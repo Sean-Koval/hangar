@@ -77,7 +77,8 @@ def test_full_flow_refresh_and_revoke(client):
     assert again.status_code == 400
     hdrs = {"Authorization": f"Bearer {tok['access_token']}", "accept": "application/json, text/event-stream"}
     init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}}
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                       "clientInfo": {"name": "t", "version": "1"}}}
     assert client.post("/mcp", json=init, headers=hdrs).status_code == 200
     # refresh rotates
     new = client.post("/token", data={"grant_type": "refresh_token", "refresh_token": tok["refresh_token"],
