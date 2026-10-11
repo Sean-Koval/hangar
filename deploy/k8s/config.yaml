@@ -13,6 +13,7 @@ data:
   HANGAR_K8S_RUNTIME_CLASS: "gvisor"        # kata-qemu for microVM pools, "" for runc
   HANGAR_REGISTRY: "REGION-docker.pkg.dev/PROJECT_ID/hangar"
   HANGAR_MAX_SANDBOXES: "50"
+  HANGAR_K8S_POD_SNAPSHOTS: "false"         # true after applying pod-snapshots.yaml (full-state forks)
 ---
 # Create the real secret out of band (never commit it):
 #   kubectl -n hangar create secret generic hangar \

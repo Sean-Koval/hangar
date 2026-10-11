@@ -58,6 +58,16 @@ Set `enable_kata_pool = true` and re-apply. That adds an Intel N2 Ubuntu pool wi
 
 Hangar adds the matching nodeSelector and toleration to sandbox pods automatically.
 
+## 5. Full-state forks with Pod snapshots (optional)
+
+By default, Kubernetes forks copy `/workspace` as a tarball. With GKE Pod snapshots, a fork restores the parent's entire pod instead: memory, running processes, and everything installed outside `/workspace`.
+
+1. Set `enable_pod_snapshots = true` in `terraform.tfvars` and re-apply. This enables `--enable-pod-snapshots` and creates the snapshot bucket, custom role and IAM bindings.
+2. Put `terraform output pod_snapshot_bucket` into `deploy/k8s/pod-snapshots.yaml`, then `kubectl apply -f deploy/k8s/pod-snapshots.yaml`. That creates the `hangar-sandbox` service account, the storage config, and a policy that selects sandboxes by the `hangar.dev/snapshottable` label.
+3. Set `HANGAR_K8S_POD_SNAPSHOTS: "true"` in `config.yaml` and restart hangar.
+
+Hangar then runs sandboxes as `hangar-sandbox` with the snapshot label. `snapshot_sandbox` creates a `PodSnapshotManualTrigger`; the source keeps running (`postCheckpoint: resume`). `fork_sandbox` creates claims annotated with `podsnapshot.gke.io/ps-name`, so GKE restores each copy from that snapshot. This requires the gVisor runtime class; Kata pools can't be snapshotted.
+
 ## Notes
 
 - **Network.** The default SandboxTemplate network policy allows egress to the public internet only, and blocks RFC1918 ranges and the metadata server. Agents can reach GitHub and package registries but not your VPC.

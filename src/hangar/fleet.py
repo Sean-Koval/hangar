@@ -320,7 +320,7 @@ class Fleet:
             self.store.put(sb)
             image = _image or await self._ensure_image(spec, pname, actor)
             sb.image = image
-            await prov.create(sb, image, spec if _image is None else None)
+            await prov.create(sb, image, spec)  # image may be a snapshot ref (forks)
             self.store.put(sb)
             await self._wait_running(prov, sb)
             if _parent:
@@ -685,8 +685,8 @@ class Fleet:
             from pathlib import Path
 
             Path(snap.ref).unlink(missing_ok=True)
-        elif snap.provider == "docker" and "docker" in self.providers:
-            await self.providers["docker"].delete_image(snap.ref)  # type: ignore[attr-defined]
+        elif snap.provider in self.providers:
+            await self.providers[snap.provider].delete_snapshot(snap.ref)
         self.store.delete(Snapshot, snap_id)
         self.audit(actor, "snapshot.delete", snap_id)
 

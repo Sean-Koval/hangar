@@ -305,6 +305,9 @@ class DockerProvider(Provider):
         )
         return f"{repo}:{snapshot_id}"
 
+    async def delete_snapshot(self, ref: str) -> None:
+        await self.delete_image(ref)
+
     async def delete_image(self, ref: str) -> None:
         try:
             await asyncio.to_thread(self.client.images.remove, ref, force=True)

@@ -1,0 +1,41 @@
+# Optional: GKE Pod snapshots, so forks on Kubernetes capture memory + the whole filesystem
+# (not just /workspace). Needs: GKE >= 1.35.3, --enable-pod-snapshots, gVisor node pool, and the
+# bucket/IAM from deploy/terraform/gke (enable_pod_snapshots = true).
+#
+#   kubectl apply -f deploy/k8s/pod-snapshots.yaml        # after replacing SNAPSHOT_BUCKET
+#   then set HANGAR_K8S_POD_SNAPSHOTS: "true" in config.yaml and restart hangar
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hangar-sandbox          # = HANGAR_K8S_SNAPSHOT_SERVICE_ACCOUNT; sandboxes run as this KSA
+  namespace: hangar-sandboxes
+automountServiceAccountToken: false
+---
+apiVersion: podsnapshot.gke.io/v1
+kind: PodSnapshotStorageConfig
+metadata:
+  name: hangar-snapshots
+spec:
+  snapshotStorageConfig:
+    gcs:
+      bucket: SNAPSHOT_BUCKET   # terraform output pod_snapshot_bucket
+      path: hangar
+---
+apiVersion: podsnapshot.gke.io/v1
+kind: PodSnapshotPolicy
+metadata:
+  name: hangar-snapshots
+  namespace: hangar-sandboxes
+spec:
+  storageConfigName: hangar-snapshots
+  selector:
+    matchLabels:
+      hangar.dev/snapshottable: "true"   # hangar adds this label when pod snapshots are enabled
+  triggerConfig:
+    type: manual
+    postCheckpoint: resume               # the source sandbox keeps running after a snapshot
+  snapshotGroupingRules:
+    groupByLabelValue:
+      labels: ["agents.x-k8s.io/sandbox-name-hash"]
+      groupRetentionPolicy:
+        maxSnapshotCountPerGroup: 10

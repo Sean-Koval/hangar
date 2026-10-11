@@ -123,5 +123,8 @@ class Provider(abc.ABC):
         """Provider-native full snapshot. Returns a ref usable by `create` as `image`."""
         raise NotImplementedError
 
+    async def delete_snapshot(self, ref: str) -> None:
+        """Delete a provider-native snapshot created by `snapshot`."""
+
     async def close(self) -> None:
         pass

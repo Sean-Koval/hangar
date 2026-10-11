@@ -94,3 +94,59 @@ async def test_write_file_uses_exec_in_chunks(monkeypatch):
     assert calls[0].startswith(": > /tmp/.hangar-upload-")
     assert sum(c.startswith("printf %s") for c in calls) >= 2  # base64 split into chunks
     assert "base64 -d" in calls[-1] and "chmod 600" in calls[-1]
+
+
+class SnapCRD(FakeCRD):
+    """Completes any PodSnapshotManualTrigger as soon as it is read back."""
+
+    def __init__(self):
+        super().__init__()
+        self.deleted = []
+
+    def get_namespaced_custom_object(self, group, version, ns, plural, name):
+        obj = super().get_namespaced_custom_object(group, version, ns, plural, name)
+        if plural == "podsnapshotmanualtriggers":
+            obj["status"] = {"conditions": [{"type": "Triggered", "status": "True", "reason": "Complete"}],
+                             "snapshotCreated": {"name": "ps-abc123"}}
+        return obj
+
+    def delete_namespaced_custom_object(self, group, version, ns, plural, name, **kw):
+        self.deleted.append((plural, name))
+
+
+async def test_pod_snapshot_and_restore():
+    p = provider(k8s_pod_snapshots=True)
+    p.crd = SnapCRD()
+    assert p.capabilities.full_snapshots
+    tmpl = p._pod_template(spec(), "i")
+    assert tmpl["metadata"]["labels"]["hangar.dev/snapshottable"] == "true"
+    assert tmpl["spec"]["serviceAccountName"] == "hangar-sandbox"
+
+    parent = Sandbox(name="a", environment="py", provider="kubernetes", info={"pod": "pod-a"})
+    ref = await p.snapshot(parent, "snap-1")
+    trig = p.crd.objects[("podsnapshotmanualtriggers", "hangar-snap-1")]
+    assert ref == "podsnapshot:ps-abc123" and trig["spec"] == {"targetPod": "pod-a"}
+    assert ("podsnapshotmanualtriggers", "hangar-snap-1") in p.crd.deleted  # trigger cleaned up
+
+    fork = Sandbox(name="b", environment="py", provider="kubernetes")
+    await p.create(fork, ref, spec())
+    claim = p.crd.objects[("sandboxclaims", f"hangar-{fork.id}")]
+    assert claim["spec"]["additionalPodMetadata"] == {"annotations": {"podsnapshot.gke.io/ps-name": "ps-abc123"}}
+    assert ("sandboxtemplates", "hangar-py") not in p.crd.objects, "restores must not rewrite the template image"
+    await p.delete_snapshot(ref)
+    assert ("podsnapshots", "ps-abc123") in p.crd.deleted
+
+
+def test_snapshot_failure_is_reported():
+    from hangar.providers.base import ProviderError
+    from hangar.providers.kubernetes import _snapshot_result
+
+    assert _snapshot_result({"status": {}}) is None
+    with pytest.raises(ProviderError, match="disk full"):
+        _snapshot_result({"status": {"conditions": [{"type": "Triggered", "status": "False", "reason": "Failed",
+                                                     "message": "disk full"}]}})
+
+
+def test_snapshots_off_by_default():
+    assert not provider().capabilities.full_snapshots
+    assert "serviceAccountName" not in provider()._pod_template(spec(), "i")["spec"]

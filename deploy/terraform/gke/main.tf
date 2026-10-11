@@ -176,3 +176,54 @@ resource "google_service_account_iam_member" "workload_identity" {
 resource "google_compute_global_address" "hangar" {
   name = "hangar-ip"
 }
+
+# --------------------------------------------------------------------------- pod snapshots
+# Bucket + IAM for GKE Pod snapshots (full-state forks). Apply deploy/k8s/pod-snapshots.yaml after.
+data "google_project" "this" {}
+
+resource "google_storage_bucket" "pod_snapshots" {
+  count                       = var.enable_pod_snapshots ? 1 : 0
+  name                        = "${var.project_id}-hangar-snapshots"
+  location                    = var.region
+  uniform_bucket_level_access = true
+  force_destroy               = true
+  hierarchical_namespace {
+    enabled = true
+  }
+  soft_delete_policy {
+    retention_duration_seconds = 0
+  }
+  lifecycle_rule {
+    condition {
+      age = 14
+    }
+    action {
+      type = "Delete"
+    }
+  }
+}
+
+resource "google_project_iam_custom_role" "pod_snapshot_rw" {
+  count       = var.enable_pod_snapshots ? 1 : 0
+  role_id     = "podSnapshotGcsReadWriter"
+  title       = "Pod snapshot GCS read/write"
+  permissions = ["storage.objects.get", "storage.objects.create", "storage.objects.delete", "storage.folders.create"]
+}
+
+locals {
+  wi_pool      = "principal://iam.googleapis.com/projects/${data.google_project.this.number}/locations/global/workloadIdentityPools/${var.project_id}.svc.id.goog"
+  snapshot_ksa = "${local.wi_pool}/subject/ns/hangar-sandboxes/sa/hangar-sandbox"
+  snapshot_ns  = "principalSet://iam.googleapis.com/projects/${data.google_project.this.number}/locations/global/workloadIdentityPools/${var.project_id}.svc.id.goog/namespace/hangar-sandboxes"
+}
+
+resource "google_storage_bucket_iam_member" "pod_snapshots" {
+  for_each = var.enable_pod_snapshots ? {
+    viewer = { role = "roles/storage.bucketViewer", member = local.snapshot_ns }
+    rw     = { role = google_project_iam_custom_role.pod_snapshot_rw[0].id, member = local.snapshot_ksa }
+    user   = { role = "roles/storage.objectUser", member = local.snapshot_ksa }
+    robot  = { role = "roles/storage.objectUser", member = "serviceAccount:service-${data.google_project.this.number}@container-engine-robot.iam.gserviceaccount.com" }
+  } : {}
+  bucket = google_storage_bucket.pod_snapshots[0].name
+  role   = each.value.role
+  member = each.value.member
+}

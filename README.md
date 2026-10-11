@@ -149,7 +149,7 @@ Everything is set through `HANGAR_*` environment variables (see `src/hangar/conf
 
 ## Known limits
 
-- **Forks on Kubernetes** use portable workspace tarballs. GKE Pod snapshots, which also capture memory and installed packages outside `/workspace`, aren't wired in yet. On Docker and E2B, forks are full snapshots.
+- **Forks on Kubernetes** copy `/workspace` as a tarball unless you enable GKE Pod snapshots, which restore the whole pod including memory (see [docs/gke.md](docs/gke.md)). On Docker and E2B, forks are always full snapshots.
 - **Test coverage of the Kubernetes and E2B providers** is unit tests against fake APIs only; they haven't run against a live cluster or account yet. The Docker path is exercised end to end.
 - **Antigravity (`agy`) subscription login** stores OAuth in the OS keyring, which headless containers may lack. Use a `GEMINI_API_KEY` credential for fleets.
 - **Concurrent sandboxes share one subscription's limits.** Parallel Claude Code agents on a single Pro login hit the plan's limits quickly. Mix in API-key credentials for wide fan-out.

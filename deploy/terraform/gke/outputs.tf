@@ -24,3 +24,7 @@ output "next_steps" {
     5. HANGAR_URL=https://<domain> HANGAR_TOKEN=... hangar env publish base --provider kubernetes
   EOT
 }
+
+output "pod_snapshot_bucket" {
+  value = var.enable_pod_snapshots ? google_storage_bucket.pod_snapshots[0].name : null
+}
