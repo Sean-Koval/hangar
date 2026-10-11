@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     public_url: str = "http://localhost:8787"
     # Bootstrap admin token. If unset on first start, one is generated and printed once.
     admin_token: str | None = None
+    # Built-in OAuth 2.1 server for MCP clients that need it (ChatGPT/claude.ai connectors).
+    # public_url must be https (or localhost) for OAuth to be enabled.
+    oauth_enabled: bool = True
 
     # --- state --------------------------------------------------------------
     data_dir: Path = Field(default_factory=lambda: Path.home() / ".hangar")

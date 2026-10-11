@@ -34,6 +34,7 @@ The same control plane runs on your laptop (Docker), on a single VM (Docker + gV
   - Codex's rotating refresh token is *leased* to one sandbox at a time and written back when that sandbox stops, so sandboxes never log each other out.
 - **Terminals that agents and humans share.** MCP clients drive persistent tmux sessions (`terminal_send` / `terminal_read`). From the dashboard you can attach to the same session and watch, or type along.
 - **Agents inside sandboxes.** `run_agent` starts Claude Code, Codex, `agy` (Antigravity) or Gemini CLI headless on a task, so one orchestrator session can fan work out across the fleet.
+- **Bearer tokens or OAuth.** Codex and Claude Code connect with a bearer token. ChatGPT connectors and other OAuth-only clients use hangar's built-in OAuth 2.1 server: discovery, dynamic registration, PKCE, and a consent page where you approve with a hangar token. See [docs/clients.md](docs/clients.md).
 - **A dashboard.** It covers the fleet, live terminals, the environment editor with streaming builds, credentials and sign-in, snapshots, MCP connect snippets with token management, and an audit log.
 
 ## Quickstart (macOS)
@@ -148,7 +149,6 @@ Everything is set through `HANGAR_*` environment variables (see `src/hangar/conf
 
 ## Known limits
 
-- **ChatGPT developer-mode connectors** accept only OAuth or no auth, not bearer tokens. Codex and Claude Code work today. To use ChatGPT, front hangar with an OAuth proxy (see [docs/clients.md](docs/clients.md)).
 - **Forks on Kubernetes** use portable workspace tarballs. GKE Pod snapshots, which also capture memory and installed packages outside `/workspace`, aren't wired in yet. On Docker and E2B, forks are full snapshots.
 - **Test coverage of the Kubernetes and E2B providers** is unit tests against fake APIs only; they haven't run against a live cluster or account yet. The Docker path is exercised end to end.
 - **Antigravity (`agy`) subscription login** stores OAuth in the OS keyring, which headless containers may lack. Use a `GEMINI_API_KEY` credential for fleets.

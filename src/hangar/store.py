@@ -109,6 +109,16 @@ class Store:
                 (key, value),
             )
 
+    def kv_delete(self, key: str) -> None:
+        with self._lock:
+            self._db.execute("DELETE FROM kv WHERE key=?", (key,))
+
+    def kv_keys(self, prefix: str) -> list[str]:
+        with self._lock:
+            rows = self._db.execute("SELECT key FROM kv WHERE key LIKE ? ESCAPE '\\'",
+                                    (prefix.replace("_", "\\_").replace("%", "\\%") + "%",)).fetchall()
+        return [r[0] for r in rows]
+
     def kv_get_json(self, key: str, default=None):
         v = self.kv_get(key)
         return json.loads(v) if v is not None else default

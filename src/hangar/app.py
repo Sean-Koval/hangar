@@ -45,18 +45,28 @@ class Hangar:
 
 # ---------------------------------------------------------------------------- MCP auth
 class MCPAuthMiddleware:
-    def __init__(self, app, auth: TokenAuth):
+    """Accepts static hangar tokens and (when enabled) OAuth access tokens issued by hangar."""
+
+    def __init__(self, app, auth: TokenAuth, oauth=None, resource_metadata_url: str | None = None):
         self.app = app
         self.auth = auth
+        self.oauth = oauth
+        self.resource_metadata_url = resource_metadata_url
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
-        actor = self.auth.verify(bearer_from_headers(headers))
+        token = bearer_from_headers(headers)
+        actor = self.auth.verify(token)
+        if actor is None and self.oauth is not None:
+            actor = await self.oauth.verify(token)
         if actor is None:
+            challenge = 'Bearer realm="hangar"'
+            if self.resource_metadata_url:  # MCP auth discovery (RFC 9728)
+                challenge += f', resource_metadata="{self.resource_metadata_url}"'
             resp = JSONResponse({"error": "unauthorized", "hint": "send Authorization: Bearer <hangar token>"},
-                                status_code=401, headers={"WWW-Authenticate": 'Bearer realm="hangar"'})
+                                status_code=401, headers={"WWW-Authenticate": challenge})
             return await resp(scope, receive, send)
         tok = current_actor.set(actor)
         try:
@@ -149,6 +159,49 @@ class TokenBody(BaseModel):
     name: str
 
 
+def _setup_oauth(app: FastAPI, h: Hangar):
+    """Mount the OAuth 2.1 endpoints the MCP auth spec expects, at the server root."""
+    if not h.settings.oauth_enabled:
+        return None, None
+    from mcp.server.auth.routes import create_auth_routes, create_protected_resource_routes
+    from mcp.server.auth.settings import ClientRegistrationOptions, RevocationOptions
+    from pydantic import AnyHttpUrl
+    from starlette.routing import Route
+
+    from hangar.oauth import HangarOAuthProvider, consent_get, consent_post
+
+    base = h.settings.public_url.rstrip("/")
+    provider = HangarOAuthProvider(h.store, h.auth, base)
+    try:
+        routes = create_auth_routes(
+            provider, issuer_url=AnyHttpUrl(base),
+            client_registration_options=ClientRegistrationOptions(enabled=True, valid_scopes=["hangar"],
+                                                                  default_scopes=["hangar"]),
+            revocation_options=RevocationOptions(enabled=True),
+        )
+        routes += create_protected_resource_routes(
+            resource_url=AnyHttpUrl(f"{base}/mcp"), authorization_servers=[AnyHttpUrl(base)],
+            scopes_supported=["hangar"], resource_name="hangar",
+        )
+    except Exception as e:  # noqa: BLE001 - e.g. a non-https public URL
+        log.warning("OAuth disabled: %s (set HANGAR_PUBLIC_URL to an https URL to enable it)", e)
+        return None, None
+    async def _consent_get(request):
+        return await consent_get(request, provider)
+
+    async def _consent_post(request):
+        return await consent_post(request, provider)
+
+    routes.append(Route("/oauth/consent", _consent_get, methods=["GET"]))
+    routes.append(Route("/oauth/consent", _consent_post, methods=["POST"]))
+    for i, r in enumerate(routes):
+        app.router.routes.insert(i, r)
+    from urllib.parse import urlparse
+
+    u = urlparse(base)
+    return provider, f"{u.scheme}://{u.netloc}/.well-known/oauth-protected-resource{u.path}/mcp"
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     h = Hangar(settings)
     mcp = build_mcp(h.fleet)
@@ -172,7 +225,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="hangar", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None,
                   openapi_url=None)
     app.state.hangar = h
-    app.mount("/mcp", MCPAuthMiddleware(mcp_asgi, h.auth))
+    oauth, rm_url = _setup_oauth(app, h)
+    app.state.oauth = oauth
+    app.mount("/mcp", MCPAuthMiddleware(mcp_asgi, h.auth, oauth, rm_url))
     app.add_middleware(MCPPathMiddleware)
 
     @app.exception_handler(FleetError)
@@ -222,9 +277,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "claude_code_cli": (
                 f'claude mcp add --transport http hangar {url} --header "Authorization: Bearer $HANGAR_TOKEN"'
             ),
-            "note": "ChatGPT developer-mode connectors require OAuth or no auth; front hangar with an OAuth "
-                    "proxy (see docs/clients.md) to use it there.",
+            "oauth": app.state.oauth is not None,
+            "chatgpt": (
+                f"In ChatGPT: Settings → Connectors → Create. MCP server URL: {url}. Authentication: OAuth. "
+                "ChatGPT registers itself and opens Hangar's approval page, where you paste a hangar token."
+                if app.state.oauth is not None else
+                "OAuth is off: set HANGAR_PUBLIC_URL to the https URL clients reach hangar at to enable it."
+            ),
         }
+
+    @app.get("/api/oauth/clients")
+    async def oauth_clients(_: str = A):
+        return app.state.oauth.clients() if app.state.oauth else []
+
+    @app.delete("/api/oauth/clients/{client_id}")
+    async def oauth_revoke(client_id: str, who: str = A):
+        if not app.state.oauth:
+            raise HTTPException(404, "OAuth is disabled")
+        app.state.oauth.revoke_client(client_id)
+        fleet.audit(who, "oauth.revoke", client_id)
+        return {"revoked": client_id}
 
     # ------------------------------------------------------------------ environments
     @app.get("/api/environments")

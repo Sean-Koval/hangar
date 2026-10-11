@@ -22,12 +22,21 @@ claude mcp add --transport http hangar https://hangar.example.com/mcp \
   --header "Authorization: Bearer $HANGAR_TOKEN"
 ```
 
-## ChatGPT (developer mode connectors)
+## ChatGPT, claude.ai and other OAuth clients
 
-ChatGPT custom connectors support OAuth or no authentication. They don't accept a static bearer token. You have two options:
+Hangar includes an OAuth 2.1 authorization server that follows the MCP authorization spec. Clients that can't send a static bearer token connect with it.
 
-1. **Put an OAuth-capable proxy in front of `/mcp`.** For example, use Google IAP or Cloudflare Access with an OAuth app, or an MCP auth gateway. Have it forward requests to hangar with `Authorization: Bearer <hangar token>` injected.
-2. **Use Codex or Claude Code as the orchestrator,** which work with bearer tokens today.
+1. Make sure `HANGAR_PUBLIC_URL` is the https URL clients reach hangar at, for example `https://hangar.example.com`. OAuth turns itself off for plain-http hosts other than localhost.
+2. In ChatGPT, go to **Settings → Connectors → Create** (developer mode). Set the MCP server URL to `https://hangar.example.com/mcp` and choose **OAuth** for authentication.
+3. ChatGPT discovers hangar's metadata, registers itself, and opens hangar's approval page. Paste a hangar API token there and approve.
+
+The app then gets an access token (valid for 1 hour) and a refresh token (valid for 30 days, rotated on every use). It acts as the token you approved with. Connected apps are listed in the dashboard under **Connect**, where you can revoke each one immediately.
+
+Under the hood:
+
+- Discovery: `/.well-known/oauth-protected-resource/mcp` and `/.well-known/oauth-authorization-server`
+- Endpoints: `/register` (RFC 7591), `/authorize` (PKCE S256 only), `/token`, `/revoke`
+- `/mcp` returns `401` with a `resource_metadata` pointer, so clients find all of the above on their own.
 
 Never expose hangar without auth. Its tools can run arbitrary commands in your sandboxes.
 

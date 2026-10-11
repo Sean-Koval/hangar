@@ -49,3 +49,4 @@ ignore = ["B008", "E731", "B027"]  # FastAPI Depends defaults; small lambdas; op
 
 [tool.ruff.lint.per-file-ignores]
 "tests/test_kubernetes.py" = ["E402"]
+"src/hangar/oauth.py" = ["E501"]  # inline HTML template

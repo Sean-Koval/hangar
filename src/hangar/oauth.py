@@ -1,0 +1,273 @@
+"""OAuth 2.1 authorization server for MCP clients that can't use static bearer tokens (ChatGPT
+connectors, claude.ai custom connectors, MCP Inspector).
+
+Flow (MCP authorization spec): the client hits /mcp, gets 401 with `resource_metadata`, discovers
+/.well-known/oauth-protected-resource/mcp and /.well-known/oauth-authorization-server, registers
+itself (RFC 7591), and sends the user to /authorize with PKCE. Hangar has no user accounts, so
+the consent page asks for a hangar API token: approving a client means vouching for it with a
+token you hold. The client then receives short-lived access tokens (+ refresh tokens) that act
+with the approving token's identity, and can be revoked from the dashboard.
+
+Only SHA-256 hashes of codes/tokens are stored. Static `hgr_` tokens keep working everywhere.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import html
+import json
+import secrets
+import time
+from typing import Any
+from urllib.parse import urlparse
+
+from mcp.server.auth.provider import (
+    AccessToken,
+    AuthorizationCode,
+    AuthorizationParams,
+    AuthorizeError,
+    RefreshToken,
+    TokenError,
+    construct_redirect_uri,
+)
+from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+from starlette.requests import Request
+from starlette.responses import HTMLResponse, RedirectResponse, Response
+
+from hangar.auth import TokenAuth
+from hangar.store import Store
+
+ACCESS_TTL = 3600
+REFRESH_TTL = 30 * 86400
+CODE_TTL = 300
+REQUEST_TTL = 600
+SCOPE = "hangar"
+
+
+def _h(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+class HangarOAuthProvider:
+    """Implements mcp.server.auth.provider.OAuthAuthorizationServerProvider on the hangar store."""
+
+    def __init__(self, store: Store, auth: TokenAuth, public_url: str):
+        self.store = store
+        self.auth = auth
+        self.public_url = public_url.rstrip("/")
+
+    # ------------------------------------------------------------------ storage helpers
+    def _put(self, kind: str, key: str, value: dict[str, Any]) -> None:
+        self.store.kv_set_json(f"oauth:{kind}:{key}", value)
+
+    def _get(self, kind: str, key: str) -> dict[str, Any] | None:
+        v = self.store.kv_get_json(f"oauth:{kind}:{key}")
+        if v and v.get("expires_at") and v["expires_at"] < time.time():
+            self._del(kind, key)
+            return None
+        return v
+
+    def _del(self, kind: str, key: str) -> None:
+        self.store.kv_delete(f"oauth:{kind}:{key}")
+
+    # ------------------------------------------------------------------ clients
+    async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
+        v = self.store.kv_get_json(f"oauth:client:{client_id}")
+        return OAuthClientInformationFull.model_validate(v) if v else None
+
+    async def register_client(self, client_info: OAuthClientInformationFull) -> None:
+        self.store.kv_set(f"oauth:client:{client_info.client_id}", client_info.model_dump_json())
+
+    # ------------------------------------------------------------------ authorize -> consent page
+    async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
+        req = secrets.token_urlsafe(24)
+        self._put("req", req, {
+            "client_id": client.client_id,
+            "params": json.loads(params.model_dump_json()),
+            "expires_at": time.time() + REQUEST_TTL,
+        })
+        return f"{self.public_url}/oauth/consent?req={req}"
+
+    def pending(self, req: str) -> tuple[dict[str, Any], OAuthClientInformationFull] | None:
+        v = self._get("req", req)
+        if not v:
+            return None
+        raw = self.store.kv_get_json(f"oauth:client:{v['client_id']}")
+        return (v, OAuthClientInformationFull.model_validate(raw)) if raw else None
+
+    def approve(self, req: str, actor: str) -> str:
+        """Issue an authorization code for a pending request; returns the client redirect URL."""
+        found = self.pending(req)
+        if not found:
+            raise AuthorizeError(error="invalid_request", error_description="authorization request expired")
+        v, client = found
+        self._del("req", req)
+        p = AuthorizationParams.model_validate(v["params"])
+        code = secrets.token_urlsafe(32)
+        self._put("code", _h(code), json.loads(AuthorizationCode(
+            code=_h(code), scopes=p.scopes or [SCOPE], expires_at=time.time() + CODE_TTL,
+            client_id=client.client_id, code_challenge=p.code_challenge, redirect_uri=p.redirect_uri,
+            redirect_uri_provided_explicitly=p.redirect_uri_provided_explicitly, resource=p.resource,
+            subject=actor,
+        ).model_dump_json()))
+        from hangar.models import AuditEvent
+
+        self.store.audit(AuditEvent(actor=f"ui:{actor}", action="oauth.approve", target=client.client_id,
+                                    detail={"client_name": client.client_name or client.client_id,
+                                            "redirect_host": urlparse(str(p.redirect_uri)).netloc}))
+        return construct_redirect_uri(str(p.redirect_uri), code=code, state=p.state)
+
+    def deny(self, req: str) -> str | None:
+        found = self.pending(req)
+        if not found:
+            return None
+        v, _ = found
+        self._del("req", req)
+        p = AuthorizationParams.model_validate(v["params"])
+        return construct_redirect_uri(str(p.redirect_uri), error="access_denied", state=p.state)
+
+    # ------------------------------------------------------------------ codes & tokens
+    async def load_authorization_code(self, client: OAuthClientInformationFull, authorization_code: str):
+        v = self._get("code", _h(authorization_code))
+        if not v or v["client_id"] != client.client_id:
+            return None
+        return AuthorizationCode.model_validate(v)
+
+    def _issue(self, client_id: str, scopes: list[str], subject: str | None, resource: str | None) -> OAuthToken:
+        access, refresh = "hoa_" + secrets.token_urlsafe(32), "hor_" + secrets.token_urlsafe(32)
+        now_ = int(time.time())
+        base = {"client_id": client_id, "scopes": scopes, "subject": subject, "resource": resource}
+        self._put("at", _h(access), {**base, "token": _h(access), "expires_at": now_ + ACCESS_TTL})
+        self._put("rt", _h(refresh), {**base, "token": _h(refresh), "expires_at": now_ + REFRESH_TTL})
+        grants = self.store.kv_get_json(f"oauth:grants:{client_id}", []) or []
+        grants = [g for g in grants if g.get("expires_at", 0) > now_][-20:]
+        grants += [{"kind": "at", "key": _h(access), "expires_at": now_ + ACCESS_TTL},
+                   {"kind": "rt", "key": _h(refresh), "expires_at": now_ + REFRESH_TTL}]
+        self.store.kv_set_json(f"oauth:grants:{client_id}", grants)
+        self.store.kv_set_json(f"oauth:clientmeta:{client_id}", {"subject": subject, "last_issued": now_})
+        return OAuthToken(access_token=access, expires_in=ACCESS_TTL, scope=" ".join(scopes), refresh_token=refresh)
+
+    async def exchange_authorization_code(self, client: OAuthClientInformationFull,
+                                          authorization_code: AuthorizationCode) -> OAuthToken:
+        if self._get("code", authorization_code.code) is None:
+            raise TokenError(error="invalid_grant", error_description="authorization code already used")
+        self._del("code", authorization_code.code)  # single use
+        return self._issue(client.client_id, authorization_code.scopes, authorization_code.subject,
+                           authorization_code.resource)
+
+    async def load_refresh_token(self, client: OAuthClientInformationFull, refresh_token: str):
+        v = self._get("rt", _h(refresh_token))
+        if not v or v["client_id"] != client.client_id:
+            return None
+        return RefreshToken.model_validate(v)
+
+    async def exchange_refresh_token(self, client: OAuthClientInformationFull, refresh_token: RefreshToken,
+                                     scopes: list[str]) -> OAuthToken:
+        self._del("rt", refresh_token.token)  # rotate
+        return self._issue(client.client_id, scopes or refresh_token.scopes, refresh_token.subject,
+                           refresh_token.resource)
+
+    async def load_access_token(self, token: str) -> AccessToken | None:
+        v = self._get("at", _h(token))
+        return AccessToken.model_validate(v) if v else None
+
+    async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
+        self._del("at", token.token)
+        self._del("rt", token.token)
+
+    # ------------------------------------------------------------------ dashboard helpers
+    def clients(self) -> list[dict[str, Any]]:
+        out = []
+        for key in self.store.kv_keys("oauth:client:"):
+            raw = self.store.kv_get_json(key)
+            if not raw:
+                continue
+            cid = raw["client_id"]
+            meta = self.store.kv_get_json(f"oauth:clientmeta:{cid}") or {}
+            live = [g for g in (self.store.kv_get_json(f"oauth:grants:{cid}", []) or [])
+                    if g["kind"] == "rt" and self._get("rt", g["key"])]
+            out.append({"client_id": cid, "client_name": raw.get("client_name") or cid,
+                        "redirect_uris": raw.get("redirect_uris") or [], "approved_by": meta.get("subject"),
+                        "last_issued": meta.get("last_issued"), "active": bool(live)})
+        return sorted(out, key=lambda c: c.get("last_issued") or 0, reverse=True)
+
+    def revoke_client(self, client_id: str) -> None:
+        for g in self.store.kv_get_json(f"oauth:grants:{client_id}", []) or []:
+            self._del(g["kind"], g["key"])
+        for key in (f"oauth:grants:{client_id}", f"oauth:client:{client_id}", f"oauth:clientmeta:{client_id}"):
+            self.store.kv_delete(key)
+
+    # ------------------------------------------------------------------ verification for /mcp
+    async def verify(self, token: str | None) -> str | None:
+        if not token:
+            return None
+        at = await self.load_access_token(token)
+        if not at:
+            return None
+        raw = self.store.kv_get_json(f"oauth:client:{at.client_id}") or {}
+        return f"{at.subject or 'oauth'}/{raw.get('client_name') or at.client_id}"
+
+
+# ---------------------------------------------------------------------------- consent page
+_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Authorize · Hangar</title>
+<style>
+:root{{--floor:#1e2833;--panel:#26323f;--line:#3a4857;--ink:#e8ecef;--ink2:#a9b4be;--y:#f2c230;--err:#e5684f;color-scheme:dark}}
+@media (prefers-color-scheme: light){{:root{{--floor:#e6e9eb;--panel:#f6f7f8;--line:#cdd4da;--ink:#1f2a36;--ink2:#4b5967;--y:#e8b419;color-scheme:light}}}}
+*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--floor);
+color:var(--ink);font:15px/1.5 system-ui,sans-serif;padding:16px}}
+.card{{width:min(460px,100%);background:var(--panel);border-top:6px solid var(--y);border-radius:8px;padding:26px;
+display:flex;flex-direction:column;gap:14px}}h1{{margin:0;font-size:26px}}p{{margin:0;color:var(--ink2)}}
+code{{font-size:13px}}label{{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--ink2)}}
+input{{font:inherit;color:inherit;background:var(--floor);border:1px solid var(--line);border-radius:4px;padding:8px}}
+.row{{display:flex;gap:10px;justify-content:flex-end}}button{{font:inherit;border-radius:4px;padding:7px 14px;
+border:1px solid var(--line);background:transparent;color:inherit;cursor:pointer}}
+button.p{{background:var(--y);border-color:var(--y);color:#1e2833;font-weight:600}}.e{{color:var(--err)}}
+</style></head><body><form class="card" method="post" action="/oauth/consent">
+<h1>Connect {name} to Hangar?</h1>
+<p><b>{name}</b> wants to manage your sandboxes: create and destroy them, run commands and agents,
+and read and write their files. It will act as the token you approve with.</p>
+<p>After approval you'll return to <code>{host}</code>.</p>
+{error}
+<input type="hidden" name="req" value="{req}">
+<label>Hangar API token<input name="token" type="password" autocomplete="off" required autofocus placeholder="hgr_…"></label>
+<div class="row"><button name="action" value="deny" formnovalidate>Deny</button>
+<button class="p" name="action" value="approve">Approve</button></div>
+</form></body></html>"""
+
+_HEADERS = {"X-Frame-Options": "DENY", "Content-Security-Policy": "frame-ancestors 'none'",
+            "Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+
+
+def _page(req: str, client: OAuthClientInformationFull, params: dict[str, Any], error: str = "") -> HTMLResponse:
+    host = urlparse(str(params.get("redirect_uri", ""))).netloc or "the app"
+    body = _PAGE.format(name=html.escape(client.client_name or client.client_id), host=html.escape(host),
+                        req=html.escape(req), error=f'<p class="e">{html.escape(error)}</p>' if error else "")
+    return HTMLResponse(body, headers=_HEADERS)
+
+
+async def consent_get(request: Request, provider: HangarOAuthProvider) -> Response:
+    req = request.query_params.get("req", "")
+    found = provider.pending(req)
+    if not found:
+        return HTMLResponse("<p>This authorization request expired. Start the connection again from the app.</p>",
+                            status_code=400, headers=_HEADERS)
+    v, client = found
+    return _page(req, client, v["params"])
+
+
+async def consent_post(request: Request, provider: HangarOAuthProvider) -> Response:
+    form = await request.form()
+    req = str(form.get("req", ""))
+    if form.get("action") == "deny":
+        url = provider.deny(req)
+        return RedirectResponse(url, status_code=302) if url else HTMLResponse("expired", status_code=400)
+    found = provider.pending(req)
+    if not found:
+        return HTMLResponse("<p>This authorization request expired. Start again from the app.</p>",
+                            status_code=400, headers=_HEADERS)
+    actor = provider.auth.verify(str(form.get("token", "")).strip())
+    if not actor:
+        v, client = found
+        return _page(req, client, v["params"], error="That token was not accepted.")
+    return RedirectResponse(provider.approve(req, actor), status_code=302, headers=_HEADERS)

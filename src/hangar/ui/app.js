@@ -610,9 +610,24 @@ async function loadConnect() {
     block("Codex (~/.codex/config.toml)", c.codex_config_toml, "Then export HANGAR_TOKEN in the shell Codex runs from.") +
     block("Codex CLI", c.codex_cli) +
     block("Claude Code", c.claude_code_cli) +
-    `<p class="hint">${esc(c.note)}</p>`;
+    `<div class="snippet"><h3>ChatGPT and other OAuth clients</h3><p class="${c.oauth ? "sub" : "hint"}">${esc(c.chatgpt)}</p></div>`;
   loadTokens();
+  loadOAuth();
 }
+async function loadOAuth() {
+  const apps = (await api("GET", "/api/oauth/clients")).filter((a) => a.approved_by || a.active);
+  $("#oauth-table tbody").innerHTML = apps.length ? apps.map((a) => `<tr>
+    <td><b>${esc(a.client_name)}</b><div class="muted">${esc((a.redirect_uris[0] || "").replace(/^https?:\/\//, "").split("/")[0])}</div></td>
+    <td class="muted">${a.active ? `approved by ${esc(a.approved_by || "?")}, ${ago(a.last_issued)}` : "no active session"}</td>
+    <td><button class="danger" data-oauth-revoke="${esc(a.client_id)}">Revoke</button></td></tr>`).join("")
+    : `<tr><td class="muted">No apps connected with OAuth yet.</td></tr>`;
+}
+$("#oauth-table").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-oauth-revoke]");
+  if (b && confirm("Revoke this app? It loses access immediately and must be approved again.")) {
+    await busy(b, async () => { await api("DELETE", `/api/oauth/clients/${encodeURIComponent(b.dataset.oauthRevoke)}`); loadOAuth(); });
+  }
+});
 $("#connect-snippets").addEventListener("click", (e) => {
   const b = e.target.closest("[data-copy]");
   if (b) navigator.clipboard.writeText(b.dataset.copy).then(() => toast("Copied"));
