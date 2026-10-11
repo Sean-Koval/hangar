@@ -1,0 +1,8 @@
+# Same toolchain as claude-python, but each sandbox is a Kata microVM with its own kernel.
+# Kubernetes only: needs the Kata node pool and kata-deploy (docs/gke.md, step 4).
+# Locally, use claude-python with HANGAR_DOCKER_RUNTIME=kata instead.
+name: claude-python-kata
+extends: claude-python
+description: claude-python in a Kata microVM (GKE nested-virtualization pool)
+runtime_class: kata-qemu-runtime-rs
+warm_pool: 0

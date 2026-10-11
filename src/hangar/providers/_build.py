@@ -61,6 +61,27 @@ async def _has_buildx() -> bool:
     return _BUILDX
 
 
+_DAEMON: bool | None = None
+
+
+async def docker_available() -> bool:
+    """True when the docker CLI is installed *and* can reach a daemon. The control-plane image ships the
+    CLI (for single-VM installs) but has no daemon inside a cluster, where builds must use Cloud Build."""
+    global _DAEMON
+    if _DAEMON is None:
+        if not shutil.which("docker"):
+            return False
+        quiet = asyncio.subprocess.DEVNULL
+        proc = await asyncio.create_subprocess_exec("docker", "version", "--format", "{{.Server.Version}}",
+                                                    stdout=quiet, stderr=quiet)
+        try:
+            _DAEMON = await asyncio.wait_for(proc.wait(), 15) == 0
+        except TimeoutError:
+            proc.kill()
+            _DAEMON = False
+    return _DAEMON
+
+
 async def docker_build(ctx: BuildContext, tag: str, log: LogFn | None = None, platform: str | None = None,
                        push: bool = False) -> str:
     if not shutil.which("docker"):

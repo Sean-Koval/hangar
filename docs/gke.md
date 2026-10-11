@@ -19,6 +19,15 @@ This creates:
 
 ## 2. Control plane
 
+The quick way is one script. It reads the Terraform outputs, builds the control-plane image with Cloud Build, fills in the `deploy/k8s` placeholders and deploys:
+
+```bash
+bash deploy/gke/up.sh            # KATA=1 also installs Kata on the microVM pool (step 4)
+```
+
+Without `DOMAIN=...` it serves on `https://<static-ip>.sslip.io`, a public wildcard DNS name that resolves to the static IP, so the managed certificate provisions with no DNS setup. The admin token is saved to `~/.hangar/gke-admin-token`. The manual steps below do the same thing by hand.
+
+
 ```bash
 $(terraform output -raw get_credentials)
 REG=$(terraform output -raw registry)
@@ -64,7 +73,7 @@ Set `enable_kata_pool = true` and re-apply. That adds an Intel N2 Ubuntu pool wi
      --set 'tolerations[0].effect=NoSchedule'
    kubectl get runtimeclass   # expect kata-qemu-runtime-rs
    ```
-2. Set `HANGAR_K8S_RUNTIME_CLASS: kata-qemu-runtime-rs` in `deploy/k8s/config.yaml` and restart hangar.
+2. Use an environment with `runtime_class: kata-qemu-runtime-rs`, such as `envs/claude-python-kata.yaml`. gVisor and Kata environments then share the cluster. To make Kata the default for every environment, set `HANGAR_K8S_RUNTIME_CLASS: kata-qemu-runtime-rs` in `deploy/k8s/config.yaml` instead.
 
 Kata 4.x defaults to its Rust runtime, `kata-qemu-runtime-rs`. The older Go runtime is still available as `kata-qemu` (enable `shims.qemu`), but it's deprecated. Hangar pins any `kata*` runtime class to the Kata pool automatically.
 
