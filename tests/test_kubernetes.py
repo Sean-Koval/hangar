@@ -114,27 +114,71 @@ class SnapCRD(FakeCRD):
         self.deleted.append((plural, name))
 
 
-async def test_pod_snapshot_and_restore():
-    p = provider(k8s_pod_snapshots=True)
-    p.crd = SnapCRD()
-    assert p.capabilities.full_snapshots
-    tmpl = p._pod_template(spec(), "i")
-    assert tmpl["metadata"]["labels"]["hangar.dev/snapshottable"] == "true"
-    assert tmpl["spec"]["serviceAccountName"] == "hangar-sandbox"
+class FakeCore:
+    """Pod API: the pod disappears on suspend and comes back (restored or fresh) on resume."""
 
-    parent = Sandbox(name="a", environment="py", provider="kubernetes", info={"pod": "pod-a"})
-    ref = await p.snapshot(parent, "snap-1")
-    trig = p.crd.objects[("podsnapshotmanualtriggers", "hangar-snap-1")]
-    assert ref == "podsnapshot:ps-abc123" and trig["spec"] == {"targetPod": "pod-a"}
-    assert ("podsnapshotmanualtriggers", "hangar-snap-1") in p.crd.deleted  # trigger cleaned up
+    def __init__(self, crd, restored=True):
+        from types import SimpleNamespace as NS
 
-    fork = Sandbox(name="b", environment="py", provider="kubernetes")
-    await p.create(fork, ref, spec())
-    claim = p.crd.objects[("sandboxclaims", f"hangar-{fork.id}")]
-    assert claim["spec"]["additionalPodMetadata"] == {"annotations": {"podsnapshot.gke.io/ps-name": "ps-abc123"}}
-    assert ("sandboxtemplates", "hangar-py") not in p.crd.objects, "restores must not rewrite the template image"
-    await p.delete_snapshot(ref)
-    assert ("podsnapshots", "ps-abc123") in p.crd.deleted
+        self.NS, self.crd, self.restored, self.gen = NS, crd, restored, 1
+
+    def read_namespaced_pod(self, name, ns):
+        from kubernetes.client.rest import ApiException
+
+        sb = self.crd.objects.get(("sandboxes", "sbx-1"), {})
+        if sb.get("spec", {}).get("operatingMode") == "Suspended":
+            raise ApiException(status=404)
+        NS = self.NS
+        conds = [NS(type="Ready", status="True", message="")]
+        if self.gen > 1 and self.restored:
+            conds.append(NS(type="PodRestored", status="True", message="restored from snapshot ps-abc123"))
+        return NS(metadata=NS(uid=f"uid-{self.gen}"), status=NS(phase="Running", conditions=conds))
+
+
+class SnapCRD2(SnapCRD):
+    def patch_namespaced_custom_object(self, group, version, ns, plural, name, body):
+        obj = self.objects.setdefault((plural, name), {"metadata": {"name": name}})
+        obj.setdefault("spec", {}).update(body["spec"])
+        if body["spec"].get("operatingMode") == "Running":
+            self.core.gen += 1
+
+
+async def _paused_provider(restored=True):
+    p = provider(k8s_pod_snapshots=True, k8s_snapshot_timeout_seconds=5)
+    p.crd = SnapCRD2()
+    p.core = FakeCore(p.crd, restored)
+    p.crd.core = p.core
+    sb = Sandbox(name="a", environment="py", provider="kubernetes", provider_ref="hangar-x",
+                 info={"pod": "sbx-1", "k8s_sandbox": "sbx-1"})
+    await p.pause(sb)
+    return p, sb
+
+
+async def test_pause_snapshots_then_suspends_and_resume_verifies_restore():
+    p, sb = await _paused_provider()
+    assert p.capabilities.pause and not p.capabilities.full_snapshots
+    trig = next(v for (pl, _), v in p.crd.objects.items() if pl == "podsnapshotmanualtriggers")
+    assert trig["spec"] == {"targetPod": "sbx-1"}
+    assert p.crd.objects[("sandboxes", "sbx-1")]["spec"]["operatingMode"] == "Suspended"
+    assert sb.info["paused_snapshot"] == "ps-abc123" and "pod" not in sb.info
+    await p.resume(sb)
+    assert p.crd.objects[("sandboxes", "sbx-1")]["spec"]["operatingMode"] == "Running"
+    assert "paused_snapshot" not in sb.info
+
+
+async def test_resume_as_fresh_pod_is_an_error():
+    from hangar.providers.base import ProviderError
+
+    p, sb = await _paused_provider(restored=False)
+    with pytest.raises(ProviderError, match="fresh pod"):
+        await p.resume(sb)
+
+
+def test_pod_snapshots_require_gvisor():
+    from hangar.providers.base import ProviderError
+
+    with pytest.raises(ProviderError, match="gvisor"):
+        KubernetesProvider(Settings(k8s_pod_snapshots=True, k8s_runtime_class="kata-qemu"))
 
 
 def test_snapshot_failure_is_reported():
@@ -148,7 +192,7 @@ def test_snapshot_failure_is_reported():
 
 
 def test_snapshots_off_by_default():
-    assert not provider().capabilities.full_snapshots
+    assert not provider().capabilities.pause
     assert "serviceAccountName" not in provider()._pod_template(spec(), "i")["spec"]
 
 

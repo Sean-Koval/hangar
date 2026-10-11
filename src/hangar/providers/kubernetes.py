@@ -42,8 +42,6 @@ except ImportError:  # pragma: no cover
 
 CORE_GROUP, CORE_V = "agents.x-k8s.io", "v1beta1"
 PS_GROUP, PS_V = "podsnapshot.gke.io", "v1"
-PS_NAME_ANNOTATION = "podsnapshot.gke.io/ps-name"
-SNAP_PREFIX = "podsnapshot:"
 SNAPSHOT_LABEL = {"hangar.dev/snapshottable": "true"}  # matched by the PodSnapshotPolicy selector
 EXT_GROUP, EXT_V = "extensions.agents.x-k8s.io", "v1beta1"
 CONTAINER = "sandbox"
@@ -118,6 +116,8 @@ class KubernetesProvider(Provider):
             raise ProviderError("kubernetes extra not installed: pip install 'hangar[kubernetes]'")
         self.settings = settings
         self.ns = settings.k8s_namespace
+        if settings.k8s_pod_snapshots and (settings.k8s_runtime_class or "") != "gvisor":
+            raise ProviderError("GKE Pod snapshots require HANGAR_K8S_RUNTIME_CLASS=gvisor")
         try:
             if settings.k8s_in_cluster:
                 config.load_incluster_config()
@@ -143,7 +143,9 @@ class KubernetesProvider(Provider):
     @property
     def capabilities(self) -> Capabilities:
         rc = (self.settings.k8s_runtime_class or "").lower()
-        return Capabilities(full_snapshots=self.settings.k8s_pod_snapshots, warm_pools=True, pause=False,
+        # GKE Pod snapshots restore a sandbox only from its *own* snapshots, so they power
+        # pause/resume (memory + processes kept, node capacity freed), not cross-sandbox forks.
+        return Capabilities(full_snapshots=False, warm_pools=True, pause=self.settings.k8s_pod_snapshots,
                             microvm="kata" in rc,
                             local_build=bool(shutil.which("docker") or shutil.which("gcloud")))
 
@@ -276,8 +278,7 @@ class KubernetesProvider(Provider):
     async def create(self, sandbox: Sandbox, image: str, spec: EnvSpec | None = None) -> None:
         if spec is None:
             raise ProviderError("kubernetes provider needs the environment spec to create a sandbox")
-        restore_from = image[len(SNAP_PREFIX):] if image.startswith(SNAP_PREFIX) else None
-        if restore_from is None and self._synced.get(spec.name) != (image, spec.warm_pool):
+        if self._synced.get(spec.name) != (image, spec.warm_pool):
             await self.sync_warm_pool(spec, image)  # idempotent; keeps template image current
             self._synced[spec.name] = (image, spec.warm_pool)
         claim = f"hangar-{sandbox.id}"
@@ -288,10 +289,6 @@ class KubernetesProvider(Provider):
             "spec": {"warmPoolRef": {"name": f"hangar-{spec.name}"},
                      "lifecycle": {"shutdownPolicy": "Delete"}},
         }
-        if restore_from:
-            # GKE restores the pod (memory + filesystem) from this PodSnapshot instead of booting fresh.
-            body["spec"]["additionalPodMetadata"] = {"annotations": {PS_NAME_ANNOTATION: restore_from}}
-            sandbox.info["restored_from"] = restore_from
         if sandbox.expires_at:
             body["spec"]["lifecycle"]["shutdownTime"] = _rfc3339(sandbox.expires_at + 300)  # reaper first, k8s backstop
         await asyncio.to_thread(self.crd.create_namespaced_custom_object, EXT_GROUP, EXT_V, self.ns,
@@ -344,6 +341,7 @@ class KubernetesProvider(Provider):
     async def destroy(self, sandbox: Sandbox) -> None:
         if not sandbox.provider_ref:
             return
+        await self._cleanup_triggers(sandbox)
         try:
             await asyncio.to_thread(self.crd.delete_namespaced_custom_object, EXT_GROUP, EXT_V, self.ns,
                                     "sandboxclaims", sandbox.provider_ref,
@@ -432,42 +430,93 @@ class KubernetesProvider(Provider):
         if code != 0:
             raise ProviderError(f"write {path} failed: {err}")
 
-    # ------------------------------------------------------------------ GKE Pod snapshots
-    async def snapshot(self, sandbox, snapshot_id) -> str:
-        if not self.settings.k8s_pod_snapshots:
-            raise NotImplementedError
-        pod = await self._pod(sandbox)
-        trigger = f"hangar-{snapshot_id}"[:63]
+    # ------------------------------------------------------------------ GKE Pod snapshots: pause/resume
+    async def _take_snapshot(self, sandbox: Sandbox, pod: str) -> str:
+        trigger = f"hangar-{sandbox.id}-{int(time.time())}"[:63]
         body = {"apiVersion": f"{PS_GROUP}/{PS_V}", "kind": "PodSnapshotManualTrigger",
-                "metadata": {"name": trigger, "labels": dict(MANAGED)}, "spec": {"targetPod": pod}}
+                "metadata": {"name": trigger, "labels": {**MANAGED, "dev.hangar/sandbox": sandbox.id}},
+                "spec": {"targetPod": pod}}
         await asyncio.to_thread(self.crd.create_namespaced_custom_object, PS_GROUP, PS_V, self.ns,
                                 "podsnapshotmanualtriggers", body)
-        try:
-            deadline = time.monotonic() + self.settings.k8s_snapshot_timeout_seconds
-            while time.monotonic() < deadline:
-                obj = await asyncio.to_thread(self.crd.get_namespaced_custom_object, PS_GROUP, PS_V, self.ns,
-                                              "podsnapshotmanualtriggers", trigger)
-                done = _snapshot_result(obj)
-                if done:
-                    return SNAP_PREFIX + done
+        # Triggers are kept until the sandbox is destroyed (the reference client does the same;
+        # deleting early may garbage-collect the snapshot it produced).
+        sandbox.info.setdefault("snapshot_triggers", []).append(trigger)
+        deadline = time.monotonic() + self.settings.k8s_snapshot_timeout_seconds
+        while time.monotonic() < deadline:
+            obj = await asyncio.to_thread(self.crd.get_namespaced_custom_object, PS_GROUP, PS_V, self.ns,
+                                          "podsnapshotmanualtriggers", trigger)
+            done = _snapshot_result(obj)
+            if done:
+                return done
+            await asyncio.sleep(2)
+        raise ProviderError(f"pod snapshot {trigger} did not complete in time")
+
+    async def _set_mode(self, sandbox: Sandbox, mode: str) -> None:
+        name = sandbox.info.get("k8s_sandbox")
+        if not name:
+            await self._pod(sandbox)
+            name = sandbox.info["k8s_sandbox"]
+        await asyncio.to_thread(self.crd.patch_namespaced_custom_object, CORE_GROUP, CORE_V, self.ns, "sandboxes",
+                                name, {"spec": {"operatingMode": mode}})
+
+    async def pause(self, sandbox: Sandbox) -> None:
+        if not self.settings.k8s_pod_snapshots:
+            raise ProviderError("pause on Kubernetes needs GKE Pod snapshots (HANGAR_K8S_POD_SNAPSHOTS=true)")
+        pod = await self._pod(sandbox)
+        uid = await self._take_snapshot(sandbox, pod)
+        old = await asyncio.to_thread(self.core.read_namespaced_pod, pod, self.ns)
+        await self._set_mode(sandbox, "Suspended")
+        deadline = time.monotonic() + self.settings.k8s_snapshot_timeout_seconds
+        while time.monotonic() < deadline:  # wait for the pod to go away so its node capacity is freed
+            try:
+                cur = await asyncio.to_thread(self.core.read_namespaced_pod, pod, self.ns)
+                if cur.metadata.uid != old.metadata.uid:
+                    break
+            except ApiException as e:
+                if e.status == 404:
+                    break
+                raise
+            await asyncio.sleep(2)
+        sandbox.info.pop("pod", None)
+        sandbox.info["paused_snapshot"] = uid
+
+    async def resume(self, sandbox: Sandbox) -> None:
+        uid = sandbox.info.get("paused_snapshot")
+        await self._set_mode(sandbox, "Running")
+        sandbox.info.pop("pod", None)
+        deadline = time.monotonic() + self.settings.k8s_snapshot_timeout_seconds
+        while time.monotonic() < deadline:
+            # The controller recreates the pod under the Sandbox's own name; fall back to the claim lookup.
+            pod = sandbox.info.get("k8s_sandbox")
+            try:
+                if not pod:
+                    pod = await self._pod(sandbox)
+                p = await asyncio.to_thread(self.core.read_namespaced_pod, pod, self.ns)
+            except (ProviderError, ApiException):
+                sandbox.info.pop("pod", None)
                 await asyncio.sleep(2)
-            raise ProviderError(f"pod snapshot {trigger} did not complete in time")
-        finally:
+                continue
+            sandbox.info["pod"] = pod
+            conds = {c.type: c for c in (p.status.conditions or [])} if p.status else {}
+            if p.status and p.status.phase == "Running" and getattr(conds.get("Ready"), "status", "") == "True":
+                restored = conds.get("PodRestored")
+                if uid and not (restored and restored.status == "True" and uid in (restored.message or "")):
+                    raise ProviderError(
+                        f"sandbox resumed as a fresh pod instead of from snapshot {uid}: "
+                        f"{getattr(restored, 'message', 'no PodRestored condition')}. Files outside the image "
+                        "were lost; destroy and recreate it.")
+                sandbox.info.pop("paused_snapshot", None)
+                return
+            await asyncio.sleep(2)
+        raise ProviderError("timed out waiting for the sandbox to resume")
+
+    async def _cleanup_triggers(self, sandbox: Sandbox) -> None:
+        for trigger in sandbox.info.get("snapshot_triggers", []):
             try:
                 await asyncio.to_thread(self.crd.delete_namespaced_custom_object, PS_GROUP, PS_V, self.ns,
                                         "podsnapshotmanualtriggers", trigger)
             except ApiException:
                 pass
-
-    async def delete_snapshot(self, ref: str) -> None:
-        if not ref.startswith(SNAP_PREFIX):
-            return
-        try:
-            await asyncio.to_thread(self.crd.delete_namespaced_custom_object, PS_GROUP, PS_V, self.ns,
-                                    "podsnapshots", ref[len(SNAP_PREFIX):])
-        except ApiException as e:
-            if e.status != 404:
-                raise
 
     async def open_terminal(self, sandbox, command, cols=120, rows=32) -> TerminalStream:
         pod = await self._pod(sandbox)

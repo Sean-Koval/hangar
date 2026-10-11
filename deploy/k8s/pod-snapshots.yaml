@@ -1,6 +1,7 @@
-# Optional: GKE Pod snapshots, so forks on Kubernetes capture memory + the whole filesystem
-# (not just /workspace). Needs: GKE >= 1.35.3, --enable-pod-snapshots, gVisor node pool, and the
-# bucket/IAM from deploy/terraform/gke (enable_pod_snapshots = true).
+# Optional: GKE Pod snapshots, so pause/resume on Kubernetes keeps memory, processes and the
+# filesystem while freeing node capacity. (GKE restores a sandbox only from its own snapshots,
+# so forks still copy /workspace.) Needs: GKE >= 1.35.3, --enable-pod-snapshots, a gVisor node
+# pool, and the bucket/IAM from deploy/terraform/gke (enable_pod_snapshots = true).
 #
 #   kubectl apply -f deploy/k8s/pod-snapshots.yaml        # after replacing SNAPSHOT_BUCKET
 #   then set HANGAR_K8S_POD_SNAPSHOTS: "true" in config.yaml and restart hangar

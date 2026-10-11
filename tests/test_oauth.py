@@ -84,15 +84,81 @@ def test_full_flow_refresh_and_revoke(client):
     new = client.post("/token", data={"grant_type": "refresh_token", "refresh_token": tok["refresh_token"],
                                       "client_id": reg["client_id"]}).json()
     assert new["access_token"] != tok["access_token"]
-    assert client.post("/token", data={"grant_type": "refresh_token", "refresh_token": tok["refresh_token"],
-                                       "client_id": reg["client_id"]}).status_code == 400
-    # dashboard revoke kills access
+    hdrs["Authorization"] = f"Bearer {new['access_token']}"
+    assert client.post("/mcp", json=init, headers=hdrs).status_code == 200
     admin = {"Authorization": "Bearer t0ken"}
     apps = client.get("/api/oauth/clients", headers=admin).json()
     assert apps[0]["approved_by"] == "admin" and apps[0]["active"]
-    client.delete(f"/api/oauth/clients/{reg['client_id']}", headers=admin)
-    hdrs["Authorization"] = f"Bearer {new['access_token']}"
+    # replaying the rotated-out refresh token looks like theft: the whole grant is revoked
+    assert client.post("/token", data={"grant_type": "refresh_token", "refresh_token": tok["refresh_token"],
+                                       "client_id": reg["client_id"]}).status_code == 400
     assert client.post("/mcp", json=init, headers=hdrs).status_code == 401
+
+
+def _grant(client):
+    reg = register(client)
+    verifier, challenge = pkce()
+    ok = authorize(client, reg, challenge)
+    code = parse_qs(urlparse(ok.headers["location"]).query)["code"][0]
+    tok = client.post("/token", data={"grant_type": "authorization_code", "code": code,
+                                      "redirect_uri": "https://chatgpt.com/cb", "client_id": reg["client_id"],
+                                      "code_verifier": verifier}).json()
+    return reg, tok
+
+
+INIT = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}}
+
+
+def _mcp(client, at):
+    return client.post("/mcp", json=INIT, headers={"Authorization": f"Bearer {at}",
+                                                   "accept": "application/json, text/event-stream"}).status_code
+
+
+def test_dashboard_revoke_kills_access(client):
+    reg, tok = _grant(client)
+    assert _mcp(client, tok["access_token"]) == 200
+    client.delete(f"/api/oauth/clients/{reg['client_id']}", headers={"Authorization": "Bearer t0ken"})
+    assert _mcp(client, tok["access_token"]) == 401
+
+
+def test_revoking_the_approving_token_revokes_its_grants(client):
+    admin = {"Authorization": "Bearer t0ken"}
+    minted = client.post("/api/tokens", json={"name": "laptop"}, headers=admin).json()
+    reg = register(client)
+    verifier, challenge = pkce()
+    ok = authorize(client, reg, challenge, token=minted["token"])
+    code = parse_qs(urlparse(ok.headers["location"]).query)["code"][0]
+    tok = client.post("/token", data={"grant_type": "authorization_code", "code": code,
+                                      "redirect_uri": "https://chatgpt.com/cb", "client_id": reg["client_id"],
+                                      "code_verifier": verifier}).json()
+    assert _mcp(client, tok["access_token"]) == 200
+    client.delete(f"/api/tokens/{minted['id']}", headers=admin)
+    assert _mcp(client, tok["access_token"]) == 401
+    assert client.post("/token", data={"grant_type": "refresh_token", "refresh_token": tok["refresh_token"],
+                                       "client_id": reg["client_id"]}).status_code == 400
+
+
+def test_unknown_redirect_hosts_cannot_register(client):
+    r = client.post("/register", json={"client_name": "ChatGPT", "redirect_uris": ["https://evil.example/cb"],
+                                       "grant_types": ["authorization_code", "refresh_token"],
+                                       "response_types": ["code"], "token_endpoint_auth_method": "none"})
+    assert r.status_code == 400 and r.json()["error"] == "invalid_redirect_uri"
+
+
+def test_double_consent_submit_is_clean(client):
+    reg = register(client)
+    _, challenge = pkce()
+    r = client.get("/authorize", params={"response_type": "code", "client_id": reg["client_id"],
+                                         "redirect_uri": "https://chatgpt.com/cb", "code_challenge": challenge,
+                                         "code_challenge_method": "S256", "state": "s"}, follow_redirects=False)
+    consent = urlparse(r.headers["location"])
+    req = re.search(r'name="req" value="([^"]+)"', client.get(f"{consent.path}?{consent.query}").text).group(1)
+    first = client.post("/oauth/consent", data={"req": req, "token": "t0ken", "action": "approve"},
+                        follow_redirects=False)
+    second = client.post("/oauth/consent", data={"req": req, "token": "t0ken", "action": "approve"},
+                         follow_redirects=False)
+    assert first.status_code == 302 and second.status_code == 400
 
 
 def test_wrong_pkce_verifier_rejected(client):

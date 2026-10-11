@@ -796,7 +796,9 @@ class Fleet:
         Dry-run by default: if several hangar instances share one Docker engine, each sees the
         others' sandboxes as orphans, so review the list before deleting.
         """
-        known = {s.provider_ref for s in self.store.list(Sandbox) if s.state in ACTIVE and s.provider_ref}
+        settled = (SandboxState.STOPPED, SandboxState.ERROR)
+        live = [s for s in self.store.list(Sandbox) if s.state not in settled]  # incl. pending/stopping
+        known = {s.provider_ref for s in live if s.provider_ref} | {f"name:hangar-{s.id}" for s in live}
         found: list[dict[str, str]] = []
         for pname, prov in self.providers.items():
             if not hasattr(prov, "orphans"):

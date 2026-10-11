@@ -180,7 +180,10 @@ class DockerProvider(Provider):
             try:
                 await asyncio.to_thread(warm.rename, name)
             except APIError:
-                await asyncio.to_thread(warm.remove, force=True)  # don't orphan a half-claimed container
+                try:
+                    await asyncio.to_thread(warm.remove, force=True)  # don't orphan a half-claimed container
+                except APIError:
+                    pass
                 warm = None
         if warm is not None:
             sandbox.provider_ref = warm.id
@@ -226,12 +229,19 @@ class DockerProvider(Provider):
 
     async def orphans(self, known_refs: set[str]) -> list[dict[str, str]]:
         """Containers hangar created that no active sandbox owns (crashed creates, other state dirs)."""
+        import datetime as dt
+
         out = []
+        cutoff = dt.datetime.now(dt.UTC) - dt.timedelta(minutes=10)
         for prefix in ("hangar-sb-", "hangar-claiming-"):
             cs = await asyncio.to_thread(self.client.containers.list, all=True, filters={"name": prefix})
             for c in cs:
-                if c.name.startswith(prefix) and c.id not in known_refs:
-                    out.append({"ref": c.id, "name": c.name, "status": c.status})
+                if not c.name.startswith(prefix) or c.id in known_refs or f"name:{c.name}" in known_refs:
+                    continue
+                created = dt.datetime.fromisoformat(c.attrs.get("Created", "1970-01-01T00:00:00Z")[:19] + "+00:00")
+                if created > cutoff:
+                    continue  # may belong to a create that is still in flight
+                out.append({"ref": c.id, "name": c.name, "status": c.status})
         return out
 
     async def remove_ref(self, ref: str) -> None:

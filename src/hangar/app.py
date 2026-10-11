@@ -171,7 +171,13 @@ def _setup_oauth(app: FastAPI, h: Hangar):
     from hangar.oauth import HangarOAuthProvider, consent_get, consent_post
 
     base = h.settings.public_url.rstrip("/")
-    provider = HangarOAuthProvider(h.store, h.auth, base)
+    from urllib.parse import urlparse
+
+    if urlparse(base).path not in ("", "/"):
+        log.warning("OAuth disabled: HANGAR_PUBLIC_URL must not contain a path (serve hangar at a host root)")
+        return None, None
+    provider = HangarOAuthProvider(h.store, h.auth, base, h.settings.oauth_redirect_hosts,
+                                   h.settings.oauth_max_clients, h.settings.oauth_grant_days)
     try:
         routes = create_auth_routes(
             provider, issuer_url=AnyHttpUrl(base),
@@ -196,8 +202,6 @@ def _setup_oauth(app: FastAPI, h: Hangar):
     routes.append(Route("/oauth/consent", _consent_post, methods=["POST"]))
     for i, r in enumerate(routes):
         app.router.routes.insert(i, r)
-    from urllib.parse import urlparse
-
     u = urlparse(base)
     return provider, f"{u.scheme}://{u.netloc}/.well-known/oauth-protected-resource{u.path}/mcp"
 

@@ -58,15 +58,28 @@ Set `enable_kata_pool = true` and re-apply. That adds an Intel N2 Ubuntu pool wi
 
 Hangar adds the matching nodeSelector and toleration to sandbox pods automatically.
 
-## 5. Full-state forks with Pod snapshots (optional)
+## 5. Pause and resume with Pod snapshots (optional)
 
-By default, Kubernetes forks copy `/workspace` as a tarball. With GKE Pod snapshots, a fork restores the parent's entire pod instead: memory, running processes, and everything installed outside `/workspace`.
+Without Pod snapshots, Kubernetes sandboxes can't be paused. With them, `pause_sandbox` snapshots the pod (memory, running processes and filesystem) and suspends it, which frees its node capacity. `resume_sandbox` brings it back exactly where it was.
+
+GKE restores a sandbox only from its *own* snapshots, so this powers pause and resume, not forks. Forks on Kubernetes always copy `/workspace` as a tarball.
 
 1. Set `enable_pod_snapshots = true` in `terraform.tfvars` and re-apply. This enables `--enable-pod-snapshots` and creates the snapshot bucket, custom role and IAM bindings.
 2. Put `terraform output pod_snapshot_bucket` into `deploy/k8s/pod-snapshots.yaml`, then `kubectl apply -f deploy/k8s/pod-snapshots.yaml`. That creates the `hangar-sandbox` service account, the storage config, and a policy that selects sandboxes by the `hangar.dev/snapshottable` label.
-3. Set `HANGAR_K8S_POD_SNAPSHOTS: "true"` in `config.yaml` and restart hangar.
+3. Set `HANGAR_K8S_POD_SNAPSHOTS: "true"` in `config.yaml` and restart hangar. This requires `HANGAR_K8S_RUNTIME_CLASS=gvisor`; Kata pools can't be snapshotted.
 
-Hangar then runs sandboxes as `hangar-sandbox` with the snapshot label. `snapshot_sandbox` creates a `PodSnapshotManualTrigger`; the source keeps running (`postCheckpoint: resume`). `fork_sandbox` creates claims annotated with `podsnapshot.gke.io/ps-name`, so GKE restores each copy from that snapshot. This requires the gVisor runtime class; Kata pools can't be snapshotted.
+How it works:
+
+- **Pause:** creates a `PodSnapshotManualTrigger`, waits for it to complete, then sets the Sandbox's `operatingMode` to `Suspended`.
+- **Resume:** sets `operatingMode` back to `Running`. Hangar checks the new pod's `PodRestored` condition. If GKE booted a fresh pod instead of restoring, the resume fails loudly rather than leaving you an empty sandbox.
+- **Retention:** the policy keeps 10 snapshots per sandbox, and the bucket deletes objects after 14 days. A sandbox paused longer than that can't be restored.
+
+**Security.** With snapshots on, sandbox pods run as `hangar-sandbox`, which has read/write access to the snapshot bucket. That bucket holds every sandbox's memory, including injected credentials. This relies on Agent Sandbox's default network policy, which blocks the metadata server, so code in a sandbox can't mint a token for that service account. Don't switch templates to `networkPolicyManagement: Unmanaged`. To verify, run this from inside a sandbox; it should fail:
+
+```bash
+curl -s -m 5 -H 'Metadata-Flavor: Google' \
+  http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token
+```
 
 ## Notes
 

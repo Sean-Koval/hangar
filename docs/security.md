@@ -21,6 +21,13 @@ Hangar exists to run untrusted, model-generated code. The design assumes any san
 - **Audit redaction.** Commands, prompts and terminal input are recorded in the audit log with stored credential values masked as `***`. Secrets that were never stored in the vault can't be recognized, so don't paste unrelated secrets into agent terminals.
 - **Browser streams.** The dashboard never puts its token in a URL. Websocket terminals and build-log streams use single-use tickets that expire after 60 seconds.
 
+## OAuth connectors
+
+- **Scope:** OAuth access tokens reach `/mcp` only, never the REST API or the dashboard.
+- **Lifetime:** every approval is tied to the hangar token that approved it and stops working when that token is revoked or the app is disconnected. Approvals last at most 90 days.
+- **Registration:** limited to allowlisted redirect hosts and capped in number.
+- **Consent page:** can't be framed, and isn't cached.
+
 ## Operational advice
 
 - Keep the control plane private: localhost, an IAP tunnel, Tailscale, or IAP on the GKE ingress.

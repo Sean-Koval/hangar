@@ -27,6 +27,7 @@ from mcp.server.auth.provider import (
     AuthorizationParams,
     AuthorizeError,
     RefreshToken,
+    RegistrationError,
     TokenError,
     construct_redirect_uri,
 )
@@ -51,10 +52,14 @@ def _h(token: str) -> str:
 class HangarOAuthProvider:
     """Implements mcp.server.auth.provider.OAuthAuthorizationServerProvider on the hangar store."""
 
-    def __init__(self, store: Store, auth: TokenAuth, public_url: str):
+    def __init__(self, store: Store, auth: TokenAuth, public_url: str, redirect_hosts: list[str] | None = None,
+                 max_clients: int = 200, grant_days: int = 90):
         self.store = store
         self.auth = auth
         self.public_url = public_url.rstrip("/")
+        self.redirect_hosts = redirect_hosts or ["*"]
+        self.max_clients = max_clients
+        self.grant_seconds = grant_days * 86400
 
     # ------------------------------------------------------------------ storage helpers
     def _put(self, kind: str, key: str, value: dict[str, Any]) -> None:
@@ -75,7 +80,35 @@ class HangarOAuthProvider:
         v = self.store.kv_get_json(f"oauth:client:{client_id}")
         return OAuthClientInformationFull.model_validate(v) if v else None
 
+    def _host_allowed(self, uri: str) -> bool:
+        if "*" in self.redirect_hosts:
+            return True
+        host = (urlparse(uri).hostname or "").lower()
+        return any(host == h or host.endswith("." + h) for h in self.redirect_hosts)
+
+    def sweep(self) -> None:
+        """Drop expired requests/codes/tokens and never-approved clients older than a day."""
+        now_ = time.time()
+        for prefix in ("oauth:req:", "oauth:code:", "oauth:at:", "oauth:rt:"):
+            for key in self.store.kv_keys(prefix):
+                v = self.store.kv_get_json(key)
+                if not v or (v.get("expires_at") and v["expires_at"] < now_):
+                    self.store.kv_delete(key)
+        for key in self.store.kv_keys("oauth:client:"):
+            cid = key.removeprefix("oauth:client:")
+            raw = self.store.kv_get_json(key) or {}
+            if not self.store.kv_get_json(f"oauth:clientmeta:{cid}") and \
+                    raw.get("client_id_issued_at", now_) < now_ - 86400:
+                self.store.kv_delete(key)
+
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
+        bad = [str(u) for u in (client_info.redirect_uris or []) if not self._host_allowed(str(u))]
+        if bad:
+            raise RegistrationError(error="invalid_redirect_uri",
+                                    error_description=f"redirect host not allowed by HANGAR_OAUTH_REDIRECT_HOSTS: {bad[0]}")
+        self.sweep()
+        if len(self.store.kv_keys("oauth:client:")) >= self.max_clients:
+            raise RegistrationError(error="invalid_client_metadata", error_description="too many registered clients")
         self.store.kv_set(f"oauth:client:{client_info.client_id}", client_info.model_dump_json())
 
     # ------------------------------------------------------------------ authorize -> consent page
@@ -95,7 +128,7 @@ class HangarOAuthProvider:
         raw = self.store.kv_get_json(f"oauth:client:{v['client_id']}")
         return (v, OAuthClientInformationFull.model_validate(raw)) if raw else None
 
-    def approve(self, req: str, actor: str) -> str:
+    def approve(self, req: str, actor: str, token_id: str | None = None) -> str:
         """Issue an authorization code for a pending request; returns the client redirect URL."""
         found = self.pending(req)
         if not found:
@@ -109,7 +142,7 @@ class HangarOAuthProvider:
             client_id=client.client_id, code_challenge=p.code_challenge, redirect_uri=p.redirect_uri,
             redirect_uri_provided_explicitly=p.redirect_uri_provided_explicitly, resource=p.resource,
             subject=actor,
-        ).model_dump_json()))
+        ).model_dump_json()) | {"approver_id": token_id, "grant_expires_at": time.time() + self.grant_seconds})
         from hangar.models import AuditEvent
 
         self.store.audit(AuditEvent(actor=f"ui:{actor}", action="oauth.approve", target=client.client_id,
@@ -129,20 +162,23 @@ class HangarOAuthProvider:
     # ------------------------------------------------------------------ codes & tokens
     async def load_authorization_code(self, client: OAuthClientInformationFull, authorization_code: str):
         v = self._get("code", _h(authorization_code))
-        if not v or v["client_id"] != client.client_id:
+        if not v or v["client_id"] != client.client_id or not self.auth.exists(v.get("approver_id")):
             return None
         return AuthorizationCode.model_validate(v)
 
-    def _issue(self, client_id: str, scopes: list[str], subject: str | None, resource: str | None) -> OAuthToken:
+    def _issue(self, client_id: str, scopes: list[str], subject: str | None, resource: str | None,
+               approver_id: str | None, grant_expires_at: float, family: str | None = None) -> OAuthToken:
         access, refresh = "hoa_" + secrets.token_urlsafe(32), "hor_" + secrets.token_urlsafe(32)
         now_ = int(time.time())
-        base = {"client_id": client_id, "scopes": scopes, "subject": subject, "resource": resource}
-        self._put("at", _h(access), {**base, "token": _h(access), "expires_at": now_ + ACCESS_TTL})
-        self._put("rt", _h(refresh), {**base, "token": _h(refresh), "expires_at": now_ + REFRESH_TTL})
+        family = family or secrets.token_hex(8)
+        base = {"client_id": client_id, "scopes": scopes, "subject": subject, "resource": resource,
+                "approver_id": approver_id, "grant_expires_at": grant_expires_at, "family": family}
+        self._put("at", _h(access), {**base, "token": _h(access), "expires_at": min(now_ + ACCESS_TTL, grant_expires_at)})
+        self._put("rt", _h(refresh), {**base, "token": _h(refresh), "expires_at": min(now_ + REFRESH_TTL, grant_expires_at)})
         grants = self.store.kv_get_json(f"oauth:grants:{client_id}", []) or []
         grants = [g for g in grants if g.get("expires_at", 0) > now_][-20:]
-        grants += [{"kind": "at", "key": _h(access), "expires_at": now_ + ACCESS_TTL},
-                   {"kind": "rt", "key": _h(refresh), "expires_at": now_ + REFRESH_TTL}]
+        grants += [{"kind": "at", "key": _h(access), "expires_at": now_ + ACCESS_TTL, "family": family},
+                   {"kind": "rt", "key": _h(refresh), "expires_at": now_ + REFRESH_TTL, "family": family}]
         self.store.kv_set_json(f"oauth:grants:{client_id}", grants)
         self.store.kv_set_json(f"oauth:clientmeta:{client_id}", {"subject": subject, "last_issued": now_})
         return OAuthToken(access_token=access, expires_in=ACCESS_TTL, scope=" ".join(scopes), refresh_token=refresh)
@@ -151,25 +187,48 @@ class HangarOAuthProvider:
                                           authorization_code: AuthorizationCode) -> OAuthToken:
         if self._get("code", authorization_code.code) is None:
             raise TokenError(error="invalid_grant", error_description="authorization code already used")
+        raw = self._get("code", authorization_code.code) or {}
         self._del("code", authorization_code.code)  # single use
         return self._issue(client.client_id, authorization_code.scopes, authorization_code.subject,
-                           authorization_code.resource)
+                           authorization_code.resource, raw.get("approver_id"),
+                           raw.get("grant_expires_at") or time.time() + self.grant_seconds)
 
     async def load_refresh_token(self, client: OAuthClientInformationFull, refresh_token: str):
-        v = self._get("rt", _h(refresh_token))
-        if not v or v["client_id"] != client.client_id:
+        key = _h(refresh_token)
+        v = self._get("rt", key)
+        if not v:
+            used = self.store.kv_get_json(f"oauth:used-rt:{key}")
+            if used:  # a rotated-out refresh token came back: assume theft, kill the whole grant
+                self._revoke_family(used["client_id"], used["family"])
+            return None
+        if v["client_id"] != client.client_id or not self.auth.exists(v.get("approver_id")):
             return None
         return RefreshToken.model_validate(v)
 
     async def exchange_refresh_token(self, client: OAuthClientInformationFull, refresh_token: RefreshToken,
                                      scopes: list[str]) -> OAuthToken:
+        raw = self._get("rt", refresh_token.token)
+        if raw is None:  # concurrent refresh already consumed it
+            raise TokenError(error="invalid_grant", error_description="refresh token already used")
         self._del("rt", refresh_token.token)  # rotate
+        self.store.kv_set_json(f"oauth:used-rt:{refresh_token.token}",
+                               {"client_id": client.client_id, "family": raw.get("family"),
+                                "expires_at": time.time() + REFRESH_TTL})
         return self._issue(client.client_id, scopes or refresh_token.scopes, refresh_token.subject,
-                           refresh_token.resource)
+                           refresh_token.resource, raw.get("approver_id"),
+                           raw.get("grant_expires_at") or time.time() + self.grant_seconds, raw.get("family"))
+
+    def _revoke_family(self, client_id: str, family: str | None) -> None:
+        for g in self.store.kv_get_json(f"oauth:grants:{client_id}", []) or []:
+            if family is None or g.get("family") == family:
+                self._del(g["kind"], g["key"])
 
     async def load_access_token(self, token: str) -> AccessToken | None:
         v = self._get("at", _h(token))
-        return AccessToken.model_validate(v) if v else None
+        if not v or not self.auth.exists(v.get("approver_id")) or \
+                not self.store.kv_get_json(f"oauth:client:{v['client_id']}"):
+            return None  # approving hangar token revoked, or the app was disconnected
+        return AccessToken.model_validate(v)
 
     async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
         self._del("at", token.token)
@@ -204,8 +263,7 @@ class HangarOAuthProvider:
         at = await self.load_access_token(token)
         if not at:
             return None
-        raw = self.store.kv_get_json(f"oauth:client:{at.client_id}") or {}
-        return f"{at.subject or 'oauth'}/{raw.get('client_name') or at.client_id}"
+        return f"oauth:{at.client_id}({at.subject or '?'})"
 
 
 # ---------------------------------------------------------------------------- consent page
@@ -259,15 +317,19 @@ async def consent_get(request: Request, provider: HangarOAuthProvider) -> Respon
 async def consent_post(request: Request, provider: HangarOAuthProvider) -> Response:
     form = await request.form()
     req = str(form.get("req", ""))
+    expired = HTMLResponse("<p>This authorization request expired or was already used. Start again from the app.</p>",
+                           status_code=400, headers=_HEADERS)
     if form.get("action") == "deny":
         url = provider.deny(req)
-        return RedirectResponse(url, status_code=302) if url else HTMLResponse("expired", status_code=400)
+        return RedirectResponse(url, status_code=302, headers=_HEADERS) if url else expired
     found = provider.pending(req)
     if not found:
-        return HTMLResponse("<p>This authorization request expired. Start again from the app.</p>",
-                            status_code=400, headers=_HEADERS)
-    actor = provider.auth.verify(str(form.get("token", "")).strip())
-    if not actor:
+        return expired
+    ident = provider.auth.identify(str(form.get("token", "")).strip())
+    if not ident:
         v, client = found
         return _page(req, client, v["params"], error="That token was not accepted.")
-    return RedirectResponse(provider.approve(req, actor), status_code=302, headers=_HEADERS)
+    try:
+        return RedirectResponse(provider.approve(req, ident[0], ident[1]), status_code=302, headers=_HEADERS)
+    except AuthorizeError:
+        return expired

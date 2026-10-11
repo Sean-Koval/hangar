@@ -54,6 +54,23 @@ class TokenAuth:
     def revoke(self, token_id: str) -> None:
         self.store.delete(ApiToken, token_id)
 
+    def identify(self, raw: str | None) -> tuple[str, str] | None:
+        """(actor name, token id) for a valid token. The admin token's id is 'admin'."""
+        if not raw:
+            return None
+        h = hash_token(raw)
+        if self._admin_hash and hmac.compare_digest(h, self._admin_hash):
+            return "admin", "admin"
+        for tok in self.store.list(ApiToken):
+            if hmac.compare_digest(h, tok.token_hash):
+                return tok.name, tok.id
+        return None
+
+    def exists(self, token_id: str | None) -> bool:
+        if token_id == "admin":
+            return self._admin_hash is not None
+        return bool(token_id) and self.store.get(ApiToken, token_id) is not None
+
     def verify(self, raw: str | None) -> str | None:
         """Return the actor name for a valid token, else None."""
         if not raw:

@@ -30,7 +30,9 @@ Hangar includes an OAuth 2.1 authorization server that follows the MCP authoriza
 2. In ChatGPT, go to **Settings → Connectors → Create** (developer mode). Set the MCP server URL to `https://hangar.example.com/mcp` and choose **OAuth** for authentication.
 3. ChatGPT discovers hangar's metadata, registers itself, and opens hangar's approval page. Paste a hangar API token there and approve.
 
-The app then gets an access token (valid for 1 hour) and a refresh token (valid for 30 days, rotated on every use). It acts as the token you approved with. Connected apps are listed in the dashboard under **Connect**, where you can revoke each one immediately.
+Only apps whose redirect URL is on `HANGAR_OAUTH_REDIRECT_HOSTS` can register. The default list covers ChatGPT, claude.ai and localhost, which stops look-alike apps from phishing approvals.
+
+The app then gets an access token (valid for 1 hour) and a refresh token (valid for 30 days, rotated on every use). It acts as the token you approved with, so revoking that hangar token also cuts off every app it approved. Approvals expire after 90 days (`HANGAR_OAUTH_GRANT_DAYS`), and replaying an old refresh token revokes the whole grant. Connected apps are listed in the dashboard under **Connect**, where you can revoke each one immediately.
 
 Under the hood:
 

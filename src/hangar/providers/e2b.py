@@ -9,8 +9,11 @@ against your account before relying on it for production fleets.
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 import shlex
 import time
+from pathlib import Path
 
 from hangar.config import Settings
 from hangar.envspec import BuildContext, EnvSpec
@@ -92,11 +95,15 @@ class E2BProvider(Provider):
         """Start an E2B template from our pushed image, with whatever registry auth is configured."""
         s = self.settings
         if s.e2b_gcp_service_account_json:
-            return Template().from_gcp_registry(tag, s.e2b_gcp_service_account_json)
+            v = s.e2b_gcp_service_account_json.strip()
+            # The SDK treats strings as paths, so inline JSON is parsed here and passed as a dict.
+            sa = json.loads(v) if v.startswith("{") else str(Path(v).expanduser().resolve())
+            return Template().from_gcp_registry(tag, sa)
         if s.e2b_aws_access_key_id and s.e2b_aws_secret_access_key:
+            m = re.search(r"\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com/", tag)
             return Template().from_aws_registry(tag, access_key_id=s.e2b_aws_access_key_id,
                                                 secret_access_key=s.e2b_aws_secret_access_key,
-                                                region=s.e2b_aws_region or "us-east-1")
+                                                region=s.e2b_aws_region or (m.group(1) if m else "us-east-1"))
         if s.e2b_registry_username and s.e2b_registry_password:
             return Template().from_image(tag, username=s.e2b_registry_username, password=s.e2b_registry_password)
         if any(h in tag for h in (".pkg.dev/", "gcr.io/", ".amazonaws.com/")):
