@@ -49,11 +49,25 @@ async def run_cli(args: list[str], stdin: bytes | None = None, log: LogFn | None
     return "\n".join(out)
 
 
+_BUILDX: bool | None = None
+
+
+async def _has_buildx() -> bool:
+    global _BUILDX
+    if _BUILDX is None:
+        proc = await asyncio.create_subprocess_exec("docker", "buildx", "version", stdout=asyncio.subprocess.DEVNULL,
+                                                    stderr=asyncio.subprocess.DEVNULL)
+        _BUILDX = await proc.wait() == 0
+    return _BUILDX
+
+
 async def docker_build(ctx: BuildContext, tag: str, log: LogFn | None = None, platform: str | None = None,
                        push: bool = False) -> str:
     if not shutil.which("docker"):
         raise ProviderError("docker CLI not found; install Docker Desktop / OrbStack / docker-ce to build images")
-    args = ["docker", "build", "--progress=plain", "-t", tag]
+    args = ["docker", "build", "-t", tag]
+    if await _has_buildx():
+        args.insert(2, "--progress=plain")  # BuildKit; the legacy builder prints plain logs already
     if platform:
         args += ["--platform", platform]
     args.append("-")

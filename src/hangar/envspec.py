@@ -193,12 +193,6 @@ def _resolve_home_path(path: str, user: str) -> str:
     return path if path.startswith("/") else f"{_home(user)}/{path}"
 
 
-def _heredoc_run(script: str, user: str | None = None) -> str:
-    """A RUN step executing a multi-line script via BuildKit heredoc."""
-    prefix = f"USER {user}\n" if user else ""
-    return f"{prefix}RUN <<'HANGAR_EOF'\nset -euxo pipefail\n{script.strip()}\nHANGAR_EOF\n"
-
-
 class BuildContext(BaseModel):
     dockerfile: str
     files: dict[str, bytes] = Field(default_factory=dict)  # path in context -> content
@@ -219,6 +213,17 @@ def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace",
            extra_ca: bytes | None = None) -> BuildContext:
     home = _home(user)
     files: dict[str, bytes] = {}
+    step_no = 0
+
+    def _step(script: str, as_user: str | None = None) -> str:
+        """One build step. Steps are shipped as script files rather than RUN heredocs so the
+        Dockerfile works on every builder: BuildKit, the legacy builder, Cloud Build, Kaniko."""
+        nonlocal step_no
+        step_no += 1
+        name = f"steps/{step_no:02d}.sh"
+        files[name] = f"#!/bin/bash\nset -euxo pipefail\n{script.strip()}\n".encode()
+        prefix = f"USER {as_user}\n" if as_user else "USER root\n"
+        return f"{prefix}COPY {name} /tmp/hangar-steps/{step_no:02d}.sh\nRUN bash /tmp/hangar-steps/{step_no:02d}.sh\n"
     harnesses = [get_harness(h) for h in spec.harnesses]
 
     needs = {n for h in harnesses for n in h.needs}
@@ -238,7 +243,7 @@ def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace",
     # 1. system packages + sandbox user
     apt = list(dict.fromkeys([*BASE_APT, *spec.tools.apt]))
     df.append(
-        _heredoc_run(
+        _step(
             "apt-get update\n"
             f"apt-get install -y --no-install-recommends {' '.join(apt)}\n"
             "rm -rf /var/lib/apt/lists/*\n"
@@ -258,7 +263,7 @@ def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace",
                   "NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/hangar-extra-ca.crt "
                   "GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt")
     if spec.tools.script:
-        df.append(_heredoc_run(spec.tools.script))
+        df.append(_step(spec.tools.script))
 
     # 2. language runtimes via mise
     path_env = f"{home}/.local/bin:{home}/.local/share/mise/shims"
@@ -266,11 +271,11 @@ def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace",
     if mise:
         uses = " ".join(f"{shlex.quote(k)}@{shlex.quote(v)}" for k, v in sorted(mise.items()))
         df.append(
-            _heredoc_run(
+            _step(
                 "curl -fsSL https://mise.run | sh\n"
                 f"mise use -g {uses}\n"
                 "mise reshim",
-                user=user,
+                as_user=user,
             )
         )
 
@@ -287,7 +292,7 @@ def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace",
         if h.first_run:
             steps.append(h.first_run)
         steps.append(h.verify)
-        df.append(_heredoc_run("\n".join(steps), user=user))
+        df.append(_step("\n".join(steps), as_user=user))
 
     # 4. dependencies
     dep_steps: list[str] = []
@@ -300,7 +305,7 @@ def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace",
     if spec.dependencies.script:
         dep_steps.append(spec.dependencies.script)
     if dep_steps:
-        df.append(_heredoc_run("\n".join(dep_steps), user=user))
+        df.append(_step("\n".join(dep_steps), as_user=user))
 
     # 5. skills, agent config and files -> staged in the build context, then COPY'd
     staged: dict[str, str] = {}  # context path -> absolute destination
@@ -358,7 +363,7 @@ def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace",
     if top_dirs:
         df.append("USER root\nRUN chown -R " + f"{user}:{user} " + " ".join(top_dirs))
     if git_skill_steps:
-        df.append(_heredoc_run("\n".join(git_skill_steps), user=user))
+        df.append(_step("\n".join(git_skill_steps), as_user=user))
 
     if spec.env:
         df.append("ENV " + " ".join(f"{k}={shlex.quote(v)}" for k, v in sorted(spec.env.items())))
@@ -370,11 +375,11 @@ def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace",
                  f"{shlex.quote(spec.repo.url)} {dest}"]
         if spec.repo.setup:
             steps.append(f"cd {dest} && {spec.repo.setup}")
-        df.append(_heredoc_run("\n".join(steps), user=user))
+        df.append(_step("\n".join(steps), as_user=user))
 
     # shell niceties: secrets env file sourced by every login/interactive shell
     df.append(
-        _heredoc_run(
+        _step(
             f"mkdir -p {home}/.hangar && touch {home}/.hangar/env && chmod 700 {home}/.hangar\n"
             f"grep -q 'hangar/env' {home}/.bashrc || "
             "printf '\\n# hangar: injected credentials + env\\numask 022\\n"
@@ -383,7 +388,7 @@ def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace",
             "printf 'set -g mouse on\\nset -g history-limit 50000\\n"
             "set -g default-terminal \"screen-256color\"\\n'"
             f" > {home}/.tmux.conf",
-            user=user,
+            as_user=user,
         )
     )
     df.append(f"USER {user}\nWORKDIR {workspace}")
