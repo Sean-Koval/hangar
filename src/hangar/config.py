@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     # kubernetes / agent-sandbox
     k8s_namespace: str = "hangar-sandboxes"
     k8s_in_cluster: bool = False
-    k8s_runtime_class: str | None = "gvisor"  # gvisor | kata-qemu | None (runc)
+    k8s_runtime_class: str | None = "gvisor"  # gvisor | kata-qemu-runtime-rs | None (runc)
     k8s_gke_node_selector: bool = True  # add sandbox.gke.io/runtime selector+toleration for gvisor
     k8s_pod_snapshots: bool = False  # GKE Pod snapshots (podsnapshot.gke.io): full memory+fs forks
     k8s_snapshot_service_account: str = "hangar-sandbox"  # KSA with GCS access for the snapshot bucket

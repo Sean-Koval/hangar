@@ -98,7 +98,7 @@ resource "google_container_node_pool" "sandboxes" {
 }
 
 # Optional Kata pool (hardware-virtualized microVMs). After apply, install kata-deploy on it
-# (see docs/gke.md) and set HANGAR_K8S_RUNTIME_CLASS=kata-qemu.
+# (see docs/gke.md) and set HANGAR_K8S_RUNTIME_CLASS=kata-qemu-runtime-rs.
 resource "google_container_node_pool" "kata" {
   count    = var.enable_kata_pool ? 1 : 0
   name     = "sandboxes-kata"

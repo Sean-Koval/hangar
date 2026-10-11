@@ -142,7 +142,7 @@ Everything is set through `HANGAR_*` environment variables (see `src/hangar/conf
 | `HANGAR_ENV_DIRS` | JSON list of spec directories. Default `["envs"]`. |
 | `HANGAR_DEFAULT_PROVIDER` / `HANGAR_ENABLED_PROVIDERS` | `docker`, `kubernetes`, `e2b` |
 | `HANGAR_DOCKER_RUNTIME` | `runsc` (gVisor) or `kata` on Linux hosts |
-| `HANGAR_K8S_RUNTIME_CLASS` | `gvisor` (default), `kata-qemu`, or empty for runc |
+| `HANGAR_K8S_RUNTIME_CLASS` | `gvisor` (default), `kata-qemu-runtime-rs` (Kata microVMs), or empty for runc |
 | `HANGAR_REGISTRY` | Where cluster/E2B images are pushed, e.g. Artifact Registry |
 | `HANGAR_EXTRA_CA_BUNDLE` | PEM file trusted inside every image, for corporate TLS-inspecting proxies |
 | `HANGAR_DEFAULT_TTL_MINUTES` / `HANGAR_MAX_SANDBOXES` | Fleet guardrails |
@@ -153,7 +153,10 @@ Everything is set through `HANGAR_*` environment variables (see `src/hangar/conf
 ## Known limits
 
 - **Forks on Kubernetes** copy `/workspace` as a tarball; GKE can only restore a sandbox from its own snapshots. With Pod snapshots enabled, Kubernetes sandboxes can be paused and resumed with memory intact (see [docs/gke.md](docs/gke.md)). On Docker and E2B, forks are full snapshots.
-- **Test coverage of the Kubernetes and E2B providers** is unit tests against fake APIs only; they haven't run against a live cluster or account yet. The Docker path is exercised end to end.
+- **What has run for real:**
+  - **Docker provider:** end to end in CI.
+  - **Kubernetes provider:** end to end over MCP against the real Agent Sandbox v1.0.6 controller on kind, with the runc runtime. This covered builds pushed to a registry, claims, exec, 300 KB file writes, terminals, TTL extension, forks and teardown.
+  - **Not yet run live:** gVisor, Kata, the GKE add-on, Pod snapshots and E2B. They're covered by unit tests against fake APIs.
 - **Antigravity (`agy`) subscription login** stores OAuth in the OS keyring, which headless containers may lack. Use a `GEMINI_API_KEY` credential for fleets.
 - **Concurrent sandboxes share one subscription's limits.** Parallel Claude Code agents on a single Pro login hit the plan's limits quickly. Mix in API-key credentials for wide fan-out.
 - **The control plane is a single replica** with SQLite state, which is right for a personal or team instance.
