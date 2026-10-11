@@ -5,7 +5,7 @@ import pytest
 pytest.importorskip("kubernetes")
 
 from hangar.config import Settings  # noqa: E402
-from hangar.envspec import EnvSpec  # noqa: E402
+from hangar.envspec import EnvSpec, render  # noqa: E402
 from hangar.models import Resources, Sandbox  # noqa: E402
 from hangar.providers.kubernetes import EXT_GROUP, KubernetesProvider  # noqa: E402
 
@@ -58,6 +58,44 @@ def test_kata_and_runc_templates():
     assert kata["runtimeClassName"] == "kata-qemu" and kata["nodeSelector"] == {"hangar.dev/runtime": "kata"}
     runc = provider(k8s_runtime_class=None)._pod_template(spec(), "i")["spec"]
     assert "runtimeClassName" not in runc and "nodeSelector" not in runc
+
+
+def test_environment_overrides_runtime_class():
+    p = provider(k8s_pod_snapshots=True)  # cluster default gvisor, snapshots on
+    kata = p._pod_template(spec(runtime_class="kata-qemu-runtime-rs"), "i")
+    assert kata["spec"]["runtimeClassName"] == "kata-qemu-runtime-rs"
+    assert kata["spec"]["tolerations"][0]["value"] == "kata"
+    assert "serviceAccountName" not in kata["spec"], "Kata pods can't be snapshotted"
+    runc = p._pod_template(spec(runtime_class=""), "i")["spec"]
+    assert "runtimeClassName" not in runc
+    assert p._pod_template(spec(), "i")["spec"]["serviceAccountName"] == "hangar-sandbox"
+
+
+async def test_in_cluster_without_docker_daemon_uses_cloud_build(monkeypatch):
+    import hangar.providers._build as b
+    import hangar.providers.kubernetes as k
+
+    calls = []
+    monkeypatch.setattr(b, "_DAEMON", None)
+    monkeypatch.setattr(b.shutil, "which", lambda name: f"/usr/bin/{name}")  # CLI present...
+
+    async def no_daemon(*a, **kw):  # ...but `docker version` can't reach a server
+        class P:
+            async def wait(self):
+                return 1
+        return P()
+
+    monkeypatch.setattr(b.asyncio, "create_subprocess_exec", no_daemon)
+
+    async def cloud_build(self, ctx, tag, log):
+        calls.append(tag)
+
+    monkeypatch.setattr(k.KubernetesProvider, "_cloud_build", cloud_build)
+    monkeypatch.setattr(k.shutil, "which", lambda name: f"/usr/bin/{name}")
+    p = provider(registry="r.example/x")
+    ctx = render(spec())
+    assert await p.build_template(spec(), ctx, "r.example/x/py:1") == "r.example/x/py:1"
+    assert calls == ["r.example/x/py:1"]
 
 
 async def test_warm_pool_and_claim():

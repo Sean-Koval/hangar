@@ -29,7 +29,7 @@ from pathlib import Path
 from hangar.config import Settings
 from hangar.envspec import BuildContext, EnvSpec
 from hangar.models import ExecResult, Sandbox, SandboxState
-from hangar.providers._build import docker_build, run_cli
+from hangar.providers._build import docker_available, docker_build, run_cli
 from hangar.providers.base import Capabilities, LogFn, Provider, ProviderError, TerminalStream
 
 try:
@@ -154,7 +154,7 @@ class KubernetesProvider(Provider):
         if tag in self._known_images:
             return True
         probes = []
-        if shutil.which("docker"):
+        if await docker_available():
             probes.append(["docker", "manifest", "inspect", tag])
         if shutil.which("gcloud") and ".pkg.dev/" in tag:
             probes.append(["gcloud", "artifacts", "docker", "images", "describe", tag, "--quiet"])
@@ -170,7 +170,7 @@ class KubernetesProvider(Provider):
         if not self.settings.registry:
             raise ProviderError("set HANGAR_REGISTRY (e.g. us-central1-docker.pkg.dev/PROJECT/hangar) so the "
                                 "cluster can pull environment images")
-        if shutil.which("docker"):
+        if await docker_available():
             await docker_build(ctx, tag, log=log, platform="linux/amd64", push=True)
         elif shutil.which("gcloud"):
             await self._cloud_build(ctx, tag, log)
@@ -214,7 +214,7 @@ class KubernetesProvider(Provider):
         }
         if res.disk_gb:
             pod["containers"][0]["resources"]["requests"]["ephemeral-storage"] = f"{int(res.disk_gb)}Gi"
-        rc = s.k8s_runtime_class
+        rc = spec.runtime_class if spec.runtime_class is not None else s.k8s_runtime_class
         if rc:
             pod["runtimeClassName"] = rc
             if rc == "gvisor" and s.k8s_gke_node_selector:
@@ -227,7 +227,7 @@ class KubernetesProvider(Provider):
                 pod["tolerations"] = [{"key": "hangar.dev/runtime", "operator": "Equal", "value": "kata",
                                        "effect": "NoSchedule"}]
         labels = {**MANAGED, "dev.hangar/env": spec.name}
-        if s.k8s_pod_snapshots:
+        if s.k8s_pod_snapshots and rc == "gvisor":
             # Pod snapshots need gVisor, a KSA with access to the snapshot bucket, and the policy's label.
             labels.update(SNAPSHOT_LABEL)
             pod["serviceAccountName"] = s.k8s_snapshot_service_account

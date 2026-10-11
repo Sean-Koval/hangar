@@ -84,6 +84,9 @@ class EnvSpec(BaseModel):
     credentials: list[str] = Field(default_factory=list)  # default credentials to attach
     resources: Resources = Field(default_factory=Resources)
     warm_pool: int = 0
+    # Kubernetes only: RuntimeClass for this environment's pods, overriding HANGAR_K8S_RUNTIME_CLASS
+    # ("gvisor", "kata-qemu-runtime-rs", or "" for runc). Lets gVisor and Kata environments share a cluster.
+    runtime_class: str | None = None
     sudo: bool = True
     source_dir: Path | None = Field(default=None, exclude=True)
 
