@@ -84,7 +84,10 @@ class FakeProvider(Provider):
         # Remap absolute sandbox paths into the box for the handful of commands fleet issues.
         cmd = command.replace("/home/agent", f"{box}/home/agent").replace("/workspace", f"{box}/workspace") \
             .replace("/tmp/", f"{box}/tmp/")
-        env = {"HOME": f"{box}/home/agent", "PATH": "/usr/bin:/bin:/usr/local/bin"}
+        # TMUX_TMPDIR gives each fake sandbox a private tmux socket. Without it, fleet's
+        # `tmux kill-server` (fork scrubbing) hits the real tmux server of whoever runs the tests,
+        # e.g. the hangar agent session running this suite inside a sandbox.
+        env = {"HOME": f"{box}/home/agent", "PATH": "/usr/bin:/bin:/usr/local/bin", "TMUX_TMPDIR": f"{box}/tmp"}
         p = subprocess.run(["bash", "-c", f"set -a; . {box}/home/agent/.hangar/env; set +a; {cmd}"],
                            capture_output=True, text=True, env=env,
                            cwd=str(self._map(sandbox, cwd)) if cwd and self._map(sandbox, cwd).exists() else str(box))
