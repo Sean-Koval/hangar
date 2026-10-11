@@ -184,7 +184,7 @@ class Fleet:
                 try:
                     if not force and await prov.image_exists(tag):
                         await job.emit(f"image {tag} is up to date")
-                        job.image = tag
+                        job.image = prov.image_ref(tag)
                     else:
                         await job.emit(f"building {env} -> {tag}")
                         job.image = await prov.build_template(spec, ctx, tag, log=job.emit)
@@ -207,11 +207,35 @@ class Fleet:
             await job.task
         return job
 
+    def build_context(self, env: str, provider: str | None = None) -> tuple[str, bytes]:
+        """Image tag + build-context tar, for building on another machine (laptop/CI) and registering after."""
+        pname = provider or self.settings.default_provider
+        spec = self.catalog.get(env)
+        tag, ctx = self._tag_for(spec, pname)
+        return tag, ctx.tar()
+
+    async def register_image(self, env: str, image: str, provider: str | None = None,
+                             actor: str = "system") -> dict[str, Any]:
+        """Record an externally built image for an environment and sync its warm pool."""
+        pname = provider or self.settings.default_provider
+        prov = self.provider(pname)
+        spec = self.catalog.get(env)
+        ref = prov.image_ref(image)
+        self.store.kv_set(f"image:{pname}:{env}", ref)
+        if hasattr(prov, "_known_images"):
+            prov._known_images.add(image)  # type: ignore[attr-defined]
+        await prov.sync_warm_pool(spec, ref)
+        self.audit(actor, "environment.register_image", env, provider=pname, image=ref)
+        return {"environment": env, "provider": pname, "image": ref}
+
     async def _ensure_image(self, spec: EnvSpec, pname: str, actor: str) -> str:
         prov = self.provider(pname)
         tag, _ = self._tag_for(spec, pname)
+        registered = self.store.kv_get(f"image:{pname}:{spec.name}")
+        if registered and registered == prov.image_ref(tag):
+            return registered
         if await prov.image_exists(tag):
-            return tag
+            return prov.image_ref(tag)
         job = await self.build(spec.name, pname, actor=actor)
         if job.state != "succeeded" or not job.image:
             raise FleetError(f"build of {spec.name} failed: {job.error}")

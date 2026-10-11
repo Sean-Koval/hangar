@@ -128,6 +128,11 @@ class BuildBody(BaseModel):
     force: bool = False
 
 
+class RegisterImage(BaseModel):
+    image: str
+    provider: str | None = None
+
+
 class TokenBody(BaseModel):
     name: str
 
@@ -231,6 +236,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def env_build(name: str, body: BuildBody, who: str = A):
         job = await fleet.build(name, body.provider, force=body.force, actor=who, wait=False)
         return job.summary()
+
+    @app.get("/api/environments/{name}/context")
+    async def env_context(name: str, provider: str | None = None, _: str = A):
+        from fastapi.responses import Response
+
+        tag, tar = fleet.build_context(name, provider)
+        return Response(tar, media_type="application/x-tar", headers={"X-Hangar-Image": tag})
+
+    @app.post("/api/environments/{name}/images")
+    async def env_register(name: str, body: RegisterImage, who: str = A):
+        return await fleet.register_image(name, body.image, body.provider, actor=who)
 
     @app.get("/api/builds")
     async def builds(_: str = A):

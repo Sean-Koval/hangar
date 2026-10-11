@@ -1,0 +1,397 @@
+"""Kubernetes provider backed by kubernetes-sigs/agent-sandbox (GKE Agent Sandbox add-on or OSS install).
+
+Mapping:
+    environment  -> SandboxTemplate  hangar-<env>   (pod spec: image, runtimeClass, resources)
+                 -> SandboxWarmPool  hangar-<env>   (replicas = spec.warm_pool)
+    sandbox      -> SandboxClaim     hangar-<sb-id> (warmPoolRef, lifecycle.shutdownTime)
+
+Isolation comes from the runtime class: `gvisor` (GKE Sandbox, default), `kata-qemu` (real
+microVMs; needs nested-virt Intel nodes), or none (runc, local dev clusters).
+
+I/O uses the pods/exec API, so the control plane needs RBAC for pods/exec in the sandbox
+namespace (see deploy/k8s). Images must live in a registry the cluster can pull from
+(HANGAR_REGISTRY, e.g. Artifact Registry); builds run with local docker or Cloud Build.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import datetime as dt
+import json
+import shlex
+import shutil
+import tempfile
+import time
+import uuid
+from pathlib import Path
+
+from hangar.config import Settings
+from hangar.envspec import BuildContext, EnvSpec
+from hangar.models import ExecResult, Sandbox, SandboxState
+from hangar.providers._build import docker_build, run_cli
+from hangar.providers.base import Capabilities, LogFn, Provider, ProviderError, TerminalStream
+
+try:
+    from kubernetes import client, config
+    from kubernetes.client.rest import ApiException
+    from kubernetes.stream import stream as k8s_stream
+    from kubernetes.stream.ws_client import RESIZE_CHANNEL
+except ImportError:  # pragma: no cover
+    client = None  # type: ignore[assignment]
+
+CORE_GROUP, CORE_V = "agents.x-k8s.io", "v1beta1"
+EXT_GROUP, EXT_V = "extensions.agents.x-k8s.io", "v1beta1"
+CONTAINER = "sandbox"
+MANAGED = {"app.kubernetes.io/managed-by": "hangar"}
+MAX_OUTPUT = 256 * 1024
+
+
+def _rfc3339(ts: float) -> str:
+    return dt.datetime.fromtimestamp(ts, dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _cond(obj: dict, kind: str) -> dict | None:
+    return next((c for c in (obj.get("status") or {}).get("conditions") or [] if c.get("type") == kind), None)
+
+
+class K8sTerminal(TerminalStream):
+    def __init__(self, ws):
+        self.ws = ws
+        self._closed = False
+
+    async def read(self) -> bytes:
+        def _read() -> bytes:
+            while self.ws.is_open():
+                self.ws.update(timeout=1)
+                out = b""
+                if self.ws.peek_stdout():
+                    out += self.ws.read_stdout().encode(errors="replace")
+                if self.ws.peek_stderr():
+                    out += self.ws.read_stderr().encode(errors="replace")
+                if out:
+                    return out
+            return b""
+
+        if self._closed:
+            return b""
+        return await asyncio.to_thread(_read)
+
+    async def write(self, data: bytes) -> None:
+        if not self._closed:
+            await asyncio.to_thread(self.ws.write_stdin, data.decode(errors="replace"))
+
+    async def resize(self, cols: int, rows: int) -> None:
+        if not self._closed:
+            await asyncio.to_thread(self.ws.write_channel, RESIZE_CHANNEL, json.dumps({"Width": cols, "Height": rows}))
+
+    async def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            await asyncio.to_thread(self.ws.close)
+
+
+class KubernetesProvider(Provider):
+    name = "kubernetes"
+
+    def __init__(self, settings: Settings):
+        if client is None:
+            raise ProviderError("kubernetes extra not installed: pip install 'hangar[kubernetes]'")
+        self.settings = settings
+        self.ns = settings.k8s_namespace
+        try:
+            if settings.k8s_in_cluster:
+                config.load_incluster_config()
+            else:
+                config.load_kube_config()
+        except Exception as e:  # noqa: BLE001
+            raise ProviderError(f"cannot load kubernetes config: {e}") from e
+        self.core = client.CoreV1Api()
+        self.crd = client.CustomObjectsApi()
+        self._known_images: set[str] = set()
+        try:
+            self.crd.list_namespaced_custom_object(EXT_GROUP, EXT_V, self.ns, "sandboxwarmpools", limit=1)
+        except ApiException as e:
+            if e.status == 404:
+                raise ProviderError(
+                    "Agent Sandbox CRDs (extensions.agents.x-k8s.io/v1beta1) not found or namespace "
+                    f"'{self.ns}' missing. Enable the GKE add-on (--enable-agent-sandbox) or install the OSS "
+                    "controller with extensions, then apply deploy/k8s."
+                ) from e
+            raise ProviderError(f"kubernetes API error: {e.reason}") from e
+
+    @property
+    def capabilities(self) -> Capabilities:
+        rc = (self.settings.k8s_runtime_class or "").lower()
+        return Capabilities(full_snapshots=False, warm_pools=True, pause=False, microvm="kata" in rc,
+                            local_build=bool(shutil.which("docker") or shutil.which("gcloud")))
+
+    # ------------------------------------------------------------------ templates
+    async def image_exists(self, tag: str) -> bool:
+        if tag in self._known_images:
+            return True
+        probes = []
+        if shutil.which("docker"):
+            probes.append(["docker", "manifest", "inspect", tag])
+        if shutil.which("gcloud") and ".pkg.dev/" in tag:
+            probes.append(["gcloud", "artifacts", "docker", "images", "describe", tag, "--quiet"])
+        for args in probes:
+            proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.DEVNULL,
+                                                        stderr=asyncio.subprocess.DEVNULL)
+            if await proc.wait() == 0:
+                self._known_images.add(tag)
+                return True
+        return False
+
+    async def build_template(self, spec: EnvSpec, ctx: BuildContext, tag: str, log: LogFn | None = None) -> str:
+        if not self.settings.registry:
+            raise ProviderError("set HANGAR_REGISTRY (e.g. us-central1-docker.pkg.dev/PROJECT/hangar) so the "
+                                "cluster can pull environment images")
+        if shutil.which("docker"):
+            await docker_build(ctx, tag, log=log, platform="linux/amd64", push=True)
+        elif shutil.which("gcloud"):
+            await self._cloud_build(ctx, tag, log)
+        else:
+            raise ProviderError("no image builder available: install docker, or gcloud for Cloud Build")
+        self._known_images.add(tag)
+        return tag
+
+    async def _cloud_build(self, ctx: BuildContext, tag: str, log: LogFn | None) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "Dockerfile").write_text(ctx.dockerfile)
+            for rel, data in ctx.files.items():
+                p = root / rel
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(data)
+            (root / "cloudbuild.yaml").write_text(
+                "steps:\n- name: gcr.io/cloud-builders/docker\n  env: ['DOCKER_BUILDKIT=1']\n"
+                f"  args: ['build', '-t', '{tag}', '.']\nimages: ['{tag}']\ntimeout: 3600s\n"
+            )
+            await run_cli(["gcloud", "builds", "submit", "--config", str(root / "cloudbuild.yaml"), str(root)], log=log)
+
+    def _pod_template(self, spec: EnvSpec, image: str) -> dict:
+        s = self.settings
+        res = spec.resources
+        pod: dict = {
+            "automountServiceAccountToken": False,
+            "enableServiceLinks": False,
+            "securityContext": {"runAsUser": 1000, "runAsGroup": 1000, "fsGroup": 1000},
+            "containers": [{
+                "name": CONTAINER,
+                "image": image,
+                "command": ["sleep", "infinity"],
+                "workingDir": s.workspace_dir,
+                "env": [{"name": "TERM", "value": "xterm-256color"}],
+                "resources": {
+                    "requests": {"cpu": str(res.cpus), "memory": f"{int(res.memory_gb * 1024)}Mi"},
+                    "limits": {"cpu": str(res.cpus), "memory": f"{int(res.memory_gb * 1024)}Mi"},
+                },
+            }],
+        }
+        if res.disk_gb:
+            pod["containers"][0]["resources"]["requests"]["ephemeral-storage"] = f"{int(res.disk_gb)}Gi"
+        rc = s.k8s_runtime_class
+        if rc:
+            pod["runtimeClassName"] = rc
+            if rc == "gvisor" and s.k8s_gke_node_selector:
+                pod["nodeSelector"] = {"sandbox.gke.io/runtime": "gvisor"}
+                pod["tolerations"] = [{"key": "sandbox.gke.io/runtime", "operator": "Equal", "value": "gvisor",
+                                       "effect": "NoSchedule"}]
+            elif rc.startswith("kata") and s.k8s_gke_node_selector:
+                # Matches the nested-virt pool created by deploy/terraform/gke (enable_kata_pool).
+                pod["nodeSelector"] = {"hangar.dev/runtime": "kata"}
+                pod["tolerations"] = [{"key": "hangar.dev/runtime", "operator": "Equal", "value": "kata",
+                                       "effect": "NoSchedule"}]
+        return {"metadata": {"labels": {**MANAGED, "dev.hangar/env": spec.name}}, "spec": pod}
+
+    async def _apply(self, plural: str, body: dict) -> None:
+        name = body["metadata"]["name"]
+
+        def _do():
+            try:
+                cur = self.crd.get_namespaced_custom_object(EXT_GROUP, EXT_V, self.ns, plural, name)
+                body["metadata"]["resourceVersion"] = cur["metadata"]["resourceVersion"]
+                self.crd.replace_namespaced_custom_object(EXT_GROUP, EXT_V, self.ns, plural, name, body)
+            except ApiException as e:
+                if e.status != 404:
+                    raise
+                self.crd.create_namespaced_custom_object(EXT_GROUP, EXT_V, self.ns, plural, body)
+
+        await asyncio.to_thread(_do)
+
+    async def sync_warm_pool(self, spec: EnvSpec, image: str) -> None:
+        name = f"hangar-{spec.name}"
+        meta = {"name": name, "labels": {**MANAGED, "dev.hangar/env": spec.name},
+                "annotations": {"dev.hangar/image": image}}
+        await self._apply("sandboxtemplates", {
+            "apiVersion": f"{EXT_GROUP}/{EXT_V}", "kind": "SandboxTemplate", "metadata": dict(meta),
+            "spec": {"podTemplate": self._pod_template(spec, image)},
+        })
+        await self._apply("sandboxwarmpools", {
+            "apiVersion": f"{EXT_GROUP}/{EXT_V}", "kind": "SandboxWarmPool", "metadata": dict(meta),
+            "spec": {"replicas": max(0, spec.warm_pool), "sandboxTemplateRef": {"name": name},
+                     "updateStrategy": {"type": "Recreate"}},
+        })
+
+    # ------------------------------------------------------------------ lifecycle
+    async def create(self, sandbox: Sandbox, image: str, spec: EnvSpec | None = None) -> None:
+        if spec is None:
+            raise ProviderError("kubernetes provider creates sandboxes from environments only "
+                                "(forks use workspace snapshots)")
+        await self.sync_warm_pool(spec, image)  # idempotent; keeps template image current
+        claim = f"hangar-{sandbox.id}"
+        body = {
+            "apiVersion": f"{EXT_GROUP}/{EXT_V}", "kind": "SandboxClaim",
+            "metadata": {"name": claim, "labels": {**MANAGED, "dev.hangar/sandbox": sandbox.id,
+                                                   "dev.hangar/env": spec.name}},
+            "spec": {"warmPoolRef": {"name": f"hangar-{spec.name}"},
+                     "lifecycle": {"shutdownPolicy": "Delete"}},
+        }
+        if sandbox.expires_at:
+            body["spec"]["lifecycle"]["shutdownTime"] = _rfc3339(sandbox.expires_at + 300)  # reaper first, k8s backstop
+        await asyncio.to_thread(self.crd.create_namespaced_custom_object, EXT_GROUP, EXT_V, self.ns,
+                                "sandboxclaims", body)
+        sandbox.provider_ref = claim
+
+    async def _claim(self, sandbox: Sandbox) -> dict | None:
+        try:
+            return await asyncio.to_thread(self.crd.get_namespaced_custom_object, EXT_GROUP, EXT_V, self.ns,
+                                           "sandboxclaims", sandbox.provider_ref)
+        except ApiException as e:
+            if e.status == 404:
+                return None
+            raise
+
+    async def _pod(self, sandbox: Sandbox) -> str:
+        if pod := sandbox.info.get("pod"):
+            return pod
+        claim = await self._claim(sandbox)
+        if not claim:
+            raise ProviderError(f"sandbox {sandbox.id} no longer exists in the cluster")
+        sb_name = ((claim.get("status") or {}).get("sandbox") or {}).get("name") or \
+            claim["metadata"].get("annotations", {}).get("agents.x-k8s.io/sandbox-name")
+        if not sb_name:
+            raise ProviderError("sandbox not bound yet")
+        obj = await asyncio.to_thread(self.crd.get_namespaced_custom_object, CORE_GROUP, CORE_V, self.ns,
+                                      "sandboxes", sb_name)
+        pod = (obj["metadata"].get("annotations") or {}).get("agents.x-k8s.io/pod-name") or sb_name
+        sandbox.info["pod"] = pod
+        sandbox.info["k8s_sandbox"] = sb_name
+        sandbox.info["warm"] = (obj["metadata"].get("labels") or {}).get("agents.x-k8s.io/launch-type") == "warm"
+        return pod
+
+    async def status(self, sandbox: Sandbox) -> SandboxState:
+        claim = await self._claim(sandbox)
+        if claim is None:
+            return SandboxState.STOPPED
+        ready = _cond(claim, "Ready")
+        if ready and ready.get("status") == "True":
+            try:
+                pod = await self._pod(sandbox)
+                p = await asyncio.to_thread(self.core.read_namespaced_pod, pod, self.ns)
+                return SandboxState.RUNNING if p.status.phase == "Running" else SandboxState.STARTING
+            except (ProviderError, ApiException):
+                return SandboxState.STARTING
+        if ready and ready.get("reason") in ("Failed", "Error", "TemplateNotFound", "WarmPoolNotFound"):
+            return SandboxState.ERROR
+        return SandboxState.STARTING
+
+    async def destroy(self, sandbox: Sandbox) -> None:
+        if not sandbox.provider_ref:
+            return
+        try:
+            await asyncio.to_thread(self.crd.delete_namespaced_custom_object, EXT_GROUP, EXT_V, self.ns,
+                                    "sandboxclaims", sandbox.provider_ref,
+                                    body=client.V1DeleteOptions(propagation_policy="Foreground"))
+        except ApiException as e:
+            if e.status != 404:
+                raise
+
+    async def list_refs(self) -> dict[str, SandboxState]:
+        items = await asyncio.to_thread(self.crd.list_namespaced_custom_object, EXT_GROUP, EXT_V, self.ns,
+                                        "sandboxclaims", label_selector="app.kubernetes.io/managed-by=hangar")
+        out = {}
+        for it in items.get("items", []):
+            ready = _cond(it, "Ready")
+            out[it["metadata"]["name"]] = (SandboxState.RUNNING if ready and ready.get("status") == "True"
+                                           else SandboxState.STARTING)
+        return out
+
+    # ------------------------------------------------------------------ I/O
+    def _exec_blocking(self, pod: str, argv: list[str], timeout: int) -> tuple[int, str, str]:
+        ws = k8s_stream(self.core.connect_get_namespaced_pod_exec, pod, self.ns, container=CONTAINER,
+                        command=argv, stderr=True, stdin=False, stdout=True, tty=False,
+                        _preload_content=False)
+        out, err = [], []
+        try:
+            deadline = time.monotonic() + timeout + 10
+            while ws.is_open() and time.monotonic() < deadline:
+                ws.update(timeout=1)
+                if ws.peek_stdout():
+                    out.append(ws.read_stdout())
+                if ws.peek_stderr():
+                    err.append(ws.read_stderr())
+            code = ws.returncode
+        finally:
+            ws.close()
+        return (code if code is not None else -1), "".join(out), "".join(err)
+
+    async def exec(self, sandbox, command, timeout=120, cwd=None, user=None) -> ExecResult:
+        pod = await self._pod(sandbox)
+        wd = cwd or self.settings.workspace_dir
+        script = f"cd {shlex.quote(wd)} 2>/dev/null; {command}"
+        argv = ["timeout", "--kill-after=5", str(int(timeout)), "bash", "-lc", script]
+        t0 = time.monotonic()
+        try:
+            code, out, err = await asyncio.to_thread(self._exec_blocking, pod, argv, timeout)
+        except ApiException as e:
+            raise ProviderError(f"exec failed: {e.reason}") from e
+        trunc = len(out) > MAX_OUTPUT or len(err) > MAX_OUTPUT
+        if code == 124:
+            err += f"\n[hangar] command timed out after {timeout}s"
+        return ExecResult(exit_code=code, stdout=out[-MAX_OUTPUT:], stderr=err[-MAX_OUTPUT:],
+                          duration_ms=int((time.monotonic() - t0) * 1000), truncated=trunc)
+
+    async def read_file(self, sandbox, path) -> bytes | None:
+        pod = await self._pod(sandbox)
+        code, out, _ = await asyncio.to_thread(
+            self._exec_blocking, pod, ["sh", "-c", f"base64 -w0 {shlex.quote(path)}"], 300)
+        if code != 0:
+            return None
+        return base64.b64decode(out)
+
+    async def write_file(self, sandbox, path, data, mode=0o644) -> None:
+        pod = await self._pod(sandbox)
+        q = shlex.quote(path)
+        d = shlex.quote(str(Path(path).parent))
+        # Ship base64 inline in chunks via a temp file; avoids stdin EOF semantics of the exec websocket.
+        b64 = base64.b64encode(data).decode()
+        tmp = f"/tmp/.hangar-upload-{uuid.uuid4().hex[:10]}"
+        chunk = 96 * 1024
+        await asyncio.to_thread(self._exec_blocking, pod, ["sh", "-c", f": > {tmp}"], 30)
+        for i in range(0, len(b64), chunk):
+            part = b64[i:i + chunk]
+            code, _, err = await asyncio.to_thread(
+                self._exec_blocking, pod, ["sh", "-c", f"printf %s {shlex.quote(part)} >> {tmp}"], 60)
+            if code != 0:
+                raise ProviderError(f"write {path} failed: {err}")
+        code, _, err = await asyncio.to_thread(
+            self._exec_blocking, pod,
+            ["sh", "-c", f"mkdir -p {d} && base64 -d {tmp} > {q} && chmod {mode:o} {q}; rc=$?; rm -f {tmp}; exit $rc"],
+            None, 60)
+        if code != 0:
+            raise ProviderError(f"write {path} failed: {err}")
+
+    async def open_terminal(self, sandbox, command, cols=120, rows=32) -> TerminalStream:
+        pod = await self._pod(sandbox)
+
+        def _open():
+            return k8s_stream(self.core.connect_get_namespaced_pod_exec, pod, self.ns, container=CONTAINER,
+                              command=command, stderr=True, stdin=True, stdout=True, tty=True,
+                              _preload_content=False)
+
+        ws = await asyncio.to_thread(_open)
+        term = K8sTerminal(ws)
+        await term.resize(cols, rows)
+        return term

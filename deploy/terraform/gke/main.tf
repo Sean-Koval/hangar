@@ -1,0 +1,178 @@
+locals {
+  sa_email = google_service_account.hangar.email
+}
+
+resource "google_project_service" "apis" {
+  for_each = toset([
+    "container.googleapis.com",
+    "artifactregistry.googleapis.com",
+    "cloudbuild.googleapis.com",
+    "iam.googleapis.com",
+  ])
+  service            = each.value
+  disable_on_destroy = false
+}
+
+# --------------------------------------------------------------------------- registry
+resource "google_artifact_registry_repository" "hangar" {
+  location      = var.region
+  repository_id = "hangar"
+  format        = "DOCKER"
+  description   = "hangar control plane + environment images"
+  cleanup_policies {
+    id     = "keep-recent"
+    action = "KEEP"
+    most_recent_versions {
+      keep_count = 10
+    }
+  }
+  depends_on = [google_project_service.apis]
+}
+
+# --------------------------------------------------------------------------- cluster
+resource "google_container_cluster" "hangar" {
+  name     = var.cluster_name
+  location = var.zone
+
+  release_channel {
+    channel = var.release_channel
+  }
+
+  remove_default_node_pool = true
+  initial_node_count       = 1
+  deletion_protection      = false
+
+  workload_identity_config {
+    workload_pool = "${var.project_id}.svc.id.goog"
+  }
+
+  # NetworkPolicy enforcement (Dataplane V2) backs Agent Sandbox's default-deny egress to internal ranges.
+  datapath_provider = "ADVANCED_DATAPATH"
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_container_node_pool" "system" {
+  name     = "system"
+  cluster  = google_container_cluster.hangar.name
+  location = var.zone
+
+  autoscaling {
+    min_node_count = 1
+    max_node_count = 2
+  }
+
+  node_config {
+    machine_type = "e2-standard-2"
+    oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+    workload_metadata_config {
+      mode = "GKE_METADATA"
+    }
+  }
+}
+
+# gVisor (GKE Sandbox) pool: default isolation for sandboxes. Scales to zero when idle.
+resource "google_container_node_pool" "sandboxes" {
+  name     = "sandboxes-gvisor"
+  cluster  = google_container_cluster.hangar.name
+  location = var.zone
+
+  autoscaling {
+    min_node_count = 0
+    max_node_count = var.sandbox_max_nodes
+  }
+
+  node_config {
+    machine_type = var.sandbox_machine_type
+    image_type   = "COS_CONTAINERD"
+    spot         = var.sandbox_spot
+    disk_size_gb = 200
+    oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+    sandbox_config {
+      type = "gvisor"
+    }
+    workload_metadata_config {
+      mode = "GKE_METADATA"
+    }
+  }
+}
+
+# Optional Kata pool (hardware-virtualized microVMs). After apply, install kata-deploy on it
+# (see docs/gke.md) and set HANGAR_K8S_RUNTIME_CLASS=kata-qemu.
+resource "google_container_node_pool" "kata" {
+  count    = var.enable_kata_pool ? 1 : 0
+  name     = "sandboxes-kata"
+  cluster  = google_container_cluster.hangar.name
+  location = var.zone
+
+  autoscaling {
+    min_node_count = 0
+    max_node_count = var.sandbox_max_nodes
+  }
+
+  node_config {
+    machine_type = var.kata_machine_type
+    image_type   = "UBUNTU_CONTAINERD"
+    spot         = var.sandbox_spot
+    disk_size_gb = 200
+    oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+    labels = {
+      "hangar.dev/runtime" = "kata"
+    }
+    taint {
+      key    = "hangar.dev/runtime"
+      value  = "kata"
+      effect = "NO_SCHEDULE"
+    }
+    advanced_machine_features {
+      threads_per_core             = 0
+      enable_nested_virtualization = true
+    }
+    workload_metadata_config {
+      mode = "GKE_METADATA"
+    }
+  }
+}
+
+# The Agent Sandbox add-on (and optionally Pod snapshots) is enabled with gcloud until the
+# provider exposes it as a cluster field.
+resource "terraform_data" "agent_sandbox" {
+  triggers_replace = [google_container_cluster.hangar.id, var.enable_pod_snapshots]
+  provisioner "local-exec" {
+    command = join(" ", compact([
+      "gcloud beta container clusters update ${google_container_cluster.hangar.name}",
+      "--location ${var.zone} --project ${var.project_id} --enable-agent-sandbox",
+      var.enable_pod_snapshots ? "--enable-pod-snapshots" : "",
+      "--quiet",
+    ]))
+  }
+  depends_on = [google_container_node_pool.sandboxes]
+}
+
+# --------------------------------------------------------------------------- identity
+resource "google_service_account" "hangar" {
+  account_id   = "hangar"
+  display_name = "hangar control plane"
+}
+
+resource "google_project_iam_member" "hangar" {
+  for_each = toset([
+    "roles/artifactregistry.writer",
+    "roles/cloudbuild.builds.editor",
+    "roles/storage.admin", # Cloud Build source staging bucket
+    "roles/logging.logWriter",
+  ])
+  project = var.project_id
+  role    = each.value
+  member  = "serviceAccount:${local.sa_email}"
+}
+
+resource "google_service_account_iam_member" "workload_identity" {
+  service_account_id = google_service_account.hangar.name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "serviceAccount:${var.project_id}.svc.id.goog[hangar/hangar]"
+}
+
+resource "google_compute_global_address" "hangar" {
+  name = "hangar-ip"
+}

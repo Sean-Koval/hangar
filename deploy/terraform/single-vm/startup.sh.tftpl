@@ -1,0 +1,55 @@
+#!/bin/bash
+# hangar single-VM bootstrap: Docker + (gVisor | Kata) + hangar via docker compose.
+set -euxo pipefail
+exec > >(tee -a /var/log/hangar-startup.log) 2>&1
+
+if [ -f /opt/hangar/.installed ]; then
+  cd /opt/hangar/src/deploy/compose && docker compose up -d
+  exit 0
+fi
+
+apt-get update
+apt-get install -y ca-certificates curl gnupg git jq zstd
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable" \
+  > /etc/apt/sources.list.d/docker.list
+apt-get update
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+RUNTIME="${runtime}"
+if [ "$RUNTIME" = "runsc" ]; then
+  curl -fsSL https://gvisor.dev/archive.key | gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
+  echo "deb [arch=amd64 signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" \
+    > /etc/apt/sources.list.d/gvisor.list
+  apt-get update && apt-get install -y runsc
+  runsc install
+elif [ "$RUNTIME" = "kata" ]; then
+  # Kata Containers static release; registers io.containerd.kata.v2 with Docker as runtime "kata".
+  test -e /dev/kvm || { echo "no /dev/kvm: nested virtualization is not enabled"; exit 1; }
+  KATA_VER=$(curl -fsSL https://api.github.com/repos/kata-containers/kata-containers/releases/latest | jq -r .tag_name)
+  curl -fsSL "https://github.com/kata-containers/kata-containers/releases/download/$${KATA_VER}/kata-static-$${KATA_VER}-amd64.tar.zst" \
+    | zstd -d | tar -xf - -C /
+  ln -sf /opt/kata/bin/containerd-shim-kata-v2 /usr/local/bin/containerd-shim-kata-v2
+  jq '.runtimes.kata = {"runtimeType": "io.containerd.kata.v2"}' /etc/docker/daemon.json 2>/dev/null > /tmp/d.json \
+    || echo '{"runtimes":{"kata":{"runtimeType":"io.containerd.kata.v2"}}}' > /tmp/d.json
+  mv /tmp/d.json /etc/docker/daemon.json
+fi
+systemctl restart docker
+
+mkdir -p /opt/hangar
+git clone "${repo_url}" /opt/hangar/src
+cd /opt/hangar/src/deploy/compose
+ADMIN="hgr_$(openssl rand -hex 24)"
+KEY="$(python3 -c 'import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
+cat > .env <<ENV
+HANGAR_ADMIN_TOKEN=$ADMIN
+HANGAR_SECRET_KEY=$KEY
+HANGAR_BIND=0.0.0.0
+HANGAR_DOCKER_RUNTIME=$([ "$RUNTIME" = runc ] && echo "" || echo "$RUNTIME")
+HANGAR_MAX_SANDBOXES=40
+ENV
+chmod 600 .env
+echo "$ADMIN" > /opt/hangar/.bootstrap-token && chmod 600 /opt/hangar/.bootstrap-token
+docker compose up -d --build
+touch /opt/hangar/.installed

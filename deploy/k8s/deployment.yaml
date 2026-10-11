@@ -1,0 +1,73 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hangar-data
+  namespace: hangar
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hangar
+  namespace: hangar
+spec:
+  replicas: 1                 # state is a single SQLite file on the PVC
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app: hangar}
+  template:
+    metadata:
+      labels: {app: hangar}
+    spec:
+      serviceAccountName: hangar
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: hangar
+          image: REGION-docker.pkg.dev/PROJECT_ID/hangar/control-plane:latest
+          ports: [{containerPort: 8787, name: http}]
+          envFrom:
+            - configMapRef: {name: hangar}
+            - secretRef: {name: hangar}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 30
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {memory: 2Gi}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: hangar-data}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hangar
+  namespace: hangar
+  annotations:
+    cloud.google.com/backend-config: '{"default": "hangar"}'
+spec:
+  selector: {app: hangar}
+  ports: [{name: http, port: 80, targetPort: http}]
+---
+# Long-lived websockets (terminals) and slow MCP tool calls need a long backend timeout.
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: hangar
+  namespace: hangar
+spec:
+  timeoutSec: 3600
+  healthCheck:
+    requestPath: /healthz
+  # Recommended: put Identity-Aware Proxy in front of the dashboard as a second auth layer.
+  # iap: {enabled: true, oauthclientCredentials: {secretName: iap-oauth}}

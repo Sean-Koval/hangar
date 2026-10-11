@@ -1,0 +1,23 @@
+# Laptop or single VM: hangar in a container driving the host's Docker engine.
+#   cp .env.example .env && docker compose up -d
+#   open http://localhost:8787  (token: docker compose logs hangar | grep -A1 Bootstrap)
+services:
+  hangar:
+    build: ../..
+    image: hangar:local
+    restart: unless-stopped
+    ports:
+      - "${HANGAR_BIND:-127.0.0.1}:8787:8787"
+    environment:
+      HANGAR_PUBLIC_URL: ${HANGAR_PUBLIC_URL:-http://localhost:8787}
+      HANGAR_ADMIN_TOKEN: ${HANGAR_ADMIN_TOKEN:-}
+      HANGAR_SECRET_KEY: ${HANGAR_SECRET_KEY:-}
+      HANGAR_DOCKER_RUNTIME: ${HANGAR_DOCKER_RUNTIME:-}   # runsc (gVisor) or kata on Linux hosts
+      HANGAR_MAX_SANDBOXES: ${HANGAR_MAX_SANDBOXES:-20}
+      HANGAR_ENV_DIRS: '["/app/envs", "/envs"]'
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock   # sandboxes run as sibling containers
+      - hangar-data:/data
+      - ../../envs:/envs                            # edit specs on the host, live
+volumes:
+  hangar-data:

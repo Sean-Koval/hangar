@@ -155,6 +155,38 @@ def env_build(name: str, provider: Optional[str] = None, force: bool = False):
                     typer.echo(data)
 
 
+@env_app.command("publish")
+def env_publish(
+    name: str,
+    provider: Optional[str] = typer.Option(None, help="Provider the image is for (default: server default)."),
+    platform: str = typer.Option("linux/amd64", help="Target platform; GKE nodes are amd64 unless you use Arm pools."),
+):
+    """Build an environment on THIS machine, push it, and register it with the server.
+
+    Use this when the control plane runs in a cluster without a builder: the server renders
+    the build context, your docker builds and pushes it, and the server syncs its warm pool.
+    """
+    import asyncio
+    import shutil
+    import subprocess
+
+    if not shutil.which("docker"):
+        typer.secho("docker is required for publish", fg="red")
+        raise typer.Exit(2)
+    with _client() as c:
+        r = c.get(f"/api/environments/{name}/context", params={"provider": provider})
+        if r.status_code >= 400:
+            typer.secho(f"error: {r.text}", fg="red")
+            raise typer.Exit(1)
+        tag = r.headers["X-Hangar-Image"]
+        tar = r.content
+    typer.secho(f"building {tag}", fg="cyan")
+    subprocess.run(["docker", "buildx", "build", "--platform", platform, "-t", tag, "--push", "-"], input=tar,
+                   check=True)
+    res = _call("POST", f"/api/environments/{name}/images", json={"image": tag, "provider": provider})
+    typer.secho(f"registered {res['image']} for {res['provider']}", fg="green")
+
+
 @env_app.command("push")
 def env_push(file: Path):
     """Create/update an environment on the server from a YAML file."""

@@ -63,6 +63,10 @@ class Provider(abc.ABC):
     async def image_exists(self, tag: str) -> bool:
         return False
 
+    def image_ref(self, tag: str) -> str:
+        """What `create` should receive for a built image tag (E2B maps tags to template names)."""
+        return tag
+
     async def sync_warm_pool(self, spec: EnvSpec, image: str) -> None:
         """Bring the warm pool for this environment to spec.warm_pool ready sandboxes."""
 

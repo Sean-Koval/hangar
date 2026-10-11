@@ -1,0 +1,5 @@
+project_id       = "my-gcp-project"
+region           = "us-central1"
+zone             = "us-central1-a"
+domain           = "hangar.example.com"
+enable_kata_pool = false

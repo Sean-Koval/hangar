@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hangar
+  namespace: hangar
+data:
+  HANGAR_HOST: "0.0.0.0"
+  HANGAR_PUBLIC_URL: "https://hangar.example.com"
+  HANGAR_DEFAULT_PROVIDER: "kubernetes"
+  HANGAR_ENABLED_PROVIDERS: '["kubernetes"]'
+  HANGAR_K8S_IN_CLUSTER: "true"
+  HANGAR_K8S_NAMESPACE: "hangar-sandboxes"
+  HANGAR_K8S_RUNTIME_CLASS: "gvisor"        # kata-qemu for microVM pools, "" for runc
+  HANGAR_REGISTRY: "REGION-docker.pkg.dev/PROJECT_ID/hangar"
+  HANGAR_MAX_SANDBOXES: "50"
+---
+# Create the real secret out of band (never commit it):
+#   kubectl -n hangar create secret generic hangar \
+#     --from-literal=HANGAR_ADMIN_TOKEN=hgr_$(openssl rand -hex 24) \
+#     --from-literal=HANGAR_SECRET_KEY=$(python3 -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())")
