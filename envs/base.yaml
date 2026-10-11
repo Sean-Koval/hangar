@@ -1,7 +1,7 @@
 # Shared foundation. Other environments `extends: base` and add harnesses, deps and repos.
 name: base
 description: Ubuntu 24.04 + git, tmux, ripgrep, mise-managed Python 3.12 / uv / Node 22
-base: ubuntu:24.04
+base: mirror.gcr.io/library/ubuntu:24.04  # Google's Docker Hub mirror: same image, no pull rate limits
 tools:
   apt: [gh, fd-find, shellcheck]
   mise:

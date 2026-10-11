@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     # Registry to push template images to (required for kubernetes provider), e.g.
     # us-central1-docker.pkg.dev/my-proj/hangar
     registry: str | None = None
+    # PEM bundle trusted inside every image (corporate TLS-inspecting proxies, private CAs).
+    extra_ca_bundle: Path | None = None
 
     # --- providers ----------------------------------------------------------
     default_provider: Literal["docker", "kubernetes", "e2b"] = "docker"

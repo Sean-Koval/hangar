@@ -150,9 +150,13 @@ class Fleet:
             })
         return out
 
+    def _extra_ca(self) -> bytes | None:
+        p = self.settings.extra_ca_bundle
+        return p.expanduser().read_bytes() if p else None
+
     def environment_detail(self, name: str) -> dict[str, Any]:
         spec = self.catalog.get(name)
-        ctx = render(spec, self.settings.sandbox_user, self.settings.workspace_dir)
+        ctx = render(spec, self.settings.sandbox_user, self.settings.workspace_dir, self._extra_ca())
         return {"spec": spec.model_dump(mode="json"), "raw": self.catalog.raw(name), "dockerfile": ctx.dockerfile,
                 "digest": ctx.digest}
 
@@ -162,7 +166,7 @@ class Fleet:
         return spec
 
     def _tag_for(self, spec: EnvSpec, provider: str) -> tuple[str, Any]:
-        ctx = render(spec, self.settings.sandbox_user, self.settings.workspace_dir)
+        ctx = render(spec, self.settings.sandbox_user, self.settings.workspace_dir, self._extra_ca())
         registry = self.settings.registry if provider in ("kubernetes", "e2b") else None
         return image_tag(spec, ctx, self.settings.image_prefix, registry), ctx
 
@@ -278,6 +282,7 @@ class Fleet:
         self.store.put(sb)
         self.audit(actor, "sandbox.create", sb.id, environment=environment, provider=pname, name=sb.name)
         try:
+            creds = self.broker.acquire(cred_names, sb.id)  # fail before starting anything
             sb.state = SandboxState.STARTING
             self.store.put(sb)
             image = _image or await self._ensure_image(spec, pname, actor)
@@ -287,7 +292,6 @@ class Fleet:
             await self._wait_running(prov, sb)
             if _parent:
                 await self._scrub_inherited_secrets(prov, sb)
-            creds = self.broker.acquire(cred_names, sb.id)
             await self.broker.inject(sb, prov, creds)
             if _restore_workspace:
                 await self._restore_workspace(prov, sb, _restore_workspace)
@@ -501,7 +505,7 @@ class Fleet:
                 raise FleetError(f"terminal_send failed: {res.stderr or 'no such session'}")
         self.audit(actor, "sandbox.terminal_send", sb.id, session=session, text=text[:300], keys=keys or [])
         deadline = time.monotonic() + max(wait_ms, 0) / 1000
-        pattern = re.compile(wait_for) if wait_for else None
+        pattern = re.compile(wait_for, re.MULTILINE) if wait_for else None
         out = ""
         while True:
             await asyncio.sleep(0.3 if pattern else max(wait_ms, 0) / 1000)

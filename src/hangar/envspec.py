@@ -190,7 +190,8 @@ class BuildContext(BaseModel):
         return buf.getvalue()
 
 
-def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace") -> BuildContext:
+def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace",
+           extra_ca: bytes | None = None) -> BuildContext:
     home = _home(user)
     files: dict[str, bytes] = {}
     harnesses = [get_harness(h) for h in spec.harnesses]
@@ -203,7 +204,6 @@ def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace") ->
         mise.setdefault("uv", "latest")
 
     df: list[str] = [
-        "# syntax=docker/dockerfile:1.7",
         f"# hangar environment: {spec.name}",
         f"FROM {spec.base}",
         "ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8",
@@ -224,6 +224,14 @@ def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace") ->
             + f"mkdir -p {workspace} && chown {user}:{user} {workspace}"
         )
     )
+    if extra_ca:
+        files["certs/hangar-extra-ca.crt"] = extra_ca
+        df.append("COPY certs/hangar-extra-ca.crt /usr/local/share/ca-certificates/hangar-extra-ca.crt")
+        df.append("RUN update-ca-certificates >/dev/null")
+        df.append("ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt "
+                  "REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt "
+                  "NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/hangar-extra-ca.crt "
+                  "GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt")
     if spec.tools.script:
         df.append(_heredoc_run(spec.tools.script))
 
