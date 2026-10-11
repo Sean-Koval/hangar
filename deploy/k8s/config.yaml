@@ -10,7 +10,7 @@ data:
   HANGAR_ENABLED_PROVIDERS: '["kubernetes"]'
   HANGAR_K8S_IN_CLUSTER: "true"
   HANGAR_K8S_NAMESPACE: "hangar-sandboxes"
-  HANGAR_K8S_RUNTIME_CLASS: "gvisor"        # kata-qemu for microVM pools, "" for runc
+  HANGAR_K8S_RUNTIME_CLASS: "gvisor"        # kata-qemu-runtime-rs for microVM pools, "" for runc
   HANGAR_REGISTRY: "REGION-docker.pkg.dev/PROJECT_ID/hangar"
   HANGAR_MAX_SANDBOXES: "50"
   HANGAR_K8S_POD_SNAPSHOTS: "false"         # true after applying pod-snapshots.yaml (full-state forks)

@@ -5,7 +5,7 @@ Mapping:
                  -> SandboxWarmPool  hangar-<env>   (replicas = spec.warm_pool)
     sandbox      -> SandboxClaim     hangar-<sb-id> (warmPoolRef, lifecycle.shutdownTime)
 
-Isolation comes from the runtime class: `gvisor` (GKE Sandbox, default), `kata-qemu` (real
+Isolation comes from the runtime class: `gvisor` (GKE Sandbox, default), `kata-qemu-runtime-rs` (real
 microVMs; needs nested-virt Intel nodes), or none (runc, local dev clusters).
 
 I/O uses the pods/exec API, so the control plane needs RBAC for pods/exec in the sandbox

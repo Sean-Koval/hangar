@@ -53,8 +53,22 @@ uv run hangar env publish claude-python --provider kubernetes
 
 Set `enable_kata_pool = true` and re-apply. That adds an Intel N2 Ubuntu pool with nested virtualization, labeled and tainted `hangar.dev/runtime=kata`. Then:
 
-1. Install Kata on that pool by applying kata-deploy, restricted with a nodeSelector of `hangar.dev/runtime: kata`. Follow the Agent Sandbox "Kata on GKE" example.
-2. Set `HANGAR_K8S_RUNTIME_CLASS: kata-qemu` in `deploy/k8s/config.yaml` and restart hangar.
+1. Install Kata on that pool with the official chart, enabling only the QEMU shims and pinning it to the Kata pool:
+   ```bash
+   helm install kata-deploy oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy \
+     --version 4.2.0 --namespace kata-system --create-namespace \
+     --set shims.disableAll=true --set shims.qemu-runtime-rs.enabled=true \
+     --set nfd.enabled=false \
+     --set nodeSelector."hangar\.dev/runtime"=kata \
+     --set 'tolerations[0].key=hangar.dev/runtime' --set 'tolerations[0].value=kata' \
+     --set 'tolerations[0].effect=NoSchedule'
+   kubectl get runtimeclass   # expect kata-qemu-runtime-rs
+   ```
+2. Set `HANGAR_K8S_RUNTIME_CLASS: kata-qemu-runtime-rs` in `deploy/k8s/config.yaml` and restart hangar.
+
+Kata 4.x defaults to its Rust runtime, `kata-qemu-runtime-rs`. The older Go runtime is still available as `kata-qemu` (enable `shims.qemu`), but it's deprecated. Hangar pins any `kata*` runtime class to the Kata pool automatically.
+
+Kata needs real nested virtualization, which is why the pool uses Intel N2 machines with `enable_nested_virtualization`. Running Kata inside kind on WSL boots the VM but can't reach the guest agent over vsock, so test Kata on a GCE or bare-metal Linux node.
 
 Hangar adds the matching nodeSelector and toleration to sandbox pods automatically.
 
