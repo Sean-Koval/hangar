@@ -89,7 +89,7 @@ resource "google_container_node_pool" "sandboxes" {
     disk_size_gb = 200
     oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
     sandbox_config {
-      type = "gvisor"
+      type = "GVISOR"
     }
     workload_metadata_config {
       mode = "GKE_METADATA"
