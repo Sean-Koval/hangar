@@ -187,11 +187,17 @@ class KubernetesProvider(Provider):
                 p = root / rel
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_bytes(data)
+            sa = self.settings.k8s_build_service_account
             (root / "cloudbuild.yaml").write_text(
                 "steps:\n- name: gcr.io/cloud-builders/docker\n  env: ['DOCKER_BUILDKIT=1']\n"
                 f"  args: ['build', '-t', '{tag}', '.']\nimages: ['{tag}']\ntimeout: 3600s\n"
+                # A user-specified build SA can't write to the default logs bucket.
+                + ("options:\n  logging: CLOUD_LOGGING_ONLY\n" if sa else "")
             )
-            await run_cli(["gcloud", "builds", "submit", "--config", str(root / "cloudbuild.yaml"), str(root)], log=log)
+            args = ["gcloud", "builds", "submit", "--config", str(root / "cloudbuild.yaml")]
+            if sa:
+                args.append(f"--service-account=projects/-/serviceAccounts/{sa}")
+            await run_cli([*args, str(root)], log=log)
 
     def _pod_template(self, spec: EnvSpec, image: str) -> dict:
         s = self.settings

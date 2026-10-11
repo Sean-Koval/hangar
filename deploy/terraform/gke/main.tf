@@ -116,8 +116,14 @@ resource "google_container_node_pool" "kata" {
     spot         = var.sandbox_spot
     disk_size_gb = 200
     oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+    # kata-deploy's RuntimeClass selects nodes by the two katacontainers labels, which kata-deploy
+    # only adds after installing. Pre-labelling the pool puts them in the autoscaler's node
+    # template, so a pending Kata pod can scale the pool up from zero. A pod that lands before the
+    # install finishes fails sandbox creation briefly and the kubelet retries.
     labels = {
-      "hangar.dev/runtime" = "kata"
+      "hangar.dev/runtime"                    = "kata"
+      "katacontainers.io/kata-runtime"        = "true"
+      "kata-deploy.katacontainers.io/default" = "true"
     }
     taint {
       key    = "hangar.dev/runtime"
@@ -173,6 +179,14 @@ resource "google_service_account_iam_member" "workload_identity" {
   member             = "serviceAccount:${var.project_id}.svc.id.goog[hangar/hangar]"
   # The PROJECT.svc.id.goog identity pool only exists once a cluster with Workload Identity does.
   depends_on = [google_container_cluster.hangar]
+}
+
+# In-cluster builds run Cloud Build *as* the hangar service account (HANGAR_K8S_BUILD_SERVICE_ACCOUNT),
+# which needs actAs on itself; otherwise Cloud Build uses the default compute SA, which hangar can't act as.
+resource "google_service_account_iam_member" "hangar_self_user" {
+  service_account_id = google_service_account.hangar.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${local.sa_email}"
 }
 
 resource "google_compute_global_address" "hangar" {
