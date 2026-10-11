@@ -1,0 +1,19 @@
+name: agent
+extends: base
+harnesses: [claude-code, codex]
+dependencies:
+  npm: [typescript]
+  pip: [ruff]
+skills:
+  - path: skills/demo
+files:
+  .config/demo.txt: hello
+env:
+  FOO: bar
+repo:
+  url: https://github.com/example/proj.git
+  branch: main
+  setup: make deps
+resources:
+  cpus: 1
+  memory_gb: 2

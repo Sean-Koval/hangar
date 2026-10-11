@@ -84,12 +84,14 @@ function route() {
 }
 window.addEventListener("hashchange", route);
 
+let pollTimer = null;
 async function boot() {
   $("#gate").hidden = true;
   $("#shell").hidden = false;
   await refreshMeta();
   route();
-  setInterval(() => { if (state.view === "fleet" && !document.hidden) loadFleet(true); }, 4000);
+  clearInterval(pollTimer);
+  pollTimer = setInterval(() => { if (state.view === "fleet" && !document.hidden) loadFleet(true); }, 4000);
 }
 
 async function refreshMeta() {
@@ -321,11 +323,17 @@ function openTerminal(sb, session = null) {
   connectTerm(entry);
 }
 
-function connectTerm(entry) {
+async function ticket() {
+  return (await api("POST", "/api/tickets")).ticket;
+}
+
+async function connectTerm(entry) {
   const { term, fit, sb, session } = entry;
   fit.fit();
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const q = new URLSearchParams({ token: store.token, cols: term.cols, rows: term.rows });
+  let t;
+  try { t = await ticket(); } catch (e) { term.writeln(`\r\n\x1b[31m${e.message}\x1b[0m`); return; }
+  const q = new URLSearchParams({ ticket: t, cols: term.cols, rows: term.rows });
   if (session) q.set("session", session);
   const ws = new WebSocket(`${proto}://${location.host}/api/sandboxes/${sb.id}/attach?${q}`);
   ws.binaryType = "arraybuffer";
@@ -457,11 +465,11 @@ async function showEnv(name) {
   });
 }
 
-function followBuild(job) {
+async function followBuild(job) {
   const log = $("#env-log");
   log.hidden = false;
   log.textContent = "";
-  const es = new EventSource(`/api/builds/${job.id}/stream?token=${encodeURIComponent(store.token)}`);
+  const es = new EventSource(`/api/builds/${job.id}/stream?ticket=${encodeURIComponent(await ticket())}`);
   es.onmessage = (ev) => {
     const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
     log.textContent += JSON.parse(ev.data) + "\n";
@@ -484,9 +492,10 @@ $("#btn-new-env").addEventListener("click", () => {
     <label>Setup command after clone (optional)<input name="setup" placeholder="uv sync"></label>`,
   async (fd) => {
     const name = fd.get("name");
-    let y = `name: ${name}\nextends: ${fd.get("extends")}\ndescription: ""\n`;
-    if (fd.get("repo")) y += `repo:\n  url: ${fd.get("repo")}\n${fd.get("setup") ? `  setup: ${fd.get("setup")}\n` : ""}`;
-    await api("PUT", `/api/environments/${encodeURIComponent(name)}`, y);
+    const spec = { name, extends: fd.get("extends"), description: "" };
+    if (fd.get("repo")) spec.repo = { url: fd.get("repo"), ...(fd.get("setup") ? { setup: fd.get("setup") } : {}) };
+    // JSON is valid YAML, and avoids quoting bugs from string-built YAML.
+    await api("PUT", `/api/environments/${encodeURIComponent(name)}`, JSON.stringify(spec, null, 2));
     state.selectedEnv = name;
     await loadEnvs();
     toast(`Created ${name}. Adjust the spec, then build it.`);
@@ -542,9 +551,9 @@ $("#cred-form").addEventListener("submit", async (e) => {
 $("#cred-table").addEventListener("click", async (e) => {
   const del = e.target.closest("[data-del]"), rel = e.target.closest("[data-release]");
   if (del && confirm(`Delete credential ${del.dataset.del}? Running sandboxes keep their copy until they stop.`)) {
-    await busy(del, async () => { await api("DELETE", `/api/credentials/${del.dataset.del}`); toast("Deleted"); loadCreds(); });
+    await busy(del, async () => { await api("DELETE", `/api/credentials/${encodeURIComponent(del.dataset.del)}`); toast("Deleted"); loadCreds(); });
   }
-  if (rel) await busy(rel, async () => { await api("POST", `/api/credentials/${rel.dataset.release}/release`); toast("Released"); loadCreds(); });
+  if (rel) await busy(rel, async () => { await api("POST", `/api/credentials/${encodeURIComponent(rel.dataset.release)}/release`); toast("Released"); loadCreds(); });
 });
 $("#login-buttons").addEventListener("click", (e) => {
   const b = e.target.closest("[data-login]");

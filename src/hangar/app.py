@@ -65,6 +65,18 @@ class MCPAuthMiddleware:
             current_actor.reset(tok)
 
 
+class MCPPathMiddleware:
+    """Serve POST /mcp directly instead of a 307 to /mcp/ (clients drop auth on redirects behind TLS proxies)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("path") == "/mcp":
+            scope = dict(scope, path="/mcp/", raw_path=b"/mcp/")
+        await self.app(scope, receive, send)
+
+
 # ---------------------------------------------------------------------------- request models
 class CreateSandbox(BaseModel):
     environment: str
@@ -157,9 +169,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             yield
         await h.fleet.stop()
 
-    app = FastAPI(title="hangar", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="hangar", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None,
+                  openapi_url=None)
     app.state.hangar = h
     app.mount("/mcp", MCPAuthMiddleware(mcp_asgi, h.auth))
+    app.add_middleware(MCPPathMiddleware)
 
     @app.exception_handler(FleetError)
     @app.exception_handler(CredentialError)
@@ -252,9 +266,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def builds(_: str = A):
         return [j.summary() for j in sorted(fleet.builds.values(), key=lambda j: j.started_at, reverse=True)]
 
+    @app.post("/api/tickets")
+    async def ticket(who: str = A):
+        return {"ticket": h.auth.issue_ticket(who.removeprefix("ui:")), "ttl_seconds": 60}
+
     @app.get("/api/builds/{job_id}/stream")
-    async def build_stream(job_id: str, token: str | None = Query(None), request: Request = None):
-        if not h.auth.verify(token or bearer_from_headers(request.headers)):
+    async def build_stream(job_id: str, request: Request, ticket: str | None = Query(None)):
+        if not (h.auth.redeem_ticket(ticket) or h.auth.verify(bearer_from_headers(request.headers))):
             raise HTTPException(401)
         job = fleet.builds.get(job_id)
         if not job:
@@ -306,7 +324,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/sandboxes/{ref}/extend")
     async def extend_sb(ref: str, minutes: int = 60, who: str = A):
-        return sbd(fleet.extend(ref, minutes, actor=who))
+        return sbd(await fleet.extend(ref, minutes, actor=who))
 
     @app.post("/api/sandboxes/{ref}/exec")
     async def exec_sb(ref: str, body: ExecBody, who: str = A):
@@ -339,9 +357,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return [sbd(s) for s in sbs]
 
     @app.websocket("/api/sandboxes/{ref}/attach")
-    async def attach(ws: WebSocket, ref: str, token: str = Query(""), session: str | None = Query(None),
+    async def attach(ws: WebSocket, ref: str, ticket: str = Query(""), session: str | None = Query(None),
                      cols: int = Query(120), rows: int = Query(32)):
-        who = h.auth.verify(token)
+        who = h.auth.redeem_ticket(ticket) or h.auth.verify(bearer_from_headers(ws.headers))
         if not who:
             await ws.close(code=4401)
             return

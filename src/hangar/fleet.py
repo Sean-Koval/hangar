@@ -59,21 +59,24 @@ class BuildJob:
         self.started_at = now()
         self.finished_at: float | None = None
         self.lines: collections.deque[str] = collections.deque(maxlen=4000)
+        self.total = 0  # monotonic count of emitted lines (the deque drops old ones)
         self._cond = asyncio.Condition()
         self.task: asyncio.Task | None = None
 
     async def emit(self, line: str) -> None:
         self.lines.append(line)
+        self.total += 1
         async with self._cond:
             self._cond.notify_all()
 
     async def follow(self) -> AsyncIterator[str]:
-        idx = 0
+        seen = 0
         while True:
-            snapshot = list(self.lines)
-            for line in snapshot[idx:]:
+            snapshot, total = list(self.lines), self.total
+            first = total - len(snapshot)  # absolute index of snapshot[0]
+            for line in snapshot[max(seen - first, 0):]:
                 yield line
-            idx = len(snapshot)
+            seen = total
             if self.state != "running":
                 return
             async with self._cond:
@@ -128,6 +131,8 @@ class Fleet:
         raise FleetError(f"provider '{name}' unavailable: {reason}")
 
     def audit(self, actor: str, action: str, target: str | None = None, **detail: Any) -> None:
+        # Commands, prompts and terminal input can contain pasted secrets; mask any stored credential value.
+        detail = self.broker.redact(detail)
         self.store.audit(AuditEvent(actor=actor, action=action, target=target, detail=detail))
 
     # ================================================================== environments
@@ -279,6 +284,7 @@ class Fleet:
         _image: str | None = None,
         _parent: str | None = None,
         _restore_workspace: str | None = None,
+        _skip_repo: bool = False,
     ) -> Sandbox:
         active = [s for s in self.store.list(Sandbox) if s.state in ACTIVE]
         if len(active) >= self.settings.max_sandboxes:
@@ -290,12 +296,15 @@ class Fleet:
         for c in cred_names:
             self.broker.get(c)  # fail fast on typos
         ttl = ttl_minutes if ttl_minutes is not None else self.settings.default_ttl_minutes
+        base_name = _slug(name or f"{environment}-{new_id('x')[2:]}")
+        taken = {s.name for s in active}
+        unique = base_name if base_name not in taken else f"{base_name}-{new_id('x')[2:6]}"
         sb = Sandbox(
-            name=_slug(name or f"{environment}-{new_id('x')[2:]}"),
+            name=unique,
             environment=environment,
             provider=pname,
-            repo=repo or (spec.repo.url if spec.repo else None),
-            branch=branch or (spec.repo.branch if spec.repo else None),
+            repo=None if _skip_repo else repo or (spec.repo.url if spec.repo else None),
+            branch=None if _skip_repo else branch or (spec.repo.branch if spec.repo else None),
             credentials=cred_names,
             labels=labels or {},
             resources=resources or spec.resources,
@@ -327,16 +336,22 @@ class Fleet:
             if spec.warm_pool and pname in self.providers and _image is None:
                 asyncio.create_task(self._refill(spec, pname, image))
             return sb
-        except Exception as e:
+        except BaseException as e:  # includes CancelledError (client cancelled / tool timeout)
             sb.state = SandboxState.ERROR
-            sb.error = str(e)
+            sb.error = str(e) or type(e).__name__
             self.store.put(sb)
-            log.exception("create failed for %s", sb.id)
-            try:
-                await self.broker.release(sb, prov, write_back=False)
-                await prov.destroy(sb)
-            except Exception:  # noqa: BLE001
-                pass
+            log.warning("create failed for %s: %s", sb.id, sb.error)
+
+            async def _cleanup() -> None:
+                try:
+                    await self.broker.release(sb, prov, write_back=False)
+                    await prov.destroy(sb)
+                except Exception:  # noqa: BLE001
+                    log.exception("cleanup after failed create of %s", sb.id)
+
+            await asyncio.shield(asyncio.ensure_future(_cleanup()))
+            if not isinstance(e, Exception):
+                raise
             raise FleetError(f"failed to create sandbox: {e}") from e
 
     async def _refill(self, spec: EnvSpec, pname: str, image: str) -> None:
@@ -363,8 +378,11 @@ class Fleet:
         for c in self.store.list(Credential):
             if c.file_path:
                 paths.append(c.file_path if c.file_path.startswith("/") else f"{home}/{c.file_path}")
-        await prov.exec(sb, "rm -f " + " ".join(map(shlex.quote, paths)) + f" && touch {home}/.hangar/env "
-                        f"&& chmod 600 {home}/.hangar/env", timeout=30)
+        res = await prov.exec(
+            sb, "tmux kill-server 2>/dev/null; rm -f " + " ".join(map(shlex.quote, paths))
+            + f" && touch {home}/.hangar/env && chmod 600 {home}/.hangar/env", timeout=30)
+        if res.exit_code != 0:
+            raise FleetError(f"could not scrub inherited secrets from fork: {res.stderr[-300:]}")
 
     async def _setup_repo(self, prov: Provider, sb: Sandbox, spec: EnvSpec, work_branch: str | None) -> None:
         ws = self.settings.workspace_dir
@@ -377,7 +395,7 @@ class Fleet:
             if sb.branch:
                 script += f" && git checkout -q {q(sb.branch)} && git pull -q --ff-only || true"
         else:
-            script = f"git clone -q {'--branch ' + q(sb.branch) + ' ' if sb.branch else ''}{q(sb.repo)} {q(dest)}"
+            script = f"git clone -q {'--branch ' + q(sb.branch) + ' ' if sb.branch else ''}-- {q(sb.repo)} {q(dest)}"
         if work_branch:
             script += f" && cd {q(dest)} && git checkout -q -b {q(work_branch)}"
         res = await prov.exec(sb, script, timeout=600)
@@ -430,10 +448,13 @@ class Fleet:
         self.audit(actor, "sandbox.resume", sb.id)
         return sb
 
-    def extend(self, ref: str, minutes: int, actor: str = "system") -> Sandbox:
+    async def extend(self, ref: str, minutes: int, actor: str = "system") -> Sandbox:
         sb = self.get(ref)
         sb.expires_at = max(sb.expires_at or now(), now()) + minutes * 60
         self.store.put(sb)
+        prov = self.providers.get(sb.provider)
+        if prov and sb.state in ACTIVE:
+            await prov.set_expiry(sb, sb.expires_at)
         self.audit(actor, "sandbox.extend", sb.id, minutes=minutes)
         return sb
 
@@ -594,6 +615,8 @@ class Fleet:
 
     async def agent_status(self, ref: str, run_id: str, tail_lines: int = 60) -> dict[str, Any]:
         sb, prov = self._running(ref)
+        if not re.fullmatch(r"run-[0-9a-f]{8}", run_id):
+            raise FleetError(f"invalid run id '{run_id}'")
         rdir = f"/home/{self.settings.sandbox_user}/.hangar/runs"
         res = await prov.exec(
             sb, f"cat {rdir}/{run_id}.exit 2>/dev/null || echo RUNNING; echo '---'; "
@@ -614,9 +637,9 @@ class Fleet:
                 ref_ = await prov.snapshot(sb, snap_id)
                 snap = Snapshot(id=snap_id, sandbox_id=sb.id, environment=sb.environment, provider=sb.provider,
                                 kind=SnapshotKind.FULL, label=label, ref=ref_)
-            except NotImplementedError:
+            except NotImplementedError as e:
                 if kind == "full":
-                    raise FleetError(f"{sb.provider} provider has no full snapshots; use kind=workspace")
+                    raise FleetError(f"{sb.provider} provider has no full snapshots; use kind=workspace") from e
                 use_full = False
         if not use_full:
             snap = await self._workspace_snapshot(prov, sb, snap_id, label)
@@ -689,7 +712,8 @@ class Fleet:
             sb = await self.create(
                 environment=snap.environment,
                 name=f"{prefix}-f{i + 1}-{new_id('x')[2:6]}",
-                repo=None if same_provider or snap.kind == SnapshotKind.WORKSPACE else (parent.repo if parent else None),
+                repo=None if same_provider or snap.kind == SnapshotKind.WORKSPACE
+                else (parent.repo if parent else None),
                 credentials=credentials or [],
                 provider=pname,
                 ttl_minutes=ttl_minutes,
@@ -698,6 +722,7 @@ class Fleet:
                 _image=snap.ref if same_provider else None,
                 _parent=snap.id,
                 _restore_workspace=snap.ref if snap.kind == SnapshotKind.WORKSPACE else None,
+                _skip_repo=same_provider or snap.kind == SnapshotKind.WORKSPACE,
             )
             if parent and parent.info.get("repo_path"):
                 sb.info["repo_path"] = parent.info["repo_path"]
@@ -730,6 +755,7 @@ class Fleet:
         if not env:
             raise FleetError(f"no environment installs {harness}; create one (see envs/) to host the login")
         sb = await self.create(env, name=f"login-{harness}", credentials=[], provider=provider, ttl_minutes=30,
+                               _skip_repo=True,
                                labels={"purpose": "login"}, actor=actor)
         await self.terminal_open(sb.id, "login", cwd=f"/home/{self.settings.sandbox_user}")
         await self.terminal_send(sb.id, "login", flow.command, wait_ms=500, actor=actor)
@@ -749,7 +775,7 @@ class Fleet:
         kind = flow.captures
         if flow.token_regex:
             out = await self.terminal_read(lg["sandbox"], lg["session"], lines=2000)
-            m = re.findall(flow.token_regex, out.replace("\n", ""))
+            m = re.findall(flow.token_regex + r"(?![0-9A-Za-z_\-])", out)
             value = m[-1] if m else None
         elif flow.capture_file:
             value = await self.read_file(lg["sandbox"], f"~/{flow.capture_file}")
@@ -764,28 +790,35 @@ class Fleet:
         return cred
 
     # ================================================================== housekeeping
+    def _mark_gone(self, sb: Sandbox, reason: str) -> None:
+        sb.state = SandboxState.STOPPED
+        sb.error = reason
+        self.store.put(sb)
+        for c in self.store.list(Credential):
+            if c.leased_to == sb.id:  # the auth file is gone with the sandbox; keep the vault copy
+                c.leased_to = None
+                self.store.put(c)
+        self.audit("reaper", "sandbox.gone", sb.id, reason=reason)
+
     async def reconcile(self) -> None:
+        """Mark sandboxes whose backing container/pod/VM died or vanished as stopped."""
         for pname, prov in self.providers.items():
             try:
                 refs = await prov.list_refs()
             except Exception:  # noqa: BLE001
                 continue
+            if refs is None:  # provider can't enumerate; nothing to compare against
+                continue
             for sb in self.store.list(Sandbox):
-                if sb.provider != pname or sb.state not in ACTIVE or not sb.provider_ref:
+                if sb.provider != pname or not sb.provider_ref:
                     continue
-                if sb.provider_ref not in refs and refs is not None:
-                    try:
-                        st = await prov.status(sb)
-                    except Exception:  # noqa: BLE001
-                        st = SandboxState.STOPPED
-                    if st in (SandboxState.STOPPED, SandboxState.ERROR):
-                        sb.state = SandboxState.STOPPED
-                        sb.error = "disappeared from provider"
-                        self.store.put(sb)
-                        for c in self.store.list(Credential):
-                            if c.leased_to == sb.id:
-                                c.leased_to = None
-                                self.store.put(c)
+                if sb.state not in (SandboxState.RUNNING, SandboxState.PAUSED):
+                    continue  # pending/starting sandboxes may not be listed yet
+                reported = refs.get(sb.provider_ref)
+                if reported is None:
+                    self._mark_gone(sb, "disappeared from provider")
+                elif reported in (SandboxState.STOPPED, SandboxState.ERROR):
+                    self._mark_gone(sb, f"provider reports {reported.value}")
 
     async def _reaper_loop(self) -> None:
         while True:

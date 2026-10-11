@@ -14,9 +14,10 @@ code path works for Docker, Agent Sandbox pods and E2B VMs.
 
 from __future__ import annotations
 
+import re
 import shlex
 import threading
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from hangar.harnesses import HARNESSES, slot_for
 from hangar.models import Credential, CredentialKind, now
@@ -24,8 +25,11 @@ from hangar.store import Store
 from hangar.vault import Vault
 
 if TYPE_CHECKING:
-    from hangar.providers.base import Provider
     from hangar.models import Sandbox
+    from hangar.providers.base import Provider
+
+
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 class CredentialError(RuntimeError):
@@ -38,6 +42,36 @@ class Broker:
         self.vault = vault
         self.user = user
         self._lock = threading.Lock()
+        self._secret_cache: list[str] | None = None
+
+    # ------------------------------------------------------------------ redaction
+    def _secrets(self) -> list[str]:
+        if self._secret_cache is None:
+            vals: list[str] = []
+            for c in self.store.list(Credential):
+                v = self.vault.get(f"cred:{c.name}")
+                if not v:
+                    continue
+                text = v.decode(errors="ignore").strip()
+                vals.append(text)
+                if c.kind == CredentialKind.AUTH_FILE:  # also mask the tokens inside JSON auth files
+                    vals += re.findall(r'"[^"]*token[^"]*"\s*:\s*"([^"]{12,})"', text)
+            self._secret_cache = sorted({x for x in vals if len(x) >= 8}, key=len, reverse=True)
+        return self._secret_cache
+
+    def redact(self, obj: Any) -> Any:
+        secrets_ = self._secrets()
+        if not secrets_:
+            return obj
+        if isinstance(obj, str):
+            for sec in secrets_:
+                obj = obj.replace(sec, "***")
+            return obj
+        if isinstance(obj, dict):
+            return {k: self.redact(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [self.redact(v) for v in obj]
+        return obj
 
     @property
     def home(self) -> str:
@@ -54,6 +88,8 @@ class Broker:
         env_var: str | None = None,
         file_path: str | None = None,
     ) -> Credential:
+        if not NAME_RE.match(name):
+            raise CredentialError(f"invalid credential name '{name}': letters, digits, '.', '_', '-'")
         slot = slot_for(harness, kind)
         if slot is None and not (env_var or file_path):
             known = ", ".join(f"{s.kind.value}" for s in HARNESSES[harness].credentials) if harness in HARNESSES else ""
@@ -76,6 +112,7 @@ class Broker:
         )
         self.vault.put(f"cred:{name}", value)
         self.store.put(cred)
+        self._secret_cache = None
         return cred
 
     def list(self) -> list[Credential]:
@@ -90,6 +127,7 @@ class Broker:
     def delete(self, name: str) -> None:
         self.store.delete(Credential, name)
         self.vault.delete(f"cred:{name}")
+        self._secret_cache = None
 
     # ------------------------------------------------------------------ leasing
     def acquire(self, names: list[str], sandbox_id: str) -> list[Credential]:
@@ -107,21 +145,28 @@ class Broker:
                     self.store.put(c)
         return creds
 
-    async def release(self, sandbox: "Sandbox", provider: "Provider", write_back: bool = True) -> None:
+    async def release(self, sandbox: Sandbox, provider: Provider, write_back: bool = True) -> None:
         """Return exclusive leases, copying rotated auth files back into the vault first."""
         for c in self.store.list(Credential):
             if c.leased_to != sandbox.id:
                 continue
+            data = None
             if write_back and c.kind == CredentialKind.AUTH_FILE and c.file_path:
                 try:
                     data = await provider.read_file(sandbox, self._abs(c.file_path))
-                    if data and data != self.vault.get(f"cred:{c.name}"):
-                        self.vault.put(f"cred:{c.name}", data)
-                        c.updated_at = now()
                 except Exception:  # sandbox may already be gone; keep the vault copy
-                    pass
-            c.leased_to = None
-            self.store.put(c)
+                    data = None
+            with self._lock:
+                # Re-read after the await: the lease may have been force-released and re-issued meanwhile.
+                cur = self.store.get(Credential, c.name)
+                if cur is None or cur.leased_to != sandbox.id:
+                    continue
+                if data and data != self.vault.get(f"cred:{c.name}"):
+                    self.vault.put(f"cred:{c.name}", data)
+                    cur.updated_at = now()
+                    self._secret_cache = None
+                cur.leased_to = None
+                self.store.put(cur)
 
     def force_release(self, name: str) -> Credential:
         c = self.get(name)
@@ -133,7 +178,7 @@ class Broker:
     def _abs(self, path: str) -> str:
         return path if path.startswith("/") else f"{self.home}/{path}"
 
-    async def inject(self, sandbox: "Sandbox", provider: "Provider", creds: list[Credential]) -> None:
+    async def inject(self, sandbox: Sandbox, provider: Provider, creds: list[Credential]) -> None:
         env_lines: list[str] = []
         post: list[str] = []
         for c in creds:

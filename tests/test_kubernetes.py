@@ -1,0 +1,96 @@
+"""Kubernetes provider: manifest generation and claim flow against a fake CustomObjectsApi."""
+
+import pytest
+
+pytest.importorskip("kubernetes")
+
+from hangar.config import Settings  # noqa: E402
+from hangar.envspec import EnvSpec  # noqa: E402
+from hangar.models import Resources, Sandbox  # noqa: E402
+from hangar.providers.kubernetes import EXT_GROUP, KubernetesProvider  # noqa: E402
+
+
+class FakeCRD:
+    def __init__(self):
+        self.objects: dict[tuple[str, str], dict] = {}
+
+    def get_namespaced_custom_object(self, group, version, ns, plural, name):
+        from kubernetes.client.rest import ApiException
+
+        if (plural, name) not in self.objects:
+            raise ApiException(status=404)
+        return self.objects[(plural, name)]
+
+    def create_namespaced_custom_object(self, group, version, ns, plural, body):
+        body.setdefault("metadata", {})["resourceVersion"] = "1"
+        self.objects[(plural, body["metadata"]["name"])] = body
+
+    def replace_namespaced_custom_object(self, group, version, ns, plural, name, body):
+        self.objects[(plural, name)] = body
+
+
+def provider(**kw) -> KubernetesProvider:
+    p = object.__new__(KubernetesProvider)
+    p.settings = Settings(**kw)
+    p.ns = p.settings.k8s_namespace
+    p.crd = FakeCRD()
+    p._known_images = set()
+    p._synced = {}
+    return p
+
+
+def spec(**kw):
+    return EnvSpec(name="py", resources=Resources(cpus=2, memory_gb=4), warm_pool=3, **kw)
+
+
+def test_gvisor_pod_template():
+    pod = provider()._pod_template(spec(), "reg/py:abc")["spec"]
+    assert pod["runtimeClassName"] == "gvisor"
+    assert pod["nodeSelector"] == {"sandbox.gke.io/runtime": "gvisor"}
+    assert pod["automountServiceAccountToken"] is False
+    c = pod["containers"][0]
+    assert c["image"] == "reg/py:abc" and c["resources"]["limits"]["memory"] == "4096Mi"
+    assert pod["securityContext"]["runAsUser"] == 1000
+
+
+def test_kata_and_runc_templates():
+    kata = provider(k8s_runtime_class="kata-qemu")._pod_template(spec(), "i")["spec"]
+    assert kata["runtimeClassName"] == "kata-qemu" and kata["nodeSelector"] == {"hangar.dev/runtime": "kata"}
+    runc = provider(k8s_runtime_class=None)._pod_template(spec(), "i")["spec"]
+    assert "runtimeClassName" not in runc and "nodeSelector" not in runc
+
+
+async def test_warm_pool_and_claim():
+    p = provider()
+    sb = Sandbox(name="a", environment="py", provider="kubernetes", expires_at=2_000_000_000)
+    await p.create(sb, "reg/py:abc", spec())
+    tmpl = p.crd.objects[("sandboxtemplates", "hangar-py")]
+    pool = p.crd.objects[("sandboxwarmpools", "hangar-py")]
+    claim = p.crd.objects[("sandboxclaims", f"hangar-{sb.id}")]
+    assert tmpl["apiVersion"] == f"{EXT_GROUP}/v1beta1"
+    assert pool["spec"] == {"replicas": 3, "sandboxTemplateRef": {"name": "hangar-py"},
+                            "updateStrategy": {"type": "Recreate"}}
+    assert claim["spec"]["warmPoolRef"] == {"name": "hangar-py"}
+    assert claim["spec"]["lifecycle"]["shutdownPolicy"] == "Delete"
+    assert claim["spec"]["lifecycle"]["shutdownTime"].endswith("Z")
+    assert sb.provider_ref == f"hangar-{sb.id}"
+    # re-sync with a new image updates the template in place
+    await p.sync_warm_pool(spec(), "reg/py:def")
+    tmpl = p.crd.objects[("sandboxtemplates", "hangar-py")]
+    assert tmpl["spec"]["podTemplate"]["spec"]["containers"][0]["image"] == "reg/py:def"
+
+
+async def test_write_file_uses_exec_in_chunks(monkeypatch):
+    p = provider()
+    calls = []
+
+    def fake_exec(pod, argv, timeout):
+        calls.append(argv[-1])
+        return 0, "", ""
+
+    p._exec_blocking = fake_exec
+    sb = Sandbox(name="a", environment="py", provider="kubernetes", info={"pod": "pod-1"})
+    await p.write_file(sb, "/home/agent/.codex/auth.json", b"x" * 200_000, mode=0o600)
+    assert calls[0].startswith(": > /tmp/.hangar-upload-")
+    assert sum(c.startswith("printf %s") for c in calls) >= 2  # base64 split into chunks
+    assert "base64 -d" in calls[-1] and "chmod 600" in calls[-1]

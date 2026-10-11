@@ -167,9 +167,9 @@ def build_mcp(fleet: Fleet) -> MCPServer:
         return _sb(await fleet.resume(sandbox, actor=actor()))
 
     @mcp.tool()
-    def extend_sandbox(sandbox: str, minutes: int = 60) -> dict[str, Any]:
+    async def extend_sandbox(sandbox: str, minutes: int = 60) -> dict[str, Any]:
         """Push back a sandbox's expiry."""
-        return _sb(fleet.extend(sandbox, minutes, actor=actor()))
+        return _sb(await fleet.extend(sandbox, minutes, actor=actor()))
 
     # ------------------------------------------------------------------ commands & files
     @mcp.tool()
@@ -234,7 +234,8 @@ def build_mcp(fleet: Fleet) -> MCPServer:
 
     # ------------------------------------------------------------------ agents
     @mcp.tool()
-    async def run_agent(sandbox: str, prompt: str, harness: str | None = None, cwd: str | None = None) -> dict[str, Any]:
+    async def run_agent(sandbox: str, prompt: str, harness: str | None = None,
+                        cwd: str | None = None) -> dict[str, Any]:
         """Start a headless coding agent (claude-code | codex | antigravity | gemini) on `prompt` inside the
         sandbox. Returns a run_id; its terminal session has the same name. Poll with agent_status."""
         return await fleet.run_agent(sandbox, prompt, harness, cwd, actor=actor())

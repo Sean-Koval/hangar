@@ -1,0 +1,31 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --all-extras
+      - run: uv run ruff check src tests
+      - run: uv run pytest -q
+  e2e-docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --all-extras
+      - run: HANGAR_E2E=1 uv run pytest tests/test_e2e_docker.py -v
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: |
+          for d in deploy/terraform/gke deploy/terraform/single-vm; do
+            terraform -chdir=$d init -backend=false && terraform -chdir=$d validate
+          done
+          terraform fmt -check -recursive deploy/terraform

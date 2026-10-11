@@ -138,6 +138,14 @@ class DockerProvider(Provider):
                 filters={"label": f"{POOL_LABEL}={image}", "name": "hangar-pool-"},
             )
             pool = [c for c in pool if c.name.startswith("hangar-pool-")]  # claimed ones were renamed
+            # Pool members built from an older image of this environment are stale after a rebuild.
+            stale = await asyncio.to_thread(
+                self.client.containers.list, all=True,
+                filters={"label": f"dev.hangar.env={spec.name}", "name": "hangar-pool-"},
+            )
+            for c in stale:
+                if c.name.startswith("hangar-pool-") and c.labels.get(POOL_LABEL) != image:
+                    await asyncio.to_thread(c.remove, force=True)
             alive = [c for c in pool if c.status in ("running", "created")]
             for c in pool:
                 if c not in alive:

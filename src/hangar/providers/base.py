@@ -87,9 +87,13 @@ class Provider(abc.ABC):
     async def resume(self, sandbox: Sandbox) -> None:
         raise ProviderError(f"{self.name} provider does not support resume")
 
-    async def list_refs(self) -> dict[str, SandboxState]:
-        """provider_ref -> state for every sandbox this provider manages (for reconciliation)."""
-        return {}
+    async def list_refs(self) -> dict[str, SandboxState] | None:
+        """provider_ref -> state for every sandbox this provider manages (for reconciliation).
+        Return None if the provider cannot enumerate its sandboxes."""
+        return None
+
+    async def set_expiry(self, sandbox: Sandbox, expires_at: float) -> None:
+        """Propagate a TTL change to the backend's own timeout, if it has one."""
 
     # --- I/O ----------------------------------------------------------------
     @abc.abstractmethod
@@ -110,7 +114,9 @@ class Provider(abc.ABC):
     async def write_file(self, sandbox: Sandbox, path: str, data: bytes, mode: int = 0o644) -> None: ...
 
     @abc.abstractmethod
-    async def open_terminal(self, sandbox: Sandbox, command: list[str], cols: int = 120, rows: int = 32) -> TerminalStream: ...
+    async def open_terminal(
+        self, sandbox: Sandbox, command: list[str], cols: int = 120, rows: int = 32
+    ) -> TerminalStream: ...
 
     # --- snapshots ----------------------------------------------------------
     async def snapshot(self, sandbox: Sandbox, snapshot_id: str) -> str:

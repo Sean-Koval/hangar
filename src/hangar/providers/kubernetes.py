@@ -109,6 +109,7 @@ class KubernetesProvider(Provider):
         self.core = client.CoreV1Api()
         self.crd = client.CustomObjectsApi()
         self._known_images: set[str] = set()
+        self._synced: dict[str, tuple[str, int]] = {}
         try:
             self.crd.list_namespaced_custom_object(EXT_GROUP, EXT_V, self.ns, "sandboxwarmpools", limit=1)
         except ApiException as e:
@@ -206,17 +207,29 @@ class KubernetesProvider(Provider):
         return {"metadata": {"labels": {**MANAGED, "dev.hangar/env": spec.name}}, "spec": pod}
 
     async def _apply(self, plural: str, body: dict) -> None:
+        """Create-or-replace with retries on 409 (concurrent creates race on resourceVersion)."""
         name = body["metadata"]["name"]
 
         def _do():
-            try:
-                cur = self.crd.get_namespaced_custom_object(EXT_GROUP, EXT_V, self.ns, plural, name)
-                body["metadata"]["resourceVersion"] = cur["metadata"]["resourceVersion"]
-                self.crd.replace_namespaced_custom_object(EXT_GROUP, EXT_V, self.ns, plural, name, body)
-            except ApiException as e:
-                if e.status != 404:
-                    raise
-                self.crd.create_namespaced_custom_object(EXT_GROUP, EXT_V, self.ns, plural, body)
+            for attempt in range(5):
+                try:
+                    try:
+                        cur = self.crd.get_namespaced_custom_object(EXT_GROUP, EXT_V, self.ns, plural, name)
+                    except ApiException as e:
+                        if e.status != 404:
+                            raise
+                        self.crd.create_namespaced_custom_object(EXT_GROUP, EXT_V, self.ns, plural, body)
+                        return
+                    if cur.get("spec") == body["spec"] and \
+                            (cur["metadata"].get("annotations") or {}) == body["metadata"].get("annotations", {}):
+                        return  # already up to date
+                    body["metadata"]["resourceVersion"] = cur["metadata"]["resourceVersion"]
+                    self.crd.replace_namespaced_custom_object(EXT_GROUP, EXT_V, self.ns, plural, name, body)
+                    return
+                except ApiException as e:
+                    if e.status != 409 or attempt == 4:
+                        raise
+                    time.sleep(0.2 * (attempt + 1))
 
         await asyncio.to_thread(_do)
 
@@ -239,7 +252,9 @@ class KubernetesProvider(Provider):
         if spec is None:
             raise ProviderError("kubernetes provider creates sandboxes from environments only "
                                 "(forks use workspace snapshots)")
-        await self.sync_warm_pool(spec, image)  # idempotent; keeps template image current
+        if self._synced.get(spec.name) != (image, spec.warm_pool):
+            await self.sync_warm_pool(spec, image)  # idempotent; keeps template image current
+            self._synced[spec.name] = (image, spec.warm_pool)
         claim = f"hangar-{sandbox.id}"
         body = {
             "apiVersion": f"{EXT_GROUP}/{EXT_V}", "kind": "SandboxClaim",
@@ -307,6 +322,11 @@ class KubernetesProvider(Provider):
         except ApiException as e:
             if e.status != 404:
                 raise
+
+    async def set_expiry(self, sandbox: Sandbox, expires_at: float) -> None:
+        patch = {"spec": {"lifecycle": {"shutdownTime": _rfc3339(expires_at + 300)}}}
+        await asyncio.to_thread(self.crd.patch_namespaced_custom_object, EXT_GROUP, EXT_V, self.ns,
+                                "sandboxclaims", sandbox.provider_ref, patch)
 
     async def list_refs(self) -> dict[str, SandboxState]:
         items = await asyncio.to_thread(self.crd.list_namespaced_custom_object, EXT_GROUP, EXT_V, self.ns,
@@ -379,7 +399,7 @@ class KubernetesProvider(Provider):
         code, _, err = await asyncio.to_thread(
             self._exec_blocking, pod,
             ["sh", "-c", f"mkdir -p {d} && base64 -d {tmp} > {q} && chmod {mode:o} {q}; rc=$?; rm -f {tmp}; exit $rc"],
-            None, 60)
+            60)
         if code != 0:
             raise ProviderError(f"write {path} failed: {err}")
 

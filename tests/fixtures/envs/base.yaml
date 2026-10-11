@@ -1,0 +1,9 @@
+name: base
+description: test base
+tools:
+  apt: [jq]
+  mise:
+    python: "3.12"
+harnesses: [git]
+agent_config:
+  instructions: "be careful"

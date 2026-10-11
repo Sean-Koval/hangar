@@ -1,7 +1,7 @@
 # Fastest possible environment: system tools only, no runtimes or harnesses. Good for smoke tests.
 name: minimal
 description: Ubuntu 24.04 with git + tmux only (no harnesses)
-base: ubuntu:24.04
+base: mirror.gcr.io/library/ubuntu:24.04  # Docker Hub mirror (no pull rate limits)
 resources:
   cpus: 1
   memory_gb: 1

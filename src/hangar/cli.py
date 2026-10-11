@@ -11,7 +11,6 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Optional
 
 import httpx
 import typer
@@ -61,8 +60,8 @@ def _print(obj) -> None:
 # ---------------------------------------------------------------------------- server
 @app.command()
 def serve(
-    host: Optional[str] = typer.Option(None, help="Bind address (default from HANGAR_HOST, 127.0.0.1)."),
-    port: Optional[int] = typer.Option(None, help="Port (default 8787)."),
+    host: str | None = typer.Option(None, help="Bind address (default from HANGAR_HOST, 127.0.0.1)."),
+    port: int | None = typer.Option(None, help="Port (default 8787)."),
     reload: bool = typer.Option(False, help="Auto-reload on code changes (dev)."),
 ):
     """Run the control plane: dashboard at /, REST at /api, MCP at /mcp."""
@@ -136,7 +135,7 @@ def env_render(name: str, env_dir: Path = typer.Option(Path("envs"), "--dir")):
 
 
 @env_app.command("build")
-def env_build(name: str, provider: Optional[str] = None, force: bool = False):
+def env_build(name: str, provider: str | None = None, force: bool = False):
     """Build an environment image (streams the build log)."""
     job = _call("POST", f"/api/environments/{name}/build", json={"provider": provider, "force": force})
     with _client() as c, c.stream("GET", f"/api/builds/{job['id']}/stream") as r:
@@ -158,7 +157,7 @@ def env_build(name: str, provider: Optional[str] = None, force: bool = False):
 @env_app.command("publish")
 def env_publish(
     name: str,
-    provider: Optional[str] = typer.Option(None, help="Provider the image is for (default: server default)."),
+    provider: str | None = typer.Option(None, help="Provider the image is for (default: server default)."),
     platform: str = typer.Option("linux/amd64", help="Target platform; GKE nodes are amd64 unless you use Arm pools."),
 ):
     """Build an environment on THIS machine, push it, and register it with the server.
@@ -166,7 +165,6 @@ def env_publish(
     Use this when the control plane runs in a cluster without a builder: the server renders
     the build context, your docker builds and pushes it, and the server syncs its warm pool.
     """
-    import asyncio
     import shutil
     import subprocess
 
@@ -204,13 +202,13 @@ def sb_ls(all: bool = typer.Option(False, "--all", "-a")):
 @sb_app.command("create")
 def sb_create(
     environment: str,
-    name: Optional[str] = None,
-    repo: Optional[str] = None,
-    branch: Optional[str] = None,
-    work_branch: Optional[str] = None,
+    name: str | None = None,
+    repo: str | None = None,
+    branch: str | None = None,
+    work_branch: str | None = None,
     cred: list[str] = typer.Option(None, "--cred", "-c", help="Credential name (repeatable)."),
-    provider: Optional[str] = None,
-    ttl: Optional[int] = typer.Option(None, help="Minutes until auto-destroy."),
+    provider: str | None = None,
+    ttl: int | None = typer.Option(None, help="Minutes until auto-destroy."),
     count: int = 1,
 ):
     body = {"environment": environment, "name": name, "repo": repo, "branch": branch, "work_branch": work_branch,
@@ -228,19 +226,19 @@ def sb_exec(sandbox: str, command: list[str], timeout: int = 120):
 
 
 @sb_app.command("agent")
-def sb_agent(sandbox: str, prompt: str, harness: Optional[str] = None):
+def sb_agent(sandbox: str, prompt: str, harness: str | None = None):
     _print(_call("POST", f"/api/sandboxes/{sandbox}/agent", json={"prompt": prompt, "harness": harness}))
 
 
 @sb_app.command("fork")
-def sb_fork(sandbox: str, count: int = 1, work_branch_prefix: Optional[str] = None):
+def sb_fork(sandbox: str, count: int = 1, work_branch_prefix: str | None = None):
     for s in _call("POST", f"/api/sandboxes/{sandbox}/fork",
                    json={"count": count, "work_branch_prefix": work_branch_prefix}):
         typer.echo(f"{s['id']:12} {s['name']}")
 
 
 @sb_app.command("snapshot")
-def sb_snapshot(sandbox: str, label: Optional[str] = None, kind: str = "auto"):
+def sb_snapshot(sandbox: str, label: str | None = None, kind: str = "auto"):
     _print(_call("POST", f"/api/sandboxes/{sandbox}/snapshot", json={"label": label, "kind": kind}))
 
 
@@ -264,9 +262,9 @@ def cred_add(
     name: str,
     harness: str = typer.Option(..., help="claude-code | codex | antigravity | gemini | git"),
     kind: str = typer.Option(..., help="api_key | oauth_token | auth_file | git_token | ssh_key"),
-    value: Optional[str] = typer.Option(None, help="Secret value; omit to read from --file or stdin."),
-    file: Optional[Path] = typer.Option(None, help="Read the secret from a file (e.g. ~/.codex/auth.json)."),
-    description: Optional[str] = None,
+    value: str | None = typer.Option(None, help="Secret value; omit to read from --file or stdin."),
+    file: Path | None = typer.Option(None, help="Read the secret from a file (e.g. ~/.codex/auth.json)."),
+    description: str | None = None,
 ):
     """Store a credential. Examples:
 

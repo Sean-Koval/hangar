@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
+import time
 
 from hangar.models import ApiToken, now
 from hangar.store import Store
@@ -24,6 +25,22 @@ class TokenAuth:
     def __init__(self, store: Store, admin_token: str | None = None):
         self.store = store
         self._admin_hash = hash_token(admin_token) if admin_token else None
+        self._tickets: dict[str, tuple[str, float]] = {}
+
+    # Browsers can't set headers on WebSocket/EventSource, so the dashboard trades its token
+    # for a single-use ticket that lives 60s. Tickets (unlike tokens) are safe to put in URLs/logs.
+    def issue_ticket(self, actor: str, ttl: float = 60) -> str:
+        t = time.time()
+        self._tickets = {k: v for k, v in self._tickets.items() if v[1] > t}
+        ticket = "tkt_" + secrets.token_urlsafe(24)
+        self._tickets[ticket] = (actor, t + ttl)
+        return ticket
+
+    def redeem_ticket(self, ticket: str | None) -> str | None:
+        if not ticket:
+            return None
+        actor, exp = self._tickets.pop(ticket, (None, 0.0))
+        return actor if actor and exp > time.time() else None
 
     def create(self, name: str, scopes: list[str] | None = None) -> tuple[str, ApiToken]:
         raw = PREFIX + secrets.token_urlsafe(32)

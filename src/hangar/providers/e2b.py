@@ -22,8 +22,7 @@ try:
     import e2b
     from e2b import Sandbox as E2BSandbox
     from e2b import Template
-    from e2b.sandbox.commands.command_handle import CommandExitException
-    from e2b.sandbox.commands.command_handle import PtySize
+    from e2b.sandbox.commands.command_handle import CommandExitException, PtySize
 except ImportError:  # pragma: no cover
     e2b = None  # type: ignore[assignment]
 
@@ -134,12 +133,32 @@ class E2BProvider(Provider):
         self._handles[sbx.sandbox_id] = sbx
 
     async def status(self, sandbox: Sandbox) -> SandboxState:
+        # get_info, not connect(): connect() auto-resumes paused sandboxes.
         try:
-            sbx = await self._sbx(sandbox)
-            running = await asyncio.to_thread(sbx.is_running)
+            info = await asyncio.to_thread(E2BSandbox.get_info, sandbox.provider_ref, **self.opts)
         except Exception:  # noqa: BLE001
             return SandboxState.STOPPED
-        return SandboxState.RUNNING if running else SandboxState.PAUSED
+        return SandboxState.PAUSED if str(getattr(info, "state", "running")) == "paused" else SandboxState.RUNNING
+
+    async def list_refs(self) -> dict[str, SandboxState] | None:
+        def _list() -> dict[str, SandboxState]:
+            out: dict[str, SandboxState] = {}
+            pager = E2BSandbox.list(**self.opts)
+            while pager.has_next:
+                for info in pager.next_items():
+                    if "hangar_id" in (info.metadata or {}):
+                        out[info.sandbox_id] = (SandboxState.PAUSED if str(info.state) == "paused"
+                                                else SandboxState.RUNNING)
+            return out
+
+        try:
+            return await asyncio.to_thread(_list)
+        except Exception:  # noqa: BLE001
+            return None
+
+    async def set_expiry(self, sandbox: Sandbox, expires_at: float) -> None:
+        secs = int(min(MAX_TIMEOUT, max(60, expires_at - time.time())))
+        await asyncio.to_thread(E2BSandbox.set_timeout, sandbox.provider_ref, secs, **self.opts)
 
     async def destroy(self, sandbox: Sandbox) -> None:
         if sandbox.provider_ref:
@@ -199,7 +218,16 @@ class E2BProvider(Provider):
             return h
 
         term.handle = await asyncio.to_thread(_open)
-        asyncio.get_running_loop().run_in_executor(None, lambda: term.handle.wait(on_pty=term.on_data))
+        loop = asyncio.get_running_loop()
+
+        def _pump() -> None:
+            try:
+                term.handle.wait(on_pty=term.on_data)
+            except Exception:  # noqa: BLE001 - shell exited with non-zero status
+                pass
+            loop.call_soon_threadsafe(term.queue.put_nowait, b"")  # EOF
+
+        loop.run_in_executor(None, _pump)
         await term.write(("exec " + " ".join(shlex.quote(c) for c in command) + "\n").encode())
         return term
 
