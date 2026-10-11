@@ -13,12 +13,20 @@ from __future__ import annotations
 
 import base64
 import contextvars
+import functools
+import inspect
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
-from hangar.fleet import Fleet
+from hangar.broker import CredentialError
+from hangar.fleet import Fleet, FleetError
 from hangar.models import Sandbox
+from hangar.providers.base import ProviderError
+
+# Failures an agent can act on (bad name, quota, build error...). Anything else is a crash and stays generic.
+EXPECTED = (FleetError, ProviderError, CredentialError, ValueError, KeyError, NotImplementedError)
 
 current_actor: contextvars.ContextVar[str] = contextvars.ContextVar("hangar_actor", default="mcp")
 
@@ -51,40 +59,62 @@ def _sb(s: Sandbox) -> dict[str, Any]:
 def build_mcp(fleet: Fleet) -> MCPServer:
     mcp = MCPServer("hangar", instructions=INSTRUCTIONS, version="0.1.0")
 
+    def tool():
+        """mcp.tool() that reports expected failures to the client instead of a generic error."""
+
+        def deco(fn):
+            if inspect.iscoroutinefunction(fn):
+                @functools.wraps(fn)
+                async def wrapped(*a, **kw):
+                    try:
+                        return await fn(*a, **kw)
+                    except EXPECTED as e:
+                        raise ToolError(str(e).strip("'\"")) from e
+            else:
+                @functools.wraps(fn)
+                def wrapped(*a, **kw):
+                    try:
+                        return fn(*a, **kw)
+                    except EXPECTED as e:
+                        raise ToolError(str(e).strip("'\"")) from e
+            return mcp.tool()(wrapped)
+
+        return deco
+
     def actor() -> str:
         return f"mcp:{current_actor.get()}"
 
     # ------------------------------------------------------------------ discovery
-    @mcp.tool()
+    @tool()
     def fleet_overview() -> dict[str, Any]:
         """Counts of sandboxes by state, available providers and their capabilities."""
         return fleet.overview()
 
-    @mcp.tool()
+    @tool()
     def list_environments() -> list[dict[str, Any]]:
         """List environment templates (tools, harnesses, deps, skills, repo) and their built images."""
         return fleet.environments()
 
-    @mcp.tool()
+    @tool()
     def describe_environment(name: str) -> dict[str, Any]:
         """Full spec and the rendered Dockerfile for an environment."""
         d = fleet.environment_detail(name)
         return {"spec": d["spec"], "dockerfile": d["dockerfile"]}
 
-    @mcp.tool()
+    @tool()
     async def build_environment(name: str, provider: str | None = None, force: bool = False) -> dict[str, Any]:
         """Build (or rebuild with force=True) an environment's image and warm pool. Can take minutes."""
         job = await fleet.build(name, provider, force=force, actor=actor())
         return job.summary()
 
-    @mcp.tool()
+    @tool()
     def list_credentials() -> list[dict[str, Any]]:
         """Credentials available to attach to sandboxes (names and metadata only, never secrets)."""
         return [c.model_dump(include={"name", "harness", "kind", "exclusive", "leased_to", "description"})
                 for c in fleet.broker.list()]
 
     # ------------------------------------------------------------------ lifecycle
-    @mcp.tool()
+    @tool()
     async def create_sandbox(
         environment: str,
         name: str | None = None,
@@ -103,7 +133,7 @@ def build_mcp(fleet: Fleet) -> MCPServer:
                                 labels=labels, actor=actor())
         return _sb(sb)
 
-    @mcp.tool()
+    @tool()
     async def create_sandboxes(
         environment: str,
         count: int,
@@ -132,53 +162,53 @@ def build_mcp(fleet: Fleet) -> MCPServer:
         res = await asyncio.gather(*(one(i) for i in range(count)), return_exceptions=True)
         return [_sb(r) if isinstance(r, Sandbox) else {"error": str(r)} for r in res]
 
-    @mcp.tool()
+    @tool()
     def list_sandboxes(include_stopped: bool = False, label: str | None = None) -> list[dict[str, Any]]:
         """List sandboxes. `label` filters by key or key=value."""
         return [_sb(s) for s in fleet.list(include_stopped=include_stopped, label=label)]
 
-    @mcp.tool()
+    @tool()
     def get_sandbox(sandbox: str) -> dict[str, Any]:
         """Details for one sandbox, including recent agent runs."""
         s = fleet.get(sandbox)
         return {**_sb(s), "runs": s.info.get("runs", [])[-10:], "created_at": s.created_at,
                 "last_activity": s.last_activity}
 
-    @mcp.tool()
+    @tool()
     async def destroy_sandbox(sandbox: str) -> dict[str, Any]:
         """Stop and delete a sandbox. Exclusive credentials are written back and released."""
         return _sb(await fleet.destroy(sandbox, actor=actor()))
 
-    @mcp.tool()
+    @tool()
     async def destroy_sandboxes(sandboxes: list[str] | None = None, label: str | None = None) -> list[str]:
         """Destroy several sandboxes by id/name, or every active sandbox matching `label`."""
         if not sandboxes and not label:
             raise ValueError("pass sandboxes or label (refusing to destroy the whole fleet implicitly)")
         return await fleet.destroy_many(sandboxes, label=label, actor=actor())
 
-    @mcp.tool()
+    @tool()
     async def pause_sandbox(sandbox: str) -> dict[str, Any]:
         """Freeze a sandbox's processes to free CPU (state is kept)."""
         return _sb(await fleet.pause(sandbox, actor=actor()))
 
-    @mcp.tool()
+    @tool()
     async def resume_sandbox(sandbox: str) -> dict[str, Any]:
         """Resume a paused sandbox."""
         return _sb(await fleet.resume(sandbox, actor=actor()))
 
-    @mcp.tool()
+    @tool()
     async def extend_sandbox(sandbox: str, minutes: int = 60) -> dict[str, Any]:
         """Push back a sandbox's expiry."""
         return _sb(await fleet.extend(sandbox, minutes, actor=actor()))
 
     # ------------------------------------------------------------------ commands & files
-    @mcp.tool()
+    @tool()
     async def exec(sandbox: str, command: str, cwd: str | None = None, timeout: int = 120) -> dict[str, Any]:
         """Run a shell command (bash -lc) and wait for it. Returns exit_code, stdout, stderr."""
         r = await fleet.exec(sandbox, command, cwd=cwd, timeout=timeout, actor=actor())
         return r.model_dump()
 
-    @mcp.tool()
+    @tool()
     async def read_file(sandbox: str, path: str, binary: bool = False) -> dict[str, Any]:
         """Read a file. Text by default; binary=True returns base64."""
         data = await fleet.read_file(sandbox, path)
@@ -188,26 +218,26 @@ def build_mcp(fleet: Fleet) -> MCPServer:
             return {"path": path, "exists": True, "base64": base64.b64encode(data).decode()}
         return {"path": path, "exists": True, "content": data.decode(errors="replace")}
 
-    @mcp.tool()
+    @tool()
     async def write_file(sandbox: str, path: str, content: str, base64_encoded: bool = False) -> dict[str, Any]:
         """Write a file (parents are created). Set base64_encoded for binary content."""
         data = base64.b64decode(content) if base64_encoded else content.encode()
         p = await fleet.write_file(sandbox, path, data, actor=actor())
         return {"path": p, "bytes": len(data)}
 
-    @mcp.tool()
+    @tool()
     async def list_files(sandbox: str, path: str = ".", depth: int = 2) -> str:
         """List files under a directory (type, size, path), skipping .git."""
         return await fleet.list_files(sandbox, path, depth)
 
     # ------------------------------------------------------------------ terminals
-    @mcp.tool()
+    @tool()
     async def terminal_open(sandbox: str, session: str = "main", command: str | None = None,
                             cwd: str | None = None) -> dict[str, Any]:
         """Open (or reuse) a persistent terminal session, optionally running `command` in it."""
         return await fleet.terminal_open(sandbox, session, command, cwd)
 
-    @mcp.tool()
+    @tool()
     async def terminal_send(sandbox: str, session: str = "main", text: str = "", enter: bool = True,
                             keys: list[str] | None = None, wait_ms: int = 1500,
                             wait_for: str | None = None, lines: int = 60) -> str:
@@ -216,47 +246,47 @@ def build_mcp(fleet: Fleet) -> MCPServer:
         return await fleet.terminal_send(sandbox, session, text, enter, keys, wait_ms, wait_for, lines,
                                          actor=actor())
 
-    @mcp.tool()
+    @tool()
     async def terminal_read(sandbox: str, session: str = "main", lines: int = 200) -> str:
         """Return the last `lines` lines of a terminal session's scrollback."""
         return await fleet.terminal_read(sandbox, session, lines)
 
-    @mcp.tool()
+    @tool()
     async def terminal_list(sandbox: str) -> list[str]:
         """List terminal sessions (including agent runs) in a sandbox."""
         return await fleet.terminal_list(sandbox)
 
-    @mcp.tool()
+    @tool()
     async def terminal_close(sandbox: str, session: str) -> dict[str, str]:
         """Kill a terminal session."""
         await fleet.terminal_kill(sandbox, session)
         return {"closed": session}
 
     # ------------------------------------------------------------------ agents
-    @mcp.tool()
+    @tool()
     async def run_agent(sandbox: str, prompt: str, harness: str | None = None,
                         cwd: str | None = None) -> dict[str, Any]:
         """Start a headless coding agent (claude-code | codex | antigravity | gemini) on `prompt` inside the
         sandbox. Returns a run_id; its terminal session has the same name. Poll with agent_status."""
         return await fleet.run_agent(sandbox, prompt, harness, cwd, actor=actor())
 
-    @mcp.tool()
+    @tool()
     async def agent_status(sandbox: str, run_id: str, tail_lines: int = 60) -> dict[str, Any]:
         """State (running/finished), exit code and output tail of an agent run."""
         return await fleet.agent_status(sandbox, run_id, tail_lines)
 
     # ------------------------------------------------------------------ clone
-    @mcp.tool()
+    @tool()
     async def snapshot_sandbox(sandbox: str, label: str | None = None, kind: str = "auto") -> dict[str, Any]:
         """Snapshot a sandbox. kind: auto | full (provider-native) | workspace (portable tarball)."""
         return (await fleet.snapshot(sandbox, label, kind, actor=actor())).model_dump(mode="json")
 
-    @mcp.tool()
+    @tool()
     def list_snapshots(sandbox: str | None = None) -> list[dict[str, Any]]:
         """List snapshots, optionally for one sandbox."""
         return [s.model_dump(mode="json") for s in fleet.snapshots(sandbox)]
 
-    @mcp.tool()
+    @tool()
     async def fork_sandbox(source: str, count: int = 1, name_prefix: str | None = None,
                            work_branch_prefix: str | None = None, credentials: list[str] | None = None,
                            provider: str | None = None, ttl_minutes: int | None = None) -> list[dict[str, Any]]:

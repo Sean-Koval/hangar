@@ -18,9 +18,24 @@ def test_extends_merges_layers(catalog):
     assert spec.repo.url.endswith("proj.git")
 
 
+def expanded(ctx):
+    """Dockerfile with each shipped step script inlined where it runs."""
+    import re
+
+    return re.sub(r"COPY (steps/\d+\.sh) \S+", lambda m: ctx.files[m.group(1)].decode(), ctx.dockerfile)
+
+
+def test_dockerfile_is_portable_across_builders(catalog):
+    ctx = render(catalog.get("agent"))
+    assert "<<" not in ctx.dockerfile, "RUN heredocs need BuildKit; steps must ship as files"
+    assert "# syntax=" not in ctx.dockerfile
+    steps = [k for k in ctx.files if k.startswith("steps/")]
+    assert steps and all(ctx.files[k].startswith(b"#!/bin/bash\nset -euxo pipefail") for k in steps)
+
+
 def test_render_layer_order_and_content(catalog):
     ctx = render(catalog.get("agent"))
-    df = ctx.dockerfile
+    df = expanded(ctx)
     order = [df.index(s) for s in ("apt-get install", "mise use -g", "# harness: claude-code",
                                    "# harness: codex", "npm install -g typescript", "COPY --chown")]
     assert order == sorted(order), "layers must be ordered for cache reuse"
@@ -40,7 +55,7 @@ def test_render_layer_order_and_content(catalog):
 
 
 def test_noop_harness_is_skipped(catalog):
-    assert "# harness: git" not in render(catalog.get("base")).dockerfile
+    assert "# harness: git" not in expanded(render(catalog.get("base")))
 
 
 def test_extra_ca_is_trusted(catalog):
