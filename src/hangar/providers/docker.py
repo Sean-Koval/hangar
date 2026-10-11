@@ -134,8 +134,10 @@ class DockerProvider(Provider):
     async def sync_warm_pool(self, spec: EnvSpec, image: str) -> None:
         async with self._pool_lock:
             pool = await asyncio.to_thread(
-                self.client.containers.list, all=True, filters={"label": f"{POOL_LABEL}={image}"}
+                self.client.containers.list, all=True,
+                filters={"label": f"{POOL_LABEL}={image}", "name": "hangar-pool-"},
             )
+            pool = [c for c in pool if c.name.startswith("hangar-pool-")]  # claimed ones were renamed
             alive = [c for c in pool if c.status in ("running", "created")]
             for c in pool:
                 if c not in alive:
@@ -149,9 +151,16 @@ class DockerProvider(Provider):
     async def _claim_warm(self, image: str):
         async with self._pool_lock:
             pool = await asyncio.to_thread(
-                self.client.containers.list, filters={"label": f"{POOL_LABEL}={image}", "status": "running"}
+                self.client.containers.list,
+                filters={"label": f"{POOL_LABEL}={image}", "status": "running", "name": "hangar-pool-"},
             )
-            return pool[0] if pool else None
+            pool = [c for c in pool if c.name.startswith("hangar-pool-")]
+            if not pool:
+                return None
+            # Rename inside the lock so two concurrent claims can never take the same container.
+            claimed = pool[0]
+            await asyncio.to_thread(claimed.rename, f"hangar-claiming-{claimed.id[:12]}")
+            return claimed
 
     # ------------------------------------------------------------------ lifecycle
     async def create(self, sandbox: Sandbox, image: str, spec: EnvSpec | None = None) -> None:

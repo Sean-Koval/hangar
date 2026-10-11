@@ -527,7 +527,8 @@ class Fleet:
             await self.terminal_open(sb.id, session)
             cmd = ["tmux", "attach-session", "-t", _slug(session)]
         else:
-            cmd = ["bash", "-l"]
+            wd = sb.info.get("repo_path") or self.settings.workspace_dir
+            cmd = ["bash", "-lc", f"cd {shlex.quote(wd)} 2>/dev/null; exec bash -l"]
         self._touch(sb)
         return await prov.open_terminal(sb, cmd, cols, rows)
 

@@ -1,1 +1,176 @@
-<!doctype html><title>hangar</title><p>loading</p>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hangar</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M2 30V14L16 4l14 10v16h-6V18H8v12z' fill='%23F2C230'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+<link rel="stylesheet" href="/ui/app.css">
+</head>
+<body>
+<div id="gate" class="gate" hidden>
+  <form id="gate-form" class="gate-card">
+    <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M2 30V14L16 4l14 10v16h-6V18H8v12z"/></svg>
+    <h1>Hangar</h1>
+    <p>Paste an API token to open the control plane. A bootstrap token is printed when the server
+      first starts and saved to <code>~/.hangar/bootstrap-token</code>.</p>
+    <label for="gate-token">API token</label>
+    <input id="gate-token" type="password" autocomplete="off" placeholder="hgr_…" required>
+    <p id="gate-error" class="error" hidden></p>
+    <button class="primary" type="submit">Open hangar</button>
+  </form>
+</div>
+
+<div id="shell" class="shell" hidden>
+  <nav class="rail" aria-label="Sections">
+    <a class="brand" href="#fleet">
+      <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M2 30V14L16 4l14 10v16h-6V18H8v12z"/></svg>
+      <span>Hangar</span>
+    </a>
+    <a href="#fleet" data-view="fleet">Fleet <span id="nav-count" class="pill"></span></a>
+    <a href="#environments" data-view="environments">Environments</a>
+    <a href="#credentials" data-view="credentials">Credentials</a>
+    <a href="#snapshots" data-view="snapshots">Snapshots</a>
+    <a href="#connect" data-view="connect">Connect</a>
+    <a href="#activity" data-view="activity">Activity</a>
+    <div class="rail-foot">
+      <div id="providers"></div>
+      <button id="signout" class="link">Sign out</button>
+    </div>
+  </nav>
+
+  <main id="main">
+    <!-- FLEET -->
+    <section id="view-fleet" class="view">
+      <header class="view-head">
+        <div>
+          <h2>Fleet</h2>
+          <p id="fleet-sub" class="sub"></p>
+        </div>
+        <div class="actions">
+          <label class="check"><input type="checkbox" id="show-stopped"> Show stopped</label>
+          <button class="primary" id="btn-new">New sandbox</button>
+        </div>
+      </header>
+      <form id="new-form" class="panel new-form" hidden>
+        <div class="grid">
+          <label>Environment<select name="environment" required></select></label>
+          <label>Name<input name="name" placeholder="auto"></label>
+          <label class="wide">Repo<input name="repo" placeholder="https://github.com/org/repo.git (optional)"></label>
+          <label>Branch<input name="branch" placeholder="default"></label>
+          <label>Work branch<input name="work_branch" placeholder="agent/task-name"></label>
+          <label>Provider<select name="provider"></select></label>
+          <label>Expires after (min)<input name="ttl_minutes" type="number" min="0" placeholder="240"></label>
+          <label>Count<input name="count" type="number" min="1" max="20" value="1"></label>
+        </div>
+        <fieldset class="creds"><legend>Credentials</legend><div id="new-creds" class="chips"></div></fieldset>
+        <div class="form-foot">
+          <span class="hint">Count above 1 starts identical sandboxes in parallel, each on its own numbered work branch.</span>
+          <button type="button" class="ghost" id="new-cancel">Cancel</button>
+          <button class="primary" type="submit">Start sandbox</button>
+        </div>
+      </form>
+      <div id="bays" class="bays" aria-live="polite"></div>
+    </section>
+
+    <!-- ENVIRONMENTS -->
+    <section id="view-environments" class="view" hidden>
+      <header class="view-head">
+        <div><h2>Environments</h2>
+          <p class="sub">Layered templates: base, tools, harnesses, dependencies, skills, then repo.</p></div>
+        <div class="actions"><button class="primary" id="btn-new-env">New environment</button></div>
+      </header>
+      <div class="split">
+        <ul id="env-list" class="list"></ul>
+        <div id="env-detail" class="panel env-detail"><p class="empty">Choose an environment to edit or build it.</p></div>
+      </div>
+    </section>
+
+    <!-- CREDENTIALS -->
+    <section id="view-credentials" class="view" hidden>
+      <header class="view-head">
+        <div><h2>Credentials</h2>
+          <p class="sub">Encrypted at rest and injected into sandboxes at start. Values are never shown again.</p></div>
+      </header>
+      <div class="split">
+        <div>
+          <table class="table" id="cred-table">
+            <thead><tr><th>Name</th><th>Harness</th><th>Kind</th><th>Status</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+          <h3 class="section-title">Sign in with a subscription</h3>
+          <p class="sub">Runs the harness's own login inside a short-lived sandbox. Finish the flow in the terminal
+            that opens below, then capture the result.</p>
+          <div id="login-buttons" class="login-row"></div>
+        </div>
+        <form id="cred-form" class="panel">
+          <h3>Add a key or token</h3>
+          <label>Harness<select name="harness"></select></label>
+          <label>Kind<select name="kind"></select></label>
+          <p id="cred-slot" class="hint"></p>
+          <label>Name<input name="name" required placeholder="claude-max"></label>
+          <label>Value<textarea name="value" rows="4" required placeholder="Paste the key, token, or file contents"></textarea></label>
+          <label class="file">…or load a file<input type="file" id="cred-file"></label>
+          <label>Description<input name="description" placeholder="optional"></label>
+          <button class="primary" type="submit">Save credential</button>
+        </form>
+      </div>
+    </section>
+
+    <!-- SNAPSHOTS -->
+    <section id="view-snapshots" class="view" hidden>
+      <header class="view-head"><div><h2>Snapshots</h2>
+        <p class="sub">Full snapshots keep everything; workspace snapshots are portable across providers.</p></div></header>
+      <table class="table" id="snap-table">
+        <thead><tr><th>Snapshot</th><th>From</th><th>Environment</th><th>Kind</th><th>Taken</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <!-- CONNECT -->
+    <section id="view-connect" class="view" hidden>
+      <header class="view-head"><div><h2>Connect an MCP client</h2>
+        <p class="sub">Point Codex, Claude Code or any MCP client at this hangar with a token.</p></div></header>
+      <div class="split even">
+        <div id="connect-snippets"></div>
+        <div class="panel">
+          <h3>API tokens</h3>
+          <form id="token-form" class="inline">
+            <input name="name" required placeholder="codex-laptop">
+            <button class="primary" type="submit">Create token</button>
+          </form>
+          <div id="token-new" class="reveal" hidden></div>
+          <table class="table compact" id="token-table"><tbody></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ACTIVITY -->
+    <section id="view-activity" class="view" hidden>
+      <header class="view-head"><div><h2>Activity</h2>
+        <p class="sub">Everything people and MCP clients did, newest first.</p></div></header>
+      <table class="table" id="audit-table">
+        <thead><tr><th>When</th><th>Who</th><th>Action</th><th>Target</th><th>Detail</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </main>
+
+  <section id="drawer" class="drawer" hidden aria-label="Terminals">
+    <div class="drawer-grip" id="drawer-grip" title="Drag to resize"></div>
+    <div class="drawer-tabs" role="tablist" id="drawer-tabs"></div>
+    <div class="drawer-body" id="drawer-body"></div>
+  </section>
+</div>
+
+<dialog id="dialog"><form method="dialog" id="dialog-form"></form></dialog>
+<div id="toast" class="toast" role="status" hidden></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+<script src="/ui/app.js"></script>
+</body>
+</html>
