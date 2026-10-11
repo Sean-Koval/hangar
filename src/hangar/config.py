@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     k8s_pod_snapshots: bool = False  # GKE Pod snapshots (podsnapshot.gke.io): full memory+fs forks
     k8s_snapshot_service_account: str = "hangar-sandbox"  # KSA with GCS access for the snapshot bucket
     k8s_snapshot_timeout_seconds: int = 600
+    # Service account Cloud Build runs as for in-cluster builds (the control plane's own GSA). Without it
+    # Cloud Build uses the project's default SA, which the control plane usually may not act as.
+    k8s_build_service_account: str | None = None
 
     # e2b
     e2b_api_key: str | None = None

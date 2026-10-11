@@ -1,5 +1,7 @@
 """Kubernetes provider: manifest generation and claim flow against a fake CustomObjectsApi."""
 
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("kubernetes")
@@ -246,3 +248,20 @@ def test_e2b_registry_auth_selection(monkeypatch):
     p._base("ghcr.io/me/py:abc")  # public registries need no auth
     p.settings = Settings(e2b_api_key="k", e2b_registry_username="u", e2b_registry_password="pw")
     assert p._base("registry.example.com/py:abc")._template._registry_config["type"] == "registry"
+
+
+async def test_cloud_build_runs_as_configured_service_account(monkeypatch, tmp_path):
+    import hangar.providers.kubernetes as k
+
+    seen = {}
+
+    async def fake_run_cli(args, stdin=None, log=None):
+        seen["args"] = args
+        seen["yaml"] = (Path(args[-1]) / "cloudbuild.yaml").read_text()
+        return ""
+
+    monkeypatch.setattr(k, "run_cli", fake_run_cli)
+    p = provider(registry="r.example/x", k8s_build_service_account="hangar@p.iam.gserviceaccount.com")
+    await p._cloud_build(render(spec()), "r.example/x/py:1", None)
+    assert "--service-account=projects/-/serviceAccounts/hangar@p.iam.gserviceaccount.com" in seen["args"]
+    assert "CLOUD_LOGGING_ONLY" in seen["yaml"]

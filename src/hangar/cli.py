@@ -179,8 +179,13 @@ def env_publish(
         tag = r.headers["X-Hangar-Image"]
         tar = r.content
     typer.secho(f"building {tag}", fg="cyan")
-    subprocess.run(["docker", "buildx", "build", "--platform", platform, "-t", tag, "--push", "-"], input=tar,
-                   check=True)
+    has_buildx = subprocess.run(["docker", "buildx", "version"], capture_output=True).returncode == 0
+    if has_buildx:
+        subprocess.run(["docker", "buildx", "build", "--platform", platform, "-t", tag, "--push", "-"], input=tar,
+                       check=True)
+    else:  # docker-ce without the buildx plugin: legacy builder, then push
+        subprocess.run(["docker", "build", "--platform", platform, "-t", tag, "-"], input=tar, check=True)
+        subprocess.run(["docker", "push", tag], check=True)
     res = _call("POST", f"/api/environments/{name}/images", json={"image": tag, "provider": provider})
     typer.secho(f"registered {res['image']} for {res['provider']}", fg="green")
 
