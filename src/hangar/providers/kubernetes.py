@@ -205,10 +205,14 @@ class KubernetesProvider(Provider):
         pod: dict = {
             "automountServiceAccountToken": False,
             "enableServiceLinks": False,
-            "securityContext": {"runAsUser": 1000, "runAsGroup": 1000, "fsGroup": 1000},
+            "securityContext": {"runAsUser": 1000, "runAsGroup": 1000, "fsGroup": 1000, "runAsNonRoot": True},
             "containers": [{
                 "name": CONTAINER,
                 "image": image,
+                # Required by GKE Agent Sandbox's sandbox-hardening admission policy, and sound anywhere:
+                # no capabilities, no privilege escalation (so sudo inside the sandbox is unavailable).
+                "securityContext": {"capabilities": {"drop": ["ALL"]}, "allowPrivilegeEscalation": False,
+                                    "privileged": False},
                 "command": ["sleep", "infinity"],
                 "workingDir": s.workspace_dir,
                 "env": [{"name": "TERM", "value": "xterm-256color"}],

@@ -1,5 +1,6 @@
 # Same toolchain as claude-python, but each sandbox is a Kata microVM with its own kernel.
-# Kubernetes only: needs the Kata node pool and kata-deploy (docs/gke.md, step 4).
+# Kubernetes only: needs the Kata node pool and kata-deploy (docs/gke.md, step 4). The GKE Agent Sandbox
+# add-on rejects this RuntimeClass (it allows only gvisor and microvm); it works with the open-source controller.
 # Locally, use claude-python with HANGAR_DOCKER_RUNTIME=kata instead.
 name: claude-python-kata
 extends: claude-python

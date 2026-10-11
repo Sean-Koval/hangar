@@ -53,6 +53,12 @@ def test_gvisor_pod_template():
     c = pod["containers"][0]
     assert c["image"] == "reg/py:abc" and c["resources"]["limits"]["memory"] == "4096Mi"
     assert pod["securityContext"]["runAsUser"] == 1000
+    # GKE Agent Sandbox admission policies (sandbox-core / sandbox-hardening)
+    assert pod["securityContext"]["runAsNonRoot"] is True
+    assert c["securityContext"]["capabilities"]["drop"] == ["ALL"]
+    assert c["securityContext"]["allowPrivilegeEscalation"] is False
+    assert pod["tolerations"][0]["key"] == "sandbox.gke.io/runtime"
+    assert c["resources"]["limits"]["cpu"] and c["resources"]["limits"]["memory"]
 
 
 def test_kata_and_runc_templates():
