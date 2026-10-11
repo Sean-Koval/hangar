@@ -25,6 +25,9 @@ spec:
       labels: {app: hangar}
     spec:
       serviceAccountName: hangar
+      # The Service is named "hangar", so Kubernetes' legacy service-link env vars would inject
+      # HANGAR_PORT=tcp://... and collide with hangar's own HANGAR_* settings.
+      enableServiceLinks: false
       securityContext:
         fsGroup: 1000
       containers:
