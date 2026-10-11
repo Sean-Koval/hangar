@@ -171,6 +171,8 @@ resource "google_service_account_iam_member" "workload_identity" {
   service_account_id = google_service_account.hangar.name
   role               = "roles/iam.workloadIdentityUser"
   member             = "serviceAccount:${var.project_id}.svc.id.goog[hangar/hangar]"
+  # The PROJECT.svc.id.goog identity pool only exists once a cluster with Workload Identity does.
+  depends_on = [google_container_cluster.hangar]
 }
 
 resource "google_compute_global_address" "hangar" {
@@ -223,7 +225,8 @@ resource "google_storage_bucket_iam_member" "pod_snapshots" {
     user   = { role = "roles/storage.objectUser", member = local.snapshot_ksa }
     robot  = { role = "roles/storage.objectUser", member = "serviceAccount:service-${data.google_project.this.number}@container-engine-robot.iam.gserviceaccount.com" }
   } : {}
-  bucket = google_storage_bucket.pod_snapshots[0].name
-  role   = each.value.role
-  member = each.value.member
+  bucket     = google_storage_bucket.pod_snapshots[0].name
+  role       = each.value.role
+  member     = each.value.member
+  depends_on = [google_container_cluster.hangar] # the identity pool appears with the cluster
 }
