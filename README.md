@@ -124,6 +124,7 @@ warm_pool: 2                       # keep two pre-started
 | Where | How | Isolation |
 | --- | --- | --- |
 | Laptop | `hangar serve`, or `docker compose up` in `deploy/compose` | runc containers |
+| Your Linux or WSL2 box | `sudo bash deploy/local/kata-install.sh`, then `HANGAR_DOCKER_RUNTIME=kata hangar serve` | Kata microVMs |
 | Single Linux VM | `deploy/terraform/single-vm`: a GCE VM with nested virt, running Compose | gVisor (`runsc`) or Kata microVMs |
 | GKE | `deploy/terraform/gke` + `deploy/k8s` | Agent Sandbox with gVisor; optional Kata pool |
 | E2B | `HANGAR_ENABLED_PROVIDERS='["docker","e2b"]'` with `HANGAR_E2B_API_KEY` | Firecracker microVMs |
@@ -156,7 +157,8 @@ Everything is set through `HANGAR_*` environment variables (see `src/hangar/conf
 - **What has run for real:**
   - **Docker provider:** end to end in CI.
   - **Kubernetes provider:** end to end over MCP against the real Agent Sandbox v1.0.6 controller on kind, with the runc runtime. This covered builds pushed to a registry, claims, exec, 300 KB file writes, terminals, TTL extension, forks and teardown.
-  - **Not yet run live:** gVisor, Kata, the GKE add-on, Pod snapshots and E2B. They're covered by unit tests against fake APIs.
+  - **Kata microVMs (Docker provider):** end to end on WSL2. Each sandbox is a VM with its own kernel; it starts in about 2 s, and 4 start in parallel in 2.2 s. See [docs/local-microvms.md](docs/local-microvms.md).
+  - **Not yet run live:** gVisor, Kata on Kubernetes, the GKE add-on, Pod snapshots and E2B. They're covered by unit tests against fake APIs.
 - **Antigravity (`agy`) subscription login** stores OAuth in the OS keyring, which headless containers may lack. Use a `GEMINI_API_KEY` credential for fleets.
 - **Concurrent sandboxes share one subscription's limits.** Parallel Claude Code agents on a single Pro login hit the plan's limits quickly. Mix in API-key credentials for wide fan-out.
 - **The control plane is a single replica** with SQLite state, which is right for a personal or team instance.
