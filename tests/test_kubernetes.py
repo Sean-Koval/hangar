@@ -150,3 +150,17 @@ def test_snapshot_failure_is_reported():
 def test_snapshots_off_by_default():
     assert not provider().capabilities.full_snapshots
     assert "serviceAccountName" not in provider()._pod_template(spec(), "i")["spec"]
+
+
+def test_e2b_registry_auth_selection(monkeypatch):
+    pytest.importorskip("e2b")
+    from hangar.providers.base import ProviderError
+    from hangar.providers.e2b import E2BProvider
+
+    p = object.__new__(E2BProvider)
+    p.settings = Settings(e2b_api_key="k")
+    with pytest.raises(ProviderError, match="private registry"):
+        p._base("us-central1-docker.pkg.dev/proj/hangar/py:abc")
+    p._base("ghcr.io/me/py:abc")  # public registries need no auth
+    p.settings = Settings(e2b_api_key="k", e2b_registry_username="u", e2b_registry_password="pw")
+    assert p._base("registry.example.com/py:abc")._template._registry_config["type"] == "registry"

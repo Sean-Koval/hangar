@@ -88,6 +88,23 @@ class E2BProvider(Provider):
         except Exception:  # noqa: BLE001
             return False
 
+    def _base(self, tag: str):
+        """Start an E2B template from our pushed image, with whatever registry auth is configured."""
+        s = self.settings
+        if s.e2b_gcp_service_account_json:
+            return Template().from_gcp_registry(tag, s.e2b_gcp_service_account_json)
+        if s.e2b_aws_access_key_id and s.e2b_aws_secret_access_key:
+            return Template().from_aws_registry(tag, access_key_id=s.e2b_aws_access_key_id,
+                                                secret_access_key=s.e2b_aws_secret_access_key,
+                                                region=s.e2b_aws_region or "us-east-1")
+        if s.e2b_registry_username and s.e2b_registry_password:
+            return Template().from_image(tag, username=s.e2b_registry_username, password=s.e2b_registry_password)
+        if any(h in tag for h in (".pkg.dev/", "gcr.io/", ".amazonaws.com/")):
+            raise ProviderError(
+                f"{tag.split('/')[0]} is a private registry: set HANGAR_E2B_GCP_SERVICE_ACCOUNT_JSON (Artifact "
+                "Registry/GCR) or HANGAR_E2B_AWS_* (ECR) so E2B can pull the image")
+        return Template().from_image(tag)
+
     def image_ref(self, tag: str) -> str:
         return self._from_tag(tag)
 
@@ -101,7 +118,7 @@ class E2BProvider(Provider):
             raise ProviderError("set HANGAR_REGISTRY: E2B builds templates from an image in a registry it can pull")
         await docker_build(ctx, tag, log=log, platform="linux/amd64", push=True)
         name = self._from_tag(tag)
-        tmpl = Template().from_image(tag).set_user(self.settings.sandbox_user).set_workdir(self.settings.workspace_dir)
+        tmpl = self._base(tag).set_user(self.settings.sandbox_user).set_workdir(self.settings.workspace_dir)
         loop = asyncio.get_running_loop()
 
         def on_log(entry) -> None:

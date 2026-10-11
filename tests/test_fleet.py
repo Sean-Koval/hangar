@@ -169,3 +169,21 @@ async def test_reconcile_marks_dead_and_vanished(fleet, broker):
     await fleet.reconcile()
     assert fleet.get(a.id).state == S.STOPPED and fleet.get(b.id).state == S.STOPPED
     assert broker.get("codex").leased_to is None
+
+
+async def test_gc_lists_and_removes_orphans(fleet):
+    fake = fleet.providers["docker"]
+    sb = await fleet.create("plain")
+    removed = []
+
+    async def orphans(known):
+        return [{"ref": r, "name": f"hangar-sb-{r}", "status": "exited"} for r in ("x1", sb.provider_ref)
+                if r not in known]
+
+    async def remove_ref(ref):
+        removed.append(ref)
+
+    fake.orphans, fake.remove_ref = orphans, remove_ref
+    assert [o["ref"] for o in await fleet.gc()] == ["x1"] and removed == []
+    await fleet.gc(delete=True)
+    assert removed == ["x1"]

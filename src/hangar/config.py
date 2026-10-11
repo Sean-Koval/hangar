@@ -57,6 +57,13 @@ class Settings(BaseSettings):
     # e2b
     e2b_api_key: str | None = None
     e2b_domain: str | None = None
+    # How E2B pulls environment images from HANGAR_REGISTRY (private registries need one of these):
+    e2b_gcp_service_account_json: str | None = None  # path or JSON; Artifact Registry / GCR reader key
+    e2b_aws_access_key_id: str | None = None  # ECR
+    e2b_aws_secret_access_key: str | None = None
+    e2b_aws_region: str | None = None
+    e2b_registry_username: str | None = None  # any other registry (basic auth)
+    e2b_registry_password: str | None = None
 
     # --- fleet defaults -----------------------------------------------------
     default_ttl_minutes: int = 240

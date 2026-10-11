@@ -249,6 +249,20 @@ def sb_rm(sandboxes: list[str]):
         typer.echo(f"destroyed {r['id']} ({r['name']})")
 
 
+@app.command()
+def gc(yes: bool = typer.Option(False, "--yes", help="Remove what was found (default: just list).")):
+    """List (or remove with --yes) leftover containers no active sandbox owns."""
+    found = _call("POST", "/api/gc", params={"delete": yes})
+    if not found:
+        typer.echo("nothing to clean up")
+        return
+    for o in found:
+        typer.echo(f"{'removed' if yes else 'orphan '}  {o['provider']:10} {o['name']:40} {o['status']}")
+    if not yes:
+        typer.secho("re-run with --yes to remove (check first if other hangar instances share this engine)",
+                    fg="yellow")
+
+
 # ---------------------------------------------------------------------------- credentials
 @cred_app.command("ls")
 def cred_ls():

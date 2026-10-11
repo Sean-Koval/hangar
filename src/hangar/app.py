@@ -551,6 +551,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         fleet.audit(who, "token.revoke", token_id)
         return {"revoked": token_id}
 
+    @app.post("/api/gc")
+    async def gc(delete: bool = False, who: str = A):
+        return await fleet.gc(delete=delete, actor=who)
+
     @app.get("/api/audit")
     async def audit(limit: int = 200, _: str = A):
         return [e.model_dump(mode="json") for e in h.store.audit_tail(limit)]

@@ -790,6 +790,25 @@ class Fleet:
         return cred
 
     # ================================================================== housekeeping
+    async def gc(self, delete: bool = False, actor: str = "system") -> list[dict[str, str]]:
+        """Find (and optionally remove) provider resources no active sandbox in this store owns.
+
+        Dry-run by default: if several hangar instances share one Docker engine, each sees the
+        others' sandboxes as orphans, so review the list before deleting.
+        """
+        known = {s.provider_ref for s in self.store.list(Sandbox) if s.state in ACTIVE and s.provider_ref}
+        found: list[dict[str, str]] = []
+        for pname, prov in self.providers.items():
+            if not hasattr(prov, "orphans"):
+                continue
+            for o in await prov.orphans(known):  # type: ignore[attr-defined]
+                found.append({**o, "provider": pname})
+                if delete:
+                    await prov.remove_ref(o["ref"])  # type: ignore[attr-defined]
+        if delete and found:
+            self.audit(actor, "fleet.gc", None, removed=[o["name"] for o in found])
+        return found
+
     def _mark_gone(self, sb: Sandbox, reason: str) -> None:
         sb.state = SandboxState.STOPPED
         sb.error = reason

@@ -146,6 +146,9 @@ Everything is set through `HANGAR_*` environment variables (see `src/hangar/conf
 | `HANGAR_REGISTRY` | Where cluster/E2B images are pushed, e.g. Artifact Registry |
 | `HANGAR_EXTRA_CA_BUNDLE` | PEM file trusted inside every image, for corporate TLS-inspecting proxies |
 | `HANGAR_DEFAULT_TTL_MINUTES` / `HANGAR_MAX_SANDBOXES` | Fleet guardrails |
+| `HANGAR_E2B_GCP_SERVICE_ACCOUNT_JSON` / `HANGAR_E2B_AWS_*` / `HANGAR_E2B_REGISTRY_USERNAME` | How E2B pulls images from a private `HANGAR_REGISTRY` |
+
+`hangar gc` lists containers left behind by crashed creates or other state directories, and `hangar gc --yes` removes them.
 
 ## Known limits
 
