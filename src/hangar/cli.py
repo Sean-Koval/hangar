@@ -119,8 +119,12 @@ def token_revoke(token_id: str):
 
 # ---------------------------------------------------------------------------- environments
 @env_app.command("list")
-def env_list():
-    for e in _call("GET", "/api/environments"):
+def env_list(as_json: bool = typer.Option(False, "--json", help="Print the raw list as JSON.")):
+    envs = _call("GET", "/api/environments")
+    if as_json:
+        _print(envs)
+        return
+    for e in envs:
         imgs = ", ".join(f"{k}:{v.split(':')[-1]}" for k, v in (e.get("images") or {}).items()) or "not built"
         typer.echo(f"{e['name']:22} {', '.join(e.get('harnesses') or []):34} {imgs}")
 
@@ -199,8 +203,15 @@ def env_push(file: Path):
 
 # ---------------------------------------------------------------------------- sandboxes
 @sb_app.command("ls")
-def sb_ls(all: bool = typer.Option(False, "--all", "-a")):
-    for s in _call("GET", "/api/sandboxes", params={"include_stopped": all}):
+def sb_ls(
+    all: bool = typer.Option(False, "--all", "-a"),
+    as_json: bool = typer.Option(False, "--json", help="Print the raw list as JSON."),
+):
+    sandboxes = _call("GET", "/api/sandboxes", params={"include_stopped": all})
+    if as_json:
+        _print(sandboxes)
+        return
+    for s in sandboxes:
         typer.echo(f"{s['id']:12} {s['name']:28} {s['state']:9} {s['environment']:18} {s['provider']}")
 
 
