@@ -1,0 +1,10 @@
+name: claude-python
+description: Python project sandbox with Claude Code, uv, ruff and pytest
+extends: base
+harnesses: [claude-code]
+dependencies:
+  pip: [ruff, pytest, pre-commit]
+skills:
+  - path: skills/repo-conventions
+credentials: []          # e.g. [claude-max, github]
+warm_pool: 1             # keep one sandbox pre-started for instant claims

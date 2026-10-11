@@ -1,0 +1,20 @@
+# Shared foundation. Other environments `extends: base` and add harnesses, deps and repos.
+name: base
+description: Ubuntu 24.04 + git, tmux, ripgrep, mise-managed Python 3.12 / uv / Node 22
+base: ubuntu:24.04
+tools:
+  apt: [gh, fd-find, shellcheck]
+  mise:
+    python: "3.12"
+    uv: latest
+    node: "22"
+harnesses: [git]
+resources:
+  cpus: 2
+  memory_gb: 4
+agent_config:
+  instructions: |
+    You are working inside a disposable hangar sandbox.
+    - The repo checkout is your working directory; commit to your work branch freely.
+    - Run the project's tests before declaring a task done.
+    - Prefer small, reviewable commits with descriptive messages.

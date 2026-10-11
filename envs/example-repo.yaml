@@ -1,0 +1,10 @@
+# Template for a per-project environment: bake the repo + deps into the image so claims
+# are instant, then each sandbox fetches and branches at claim time.
+name: example-repo
+description: Example of a project environment with a baked repo (edit url/setup for your project)
+extends: claude-python
+repo:
+  url: https://github.com/pallets/click.git
+  branch: main
+  setup: uv venv && uv pip install -e . pytest
+  bake: true

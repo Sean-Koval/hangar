@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.hangar/
+dist/
+.pytest_cache/
+.ruff_cache/
+deploy/terraform/**/.terraform/
+deploy/terraform/**/*.tfstate*
+deploy/terraform/**/terraform.tfvars

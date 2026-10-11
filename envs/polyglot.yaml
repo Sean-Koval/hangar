@@ -1,0 +1,17 @@
+# Every major harness side by side: compare agents on the same task, or let an orchestrator
+# pick per subtask. Attach whichever credentials you have.
+name: polyglot
+description: Claude Code + Codex + Antigravity (agy) + Gemini CLI, Python + Node + Go
+extends: base
+tools:
+  mise:
+    go: "1.23"
+harnesses: [claude-code, codex, antigravity, gemini]
+dependencies:
+  pip: [ruff, pytest]
+  npm: [pnpm, typescript]
+skills:
+  - path: skills/repo-conventions
+resources:
+  cpus: 4
+  memory_gb: 8

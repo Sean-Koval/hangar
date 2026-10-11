@@ -1,0 +1,8 @@
+name: codex-node
+description: TypeScript/Node sandbox with OpenAI Codex CLI, pnpm and TypeScript
+extends: base
+harnesses: [codex]
+dependencies:
+  npm: [pnpm, typescript, tsx]
+skills:
+  - path: skills/repo-conventions
