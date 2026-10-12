@@ -61,6 +61,22 @@ def _slug(s: str) -> str:
     return _NAME_RE.sub("-", s.lower()).strip("-")[:40] or "sandbox"
 
 
+def _clip_tail(text: str, line_max: int = 2000, total_max: int = 24000) -> str:
+    """Keep agent output readable by MCP clients: some harnesses (pi --mode json) emit one JSON event per
+    line with the whole conversation inside, so a 60-line tail can be megabytes."""
+    lines = [ln if len(ln) <= line_max else f"{ln[:line_max]}… [{len(ln) - line_max} chars clipped]"
+             for ln in text.splitlines()]
+    out: list[str] = []
+    size = 0
+    for ln in reversed(lines):
+        size += len(ln) + 1
+        if size > total_max:
+            out.append(f"[{len(lines) - len(out)} earlier lines clipped]")
+            break
+        out.append(ln)
+    return "\n".join(reversed(out))
+
+
 class BuildJob:
     def __init__(self, env: str, provider: str):
         self.id = new_id("build")
@@ -797,7 +813,7 @@ class Fleet:
         if not hname:
             raise FleetError(f"environment {sb.environment} has no agent harness enabled")
         h = get_harness(hname)
-        model = model or spec.model
+        model = model or spec.model_for(hname)
         run_id = new_id("run")
         home = f"/home/{self.settings.sandbox_user}"
         rdir = f"{home}/.hangar/runs"
@@ -834,6 +850,7 @@ class Fleet:
                 f"tail -n {int(tail_lines)} {rdir}/{run_id}.log 2>/dev/null", timeout=20)
         head, _, tail = res.stdout.partition("---\n")
         status = head.strip()
+        tail = _clip_tail(tail)
         return {"run_id": run_id, "state": "running" if status == "RUNNING" else "finished",
                 "exit_code": None if status == "RUNNING" else int(status or -1), "output_tail": tail}
 

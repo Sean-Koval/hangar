@@ -119,9 +119,9 @@ mcp:
 | claude-code | `api_key` → `ANTHROPIC_API_KEY`; `oauth_token` → `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) |
 | codex | `api_key` → `CODEX_API_KEY` (+ `codex login --with-api-key`); `auth_file` → `~/.codex/auth.json`, exclusive lease (ChatGPT login rotates refresh tokens) |
 | pi | `api_key` → `OPENROUTER_API_KEY` by default, or any provider's variable via `--env-var`; `auth_file` → `~/.pi/agent/auth.json`, exclusive; `generic` → GCP service-account key for `google-vertex/*` models |
-| antigravity | `api_key` → `GEMINI_API_KEY` (+ `modelProvider: gemini`); `generic` → GCP service-account key: sets `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT` (from the key), `GOOGLE_CLOUD_LOCATION`, `GOOGLE_GENAI_USE_ENTERPRISE`/`USE_VERTEXAI` |
+| antigravity | `generic` → GCP service-account key, billed to the key's project: sets `AGY_ADC_AUTH=true`, `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_QUOTA_PROJECT` and `GOOGLE_CLOUD_LOCATION` (Antigravity's enterprise ADC mode). `api_key` → `GEMINI_API_KEY` (+ `modelProvider: gemini`), billed through the Gemini API (AI Studio) instead |
 
-The Antigravity enterprise variables come from strings in the `agy` 1.3.3 binary. They have not yet been confirmed by a live run; that is M3's acceptance test. `agy` keeps Google OAuth in the OS keyring, which headless sandboxes lack, so it has no login flow.
+Live test on GKE (2026-10-12, `agy` 1.3.3). With a service-account key, `AGY_ADC_AUTH=true` and `GOOGLE_CLOUD_QUOTA_PROJECT`, headless `agy` bills the project. It answered on `gemini-3.8-flash-high`, and `agy models` listed Gemini 3.x models up to 3.8 Flash. That mode is documented on [antigravity.google/docs/enterprise](https://antigravity.google/docs/enterprise); the account needs `aiplatform.googleapis.com` enabled and Vertex access. The `GOOGLE_GENAI_USE_ENTERPRISE`/`USE_VERTEXAI` variables have no effect. With `modelProvider: gemini`, `agy` calls `generativelanguage.googleapis.com`, which bills through AI Studio's prepaid or postpaid plan, not the project's Cloud Billing. Interactive Google sign-in is stored in the OS keyring (Secret Service over D-Bus), which sandboxes lack, so `agy` has no login flow. pi's `google-vertex/*` models also work with the same service-account key.
 
 ### 3.6 Bring your own image
 
@@ -175,12 +175,12 @@ Tools for building environments (MCP and REST):
    - Claude Code on the Pro subscription token;
    - Codex on the ChatGPT login (auth.json, leased);
    - pi on an OpenRouter key, and on Vertex AI with a GCP service-account key;
-   - Antigravity on the GCP project (service-account key).
+   - Antigravity on the GCP project (service-account key, ADC mode). Done 2026-10-12.
 5. A warm-pool claim for a non-default harness takes the same time as one for the default (packs are already mounted).
 6. On Docker without the containerd store, `create_sandbox("python", harness="pi")` builds a variant that contains only pi.
 
 ## 6. Open questions
 
-1. Does `agy` accept a service-account key for Vertex billing headless, or does it need `gcloud auth application-default login` credentials (an authorized-user file)? M3's live test answers this. If it needs the latter, the `generic` slot stores that file instead.
+1. ~~Does `agy` accept a service-account key for project billing headless?~~ Yes, through `AGY_ADC_AUTH=true` (see 3.5). Claude models in `agy` need third-party models enabled under Gemini Enterprise > Settings > AI developer tools; not tested.
 2. Should packs be signed and verified (cosign) before mounting? The mount is read-only and the images come from our own registry, so probably not before spec 0003 M5.
 3. Claude Code's installer has no pinned-version URL documented for every release. If pinning matters, switch the pack to the npm package's native binary.

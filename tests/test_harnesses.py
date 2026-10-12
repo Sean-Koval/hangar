@@ -77,3 +77,12 @@ def test_resolve_refs_reports_missing():
     missing: set[str] = set()
     out = resolve_refs({"a": "Bearer ${T}", "b": ["${U}"]}, {"T": "x"}, missing)
     assert out == {"a": "Bearer x", "b": ["${U}"]} and missing == {"U"}
+
+
+def test_agent_output_tail_is_clipped():
+    from hangar.fleet import _clip_tail
+
+    out = _clip_tail("\n".join(["x" * 70000, *[f"line {i}" for i in range(5)]]))
+    assert len(out) < 3000 and "chars clipped" in out and out.endswith("line 4")
+    many = _clip_tail("\n".join("y" * 1500 for _ in range(100)))
+    assert len(many) <= 24100 and many.startswith("[")
