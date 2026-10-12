@@ -2,6 +2,8 @@
 
 Status: proposed · Date: 2026-10-12 · Author: hangar maintainers
 
+> Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins.
+
 ## 1. Summary
 
 - Hangar collects each run's branch, commits, diff, PR and CI checks itself, from git and GitHub. It never parses the agent's prose.
