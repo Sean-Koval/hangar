@@ -58,6 +58,21 @@ uv run hangar env publish claude-python --provider kubernetes
 
 `publish` asks the server for the exact build context, builds and pushes it with your local Docker, then registers the image. The server then syncs that environment's SandboxTemplate and SandboxWarmPool.
 
+### Harness packs
+
+Environment images carry no agents. Claude Code, Codex, pi and Antigravity ship as read-only OCI "harness packs" instead. Each pack is mounted at `/opt/hangar/harness/<name>` through a Kubernetes image volume. Image volumes are stable in Kubernetes 1.36 and work under gVisor. Nodes pull a pack once and share it across every environment.
+
+Publish the packs from a machine with Docker:
+
+```bash
+HANGAR_URL=https://hangar.example.com HANGAR_TOKEN=hgr_... \
+  uv run hangar pack publish claude-code codex pi antigravity
+```
+
+Set `HANGAR_K8S_IMAGE_VOLUMES=false` to turn image volumes off. Hangar then bakes the selected harness into a per-harness image. Only the harness the sandbox was created for is baked.
+
+See [specs/0006-environments-and-harness-packs.md](specs/0006-environments-and-harness-packs.md) for the design.
+
 ## 4. Kata microVMs (optional)
 
 > **With the GKE Agent Sandbox add-on, this doesn't work yet.** The add-on installs admission policies (`sandbox-core-policy`, `sandbox-hardening-policy`) that allow only the `gvisor` and `microvm` RuntimeClasses, on nodes labelled `sandbox.gke.io/runtime`. `microvm` is GKE's managed Kata (Cloud Hypervisor), but as of gcloud 588 node pools can only be created with `--sandbox type=gvisor`. Until GKE offers microVM node pools, use gVisor on GKE and Kata through the Docker provider on a KVM host ([local-microvms.md](local-microvms.md)). The steps below apply to clusters that run the open-source Agent Sandbox controller instead of the add-on.
