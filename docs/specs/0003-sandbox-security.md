@@ -2,6 +2,8 @@
 
 Status: draft. Date: 2026-10-12.
 
+> Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins.
+
 ## 1. Summary
 
 - Agents must never hold a credential that can write outside their own branch. Hangar moves the GitHub token, and later the model credential, out of sandboxes and into a gateway in the control plane.
