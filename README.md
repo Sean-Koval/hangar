@@ -164,7 +164,8 @@ Everything is set through `HANGAR_*` environment variables (see `src/hangar/conf
   - **Docker provider:** end to end in CI.
   - **Kubernetes provider:** end to end over MCP against the real Agent Sandbox v1.0.6 controller on kind, with the runc runtime. This covered builds pushed to a registry, claims, exec, 300 KB file writes, terminals, TTL extension, forks and teardown.
   - **Kata microVMs (Docker provider):** end to end on WSL2. Each sandbox is a VM with its own kernel; it starts in about 2 s, and 4 start in parallel in 2.2 s. See [docs/local-microvms.md](docs/local-microvms.md).
-  - **Not yet run live:** gVisor, Kata on Kubernetes, the GKE add-on, Pod snapshots and E2B. They're covered by unit tests against fake APIs.
+  - **GKE with the Agent Sandbox add-on and gVisor:** end to end, with the control plane in the cluster behind a Google-managed certificate. A remote MCP client created two sandboxes from the warm pool over HTTPS in 3.1 s. Each had the repo cloned on its own branch, a Claude Code subscription token and a fine-grained GitHub token. Claude Code ran headless in both, made a change with tests, and opened a PR that passed CI ([#13](https://github.com/Sean-Koval/hangar/pull/13), [#14](https://github.com/Sean-Koval/hangar/pull/14)). `scripts/agent_fleet_demo.py` reproduces the run.
+  - **Not yet run live:** Kata on GKE (the add-on only admits `gvisor` and `microvm`; see [docs/gke.md](docs/gke.md)), Pod snapshots and E2B. They're covered by unit tests against fake APIs.
 - **Antigravity (`agy`) subscription login** stores OAuth in the OS keyring, which headless containers may lack. Use a `GEMINI_API_KEY` credential for fleets.
 - **Concurrent sandboxes share one subscription's limits.** Parallel Claude Code agents on a single Pro login hit the plan's limits quickly. Mix in API-key credentials for wide fan-out.
 - **The control plane is a single replica** with SQLite state, which is right for a personal or team instance.
