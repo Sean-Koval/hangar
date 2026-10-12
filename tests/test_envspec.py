@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from hangar.envspec import EnvCatalog, image_tag, render, repo_dirname
@@ -7,6 +9,33 @@ from tests.conftest import ENVS
 @pytest.fixture
 def catalog():
     return EnvCatalog([ENVS])
+
+
+def test_shipped_envs_load_and_render():
+    """Test that all environments in the repo load and render correctly."""
+    # Load all environments from the repo's envs/ directory
+    envs_path = Path(__file__).parent.parent / "envs"
+    catalog = EnvCatalog([envs_path])
+    
+    # Test each environment
+    for name in catalog.names():
+        spec = catalog.get(name)
+        
+        # If the spec has no image set, render it and check Dockerfile contains "FROM"
+        if spec.image is None:
+            ctx = render(spec)
+            assert "FROM" in ctx.dockerfile, f"Environment {name} Dockerfile should contain 'FROM'"
+        
+        # If the environment has agent harnesses, check pick_harness() result
+        if spec.agent_harnesses:
+            picked = spec.pick_harness()
+            assert picked in spec.harnesses, (
+                f"Environment {name} pick_harness() result '{picked}' should be in harnesses list"
+            )
+            assert picked in spec.agent_harnesses, (
+                f"Environment {name} pick_harness() result '{picked}' should be in agent_harnesses list"
+            )
+
 
 
 def test_extends_merges_layers(catalog):
