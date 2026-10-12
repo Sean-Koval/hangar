@@ -178,8 +178,19 @@ class Broker:
     def _abs(self, path: str) -> str:
         return path if path.startswith("/") else f"{self.home}/{path}"
 
-    async def inject(self, sandbox: Sandbox, provider: Provider, creds: list[Credential]) -> None:
-        env_lines: list[str] = []
+    def secret_text(self, name: str) -> str:
+        """A credential's value as text, for `secrets:` env mappings and MCP config resolution."""
+        self.get(name)
+        value = self.vault.get(f"cred:{name}")
+        if value is None:
+            raise CredentialError(f"credential '{name}' has no stored secret")
+        return value.decode().strip()
+
+    async def inject(self, sandbox: Sandbox, provider: Provider, creds: list[Credential],
+                     extra_env: dict[str, str] | None = None, prelude: list[str] | None = None) -> dict[str, str]:
+        """Materialize credentials. `extra_env` adds plain exports (harness env, `secrets:` mappings) and
+        `prelude` raw shell lines (PATH) to ~/.hangar/env. Returns every env var set, for config rendering."""
+        env: dict[str, str] = dict(extra_env or {})
         post: list[str] = []
         for c in creds:
             value = self.vault.get(f"cred:{c.name}")
@@ -187,18 +198,20 @@ class Broker:
                 raise CredentialError(f"credential '{c.name}' has no stored secret")
             slot = slot_for(c.harness, c.kind)
             if c.env_var:
-                env_lines.append(f"export {c.env_var}={shlex.quote(value.decode().strip())}")
+                env[c.env_var] = value.decode().strip()
             if c.file_path:
                 await provider.write_file(sandbox, self._abs(c.file_path), value, mode=0o600)
             if slot and slot.post_inject:
                 post.append(slot.post_inject)
-        if env_lines:
+        if env or prelude:
             existing = await provider.read_file(sandbox, f"{self.home}/.hangar/env") or b""
             kept = [ln for ln in existing.decode().splitlines()
-                    if not any(ln.startswith(f"export {c.env_var}=") for c in creds if c.env_var)]
-            content = "\n".join([*kept, *env_lines]) + "\n"
+                    if ln not in (prelude or []) and not any(ln.startswith(f"export {v}=") for v in env)]
+            lines = [*(prelude or []), *kept, *(f"export {k}={shlex.quote(v)}" for k, v in env.items())]
+            content = "\n".join(lines) + "\n"
             await provider.write_file(sandbox, f"{self.home}/.hangar/env", content.encode(), mode=0o600)
         for script in post:
             res = await provider.exec(sandbox, script, timeout=60)
             if res.exit_code != 0:
                 raise CredentialError(f"post-inject step failed ({res.exit_code}): {res.stderr[-500:]}")
+        return env

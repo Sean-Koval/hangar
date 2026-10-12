@@ -51,8 +51,8 @@ def _sb(s: Sandbox) -> dict[str, Any]:
     return {
         "id": s.id, "name": s.name, "state": s.state.value, "environment": s.environment, "provider": s.provider,
         "repo": s.repo, "branch": s.info.get("work_branch") or s.branch, "repo_path": s.info.get("repo_path"),
-        "credentials": s.credentials, "labels": s.labels, "parent": s.parent, "expires_at": s.expires_at,
-        "error": s.error,
+        "harness": s.info.get("harness"), "credentials": s.credentials, "labels": s.labels, "parent": s.parent,
+        "expires_at": s.expires_at, "error": s.error,
     }
 
 
@@ -108,6 +108,32 @@ def build_mcp(fleet: Fleet) -> MCPServer:
         return job.summary()
 
     @tool()
+    def validate_environment(spec: dict[str, Any]) -> dict[str, Any]:
+        """Check an environment spec without saving it: resolves `extends`, validates fields, lists warnings
+        (missing credentials, deprecated harnesses) and returns the Dockerfile it would build.
+
+        Spec fields: name, description, extends, base | image (prebuilt), tools {apt, mise, script},
+        harnesses [claude-code, codex, pi, antigravity, git], default_harness, harness_mode (auto|pack|bake),
+        model, dependencies {pip, npm, script}, skills [{path|git, name}], agent_config {instructions, files},
+        mcp {name: {url, headers} | {command, args, env}}, secrets {ENV_VAR: credential}, env, repo {url,
+        branch, setup, bake}, credentials, resources {cpus, memory_gb}, warm_pool, runtime_class."""
+        return fleet.validate_environment(spec)
+
+    @tool()
+    def create_environment(spec: dict[str, Any]) -> dict[str, Any]:
+        """Save a new or updated environment (same fields as validate_environment). Usually `extends` a
+        default (bare, python, node, go, polyglot) or a team environment. Build it with build_environment."""
+        s = fleet.save_environment(spec, actor=actor())
+        return {"name": s.name, "harnesses": s.harnesses, "default_harness": s.pick_harness()}
+
+    @tool()
+    def clone_environment(source: str, name: str, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Create environment `name` that extends `source`, applying `overrides` (lists and maps merge with
+        the source's, scalars replace). E.g. overrides={"harnesses": ["codex"], "secrets": {...}}."""
+        s = fleet.clone_environment(source, name, overrides, actor=actor())
+        return {"name": s.name, "extends": source, "harnesses": s.harnesses, "default_harness": s.pick_harness()}
+
+    @tool()
     def list_credentials() -> list[dict[str, Any]]:
         """Credentials available to attach to sandboxes (names and metadata only, never secrets)."""
         return [c.model_dump(include={"name", "harness", "kind", "exclusive", "leased_to", "description"})
@@ -125,12 +151,15 @@ def build_mcp(fleet: Fleet) -> MCPServer:
         provider: str | None = None,
         ttl_minutes: int | None = None,
         labels: dict[str, str] | None = None,
+        harness: str | None = None,
     ) -> dict[str, Any]:
         """Start a sandbox from an environment. Optionally clone `repo` (at `branch`) and check out a
-        new `work_branch`. `credentials` overrides the environment's default credential list."""
+        new `work_branch`. `harness` picks which of the environment's agents this sandbox is for (default:
+        the environment's default); only that agent's credentials, config and MCP servers are applied.
+        `credentials` overrides the environment's default credential list."""
         sb = await fleet.create(environment, name=name, repo=repo, branch=branch, work_branch=work_branch,
                                 credentials=credentials, provider=provider, ttl_minutes=ttl_minutes,
-                                labels=labels, actor=actor())
+                                labels=labels, harness=harness, actor=actor())
         return _sb(sb)
 
     @tool()
@@ -145,6 +174,7 @@ def build_mcp(fleet: Fleet) -> MCPServer:
         provider: str | None = None,
         ttl_minutes: int | None = None,
         labels: dict[str, str] | None = None,
+        harness: str | None = None,
     ) -> list[dict[str, Any]]:
         """Start `count` (1-20) identical sandboxes concurrently, each on its own work branch."""
         import asyncio
@@ -157,7 +187,8 @@ def build_mcp(fleet: Fleet) -> MCPServer:
             return await fleet.create(
                 environment, name=f"{prefix}-{i + 1}", repo=repo, branch=branch,
                 work_branch=f"{work_branch_prefix}-{i + 1}" if work_branch_prefix else None,
-                credentials=credentials, provider=provider, ttl_minutes=ttl_minutes, labels=labels, actor=actor())
+                credentials=credentials, provider=provider, ttl_minutes=ttl_minutes, labels=labels,
+                harness=harness, actor=actor())
 
         res = await asyncio.gather(*(one(i) for i in range(count)), return_exceptions=True)
         return [_sb(r) if isinstance(r, Sandbox) else {"error": str(r)} for r in res]
@@ -265,10 +296,12 @@ def build_mcp(fleet: Fleet) -> MCPServer:
     # ------------------------------------------------------------------ agents
     @tool()
     async def run_agent(sandbox: str, prompt: str, harness: str | None = None,
-                        cwd: str | None = None) -> dict[str, Any]:
-        """Start a headless coding agent (claude-code | codex | antigravity | gemini) on `prompt` inside the
-        sandbox. Returns a run_id; its terminal session has the same name. Poll with agent_status."""
-        return await fleet.run_agent(sandbox, prompt, harness, cwd, actor=actor())
+                        cwd: str | None = None, model: str | None = None) -> dict[str, Any]:
+        """Start the sandbox's headless coding agent (claude-code | codex | pi | antigravity) on `prompt`.
+        `model` overrides the environment's default model (harness-specific id, e.g. "sonnet", "gpt-5.5",
+        "openrouter/qwen/qwen3-coder"). Returns a run_id; its terminal session has the same name. Poll with
+        agent_status."""
+        return await fleet.run_agent(sandbox, prompt, harness, cwd, model=model, actor=actor())
 
     @tool()
     async def agent_status(sandbox: str, run_id: str, tail_lines: int = 60) -> dict[str, Any]:

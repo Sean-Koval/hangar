@@ -21,10 +21,12 @@ env_app = typer.Typer(no_args_is_help=True, help="Environment templates.")
 sb_app = typer.Typer(no_args_is_help=True, help="Sandboxes.")
 cred_app = typer.Typer(no_args_is_help=True, help="Credentials (API keys and subscription logins).")
 token_app = typer.Typer(no_args_is_help=True, help="API tokens for MCP clients and the dashboard.")
+pack_app = typer.Typer(no_args_is_help=True, help="Harness packs: agent CLIs shipped as read-only images.")
 app.add_typer(env_app, name="env")
 app.add_typer(sb_app, name="sb")
 app.add_typer(cred_app, name="cred")
 app.add_typer(token_app, name="token")
+app.add_typer(pack_app, name="pack")
 
 
 def _client() -> httpx.Client:
@@ -166,7 +168,6 @@ def env_publish(
     the build context, your docker builds and pushes it, and the server syncs its warm pool.
     """
     import shutil
-    import subprocess
 
     if not shutil.which("docker"):
         typer.secho("docker is required for publish", fg="red")
@@ -178,6 +179,14 @@ def env_publish(
             raise typer.Exit(1)
         tag = r.headers["X-Hangar-Image"]
         tar = r.content
+    _build_and_push(tag, tar, platform)
+    res = _call("POST", f"/api/environments/{name}/images", json={"image": tag, "provider": provider})
+    typer.secho(f"registered {res['image']} for {res['provider']}", fg="green")
+
+
+def _build_and_push(tag: str, tar: bytes, platform: str) -> None:
+    import subprocess
+
     typer.secho(f"building {tag}", fg="cyan")
     has_buildx = subprocess.run(["docker", "buildx", "version"], capture_output=True).returncode == 0
     if has_buildx:
@@ -186,8 +195,46 @@ def env_publish(
     else:  # docker-ce without the buildx plugin: legacy builder, then push
         subprocess.run(["docker", "build", "--platform", platform, "-t", tag, "-"], input=tar, check=True)
         subprocess.run(["docker", "push", tag], check=True)
-    res = _call("POST", f"/api/environments/{name}/images", json={"image": tag, "provider": provider})
-    typer.secho(f"registered {res['image']} for {res['provider']}", fg="green")
+
+
+@pack_app.command("render")
+def pack_render(harness: str):
+    """Print a harness pack's Dockerfile and install script (local, no server needed)."""
+    from hangar.harnesses import get_harness, pack_dockerfile, pack_script
+
+    h = get_harness(harness)
+    typer.echo(pack_dockerfile(h) + "\n# packs/" + h.name + ".sh\n" + pack_script(h))
+
+
+@pack_app.command("build")
+def pack_build(harness: list[str], provider: str | None = None, force: bool = False):
+    """Build harness packs on the server's builder."""
+    for h in harness:
+        _print(_call("POST", f"/api/harnesses/{h}/pack", json={"provider": provider, "force": force}))
+
+
+@pack_app.command("publish")
+def pack_publish(
+    harness: list[str],
+    provider: str | None = typer.Option(None, help="Provider the pack is for (default: server default)."),
+    platform: str = typer.Option("linux/amd64", help="Target platform."),
+):
+    """Build harness packs on THIS machine, push them, and register them with the server."""
+    import shutil
+
+    if not shutil.which("docker"):
+        typer.secho("docker is required for publish", fg="red")
+        raise typer.Exit(2)
+    for h in harness:
+        with _client() as c:
+            r = c.get(f"/api/harnesses/{h}/context", params={"provider": provider})
+            if r.status_code >= 400:
+                typer.secho(f"error: {r.text}", fg="red")
+                raise typer.Exit(1)
+            tag, tar = r.headers["X-Hangar-Image"], r.content
+        _build_and_push(tag, tar, platform)
+        res = _call("POST", f"/api/harnesses/{h}/images", json={"image": tag, "provider": provider})
+        typer.secho(f"registered {res['image']}", fg="green")
 
 
 @env_app.command("push")
@@ -215,9 +262,11 @@ def sb_create(
     provider: str | None = None,
     ttl: int | None = typer.Option(None, help="Minutes until auto-destroy."),
     count: int = 1,
+    harness: str | None = typer.Option(None, help="Which of the environment's agents (default: its default)."),
 ):
     body = {"environment": environment, "name": name, "repo": repo, "branch": branch, "work_branch": work_branch,
-            "credentials": cred or None, "provider": provider, "ttl_minutes": ttl, "count": count}
+            "credentials": cred or None, "provider": provider, "ttl_minutes": ttl, "count": count,
+            "harness": harness}
     for s in _call("POST", "/api/sandboxes", json=body):
         typer.echo(f"{s.get('id', 'ERR'):12} {s.get('name') or s.get('error')}")
 
@@ -231,8 +280,9 @@ def sb_exec(sandbox: str, command: list[str], timeout: int = 120):
 
 
 @sb_app.command("agent")
-def sb_agent(sandbox: str, prompt: str, harness: str | None = None):
-    _print(_call("POST", f"/api/sandboxes/{sandbox}/agent", json={"prompt": prompt, "harness": harness}))
+def sb_agent(sandbox: str, prompt: str, harness: str | None = None, model: str | None = None):
+    _print(_call("POST", f"/api/sandboxes/{sandbox}/agent", json={"prompt": prompt, "harness": harness,
+                                                                  "model": model}))
 
 
 @sb_app.command("fork")
@@ -279,10 +329,12 @@ def cred_ls():
 @cred_app.command("add")
 def cred_add(
     name: str,
-    harness: str = typer.Option(..., help="claude-code | codex | antigravity | gemini | git"),
-    kind: str = typer.Option(..., help="api_key | oauth_token | auth_file | git_token | ssh_key"),
+    harness: str = typer.Option(..., help="claude-code | codex | pi | antigravity | git (or any label)"),
+    kind: str = typer.Option(..., help="api_key | oauth_token | auth_file | git_token | ssh_key | generic"),
     value: str | None = typer.Option(None, help="Secret value; omit to read from --file or stdin."),
     file: Path | None = typer.Option(None, help="Read the secret from a file (e.g. ~/.codex/auth.json)."),
+    env_var: str | None = typer.Option(None, "--env-var", help="Env var to inject as, overriding the harness "
+                                       "default (e.g. OPENAI_API_KEY for a pi credential)."),
     description: str | None = None,
 ):
     """Store a credential. Examples:
@@ -290,6 +342,10 @@ def cred_add(
       claude setup-token | hangar cred add claude-max --harness claude-code --kind oauth_token
 
       hangar cred add codex-chatgpt --harness codex --kind auth_file --file ~/.codex/auth.json
+
+      hangar cred add openrouter --harness pi --kind api_key --file ~/.hangar/openrouter-key
+
+      hangar cred add gcp-vertex --harness antigravity --kind generic --file sa-key.json
     """
     secret = value if value is not None else (file.expanduser().read_text() if file else sys.stdin.read())
     if kind == "oauth_token" and harness == "claude-code":
@@ -297,8 +353,8 @@ def cred_add(
 
         m = re.findall(r"sk-ant-oat[0-9A-Za-z_\-]{20,}", secret)
         secret = m[-1] if m else secret.strip()
-    c = _call("POST", "/api/credentials", json={"name": name, "harness": harness, "kind": kind,
-                                                "value": secret, "description": description})
+    c = _call("POST", "/api/credentials", json={"name": name, "harness": harness, "kind": kind, "value": secret,
+                                                "description": description, "env_var": env_var})
     typer.secho(f"stored {c['name']} ({c['harness']}/{c['kind']}{', exclusive' if c['exclusive'] else ''})",
                 fg="green")
 

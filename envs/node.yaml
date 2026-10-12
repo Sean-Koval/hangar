@@ -1,0 +1,8 @@
+name: node
+extends: bare
+description: bare + Node 22, pnpm, TypeScript
+tools:
+  mise:
+    node: "22"
+dependencies:
+  npm: [pnpm, typescript, tsx]

@@ -19,6 +19,7 @@ from docker.errors import APIError, ImageNotFound, NotFound
 
 from hangar.config import Settings
 from hangar.envspec import BuildContext, EnvSpec
+from hangar.harnesses import PACK_ROOT
 from hangar.models import ExecResult, Sandbox, SandboxState
 from hangar.providers._build import docker_build
 from hangar.providers.base import Capabilities, LogFn, Provider, ProviderError, TerminalStream
@@ -81,6 +82,16 @@ class DockerTerminal(TerminalStream):
         self._sock.close()
 
 
+def _supports_image_mounts(client) -> bool:
+    """`--mount type=image` needs Engine API 1.48+ (Docker 28) and the containerd image store."""
+    try:
+        api = tuple(int(x) for x in client.version().get("ApiVersion", "0.0").split("."))
+        status = dict((k, v) for k, v in (client.info().get("DriverStatus") or []) if isinstance(k, str))
+        return api >= (1, 48) and "containerd.snapshotter" in status.get("driver-type", "")
+    except Exception:  # noqa: BLE001 - fall back to baking harnesses into images
+        return False
+
+
 class DockerProvider(Provider):
     name = "docker"
 
@@ -94,11 +105,15 @@ class DockerProvider(Provider):
                 "cannot reach the Docker engine. Start Docker Desktop/OrbStack, or set DOCKER_HOST."
             ) from e
         self._pool_lock = asyncio.Lock()
+        self._image_volumes = settings.docker_image_volumes
+        if self._image_volumes is None:
+            self._image_volumes = _supports_image_mounts(self.client)
 
     @property
     def capabilities(self) -> Capabilities:
         rt = (self.settings.docker_runtime or "").lower()
-        return Capabilities(full_snapshots=True, warm_pools=True, pause=True, microvm="kata" in rt)
+        return Capabilities(full_snapshots=True, warm_pools=True, pause=True, microvm="kata" in rt,
+                            image_volumes=bool(self._image_volumes))
 
     # ------------------------------------------------------------------ templates
     async def image_exists(self, tag: str) -> bool:
@@ -111,7 +126,8 @@ class DockerProvider(Provider):
     async def build_template(self, spec: EnvSpec, ctx: BuildContext, tag: str, log: LogFn | None = None) -> str:
         return await docker_build(ctx, tag, log=log)
 
-    def _run_kwargs(self, name: str, image: str, spec_resources, labels: dict[str, str], hostname: str) -> dict:
+    def _run_kwargs(self, name: str, image: str, spec_resources, labels: dict[str, str], hostname: str,
+                    packs: dict[str, str] | None = None) -> dict:
         kw = dict(
             image=image,
             name=name,
@@ -129,6 +145,9 @@ class DockerProvider(Provider):
             kw["runtime"] = self.settings.docker_runtime
         if self.settings.docker_network:
             kw["network"] = self.settings.docker_network
+        if packs:
+            kw["mounts"] = [{"Type": "image", "Source": ref, "Target": f"{PACK_ROOT}/{n}", "ReadOnly": True}
+                            for n, ref in sorted(packs.items())]
         return kw
 
     async def sync_warm_pool(self, spec: EnvSpec, image: str) -> None:
@@ -153,7 +172,7 @@ class DockerProvider(Provider):
             for _ in range(max(0, spec.warm_pool - len(alive))):
                 name = f"hangar-pool-{spec.name}-{int(time.time() * 1000) % 10**8}"
                 kw = self._run_kwargs(name, image, spec.resources, {POOL_LABEL: image, "dev.hangar.env": spec.name},
-                                      hostname=spec.name)
+                                      hostname=spec.name, packs=spec.packs)
                 await asyncio.to_thread(self.client.containers.run, **kw)
 
     async def _claim_warm(self, image: str):
@@ -191,7 +210,8 @@ class DockerProvider(Provider):
             sandbox.info["pool_image"] = image
             return
         labels = {LABEL: sandbox.id, "dev.hangar.env": sandbox.environment}
-        kw = self._run_kwargs(name, image, sandbox.resources, labels, hostname=sandbox.name)
+        kw = self._run_kwargs(name, image, sandbox.resources, labels, hostname=sandbox.name,
+                              packs=spec.packs if spec else None)
         try:
             c = await asyncio.to_thread(self.client.containers.run, **kw)
         except ImageNotFound as e:

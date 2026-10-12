@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import json
 import logging
 import re
 import shlex
@@ -16,8 +17,20 @@ from typing import Any
 
 from hangar.broker import Broker, CredentialError
 from hangar.config import Settings
-from hangar.envspec import EnvCatalog, EnvSpec, image_tag, render, repo_dirname
-from hangar.harnesses import HARNESSES, get_harness
+from hangar.envspec import BuildContext, EnvCatalog, EnvSpec, image_tag, render, repo_dirname
+from hangar.harnesses import (
+    HARNESSES,
+    Harness,
+    deep_merge,
+    get_harness,
+    mcp_config,
+    merge_codex_toml,
+    pack_digest,
+    pack_dockerfile,
+    pack_script,
+    pack_tag,
+    resolve_refs,
+)
 from hangar.models import (
     AuditEvent,
     Credential,
@@ -148,7 +161,10 @@ class Fleet:
             images = {p: self.store.kv_get(f"image:{p}:{name}") for p in self.providers}
             out.append({
                 "name": name, "description": spec.description, "extends": spec.extends, "base": spec.base,
-                "harnesses": spec.harnesses, "repo": spec.repo.url if spec.repo else None,
+                "harnesses": spec.harnesses, "default_harness": spec.pick_harness(),
+                "harness_mode": spec.harness_mode, "image": spec.image, "model": spec.model,
+                "mcp": sorted(spec.mcp), "secrets": sorted(spec.secrets),
+                "repo": spec.repo.url if spec.repo else None,
                 "skills": len(spec.skills), "warm_pool": spec.warm_pool,
                 "resources": spec.resources.model_dump(), "credentials": spec.credentials,
                 "images": {k: v for k, v in images.items() if v},
@@ -161,6 +177,9 @@ class Fleet:
 
     def environment_detail(self, name: str) -> dict[str, Any]:
         spec = self.catalog.get(name)
+        if spec.image:
+            return {"spec": spec.model_dump(mode="json"), "raw": self.catalog.raw(name),
+                    "dockerfile": f"# prebuilt image, not built by hangar\n# {spec.image}\n", "digest": None}
         ctx = render(spec, self.settings.sandbox_user, self.settings.workspace_dir, self._extra_ca())
         return {"spec": spec.model_dump(mode="json"), "raw": self.catalog.raw(name), "dockerfile": ctx.dockerfile,
                 "digest": ctx.digest}
@@ -170,23 +189,130 @@ class Fleet:
         self.audit(actor, "environment.save", spec.name)
         return spec
 
-    def _tag_for(self, spec: EnvSpec, provider: str) -> tuple[str, Any]:
-        ctx = render(spec, self.settings.sandbox_user, self.settings.workspace_dir, self._extra_ca())
+    def validate_environment(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Check a spec without saving it: resolves `extends`, validates, renders the Dockerfile."""
+        name = str(data.get("name") or "")
+        problems: list[str] = []
+        prev = self.catalog._raw.get(name)
+        try:
+            self.catalog._raw[name] = (data, self.catalog.dirs[0] if self.catalog.dirs else None)
+            spec = self.catalog.get(name)
+            dockerfile = None if spec.image else render(
+                spec, self.settings.sandbox_user, self.settings.workspace_dir, self._extra_ca()).dockerfile
+        except Exception as e:  # noqa: BLE001 - reported to the caller
+            return {"valid": False, "errors": [str(e)]}
+        finally:
+            if prev is None:
+                self.catalog._raw.pop(name, None)
+            else:
+                self.catalog._raw[name] = prev
+        known = {c.name for c in self.broker.list()}
+        for c in [*spec.credentials, *spec.secrets.values()]:
+            if c not in known:
+                problems.append(f"credential '{c}' is not in the vault yet")
+        if not spec.agent_harnesses:
+            problems.append("no agent harness enabled: sandboxes can run commands but not run_agent")
+        for h in spec.harnesses:
+            if HARNESSES[h].deprecated:
+                problems.append(f"{h}: {HARNESSES[h].deprecated}")
+        return {"valid": True, "warnings": problems, "spec": spec.model_dump(mode="json"),
+                "default_harness": spec.pick_harness(), "dockerfile": dockerfile}
+
+    def clone_environment(self, source: str, name: str, overrides: dict[str, Any] | None = None,
+                          actor: str = "system") -> EnvSpec:
+        """New environment that `extends` an existing one, with optional overrides (lists merge, maps merge)."""
+        self.catalog.get(source)
+        if name in self.catalog.names():
+            raise FleetError(f"environment '{name}' already exists")
+        data = {**(overrides or {}), "name": name, "extends": source}
+        data.setdefault("description", f"{source} + customisations")
+        return self.save_environment(data, actor=actor)
+
+    def _tag_for(self, spec: EnvSpec, provider: str, bake: list[str] | None = None) -> tuple[str, Any]:
+        ctx = render(spec, self.settings.sandbox_user, self.settings.workspace_dir, self._extra_ca(), bake=bake)
         registry = self.settings.registry if provider in ("kubernetes", "e2b") else None
         return image_tag(spec, ctx, self.settings.image_prefix, registry), ctx
+
+    # ================================================================== harness packs
+    def _uses_packs(self, spec: EnvSpec, pname: str) -> bool:
+        can = self.provider(pname).capabilities.image_volumes
+        if spec.harness_mode == "pack" and not can:
+            raise FleetError(f"environment {spec.name} sets harness_mode: pack but the {pname} provider can't "
+                             "mount images; use harness_mode: auto or bake")
+        return can and spec.harness_mode != "bake"
+
+    def _bake_for(self, spec: EnvSpec, pname: str, harness: str | None) -> list[str]:
+        if spec.image or self._uses_packs(spec, pname) or not harness:
+            return []
+        return [harness] if HARNESSES[harness].install else []
+
+    async def build_pack(self, harness: str, provider: str | None = None, force: bool = False,
+                         actor: str = "system", log_fn: Any = None) -> str:
+        """Build and publish one harness pack (an OCI image holding PACK_ROOT/<harness>)."""
+        h = get_harness(harness)
+        if not h.install:
+            raise FleetError(f"{harness} has nothing to install")
+        pname = provider or self.settings.default_provider
+        prov = self.provider(pname)
+        tag, ctx = self.pack_context(harness, pname)
+        async with self._build_locks[f"{pname}:pack:{harness}"]:
+            if not force and self.store.kv_get(f"pack:{pname}:{harness}") == tag:
+                return tag  # built or registered (hangar pack publish) earlier
+            if force or not await prov.image_exists(tag):
+                if log_fn:
+                    await log_fn(f"building harness pack {tag}")
+                tag = await prov.build_template(EnvSpec(name=f"harness-{h.name}"), ctx, tag, log=log_fn)
+                self.audit(actor, "harness.pack_build", harness, provider=pname, image=tag)
+        self.store.kv_set(f"pack:{pname}:{harness}", tag)
+        return tag
+
+    def pack_context(self, harness: str, provider: str | None = None) -> tuple[str, BuildContext]:
+        """Pack image tag + build context, for building on another machine (hangar pack publish)."""
+        h = get_harness(harness)
+        if not h.install:
+            raise FleetError(f"{harness} has nothing to install")
+        pname = provider or self.settings.default_provider
+        registry = self.settings.registry if pname in ("kubernetes", "e2b") else None
+        ctx = BuildContext(dockerfile=pack_dockerfile(h), files={f"packs/{h.name}.sh": pack_script(h).encode()},
+                           digest=pack_digest(h))
+        return pack_tag(h, self.settings.image_prefix, registry), ctx
+
+    def register_pack(self, harness: str, image: str, provider: str | None = None, actor: str = "system") -> str:
+        get_harness(harness)
+        pname = provider or self.settings.default_provider
+        prov = self.provider(pname)
+        if hasattr(prov, "_known_images"):
+            prov._known_images.add(image)  # type: ignore[attr-defined]
+        self.store.kv_set(f"pack:{pname}:{harness}", image)
+        self.audit(actor, "harness.pack_register", harness, provider=pname, image=image)
+        return image
+
+    async def _resolve_packs(self, spec: EnvSpec, pname: str, actor: str, log_fn: Any = None) -> EnvSpec:
+        """Attach the pack image for every agent harness the env allows (all are mounted, read-only, so a
+        warm sandbox can be claimed for any of them; only the selected one is configured)."""
+        spec.packs = {}
+        if not self._uses_packs(spec, pname):
+            return spec
+        for hname in spec.agent_harnesses:
+            if HARNESSES[hname].install:
+                spec.packs[hname] = await self.build_pack(hname, pname, actor=actor, log_fn=log_fn)
+        return spec
 
     async def build(self, env: str, provider: str | None = None, force: bool = False, actor: str = "system",
                     wait: bool = True) -> BuildJob:
         pname = provider or self.settings.default_provider
         prov = self.provider(pname)
         spec = self.catalog.get(env)
-        tag, ctx = self._tag_for(spec, pname)
+        if spec.image:
+            raise FleetError(f"environment {env} uses the prebuilt image {spec.image}; there is nothing to build")
+        tag, ctx = self._tag_for(spec, pname, self._bake_for(spec, pname, spec.pick_harness()))
         job = BuildJob(env, pname)
         self.builds[job.id] = job
 
         async def _run() -> None:
             async with self._build_locks[f"{pname}:{env}"]:
                 try:
+                    await self._resolve_packs(spec, pname, actor, log_fn=job.emit)
                     if not force and await prov.image_exists(tag):
                         await job.emit(f"image {tag} is up to date")
                         job.image = prov.image_ref(tag)
@@ -216,7 +342,7 @@ class Fleet:
         """Image tag + build-context tar, for building on another machine (laptop/CI) and registering after."""
         pname = provider or self.settings.default_provider
         spec = self.catalog.get(env)
-        tag, ctx = self._tag_for(spec, pname)
+        tag, ctx = self._tag_for(spec, pname, self._bake_for(spec, pname, spec.pick_harness()))
         return tag, ctx.tar()
 
     async def register_image(self, env: str, image: str, provider: str | None = None,
@@ -229,18 +355,25 @@ class Fleet:
         self.store.kv_set(f"image:{pname}:{env}", ref)
         if hasattr(prov, "_known_images"):
             prov._known_images.add(image)  # type: ignore[attr-defined]
+        await self._resolve_packs(spec, pname, actor)
         await prov.sync_warm_pool(spec, ref)
         self.audit(actor, "environment.register_image", env, provider=pname, image=ref)
         return {"environment": env, "provider": pname, "image": ref}
 
-    async def _ensure_image(self, spec: EnvSpec, pname: str, actor: str) -> str:
+    async def _ensure_image(self, spec: EnvSpec, pname: str, actor: str, harness: str | None = None) -> str:
+        if spec.image:
+            return spec.image
         prov = self.provider(pname)
-        tag, _ = self._tag_for(spec, pname)
+        bake = self._bake_for(spec, pname, harness)
+        tag, ctx = self._tag_for(spec, pname, bake)
         registered = self.store.kv_get(f"image:{pname}:{spec.name}")
         if registered and registered == prov.image_ref(tag):
             return registered
         if await prov.image_exists(tag):
             return prov.image_ref(tag)
+        if bake and bake != self._bake_for(spec, pname, spec.pick_harness()):
+            # A non-default harness on a provider without packs: build that variant directly.
+            return await prov.build_template(spec, ctx, tag)
         job = await self.build(spec.name, pname, actor=actor)
         if job.state != "succeeded" or not job.image:
             raise FleetError(f"build of {spec.name} failed: {job.error}")
@@ -280,6 +413,7 @@ class Fleet:
         ttl_minutes: int | None = None,
         labels: dict[str, str] | None = None,
         resources: Resources | None = None,
+        harness: str | None = None,
         actor: str = "system",
         _image: str | None = None,
         _parent: str | None = None,
@@ -292,8 +426,17 @@ class Fleet:
         spec = self.catalog.get(environment)
         pname = provider or self.settings.default_provider
         prov = self.provider(pname)
-        cred_names = list(dict.fromkeys(credentials if credentials is not None else spec.credentials))
-        for c in cred_names:
+        try:
+            hname = spec.pick_harness(harness)
+        except ValueError as e:
+            raise FleetError(str(e)) from e
+        if credentials is not None:
+            cred_names = list(dict.fromkeys(credentials))
+        else:
+            # Only the selected harness's credentials (plus non-agent ones such as git) go into the sandbox.
+            cred_names = [c for c in dict.fromkeys(spec.credentials)
+                          if self._cred_harness(c) in (hname, None) or not self._is_agent(self._cred_harness(c))]
+        for c in [*cred_names, *spec.secrets.values()]:
             self.broker.get(c)  # fail fast on typos
         ttl = ttl_minutes if ttl_minutes is not None else self.settings.default_ttl_minutes
         base_name = _slug(name or f"{environment}-{new_id('x')[2:]}")
@@ -312,20 +455,25 @@ class Fleet:
             expires_at=now() + ttl * 60 if ttl else None,
             created_by=actor,
         )
+        if hname:
+            sb.info["harness"] = hname
         self.store.put(sb)
         self.audit(actor, "sandbox.create", sb.id, environment=environment, provider=pname, name=sb.name)
         try:
             creds = self.broker.acquire(cred_names, sb.id)  # fail before starting anything
             sb.state = SandboxState.STARTING
             self.store.put(sb)
-            image = _image or await self._ensure_image(spec, pname, actor)
+            image = _image or await self._ensure_image(spec, pname, actor, hname)
             sb.image = image
+            await self._resolve_packs(spec, pname, actor)
+            if spec.packs:
+                sb.info["packs"] = dict(spec.packs)
             await prov.create(sb, image, spec)  # image may be a snapshot ref (forks)
             self.store.put(sb)
             await self._wait_running(prov, sb)
             if _parent:
                 await self._scrub_inherited_secrets(prov, sb)
-            await self.broker.inject(sb, prov, creds)
+            await self._apply_session(prov, sb, spec, hname, creds)
             if _restore_workspace:
                 await self._restore_workspace(prov, sb, _restore_workspace)
             elif sb.repo:
@@ -353,6 +501,62 @@ class Fleet:
             if not isinstance(e, Exception):
                 raise
             raise FleetError(f"failed to create sandbox: {e}") from e
+
+    def _cred_harness(self, name: str) -> str | None:
+        c = self.store.get(Credential, name)
+        return c.harness if c else None
+
+    @staticmethod
+    def _is_agent(harness: str | None) -> bool:
+        return bool(harness and harness in HARNESSES and HARNESSES[harness].agent)
+
+    async def _apply_session(self, prov: Provider, sb: Sandbox, spec: EnvSpec, hname: str | None,
+                             creds: list[Credential]) -> None:
+        """Per-sandbox setup for the selected harness: PATH and env, credentials, secrets, config and MCP."""
+        h: Harness | None = HARNESSES.get(hname) if hname else None
+        prelude: list[str] = []
+        extra_env: dict[str, str] = {}
+        if h:
+            if h.install:
+                prelude.append(f'export PATH="{h.prefix}/bin:$PATH"')
+            extra_env.update(h.env)
+            extra_env["HANGAR_HARNESS"] = h.name
+        for var, cred in spec.secrets.items():
+            extra_env[var] = self.broker.secret_text(cred)
+        env = await self.broker.inject(sb, prov, creds, extra_env=extra_env, prelude=prelude)
+        if not h:
+            return
+        home = f"/home/{self.settings.sandbox_user}"
+        for rel, patch in h.config.items():
+            await self._merge_json(prov, sb, f"{home}/{rel}", patch)
+        servers = {n: s for n, s in spec.mcp.items() if s.harnesses is None or h.name in s.harnesses}
+        resolved = {}
+        for n, srv in servers.items():
+            missing: set[str] = set()
+            fields = resolve_refs(srv.model_dump(include={"url", "headers", "command", "args", "env"}), env, missing)
+            if missing:
+                # Skip rather than fail: the server needs a credential this sandbox wasn't given.
+                sb.info.setdefault("warnings", []).append(
+                    f"MCP server '{n}' skipped: needs {', '.join(sorted(missing))} (add it to `secrets:` or attach "
+                    "a credential that sets it)")
+                continue
+            resolved[n] = srv.model_copy(update=fields)
+        if resolved and h.mcp_format:
+            rel, content = mcp_config(h.mcp_format, resolved)
+            if isinstance(content, str):
+                cur = (await prov.read_file(sb, f"{home}/{rel}") or b"").decode()
+                await prov.write_file(sb, f"{home}/{rel}", merge_codex_toml(cur, content).encode(), mode=0o600)
+            else:
+                await self._merge_json(prov, sb, f"{home}/{rel}", content)
+            sb.info["mcp"] = sorted(resolved)
+
+    async def _merge_json(self, prov: Provider, sb: Sandbox, path: str, patch: dict[str, Any]) -> None:
+        raw = await prov.read_file(sb, path)
+        try:
+            cur = json.loads(raw) if raw else {}
+        except ValueError:
+            cur = {}
+        await prov.write_file(sb, path, json.dumps(deep_merge(cur, patch), indent=2).encode(), mode=0o600)
 
     async def _refill(self, spec: EnvSpec, pname: str, image: str) -> None:
         try:
@@ -579,15 +783,21 @@ class Fleet:
 
     # ================================================================== agent runs
     async def run_agent(self, ref: str, prompt: str, harness: str | None = None, cwd: str | None = None,
-                        extra_args: str = "", actor: str = "system") -> dict[str, Any]:
+                        extra_args: str = "", model: str | None = None, actor: str = "system") -> dict[str, Any]:
         sb, prov = self._running(ref)
         spec = self.catalog.get(sb.environment)
-        hname = harness or next((h for h in spec.harnesses if h != "git"), None)
+        selected = sb.info.get("harness")
+        if harness and selected and harness != selected:
+            raise FleetError(f"sandbox {sb.name} was created for {selected}; its credentials and config are for "
+                             f"that harness. Create a sandbox with harness={harness} instead.")
+        try:
+            hname = spec.pick_harness(harness or selected)
+        except ValueError as e:
+            raise FleetError(str(e)) from e
         if not hname:
-            raise FleetError(f"environment {sb.environment} has no agent harness installed")
+            raise FleetError(f"environment {sb.environment} has no agent harness enabled")
         h = get_harness(hname)
-        if hname not in spec.harnesses:
-            raise FleetError(f"harness {hname} is not installed in environment {sb.environment}")
+        model = model or spec.model
         run_id = new_id("run")
         home = f"/home/{self.settings.sandbox_user}"
         rdir = f"{home}/.hangar/runs"
@@ -597,6 +807,7 @@ class Fleet:
             "#!/usr/bin/env bash\n"
             "set -a; [ -f ~/.hangar/env ] && . ~/.hangar/env; set +a\n"
             f"export HANGAR_PROMPT_FILE={rdir}/{run_id}.prompt HANGAR_RUN_ID={run_id}\n"
+            + (f"export HANGAR_MODEL={shlex.quote(model)}\n" if model else "") +
             f"cd {shlex.quote(wd)}\n"
             f"{{ {h.run} {extra_args}; }} 2>&1 | tee {rdir}/{run_id}.log\n"
             f"echo ${{PIPESTATUS[0]}} > {rdir}/{run_id}.exit\n"
@@ -607,10 +818,10 @@ class Fleet:
         if res.exit_code != 0:
             raise FleetError(f"failed to start agent: {res.stderr}")
         runs = sb.info.setdefault("runs", [])
-        runs.append({"id": run_id, "harness": hname, "started_at": now(), "prompt": prompt[:200]})
+        runs.append({"id": run_id, "harness": hname, "model": model, "started_at": now(), "prompt": prompt[:200]})
         self._touch(sb)
-        self.audit(actor, "agent.run", sb.id, run=run_id, harness=hname, prompt=prompt[:300])
-        return {"sandbox": sb.id, "run_id": run_id, "harness": hname, "terminal_session": run_id,
+        self.audit(actor, "agent.run", sb.id, run=run_id, harness=hname, model=model, prompt=prompt[:300])
+        return {"sandbox": sb.id, "run_id": run_id, "harness": hname, "model": model, "terminal_session": run_id,
                 "log": f"{rdir}/{run_id}.log"}
 
     async def agent_status(self, ref: str, run_id: str, tail_lines: int = 60) -> dict[str, Any]:
@@ -718,6 +929,7 @@ class Fleet:
                 provider=pname,
                 ttl_minutes=ttl_minutes,
                 labels={**(parent.labels if parent else {}), **(labels or {}), "fork-of": snap.sandbox_id},
+                harness=parent.info.get("harness") if parent else None,
                 actor=actor,
                 _image=snap.ref if same_provider else None,
                 _parent=snap.id,
@@ -753,9 +965,9 @@ class Fleet:
         env = environment or next(
             (e for e in self.catalog.names() if harness in self.catalog.get(e).harnesses), None)
         if not env:
-            raise FleetError(f"no environment installs {harness}; create one (see envs/) to host the login")
+            raise FleetError(f"no environment enables {harness}; add it to one's harnesses to host the login")
         sb = await self.create(env, name=f"login-{harness}", credentials=[], provider=provider, ttl_minutes=30,
-                               _skip_repo=True,
+                               _skip_repo=True, harness=harness,
                                labels={"purpose": "login"}, actor=actor)
         await self.terminal_open(sb.id, "login", cwd=f"/home/{self.settings.sandbox_user}")
         await self.terminal_send(sb.id, "login", flow.command, wait_ms=500, actor=actor)
@@ -868,7 +1080,8 @@ class Fleet:
             "default_provider": self.settings.default_provider,
             "environments": len(self.catalog.names()),
             "credentials": len(self.broker.list()),
-            "harnesses": {k: v.title for k, v in HARNESSES.items()},
+            "harnesses": {k: {"title": v.title, "agent": v.agent, "version": v.version or "latest",
+                              "deprecated": v.deprecated} for k, v in HARNESSES.items()},
         }
 
 

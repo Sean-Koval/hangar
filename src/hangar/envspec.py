@@ -1,9 +1,20 @@
 """Environment specs: a declarative, layered description of a coding sandbox.
 
-Layers are rendered into a Dockerfile in cache-friendly order, so changing a repo setup
-command does not reinstall your harnesses:
+An environment has three parts:
 
-    base -> system packages -> language runtimes (mise) -> agent harnesses
+* **Image**: what is on disk. Built from this spec, or a prebuilt image you bring (`image:`).
+* **Runtime**: where it runs and with what isolation (`resources`, `runtime_class`, the provider).
+* **Session**: what is applied when a sandbox is claimed, for the one harness it was created for:
+  credentials, `secrets`, `mcp` servers, `model`, harness config and PATH.
+
+`harnesses` lists the agents an environment *allows*. They are not installed into the image: each
+harness ships as a read-only pack mounted at start (see hangar.harnesses), or, on providers that cannot
+mount images, only the selected harness is baked into a per-harness variant of the image.
+
+Image layers are rendered into a Dockerfile in cache-friendly order, so changing a repo setup
+command does not reinstall anything:
+
+    base -> system packages -> language runtimes (mise) -> [baked harness]
          -> dependencies -> skills + agent config + files -> [baked repo]
 
 The repo itself is normally cloned when a sandbox is claimed (so every sandbox is on a
@@ -19,12 +30,12 @@ import re
 import shlex
 import tarfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-from hangar.harnesses import HARNESSES, get_harness
+from hangar.harnesses import HARNESSES, McpServer, get_harness, pack_script, pack_stage
 from hangar.models import Resources
 
 DEFAULT_BASE = "ubuntu:24.04"
@@ -74,7 +85,17 @@ class EnvSpec(BaseModel):
     extends: str | None = None
     base: str = DEFAULT_BASE
     tools: Tools = Field(default_factory=Tools)
-    harnesses: list[str] = Field(default_factory=list)
+    # Prebuilt image to run as-is instead of building this spec (must meet the contract in
+    # docs/specs/0006-environments-and-harness-packs.md). To customise a prebuilt image, use `base:` instead.
+    image: str | None = None
+    harnesses: list[str] = Field(default_factory=list)  # harnesses sandboxes of this env may use
+    default_harness: str | None = None  # default: the first agent harness listed
+    # pack: mount read-only harness packs (fails if the provider can't); bake: copy the selected harness
+    # into a per-harness image variant; auto: pack when the provider supports image volumes, else bake.
+    harness_mode: Literal["auto", "pack", "bake"] = "auto"
+    model: str | None = None  # default model for agent runs (harness-specific id, e.g. openrouter/qwen/...)
+    mcp: dict[str, McpServer] = Field(default_factory=dict)  # MCP servers, rendered per harness at claim
+    secrets: dict[str, str] = Field(default_factory=dict)  # ENV_VAR -> credential name, injected at claim
     dependencies: Dependencies = Field(default_factory=Dependencies)
     skills: list[Skill] = Field(default_factory=list)
     agent_config: AgentConfig = Field(default_factory=AgentConfig)
@@ -89,6 +110,8 @@ class EnvSpec(BaseModel):
     runtime_class: str | None = None
     sudo: bool = True
     source_dir: Path | None = Field(default=None, exclude=True)
+    # Resolved by the fleet before a provider sees the spec: harness name -> pack image to mount read-only.
+    packs: dict[str, str] = Field(default_factory=dict, exclude=True)
 
     @field_validator("harnesses")
     @classmethod
@@ -96,6 +119,35 @@ class EnvSpec(BaseModel):
         for h in v:
             get_harness(h)
         return v
+
+    @field_validator("secrets")
+    @classmethod
+    def _secret_vars(cls, v: dict[str, str]) -> dict[str, str]:
+        for var in v:
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", var):
+                raise ValueError(f"invalid env var name in secrets: '{var}'")
+        return v
+
+    @model_validator(mode="after")
+    def _default_harness_allowed(self) -> EnvSpec:
+        if self.default_harness and self.default_harness not in self.agent_harnesses:
+            raise ValueError(f"default_harness '{self.default_harness}' is not one of this environment's agent "
+                             f"harnesses ({', '.join(self.agent_harnesses) or 'none'})")
+        return self
+
+    @property
+    def agent_harnesses(self) -> list[str]:
+        return [h for h in self.harnesses if get_harness(h).agent]
+
+    def pick_harness(self, requested: str | None = None) -> str | None:
+        """The agent harness a sandbox runs: the requested one (must be allowed), else the default."""
+        if requested:
+            get_harness(requested)
+            if requested not in self.agent_harnesses:
+                raise ValueError(f"harness '{requested}' is not enabled in environment '{self.name}' "
+                                 f"(allowed: {', '.join(self.agent_harnesses) or 'none'})")
+            return requested
+        return self.default_harness or next(iter(self.agent_harnesses), None)
 
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
@@ -126,7 +178,8 @@ def _deep_merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
     for k, v in over.items():
         if isinstance(v, dict) and isinstance(out.get(k), dict):
             out[k] = _deep_merge(out[k], v)
-        elif isinstance(v, list) and isinstance(out.get(k), list) and k not in ("credentials",):
+        # `harnesses` and `credentials` replace the parent's: a child narrows which agents it allows.
+        elif isinstance(v, list) and isinstance(out.get(k), list) and k not in ("credentials", "harnesses"):
             out[k] = list(dict.fromkeys([*out[k], *v])) if all(isinstance(x, str) for x in v) else [*out[k], *v]
         else:
             out[k] = v
@@ -213,7 +266,9 @@ class BuildContext(BaseModel):
 
 
 def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace",
-           extra_ca: bytes | None = None) -> BuildContext:
+           extra_ca: bytes | None = None, bake: list[str] | None = None) -> BuildContext:
+    """Render the image build. `bake` lists harnesses to copy into the image (the fallback when packs
+    can't be mounted); by default the image carries no harness binaries at all."""
     home = _home(user)
     files: dict[str, bytes] = {}
     step_no = 0
@@ -228,16 +283,23 @@ def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace",
         prefix = f"USER {as_user}\n" if as_user else "USER root\n"
         return f"{prefix}COPY {name} /tmp/hangar-steps/{step_no:02d}.sh\nRUN bash /tmp/hangar-steps/{step_no:02d}.sh\n"
     harnesses = [get_harness(h) for h in spec.harnesses]
+    baked = [get_harness(h) for h in dict.fromkeys(bake or [])]
+    for h in baked:
+        if h.name not in spec.harnesses:
+            raise ValueError(f"cannot bake harness '{h.name}': not enabled in environment '{spec.name}'")
 
-    needs = {n for h in harnesses for n in h.needs}
     mise = dict(spec.tools.mise)
-    if "node" in needs or spec.dependencies.npm:
+    if spec.dependencies.npm:
         mise.setdefault("node", "22")
     if spec.dependencies.pip:
         mise.setdefault("uv", "latest")
 
-    df: list[str] = [
-        f"# hangar environment: {spec.name}",
+    df: list[str] = [f"# hangar environment: {spec.name}"]
+    baked = [h for h in baked if h.install]
+    for h in baked:  # build stages must precede the final stage
+        files[f"packs/{h.name}.sh"] = pack_script(h).encode()
+        df.append(pack_stage(h))
+    df += [
         f"FROM {spec.base}",
         "ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8",
         "SHELL [\"/bin/bash\", \"-o\", \"pipefail\", \"-c\"]",
@@ -282,20 +344,9 @@ def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace",
             )
         )
 
-    # 3. agent harnesses
-    harness_env = {k: v for h in harnesses for k, v in h.env.items()}
-    if harness_env:
-        df.append("ENV " + " ".join(f"{k}={shlex.quote(v)}" for k, v in sorted(harness_env.items())))
-    for h in harnesses:
-        if h.install == "true" and not h.first_run:
-            continue
-        steps = [f"# harness: {h.name}", h.install]
-        if mise:
-            steps.append("mise reshim || true")
-        if h.first_run:
-            steps.append(h.first_run)
-        steps.append(h.verify)
-        df.append(_step("\n".join(steps), as_user=user))
+    # 3. baked harnesses (fallback for providers that can't mount packs): same prefix and layout as a pack
+    for h in baked:
+        df.append(f"# harness: {h.name}\nCOPY --from=pack-{h.name} {h.prefix} {h.prefix}")
 
     # 4. dependencies
     dep_steps: list[str] = []

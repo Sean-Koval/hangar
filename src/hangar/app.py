@@ -20,7 +20,7 @@ from hangar.broker import Broker, CredentialError
 from hangar.config import Settings, get_settings
 from hangar.envspec import EnvCatalog
 from hangar.fleet import Fleet, FleetError
-from hangar.harnesses import HARNESSES
+from hangar.harnesses import HARNESSES, PACK_ROOT
 from hangar.mcp_server import build_mcp, current_actor
 from hangar.models import CredentialKind, Resources, Sandbox
 from hangar.providers.base import ProviderError
@@ -99,6 +99,7 @@ class CreateSandbox(BaseModel):
     ttl_minutes: int | None = None
     labels: dict[str, str] = Field(default_factory=dict)
     resources: Resources | None = None
+    harness: str | None = None
     count: int = 1
 
 
@@ -112,6 +113,7 @@ class AgentBody(BaseModel):
     prompt: str
     harness: str | None = None
     cwd: str | None = None
+    model: str | None = None
 
 
 class ForkBody(BaseModel):
@@ -322,6 +324,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         spec = fleet.save_environment(data, actor=who)
         return spec.model_dump(mode="json")
 
+    @app.post("/api/environments/validate")
+    async def env_validate(request: Request, _: str = A):
+        body = await request.body()
+        data = yaml.safe_load(body.decode()) if body else {}
+        if not isinstance(data, dict):
+            raise HTTPException(400, "body must be a YAML/JSON mapping")
+        return fleet.validate_environment(data)
+
+    @app.post("/api/environments/{name}/clone")
+    async def env_clone(name: str, request: Request, who: str = A):
+        body = await request.body()
+        data = yaml.safe_load(body.decode()) if body else {}
+        if not isinstance(data, dict) or not data.get("name"):
+            raise HTTPException(400, "body must be a mapping with the new environment's `name`")
+        new = data.pop("name")
+        return fleet.clone_environment(name, new, data, actor=who).model_dump(mode="json")
+
+    @app.post("/api/harnesses/{harness}/pack")
+    async def pack_build(harness: str, body: BuildBody, who: str = A):
+        return {"harness": harness, "image": await fleet.build_pack(harness, body.provider, body.force, actor=who)}
+
+    @app.get("/api/harnesses/{harness}/context")
+    async def pack_context(harness: str, provider: str | None = None, _: str = A):
+        from fastapi.responses import Response
+
+        tag, ctx = fleet.pack_context(harness, provider)
+        return Response(ctx.tar(), media_type="application/x-tar", headers={"X-Hangar-Image": tag})
+
+    @app.post("/api/harnesses/{harness}/images")
+    async def pack_register(harness: str, body: RegisterImage, who: str = A):
+        return {"harness": harness, "image": fleet.register_pack(harness, body.image, body.provider, actor=who)}
+
     @app.post("/api/environments/{name}/build")
     async def env_build(name: str, body: BuildBody, who: str = A):
         job = await fleet.build(name, body.provider, force=body.force, actor=who, wait=False)
@@ -412,7 +446,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/sandboxes/{ref}/agent")
     async def agent(ref: str, body: AgentBody, who: str = A):
-        return await fleet.run_agent(ref, body.prompt, body.harness, body.cwd, actor=who)
+        return await fleet.run_agent(ref, body.prompt, body.harness, body.cwd, model=body.model, actor=who)
 
     @app.get("/api/sandboxes/{ref}/runs/{run_id}")
     async def agent_st(ref: str, run_id: str, _: str = A):
@@ -501,7 +535,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/harnesses")
     async def harnesses(_: str = A):
         return [
-            {"name": x.name, "title": x.title,
+            {"name": x.name, "title": x.title, "agent": x.agent, "version": x.version or "latest",
+             "deprecated": x.deprecated, "pack": f"{PACK_ROOT}/{x.name}" if x.install else None,
              "credential_kinds": [{"kind": s.kind.value, "env_var": s.env_var, "file_path": s.file_path,
                                    "exclusive": s.exclusive} for s in x.credentials],
              "logins": [{"command": lg.command, "captures": lg.captures.value, "notes": lg.notes} for lg in x.logins]}

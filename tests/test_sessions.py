@@ -1,0 +1,131 @@
+"""Harness selection at claim time: credentials, config, MCP servers, models and packs for one harness."""
+
+import json
+import tomllib
+
+import pytest
+
+from hangar.fleet import FleetError
+from hangar.models import CredentialKind
+
+
+@pytest.fixture
+def creds(broker):
+    broker.put("claude", "claude-code", CredentialKind.API_KEY, "sk-claude")
+    broker.put("oai", "codex", CredentialKind.API_KEY, "sk-codex")
+    broker.put("orkey", "pi", CredentialKind.API_KEY, "sk-or")
+    broker.put("ghtok", "generic-secret", CredentialKind.GENERIC, "ghp_123", env_var="UNUSED_GH")
+    return broker
+
+
+async def _env(fleet, sb) -> str:
+    return (await fleet.read_file(sb.id, "/home/agent/.hangar/env")).decode()
+
+
+async def _json(fleet, sb, path):
+    return json.loads(await fleet.read_file(sb.id, path))
+
+
+async def test_default_harness_gets_only_its_credentials(fleet, creds):
+    sb = await fleet.create("agents")
+    assert sb.info["harness"] == "claude-code"
+    env = await _env(fleet, sb)
+    assert "sk-claude" in env and "sk-codex" not in env and "sk-or" not in env
+    assert sb.credentials == ["claude"]
+    assert 'export PATH="/opt/hangar/harness/claude-code/bin:$PATH"' in env
+    assert "DISABLE_AUTOUPDATER=1" in env and "HANGAR_HARNESS=claude-code" in env
+    assert "GH_TOKEN=ghp_123" in env, "`secrets:` maps a credential to an env var"
+
+
+async def test_claude_config_and_mcp(fleet, creds):
+    sb = await fleet.create("agents")
+    cfg = await _json(fleet, sb, "/home/agent/.claude.json")
+    assert cfg["hasCompletedOnboarding"] is True
+    assert cfg["mcpServers"]["github"] == {"type": "http", "url": "https://api.example/mcp",
+                                           "headers": {"Authorization": "Bearer ghp_123"}}
+    assert "only-pi" not in cfg["mcpServers"], "harness-scoped servers go only to that harness"
+    assert "private" not in cfg["mcpServers"]
+    assert any("'private' skipped: needs NOPE" in w for w in sb.info["warnings"])
+    assert sb.info["mcp"] == ["github"]
+
+
+async def test_pi_sandbox(fleet, creds):
+    sb = await fleet.create("agents", harness="pi")
+    env = await _env(fleet, sb)
+    assert "OPENROUTER_API_KEY=sk-or" in env and "sk-claude" not in env
+    mcp = await _json(fleet, sb, "/home/agent/.pi/agent/mcp.json")
+    assert set(mcp["mcpServers"]) == {"github", "only-pi"}
+
+
+async def test_codex_mcp_toml_preserves_user_config(fleet, creds):
+    sb = await fleet.create("agents", harness="codex")
+    doc = tomllib.loads((await fleet.read_file(sb.id, "/home/agent/.codex/config.toml")).decode())
+    assert doc["mcp_servers"]["github"]["http_headers"]["Authorization"] == "Bearer ghp_123"
+
+
+async def test_harness_must_be_enabled(fleet, creds):
+    with pytest.raises(FleetError, match="not enabled"):
+        await fleet.create("agents", harness="antigravity")
+    with pytest.raises(FleetError, match="unknown harness"):
+        await fleet.create("agents", harness="nope")
+
+
+async def test_explicit_credentials_are_honoured(fleet, creds):
+    sb = await fleet.create("agents", harness="pi", credentials=["orkey", "claude"])
+    assert sb.credentials == ["orkey", "claude"]
+
+
+async def test_run_agent_model_and_harness(fleet, creds):
+    sb = await fleet.create("agents", harness="pi")
+    with pytest.raises(FleetError, match="was created for pi"):
+        await fleet.run_agent(sb.id, "hi", harness="codex")
+    for model, expect in ((None, "sonnet"), ("openrouter/qwen/qwen3-coder", "openrouter/qwen/qwen3-coder")):
+        run = await fleet.run_agent(sb.id, "hi", model=model)
+        assert run["harness"] == "pi" and run["model"] == expect
+        script = (await fleet.read_file(sb.id, f"/home/agent/.hangar/runs/{run['run_id']}.sh")).decode()
+        assert f"export HANGAR_MODEL={expect}" in script and "pi -p --mode json" in script
+        await fleet.terminal_kill(sb.id, run["run_id"])
+
+
+async def test_packs_are_mounted_not_baked(fleet, creds):
+    fake = fleet.providers["docker"]
+    fake.image_volumes = True
+    a = await fleet.create("agents")
+    b = await fleet.create("agents", harness="codex")
+    assert set(a.info["packs"]) == {"claude-code", "codex", "pi"}, "every allowed harness is mounted read-only"
+    assert fake.packs_mounted[-1] == a.info["packs"] == b.info["packs"]
+    assert a.image == b.image, "one harness-free image serves every harness"
+    pack_images = {t for t in fake.images if "/harness-" in t}
+    assert len(pack_images) == 3
+
+
+async def test_without_image_volumes_only_the_selected_harness_is_baked(fleet, creds):
+    fake = fleet.providers["docker"]
+    a = await fleet.create("agents")
+    b = await fleet.create("agents", harness="pi")
+    c = await fleet.create("agents", harness="pi")
+    assert a.image != b.image and b.image == c.image
+    assert "packs" not in a.info and fake.packs_mounted[-1] == {}
+    assert not any("/harness-" in t for t in fake.images)
+
+
+async def test_fork_keeps_the_parents_harness(fleet, creds):
+    parent = await fleet.create("agents", harness="pi")
+    (fork,) = await fleet.fork(parent.id, count=1)
+    assert fork.info["harness"] == "pi"
+    assert "OPENROUTER_API_KEY=sk-or" in await _env(fleet, fork)
+
+
+async def test_validate_and_clone(fleet, creds, tmp_path):
+    fleet.catalog.dirs = [tmp_path / "saved", *fleet.catalog.dirs]  # clones persist here, not into fixtures
+    ok = fleet.validate_environment({"name": "t", "extends": "agents", "harnesses": ["pi"],
+                                     "credentials": ["missing-cred"]})
+    assert ok["valid"] and ok["default_harness"] == "pi"
+    assert any("missing-cred" in w for w in ok["warnings"])
+    assert "t" not in fleet.catalog.names(), "validation must not register the env"
+    bad = fleet.validate_environment({"name": "t", "harnesses": ["nope"]})
+    assert not bad["valid"] and "unknown harness" in bad["errors"][0]
+    spec = fleet.clone_environment("agents", "agents-pi", {"default_harness": "pi"})
+    assert spec.pick_harness() == "pi" and spec.mcp.keys() == {"github", "private", "only-pi"}
+    with pytest.raises(FleetError, match="already exists"):
+        fleet.clone_environment("agents", "agents-pi")

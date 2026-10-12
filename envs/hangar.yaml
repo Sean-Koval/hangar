@@ -1,0 +1,19 @@
+# A team project environment: what a "hangar env" looks like. Clone it for a teammate or a variant with
+# clone_environment(source="hangar", name="hangar-codex", overrides={"default_harness": "codex"}).
+name: hangar
+extends: python
+description: The hangar repo, checked out and synced, with its conventions and the GitHub MCP server
+repo:
+  url: https://github.com/Sean-Koval/hangar.git
+  branch: main
+  setup: uv sync
+skills:
+  - path: skills/repo-conventions
+credentials: []            # e.g. [claude-pro, codex-chatgpt, openrouter, github-hangar]; filtered per harness
+# MCP servers are written in each harness's own config format when a sandbox is claimed.
+# ${VAR} references resolve against env injected into the sandbox (credentials and `secrets`).
+mcp:
+  github:
+    url: https://api.githubcopilot.com/mcp/
+    headers:
+      Authorization: Bearer ${GH_TOKEN}

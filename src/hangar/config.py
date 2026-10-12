@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     # docker
     docker_runtime: str | None = None  # e.g. "runsc" for gVisor, "kata" if configured
     docker_network: str | None = None
+    # Mount harness packs with `--mount type=image` (Docker 28+ with the containerd image store). None = detect.
+    docker_image_volumes: bool | None = None
 
     # kubernetes / agent-sandbox
     k8s_namespace: str = "hangar-sandboxes"
@@ -61,6 +63,8 @@ class Settings(BaseSettings):
     # Service account Cloud Build runs as for in-cluster builds (the control plane's own GSA). Without it
     # Cloud Build uses the project's default SA, which the control plane usually may not act as.
     k8s_build_service_account: str | None = None
+    # Mount harness packs as OCI image volumes (Kubernetes >= 1.35, stable in 1.36). Off: bake into images.
+    k8s_image_volumes: bool = True
 
     # e2b
     e2b_api_key: str | None = None

@@ -1,0 +1,20 @@
+name: agents
+description: several harnesses, MCP servers and secrets
+harnesses: [claude-code, codex, pi]
+credentials: [claude, oai, orkey]
+model: sonnet
+secrets:
+  GH_TOKEN: ghtok
+mcp:
+  github:
+    url: https://api.example/mcp
+    headers:
+      Authorization: Bearer ${GH_TOKEN}
+  private:
+    url: https://p.example/mcp
+    headers:
+      X-Key: ${NOPE}
+  only-pi:
+    command: npx
+    args: [x]
+    harnesses: [pi]
