@@ -2,6 +2,8 @@
 
 Status: draft · Date: 2026-10-12 · Builds on: 0001 (run events), 0002 (verification, approvals), 0003 (gateway, egress) · Consumed by: 0004 (supervisor)
 
+> Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins.
+
 ## 1. Summary
 
 - Collect OpenTelemetry from Claude Code sessions through an OTLP endpoint on the gateway listener. Tag every signal with hangar's sandbox, run and task ids on the server side.
