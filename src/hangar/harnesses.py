@@ -124,19 +124,19 @@ curl -fsSL https://antigravity.google/cli/install.sh | bash
 install -D -m 755 "$(readlink -f "$HOME/.local/bin/agy")" "$PREFIX/bin/agy"
 """
 
-# A GCP service-account key (Vertex AI billing on your own project). The project comes from the key file.
-_GCP_SA_ENV = (
-    "P=$(python3 -c 'import json,os;print(json.load(open(os.path.expanduser(\"~/.config/hangar/gcp-sa.json\")))"
-    "[\"project_id\"])') && "
-    "printf 'export GOOGLE_APPLICATION_CREDENTIALS=%s GOOGLE_CLOUD_PROJECT=%s "
-    "GOOGLE_CLOUD_LOCATION=${GOOGLE_CLOUD_LOCATION:-global} %s\\n' "
-    "\"$HOME/.config/hangar/gcp-sa.json\" \"$P\" \"$EXTRA\" >> ~/.hangar/env"
+# A GCP service-account key for Vertex AI billed to your own project (pi's google-vertex/* models; verified on
+# GKE). The project comes from the key file. GOOGLE_CLOUD_LOCATION expands when ~/.hangar/env is sourced.
+_GCP_SA_SLOT = CredentialSlot(
+    kind=CredentialKind.GENERIC,
+    file_path=".config/hangar/gcp-sa.json",
+    post_inject=(
+        "P=$(python3 -c 'import json,os;print(json.load(open(os.path.expanduser(\"~/.config/hangar/gcp-sa.json\")))"
+        "[\"project_id\"])') && "
+        "printf 'export GOOGLE_APPLICATION_CREDENTIALS=%s GOOGLE_CLOUD_PROJECT=%s "
+        "GOOGLE_CLOUD_LOCATION=${GOOGLE_CLOUD_LOCATION:-global}\\n' "
+        "\"$HOME/.config/hangar/gcp-sa.json\" \"$P\" >> ~/.hangar/env"
+    ),
 )
-
-
-def _gcp_slot(extra_env: str = "") -> CredentialSlot:
-    return CredentialSlot(kind=CredentialKind.GENERIC, file_path=".config/hangar/gcp-sa.json",
-                          post_inject=f"EXTRA={json.dumps(extra_env)}; " + _GCP_SA_ENV)
 
 
 HARNESSES: dict[str, Harness] = {
@@ -215,7 +215,7 @@ HARNESSES: dict[str, Harness] = {
             # `pi /login` subscriptions (ChatGPT, Claude...). Tokens refresh in place, so lease exclusively.
             CredentialSlot(kind=CredentialKind.AUTH_FILE, file_path=".pi/agent/auth.json", exclusive=True),
             # Vertex AI on your own GCP project (`--model google-vertex/<id>`).
-            _gcp_slot(),
+            _GCP_SA_SLOT,
         ],
         run=(
             'pi -p --mode json --approve ${HANGAR_MODEL:+--model "$HANGAR_MODEL"} '
@@ -245,11 +245,11 @@ HARNESSES: dict[str, Harness] = {
                     "PY"
                 ),
             ),
-            # Vertex AI / Gemini Enterprise on your own GCP project.
-            _gcp_slot("GOOGLE_GENAI_USE_ENTERPRISE=true GOOGLE_GENAI_USE_VERTEXAI=true"),
         ],
-        # No login flow: agy keeps Google OAuth in the OS keyring, which headless sandboxes lack. Use a
-        # GEMINI_API_KEY or a GCP service-account key (kind=generic) instead.
+        # Headless agy needs GEMINI_API_KEY. Verified on GKE (agy 1.3.3): it ignores service-account/ADC and
+        # the GOOGLE_GENAI_USE_* Vertex variables, and its Google sign-in lives in the OS keyring (Secret
+        # Service over D-Bus), which sandboxes lack. To bill your own GCP project, create the key there:
+        # `gcloud services api-keys create --api-target=service=generativelanguage.googleapis.com`.
         run=(
             'agy -p "$(cat "$HANGAR_PROMPT_FILE")" --output-format stream-json '
             '--dangerously-skip-permissions ${HANGAR_MODEL:+--model "$HANGAR_MODEL"}'
