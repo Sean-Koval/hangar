@@ -1,6 +1,6 @@
-import pytest
-
 from pathlib import Path
+
+import pytest
 
 from hangar.envspec import EnvCatalog, image_tag, render, repo_dirname
 from tests.conftest import ENVS
@@ -29,8 +29,12 @@ def test_shipped_envs_load_and_render():
         # If the environment has agent harnesses, check pick_harness() result
         if spec.agent_harnesses:
             picked = spec.pick_harness()
-            assert picked in spec.harnesses, f"Environment {name} pick_harness() result '{picked}' should be in harnesses list"
-            assert picked in spec.agent_harnesses, f"Environment {name} pick_harness() result '{picked}' should be in agent_harnesses list"
+            assert picked in spec.harnesses, (
+                f"Environment {name} pick_harness() result '{picked}' should be in harnesses list"
+            )
+            assert picked in spec.agent_harnesses, (
+                f"Environment {name} pick_harness() result '{picked}' should be in agent_harnesses list"
+            )
 
 
 
