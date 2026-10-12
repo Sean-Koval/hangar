@@ -33,7 +33,8 @@ rseq = [s.get("rule_category") or "?" for s in tools]
 first_edit = next((i for i, c in enumerate(rseq) if c == "edit"), None)
 test_runs = [s for s in tools if re.search(r"unittest|pytest", s.get("args") or "")]
 test_fail = [s for s in test_runs if s.get("error") or re.search(r"FAILED|Error|Traceback", s.get("result") or "")]
-ref = [s for s in tools if re.search(r"node_modules|/opt/hangar/harness|require\(", s.get("args") or "")]
+ref = [s for s in tools if re.search(r"node_modules|/opt/hangar/harness|require\(", s.get("args") or "")
+       or re.match(r"search_web|read_url_content|web_search|fetch", s.get("name") or "")]
 writes = [s for s in tools if rseq[tools.index(s)] == "edit"]
 
 # fix loops: a failing test run followed by an edit then another test run

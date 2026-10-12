@@ -15,8 +15,8 @@ URL = "https://openrouter.ai/api/alpha/decisions"
 MODEL = "microsoft/microsoft-decision-1"
 CATS = {
     "explore": "reading or searching the agent's own workspace, listing directories, checking the environment",
-    "reference": "reading or running a third-party/reference implementation outside the workspace "
-                 "(e.g. node_modules, another library's source) to learn expected behaviour",
+    "reference": "consulting an external reference to learn expected behaviour: web searches, reading documentation "
+                 "URLs, or reading/running a third-party implementation outside the workspace (e.g. node_modules)",
     "edit": "creating or modifying the project's source or test files",
     "test": "running the project's own test suite (unittest/pytest)",
     "verify": "running the program or ad-hoc scripts to check behaviour, other than the test suite",
@@ -27,7 +27,7 @@ CATS = {
 
 def rule(span: dict) -> str:
     a = (span.get("name") or "") + " " + (span.get("args") or "")
-    if re.search(r"node_modules|/opt/hangar/harness|require\(", a):
+    if re.search(r"^(search_web|read_url_content|web_search|fetch)|node_modules|/opt/hangar/harness|require\(", a):
         return "reference"
     if re.search(r"\bgit (add|commit|status|log|diff|show)", a):
         return "vcs"
