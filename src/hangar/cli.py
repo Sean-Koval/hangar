@@ -218,6 +218,19 @@ def _build_and_push(tag: str, tar: bytes, platform: str) -> None:
         subprocess.run(["docker", "push", tag], check=True)
 
 
+@pack_app.command("list")
+def pack_list(as_json: bool = typer.Option(False, "--json", help="Print the raw list as JSON.")):
+    """List harness packs supported by the server."""
+    harnesses = _call("GET", "/api/harnesses")
+    if as_json:
+        _print(harnesses)
+        return
+    for h in harnesses:
+        agent = " agent" if h.get("agent") else ""
+        dep = " (deprecated)" if h.get("deprecated") else ""
+        typer.echo(f"{h['name']:16} {h.get('version') or 'latest':12}{agent}{dep}".rstrip())
+
+
 @pack_app.command("render")
 def pack_render(harness: str):
     """Print a harness pack's Dockerfile and install script (local, no server needed)."""
