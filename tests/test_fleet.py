@@ -187,3 +187,26 @@ async def test_gc_lists_and_removes_orphans(fleet):
     assert [o["ref"] for o in await fleet.gc()] == ["x1"] and removed == []
     await fleet.gc(delete=True)
     assert removed == ["x1"]
+
+
+async def test_fork_scrub_does_not_touch_the_callers_tmux(fleet):
+    """Regression: the fork test's `tmux kill-server` once killed the agent running this suite in a sandbox.
+
+    The bystander lives on the default tmux server, where an agent's session (or a developer's) would be.
+    """
+    import os
+    import shutil
+    import subprocess
+
+    if not shutil.which("tmux"):
+        pytest.skip("tmux not installed")
+    env = {k: v for k, v in os.environ.items() if k not in ("TMUX", "TMUX_TMPDIR")}
+    name = f"hangar-bystander-{os.getpid()}"
+    subprocess.run(["tmux", "new-session", "-d", "-s", name, "sleep 300"], env=env, check=True)
+    try:
+        parent = await fleet.create("plain", name="tmux-parent")
+        await fleet.fork(parent.id, count=1, work_branch_prefix=None)
+        alive = subprocess.run(["tmux", "has-session", "-t", name], env=env, capture_output=True)
+        assert alive.returncode == 0, "fork scrubbing killed a tmux server outside the fake sandbox"
+    finally:
+        subprocess.run(["tmux", "kill-session", "-t", name], env=env, capture_output=True)
