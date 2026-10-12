@@ -93,7 +93,10 @@ class EnvSpec(BaseModel):
     # pack: mount read-only harness packs (fails if the provider can't); bake: copy the selected harness
     # into a per-harness image variant; auto: pack when the provider supports image volumes, else bake.
     harness_mode: Literal["auto", "pack", "bake"] = "auto"
-    model: str | None = None  # default model for agent runs (harness-specific id, e.g. openrouter/qwen/...)
+    # Default model for agent runs. Model ids are harness-specific, so prefer a map per harness:
+    # {claude-code: opus, pi: openrouter/google/gemini-3.8-flash, antigravity: gemini-3.8-flash-high}.
+    # A plain string applies to whichever harness the sandbox runs.
+    model: str | dict[str, str] | None = None
     mcp: dict[str, McpServer] = Field(default_factory=dict)  # MCP servers, rendered per harness at claim
     secrets: dict[str, str] = Field(default_factory=dict)  # ENV_VAR -> credential name, injected at claim
     dependencies: Dependencies = Field(default_factory=Dependencies)
@@ -134,6 +137,19 @@ class EnvSpec(BaseModel):
             raise ValueError(f"default_harness '{self.default_harness}' is not one of this environment's agent "
                              f"harnesses ({', '.join(self.agent_harnesses) or 'none'})")
         return self
+
+    @field_validator("model")
+    @classmethod
+    def _model_keys(cls, v: str | dict[str, str] | None) -> str | dict[str, str] | None:
+        if isinstance(v, dict):
+            for h in v:
+                get_harness(h)
+        return v
+
+    def model_for(self, harness: str | None) -> str | None:
+        if isinstance(self.model, dict):
+            return self.model.get(harness or "")
+        return self.model
 
     @property
     def agent_harnesses(self) -> list[str]:

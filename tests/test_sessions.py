@@ -129,3 +129,17 @@ async def test_validate_and_clone(fleet, creds, tmp_path):
     assert spec.pick_harness() == "pi" and spec.mcp.keys() == {"github", "private", "only-pi"}
     with pytest.raises(FleetError, match="already exists"):
         fleet.clone_environment("agents", "agents-pi")
+
+
+async def test_model_map_per_harness(fleet, creds, tmp_path):
+    fleet.catalog.dirs = [tmp_path / "saved", *fleet.catalog.dirs]
+    fleet.clone_environment("agents", "agents-models", {"model": {"pi": "openrouter/google/gemini-3.8-flash"}})
+    sb = await fleet.create("agents-models", harness="pi")
+    run = await fleet.run_agent(sb.id, "hi")
+    assert run["model"] == "openrouter/google/gemini-3.8-flash"
+    await fleet.terminal_kill(sb.id, run["run_id"])
+    other = await fleet.create("agents-models", harness="codex", credentials=[])
+    run = await fleet.run_agent(other.id, "hi")
+    assert run["model"] is None, "no entry for codex: the harness's own default"
+    await fleet.terminal_kill(other.id, run["run_id"])
+

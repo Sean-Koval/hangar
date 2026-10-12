@@ -813,7 +813,7 @@ class Fleet:
         if not hname:
             raise FleetError(f"environment {sb.environment} has no agent harness enabled")
         h = get_harness(hname)
-        model = model or spec.model
+        model = model or spec.model_for(hname)
         run_id = new_id("run")
         home = f"/home/{self.settings.sandbox_user}"
         rdir = f"{home}/.hangar/runs"
