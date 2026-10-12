@@ -1,4 +1,4 @@
-# 0008: Sandbox swarms for MCP clients, the automated improvement loop, labeling, and the RL path
+# 0008: Sandbox swarms for coding work, and the improvement loop, labeling and RL built on them
 
 Status: draft · Date: 2026-10-12 · Builds on: 0004 (scheduler, performance), 0005 (traces, Decision-1), 0006 (environments, packs), 0007 (policy, MCP gateway, experiments, labels, team learning) · Research: three briefs of 2026-10-12, sources in §10
 
@@ -6,8 +6,10 @@ Status: draft · Date: 2026-10-12 · Builds on: 0004 (scheduler, performance), 0
 
 ## 1. Summary
 
-- **Product shape:** hangar becomes the tool an agent reaches for when it needs many small, isolated, fast, cheap sandboxes. That means fan out a task, try N approaches, map work over shards, or run untrusted code. Hangar handles placement, policy, credentials, traces and grading. A handful of MCP tools covers it, with `swarm` as the one-call default.
-- **Don't reinvent the open interfaces.** Hangar implements **Harbor's sandbox interface** (`BaseEnvironment`), runs **Harbor-format tasks** (`task.toml`, instruction, `tests/test.sh` → `reward.json`), and stores trajectories as **ATIF v1.7** next to OpenTelemetry spans. Harbor and Prime Intellect's `verifiers` tasks, verifiers and optimizers then run on hangar's fleet. Hangar adds what they lack: enforced policy, a credential gateway, warm pools, and an MCP front door.
+> **Product priority (owner, 2026-10-12).** Hangar is a control plane for sandboxes with agent harnesses, used to scale software development with coding agents. Swarms exist to get more real work done: issues fixed, migrations landed, PRs opened. Evals, labeling, the improvement loop and RL are features on top of that fleet, built from the traces real work already produces. When a choice trades development throughput or UX against eval or RL convenience, development wins.
+
+- **Product shape:** hangar becomes the tool a developer, or the agent they are working with, reaches for to spread coding work across many isolated, fast, cheap sandboxes. It can split a migration across shards, try N fixes for an issue and keep the one that passes the repo's tests, or run untrusted code. Hangar handles placement, policy, credentials, traces and checks. A handful of MCP tools covers it, with `swarm` as the one-call default. Results land as branches and PRs, under 0002's human-approved landing.
+- **Use open formats for the eval side; don't let them shape the core.** Development work is described by GitHub issues, 0004 tasks and `swarm` calls, and it is checked by the repo's own commands (its tests, linters, builds). For *graded* work (benchmarks, regression sets, experiments, RL), hangar uses **Harbor's task format** (`task.toml`, instruction, `tests/test.sh` → `reward.json`) as its only task format, implements **Harbor's sandbox interface** (`BaseEnvironment`) as an adapter, and exports trajectories as **ATIF v1.7** next to OpenTelemetry spans. A finished development run can be saved as a Harbor task, so real work becomes the regression set.
 - **The improvement loop runs on a schedule and ends at a PR:**
   1. observe;
   2. detect (labels, regressions, per-tool difficulty);
@@ -37,7 +39,7 @@ Status: draft · Date: 2026-10-12 · Builds on: 0004 (scheduler, performance), 0
 | --- | --- | --- |
 | Harbor defines the sandbox interface (`start/stop/exec/upload/download`), the task and verifier layout, separate verifier sandboxes, and ATIF. Its docs list about 30 integrated providers, including `gke`, `e2b`, `daytona` and `modal`. | R1 (interface, verifier, ATIF verified at source); provider list per the research brief | Implement `BaseEnvironment`; adopt the task format and ATIF; convert `evals/semver` into a Harbor task |
 | `verifiers` v1: taskset × harness × trace. A model-interception proxy captures tokens and logprobs. GEPA is built in and optimizes prompts over any harness, including Claude Code and Codex. | R1 | Hangar's model-API proxy (0003 M9) doubles as the interception point; GEPA is a candidate proposer |
-| Memory snapshot plus fork of a running sandbox exists at E2B, Morph, Freestyle, CodeSandbox, Modal (alpha) and GKE Pod Snapshots (GA May 2026). Others fork only the filesystem. | R2 | `fork(n)` records whether each backend forks memory or only the filesystem; route best-of-N to backends with memory fork |
+| Memory snapshot plus fork of a running sandbox exists at E2B, Morph, Freestyle, CodeSandbox, Modal (alpha) and GKE Pod Snapshots (GA May 2026). Others fork only the filesystem. | R2 | `fork(n)` records whether each backend forks memory or only the filesystem. Coding state is mostly on disk, so disk-level forks on GKE are the default and memory fork is opt-in (decision in §7) |
 | Sub-second starts come from warm pools, lazy snapshot restore, and copy-on-write disk and memory shared across clones. Lazy image loading cuts pulls about 7× (SOCI). | R2 | Pools per variant, snapshot-backed pools, image streaming |
 | The OpenAI Agents SDK sandbox abstraction (Apr 2026) ships with 7 providers. No MCP-level sandbox spec exists. | R2 | Hangar's MCP tools are the MCP-side answer; add an Agents SDK provider later |
 | Rollout scale in practice: 512 containers per step (DeepSWE; Docker daemon limits pushed them to Kubernetes); 1k+ concurrent rollouts (GLM-5); one Firecracker VM per rollout with snapshot-fork (Cursor). | R1 | Kubernetes plus pools is the right base; set a target of 512 concurrent agent sandboxes |
@@ -49,8 +51,9 @@ Status: draft · Date: 2026-10-12 · Builds on: 0004 (scheduler, performance), 0
 
 Goals:
 
-- One MCP call creates a swarm and returns graded, ranked results. A swarm of 20 small sandboxes is claimed in under 5 s warm.
-- Run Harbor tasks and `verifiers` environments on hangar unchanged, with hangar's policy and traces added.
+- One MCP call spreads a piece of coding work across sandboxes and returns checked, ranked branches. A swarm of 20 small sandboxes is claimed in under 5 s warm.
+- The swarm UX is built for development first: repo checkout, the repo's own checks, branches and PRs, budgets, and cancellation.
+- Run Harbor tasks and `verifiers` environments on hangar unchanged, with hangar's policy and traces added. This is a feature, not the core.
 - An improvement loop that runs unattended and produces reviewed PRs with evidence, never silent changes.
 - Labeling a queue item takes about 3 seconds for a binary or categorical call.
 - A data path from runs to training sets (stage B) and a rollout path for open-model RL (stage C), without redesigning anything.
@@ -89,7 +92,12 @@ There are few tools, each covering a lot, with sensible defaults. The existing s
 - **Tool sandboxes** (`profile: nano`, 0.25–0.5 vCPU, 512 MB–1 GB, no harness): the calling agent runs its own loop and only executes code here. These are the cheapest, the densest, and the sub-second ones.
 - **Agent sandboxes** (`profile: agent`, 1–2 vCPU, harness pack mounted): a harness runs inside under policy.
 
-**Placement** chooses a backend by need: memory fork → E2B or Morph-class; bulk or cheap → GKE pools on hangar's own nodes; local → Docker. The cost model is per backend, and placement is visible in the result.
+**Placement** chooses a backend by need:
+- **Default:** GKE pools on hangar's own nodes, forking at the disk level (repo, dependencies and build caches carried over). Code and credentials stay in the owner's project.
+- **Process state needed** (a running dev server, warmed language server, mid-session fork): GKE Pod Snapshots, then E2B if the M2 benchmark shows Pod Snapshots too slow or too fragile.
+- **Local:** Docker.
+
+The cost model is per backend, and placement is visible in the result.
 
 **Merging `map` output:** each shard commits on `swarm/<id>/<k>`. Hangar merges the shards in order onto `swarm/<id>`, reports conflicts per shard, and can run one agent sandbox to resolve them.
 
@@ -98,7 +106,7 @@ There are few tools, each covering a lot, with sensible defaults. The existing s
 | Path | Mechanism | Target |
 | --- | --- | --- |
 | Warm claim | Pools per (env, harness, profile) and per experiment variant; forecasting (0004 M2) | p50 < 1 s, p95 < 3 s |
-| Fork N | Memory snapshot restore (E2B, Morph, GKE Pod Snapshots, pinned to machine series and gVisor version) | N=10 in < 5 s on a memory-fork backend; filesystem fork < 15 s |
+| Fork N | Disk-level fork from a prepared sandbox on GKE (default); memory snapshot restore where process state is needed (GKE Pod Snapshots pinned to machine series and gVisor version; E2B) | Disk fork N=10 < 15 s; memory fork N=10 < 5 s where the backend supports it |
 | Cold start | GKE image streaming or lazy pulls; pack pre-pull DaemonSet; images built in CI | < 30 s p95 |
 | Density | CPU requests below limits; `nano` profile; bin-packing | ≥ 30 nano or ≥ 12 agent sandboxes per 8-vCPU node |
 | Scale | Async create plus queue; node pools sized from forecasts; quota headroom | 512 concurrent agent sandboxes and 2,000 nano per cluster |
@@ -185,12 +193,16 @@ Each number gets a benchmark in `evals/perf/`, run on every release (0004 M0).
 
 ### 5.5 Interop: Harbor, verifiers, ATIF, Agents SDK
 
+Scope: this section is about graded work. Development runs do not need a Harbor task; they use the repo's own checks (`verify=`) and land as branches and PRs. Harbor enters when a run is meant to be scored and compared.
+
+- **Save as task:** `save_as_task(run)` turns a finished development run into a Harbor task. It takes the starting commit as the environment, the issue text as the instruction, and the tests that changed or were added in the merged fix as `tests/`. This is how the team's real work becomes its regression set.
+- **One task format:** Harbor's layout is hangar's only task format. Hangar-specific hints (sandbox size, preferred harness) go in a `[metadata.hangar]` table in `task.toml`. Variants, policy, budgets and ticket links belong to the 0007 experiment definition, which points at task directories. Pin a Harbor version and run its task validator in CI.
 - **`hangar.harbor:HangarEnvironment`** implements Harbor's `BaseEnvironment` against hangar's REST API, so `harbor run -e hangar.harbor:HangarEnvironment` runs any Harbor task on hangar under its policy. Credentials stay in the Harbor process or hangar's vault, per Harbor's guidance. Capabilities are declared honestly.
 - **Tasks:** `evals/semver` is converted to a Harbor task (`task.toml`, `instruction.md`, `tests/test.sh` writing `reward.json` per category). The 0007 experiment runner accepts Harbor task directories as its task-set format.
 - **Separate verifier sandbox** by default for graded runs (Harbor's `environment_mode = "separate"`): fresh sandbox, only declared artifacts copied, no network.
 - **Trajectories:** each run exports ATIF v1.7 (`trajectory.json`) from the normalized spans (0007 M6 parsers), with `final_metrics` for tokens and cost. OTel stays the live channel. Claims that harnesses export ATIF natively are unverified; hangar converts.
 - **`verifiers` v1:** run its environments via Harbor, or directly by implementing its runtime hooks (OQ2).
-- **OpenAI Agents SDK:** a hangar sandbox provider, later (M10), so SDK agents get hangar sandboxes.
+- **OpenAI Agents SDK:** a hangar sandbox provider, later (M12), so SDK agents get hangar sandboxes.
 
 ### 5.6 RL path and reward-hacking defenses
 
@@ -231,9 +243,9 @@ Each number gets a benchmark in `evals/perf/`, run on every release (0004 M0).
 
 ## 7. Open questions
 
-1. Adopt Harbor's task format as hangar's only task format, or support both it and an internal one? Recommended: Harbor only.
+1. ~~Harbor's task format as the only task format?~~ **Decided (owner, 2026-10-12): yes, for graded work only.** Development work keeps GitHub issues, 0004 tasks and the repo's own checks. Hangar hints go in `[metadata.hangar]`; experiment settings stay in 0007's experiment definition (§5.5).
 2. `verifiers` integration through Harbor, or natively? Decide after M6.
-3. Memory-fork backend for best-of-N: E2B (already a provider), Morph, or GKE Pod Snapshots (no native fork-N; restore takes seconds)? Benchmark all three in M2.
+3. ~~Memory-fork backend?~~ **Decided (owner, 2026-10-12):** disk-level forks on GKE are the default. Memory fork is opt-in for workloads that need process state: GKE Pod Snapshots first, E2B as the fallback, Morph only if M2 shows a gap neither closes. M2 benchmarks time to N ready forks (N = 1, 10, 50), cost per fork-hour, whether a running process survives, failure rate, and whether it works under gVisor with policy enforced. Run it after 0007 M0 so SSD quota doesn't skew the GKE numbers.
 4. Which open model and trainer for stage C, and on what GPU budget? Out of scope until stage B data exists.
 5. Should the improvement loop's L2 `staging` channel exist at all, or is L1 (PR only) enough?
 
@@ -244,9 +256,9 @@ Sizes: S ≤ 1 day, M ≈ 2–3 days, L ≈ 4–6 days. These come after 0007 M0
 | # | Milestone | Size | Depends on |
 | --- | --- | --- | --- |
 | M1 | `nano` profile, `exec_many`, and pools per (env, harness, profile) | M | 0007 M0–M1 |
-| M2 | `fork_sandbox(kind=…)` across backends + benchmark (E2B, GKE Pod Snapshots, Docker) | M | — |
+| M2 | `fork_sandbox(kind=…)`: disk fork on GKE (default) and Docker, memory fork via GKE Pod Snapshots and E2B; benchmark per §7 OQ3 | M | 0007 M0 |
 | M3 | `swarm` with `best_of_n` and `map`, server-side loop, progress notifications, ranking, merge of map shards | L | M1, M2, 0007 M3 (budgets) |
-| M4 | Harbor `BaseEnvironment` adapter; `evals/semver` as a Harbor task; separate verifier sandboxes | M | — |
+| M4 | Harbor `BaseEnvironment` adapter; `evals/semver` as a Harbor task; `save_as_task`; separate verifier sandboxes | M | — |
 | M5 | ATIF export from normalized spans; `export_dataset` | M | 0007 M6 |
 | M6 | Review tab: rule-routed queues, pre-labels, hotkeys, first-failure marking, MCP review tools | L | 0007 M8 |
 | M7 | Error-analysis assistant (clustering notes → taxonomy), natural-language run search | M | M6 |
@@ -258,11 +270,12 @@ Sizes: S ≤ 1 day, M ≈ 2–3 days, L ≈ 4–6 days. These come after 0007 M0
 
 ## 9. Acceptance
 
-1. `swarm(best_of_n, n=10)` on a hangar issue returns 10 verified attempts. Claim plus fork completes in under 10 s on a warm pool or memory-fork backend.
-2. `harbor run -e hangar.harbor:HangarEnvironment` runs the semver Harbor task and writes `reward.json`.
-3. A reviewer labels 50 queued items in under 5 minutes with keys alone.
-4. The nightly loop opens one PR with evidence and a held-out result; a deliberately bad proposal is rejected on validation.
-5. A planted answer key in an image is caught by the scan before the experiment starts.
+1. `swarm(best_of_n, n=10)` on a real hangar GitHub issue returns 10 attempts checked by the repo's own tests, and the best one opens a PR. Claim plus disk fork completes in under 15 s on a warm GKE pool.
+2. `swarm(map, n=20)` over a real multi-file change in hangar produces one combined branch with per-shard conflicts reported.
+3. `harbor run -e hangar.harbor:HangarEnvironment` runs the semver Harbor task and writes `reward.json`.
+4. A reviewer labels 50 queued items in under 5 minutes with keys alone.
+5. The nightly loop opens one PR with evidence and a held-out result; a deliberately bad proposal is rejected on validation.
+6. A planted answer key in an image is caught by the scan before the experiment starts.
 
 ## 10. Sources
 

@@ -11,7 +11,7 @@ Design specs for the next round of work. They came out of the first live GKE run
 | [0005 Traces and decision model](0005-traces-and-decision-model.md) | OpenTelemetry collection from harnesses, trace storage and redaction, the `DecisionService` (Microsoft Decision-1 first, rules and local fallbacks), decision tasks, shadow/advisory/acting modes, the optimization and evaluation loop | #20 |
 | [0006 Environments and harness packs](0006-environments-and-harness-packs.md) | Image/runtime/session split, harness packs, per-sandbox harness selection, `mcp:` and `secrets:`, default and team environments | #22 (M1–M3 built) |
 | [0007 Experiments, policy and team learning](0007-experiments-policy-and-team-learning.md) | The MCP gateway, the `policy:` block and where each rule is enforced, experiments over environment variants, the label taxonomy and labeler cascade, links from runs to tickets and objectives, team learnings, and the performance fixes they depend on | this PR |
-| [0008 Swarms, the improvement loop and RL](0008-swarm-improvement-loop-and-rl.md) | `swarm` and sandbox pools for MCP clients, memory vs filesystem fork per backend, the Harbor sandbox adapter and ATIF export, the scheduled improvement loop that ends in a PR, the labeling review tab and reports, the RL path (best-of-N → datasets → rollout backend), and reward-hacking defenses | this PR |
+| [0008 Swarms, the improvement loop and RL](0008-swarm-improvement-loop-and-rl.md) | `swarm` and sandbox pools for spreading coding work across sandboxes, memory vs filesystem fork per backend, the Harbor sandbox adapter and ATIF export, the scheduled improvement loop that ends in a PR, the labeling review tab and reports, the RL path (best-of-N → datasets → rollout backend), and reward-hacking defenses | this PR |
 
 ## Cross-spec decisions
 
@@ -54,8 +54,10 @@ Where a spec conflicts with this list, this list wins. Specs will be updated to 
     - **Experiments:** 0007's `run_experiment` replaces 0005 M10's two-config `POST /api/evals`, keeping all eight of 0005's evaluation rules.
     - **Parsers:** the Codex, pi and Antigravity parsers move from 0001 M7 and 0005 M3 into 0007 M6, starting from `evals/semver/spans.py`.
 
-16. **0008 builds on Harbor and ATIF rather than defining its own formats.**
-    - **Tasks:** Harbor's task layout (`task.toml`, instruction, `tests/test.sh` → `reward.json`) is the task format for 0007 experiments and 0008 swarms; `evals/semver` converts first.
+16. **Hangar is a development control plane first; evals are a feature (owner, 2026-10-12).**
+    - **Priority:** sandboxes with agent harnesses for scaling coding work come first. Evals, labeling, the improvement loop and RL are built from the traces that real work produces. When the two conflict, development throughput and UX win.
+    - **Tasks:** development work is GitHub issues, 0004 tasks and `swarm` calls, checked by the repo's own commands. Harbor's task layout (`task.toml`, instruction, `tests/test.sh` → `reward.json`) is the only format for *graded* work (0007 experiments, regression sets, RL); `save_as_task` turns a finished run into one.
+    - **Forks:** disk-level forks on GKE are the default. Memory fork is opt-in (GKE Pod Snapshots, then E2B), chosen by 0008 M2's benchmark.
     - **Trajectories:** ATIF v1.7 is the stored per-run export, built from 0007 M6's normalized spans; OTel stays the live channel.
     - **Learned changes:** the improvement loop opens PRs and never merges to a team environment's default channel (consistent with 0002's human-approved landing).
     - **Tickets:** GitHub Issues only (0007 OQ4); Linear is not planned.
