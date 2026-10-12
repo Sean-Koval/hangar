@@ -2,6 +2,8 @@
 
 Status: draft. Date: 2026-10-12. Author: hangar agent session, for review.
 
+> Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins.
+
 ## 1. Summary
 
 - A run becomes a stored object with nine states, not a dict in `sandbox.info["runs"]`.
