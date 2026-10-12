@@ -1,0 +1,19 @@
+# The default starting point: Ubuntu + git tooling, no language runtimes, no harness binaries.
+# Every agent harness is *allowed*; each sandbox gets the one you pick (create_sandbox harness=...),
+# mounted read-only as a harness pack, with only that harness's credentials and config applied.
+name: bare
+description: Ubuntu 24.04 + git/gh/tmux/ripgrep; any agent (Claude Code, Codex, pi, Antigravity)
+base: mirror.gcr.io/library/ubuntu:24.04  # Google's Docker Hub mirror: same image, no pull rate limits
+tools:
+  apt: [gh, fd-find, shellcheck]
+harnesses: [claude-code, codex, pi, antigravity]  # allowed agents; a child env's list replaces this one
+default_harness: claude-code
+resources:
+  cpus: 2
+  memory_gb: 4
+agent_config:
+  instructions: |
+    You are working inside a disposable hangar sandbox.
+    - The repo checkout is your working directory; commit to your work branch freely.
+    - Run the project's tests before declaring a task done.
+    - Prefer small, reviewable commits with descriptive messages.

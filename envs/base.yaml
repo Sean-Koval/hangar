@@ -8,7 +8,7 @@ tools:
     python: "3.12"
     uv: latest
     node: "22"
-harnesses: [git]
+
 resources:
   cpus: 2
   memory_gb: 4

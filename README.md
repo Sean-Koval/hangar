@@ -24,16 +24,17 @@ The same control plane runs on your laptop (Docker), on a single VM (Docker + gV
 
 ## What you get
 
-- **Environments as layered specs.** Base image, then system packages and runtimes (via mise), then agent harnesses, then dependencies, then skills and agent config, then the repo. Layers are ordered for Docker cache reuse, and the image tag is content-addressed, so changing a setup command doesn't reinstall your harnesses.
+- **Environments as layered specs.** Base image, then system packages and runtimes (via mise), then dependencies, then skills and agent config, then the repo. Layers are ordered for Docker cache reuse, and the image tag is content-addressed. Start from a default (`bare`, `python`, `node`, `go`, `polyglot`), or bring a prebuilt image.
+- **Pick the agent per sandbox, not per image.** An environment lists the harnesses it allows (Claude Code, Codex, pi, Antigravity). Each harness ships once as a read-only *harness pack* that is mounted at start, so adding agents doesn't bloat images. `create_sandbox(harness=...)` applies only that agent's credentials, config and MCP servers. Providers that can't mount images get a per-harness image instead.
 - **Fast, concurrent sandboxes.** Warm pools keep sandboxes pre-started. Claiming one, cloning the repo and checking out a fresh work branch took about 0.6s in testing, and four in parallel took about 1.2s.
 - **Clone two ways.** Rebuild from the spec, or snapshot a live sandbox and fork it into up to 20 copies with the same files, installed deps and repo state.
-- **Logins for Claude Code, Codex and Antigravity.**
+- **Logins for Claude Code, Codex, pi and Antigravity.**
   - Both API keys and subscription logins are supported.
   - Subscription logins run inside a short-lived sandbox, and you finish them in the dashboard terminal.
   - Credentials are encrypted at rest and injected into `~/.hangar/env` or their usual files at claim time.
   - Codex's rotating refresh token is *leased* to one sandbox at a time and written back when that sandbox stops, so sandboxes never log each other out.
 - **Terminals that agents and humans share.** MCP clients drive persistent tmux sessions (`terminal_send` / `terminal_read`). From the dashboard you can attach to the same session and watch, or type along.
-- **Agents inside sandboxes.** `run_agent` starts Claude Code, Codex, `agy` (Antigravity) or Gemini CLI headless on a task, so one orchestrator session can fan work out across the fleet.
+- **Agents inside sandboxes.** `run_agent` starts Claude Code, Codex, pi or `agy` (Antigravity) headless on a task, with an optional `model`, so one orchestrator session can fan work out across the fleet.
 - **Bearer tokens or OAuth.** Codex and Claude Code connect with a bearer token. ChatGPT connectors and other OAuth-only clients use hangar's built-in OAuth 2.1 server: discovery, dynamic registration, PKCE, and a consent page where you approve with a hangar token. See [docs/clients.md](docs/clients.md).
 - **A dashboard.** It covers the fleet, live terminals, the environment editor with streaming builds, credentials and sign-in, snapshots, MCP connect snippets with token management, and an audit log.
 
@@ -85,12 +86,14 @@ Every tool accepts a sandbox id or name. Relative paths resolve against the sand
 
 ## Environment specs
 
-Specs are YAML files in `envs/`. They can `extend` each other, and lists merge.
+Specs are YAML files in `envs/`. They can `extend` each other; lists and maps merge, except `harnesses` and `credentials`, which replace the parent's. The full design is [spec 0006](docs/specs/0006-environments-and-harness-packs.md).
 
 ```yaml
 name: my-service
-extends: base                      # base = Ubuntu 24.04 + git/tmux/rg + mise python/uv/node
-harnesses: [claude-code, codex]    # also: antigravity, gemini, git
+extends: python                    # bare + Python 3.12/uv/ruff/pytest; bare = Ubuntu + git/gh/tmux/rg
+harnesses: [claude-code, codex]    # agents this env allows: claude-code, codex, pi, antigravity
+default_harness: claude-code
+model: sonnet                      # default for run_agent; harness-specific id
 tools:
   apt: [postgresql-client]
   mise: { go: "1.23" }
@@ -103,7 +106,7 @@ skills:
   - path: skills/repo-conventions  # copied into ~/.claude/skills and ~/.codex/skills
   - git: https://github.com/org/skills#review@main
 agent_config:
-  instructions: |                  # written to ~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, ~/.gemini/GEMINI.md
+  instructions: |                  # written to each allowed harness's global instructions file
     Run `make test` before you finish.
 files:
   .config/foo/config.toml: "key = 1"
@@ -112,12 +115,15 @@ repo:
   branch: main
   setup: uv sync                   # after clone
   bake: false                      # true = clone + setup at build time, for instant claims
-credentials: [claude-max, gh]      # attached by default
+credentials: [claude-max, codex-chatgpt, gh]  # each sandbox gets its harness's ones, plus non-agent ones (git)
+secrets: { SENTRY_TOKEN: sentry }  # env var <- credential, injected at claim
+mcp:                               # written in each harness's own config format at claim
+  sentry: { url: "https://mcp.sentry.dev/mcp", headers: { Authorization: "Bearer ${SENTRY_TOKEN}" } }
 resources: { cpus: 4, memory_gb: 8 }
 warm_pool: 2                       # keep two pre-started
 ```
 
-`hangar env render my-service` prints the generated Dockerfile.
+`hangar env render my-service` prints the generated Dockerfile. `hangar pack render codex` prints a harness pack's build, and `hangar pack publish claude-code codex pi antigravity` builds and pushes packs from your machine when the server has no builder.
 
 ## Running elsewhere
 

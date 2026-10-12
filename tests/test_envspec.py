@@ -11,7 +11,7 @@ def catalog():
 
 def test_extends_merges_layers(catalog):
     spec = catalog.get("agent")
-    assert spec.harnesses == ["git", "claude-code", "codex"]
+    assert spec.harnesses == ["claude-code", "codex"], "a child's harness list replaces the parent's"
     assert spec.tools.apt == ["jq"]
     assert spec.tools.mise == {"python": "3.12"}
     assert spec.agent_config.instructions == "be careful"
@@ -34,12 +34,15 @@ def test_dockerfile_is_portable_across_builders(catalog):
 
 
 def test_render_layer_order_and_content(catalog):
-    ctx = render(catalog.get("agent"))
+    ctx = render(catalog.get("agent"), bake=["codex"])
     df = expanded(ctx)
-    order = [df.index(s) for s in ("apt-get install", "mise use -g", "# harness: claude-code",
-                                   "# harness: codex", "npm install -g typescript", "COPY --chown")]
+    order = [df.index(s) for s in ("FROM mirror.gcr.io/library/node:22-bookworm AS pack-codex", "apt-get install",
+                                   "mise use -g", "# harness: codex", "npm install -g typescript", "COPY --chown")]
     assert order == sorted(order), "layers must be ordered for cache reuse"
-    # codex needs node, so it is added to mise automatically
+    assert "COPY --from=pack-codex /opt/hangar/harness/codex /opt/hangar/harness/codex" in df
+    assert "# harness: claude-code" not in df, "only the requested harness is baked"
+    assert "@openai/codex@$VERSION" in ctx.files["packs/codex.sh"].decode()
+    # npm dependencies pull in node; harnesses never do (packs bundle what they need)
     assert "node@22" in df and "python@3.12" in df
     # skill lands in every harness that has a skills dir
     assert "/home/agent/.claude/skills/demo/SKILL.md" in df
@@ -54,8 +57,44 @@ def test_render_layer_order_and_content(catalog):
     assert any(k.startswith("skills/") for k in ctx.files)
 
 
-def test_noop_harness_is_skipped(catalog):
-    assert "# harness: git" not in expanded(render(catalog.get("base")))
+def test_images_carry_no_harness_by_default(catalog):
+    df = expanded(render(catalog.get("agent")))
+    assert "# harness:" not in df and "pack-" not in df and "/opt/hangar" not in df
+    assert render(catalog.get("agent")).digest != render(catalog.get("agent"), bake=["claude-code"]).digest
+
+
+def test_cannot_bake_a_harness_the_env_does_not_allow(catalog):
+    with pytest.raises(ValueError, match="not enabled"):
+        render(catalog.get("agent"), bake=["pi"])
+
+
+def test_harness_selection(catalog, tmp_path):
+    spec = catalog.get("agent")
+    assert spec.agent_harnesses == ["claude-code", "codex"]
+    assert spec.pick_harness() == "claude-code"
+    assert spec.pick_harness("codex") == "codex"
+    with pytest.raises(ValueError, match="not enabled"):
+        spec.pick_harness("pi")
+    (tmp_path / "x.yaml").write_text("name: x\nharnesses: [codex]\ndefault_harness: pi\n")
+    with pytest.raises(ValueError, match="default_harness"):
+        EnvCatalog([tmp_path]).get("x")
+
+
+def test_session_fields_validate(tmp_path):
+    (tmp_path / "m.yaml").write_text("name: m\nmcp: {gh: {url: https://x/mcp, command: npx}}\n")
+    (tmp_path / "s.yaml").write_text("name: s\nsecrets: {'bad-var': cred}\n")
+    (tmp_path / "ok.yaml").write_text(
+        "name: ok\nharnesses: [pi]\nmodel: openrouter/qwen/qwen3-coder\n"
+        "mcp: {gh: {url: https://x/mcp, headers: {Authorization: 'Bearer ${GH_TOKEN}'}}}\n"
+        "secrets: {OPENROUTER_API_KEY: openrouter}\n")
+    cat = EnvCatalog([tmp_path])
+    with pytest.raises(ValueError, match="exactly one"):
+        cat.get("m")
+    with pytest.raises(ValueError, match="env var name"):
+        cat.get("s")
+    ok = cat.get("ok")
+    assert ok.mcp["gh"].headers["Authorization"] == "Bearer ${GH_TOKEN}" and ok.secrets == {
+        "OPENROUTER_API_KEY": "openrouter"}
 
 
 def test_extra_ca_is_trusted(catalog):

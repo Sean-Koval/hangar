@@ -34,10 +34,12 @@ class FakeProvider(Provider):
         self.images: set[str] = set()
         self.snaps: dict[str, Path] = {}
         self.created: list[str] = []
+        self.packs_mounted: list[dict[str, str]] = []
+        self.image_volumes = False
 
     @property
     def capabilities(self) -> Capabilities:
-        return Capabilities(full_snapshots=True, warm_pools=False, pause=True)
+        return Capabilities(full_snapshots=True, warm_pools=False, pause=True, image_volumes=self.image_volumes)
 
     def _map(self, sb: Sandbox, path: str) -> Path:
         box = self.boxes[sb.provider_ref]
@@ -66,6 +68,7 @@ class FakeProvider(Provider):
         sandbox.provider_ref = sandbox.id
         self.boxes[sandbox.id] = box
         self.created.append(image)
+        self.packs_mounted.append(dict(spec.packs) if spec else {})
 
     async def status(self, sandbox):
         return SandboxState.RUNNING if sandbox.provider_ref in self.boxes else SandboxState.STOPPED

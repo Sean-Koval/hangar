@@ -25,6 +25,7 @@ class Capabilities(BaseModel):
     pause: bool = False
     microvm: bool = False  # hardware-virtualized isolation available (Kata/Firecracker)
     local_build: bool = True  # can build env images itself
+    image_volumes: bool = False  # can mount harness packs (read-only OCI images) into sandboxes
 
 
 class TerminalStream(abc.ABC):

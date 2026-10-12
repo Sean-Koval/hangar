@@ -1,0 +1,6 @@
+name: go
+extends: bare
+description: bare + Go 1.24, gopls tooling
+tools:
+  mise:
+    go: "1.24"

@@ -28,6 +28,7 @@ from pathlib import Path
 
 from hangar.config import Settings
 from hangar.envspec import BuildContext, EnvSpec
+from hangar.harnesses import PACK_ROOT
 from hangar.models import ExecResult, Sandbox, SandboxState
 from hangar.providers._build import docker_available, docker_build, run_cli
 from hangar.providers.base import Capabilities, LogFn, Provider, ProviderError, TerminalStream
@@ -128,7 +129,7 @@ class KubernetesProvider(Provider):
         self.core = client.CoreV1Api()
         self.crd = client.CustomObjectsApi()
         self._known_images: set[str] = set()
-        self._synced: dict[str, tuple[str, int]] = {}
+        self._synced: dict[str, tuple] = {}
         try:
             self.crd.list_namespaced_custom_object(EXT_GROUP, EXT_V, self.ns, "sandboxwarmpools", limit=1)
         except ApiException as e:
@@ -146,7 +147,7 @@ class KubernetesProvider(Provider):
         # GKE Pod snapshots restore a sandbox only from its *own* snapshots, so they power
         # pause/resume (memory + processes kept, node capacity freed), not cross-sandbox forks.
         return Capabilities(full_snapshots=False, warm_pools=True, pause=self.settings.k8s_pod_snapshots,
-                            microvm="kata" in rc,
+                            microvm="kata" in rc, image_volumes=self.settings.k8s_image_volumes,
                             local_build=bool(shutil.which("docker") or shutil.which("gcloud")))
 
     # ------------------------------------------------------------------ templates
@@ -224,6 +225,13 @@ class KubernetesProvider(Provider):
         }
         if res.disk_gb:
             pod["containers"][0]["resources"]["requests"]["ephemeral-storage"] = f"{int(res.disk_gb)}Gi"
+        if spec.packs:
+            # Harness packs: OCI images mounted read-only (image volumes, stable in Kubernetes 1.36). Pulled once
+            # per node and shared by every sandbox, so environment images carry no harness binaries.
+            pod["volumes"] = [{"name": f"pack-{n}", "image": {"reference": ref, "pullPolicy": "IfNotPresent"}}
+                              for n, ref in sorted(spec.packs.items())]
+            pod["containers"][0]["volumeMounts"] = [
+                {"name": f"pack-{n}", "mountPath": f"{PACK_ROOT}/{n}", "readOnly": True} for n in sorted(spec.packs)]
         rc = spec.runtime_class if spec.runtime_class is not None else s.k8s_runtime_class
         if rc:
             pod["runtimeClassName"] = rc
@@ -288,9 +296,10 @@ class KubernetesProvider(Provider):
     async def create(self, sandbox: Sandbox, image: str, spec: EnvSpec | None = None) -> None:
         if spec is None:
             raise ProviderError("kubernetes provider needs the environment spec to create a sandbox")
-        if self._synced.get(spec.name) != (image, spec.warm_pool):
-            await self.sync_warm_pool(spec, image)  # idempotent; keeps template image current
-            self._synced[spec.name] = (image, spec.warm_pool)
+        key = (image, spec.warm_pool, tuple(sorted(spec.packs.items())))
+        if self._synced.get(spec.name) != key:
+            await self.sync_warm_pool(spec, image)  # idempotent; keeps template image and packs current
+            self._synced[spec.name] = key
         claim = f"hangar-{sandbox.id}"
         body = {
             "apiVersion": f"{EXT_GROUP}/{EXT_V}", "kind": "SandboxClaim",

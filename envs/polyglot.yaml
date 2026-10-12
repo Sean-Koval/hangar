@@ -1,12 +1,14 @@
-# Every major harness side by side: compare agents on the same task, or let an orchestrator
-# pick per subtask. Attach whichever credentials you have.
+# Python + Node + Go in one image. Harnesses are packs, so allowing all four agents adds nothing to it:
+# compare agents on the same task by creating one sandbox per harness from this environment.
 name: polyglot
-description: Claude Code + Codex + Antigravity (agy) + Gemini CLI, Python + Node + Go
-extends: base
+description: bare + Python 3.12/uv, Node 22, Go 1.24
+extends: bare
 tools:
   mise:
-    go: "1.23"
-harnesses: [claude-code, codex, antigravity, gemini]
+    python: "3.12"
+    uv: latest
+    node: "22"
+    go: "1.24"
 dependencies:
   pip: [ruff, pytest]
   npm: [pnpm, typescript]

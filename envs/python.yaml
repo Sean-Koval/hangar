@@ -1,0 +1,9 @@
+name: python
+extends: bare
+description: bare + Python 3.12, uv, ruff, pytest
+tools:
+  mise:
+    python: "3.12"
+    uv: latest
+dependencies:
+  pip: [ruff, pytest, pre-commit]
