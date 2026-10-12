@@ -29,6 +29,16 @@ def test_supported_agents():
         assert "$HANGAR_PROMPT_FILE" in h.run and "HANGAR_MODEL" in h.run, n
 
 
+def test_credential_slots_are_well_formed():
+    for name, harness in HARNESSES.items():
+        kinds = [slot.kind for slot in harness.credentials]
+        assert len(kinds) == len(set(kinds)), f"{name}: duplicate credential kinds"
+        for slot in harness.credentials:
+            assert slot.env_var or slot.file_path, f"{name}: {slot.kind} has no credential destination"
+            if slot.exclusive:
+                assert slot.file_path, f"{name}: exclusive {slot.kind} must be file-based"
+
+
 def test_codex_runs_without_its_own_sandbox_or_prompts():
     run = HARNESSES["codex"].run
     assert "codex exec --json" in run and "--dangerously-bypass-approvals-and-sandbox" in run
