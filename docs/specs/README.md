@@ -11,6 +11,7 @@ Design specs for the next round of work. They came out of the first live GKE run
 | [0005 Traces and decision model](0005-traces-and-decision-model.md) | OpenTelemetry collection from harnesses, trace storage and redaction, the `DecisionService` (Microsoft Decision-1 first, rules and local fallbacks), decision tasks, shadow/advisory/acting modes, the optimization and evaluation loop | #20 |
 | [0006 Environments and harness packs](0006-environments-and-harness-packs.md) | Image/runtime/session split, harness packs, per-sandbox harness selection, `mcp:` and `secrets:`, default and team environments | #22 (M1–M3 built) |
 | [0007 Experiments, policy and team learning](0007-experiments-policy-and-team-learning.md) | The MCP gateway, the `policy:` block and where each rule is enforced, experiments over environment variants, the label taxonomy and labeler cascade, links from runs to tickets and objectives, team learnings, and the performance fixes they depend on | this PR |
+| [0008 Swarms, the improvement loop and RL](0008-swarm-improvement-loop-and-rl.md) | `swarm` and sandbox pools for MCP clients, memory vs filesystem fork per backend, the Harbor sandbox adapter and ATIF export, the scheduled improvement loop that ends in a PR, the labeling review tab and reports, the RL path (best-of-N → datasets → rollout backend), and reward-hacking defenses | this PR |
 
 ## Cross-spec decisions
 
@@ -53,6 +54,12 @@ Where a spec conflicts with this list, this list wins. Specs will be updated to 
     - **Experiments:** 0007's `run_experiment` replaces 0005 M10's two-config `POST /api/evals`, keeping all eight of 0005's evaluation rules.
     - **Parsers:** the Codex, pi and Antigravity parsers move from 0001 M7 and 0005 M3 into 0007 M6, starting from `evals/semver/spans.py`.
 
+16. **0008 builds on Harbor and ATIF rather than defining its own formats.**
+    - **Tasks:** Harbor's task layout (`task.toml`, instruction, `tests/test.sh` → `reward.json`) is the task format for 0007 experiments and 0008 swarms; `evals/semver` converts first.
+    - **Trajectories:** ATIF v1.7 is the stored per-run export, built from 0007 M6's normalized spans; OTel stays the live channel.
+    - **Learned changes:** the improvement loop opens PRs and never merges to a team environment's default channel (consistent with 0002's human-approved landing).
+    - **Tickets:** GitHub Issues only (0007 OQ4); Linear is not planned.
+
 ## Build order
 
 Phases are in order. Within a phase, items can run in parallel. Sizes: S ≤ 1 day, M ≈ 2–3 days, L ≈ 4–6 days.
@@ -66,6 +73,7 @@ Phases are in order. Within a phase, items can run in parallel. Sizes: S ≤ 1 d
 | 4. Landing | Human-approved merges, parallel PRs, best-of-N | 0002 M7 land core · 0002 M8 notifiers · 0002 M11 conflicts and rebase · 0002 M5 fan-out and ranking · 0004 M9 decisions and escalations · 0004 M10 routing · 0004 M11 right-sizing · 0005 M6 remaining decision tasks |
 | 5. Network and front door | Default-deny egress, hardened dashboard | 0003 M5 dashboard hardening · 0003 M6 egress audit mode · 0003 M7 egress enforce · 0003 M8 IAP/SSO · 0003 M10 OAuth scopes and step-up · 0003 M11 E2B egress |
 | 6. Polish | One dashboard, team learning, optional extras | One combined dashboard (0001 M8, 0002 M9, 0004 M12, 0005 M8) · 0007 M5 MCP gateway (with phase 5's egress) · 0007 M8 labels and gold set · 0007 M9 lifecycle links · 0007 M10 team learnings · 0001 M10 stdin and transcript archive · 0005 M9–M10 insights and evals · 0003 M9 model proxy (if decision 9 clears) |
+| 7. Swarms and learning | Sandbox swarms for MCP clients, the improvement loop, the RL path | 0008 M1 nano profile and `exec_many` · M2 fork benchmark · M4 Harbor adapter (can start in phase 2) · M10 reward-hacking defenses (with M4) · M3 `swarm` · M5 ATIF export · M6–M8 review tab and reports (with 0007 M8) · M9 improvement loop · M11 rollout readiness (needs 0003 M9) · M12 Agents SDK provider |
 
 Each phase ends with its specs' live acceptance checks on GKE (0001 §8.2, 0002 §8, 0003 §8.2), recorded in the PR that closes the phase. The docs milestones (0001 M11, 0002 M12, 0003 M12) are folded into those phase-closing PRs.
 

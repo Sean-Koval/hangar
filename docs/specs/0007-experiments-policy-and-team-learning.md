@@ -161,7 +161,7 @@ Rules, extending 0005 §5.8:
 | MCP gateway | §5.1 | new |
 | git, CI, PR review, merge, revert | 0002 collector + GitHub webhooks | planned |
 
-**Lifecycle links.** `Run.task_id → Task → ticket_ref` (GitHub issue or Linear; 0004 tasks) `→ objective_ref`. Linking happens at creation (`run_agent(ticket=...)`), or after the fact from PR bodies and branch names. Outcomes flow back to the run: verified, merged, review rounds, CI result, reverted within 14 days, follow-up fix PR. Lifecycle metrics per objective and per environment:
+**Lifecycle links.** `Run.task_id → Task → ticket_ref` (a GitHub issue; 0004 tasks) `→ objective_ref`. Linking happens at creation (`run_agent(ticket=...)`), or after the fact from PR bodies and branch names. Outcomes flow back to the run: verified, merged, review rounds, CI result, reverted within 14 days, follow-up fix PR. Lifecycle metrics per objective and per environment:
 
 - ticket → merged PR lead time;
 - review rounds per PR;
@@ -264,6 +264,6 @@ Suggested order: M0–M2 now (performance), then M3–M4 and M6, then M7 (the fi
 1. Does Docker's MCP gateway run as a non-root sidecar under gVisor and accept per-sandbox tokens and tool filters? If not, how big is a minimal hangar gateway?
 2. Can the GKE Agent Sandbox `SandboxTemplate` express a sidecar container? If not: use the OSS controller, or a gateway pod per sandbox reached over a NetworkPolicy-pinned service.
 3. Does the add-on's admission policy accept CPU requests below limits?
-4. Which ticket system first: GitHub Issues (no new integration) or Linear?
+4. ~~Which ticket system first?~~ **GitHub Issues** (owner, 2026-10-12). Linear is not planned.
 5. Who curates the gold label set, and how much human labeling time per taxonomy version is acceptable?
 6. Human-session capture: is anyone besides the owner in scope for v1?
