@@ -186,7 +186,12 @@ HARNESSES: dict[str, Harness] = {
                 post_inject=(
                     'git config --global credential.helper store && '
                     'printf "https://x-access-token:%s@github.com\\n" "$GH_TOKEN" > ~/.git-credentials && '
-                    "chmod 600 ~/.git-credentials"
+                    "chmod 600 ~/.git-credentials && "
+                    # Commit as the token's GitHub user (noreply address) unless an identity is already set.
+                    '{ git config --global user.email >/dev/null || { '
+                    'L=$(gh api user --jq .login 2>/dev/null) && I=$(gh api user --jq .id 2>/dev/null) && '
+                    'git config --global user.name "$L" && '
+                    'git config --global user.email "$I+$L@users.noreply.github.com"; }; } || true'
                 ),
             ),
             CredentialSlot(
