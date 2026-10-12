@@ -92,10 +92,18 @@ def connect():
     typer.secho("Then: export HANGAR_TOKEN=<token from `hangar token create`>", fg="yellow")
 
 
-# ---------------------------------------------------------------------------- tokens (local)
+# ---------------------------------------------------------------------------- tokens
 @token_app.command("create")
 def token_create(name: str = typer.Argument(..., help="Label, e.g. 'codex-laptop'.")):
-    """Mint an API token directly in the local state store (shown once)."""
+    """Mint an API token (shown once).
+
+    Uses the server's REST API when HANGAR_URL is set, otherwise the local state store.
+    """
+    if os.environ.get("HANGAR_URL"):
+        res = _call("POST", "/api/tokens", json={"name": name})
+        typer.secho(f"token {res['id']} ({res['name']}):", fg="green")
+        typer.echo(res["token"])
+        return
     from hangar.app import Hangar
 
     raw, tok = Hangar().auth.create(name)
@@ -105,6 +113,11 @@ def token_create(name: str = typer.Argument(..., help="Label, e.g. 'codex-laptop
 
 @token_app.command("list")
 def token_list():
+    """List API tokens (server REST API when HANGAR_URL is set, otherwise the local state store)."""
+    if os.environ.get("HANGAR_URL"):
+        for t in _call("GET", "/api/tokens"):
+            typer.echo(f"{t['id']}  {t['name']:24}  last_used={t['last_used']}")
+        return
     from hangar.app import Hangar
 
     for t in Hangar().auth.list():
@@ -113,9 +126,13 @@ def token_list():
 
 @token_app.command("revoke")
 def token_revoke(token_id: str):
-    from hangar.app import Hangar
+    """Revoke an API token (server REST API when HANGAR_URL is set, otherwise the local state store)."""
+    if os.environ.get("HANGAR_URL"):
+        _call("DELETE", f"/api/tokens/{token_id}")
+    else:
+        from hangar.app import Hangar
 
-    Hangar().auth.revoke(token_id)
+        Hangar().auth.revoke(token_id)
     typer.echo(f"revoked {token_id}")
 
 
