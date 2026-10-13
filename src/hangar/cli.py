@@ -794,3 +794,90 @@ def doctor_cmd(as_json: bool = typer.Option(False, "--json")):
     fails = sum(c["status"] == "fail" for c in checks)
     typer.echo(f"\n{fails} problem(s)" if fails else "\nall good")
     raise typer.Exit(1 if fails else 0)
+
+
+# ---------------------------------------------------------------------------- triggers (workstream A)
+schedule_app = typer.Typer(no_args_is_help=True, help="Scheduled jobs: submit the same job on a cron schedule.")
+app.add_typer(schedule_app, name="schedule")
+
+
+@job_app.command("approve")
+def job_approve(job_id: str):
+    """Let a job that is waiting for approval run (it was started by someone outside the trusted list)."""
+    j = _call("POST", f"/api/jobs/{job_id}/approve")
+    typer.secho(f"{j['id']} {j['state']}", fg="green")
+
+
+@job_app.command("reject")
+def job_reject(job_id: str):
+    """Drop a job that is waiting for approval."""
+    j = _call("POST", f"/api/jobs/{job_id}/reject")
+    typer.echo(f"{j['id']} {j['state']}")
+
+
+def _schedule_line(x: dict) -> str:
+    state = "on" if x["enabled"] else "off"
+    nxt = x.get("next_run") or "-"
+    return f"{x['name']:24} {state:3} {x['cron']:16} {x['timezone']:18} next {nxt:22} {x.get('last_job_id') or ''}"
+
+
+@schedule_app.command("create")
+def schedule_create(
+    name: str = typer.Argument(..., help="Short name, e.g. nightly-deps."),
+    instructions: str = typer.Argument(..., help="What the agent should do on each run."),
+    cron: str = typer.Option(..., "--cron", help="5 fields: minute hour day month weekday, e.g. '0 9 * * 1-5'."),
+    tz: str = typer.Option("UTC", "--tz", help="IANA timezone the cron is in, e.g. America/New_York."),
+    repo: str | None = typer.Option(None, help="Git URL (default: the environment's repo)."),
+    env: str | None = typer.Option(None, "--env", "-e", help="Environment (default: the repo's mapped one)."),
+    title: str | None = None,
+    harness: str | None = None,
+    model: str | None = None,
+    verify: str | None = typer.Option(None, help="The repo's own check, e.g. 'pytest -q'."),
+    deliver: str = typer.Option("draft_pr", help="draft_pr | pr | branch | none"),
+    allow_overlap: bool = typer.Option(False, "--allow-overlap", help="Run even if the last run is still going."),
+    disabled: bool = typer.Option(False, "--disabled", help="Create it switched off."),
+):
+    """Example:  hangar schedule create deps "update dependencies and fix what breaks" --cron "0 6 * * 1" -e python"""
+    job = {k: v for k, v in dict(instructions=instructions, repo=repo, environment=env, title=title, harness=harness,
+                                 model=model, verify=verify, deliver=deliver).items() if v is not None}
+    x = _call("POST", "/api/schedules", json={"name": name, "cron": cron, "timezone": tz, "job": job,
+                                               "allow_overlap": allow_overlap, "enabled": not disabled})
+    typer.secho(f"{x['name']} ({x['id']}): next run {x.get('next_run') or '(disabled)'}", fg="green")
+
+
+@schedule_app.command("list")
+def schedule_list(as_json: bool = typer.Option(False, "--json")):
+    xs = _call("GET", "/api/schedules")
+    if as_json:
+        return _print(xs)
+    if not xs:
+        typer.echo("No schedules.")
+    for x in xs:
+        typer.echo(_schedule_line(x))
+
+
+@schedule_app.command("get")
+def schedule_get(ref: str):
+    _print(_call("GET", f"/api/schedules/{ref}"))
+
+
+@schedule_app.command("enable")
+def schedule_enable(ref: str):
+    typer.echo(_schedule_line(_call("PATCH", f"/api/schedules/{ref}", json={"enabled": True})))
+
+
+@schedule_app.command("disable")
+def schedule_disable(ref: str):
+    typer.echo(_schedule_line(_call("PATCH", f"/api/schedules/{ref}", json={"enabled": False})))
+
+
+@schedule_app.command("run")
+def schedule_run(ref: str):
+    """Submit the schedule's job now (its regular runs are unaffected)."""
+    j = _call("POST", f"/api/schedules/{ref}/run")
+    typer.secho(f"{j['id']} {j['state']}: {j['title']}", fg="green")
+
+
+@schedule_app.command("rm")
+def schedule_rm(ref: str):
+    typer.echo(f"deleted {_call('DELETE', f'/api/schedules/{ref}')['deleted']}")

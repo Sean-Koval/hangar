@@ -28,6 +28,7 @@ from hangar.models import Budget, Credential, CredentialKind, Resources, Sandbox
 from hangar.providers.base import ProviderError
 from hangar.sessions import NewSession, SessionService
 from hangar.store import Store
+from hangar.triggers import ScheduleSpec, ScheduleUpdate, Triggers
 from hangar.vault import Vault, load_or_create_key
 
 log = logging.getLogger("hangar")
@@ -46,6 +47,7 @@ class Hangar:
         self.auth = TokenAuth(self.store, self.settings.admin_token)
         self.sessions = SessionService(self.fleet, self.vault)
         self.jobs = JobService(self.fleet, self.sessions)
+        self.triggers = Triggers(self.jobs)  # workstream A: approvals, inbound webhooks, schedules
 
 
 # ---------------------------------------------------------------------------- MCP auth
@@ -234,7 +236,7 @@ def _setup_oauth(app: FastAPI, h: Hangar):
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     h = Hangar(settings)
-    mcp = build_mcp(h.fleet, h.jobs, h.sessions)
+    mcp = build_mcp(h.fleet, h.jobs, h.sessions, triggers=h.triggers)
     mcp_asgi = mcp.streamable_http_app(streamable_http_path="/", stateless_http=True, host="0.0.0.0")
 
     @contextlib.asynccontextmanager
@@ -250,6 +252,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await h.fleet.start()
         await h.sessions.start()  # first: jobs look up their sessions
         await h.jobs.start()
+        await h.triggers.start()  # after jobs: it expires approvals and submits scheduled jobs
         pre = h.settings.prebuild_environments
         if pre is None:
             pre = [e.strip() for v in h.settings.github_repos.values() for e in v.split(",") if e.strip()]
@@ -258,6 +261,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             yield
         if prebuild:
             prebuild.cancel()
+        await h.triggers.stop()
         await h.jobs.stop()
         await h.sessions.stop()
         await h.fleet.stop()
@@ -714,6 +718,61 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         res = await handle_github(jobs, request.headers.get("x-github-event", ""),
                                   request.headers.get("x-github-delivery"), payload)
         return JSONResponse(res, status_code=202 if res.get("ok") else 200)
+
+    # ------------------------------------------------------------------ triggers (workstream A)
+    triggers = h.triggers
+
+    def admin_caller(caller: Caller) -> Caller:
+        if caller.restricted:
+            raise HTTPException(403, "this needs an admin token")
+        return caller
+
+    @app.post("/api/jobs/{job_id}/approve")
+    async def job_approve(job_id: str, caller: Caller = J):
+        return jobs.view(triggers.approve(job_id, admin_caller(caller).requester))
+
+    @app.post("/api/jobs/{job_id}/reject")
+    async def job_reject(job_id: str, caller: Caller = J):
+        return jobs.view(triggers.reject(job_id, admin_caller(caller).requester))
+
+    @app.post("/api/hooks/inbound/{source}")
+    async def inbound_hook(source: str, request: Request):
+        limit = h.settings.inbound_max_body_bytes
+        length = request.headers.get("content-length")
+        if length is not None and (not length.isdigit() or int(length) > limit):
+            return JSONResponse({"error": "body too large"}, status_code=413)
+        body = b""
+        async for chunk in request.stream():
+            body += chunk
+            if len(body) > limit:
+                return JSONResponse({"error": "body too large"}, status_code=413)
+        res = triggers.handle_inbound(source, request.headers, body)
+        return JSONResponse(res.body, status_code=res.status)
+
+    @app.get("/api/schedules")
+    async def schedule_list(_: str = A):
+        return [triggers.view_schedule(s) for s in triggers.list_schedules()]
+
+    @app.post("/api/schedules")
+    async def schedule_create(body: ScheduleSpec, caller: Caller = J):
+        c = admin_caller(caller)
+        return triggers.view_schedule(triggers.create_schedule(body, owner=c.owner, requester=c.requester))
+
+    @app.get("/api/schedules/{ref}")
+    async def schedule_get(ref: str, _: str = A):
+        return triggers.view_schedule(triggers.get_schedule(ref))
+
+    @app.patch("/api/schedules/{ref}")
+    async def schedule_update(ref: str, body: ScheduleUpdate, who: str = A):
+        return triggers.view_schedule(triggers.update_schedule(ref, body, requester=who))
+
+    @app.delete("/api/schedules/{ref}")
+    async def schedule_delete(ref: str, who: str = A):
+        return {"deleted": triggers.delete_schedule(ref, requester=who).id}
+
+    @app.post("/api/schedules/{ref}/run")
+    async def schedule_run(ref: str, who: str = A):
+        return jobs.view(triggers.run_now(ref, requester=who))
 
     # ------------------------------------------------------------------ sessions (spec 0010)
     sessions = h.sessions
