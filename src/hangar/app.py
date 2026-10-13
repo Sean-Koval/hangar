@@ -15,14 +15,16 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from hangar.auth import TokenAuth, bearer_from_headers
+from hangar.auth import SCOPES, TokenAuth, bearer_from_headers
 from hangar.broker import Broker, CredentialError
 from hangar.config import Settings, get_settings
 from hangar.envspec import EnvCatalog
 from hangar.fleet import Fleet, FleetError
+from hangar.github import verify_signature
 from hangar.harnesses import HARNESSES, PACK_ROOT
+from hangar.jobs import Caller, JobService, SubmitJob, handle_github
 from hangar.mcp_server import build_mcp, current_actor
-from hangar.models import CredentialKind, Resources, Sandbox
+from hangar.models import Credential, CredentialKind, Resources, Sandbox
 from hangar.providers.base import ProviderError
 from hangar.store import Store
 from hangar.vault import Vault, load_or_create_key
@@ -41,6 +43,7 @@ class Hangar:
         self.catalog = EnvCatalog(self.settings.env_dirs)
         self.fleet = Fleet(self.settings, self.store, self.broker, self.catalog)
         self.auth = TokenAuth(self.store, self.settings.admin_token)
+        self.jobs = JobService(self.fleet)
 
 
 # ---------------------------------------------------------------------------- MCP auth
@@ -157,8 +160,14 @@ class RegisterImage(BaseModel):
     provider: str | None = None
 
 
+class FollowUpBody(BaseModel):
+    message: str
+
+
 class TokenBody(BaseModel):
     name: str
+    scopes: list[str] = Field(default_factory=lambda: ["admin"])
+    callback_secret: str | None = None  # jobs tokens: vault `webhook` credential that signs their callbacks
 
 
 def _setup_oauth(app: FastAPI, h: Hangar):
@@ -210,7 +219,7 @@ def _setup_oauth(app: FastAPI, h: Hangar):
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     h = Hangar(settings)
-    mcp = build_mcp(h.fleet)
+    mcp = build_mcp(h.fleet, h.jobs)
     mcp_asgi = mcp.streamable_http_app(streamable_http_path="/", stateless_http=True, host="0.0.0.0")
 
     @contextlib.asynccontextmanager
@@ -224,8 +233,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log.warning("    %s", boot)
             log.warning("=" * 72)
         await h.fleet.start()
+        await h.jobs.start()
         async with mcp.session_manager.run():
             yield
+        await h.jobs.stop()
         await h.fleet.stop()
 
     app = FastAPI(title="hangar", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None,
@@ -246,12 +257,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return JSONResponse({"error": str(exc).strip("'\"")}, status_code=status)
 
     def actor(request: Request) -> str:
-        who = h.auth.verify(bearer_from_headers(request.headers))
-        if who is None:
+        res = h.auth.verify_scopes(bearer_from_headers(request.headers))
+        if res is None:
             raise HTTPException(401, "unauthorized", headers={"WWW-Authenticate": "Bearer"})
-        return f"ui:{who}"
+        if "admin" not in res[1]:
+            raise HTTPException(403, f"token scopes {res[1]} do not allow this route")
+        return f"ui:{res[0]}"
+
+    def job_caller(request: Request) -> Caller:
+        """Admin sees every job; a `jobs`-scoped token is restricted and sees only jobs it submitted."""
+        p = h.auth.principal(bearer_from_headers(request.headers))
+        if p is None:
+            raise HTTPException(401, "unauthorized", headers={"WWW-Authenticate": "Bearer"})
+        if p.admin:
+            return Caller(p.name, p.id)
+        if "jobs" in p.scopes:
+            return Caller(p.name, p.id, restricted=True, callback_secret=p.callback_secret)
+        raise HTTPException(403, f"token scopes {p.scopes} do not allow jobs")
+
+    def owner_filter(c: Caller) -> str | None:
+        return c.owner if c.restricted else None
 
     A = Depends(actor)
+    J = Depends(job_caller)
     fleet = h.fleet
 
     def sbd(s: Sandbox) -> dict[str, Any]:
@@ -580,8 +608,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/tokens")
     async def new_token(body: TokenBody, who: str = A):
-        raw, tok = h.auth.create(body.name)
-        fleet.audit(who, "token.create", tok.id, name=body.name)
+        bad = [x for x in body.scopes if x not in SCOPES]
+        if bad or not body.scopes:
+            raise HTTPException(400, f"unknown scopes {bad}; choose from {list(SCOPES)}")
+        if body.callback_secret:
+            cred = h.store.get(Credential, body.callback_secret)
+            if cred is None or cred.harness != "webhook":
+                raise HTTPException(400, f"callback_secret '{body.callback_secret}' must name a 'webhook' credential")
+        try:
+            raw, tok = h.auth.create(body.name, body.scopes, callback_secret=body.callback_secret)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        fleet.audit(who, "token.create", tok.id, name=body.name, scopes=body.scopes)
         return {"token": raw, **tok.model_dump(mode="json", exclude={"token_hash"})}
 
     @app.delete("/api/tokens/{token_id}")
@@ -593,6 +631,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/gc")
     async def gc(delete: bool = False, who: str = A):
         return await fleet.gc(delete=delete, actor=who)
+
+    # ------------------------------------------------------------------ jobs (spec 0009)
+    jobs = h.jobs
+
+    @app.post("/api/jobs")
+    async def job_submit(body: SubmitJob, caller: Caller = J):
+        return jobs.view(jobs.submit(body, caller, source="api"))
+
+    @app.get("/api/jobs")
+    async def job_list(state: str | None = None, limit: int = 50, caller: Caller = J):
+        return [jobs.view(j) for j in jobs.list(state=state, owner=owner_filter(caller), limit=limit)]
+
+    @app.get("/api/jobs/{job_id}")
+    async def job_get(job_id: str, caller: Caller = J):
+        return jobs.view(jobs.get(job_id, owner=owner_filter(caller)))
+
+    @app.post("/api/jobs/{job_id}/follow-up")
+    async def job_follow_up(job_id: str, body: FollowUpBody, caller: Caller = J):
+        return jobs.view(jobs.follow_up(job_id, body.message, requester=caller.requester,
+                                        owner=owner_filter(caller)))
+
+    @app.post("/api/jobs/{job_id}/cancel")
+    async def job_cancel(job_id: str, caller: Caller = J):
+        return jobs.view(jobs.cancel(job_id, requester=caller.requester, owner=owner_filter(caller)))
+
+    @app.post("/api/hooks/github")
+    async def github_hook(request: Request):
+        name = h.settings.github_webhook_secret_credential
+        if not name:
+            raise HTTPException(404, "GitHub webhook is not configured (HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL)")
+        body = await request.body()
+        if not verify_signature(h.broker.secret_text(name), body, request.headers.get("x-hub-signature-256")):
+            raise HTTPException(401, "bad signature")
+        try:
+            payload = json.loads(body)
+        except ValueError as e:
+            raise HTTPException(400, "body is not JSON") from e
+        res = await handle_github(jobs, request.headers.get("x-github-event", ""),
+                                  request.headers.get("x-github-delivery"), payload)
+        return JSONResponse(res, status_code=202 if res.get("ok") else 200)
 
     @app.get("/api/audit")
     async def audit(limit: int = 200, _: str = A):

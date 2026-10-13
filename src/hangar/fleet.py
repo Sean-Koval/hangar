@@ -51,6 +51,7 @@ log = logging.getLogger("hangar.fleet")
 
 ACTIVE = {SandboxState.PENDING, SandboxState.STARTING, SandboxState.RUNNING, SandboxState.PAUSED}
 _NAME_RE = re.compile(r"[^a-z0-9-]+")
+_ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]*")
 
 
 class FleetError(RuntimeError):
@@ -799,7 +800,8 @@ class Fleet:
 
     # ================================================================== agent runs
     async def run_agent(self, ref: str, prompt: str, harness: str | None = None, cwd: str | None = None,
-                        extra_args: str = "", model: str | None = None, actor: str = "system") -> dict[str, Any]:
+                        extra_args: str = "", model: str | None = None, actor: str = "system",
+                        env: dict[str, str] | None = None) -> dict[str, Any]:
         sb, prov = self._running(ref)
         spec = self.catalog.get(sb.environment)
         selected = sb.info.get("harness")
@@ -823,7 +825,8 @@ class Fleet:
             "#!/usr/bin/env bash\n"
             "set -a; [ -f ~/.hangar/env ] && . ~/.hangar/env; set +a\n"
             f"export HANGAR_PROMPT_FILE={rdir}/{run_id}.prompt HANGAR_RUN_ID={run_id}\n"
-            + (f"export HANGAR_MODEL={shlex.quote(model)}\n" if model else "") +
+            + (f"export HANGAR_MODEL={shlex.quote(model)}\n" if model else "")
+            + "".join(f"export {k}={shlex.quote(v)}\n" for k, v in (env or {}).items() if _ENV_NAME.fullmatch(k)) +
             f"cd {shlex.quote(wd)}\n"
             f"{{ {h.run} {extra_args}; }} 2>&1 | tee {rdir}/{run_id}.log\n"
             f"echo ${{PIPESTATUS[0]}} > {rdir}/{run_id}.exit\n"

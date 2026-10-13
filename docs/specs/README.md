@@ -2,6 +2,8 @@
 
 Design specs for the next round of work. They came out of the first live GKE run on 2026-10-11: two Claude Code agents in gVisor sandboxes made real changes and opened PRs (#13, #14), and the run exposed the gaps these specs close. Each spec was drafted by a Claude Code agent in its own hangar sandbox, working in parallel. This page reconciles them.
 
+**North star (owner, 2026-10-12):** a software factory. Coding agents run on our own infrastructure and do development work that clients, applications and services hand them, with context, while engineers follow, steer and take over. Hangar is the control plane for that: environments, harnesses, sandboxes, credentials and runs are the factory floor; jobs (0009) are the front door; evals, labeling and learning are features built from the work it does.
+
 | Spec | Owns | PR |
 | --- | --- | --- |
 | [0001 Agent runs](0001-agent-runs.md) | The `Run` record and its lifecycle states, the supervisor and liveness watcher, structured events and status, plan-usage tracking and the per-credential queue, `resume_agent` / `cancel_agent` / `send_input`, baked dependencies | #16 |
@@ -9,6 +11,7 @@ Design specs for the next round of work. They came out of the first live GKE run
 | [0003 Sandbox security](0003-sandbox-security.md) | Branch protection, the credential gateway (git smart-HTTP inspection, GitHub REST allowlist, grants, GitHub App tokens), the model-API proxy, egress allowlists, token scopes and limits, dashboard hardening | #17 |
 | [0004 Supervisor, scheduling, performance](0004-supervisor-scheduling-performance.md) | Tasks and sub-task graphs, the deterministic supervisor and its intervention ladder, scheduler v2 (priority, fair share, plan-aware pacing, model tiers), warm-pool forecasting, image distribution, workspace checkpoints, right-sizing, benchmarks | #21 |
 | [0005 Traces and decision model](0005-traces-and-decision-model.md) | OpenTelemetry collection from harnesses, trace storage and redaction, the `DecisionService` (Microsoft Decision-1 first, rules and local fallbacks), decision tasks, shadow/advisory/acting modes, the optimization and evaluation loop | #20 |
+| [0009 Jobs, the factory front door](0009-jobs-and-the-factory-front-door.md) | Jobs: how clients, services, MCP clients, the CLI and GitHub issues hand work to cloud agents with a context bundle; queueing, verification with the repo's own check, delivery as a branch and PR, signed callbacks, follow-ups and take-over by engineers, `jobs`-scoped service tokens | this PR (M1–M2 built) |
 
 ## Cross-spec decisions
 

@@ -91,7 +91,8 @@ class Broker:
         if not NAME_RE.match(name):
             raise CredentialError(f"invalid credential name '{name}': letters, digits, '.', '_', '-'")
         slot = slot_for(harness, kind)
-        if slot is None and not (env_var or file_path):
+        # `webhook` credentials are signing keys the control plane uses (job callbacks); never put in sandboxes.
+        if slot is None and not (env_var or file_path) and harness != "webhook":
             known = ", ".join(f"{s.kind.value}" for s in HARNESSES[harness].credentials) if harness in HARNESSES else ""
             raise CredentialError(
                 f"harness '{harness}' has no slot for kind '{kind.value}'"

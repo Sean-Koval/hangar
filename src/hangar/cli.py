@@ -22,11 +22,13 @@ sb_app = typer.Typer(no_args_is_help=True, help="Sandboxes.")
 cred_app = typer.Typer(no_args_is_help=True, help="Credentials (API keys and subscription logins).")
 token_app = typer.Typer(no_args_is_help=True, help="API tokens for MCP clients and the dashboard.")
 pack_app = typer.Typer(no_args_is_help=True, help="Harness packs: agent CLIs shipped as read-only images.")
+job_app = typer.Typer(no_args_is_help=True, help="Jobs: hand work to cloud agents (branch + PR when done).")
 app.add_typer(env_app, name="env")
 app.add_typer(sb_app, name="sb")
 app.add_typer(cred_app, name="cred")
 app.add_typer(token_app, name="token")
 app.add_typer(pack_app, name="pack")
+app.add_typer(job_app, name="job")
 
 
 def _client() -> httpx.Client:
@@ -94,19 +96,34 @@ def connect():
 
 # ---------------------------------------------------------------------------- tokens
 @token_app.command("create")
-def token_create(name: str = typer.Argument(..., help="Label, e.g. 'codex-laptop'.")):
+def token_create(name: str = typer.Argument(..., help="Label, e.g. 'codex-laptop'."),
+                 scope: list[str] = typer.Option(["admin"], "--scope",
+                                                 help="admin (everything) or jobs (only /api/jobs, for services). "
+                                                      "Repeatable."),
+                 callback_secret: str | None = typer.Option(
+                     None, "--callback-secret",
+                     help="jobs tokens: 'webhook' credential that signs this token's job callbacks.")):
     """Mint an API token (shown once).
 
     Uses the server's REST API when HANGAR_URL is set, otherwise the local state store.
     """
     if os.environ.get("HANGAR_URL"):
-        res = _call("POST", "/api/tokens", json={"name": name})
+        res = _call("POST", "/api/tokens", json={"name": name, "scopes": scope,
+                                                **({"callback_secret": callback_secret} if callback_secret else {})})
         typer.secho(f"token {res['id']} ({res['name']}):", fg="green")
         typer.echo(res["token"])
         return
     from hangar.app import Hangar
+    from hangar.auth import SCOPES
 
-    raw, tok = Hangar().auth.create(name)
+    if bad := [x for x in scope if x not in SCOPES]:
+        typer.secho(f"unknown scopes {bad}; choose from {list(SCOPES)}", fg="red", err=True)
+        raise typer.Exit(2)
+    try:
+        raw, tok = Hangar().auth.create(name, scope, callback_secret=callback_secret)
+    except ValueError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
     typer.secho(f"token {tok.id} ({name}):", fg="green")
     typer.echo(raw)
 
@@ -404,6 +421,105 @@ def cred_add(
 def cred_rm(name: str):
     _call("DELETE", f"/api/credentials/{name}")
     typer.echo(f"deleted {name}")
+
+
+# ---------------------------------------------------------------------------- jobs
+_JOB_DONE = {"succeeded", "failed", "cancelled"}
+
+
+def _job_line(j: dict) -> str:
+    pr = (j.get("result") or {}).get("pr_url") or ""
+    reason = f" ({j['reason']})" if j.get("reason") else ""
+    return f"{j['id']}  {j['state']:12}{reason:16} {j['title'][:60]:60} {pr}"
+
+
+def _wait_job(job_id: str) -> dict:
+    import time
+
+    seen = 0
+    while True:
+        j = _call("GET", f"/api/jobs/{job_id}")
+        for ev in j["events"][seen:]:
+            typer.echo(f"  [{ev['state']}] {ev['message']}")
+        seen = len(j["events"])
+        if j["state"] in _JOB_DONE:
+            return j
+        time.sleep(5)
+
+
+@job_app.command("submit")
+def job_submit(
+    instructions: str = typer.Argument(None, help="What to do. Omit to read from --file or stdin."),
+    repo: str | None = typer.Option(None, help="Git URL (default: the environment's repo)."),
+    env: str | None = typer.Option(None, "--env", "-e", help="Environment (default: the repo's mapped one)."),
+    title: str | None = None,
+    harness: str | None = None,
+    model: str | None = None,
+    base: str | None = typer.Option(None, help="Base branch (default: the repo's default branch)."),
+    verify: str | None = typer.Option(None, help="The repo's own check, e.g. 'pytest -q'."),
+    deliver: str = typer.Option("draft_pr", help="draft_pr | pr | branch | none"),
+    context: list[Path] = typer.Option([], "--context", "-c", help="File to hand the agent (repeatable)."),
+    link: list[str] = typer.Option([], "--link", help="URL the agent may read (repeatable)."),
+    file: Path | None = typer.Option(None, "--file", "-f", help="Read instructions from a file."),
+    timeout: int | None = typer.Option(None, help="Minutes per agent turn."),
+    wait: bool = typer.Option(False, "--wait", "-w", help="Follow the job until it finishes."),
+):
+    """Submit a job. Example:
+
+      hangar job submit "fix the unicode bug in CSV export" --repo https://github.com/me/app \\
+          --env python -c trace.txt --verify "pytest -q" --wait
+    """
+    import base64 as b64
+
+    text = instructions or (file.expanduser().read_text() if file else sys.stdin.read())
+    items = []
+    for pth in context:
+        data = pth.expanduser().read_bytes()
+        try:
+            items.append({"name": pth.name, "kind": "file", "content": data.decode()})
+        except UnicodeDecodeError:
+            items.append({"name": pth.name, "kind": "file", "content": b64.b64encode(data).decode(),
+                          "encoding": "base64"})
+    items += [{"name": f"link-{i + 1}", "kind": "url", "url": u} for i, u in enumerate(link)]
+    j = _call("POST", "/api/jobs", json={
+        "instructions": text, "repo": repo, "environment": env, "title": title, "harness": harness, "model": model,
+        "base_branch": base, "verify": verify, "deliver": deliver, "context": items, "timeout_minutes": timeout})
+    typer.secho(f"{j['id']} queued: {j['title']}", fg="green")
+    if wait:
+        j = _wait_job(j["id"])
+        typer.echo(_job_line(j))
+        if (j.get("result") or {}).get("summary"):
+            typer.echo("\n" + j["result"]["summary"])
+        raise typer.Exit(0 if j["state"] == "succeeded" else 1)
+
+
+@job_app.command("list")
+def job_list(state: str | None = None, limit: int = 20, as_json: bool = typer.Option(False, "--json")):
+    jobs = _call("GET", "/api/jobs", params={"state": state, "limit": limit} if state else {"limit": limit})
+    if as_json:
+        return _print(jobs)
+    for j in jobs:
+        typer.echo(_job_line(j))
+
+
+@job_app.command("get")
+def job_get(job_id: str, wait: bool = typer.Option(False, "--wait", "-w")):
+    _print(_wait_job(job_id) if wait else _call("GET", f"/api/jobs/{job_id}"))
+
+
+@job_app.command("follow-up")
+def job_follow_up(job_id: str, message: str, wait: bool = typer.Option(False, "--wait", "-w")):
+    """Continue a finished job in the same sandbox and branch."""
+    j = _call("POST", f"/api/jobs/{job_id}/follow-up", json={"message": message})
+    typer.secho(f"{j['id']} {j['state']}", fg="green")
+    if wait:
+        typer.echo(_job_line(_wait_job(job_id)))
+
+
+@job_app.command("cancel")
+def job_cancel(job_id: str):
+    j = _call("POST", f"/api/jobs/{job_id}/cancel")
+    typer.echo(f"{j['id']} {j['state']}")
 
 
 if __name__ == "__main__":

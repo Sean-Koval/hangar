@@ -24,8 +24,16 @@ def test_create_remote(monkeypatch):
     calls = _record(monkeypatch, {"id": "t1", "name": "laptop", "token": "hg_secret"})
     r = runner.invoke(cli.app, ["token", "create", "laptop"])
     assert r.exit_code == 0, r.output
-    assert calls == [("POST", "/api/tokens", {"json": {"name": "laptop"}})]
+    assert calls == [("POST", "/api/tokens", {"json": {"name": "laptop", "scopes": ["admin"]}})]
     assert "t1" in r.output and r.output.count("hg_secret") == 1
+
+
+def test_create_remote_jobs_scope(monkeypatch):
+    monkeypatch.setenv("HANGAR_URL", "http://hangar.test")
+    calls = _record(monkeypatch, {"id": "t2", "name": "svc", "token": "hg_s"})
+    r = runner.invoke(cli.app, ["token", "create", "svc", "--scope", "jobs"])
+    assert r.exit_code == 0, r.output
+    assert calls == [("POST", "/api/tokens", {"json": {"name": "svc", "scopes": ["jobs"]}})]
 
 
 def test_list_remote(monkeypatch):
@@ -51,7 +59,7 @@ def test_local_when_url_unset(monkeypatch):
     calls = _record(monkeypatch, None)
 
     class FakeAuth:
-        def create(self, name):
+        def create(self, name, scopes=None, callback_secret=None):
             return "raw-secret", SimpleNamespace(id="loc1")
 
     monkeypatch.setattr(hangar.app, "Hangar", lambda: SimpleNamespace(auth=FakeAuth()))
