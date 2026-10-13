@@ -175,12 +175,16 @@ async def _fork(svc: SessionService, parent: Session, n: int, requester: str, *,
         for i, (name, branch) in enumerate(planned, 1):
             c = Session(
                 name=name, title=f"{parent.title} ({suffix} {i})"[:200], owner=parent.owner,
-                environment=parent.environment, harness=child_harness, model=parent.model, repo=parent.repo,
+                environment=parent.environment, harness=child_harness, repo=parent.repo,
                 base_branch=parent.base_branch, base_sha=parent.base_sha, branch=branch, provider=parent.provider,
                 extra_dirs=list(parent.extra_dirs), idle_minutes=parent.idle_minutes,
                 labels={**labels, **({"hangar.job": job_id, "hangar.attempt": str(i)} if job_id else {})},
                 job_id=job_id, parent_id=parent.id, forked_from_checkpoint=ck.id,
                 approvals=parent.approvals,  # --- workstream steer: a fork never runs with fewer checks
+                # --- overnight/cache: the parent's cache policy; on another harness, that harness's model (model
+                # ids are per harness, as in SessionService.open)
+                cache=parent.cache,
+                model=parent.model if child_harness == parent.harness else spec.model_for(child_harness),
                 # The conversation is forked on the child's first turn (each child gets its own id), never resumed.
                 harness_session=None, harness_session_for=parent.harness_session_for,
                 fork_conversation=parent.harness_session if parent.harness_session_for else None,

@@ -435,6 +435,32 @@ async def test_forks_with_a_message_wait_for_the_first_to_answer(svc, world, fle
     assert 1.3 < starts[other] - starts[lead] < 10, starts
 
 
+@pytestmark_tmux
+async def test_forks_keep_the_cache_policy_and_take_the_new_harness_model(svc, world, fleet, monkeypatch):
+    """review(#63): a fork runs with its parent's cache policy, and a fork onto another harness gets that harness's
+    model (as open(harness=) does), not the parent's model id."""
+    from hangar.strategies import fork_session
+
+    monkeypatch.setitem(HARNESSES, "cachey2", HARNESSES["cachey"].model_copy(update={"name": "cachey2"}))
+    (world["envs"] / "twoenv.yaml").write_text(
+        "name: twoenv\nharnesses: [cachey, cachey2]\nmodel: {cachey: claude-opus-5-5, cachey2: claude-sonnet-5-5}\n")
+    fleet.catalog.reload()
+    svc.new(NewSession(name="off", environment="twoenv", repo=world["url"], message="start", cache="off"),
+            owner="admin", requester="sean")
+    p = await settle(svc, "off")
+    assert p.turns[0].cache_ttl == "off" and p.model == "claude-opus-5-5"
+    (same,) = await fork_session(svc, "off", 1, "sean", message="try it")
+    (other,) = await fork_session(svc, "off", 1, "sean", harness="cachey2", message="try it")
+    same, other = await settle(svc, same.name), await settle(svc, other.name)
+    for k in (same, other):
+        t = k.turns[-1]
+        assert k.cache == "off" and t.exit_code == 0 and t.cache_ttl == "off", (k.name, k.cache, t.cache_ttl)
+        assert _env(fleet, k, t)["DISABLE_PROMPT_CACHING"] == "1"
+    assert same.model == "claude-opus-5-5"
+    assert other.harness == "cachey2" and other.model == "claude-sonnet-5-5"
+    assert _env(fleet, other, other.turns[-1])["HANGAR_MODEL"] == "claude-sonnet-5-5"
+
+
 # ====================================================================== the real CLIs, offline
 CLAUDE, PI = os.environ.get("HANGAR_TEST_CLAUDE"), os.environ.get("HANGAR_TEST_PI")
 USAGE = {"input_tokens": 5, "output_tokens": 1, "cache_read_input_tokens": 300, "cache_creation_input_tokens": 1000,
