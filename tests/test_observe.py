@@ -340,6 +340,21 @@ def test_metrics_endpoint_auth_and_content(app_client):
     assert c.get("/metrics").status_code == 200  # admin too
 
 
+def test_http_method_is_a_bounded_label(app_client):
+    """Review of observe: the method comes from the client, unauthenticated (and from sandboxes on the gateway
+    listener). Any token is a valid method to h11, so each new one was a new label set: OTel's known methods only,
+    the rest "_OTHER", on the metric and the span."""
+    c = app_client
+    for i in range(50):
+        c.request(f"X{i}", "/api/me", headers={"Authorization": ""})
+    c.request("BREW", "/api/me", headers={"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"})
+    body = c.get("/metrics").text
+    assert 'method="X1"' not in body and 'method="_OTHER"' in body
+    observe._provider.force_flush()
+    sp = next(s for s in c.exp.get_finished_spans() if s.attributes.get("http.request.method_original") == "BREW")
+    assert sp.name == "HTTP /api/me" and sp.attributes["http.request.method"] == "_OTHER"
+
+
 def test_metrics_can_be_turned_off(settings):
     settings.admin_token = "t"
     settings.metrics_enabled = False

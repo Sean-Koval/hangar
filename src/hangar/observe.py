@@ -38,6 +38,8 @@ _redact: Callable[[str], str] = lambda s: s  # noqa: E731 - the broker's, once t
 _open_turns: dict[str, Any] = {}  # run id -> its invoke_agent span, from begin_turn until end_turn
 _MAX_OPEN_TURNS = 2000
 _QUIET_PATHS = {"/metrics", "/healthz"}  # scraped and probed every few seconds: no span each time
+# review(observe): the client picks the method, so only HTTP semconv's known ones are labels; the rest are "_OTHER"
+_METHODS = {"CONNECT", "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT", "TRACE"}
 # GenAI semconv `gen_ai.provider.name` for harnesses tied to one model provider
 _PROVIDERS = {"claude-code": "anthropic", "codex": "openai", "antigravity": "gcp.gemini"}
 CODEX_BLOCK = ("# >>> hangar otel (managed; edits are overwritten) >>>", "# <<< hangar otel <<<")
@@ -594,7 +596,8 @@ class HTTPMiddleware:
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope["type"] != "http" or (_tracer is None and metrics.M is None):
             return await self.app(scope, receive, send)
-        method = scope.get("method", "GET")
+        raw_method = scope.get("method", "GET")
+        method = raw_method if raw_method in _METHODS else "_OTHER"  # review(observe): a bounded label
         status = 500
 
         async def send_(msg: dict[str, Any]) -> None:
@@ -605,15 +608,17 @@ class HTTPMiddleware:
 
         t0 = time.monotonic()
         quiet = _tracer is None or scope.get("path") in _QUIET_PATHS
-        cm = contextlib.nullcontext() if quiet else span(method, {"http.request.method": method}, kind="server",
-                                                         context=_extract(scope))
+        attrs = {"http.request.method": method} | ({} if method == raw_method else
+                                                   {"http.request.method_original": raw_method[:40]})
+        name = method if method == raw_method else "HTTP"  # HTTP semconv: "HTTP {route}" for an unknown method
+        cm = contextlib.nullcontext() if quiet else span(name, attrs, kind="server", context=_extract(scope))
         with cm as sp:
             try:
                 await self.app(scope, receive, send_)
             finally:
                 route = _route(scope)
                 if sp is not None:
-                    sp.update_name(f"{method} {route}")
+                    sp.update_name(f"{name} {route}")
                     set_attrs(sp, {"http.route": route, "http.response.status_code": status})
                     if status >= 500:
                         from opentelemetry.trace import Status, StatusCode
