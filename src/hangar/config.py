@@ -84,6 +84,27 @@ class Settings(BaseSettings):
     sandbox_user: str = "agent"
     workspace_dir: str = "/workspace"
 
+    # --- jobs (spec 0009) ---------------------------------------------------
+    job_concurrency: int = 4  # jobs provisioning/running at once; the rest wait in the queue
+    job_poll_seconds: float = 5.0
+    job_timeout_minutes: int = 60  # per agent turn
+    job_keep_minutes: int = 120  # sandbox kept after a turn for follow-ups and take-over
+    job_verify_timeout_seconds: int = 1800
+    job_max_context_bytes: int = 2_000_000
+    job_max_context_items: int = 50
+    # Hosts allowed for plain-http callbacks or private-address callbacks (https to public hosts always allowed).
+    job_callback_hosts: list[str] = Field(default_factory=list)
+
+    # --- GitHub (jobs delivery and trigger) ---------------------------------
+    github_api_url: str = "https://api.github.com"
+    # Vault credential holding a GitHub token the *control plane* uses to open PRs and comment.
+    github_token_credential: str | None = None
+    # Vault credential holding the webhook secret; the webhook route is off until this is set.
+    github_webhook_secret_credential: str | None = None
+    # Repos that may trigger jobs, mapped to the environment to run them in: {"owner/repo": "env"}.
+    github_repos: dict[str, str] = Field(default_factory=dict)
+    github_trigger_label: str = "hangar"
+
     @property
     def db_path(self) -> Path:
         return self.data_dir / "hangar.db"

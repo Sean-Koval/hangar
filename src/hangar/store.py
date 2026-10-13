@@ -15,7 +15,7 @@ from typing import TypeVar
 
 from pydantic import BaseModel
 
-from hangar.models import ApiToken, AuditEvent, Credential, Sandbox, Snapshot
+from hangar.models import ApiToken, AuditEvent, Credential, Job, Sandbox, Snapshot
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -24,6 +24,7 @@ _TABLES: dict[type[BaseModel], tuple[str, str]] = {
     Snapshot: ("snapshots", "id"),
     Credential: ("credentials", "name"),
     ApiToken: ("api_tokens", "id"),
+    Job: ("jobs", "id"),
 }
 
 
