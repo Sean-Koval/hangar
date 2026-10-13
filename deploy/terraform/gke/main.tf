@@ -86,10 +86,16 @@ resource "google_container_node_pool" "sandboxes" {
     machine_type = var.sandbox_machine_type
     image_type   = "COS_CONTAINERD"
     spot         = var.sandbox_spot
-    disk_size_gb = 200
+    # pd-balanced counts against the SSD_TOTAL_GB quota (500 GB by default): 100 GB nodes leave room to scale.
+    disk_size_gb = var.sandbox_disk_gb
+    disk_type    = var.sandbox_disk_type
     oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
     sandbox_config {
       type = "GVISOR"
+    }
+    # Image streaming: pods start before the whole environment image is pulled (Artifact Registry images).
+    gcfs_config {
+      enabled = var.image_streaming
     }
     workload_metadata_config {
       mode = "GKE_METADATA"
@@ -243,4 +249,29 @@ resource "google_storage_bucket_iam_member" "pod_snapshots" {
   role       = each.value.role
   member     = each.value.member
   depends_on = [google_container_cluster.hangar] # the identity pool appears with the cluster
+}
+
+# --------------------------------------------------------------------------- session checkpoints (spec 0010)
+# Durable storage for session checkpoints: set HANGAR_SESSION_STORE=gs://<bucket> (hangar-site config map).
+resource "google_storage_bucket" "sessions" {
+  count                       = var.enable_session_bucket ? 1 : 0
+  name                        = "${var.project_id}-hangar-sessions"
+  location                    = var.region
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+  lifecycle_rule {
+    condition {
+      age = var.session_retention_days
+    }
+    action {
+      type = "Delete"
+    }
+  }
+}
+
+resource "google_storage_bucket_iam_member" "sessions" {
+  count  = var.enable_session_bucket ? 1 : 0
+  bucket = google_storage_bucket.sessions[0].name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${local.sa_email}"
 }

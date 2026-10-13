@@ -31,7 +31,21 @@ Checkpoints are taken:
 
 Checkpoints are encrypted with the vault key.
 
-Harnesses without a resume flag (Antigravity, for now) get a **handoff**: the next prompt starts with a short account of the earlier turns.
+All four agents resume their own conversation: Claude Code, Codex, pi and Antigravity (`agy --conversation <id>`). If you switch a session to a different agent, the next prompt starts with a short account of the earlier turns instead (a **handoff**).
+
+## Staying open while you work
+
+A session never suspends while it's in use. Any of these keeps it up:
+- an agent turn running;
+- a terminal open on it (dashboard or `hangar sb attach`);
+- anything using the sandbox through hangar (commands, files, MCP tools).
+
+It suspends only after it has been idle for its idle time: 30 minutes by default. To change that:
+
+```bash
+hangar session keep onboarding --idle 240   # four hours
+hangar session keep onboarding --idle 0     # stay up until I suspend it
+```
 
 ## Commands
 
@@ -41,11 +55,19 @@ Harnesses without a resume flag (Antigravity, for now) get a **handoff**: the ne
 | `hangar session list` | `list_sessions` | Streams of work, most recently active first |
 | `hangar session send NAME MESSAGE` | `send_to_session` | Continue: resumes the session if suspended, then runs a turn |
 | `hangar session open NAME` | `open_session` | Boot and restore without running the agent: work in the sandbox yourself |
+| `hangar session keep NAME --idle MIN` | `keep_session` | Idle time before suspending (0 = never) |
 | `hangar session suspend NAME` | `suspend_session` | Checkpoint and release the sandbox now |
 | `hangar session get NAME` | `get_session` | Turns, summaries, checkpoints, and `resume_command` |
 | `hangar session archive NAME` | | Drop the checkpoints (the record stays) |
 
-To work alongside the agent interactively:
+In the dashboard, the **Sessions** page does all of this:
+- **Resume** a session;
+- message the agent;
+- **Talk to the agent here**, which opens a terminal in the agent's own conversation;
+- open a shell;
+- set the idle time.
+
+To work alongside the agent interactively from a terminal:
 1. Open the session and attach to its sandbox: `hangar sb attach <sandbox_id>`.
 2. Run the `resume_command` that `get` shows, for example `claude --resume 3f2a…`. You're now in the same conversation the agent had.
 
@@ -58,6 +80,7 @@ To work alongside the agent interactively:
 | `HANGAR_SESSION_KEEP_CHECKPOINTS` | 5 | Per session |
 | `HANGAR_SESSION_MAX_UNTRACKED_MB` / `_MAX_PART_MB` | 20 / 100 | Larger parts are skipped with a warning |
 | `HANGAR_SESSION_TURN_TIMEOUT_MINUTES` | 120 | |
+| `HANGAR_SESSION_STORE` | data volume | `gs://bucket[/prefix]` for durable checkpoints on GKE (terraform output `session_bucket`) |
 
 ## Cost and speed
 

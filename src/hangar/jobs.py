@@ -369,6 +369,19 @@ class JobService:
     def _ctxdir(self, job: Job) -> str:
         return f"/home/{self.settings.sandbox_user}/.hangar/jobs/{job.id}"
 
+    def _progress(self, job: Job):
+        """Startup updates (image build, waiting for a node, cloning) as job events, without repeats."""
+        last: list[str] = []
+
+        def report(msg: str) -> None:
+            key = msg.split("(")[0] if msg.startswith("waiting for the sandbox") else msg
+            if last and last[-1] == key:
+                return
+            last.append(key)
+            self._event(job, msg)
+
+        return report
+
     def _session(self, job: Job):
         if not job.session_id:
             return None
@@ -423,7 +436,7 @@ class JobService:
                 if not self._sandbox_alive(job):
                     # A follow-up after the sandbox was released: resume the job's session from its checkpoint.
                     self._event(job, "resuming the job's session from its last checkpoint", JobState.PROVISIONING)
-                    sb = await self.sessions.ensure_sandbox(s)
+                    sb = await self.sessions.ensure_sandbox(s, progress=self._progress(job))
                     job.sandbox_id = sb.id
                     self._save(job)
                     self._event(job, f"sandbox {sb.name} ready (restored) on branch {job.branch}")
@@ -452,7 +465,7 @@ class JobService:
         job.session_id = s.id
         self._save(job)
         with self.sessions.hold(s):
-            sb = await self.sessions.ensure_sandbox(s)
+            sb = await self.sessions.ensure_sandbox(s, progress=self._progress(job))
         job.sandbox_id = sb.id
         job.harness = job.harness or sb.info.get("harness")
         job.repo = job.repo or sb.repo

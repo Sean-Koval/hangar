@@ -19,6 +19,7 @@ import asyncio
 import base64
 import datetime as dt
 import json
+import logging
 import shlex
 import shutil
 import tempfile
@@ -45,6 +46,7 @@ CORE_GROUP, CORE_V = "agents.x-k8s.io", "v1beta1"
 PS_GROUP, PS_V = "podsnapshot.gke.io", "v1"
 SNAPSHOT_LABEL = {"hangar.dev/snapshottable": "true"}  # matched by the PodSnapshotPolicy selector
 EXT_GROUP, EXT_V = "extensions.agents.x-k8s.io", "v1beta1"
+log = logging.getLogger("hangar.kubernetes")
 CONTAINER = "sandbox"
 MANAGED = {"app.kubernetes.io/managed-by": "hangar"}
 MAX_OUTPUT = 256 * 1024
@@ -369,6 +371,26 @@ class KubernetesProvider(Provider):
             if e.status != 404:
                 raise
 
+    async def explain_pending(self, sandbox: Sandbox) -> str | None:
+        """Plain-language reason a claim isn't running: scheduling (quota, no room, scale-up), image pull."""
+        try:
+            pod = await self._pod(sandbox)
+        except ProviderError:
+            claim = await self._claim(sandbox)
+            ready = _cond(claim or {}, "Ready") or {}
+            return ready.get("message") or "waiting for a sandbox from the pool"
+        evs = await asyncio.to_thread(self.core.list_namespaced_event, self.ns,
+                                      field_selector=f"involvedObject.name={pod}")
+        def _ts(e) -> float:
+            t = e.last_timestamp or e.event_time or (e.metadata.creation_timestamp if e.metadata else None)
+            return t.timestamp() if t else 0.0
+
+        items = sorted(evs.items or [], key=_ts)
+        if not items:
+            return "waiting to be scheduled"
+        e = items[-1]
+        return _explain_event(e.reason or "", e.message or "")
+
     async def set_expiry(self, sandbox: Sandbox, expires_at: float) -> None:
         patch = {"spec": {"lifecycle": {"shutdownTime": _rfc3339(expires_at + 300)}}}
         await asyncio.to_thread(self.crd.patch_namespaced_custom_object, EXT_GROUP, EXT_V, self.ns,
@@ -427,12 +449,50 @@ class KubernetesProvider(Provider):
             return None
         return base64.b64decode(out)
 
+    def _upload_stream_blocking(self, pod: str, path: str, b64: str, mode: int, timeout: int) -> tuple[int, str]:
+        """One exec, data on stdin. The exec websocket can't signal EOF to the process, so the receiver reads an
+        exact byte count (`head -c N`) instead: no EOF needed, and ~1 round trip instead of one per 96 KB."""
+        q, d = shlex.quote(path), shlex.quote(str(Path(path).parent))
+        tmp = f"/tmp/.hangar-upload-{uuid.uuid4().hex[:10]}"
+        script = (f"mkdir -p {d} && head -c {len(b64)} | base64 -d > {tmp} && chmod {mode:o} {tmp} && mv {tmp} {q}"
+                  f"; rc=$?; rm -f {tmp}; exit $rc")
+        ws = k8s_stream(self.core.connect_get_namespaced_pod_exec, pod, self.ns, container=CONTAINER,
+                        command=["sh", "-c", script], stderr=True, stdin=True, stdout=True, tty=False,
+                        _preload_content=False)
+        err: list[str] = []
+        try:
+            step = 256 * 1024
+            for i in range(0, len(b64), step):
+                ws.write_stdin(b64[i:i + step])
+                ws.update(timeout=0)
+                if ws.peek_stderr():
+                    err.append(ws.read_stderr())
+            deadline = time.monotonic() + timeout
+            while ws.is_open() and time.monotonic() < deadline:
+                ws.update(timeout=1)
+                if ws.peek_stderr():
+                    err.append(ws.read_stderr())
+            code = ws.returncode
+        finally:
+            ws.close()
+        return (code if code is not None else -1), "".join(err)
+
     async def write_file(self, sandbox, path, data, mode=0o644) -> None:
         pod = await self._pod(sandbox)
         q = shlex.quote(path)
         d = shlex.quote(str(Path(path).parent))
-        # Ship base64 inline in chunks via a temp file; avoids stdin EOF semantics of the exec websocket.
         b64 = base64.b64encode(data).decode()
+        if self.settings.k8s_stream_uploads and len(b64) > 64 * 1024:
+            try:
+                code, err = await asyncio.to_thread(self._upload_stream_blocking, pod, path, b64, mode,
+                                                    max(60, len(b64) // (512 * 1024)))
+                if code == 0:
+                    return
+                log.warning("streamed upload of %s failed (exit %s: %s); falling back to chunks", path, code,
+                            err[-200:])
+            except Exception as e:  # noqa: BLE001 - fall back to the slow, known-good path
+                log.warning("streamed upload of %s failed (%s); falling back to chunks", path, e)
+        # Fallback: ship base64 inline in chunks via a temp file (one exec per 96 KB).
         tmp = f"/tmp/.hangar-upload-{uuid.uuid4().hex[:10]}"
         chunk = 96 * 1024
         await asyncio.to_thread(self._exec_blocking, pod, ["sh", "-c", f": > {tmp}"], 30)
@@ -549,3 +609,29 @@ class KubernetesProvider(Provider):
         term = K8sTerminal(ws)
         await term.resize(cols, rows)
         return term
+
+
+def _explain_event(reason: str, message: str) -> str:
+    """Turn a Kubernetes pod event into something a person waiting on a sandbox can act on."""
+    m = message.strip()
+    low = m.lower()
+    if reason == "TriggeredScaleUp":
+        return "adding a node to the cluster (usually 1-3 minutes)"
+    if reason == "NotTriggerScaleUp":
+        if "quota" in low:
+            return f"the cluster can't add a node: a Google Cloud quota is exhausted ({m[:200]})"
+        if "max node group size" in low:
+            return "the sandbox node pool is at its maximum size; raise sandbox_max_nodes or free sandboxes"
+        return f"the cluster can't add a node: {m[:200]}"
+    if reason == "FailedScheduling":
+        if "insufficient" in low:
+            return f"no node has room right now ({m[:160]}); waiting for one to be added"
+        return f"can't be scheduled yet: {m[:200]}"
+    if reason == "Pulling":
+        return "pulling the environment image onto the node (first time on this node)"
+    if reason in ("Pulled", "Created", "Started", "Scheduled"):
+        return {"Pulled": "image pulled; starting", "Created": "starting", "Started": "starting",
+                "Scheduled": "placed on a node; starting"}[reason]
+    if reason in ("Failed", "ErrImagePull", "ImagePullBackOff", "BackOff"):
+        return f"problem starting: {m[:200]}"
+    return f"{reason}: {m[:200]}" if reason else m[:200]

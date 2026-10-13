@@ -7,6 +7,7 @@ laptop instance or a GKE deployment: set HANGAR_URL and HANGAR_TOKEN.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -34,17 +35,72 @@ session_app = typer.Typer(no_args_is_help=True,
 app.add_typer(session_app, name="session")
 
 
+def _config_path() -> Path:
+    return Path(os.environ.get("HANGAR_CLI_CONFIG", Path.home() / ".hangar" / "cli.json"))
+
+
+def _saved() -> dict:
+    try:
+        return json.loads(_config_path().read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _remote_url() -> str | None:
+    """The hangar server this CLI talks to: $HANGAR_URL, else the one saved by `hangar login`."""
+    return os.environ.get("HANGAR_URL") or _saved().get("url")
+
+
 def _client() -> httpx.Client:
-    url = os.environ.get("HANGAR_URL", "http://localhost:8787")
-    token = os.environ.get("HANGAR_TOKEN")
+    saved = _saved()
+    url = _remote_url() or "http://localhost:8787"
+    token = os.environ.get("HANGAR_TOKEN") or (saved.get("token") if saved.get("url") == url else None)
     if not token:
         boot = Path(os.environ.get("HANGAR_DATA_DIR", Path.home() / ".hangar")) / "bootstrap-token"
         if boot.exists():
             token = boot.read_text().strip()
     if not token:
-        typer.secho("HANGAR_TOKEN is not set (and no local bootstrap token found)", fg="red", err=True)
+        typer.secho("Not logged in: run `hangar login https://<your hangar>` (or set HANGAR_URL and HANGAR_TOKEN)",
+                    fg="red", err=True)
         raise typer.Exit(2)
     return httpx.Client(base_url=url, headers={"Authorization": f"Bearer {token}"}, timeout=httpx.Timeout(1800))
+
+
+@app.command("login")
+def login(
+    url: str = typer.Argument(..., help="Your hangar, e.g. https://34.8.98.95.sslip.io"),
+    token_file: Path | None = typer.Option(None, "--token-file", help="Read the token from a file "
+                                           "(e.g. ~/.hangar/gke-admin-token) instead of a prompt."),
+):
+    """Remember which hangar to use, so other commands work without HANGAR_URL/HANGAR_TOKEN.
+
+    The token is checked against the server, then saved to ~/.hangar/cli.json (mode 600)."""
+    url = url.rstrip("/")
+    token = (token_file.expanduser().read_text() if token_file else typer.prompt("API token", hide_input=True)).strip()
+    try:
+        r = httpx.get(f"{url}/api/me", headers={"Authorization": f"Bearer {token}"}, timeout=20)
+    except httpx.HTTPError as e:
+        typer.secho(f"can't reach {url}: {e}", fg="red", err=True)
+        raise typer.Exit(1) from e
+    if r.status_code != 200:
+        typer.secho(f"{url} rejected that token (HTTP {r.status_code})", fg="red", err=True)
+        raise typer.Exit(1)
+    cfg = _config_path()
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(cfg, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump({"url": url, "token": token}, f)
+    os.chmod(cfg, 0o600)
+    who = r.json().get("actor") or "ok"
+    typer.secho(f"logged in to {url} as {who}; saved to {cfg}", fg="green")
+
+
+@app.command("logout")
+def logout():
+    """Forget the saved hangar URL and token."""
+    with contextlib.suppress(FileNotFoundError):
+        _config_path().unlink()
+    typer.echo("logged out")
 
 
 def _call(method: str, path: str, **kw):
@@ -110,7 +166,7 @@ def token_create(name: str = typer.Argument(..., help="Label, e.g. 'codex-laptop
 
     Uses the server's REST API when HANGAR_URL is set, otherwise the local state store.
     """
-    if os.environ.get("HANGAR_URL"):
+    if _remote_url():
         res = _call("POST", "/api/tokens", json={"name": name, "scopes": scope,
                                                 **({"callback_secret": callback_secret} if callback_secret else {})})
         typer.secho(f"token {res['id']} ({res['name']}):", fg="green")
@@ -134,7 +190,7 @@ def token_create(name: str = typer.Argument(..., help="Label, e.g. 'codex-laptop
 @token_app.command("list")
 def token_list():
     """List API tokens (server REST API when HANGAR_URL is set, otherwise the local state store)."""
-    if os.environ.get("HANGAR_URL"):
+    if _remote_url():
         for t in _call("GET", "/api/tokens"):
             typer.echo(f"{t['id']}  {t['name']:24}  last_used={t['last_used']}")
         return
@@ -147,7 +203,7 @@ def token_list():
 @token_app.command("revoke")
 def token_revoke(token_id: str):
     """Revoke an API token (server REST API when HANGAR_URL is set, otherwise the local state store)."""
-    if os.environ.get("HANGAR_URL"):
+    if _remote_url():
         _call("DELETE", f"/api/tokens/{token_id}")
     else:
         from hangar.app import Hangar
@@ -634,3 +690,28 @@ def session_suspend(ref: str):
 def session_archive(ref: str):
     x = _call("POST", f"/api/sessions/{ref}/archive")
     typer.echo(f"{x['name']} {x['state']}")
+
+
+@session_app.command("keep")
+def session_keep(ref: str, idle: int = typer.Option(..., "--idle", help="Minutes idle before suspending; 0 = never.")):
+    """Change how long a session may sit idle (activity in its sandbox always keeps it up)."""
+    x = _call("POST", f"/api/sessions/{ref}/idle", json={"idle_minutes": idle})
+    typer.echo(f"{x['name']}: suspends after {x['idle_minutes']} idle minutes" if x["idle_minutes"]
+               else f"{x['name']}: stays up until you suspend it")
+
+
+@app.command("doctor")
+def doctor_cmd(as_json: bool = typer.Option(False, "--json")):
+    """Check this hangar for the things that break jobs and sessions, with the fix for each."""
+    checks = _call("GET", "/api/doctor")
+    if as_json:
+        return _print(checks)
+    marks = {"ok": ("✓", "green"), "warn": ("!", "yellow"), "fail": ("✗", "red")}
+    for c in checks:
+        mark, color = marks[c["status"]]
+        typer.secho(f"{mark} {c['name']}: {c['detail']}", fg=color)
+        if c.get("fix"):
+            typer.echo(f"    fix: {c['fix']}")
+    fails = sum(c["status"] == "fail" for c in checks)
+    typer.echo(f"\n{fails} problem(s)" if fails else "\nall good")
+    raise typer.Exit(1 if fails else 0)

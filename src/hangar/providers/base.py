@@ -96,6 +96,11 @@ class Provider(abc.ABC):
     async def set_expiry(self, sandbox: Sandbox, expires_at: float) -> None:
         """Propagate a TTL change to the backend's own timeout, if it has one."""
 
+    async def explain_pending(self, sandbox: Sandbox) -> str | None:
+        """Why a starting sandbox isn't running yet (waiting for a node, quota, pulling the image...), in plain
+        words, if the backend can tell. Shown to people while they wait."""
+        return None
+
     # --- I/O ----------------------------------------------------------------
     @abc.abstractmethod
     async def exec(

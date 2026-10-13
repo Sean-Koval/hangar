@@ -31,6 +31,7 @@
       <span>Hangar</span>
     </a>
     <a href="#jobs" data-view="jobs">Jobs <span id="nav-jobs" class="pill"></span></a>
+    <a href="#sessions" data-view="sessions">Sessions <span id="nav-sessions" class="pill"></span></a>
     <a href="#fleet" data-view="fleet">Fleet <span id="nav-count" class="pill"></span></a>
     <a href="#environments" data-view="environments">Environments</a>
     <a href="#credentials" data-view="credentials">Credentials</a>
@@ -90,6 +91,40 @@
         <ul id="job-list" class="list"></ul>
         <div id="job-detail" class="panel job-detail"><p class="empty">Choose a job to see its timeline, result and
           sandbox.</p></div>
+      </div>
+    </section>
+
+    <!-- SESSIONS -->
+    <section id="view-sessions" class="view" hidden>
+      <header class="view-head">
+        <div>
+          <h2>Sessions</h2>
+          <p class="sub">Streams of work you come back to. The agent's conversation and the repo are saved after
+            every turn and when a session goes idle; resuming starts a fresh sandbox and picks up where it left off.</p>
+        </div>
+        <div class="actions">
+          <label class="check"><input type="checkbox" id="ses-jobs"> Show job sessions</label>
+          <button class="primary" id="btn-new-session">New session</button>
+        </div>
+      </header>
+      <form id="session-form" class="panel new-form" hidden>
+        <div class="grid">
+          <label>Name<input name="name" required pattern="[a-z0-9][a-z0-9._-]*" placeholder="csv-fix"></label>
+          <label>Environment<select name="environment" required></select></label>
+          <label>Agent<select name="harness"></select></label>
+        </div>
+        <label class="wide">First message (optional)<textarea name="message" rows="4"
+          placeholder="Fix the unicode bug in CSV export. Start by reproducing it with a test."></textarea></label>
+        <div class="form-foot">
+          <span class="hint">Without a message the sandbox just opens, ready for you or the agent.</span>
+          <button type="button" class="ghost" id="session-cancel">Cancel</button>
+          <button class="primary" type="submit">Start session</button>
+        </div>
+      </form>
+      <div class="split jobs-split">
+        <ul id="session-list" class="list"></ul>
+        <div id="session-detail" class="panel job-detail"><p class="empty">Choose a session to resume it, talk to
+          its agent, or open its terminal.</p></div>
       </div>
     </section>
 

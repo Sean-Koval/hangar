@@ -18,7 +18,7 @@ from typing import Any
 
 from hangar.broker import Broker, CredentialError
 from hangar.config import Settings
-from hangar.envspec import BuildContext, EnvCatalog, EnvSpec, image_tag, render, repo_dirname
+from hangar.envspec import BuildContext, EnvCatalog, EnvSpec, image_tag, render, repo_dirname, warm_pool_now
 from hangar.harnesses import (
     HARNESSES,
     Harness,
@@ -141,6 +141,7 @@ class Fleet:
         self.pre_destroy: list[Callable[[Sandbox], Awaitable[None]]] = []
         # Live dashboard/CLI terminals per sandbox. Someone watching or typing keeps sessions awake.
         self.attached: collections.Counter[str] = collections.Counter()
+        self._warm_applied: dict[str, int] = {}
 
     # ================================================================== setup
     async def start(self) -> None:
@@ -344,8 +345,10 @@ class Fleet:
                         job.image = await prov.build_template(spec, ctx, tag, log=job.emit)
                     self.store.kv_set(f"image:{pname}:{env}", job.image)
                     if spec.warm_pool:
-                        await job.emit(f"syncing warm pool to {spec.warm_pool}")
-                        await prov.sync_warm_pool(spec, job.image)
+                        live = self._warm(spec)
+                        await job.emit(f"syncing warm pool to {live.warm_pool}"
+                                       + (f" (schedule: {spec.warm_pool_hours})" if spec.warm_pool_hours else ""))
+                        await prov.sync_warm_pool(live, job.image)
                     job.state = "succeeded"
                     self.audit(actor, "environment.build", env, provider=pname, image=job.image)
                 except Exception as e:  # noqa: BLE001
@@ -379,11 +382,12 @@ class Fleet:
         if hasattr(prov, "_known_images"):
             prov._known_images.add(image)  # type: ignore[attr-defined]
         await self._resolve_packs(spec, pname, actor)
-        await prov.sync_warm_pool(spec, ref)
+        await prov.sync_warm_pool(self._warm(spec), ref)
         self.audit(actor, "environment.register_image", env, provider=pname, image=ref)
         return {"environment": env, "provider": pname, "image": ref}
 
-    async def _ensure_image(self, spec: EnvSpec, pname: str, actor: str, harness: str | None = None) -> str:
+    async def _ensure_image(self, spec: EnvSpec, pname: str, actor: str, harness: str | None = None,
+                            stage: Callable[[str], None] | None = None) -> str:
         if spec.image:
             return spec.image
         prov = self.provider(pname)
@@ -394,6 +398,8 @@ class Fleet:
             return registered
         if await prov.image_exists(tag):
             return prov.image_ref(tag)
+        if stage:
+            stage(f"building the {spec.name} image (first use or the environment changed; usually a few minutes)")
         if bake and bake != self._bake_for(spec, pname, spec.pick_harness()):
             # A non-default harness on a provider without packs: build that variant directly.
             return await prov.build_template(spec, ctx, tag)
@@ -456,7 +462,10 @@ class Fleet:
         _parent: str | None = None,
         _restore_workspace: str | None = None,
         _skip_repo: bool = False,
+        progress: Callable[[str], None] | None = None,
     ) -> Sandbox:
+        """`progress` gets short plain-language updates while the sandbox starts (image build, waiting for a
+        node, cloning...), so callers can show where the time goes."""
         active = [s for s in self.store.list(Sandbox) if s.state in ACTIVE]
         if len(active) >= self.settings.max_sandboxes:
             raise FleetError(f"fleet is at max_sandboxes={self.settings.max_sandboxes}; destroy some first")
@@ -496,30 +505,40 @@ class Fleet:
             sb.info["harness"] = hname
         self.store.put(sb)
         self.audit(actor, "sandbox.create", sb.id, environment=environment, provider=pname, name=sb.name)
+        def stage(msg: str) -> None:
+            sb.info["stage"] = msg
+            self.store.put(sb)
+            if progress:
+                with contextlib.suppress(Exception):
+                    progress(msg)
+
         try:
             creds = self.broker.acquire(cred_names, sb.id)  # fail before starting anything
             sb.state = SandboxState.STARTING
             self.store.put(sb)
-            image = _image or await self._ensure_image(spec, pname, actor, hname)
+            image = _image or await self._ensure_image(spec, pname, actor, hname, stage=stage)
             sb.image = image
             await self._resolve_packs(spec, pname, actor)
             if spec.packs:
                 sb.info["packs"] = dict(spec.packs)
-            await prov.create(sb, image, spec)  # image may be a snapshot ref (forks)
+            stage("starting the sandbox")
+            await prov.create(sb, image, self._warm(spec))  # image may be a snapshot ref (forks)
             self.store.put(sb)
-            await self._wait_running(prov, sb)
+            await self._wait_running(prov, sb, stage=stage)
             if _parent:
                 await self._scrub_inherited_secrets(prov, sb)
             await self._apply_session(prov, sb, spec, hname, creds)
             if _restore_workspace:
                 await self._restore_workspace(prov, sb, _restore_workspace)
             elif sb.repo:
-                await self._setup_repo(prov, sb, spec, work_branch)
+                stage(f"cloning {repo_dirname(sb.repo)}")
+                await self._setup_repo(prov, sb, spec, work_branch, stage=stage)
+            sb.info.pop("stage", None)
             sb.state = SandboxState.RUNNING
             sb.error = None
             self._touch(sb)
             if spec.warm_pool and pname in self.providers and _image is None:
-                asyncio.create_task(self._refill(spec, pname, image))
+                asyncio.create_task(self._refill(self._warm(spec), pname, image))
             return sb
         except BaseException as e:  # includes CancelledError (client cancelled / tool timeout)
             sb.state = SandboxState.ERROR
@@ -595,22 +614,76 @@ class Fleet:
             cur = {}
         await prov.write_file(sb, path, json.dumps(deep_merge(cur, patch), indent=2).encode(), mode=0o600)
 
+    def _warm(self, spec: EnvSpec) -> EnvSpec:
+        """The spec with the warm pool size that applies now (warm_pool_hours schedules it to 0 off-hours)."""
+        n = warm_pool_now(spec)
+        return spec if n == spec.warm_pool else spec.model_copy(update={"warm_pool": n})
+
+    async def sync_scheduled_pools(self) -> None:
+        """Scale scheduled warm pools up or down when their working hours start or end."""
+        for name in self.catalog.names():
+            try:
+                spec = self.catalog.get(name)
+            except Exception:  # noqa: BLE001 - a broken spec must not stop the others
+                continue
+            if not spec.warm_pool or not spec.warm_pool_hours:
+                continue
+            want = warm_pool_now(spec)
+            for pname, prov in self.providers.items():
+                image = self.store.kv_get(f"image:{pname}:{name}")
+                key = f"{pname}:{name}"
+                if not image or self._warm_applied.get(key) == want:
+                    continue
+                try:
+                    await self._resolve_packs(spec, pname, "scheduler")
+                    await prov.sync_warm_pool(spec.model_copy(update={"warm_pool": want}), image)
+                    self._warm_applied[key] = want
+                    log.info("warm pool %s on %s -> %d (schedule %s)", name, pname, want, spec.warm_pool_hours)
+                except Exception:  # noqa: BLE001
+                    log.exception("scheduled warm pool sync failed for %s", key)
+
+    async def prebuild(self, names: list[str], pname: str | None = None) -> None:
+        """Build environment images ahead of first use (at startup), so the first job or session doesn't wait on
+        a build. Missing images are built one at a time; existing ones return immediately."""
+        pname = pname or self.settings.default_provider
+        for name in dict.fromkeys(names):
+            try:
+                spec = self.catalog.get(name)
+                if spec.image:
+                    continue
+                await self._ensure_image(spec, pname, "prebuild")
+                await self._resolve_packs(spec, pname, "prebuild")
+                log.info("prebuild: %s ready on %s", name, pname)
+            except Exception as e:  # noqa: BLE001
+                log.warning("prebuild of %s failed: %s", name, e)
+
     async def _refill(self, spec: EnvSpec, pname: str, image: str) -> None:
         try:
             await self.providers[pname].sync_warm_pool(spec, image)
         except Exception:  # noqa: BLE001
             log.exception("warm pool refill failed")
 
-    async def _wait_running(self, prov: Provider, sb: Sandbox, timeout: float = 300) -> None:
-        deadline = time.monotonic() + timeout
+    async def _wait_running(self, prov: Provider, sb: Sandbox, timeout: float | None = None,
+                            stage: Callable[[str], None] | None = None) -> None:
+        timeout = timeout or self.settings.sandbox_start_timeout_seconds
+        start = time.monotonic()
+        deadline = start + timeout
+        last_check, why = start, None
         while time.monotonic() < deadline:
             st = await prov.status(sb)
             if st == SandboxState.RUNNING:
                 return
             if st in (SandboxState.ERROR, SandboxState.STOPPED):
-                raise ProviderError(f"sandbox entered state {st}")
+                raise ProviderError(f"sandbox entered state {st}" + (f" ({why})" if why else ""))
+            if time.monotonic() - last_check > 10:  # say why it's taking a while
+                last_check = time.monotonic()
+                with contextlib.suppress(Exception):
+                    why = await prov.explain_pending(sb) or why
+                if why and stage:
+                    stage(f"waiting for the sandbox to start ({int(time.monotonic() - start)}s): {why}")
             await asyncio.sleep(0.5)
-        raise ProviderError("timed out waiting for sandbox to start")
+        raise ProviderError(f"timed out after {int(timeout)}s waiting for the sandbox to start"
+                            + (f"; last seen: {why}" if why else ""))
 
     async def _scrub_inherited_secrets(self, prov: Provider, sb: Sandbox) -> None:
         """A fork inherits the parent's filesystem; drop secrets so leases and env are re-issued cleanly."""
@@ -625,7 +698,8 @@ class Fleet:
         if res.exit_code != 0:
             raise FleetError(f"could not scrub inherited secrets from fork: {res.stderr[-300:]}")
 
-    async def _setup_repo(self, prov: Provider, sb: Sandbox, spec: EnvSpec, work_branch: str | None) -> None:
+    async def _setup_repo(self, prov: Provider, sb: Sandbox, spec: EnvSpec, work_branch: str | None,
+                          stage: Callable[[str], None] | None = None) -> None:
         ws = self.settings.workspace_dir
         dest = (spec.repo.path if spec.repo and spec.repo.path and spec.repo.url == sb.repo else None) or \
             f"{ws}/{repo_dirname(sb.repo)}"
@@ -643,6 +717,8 @@ class Fleet:
         if res.exit_code != 0:
             raise FleetError(f"repo setup failed: {(res.stderr or res.stdout)[-800:]}")
         setup = spec.repo.setup if spec.repo and spec.repo.url == sb.repo and not baked else None
+        if setup and stage:
+            stage(f"running the repo's setup: {setup[:80]}")
         if setup:
             res = await prov.exec(sb, setup, cwd=dest, timeout=1800)
             if res.exit_code != 0:
@@ -1110,11 +1186,14 @@ class Fleet:
             try:
                 await asyncio.sleep(self.settings.reaper_interval_seconds)
                 t = now()
-                for sb in self.list():
-                    if sb.expires_at and sb.expires_at < t:
-                        log.info("expiring %s", sb.id)
-                        await self.destroy(sb.id, actor="reaper")
+                expired = [sb for sb in self.list() if sb.expires_at and sb.expires_at < t]
+                for sb in expired:
+                    log.info("expiring %s", sb.id)
+                # concurrently: a destroy may first checkpoint a session (pre-destroy hook), which takes a while
+                await asyncio.gather(*(self.destroy(sb.id, actor="reaper") for sb in expired),
+                                     return_exceptions=True)
                 await self.reconcile()
+                await self.sync_scheduled_pools()
             except asyncio.CancelledError:
                 return
             except Exception:  # noqa: BLE001

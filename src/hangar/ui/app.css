@@ -255,3 +255,9 @@ dialog .form-foot { margin-top: 4px; }
 .new-form > label.wide { display: block; margin-bottom: 12px; }
 .new-form > label.wide textarea { width: 100%; }
 @media (max-width: 860px) { .jobs-split { grid-template-columns: 1fr; } }
+
+/* ---- sessions ---- */
+.turns li { padding: 8px 0; border-top: 1px solid var(--line); }
+.turns li:first-child { border-top: 0; }
+.turn-summary { margin-top: 4px; white-space: pre-wrap; font-size: 13px; color: var(--ink-2); font-variant-ligatures: none; }
+#ses-idle { width: auto; }

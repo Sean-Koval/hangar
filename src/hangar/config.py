@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     k8s_build_service_account: str | None = None
     # Mount harness packs as OCI image volumes (Kubernetes >= 1.35, stable in 1.36). Off: bake into images.
     k8s_image_volumes: bool = True
+    k8s_stream_uploads: bool = True  # one exec with stdin per file upload; falls back to 96 KB chunks
 
     # e2b
     e2b_api_key: str | None = None
@@ -102,9 +103,17 @@ class Settings(BaseSettings):
     session_max_untracked_mb: int = 20  # untracked files above this are not checkpointed (warning)
     session_max_part_mb: int = 100  # any other checkpoint part above this is skipped (warning)
     session_handoff_turns: int = 10  # earlier turns summarised in a handoff prompt
+    # Where checkpoints live: unset = <data_dir>/sessions; gs://bucket[/prefix] = GCS via Workload Identity
+    # (durable, doesn't fill the control plane's disk; terraform output session_bucket).
+    session_store: str | None = None
     session_poll_seconds: float = 5.0
     session_turn_timeout_minutes: int = 120
     pre_destroy_timeout_seconds: float = 300.0
+    # Waiting for a sandbox to start covers node scale-up (2-4 min on GKE) plus a first image pull (1-3 min).
+    sandbox_start_timeout_seconds: int = 900
+    # Environments to build at startup so the first job/session doesn't wait on an image build. Unset = the
+    # environments mapped in HANGAR_GITHUB_REPOS; [] = none.
+    prebuild_environments: list[str] | None = None
 
     # --- GitHub (jobs delivery and trigger) ---------------------------------
     github_api_url: str = "https://api.github.com"

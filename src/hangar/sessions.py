@@ -18,7 +18,6 @@ import json
 import logging
 import re
 import shlex
-import shutil
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -26,6 +25,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from hangar.checkpoints import CheckpointStore, make_store
 from hangar.fleet import Fleet, FleetError, _clip_tail
 from hangar.harnesses import get_harness
 from hangar.models import (
@@ -113,6 +113,7 @@ class SessionService:
         self.store = fleet.store
         self.vault = vault
         self.root = self.settings.data_dir / "sessions"
+        self.blobs: CheckpointStore = make_store(self.settings.session_store, self.settings.data_dir)
         self._sessions: dict[str, Session] = {}
         self._locks: dict[str, asyncio.Lock] = collections.defaultdict(asyncio.Lock)
         self._busy: set[str] = set()  # sessions with a turn or boot in flight
@@ -268,7 +269,7 @@ class SessionService:
         s = self.get(ref)
         if s.sandbox_id or s.id in self._busy:
             raise SessionError(f"suspend session {s.name} before archiving it")
-        shutil.rmtree(self.root / s.id, ignore_errors=True)
+        self._spawn(self._drop(f"{s.id}/"))
         s.checkpoints = []
         self._set(s, SessionState.ARCHIVED, f"archived by {requester}")
         self.fleet.audit(requester, "session.archive", s.id)
@@ -333,7 +334,7 @@ class SessionService:
         finally:
             self._busy.discard(sid)
 
-    async def _boot(self, s: Session) -> Sandbox:
+    async def _boot(self, s: Session, progress: Callable[[str], None] | None = None) -> Sandbox:
         """Attach a running sandbox to the session, restoring its last checkpoint. Caller holds the lock."""
         if s.sandbox_id and self._alive(s.sandbox_id):
             return self.fleet.get(s.sandbox_id)
@@ -341,10 +342,18 @@ class SessionService:
         self._set(s, SessionState.STARTING, "starting a sandbox" + (" and restoring the last checkpoint"
                                                                      if s.checkpoints else ""))
         ttl = max(s.idle_minutes * 3, 120) + self.settings.session_turn_timeout_minutes
+
+        def stage(msg: str) -> None:  # where the time goes, for people waiting on the session (and its job)
+            self._set(s, SessionState.STARTING, msg)
+            if progress:
+                progress(msg)
+
         sb = await self.fleet.create(
             s.environment, name=f"ses-{s.name[:30]}-{uuid.uuid4().hex[:4]}", repo=s.repo, branch=s.base_branch,
             harness=s.harness, ttl_minutes=ttl, labels={**s.labels, "hangar.session": s.id}, provider=s.provider,
-            actor=f"session:{s.id}")
+            actor=f"session:{s.id}", progress=stage)
+        if s.checkpoints and sb.info.get("repo_path"):
+            stage("restoring the last checkpoint")
         note = None
         try:
             if sb.info.get("repo_path"):
@@ -398,14 +407,16 @@ class SessionService:
     async def _restore_checkpoint(self, s: Session, sb: Sandbox, repo: str, ck: Checkpoint) -> None:
         q = shlex.quote
         _, prov = self.fleet._running(sb.id)
-        d = self.root / s.id / ck.id
         present: set[str] = set()
         for part in PARTS:
-            f = d / f"{part}.enc"
-            if f.exists():
-                data = await asyncio.to_thread(lambda f=f: self.vault.decrypt(f.read_bytes()))
-                await prov.write_file(sb, f"{RESTORE_DIR}/{part}", data, mode=0o600)
-                present.add(part)
+            if part not in ck.parts:
+                continue
+            blob = await self.blobs.get(f"{s.id}/{ck.id}/{part}.enc")
+            if blob is None:
+                raise SessionError(f"checkpoint part {part} is missing from {self.blobs.description}")
+            data = await asyncio.to_thread(self.vault.decrypt, blob)
+            await prov.write_file(sb, f"{RESTORE_DIR}/{part}", data, mode=0o600)
+            present.add(part)
         r, home = RESTORE_DIR, f"/home/{self.settings.sandbox_user}"
         base = ck.base or s.base_sha or "HEAD"
         target = q(ck.head or base)
@@ -490,8 +501,7 @@ class SessionService:
                 sizes[Path(parts[1]).name] = int(parts[0])
         ck = Checkpoint(reason=reason, head=head if head and head != "HEAD" else None, base=s.base_sha,
                         branch=s.branch, fingerprint=fp)
-        d = self.root / s.id / ck.id
-        d.mkdir(parents=True, exist_ok=True)
+        key = f"{s.id}/{ck.id}"
         max_part = self.settings.session_max_part_mb * 1024 * 1024
         try:
             for part in PARTS:
@@ -507,17 +517,17 @@ class SessionService:
                     ck.warnings.append(f"could not read {part}")
                     continue
                 blob = await asyncio.to_thread(self.vault.encrypt, data)
-                await asyncio.to_thread((d / f"{part}.enc").write_bytes, blob)
+                await self.blobs.put(f"{key}/{part}.enc", blob)
                 ck.parts[part] = len(data)
         except BaseException:
-            await asyncio.to_thread(shutil.rmtree, d, True)  # never leave an unrecorded partial checkpoint
+            self._spawn(self._drop(f"{key}/"))  # never leave an unrecorded partial checkpoint
             raise
         with contextlib.suppress(Exception):
             await self._sh(sb, f"rm -rf {c}")
         s.checkpoints.append(ck)
         keep = max(1, self.settings.session_keep_checkpoints)
         for old in s.checkpoints[:-keep]:
-            await asyncio.to_thread(shutil.rmtree, self.root / s.id / old.id, True)
+            self._spawn(self._drop(f"{s.id}/{old.id}/"))
         s.checkpoints = s.checkpoints[-keep:]
         self._last_checked[s.id] = now()
         self._save(s)
@@ -632,10 +642,10 @@ class SessionService:
         self._save(s)
 
     # ================================================================== turns (also used by jobs)
-    async def ensure_sandbox(self, s: Session) -> Sandbox:
+    async def ensure_sandbox(self, s: Session, progress: Callable[[str], None] | None = None) -> Sandbox:
         """A running sandbox for the session: the current one, or a new one restored from the last checkpoint."""
         async with self._locks[s.id]:
-            return await self._boot(s)
+            return await self._boot(s, progress=progress)
 
     async def begin_turn(self, s: Session, turn: SessionTurn, prompt: str | None = None,
                          extra_env: dict[str, str] | None = None, timeout_minutes: int | None = None) -> None:
@@ -770,6 +780,12 @@ class SessionService:
         self._set(s, SessionState.SUSPENDED, why)
         with contextlib.suppress(Exception):
             await self.fleet.destroy(sid, actor=f"session:{s.id}")
+
+    async def _drop(self, prefix: str) -> None:
+        try:
+            await self.blobs.delete_prefix(prefix)
+        except Exception as e:  # noqa: BLE001 - leftovers are harmless; log and move on
+            log.warning("could not delete checkpoint data %s: %s", prefix, e)
 
     async def _hook(self, sb: Sandbox) -> None:
         """Fleet pre-destroy hook: checkpoint a session whose sandbox is being destroyed by someone else."""

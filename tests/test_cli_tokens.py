@@ -67,3 +67,29 @@ def test_local_when_url_unset(monkeypatch):
     assert r.exit_code == 0, r.output
     assert "loc1" in r.output and "raw-secret" in r.output
     assert calls == []
+
+
+def test_login_saves_config_and_commands_use_it(monkeypatch, tmp_path):
+    import json
+
+    import httpx
+
+    monkeypatch.delenv("HANGAR_URL", raising=False)
+    monkeypatch.delenv("HANGAR_TOKEN", raising=False)
+    seen = {}
+
+    def fake_get(url, headers=None, timeout=None):
+        seen["auth"] = headers["Authorization"]
+        return httpx.Response(200, json={"actor": "ui:admin"}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(cli.httpx, "get", fake_get)
+    tok = tmp_path / "tok"
+    tok.write_text("hgr_abc\n")
+    r = runner.invoke(cli.app, ["login", "https://h.example/", "--token-file", str(tok)])
+    assert r.exit_code == 0, r.output
+    cfg = json.loads((tmp_path / "cli.json").read_text())
+    assert cfg == {"url": "https://h.example", "token": "hgr_abc"} and seen["auth"] == "Bearer hgr_abc"
+    assert ((tmp_path / "cli.json").stat().st_mode & 0o777) == 0o600
+    with cli._client() as c:
+        assert str(c.base_url) == "https://h.example" and c.headers["Authorization"] == "Bearer hgr_abc"
+    assert runner.invoke(cli.app, ["logout"]).exit_code == 0 and not (tmp_path / "cli.json").exists()

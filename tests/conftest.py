@@ -22,6 +22,12 @@ from hangar.vault import Vault, load_or_create_key
 ENVS = Path(__file__).parent / "fixtures" / "envs"
 
 
+@pytest.fixture(autouse=True)
+def _isolated_cli_config(tmp_path, monkeypatch):
+    """Never read or write the developer's real ~/.hangar/cli.json (hangar login) in tests."""
+    monkeypatch.setenv("HANGAR_CLI_CONFIG", str(tmp_path / "cli.json"))
+
+
 def scratch_root() -> Path:
     """Where fake sandboxes and test git remotes live. The fake provider rewrites /home/agent, /workspace and
     /tmp/ inside commands, so this path must contain none of them. Inside a hangar sandbox $HOME *is*

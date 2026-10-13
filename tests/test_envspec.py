@@ -187,3 +187,25 @@ def test_skill_paths_cannot_escape_spec_dir(tmp_path):
 def test_invalid_env_name_rejected(tmp_path):
     with pytest.raises(ValueError, match="invalid environment name"):
         EnvCatalog([tmp_path]).add({"name": "../evil"})
+
+
+def test_warm_pool_hours():
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+
+    from hangar.envspec import EnvSpec, parse_hours, warm_pool_now
+
+    assert parse_hours("Mon-Fri 08:00-20:00 America/New_York") == ({0, 1, 2, 3, 4}, 480, 1200, "America/New_York")
+    assert parse_hours("sat,sun 22:00-02:00")[0] == {5, 6}
+    spec = EnvSpec(name="x", warm_pool=2, warm_pool_hours="Mon-Fri 08:00-20:00 America/New_York")
+    ny = ZoneInfo("America/New_York")
+    tue_10am = dt.datetime(2026, 10, 13, 10, 0, tzinfo=ny).timestamp()
+    tue_9pm = dt.datetime(2026, 10, 13, 21, 0, tzinfo=ny).timestamp()
+    sat_10am = dt.datetime(2026, 10, 17, 10, 0, tzinfo=ny).timestamp()
+    assert warm_pool_now(spec, tue_10am) == 2
+    assert warm_pool_now(spec, tue_9pm) == 0 and warm_pool_now(spec, sat_10am) == 0
+    assert warm_pool_now(EnvSpec(name="y", warm_pool=1)) == 1  # no schedule: always
+    import pytest
+
+    with pytest.raises(ValueError):
+        EnvSpec(name="z", warm_pool=1, warm_pool_hours="weekdays 9-5")

@@ -174,6 +174,10 @@ class OpenBody(BaseModel):
     harness: str | None = None
 
 
+class IdleBody(BaseModel):
+    idle_minutes: int = Field(ge=0, le=10080)  # 0 = stay up until suspended by hand
+
+
 class TokenBody(BaseModel):
     name: str
     scopes: list[str] = Field(default_factory=lambda: ["admin"])
@@ -245,8 +249,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await h.fleet.start()
         await h.sessions.start()  # first: jobs look up their sessions
         await h.jobs.start()
+        pre = h.settings.prebuild_environments
+        if pre is None:
+            pre = [e.strip() for v in h.settings.github_repos.values() for e in v.split(",") if e.strip()]
+        prebuild = asyncio.create_task(h.fleet.prebuild(pre)) if pre else None
         async with mcp.session_manager.run():
             yield
+        if prebuild:
+            prebuild.cancel()
         await h.jobs.stop()
         await h.sessions.stop()
         await h.fleet.stop()
@@ -305,6 +315,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/me")
     async def me(who: str = A):
         return {"actor": who}
+
+    @app.get("/api/doctor")
+    async def doctor_route(_: str = A):
+        from hangar import doctor
+
+        return await doctor.run(h)
 
     @app.get("/api/overview")
     async def overview(_: str = A):
@@ -709,6 +725,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/sessions/{ref}/send")
     async def session_send(ref: str, body: SendBody, who: str = A):
         return sessions.view(sessions.send(ref, body.message, requester=who))
+
+    @app.post("/api/sessions/{ref}/idle")
+    async def session_idle(ref: str, body: IdleBody, who: str = A):
+        return sessions.view(sessions.set_idle(ref, body.idle_minutes, requester=who))
 
     @app.post("/api/sessions/{ref}/suspend")
     async def session_suspend(ref: str, who: str = A):

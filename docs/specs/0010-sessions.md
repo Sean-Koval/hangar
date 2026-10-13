@@ -1,6 +1,6 @@
 # 0010: Sessions, resumable streams of work
 
-Status: M1 in progress · Date: 2026-10-12 · Builds on: 0001 (runs, harness resume), 0006 (environments, harnesses), 0009 (jobs)
+Status: M1–M3 built, M4 partly (2026-10-13) · Date: 2026-10-12 · Builds on: 0001 (runs, harness resume), 0006 (environments, harnesses), 0009 (jobs)
 
 > Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins.
 
@@ -41,7 +41,7 @@ A session is the unit of *ongoing work*. A job (0009) is a *request* for work. I
   | Claude Code | `~/.claude/projects/<cwd-slug>/<uuid>.jsonl` | `--session-id <uuid>` | `-p … --resume <uuid>` / interactive `claude --resume <uuid>` |
   | Codex 0.162 | `~/.codex/sessions/YYYY/MM/DD/rollout-…-<id>.jsonl` | no (id printed as `thread_id` in `--json` output) | `codex exec resume <id> [prompt]` / interactive `codex resume <id>` |
   | pi 1.1.0 | `~/.pi/agent/sessions/<cwd-slug>/…` | `--session-id <id>` (creates it if missing) | same flag |
-  | Antigravity | not verified | — | **handoff** (§5.5) |
+  | Antigravity 1.3.3 | `~/.gemini/antigravity-cli/conversations/<id>.db` | no (id is `conversation_id` in the stream-json `init` event) | `--conversation <id>`. An unknown id silently starts a new conversation; hangar's post-turn check catches that. |
 
   The cwd slug matters: hangar always checks the repo out at `/workspace/<repo>`, so the slug is the same in every sandbox of a session.
 
@@ -137,12 +137,24 @@ When the turn finishes, hangar takes a checkpoint, records the summary (the last
 
 ### 5.4 Suspend and idle
 
-A reaper pass every minute checks each `ACTIVE`/`IDLE` session. If its sandbox has no agent turn running, no tmux client attached (`tmux list-clients`), and has been idle for `idle_minutes`, the session is suspended:
+**A session never suspends while it is being used.** A pass every minute counts all of these as activity:
+- an agent turn running (and, for jobs, the whole verify-and-deliver step);
+- a dashboard or CLI terminal open on the sandbox (counted live, and touched on every keystroke);
+- a tmux client attached (`hangar sb attach`);
+- anything that used the sandbox through hangar (exec, files, terminals, MCP) in the last 90 seconds.
+
+hangar's own housekeeping (checkpoints, these probes) runs "quiet": it neither counts as activity nor fills the audit log.
+
+Only after `idle_minutes` with none of that is the session suspended:
 1. checkpoint;
 2. destroy the sandbox;
 3. set the state to `SUSPENDED`.
 
-`hangar session suspend` does the same on demand. `archive` drops the checkpoints and keeps the record and transcript summary.
+- `idle_minutes` is per session. You can change it at any time (`hangar session keep NAME --idle 0`, MCP `keep_session`, or the dashboard). 0 means the session stays up until you suspend it.
+- The sandbox's own TTL is extended for the whole of every turn and while the session is live, so the reaper never takes a session mid-work.
+- Expired sandboxes are reaped concurrently, so one session's checkpoint doesn't delay the others.
+
+`hangar session suspend` suspends on demand. `archive` drops the checkpoints and keeps the record and transcript summary.
 
 ### 5.5 Handoff (harness without resume, or switching harness)
 
@@ -152,22 +164,32 @@ The new turn's prompt starts with a compact account of the session:
 - the branch;
 - the last check result.
 
-This works for any harness. It is used when a harness has no resume support (Antigravity until verified), or when a session is reopened with a different harness. It is lossy compared with native resume, so it is labelled as such.
+This works for any harness. It is used when a harness has no resume support, or when a session is reopened with a different harness. It is lossy compared with native resume, so it is labelled as such.
 
 ### 5.6 Surfaces
 
 | Surface | Calls |
 | --- | --- |
 | REST | `POST /api/sessions`, `GET /api/sessions`, `GET /api/sessions/{id}`, `POST …/open`, `POST …/send`, `POST …/suspend`, `POST …/archive`, `DELETE …` |
-| MCP | `new_session`, `list_sessions`, `open_session`, `send_to_session`, `suspend_session` |
-| CLI | `hangar session new/list/get/open/send/suspend/archive` (`--wait`, `--attach`) |
-| Dashboard (M3) | Sessions page; Resume opens the terminal on the agent's conversation |
+| MCP | `new_session`, `list_sessions`, `get_session`, `open_session`, `send_to_session`, `keep_session`, `suspend_session` |
+| CLI | `hangar session new/list/get/open/send/keep/suspend/archive` (`--wait`) |
+| Dashboard | Sessions page: resume, message the agent, **Talk to the agent here** (a terminal running the harness's interactive resume), shell, idle control, turns and summaries |
 
 ### 5.7 Cost and speed
 
-- **Suspended:** storage only. A conversation is typically under 5 MB and a WIP checkpoint under 50 MB. On the control-plane volume, or GCS from M4.
-- **Resume time:** sandbox start, plus the restore. The restore costs seconds for typical sizes. Uploads go through the provider's file API in M1; M4 lets the sandbox fetch checkpoints directly with a signed URL.
-- **A warm sandbox per environment** (0004 forecasts, or a scheduled warm pool during working hours) makes resume about 10 seconds. Without one, it is a cold start: image already built, node already present, so about 30–60 seconds.
+- **Suspended:** storage only. A conversation is typically under 5 MB and a WIP checkpoint under 50 MB.
+- **Storage:** checkpoints go through a store:
+  - the control plane's volume by default;
+  - or **GCS** with `HANGAR_SESSION_STORE=gs://bucket[/prefix]`. GCS is durable, doesn't fill or die with the control plane's zonal disk, and uses the pod's Workload Identity token, with no client library.
+
+  Terraform creates the bucket (`session_bucket` output) with a retention rule (90 days by default).
+- **Resume time:** sandbox start, plus the restore.
+  - On Kubernetes, uploads go in **one exec per file**, streamed on stdin (`head -c N`, since the exec websocket can't signal EOF), instead of one exec per 96 KB. The chunked path stays as a fallback.
+  - While a sandbox starts, sessions and jobs show where the time goes: "building the image", "adding a node to the cluster", "a Google Cloud quota is exhausted (SSD_TOTAL_GB)", "pulling the image", "cloning", "running setup".
+  - The start timeout is 15 minutes (it was 5), long enough for a node scale-up plus a first image pull.
+- **Warm pools on a schedule:** `warm_pool_hours: "Mon-Fri 08:00-20:00 America/New_York"` keeps the pool only in working hours. Outside them it scales to 0, so the node pool can scale down. A warm sandbox makes resume about 10 seconds. Without one, it is a cold start: image already built, node already present, so about 30–60 seconds.
+- **Prebuilt images:** at startup hangar builds the environments mapped for jobs (`HANGAR_GITHUB_REPOS`, or `HANGAR_PREBUILD_ENVIRONMENTS`), so the first job or session doesn't wait on a build.
+- **Cluster settings:** terraform enables GKE image streaming on the sandbox pool and sizes node disks at 100 GB. pd-balanced counts against the 500 GB SSD quota that blocked scale-up.
 
 ## 6. Security
 
@@ -182,10 +204,10 @@ This works for any harness. It is used when a harness has no resume support (Ant
 | # | Milestone | Size | Depends on |
 | --- | --- | --- | --- |
 | M1 | Session model and store; checkpoint/restore (agent state, bundle, WIP, untracked); resume flags for Claude Code, Codex and pi; `send` with resume; idle suspend; pre-destroy checkpoint hook; REST, MCP, CLI; handoff fallback | L | — |
-| M2 | Jobs run in sessions: follow-ups after the sandbox is gone resume the session; a PR comment days later resumes | M | M1 |
-| M3 | Dashboard Sessions page: list, resume, timeline, send | M | M1 |
-| M4 | Speed: sandbox-side fetch of checkpoints (signed URL / GCS); hot resume with GKE Pod Snapshots (opt-in); warm pool during working hours | M | M1, 0004 M2 |
-| M5 | Verify Antigravity resume; fork a session (`fork_session`) to try two directions from one conversation (Claude `--fork-session`, Codex `fork`, pi `--fork`) | S | M1 |
+| M2 ✓ | Jobs run in sessions: every job's turns resume the agent's conversation; job context is checkpointed with it; `keep_minutes` releases via suspend; follow-ups after the sandbox is gone resume the session instead of failing | M | M1 |
+| M3 ✓ | Dashboard Sessions page; activity-based keep-alive; idle control; Antigravity resume (verified, agy 1.3.3) | M | M1 |
+| M4 (partly ✓) | Speed and durability. Done: GCS checkpoint store; streamed uploads; startup progress and pending reasons; scheduled warm pools; prebuild; image streaming. Not yet: sandbox-side fetch of checkpoints (signed URL); hot resume with GKE Pod Snapshots (opt-in). | M | M1, 0004 M2 |
+| M5 | `fork_session(n)`: restore one checkpoint into N sandboxes and fork the conversation (Claude `--fork-session`, Codex `fork`, pi `--fork`). Best-of-N and swarms (0008) on top of sessions. | M | M1 |
 
 ## 8. Acceptance
 
@@ -197,6 +219,6 @@ This works for any harness. It is used when a harness has no resume support (Ant
 
 ## 9. Open questions
 
-1. Where checkpoints live past M1: the control-plane volume (simple; sized by the PVC) or GCS (scales; needs signed URLs)? Recommended: GCS in M4.
+1. ~~Where checkpoints live past M1?~~ Both are supported. GCS (`HANGAR_SESSION_STORE`) is recommended on GKE, and `hangar doctor` warns when it's not set.
 2. Should suspend also push the branch? It is safer, but it publishes work in progress. Recommended: no; the bundle covers it, and a push stays opt-in.
 3. Retention for archived sessions' transcripts: keep forever, or 90 days?

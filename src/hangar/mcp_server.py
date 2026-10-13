@@ -383,6 +383,13 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             return sessions.view(sessions.send(session, message, requester=current_actor.get()))
 
         @tool()
+        async def keep_session(session: str, idle_minutes: int) -> dict[str, Any]:
+            """How long the session may sit idle before it checkpoints and releases its sandbox (0 = stay up
+            until suspended by hand). Work through hangar, open terminals and running turns all count as
+            activity, so a session you're using never suspends under you."""
+            return sessions.view(sessions.set_idle(session, idle_minutes, requester=current_actor.get()))
+
+        @tool()
         async def suspend_session(session: str) -> dict[str, Any]:
             """Checkpoint a session and release its sandbox now (idle sessions also suspend on their own)."""
             return sessions.view(sessions.suspend(session, requester=current_actor.get()))
