@@ -127,8 +127,6 @@ class SessionService:
         self._tasks: set[asyncio.Task] = set()
         self._loop: asyncio.Task | None = None
         self._last_checked: dict[str, float] = {}  # last time a checkpoint ran (taken or found unchanged)
-        # perf: turns wait for their end inside the sandbox, which holds an I/O thread; keep half the pool free
-        self._waiters = asyncio.Semaphore(max(1, self.settings.io_threads // 2))
         self.activity = Activity(self.settings, fleet.broker.redact)  # workstream C: events, usage, budgets
 
     # ================================================================== lifecycle
@@ -878,15 +876,10 @@ class SessionService:
         """The run's status after waiting up to `wait` seconds in the sandbox for it to finish (or, before its first
         output, to print something): the end of a turn is noticed within ~0.2 s, not after up to a whole poll
         interval, for the same number of round trips (perf). A wait holds a worker thread, so when half the pool
-        is already waiting this sleeps here instead."""
+        is already waiting the fleet sleeps instead (review: one bound shared with MCP clients' long-polls)."""
         grow = 0 if watch.parser.next == 0 else None
-        if wait > 0 and not self._waiters.locked():
-            async with self._waiters:
-                return await self.fleet.agent_status(s.sandbox_id or "", turn.run_id or "", tail_lines=5, quiet=True,
-                                                     wait_seconds=wait, grow_from=grow)
-        if wait > 0:
-            await asyncio.sleep(wait)
-        return await self.fleet.agent_status(s.sandbox_id or "", turn.run_id or "", tail_lines=5, quiet=True)
+        return await self.fleet.agent_status(s.sandbox_id or "", turn.run_id or "", tail_lines=5, quiet=True,
+                                             wait_seconds=wait, grow_from=grow)
 
     async def _record_conversation(self, s: Session, sb: Sandbox, turn: SessionTurn, raw_log: str) -> None:
         """Remember the harness's conversation id so the next turn resumes it."""

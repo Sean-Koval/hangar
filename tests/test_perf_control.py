@@ -41,8 +41,8 @@ async def test_turn_end_is_noticed_without_waiting_a_poll_interval(svc, world, f
 @needs_tools
 async def test_turns_still_end_when_every_waiter_slot_is_taken(svc, world, fleet, settings):  # noqa: F811
     settings.session_poll_seconds = 0.2
-    svc._waiters = asyncio.Semaphore(1)
-    await svc._waiters.acquire()  # someone else holds the only slot: fall back to sleeping between looks
+    fleet._waiters = asyncio.Semaphore(1)
+    await fleet._waiters.acquire()  # someone else holds the only slot: fall back to sleeping between looks
     svc.new(NewSession(name="busy", environment="sesenv", repo=world["url"], message="start the work"),
             owner="admin", requester="sean")
     s = await settle(svc, "busy", timeout=30)
@@ -116,3 +116,27 @@ def test_token_last_used_is_written_at_most_once_a_minute(store):
 def test_store_syncs_in_wal_normal_mode(store):
     assert store._db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     assert store._db.execute("PRAGMA synchronous").fetchone()[0] == 1  # NORMAL
+
+
+async def test_long_polls_cannot_take_every_io_thread(fleet, settings, monkeypatch):
+    """`agent_status(wait_seconds)` holds a worker thread for the whole wait (an MCP client may ask for 25 s). However
+    many clients wait at once, half the pool stays free for everything else."""
+    settings.io_threads = 8
+    pool = install_io_executor(settings)
+    prov = fleet.providers["docker"]
+    exec_ = prov.exec
+
+    async def threaded_exec(sb, cmd, **kw):  # like docker-py and the kubernetes client: a worker thread per call
+        return await asyncio.to_thread(asyncio.run, exec_(sb, cmd, **kw))
+
+    monkeypatch.setattr(prov, "exec", threaded_exec)
+    sb = await fleet.create("base")
+    try:
+        polls = [asyncio.create_task(fleet.agent_status(sb.id, "run-0000abcd", wait_seconds=3)) for _ in range(12)]
+        await asyncio.sleep(0.3)
+        t0 = time.monotonic()
+        assert (await fleet.exec(sb.id, "echo ok")).stdout.strip() == "ok"
+        assert time.monotonic() - t0 < 1.5, "a plain exec queued behind long-polls"
+        assert all(st["state"] == "running" for st in await asyncio.gather(*polls))
+    finally:
+        pool.shutdown(wait=False)

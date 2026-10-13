@@ -144,6 +144,9 @@ class Fleet:
         # Live dashboard/CLI terminals per sandbox. Someone watching or typing keeps sessions awake.
         self.attached: collections.Counter[str] = collections.Counter()
         self._warm_applied: dict[str, int] = {}
+        # --- review(perf): an agent_status long-poll holds an I/O worker thread for its whole wait; at most half
+        # the pool waits at once (sessions and MCP clients alike), so waiters can never starve other provider calls.
+        self._waiters: asyncio.Semaphore | None = None  # sized from settings.io_threads on first use
         # --- workstream F: git gateway. Grants for sandboxes in credential_mode: gateway (spec 0003).
         self.gateway = Gateway(self)
 
@@ -979,7 +982,8 @@ class Fleet:
                            wait_seconds: float = 0, grow_from: int | None = None) -> dict[str, Any]:
         """`wait_seconds` (perf): first wait in the sandbox, up to that long (max 60), for the run to finish, or
         with `grow_from` for its log to pass that many bytes. One round trip that answers within ~0.2 s of the
-        change, where a caller sleeping between polls noticed it half a poll interval late on average."""
+        change, where a caller sleeping between polls noticed it half a poll interval late on average. When every
+        wait slot is taken, it sleeps here instead and then looks once."""
         sb, prov = self._running(ref)
         if not quiet:
             self.touch(sb.id)  # a client following an agent counts as use; hangar's own polling doesn't
@@ -987,15 +991,21 @@ class Fleet:
             raise FleetError(f"invalid run id '{run_id}'")
         rdir = f"/home/{self.settings.sandbox_user}/.hangar/runs"
         wait_seconds = max(0.0, min(60.0, float(wait_seconds)))
+        if self._waiters is None:
+            self._waiters = asyncio.Semaphore(max(1, self.settings.io_threads // 2))
+        if wait_seconds and self._waiters.locked():
+            await asyncio.sleep(wait_seconds)
+            wait_seconds = 0.0
         wait = ""
         if wait_seconds:
             grew = (f" || [ \"$(stat -c %s {rdir}/{run_id}.log 2>/dev/null || echo 0)\" -gt {int(grow_from)} ]"
                     if grow_from is not None else "")
             wait = (f"for i in $(seq {max(1, round(wait_seconds * 5))}); do {{ [ -s {rdir}/{run_id}.exit ]{grew}; }} "
                     "&& break; sleep 0.2; done; ")
-        res = await prov.exec(
-            sb, f"{wait}cat {rdir}/{run_id}.exit 2>/dev/null || echo RUNNING; echo '---'; "
-                f"tail -n {int(tail_lines)} {rdir}/{run_id}.log 2>/dev/null", timeout=20 + int(wait_seconds))
+        async with self._waiters if wait_seconds else contextlib.nullcontext():
+            res = await prov.exec(
+                sb, f"{wait}cat {rdir}/{run_id}.exit 2>/dev/null || echo RUNNING; echo '---'; "
+                    f"tail -n {int(tail_lines)} {rdir}/{run_id}.log 2>/dev/null", timeout=20 + int(wait_seconds))
         head, _, tail = res.stdout.partition("---\n")
         status = head.strip()
         tail = _clip_tail(tail)
