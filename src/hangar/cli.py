@@ -161,14 +161,21 @@ def token_create(name: str = typer.Argument(..., help="Label, e.g. 'codex-laptop
                                                       "Repeatable."),
                  callback_secret: str | None = typer.Option(
                      None, "--callback-secret",
-                     help="jobs tokens: 'webhook' credential that signs this token's job callbacks.")):
+                     help="jobs tokens: 'webhook' credential that signs this token's job callbacks."),
+                 max_cost: float | None = typer.Option(None, "--max-cost", help="jobs tokens: cap on USD per turn."),
+                 max_tokens: int | None = typer.Option(None, "--max-tokens",
+                                                       help="jobs tokens: cap on tokens per turn."),
+                 max_minutes: int | None = typer.Option(None, "--max-minutes",
+                                                        help="jobs tokens: cap on minutes per turn.")):
     """Mint an API token (shown once).
 
     Uses the server's REST API when HANGAR_URL is set, otherwise the local state store.
     """
+    cap = _budget(max_minutes, max_tokens, max_cost)
     if _remote_url():
         res = _call("POST", "/api/tokens", json={"name": name, "scopes": scope,
-                                                **({"callback_secret": callback_secret} if callback_secret else {})})
+                                                **({"callback_secret": callback_secret} if callback_secret else {}),
+                                                **({"max_budget": cap} if cap else {})})
         typer.secho(f"token {res['id']} ({res['name']}):", fg="green")
         typer.echo(res["token"])
         return
@@ -179,7 +186,10 @@ def token_create(name: str = typer.Argument(..., help="Label, e.g. 'codex-laptop
         typer.secho(f"unknown scopes {bad}; choose from {list(SCOPES)}", fg="red", err=True)
         raise typer.Exit(2)
     try:
-        raw, tok = Hangar().auth.create(name, scope, callback_secret=callback_secret)
+        from hangar.models import Budget
+
+        raw, tok = Hangar().auth.create(name, scope, callback_secret=callback_secret,
+                                        **({"max_budget": Budget(**cap)} if cap else {}))
     except ValueError as e:
         typer.secho(str(e), fg="red", err=True)
         raise typer.Exit(2) from e
@@ -522,6 +532,9 @@ def job_submit(
     file: Path | None = typer.Option(None, "--file", "-f", help="Read instructions from a file."),
     timeout: int | None = typer.Option(None, help="Minutes per agent turn."),
     wait: bool = typer.Option(False, "--wait", "-w", help="Follow the job until it finishes."),
+    max_cost: float | None = typer.Option(None, "--max-cost", help="Budget: USD per agent turn."),
+    max_tokens: int | None = typer.Option(None, "--max-tokens", help="Budget: tokens per agent turn."),
+    max_minutes: int | None = typer.Option(None, "--max-minutes", help="Budget: minutes per agent turn."),
 ):
     """Submit a job. Example:
 
@@ -542,11 +555,14 @@ def job_submit(
     items += [{"name": f"link-{i + 1}", "kind": "url", "url": u} for i, u in enumerate(link)]
     j = _call("POST", "/api/jobs", json={
         "instructions": text, "repo": repo, "environment": env, "title": title, "harness": harness, "model": model,
-        "base_branch": base, "verify": verify, "deliver": deliver, "context": items, "timeout_minutes": timeout})
+        "base_branch": base, "verify": verify, "deliver": deliver, "context": items, "timeout_minutes": timeout,
+        "budget": _budget(max_minutes, max_tokens, max_cost)})
     typer.secho(f"{j['id']} queued: {j['title']}", fg="green")
     if wait:
         j = _wait_job(j["id"])
         typer.echo(_job_line(j))
+        if j.get("usage"):
+            typer.echo(f"usage: {_usage_line(j['usage'])}")
         if (j.get("result") or {}).get("summary"):
             typer.echo("\n" + j["result"]["summary"])
         raise typer.Exit(0 if j["state"] == "succeeded" else 1)
@@ -583,6 +599,51 @@ def job_cancel(job_id: str):
     typer.echo(f"{j['id']} {j['state']}")
 
 
+# ---------------------------------------------------------------------------- workstream C: events/usage/budgets
+def _budget(max_minutes: int | None, max_tokens: int | None, max_cost: float | None) -> dict | None:
+    b = {k: v for k, v in (("max_minutes", max_minutes), ("max_tokens", max_tokens), ("max_cost_usd", max_cost))
+         if v is not None}
+    return b or None
+
+
+def _usage_line(u: dict) -> str:
+    from hangar.events import usage_line
+    from hangar.models import Usage
+
+    return usage_line(Usage.model_validate(u))
+
+
+def _event_line(e: dict) -> str:
+    import time
+
+    when = time.strftime("%H:%M:%S", time.localtime(e["ts"]))
+    text = " ".join((e.get("text") or "").split())
+    return f"{when}  t{e.get('turn', 0)}  {e['kind']:11} {text[:160]}"
+
+
+def _follow_events(path: str, done, since: int, follow: bool, as_json: bool) -> None:
+    """Print events after `since`; with follow, keep printing until `done()` says the work has settled."""
+    import time
+
+    while True:
+        res = _call("GET", path, params={"since": since, "limit": 500})
+        for e in res["events"]:
+            typer.echo(json.dumps(e) if as_json else _event_line(e))
+        since = res["next"]
+        if not follow or (not res["events"] and done()):
+            return
+        time.sleep(2)
+
+
+@job_app.command("events")
+def job_events(job_id: str, since: int = typer.Option(0, help="Only events after this seq."),
+               follow: bool = typer.Option(False, "--follow", "-f", help="Keep printing until the job finishes."),
+               as_json: bool = typer.Option(False, "--json", help="One JSON event per line.")):
+    """What the agent did: messages, commands, tool calls, file changes, errors and usage."""
+    _follow_events(f"/api/jobs/{job_id}/events",
+                   lambda: _call("GET", f"/api/jobs/{job_id}")["state"] in _JOB_DONE, since, follow, as_json)
+
+
 if __name__ == "__main__":
     app()
 
@@ -617,6 +678,8 @@ def _wait_session(ref: str) -> dict:
 def _print_summary(x: dict) -> None:
     if x.get("last_summary"):
         typer.echo("\n" + x["last_summary"])
+    if x.get("usage"):
+        typer.echo(f"\nusage: {_usage_line(x['usage'])}")
     if x.get("resume_command") and x.get("sandbox_id"):
         typer.secho(f"\nWork with the agent interactively: hangar sb attach {x['sandbox_id']}  then  "
                     f"{x['resume_command']}", fg="cyan")
@@ -633,11 +696,15 @@ def session_new(
     model: str | None = None,
     idle: int | None = typer.Option(None, help="Minutes idle before suspending (0 = never)."),
     wait: bool = typer.Option(False, "--wait", "-w", help="Follow it until the agent finishes."),
+    max_cost: float | None = typer.Option(None, "--max-cost", help="Budget: USD per agent turn."),
+    max_tokens: int | None = typer.Option(None, "--max-tokens", help="Budget: tokens per agent turn."),
+    max_minutes: int | None = typer.Option(None, "--max-minutes", help="Budget: minutes per agent turn."),
 ):
     """Start a session. Example:  hangar session new csv-fix "fix unicode in CSV export" -e hangar-jobs -w"""
     x = _call("POST", "/api/sessions", json={"name": name, "message": message, "environment": env, "repo": repo,
                                               "base_branch": base, "harness": harness, "model": model,
-                                              "idle_minutes": idle})
+                                              "idle_minutes": idle,
+                                              "budget": _budget(max_minutes, max_tokens, max_cost)})
     typer.secho(f"{x['name']} ({x['id']}) {x['state']} on {x['branch']}", fg="green")
     if wait:
         _print_summary(_wait_session(x["id"]))
@@ -690,6 +757,18 @@ def session_suspend(ref: str):
 def session_archive(ref: str):
     x = _call("POST", f"/api/sessions/{ref}/archive")
     typer.echo(f"{x['name']} {x['state']}")
+
+
+@session_app.command("events")
+def session_events(ref: str, since: int = typer.Option(0, help="Only events after this seq."),
+                   follow: bool = typer.Option(False, "--follow", "-f", help="Keep printing until the turn ends."),
+                   as_json: bool = typer.Option(False, "--json", help="One JSON event per line.")):
+    """What the agent did in this session's turns: messages, commands, file changes, errors and usage."""
+    def settled() -> bool:
+        x = _call("GET", f"/api/sessions/{ref}")
+        return x["state"] in _SES_SETTLED and not x.get("busy")
+
+    _follow_events(f"/api/sessions/{ref}/events", settled, since, follow, as_json)
 
 
 @session_app.command("keep")

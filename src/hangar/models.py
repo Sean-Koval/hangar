@@ -106,6 +106,33 @@ class Credential(BaseModel):
     file_path: str | None = None
 
 
+# ---------------------------------------------------------------------------- workstream C: events/usage/budgets
+class Usage(BaseModel):
+    """Tokens and money one agent turn (or a sum of turns) used. `input_tokens` excludes cache reads and writes."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    cost_usd: float | None = None  # None: no harness-reported cost and no price for the model
+    cost_source: Literal["harness", "prices", "mixed"] | None = None
+    model: str | None = None
+
+    @property
+    def tokens(self) -> int:
+        """New tokens: input, output and cache writes. Cache reads are left out (every model call re-reads the
+        cached context, so they would dwarf the rest); they are counted, and priced, separately."""
+        return self.input_tokens + self.output_tokens + self.cache_write_tokens
+
+
+class Budget(BaseModel):
+    """Caps for one agent turn; the turn is stopped (outcome `over_budget`) when it crosses any of them."""
+
+    max_minutes: int | None = Field(None, ge=1, le=1440)
+    max_tokens: int | None = Field(None, ge=1)
+    max_cost_usd: float | None = Field(None, gt=0)
+
+
 class ApiToken(BaseModel):
     id: str = Field(default_factory=lambda: new_id("tok"))
     name: str
@@ -113,6 +140,7 @@ class ApiToken(BaseModel):
     scopes: list[str] = Field(default_factory=lambda: ["admin"])
     # jobs-scoped tokens: the vault `webhook` credential that signs this token's job callbacks (set by an admin)
     callback_secret: str | None = None
+    max_budget: Budget | None = None  # jobs-scoped tokens: caps the budget callers may ask for (workstream C)
     created_at: float = Field(default_factory=now)
     last_used: float | None = None
 
@@ -169,6 +197,9 @@ class Turn(BaseModel):
     finished_at: float | None = None
     exit_code: int | None = None
     summary: str | None = None
+    usage: Usage | None = None  # workstream C
+    outcome: str | None = None  # exited | timed_out | cancelled | over_budget | gone | error
+    outcome_reason: str | None = None
 
 
 class JobResult(BaseModel):
@@ -208,6 +239,7 @@ class Job(BaseModel):
     labels: dict[str, str] = Field(default_factory=dict)
     timeout_minutes: int = 60
     keep_minutes: int = 120
+    budget: Budget | None = None  # per agent turn (workstream C)
     state: JobState = JobState.QUEUED
     reason: str | None = None
     cancel_requested: bool = False
@@ -245,6 +277,10 @@ class SessionTurn(BaseModel):
     finished_at: float | None = None
     exit_code: int | None = None
     summary: str | None = None
+    usage: Usage | None = None  # workstream C: live while the turn runs, final after
+    outcome: str | None = None  # exited | timed_out | cancelled | over_budget | gone | error
+    outcome_reason: str | None = None
+    event_cursor: dict[str, Any] | None = None  # where event collection is in the run log (restart-safe)
 
 
 class Checkpoint(BaseModel):
@@ -282,6 +318,7 @@ class Session(BaseModel):
     job_id: str | None = None  # set when the session carries a job (spec 0009/0010 M2)
     provider: str | None = None
     extra_dirs: list[str] = Field(default_factory=list)  # more $HOME-relative paths to checkpoint (job context)
+    budget: Budget | None = None  # per agent turn (workstream C)
     labels: dict[str, str] = Field(default_factory=dict)
     created_at: float = Field(default_factory=now)
     last_active_at: float = Field(default_factory=now)

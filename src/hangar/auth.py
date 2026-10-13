@@ -12,7 +12,7 @@ import secrets
 import time
 from typing import NamedTuple
 
-from hangar.models import ApiToken, now
+from hangar.models import ApiToken, Budget, now
 from hangar.store import Store
 
 PREFIX = "hgr_"
@@ -25,6 +25,7 @@ class Principal(NamedTuple):
     id: str  # token id: the ownership key
     scopes: list[str]
     callback_secret: str | None = None
+    max_budget: Budget | None = None  # jobs tokens: caps the budget their jobs may ask for (workstream C)
 
     @property
     def admin(self) -> bool:
@@ -62,11 +63,11 @@ class TokenAuth:
         return actor if actor and exp > time.time() else None
 
     def create(self, name: str, scopes: list[str] | None = None,
-               callback_secret: str | None = None) -> tuple[str, ApiToken]:
+               callback_secret: str | None = None, max_budget: Budget | None = None) -> tuple[str, ApiToken]:
         check_token_name(name)
         raw = PREFIX + secrets.token_urlsafe(32)
         tok = ApiToken(name=name, token_hash=hash_token(raw), scopes=scopes or ["admin"],
-                       callback_secret=callback_secret)
+                       callback_secret=callback_secret, max_budget=max_budget)
         self.store.put(tok)
         return raw, tok
 
@@ -93,7 +94,7 @@ class TokenAuth:
             if hmac.compare_digest(h, tok.token_hash):
                 tok.last_used = now()
                 self.store.put(tok)
-                return Principal(tok.name, tok.id, list(tok.scopes), tok.callback_secret)
+                return Principal(tok.name, tok.id, list(tok.scopes), tok.callback_secret, tok.max_budget)
         return None
 
     def exists(self, token_id: str | None) -> bool:

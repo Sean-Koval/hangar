@@ -26,10 +26,12 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from hangar.checkpoints import CheckpointStore, make_store
+from hangar.events import Activity, resolve_budget, total_usage
 from hangar.fleet import Fleet, FleetError, _clip_tail
 from hangar.harnesses import get_harness
 from hangar.models import (
     SESSION_LIVE,
+    Budget,
     Checkpoint,
     Sandbox,
     SandboxState,
@@ -71,6 +73,7 @@ class NewSession(BaseModel):
     message: str | None = Field(None, max_length=MAX_MESSAGE)
     idle_minutes: int | None = Field(None, ge=0, le=10080)  # 0 = never auto-suspend
     labels: dict[str, str] = Field(default_factory=dict)
+    budget: Budget | None = None  # per agent turn; unset fields fall back to HANGAR_BUDGET_* (workstream C)
 
 
 def extract_summary(harness: str | None, log_text: str) -> str | None:
@@ -122,6 +125,7 @@ class SessionService:
         self._tasks: set[asyncio.Task] = set()
         self._loop: asyncio.Task | None = None
         self._last_checked: dict[str, float] = {}  # last time a checkpoint ran (taken or found unchanged)
+        self.activity = Activity(self.settings, fleet.broker.redact)  # workstream C: events, usage, budgets
 
     # ================================================================== lifecycle
     async def start(self) -> None:
@@ -210,6 +214,7 @@ class SessionService:
                     branch=branch, labels=req.labels,
                     idle_minutes=(req.idle_minutes if req.idle_minutes is not None
                                   else self.settings.session_idle_minutes))
+        s.budget = resolve_budget(req.budget, self.settings)
         self._sessions[s.id] = s
         self._set(s, SessionState.STARTING, f"created by {requester}")
         self.fleet.audit(requester, "session.new", s.id, name=s.name, environment=env, repo=s.repo)
@@ -297,6 +302,12 @@ class SessionService:
         s = self.archive(ref, requester)
         self.store.delete(Session, s.id)
         self._sessions.pop(s.id, None)
+        self.activity.log.drop(s.id)
+
+    def events(self, ref: str, since: int = 0, limit: int = 200, tail: int | None = None) -> list[dict[str, Any]]:
+        """The session's activity events (every turn), oldest first: after `since`, or the last `tail`."""
+        s = self.get(ref)
+        return [e.model_dump(mode="json", exclude={"off"}) for e in self.activity.read(s.id, since, limit, tail)]
 
     def view(self, s: Session) -> dict[str, Any]:
         d = s.model_dump(mode="json", exclude={"checkpoints"})
@@ -312,6 +323,9 @@ class SessionService:
         d["resume_command"] = (h.resume_hint.format(id=s.harness_session)
                                if h and h.resume_hint and s.harness_session and s.harness_session_for == s.harness
                                else None)
+        for t in d["turns"]:  # workstream C: the collector's read position is internal
+            t.pop("event_cursor", None)
+        d["usage"] = u.model_dump(mode="json") if (u := total_usage(s.turns)) else None
         return d
 
     # ================================================================== internals: state
@@ -743,6 +757,9 @@ class SessionService:
         deadline = (turn.started_at or now()) + tmo * 60
         errors = 0
         outcome = "exited"
+        # --- workstream C: collect events and usage from the run log as it grows; stop the turn over budget.
+        watch = self.activity.watch(self.fleet, s, turn, lambda: self._save(s))
+        over: str | None = None
         while True:
             if not s.sandbox_id or not self._alive(s.sandbox_id):
                 outcome = "gone"
@@ -765,14 +782,21 @@ class SessionService:
             if now() > deadline:
                 outcome = "timed_out"
                 break
+            if over := await watch.poll():  # workstream C
+                outcome = "over_budget"
+                break
             await asyncio.sleep(self.settings.session_poll_seconds)
         turn.finished_at = now()
+        turn.outcome, turn.outcome_reason = outcome, over  # workstream C
+        if over:
+            watch.note("error", f"stopped: over budget ({over})", reason="over_budget")
         if outcome == "gone":
+            await watch.finish(alive=False)
             s.sandbox_id = None if not self._alive(s.sandbox_id or "") else s.sandbox_id
             self._set(s, SessionState.SUSPENDED if s.checkpoints else SessionState.FAILED,
                       "the sandbox went away during the turn")
             return outcome, ""
-        if outcome in ("cancelled", "timed_out", "error"):
+        if outcome in ("cancelled", "timed_out", "error", "over_budget"):
             # Never leave an agent running that nobody is watching (it would keep working, and spending).
             with contextlib.suppress(Exception):
                 await self._sh(self.fleet.get(s.sandbox_id), f"tmux kill-session -t {shlex.quote(turn.run_id or '')}")
@@ -787,6 +811,7 @@ class SessionService:
             await self._record_conversation(s, sb, turn, raw)
         except Exception as e:  # noqa: BLE001 - the work is in the sandbox; don't lose the turn over its log
             log.warning("session %s: could not read turn %s output: %s", s.id, turn.run_id, e)
+        await watch.finish()  # workstream C: whatever the last polls missed
         try:
             async with self._locks[s.id]:
                 await self._checkpoint(s, "turn")
