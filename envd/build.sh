@@ -9,11 +9,18 @@ set -eu
 cd "$(dirname "$0")"
 ARCHES="${ARCHES:-x86_64 aarch64}"
 TARGET_DIR="${CARGO_TARGET_DIR:-target}"
+HOST="$(rustc -vV | sed -n 's/^host: //p')"
 for a in $ARCHES; do
   t="$a-unknown-linux-musl"
   rustup target add "$t" >/dev/null
-  env "CARGO_TARGET_$(echo "$t" | tr 'a-z-' 'A-Z_')_LINKER=rust-lld" \
+  if [ "$t" = "$HOST" ]; then
+    # A musl host (rust:alpine): build scripts and proc macros are linked for this same target, dynamically, which
+    # rust-lld can't do on its own; the system linker can.
     cargo build --release --locked --target "$t"
+  else
+    env "CARGO_TARGET_$(echo "$t" | tr 'a-z-' 'A-Z_')_LINKER=rust-lld" \
+      cargo build --release --locked --target "$t"
+  fi
   mkdir -p dist
   install -m 0755 "$TARGET_DIR/$t/release/hangar-envd" "dist/hangar-envd-$a"
   echo "dist/hangar-envd-$a: $(wc -c < "dist/hangar-envd-$a") bytes"
