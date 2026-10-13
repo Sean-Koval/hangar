@@ -568,7 +568,8 @@ class E2BProvider(Provider):
         return r
 
     async def read_file(self, sandbox, path, limit=None) -> bytes | None:
-        r = await self._retry(sandbox, lambda: self.dataplane.read_file(sandbox, path, limit), nothing=(SKIP,))
+        r = await self._retry(sandbox, lambda: self.dataplane.read_file(sandbox, path, limit=limit),
+                              nothing=(SKIP,))
         if r is SKIP:
             raise ProviderError(f"could not read {path} in {sandbox.id}"
                                 + (" (over 64 MiB: read it with a limit)" if limit is None else ""))
