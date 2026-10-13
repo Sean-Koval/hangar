@@ -170,3 +170,70 @@ async def test_parking_is_bounded(svc, world, fleet, hot, settings, broker):  # 
     d = (await start(svc, world, "crowded")).sandbox_id
     await suspend(svc, "crowded")
     assert fleet.get(d).state == SandboxState.STOPPED and hot_resume.parked_ids(svc) == {b}
+
+
+async def test_a_parked_sandbox_holds_no_grant_and_wakes_with_one_for_the_sessions_branch(
+        svc, world, fleet, hot, settings):  # noqa: F811
+    """review(#64): a paused microVM keeps no live gateway grant, and a woken one gets a fresh grant for the branch
+    the session is on now (best-of-N's take-over renames it), as a cold boot would."""
+    settings.gateway_url = "http://gw.test"
+    s = await start(svc, world, "granted")
+    sb = fleet.get(s.sandbox_id)
+    old = fleet.gateway.mint(sb, "github.com", ["o/r"], [f"refs/heads/{s.branch}"], "gh")
+    sb.info["git"] = {"mode": "gateway", "repo": "o/r", "push_refs": [f"refs/heads/{s.branch}"], "credential": "gh"}
+    fleet.store.put(sb)
+    await suspend(svc, "granted")
+    assert fleet.get(sb.id).state == SandboxState.PAUSED
+    assert not fleet.gateway.grants(sb.id), "the grant dies before the sandbox is frozen"
+
+    s = svc.get("granted")
+    s.branch = "hangar/job-7"  # as strategies._take_over does for the winner
+    svc._save(s)
+    svc.send("granted", "more work", requester="sean")
+    s = await settle(svc, "granted")
+    assert s.state == SessionState.IDLE and s.sandbox_id == sb.id, s.reason
+    [g] = fleet.gateway.grants(sb.id)
+    assert g.push_refs[0] == "refs/heads/hangar/job-7" and g.repos == ["o/r"] and g.credential == "gh"
+    assert g.expires_at == fleet.get(sb.id).expires_at
+    creds = (box(fleet, sb.id) / "home/agent/.git-credentials").read_text()
+    token = creds.split("x-access-token:", 1)[1].split("@", 1)[0]
+    assert token != old and fleet.gateway.verify(token) is not None and fleet.gateway.verify(old) is None
+    assert fleet.get(sb.id).info["git"]["push_refs"][0] == "refs/heads/hangar/job-7"
+
+
+async def test_a_full_fleet_evicts_parked_sandboxes_before_refusing(svc, world, fleet, hot, settings):  # noqa: F811
+    """review(#64): paused sandboxes count against HANGAR_MAX_SANDBOXES, so they must give way to sandboxes that
+    would run, not block them until they expire."""
+    from hangar.fleet import FleetError
+
+    s = await start(svc, world, "roomy")
+    parked = s.sandbox_id
+    await suspend(svc, "roomy")
+    settings.max_sandboxes = len(fleet.list())  # the parked one fills the fleet
+    sb = await fleet.create("plain")
+    assert fleet.get(parked).state == SandboxState.STOPPED and hot_resume._record(svc, s.id) is None
+    with pytest.raises(FleetError, match="max_sandboxes"):  # nothing parked left to give way
+        await fleet.create("plain")
+    await fleet.destroy(sb.id)
+    svc.open("roomy", requester="sean")
+    s = await settle(svc, "roomy")
+    assert s.state == SessionState.IDLE and s.sandbox_id != parked, "resumed cold from its checkpoint"
+
+
+async def test_a_waking_sandbox_is_not_evicted_under_it(svc, world, fleet, hot, monkeypatch):  # noqa: F811
+    """review(#64): wake claims the record before resuming, so a create making room meanwhile can't destroy the
+    sandbox the session is about to attach."""
+    s = await start(svc, world, "claimed")
+    parked = s.sandbox_id
+    await suspend(svc, "claimed")
+    resume = hot.resume
+
+    async def racing(sb):
+        await hot_resume.make_room(fleet)  # another create, at max_sandboxes, right now
+        await resume(sb)
+
+    monkeypatch.setattr(hot, "resume", racing)
+    svc.open("claimed", requester="sean")
+    s = await settle(svc, "claimed")
+    assert s.state == SessionState.IDLE and s.sandbox_id == parked
+    assert fleet.get(parked).state == SandboxState.RUNNING

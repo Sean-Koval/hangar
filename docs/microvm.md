@@ -111,9 +111,9 @@ In every fallback the parked sandbox is destroyed. No checkpoint is ever deleted
 
 Parked sandboxes are a cache, so hangar bounds them. When a suspend would break one of these rules, the sandbox is destroyed as before, and the next resume restores the checkpoint:
 - **A cap.** At most `HANGAR_SESSION_HOT_RESUME_MAX` (20) sandboxes are parked at once; past that, the longest-parked goes first.
-- **Headroom.** Paused sandboxes count against `HANGAR_MAX_SANDBOXES`, so nothing is parked while the fleet is three-quarters full.
+- **Headroom.** Paused sandboxes count against `HANGAR_MAX_SANDBOXES`, so nothing is parked while the fleet is three-quarters full. If the fleet fills up later, a create evicts the longest-parked sandbox instead of being refused.
 - **No rotating tokens.** A sandbox holding an exclusive credential, such as a Claude Code OAuth login with its rotating refresh token, isn't parked. The token goes back to the vault, so other sandboxes can use it, and a paused copy can't go stale.
-- **Gateway grants.** A parked sandbox's gateway grant lasts as long as the sandbox, but it answers only while the sandbox runs.
+- **Gateway grants.** A parked sandbox holds no live grant: it is revoked before the pause. Wake mints a new one for the session's branch as it is then (best-of-N's take-over moves the winner to the job's branch) and writes it where git reads it, as a cold boot would. If that fails, the session restores its checkpoint instead.
 
 **Cost.** A paused sandbox isn't running, but it isn't free either: E2B keeps its snapshot (check your plan's terms for paused sandboxes), and CubeSandbox keeps the snapshot files on the node's disk. Turn hot resume off with `HANGAR_SESSION_HOT_RESUME_MINUTES=0` if that matters more than the restore time.
 

@@ -498,6 +498,11 @@ class Fleet:
             call = {k: v for k, v in locals().items() if k not in ("self", "tier", "tiers")}
             return await tiers.create(self, tier, call)
         active = [s for s in self.store.list(Sandbox) if s.state in ACTIVE]
+        if len(active) >= self.settings.max_sandboxes:  # --- providers-e2b: paused for hot resume, they give way
+            from hangar import hot_resume
+
+            if await hot_resume.make_room(self):
+                active = [s for s in self.store.list(Sandbox) if s.state in ACTIVE]
         if len(active) >= self.settings.max_sandboxes:
             raise FleetError(f"fleet is at max_sandboxes={self.settings.max_sandboxes}; destroy some first")
         spec = self.catalog.get(environment)
