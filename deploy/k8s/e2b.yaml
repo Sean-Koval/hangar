@@ -1,4 +1,4 @@
-# E2B sandbox URLs on GKE (docs/gke.md §7). Optional, and not in kustomization.yaml: apply it after filling in
+# E2B sandbox URLs on GKE (docs/gke.md §8). Optional, and not in kustomization.yaml: apply it after filling in
 # E2B_DOMAIN (the domain E2B clients set as E2B_DOMAIN, e.g. e2b.example.com) and creating the certificate map and
 # static IP the comments name.
 #
@@ -31,7 +31,7 @@ spec:
 ---
 # 2. A global external Gateway for *.E2B_DOMAIN. Needs the Gateway API on the cluster (gcloud container clusters
 #    update ... --gateway-api=standard), the static IP `hangar-e2b-ip` (gcloud compute addresses create hangar-e2b-ip
-#    --global) and the certificate map `hangar-e2b` (docs/gke.md §7).
+#    --global) and the certificate map `hangar-e2b` (docs/gke.md §8).
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:

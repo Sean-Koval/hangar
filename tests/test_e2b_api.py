@@ -128,7 +128,8 @@ def stub_router(envd: StubEnvd, built: list[str] | None = None) -> tuple[Sandbox
         domain=lambda: DOMAIN, store=SimpleNamespace(get=lambda cls, sid: sb if sid == sb.id else None),
         record=lambda sid: {"owner": "tok", "nonce": "n"}, owner_live=lambda rec: True,
         check_envd=lambda sid, rec, given: False, check_traffic=lambda sid, rec, given: given == "traffic",
-        fleet=SimpleNamespace(touch=lambda sid: None, providers={"docker": SimpleNamespace(envd=envd)}),
+        fleet=SimpleNamespace(touch=lambda sid: None, providers={"docker": SimpleNamespace(envd=envd)},
+                              closing=asyncio.Event()),
         ports_http=Ports())
     return SandboxRouter(None, svc), sb
 
@@ -450,6 +451,12 @@ async def test_auth_and_ownership(hangar):
         r = await c.post("/a2a", json={"jsonrpc": "2.0", "id": 1, "method": "tasks/get", "params": {"id": "x"}},
                          headers=auth)
         assert r.status_code == 404 or "do not allow" in r.text
+        # nor live turns: steering, interrupting and approving belong to admins and job submitters
+        for path in ("/api/sessions/x/steer", "/api/sessions/x/interrupt", "/api/sessions/x/approvals/a",
+                     "/api/jobs/x/steer", "/api/jobs/x/interrupt", "/api/jobs/x/approvals/a"):
+            assert (await c.post(path, json={"message": "hi", "decision": "allow"}, headers=auth)).status_code == 403
+        for path in ("/api/sessions/x/approvals", "/api/jobs/x/approvals"):
+            assert (await c.get(path, headers=auth)).status_code == 403
 
     # Revoking the token that made a sandbox cuts off its sandbox URLs too, not just the API.
     stat = {"Host": f"49983-{sb.sandbox_id}.{DOMAIN}", "X-Access-Token": sb._envd_access_token,
@@ -788,3 +795,95 @@ async def test_code_interpreter_sdk_reaches_port_49999(hangar, monkeypatch):
     finally:
         server.should_exit = True
         t.join(10)
+
+
+@needs_binary
+async def test_sandbox_traffic_is_traced_without_tokens(hangar):
+    """Sandbox URLs get a server span and /metrics latency like any route (#55), named by a bounded route, with the
+    sandbox and the Connect method as attributes. No token (E2B's, hangar's, a signed URL's) is in any span."""
+    pytest.importorskip("opentelemetry.sdk")
+    from e2b import AsyncSandbox
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from hangar import observe
+
+    exp = InMemorySpanExporter()
+    await observe.start(hangar.h.settings, exporter=exp)
+    try:
+        key = token(hangar, "traced")
+        sb = await AsyncSandbox.create(template="plain", **hangar.opts(key))
+        path = str(hangar.prov.boxes[sb.sandbox_id] / "workspace" / "t.txt")
+        await sb.files.write(path, "traced")
+        assert (await sb.commands.run("echo hi")).stdout == "hi\n"
+        url = httpx.URL(sb.download_url(path, use_signature_expiration=60))
+        async with httpx.AsyncClient(base_url=hangar.url) as c:
+            r = await c.get("/files", params=dict(url.params), headers={"Host": f"49983-{sb.sandbox_id}.{DOMAIN}"})
+            assert r.text == "traced"
+        await sb.kill()
+        spans = exp.get_finished_spans()
+        names = {sp.name for sp in spans}
+        assert {"POST /e2b/sandbox/envd", "POST /e2b/sandbox/files", "GET /e2b/sandbox/files"} <= names, sorted(names)
+        rpc = [sp for sp in spans if sp.name == "POST /e2b/sandbox/envd"]
+        assert "process.Process/Start" in {sp.attributes.get("rpc.method") for sp in rpc}
+        assert all(sp.attributes.get("hangar.sandbox.id") == sb.sandbox_id for sp in rpc)
+        secrets_ = [key, sb._envd_access_token, sb.traffic_access_token, url.params["signature"],
+                    hangar.prov.envd.token(hangar.h.fleet.get(sb.sandbox_id))]
+        dump = json.dumps([[sp.name, dict(sp.attributes or {}), [dict(e.attributes or {}) for e in sp.events],
+                            sp.status.description] for sp in spans], default=str)
+        assert not [s for s in secrets_ if s and s in dump]
+    finally:
+        await observe.stop()
+
+
+@needs_binary
+async def test_shutdown_ends_router_streams_and_websockets(hangar, monkeypatch):
+    """On a shutdown signal (#57's Fleet.closing) open streams end and WebSockets close with 1012 at once, rather
+    than holding the pod for HANGAR_SHUTDOWN_GRACE_SECONDS; once the envd pool is closed (#60's Fleet.stop),
+    sandbox calls get a 503 instead of opening another pool."""
+    import websockets
+    from e2b import AsyncSandbox
+
+    async def local(self, sb):
+        return "127.0.0.1"
+
+    monkeypatch.setattr(SandboxRouter, "_host", local)
+    sb = await AsyncSandbox.create(template="plain", **hangar.opts(token(hangar, "closing")))
+    sid, tok = sb.sandbox_id, sb._envd_access_token
+    host = {"Host": f"49983-{sid}.{DOMAIN}", "X-Access-Token": tok}
+    closing = hangar.h.fleet.closing
+
+    async def echo(ws):
+        async for m in ws:
+            await ws.send(m)
+
+    wport = free_port()
+    async with websockets.serve(echo, "127.0.0.1", wport), httpx.AsyncClient(base_url=hangar.url, timeout=30) as c:
+        url = f"ws://127.0.0.1:{hangar.url.rsplit(':', 1)[1]}/"
+        hdrs = {"Host": f"{wport}-{sid}.{DOMAIN}", "e2b-traffic-access-token": sb.traffic_access_token}
+        async with websockets.connect(url, additional_headers=hdrs) as ws:
+            await ws.send("hi")
+            assert await ws.recv() == "hi"
+            body = json.dumps({"path": str(hangar.prov.boxes[sid] / "workspace")}).encode()
+            watch = {**host, "Content-Type": "application/connect+json", "Connect-Protocol-Version": "1"}
+            async with c.stream("POST", "/filesystem.Filesystem/WatchDir", headers=watch,
+                                content=b"\0" + len(body).to_bytes(4, "big") + body) as r:
+                assert r.status_code == 200
+                for _ in range(100):  # the router waits on Fleet.closing, on the server's loop
+                    if getattr(closing, "_loop", None) is not None:
+                        break
+                    await asyncio.sleep(0.05)
+                closing._loop.call_soon_threadsafe(closing.set)
+
+                async def drain():
+                    async for _ in r.aiter_raw():
+                        pass
+
+                await asyncio.wait_for(drain(), 5)
+            with pytest.raises(websockets.exceptions.ConnectionClosed) as closed:
+                await asyncio.wait_for(ws.recv(), 5)
+            assert closed.value.rcvd is not None and closed.value.rcvd.code == 1012
+
+        monkeypatch.setattr(hangar.prov.envd, "_closed", True)
+        r = await c.post("/filesystem.Filesystem/Stat", json={"path": "/"},
+                         headers={**host, "Connect-Protocol-Version": "1"})
+        assert r.status_code == 503 and "restarting" in r.json()["message"]

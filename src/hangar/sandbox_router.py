@@ -35,11 +35,12 @@ import time
 import zlib
 from collections import Counter
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib.parse import parse_qsl, quote, urlencode
 
 import httpx
 
+from hangar import observe
 from hangar.auth import PREFIX as TOKEN_PREFIX
 from hangar.envd import PORT as ENVD_PORT
 from hangar.envd import UPLOAD_CHUNK, Endpoint, EnvdError, frames, proof, sign
@@ -55,6 +56,7 @@ MAX_RPC_BODY = 8 << 20  # hangar-envd checks signed bodies up to this size in me
 _SMALL = 1 << 20  # responses up to this size (with a length) are relayed in one piece
 _TIMEOUTS = httpx.Timeout(None, connect=2.0).as_dict()  # streams live for hours; a dead daemon fails fast
 _SID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+_CONNECT_RPC = re.compile(rb"^/[a-z]+\.[A-Za-z]+/[A-Za-z]{1,40}$")
 _HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "trailers",
         "transfer-encoding", "upgrade", "host", "content-length"}
 # Request headers envd needs; everything else (the E2B token, routing headers, cookies) stays here.
@@ -112,6 +114,25 @@ def _passed(headers: list[tuple[bytes, bytes]], drop: set[str]) -> list[tuple[by
     return out
 
 
+class _Label(NamedTuple):
+    """What observe.HTTPMiddleware reads as the matched route (`scope["route"].path`)."""
+
+    path: str
+
+
+def _label(arg: tuple[str, str, bytes]) -> str:
+    """The route name for spans and /metrics: bounded, never the sandbox id or a client-chosen path."""
+    _, port, raw_path = arg
+    if port != str(ENVD_PORT):
+        return "/e2b/sandbox/port"
+    return "/e2b/sandbox/files" if _is_files(raw_path) else "/e2b/sandbox/envd"
+
+
+def _rpc(raw_path: bytes) -> str | None:
+    """A Connect method (`process.Process/Start`) for a span attribute, or None for anything else."""
+    return raw_path[1:].decode() if _CONNECT_RPC.match(raw_path) else None
+
+
 def _upstream(scheme: str, host: str, port: int, raw_path: bytes, query: bytes) -> httpx.URL:
     """A URL on the sandbox's own address, built from parts: the client's path can't name another host."""
     return httpx.URL(scheme=scheme, host=host, port=port, raw_path=raw_path + (b"?" + query if query else b""))
@@ -135,6 +156,7 @@ class SandboxRouter:
         self.domain = svc.domain() if base else None
         self._inflight: Counter[str] = Counter()
         self._addr: dict[str, tuple[Endpoint, float, str]] = {}  # sandbox -> (proved endpoint, when, host)
+        self._observed = observe.HTTPMiddleware(self._sandbox)  # --- integrate (#55)
 
     # ------------------------------------------------------------------ routing
     def _route(self, scope) -> tuple[str, Any] | None:
@@ -178,6 +200,12 @@ class SandboxRouter:
         kind, arg = route
         if kind == "api":
             return await self.app(dict(scope, path=arg, raw_path=arg.encode()), receive, send)
+        # --- integrate (#55): a span and /metrics latency like any route's, under a bounded route name
+        await self._observed(dict(scope, route=_Label(_label(arg) if kind == "sb" else "/e2b/sandbox"),
+                                  **{"hangar.e2b": route}), receive, send)
+
+    async def _sandbox(self, scope, receive, send):
+        kind, arg = scope["hangar.e2b"]
         try:
             if kind == "bad":
                 raise arg
@@ -187,6 +215,12 @@ class SandboxRouter:
             if not raw_path.startswith(b"/"):  # absolute-form, `@host`, `*`: uvicorn's h11 server passes them on
                 raise Refused(400, {"message": "the request target must be a path", "code": 400})
             sb, rec, port, by_url = self._authorize(scope, sid, int(port_s), raw_path)
+            if observe.enabled() and scope["type"] == "http":
+                from opentelemetry import trace
+
+                observe.set_attrs(trace.get_current_span(), {"hangar.sandbox.id": sb.id, "server.port": port,
+                                                             "rpc.method": _rpc(raw_path) if port == ENVD_PORT
+                                                             else None})
         except Refused as e:
             if scope["type"] == "websocket":
                 await receive()  # websocket.connect
@@ -287,6 +321,8 @@ class SandboxRouter:
 
     async def _ready(self, sb: Sandbox):
         envd = self._endpoint_envd(sb)
+        if getattr(envd, "_closed", False):  # integrate (#60): shutting down, its pool is gone; don't open another
+            raise Refused(503, {"sandboxId": sb.id, "code": 503, "message": "hangar is restarting; try again"})
         ep = await envd.endpoint(sb) or await envd.ready(sb, timeout=15)
         if ep is None:
             raise _gone(sb.id, "hangar-envd isn't answering in this sandbox")
@@ -473,7 +509,9 @@ class SandboxRouter:
 
     async def _relay(self, resp: httpx.Response, receive, send) -> None:
         """Stream the response back as it comes; if the client goes away first, close the upstream request (a
-        process started through it keeps running, as with E2B)."""
+        process started through it keeps running, as with E2B). A stream (no length) also ends when hangar starts
+        shutting down (#57's Fleet.closing), so open watches and process streams don't hold the pod for the whole
+        grace period: the SDK sees the stream end, and the process can be reattached through the next pod."""
         try:
             headers = _passed(resp.headers.raw, _HOP | {"date", "server"})
             n = resp.headers.get("content-length")
@@ -497,6 +535,8 @@ class SandboxRouter:
                     pass
 
             tasks = [asyncio.ensure_future(pump()), asyncio.ensure_future(gone())]
+            if n is None:
+                tasks.append(asyncio.ensure_future(self.svc.fleet.closing.wait()))
             try:
                 done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             finally:
@@ -506,6 +546,8 @@ class SandboxRouter:
             for t in done:
                 if t is tasks[0] and (e := t.exception()) is not None and not isinstance(e, httpx.HTTPError):
                     raise e
+            if tasks[0] not in done and tasks[1] not in done:  # shutting down
+                await send({"type": "http.response.body", "body": b"", "more_body": False})
         finally:
             await resp.aclose()
 
@@ -613,14 +655,19 @@ class SandboxRouter:
                 with contextlib.suppress(ConnectionClosed):
                     await up.send(m["text"] if m.get("text") is not None else m.get("bytes") or b"")
 
-        tasks = [asyncio.ensure_future(down()), asyncio.ensure_future(upstream())]
+        # --- integrate (#57): a shutdown closes it with 1012 (service restart) rather than waiting out the grace
+        tasks = [asyncio.ensure_future(down()), asyncio.ensure_future(upstream()),
+                 asyncio.ensure_future(self.svc.fleet.closing.wait())]
         try:
-            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         finally:
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             await up.close()
+        if tasks[2] in done and tasks[0] not in done and tasks[1] not in done:
+            with contextlib.suppress(Exception):
+                await send({"type": "websocket.close", "code": 1012, "reason": "hangar is restarting"})
 
 
 def _signed(ep: Endpoint, method: str, target: str, content: Any, headers: dict[str, str],
