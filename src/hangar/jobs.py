@@ -41,6 +41,7 @@ from hangar.models import (
     JobState,
     SandboxState,
     Turn,
+    Usage,
     new_id,
     now,
 )
@@ -374,10 +375,10 @@ class JobService:
         job.cancel_requested = True
         if job.state == JobState.NEEDS_INPUT and job.id not in self._active:  # workstream E: nothing is running
             self._event(job, f"cancelled by {requester} instead of answering", JobState.CANCELLED, reason="cancelled")
-            self._spawn(self._callback(job, "job.finished"))
+            self._spawn(self._report(job))  # --- interactions: the thread hears it too
         elif job.state in (JobState.QUEUED, JobState.AWAITING_APPROVAL) and job.id not in self._active:
             self._event(job, f"cancelled by {requester} before it started", JobState.CANCELLED, reason="cancelled")
-            self._spawn(self._callback(job, "job.finished"))
+            self._spawn(self._report(job))
         else:
             self._event(job, f"cancel requested by {requester}")
         self.fleet.audit(requester, "job.cancel", job.id)
@@ -394,8 +395,15 @@ class JobService:
                         "resume_command": self.sessions.view(s)["resume_command"]} if s else None
         d["active"] = job.state not in JOB_TERMINAL and job.state != JobState.NEEDS_INPUT
         # workstream C: the session's turns are the job's turns, and carry live usage while one runs
-        d["usage"] = u.model_dump(mode="json") if (u := total_usage(s.turns if s else job.turns)) else None
+        d["usage"] = u.model_dump(mode="json") if (u := self.usage(job)) else None
         return exchange.scrub_turns(d)  # workstream E: attachment contents never leave in a view
+
+    def usage(self, job: Job) -> Usage | None:
+        """What the job's agents used (--- interactions): every turn of every session that carried it, so
+        best-of-N attempts, their repair runs and the judge count, each once, and a running turn counts live."""
+        carried = list(self.sessions._sessions.values()) if self.sessions is not None else []
+        turns = [t for s in carried if s.job_id == job.id for t in s.turns]
+        return total_usage(turns) if turns else total_usage(job.turns)
 
     def events(self, job_id: str, owner: str | None = None, since: int = 0, limit: int = 200,
                tail: int | None = None) -> list[dict[str, Any]]:
@@ -739,7 +747,7 @@ class JobService:
                                                     should_cancel=lambda: job.cancel_requested)
         turn.finished_at = now()
         turn.exit_code = st.exit_code
-        turn.usage, turn.outcome, turn.outcome_reason = st.usage, st.outcome, st.outcome_reason
+        turn.usage, turn.outcome, turn.outcome_reason = total_usage([st]), st.outcome, st.outcome_reason
         exchange.record_job_turn(job, turn, st)  # workstream E: result, question, artifacts
         tail = _clip_tail(raw) if raw else ""
         if outcome in ("gone", "error"):
@@ -880,7 +888,7 @@ class JobService:
             lines += ["", strategies.attempts_table(job), ""]
         lines.append(f"hangar job `{job.id}` · requested by {job.requester} via {job.source} · "
                      f"{job.environment} / {job.harness}" + (f" / {job.model}" if job.model else ""))
-        if usage := total_usage(job.turns):  # workstream C
+        if usage := self.usage(job):  # workstream C
             lines.append(f"Usage: {usage_line(usage)}")
         m = re.match(r"^github:([^#]+)#(\d+)$", job.source_ref or "")
         if m and parse_repo(job.repo) == m.group(1) and job.labels.get("github.kind") == "issue":
@@ -930,7 +938,7 @@ class JobService:
             why = next((t.outcome_reason for t in reversed(job.turns) if t.outcome_reason), None)
             lines += ["", f"Stopped over budget{f' ({why})' if why else ''}. What the agent had done so far is "
                           "delivered as a draft."]
-        if usage := total_usage(job.turns):
+        if usage := self.usage(job):
             lines.append(f"Usage: {usage_line(usage)}")
         if r.summary:
             lines += ["", r.summary[:4000]]

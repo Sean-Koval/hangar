@@ -41,7 +41,8 @@ from typing import TYPE_CHECKING, Any
 
 import jsonschema
 
-from hangar.models import Artifact, ContextItem, Session, SessionTurn, now
+from hangar.events import add_usage, over_budget
+from hangar.models import Artifact, ContextItem, JobState, Session, SessionTurn, now
 
 if TYPE_CHECKING:
     from hangar.config import Settings
@@ -349,7 +350,8 @@ async def prepare_turn(svc: SessionService, s: Session, turn: SessionTurn, sb: S
     io_path, rel = io_dir(settings, s), io_rel(s)
     if rel not in s.extra_dirs:
         s.extra_dirs.append(rel)  # checkpointed with the session, so it survives suspend and resume
-        svc._save(s)
+    s.needs_input = None  # --- interactions: this turn answers the open question, whoever sent it (job or session)
+    svc._save(s)
     n = _turn_no(s, turn)
     _, prov = svc.fleet._running(sb.id)
     await install_helper(prov, sb, home)
@@ -472,6 +474,8 @@ async def after_turn(svc: SessionService, s: Session, turn: SessionTurn, outcome
             if (turn.output_schema and turn.result_error and outcome == "exited" and turn.exit_code == 0
                     and not turn.question and not turn.repair_run_id):
                 await _repair(svc, s, turn, sb)
+            if turn.repair_run_id:  # --- interactions: also re-attaches to a repair a restart interrupted
+                await _wait_repair(svc, s, turn, sb)
                 if svc._alive(sb.id):
                     await _read_out(svc, s, turn, sb)
             if svc._alive(sb.id):
@@ -481,7 +485,7 @@ async def after_turn(svc: SessionService, s: Session, turn: SessionTurn, outcome
         turn.warnings.append(f"could not read what the agent handed back: {e}")
     if turn.question and outcome == "exited":
         turn.outcome = "needs_input"
-        s.needs_input = turn.question
+    s.needs_input = turn.question if turn.outcome == "needs_input" else None  # a stopped turn's waits on nobody
     svc._save(s)
     return turn.outcome
 
@@ -563,12 +567,13 @@ def _repair_prompt(io_path: str, turn: SessionTurn, resuming: bool) -> str:
 
 
 async def _repair(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbox) -> None:
-    """One more turn in the same conversation, asking only for the result."""
-    settings = svc.settings
-    io_path = io_dir(settings, s)
+    """Start one more run in the same conversation, asking only for the result."""
+    io_path = io_dir(svc.settings, s)
     env = {"HANGAR_IO": io_path}
     if s.job_id:
         env.update(HANGAR_JOB_ID=s.job_id, HANGAR_JOB_DIR=io_path)
+    if attempt := s.labels.get("hangar.attempt"):  # --- interactions: a best-of-N attempt's repair is that attempt
+        env["HANGAR_ATTEMPT"] = attempt
     resuming = svc.will_resume(s)
     if resuming:
         env["HANGAR_SESSION_RESUME"] = s.harness_session or ""
@@ -576,25 +581,44 @@ async def _repair(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
                                     model=s.model, env=env, actor=f"session:{s.id}")
     turn.repair_run_id = res["run_id"]
     svc._save(s)
+
+
+async def _wait_repair(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbox) -> None:
+    """Follow the repair run to its end like any agent run (--- interactions): its events go to the session's
+    log, its usage onto the turn (`repair_usage`, re-read whole each time, so it counts once), and it stops at its
+    own time limit or when the turn as a whole goes over its budget."""
+    settings = svc.settings
+    run = SessionTurn(message="repair", run_id=turn.repair_run_id, harness=turn.harness or s.harness,
+                      started_at=now())
+    watch = svc.activity.watch(svc.fleet, s, run, lambda: None)
+    watch.number = _turn_no(s, turn)
     deadline = now() + settings.exchange_repair_timeout_minutes * 60
     errors = 0
-    while svc._alive(sb.id):
-        try:
-            st = await svc.fleet.agent_status(sb.id, turn.repair_run_id, tail_lines=1, quiet=True)
-            errors = 0
-        except Exception:  # noqa: BLE001 - transient provider errors
-            errors += 1
-            if errors >= 5:
+    try:
+        while svc._alive(sb.id):
+            try:
+                st = await svc.fleet.agent_status(sb.id, run.run_id or "", tail_lines=1, quiet=True)
+                errors = 0
+            except Exception:  # noqa: BLE001 - transient provider errors
+                errors += 1
+                if errors >= 5:
+                    return
+                st = None
+            if st and st["state"] == "finished":
                 return
-            st = None
-        if st and st["state"] == "finished":
-            return
-        if now() > deadline:
-            with contextlib.suppress(Exception):
-                await svc._sh(sb, f"tmux kill-session -t {shlex.quote(turn.repair_run_id)}")
-            turn.warnings.append("the repair turn timed out")
-            return
-        await asyncio.sleep(settings.session_poll_seconds)
+            await watch.poll()
+            over = over_budget(s.budget, add_usage(turn.usage, run.usage), turn.started_at)
+            stop = ("the repair turn timed out" if now() > deadline
+                    else f"the repair turn was stopped over budget: {over}" if over else None)
+            if stop:
+                with contextlib.suppress(Exception):
+                    await svc._sh(sb, f"tmux kill-session -t {shlex.quote(run.run_id or '')}")
+                turn.warnings.append(stop)
+                return
+            await asyncio.sleep(settings.session_poll_seconds)
+    finally:
+        await watch.finish(alive=svc._alive(sb.id))
+        turn.repair_usage = run.usage
 
 
 def _redact_bytes(svc: SessionService, data: bytes) -> bytes:
@@ -952,9 +976,10 @@ def job_turn_io(job: Job, turn: Turn, st: SessionTurn, first: bool) -> None:
 def record_job_turn(job: Job, turn: Turn, st: SessionTurn) -> None:
     """Copy what the agent handed back onto the job turn and the job's result (and so its callbacks)."""
     turn.outcome = st.outcome
-    turn.result, turn.result_error, turn.question = st.result, st.result_error, st.question
+    asked = st.question if st.outcome == "needs_input" else None  # a stopped turn's question waits on nobody
+    turn.result, turn.result_error, turn.question = st.result, st.result_error, asked
     turn.artifacts = list(st.artifacts)
-    job.result.data, job.result.result_error, job.result.question = st.result, st.result_error, st.question
+    job.result.data, job.result.result_error, job.result.question = st.result, st.result_error, asked
     job.result.artifacts = [a for t in job.turns for a in t.artifacts]
 
 
@@ -968,8 +993,6 @@ def question_comment(job: Job, question: str) -> str:
 async def job_needs_input(svc: JobService, job: Job, turn: Turn, s: Session) -> None:
     """The agent asked a question. No verify and no delivery yet: the commits stay in the session (checkpointed
     after the turn) until a follow-up answers it and the job finishes."""
-    from hangar.models import JobState
-
     q = job.result.question or ""
     svc._event(job, f"needs input: {q[:500]}", JobState.NEEDS_INPUT, reason=None)
     await svc._keep(job, s)
@@ -978,10 +1001,17 @@ async def job_needs_input(svc: JobService, job: Job, turn: Turn, s: Session) -> 
         await svc._comment(job, turn.reply_to, question_comment(job, q))
 
 
+def open_question(job: Job) -> str | None:
+    """The agent's unanswered question while the job waits for it (needs_input): one place for every surface."""
+    if job.state != JobState.NEEDS_INPUT:
+        return None
+    return job.result.question or (job.turns[-1].question if job.turns else None)
+
+
 def answer_on_issue(svc: JobService, ref: str, sender: str, text: str) -> dict[str, Any] | None:
-    """A `/hangar …` comment on an issue whose job is waiting on a question answers it (a follow-up)."""
+    """A `/hangar …` comment on an issue whose job is waiting on a question answers it (a follow-up). The caller
+    passes only a trusted person's comment: the answer steers the agent, and anyone can comment on a public issue."""
     from hangar.jobs import JobError
-    from hangar.models import JobState
 
     job = next((j for j in svc.list(limit=500) if j.source_ref == ref and j.state == JobState.NEEDS_INPUT), None)
     if job is None:

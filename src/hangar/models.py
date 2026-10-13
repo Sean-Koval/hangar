@@ -390,6 +390,7 @@ class SessionTurn(BaseModel):
     artifacts: list[Artifact] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     repair_run_id: str | None = None  # the one extra run that asked for a missing or invalid result
+    repair_usage: Usage | None = None  # --- interactions: what that run used (part of the turn's total)
 
 
 class Checkpoint(BaseModel):

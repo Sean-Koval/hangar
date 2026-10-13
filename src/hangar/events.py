@@ -131,10 +131,11 @@ def add_usage(a: Usage | None, b: Usage | None) -> Usage | None:
 
 
 def total_usage(turns: list[Any]) -> Usage | None:
-    """Usage over turns (anything with a `.usage`)."""
+    """Usage over turns (anything with a `.usage`), including a session turn's structured-result repair run."""
     out: Usage | None = None
     for t in turns:
         out = add_usage(out, getattr(t, "usage", None))
+        out = add_usage(out, getattr(t, "repair_usage", None))
     return out
 
 
