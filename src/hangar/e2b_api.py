@@ -213,6 +213,11 @@ class E2BService:
     def check_traffic(self, sandbox_id: str, rec: dict[str, Any], given: str | None) -> bool:
         return bool(given) and hmac.compare_digest(given.encode(), self.traffic_token(sandbox_id, rec).encode())
 
+    def owner_live(self, rec: dict[str, Any]) -> bool:
+        """Whether the hangar token that made the sandbox (or an admin's adopted it) still exists: revoking a token
+        revokes its sandboxes' tokens too."""
+        return self.h.auth.exists(rec.get("owner"))
+
     # ------------------------------------------------------------------ callers
     def principal(self, request: Request) -> Principal:
         raw = request.headers.get("x-api-key") or bearer_from_headers(request.headers)
@@ -333,6 +338,14 @@ class E2BService:
         if timeout > limit:
             raise E2BError(400, f"Timeout cannot be greater than {limit} seconds for this token")
         return timeout
+
+    @staticmethod
+    def _within_budget(p: Principal, sb: Sandbox, until: float) -> float:
+        """A token's budget caps how long its sandboxes live, from their start, not just each timeout it asks for:
+        refreshes, timeouts and connects can't keep one going past it."""
+        if p.max_budget and p.max_budget.max_minutes:
+            return min(until, sb.created_at + p.max_budget.max_minutes * 60)
+        return until
 
     async def _set_expiry(self, sb_id: str, expires_at: float | None) -> Sandbox:
         sb = self.store.get(Sandbox, sb_id)
@@ -471,7 +484,7 @@ class E2BService:
             sb, _ = self.owned(p, sandbox_id)
             if sb.state == SandboxState.PAUSED:
                 raise not_found(sandbox_id)  # as E2B: only a running sandbox has a timeout to set
-            await self._set_expiry(sb.id, now() + self._cap_timeout(p, max(0, timeout)))
+            await self._set_expiry(sb.id, self._within_budget(p, sb, now() + self._cap_timeout(p, max(0, timeout))))
             self.fleet.audit(self.actor(p), "sandbox.timeout", sb.id, seconds=timeout)
 
     async def refresh(self, p: Principal, sandbox_id: str, duration: int) -> None:
@@ -479,7 +492,7 @@ class E2BService:
             sb, _ = self.owned(p, sandbox_id)
             if sb.state == SandboxState.PAUSED:
                 raise not_found(sandbox_id)
-            until = now() + max(REFRESH_MIN, duration)
+            until = self._within_budget(p, sb, now() + max(REFRESH_MIN, duration))
             if sb.expires_at is not None and sb.expires_at < until:
                 await self._set_expiry(sb.id, until)
 
@@ -496,9 +509,17 @@ class E2BService:
                 await self.fleet.pause(sb.id, actor=self.actor(p))
             except (ProviderError, FleetError) as e:
                 raise E2BError(500, f"Error pausing sandbox: {e}") from e
+            self._forget_address(sb)
             # Paused sandboxes don't run out (E2B's semantics), but they hold the provider's resources, so hangar
             # keeps one for the longest timeout before removing it.
-            await self._set_expiry(sb.id, now() + self.settings.e2b_max_timeout_seconds)
+            await self._set_expiry(sb.id, self._within_budget(p, sb, now() + self.settings.e2b_max_timeout_seconds))
+
+    def _forget_address(self, sb: Sandbox) -> None:
+        """Paused or resumed, a sandbox may come back at another address (GKE restores a Pod snapshot as a new Pod):
+        its daemon is found and proved again on the next call rather than looked for where it was."""
+        envd = getattr(self.fleet.providers.get(sb.provider), "envd", None)
+        if envd is not None and hasattr(envd, "_lost"):
+            envd._lost(sb, "paused or resumed")
 
     async def connect(self, p: Principal, sandbox_id: str, timeout: int, memory: bool | None) -> tuple[int, dict]:
         """200 and the tokens for a running sandbox (its expiry only ever extended), 201 after resuming a paused one."""
@@ -519,10 +540,11 @@ class E2BService:
                     await self.fleet.resume(sb.id, actor=self.actor(p))
                 except (ProviderError, FleetError) as e:
                     raise E2BError(500, f"Error resuming sandbox: {e}") from e
-                sb = await self._set_expiry(sb.id, now() + timeout)
+                self._forget_address(sb)
+                sb = await self._set_expiry(sb.id, self._within_budget(p, sb, now() + timeout))
                 await envd.ready(sb, timeout=30)
                 return 201, self.sandbox_view(sb, rec)
-            until = now() + timeout
+            until = self._within_budget(p, sb, now() + timeout)
             if sb.expires_at is not None and sb.expires_at < until:
                 sb = await self._set_expiry(sb.id, until)
             return 200, self.sandbox_view(sb, rec)
@@ -559,12 +581,20 @@ class E2BService:
             raise E2BError(400, "limit must be between 1 and 100")
         start = 0
         if token := q.get("nextToken"):
-            ids = [sb.id for sb, _ in rows]
-            if token not in ids:
-                raise E2BError(400, "invalid nextToken")
-            start = ids.index(token)
+            # A position (the next page's first sandbox's start time and id), not a sandbox that must still exist.
+            t, _, sid = token.partition("_")
+            try:
+                at = (float(t), sid)
+            except ValueError as e:
+                raise E2BError(400, "invalid nextToken") from e
+            desc = order == "desc"
+            start = next((i for i, (sb, _) in enumerate(rows)
+                          if ((sb.created_at, sb.id) <= at if desc else (sb.created_at, sb.id) >= at)), len(rows))
         page = rows[start:start + limit]
-        nxt = rows[start + limit][0].id if len(rows) > start + limit else None
+        nxt = None
+        if len(rows) > start + limit:
+            first = rows[start + limit][0]
+            nxt = f"{first.created_at!r}_{first.id}"
         return [self.listed_view(sb, r) for sb, r in page], nxt
 
     def logs(self, p: Principal, sandbox_id: str, start_ms: int | None, limit: int, search: str | None,

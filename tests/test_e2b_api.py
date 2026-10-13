@@ -25,9 +25,9 @@ import httpx
 import pytest
 
 from hangar.e2b_api import ENVD_VERSION
-from hangar.envd import Envd, EnvdError
+from hangar.envd import Endpoint, Envd, EnvdError
 from hangar.models import Sandbox
-from hangar.sandbox_router import SandboxRouter, _with_env, file_signature
+from hangar.sandbox_router import Refused, SandboxRouter, _with_env, file_signature
 from tests.conftest import FakeProvider
 from tests.test_envd import ARCH, BINARIES, free_port, kill_daemon
 from tests.test_mcp_modern import AppThread
@@ -81,6 +81,140 @@ def test_routes():
     assert route("127.0.0.1:8787", "/e2b/sandboxes") is None  # the control API
     assert route("127.0.0.1:8787", "/api/sandboxes") is None
     assert route(f"a.b.{DOMAIN}") is None  # nested labels: not a sandbox host
+
+
+class StubEnvd:
+    """Just enough of hangar.envd.Envd for the router: an endpoint that moves, and a probe that proves it."""
+
+    enabled = True
+
+    def __init__(self, url: str):
+        self.ep = Endpoint(url=url, token="t" * 64, ref="ref-1")
+        self.lost: list[str] = []
+
+    async def endpoint(self, sb):
+        return self.ep
+
+    async def ready(self, sb, timeout=0):
+        return self.ep
+
+    async def urls(self, sb):
+        return [self.ep.url]
+
+    async def _probe(self, sb, urls, token):
+        return Endpoint(url=urls[0], token=token, ref="ref-1")
+
+    def _lost(self, sb, why):
+        self.lost.append(why)
+
+
+def stub_router(envd: StubEnvd, built: list[str] | None = None) -> tuple[SandboxRouter, SimpleNamespace]:
+    from hangar.models import SandboxState, now
+
+    sb = SimpleNamespace(id="sb-1a2b3c4d", state=SandboxState.RUNNING, last_activity=now(), provider="docker",
+                         provider_ref="ref-1")
+
+    class Ports:
+        def build_request(self, method, url, **kw):
+            built.append(str(url))
+            return httpx.Request(method, url)
+
+        async def send(self, req, **kw):
+            raise httpx.ConnectError("nothing listens in a unit test")
+
+    svc = SimpleNamespace(
+        settings=SimpleNamespace(e2b_api_path="/e2b", e2b_max_streams_per_sandbox=8, max_request_mb=8,
+                                 sandbox_user="agent"),
+        domain=lambda: DOMAIN, store=SimpleNamespace(get=lambda cls, sid: sb if sid == sb.id else None),
+        record=lambda sid: {"owner": "tok", "nonce": "n"}, owner_live=lambda rec: True,
+        check_envd=lambda sid, rec, given: False, check_traffic=lambda sid, rec, given: given == "traffic",
+        fleet=SimpleNamespace(touch=lambda sid: None, providers={"docker": SimpleNamespace(envd=envd)}),
+        ports_http=Ports())
+    return SandboxRouter(None, svc), sb
+
+
+async def asgi(router, scope) -> tuple[int, bytes]:
+    sent: list[dict] = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(m):
+        sent.append(m)
+
+    await router(scope, receive, send)
+    return sent[0]["status"], b"".join(m.get("body", b"") for m in sent[1:])
+
+
+async def test_request_targets_must_be_paths():
+    """An absolute-form or `@host` request target (uvicorn's h11 server passes both through as the path) must not
+    pick the upstream host: `http://<sandbox>:8000` + `@169.254.169.254/...` is the metadata server."""
+    built: list[str] = []
+    router, sb = stub_router(StubEnvd("http://10.0.0.5:49983"), built)
+    for target in (b"@169.254.169.254/computeMetadata/v1/", b"http://169.254.169.254/x", b"*"):
+        scope = {"type": "http", "method": "GET", "path": target.decode(), "raw_path": target, "query_string": b"",
+                 "headers": [(b"host", f"8000-{sb.id}.{DOMAIN}".encode()), (b"e2b-traffic-access-token", b"traffic")]}
+        status, _ = await asgi(router, scope)
+        assert status == 400, target
+    assert built == []
+    # an ordinary path still goes to the sandbox's own address
+    scope["raw_path"], scope["path"] = b"/x", "/x"
+    assert (await asgi(router, scope))[0] == 502 and [httpx.URL(u).host for u in built] == ["10.0.0.5"]
+
+
+async def test_ports_go_to_the_address_the_daemon_proved():
+    """A sandbox's other ports go to the address its daemon last proved (X-Hangar-Proof), never a remembered one: on
+    GKE a resumed Pod has a new IP, and the old one may by then be another sandbox's. Loopback, link-local (the
+    metadata server) and unspecified addresses are never a sandbox's."""
+    envd = StubEnvd("http://10.1.2.3:49983")
+    router, sb = stub_router(envd)
+    assert await router._host(sb) == "10.1.2.3"
+    envd.ep = Endpoint(url="http://10.9.9.9:49983", token="t" * 64, ref="ref-1")  # resumed elsewhere
+    assert await router._host(sb) == "10.9.9.9"
+    for bad in ("169.254.169.254", "127.0.0.1", "0.0.0.0", "[::1]"):
+        envd.ep = Endpoint(url=f"http://{bad}:49983", token="t" * 64, ref="ref-1")
+        with pytest.raises(Refused):
+            await router._host(sb)
+    envd.ep = Endpoint(url="http://10.4.4.4:41234", token="t" * 64, ref="ref-1")  # a port published elsewhere
+    with pytest.raises(Refused):
+        await router._host(sb)
+
+
+def test_headers_to_sandbox_ports():
+    """Hop-by-hop headers (and any the Connection header names), E2B's and hangar's tokens and X-Hangar-* stay
+    here; what the app needs (its own Authorization, cookies, the host) goes."""
+    router, _ = stub_router(StubEnvd("http://10.0.0.5:49983"))
+    hs = [(b"host", b"8000-sb-1.e2b.test"), (b"connection", b"keep-alive, X-Secret"), (b"x-secret", b"1"),
+          (b"x-api-key", b"hgr_abc"), (b"x-hangar-sig", b"forged"), (b"X-Hangar-Proof", b"p"),
+          (b"e2b-traffic-access-token", b"t"), (b"x-access-token", b"a"), (b"cookie", b"c=1"),
+          (b"authorization", b"Basic dXNlcjo="), (b"user-agent", b"ua"), (b"transfer-encoding", b"chunked")]
+    kept = {k.decode().lower() for k, _ in router._port_headers({"headers": hs})}
+    assert kept == {"host", "cookie", "authorization", "user-agent"}
+    hgr = [(b"authorization", b"Bearer hgr_secret")]
+    assert router._port_headers({"headers": hgr}) == []
+
+
+async def test_gzip_uploads_inflate_in_bounded_steps():
+    """A gzip upload is inflated a megabyte at a time: one small request can't make the router hold its whole
+    inflated size (up to HANGAR_MAX_REQUEST_MB) at once. Over the cap is a 413; junk after the stream a 400."""
+    router, _ = stub_router(StubEnvd("http://10.0.0.5:49983"))
+
+    async def chunks(body: bytes) -> list[bytes]:
+        msgs = [{"type": "http.request", "body": body, "more_body": False}]
+
+        async def receive():
+            return msgs.pop(0)
+
+        return [c async for c in router._body(receive, True)]
+
+    out = await chunks(gzip.compress(b"\0" * (5 << 20)))
+    assert sum(map(len, out)) == 5 << 20 and max(map(len, out)) <= 1 << 20
+    with pytest.raises(Refused) as e:
+        await chunks(gzip.compress(b"\0" * ((8 << 20) + 1)))
+    assert e.value.status == 413
+    with pytest.raises(Refused) as e:
+        await chunks(gzip.compress(b"abc") + b"trailing")
+    assert e.value.status == 400
 
 
 # ---------------------------------------------------------------------------- a hangar with local daemons
@@ -246,7 +380,11 @@ async def test_sdk_pause_and_connect(hangar):
         headers={"E2b-Sandbox-Id": sb.sandbox_id, "X-Access-Token": sb._envd_access_token,
                  "Connect-Protocol-Version": "1"})
     assert r.status_code == 502 and "paused" in r.json()["message"]
+    before = hangar.prov.envd._eps.get(sb.sandbox_id)
     resumed = await AsyncSandbox.connect(sb.sandbox_id, timeout=120, **opts)
+    # A resumed sandbox may have a new address (a GKE Pod snapshot restores as a new Pod): its daemon is found and
+    # proved again rather than trusted where it was.
+    assert hangar.prov.envd._eps.get(sb.sandbox_id) is not before
     assert (await resumed.commands.run("echo back")).stdout == "back\n"
     assert (await resumed.get_info()).state == SandboxState.RUNNING
     await resumed.kill()
@@ -289,9 +427,31 @@ async def test_auth_and_ownership(hangar):
             await bad.commands.run("true")
         with pytest.raises(AuthenticationException):
             await bad.files.read("/etc/hostname")
-    # Refusals are audited.
+    # Refusals are audited: the data plane's by the router, the API's by the front door.
     assert any(e.action == "e2b.envd.denied" for e in hangar.h.store.audit_tail(50))
-    await sb.kill()
+    assert any(e.action == "request.rejected" and (e.target or "").startswith("/e2b/")
+               for e in hangar.h.store.audit_tail(200))
+
+    # A sandboxes token is good for the E2B API and nothing else.
+    async with httpx.AsyncClient(base_url=hangar.url) as c:
+        auth = {"Authorization": f"Bearer {alice}"}
+        assert (await c.get("/api/sandboxes", headers=auth)).status_code == 403
+        assert (await c.get(f"/api/sandboxes/{sb.sandbox_id}", headers=auth)).status_code == 403
+        r = await c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, headers=auth)
+        assert r.status_code == 401
+        r = await c.post("/a2a", json={"jsonrpc": "2.0", "id": 1, "method": "tasks/get", "params": {"id": "x"}},
+                         headers=auth)
+        assert r.status_code == 404 or "do not allow" in r.text
+
+    # Revoking the token that made a sandbox cuts off its sandbox URLs too, not just the API.
+    stat = {"Host": f"49983-{sb.sandbox_id}.{DOMAIN}", "X-Access-Token": sb._envd_access_token,
+            "Connect-Protocol-Version": "1"}
+    async with httpx.AsyncClient(base_url=hangar.url) as c:
+        assert (await c.post("/filesystem.Filesystem/Stat", json={"path": "/"}, headers=stat)).status_code == 200
+        hangar.h.auth.revoke(next(t.id for t in hangar.h.auth.list() if t.name == "alice"))
+        r = await c.post("/filesystem.Filesystem/Stat", json={"path": "/"}, headers=stat)
+        assert r.status_code == 401 and "revoked" in r.json()["message"]
+    await AsyncSandbox.kill(sb.sandbox_id, **hangar.opts(ADMIN))  # the admin can still clean up
     await bobs.kill()
 
 
@@ -321,10 +481,21 @@ async def test_limits(hangar):
     # A token's max_budget caps its sandboxes' timeouts.
     from hangar.models import Budget
 
+    s.e2b_rate_burst, s.e2b_create_burst = 120, 10
     raw, tok = hangar.h.auth.create("budgeted", ["sandboxes"], max_budget=Budget(max_minutes=5))
-    async with httpx.AsyncClient(base_url=f"{hangar.url}/e2b", headers={"X-API-Key": raw}) as c:
+    async with httpx.AsyncClient(base_url=f"{hangar.url}/e2b", headers={"X-API-Key": raw}, timeout=60) as c:
         r = await c.post("/v2/sandboxes", json={"templateID": "plain", "timeout": 3600})
         assert r.status_code == 400 and "Timeout" in r.json()["message"]
+        # ... and how long they live: refreshes, timeouts and connects can't extend one past it.
+        r = await c.post("/v2/sandboxes", json={"templateID": "plain", "timeout": 200})
+        sid = r.json()["sandboxID"]
+        started = hangar.h.fleet.get(sid).created_at
+        assert (await c.post(f"/sandboxes/{sid}/refreshes", json={"duration": 3600})).status_code == 204
+        assert hangar.h.fleet.get(sid).expires_at <= started + 300
+        assert (await c.post(f"/sandboxes/{sid}/timeout", json={"timeout": 290})).status_code == 204
+        assert (await c.post(f"/v2/sandboxes/{sid}/connect", json={"timeout": 299})).status_code == 200
+        assert hangar.h.fleet.get(sid).expires_at <= started + 300
+        assert (await c.delete(f"/sandboxes/{sid}")).status_code == 204
     await sb.kill()
 
 
@@ -347,6 +518,7 @@ async def test_host_routing_signed_urls_and_unsupported(hangar):
         assert r.status_code == 401
         r = await c.post("/filesystem.Filesystem/Stat", json={"path": "/"}, headers={**stat, "X-Access-Token": tok})
         assert r.status_code == 200 and r.json()["entry"]["type"] == "FILE_TYPE_DIRECTORY"
+        assert not [h for h in r.headers if h.lower().startswith("x-hangar-")]  # the daemon's proof stays here
         r = await c.post("/filesystem.Filesystem/Stat", json={"path": "/"},
                          headers={**stat, "Host": f"49983-sb-00000000.{DOMAIN}", "X-Access-Token": tok})
         assert r.status_code == 502 and r.json()["message"] == "The sandbox was not found"
@@ -364,6 +536,19 @@ async def test_host_routing_signed_urls_and_unsupported(hangar):
         assert (await c.post(str(other), json={"path": path}, headers=host)).status_code == 401
         expired = up.copy_merge_params({"signature_expiration": str(int(time.time()) - 1)})
         assert (await c.post(str(expired), files={"file": ("s.txt", b"x")}, headers=host)).status_code == 401
+        # A signed URL is good for its own path only, however the query is dressed up: another `path` before the
+        # signed one must not be the one written.
+        other_path = str(hangar.prov.boxes[sid] / "workspace" / "elsewhere.txt")
+        smuggled = up.copy_with(params=[("path", other_path), *up.params.multi_items()])
+        r = await c.post(str(smuggled), content=b"smuggled",
+                         headers={**host, "Content-Type": "application/octet-stream"})
+        assert r.status_code in (400, 401) and not os.path.exists(other_path)
+        r = await c.post(str(smuggled), files={"file": ("x", b"smuggled")}, headers=host)
+        assert r.status_code in (400, 401) and not os.path.exists(other_path)
+        # ... nor can a multipart body's filenames (each part's path, with a token) send its files elsewhere.
+        r = await c.post(str(up), files=[("a", (other_path, b"smuggled")), ("b", (other_path + "2", b"too"))],
+                         headers=host)
+        assert r.status_code == 400 and not os.path.exists(other_path) and not os.path.exists(other_path + "2")
         r = await c.post("/files", params={"path": path, "username": "user"}, content=gzip.compress(b"z" * 100000),
                          headers={**host, "X-Access-Token": tok, "Content-Type": "application/octet-stream",
                                   "Content-Encoding": "gzip"})
@@ -458,6 +643,25 @@ async def test_idempotent_create_and_trusted_environments(hangar):
 
 
 @needs_binary
+async def test_list_pages_survive_kills(hangar):
+    """`nextToken` is a position, not a sandbox: killing the sandbox it would start at doesn't break the listing."""
+    key = token(hangar, "pager")
+    async with httpx.AsyncClient(base_url=f"{hangar.url}/e2b", headers={"X-API-Key": key}, timeout=60) as c:
+        ids = [(await c.post("/v2/sandboxes", json={"templateID": "plain"})).json()["sandboxID"] for _ in range(3)]
+        r = await c.get("/v2/sandboxes", params={"limit": 1, "order": "asc"})
+        assert [x["sandboxID"] for x in r.json()] == ids[:1]
+        nxt = r.headers["x-next-token"]
+        assert (await c.delete(f"/sandboxes/{ids[1]}")).status_code == 204
+        r = await c.get("/v2/sandboxes", params={"limit": 1, "order": "asc", "nextToken": nxt})
+        assert r.status_code == 200 and [x["sandboxID"] for x in r.json()] == ids[2:]
+        assert "x-next-token" not in r.headers
+        r = await c.get("/v2/sandboxes", params={"nextToken": "junk"})
+        assert r.status_code == 400 and r.json()["code"] == 400
+        for sid in (ids[0], ids[2]):
+            await c.delete(f"/sandboxes/{sid}")
+
+
+@needs_binary
 async def test_a_sandbox_whose_daemon_never_answers_is_removed(hangar, monkeypatch):
     async def never(sb, timeout=0):
         return None
@@ -486,7 +690,8 @@ async def test_other_ports_http_and_websocket(hangar, monkeypatch):
 
     async def echo(ws):
         async for m in ws:
-            await ws.send(f"echo:{m}")
+            # "big": more than a message may be (the sandbox is untrusted; the router must not buffer it whole)
+            await ws.send(b"\0" * (17 << 20) if m == "big" else f"echo:{m}")
 
     httpd = subprocess.Popen(["python3", "-m", "http.server", str(port), "--bind", "127.0.0.1"],
                              cwd=hangar.prov.boxes[sb.sandbox_id], stdout=subprocess.DEVNULL,
@@ -509,6 +714,11 @@ async def test_other_ports_http_and_websocket(hangar, monkeypatch):
             async with websockets.connect(url, additional_headers=hdrs) as ws:
                 await ws.send("hi")
                 assert await ws.recv() == "echo:hi"
+            async with websockets.connect(url, additional_headers=hdrs, max_size=None) as ws:
+                await ws.send("big")
+                with pytest.raises(websockets.exceptions.ConnectionClosed) as closed:
+                    await ws.recv()
+                assert closed.value.rcvd is not None and closed.value.rcvd.code == 1009  # message too big
             with pytest.raises(websockets.exceptions.InvalidStatus):
                 async with websockets.connect(url, additional_headers={"Host": hdrs["Host"]}):
                     pass

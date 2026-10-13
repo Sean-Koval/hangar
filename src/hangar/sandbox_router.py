@@ -27,6 +27,7 @@ import base64
 import contextlib
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import re
@@ -39,6 +40,7 @@ from urllib.parse import parse_qsl, quote, urlencode
 
 import httpx
 
+from hangar.auth import PREFIX as TOKEN_PREFIX
 from hangar.envd import PORT as ENVD_PORT
 from hangar.envd import UPLOAD_CHUNK, Endpoint, EnvdError, frames, proof, sign
 from hangar.fleet import ACTIVE
@@ -58,8 +60,11 @@ _HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
 # Request headers envd needs; everything else (the E2B token, routing headers, cookies) stays here.
 _ENVD_HEADERS = {"content-type", "connect-protocol-version", "connect-timeout-ms", "connect-accept-encoding",
                  "connect-content-encoding", "keepalive-ping-interval", "user-agent", "accept"}
-_DROP_TO_PORTS = {"x-access-token", "e2b-traffic-access-token", "e2b-sandbox-id", "e2b-sandbox-port"}
+_DROP_TO_PORTS = {"x-access-token", "e2b-traffic-access-token", "e2b-sandbox-id", "e2b-sandbox-port", "x-api-key"}
 _E2B_DEFAULT_USER = "user"  # E2B templates' user; to hangar it means the sandbox's own user
+_INFLATE_STEP = 1 << 20  # a gzip upload is inflated at most this much at a time
+_WS_MAX = 16 << 20  # largest WebSocket message either way (uvicorn's own default for clients)
+_RECHECK = 10.0  # seconds a sandbox's port address is used before its daemon proves it again
 
 
 class Disconnected(Exception):
@@ -89,6 +94,29 @@ def _is_files(raw_path: bytes) -> bool:
     return raw_path.rstrip(b"/") == b"/files"
 
 
+def _passed(headers: list[tuple[bytes, bytes]], drop: set[str]) -> list[tuple[bytes, bytes]]:
+    """Headers that cross the router, either way: not `drop`, not hop-by-hop ones the Connection header names, not
+    hangar's own (X-Hangar-*: signatures and proofs), and not a hangar token in Authorization."""
+    named = {t.strip().lower() for k, v in headers if k.lower() == b"connection"
+             for t in v.decode("latin-1").split(",")}
+    out = []
+    for k, v in headers:
+        name = k.decode("latin-1").lower()
+        if name in drop or name in named or name.startswith("x-hangar-"):
+            continue
+        if name == "authorization":
+            scheme, _, cred = v.decode("latin-1").strip().partition(" ")
+            if scheme.lower() == "bearer" and cred.strip().startswith(TOKEN_PREFIX):
+                continue
+        out.append((k, v))
+    return out
+
+
+def _upstream(scheme: str, host: str, port: int, raw_path: bytes, query: bytes) -> httpx.URL:
+    """A URL on the sandbox's own address, built from parts: the client's path can't name another host."""
+    return httpx.URL(scheme=scheme, host=host, port=port, raw_path=raw_path + (b"?" + query if query else b""))
+
+
 def file_signature(path: str, operation: str, user: str, token: str, expiration: str | None) -> str:
     """E2B's pre-signed `/files` URL signature (e2b SDK `get_signature`, envd `internal/api/auth.go`)."""
     raw = f"{path}:{operation}:{user}:{token}" + (f":{expiration}" if expiration else "")
@@ -106,7 +134,7 @@ class SandboxRouter:
         self.prefix = f"{base}/sandbox" if base else ""
         self.domain = svc.domain() if base else None
         self._inflight: Counter[str] = Counter()
-        self._addr: dict[str, tuple[str | None, str]] = {}
+        self._addr: dict[str, tuple[Endpoint, float, str]] = {}  # sandbox -> (proved endpoint, when, host)
 
     # ------------------------------------------------------------------ routing
     def _route(self, scope) -> tuple[str, Any] | None:
@@ -156,7 +184,9 @@ class SandboxRouter:
             sid, port_s, raw_path = arg
             if not _SID.match(sid) or not port_s.isdigit() or not 0 < int(port_s) < 65536:
                 raise Refused(400, {"message": "Invalid sandbox ID or port", "code": 400})
-            sb, rec, port = self._authorize(scope, sid, int(port_s), raw_path)
+            if not raw_path.startswith(b"/"):  # absolute-form, `@host`, `*`: uvicorn's h11 server passes them on
+                raise Refused(400, {"message": "the request target must be a path", "code": 400})
+            sb, rec, port, by_url = self._authorize(scope, sid, int(port_s), raw_path)
         except Refused as e:
             if scope["type"] == "websocket":
                 await receive()  # websocket.connect
@@ -177,7 +207,7 @@ class SandboxRouter:
             if scope["type"] == "websocket":
                 await self._websocket(scope, receive, send, sb, port, raw_path)
             elif port == ENVD_PORT:
-                await self._envd(scope, receive, send, sb, rec, raw_path)
+                await self._envd(scope, receive, send, sb, rec, raw_path, by_url)
             else:
                 await self._port(scope, receive, send, sb, port, raw_path)
         except Refused as e:
@@ -191,18 +221,20 @@ class SandboxRouter:
                 del self._inflight[key]
 
     # ------------------------------------------------------------------ auth
-    def _authorize(self, scope, sid: str, port: int, raw_path: bytes) -> tuple[Sandbox, dict[str, Any], int]:
+    def _authorize(self, scope, sid: str, port: int, raw_path: bytes) -> tuple[Sandbox, dict[str, Any], int, bool]:
         """Deny by default: a live sandbox exposed through the E2B API, and its token on every request."""
         sb = self.svc.store.get(Sandbox, sid)
         rec = self.svc.record(sid) if sb is not None and sb.state in ACTIVE else None
         if sb is None or rec is None:
+            self._addr.pop(sid, None)
             raise _gone(sid)
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
         access = headers.get("x-access-token")
+        by_url = False
         if port == ENVD_PORT:
             ok = self.svc.check_envd(sid, rec, access)
             if not ok and access is None and scope["type"] == "http" and _is_files(raw_path):
-                ok = self._signed_file_url(scope, sid, rec)
+                ok = by_url = self._signed_file_url(scope, sid, rec)
             if not ok:
                 self._refused(scope, sid, "e2b.envd.denied")
                 raise Refused(401, {"code": 401, "message": "unauthorized access, invalid or missing access token"})
@@ -211,17 +243,25 @@ class SandboxRouter:
             self._refused(scope, sid, "e2b.port.denied")
             raise Refused(403, {"sandboxId": sid, "code": 403, "message": "missing or invalid traffic access token "
                                 "(send the sandbox's trafficAccessToken as e2b-traffic-access-token)"})
+        if not self.svc.owner_live(rec):
+            # The sandbox's tokens came from a hangar token that has since been revoked: they go with it.
+            self._refused(scope, sid, "e2b.owner.revoked")
+            raise Refused(401, {"code": 401, "message": "the API key that created this sandbox was revoked"})
         if sb.state == SandboxState.PAUSED:
             raise _gone(sid, "The sandbox is paused; connect to it (Sandbox.connect) to resume it")
         if sb.state != SandboxState.RUNNING:
             raise _gone(sid, "The sandbox is still starting")
-        return sb, rec, port
+        return sb, rec, port, by_url
 
     def _signed_file_url(self, scope, sid: str, rec: dict[str, Any]) -> bool:
-        """A pre-signed `/files` URL: good for that path, operation and user, until its expiry, and nothing else."""
+        """A pre-signed `/files` URL: good for that path, operation and user, until its expiry, and nothing else.
+        Each signed parameter may appear once, so the one checked is the one the daemon gets."""
         if scope["method"] not in ("GET", "POST"):
             return False
-        q = dict(parse_qsl(scope.get("query_string", b"").decode("latin-1"), keep_blank_values=True))
+        pairs = parse_qsl(scope.get("query_string", b"").decode("latin-1"), keep_blank_values=True)
+        q = dict(pairs)
+        if len(q) != len(pairs):
+            return False
         sig, exp = q.get("signature"), q.get("signature_expiration")
         if not sig:
             return False
@@ -280,7 +320,8 @@ class SandboxRouter:
             return name == _E2B_DEFAULT_USER != user
         return False
 
-    async def _envd(self, scope, receive, send, sb: Sandbox, rec: dict[str, Any], raw_path: bytes) -> None:
+    async def _envd(self, scope, receive, send, sb: Sandbox, rec: dict[str, Any], raw_path: bytes,
+                    by_url: bool = False) -> None:
         envd, ep = await self._ready(sb)
         method = scope["method"]
         target, headers = self._envd_target(scope, raw_path)
@@ -290,7 +331,7 @@ class SandboxRouter:
                      for k, v in scope.get("headers", []))
             body = self._body(receive, gz)
             if hdr.get("content-type", "").lower().startswith("multipart/form-data"):
-                return await self._multipart(scope, send, sb, envd, ep, target, body)
+                return await self._multipart(scope, send, sb, envd, ep, target, body, by_url)
             # Streamed as signed frames: the daemon writes nothing it hasn't checked and replaces the file only once
             # the last frame arrives, so an upload cut short here (a 413, a client gone) changes nothing.
             return await self._forward(receive, send, sb, envd, _signed(ep, method, target, body, hdr, "chunked"))
@@ -329,7 +370,8 @@ class SandboxRouter:
         await send({"type": "http.response.start", "status": 204, "headers": []})
         await send({"type": "http.response.body", "body": b""})
 
-    async def _multipart(self, scope, send, sb: Sandbox, envd, ep, target: str, body: AsyncIterator[bytes]) -> None:
+    async def _multipart(self, scope, send, sb: Sandbox, envd, ep, target: str, body: AsyncIterator[bytes],
+                         by_url: bool = False) -> None:
         """E2B's multipart upload (one part per file, its filename the path) as one signed upload per file: the
         daemon takes signed uploads as octet-stream only."""
         from starlette.datastructures import Headers, UploadFile
@@ -346,6 +388,9 @@ class SandboxRouter:
             if not files:
                 raise Refused(400, {"code": 400, "message": "the multipart body has no file"})
             query_path = dict(pairs).get("path")
+            if by_url and (len(files) != 1 or not query_path):
+                # A pre-signed URL is signed for its `path`: a part's filename can't send it anywhere else.
+                raise Refused(400, {"code": 400, "message": "a pre-signed upload URL takes one file, for its path"})
             written: list[Any] = []
             for up in files:
                 dest = query_path if len(files) == 1 and query_path else up.filename or query_path
@@ -389,7 +434,8 @@ class SandboxRouter:
 
     async def _body(self, receive, gz: bool) -> AsyncIterator[bytes]:
         """An upload's bytes, inflated if they came gzip-encoded (the daemon takes them as is), at most
-        HANGAR_MAX_REQUEST_MB of them: a gzip bomb stops at the cap."""
+        HANGAR_MAX_REQUEST_MB of them: a gzip bomb stops at the cap. Inflating goes _INFLATE_STEP at a time, so a
+        small compressed message never becomes the whole cap in memory at once."""
         cap = self.svc.settings.max_request_mb << 20
         inflate = zlib.decompressobj(16 + zlib.MAX_WBITS) if gz else None
         size = 0
@@ -397,21 +443,28 @@ class SandboxRouter:
             msg = await receive()
             if msg["type"] == "http.disconnect":
                 raise Disconnected
-            chunk = msg.get("body", b"")
-            if inflate is not None and chunk:
-                try:
-                    chunk = inflate.decompress(chunk, cap + 1 - size)
-                except zlib.error as e:
-                    raise Refused(400, {"code": 400, "message": f"malformed gzip body: {e}"}) from e
-            size += len(chunk)
-            if size > cap:
-                raise Refused(413, {"code": 413, "message": f"upload over {cap >> 20} MiB (HANGAR_MAX_REQUEST_MB)"})
-            if chunk:
-                yield chunk
+            data = msg.get("body", b"")
+            while data:
+                if inflate is None:
+                    chunk, data = data, b""
+                else:
+                    try:
+                        chunk = inflate.decompress(data, _INFLATE_STEP)
+                    except zlib.error as e:
+                        raise Refused(400, {"code": 400, "message": f"malformed gzip body: {e}"}) from e
+                    data = inflate.unconsumed_tail
+                size += len(chunk)
+                if size > cap:
+                    raise Refused(413, {"code": 413,
+                                        "message": f"upload over {cap >> 20} MiB (HANGAR_MAX_REQUEST_MB)"})
+                if chunk:
+                    yield chunk
             if not msg.get("more_body", False):
                 break
         if inflate is not None and not inflate.eof:
             raise Refused(400, {"code": 400, "message": "truncated gzip body"})
+        if inflate is not None and inflate.unused_data:
+            raise Refused(400, {"code": 400, "message": "data after the end of the gzip body"})
 
     @staticmethod
     async def _chunks(f) -> AsyncIterator[bytes]:
@@ -422,8 +475,7 @@ class SandboxRouter:
         """Stream the response back as it comes; if the client goes away first, close the upstream request (a
         process started through it keeps running, as with E2B)."""
         try:
-            skip = _HOP | {"date", "server"}
-            headers = [(k, v) for k, v in resp.headers.raw if k.lower().decode("latin-1") not in skip]
+            headers = _passed(resp.headers.raw, _HOP | {"date", "server"})
             n = resp.headers.get("content-length")
             if n is not None:
                 headers.append((b"content-length", n.encode()))
@@ -459,27 +511,37 @@ class SandboxRouter:
 
     # ------------------------------------------------------------------ the sandbox's other ports
     async def _host(self, sb: Sandbox) -> str:
-        """The sandbox's own address (not a port published on loopback, which only leads to envd)."""
+        """The sandbox's own address for its other ports: where its daemon answered with a proof of its token
+        (X-Hangar-Proof) in the last _RECHECK seconds. An address merely remembered could be another sandbox's by
+        now (a GKE Pod resumed from a snapshot comes back with a new IP, and the old one goes to the next Pod). Never
+        loopback, link-local (the metadata server) or unspecified, and only the daemon's own port's address: one
+        published elsewhere (Docker Desktop's loopback ports) leads to envd alone."""
+        envd, ep = await self._ready(sb)
         cached = self._addr.get(sb.id)
-        if cached and cached[0] == sb.provider_ref:
-            return cached[1]
-        envd = self._endpoint_envd(sb)
-        for url in await envd.urls(sb):
-            u = httpx.URL(url)
-            if u.port == ENVD_PORT and u.host:
-                host = f"[{u.host}]" if ":" in u.host else u.host
-                self._addr[sb.id] = (sb.provider_ref, host)
-                return host
-        raise _gone(sb.id, "the control plane can't reach this sandbox's ports (only hangar-envd is published)")
+        if cached and cached[0] is ep and time.monotonic() - cached[1] < _RECHECK:
+            return cached[2]
+        u = httpx.URL(ep.url)
+        try:
+            ip = ipaddress.ip_address(u.host)
+        except ValueError:
+            ip = None
+        if (ip is None or u.port != ENVD_PORT or ip.is_loopback or ip.is_link_local or ip.is_unspecified
+                or ip.is_multicast):
+            raise _gone(sb.id, "the control plane can't reach this sandbox's ports (only hangar-envd is published)")
+        if await envd._probe(sb, [ep.url], ep.token) is None:
+            envd._lost(sb, "no proof from the daemon's address")
+            self._addr.pop(sb.id, None)
+            raise _gone(sb.id, "hangar-envd isn't answering in this sandbox")
+        self._addr[sb.id] = (ep, time.monotonic(), u.host)
+        return u.host
 
     def _port_headers(self, scope) -> list[tuple[bytes, bytes]]:
-        return [(k, v) for k, v in scope.get("headers", [])
-                if k.decode("latin-1").lower() not in _HOP | _DROP_TO_PORTS or k.lower() == b"host"]
+        """What a sandbox's app gets of the client's headers: its own Host too, without E2B's or hangar's tokens."""
+        return _passed(scope.get("headers", []), (_HOP - {"host"}) | _DROP_TO_PORTS)
 
     async def _port(self, scope, receive, send, sb: Sandbox, port: int, raw_path: bytes) -> None:
         host = await self._host(sb)
-        q = scope.get("query_string", b"")
-        url = f"http://{host}:{port}{raw_path.decode('latin-1')}" + (f"?{q.decode('latin-1')}" if q else "")
+        url = _upstream("http", host, port, raw_path, scope.get("query_string", b""))
         headers = self._port_headers(scope)
         names = {k.lower(): v for k, v in scope.get("headers", [])}
         if (length := names.get(b"content-length")) is not None:
@@ -516,26 +578,32 @@ class SandboxRouter:
             host = await self._host(sb)
         except Refused as e:
             return await send({"type": "websocket.close", "code": 1011, "reason": e.body["message"][:120]})
-        q = scope.get("query_string", b"")
-        url = f"ws://{host}:{port}{raw_path.decode('latin-1')}" + (f"?{q.decode('latin-1')}" if q else "")
+        url = str(_upstream("ws", host, port, raw_path, scope.get("query_string", b"")))
         skip = _HOP | _DROP_TO_PORTS | {"sec-websocket-key", "sec-websocket-version", "sec-websocket-extensions",
                                         "sec-websocket-protocol"}
-        extra = [(k.decode("latin-1"), v.decode("latin-1")) for k, v in scope.get("headers", [])
-                 if k.decode("latin-1").lower() not in skip]
+        extra = [(k.decode("latin-1"), v.decode("latin-1")) for k, v in _passed(scope.get("headers", []), skip)]
         try:
+            # The sandbox is untrusted: messages (inflated, with permessage-deflate) are capped as uvicorn caps the
+            # client's, and only a few wait unread, instead of whatever it sends being held in memory here.
             up = await connect(url, additional_headers=extra, subprotocols=scope.get("subprotocols") or None,
-                               open_timeout=10, max_size=None, proxy=None)
+                               open_timeout=10, max_size=_WS_MAX, max_queue=4, proxy=None)
         except (OSError, InvalidHandshake, TimeoutError) as e:
             return await send({"type": "websocket.close", "code": 1011,
                                "reason": f"port {port} refused the connection: {type(e).__name__}"[:120]})
         await send({"type": "websocket.accept", "subprotocol": up.subprotocol})
 
         async def down() -> None:
-            with contextlib.suppress(ConnectionClosed):
+            too_big = False
+            try:
                 async for m in up:
                     await send({"type": "websocket.send", **({"text": m} if isinstance(m, str) else {"bytes": m})})
+            except ConnectionClosed as e:
+                too_big = e.sent is not None and e.sent.code == 1009
+            code = 1009 if too_big else (up.close_code or 1000)
+            if code in (1005, 1006, 1015):  # reserved: never sent in a close frame
+                code = 1011
             with contextlib.suppress(Exception):
-                await send({"type": "websocket.close", "code": up.close_code or 1000})
+                await send({"type": "websocket.close", "code": code})
 
         async def upstream() -> None:
             while True:
