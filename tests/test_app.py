@@ -170,3 +170,26 @@ def test_session_idle_route(client):
     r = client.post("/api/sessions/nope/idle", json={"idle_minutes": 0})
     assert r.status_code == 404
     assert client.post("/api/sessions/nope/idle", json={"idle_minutes": -1}).status_code == 422
+
+
+def test_events_routes_and_token_budget_cap(client):
+    """Workstream C: event routes, and a jobs token's max budget."""
+    from hangar.events import RunEvent
+
+    tok = client.post("/api/tokens", json={"name": "svc", "scopes": ["jobs"],
+                                           "max_budget": {"max_cost_usd": 2.5}}).json()
+    assert tok["max_budget"]["max_cost_usd"] == 2.5
+    assert client.post("/api/tokens", json={"name": "bad", "max_budget": {"max_cost_usd": -1}}).status_code == 422
+    h = client.app.state.hangar
+    s = h.sessions.for_job(job_id="job-0000beef", environment="plain", harness=None, model=None, repo=None,
+                           base_branch=None, branch="hangar/job-0000beef", provider=None, labels={}, extra_dirs=[],
+                           idle_minutes=5)
+    h.sessions.activity.append(s.id, [RunEvent(kind="progress", text=f"p{i}", turn=1) for i in range(3)])
+    r = client.get(f"/api/sessions/{s.name}/events", params={"since": 1}).json()
+    assert [e["text"] for e in r["events"]] == ["p1", "p2"] and r["next"] == 3 and "off" not in r["events"][0]
+    assert [e["text"] for e in client.get(f"/api/sessions/{s.id}/events?tail=1").json()["events"]] == ["p2"]
+    assert client.get("/api/sessions/nope/events").status_code == 404
+    assert client.get("/api/jobs/job-nope/events").status_code == 404
+    svc = {"Authorization": f"Bearer {tok['token']}"}
+    assert client.get(f"/api/sessions/{s.id}/events", headers=svc).status_code == 403  # admin route
+    assert client.get("/api/jobs/job-nope/events", headers=svc).status_code == 404

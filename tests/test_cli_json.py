@@ -67,3 +67,27 @@ def test_pack_list_default_is_table(monkeypatch):
     )
     assert r.output == expected
 
+
+def test_job_events_and_follow(monkeypatch):
+    """`hangar job events -f` prints new events until the job has finished and nothing more arrives."""
+    pages = [{"events": [{"seq": 1, "ts": 0, "turn": 1, "kind": "command", "text": "pytest -q"}], "next": 1},
+             {"events": [{"seq": 2, "ts": 0, "turn": 1, "kind": "usage", "text": "1.2k tokens, $0.01"}], "next": 2},
+             {"events": [], "next": 2}]
+    calls = []
+
+    def fake(method, path, **kw):
+        calls.append((path, kw.get("params")))
+        return pages.pop(0) if path.endswith("/events") else {"state": "succeeded"}
+
+    monkeypatch.setattr(cli, "_call", fake)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    r = runner.invoke(cli.app, ["job", "events", "job-1", "--follow"])
+    assert r.exit_code == 0, r.output
+    lines = r.output.splitlines()
+    assert len(lines) == 2 and "command" in lines[0] and "pytest -q" in lines[0] and "$0.01" in lines[1]
+    assert [p["since"] for path, p in calls if path.endswith("/events")] == [0, 1, 2]
+    monkeypatch.setattr(cli, "_call", lambda *a, **kw: {"events": [{"seq": 5, "ts": 0, "kind": "message",
+                                                                     "text": "hi"}], "next": 5})
+    r = runner.invoke(cli.app, ["session", "events", "s", "--json"])
+    assert json.loads(r.output)["text"] == "hi"
+

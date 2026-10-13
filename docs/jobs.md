@@ -73,8 +73,9 @@ EOF
 | `callback_url`, `callback_secret` | Where to POST `job.started` and `job.finished`. `jobs` tokens always sign with their bound key; admins may name any `webhook` credential. |
 | `idempotency_key` | Resubmitting with the same key returns the existing job. |
 | `timeout_minutes`, `keep_minutes` | Limit per agent turn, and how long the sandbox stays after a turn for follow-ups. |
+| `budget` | `{"max_minutes", "max_tokens", "max_cost_usd"}` per agent turn. A turn that crosses it is stopped, and what it did is delivered as a draft (`reason: "over_budget"`). See [Activity, usage and budgets](activity.md). |
 
-Then poll `GET /api/jobs/{id}`, or wait for the callback. The job view carries `state`, the `events` timeline, `result` (commits, diffstat, `pr_url`, verification exit code and output tail, the agent's summary), `sandbox_id` and `terminal_session`.
+Then poll `GET /api/jobs/{id}`, or wait for the callback. The job view carries `state`, the `events` timeline, `result` (commits, diffstat, `pr_url`, verification exit code and output tail, the agent's summary), `usage` (tokens and USD), `sandbox_id` and `terminal_session`. `GET /api/jobs/{id}/events?since=` streams what the agent is doing (messages, commands, file changes, errors), in the same shape for every harness.
 
 From the CLI:
 
@@ -84,9 +85,12 @@ hangar job submit "fix the unicode bug in CSV export" --repo https://github.com/
 hangar job list
 hangar job follow-up job-3fa2c1d0 "also handle the empty-file case" --wait
 hangar job cancel job-3fa2c1d0
+hangar job events job-3fa2c1d0 --follow    # what the agent is doing
 ```
 
-From an MCP client (Claude Code, Codex, …): `submit_job`, `get_job`, `list_jobs`, `follow_up_job`, `cancel_job`.
+From an MCP client (Claude Code, Codex, …): `submit_job`, `get_job`, `list_jobs`, `follow_up_job`, `cancel_job`, `get_events`.
+
+A `jobs` token can carry a budget cap (`hangar token create svc --scope jobs --max-cost 2`); its jobs never get more.
 
 ## 3. Verify callbacks
 
@@ -157,6 +161,7 @@ If the sandbox was released, hangar starts a new one from the job's last checkpo
 | `HANGAR_JOB_VERIFY_TIMEOUT_SECONDS` | 1800 | |
 | `HANGAR_JOB_MAX_CONTEXT_BYTES` / `_ITEMS` | 2 MB / 50 | |
 | `HANGAR_JOB_CALLBACK_HOSTS` | `[]` | Hosts allowed for http or internal callbacks |
+| `HANGAR_BUDGET_MAX_MINUTES` / `_MAX_TOKENS` / `_MAX_COST_USD`, `HANGAR_MODEL_PRICES` | unset | Default budget per turn and the price table; see [activity.md](activity.md) |
 | `HANGAR_GITHUB_TOKEN_CREDENTIAL`, `HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL`, `HANGAR_GITHUB_REPOS`, `HANGAR_GITHUB_TRIGGER_LABEL` | | See §4 |
 
 ## Security notes

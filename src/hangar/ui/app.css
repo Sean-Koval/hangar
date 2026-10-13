@@ -250,6 +250,9 @@ dialog .form-foot { margin-top: 4px; }
 .timeline li::before { content: ""; width: 8px; height: 8px; border-radius: 50%; }
 .timeline .when { color: var(--ink-3); }
 .timeline .what { overflow-wrap: anywhere; }
+.activity { max-height: 360px; overflow-y: auto; }  /* workstream C */
+.activity .what { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.activity .what b { font-weight: 600; margin-right: 4px; }
 .followup { margin-top: 16px; }
 .followup textarea { width: 100%; }
 .new-form > label.wide { display: block; margin-bottom: 12px; }

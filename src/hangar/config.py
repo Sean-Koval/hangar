@@ -125,6 +125,17 @@ class Settings(BaseSettings):
     github_repos: dict[str, str] = Field(default_factory=dict)
     github_trigger_label: str = "hangar"
 
+    # --- workstream C: events/usage/budgets ----------------------------------
+    # USD per million tokens, merged over the built-in table in events.py (dated list prices):
+    # {"my-model": {"input": 1.0, "output": 4.0, "cache_read": 0.1, "cache_write": 1.25}}. Keys match model ids
+    # exactly or as a prefix followed by a date/variant suffix.
+    model_prices: dict[str, dict[str, float]] = Field(default_factory=dict)
+    # Default budget for each agent turn of jobs and sessions that don't set one. Unset = no limit.
+    budget_max_minutes: int | None = None
+    budget_max_tokens: int | None = None
+    budget_max_cost_usd: float | None = None
+    events_max_mb: int = 20  # per-session event log size before it rotates (one rotated file is kept)
+
     @property
     def db_path(self) -> Path:
         return self.data_dir / "hangar.db"

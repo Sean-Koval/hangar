@@ -23,7 +23,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from hangar.broker import CredentialError
 from hangar.fleet import Fleet, FleetError
 from hangar.jobs import Caller, JobService, SubmitJob
-from hangar.models import ContextItem, Sandbox
+from hangar.models import Budget, ContextItem, Sandbox
 from hangar.providers.base import ProviderError
 from hangar.sessions import NewSession, SessionService
 
@@ -344,14 +344,17 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         @tool()
         async def new_session(name: str, environment: str | None = None, repo: str | None = None,
                               message: str | None = None, harness: str | None = None, model: str | None = None,
-                              base_branch: str | None = None, idle_minutes: int | None = None) -> dict[str, Any]:
+                              base_branch: str | None = None, idle_minutes: int | None = None,
+                              budget: dict[str, Any] | None = None) -> dict[str, Any]:
             """Start a resumable stream of work (like a cloud Claude session): a sandbox of `environment` on branch
             hangar/session/<name>. With `message`, the agent starts on it right away. The conversation and repo
             state are checkpointed after every turn and when the session idles, so it can be picked up days later
-            with send_to_session or open_session. Poll get_session for progress."""
+            with send_to_session or open_session. Poll get_session for progress. `budget` caps each agent turn:
+            {"max_minutes": 30, "max_tokens": 2000000, "max_cost_usd": 5}."""
             who = current_actor.get()
             req = NewSession(name=name, environment=environment, repo=repo, message=message, harness=harness,
-                             model=model, base_branch=base_branch, idle_minutes=idle_minutes)
+                             model=model, base_branch=base_branch, idle_minutes=idle_minutes,
+                             budget=Budget.model_validate(budget) if budget else None)
             return sessions.view(sessions.new(req, owner=who, requester=who))
 
         @tool()
@@ -403,18 +406,21 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                    title: str | None = None, harness: str | None = None, model: str | None = None,
                    base_branch: str | None = None, verify: str | None = None, deliver: str = "draft_pr",
                    context: list[dict[str, Any]] | None = None, timeout_minutes: int | None = None,
-                   callback_url: str | None = None) -> dict[str, Any]:
+                   callback_url: str | None = None, budget: dict[str, Any] | None = None) -> dict[str, Any]:
         """Hand a piece of development work to a cloud agent and get on with other things.
 
         Hangar queues the job, starts a sandbox from `environment` (default: the repo's mapped one), writes
         `context` next to the repo, runs the agent, runs `verify` (the repo's own check, e.g. "pytest -q"),
         commits anything left, pushes branch hangar/<job> and opens a PR (`deliver`: draft_pr | pr | branch |
         none). `context` items: {"name": "trace.txt", "content": "...", "kind": "log"} or
-        {"name": "spec", "kind": "url", "url": "https://..."}. Returns the job; poll get_job."""
+        {"name": "spec", "kind": "url", "url": "https://..."}. `budget` caps each agent turn
+        ({"max_minutes": 30, "max_tokens": 2000000, "max_cost_usd": 5}); a turn that crosses it is stopped and
+        what it did is delivered as a draft. Returns the job; poll get_job (it shows usage) or get_events."""
         req = SubmitJob(instructions=instructions, repo=repo, environment=environment, title=title, harness=harness,
                         model=model, base_branch=base_branch, verify=verify, deliver=deliver,
                         context=[ContextItem.model_validate(c) for c in context or []],
-                        timeout_minutes=timeout_minutes, callback_url=callback_url)
+                        timeout_minutes=timeout_minutes, callback_url=callback_url,
+                        budget=Budget.model_validate(budget) if budget else None)
         who = current_actor.get()
         return jobs.view(jobs.submit(req, Caller(who, who), source="mcp"))
 
@@ -441,5 +447,21 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
     async def cancel_job(job: str) -> dict[str, Any]:
         """Stop a queued or running job (the agent is killed; work committed so far stays in the sandbox)."""
         return jobs.view(jobs.cancel(job, requester=current_actor.get()))
+
+    @tool()
+    async def get_events(job: str | None = None, session: str | None = None, since: int = 0,
+                         limit: int = 100) -> dict[str, Any]:
+        """What the agent is doing, as one event stream for every harness: message, tool_call, tool_result,
+        command, file_change, error, usage and progress events, oldest first. Pass a job or a session; poll with
+        `since` = the returned `next` to get only new events."""
+        if bool(job) == bool(session):
+            raise ValueError("pass exactly one of job or session")
+        if job:
+            evs = jobs.events(job, since=since, limit=limit)
+        elif sessions is not None:
+            evs = sessions.events(session or "", since=since, limit=limit)
+        else:
+            raise ValueError("sessions are not enabled")
+        return {"events": evs, "next": evs[-1]["seq"] if evs else since}
 
     return mcp

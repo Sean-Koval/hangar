@@ -24,7 +24,7 @@ from hangar.github import verify_signature
 from hangar.harnesses import HARNESSES, PACK_ROOT
 from hangar.jobs import Caller, JobService, SubmitJob, handle_github
 from hangar.mcp_server import build_mcp, current_actor
-from hangar.models import Credential, CredentialKind, Resources, Sandbox
+from hangar.models import Budget, Credential, CredentialKind, Resources, Sandbox
 from hangar.providers.base import ProviderError
 from hangar.sessions import NewSession, SessionService
 from hangar.store import Store
@@ -182,6 +182,7 @@ class TokenBody(BaseModel):
     name: str
     scopes: list[str] = Field(default_factory=lambda: ["admin"])
     callback_secret: str | None = None  # jobs tokens: vault `webhook` credential that signs their callbacks
+    max_budget: Budget | None = None  # jobs tokens: the most a job's per-turn budget may allow (workstream C)
 
 
 def _setup_oauth(app: FastAPI, h: Hangar):
@@ -294,7 +295,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if p.admin:
             return Caller(p.name, p.id)
         if "jobs" in p.scopes:
-            return Caller(p.name, p.id, restricted=True, callback_secret=p.callback_secret)
+            return Caller(p.name, p.id, restricted=True, callback_secret=p.callback_secret,
+                          max_budget=p.max_budget)
         raise HTTPException(403, f"token scopes {p.scopes} do not allow jobs")
 
     def owner_filter(c: Caller) -> str | None:
@@ -650,7 +652,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if cred is None or cred.harness != "webhook":
                 raise HTTPException(400, f"callback_secret '{body.callback_secret}' must name a 'webhook' credential")
         try:
-            raw, tok = h.auth.create(body.name, body.scopes, callback_secret=body.callback_secret)
+            raw, tok = h.auth.create(body.name, body.scopes, callback_secret=body.callback_secret,
+                                     max_budget=body.max_budget)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         fleet.audit(who, "token.create", tok.id, name=body.name, scopes=body.scopes)
@@ -690,6 +693,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def job_cancel(job_id: str, caller: Caller = J):
         return jobs.view(jobs.cancel(job_id, requester=caller.requester, owner=owner_filter(caller)))
 
+    @app.get("/api/jobs/{job_id}/events")
+    async def job_events(job_id: str, since: int = 0, limit: int = 200, tail: int | None = None, caller: Caller = J):
+        """Activity events (workstream C), oldest first. Poll with `since` = the last `seq` you saw."""
+        evs = jobs.events(job_id, owner=owner_filter(caller), since=since, limit=limit, tail=tail)
+        return {"events": evs, "next": evs[-1]["seq"] if evs else since}
+
     @app.post("/api/hooks/github")
     async def github_hook(request: Request):
         name = h.settings.github_webhook_secret_credential
@@ -720,6 +729,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/sessions/{ref}")
     async def session_get(ref: str, _: str = A):
         return sessions.view(sessions.get(ref))
+
+    @app.get("/api/sessions/{ref}/events")
+    async def session_events(ref: str, since: int = 0, limit: int = 200, tail: int | None = None, _: str = A):
+        """Activity events (workstream C), oldest first. Poll with `since` = the last `seq` you saw."""
+        evs = sessions.events(ref, since=since, limit=limit, tail=tail)
+        return {"events": evs, "next": evs[-1]["seq"] if evs else since}
 
     @app.post("/api/sessions/{ref}/open")
     async def session_open(ref: str, body: OpenBody | None = None, who: str = A):

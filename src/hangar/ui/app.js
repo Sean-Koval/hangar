@@ -496,6 +496,7 @@ function renderJob(j) {
           placeholder="Also handle the empty-file case, and keep the old function name."></textarea></label>
         <div class="env-bar"><span class="hint">Runs another turn in the same sandbox and branch; the PR updates.</span>
           <button class="primary" type="submit">Send</button></div></form>` : ""}
+    ${activityBlock("jobs", j.id, j.usage)}
     <h4>Timeline</h4>
     <ol class="timeline">${(j.events || []).slice().reverse().map((e) => `<li data-tone="${JOB_STATE[e.state] || "stop"}">
       <span class="when" title="${new Date(e.ts * 1000).toLocaleString()}">${ago(e.ts)}</span>
@@ -506,6 +507,7 @@ function renderJob(j) {
     <details><summary class="hint">Instructions</summary><pre class="log">${esc(j.instructions)}</pre></details>`;
   const ta = $("#job-followup-text");
   if (ta) ta.value = draft;
+  fillActivity(box);
   const sb = { id: j.sandbox_id, name: j.id };
   $("#job-watch")?.addEventListener("click", () => openTerminal(sb, j.terminal_session));
   $("#job-shell")?.addEventListener("click", () => openTerminal(sb));
@@ -599,6 +601,7 @@ function renderSession(x) {
       <div class="env-bar"><span class="hint">${x.state === "running" ? "The agent is working…"
         : "The agent continues its own conversation with everything it knew."}</span>
         <button class="primary" type="submit" ${x.state === "running" || x.busy ? "disabled" : ""}>Send</button></div></form>`}
+    ${x.turns.length ? activityBlock("sessions", x.id, x.usage) : ""}
     ${x.turns.length ? `<h4>Turns</h4><ol class="turns">${x.turns.slice().reverse().map((t) => `<li>
       <b>${esc(t.message.split("\n")[0].slice(0, 140))}</b>
       <div class="hint">${esc(t.harness || "")} · ${esc(t.mode)}${t.exit_code != null ? ` · exit ${t.exit_code}` : t.run_id ? " · running" : ""}
@@ -606,6 +609,7 @@ function renderSession(x) {
       ${t.summary ? `<div class="turn-summary">${esc(t.summary.slice(0, 600))}</div>` : ""}</li>`).join("")}</ol>` : ""}`;
   const ta = $("#ses-msg");
   if (ta) ta.value = draft;
+  fillActivity(box);
   const sb = { id: x.sandbox_id, name: x.name };
   $("#ses-open")?.addEventListener("click", (e) => busy(e.target, async () => {
     await api("POST", `/api/sessions/${x.id}/open`, {}); toast(`Resuming ${x.name}`); loadSessions(); }));
@@ -627,6 +631,54 @@ function renderSession(x) {
       await loadSessions();
     });
   });
+}
+
+/* ------------------------------------------------------------------ activity (workstream C) */
+// What the agent did, from /api/{jobs,sessions}/<id>/events: the newest events, fetched incrementally by seq.
+const ACT_LABEL = { message: "said", tool_call: "tool", tool_result: "result", command: "ran", file_change: "changed",
+  error: "error", progress: "progress" };
+const ACT_TONE = { message: "start", tool_call: "run", command: "run", file_change: "ok", error: "err" };
+const activity = new Map(); // "jobs:<id>" -> { next, events, busy }
+
+function usageText(u) {
+  if (!u) return "";
+  const k = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+  const tokens = u.input_tokens + u.output_tokens + u.cache_write_tokens;
+  return `${k(tokens)} tokens${u.cache_read_tokens ? ` (+${k(u.cache_read_tokens)} cached)` : ""}`
+    + (u.cost_usd == null ? "" : ` · $${u.cost_usd.toFixed(2)}`);
+}
+
+function activityBlock(kind, id, usage) {
+  return `<h4>Activity${usage ? ` <span class="hint">· ${esc(usageText(usage))}</span>` : ""}</h4>
+    <ol class="timeline activity" data-activity="${kind}/${esc(id)}"></ol>`;
+}
+
+function drawActivity(el, st) {
+  const shown = st.events.filter((e) => e.kind !== "usage").slice(-40).reverse();
+  el.innerHTML = shown.length ? shown.map((e) => `<li data-tone="${ACT_TONE[e.kind] || "stop"}">
+      <span class="when" title="${new Date(e.ts * 1000).toLocaleString()}">${ago(e.ts)}</span>
+      <span class="what"><b>${esc(ACT_LABEL[e.kind] || e.kind)}</b> ${esc(e.text)}</span></li>`).join("")
+    : `<li class="hint">${st.loaded ? "No activity recorded." : "Loading…"}</li>`;
+}
+
+async function fillActivity(box) {
+  const el = $("[data-activity]", box);
+  if (!el) return;
+  const key = el.dataset.activity;
+  const st = activity.get(key) || { next: 0, events: [], loaded: false };
+  activity.set(key, st);
+  drawActivity(el, st);
+  if (st.busy) return;
+  st.busy = true;
+  try {
+    const q = st.loaded ? `since=${st.next}&limit=500` : "tail=100";
+    const r = await api("GET", `/api/${key}/events?${q}`);
+    st.events = st.events.concat(r.events).slice(-100);
+    st.next = r.next || st.next;
+    st.loaded = true;
+    const cur = $(`[data-activity="${CSS.escape(key)}"]`);
+    if (cur) drawActivity(cur, st);
+  } catch { /* the next refresh retries */ } finally { st.busy = false; }
 }
 
 function syncSessionHarness() {

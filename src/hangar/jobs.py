@@ -25,10 +25,12 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel, Field
 
+from hangar.events import resolve_budget, total_usage, usage_line
 from hangar.fleet import Fleet, FleetError, _clip_tail
 from hangar.github import GitHub, GitHubError, parse_repo
 from hangar.models import (
     JOB_TERMINAL,
+    Budget,
     ContextItem,
     Credential,
     Job,
@@ -57,6 +59,7 @@ class Caller(NamedTuple):
     owner: str
     restricted: bool = False  # jobs-scoped token: allowlisted repos/envs only, own jobs only, its own callback key
     callback_secret: str | None = None
+    max_budget: Budget | None = None  # jobs-scoped token: the most a job's budget may allow (workstream C)
 
 
 class JobNotFound(KeyError):
@@ -88,6 +91,7 @@ class SubmitJob(BaseModel):
     labels: dict[str, str] = Field(default_factory=dict)
     timeout_minutes: int | None = Field(None, ge=1, le=720)
     keep_minutes: int | None = Field(None, ge=0, le=1440)
+    budget: Budget | None = None  # per agent turn; unset fields fall back to HANGAR_BUDGET_* (workstream C)
 
 
 def _safe_name(name: str, taken: set[str]) -> str:
@@ -282,6 +286,7 @@ class JobService:
             turns=[Turn(kind="initial", requester=requester,
                         reply_to=source_ref if source_ref and source_ref.startswith("github:") else None)],
         )
+        job.budget = resolve_budget(req.budget, self.settings, caller.max_budget if caller.restricted else None)
         self._jobs[job.id] = job
         self._event(job, f"queued by {requester} via {source}")
         self.fleet.audit(requester, "job.submit", job.id, environment=env, repo=repo, source=source)
@@ -331,7 +336,17 @@ class JobService:
         d["session"] = {"name": s.name, "state": s.state.value, "checkpoints": len(s.checkpoints),
                         "resume_command": self.sessions.view(s)["resume_command"]} if s else None
         d["active"] = job.state not in JOB_TERMINAL
+        # workstream C: the session's turns are the job's turns, and carry live usage while one runs
+        d["usage"] = u.model_dump(mode="json") if (u := total_usage(s.turns if s else job.turns)) else None
         return d
+
+    def events(self, job_id: str, owner: str | None = None, since: int = 0, limit: int = 200,
+               tail: int | None = None) -> list[dict[str, Any]]:
+        """The job's activity events (all its turns), oldest first (workstream C)."""
+        job = self.get(job_id, owner)
+        if not job.session_id:
+            return []
+        return self.sessions.events(job.session_id, since=since, limit=limit, tail=tail)
 
     # ================================================================== validation
     def _check_context(self, items: list[ContextItem]) -> list[ContextItem]:
@@ -635,10 +650,12 @@ class JobService:
         st = next((t for t in reversed(s.turns) if t.run_id == turn.run_id), None)
         if st is None:
             raise JobError(f"turn {turn.run_id} is not in session {s.name}")
+        s.budget = job.budget  # workstream C: the session enforces the job's budget on its turns
         outcome, raw = await self.sessions.end_turn(s, st, timeout_minutes=job.timeout_minutes,
                                                     should_cancel=lambda: job.cancel_requested)
         turn.finished_at = now()
         turn.exit_code = st.exit_code
+        turn.usage, turn.outcome, turn.outcome_reason = st.usage, st.outcome, st.outcome_reason
         tail = _clip_tail(raw) if raw else ""
         if outcome in ("gone", "error"):
             more = "; follow up to continue from its last checkpoint" if self.sessions.resumable(s) else ""
@@ -662,6 +679,8 @@ class JobService:
         clean = outcome == "exited" and turn.exit_code == 0
         self._event(job, f"agent turn finished: {outcome}"
                          + (f", exit {turn.exit_code}" if turn.exit_code is not None else ""))
+        if outcome == "over_budget":
+            self._event(job, f"stopped over budget: {turn.outcome_reason}; delivering what it did as a draft")
         repo_path = prov_sb.info.get("repo_path")
         if job.verify and repo_path:
             self._event(job, f"verifying: {job.verify}", JobState.VERIFYING)
@@ -682,6 +701,8 @@ class JobService:
             pass
         elif outcome == "timed_out":
             state, reason = JobState.FAILED, "timed_out"
+        elif outcome == "over_budget":
+            state, reason = JobState.FAILED, "over_budget"
         elif not clean and not commits:
             state, reason = JobState.FAILED, "agent_failed"
         elif not verify_ok:
@@ -769,6 +790,8 @@ class JobService:
             lines.append(f"Verification `{job.verify}`: **{ok}**")
         lines.append(f"hangar job `{job.id}` · requested by {job.requester} via {job.source} · "
                      f"{job.environment} / {job.harness}" + (f" / {job.model}" if job.model else ""))
+        if usage := total_usage(job.turns):  # workstream C
+            lines.append(f"Usage: {usage_line(usage)}")
         m = re.match(r"^github:([^#]+)#(\d+)$", job.source_ref or "")
         if m and parse_repo(job.repo) == m.group(1) and job.labels.get("github.kind") == "issue":
             lines.append(f"Closes #{m.group(2)}")
@@ -813,6 +836,12 @@ class JobService:
                           if not e.message.startswith(("failed", "succeeded", "cancelled"))), None)
             if cause:
                 lines += ["", f"What went wrong: {cause[:1500]}"]
+        if job.reason == "over_budget":  # workstream C
+            why = next((t.outcome_reason for t in reversed(job.turns) if t.outcome_reason), None)
+            lines += ["", f"Stopped over budget{f' ({why})' if why else ''}. What the agent had done so far is "
+                          "delivered as a draft."]
+        if usage := total_usage(job.turns):
+            lines.append(f"Usage: {usage_line(usage)}")
         if r.summary:
             lines += ["", r.summary[:4000]]
         if r.pr_url:

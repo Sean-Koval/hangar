@@ -61,6 +61,9 @@ hangar session keep onboarding --idle 0     # stay up until I suspend it
 | `hangar session suspend NAME` | `suspend_session` | Checkpoint and release the sandbox now |
 | `hangar session get NAME` | `get_session` | Turns, summaries, checkpoints, and `resume_command` |
 | `hangar session archive NAME` | | Drop the checkpoints (the record stays) |
+| `hangar session events NAME [--follow]` | `get_events` | What the agent did: messages, commands, file changes, errors, usage ([activity](activity.md)) |
+
+`hangar session new` takes a per-turn budget (`--max-cost`, `--max-tokens`, `--max-minutes`; `budget` in the API). A turn that crosses it is stopped with outcome `over_budget`. `get` shows each turn's `usage` and the session's total.
 
 In the dashboard, the **Sessions** page does all of this:
 - **Resume** a session;
