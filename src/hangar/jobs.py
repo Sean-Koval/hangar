@@ -26,7 +26,7 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel, Field
 
-from hangar import exchange, observe, steer, strategies  # strategies: workstream D (forks/best-of-N); --- observe; steer: live turns
+from hangar import exchange, observe, steer, strategies  # strategies: workstream D; --- observe; steer: live turns
 from hangar.events import resolve_budget, total_usage, usage_line
 from hangar.fleet import Fleet, FleetError, _clip_tail
 from hangar.github import GitHub, GitHubError, parse_repo

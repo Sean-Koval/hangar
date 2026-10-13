@@ -28,7 +28,7 @@ from mcp.shared.exceptions import NoBackChannelError
 from mcp_types import CallToolResult, ElicitResult, Icon, InputRequiredResult
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
-from hangar import exchange, mcp_steer, mcp_tasks, observe  # mcp_tasks: tasks and elicitation; mcp_steer: live turns; --- observe
+from hangar import exchange, mcp_steer, mcp_tasks, observe  # mcp_tasks: elicitation; mcp_steer: live turns; --- observe
 from hangar import mcp_live as live  # workstream mcp-modern: typed results, hints, resources, prompts
 from hangar.broker import CredentialError
 from hangar.fleet import Fleet, FleetError
@@ -45,6 +45,22 @@ EXPECTED = (FleetError, ProviderError, CredentialError, ValueError, KeyError, No
 current_actor: contextvars.ContextVar[str] = contextvars.ContextVar("hangar_actor", default="mcp")
 log = logging.getLogger("hangar.mcp")
 ELICIT_WAIT_SECONDS = 900  # how long an agent's question put to you by wait_for_turn waits for your answer
+
+
+async def _elicit(ctx: Context, closing: Any, wait: float, message: str, schema: type) -> Any:
+    """ctx.elicit, given up with TimeoutError after `wait` seconds or when a shutdown starts (integrate: #57's
+    long-polls answer on SIGTERM; a question or an approval put to a client would hold the pod for up to 15 min)."""
+    async def cut() -> None:
+        await closing.wait()
+        scope.cancel()
+
+    with anyio.fail_after(wait), anyio.CancelScope() as scope:
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(cut)
+            res = await ctx.elicit(message, schema)
+            tg.cancel_scope.cancel()
+            return res
+    raise TimeoutError("the control plane is shutting down")
 READ_FILE_LIMIT = 10 * 1024 * 1024  # --- overnight/sweep: read_file answers with at most this much of a file
 
 INSTRUCTIONS = """\
@@ -523,10 +539,13 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             def approval_waits() -> bool:
                 return mcp_steer.first_pending(sessions, jobs, ref, skip) is not None
 
+            closing = fleet.closing  # integrate (#57): on shutdown, answer with the turn as it stands
             while True:
                 left = max(1, int(deadline - time.monotonic()))
                 turn = await exchange.wait_for_turn(sessions, jobs, ref, left, report,
                                                     until=approval_waits if asks else None)
+                if closing.is_set():
+                    break
                 # --- workstream steer: the agent waits on a tool approval; ask the user
                 ap = mcp_steer.first_pending(sessions, jobs, ref, skip) if asks and not turn["done"] else None
                 if ap is not None and time.monotonic() < deadline:
@@ -538,8 +557,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                                                    request_state=state)
                     try:
                         wait = min(ELICIT_WAIT_SECONDS, max(1.0, (a.expires_at or 0) - time.time()))
-                        with anyio.fail_after(wait):
-                            form = await ctx.elicit(mcp_steer.message(label, a), mcp_steer.ApprovalForm)
+                        form = await _elicit(ctx, closing, wait, mcp_steer.message(label, a), mcp_steer.ApprovalForm)
                     except (NoBackChannelError, TimeoutError, ValueError) as e:
                         log.info("could not ask the client about %s's approval: %s", ref, e)
                         asks = False
@@ -562,8 +580,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                     return InputRequiredResult(input_requests={key: mcp_tasks.question_request(label, question)},
                                                request_state=state)
                 try:
-                    with anyio.fail_after(ELICIT_WAIT_SECONDS):
-                        resp = await ctx.elicit(f"{label} asks: {question}", mcp_tasks.Answer)
+                    resp = await _elicit(ctx, closing, ELICIT_WAIT_SECONDS, f"{label} asks: {question}",
+                                         mcp_tasks.Answer)
                 except (NoBackChannelError, TimeoutError, ValueError) as e:
                     log.info("could not ask the client %s's question: %s", ref, e)
                     break

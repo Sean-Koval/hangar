@@ -14,6 +14,7 @@ from hangar import steer as steering
 from hangar.mcp_server import build_mcp
 from tests import test_mcp_modern as modern
 from tests import test_steer as live_tests
+from tests.test_observe import by_name, one, otel, sample  # noqa: F401 - otel is a fixture
 
 live, svc, settle, running, repo_file = (live_tests.live, live_tests.svc, live_tests.settle, live_tests.running,
                                          live_tests.repo_file)
@@ -158,3 +159,54 @@ async def test_an_approval_answer_does_not_undo_a_cancel_that_came_meanwhile(sto
     await tasks.update(tid, {"approve-ap-0123456789ab": {"action": "accept", "content": {"decision": "allow"}}})
     final = tasks._load(tid).final
     assert final is not None and final["status"] == "cancelled", final
+
+
+async def test_a_shutdown_ends_wait_for_turn_and_the_approval_it_asks_about(fleet, svc, live):
+    """integrate (#57 x #59): on shutdown, wait_for_turn answers with the turn as it stands. A legacy client being
+    asked about an approval stops being asked (that wait was up to 15 min), and a wait with nothing to ask about
+    returns instead of spinning on the shutdown's instant answers until the turn ends."""
+    asked, release = asyncio.Event(), asyncio.Event()
+
+    async def never(ctx, params):
+        asked.set()
+        await release.wait()
+        return types.ElicitResult(action="cancel")
+
+    async with Client(build_mcp(fleet, None, svc), mode="legacy", elicitation_callback=never) as c:
+        sc(await c.call_tool("new_session", {"name": "down-ask", "environment": "liveenv", "repo": live["url"],
+                                             "message": "TOOL make the file", "approvals": "ask"}))
+        sc(await c.call_tool("new_session", {"name": "down-slow", "environment": "liveenv", "repo": live["url"],
+                                             "message": "SLOW write it"}))
+        await running(svc, "down-slow")
+        waits = [asyncio.create_task(c.call_tool("wait_for_turn", {"ref": ref, "timeout_seconds": 120}))
+                 for ref in ("down-ask", "down-slow")]
+        await asyncio.wait_for(asked.wait(), 30)
+        t0 = asyncio.get_running_loop().time()
+        fleet.closing.set()
+        ask, slow = [sc(r) for r in await asyncio.wait_for(asyncio.gather(*waits), 10)]
+        took = asyncio.get_running_loop().time() - t0
+        release.set()
+    assert took < 3, took
+    assert not ask["done"] and len(ask["pending_approvals"]) == 1 and "approval" not in ask, ask
+    assert not slow["done"], slow
+
+
+async def test_live_turns_and_the_steer_tools_are_traced(fleet, svc, live, otel):  # noqa: F811
+    """integrate (#55 x #59): a turn under the driver gets the same invoke_agent span and /metrics as a one-shot
+    turn, an interrupt is a person stopping it rather than an error, and the new tools get tool-call spans."""
+    async with Client(build_mcp(fleet, None, svc)) as c:
+        sc(await c.call_tool("new_session", {"name": "traced", "environment": "liveenv", "repo": live["url"],
+                                             "message": "SLOW write it", "harness": "live-codex"}))
+        await running(svc, "traced")
+        assert sc(await c.call_tool("steer_turn", {"ref": "traced", "message": "in Rust"}))["status"] == "delivered"
+        sc(await c.call_tool("steer_turn", {"ref": "traced", "interrupt": True}))
+        s = await settle(svc, "traced")
+    t = s.turns[0]
+    assert (t.outcome, t.exit_code, t.live) == ("interrupted", 130, True)
+    spans = by_name(otel)
+    sp = one(spans, "invoke_agent live-codex")
+    assert sp.attributes["hangar.turn.outcome"] == "interrupted" and sp.attributes["hangar.run.id"] == t.run_id
+    assert "error.type" not in sp.attributes and sp.status.status_code.name != "ERROR"
+    assert len(spans["tools/call steer_turn"]) == 2
+    assert sample("hangar_mcp_calls_total", tool="steer_turn", status="ok") == 2
+    assert sample("hangar_turn_seconds_count", harness="live-codex", outcome="interrupted") == 1
