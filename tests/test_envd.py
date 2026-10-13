@@ -6,6 +6,8 @@ Needs the binary: `envd/build.sh` (or HANGAR_ENVD_DIR). The Docker end-to-end te
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import os
 import shutil
@@ -163,19 +165,34 @@ async def test_terminal(env):
 
 
 # ---------------------------------------------------------------------- a hostile daemon
-class FakeDaemon:
-    """Answers every request with the same canned HTTP response; `/info` says it is a daemon."""
+def proof_for(token: str, head: bytes) -> str:
+    """X-Hangar-Proof for a request (envd/src/auth.rs): what only a holder of the sandbox's token can make."""
+    sig = next(x.split(b":", 1)[1].strip() for x in head.split(b"\r\n") if x.lower().startswith(b"x-hangar-sig"))
+    mac = bytes.fromhex(sig.decode().rsplit(".", 1)[1])
+    return hmac.new(token.encode(), b"proof\n" + mac, hashlib.sha256).hexdigest()
 
-    def __init__(self, body: bytes, headers: str = "content-type: application/connect+json\r\n"):
-        self.body, self.headers = body, headers
+
+class FakeDaemon:
+    """Answers every request with the same canned HTTP response; `/info` says it is a daemon. With `token` it is
+    run by the sandbox's own user, who can read the daemon's token, and proves it; without, it is an impostor (say,
+    another sandbox that got this one's old address). `respond`, if given, answers non-/info requests instead."""
+
+    def __init__(self, body: bytes = b"", headers: str = "content-type: application/connect+json\r\n",
+                 token: str | None = None, respond=None):
+        self.body, self.headers, self.token, self.respond = body, headers, token, respond
 
     async def handle(self, r: asyncio.StreamReader, w: asyncio.StreamWriter) -> None:
         head = await r.readuntil(b"\r\n\r\n")
         n = next((int(x.split(b":")[1]) for x in head.split(b"\r\n") if x.lower().startswith(b"content-length")), 0)
         await r.readexactly(n)
         info = b" /info " in head.split(b"\r\n")[0]
+        proof = f"x-hangar-proof: {proof_for(self.token, head)}\r\n" if self.token else ""
+        if self.respond and not info:
+            await self.respond(w, proof)
+            return
         body, headers = (b'{"version":"fake"}', "") if info else (self.body, self.headers)
-        w.write(f"HTTP/1.1 200 OK\r\nconnection: close\r\n{headers}content-length: {len(body)}\r\n\r\n".encode() + body)
+        w.write(f"HTTP/1.1 200 OK\r\nconnection: close\r\n{proof}{headers}content-length: {len(body)}\r\n\r\n".encode()
+                + body)
         await w.drain()
         w.close()
 
@@ -193,13 +210,14 @@ def frame(obj: dict | bytes, flags: int = 0, size: int | None = None) -> bytes:
     return bytes([flags]) + (len(p) if size is None else size).to_bytes(4, "big") + p
 
 
-async def hostile(tmp_path, body: bytes, headers: str | None = None):
+async def hostile(tmp_path, body: bytes = b"", headers: str | None = None, respond=None):
     s = Settings(data_dir=tmp_path, envd_dir=tmp_path)
     (tmp_path / f"hangar-envd-{ARCH}").write_bytes(b"")
-    fake = FakeDaemon(body, *([headers] if headers else []))
-    await fake.__aenter__()
-    e = LocalEnvd(s, fake.port)
     sb = Sandbox(name="t", environment="x", provider="local", provider_ref="local-1")
+    e = LocalEnvd(s, 0)
+    fake = FakeDaemon(body, *([headers] if headers else []), token=e.token(sb), respond=respond)
+    await fake.__aenter__()
+    e.port = fake.port
     assert await e.ready(sb) is not None
     return e, sb, fake
 
@@ -207,7 +225,9 @@ async def hostile(tmp_path, body: bytes, headers: str | None = None):
 async def test_oversized_frames_are_refused(tmp_path):
     e, sb, fake = await hostile(tmp_path, frame(b"x" * 10, size=64 << 20))
     try:
-        assert await e.exec(sb, "true") is None  # before the start event: nothing ran
+        # A garbled answer to a Start that arrived: whether the command started is unknown, so it isn't run again.
+        with pytest.raises(ProviderError, match="over the limit"):
+            await e.exec(sb, "true")
     finally:
         await fake.__aexit__()
     start = frame({"event": {"start": {"pid": 1}}})
@@ -236,11 +256,165 @@ async def test_file_reads_are_not_decompressed_and_stop_at_the_limit(tmp_path):
     bomb = gzip.compress(b"\0" * (20 << 20))
     e, sb, fake = await hostile(tmp_path, bomb, "content-encoding: gzip\r\n")
     try:
-        got = await e.read_file(sb, "/x", limit=100)
-        assert got == bomb[:101]
-        assert await e.read_file(sb, "/x") == bomb  # raw bytes, never 20 MB of zeros
+        # Never inflated, and not mistaken for the file's bytes either: the provider reads the file instead.
+        assert await e.read_file(sb, "/x", limit=100) is SKIP
+        assert await e.read_file(sb, "/x") is SKIP
     finally:
         await fake.__aexit__()
+    e, sb, fake = await hostile(tmp_path, b"y" * 5000, "content-type: application/octet-stream\r\n")
+    try:
+        assert await e.read_file(sb, "/x", limit=100) == b"y" * 101
+    finally:
+        await fake.__aexit__()
+
+
+async def test_unbounded_reads_are_capped(tmp_path, monkeypatch):
+    # read_file(limit=None) trusts the file's size; a daemon has no file and can send forever. Past the cap the
+    # provider reads the file (from disk, where it really is that big).
+    import hangar.envd as envd_mod
+
+    monkeypatch.setattr(envd_mod, "MAX_READ", 1 << 20, raising=False)
+
+    async def endless(w, proof):
+        w.write(f"HTTP/1.1 200 OK\r\n{proof}transfer-encoding: chunked\r\n\r\n".encode())
+        try:
+            for _ in range(10_000):  # 640 MB, if nobody stops reading
+                w.write(b"10000\r\n" + b"z" * 65536 + b"\r\n")
+                await w.drain()
+        except ConnectionError:
+            pass
+        w.close()
+
+    e, sb, fake = await hostile(tmp_path, respond=endless)
+    try:
+        assert await asyncio.wait_for(e.read_file(sb, "/x"), 30) is SKIP
+    finally:
+        await fake.__aexit__()
+    e, sb, fake = await hostile(tmp_path, b"z" * (2 << 20), "content-type: application/octet-stream\r\n")
+    try:
+        assert await e.read_file(sb, "/x") is SKIP  # a declared length over the cap isn't even read
+        assert await e.read_file(sb, "/x", limit=10) == b"z" * 11
+    finally:
+        await fake.__aexit__()
+
+
+async def test_a_broken_stream_after_the_request_is_not_run_again(tmp_path):
+    """The request reached the daemon and the answer broke off: the command may have run, so the provider must not
+    run it a second time. Only a refusal (an error status, or an error before any event) falls back."""
+
+    async def hang_up(w, proof):  # read the request, then close without a word
+        w.close()
+
+    async def headers_only(w, proof):  # accepted, then nothing
+        w.write(f"HTTP/1.1 200 OK\r\n{proof}content-type: application/connect+json\r\n"
+                "transfer-encoding: chunked\r\n\r\n".encode())
+        await w.drain()
+        w.close()
+
+    for respond in (hang_up, headers_only):
+        e, sb, fake = await hostile(tmp_path, respond=respond)
+        try:
+            with pytest.raises(ProviderError, match="may still be running|may have run"):
+                await e.exec(sb, "touch /tmp/once")
+        finally:
+            await fake.__aexit__()
+
+    async def refused(w, proof):
+        body = json.dumps({"code": "resource_exhausted", "message": "512 processes"}).encode()
+        w.write(f"HTTP/1.1 429 Too Many Requests\r\n{proof}content-length: {len(body)}\r\n\r\n".encode() + body)
+        await w.drain()
+        w.close()
+
+    e, sb, fake = await hostile(tmp_path, respond=refused)
+    try:
+        assert await e.exec(sb, "true") is None  # refused: nothing ran, the provider runs it
+    finally:
+        await fake.__aexit__()
+    e, sb, fake = await hostile(tmp_path, frame({"error": {"code": "invalid_argument", "message": "no cwd"}}, flags=2))
+    try:
+        assert await e.exec(sb, "true") is None
+    finally:
+        await fake.__aexit__()
+
+
+async def test_exec_gives_up_on_a_daemon_that_never_finishes(tmp_path, monkeypatch):
+    # The daemon kills the command at its timeout and ends the stream; one that keeps the stream open regardless
+    # (keepalives forever) must not hold the caller forever.
+    import hangar.envd as envd_mod
+
+    monkeypatch.setattr(envd_mod, "EXEC_GRACE", 1.0, raising=False)
+
+    async def forever(w, proof):
+        w.write(f"HTTP/1.1 200 OK\r\n{proof}content-type: application/connect+json\r\n"
+                "transfer-encoding: chunked\r\n\r\n".encode())
+        try:
+            for i in range(10_000):
+                f = frame({"event": {"start": {"pid": 7}}} if i == 0 else {"event": {"keepalive": {}}})
+                w.write(f"{len(f):x}\r\n".encode() + f + b"\r\n")
+                await w.drain()
+                await asyncio.sleep(0.1)
+        except ConnectionError:
+            pass
+        w.close()
+
+    e, sb, fake = await hostile(tmp_path, respond=forever)
+    try:
+        with pytest.raises(ProviderError, match="may still be running"):
+            await asyncio.wait_for(e.exec(sb, "sleep 1000", timeout=1), 20)
+    finally:
+        await fake.__aexit__()
+
+
+async def test_an_impostor_is_not_taken_for_the_daemon(tmp_path):
+    """Whatever answers at a sandbox's address (an address reused by another sandbox, say) without that sandbox's
+    token gets no traffic beyond the probe, and none of its answers are used."""
+    s = Settings(data_dir=tmp_path, envd_dir=tmp_path)
+    (tmp_path / f"hangar-envd-{ARCH}").write_bytes(b"")
+    sb = Sandbox(name="t", environment="x", provider="local", provider_ref="local-1")
+    start = frame({"event": {"start": {"pid": 1}}})
+    end = frame({"event": {"end": {"exited": True, "status": "exit status 0"}}})
+    fake = FakeDaemon(start + frame({"event": {"data": {"stdout": "bGllcwo="}}}) + end + frame({}, flags=2))
+    await fake.__aenter__()
+    try:
+        e = LocalEnvd(s, fake.port)
+        assert await e._probe(sb, await e.urls(sb), e.token(sb)) is None
+        # Taken for the daemon anyway (it answered before the address changed hands): its answers are refused.
+        from hangar.envd import Endpoint
+
+        e._eps[sb.id] = Endpoint(url=f"http://127.0.0.1:{fake.port}", token=e.token(sb), ref=sb.provider_ref)
+        with pytest.raises(ProviderError, match="not from this sandbox's daemon"):
+            await e.exec(sb, "true")
+        assert sb.id not in e._eps  # and the address is looked up again
+        e._eps[sb.id] = Endpoint(url=f"http://127.0.0.1:{fake.port}", token=e.token(sb), ref=sb.provider_ref)
+        assert await e.read_file(sb, "/x") is SKIP
+        e._eps[sb.id] = Endpoint(url=f"http://127.0.0.1:{fake.port}", token=e.token(sb), ref=sb.provider_ref)
+        assert await e.write_file(sb, "/x", b"data") is False
+    finally:
+        await fake.__aexit__()
+
+
+def test_docker_start_script_output_is_capped(tmp_path):
+    """The start script runs whatever sits at the binary's path in the sandbox; its output must not be held whole."""
+    from hangar.envd import DockerEnvd
+
+    class Api:
+        def exec_create(self, *a, **kw):
+            return {"Id": "e1"}
+
+        def exec_start(self, eid, stream=False, demux=False, **kw):
+            if not stream:
+                return b"x" * (64 << 20)
+            return ((b"x" * 65536, None) for _ in range(1024))
+
+        def exec_inspect(self, eid):
+            return {"ExitCode": 1}
+
+    prov = SimpleNamespace(name="docker", client=SimpleNamespace(api=Api()))
+    (tmp_path / f"hangar-envd-{ARCH}").write_bytes(b"bin")
+    e = DockerEnvd(prov, Settings(data_dir=tmp_path, envd_dir=tmp_path))
+    sb = Sandbox(name="t", environment="x", provider="docker", provider_ref="c1")
+    code, out = asyncio.run(e.run_script(sb, "tok"))
+    assert code == 1 and len(out) <= 65536
 
 
 # ---------------------------------------------------------------------- Kubernetes

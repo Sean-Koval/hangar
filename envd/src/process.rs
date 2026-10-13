@@ -27,7 +27,7 @@ use tokio::sync::mpsc;
 
 use crate::config::Config;
 use crate::paths::{check_user_header, resolve};
-use crate::proto::process::process_event::{DataEvent, EndEvent, Event, KeepAlive, StartEvent};
+use crate::proto::process::process_event::{DataEvent, EndEvent, Event, StartEvent};
 use crate::proto::process::*;
 use crate::stream::{keepalive_interval, with_keepalive};
 
@@ -77,7 +77,7 @@ fn start_event(pid: u32) -> ProcessEvent {
 }
 
 fn keepalive_event() -> ProcessEvent {
-    ProcessEvent { event: Some(Event::Keepalive(Box::new(KeepAlive::default()))), ..Default::default() }
+    ProcessEvent { event: Some(Event::Keepalive(Box::default())), ..Default::default() }
 }
 
 /// The controller side of a pseudo-terminal, non-blocking, readable and writable from different tasks.
@@ -137,7 +137,7 @@ struct Proc {
 
 impl Proc {
     fn subscribe(&self) -> Result<mpsc::Receiver<Ev>, ConnectError> {
-        let mut s = self.subs.lock().unwrap();
+        let mut s = crate::lock(&self.subs);
         if s.finished {
             return Err(ConnectError::not_found(format!("process {} has exited", self.pid)));
         }
@@ -157,7 +157,7 @@ impl Proc {
     /// client. A client that takes nothing for STALLED_CLIENT (a dead connection nobody closed) is let go, so it
     /// can't hold the process up for good; its stream ends without an exit event.
     async fn fanout(&self, ev: Ev) {
-        let subs: Vec<mpsc::Sender<Ev>> = self.subs.lock().unwrap().list.clone();
+        let subs: Vec<mpsc::Sender<Ev>> = crate::lock(&self.subs).list.clone();
         let mut gone = Vec::new();
         for s in &subs {
             match tokio::time::timeout(STALLED_CLIENT, s.send(ev.clone())).await {
@@ -166,7 +166,7 @@ impl Proc {
             }
         }
         if !gone.is_empty() {
-            self.subs.lock().unwrap().list.retain(|t| !t.is_closed() && !gone.iter().any(|g| g.same_channel(t)));
+            crate::lock(&self.subs).list.retain(|t| !t.is_closed() && !gone.iter().any(|g| g.same_channel(t)));
         }
     }
 
@@ -199,7 +199,7 @@ impl Procs {
     /// The end event of a process that exited within EXITED_RETENTION.
     fn recently_exited(&self, sel: Option<&ProcessSelector>) -> Option<(u32, EndEvent)> {
         use crate::proto::process::process_selector::Selector;
-        let mut ex = self.exited.lock().unwrap();
+        let mut ex = crate::lock(&self.exited);
         ex.retain(|_, (t, _, _)| t.elapsed() < EXITED_RETENTION);
         match sel.and_then(|s| s.selector.as_ref())? {
             Selector::Pid(pid) => ex.get(pid).map(|(_, _, e)| (*pid, e.clone())),
@@ -216,14 +216,14 @@ impl Procs {
 
     /// SIGKILL every process this daemon started (its shutdown).
     pub fn kill_all(&self) {
-        for p in self.table.lock().unwrap().values() {
+        for p in crate::lock(&self.table).values() {
             let _ = p.signal(Sig::SIGKILL);
         }
     }
 
     fn find(&self, sel: Option<&ProcessSelector>) -> Result<Arc<Proc>, ConnectError> {
         use crate::proto::process::process_selector::Selector;
-        let t = self.table.lock().unwrap();
+        let t = crate::lock(&self.table);
         match sel.and_then(|s| s.selector.as_ref()) {
             Some(Selector::Pid(pid)) => t.get(pid).cloned().ok_or_else(|| ConnectError::not_found(format!("no running process {pid}"))),
             Some(Selector::Tag(tag)) => t
@@ -328,7 +328,7 @@ impl Procs {
             subs: std::sync::Mutex::new(Subs { list: Vec::new(), finished: false }),
         });
         let rx = proc_.subscribe()?; // before the pump starts: the first byte of output must reach the starter
-        self.table.lock().unwrap().insert(pid, proc_.clone());
+        crate::lock(&self.table).insert(pid, proc_.clone());
         let p = proc_.clone();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
@@ -341,12 +341,12 @@ impl Procs {
             };
             let end = end_event(status);
             let subs = {
-                let mut s = p.subs.lock().unwrap();
+                let mut s = crate::lock(&p.subs);
                 s.finished = true;
                 std::mem::take(&mut s.list)
             };
-            exited.lock().unwrap().insert(p.pid, (std::time::Instant::now(), p.tag.clone(), end.clone()));
-            registry.lock().unwrap().remove(&p.pid);
+            crate::lock(&exited).insert(p.pid, (std::time::Instant::now(), p.tag.clone(), end.clone()));
+            crate::lock(&registry).remove(&p.pid);
             drop(slot);
             for s in subs {
                 let _ = tokio::time::timeout(Duration::from_secs(10), s.send(Ev::End(end.clone()))).await;
@@ -568,7 +568,7 @@ impl Process for Procs {
             let p = p.clone();
             tokio::spawn(async move {
                 tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
-                if !p.subs.lock().unwrap().finished {
+                if !crate::lock(&p.subs).finished {
                     let _ = p.signal(Sig::SIGKILL);
                 }
             });
@@ -656,5 +656,20 @@ mod tests {
         assert_eq!((ok.exit_code, ok.exited, ok.status.as_str()), (3, true, "exit status 3"));
         let killed = end_event(Ok(ExitStatus::from_raw(libc::SIGKILL)));
         assert_eq!((killed.exit_code, killed.exited, killed.status.as_str()), (-1, false, "signal: killed"));
+    }
+
+    #[test]
+    fn a_panic_elsewhere_does_not_break_the_process_table() {
+        // A panic while a lock is held poisons it; every later request would then panic on it too.
+        let cfg = Arc::new(crate::config::Config::parse(vec![], Some("0123456789abcdef".into())).unwrap());
+        let procs = Arc::new(Procs::new(cfg));
+        let p = procs.clone();
+        let _ = std::thread::spawn(move || {
+            let _g = p.table.lock();
+            panic!("a bug somewhere");
+        })
+        .join();
+        assert!(std::panic::catch_unwind(|| procs.kill_all()).is_ok());
+        assert!(std::panic::catch_unwind(|| procs.find(None).is_err()).is_ok());
     }
 }

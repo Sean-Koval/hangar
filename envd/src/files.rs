@@ -4,6 +4,9 @@
 //!
 //! Hangar extension: `mode=<octal>` on an upload sets the file's permissions (E2B has no such parameter).
 
+// Errors here are the HTTP responses the handlers return, built once on a failure path; boxing them buys nothing.
+#![allow(clippy::result_large_err)]
+
 use std::io;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -19,9 +22,11 @@ use futures::{Stream, StreamExt};
 use serde::Deserialize;
 use tokio::io::AsyncWriteExt;
 
-use crate::App;
-use crate::auth::PendingSig;
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
+
+use crate::App;
+use crate::auth::{ChunkReader, Signed, SignedBody};
 use crate::paths::{check_user, check_user_header, resolve};
 
 #[derive(Deserialize)]
@@ -87,12 +92,13 @@ pub async fn download(State(app): State<Arc<App>>, Query(q): Query<FileQuery>, h
 
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// Streams `body` into `dst` through a temporary sibling, then renames it into place.
-async fn write_stream<E: std::fmt::Display>(
+/// Streams `body` into `dst` through a temporary sibling, then renames it into place. With `want_sha256`, the body
+/// must hash to it, or nothing is replaced.
+async fn write_stream(
     dst: &Path,
     mode: Option<u32>,
-    mut body: impl Stream<Item = Result<Bytes, E>> + Unpin,
-    sig: Option<(&App, &PendingSig)>,
+    mut body: impl Stream<Item = Result<Bytes, Response>> + Unpin,
+    want_sha256: Option<[u8; 32]>,
 ) -> Result<(), Response> {
     let parent = dst.parent().unwrap_or(Path::new("/"));
     let name = dst.file_name().ok_or_else(|| error(StatusCode::BAD_REQUEST, "path names a directory"))?;
@@ -114,17 +120,19 @@ async fn write_stream<E: std::fmt::Display>(
             .open(&tmp)
             .await
             .map_err(|e| error(io_status(&e), format!("cannot create {}: {e}", tmp.display())))?;
-        let mut hash = Sha256::new();
+        let mut hash = want_sha256.map(|_| Sha256::new());
         while let Some(chunk) = body.next().await {
-            let chunk = chunk.map_err(|e| error(StatusCode::BAD_REQUEST, format!("upload interrupted: {e}")))?;
-            hash.update(&chunk);
+            let chunk = chunk?;
+            if let Some(h) = hash.as_mut() {
+                h.update(&chunk);
+            }
             f.write_all(&chunk).await.map_err(|e| error(io_status(&e), format!("cannot write {}: {e}", dst.display())))?;
         }
         f.flush().await.map_err(|e| error(io_status(&e), format!("cannot write {}: {e}", dst.display())))?;
-        if let Some((app, p)) = sig
-            && !p.verify(app.auth.token(), &hash.finalize())
+        if let (Some(h), Some(want)) = (hash, want_sha256)
+            && !bool::from(h.finalize().as_slice().ct_eq(&want))
         {
-            return Err(error(StatusCode::UNAUTHORIZED, "X-Hangar-Sig does not match the upload"));
+            return Err(error(StatusCode::UNAUTHORIZED, "the upload is not the body X-Hangar-Sig was made for"));
         }
         let perm = std::fs::Permissions::from_mode(mode.or(existing_mode).unwrap_or(0o644));
         tokio::fs::set_permissions(&tmp, perm)
@@ -157,7 +165,7 @@ fn written(paths: &[PathBuf]) -> Response {
 
 pub async fn upload(State(app): State<Arc<App>>, Query(q): Query<FileQuery>, req: Request) -> Response {
     let headers = req.headers().clone();
-    let sig = req.extensions().get::<PendingSig>().cloned();
+    let sig = req.extensions().get::<Signed>().cloned();
     if headers.get(header::CONTENT_ENCODING).is_some_and(|v| v != "identity") {
         return error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "compressed uploads are not supported; send the file as is");
     }
@@ -192,7 +200,7 @@ pub async fn upload(State(app): State<Arc<App>>, Query(q): Query<FileQuery>, req
                 match f.chunk().await {
                     Ok(Some(c)) => Some((Ok(c), f)),
                     Ok(None) => None,
-                    Err(e) => Some((Err(e), f)),
+                    Err(e) => Some((Err(interrupted(e)), f)),
                 }
             }));
             if let Err(r) = write_stream(&dst, mode, chunks, None).await {
@@ -209,10 +217,55 @@ pub async fn upload(State(app): State<Arc<App>>, Query(q): Query<FileQuery>, req
         Ok(p) => p,
         Err(r) => return r,
     };
-    let body = req.into_body().into_data_stream();
-    match write_stream(&dst, mode, body, sig.as_ref().map(|p| (&*app, p))).await {
+    let body = req.into_body().into_data_stream().map(|r| r.map_err(interrupted));
+    let res = match sig {
+        None => write_stream(&dst, mode, body, None).await,
+        Some(Signed { body: SignedBody::Sha256(want), .. }) => write_stream(&dst, mode, body, Some(want)).await,
+        Some(s @ Signed { body: SignedBody::Chunked, .. }) => {
+            write_stream(&dst, mode, Box::pin(verified(app.auth.chunk_reader(&s), body)), None).await
+        }
+    };
+    match res {
         Ok(()) => written(&[dst]),
         Err(r) => r,
     }
+}
+
+fn interrupted(e: impl std::fmt::Display) -> Response {
+    error(StatusCode::BAD_REQUEST, format!("upload interrupted: {e}"))
+}
+
+/// The data of a chunked upload, released frame by frame as each frame's HMAC checks out (auth.rs).
+fn verified(
+    reader: ChunkReader,
+    body: impl Stream<Item = Result<Bytes, Response>> + Unpin,
+) -> impl Stream<Item = Result<Bytes, Response>> {
+    let bad = |e: &str| error(StatusCode::UNAUTHORIZED, e.to_string());
+    let start = (reader, body, std::collections::VecDeque::<Bytes>::new(), false);
+    futures::stream::unfold(start, move |(mut r, mut body, mut ready, ended)| async move {
+        loop {
+            if let Some(c) = ready.pop_front() {
+                return Some((Ok(c), (r, body, ready, ended)));
+            }
+            if ended {
+                return None;
+            }
+            let err = match body.next().await {
+                Some(Ok(data)) => match r.push(&data) {
+                    Ok(chunks) => {
+                        ready.extend(chunks);
+                        continue;
+                    }
+                    Err(e) => bad(e),
+                },
+                Some(Err(e)) => e,
+                None => match r.finish() {
+                    Ok(()) => return None,
+                    Err(e) => bad(e),
+                },
+            };
+            return Some((Err(err), (r, body, ready, true)));
+        }
+    })
 }
 

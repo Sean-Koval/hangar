@@ -7,10 +7,13 @@ falling back to their own exec path whenever it can't be used: no binary for the
 address, a request as root, or a call that fails before the command started.
 
 The daemon runs as the sandbox user, in a sandbox that runs untrusted code, so nothing it returns is trusted: output
-keeps only a bounded tail, reads stop at the caller's limit, frames are size-capped, and responses are never
-decompressed. Its access token is HMAC(the vault key, sandbox id): unique per sandbox, never stored, and the same
-after a control-plane restart, so an already running daemon is found again rather than started twice. Requests are
-signed with the token (`sign`) rather than carrying it.
+keeps only a bounded tail, reads stop at the caller's limit (or MAX_READ), frames are size-capped, compressed answers
+are refused, and every call has a deadline. Its access token is HMAC(the vault key, sandbox id): unique per sandbox,
+never stored, and the same after a control-plane restart, so an already running daemon is found again rather than
+started twice. Requests are signed with the token (`sign`) rather than carrying it, and answers must prove the token
+(X-Hangar-Proof), so nothing else answering at a sandbox's address (a reused IP) is taken for its daemon. The
+sandbox's own user can read its daemon's token and so pass as it, which gains it nothing: it can already run
+anything there as that user.
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ import secrets
 import shlex
 import tarfile
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -49,6 +52,11 @@ RETRY_AFTER = 300.0  # seconds before trying a sandbox whose daemon couldn't be 
 START_TIMEOUT = 90.0  # install + start; a k8s upload of the binary is the slow part
 LOG = "/tmp/hangar-envd.log"
 SKIP = object()  # "use the provider's own path" from read_file
+MAX_READ = 64 << 20  # read_file without a limit: past this, the provider reads the file (a daemon could send forever)
+EXEC_GRACE = 30.0  # past a command's timeout, how long to wait for the daemon to report its end
+UPLOAD_CHUNK = 256 << 10  # frame size of a signed upload (`chunked_body`); measured best of 256 KiB, 1 and 4 MiB
+# Transport failures that happen before a request is sent: nothing reached the daemon.
+NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 
 
 class EnvdError(ProviderError):
@@ -110,12 +118,41 @@ class Endpoint:
     version: str = ""
 
 
-def sign(token: str, method: str, raw_path: bytes, body_sha256: str) -> str:
-    """X-Hangar-Sig (envd/src/auth.rs): HMAC(token; ms, nonce, method, path?query, sha256(body)). The token itself
-    never leaves the control plane, so a request that reaches the wrong address is useless to whoever got it."""
+def sign(token: str, method: str, raw_path: bytes, body: str) -> tuple[str, bytes]:
+    """X-Hangar-Sig (envd/src/auth.rs) and its MAC: HMAC(token; ms, nonce, method, path?query, body), where `body` is
+    the body's SHA-256 in hex, or "chunked" for an upload whose frames carry their own MACs (`chunked_body`). The token
+    itself never leaves the control plane, so a request that reaches the wrong address is useless to whoever got it.
+    The daemon checks the time against its own clock, within 5 minutes either way."""
     ts, nonce = int(time.time() * 1000), secrets.token_hex(16)
-    msg = f"{ts}\n{nonce}\n{method}\n".encode() + raw_path + b"\n" + body_sha256.encode()
-    return f"{ts}.{nonce}.{hmac.new(token.encode(), msg, hashlib.sha256).hexdigest()}"
+    msg = f"{ts}\n{nonce}\n{method}\n".encode() + raw_path + f"\n{body}".encode()
+    mac = hmac.new(token.encode(), msg, hashlib.sha256).digest()
+    return f"{ts}.{nonce}.{body}.{mac.hex()}", mac
+
+
+def proof(token: str, mac: bytes) -> str:
+    """The X-Hangar-Proof on the daemon's answer to a request signed with `mac`: only a token holder can make it."""
+    return hmac.new(token.encode(), b"proof\n" + mac, hashlib.sha256).hexdigest()
+
+
+def chunked_body(data: bytes, size: int) -> tuple[int, list[memoryview]]:
+    """A signed upload's body is frames of `u32 length | data | HMAC(token; "chunk\\n", previous HMAC (the request's
+    for the first), length, data)`, ending with an empty frame. The daemon checks each frame before writing it, and
+    the sender signs each as it goes (`frames`), so a big write isn't hashed whole before its first byte is sent.
+    Returns the body's length and its parts (slices, not copies)."""
+    parts = [memoryview(data)[i:i + size] for i in range(0, len(data), size)] + [memoryview(b"")]
+    return len(data) + 36 * len(parts), parts
+
+
+def frames(token: str, mac: bytes, parts: list[memoryview]) -> Iterator[bytes]:
+    prev = mac
+    for part in parts:
+        head = len(part).to_bytes(4, "big")
+        h = hmac.new(token.encode(), b"chunk\n", hashlib.sha256)
+        h.update(prev)
+        h.update(head)
+        h.update(part)
+        prev = h.digest()
+        yield b"".join((head, part, prev))
 
 
 class Envd:
@@ -200,19 +237,48 @@ class Envd:
 
     def request(self, ep: Endpoint, method: str, path: str, *, params: dict[str, str] | None = None,
                 content: bytes = b"", headers: dict[str, str] | None = None,
-                timeout: httpx.Timeout | None = None, content_sha256: str | None = None) -> httpx.Request:
-        req = self.http.build_request(method, f"{ep.url}{path}", params=params, content=content, headers=headers,
+                timeout: httpx.Timeout | None = None, upload: bool = False) -> httpx.Request:
+        """A signed request. `upload`: `content` goes as a chunked signed body (`chunked_body`). The answer's
+        expected X-Hangar-Proof rides along in `req.extensions["hangar_proof"]` (see `check_proof`)."""
+        url = httpx.URL(f"{ep.url}{path}", params=params)
+        headers = {**(headers or {}), "Accept-Encoding": "identity"}
+        if upload:
+            sig, mac = sign(ep.token, method, url.raw_path, "chunked")
+            size, parts = chunked_body(content, UPLOAD_CHUNK)
+            headers["Content-Length"] = str(size)
+            if len(parts) <= 2:
+                body: Any = b"".join(frames(ep.token, mac, parts))
+            else:
+                async def body_iter():
+                    # Signing a frame holds the loop for under a millisecond; the daemon checks the last meanwhile.
+                    for f in frames(ep.token, mac, parts):
+                        yield f
+
+                body = body_iter()
+        else:
+            sig, mac = sign(ep.token, method, url.raw_path, hashlib.sha256(content).hexdigest())
+            body = content
+        headers["X-Hangar-Sig"] = sig
+        req = self.http.build_request(method, url, content=body, headers=headers,
                                       timeout=timeout or httpx.Timeout(30.0, connect=2.0))
-        req.headers["Accept-Encoding"] = "identity"
-        digest = content_sha256 or hashlib.sha256(content).hexdigest()
-        req.headers["X-Hangar-Sig"] = sign(ep.token, method, req.url.raw_path, digest)
+        req.extensions["hangar_proof"] = proof(ep.token, mac)
         return req
+
+    @staticmethod
+    def check_proof(req: httpx.Request, resp: httpx.Response, started: bool = False) -> None:
+        """Every answer but a refused signature (401) must come from the sandbox's daemon: anything else at its
+        address (another sandbox that got its old IP, say) can't prove the token."""
+        if resp.status_code != 401 and not hmac.compare_digest(
+                resp.headers.get("x-hangar-proof", ""), req.extensions.get("hangar_proof", "-")):
+            raise EnvdError("envd: the answer is not from this sandbox's daemon (no valid X-Hangar-Proof)", "impostor",
+                            started=started)
 
     async def send_capped(self, req: httpx.Request, cap: int) -> tuple[int, bytes]:
         """Status and raw body of a small response, refusing more than `cap` bytes (and any compression: httpx
         would otherwise inflate whatever the sandbox sent)."""
         resp = await self.http.send(req, stream=True)
         try:
+            self.check_proof(req, resp)
             if resp.headers.get("content-encoding", "identity") != "identity":
                 raise EnvdError("envd: compressed response, none was asked for")
             body = bytearray()
@@ -330,19 +396,25 @@ class Envd:
 
     async def stream(self, ep: Endpoint, method: str, body: dict[str, Any], timeout: float | None,
                      keepalive: int | None = None) -> AsyncIterator[dict[str, Any]]:
-        """Messages of a server stream. An error before the first message raises EnvdError(started=False): nothing
-        ran, so the caller may use the provider instead; after it, started=True."""
+        """Messages of a server stream. EnvdError(started=False) means the daemon refused the call (an error status,
+        or an error before any message) or never got it: nothing ran, so the caller may use the provider instead.
+        Any other failure, once the request may have arrived, is started=True: the work may be under way."""
         headers = self._connect_headers(True, timeout)
         if keepalive:
             headers["Keepalive-Ping-Interval"] = str(keepalive)
+        # Between messages: the call's own timeout, or for a long-lived stream a few missed keepalives.
+        read = timeout + 30 if timeout is not None else (4 * keepalive if keepalive else None)
         req = self.request(ep, "POST", f"/{method}", content=_frame(json.dumps(body).encode()), headers=headers,
-                           timeout=httpx.Timeout(None if timeout is None else timeout + 30, connect=2.0))
+                           timeout=httpx.Timeout(read, connect=2.0))
         try:
             resp = await self.http.send(req, stream=True)
-        except httpx.HTTPError as e:
+        except NOT_SENT as e:
             raise EnvdError(f"envd {method}: {e}", "transport") from e
-        started = False
+        except httpx.HTTPError as e:
+            raise EnvdError(f"envd {method}: {e or type(e).__name__}", "transport", started=True) from e
+        started = True  # from here on, a failure that isn't the daemon's refusal may have followed a start
         try:
+            self.check_proof(req, resp, started=True)  # the request reached something; it may have passed it on
             if resp.status_code != 200:
                 raw = b""
                 async for chunk in resp.aiter_raw():
@@ -350,7 +422,8 @@ class Envd:
                     if len(raw) > 65536:
                         break
                 code, msg = _connect_error(raw, resp.status_code)
-                raise EnvdError(f"envd {method}: {code}: {msg}", code)
+                raise EnvdError(f"envd {method}: {code}: {msg}", code, started=False)
+            first = True
             buf = bytearray()
             async for chunk in resp.aiter_raw():  # raw: a sandbox doesn't get to make us decompress anything
                 buf += chunk
@@ -371,15 +444,16 @@ class Envd:
                     if flags & 2:  # end of stream: {} or {"error": {...}}
                         if isinstance(msg, dict) and msg.get("error"):
                             code, text = _connect_error(data, 200)
-                            raise EnvdError(f"envd {method}: {code}: {text}", code, started=started)
+                            # An error before any event is the daemon refusing the call (no cwd, the process cap).
+                            raise EnvdError(f"envd {method}: {code}: {text}", code, started=not first)
                         return
                     if not isinstance(msg, dict):
                         raise EnvdError(f"envd {method}: malformed message", started=started)
-                    started = True
+                    first = False
                     yield msg
             raise EnvdError(f"envd {method}: the stream ended without its end message", "transport", started=started)
         except httpx.HTTPError as e:
-            raise EnvdError(f"envd {method}: {e}", "transport", started=started) from e
+            raise EnvdError(f"envd {method}: {e or type(e).__name__}", "transport", started=started) from e
         finally:
             await resp.aclose()
 
@@ -399,22 +473,32 @@ class Envd:
         end: dict[str, Any] | None = None
         t0 = time.monotonic()
         try:
-            # Read to the end-of-stream frame (it follows the exit event), so the connection goes back to the pool.
-            async with contextlib.aclosing(self.stream(ep, "process.Process/Start", body, timeout + 15)) as events:
-                async for msg in events:
-                    ev = msg.get("event") or {}
-                    if (data := ev.get("data")) and isinstance(data, dict):
-                        if "stdout" in data:
-                            out.add(_b64(data["stdout"]))
-                        elif "stderr" in data:
-                            err.add(_b64(data["stderr"]))
-                    elif (e := ev.get("end")) is not None:
-                        end = e if isinstance(e, dict) else {}
+            # The daemon ends the stream once it has killed the command (Connect-Timeout-Ms below); one that doesn't
+            # doesn't get to hold the caller past that.
+            async with asyncio.timeout(timeout + 15 + EXEC_GRACE):
+                # Read to the end-of-stream frame (it follows the exit event), so the connection goes back to the pool.
+                async with contextlib.aclosing(self.stream(ep, "process.Process/Start", body, timeout + 15)) as events:
+                    async for msg in events:
+                        ev = msg.get("event") or {}
+                        if (data := ev.get("data")) and isinstance(data, dict):
+                            if "stdout" in data:
+                                out.add(_b64(data["stdout"]))
+                            elif "stderr" in data:
+                                err.add(_b64(data["stderr"]))
+                        elif (e := ev.get("end")) is not None:
+                            end = e if isinstance(e, dict) else {}
+        except TimeoutError as e:
+            self._lost(sb, "a command's stream outlived its timeout")
+            if end is None:
+                raise ProviderError("exec failed: no exit status from the sandbox's daemon in time; the command may "
+                                    "still be running") from e
         except EnvdError as e:
-            if e.code in ("transport", "unauthenticated"):
+            if e.code in ("transport", "unauthenticated", "impostor"):
                 self._lost(sb, str(e))
             if not e.started:
                 return None  # refused before starting (no cwd, the process limit, a dead daemon): the provider runs it
+            if e.code == "impostor":
+                raise ProviderError(f"exec failed: {e}; the command may have run elsewhere") from e
             if end is None:
                 raise ProviderError(f"exec failed: lost the command's output ({e}); it may still be running") from e
         if end is None:
@@ -435,30 +519,34 @@ class Envd:
         if ep is None:
             return SKIP
         req = self.request(ep, "GET", "/files", params={"path": path}, timeout=httpx.Timeout(300.0, connect=2.0))
+        cap = MAX_READ if limit is None else limit + 1
         try:
-            resp = await self.http.send(req, stream=True)
-        except httpx.HTTPError as e:
-            self._lost(sb, str(e))
+            # A deadline for the whole read: a daemon trickling bytes can't hold the caller past what a big file takes.
+            async with asyncio.timeout(300 + cap / (1 << 20)):
+                resp = await self.http.send(req, stream=True)
+                try:
+                    self.check_proof(req, resp)
+                    if resp.status_code in (400, 404):
+                        return None
+                    if resp.status_code != 200 or resp.headers.get("content-encoding", "identity") != "identity":
+                        return SKIP  # e.g. 403: a file the sandbox user can't read; the provider may
+                    declared = resp.headers.get("content-length", "")
+                    if limit is None and declared.isdigit() and int(declared) >= cap:
+                        return SKIP  # more than a daemon's answer may be: the provider reads the file
+                    parts, n = [], 0
+                    async for chunk in resp.aiter_raw():
+                        parts.append(chunk)
+                        n += len(chunk)
+                        if n >= cap:
+                            break
+                    if limit is None and n >= cap:
+                        return SKIP
+                    return b"".join(parts)[:cap]
+                finally:
+                    await resp.aclose()
+        except (httpx.HTTPError, EnvdError, TimeoutError) as e:
+            self._lost(sb, str(e) or type(e).__name__)
             return SKIP
-        try:
-            if resp.status_code in (400, 404):
-                return None
-            if resp.status_code != 200:
-                return SKIP  # e.g. 403: a file the sandbox user can't read; the provider may
-            cap = None if limit is None else limit + 1
-            parts, n = [], 0
-            async for chunk in resp.aiter_raw():
-                parts.append(chunk)
-                n += len(chunk)
-                if cap is not None and n >= cap:
-                    break
-            data = b"".join(parts)
-            return data if cap is None else data[:cap]
-        except httpx.HTTPError as e:
-            self._lost(sb, str(e))
-            return SKIP
-        finally:
-            await resp.aclose()
 
     async def write_file(self, sb: Sandbox, path: str, data: bytes, mode: int = 0o644) -> bool:
         """True once written through the daemon; False means "use the provider" (a whole-file write is safe to
@@ -466,18 +554,19 @@ class Envd:
         ep = await self.endpoint(sb)
         if ep is None:
             return False
-        # Hashing a big body would hold the event loop (~1 ms per MB), so it runs in a thread.
-        digest = (await asyncio.to_thread(lambda: hashlib.sha256(data).hexdigest())) if len(data) > (1 << 20) \
-            else None
+        # Signed frame by frame as it is sent (`chunked_body`): no pass over the whole body before the first byte.
         req = self.request(ep, "POST", "/files", params={"path": path, "mode": f"{mode & 0o7777:o}"}, content=data,
-                           headers={"Content-Type": "application/octet-stream"}, content_sha256=digest,
-                           timeout=httpx.Timeout(max(60.0, len(data) / (4 << 20)), connect=2.0))
+                           headers={"Content-Type": "application/octet-stream"}, upload=True,
+                           timeout=httpx.Timeout(60.0, connect=2.0))
         try:
-            status, _ = await self.send_capped(req, 65536)
-        except httpx.HTTPError as e:
-            self._lost(sb, str(e))
+            async with asyncio.timeout(60 + len(data) / (1 << 20)):
+                status, _ = await self.send_capped(req, 65536)
+        except (httpx.HTTPError, TimeoutError) as e:
+            self._lost(sb, str(e) or type(e).__name__)
             return False
-        except EnvdError:
+        except EnvdError as e:
+            if e.code == "impostor":
+                self._lost(sb, str(e))
             return False
         if status != 200:
             if status != 403:
@@ -631,9 +720,22 @@ class DockerEnvd(Installer):
             # The token goes in the exec's environment, not its command line.
             eid = api.exec_create(sb.provider_ref, ["sh", "-c", self.script(None)], user=self.s.sandbox_user,
                                   environment={"HANGAR_ENVD_TOKEN": token})["Id"]
-            out = api.exec_start(eid)
+            # What runs is whatever sits at the binary's path in the sandbox: keep a tail of its output, and stop
+            # reading once the start should long be over (a stream nothing writes to still blocks; the caller's
+            # START_TIMEOUT gives up on it).
+            out, deadline = OutputTail(65536, b""), time.monotonic() + START_TIMEOUT
+            chunks = api.exec_start(eid, stream=True, demux=True)
+            try:
+                for o, e in chunks:
+                    out.add((o or b"") + (e or b""))
+                    if time.monotonic() > deadline:
+                        break
+            finally:
+                close = getattr(chunks, "close", None)
+                if close is not None:
+                    close()
             code = api.exec_inspect(eid).get("ExitCode")
-            return (code if isinstance(code, int) else -1), out.decode(errors="replace")
+            return (code if isinstance(code, int) else -1), out.value()[-65536:].decode(errors="replace")
 
         return await asyncio.to_thread(_run)
 

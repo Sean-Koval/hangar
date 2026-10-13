@@ -63,7 +63,7 @@ impl Fs {
     }
 
     fn watcher_slots_left(&self) -> bool {
-        let polled = self.watchers.lock().unwrap().len();
+        let polled = crate::lock(&self.watchers).len();
         polled + self.streaming.load(Ordering::Relaxed) < self.cfg.max_watchers
     }
 
@@ -344,7 +344,7 @@ impl Filesystem for Fs {
         let q = queue.clone();
         let task = tokio::spawn(async move {
             while let Some(ev) = rx.recv().await {
-                let mut q = q.lock().unwrap();
+                let mut q = crate::lock(&q);
                 if q.len() >= MAX_QUEUED_EVENTS {
                     q.pop_front();
                 }
@@ -353,19 +353,19 @@ impl Filesystem for Fs {
             inner.abort();
         });
         let id = format!("w{}", self.next_id.fetch_add(1, Ordering::Relaxed));
-        self.watchers.lock().unwrap().insert(id.clone(), Polled { queue, task });
+        crate::lock(&self.watchers).insert(id.clone(), Polled { queue, task });
         Response::ok(CreateWatcherResponse { watcher_id: id, ..Default::default() })
     }
 
     async fn get_watcher_events(&self, _ctx: RequestContext, request: ServiceRequest<'_, GetWatcherEventsRequest>) -> ServiceResult<GetWatcherEventsResponse> {
-        let w = self.watchers.lock().unwrap();
+        let w = crate::lock(&self.watchers);
         let p = w.get(request.watcher_id).ok_or_else(|| ConnectError::not_found(format!("no watcher {}", request.watcher_id)))?;
-        let events: Vec<FilesystemEvent> = p.queue.lock().unwrap().drain(..).collect();
+        let events: Vec<FilesystemEvent> = crate::lock(&p.queue).drain(..).collect();
         Response::ok(GetWatcherEventsResponse { events, ..Default::default() })
     }
 
     async fn remove_watcher(&self, _ctx: RequestContext, request: ServiceRequest<'_, RemoveWatcherRequest>) -> ServiceResult<RemoveWatcherResponse> {
-        let p = self.watchers.lock().unwrap().remove(request.watcher_id);
+        let p = crate::lock(&self.watchers).remove(request.watcher_id);
         match p {
             Some(p) => {
                 p.task.abort();

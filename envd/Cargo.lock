@@ -553,6 +553,7 @@ dependencies = [
  "hmac",
  "http",
  "http-body-util",
+ "hyper-util",
  "inotify",
  "libc",
  "nix",

@@ -22,7 +22,7 @@ pub struct Names {
 
 impl Names {
     fn user(&self, uid: u32) -> String {
-        let mut m = self.users.lock().unwrap();
+        let mut m = crate::lock(&self.users);
         m.entry(uid)
             .or_insert_with(|| {
                 nix::unistd::User::from_uid(uid.into())
@@ -35,7 +35,7 @@ impl Names {
     }
 
     fn group(&self, gid: u32) -> String {
-        let mut m = self.groups.lock().unwrap();
+        let mut m = crate::lock(&self.groups);
         m.entry(gid)
             .or_insert_with(|| {
                 nix::unistd::Group::from_gid(gid.into())

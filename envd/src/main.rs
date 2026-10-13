@@ -12,6 +12,7 @@ mod files;
 mod fs;
 mod paths;
 mod process;
+mod server;
 mod stream;
 #[cfg(test)]
 mod tests;
@@ -47,31 +48,47 @@ fn denied(why: &str) -> Response {
     (StatusCode::UNAUTHORIZED, [("content-type", "application/json")], body.to_string()).into_response()
 }
 
-/// Deny by default: everything but `/health` needs the token or a signature made with it (auth.rs).
+/// A lock that a panic elsewhere (which unwinds one request, not the daemon) doesn't leave poisoned for everyone.
+pub fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Deny by default: everything but `/health` needs the token or a signature made with it (auth.rs). A signature is
+/// checked before any of the body is read; the body is then held to what was signed.
 async fn require_auth(State(app): State<Arc<App>>, req: Request, next: Next) -> Response {
     let h = req.headers();
     let token = h.get("x-access-token").map(|v| v.as_bytes());
     let sig = h.get("x-hangar-sig").and_then(|v| v.to_str().ok());
     let pq = req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/");
-    match app.auth.check(token, sig, req.method().as_str(), pq) {
-        auth::Check::Ok => next.run(req).await,
-        auth::Check::Denied(why) => denied(why),
-        auth::Check::Body(p) if req.method() == axum::http::Method::POST && req.uri().path() == "/files" => {
+    let signed = match app.auth.check(token, sig, req.method().as_str(), pq) {
+        auth::Check::Token => return next.run(req).await,
+        auth::Check::Denied(why) => return denied(why),
+        auth::Check::Signed(s) => s,
+    };
+    let proof = app.auth.proof(&signed.mac);
+    let upload = req.method() == axum::http::Method::POST && req.uri().path() == "/files";
+    let mut resp = match &signed.body {
+        _ if upload => {
             let mut req = req;
-            req.extensions_mut().insert(p); // checked by the upload handler once the body is on disk
+            req.extensions_mut().insert(signed); // the upload handler checks the body as it streams to disk
             next.run(req).await
         }
-        auth::Check::Body(p) => {
+        auth::SignedBody::Chunked => denied("only uploads can be signed chunked"),
+        auth::SignedBody::Sha256(want) => {
             let (parts, body) = req.into_parts();
-            let Ok(bytes) = axum::body::to_bytes(body, auth::MAX_SIGNED_BODY).await else {
-                return denied("signed request body is too large or was cut off");
-            };
-            if !app.auth.verify(&p, &bytes) {
-                return denied("X-Hangar-Sig does not match the request");
+            match axum::body::to_bytes(body, auth::MAX_SIGNED_BODY).await {
+                Ok(bytes) if bool::from(subtle::ConstantTimeEq::ct_eq(auth::sha256(&bytes).as_slice(), want)) => {
+                    next.run(Request::from_parts(parts, axum::body::Body::from(bytes))).await
+                }
+                Ok(_) => denied("the request body is not the one X-Hangar-Sig was made for"),
+                Err(_) => denied("signed request body is too large or was cut off"),
             }
-            next.run(Request::from_parts(parts, axum::body::Body::from(bytes))).await
         }
+    };
+    if let Ok(v) = axum::http::HeaderValue::from_str(&proof) {
+        resp.headers_mut().insert("x-hangar-proof", v);
     }
+    resp
 }
 
 /// Hangar extension: who and what this daemon is. Authenticated, so a 200 also proves the token is the right one.
@@ -199,29 +216,14 @@ async fn serve(cfg: Arc<Config>, listener: std::net::TcpListener) {
     listener.set_nonblocking(true).expect("nonblocking listener");
     let listener = tokio::net::TcpListener::from_std(listener).expect("listener");
     let (app, procs) = router(cfg);
-    let shutdown = async {
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM");
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM");
+    let shutdown = async move {
         tokio::select! {
             _ = term.recv() => {}
             _ = tokio::signal::ctrl_c() => {}
         }
     };
-    let listener = axum::serve::ListenerExt::tap_io(listener, |tcp| {
-        let _ = tcp.set_nodelay(true);
-    });
-    let served = axum::serve(listener, app).with_graceful_shutdown(shutdown);
-    let res = tokio::select! {
-        r = served => r,
-        // Graceful shutdown waits for open streams; a stream of a process that never ends would hold it forever.
-        _ = async {
-            let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM");
-            term.recv().await;
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        } => Ok(()),
-    };
+    // On shutdown, open streams get a moment to finish; a stream of a process that never ends can't hold it up.
+    server::serve(listener, app, server::LIMITS, shutdown, std::time::Duration::from_secs(2)).await;
     procs.kill_all();
-    if let Err(e) = res {
-        eprintln!("hangar-envd: server error: {e}");
-        std::process::exit(1);
-    }
 }
