@@ -135,8 +135,7 @@ async def test_big_parts_travel_alone(svc, world, fleet, monkeypatch):  # noqa: 
 
 
 def test_groups_and_unpack_take_only_what_is_expected():
-    parts = {"a": b"x" * 10, "b": b"y" * 10, "c": b"z" * 30}
-    assert [list(g) for g in ckpt.groups(parts, limit=25)] == [["a", "b"], ["c"]]
+    assert ckpt.groups({"a": 10, "b": 10, "c": 30, "d": 1}, limit=25) == [["a", "b"], ["c"], ["d"]]
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tf:
         for name, kind in (("agent.tgz", tarfile.SYMTYPE), ("../wip.patch", tarfile.REGTYPE),
@@ -246,3 +245,99 @@ async def test_docker_write_file_creates_the_directory_only_when_missing():
         await prov.write_file(None, "/home/agent/x/y.txt", b"hi")
         assert c.puts == ["/home/agent/x"]
         assert c.mkdirs == ([(["mkdir", "-p", "/home/agent/x"], "agent")] if missing else [])
+
+
+async def _big_session(svc, fleet, name: str, mb: int = 6):  # noqa: F811
+    """A session whose conversation, untracked files and commits each hold `mb` MB of incompressible data."""
+    s = svc.get(name)
+    b = box(fleet, s.sandbox_id)
+    repo = b / "workspace/remote"
+    (b / "home/agent/.fake/sessions/big.bin").write_bytes(os.urandom(mb << 20))
+    (repo / "big-untracked.bin").write_bytes(os.urandom(mb << 20))
+    (repo / "big-commit.bin").write_bytes(os.urandom(mb << 20))
+    subprocess.run("git add big-commit.bin && git -c user.email=t@t -c user.name=t commit -qm big", shell=True,
+                   cwd=repo, check=True)
+    return s
+
+
+async def _peak(coro) -> int:
+    """Peak bytes allocated by Python (all threads) while `coro` runs."""
+    import gc
+    import tracemalloc
+
+    gc.collect()
+    tracemalloc.start()
+    try:
+        await coro
+        return tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+
+async def test_restore_holds_one_pack_at_a_time(svc, world, fleet, monkeypatch):  # noqa: F811
+    """The control plane must not hold every part of a checkpoint at once: parts are fetched, decrypted and
+    written one pack at a time (a burst of restores of big sessions would otherwise OOM it)."""
+    svc.new(NewSession(name="heavy", environment="sesenv", repo=world["url"], message="start the work"),
+            owner="admin", requester="sean")
+    await settle(svc, "heavy")
+    s = await _big_session(svc, fleet, "heavy")
+    ck = await svc.checkpoint_now("heavy", requester="sean")
+    assert all(ck.parts[p] > 6 << 20 for p in ("agent.tgz", "untracked.tgz", "repo.bundle")), ck.parts
+    monkeypatch.setattr(ckpt, "PACK_LIMIT", 8 << 20)  # one part per pack
+    sb = fleet.get(s.sandbox_id)
+    peak = await _peak(svc._restore_checkpoint(s, sb, sb.info["repo_path"], ck))
+    # one 6 MB part: its ciphertext (~8 MB), the plaintext and the pack around it; all three parts would be ~3x
+    assert peak < 34 << 20, f"restore peaked at {peak >> 20} MB"
+
+
+async def test_capture_holds_one_unpacked_part_at_a_time(svc, world, fleet, monkeypatch):  # noqa: F811
+    svc.new(NewSession(name="heavy2", environment="sesenv", repo=world["url"], message="start the work"),
+            owner="admin", requester="sean")
+    await settle(svc, "heavy2")
+    await _big_session(svc, fleet, "heavy2")
+    monkeypatch.setattr(ckpt, "PACK_LIMIT", 8 << 20)  # too much to pack: every part is read on its own
+    held = [0, 0]  # plaintext read from the sandbox and not yet encrypted; the most of it at any time
+    prov, vault = fleet.providers["docker"], svc.vault
+    read, encrypt = prov.read_file, vault.encrypt
+
+    async def counting_read(sb, path):
+        data = await read(sb, path)
+        held[0] += len(data or b"")
+        held[1] = max(held)
+        return data
+
+    def counting_encrypt(data):
+        out = encrypt(data)
+        held[0] -= len(data)
+        return out
+
+    monkeypatch.setattr(prov, "read_file", counting_read)
+    monkeypatch.setattr(vault, "encrypt", counting_encrypt)
+    ck = await svc.checkpoint_now("heavy2", requester="sean")
+    assert all(ck.parts[p] > 6 << 20 for p in ("agent.tgz", "untracked.tgz", "repo.bundle")), ck.parts
+    assert held[1] == max(ck.parts.values()), f"held {held[1] >> 20} MB at once; parts {ck.parts}"
+
+
+async def test_recorded_digests_are_of_what_was_stored(svc, world, fleet, monkeypatch):  # noqa: F811
+    """A part that changed between the sandbox's report and the read (an agent writing to /tmp, a torn read) must
+    not be recorded under the reported digest: later checkpoints would copy the wrong blob for good."""
+    import hashlib
+
+    monkeypatch.setattr(ckpt, "PACK_LIMIT", 64)  # parts are read one by one, after the capture script
+    svc.new(NewSession(name="torn", environment="sesenv", repo=world["url"], message="start the work"),
+            owner="admin", requester="sean")
+    s = await settle(svc, "torn")
+    (box(fleet, s.sandbox_id) / "workspace/remote/README.md").write_text("hello\nmore\n")
+    prov = fleet.providers["docker"]
+    exec_ = prov.exec
+
+    async def capture_then_change(sb, cmd, **kw):
+        res = await exec_(sb, cmd, **kw)
+        if "HANGAR-PART" in cmd:
+            (box(fleet, s.sandbox_id) / "tmp/hangar-ckpt/wip.patch").write_text("not what was reported\n")
+        return res
+
+    monkeypatch.setattr(prov, "exec", capture_then_change)
+    ck = await svc.checkpoint_now("torn", requester="sean")
+    stored = svc.vault.decrypt((svc.root / s.id / ck.id / "wip.patch.enc").read_bytes())
+    assert ck.digests["wip.patch"] == hashlib.sha256(stored).hexdigest()

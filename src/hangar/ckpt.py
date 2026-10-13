@@ -16,13 +16,18 @@ level 6 for ~20% more bytes.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import re
 import shlex
 import tarfile
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from hangar import exchange
+
+if TYPE_CHECKING:
+    from hangar.vault import Vault
 
 PARTS = ("agent.tgz", "repo.bundle", "wip.patch", "untracked.tgz")
 ALL_PARTS = (*PARTS, *exchange.CHECKPOINT_EXTRA)
@@ -130,6 +135,12 @@ def pack(parts: dict[str, bytes]) -> bytes:
     return buf.getvalue()
 
 
+def seal(vault: Vault, plain: bytes) -> tuple[str, bytes]:
+    """A part's sha256 and its encrypted blob. The digest is taken here, from the bytes actually stored, so a part
+    that changed (or was damaged) between the sandbox's report and the read is never mistaken for an old one."""
+    return hashlib.sha256(plain).hexdigest(), vault.encrypt(plain)
+
+
 def unpack(data: bytes, expected: set[str]) -> dict[str, bytes]:
     """Parts from a capture pack. The sandbox wrote it, so only regular files with an expected name are taken."""
     out: dict[str, bytes] = {}
@@ -141,17 +152,18 @@ def unpack(data: bytes, expected: set[str]) -> dict[str, bytes]:
     return out
 
 
-def groups(parts: dict[str, bytes], limit: int | None = None) -> list[dict[str, bytes]]:
-    """Split parts into packs of at most `limit` bytes (default PACK_LIMIT; a bigger part goes alone)."""
+def groups(sizes: dict[str, int], limit: int | None = None) -> list[list[str]]:
+    """Split parts (name -> bytes) into packs of at most `limit` bytes (default PACK_LIMIT; a bigger part goes
+    alone). Planned from the recorded sizes, so a restore fetches and holds one pack at a time."""
     limit = limit or PACK_LIMIT
-    out: list[dict[str, bytes]] = []
-    size = 0
-    for name, data in parts.items():
-        if not out or (size + len(data) > limit and out[-1]):
-            out.append({})
-            size = 0
-        out[-1][name] = data
-        size += len(data)
+    out: list[list[str]] = []
+    total = 0
+    for name, size in sizes.items():
+        if not out or (total + size > limit and out[-1]):
+            out.append([])
+            total = 0
+        out[-1].append(name)
+        total += size
     return out
 
 
@@ -178,7 +190,7 @@ def restore_script(*, repo: str, home: str, branch: str, target: str, present: s
         steps.append(f"tar xzf {r}/untracked.tgz -C {q(repo)}")
     if "agent.tgz" in present:
         steps.append(f"tar xzf {r}/agent.tgz -C {q(home)}")
-    steps.append(f"rm -rf {r}")
+    steps.append(f"rm -rf {r} {r}-*.tar")  # and the packs of an earlier attempt that failed
     steps.append("echo \"HANGAR-HEAD $(git rev-parse HEAD)\"")
     return " && ".join(steps)
 

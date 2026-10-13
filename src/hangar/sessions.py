@@ -462,7 +462,8 @@ class SessionService:
 
     async def _restore_checkpoint(self, s: Session, sb: Sandbox, repo: str, ck: Checkpoint) -> None:
         """Parts are fetched and decrypted in parallel, written as one archive and applied by one script (perf: two
-        round trips, where it was one write per part and three execs)."""
+        round trips, where it was one write per part and three execs). Packs are planned from the recorded sizes
+        and sent one at a time, so the control plane holds at most one pack (or one big part) per restore."""
         _, prov = self.fleet._running(sb.id)
 
         async def fetch(part: str) -> tuple[str, bytes]:
@@ -474,12 +475,16 @@ class SessionService:
             except InvalidToken as e:  # a damaged blob must fall back to an older checkpoint, not brick the session
                 raise SessionError(f"checkpoint part {part} is corrupt (or was written with another key)") from e
 
-        parts = dict(await asyncio.gather(*(fetch(p) for p in PARTS if p in ck.parts)))
-        packs = f"{RESTORE_DIR}-{ck.id}"
-        for i, group in enumerate(ckpt.groups(parts)):
+        async def send(i: int, names: list[str]) -> None:
+            group = dict(await asyncio.gather(*(fetch(p) for p in names)))
             await prov.write_file(sb, f"{packs}.{i}.tar", await asyncio.to_thread(ckpt.pack, group), mode=0o600)
+
+        present = {p: ck.parts[p] for p in PARTS if p in ck.parts}
+        packs = f"{RESTORE_DIR}-{ck.id}"
+        for i, names in enumerate(ckpt.groups(present)):
+            await send(i, names)  # one pack in memory at a time
         script = ckpt.restore_script(repo=repo, home=f"/home/{self.settings.sandbox_user}", branch=s.branch,
-                                     target=ck.head or ck.base or s.base_sha or "HEAD", present=set(parts),
+                                     target=ck.head or ck.base or s.base_sha or "HEAD", present=set(present),
                                      packs=packs)
         res = await self._sh(sb, script, cwd=repo, timeout=600)
         if res.exit_code != 0:
@@ -524,6 +529,7 @@ class SessionService:
         ck = Checkpoint(reason=reason, head=cap.head, base=s.base_sha, branch=s.branch, fingerprint=cap.fingerprint)
         key = f"{s.id}/{ck.id}"
         data: dict[str, bytes] = {}  # parts to encrypt and upload
+        sizes: dict[str, int] = {}  # part -> plaintext bytes stored
         same: list[str] = []  # parts unchanged since `last`: copied inside the store
         try:
             for part in ckpt.ALL_PARTS:
@@ -539,9 +545,10 @@ class SessionService:
                 if last and previous.get(part) == digest:
                     same.append(part)
             fresh = [p for p in ck.digests if p not in same]
-            if set(fresh) & cap.packed:
+            if packed := set(fresh) & cap.packed:
                 raw = await prov.read_file(sb, f"{CKPT_DIR}/{ckpt.PACK}") or b""
-                data = await asyncio.to_thread(ckpt.unpack, raw, set(fresh))  # off the loop: packs can be big
+                data = await asyncio.to_thread(ckpt.unpack, raw, packed)  # off the loop: packs can be big
+                del raw
 
             copied: list[str] = []
 
@@ -550,29 +557,36 @@ class SessionService:
                 (copied if ok else fresh).append(part)  # the earlier copy is gone: send this one
 
             await asyncio.gather(*(copy(p) for p in same))
-            for part in fresh:
-                if part not in data:  # not packed (over PACK_LIMIT), or a copy that failed: read it on its own
-                    got = await prov.read_file(sb, f"{CKPT_DIR}/{part}")
-                    if got is None:
-                        ck.warnings.append(f"could not read {part}")
-                        ck.digests.pop(part, None)
-                        continue
-                    data[part] = got
-            # Everything is out of the sandbox: drop its copies (its /tmp may be RAM) while the uploads run.
-            cleanup = asyncio.ensure_future(self._sh(sb, f"rm -rf {CKPT_DIR}"))
+            singles = [p for p in fresh if p not in data]  # not packed (too big), or a copy that failed
+            # Once nothing is left to read, drop the sandbox's copies (its /tmp may be RAM) while the uploads run.
+            cleanup = None if singles else asyncio.ensure_future(self._sh(sb, f"rm -rf {CKPT_DIR}"))
 
             async def upload(part: str, plain: bytes) -> None:
-                await self.blobs.put(f"{key}/{part}.enc", await asyncio.to_thread(self.vault.encrypt, plain))
+                # review: the digest of what is stored, not the one the sandbox reported, decides later copies
+                ck.digests[part], blob = await asyncio.to_thread(ckpt.seal, self.vault, plain)
+                await self.blobs.put(f"{key}/{part}.enc", blob)
+                sizes[part] = len(plain)
+
+            async def single(part: str) -> None:
+                plain = await prov.read_file(sb, f"{CKPT_DIR}/{part}")
+                if plain is None:
+                    ck.warnings.append(f"could not read {part}")
+                    ck.digests.pop(part, None)
+                    return
+                await upload(part, plain)
 
             try:
-                await asyncio.gather(*(upload(p, b) for p, b in data.items()))
+                await asyncio.gather(*(upload(p, data.pop(p)) for p in list(data)))
+                for part in singles:  # review: one at a time, as each may be up to session_max_part_mb
+                    await single(part)
             finally:
+                cleanup = cleanup or asyncio.ensure_future(self._sh(sb, f"rm -rf {CKPT_DIR}"))
                 with contextlib.suppress(Exception):
                     await cleanup
         except BaseException:
             self._spawn(self._drop(f"{key}/"))  # never leave an unrecorded partial checkpoint
             raise
-        sizes = {p: len(b) for p, b in data.items()} | {p: cap.parts[p][0] for p in copied}
+        sizes |= {p: cap.parts[p][0] for p in copied}
         ck.parts = {p: sizes[p] for p in ckpt.ALL_PARTS if p in sizes}
         s.checkpoints.append(ck)
         keep = max(1, self.settings.session_keep_checkpoints)
