@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 from importlib import resources
 from typing import Any
 
@@ -288,6 +289,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.oauth = oauth
     app.mount("/mcp", MCPAuthMiddleware(mcp_asgi, h.auth, oauth, rm_url))
     app.add_middleware(MCPPathMiddleware)
+    # --- front-door-auth: body caps before anything parses a body, and an audit entry for refused requests
+    from hangar.frontdoor import FrontDoorMiddleware, RateLimited
+
+    app.add_middleware(FrontDoorMiddleware, hangar=h, oauth=oauth)
+
+    @app.exception_handler(RateLimited)
+    async def _rate_limited(_: Request, exc: RateLimited):
+        return JSONResponse({"error": str(exc)}, status_code=429,
+                            headers={"Retry-After": str(max(1, math.ceil(exc.retry_after)))})
     # --- workstream F: with HANGAR_GATEWAY_PORT=0 the git gateway shares the main port (grant tokens only).
     if h.settings.gateway_url and not h.settings.gateway_port:
         for i, r in enumerate(h.fleet.gateway.routes()):
@@ -732,14 +742,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not name:
             raise HTTPException(404, "GitHub webhook is not configured (HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL)")
         body = await request.body()
-        if not verify_signature(h.broker.secret_text(name), body, request.headers.get("x-hub-signature-256")):
+        try:  # front-door-auth: say nothing about the vault to an anonymous caller
+            secret = h.broker.secret_text(name)
+        except Exception as e:  # noqa: BLE001
+            log.error("GitHub webhook secret credential %s is not usable", name)
+            raise HTTPException(503, "GitHub webhook secret is not stored") from e
+        if not verify_signature(secret, body, request.headers.get("x-hub-signature-256")):
             raise HTTPException(401, "bad signature")
         try:
             payload = json.loads(body)
         except ValueError as e:
             raise HTTPException(400, "body is not JSON") from e
-        res = await handle_github(jobs, request.headers.get("x-github-event", ""),
-                                  request.headers.get("x-github-delivery"), payload)
+        # --- front-door-auth: GitHub signs only the body, so the same body is the same delivery, whatever its
+        # X-GitHub-Delivery header says. A redelivery or a replay is acknowledged and does nothing.
+        replays = jobs.admission.replays
+        digest = replays.digest(body)
+        if replays.get("github", digest) is not None:
+            delivery = (request.headers.get("x-github-delivery") or "")[:100]
+            jobs.admission.refused("github:replay", "github", "hook.replay", delivery or None)
+            return JSONResponse({"ignored": "duplicate delivery"}, status_code=200)
+        replays.put("github", digest, "", h.settings.webhook_replay_hours * 3600)
+        try:
+            res = await handle_github(jobs, request.headers.get("x-github-event", ""),
+                                      request.headers.get("x-github-delivery"), payload)
+        except Exception:
+            replays.forget("github", digest)  # nothing happened: let GitHub's redelivery try again
+            raise
         return JSONResponse(res, status_code=202 if res.get("ok") else 200)
 
     # ------------------------------------------------------------------ triggers (workstream A)

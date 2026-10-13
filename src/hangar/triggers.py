@@ -182,6 +182,7 @@ def expire_approvals(jobs: JobService, t: float | None = None) -> list[Job]:
         if a is None or a.expires_at is None or a.expires_at > t:
             continue
         job.approval = a.model_copy(update={"decided_at": t, "decision": "expired"})
+        jobs.fleet.audit("system", "job.approval_expired", job.id, requested_by=a.requested_by)  # front-door-auth
         hours = jobs.settings.job_approval_ttl_hours
         _drop(jobs, job, "nobody approved it in time", "approval_expired",
               f"Nobody approved hangar job `{job.id}` within {hours:g} hours, so it was dropped. "
@@ -208,6 +209,8 @@ async def github_decision(jobs: JobService, ref: str, sender: str, trusted: bool
                           decision: Literal["approve", "reject"]) -> dict[str, Any]:
     """`/hangar approve|reject` on an issue with a job waiting for approval."""
     if not trusted:
+        jobs.admission.refused(f"owner:github:{sender}", f"github:{sender}", f"job.{decision}.refused", ref,
+                               why="not trusted")  # --- front-door-auth: every approval decision is audited
         return {"ignored": f"{sender} is not trusted to {decision} jobs"}
     job = next((j for j in jobs.list(state=JobState.AWAITING_APPROVAL.value, limit=500) if j.source_ref == ref), None)
     if job is None:
@@ -594,6 +597,16 @@ class Triggers:
         if not _DELIVERY_RE.match(delivery):
             delivery = "sha256:" + hashlib.sha256(body).hexdigest()[:32]  # a retry resends the same body
         who = f"webhook:{source}"
+        # --- front-door-auth: a delivery is what its signature covers. The delivery id header (and a timestamp the
+        # scheme doesn't sign) can be changed by whoever replays a captured request, so they don't make it new.
+        sig = cfg.signature
+        signed_ts = (headers.get(sig.timestamp_header) or "").strip() \
+            if sig.timestamp_header and "{timestamp}" in sig.signed_payload else ""
+        replays, scope = self.jobs.admission.replays, f"inbound:{source}"
+        digest = replays.digest(signed_ts.encode(), body)
+        if (prev := replays.get(scope, digest)) is not None:
+            self.jobs.admission.refused(f"owner:{who}", who, "hook.replay", prev, delivery=delivery[:200])
+            return InboundResult(status=202, body={"ok": True, "job": prev, "duplicate": True})
         key = f"inbound:{source}:{delivery}"
         dup = next((j for j in self.jobs._jobs.values() if j.owner == who and j.idempotency_key == key), None)
         if dup is not None:
@@ -614,6 +627,10 @@ class Triggers:
             job = self.jobs.submit(req, Caller(who, who, restricted=True), source="webhook",
                                    source_ref=f"{who}:{delivery}"[:300], untrusted_source=who)
         except (JobError, ValidationError, KeyError) as e:
+            from hangar.frontdoor import RateLimited
+
+            if isinstance(e, RateLimited):  # --- front-door-auth: senders retry a 429 later
+                return InboundResult(status=429, body={"error": str(e)})
             if isinstance(e, ValidationError):  # say which field, without echoing payload values
                 err = e.errors()[0]
                 msg = f"{'.'.join(map(str, err['loc']))}: {err['msg']}"
@@ -621,6 +638,7 @@ class Triggers:
                 msg = str(e).strip("'\"")[:300]
             log.warning("inbound webhook '%s' could not start a job: %s", source, msg)
             return InboundResult(status=422, body={"error": msg})
+        replays.put(scope, digest, job.id, self.settings.webhook_replay_hours * 3600)  # --- front-door-auth
         return InboundResult(status=202, body={"ok": True, "job": job.id})
 
     # ------------------------------------------------------------------ schedules

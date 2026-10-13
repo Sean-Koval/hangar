@@ -73,7 +73,7 @@ def verify_signature(secret: str, timestamp: str | None, body: bytes, signature:
         return False
     base = b"v0:" + timestamp.encode() + b":" + body
     want = "v0=" + hmac.new(secret.encode(), base, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(want, signature)
+    return hmac.compare_digest(want.encode(), signature.encode("utf-8", "replace"))  # bytes: see github.py
 
 
 def escape(text: str) -> str:
@@ -317,6 +317,14 @@ class SlackFrontDoor:
         @app.post("/api/hooks/slack/commands")
         async def slack_command(request: Request):
             body = await self._verified(request)
+            # --- front-door-auth: Slack doesn't retry slash commands, so a second copy of a signed one (inside the
+            # five-minute window) is a replay. Events are deduplicated by event_id instead.
+            replays = self.jobs.admission.replays
+            digest = replays.digest(request.headers.get("x-slack-signature", "").encode())
+            if replays.get("slack:command", digest) is not None:
+                self.jobs.admission.refused("slack:replay", "slack", "hook.replay", "/api/hooks/slack/commands")
+                return JSONResponse(_ephemeral("That request was already handled."))
+            replays.put("slack:command", digest, "", 2 * MAX_AGE_SECONDS)
             form = dict(parse_qsl(body.decode(errors="replace"), keep_blank_values=True))
             return JSONResponse(self.command(form))
 
@@ -337,9 +345,11 @@ class SlackFrontDoor:
         name = self.settings.slack_signing_secret_credential
         if not name:
             raise HTTPException(404, "Slack is not configured (HANGAR_SLACK_SIGNING_SECRET_CREDENTIAL)")
-        body = await request.body()
-        if len(body) > MAX_BODY:
-            raise HTTPException(413, "request too large")
+        body = b""
+        async for chunk in request.stream():  # front-door-auth: stop reading at the cap, not after the whole body
+            body += chunk
+            if len(body) > MAX_BODY:
+                raise HTTPException(413, "request too large")
         try:
             secret = self.jobs.broker.secret_text(name)
         except Exception as e:  # noqa: BLE001
@@ -351,11 +361,17 @@ class SlackFrontDoor:
         return body
 
     # ------------------------------------------------------------------ policy
-    def _refusal(self, team: str, channel: str, user: str) -> str | None:
+    def _refusal(self, team: str, channel: str, user: str, user_team: str | None = None) -> str | None:
         if channel not in self.settings.slack_channels:
             return ("This channel isn't connected to a repo. An admin can map it in HANGAR_SLACK_CHANNELS "
                     "(docs/slack.md).")
         users = self.settings.slack_users
+        # --- front-door-auth: in a Slack Connect channel, members of other organizations post too. They count
+        # only when listed by id, even when the allowlist is otherwise empty.
+        if user_team and user_team != team and user_team not in self.settings.slack_teams:
+            if user not in users and f"{user_team}/{user}" not in users:
+                return "You're not on hangar's Slack allowlist (HANGAR_SLACK_USERS)."
+            return None
         if users and user not in users and f"{team}/{user}" not in users:
             return "You're not on hangar's Slack allowlist (HANGAR_SLACK_USERS)."
         return None
@@ -494,6 +510,7 @@ class SlackFrontDoor:
         team = str(payload.get("team_id") or ev.get("team") or "")
         channel, user, ts = str(ev.get("channel") or ""), str(ev.get("user") or ""), str(ev.get("ts") or "")
         thread_ts = ev.get("thread_ts")
+        user_team = str(ev.get("user_team") or "") or None  # front-door-auth: the poster's own workspace
         if not (_ID.match(team) and _ID.match(channel) and _ID.match(user) and _TS.match(ts)) or \
                 (thread_ts is not None and not _TS.match(str(thread_ts))):
             return {"ignored": "malformed event"}
@@ -504,18 +521,19 @@ class SlackFrontDoor:
                 return {"ignored": "not a reply in a hangar thread"}
             if any(f"<@{b}" in raw for b in bots):
                 return {"ignored": "mentions the app; handled as app_mention"}
-            if self._refusal(team, channel, user):
+            if self._refusal(team, channel, user, user_team):
                 return {"ignored": "channel or user not allowed"}
         # A mention in a thread also arrives as a message event: act on whichever comes first.
         if not self._first(f"msg:{channel}:{ts}"):
             return {"ignored": "message already handled"}
         text = plain(_LEAD_MENTION.sub("", raw, count=1))
         self.jobs._spawn(self._guard(self._on_message(team, channel, user, ts, thread_ts, job_id, text,
-                                                      mention=kind == "app_mention", bots=bots)))
+                                                      mention=kind == "app_mention", bots=bots, user_team=user_team)))
         return {"ok": True}
 
     async def _on_message(self, team: str, channel: str, user: str, ts: str, thread_ts: str | None,
-                          job_id: str | None, text: str, mention: bool, bots: set[str]) -> None:
+                          job_id: str | None, text: str, mention: bool, bots: set[str],
+                          user_team: str | None = None) -> None:
         api = client_for(self.jobs)
         if api is None:
             log.warning("Slack event ignored: HANGAR_SLACK_BOT_TOKEN_CREDENTIAL is not set or not stored")
@@ -525,7 +543,7 @@ class SlackFrontDoor:
             word, _, rest = text.strip().partition(" ")
             if mention and word.lower() in ("", "help"):
                 await self._say(api, channel, reply_in, self._help(channel))
-            elif mention and (refusal := self._refusal(team, channel, user)):
+            elif mention and (refusal := self._refusal(team, channel, user, user_team)):
                 await self._say(api, channel, reply_in, refusal)
             elif mention and word.lower() == "status":
                 await self._say(api, channel, reply_in, self._status(rest))
@@ -566,7 +584,8 @@ class SlackFrontDoor:
             total += len(part)
         if not parts:
             return []
-        return [ContextItem(name="slack-thread.md", kind="text",
+        # front-door-auth: other people (and other apps' alerts) wrote this, not the requester: fence it.
+        return [ContextItem(name="slack-thread.md", kind="text", untrusted=True,
                             content="# Slack thread the request was made in\n\n" + "\n\n".join(parts))]
 
     # ------------------------------------------------------------------ actions

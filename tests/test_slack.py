@@ -10,6 +10,7 @@ import hmac
 import json
 import shutil
 import time
+import uuid
 from urllib.parse import parse_qsl, urlencode
 
 import httpx
@@ -112,7 +113,8 @@ async def slack(fleet, world, settings, sessions, broker):  # noqa: F811
 async def command(client: httpx.AsyncClient, text: str, channel: str = "C1", user: str = "U1",
                   ts: int | None = None, secret: str = SECRET) -> httpx.Response:
     body = urlencode({"team_id": "T1", "channel_id": channel, "user_id": user, "command": "/hangar", "text": text,
-                      "response_url": "https://hooks.slack.com/commands/T1/1/abc"}).encode()
+                      "response_url": "https://hooks.slack.com/commands/T1/1/abc",
+                      "trigger_id": uuid.uuid4().hex}).encode()  # Slack sends a fresh one per invocation
     return await client.post("/api/hooks/slack/commands", content=body,
                              headers={**sign(body, ts, secret), "Content-Type": "application/x-www-form-urlencoded"})
 

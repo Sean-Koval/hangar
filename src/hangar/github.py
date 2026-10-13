@@ -37,7 +37,8 @@ def verify_signature(secret: str, body: bytes, header: str | None) -> bool:
     if not header or not header.startswith("sha256="):
         return False
     want = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(want, header[7:])
+    # Bytes, not str: compare_digest raises on non-ASCII text, which made a junk header a 500 (front-door-auth).
+    return hmac.compare_digest(want.encode(), header[7:].encode("utf-8", "replace"))
 
 
 class GitHubError(RuntimeError):

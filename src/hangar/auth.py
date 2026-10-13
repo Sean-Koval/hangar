@@ -97,6 +97,16 @@ class TokenAuth:
                 return Principal(tok.name, tok.id, list(tok.scopes), tok.callback_secret, tok.max_budget)
         return None
 
+    # --- front-door-auth
+    def valid(self, raw: str | None) -> bool:
+        """Whether `raw` is a live token, without touching last_used (the body-size guard asks before the route)."""
+        if not raw:
+            return False
+        h = hash_token(raw)
+        if self._admin_hash and hmac.compare_digest(h, self._admin_hash):
+            return True
+        return any(hmac.compare_digest(h, tok.token_hash) for tok in self.store.list(ApiToken))
+
     def exists(self, token_id: str | None) -> bool:
         if token_id == "admin":
             return self._admin_hash is not None

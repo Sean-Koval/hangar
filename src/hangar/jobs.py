@@ -159,6 +159,10 @@ class JobService:
         from hangar.triggers import GitHubTrust
 
         self.trust = GitHubTrust(self)  # workstream A: who may start GitHub-triggered work without approval
+        # --- front-door-auth: rate limits, the per-caller cap, replay memory and refusal audits
+        from hangar.frontdoor import Admission
+
+        self.admission = Admission(self)
 
     # ================================================================== lifecycle
     async def start(self) -> None:
@@ -251,6 +255,13 @@ class JobService:
 
     def submit(self, req: SubmitJob, caller: Caller, source: str = "api", source_ref: str | None = None,
                approval: JobApproval | None = None, untrusted_source: str | None = None) -> Job:
+        # --- front-door-auth: every front door's submissions are rate limited, capped and audited when refused
+        with self.admission.refusals(caller, source):
+            self.admission.admit(req, caller, source)
+            return self._submit(req, caller, source, source_ref, approval, untrusted_source)
+
+    def _submit(self, req: SubmitJob, caller: Caller, source: str = "api", source_ref: str | None = None,
+                approval: JobApproval | None = None, untrusted_source: str | None = None) -> Job:
         requester = caller.requester
         if req.idempotency_key:
             for j in self._jobs.values():
@@ -333,6 +344,7 @@ class JobService:
                   reply_to: str | None = None, context: list[ContextItem] | None = None,
                   output_schema: dict[str, Any] | None = None) -> Job:
         job = self.get(job_id, owner)
+        self.admission.admit_follow_up(requester, owner)  # --- front-door-auth
         if not message.strip():
             raise JobError("follow-up message is empty")
         if len(message) > MAX_INSTRUCTIONS:
@@ -970,7 +982,10 @@ class JobService:
                                  "(allow it in HANGAR_JOB_CALLBACK_HOSTS)")
                 return
         err = ""
-        async with httpx.AsyncClient(transport=self.transport, timeout=10, follow_redirects=False) as c:
+        from hangar.frontdoor import outbound_transport  # --- front-door-auth: connect to the checked address
+
+        async with httpx.AsyncClient(transport=self.transport or outbound_transport(self), timeout=10,
+                                     follow_redirects=False) as c:
             for attempt in range(3):
                 try:
                     r = await c.post(job.callback_url, content=body, headers=headers)
@@ -1041,6 +1056,8 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
                 return {"ignored": "approvals are for jobs waiting on an issue"}
             return await github_decision(svc, f"github:{repo}#{number}", sender, trusted, decision)
         if is_pr and not trusted:
+            svc.admission.refused(f"owner:github:{sender}", f"github:{sender}", "github.refused",  # front-door-auth
+                                  f"github:{repo}#{number}", why="untrusted follow-up")
             return {"ignored": f"{sender} is not trusted to continue jobs"}
         if is_pr:
             pr_repo = f"https://github.com/{repo}"
@@ -1060,8 +1077,11 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
     if not number or is_pr:
         return {"ignored": "not an issue"}
     ref = f"github:{repo}#{number}"
-    if event == "issue_comment" and (answered := exchange.answer_on_issue(svc, ref, sender, extra)) is not None:
-        return answered  # workstream E: the comment answers a job's question
+    # workstream E: the comment answers a job's question. front-door-auth: only a trusted person's does; anyone
+    # else's would steer the agent with text nobody vetted.
+    if event == "issue_comment" and trusted and \
+            (answered := exchange.answer_on_issue(svc, ref, sender, extra)) is not None:
+        return answered
 
     def running() -> Job | None:
         return next((j for j in svc.list(limit=500) if j.source_ref == ref and j.state not in JOB_TERMINAL), None)
@@ -1069,6 +1089,10 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
     if (busy := running()) is not None:
         if busy.state == JobState.AWAITING_APPROVAL:
             return {"ignored": f"job {busy.id} is waiting for approval on {ref} (/hangar approve)"}
+        if busy.state == JobState.NEEDS_INPUT and not trusted:  # --- front-door-auth
+            svc.admission.refused(f"owner:github:{sender}", f"github:{sender}", "github.refused", ref,
+                                  why="untrusted answer", job=busy.id)
+            return {"ignored": f"{sender} is not trusted to answer job {busy.id}'s question"}
         return {"ignored": f"job {busy.id} is already working on {ref}"}
     env = opts.get("env") or envs[0]
     if env not in envs:
@@ -1113,9 +1137,13 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
         return {"ignored": f"job {busy.id} is already working on {ref}"}
     approval = None if trusted else new_approval(
         svc, f"github:{sender}", f"{sender} is not trusted to start jobs; a trusted person must approve")
+    from hangar.frontdoor import RateLimited
+
     try:
         job = svc.submit(req, Caller(f"github:{sender}", f"github:{sender}"), source="github", source_ref=ref,
                          approval=approval, untrusted_source=untrusted_source)
+    except RateLimited as e:  # --- front-door-auth: no comment, or a flood of triggers becomes a flood of comments
+        return {"ignored": str(e)}
     except JobError as e:
         # Say why on the issue; otherwise a misconfiguration looks like hangar ignoring the label.
         svc._spawn(svc._comment(None, ref, f"hangar couldn't start a job for this issue: {e}"))

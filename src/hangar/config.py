@@ -196,6 +196,20 @@ class Settings(BaseSettings):
     a2a_max_wait_seconds: int = 1800  # a blocking SendMessage returns the task as it stands after this long
     a2a_max_request_bytes: int = 4_000_000  # base64 attachments are ~4/3 of HANGAR_JOB_MAX_CONTEXT_BYTES
     a2a_max_push_configs: int = 5  # push notification configs per task
+    # --- front-door-auth: rate limits, caps and replay protection (docs/security.md) ------------
+    # Job submissions and follow-ups per caller (a jobs token, a GitHub or Slack user, a webhook source): a token
+    # bucket refilling at this rate. Admin tokens and schedules are exempt. 0 = off.
+    job_rate_per_minute: float = 30
+    job_rate_burst: int = 10
+    # The same per front door (github, slack, webhook, a2a, api, mcp), across all its callers.
+    job_source_rate_per_minute: float = 120
+    job_source_rate_burst: int = 60
+    job_max_active_per_owner: int = 10  # unfinished jobs (incl. waiting for approval or input) per caller; 0 = off
+    max_request_mb: int = 100  # request bodies from a valid token (jobs carry bundles); anonymous ones get 64 KB
+    webhook_replay_hours: float = 168  # how long a signed delivery is remembered so a replay is recognised
+    audit_rejections_per_minute: int = 30  # refused requests audited per client address or caller; more are counted
+    slack_teams: list[str] = Field(default_factory=list)  # other workspaces (Enterprise Grid) whose members count
+    a2a_max_streams_per_owner: int = 20  # open A2A streams and blocking sends per caller
 
     @property
     def db_path(self) -> Path:
