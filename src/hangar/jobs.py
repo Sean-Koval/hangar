@@ -790,6 +790,20 @@ class JobService:
             await self._keep(job, s)
             await self._report(job)
             return
+        if outcome == "interrupted":  # --- workstream steer: a person took over; nothing is verified or delivered
+            stop = next((x for x in reversed(st.steers) if x.kind == "interrupt"), None)
+            who = (stop.requester if stop else None) or "someone"
+            if stop is not None and stop.status == "queued" and stop.text:  # with what to do instead: carry on
+                self._event(job, f"interrupted by {who}; carrying on with their message")
+                nxt = Turn(kind="follow_up", message=stop.text, requester=who, reply_to=turn.reply_to)
+                job.turns.append(nxt)
+                await self._start_turn(job, nxt, s)
+                await self._finish_turn(job, nxt, s)
+                return
+            job.result.question = (f"Interrupted by {who}. Follow up with what the agent should do instead "
+                                   "(it continues the same conversation), or cancel the job.")
+            await exchange.job_needs_input(self, job, turn, s)
+            return
         clean = outcome == "exited" and turn.exit_code == 0
         self._event(job, f"agent turn finished: {outcome}"
                          + (f", exit {turn.exit_code}" if turn.exit_code is not None else ""))
@@ -819,8 +833,6 @@ class JobService:
             state, reason = JobState.FAILED, "timed_out"
         elif outcome == "over_budget":
             state, reason = JobState.FAILED, "over_budget"
-        elif outcome == "interrupted":  # --- workstream steer: stopped by hand; follow_up_job continues it
-            state, reason = JobState.FAILED, "interrupted"
         elif not clean and not commits:
             state, reason = JobState.FAILED, "agent_failed"
         elif not verify_ok:

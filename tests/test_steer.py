@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
+import signal
 import subprocess
 import tempfile
 from pathlib import Path
@@ -32,6 +34,8 @@ ONE_SHOT = r"""#!/usr/bin/env bash
 asked="$(awk 'f&&NF{print;exit} /^# Now$/{f=1}' "$HANGAR_PROMPT_FILE")"  # a handoff prompt: the new message
 [ -n "$asked" ] || asked="$(head -1 "$HANGAR_PROMPT_FILE")"
 case "$asked" in SLOW*) sleep 30 ;; esac
+held="$(dirname "$HANGAR_PROMPT_FILE")/held"  # HOLD (a job's task): the first run works for a while
+grep -q HOLD "$HANGAR_PROMPT_FILE" && [ ! -e "$held" ] && { touch "$held"; sleep 30; }
 echo "{\"type\":\"result\",\"result\":\"one-shot: $asked\"}"
 """
 KEY = b"0" * 43 + b"="
@@ -257,7 +261,7 @@ async def test_deny_risky_answers_without_asking(svc, live, settings):
     assert [(a.status, a.by) for a in t.approvals] == [("allowed", "policy")]
 
 
-async def test_allow_always_is_for_this_conversation_only(svc, live):
+async def test_allow_always_is_never_written_to_settings(svc, live):
     new(svc, live, "always", "TOOL make the file", approvals="ask")
     a = await pending_approval(svc, "always")
     await steering.answer(svc, svc.get("always"), a.id, "allow_always", "ana")
@@ -330,3 +334,164 @@ async def test_forged_commands_are_refused(svc, live):
     assert steering.pending(svc.get("forge"))[0].id == a.id
     await steering.answer(svc, s, a.id, "deny", "ana")
     await settle(svc, "forge")
+
+
+# ---------------------------------------------------------------------------- review: races, tampering, jobs
+def driver_proc(svc: SessionService, s, t) -> int:
+    """The pid of the turn's driver (by its --ctl argument)."""
+    want = str(inbox(svc, s, t).parent).encode()
+    for p in Path("/proc").iterdir():
+        try:
+            argv = (p / "cmdline").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        if any(a.endswith(b"driver.py") for a in argv) and want in argv:
+            return int(p.name)
+    raise AssertionError(f"no driver for {want!r}")
+
+
+async def test_a_fork_keeps_the_sessions_approval_policy(svc, live):
+    from hangar import strategies
+
+    new(svc, live, "careful", "work", approvals="ask")
+    await settle(svc, "careful")
+    child = (await strategies.fork_session(svc, "careful", 1, "ana", message="TOOL make the file"))[0]
+    a = await pending_approval(svc, child.name)  # asked, not run with permission checks off
+    c = svc.get(child.name)
+    assert c.approvals == "ask" and c.turns[-1].approval_policy == "ask"
+    assert not repo_file(svc, c, "tool-ran.txt").exists()
+    await steering.answer(svc, c, a.id, "deny", "ana")
+    await settle(svc, child.name)
+
+
+async def test_a_forged_acknowledgement_is_not_believed(svc, live):
+    """Something in the sandbox (the agent's uid) swallows hangar's interrupt and writes `ok` in its place: hangar
+    must not report the turn interrupted while it runs on. The driver signs its answers; an interrupt it does not
+    confirm stops the run outright."""
+    new(svc, live, "swallow", "SLOW keep going")
+    s = await running(svc, "swallow")
+    t = s.turns[0]
+    box_in = inbox(svc, s, t)
+    pid = driver_proc(svc, s, t)
+    os.kill(pid, signal.SIGSTOP)  # the agent wins the race for the command file
+    try:
+        async def swallow() -> None:
+            while True:
+                for f in box_in.glob("*.json"):
+                    f.unlink()
+                    with (box_in.parent / "acks").open("a") as acks:
+                        acks.write(json.dumps({"id": f.name[:-5], "ok": True, "ts": 1}) + "\n")
+                    return
+                await asyncio.sleep(0.01)
+
+        thief = asyncio.create_task(swallow())
+        await steering.interrupt(svc, s, "ana")
+        await thief
+    finally:
+        os.kill(pid, signal.SIGCONT)
+    s = await settle(svc, "swallow")
+    assert (s.turns[0].outcome, s.turns[0].exit_code) == ("interrupted", 130), (s.turns[0].outcome, s.turns[0].summary)
+
+
+async def test_a_steer_that_meets_a_harness_that_just_exited_starts_the_next_turn(svc, live):
+    """The harness exits on its own while a message is landing: the driver must not take it (nothing would read
+    it), and hangar must start the next turn with it rather than call it failed."""
+    new(svc, live, "exits", "SLOW work")
+    s = await running(svc, "exits")
+    t = s.turns[0]
+    pid = driver_proc(svc, s, t)
+    harness = int(subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True).stdout.split()[0])
+    os.kill(pid, signal.SIGSTOP)
+    try:
+        svc.send("exits", "the follow-up", requester="ana")  # a steer, on its way into the turn
+        for _ in range(100):
+            if list(inbox(svc, s, t).glob("*.json")):
+                break
+            await asyncio.sleep(0.05)
+        os.kill(harness, signal.SIGKILL)  # the harness goes away by itself
+        await asyncio.sleep(0.2)
+    finally:
+        os.kill(pid, signal.SIGCONT)
+    s = await settle(svc, "exits")
+    st = s.turns[0].steers[0]
+    assert st.status == "queued", st
+    assert [x.message for x in s.turns] == ["SLOW work", "the follow-up"]
+    assert s.turns[1].summary == "did: the follow-up"
+
+
+async def test_the_driver_does_not_load_modules_planted_next_to_it(svc, live):
+    """~/.hangar is the agent's to write: a json.py there must not run inside the driver (python3 -I)."""
+    svc.new(NewSession(name="planted", environment="liveenv", repo=live["url"]), owner="admin", requester="sean")
+    s = await settle(svc, "planted")
+    box = svc.fleet.providers["docker"].boxes[s.sandbox_id]
+    (box / "home/agent/.hangar/json.py").write_text("raise SystemExit('planted module ran')\n")
+    svc.send("planted", "work", requester="ana")
+    s = await settle(svc, "planted")
+    assert (s.turns[0].outcome, s.turns[0].exit_code, s.turns[0].summary) == ("exited", 0, "did: work")
+
+
+@pytest.fixture
+async def jobsvc(svc, fleet, settings):
+    from hangar.jobs import JobService
+
+    settings.job_poll_seconds = 0.1
+    j = JobService(fleet, svc)
+    await j.start()
+    yield j
+    await j.stop()
+
+
+async def job_turn(jobsvc, svc: SessionService, job_id: str):
+    for _ in range(400):
+        s = next((x for x in svc._sessions.values() if x.job_id == job_id), None)
+        if s is not None and s.turns and s.turns[-1].run_id and s.state == SessionState.RUNNING:
+            t = s.turns[-1]
+            if not t.live or inbox(svc, s, t).is_dir():
+                return s
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"job {job_id} never ran a turn: {[e.message for e in jobsvc.get(job_id).events]}")
+
+
+async def job_until(jobsvc, job_id: str, states, timeout: float = 30):
+    for _ in range(int(timeout / 0.05)):
+        job = jobsvc.get(job_id)
+        if job.state in states:
+            return job
+        await asyncio.sleep(0.05)
+    job = jobsvc.get(job_id)
+    raise AssertionError(f"{job_id} stuck in {job.state}: {[e.message for e in job.events]}")
+
+
+async def test_interrupting_a_job_pauses_it_for_the_next_instruction(svc, live, jobsvc):
+    """Stopping a job's turn is a person taking over, not a failure: no verify, no draft delivered; the job waits
+    (needs_input) for what to do instead, and a follow-up carries on in the same conversation."""
+    from hangar.jobs import Caller, SubmitJob
+    from hangar.models import JobState
+
+    job = jobsvc.submit(SubmitJob(instructions="SLOW rewrite the parser", repo=live["url"], environment="liveenv"),
+                        Caller("svc", "svc"))
+    s = await job_turn(jobsvc, svc, job.id)
+    await steering.interrupt(svc, s, "ana")
+    job = await job_until(jobsvc, job.id, {JobState.NEEDS_INPUT, JobState.FAILED, JobState.SUCCEEDED})
+    assert job.state == JobState.NEEDS_INPUT, [e.message for e in job.events]
+    assert "interrupted by ana" in (job.result.question or "").lower()
+    assert job.turns[0].outcome == "interrupted" and not job.result.pushed
+    jobsvc.follow_up(job.id, "only fix the bug in parse()", "ana")
+    job = await job_until(jobsvc, job.id, {JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED})
+    assert job.state == JobState.SUCCEEDED and len(job.turns) == 2, [e.message for e in job.events]
+
+
+async def test_a_one_shot_job_interrupted_with_a_message_carries_on_with_it(svc, live, jobsvc):
+    from hangar.jobs import Caller, SubmitJob
+    from hangar.models import JobState
+
+    job = jobsvc.submit(SubmitJob(instructions="HOLD the wrong thing", repo=live["url"], environment="liveenv",
+                                  harness="one-shot"), Caller("svc", "svc"))
+    s = await job_turn(jobsvc, svc, job.id)
+    assert not s.turns[-1].live
+    st = await steering.interrupt(svc, s, "ana", "do this instead")
+    assert st.status == "queued"
+    job = await job_until(jobsvc, job.id, {JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED,
+                                           JobState.NEEDS_INPUT})
+    assert job.state == JobState.SUCCEEDED, [e.message for e in job.events]
+    assert [t.message for t in job.turns][1:] == ["do this instead"] and job.turns[0].outcome == "interrupted"
