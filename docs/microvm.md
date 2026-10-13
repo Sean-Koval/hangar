@@ -26,12 +26,12 @@ tier: fast          # fast | isolated | default
 | `isolated` | untrusted code that needs a kernel boundary | `["kubernetes"]` (gVisor or Kata) | **fails**: it is a security choice, and falling back to runc would quietly weaken it |
 | `default` | everything else | `HANGAR_DEFAULT_PROVIDER` | |
 
-- **How a provider is picked.** A create that names no provider takes the first provider in its tier's list that is loaded and not cooling down. A create that names a provider gets that provider, whatever the tier.
+- **How a provider is picked.** A create that names no provider takes the first provider in its tier's list that is loaded and not cooling down. A create that names a provider gets that provider, whatever the tier, with one exception: an `isolated` environment (or a create that asks for `isolated`) only ever gets a provider listed for that tier. Naming another provider, or asking for another tier, fails the create.
 - **Fallback.** A provider that answers "full" or "unreachable" (HTTP 429, 502, 503, 504, or no connection) is skipped for `HANGAR_TIER_COOLDOWN_SECONDS` (60), and the create moves to the next provider. The audit log records `sandbox.tier_fallback`. Any other error, such as a missing template, fails the create as before.
 - **Jobs and sessions** use their environment's tier, since they create sandboxes through the same `fleet.create`.
 - **Change the lists** with `HANGAR_TIERS='{"fast": ["e2b"], "isolated": ["kubernetes"]}'`. An empty list is allowed, so `fast` can be just the default provider.
 
-Hangar's own E2B API never uses tiers. It always creates on `HANGAR_DEFAULT_PROVIDER`, the provider that has hangar-envd, so a `fast` environment requested through `/e2b` can't route back into the `e2b` provider. If that provider pointed at this same hangar, the request would loop.
+Hangar's own E2B API never uses tiers. It always creates on `HANGAR_DEFAULT_PROVIDER`, the provider that has hangar-envd, so a `fast` environment requested through `/e2b` can't route back into the `e2b` provider. If that provider pointed at this same hangar, the request would loop. An `isolated` environment is created through `/e2b` only when the default provider is one of the isolated tier's; otherwise the create fails.
 
 ## The e2b provider
 

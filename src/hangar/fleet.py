@@ -490,11 +490,11 @@ class Fleet:
         node, cloning...), so callers can show where the time goes. `push_branch` (default: `work_branch`) is
         the branch a gateway-mode sandbox may push. `tier` (or the environment's) picks the provider when none
         is named (tiers.py)."""
-        # --- providers-e2b: no provider named: the tier's first one with room. Must stay the first statement, so
-        # locals() is exactly the arguments.
-        if provider is None and (tier := tier or self.catalog.get(environment).tier):
-            from hangar import tiers
+        # --- providers-e2b: no provider named: the tier's first one with room (an isolated one is never given up).
+        # Must stay the first statement, so locals() is exactly the arguments.
+        from hangar import tiers
 
+        if tier := tiers.route(self, environment, tier, provider):
             call = {k: v for k, v in locals().items() if k not in ("self", "tier", "tiers")}
             return await tiers.create(self, tier, call)
         active = [s for s in self.store.list(Sandbox) if s.state in ACTIVE]

@@ -28,6 +28,26 @@ log = logging.getLogger("hangar.tiers")
 TIERS = ("fast", "isolated", "default")
 
 
+def route(fleet: Fleet, environment: str, tier: str | None, provider: str | None) -> str | None:
+    """The tier a create goes through, or None to create on `provider` (or the default) directly. A named provider
+    wins, except that isolation is never given up (review(#64)): an isolated environment, or a create asking for
+    `isolated`, gets only providers listed for that tier, whatever else the caller names or asks for."""
+    from hangar.fleet import FleetError
+
+    env_tier = fleet.catalog.get(environment).tier
+    if "isolated" in (env_tier, tier):
+        allowed = list(fleet.settings.tiers.get("isolated") or [])
+        if tier not in (None, "isolated"):
+            raise FleetError(f"environment {environment} is isolated; it can't be created in the {tier} tier")
+        if provider is not None and provider not in allowed:
+            raise FleetError(f"environment {environment} is isolated: {provider} isn't one of the isolated tier's "
+                             f"providers ({', '.join(allowed) or 'none in HANGAR_TIERS'})")
+        tier = "isolated"
+    if provider is not None:
+        return None
+    return tier or env_tier
+
+
 def candidates(fleet: Fleet, tier: str) -> list[str]:
     """The tier's providers, in order, that are loaded and not cooling down after a failure."""
     from hangar.fleet import FleetError

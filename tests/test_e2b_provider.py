@@ -592,6 +592,21 @@ async def test_isolated_never_falls_back(tier_envs):
     assert not [s for s in fleet.list() if s.provider == "docker"]
 
 
+async def test_an_isolated_environment_is_never_put_on_a_weaker_provider(tier_envs):
+    """review(#64): `isolated` is the environment's security choice. Naming a provider outside the tier, asking for
+    another tier, or hangar's E2B API pinning the default provider must not move it off an isolated provider."""
+    from hangar.fleet import FleetError
+
+    fleet = tier_envs
+    fleet.providers["kubernetes"] = FakeProvider()
+    for kw in ({"provider": "docker"}, {"tier": "fast"}, {"tier": "default"}, {"provider": "docker", "tier": "fast"}):
+        with pytest.raises(FleetError, match="isolated"):
+            await fleet.create("locked", **kw)
+    assert not [s for s in fleet.list() if s.provider == "docker"]
+    assert (await fleet.create("locked", provider="kubernetes")).provider == "kubernetes"
+    assert (await fleet.create("locked")).provider == "kubernetes"
+
+
 async def test_other_errors_do_not_fall_back(tier_envs):
     from hangar.fleet import FleetError
 
