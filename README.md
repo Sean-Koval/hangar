@@ -154,6 +154,8 @@ warm_pool: 2                       # keep two pre-started
 
 You can enable several providers on one control plane and pick one per sandbox. See [docs/gke.md](docs/gke.md) for the cluster walkthrough.
 
+On Docker and Kubernetes, hangar starts a small daemon in each sandbox, [hangar-envd](docs/envd.md), and runs commands, file transfers and terminals through it instead of `docker exec` or the Kubernetes exec API: an `exec` takes about 7 ms instead of 70 on Docker. It speaks E2B's envd protocol. Build it with `envd/build.sh` (the control-plane image includes it); without it, or with `HANGAR_ENVD=off`, hangar uses exec as before.
+
 ## Configuration
 
 Everything is set through `HANGAR_*` settings (see `src/hangar/config.py`), which come from two places:
