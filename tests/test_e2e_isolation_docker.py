@@ -294,3 +294,38 @@ async def test_the_agent_cant_reach_the_driver_on_docker(tmp_path, monkeypatch):
             with contextlib.suppress(Exception):
                 await fleet.destroy(sid)
         await fleet.stop()
+
+
+async def test_sudo_that_wants_a_terminal_still_keeps_the_sandbox_single_user(tmp_path):
+    """`Defaults requiretty` makes `sudo -n -l` fail without a terminal, and the agent can get one (script, tmux):
+    the setup must not take that for "no sudo" and split a sandbox whose agent can become root."""
+    from hangar import isolation
+    from hangar.app import Hangar
+    from hangar.config import Settings
+
+    s = Settings(data_dir=tmp_path, env_dirs=[ROOT / "envs"], reaper_interval_seconds=3600,
+                 extra_ca_bundle=os.environ.get("HANGAR_EXTRA_CA_BUNDLE") or None)
+    s.snapshot_dir.mkdir(parents=True, exist_ok=True)
+    fleet = Hangar(s).fleet
+    await fleet.start()
+    try:
+        sb = await fleet.create("minimal", name="e2e-iso-tty", labels={"e2e-iso": "1"}, actor="test")  # sudo: true
+        sb, prov = fleet._running(sb.id)
+
+        async def root(cmd: str) -> None:
+            r = await prov.exec(sb, cmd, user="root", cwd="/")
+            assert r.exit_code == 0, r
+
+        await root("echo 'Defaults requiretty' > /etc/sudoers.d/zz-tty && chmod 0440 /etc/sudoers.d/zz-tty")
+        r = await fleet.exec(sb.id, "script -qec 'sudo -n id -u' /dev/null")
+        assert r.stdout.split()[-1:] == ["0"], r  # the agent is root whenever it likes
+        assert await isolation.ensure(fleet, prov, sb) is False
+        assert "sudo" in sb.info["isolation"]["why"], sb.info["isolation"]
+
+        # Without the rule, requiretty alone keeps nobody from splitting.
+        await root(f"rm /etc/sudoers.d/{s.sandbox_user}")
+        del sb.info["isolation"]
+        assert await isolation.ensure(fleet, prov, sb) is True, sb.info["isolation"]
+    finally:
+        await fleet.destroy_many(label="e2e-iso")
+        await fleet.stop()

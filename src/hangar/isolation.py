@@ -59,9 +59,16 @@ SETUP = r"""u={user}
 uid=$(id -u "$u" 2>/dev/null) || {{ echo "there is no user $u"; exit 3; }}
 [ "$uid" != 0 ] || {{ echo "the sandbox user is root"; exit 3; }}
 for t in setpriv tmux bash; do command -v $t >/dev/null || {{ echo "the image has no $t"; exit 3; }}; done
-# any sudo rights at all without a password (sudo -l needs none then): the agent may be root whenever it likes
-if setpriv --reuid="$u" --regid="$u" --init-groups sudo -n -l >/dev/null 2>&1; then
-  echo "$u can use sudo (the environment has sudo: true)"; exit 3
+# any sudo rights at all without a password (sudo -l needs none then): the agent may be root whenever it likes. Asked
+# under a terminal too when sudo wants one (`Defaults requiretty`): the agent can get one (script, tmux).
+as_agent() {{ setpriv --reuid="$u" --regid="$u" --init-groups "$@" </dev/null 2>&1; }}
+if command -v sudo >/dev/null; then
+  out=$(as_agent sudo -n -l) && {{ echo "$u can use sudo (the environment has sudo: true)"; exit 3; }}
+  case $out in *tty*|*terminal*)
+    command -v script >/dev/null || {{ echo "sudo wants a terminal, and the image has no script(1)"; exit 3; }}
+    out=$(as_agent script -qec "sudo -n -l" /dev/null) && {{ echo "$u can use sudo (with a terminal)"; exit 3; }}
+    case $out in *tty*|*terminal*) echo "sudo wants a terminal, and asking it under one failed"; exit 3;; esac;;
+  esac
 fi
 id -u {hangar} >/dev/null 2>&1 \
   || useradd --system --user-group --no-create-home --home-dir {home} --shell /usr/sbin/nologin {hangar} 2>/dev/null \
