@@ -10,7 +10,8 @@ running in a container can't join it to reach envd: it uses `docker exec` instea
 
 The bridge has a fixed name, `hangar0`, so a host firewall rule can drop what sandboxes send to link-local addresses
 (the cloud metadata server), which Docker has no option for: `iptables -I DOCKER-USER -i hangar0 -d 169.254.0.0/16
--j DROP` (the single-VM install adds it).
+-p tcp ! --dport 53 -j DROP` (the single-VM install adds it). A network by hangar's name that isn't isolating, or isn't
+on that bridge, is refused rather than used.
 """
 
 from __future__ import annotations
@@ -29,7 +30,8 @@ log = logging.getLogger("hangar.docker")
 NAME = "hangar-sandboxes"
 BRIDGE = "hangar0"
 ICC = "com.docker.network.bridge.enable_icc"
-OPTIONS = {ICC: "false", "com.docker.network.bridge.name": BRIDGE}
+BRIDGE_NAME = "com.docker.network.bridge.name"
+OPTIONS = {ICC: "false", BRIDGE_NAME: BRIDGE}
 LABEL = "dev.hangar.network"
 
 
@@ -49,22 +51,26 @@ def joined(attrs: dict[str, Any], name: str) -> bool:
     return name in ((attrs.get("NetworkSettings") or {}).get("Networks") or {})
 
 
+def _hangars(attrs: dict[str, Any]) -> bool:
+    """Whether `hangar-sandboxes` is as hangar makes it: isolating, on the bridge the host's metadata rule names."""
+    return isolates(attrs) and (attrs.get("Options") or {}).get(BRIDGE_NAME) == BRIDGE
+
+
 class Network:
     """Creates hangar's network the first time a sandbox needs it; any other network named in HANGAR_DOCKER_NETWORK
     is the operator's and is used as it is."""
 
     def __init__(self, client: Any, settings: Settings) -> None:
         self.client, self.settings = client, settings
-        self._ready = False
         self._lock = asyncio.Lock()
 
     async def ensure(self) -> None:
-        if self._ready or network(self.settings) != NAME:
+        """Checked before every container start, not once: `docker network prune` removes the network whenever no
+        sandbox is on it, and a remembered answer would fail every start until hangar restarts."""
+        if network(self.settings) != NAME:
             return
         async with self._lock:
-            if not self._ready:
-                await asyncio.to_thread(self._ensure)
-                self._ready = True
+            await asyncio.to_thread(self._ensure)
 
     def _ensure(self) -> None:
         api = self.client.api
@@ -81,9 +87,12 @@ class Network:
                         f"could not create the Docker network {NAME} for sandboxes: {e.explanation or e}. Free the "
                         f"bridge name {BRIDGE}, or set HANGAR_DOCKER_NETWORK to a network of your own") from e
             attrs = api.inspect_network(NAME)
-        if not isolates(attrs):
-            log.warning("Docker network %s lets sandboxes reach each other (it was not created by hangar with "
-                        "%s=false); remove it and hangar recreates it", NAME, ICC)
+        if not _hangars(attrs):  # made by hand: deny rather than start sandboxes where they reach each other
+            raise ProviderError(
+                f"the Docker network {NAME} wasn't made by hangar: it lets sandboxes reach each other ({ICC} isn't "
+                f"false) or isn't on the bridge {BRIDGE}, which the host's metadata rule names. Remove it (`docker "
+                f"network rm {NAME}` once no container uses it) and hangar makes it again, or set "
+                f"HANGAR_DOCKER_NETWORK to a network of your own")
 
 
 def doctor_check(client: Any, settings: Settings) -> dict[str, Any]:
@@ -107,6 +116,10 @@ def doctor_check(client: Any, settings: Settings) -> dict[str, Any]:
     if not isolates(attrs):
         return _check("docker sandbox network", None,
                       f"sandboxes on {name} can reach each other's ports (hangar-envd, dev servers)", fix)
+    if name == NAME and not _hangars(attrs):
+        return _check("docker sandbox network", None,
+                      f"{name} isn't on the bridge {BRIDGE}, so the host's metadata rule doesn't cover it; hangar "
+                      "refuses to start sandboxes on it", f"docker network rm {name} (hangar makes it again)")
     # Sandboxes, and warm-pool members (claimed ones keep only the pool's label: labels can't change).
     stray = {c.name for label in ("dev.hangar.sandbox", "dev.hangar.pool")
              for c in client.containers.list(filters={"label": label}) if not joined(c.attrs, name)}

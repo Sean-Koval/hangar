@@ -60,13 +60,31 @@ async def test_a_race_with_another_control_plane_is_fine_and_other_errors_say_wh
         await Network(client(Api(create_error=500)), Settings()).ensure()
 
 
-async def test_an_operators_network_is_used_as_it_is(caplog):
+async def test_an_operators_network_is_used_as_it_is():
     api = Api()
     await Network(client(api), Settings(docker_network="mynet")).ensure()
     assert api.created == []
-    api = Api({NAME: {"Driver": "bridge", "Options": {}}})  # made by hand, without the option
-    await Network(client(api), Settings()).ensure()
-    assert api.created == [] and "lets sandboxes reach each other" in caplog.text
+
+
+async def test_a_network_by_hangars_name_that_doesnt_isolate_is_refused():
+    """Deny by default: a `hangar-sandboxes` made by hand without the option, or on another bridge (the host's
+    metadata rule names hangar0), would put sandboxes where they reach each other or the metadata server."""
+    for opts in ({}, {ICC: "false"}, {ICC: "false", "com.docker.network.bridge.name": "br-x"}):
+        api = Api({NAME: {"Driver": "bridge", "Options": opts}})
+        with pytest.raises(ProviderError, match="docker network rm"):
+            await Network(client(api), Settings()).ensure()
+        assert api.created == []
+
+
+async def test_a_pruned_network_is_made_again():
+    """`docker network prune` removes it whenever no sandbox is on it; the next sandbox must not fail on a cached
+    answer until hangar restarts."""
+    api = Api()
+    n = Network(client(api), Settings())
+    await n.ensure()
+    del api.nets[NAME]
+    await n.ensure()
+    assert [c[0] for c in api.created] == [NAME, NAME]
 
 
 def test_the_provider_puts_every_container_on_it(monkeypatch):
@@ -117,5 +135,7 @@ def test_doctor():
     assert c["status"] == "warn" and "hangar-sb-2" in c["detail"]
     c = doctor_check(client(Api({"bridge": {"Driver": "bridge", "Options": {}}})), Settings(docker_network="bridge"))
     assert c["status"] == "warn" and "reach each other" in c["detail"] and "unset HANGAR_DOCKER_NETWORK" in c["fix"]
+    c = doctor_check(client(Api({NAME: {"Driver": "bridge", "Options": {ICC: "false"}}})), s)
+    assert c["status"] == "warn" and BRIDGE in c["detail"]  # the metadata rule wouldn't match it
     assert doctor_check(client(Api()), Settings(docker_network="nope"))["status"] == "fail"
     assert doctor_check(client(Api()), Settings(docker_network="host"))["status"] == "warn"
