@@ -498,6 +498,8 @@ def job_list(state: str | None = None, limit: int = 20, as_json: bool = typer.Op
     jobs = _call("GET", "/api/jobs", params={"state": state, "limit": limit} if state else {"limit": limit})
     if as_json:
         return _print(jobs)
+    if not jobs:
+        typer.echo("No jobs" + (f" in state '{state}'" if state else "") + ".")
     for j in jobs:
         typer.echo(_job_line(j))
 
