@@ -147,3 +147,20 @@ Issue text, comments and service context are untrusted input to the agent. Today
 - a prompt that marks context as data.
 
 Known gap: the callback check resolves the host before sending but doesn't pin the address, so DNS rebinding is not fully blocked. Until spec 0003 lands, the agent's sandbox still holds a git credential, so restrict `HANGAR_GITHUB_REPOS` to repos where a mistaken push to a `hangar/*` branch is acceptable, and keep PR merges human-approved.
+
+## Troubleshooting
+
+**Labelling an issue or commenting `/hangar` does nothing.** Check the webhook's **Recent Deliveries** page in the repo settings.
+
+- No deliveries at all: GitHub isn't sending. Make sure the webhook is active, points at `https://<hangar>/api/hooks/github`, and is subscribed to **Issues** and **Issue comments**. GitHub must be able to reach that URL from the internet.
+- `404`: the control plane has no `HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL`. On GKE, check the `hangar-site` config map and restart (§4).
+- `401 bad signature`: the webhook secret in GitHub doesn't match the `gh-webhook` credential.
+- `200` with `{"ignored": ...}`: hangar received the event and skipped it on purpose. The reason says why: the repo isn't in `HANGAR_GITHUB_REPOS`, the label isn't the trigger label, or the commenter isn't an owner, member or collaborator.
+
+**`hangar job list` says `No jobs.`** The CLI shows only the jobs that its token can see.
+
+- A `jobs` token sees only the jobs it submitted. Use an admin token to see jobs from GitHub, MCP and other services.
+- `HANGAR_URL` defaults to `http://localhost:8787`, so set it to the control plane that ran the job.
+- With `--state`, the list shows only jobs in that state.
+
+**The first job sits in `provisioning` for minutes.** If the environment has no image for the provider yet, the first sandbox builds it, plus any harness packs. This can take several minutes. Later jobs reuse the image. To build ahead of time, run `hangar env build <env>`, or choose **Build** under **Environments** in the dashboard. GitHub-triggered jobs comment "Queued as hangar job …" right away, so the wait shows on the issue. `HANGAR_JOB_TIMEOUT_MINUTES` limits only the agent turn, so the build doesn't use it up.
