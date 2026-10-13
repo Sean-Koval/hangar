@@ -158,6 +158,7 @@ class Settings(BaseSettings):
     # --- providers-e2b: on a provider with memory snapshots (hot_resume: E2B, CubeSandbox), a suspended session's
     # sandbox is paused, not destroyed, for this long, and resumes from its memory; 0 = always restore checkpoints.
     session_hot_resume_minutes: int = 1440
+    session_hot_resume_max: int = 20  # sandboxes kept paused for hot resume at once; the longest-parked go first
     pre_destroy_timeout_seconds: float = 300.0
     # Waiting for a sandbox to start covers node scale-up (2-4 min on GKE) plus a first image pull (1-3 min).
     sandbox_start_timeout_seconds: int = 900

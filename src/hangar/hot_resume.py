@@ -9,6 +9,10 @@ parked sandbox can't be trusted to be the session's latest state:
 - resuming it fails, or it doesn't answer a command afterwards.
 Nothing here deletes a checkpoint, and a parked sandbox that isn't used is destroyed.
 
+Parked sandboxes are a cache, so they are bounded: at most HANGAR_SESSION_HOT_RESUME_MAX (the longest-parked go
+first), none while the fleet is three-quarters full (paused sandboxes count against HANGAR_MAX_SANDBOXES), and none
+holding an exclusive credential (a rotating refresh token goes back to the vault for other sandboxes to use).
+
 The record of a parked sandbox lives in the store (kv `session:parked:<session id>`), so it survives a restart.
 """
 
@@ -20,7 +24,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from hangar.fleet import FleetError
-from hangar.models import Sandbox, SandboxState, SessionState, now
+from hangar.models import Credential, Sandbox, SandboxState, SessionState, now
 
 if TYPE_CHECKING:
     from hangar.models import Session
@@ -36,25 +40,51 @@ def _record(svc: SessionService, sid: str) -> dict | None:
     return rec if isinstance(rec, dict) and isinstance(rec.get("sandbox"), str) else None
 
 
+def _parked(svc: SessionService) -> list[tuple[str, dict]]:
+    out = []
+    for k in svc.store.kv_keys(KEY):
+        sid = k.removeprefix(KEY)
+        if rec := _record(svc, sid):
+            out.append((sid, rec))
+    return out
+
+
 def parked_ids(svc: SessionService) -> set[str]:
     """Sandboxes parked for their sessions: not orphans, whatever the session's sandbox_id says."""
-    out = set()
-    for k in svc.store.kv_keys(KEY):
-        if rec := _record(svc, k.removeprefix(KEY)):
-            out.add(rec["sandbox"])
-    return out
+    return {rec["sandbox"] for _, rec in _parked(svc)}
+
+
+def _why_not(svc: SessionService, sb: Sandbox) -> str | None:
+    """Why this sandbox can't be parked, if it can't."""
+    fleet = svc.fleet
+    if not fleet.provider(sb.provider).capabilities.hot_resume:
+        return "the provider can't resume from memory"
+    if sb.state != SandboxState.RUNNING:
+        return f"it is {sb.state.value}"
+    # A rotating refresh token (an exclusive credential) must go back to the vault and be free for other sandboxes;
+    # the copy in a paused sandbox would go stale the first time another one refreshed it.
+    if any(c.leased_to == sb.id for c in svc.store.list(Credential)):
+        return "it holds an exclusive credential"
+    # Paused sandboxes count against HANGAR_MAX_SANDBOXES: keep a quarter of it for sandboxes that run.
+    active = sum(1 for x in fleet.list() if x.id != sb.id)
+    if active >= fleet.settings.max_sandboxes * 3 // 4:
+        return "the fleet is nearly at HANGAR_MAX_SANDBOXES"
+    return None
 
 
 async def park(svc: SessionService, s: Session, sandbox_id: str) -> bool:
     """Pause the session's sandbox instead of destroying it, after its suspend checkpoint. False: the caller destroys
-    it as before (the provider can't hot-resume, hot resume is off, or the pause failed)."""
+    it as before (hot resume is off or can't apply, or the pause failed)."""
     minutes = svc.settings.session_hot_resume_minutes
+    if minutes <= 0 or svc.settings.session_hot_resume_max <= 0:
+        return False
     try:
         sb = svc.fleet.get(sandbox_id)
-        prov = svc.fleet.provider(sb.provider)
+        why = _why_not(svc, sb)
     except FleetError:
         return False
-    if minutes <= 0 or not prov.capabilities.hot_resume or sb.state != SandboxState.RUNNING:
+    if why:
+        log.info("session %s: not keeping %s paused for hot resume: %s", s.id, sb.id, why)
         return False
     try:
         await svc.fleet.pause(sb.id, actor=f"session:{s.id}")
@@ -64,18 +94,23 @@ async def park(svc: SessionService, s: Session, sandbox_id: str) -> bool:
     sb = svc.fleet.get(sb.id)
     sb.expires_at = now() + minutes * 60  # the reaper removes it if nobody comes back
     svc.store.put(sb)
+    svc.fleet.gateway.extend(sb)  # a gateway grant lives as long as its sandbox (and answers only while it runs)
     svc.store.kv_set_json(KEY + s.id, {"sandbox": sb.id, "checkpoint": s.checkpoints[-1].id if s.checkpoints
                                        else None, "at": now()})
+    # A bounded cache: past HANGAR_SESSION_HOT_RESUME_MAX, the longest-parked go (their sessions resume cold).
+    parked = sorted(_parked(svc), key=lambda x: x[1].get("at") or 0)
+    for sid, _ in parked[:max(0, len(parked) - svc.settings.session_hot_resume_max)]:
+        await discard(svc, sid)
     return True
 
 
-async def discard(svc: SessionService, s: Session) -> None:
-    """Forget the session's parked sandbox and destroy it (archive, delete, or a cold resume that superseded it)."""
-    rec = _record(svc, s.id)
-    svc.store.kv_delete(KEY + s.id)
+async def discard(svc: SessionService, session_id: str) -> None:
+    """Forget a session's parked sandbox and destroy it (archive, delete, eviction, or a resume that can't use it)."""
+    rec = _record(svc, session_id)
+    svc.store.kv_delete(KEY + session_id)
     if rec:
         with contextlib.suppress(Exception):
-            await svc.fleet.destroy(rec["sandbox"], actor=f"session:{s.id}")
+            await svc.fleet.destroy(rec["sandbox"], actor=f"session:{session_id}")
 
 
 async def wake(svc: SessionService, s: Session, stage: Callable[[str], None]) -> Sandbox | None:
@@ -91,7 +126,7 @@ async def wake(svc: SessionService, s: Session, stage: Callable[[str], None]) ->
         sb = None
     if (sb is None or sb.state != SandboxState.PAUSED or sb.labels.get("hangar.session") != s.id
             or rec.get("checkpoint") != latest):
-        await discard(svc, s)
+        await discard(svc, s.id)
         return None
     stage("resuming the paused sandbox from its memory snapshot")
     try:
@@ -101,7 +136,7 @@ async def wake(svc: SessionService, s: Session, stage: Callable[[str], None]) ->
             raise RuntimeError(f"a command exited {res.exit_code}")
     except Exception as e:  # noqa: BLE001 - the checkpoint is still there: restore it instead
         log.warning("session %s: hot resume of %s failed (%s); restoring the checkpoint", s.id, sb.id, e)
-        await discard(svc, s)
+        await discard(svc, s.id)
         return None
     svc.store.kv_delete(KEY + s.id)
     ttl = max(s.idle_minutes * 3, 120) + svc.settings.session_turn_timeout_minutes

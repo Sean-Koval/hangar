@@ -92,6 +92,7 @@ None of this ran here: no Cube cluster was available. The request body is taken 
 | `HANGAR_TIERS` | `{"fast": ["e2b"], "isolated": ["kubernetes"]}` | Tier → providers in order |
 | `HANGAR_TIER_COOLDOWN_SECONDS` | `60` | How long a full or unreachable provider is skipped |
 | `HANGAR_SESSION_HOT_RESUME_MINUTES` | `1440` | How long a suspended session's sandbox stays paused for hot resume; 0 turns it off |
+| `HANGAR_SESSION_HOT_RESUME_MAX` | `20` | Most sandboxes kept paused for hot resume at once |
 
 ## Hot resume
 
@@ -107,6 +108,12 @@ It falls back to restoring the checkpoint in a new sandbox whenever the parked s
 - resuming it fails, or it doesn't answer a command afterwards.
 
 In every fallback the parked sandbox is destroyed. No checkpoint is ever deleted by any of this. A parked sandbox survives a control-plane restart; startup doesn't count it as an orphan. Archiving or deleting the session destroys it.
+
+Parked sandboxes are a cache, so hangar bounds them. When a suspend would break one of these rules, the sandbox is destroyed as before, and the next resume restores the checkpoint:
+- **A cap.** At most `HANGAR_SESSION_HOT_RESUME_MAX` (20) sandboxes are parked at once; past that, the longest-parked goes first.
+- **Headroom.** Paused sandboxes count against `HANGAR_MAX_SANDBOXES`, so nothing is parked while the fleet is three-quarters full.
+- **No rotating tokens.** A sandbox holding an exclusive credential, such as a Claude Code OAuth login with its rotating refresh token, isn't parked. The token goes back to the vault, so other sandboxes can use it, and a paused copy can't go stale.
+- **Gateway grants.** A parked sandbox's gateway grant lasts as long as the sandbox, but it answers only while the sandbox runs.
 
 **Cost.** A paused sandbox isn't running, but it isn't free either: E2B keeps its snapshot (check your plan's terms for paused sandboxes), and CubeSandbox keeps the snapshot files on the node's disk. Turn hot resume off with `HANGAR_SESSION_HOT_RESUME_MINUTES=0` if that matters more than the restore time.
 
@@ -225,7 +232,8 @@ The provider adds little on top. One control-API round trip creates a sandbox, a
 - **Hot resume** (`tests/test_hot_resume.py`) uses the session tests' scripted agent, real git and tmux:
   - suspend checkpoints, then pauses; the next turn resumes the same sandbox, with the ignored `.venv` still there;
   - a newer checkpoint, a reaped sandbox, or a failed resume each restore the checkpoint instead;
-  - parked sandboxes survive a restart and go with an archive.
+  - parked sandboxes survive a restart and go with an archive;
+  - the cap evicts the longest-parked sandbox, and neither a rotating credential nor a nearly full fleet is parked.
 
 ## Follow-ups
 

@@ -140,3 +140,33 @@ async def test_parked_sandboxes_survive_a_restart_and_go_with_archive(svc, world
         assert fleet.get(parked).state == SandboxState.STOPPED and not hot_resume.parked_ids(again)
     finally:
         await again.stop()
+
+
+async def test_parking_is_bounded(svc, world, fleet, hot, settings, broker):  # noqa: F811
+    """Paused sandboxes are a cache: capped, never holding a rotating refresh token, never crowding the fleet."""
+    from hangar.models import CredentialKind
+
+    settings.session_hot_resume_max = 1
+    a = (await start(svc, world, "first")).sandbox_id
+    await suspend(svc, "first")
+    b = (await start(svc, world, "second")).sandbox_id
+    await suspend(svc, "second")
+    assert fleet.get(a).state == SandboxState.STOPPED, "the longest-parked one was evicted"
+    assert fleet.get(b).state == SandboxState.PAUSED
+    assert hot_resume.parked_ids(svc) == {b}
+
+    settings.session_hot_resume_max = 20
+    cred = broker.put("claude-oauth", "claude-code", CredentialKind.AUTH_FILE, '{"refresh": "r"}',
+                      file_path=".claude/.credentials.json")
+    cred.exclusive = True  # a rotating refresh token, as Claude Code's OAuth login is
+    fleet.store.put(cred)
+    c = (await start(svc, world, "leased")).sandbox_id
+    broker.acquire(["claude-oauth"], c)  # as an OAuth login would be
+    await suspend(svc, "leased")
+    assert fleet.get(c).state == SandboxState.STOPPED, "a rotating token goes back to the vault"
+    assert broker.get("claude-oauth").leased_to is None
+
+    settings.max_sandboxes = 2  # b, parked, already takes three-quarters of it (rounded down)
+    d = (await start(svc, world, "crowded")).sandbox_id
+    await suspend(svc, "crowded")
+    assert fleet.get(d).state == SandboxState.STOPPED and hot_resume.parked_ids(svc) == {b}

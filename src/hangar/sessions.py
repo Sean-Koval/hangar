@@ -341,7 +341,7 @@ class SessionService:
         if s.sandbox_id or self.busy(s.id):
             raise SessionError(f"suspend session {s.name} before archiving it")
         self._spawn(self._drop(f"{s.id}/"))
-        self._spawn(hot_resume.discard(self, s))  # --- providers-e2b
+        self._spawn(hot_resume.discard(self, s.id))  # --- providers-e2b
         s.checkpoints = []
         self._set(s, SessionState.ARCHIVED, f"archived by {requester}")
         self.fleet.audit(requester, "session.archive", s.id)
