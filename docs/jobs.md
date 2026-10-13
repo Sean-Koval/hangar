@@ -88,7 +88,7 @@ hangar job cancel job-3fa2c1d0
 hangar job events job-3fa2c1d0 --follow    # what the agent is doing
 ```
 
-From an MCP client (Claude Code, Codex, …): `submit_job`, `get_job`, `list_jobs`, `follow_up_job`, `cancel_job`, `get_events`.
+From an MCP client (Claude Code, Codex, …): `submit_job`, `get_job`, `list_jobs`, `follow_up_job`, `cancel_job`, `get_events`, and `approve_job` / `reject_job` for jobs waiting for approval.
 
 A `jobs` token can carry a budget cap (`hangar token create svc --scope jobs --max-cost 2`); its jobs never get more.
 
@@ -131,11 +131,13 @@ Callbacks go only to public `https` hosts. Plain `http`, non-public addresses an
 
 Then:
 
-- Label an issue `hangar` (`HANGAR_GITHUB_TRIGGER_LABEL`), or comment `/hangar` on it, to start a job. The issue body and recent comments by owners, members and collaborators become context; other people's comments are left out. `/hangar harness=codex model=gpt-5.5 also add a test` picks the harness and model and adds instructions.
+- Label an issue `hangar` (`HANGAR_GITHUB_TRIGGER_LABEL`), or comment `/hangar` on it, to start a job. The issue body and recent comments by trusted people (by default owners, members and collaborators) become context; other people's comments are left out. `/hangar harness=codex model=gpt-5.5 also add a test` picks the harness and model and adds instructions.
 - Hangar comments when it starts and when it finishes, with the summary, verification and PR link. The PR says `Closes #N`.
 - Comment `/hangar <message>` on the PR to continue in the same sandbox and branch.
 
-Only owners, members and collaborators can trigger with comments. Only repos in `HANGAR_GITHUB_REPOS` are accepted, and GitHub's redelivery of the same event does not start a second job.
+A `/hangar` comment or label from someone who isn't trusted (by default: not an owner, member or collaborator; or set `HANGAR_GITHUB_TRUSTED`) creates the job in `awaiting_approval`, and it runs only after a trusted `/hangar approve`. See [triggers.md](triggers.md). Only repos in `HANGAR_GITHUB_REPOS` are accepted, and GitHub's redelivery of the same event does not start a second job.
+
+Jobs can also start from other systems' webhooks and on a schedule: see [triggers.md](triggers.md).
 
 ## 5. Work with the agent
 
@@ -163,13 +165,14 @@ If the sandbox was released, hangar starts a new one from the job's last checkpo
 | `HANGAR_JOB_CALLBACK_HOSTS` | `[]` | Hosts allowed for http or internal callbacks |
 | `HANGAR_BUDGET_MAX_MINUTES` / `_MAX_TOKENS` / `_MAX_COST_USD`, `HANGAR_MODEL_PRICES` | unset | Default budget per turn and the price table; see [activity.md](activity.md) |
 | `HANGAR_GITHUB_TOKEN_CREDENTIAL`, `HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL`, `HANGAR_GITHUB_REPOS`, `HANGAR_GITHUB_TRIGGER_LABEL` | | See §4 |
+| `HANGAR_GITHUB_TRUSTED`, `HANGAR_JOB_APPROVAL_TTL_HOURS`, `HANGAR_INBOUND_WEBHOOKS`, `HANGAR_SCHEDULE_POLL_SECONDS` | | See [triggers.md](triggers.md) |
 
 ## Security notes
 
 Issue text, comments and service context are untrusted input to the agent. Today's mitigations:
 
 - the repo and environment allowlist for service tokens and GitHub triggers;
-- the collaborator check for `/hangar` comments, and only maintainers' comments as context (a label already needs triage rights, but the issue *author* can be anyone);
+- untrusted triggers wait for approval, only trusted people's comments become context, and an untrusted author's text is marked as untrusted in the prompt ([triggers.md](triggers.md));
 - `jobs`-only service tokens that can't reach MCP or OAuth;
 - secret redaction of everything the agent writes that leaves hangar (summaries, verification output, PR bodies, comments, callbacks);
 - pushes only to new `hangar/` branches, never forced;

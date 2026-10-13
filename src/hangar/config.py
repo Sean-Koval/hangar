@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -135,6 +135,16 @@ class Settings(BaseSettings):
     budget_max_tokens: int | None = None
     budget_max_cost_usd: float | None = None
     events_max_mb: int = 20  # per-session event log size before it rotates (one rotated file is kept)
+    # --- workstream A: triggers ----------------------------------------------
+    # GitHub logins and "@org/team" entries whose /hangar comments and labels start jobs right away. Unset: the
+    # OWNER/MEMBER/COLLABORATOR author associations count as trusted. Anyone else's trigger waits for approval.
+    github_trusted: list[str] = Field(default_factory=list)
+    github_team_cache_seconds: int = 600
+    job_approval_ttl_hours: float = 72  # an unapproved job is cancelled after this long
+    # Signed inbound webhooks at /api/hooks/inbound/<source>: {"sentry": {"secret": "...", ...}} (docs/triggers.md)
+    inbound_webhooks: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    inbound_max_body_bytes: int = 1_000_000
+    schedule_poll_seconds: float = 10.0  # scheduler and approval-expiry loop
 
     @property
     def db_path(self) -> Path:

@@ -421,6 +421,7 @@ function closeTerminalsFor(id) { for (const k of [...terms.keys()]) if (k.starts
 const JOB_ACTIVE = ["queued", "provisioning", "running", "verifying", "delivering"];
 const JOB_STATE = { queued: "start", provisioning: "start", running: "run", verifying: "run", delivering: "run",
   succeeded: "ok", failed: "err", cancelled: "stop" };
+JOB_STATE.awaiting_approval = "start"; // workstream A: approve with `hangar job approve` or `/hangar approve`
 
 async function loadJobs(quiet = false) {
   try {

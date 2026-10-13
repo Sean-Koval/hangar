@@ -26,6 +26,7 @@ from hangar.jobs import Caller, JobService, SubmitJob
 from hangar.models import Budget, ContextItem, Sandbox
 from hangar.providers.base import ProviderError
 from hangar.sessions import NewSession, SessionService
+from hangar.triggers import ScheduleSpec, Triggers
 
 # Failures an agent can act on (bad name, quota, build error...). Anything else is a crash and stays generic.
 EXPECTED = (FleetError, ProviderError, CredentialError, ValueError, KeyError, NotImplementedError)
@@ -66,7 +67,8 @@ def _sb(s: Sandbox) -> dict[str, Any]:
     }
 
 
-def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionService | None = None) -> MCPServer:
+def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionService | None = None,
+              triggers: Triggers | None = None) -> MCPServer:
     mcp = MCPServer("hangar", instructions=INSTRUCTIONS, version="0.1.0")
 
     def tool():
@@ -463,5 +465,56 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         else:
             raise ValueError("sessions are not enabled")
         return {"events": evs, "next": evs[-1]["seq"] if evs else since}
+
+    # ------------------------------------------------------------------ triggers (workstream A)
+    def _trigger_tools() -> None:
+        """Registered only when triggers are enabled; a function rather than an early return, so tools added
+        after this section still register."""
+
+        @tool()
+        async def approve_job(job: str) -> dict[str, Any]:
+            """Let a job in state awaiting_approval run. Such jobs were started by someone outside the trusted list
+            (e.g. a non-collaborator's /hangar comment); read its instructions and context with get_job first."""
+            return jobs.view(triggers.approve(job, approver=current_actor.get()))
+
+        @tool()
+        async def reject_job(job: str) -> dict[str, Any]:
+            """Drop a job that is waiting for approval; it is cancelled without running."""
+            return jobs.view(triggers.reject(job, approver=current_actor.get()))
+
+        @tool()
+        async def create_schedule(name: str, cron: str, instructions: str, repo: str | None = None,
+                                  environment: str | None = None, timezone: str = "UTC", title: str | None = None,
+                                  harness: str | None = None, model: str | None = None, verify: str | None = None,
+                                  deliver: str = "draft_pr", context: list[dict[str, Any]] | None = None,
+                                  allow_overlap: bool = False, enabled: bool = True) -> dict[str, Any]:
+            """Submit the same job on a schedule. `cron` has 5 fields (minute hour day-of-month month day-of-week,
+            e.g. "0 9 * * 1-5" for 9:00 on weekdays) in `timezone` (IANA, e.g. "Europe/Berlin"). The job fields are
+            those of submit_job. A run is skipped while the previous one is still going unless allow_overlap."""
+            job = {k: v for k, v in dict(instructions=instructions, repo=repo, environment=environment, title=title,
+                                         harness=harness, model=model, verify=verify, deliver=deliver,
+                                         context=context).items() if v is not None}
+            who = current_actor.get()
+            spec = ScheduleSpec(name=name, cron=cron, timezone=timezone, job=job, allow_overlap=allow_overlap,
+                                enabled=enabled)
+            return triggers.view_schedule(triggers.create_schedule(spec, owner=who, requester=who))
+
+        @tool()
+        async def list_schedules() -> list[dict[str, Any]]:
+            """Scheduled jobs with their next and last run, and the last job each one started."""
+            return [triggers.view_schedule(s) for s in triggers.list_schedules()]
+
+        @tool()
+        async def delete_schedule(schedule: str) -> dict[str, Any]:
+            """Delete a schedule by id or name. Jobs it already started are not affected."""
+            return {"deleted": triggers.delete_schedule(schedule, requester=current_actor.get()).id}
+
+        @tool()
+        async def run_schedule_now(schedule: str) -> dict[str, Any]:
+            """Submit a schedule's job right away (its regular runs are unaffected). Returns the job."""
+            return jobs.view(triggers.run_now(schedule, requester=current_actor.get()))
+
+    if triggers is not None:
+        _trigger_tools()
 
     return mcp

@@ -80,6 +80,16 @@ class GitHub:
     async def comment(self, repo: str, number: int, body: str) -> None:
         await self._req("POST", f"/repos/{repo}/issues/{number}/comments", json={"body": f"{MARKER}\n{body}"})
 
+    async def team_membership(self, org: str, team: str, login: str) -> dict[str, Any] | None:
+        """`{"state": "active" | "pending", "role": ...}`, or None when the user isn't on the team (GitHub's 404,
+        which it also returns when the token can't see the team: it needs the org's Members read permission)."""
+        r = await self._client.get(f"/orgs/{org}/teams/{team}/memberships/{login}")
+        if r.status_code == 404:
+            return None
+        if r.status_code >= 400:
+            raise GitHubError(f"GitHub GET team membership {org}/{team}: {r.status_code}")
+        return r.json()
+
     async def issue_comments(self, repo: str, number: int, limit: int = 20) -> list[dict[str, Any]]:
         out = await self._req("GET", f"/repos/{repo}/issues/{number}/comments", params={"per_page": 100})
         return [c for c in out if MARKER not in (c.get("body") or "")][-limit:]

@@ -366,8 +366,10 @@ async def test_github_issue_triggers_job(fleet, settings, broker, world):
                "comment": {"body": "/hangar env=prod do it", "author_association": "COLLABORATOR",
                            "user": {"login": "sean"}}}
     assert "not allowed" in (await handle_github(svc, "issue_comment", "d-5", comment))["ignored"]
-    outsider = {**comment, "comment": {**comment["comment"], "author_association": "NONE"}}
-    assert "collaborator" in (await handle_github(svc, "issue_comment", "d-6", outsider))["ignored"]
+    outsider = {**comment, "issue": {**issue, "number": 14},
+                "comment": {**comment["comment"], "body": "/hangar do it", "author_association": "NONE"}}
+    res = await handle_github(svc, "issue_comment", "d-6", outsider)  # waits for approval (tests/test_triggers.py)
+    assert res["awaiting_approval"] and svc.get(res["job"]).state == JobState.AWAITING_APPROVAL
     ok = {**comment, "comment": {**comment["comment"], "body": "/hangar harness=scripted also add a test"}}
     j2 = svc.get((await handle_github(svc, "issue_comment", "d-7", ok))["job"])
     assert "also add a test" in j2.instructions and j2.harness == "scripted"

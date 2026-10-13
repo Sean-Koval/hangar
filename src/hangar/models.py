@@ -163,6 +163,8 @@ class JobState(StrEnum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    # --- workstream A: triggers. Started by someone untrusted; waits (not queued) until a trusted person approves.
+    AWAITING_APPROVAL = "awaiting_approval"
 
 
 JOB_TERMINAL = {JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED}
@@ -176,6 +178,7 @@ class ContextItem(BaseModel):
     content: str | None = None
     encoding: Literal["utf-8", "base64"] = "utf-8"
     url: str | None = None
+    untrusted: bool = False  # written by someone outside the trusted list; the prompt says so (workstream A)
 
     def size(self) -> int:
         return len(self.content or "")
@@ -215,11 +218,22 @@ class JobResult(BaseModel):
     summary: str | None = None
 
 
+class JobApproval(BaseModel):
+    """Why a job waits for a trusted person, and who decided (workstream A)."""
+
+    requested_by: str  # "github:<login>" or "webhook:<source>"
+    reason: str = ""
+    expires_at: float | None = None
+    decided_by: str | None = None
+    decided_at: float | None = None
+    decision: Literal["approved", "rejected", "expired"] | None = None
+
+
 class Job(BaseModel):
     id: str = Field(default_factory=lambda: new_id("job"))
     title: str
     instructions: str
-    source: Literal["api", "mcp", "cli", "github"] = "api"
+    source: Literal["api", "mcp", "cli", "github", "webhook", "schedule"] = "api"
     source_ref: str | None = None  # e.g. "github:owner/repo#12"
     requester: str = "system"
     owner: str | None = None  # token id ("tok-…"), "admin", or "github:<login>"; jobs-scoped tokens see only theirs
@@ -248,6 +262,29 @@ class Job(BaseModel):
     turns: list[Turn] = Field(default_factory=list)
     result: JobResult = Field(default_factory=JobResult)
     events: list[JobEvent] = Field(default_factory=list)
+    created_at: float = Field(default_factory=now)
+    updated_at: float = Field(default_factory=now)
+    # --- workstream A: triggers
+    approval: JobApproval | None = None
+    untrusted_source: str | None = None  # who wrote untrusted task text ("github:<login>", "webhook:<source>")
+
+
+# ---------------------------------------------------------------------------- scheduled jobs (workstream A)
+class ScheduledJob(BaseModel):
+    """A job template submitted on a cron schedule. Each slot runs at most once, across restarts."""
+
+    id: str = Field(default_factory=lambda: new_id("sch"))
+    name: str
+    cron: str  # 5 fields: minute hour day-of-month month day-of-week
+    timezone: str = "UTC"  # IANA name
+    template: dict[str, Any]  # SubmitJob fields
+    enabled: bool = True
+    allow_overlap: bool = False  # start a run while the previous one is still going
+    owner: str = "admin"
+    last_run_slot: float | None = None  # the slot (epoch seconds) last started or skipped
+    next_run_at: float | None = None
+    last_job_id: str | None = None
+    last_error: str | None = None
     created_at: float = Field(default_factory=now)
     updated_at: float = Field(default_factory=now)
 
