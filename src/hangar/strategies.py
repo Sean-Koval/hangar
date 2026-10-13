@@ -499,6 +499,10 @@ async def _deliver_winner(jobs: JobService, job: Job, w: Attempt, ws: Session, s
     from hangar.jobs import _DeliveryError
 
     job.session_id, job.sandbox_id = ws.id, ws.sandbox_id  # follow-ups continue the winner's session
+    # From here the winner's session works on the job's branch: a resumed sandbox checks it out by that name, and
+    # (with the git gateway) its grant lets it push there, which a follow-up needs.
+    ws.branch = job.branch
+    jobs.sessions._save(ws)
     turn = job.turns[0]
     turn.run_id, turn.started_at, turn.finished_at = w.run_id, w.started_at, w.finished_at
     turn.exit_code, turn.summary = w.exit_code, w.summary
