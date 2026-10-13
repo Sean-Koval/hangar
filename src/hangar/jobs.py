@@ -257,7 +257,7 @@ class JobService:
                approval: JobApproval | None = None, untrusted_source: str | None = None) -> Job:
         # --- front-door-auth: every front door's submissions are rate limited, capped and audited when refused
         with self.admission.refusals(caller, source):
-            self.admission.admit(req, caller, source)
+            self.admission.admit(req, caller, source, untrusted=approval is not None)
             return self._submit(req, caller, source, source_ref, approval, untrusted_source)
 
     def _submit(self, req: SubmitJob, caller: Caller, source: str = "api", source_ref: str | None = None,
@@ -1137,7 +1137,7 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
         return {"ignored": f"job {busy.id} is already working on {ref}"}
     approval = None if trusted else new_approval(
         svc, f"github:{sender}", f"{sender} is not trusted to start jobs; a trusted person must approve")
-    from hangar.frontdoor import RateLimited
+    from hangar.frontdoor import RateLimited, TooManyActive
 
     try:
         job = svc.submit(req, Caller(f"github:{sender}", f"github:{sender}"), source="github", source_ref=ref,
@@ -1147,6 +1147,8 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
             svc._spawn(svc._comment(None, ref, f"hangar couldn't start a job for this issue yet: {e}"))
         return {"ignored": str(e), "rate_limited": True}
     except JobError as e:
+        if isinstance(e, TooManyActive) and not trusted:  # likewise an outsider past the cap (already audited)
+            return {"ignored": str(e)}
         # Say why on the issue; otherwise a misconfiguration looks like hangar ignoring the label.
         svc._spawn(svc._comment(None, ref, f"hangar couldn't start a job for this issue: {e}"))
         return {"error": str(e)}

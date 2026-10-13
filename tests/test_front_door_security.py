@@ -544,3 +544,122 @@ async def test_a2a_open_streams_are_capped(jobs, world, settings, store):  # noq
     assert server._open == {"admin": 1}
     for j in jobs.list():
         jobs.cancel(j.id, "t")
+
+
+# ====================================================================== review of #50 (second pass)
+def test_rate_limit_buckets_stay_bounded_for_many_callers():
+    """Buckets were only pruned when a take was refused, so a stream of new keys (an anonymous client per source
+    address in the refusal audit, say) that each take one token grew the dict without bound."""
+    from hangar.frontdoor import Buckets
+
+    t = [1000.0]
+    b = Buckets(clock=lambda: t[0])
+    for i in range(25_000):
+        t[0] += 0.001
+        assert b.take(f"ip:{i}", 30, 30) == 0
+    assert len(b._b) <= 10_000, len(b._b)
+    b.take("ip:busy", 30, 1)
+    assert b.take("ip:busy", 30, 1) > 0  # an active, limited key is still limited
+async def test_a2a_stream_cap_holds_for_concurrent_requests(jobs, world, settings, store):  # noqa: F811
+    """The cap was checked when the request arrived and counted only once the stream started, so requests that
+    arrived together all passed the check."""
+    from hangar.a2a import V1, A2AServer
+    from hangar.auth import TokenAuth
+    from hangar.vault import Vault
+
+    settings.github_repos = {world["url"]: "jobenv"}
+    settings.a2a_max_streams_per_owner = 1
+    server = A2AServer(jobs, TokenAuth(store, "adm"), Vault(store, b"0" * 43 + b"="), settings)
+    caller = Caller("admin", "admin")
+
+    def params(mid: str) -> dict:
+        return {"message": {"messageId": mid, "role": "ROLE_USER", "parts": [{"text": "x"}],
+                            "metadata": {"repo": world["url"]}}}
+
+    responses = [await server._stream(caller, params(f"m{i}"), V1, "stream", i, None) for i in range(3)]
+    try:
+        first = [await r.body_iterator.__anext__() for r in responses]
+        assert server._open.get("admin", 0) <= 1, server._open
+        assert sum("too many open streams" in str(x) for x in first) == 2, first
+    finally:
+        for r in responses:
+            await r.body_iterator.aclose()
+        for j in jobs.list():
+            jobs.cancel(j.id, "t")
+    assert server._open == {}
+
+
+def test_anonymous_a2a_bodies_are_capped_before_auth(settings):
+    """/a2a used to check the token before reading the body; the body cap middleware then read up to 4 MB of an
+    anonymous request before the A2A handler could refuse it."""
+    app, _ = _app(settings)
+    big = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "SendMessage", "params": {"x": "y" * 1_000_000}})
+    with TestClient(app) as client:
+        def chunks():
+            for i in range(0, len(big), 16_384):
+                yield big[i:i + 16_384].encode()
+
+        assert client.post("/a2a", content=chunks()).status_code == 413
+        r = client.post("/a2a", content=big, headers={"Authorization": "Bearer t0ken", "A2A-Version": "1.0"})
+        assert r.status_code != 413  # a real token gets the A2A limit
+
+
+async def test_untrusted_github_callers_cannot_drain_the_front_door_for_trusted_ones(intake, settings):  # noqa: F811
+    """Every GitHub caller shared one source bucket. Outsiders, whose jobs only wait for approval, could empty it
+    with a handful of accounts and keep maintainers' /hangar from starting anything."""
+    settings.job_source_rate_per_minute, settings.job_source_rate_burst = 1, 4
+    for i in range(4):
+        res = await handle_github(intake, "issue_comment", f"d-{i}",
+                                  _comment(_issue(100 + i, f"rando{i}"), "/hangar fix it", f"rando{i}", "NONE"))
+        assert res.get("awaiting_approval"), res
+    res = await handle_github(intake, "issue_comment", "d-5",
+                              _comment(_issue(105, "rando5"), "/hangar fix it", "rando5", "NONE"))
+    assert res.get("rate_limited"), res  # outsiders as a whole are still limited
+    res = await handle_github(intake, "issue_comment", "d-t",
+                              _comment(_issue(200, "sean", "MEMBER"), "/hangar fix it", "sean", "MEMBER"))
+    assert res.get("ok") and not res.get("awaiting_approval"), res
+
+
+async def test_an_outsider_past_the_active_cap_gets_no_replies(intake, settings):  # noqa: F811
+    """A rate-limited outsider gets no comment, so a flood of /hangar comments can't become a flood of hangar's
+    comments. An outsider past the active-job cap (reached with 10 issues) still got one reply per comment."""
+    settings.job_max_active_per_owner = 2
+    for i in range(2):
+        res = await handle_github(intake, "issue_comment", f"d-{i}",
+                                  _comment(_issue(300 + i), "/hangar go", "rando", "NONE"))
+        assert res.get("awaiting_approval"), res
+    await asyncio.sleep(0.2)
+    before = len(intake.hooks.comments())
+    for i in range(2, 6):
+        res = await handle_github(intake, "issue_comment", f"d-{i}",
+                                  _comment(_issue(300 + i), "/hangar go", "rando", "NONE"))
+        assert "active jobs" in str(res), res
+    await asyncio.sleep(0.2)
+    assert len(intake.hooks.comments()) == before, intake.hooks.comments()[before:]
+
+
+async def test_oauth_allows_native_app_schemes_it_was_told_about(settings, store):
+    """RFC 8252 native clients may use a private-use scheme: Cursor registers cursor://anysphere.cursor-mcp/...
+    The https-or-loopback rule refused it even when the operator listed its host, which used to work."""
+    from mcp.server.auth.provider import RegistrationError
+    from mcp.shared.auth import OAuthClientInformationFull
+    from pydantic import AnyUrl
+
+    from hangar.auth import TokenAuth
+    from hangar.oauth import HangarOAuthProvider
+
+    def client(uri: str) -> OAuthClientInformationFull:
+        return OAuthClientInformationFull(client_id=uuid.uuid4().hex, client_id_issued_at=int(time.time()),
+                                          redirect_uris=[AnyUrl(uri)])
+
+    auth = TokenAuth(store, "adm")
+    p = HangarOAuthProvider(store, auth, "https://hangar.example", ["claude.ai", "anysphere.cursor-mcp"])
+    await p.register_client(client("cursor://anysphere.cursor-mcp/oauth/callback"))
+    for bad in ("cursor://evil.example/cb", "http://anysphere.cursor-mcp/cb"):
+        with pytest.raises(RegistrationError):
+            await p.register_client(client(bad))
+    anyhost = HangarOAuthProvider(store, auth, "https://hangar.example", ["*"])
+    for bad in ("javascript://claude.ai/%0aalert(1)", "data://claude.ai/x", "file://claude.ai/etc/passwd",
+                "http://claude.ai/cb"):
+        with pytest.raises(RegistrationError):
+            await anyhost.register_client(client(bad))

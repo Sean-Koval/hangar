@@ -44,6 +44,8 @@ CODE_TTL = 300
 REQUEST_TTL = 600
 SCOPE = "hangar"
 _LOOPBACK = {"localhost", "127.0.0.1", "::1"}
+# --- review of front-door-auth: never a redirect target, whatever host they name
+_BROWSER_SCHEMES = {"javascript", "data", "file", "vbscript", "blob", "about", "filesystem", "ftp", "ws", "wss"}
 
 
 def _h(token: str) -> str:
@@ -86,8 +88,11 @@ class HangarOAuthProvider:
         u = urlparse(uri)
         host = (u.hostname or "").lower()
         # front-door-auth: the code travels in this URL, so it must be https, except to the user's own machine
-        # (native clients such as Claude Code and Codex listen on a loopback port).
-        if not host or not (u.scheme == "https" or (u.scheme == "http" and host in _LOOPBACK)):
+        # (native clients such as Claude Code and Codex listen on a loopback port), or a native app's own scheme
+        # (RFC 8252 §7.1: Cursor registers cursor://anysphere.cursor-mcp/...), which the OS hands to that app.
+        # Schemes a browser acts on itself are never allowed.
+        scheme = u.scheme.lower()
+        if not host or scheme in _BROWSER_SCHEMES or (scheme == "http" and host not in _LOOPBACK):
             return False
         if "*" in self.redirect_hosts:
             return True

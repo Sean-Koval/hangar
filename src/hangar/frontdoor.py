@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 ANON_MAX_BODY = 64 * 1024  # an unauthenticated request: a token exchange or consent form is far smaller
 GITHUB_MAX_BODY = 25 * 1024 * 1024  # GitHub caps webhook payloads at 25 MB and doesn't deliver larger ones
 _PRUNE_SECONDS = 600
+_MAX_BUCKETS = 10_000  # rate-limit buckets kept per Buckets (callers or client addresses)
 _EXEMPT_SOURCES = {"api", "mcp", "a2a"}  # ...when the caller is an admin token (not restricted)
 
 
@@ -63,15 +64,22 @@ class Buckets:
         if per_minute <= 0 or burst <= 0:
             return 0.0
         t = self.clock()
+        if key not in self._b and len(self._b) >= _MAX_BUCKETS:
+            self._prune(t)  # on every new key: a stream of new keys that each get a token must not grow this
         tokens, last = self._b.get(key, (float(burst), t))
         tokens = min(float(burst), tokens + (t - last) * per_minute / 60)
         if tokens >= 1:
             self._b[key] = (tokens - 1, t)
             return 0.0
         self._b[key] = (tokens, t)
-        if len(self._b) > 10_000:  # forget callers quiet for 10 minutes: their buckets have refilled
-            self._b = {k: v for k, v in self._b.items() if t - v[1] < 600}
         return (1 - tokens) * 60 / per_minute
+
+    def _prune(self, t: float) -> None:
+        """Forget callers quiet for 10 minutes (their buckets have refilled); if that isn't enough, the quieter
+        half."""
+        self._b = {k: v for k, v in self._b.items() if t - v[1] < 600}
+        if len(self._b) >= _MAX_BUCKETS:
+            self._b = dict(sorted(self._b.items(), key=lambda kv: kv[1][1])[len(self._b) // 2:])
 
 
 # ====================================================================== replays
@@ -154,9 +162,11 @@ class Admission:
         if wait:
             raise RateLimited(f"too many jobs from {who}; try again in {math.ceil(wait)}s", wait)
 
-    def admit(self, req: SubmitJob, caller: Caller, source: str) -> None:
+    def admit(self, req: SubmitJob, caller: Caller, source: str, untrusted: bool = False) -> None:
         """Raise RateLimited or JobError if this submission must wait. A repeat of an idempotent request always
-        gets through: it returns the job it already started."""
+        gets through: it returns the job it already started. `untrusted` submissions (they wait for approval) have
+        a source bucket of their own, so outsiders with a handful of accounts can't use up the one trusted people
+        need."""
         if req.idempotency_key and any(j.idempotency_key == req.idempotency_key and j.owner == caller.owner
                                        for j in self.svc._jobs.values()):
             return
@@ -170,8 +180,12 @@ class Admission:
                 raise TooManyActive(f"{caller.requester} already has {active} active jobs (the limit is {cap}); "
                                     "wait for one to finish or cancel one")
         self._take(f"owner:{caller.owner}", s.job_rate_per_minute, s.job_rate_burst, caller.requester)
-        self._take(f"source:{source}", s.job_source_rate_per_minute, s.job_source_rate_burst,
-                   f"the {source} front door")
+        if untrusted:
+            self._take(f"source:{source}:untrusted", s.job_source_rate_per_minute, s.job_source_rate_burst,
+                       f"the {source} front door (people whose jobs need approval)")
+        else:
+            self._take(f"source:{source}", s.job_source_rate_per_minute, s.job_source_rate_burst,
+                       f"the {source} front door")
 
     def admit_follow_up(self, requester: str, owner: str | None) -> None:
         """Follow-ups start agent turns too: the same per-caller bucket, for everyone but admin tokens. `owner` is
@@ -283,11 +297,16 @@ class FrontDoorMiddleware:
             return MAX_BODY
         if path.startswith("/api/hooks/inbound/"):
             return s.inbound_max_body_bytes
-        if path == "/a2a":
-            return s.a2a_max_request_bytes
-        if path.startswith(("/api/", "/mcp")):
+        if path.startswith(("/api/", "/mcp")) or path == "/a2a":
             return -1  # depends on the caller
         return ANON_MAX_BODY  # the OAuth endpoints, and anything else
+
+    def _authed_cap(self, path: str) -> int:
+        """What a request with a valid token may send. /a2a has its own limit (and checks the token before reading
+        the body, which this middleware would otherwise undo for anonymous callers)."""
+        if path == "/a2a":
+            return self.h.settings.a2a_max_request_bytes
+        return self.h.settings.max_request_mb * 1024 * 1024
 
     async def _authed(self, path: str, headers: dict[str, str]) -> bool:
         from hangar.auth import bearer_from_headers
@@ -325,8 +344,7 @@ class FrontDoorMiddleware:
         length = headers.get("content-length")
         if cap == -1:
             small = length is not None and length.isdigit() and int(length) <= ANON_MAX_BODY
-            cap = ANON_MAX_BODY if not small and not await self._authed(path, headers) else \
-                self.h.settings.max_request_mb * 1024 * 1024
+            cap = ANON_MAX_BODY if not small and not await self._authed(path, headers) else self._authed_cap(path)
         if length is not None and (not length.isdigit() or int(length) > cap):
             return await _reject(scope, receive, send_)
         body, more, chunks = 0, True, []

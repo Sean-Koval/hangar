@@ -774,6 +774,13 @@ class A2AServer:
                 raise _unsupported(f"task {job.id} is {_V03_STATES[st]}; read it with GetTask")
 
         async def sse() -> AsyncIterator[str]:
+            # Checked again where the stream is counted (no await in between): requests that arrive together all
+            # pass the check above, before any of their streams has started.
+            if not self._room(caller):
+                err = RpcError(-32000, f"too many open streams for this token (the limit is "
+                                       f"{self.settings.a2a_max_streams_per_owner}); close one or poll with GetTask")
+                yield f"data: {json.dumps(_rpc_error(rid, err, ver))}\n\n"
+                return
             try:
                 with self._holding(caller):  # front-door-auth
                     async for kind, obj in self._events(job, request):

@@ -42,7 +42,7 @@ Untrusted people's `/hangar` comments on a PR that a job opened are ignored: onl
 
 GitHub signs only the body, so hangar treats the body as the delivery: a second copy of an `issues` or `issue_comment` delivery it has already handled (GitHub's *Redeliver*, or a captured request sent again with another `X-GitHub-Delivery`) is answered `200 {"ignored": "duplicate delivery"}` and does nothing. Deliveries are remembered in the store for `HANGAR_WEBHOOK_REPLAY_HOURS` (7 days), across restarts. A delivery that failed or was rate limited is forgotten, so a redelivery runs.
 
-Each GitHub user is a caller for [rate limits and the active-job cap](security.md#front-door-limits). Past a rate limit the webhook answers 429; a trusted person gets a comment saying so, someone untrusted gets none (so a flood of `/hangar` comments can't become a flood of hangar comments). Jobs waiting for approval count toward their requester's cap.
+Each GitHub user is a caller for [rate limits and the active-job cap](security.md#front-door-limits). Past a rate limit the webhook answers 429; a trusted person gets a comment saying so, someone untrusted gets none (so a flood of `/hangar` comments can't become a flood of hangar comments). The same goes for the active-job cap. Submissions that wait for approval are counted in a source bucket of their own, so outsiders can't use up the one trusted people need. Jobs waiting for approval count toward their requester's cap.
 
 ### Untrusted text in the prompt
 

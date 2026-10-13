@@ -94,7 +94,7 @@ The push is made as the App; commits keep the agent's git identity. PRs for jobs
 
 - **Scope:** OAuth access tokens reach `/mcp` only, never the REST API or the dashboard.
 - **Lifetime:** every approval is tied to the hangar token that approved it and stops working when that token is revoked or the app is disconnected. Approvals last at most 90 days.
-- **Registration:** limited to allowlisted redirect hosts (`HANGAR_OAUTH_REDIRECT_HOSTS`; an empty list allows none, `"*"` any) and capped in number. Redirect URIs must be `https`, or `http` to `localhost`, `127.0.0.1` or `[::1]` for native clients.
+- **Registration:** limited to allowlisted redirect hosts (`HANGAR_OAUTH_REDIRECT_HOSTS`; an empty list allows none, `"*"` any) and capped in number. Redirect URIs must be `https`, `http` to `localhost`, `127.0.0.1` or `[::1]`, or a native app's own scheme (RFC 8252, e.g. Cursor's `cursor://anysphere.cursor-mcp/...`; list its host). Schemes a browser handles itself (`javascript:`, `data:`, `file:` and the like) are never allowed.
 - **Audience:** a client may ask for a token only for hangar's own MCP endpoint (`resource` = `HANGAR_PUBLIC_URL` or `…/mcp`, RFC 8707); any other resource is refused at `/authorize`.
 - **PKCE:** `S256` is required, and the code is bound to its redirect URI (the MCP SDK's token endpoint checks both).
 - **Consent page:** needs an admin token, can't be framed, and isn't cached.
@@ -114,6 +114,8 @@ Work enters hangar through REST, MCP, A2A, GitHub webhooks, Slack, signed inboun
 
 Text that hangar's caller didn't write is fenced in the prompt as untrusted: issue bodies and comments by untrusted authors, an untrusted person's `/hangar` request, Slack thread context, and everything from an inbound webhook ([triggers.md](triggers.md#untrusted-text-in-the-prompt)).
 
+**Agents in `credential_mode: direct` can reach the GitHub front door.** Without the [git gateway](#git-credential-gateway), a sandbox holds a GitHub token. The account behind it has write access to the repo, so by default (author association) its comments are trusted. An agent can then comment `/hangar approve` on an outsider's job, start new jobs, or continue another job's PR as that account. Use the gateway for GitHub-triggered work, or set `HANGAR_GITHUB_TRUSTED` and leave that account out.
+
 ### Signed requests
 
 - GitHub (`X-Hub-Signature-256`), Slack (`v0`) and inbound webhooks (per-source HMAC) are verified over the raw body, before anything parses it, and compared in constant time (as bytes, so a malformed header is a 401, not an error).
@@ -129,12 +131,12 @@ Job callbacks and A2A push notifications go only to public `https` hosts unless 
 | Limit | Default | Applies to |
 | --- | --- | --- |
 | `HANGAR_JOB_RATE_PER_MINUTE`, `HANGAR_JOB_RATE_BURST` | 30, 10 | Job submissions and follow-ups per caller: a `jobs` token, a GitHub user, a Slack user, a webhook source. A token bucket: `BURST` at once, refilling at `PER_MINUTE`. |
-| `HANGAR_JOB_SOURCE_RATE_PER_MINUTE`, `HANGAR_JOB_SOURCE_RATE_BURST` | 120, 60 | The same per front door (`github`, `slack`, `webhook`, `a2a`, `api`), across all its callers |
+| `HANGAR_JOB_SOURCE_RATE_PER_MINUTE`, `HANGAR_JOB_SOURCE_RATE_BURST` | 120, 60 | The same per front door (`github`, `slack`, `webhook`, `a2a`, `api`), across all its callers. Submissions that wait for approval (untrusted GitHub people) have a bucket of their own per front door, so outsiders can't use up the one trusted people need. |
 | `HANGAR_JOB_MAX_ACTIVE_PER_OWNER` | 10 | Unfinished jobs per caller, counting those waiting for approval or input |
 | `HANGAR_A2A_MAX_STREAMS_PER_OWNER` | 20 | Open A2A streams and blocking sends per token |
-| `HANGAR_MAX_REQUEST_MB` | 100 | Request bodies from a valid token on `/api` and `/mcp` (jobs can carry git bundles) |
-| | 64 KB | Request bodies without a valid token (they get a 401 anyway), and the OAuth endpoints |
-| | 25 MB, 1 MB | `/api/hooks/github` (GitHub's own cap), `/api/hooks/slack/*`; inbound webhooks and `/a2a` keep their own settings |
+| `HANGAR_MAX_REQUEST_MB` | 100 | Request bodies from a valid token on `/api` and `/mcp` (jobs can carry git bundles); `/a2a` uses `HANGAR_A2A_MAX_REQUEST_BYTES` |
+| | 64 KB | Request bodies without a valid token on `/api`, `/mcp` and `/a2a` (they get a 401 anyway), and the OAuth endpoints |
+| | 25 MB, 1 MB | `/api/hooks/github` (GitHub's own cap), `/api/hooks/slack/*`; inbound webhooks keep their own setting |
 
 Admin tokens and schedules aren't rate limited or capped: an admin token can run anything already. Set a rate to 0 to turn it off. REST answers a rate-limited request with `429` and `Retry-After`; other front doors say so in their own way (a JSON-RPC error, a message in the Slack thread, a 429 to the webhook sender). Buckets live in memory, so a restart refills them.
 
