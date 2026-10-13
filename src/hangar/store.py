@@ -137,15 +137,17 @@ class Store:
             row = self._db.execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
         return row[0] if row else None
 
-    def kv_set(self, key: str, value: str) -> None:
-        with self._lock:
+    def kv_set(self, key: str, value: str, durable: bool = False) -> None:
+        """`durable`: commit with a WAL sync, like _DURABLE models (integrate: #51's stored settings decide who is
+        trusted and what is allowed, so a change must not roll back after a power loss)."""
+        with self._lock, self._synced(durable):
             self._db.execute(
                 "INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (key, value),
             )
 
-    def kv_delete(self, key: str) -> None:
-        with self._lock:
+    def kv_delete(self, key: str, durable: bool = False) -> None:
+        with self._lock, self._synced(durable):
             self._db.execute("DELETE FROM kv WHERE key=?", (key,))
 
     def kv_keys(self, prefix: str) -> list[str]:

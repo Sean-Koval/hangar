@@ -45,7 +45,8 @@ REFUSED: dict[str, str] = {
 _RESTART = ("public_url", "oauth_", "env_dirs", "image_prefix", "registry", "extra_ca_bundle", "default_provider",
             "enabled_providers", "docker_", "k8s_", "e2b_", "gateway_", "a2a_", "job_concurrency", "session_store",
             "prebuild_environments", "github_api_url", "sandbox_user", "events_max_mb",
-            "mcp_stateless_http")  # integrate: #52's MCP transport mode is chosen when the app is built
+            "mcp_stateless_http",  # integrate: #52's MCP transport mode is chosen when the app is built
+            "io_threads")  # integrate: #53's I/O pool and the Docker connection pool are sized at startup
 
 
 class SettingError(ValueError):
@@ -152,14 +153,14 @@ class SettingsStore:
     def set(self, key: str, raw: Any) -> dict[str, Any]:
         name = self.check(key)
         value = parse(name, raw)
-        self.store.kv_set(KV_PREFIX + name, json.dumps(_jsonable(name, value)))
+        self.store.kv_set(KV_PREFIX + name, json.dumps(_jsonable(name, value)), durable=True)
         if name not in self.pinned:
             setattr(self.settings, name, value)
         return self.describe(name)
 
     def unset(self, key: str) -> dict[str, Any]:
         name = self.check(key)
-        self.store.kv_delete(KV_PREFIX + name)
+        self.store.kv_delete(KV_PREFIX + name, durable=True)
         if name not in self.pinned:
             setattr(self.settings, name, _default(name))
         return self.describe(name)

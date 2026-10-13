@@ -19,6 +19,27 @@ def test_field_names():
         "github_repos"
 
 
+def test_stored_settings_survive_a_power_loss(tmp_path):
+    """integrate (#53 x #51): the store runs synchronous=NORMAL, where a commit can roll back after an OS crash.
+    Stored settings say who is trusted and what is allowed (github_trusted, slack_users...), so they sync the WAL
+    like token and credential writes."""
+    s = _settings(tmp_path)
+    store = Store(s.db_path)
+    cfg = SettingsStore(store, s)
+    statements: list[str] = []
+    store._db.set_trace_callback(statements.append)
+    cfg.set("github_trusted", '["alice"]')
+    cfg.unset("github_trusted")
+    store._db.set_trace_callback(None)
+    mode, synced = "NORMAL", []
+    for st in statements:
+        if st.startswith("PRAGMA synchronous="):
+            mode = st.split("=")[1]
+        elif st.split()[0] in ("INSERT", "DELETE"):
+            synced.append(mode == "FULL")
+    assert synced and all(synced), statements
+
+
 def test_set_validates_and_applies_live(tmp_path):
     s = _settings(tmp_path)
     cfg = SettingsStore(Store(s.db_path), s)
@@ -111,4 +132,5 @@ def test_settings_read_at_startup_say_so():
     assert needs_restart("sandbox_user") and needs_restart("events_max_mb")
     # integrate: #52's transport mode is fixed when the app is built; #50's limits are read on every request
     assert needs_restart("mcp_stateless_http") and not needs_restart("job_rate_per_minute")
+    assert needs_restart("io_threads")  # integrate (#53): the I/O pool is sized when hangar starts
     assert not needs_restart("job_keep_minutes") and not needs_restart("github_repos")
