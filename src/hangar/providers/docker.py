@@ -145,6 +145,9 @@ class DockerProvider(Provider):
             kw["runtime"] = self.settings.docker_runtime
         if self.settings.docker_network:
             kw["network"] = self.settings.docker_network
+        # workstream F: on Linux, host.docker.internal (the git gateway on the host) needs an explicit mapping
+        if "host.docker.internal" in (self.settings.gateway_url or ""):
+            kw["extra_hosts"] = {"host.docker.internal": "host-gateway"}
         if packs:
             kw["mounts"] = [{"Type": "image", "Source": ref, "Target": f"{PACK_ROOT}/{n}", "ReadOnly": True}
                             for n, ref in sorted(packs.items())]

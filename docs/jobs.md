@@ -1,6 +1,6 @@
 # Jobs: handing work to cloud agents
 
-A job is a piece of development work handed to hangar by a service, an app, an MCP client, the CLI or a GitHub issue. Hangar runs a coding agent on it in a fresh sandbox, checks the result with the repo's own command, and delivers a branch and a (draft) PR. Engineers can follow along, reply, or take over. The design is in [spec 0009](specs/0009-jobs-and-the-factory-front-door.md).
+A job is a piece of development work handed to hangar by a service, an app, an MCP client, the CLI, a GitHub issue or a Slack channel. Hangar runs a coding agent on it in a fresh sandbox, checks the result with the repo's own command, and delivers a branch and a (draft) PR. Engineers can follow along, reply, or take over. The design is in [spec 0009](specs/0009-jobs-and-the-factory-front-door.md).
 
 ```
 caller ──POST /api/jobs──► queue ─► sandbox (env + harness) ─► agent turn ─► verify ─► commit, push hangar/<job>, PR
@@ -23,6 +23,7 @@ hangar doctor                                                               # wh
 - the GitHub token's access to each mapped repo;
 - the webhook secret;
 - that each mapped environment exists, has credentials, and is built;
+- Slack, when configured: its credentials, the bot token, and that each mapped channel's repo is allowed;
 - that checkpoint storage is writable.
 
 ## 1. Give a service a token
@@ -146,10 +147,15 @@ A `/hangar` comment or label from someone who isn't trusted (by default: not an 
 
 Jobs can also start from other systems' webhooks and on a schedule: see [triggers.md](triggers.md).
 
+## 4a. Trigger from Slack
+
+`/hangar <instructions>` or `@hangar <instructions>` in a mapped channel starts a job on the channel's repo. Hangar replies in a thread when the agent starts, needs input and finishes, and a reply in the thread is a follow-up. Setup (app manifest, credentials, channel map) is in [slack.md](slack.md).
+
 ## 5. Work with the agent
 
 Every job runs in a [session](sessions.md). The agent keeps its conversation between turns, and the job's sandbox, context and work in progress are checkpointed. So a reply always works:
 - a `/hangar` comment on the PR a week later;
+- a reply in the job's Slack thread;
 - `hangar job follow-up`;
 - the dashboard's reply box.
 
@@ -206,6 +212,7 @@ How it runs:
 | `HANGAR_BEST_OF_N_JUDGE_TIMEOUT_MINUTES` | 15 | The judge turn's limit |
 | `HANGAR_GITHUB_TOKEN_CREDENTIAL`, `HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL`, `HANGAR_GITHUB_REPOS`, `HANGAR_GITHUB_TRIGGER_LABEL` | | See §4 |
 | `HANGAR_GITHUB_TRUSTED`, `HANGAR_JOB_APPROVAL_TTL_HOURS`, `HANGAR_INBOUND_WEBHOOKS`, `HANGAR_SCHEDULE_POLL_SECONDS` | | See [triggers.md](triggers.md) |
+| `HANGAR_SLACK_SIGNING_SECRET_CREDENTIAL`, `HANGAR_SLACK_BOT_TOKEN_CREDENTIAL`, `HANGAR_SLACK_CHANNELS`, `HANGAR_SLACK_USERS` | | See [slack.md](slack.md) |
 
 ## Security notes
 
@@ -218,4 +225,4 @@ Issue text, comments and service context are untrusted input to the agent. Today
 - pushes only to new `hangar/` branches, never forced;
 - a prompt that marks context as data.
 
-Known gap: the callback check resolves the host before sending but doesn't pin the address, so DNS rebinding is not fully blocked. Until spec 0003 lands, the agent's sandbox still holds a git credential, so restrict `HANGAR_GITHUB_REPOS` to repos where a mistaken push to a `hangar/*` branch is acceptable, and keep PR merges human-approved.
+Known gap: the callback check resolves the host before sending but doesn't pin the address, so DNS rebinding is not fully blocked. Without the [git gateway](security.md#git-credential-gateway) the agent's sandbox holds a git credential, so restrict `HANGAR_GITHUB_REPOS` to repos where a mistaken push to a `hangar/*` branch is acceptable, and keep PR merges human-approved. With `HANGAR_GATEWAY_URL` set, jobs push through the gateway: the sandbox has no GitHub token and can push only its own branch and `hangar/**`.

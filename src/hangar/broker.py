@@ -56,6 +56,14 @@ class Broker:
                 vals.append(text)
                 if c.kind == CredentialKind.AUTH_FILE:  # also mask the tokens inside JSON auth files
                     vals += re.findall(r'"[^"]*token[^"]*"\s*:\s*"([^"]{12,})"', text)
+                if c.kind == CredentialKind.GITHUB_APP:  # workstream F: the App's private key, escaped and raw
+                    import json
+
+                    vals += re.findall(r'"private_key"\s*:\s*"([^"]{12,})"', text)
+                    try:
+                        vals.append(str(json.loads(text)["private_key"]).strip())
+                    except (ValueError, KeyError, TypeError):
+                        pass
             self._secret_cache = sorted({x for x in vals if len(x) >= 8}, key=len, reverse=True)
         return self._secret_cache
 
@@ -91,8 +99,18 @@ class Broker:
         if not NAME_RE.match(name):
             raise CredentialError(f"invalid credential name '{name}': letters, digits, '.', '_', '-'")
         slot = slot_for(harness, kind)
+        # --- workstream F: a GitHub App key is used by the git gateway only and never goes into a sandbox.
+        if kind == CredentialKind.GITHUB_APP:
+            from hangar.gateway import GatewayError, parse_app_credential
+
+            if env_var or file_path:
+                raise CredentialError("github_app credentials can't be mapped into sandboxes")
+            try:
+                parse_app_credential(value)
+            except GatewayError as e:
+                raise CredentialError(str(e)) from None
         # `webhook` credentials are signing keys the control plane uses (job callbacks); never put in sandboxes.
-        if slot is None and not (env_var or file_path) and harness != "webhook":
+        elif slot is None and not (env_var or file_path) and harness != "webhook":
             known = ", ".join(f"{s.kind.value}" for s in HARNESSES[harness].credentials) if harness in HARNESSES else ""
             raise CredentialError(
                 f"harness '{harness}' has no slot for kind '{kind.value}'"
@@ -194,6 +212,8 @@ class Broker:
         env: dict[str, str] = dict(extra_env or {})
         post: list[str] = []
         for c in creds:
+            if c.kind == CredentialKind.GITHUB_APP:  # workstream F: gateway-only, never materialized
+                continue
             value = self.vault.get(f"cred:{c.name}")
             if value is None:
                 raise CredentialError(f"credential '{c.name}' has no stored secret")

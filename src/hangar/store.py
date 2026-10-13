@@ -15,7 +15,7 @@ from typing import TypeVar
 
 from pydantic import BaseModel
 
-from hangar.models import ApiToken, AuditEvent, Credential, Job, Sandbox, ScheduledJob, Session, Snapshot
+from hangar.models import ApiToken, AuditEvent, Credential, Job, Sandbox, SandboxGrant, ScheduledJob, Session, Snapshot
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -27,6 +27,7 @@ _TABLES: dict[type[BaseModel], tuple[str, str]] = {
     Job: ("jobs", "id"),
     Session: ("sessions", "id"),
     ScheduledJob: ("schedules", "id"),  # workstream A
+    SandboxGrant: ("sandbox_grants", "id"),  # workstream F: git gateway
 }
 
 

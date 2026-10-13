@@ -1,0 +1,35 @@
+# Git credential gateway (docs/security.md, spec 0003). Sandboxes push and fetch through the control plane on
+# its own port, 8788, so the GitHub token never enters a sandbox. Enable it with HANGAR_GATEWAY_URL in config.yaml.
+#
+# The gateway port is cluster-internal: the Ingress only routes to the main port (8787), and only sandboxes need
+# to reach this Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: hangar-gateway
+  namespace: hangar
+spec:
+  selector: {app: hangar}
+  ports: [{name: gateway, port: 8788, targetPort: gateway}]
+---
+# Let sandboxes reach the gateway, and nothing else of the control plane.
+#
+# Agent Sandbox's default policy blocks private (RFC1918) destinations, which is what keeps the control plane
+# unreachable from sandboxes today. NetworkPolicies add up (any policy that allows a connection allows it), so
+# this one opens exactly one destination: hangar pods on port 8788. The dashboard/API/MCP port (8787) stays
+# blocked, which is why the gateway has its own port. Requires a CNI that enforces NetworkPolicy (GKE Dataplane V2).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-hangar-gateway
+  namespace: hangar-sandboxes
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: hangar}
+          podSelector:
+            matchLabels: {app: hangar}
+      ports: [{protocol: TCP, port: 8788}]

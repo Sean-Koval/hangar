@@ -19,6 +19,7 @@ import json
 import logging
 import re
 import shlex
+from collections.abc import Awaitable, Callable
 from typing import Any, Literal, NamedTuple
 from urllib.parse import urlparse
 
@@ -52,6 +53,12 @@ _NAME_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 _RESERVED = {"result.md"}
 MAX_INSTRUCTIONS = 64_000
 MAX_EVENTS = 200
+
+# --- workstream B: slack
+# Where a turn's `reply_to` ref is posted, by scheme: "slack:C123:1712345678.000100" -> NOTIFIERS["slack"].
+# "github:" refs are handled in `_comment`. A notifier gets (service, job, ref, body, kind); kind is "final" for the
+# outcome report (the notifier may render its own from the job) and "note" for everything else.
+NOTIFIERS: dict[str, Callable[[JobService, Job | None, str, str, str], Awaitable[None]]] = {}
 
 
 class Caller(NamedTuple):
@@ -304,7 +311,8 @@ class JobService:
             keep_minutes=req.keep_minutes if req.keep_minutes is not None else self.settings.job_keep_minutes,
             output_schema=output_schema,
             turns=[Turn(kind="initial", requester=requester,
-                        reply_to=source_ref if source_ref and source_ref.startswith("github:") else None)],
+                        reply_to=source_ref if source_ref and source_ref.split(":", 1)[0] in ("github", *NOTIFIERS)
+                        else None)],
             approval=approval, untrusted_source=untrusted_source,
         )
         job.budget = resolve_budget(req.budget, self.settings, caller.max_budget if caller.restricted else None)
@@ -886,7 +894,7 @@ class JobService:
         self._spawn(self._callback(job, "job.finished"))
         turn = job.turns[-1] if job.turns else None
         if turn and turn.reply_to:
-            await self._comment(job, turn.reply_to, self._final_comment(job))
+            await self._comment(job, turn.reply_to, self._final_comment(job), kind="final")
 
     def _final_comment(self, job: Job) -> str:
         r = job.result
@@ -921,7 +929,10 @@ class JobService:
                           f"`{self.settings.github_trigger_label}` label, to try again."]
         return "\n".join(lines)
 
-    async def _comment(self, job: Job | None, ref: str, body: str) -> None:
+    async def _comment(self, job: Job | None, ref: str, body: str, kind: str = "note") -> None:
+        if (notify := NOTIFIERS.get(ref.split(":", 1)[0])) is not None:
+            await notify(self, job, ref, body, kind)
+            return
         m = re.match(r"^github:([^#]+)#(\d+)$", ref)
         gh = self._github() if m else None
         if gh is None:

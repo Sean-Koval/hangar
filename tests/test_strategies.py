@@ -368,7 +368,8 @@ async def test_best_of_n_delivers_a_passing_attempt_and_lists_all(jobs, world, f
     sessions = [jobs.sessions.get(a.session_id) for a in job.attempts]
     base = jobs.sessions.get(sessions[0].parent_id)
     assert base.job_id == job.id and base.state == SessionState.SUSPENDED and base.checkpoints
-    assert [s.branch for s in sessions] == [f"{job.branch}-attempt-{i}" for i in (1, 2, 3)]
+    # losers keep their attempt branches; the winner's session now works on the job branch (follow-ups push there)
+    assert [s.branch for s in sessions] == [f"{job.branch}-attempt-1", f"{job.branch}-attempt-2", job.branch]
     assert all(s.forked_from_checkpoint == base.checkpoints[-1].id for s in sessions)
     # the winner carries the job on; the others are checkpointed and released
     assert job.session_id == a3.session_id and fleet.get(job.sandbox_id).state == "running"
