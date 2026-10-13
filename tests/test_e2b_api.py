@@ -358,6 +358,9 @@ async def test_host_routing_signed_urls_and_unsupported(hangar):
         down = httpx.URL(sb.download_url(path)).copy_with(scheme="http", host="127.0.0.1", port=up.port)
         assert (await c.get(str(down), headers=host)).content == b"signed upload"
         assert (await c.get(str(down).replace("signature=", "signature=x"), headers=host)).status_code == 401
+        # a signed URL is good for /files only
+        other = down.copy_with(path="/filesystem.Filesystem/Stat")
+        assert (await c.post(str(other), json={"path": path}, headers=host)).status_code == 401
         expired = up.copy_merge_params({"signature_expiration": str(int(time.time()) - 1)})
         assert (await c.post(str(expired), files={"file": ("s.txt", b"x")}, headers=host)).status_code == 401
         r = await c.post("/files", params={"path": path, "username": "user"}, content=gzip.compress(b"z" * 100000),
@@ -390,6 +393,8 @@ async def test_host_routing_signed_urls_and_unsupported(hangar):
         assert "base" in next(t for t in r.json() if t["templateID"] == "plain")["aliases"]
         logs = (await c.get(f"/e2b/v2/sandboxes/{sid}/logs", headers={"X-API-Key": key})).json()["logs"]
         assert logs[0]["message"].startswith("sandbox.create by e2b:wire")
+        r = await c.get(f"/e2b/v2/sandboxes/{sid}/logs?cursor=x", headers={"X-API-Key": key})
+        assert r.status_code == 400 and r.json()["code"] == 400  # E2B's error shape, not FastAPI's
     await sb.kill()
 
 
@@ -408,6 +413,20 @@ async def test_idempotent_create_and_trusted_environments(hangar):
         assert r.status_code == 403 and "TRUSTED" in r.json()["message"]
         assert (await c.delete(f"/sandboxes/{a.json()['sandboxID']}")).status_code == 204
         assert (await c.delete(f"/sandboxes/{a.json()['sandboxID']}")).status_code == 404
+
+
+@needs_binary
+async def test_a_sandbox_whose_daemon_never_answers_is_removed(hangar, monkeypatch):
+    async def never(sb, timeout=0):
+        return None
+
+    monkeypatch.setattr(hangar.prov.envd, "ready", never)
+    key = token(hangar, "doomed")
+    async with httpx.AsyncClient(base_url=f"{hangar.url}/e2b", headers={"X-API-Key": key}, timeout=60) as c:
+        r = await c.post("/v2/sandboxes", json={"templateID": "plain"})
+        assert r.status_code == 500 and "hangar-envd did not start" in r.json()["message"]
+    assert [s for s in hangar.h.fleet.list() if s.environment == "plain"] == []
+    assert hangar.h.store.kv_keys("e2b:sb:") == []
 
 
 @needs_binary

@@ -334,12 +334,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if a2a:
         a2a.mount(app)  # /.well-known/agent-card.json and JSON-RPC at /a2a (docs/a2a.md)
     # --- e2b-api: the E2B-compatible API at HANGAR_E2B_API_PATH, and sandbox URLs in front of everything (docs/e2b.md)
-    if h.settings.e2b_api_path:
+    if e2b_path := h.settings.e2b_api_path.rstrip("/"):
         from hangar.e2b_api import E2BService, build_api
         from hangar.sandbox_router import SandboxRouter
 
         app.state.e2b = E2BService(h)
-        app.mount(h.settings.e2b_api_path.rstrip("/"), build_api(app.state.e2b))
+        app.mount(e2b_path, build_api(app.state.e2b))
         app.add_middleware(SandboxRouter, svc=app.state.e2b)  # outermost: sandbox traffic skips the body caps
 
     @app.exception_handler(FleetError)

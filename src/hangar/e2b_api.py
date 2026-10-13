@@ -40,6 +40,7 @@ from urllib.parse import parse_qsl
 
 import httpx
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
 from hangar.auth import Principal, bearer_from_headers
@@ -61,7 +62,8 @@ RECORD = "e2b:sb:"
 IDEMPOTENCY = "e2b:idem:"
 IDEMPOTENCY_TTL = 24 * 3600
 REFRESH_MIN, REFRESH_MAX = 15, 3600  # E2B's /refreshes bounds (seconds)
-MAX_METADATA, MAX_ENV_VARS, MAX_MAP_BYTES = 64, 256, 64 * 1024
+# Each fits, with the other, in the 64 KB the front door lets a request body have before its token is checked.
+MAX_METADATA, MAX_ENV_VARS, MAX_MAP_BYTES = 64, 256, 24 * 1024
 _ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _TEMPLATE_UUID = uuid.UUID("6f6b2c1e-2d0c-4a8e-9a55-3b1e2b0e2b10")  # namespace for stable template build ids
 
@@ -257,12 +259,18 @@ class E2BService:
         return out
 
     def prune(self) -> None:
-        """Drop the records of sandboxes that are gone (the reaper and other callers destroy without telling us)."""
+        """Drop the records of sandboxes that are gone (the reaper and other callers destroy without telling us),
+        and idempotency keys past their day."""
         for key in self.store.kv_keys(RECORD):
             sid = key[len(RECORD):]
             sb = self.store.get(Sandbox, sid)
             if sb is None or sb.state not in ACTIVE:
                 self.forget(sid)
+        t = now()
+        for key in self.store.kv_keys(IDEMPOTENCY):
+            v = self.store.kv_get_json(key)
+            if not isinstance(v, dict) or v.get("exp", 0) < t:
+                self.store.kv_delete(key)
 
     # ------------------------------------------------------------------ views
     def domain(self) -> str | None:
@@ -422,16 +430,18 @@ class E2BService:
                 if "max_sandboxes" in str(e):
                     raise E2BError(429, f"hangar is at its sandbox limit: {e}") from e
                 raise E2BError(500, f"Failed to create sandbox: {e}") from e
-            rec: dict[str, Any] = {"owner": p.id, "nonce": secrets.token_hex(16), "template": template}
-            if env_vars:
-                rec["env"] = self.h.vault.encrypt(json.dumps(env_vars).encode()).decode()
-            self._save(sb.id, rec)
-            sb = await self._set_expiry(sb.id, now() + timeout)
-            if await envd.ready(sb, timeout=60) is None:
-                await self.fleet.destroy(sb.id, actor=self.actor(p))
-                self.forget(sb.id)
-                raise E2BError(500, f"hangar-envd did not start in sandbox {sb.id}; it was removed (the control "
-                                    "plane log says why)")
+            try:
+                rec: dict[str, Any] = {"owner": p.id, "nonce": secrets.token_hex(16), "template": template}
+                if env_vars:
+                    rec["env"] = self.h.vault.encrypt(json.dumps(env_vars).encode()).decode()
+                self._save(sb.id, rec)
+                sb = await self._set_expiry(sb.id, now() + timeout)
+                if await envd.ready(sb, timeout=60) is None:
+                    raise E2BError(500, f"hangar-envd did not start in sandbox {sb.id}; it was removed (the "
+                                        "control plane log says why)")
+            except BaseException:  # nobody will get this sandbox's tokens: don't leave it running
+                await asyncio.shield(self._discard(sb.id, p))
+                raise
             if idem:
                 self.store.kv_set_json(idem, {"sandbox": sb.id, "body": hashlib.sha256(raw).hexdigest(),
                                               "exp": now() + IDEMPOTENCY_TTL})
@@ -442,6 +452,13 @@ class E2BService:
                 del self._creating[p.id]
             if idem:
                 self._idem_busy.discard(idem)
+
+    async def _discard(self, sandbox_id: str, p: Principal) -> None:
+        try:
+            await self.fleet.destroy(sandbox_id, actor=self.actor(p))
+        except Exception:  # noqa: BLE001 - the reaper takes it at its expiry
+            log.exception("could not remove sandbox %s after a failed create", sandbox_id)
+        self.forget(sandbox_id)
 
     async def kill(self, p: Principal, sandbox_id: str) -> None:
         async with self._locks[sandbox_id]:
@@ -576,6 +593,11 @@ def build_api(svc: E2BService) -> FastAPI:
     @api.exception_handler(E2BError)
     async def _e2b_error(_: Request, e: E2BError):
         return JSONResponse({"code": e.status, "message": e.message}, status_code=e.status, headers=e.headers)
+
+    @api.exception_handler(RequestValidationError)
+    async def _bad_request(_: Request, e: RequestValidationError):
+        msg = "; ".join(f"{'.'.join(str(x) for x in err.get('loc', ()))}: {err.get('msg')}" for err in e.errors())
+        return JSONResponse({"code": 400, "message": f"Error when parsing request: {msg}"}, status_code=400)
 
     @api.exception_handler(FleetError)
     @api.exception_handler(ProviderError)

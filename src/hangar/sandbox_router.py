@@ -96,6 +96,10 @@ def _hash_file(f) -> tuple[int, str]:
     return size, h.hexdigest()
 
 
+def _is_files(raw_path: bytes) -> bool:
+    return raw_path.rstrip(b"/") == b"/files"
+
+
 def file_signature(path: str, operation: str, user: str, token: str, expiration: str | None) -> str:
     """E2B's pre-signed `/files` URL signature (e2b SDK `get_signature`, envd `internal/api/auth.go`)."""
     raw = f"{path}:{operation}:{user}:{token}" + (f":{expiration}" if expiration else "")
@@ -163,7 +167,7 @@ class SandboxRouter:
             sid, port_s, raw_path = arg
             if not _SID.match(sid) or not port_s.isdigit() or not 0 < int(port_s) < 65536:
                 raise Refused(400, {"message": "Invalid sandbox ID or port", "code": 400})
-            sb, rec, port = self._authorize(scope, sid, int(port_s))
+            sb, rec, port = self._authorize(scope, sid, int(port_s), raw_path)
         except Refused as e:
             if scope["type"] == "websocket":
                 await receive()  # websocket.connect
@@ -198,7 +202,7 @@ class SandboxRouter:
                 del self._inflight[key]
 
     # ------------------------------------------------------------------ auth
-    def _authorize(self, scope, sid: str, port: int) -> tuple[Sandbox, dict[str, Any], int]:
+    def _authorize(self, scope, sid: str, port: int, raw_path: bytes) -> tuple[Sandbox, dict[str, Any], int]:
         """Deny by default: a live sandbox exposed through the E2B API, and its token on every request."""
         sb = self.svc.store.get(Sandbox, sid)
         rec = self.svc.record(sid) if sb is not None and sb.state in ACTIVE else None
@@ -208,7 +212,7 @@ class SandboxRouter:
         access = headers.get("x-access-token")
         if port == ENVD_PORT:
             ok = self.svc.check_envd(sid, rec, access)
-            if not ok and access is None and scope["type"] == "http":
+            if not ok and access is None and scope["type"] == "http" and _is_files(raw_path):
                 ok = self._signed_file_url(scope, sid, rec)
             if not ok:
                 self._refused(scope, sid, "e2b.envd.denied")
@@ -225,7 +229,8 @@ class SandboxRouter:
         return sb, rec, port
 
     def _signed_file_url(self, scope, sid: str, rec: dict[str, Any]) -> bool:
-        if scope["path"].rstrip("/").rsplit("/", 1)[-1] != "files" or scope["method"] not in ("GET", "POST"):
+        """A pre-signed `/files` URL: good for that path, operation and user, until its expiry, and nothing else."""
+        if scope["method"] not in ("GET", "POST"):
             return False
         q = dict(parse_qsl(scope.get("query_string", b"").decode("latin-1"), keep_blank_values=True))
         sig, exp = q.get("signature"), q.get("signature_expiration")
@@ -263,7 +268,7 @@ class SandboxRouter:
         path = raw_path.decode("latin-1")
         query = scope.get("query_string", b"").decode("latin-1")
         user = self.svc.settings.sandbox_user
-        if query and path.rstrip("/").endswith("/files"):
+        if query and _is_files(raw_path):
             pairs = parse_qsl(query, keep_blank_values=True)
             kept = [(k, v) for k, v in pairs if k not in ("signature", "signature_expiration")
                     and not (k == "username" and v == _E2B_DEFAULT_USER != user)]
@@ -291,7 +296,7 @@ class SandboxRouter:
         method = scope["method"]
         target, headers = self._envd_target(scope, raw_path)
         hdr = {k: v for k, v in headers}
-        if method == "POST" and raw_path.rstrip(b"/").endswith(b"/files"):
+        if method == "POST" and _is_files(raw_path):
             gz = any(k.lower() == b"content-encoding" and v.strip().lower() == b"gzip"
                      for k, v in scope.get("headers", []))
             body = self._body(receive, gz)
