@@ -41,7 +41,7 @@ Notes on the settings:
 | `sandbox.create` | internal | | `hangar.environment`, `.provider`, `.sandbox.id`, `.sandbox.warm` (a warm-pool claim), `.sandbox.fork` |
 | `sandbox.image`, `sandbox.start`, `sandbox.start_wait`, `sandbox.setup`, `sandbox.repo` | internal | `sandbox.create` | The image lookup or build; the provider's create or claim; waiting for it to run (node scale-up, image pull); harness, credential and MCP setup; the clone and the repo's setup command |
 | `sandbox.destroy`, `sandbox.snapshot` | internal | | |
-| `sandbox.exec`, `sandbox.read_file`, `sandbox.write_file`, `sandbox.list_files` | internal | only inside another span | `hangar.exec.exit_code`, `hangar.file.bytes`. Commands and file contents are never recorded. |
+| `sandbox.exec`, `sandbox.read_file`, `sandbox.write_file`, `sandbox.list_files` | internal | only inside another span | `hangar.exec.exit_code`, `hangar.exec.transport` (`envd` or `exec`, see [envd.md](envd.md)), `hangar.file.bytes`. Commands and file contents are never recorded. |
 | `checkpoint.capture`, `checkpoint.restore` | internal | the turn, boot or suspend | `hangar.checkpoint.reason`, `.stored`, `.bytes` |
 | `db.backup`, `db.restore_stage` | internal | root, or `hangar admin`'s request | A database backup and a staged restore (gke.md §7): `hangar.backup.name`, `.db_bytes`, `.stored_bytes` |
 | `invoke_agent <harness>` | internal | `job.process`, or the request that sent the message | One per agent turn, from start until hangar has collected its result and checkpointed. GenAI semantic conventions: `gen_ai.operation.name=invoke_agent`, `gen_ai.agent.name` (the harness), `gen_ai.provider.name` (`anthropic` for Claude Code, `openai` for Codex, `gcp.gemini` for Antigravity), `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.conversation.id`, `gen_ai.usage.input_tokens` (cached tokens included, as the convention says), `.output_tokens`, `.cache_read.input_tokens`, `.cache_write.input_tokens`. Hangar adds `hangar.cost_usd`, `.cost_source`, `.turn.outcome`, `.turn.exit_code`, `.run.id`, `.session.id`, `.job.id`. A turn that timed out, went over budget or lost its sandbox is an error span. |
@@ -107,6 +107,7 @@ Claude Code sends that header on HTTP MCP requests when its tracing beta is on. 
 | `hangar_checkpoint_bytes` | histogram | `reason` (`turn`, `interval`, `suspend`, `destroy`, `manual`) |
 | `hangar_gateway_pushes_total` | counter | `result` (`ok`, `failed`) |
 | `hangar_gateway_denials_total` | counter | `reason` (`repo_not_granted`, `ref_policy`, `too_large`, `protocol`) |
+| `hangar_sandbox_exec_seconds` | histogram | `transport`: `envd` (hangar-envd ran it), `exec` (the provider's own exec: `docker exec`, pods/exec, E2B), `error`. A falling `envd` share means daemons can't be reached or started. |
 | `hangar_mcp_calls_total`, `hangar_mcp_call_seconds` | counter, histogram | `tool`, `status` (`ok`, `tool_error`, `error`) |
 | `hangar_http_request_seconds` | histogram | `method` (a method outside HTTP's standard ones is `_OTHER`), `route` (the template), `status` |
 | `hangar_db_backups_total`, `hangar_db_backup_seconds`, `hangar_db_backup_last_success_timestamp_seconds` | counter, histogram, gauge | `result` (`ok`, `error`). Alert when `time() - hangar_db_backup_last_success_timestamp_seconds` passes two backup intervals; the gauge starts empty after a restart. |

@@ -127,6 +127,21 @@ async def test_unreachable_daemon_falls_back(tmp_path):
 
 
 @needs_binary
+async def test_close_drops_the_pool_and_later_calls_use_the_provider(env):
+    """integrate (#57 x #60): Fleet.stop closes each provider, and with it the daemon connections; a call that
+    still comes afterwards neither reopens a pool nor starts a daemon."""
+    e, sb, _ = env
+    assert await e.ready(sb) is not None
+    assert (await e.exec(sb, "true")).transport == "envd"
+    pool = e.http
+    await e.close()
+    assert pool.is_closed and e._http is None
+    other = Sandbox(name="u", environment="x", provider="local", provider_ref="local-2")
+    assert await e.exec(sb, "true") is None and await e.read_file(sb, "/etc/hostname", limit=10) is SKIP
+    assert await e.endpoint(other) is None and not e._starting and e._http is None
+
+
+@needs_binary
 async def test_wrong_token_is_refused(env):
     e, sb, _ = env
     assert await e.ready(sb) is not None

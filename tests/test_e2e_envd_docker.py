@@ -6,7 +6,9 @@ Opt-in (needs Docker and the binary from envd/build.sh):
 """
 
 import asyncio
+import base64
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -96,4 +98,107 @@ async def test_envd_in_a_docker_sandbox(tmp_path):
         assert subprocess.run(["pgrep", "-f", "sleep 4242"], capture_output=True).returncode == 1
     finally:
         await fleet.destroy_many(label="e2e-envd")
+        await fleet.stop()
+
+
+async def _exists(fleet, ref: str, path: str) -> bool:
+    return (await fleet.exec(ref, f"test -e {shlex.quote(path)}")).exit_code == 0
+
+
+async def _until(pred, what: str, timeout: float = 60.0):
+    for _ in range(int(timeout / 0.1)):
+        if got := await pred():
+            return got
+        await asyncio.sleep(0.1)
+    raise AssertionError(f"timed out waiting for {what}")
+
+
+@pytest.mark.parametrize("envd", ["auto", "off"])
+async def test_a_live_turn_works_the_same_through_envd(tmp_path, monkeypatch, envd):
+    """integrate (#59 x #60): a session's live turn under hangar's driver behaves the same through hangar-envd as
+    through `docker exec`: the tmux launch, the driver's key and command files, and the driver's signed answers to
+    an approval, a steer and an interrupt. A scripted Claude Code (tests/fixtures/live) stands in for the model."""
+    from hangar import steer as steering
+    from hangar.app import Hangar
+    from hangar.config import Settings
+    from hangar.harnesses import HARNESSES, Harness
+    from hangar.models import SessionState
+    from hangar.sessions import NewSession
+    from tests.test_steer import SESSION_FLAGS, settle
+
+    envd_dir = Path(os.environ.get("HANGAR_ENVD_DIR") or ROOT / "envd" / "dist")
+    if envd == "auto" and not find_binaries(Settings(envd_dir=envd_dir)):
+        pytest.skip("no hangar-envd binary (run envd/build.sh)")
+    fake = base64.b64encode((ROOT / "tests" / "fixtures" / "live" / "fake_claude.py").read_bytes()).decode()
+    monkeypatch.setitem(HARNESSES, "live-claude", Harness(
+        name="live-claude", title="Claude (scripted)", run="false", live="claude", resume="preset",
+        live_run=(f"bash -c 'echo {fake} | base64 -d > /tmp/fake_claude.py && exec python3 /tmp/fake_claude.py "
+                  f"\"$@\"' fake --model x {SESSION_FLAGS}"), session_dirs=[".claude/projects"]))
+    envs = tmp_path / "envs"
+    envs.mkdir()
+    (envs / "liveenv.yaml").write_text(
+        "name: liveenv\nbase: mirror.gcr.io/library/ubuntu:24.04\nharnesses: [live-claude]\nharness_mode: bake\n"
+        "resources: {cpus: 1, memory_gb: 1}\n")
+    s = Settings(data_dir=tmp_path / "data", env_dirs=[envs, ROOT / "envs"], reaper_interval_seconds=3600,
+                 envd=envd, envd_dir=envd_dir, session_poll_seconds=0.2,
+                 extra_ca_bundle=os.environ.get("HANGAR_EXTRA_CA_BUNDLE") or None)
+    s.snapshot_dir.mkdir(parents=True, exist_ok=True)
+    h = Hangar(s)
+    fleet, svc = h.fleet, h.sessions
+    await fleet.start()
+    await svc.start()
+    prov = fleet.provider("docker")
+    name = f"e2e-live-{envd}"
+    sid = None
+
+    async def live_inbox():
+        x = svc.get(name)
+        t = x.turns[-1]
+        if x.state == SessionState.RUNNING and t.live and t.run_id:
+            return await _exists(fleet, sid, f"{steering.ctl_dir(svc, t.run_id)}/in")
+        return False
+
+    async def pending():
+        return next(iter(steering.pending(svc.get(name))), None)
+
+    try:
+        svc.new(NewSession(name=name, environment="liveenv", approvals="ask"), owner="admin", requester="sean")
+        sid = (await settle(svc, name, 900)).sandbox_id  # the first run builds the image
+        assert sid
+        if envd == "auto":
+            assert await prov.envd.ready(fleet.get(sid)) is not None
+        assert await via_envd(fleet, sid) is (envd == "auto")
+
+        # An approval, answered: the driver's signed ack comes back through the same transport.
+        svc.send(name, "TOOL make the file", requester="sean")
+        a = await _until(pending, "the approval request")
+        assert "touch tool-ran.txt" in a.detail and not await _exists(fleet, sid, "/workspace/tool-ran.txt")
+        assert (await steering.answer(svc, svc.get(name), a.id, "allow", "ana")).status == "allowed"
+        t = (await settle(svc, name)).turns[-1]
+        assert (t.outcome, t.live, [x.status for x in t.approvals]) == ("exited", True, ["allowed"]), t.summary
+        assert await _exists(fleet, sid, "/workspace/tool-ran.txt")
+        assert not await _exists(fleet, sid, f"{steering.ctl_dir(svc, t.run_id)}/key")  # the driver took its key
+
+        # A steer folded into the running turn.
+        svc.send(name, "SLOW work", requester="sean")
+        await _until(live_inbox, "the second turn's driver")
+        assert (await steering.steer(svc, svc.get(name), "in Rust", "ana")).status == "delivered"
+        t = (await settle(svc, name)).turns[-1]
+        assert (t.outcome, t.summary) == ("exited", "did: SLOW work | steered: in Rust")
+
+        # An interrupt the driver confirms with a signed answer (unconfirmed, hangar would kill the run instead).
+        async def unconfirmed(*_a):
+            raise AssertionError("the driver's answer to the interrupt was not taken")
+
+        monkeypatch.setattr(steering, "kill", unconfirmed)
+        svc.send(name, "SLOW again", requester="sean")
+        await _until(live_inbox, "the third turn's driver")
+        assert (await steering.interrupt(svc, svc.get(name), "ana")).status == "delivered"
+        t = (await settle(svc, name)).turns[-1]
+        assert (t.outcome, t.exit_code) == ("interrupted", 130)
+        assert await via_envd(fleet, sid) is (envd == "auto")
+    finally:
+        await svc.stop()
+        if sid:
+            await fleet.destroy(sid)
         await fleet.stop()

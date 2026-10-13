@@ -550,3 +550,23 @@ async def test_codex_otel_config_reads_a_capped_file(settings):
     sb = SimpleNamespace(info={})
     await observe.configure_harness(big, sb, "codex", "/home/agent", settings)
     assert len(big.files[path]) == CONFIG_READ_LIMIT + 1 and "is over 8 MB" in sb.info["warnings"][0]
+
+
+async def test_exec_spans_and_metrics_say_how_the_command_ran(fleet, otel, monkeypatch):
+    """integrate (#60): `hangar.exec.transport` and hangar_sandbox_exec_seconds tell commands hangar-envd ran from
+    those the provider's own exec ran (a falling envd share means daemons can't be reached)."""
+    sb = await fleet.create("plain")
+    fake = fleet.providers["docker"]
+    real = fake.exec
+
+    async def through_envd(*a, **kw):
+        return (await real(*a, **kw)).model_copy(update={"transport": "envd"})
+
+    with observe.span("test.root"):
+        await fleet.exec(sb.id, "echo provider")
+        monkeypatch.setattr(fake, "exec", through_envd)
+        res = await fleet.exec(sb.id, "echo daemon")
+    assert "transport" not in res.model_dump()  # never in an API answer
+    assert [s.attributes["hangar.exec.transport"] for s in by_name(otel)["sandbox.exec"]] == ["exec", "envd"]
+    assert sample("hangar_sandbox_exec_seconds_count", transport="envd") == 1
+    assert sample("hangar_sandbox_exec_seconds_count", transport="exec") >= 1

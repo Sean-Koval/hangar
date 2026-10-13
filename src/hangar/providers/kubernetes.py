@@ -452,7 +452,7 @@ class KubernetesProvider(Provider):
                           duration_ms=int((time.monotonic() - t0) * 1000), truncated=trunc)
 
     async def read_file(self, sandbox, path, limit=None) -> bytes | None:
-        if (got := await self.envd.read_file(sandbox, path, limit)) is not SKIP:  # --- envd
+        if (got := await self.envd.read_file(sandbox, path, limit=limit)) is not SKIP:  # --- envd
             return got
         pod = await self._pod(sandbox)
         q = shlex.quote(path)

@@ -298,6 +298,10 @@ def _record_restore(a: dict[str, Any], _: Any, err: BaseException | None, secs: 
     metrics.checkpoint("restore", "error" if err is not None else "ok", secs)
 
 
+def _transport(r: Any) -> str:  # integrate (#60): hangar-envd, or the provider's own exec (docker exec, pods/exec)
+    return getattr(r, "transport", None) or "exec"
+
+
 def _job_attrs(a: dict[str, Any]) -> dict[str, Any]:
     job = a.get("job")
     if job is None and a.get("job_id") and a.get("self") is not None:
@@ -326,7 +330,11 @@ _SPECS: dict[str, _Spec] = {
                                                "hangar.snapshot.kind": a.get("kind")},
                               result=lambda s: {"hangar.snapshot.id": s.id, "hangar.snapshot.bytes": s.size_bytes}),
     "sandbox.exec": _Spec(attrs=lambda a: {"hangar.sandbox.ref": a.get("ref"), "hangar.exec.timeout": a.get("timeout")},
-                          result=lambda r: {"hangar.exec.exit_code": r.exit_code}, child_only=True),
+                          result=lambda r: {"hangar.exec.exit_code": r.exit_code,
+                                            "hangar.exec.transport": _transport(r)},  # integrate (#60)
+                          record=lambda a, r, err, secs: metrics.sandbox_exec(
+                              "error" if err is not None else _transport(r), secs),
+                          child_only=True),
     "sandbox.read_file": _Spec(attrs=lambda a: {"hangar.sandbox.ref": a.get("ref")},
                                result=lambda d: {"hangar.file.bytes": len(d) if d is not None else None},
                                child_only=True),

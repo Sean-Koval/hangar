@@ -172,6 +172,7 @@ class Envd:
         self._digests: dict[str, str] = {}
         self._key: bytes | None = None
         self._http: httpx.AsyncClient | None = None
+        self._closed = False
         if settings.envd != "off" and not self.binaries:
             log.info("envd: no hangar-envd binary found (set HANGAR_ENVD_DIR or run envd/build.sh); "
                      "using %s exec", provider.name)
@@ -209,6 +210,9 @@ class Envd:
         return self._http
 
     async def close(self) -> None:
+        """At shutdown (Fleet.stop, after #57's drain): the pool's connections go, and a call still in flight
+        afterwards uses the provider rather than opening a new pool or starting a daemon (integrate)."""
+        self._closed = True
         for t in self._starting.values():
             t.cancel()
         self._starting.clear()
@@ -293,7 +297,7 @@ class Envd:
     # ------------------------------------------------------------------ finding and starting the daemon
     async def endpoint(self, sb: Sandbox) -> Endpoint | None:
         """The sandbox's daemon if it is known to be up; otherwise None, starting it in the background."""
-        if not self.binaries or not sb.provider_ref:
+        if self._closed or not self.binaries or not sb.provider_ref:
             return None
         ep = self._eps.get(sb.id)
         if ep is not None and ep.ref == sb.provider_ref:
@@ -511,7 +515,7 @@ class Envd:
         if code == 124:
             e_ += f"\n[hangar] command timed out after {timeout}s"
         return ExecResult(exit_code=code, stdout=o, stderr=e_, duration_ms=int((time.monotonic() - t0) * 1000),
-                          truncated=t1 or t2)
+                          truncated=t1 or t2, transport="envd")
 
     async def read_file(self, sb: Sandbox, path: str, limit: int | None = None) -> Any:
         """The file's bytes (no more than `limit` + 1), None if it isn't a readable regular file, or SKIP."""

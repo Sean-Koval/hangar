@@ -74,6 +74,9 @@ class Metrics:
         self.pushes = Counter("hangar_gateway_pushes", "Pushes the git gateway forwarded", ["result"], registry=r)
         self.denials = Counter("hangar_gateway_denials", "Requests the git gateway refused", ["reason"], registry=r)
         self.mcp_calls = Counter("hangar_mcp_calls", "MCP tool calls", ["tool", "status"], registry=r)
+        # integrate (#60): how commands reach sandboxes: hangar-envd, the provider's exec, or neither (error)
+        self.execs = Histogram("hangar_sandbox_exec_seconds", "Sandbox commands hangar ran, by how they ran (envd, "
+                               "exec, or error)", ["transport"], buckets=_SECONDS, registry=r)
         self.mcp_seconds = Histogram("hangar_mcp_call_seconds", "MCP tool call duration", ["tool"], buckets=_SECONDS,
                                      registry=r)
         self.http = Histogram("hangar_http_request_seconds", "REST, dashboard and MCP HTTP requests",
@@ -235,6 +238,11 @@ def gateway_push(result: str) -> None:
 def gateway_denied(reason: str) -> None:
     if M is not None:
         M.denials.labels(reason).inc()
+
+
+def sandbox_exec(transport: str, seconds: float) -> None:  # integrate (#60)
+    if M is not None:
+        M.execs.labels(transport).observe(seconds)
 
 
 def mcp_call(tool: str, status: str, seconds: float) -> None:
