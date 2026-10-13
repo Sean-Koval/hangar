@@ -17,7 +17,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
-from hangar import exchange
+from hangar import exchange, observe  # --- observe
 from hangar.broker import AUTH_FILE_LIMIT, Broker, CredentialError
 from hangar.config import Settings
 from hangar.envspec import BuildContext, EnvCatalog, EnvSpec, image_tag, render, repo_dirname, warm_pool_now
@@ -398,6 +398,7 @@ class Fleet:
         self.audit(actor, "environment.register_image", env, provider=pname, image=ref)
         return {"environment": env, "provider": pname, "image": ref}
 
+    @observe.traced("sandbox.image")  # --- observe
     async def _ensure_image(self, spec: EnvSpec, pname: str, actor: str, harness: str | None = None,
                             stage: Callable[[str], None] | None = None) -> str:
         if spec.image:
@@ -461,6 +462,7 @@ class Fleet:
             del self.attached[sid]
         self.touch(sid, 0)
 
+    @observe.traced("sandbox.create")  # --- observe
     async def create(
         self,
         environment: str,
@@ -541,7 +543,8 @@ class Fleet:
             if spec.packs:
                 sb.info["packs"] = dict(spec.packs)
             stage("starting the sandbox")
-            await prov.create(sb, image, self._warm(spec))  # image may be a snapshot ref (forks)
+            with observe.span("sandbox.start", {"hangar.sandbox.id": sb.id, "hangar.provider": pname}):  # --- observe
+                await prov.create(sb, image, self._warm(spec))  # image may be a snapshot ref (forks)
             self.store.put(sb)
             await self._wait_running(prov, sb, stage=stage)
             if _parent:
@@ -588,6 +591,7 @@ class Fleet:
     def _is_agent(harness: str | None) -> bool:
         return bool(harness and harness in HARNESSES and HARNESSES[harness].agent)
 
+    @observe.traced("sandbox.setup")  # --- observe
     async def _apply_session(self, prov: Provider, sb: Sandbox, spec: EnvSpec, hname: str | None,
                              creds: list[Credential]) -> None:
         """Per-sandbox setup for the selected harness: PATH and env, credentials, secrets, config and MCP."""
@@ -631,6 +635,7 @@ class Fleet:
             else:
                 await self._merge_json(prov, sb, f"{home}/{rel}", content)
             sb.info["mcp"] = sorted(resolved)
+        await observe.configure_harness(prov, sb, h.name, home, self.settings)  # --- observe: Codex's [otel]
 
     async def _read_config(self, prov: Provider, sb: Sandbox, path: str) -> bytes | None:
         """A config file to merge into (b"" when missing), or None, with a warning, when it is over
@@ -701,6 +706,7 @@ class Fleet:
         except Exception:  # noqa: BLE001
             log.exception("warm pool refill failed")
 
+    @observe.traced("sandbox.start_wait")  # --- observe
     async def _wait_running(self, prov: Provider, sb: Sandbox, timeout: float | None = None,
                             stage: Callable[[str], None] | None = None) -> None:
         timeout = timeout or self.settings.sandbox_start_timeout_seconds
@@ -736,6 +742,7 @@ class Fleet:
         if res.exit_code != 0:
             raise FleetError(f"could not scrub inherited secrets from fork: {res.stderr[-300:]}")
 
+    @observe.traced("sandbox.repo")  # --- observe
     async def _setup_repo(self, prov: Provider, sb: Sandbox, spec: EnvSpec, work_branch: str | None,
                           stage: Callable[[str], None] | None = None) -> None:
         ws = self.settings.workspace_dir
@@ -765,6 +772,7 @@ class Fleet:
         if work_branch:
             sb.info["work_branch"] = work_branch
 
+    @observe.traced("sandbox.destroy")  # --- observe
     async def destroy(self, ref: str, actor: str = "system") -> Sandbox:
         sb = self.get(ref)
         prov = self.providers.get(sb.provider)
@@ -830,6 +838,7 @@ class Fleet:
         return sb, self.provider(sb.provider)
 
     # ================================================================== I/O
+    @observe.traced("sandbox.exec")  # --- observe
     async def exec(self, ref: str, command: str, cwd: str | None = None, timeout: int = 120,
                    actor: str = "system", quiet: bool = False) -> ExecResult:
         """`quiet` is for hangar's own housekeeping (checkpoints, idle checks): it neither counts as activity
@@ -843,11 +852,13 @@ class Fleet:
             self.audit(actor, "sandbox.exec", sb.id, command=command[:500], exit_code=res.exit_code)
         return res
 
+    @observe.traced("sandbox.read_file")  # --- observe
     async def read_file(self, ref: str, path: str, limit: int | None = None) -> bytes | None:
         sb, prov = self._running(ref)
         self._touch(sb)
         return await prov.read_file(sb, self._abs(sb, path), limit=limit)
 
+    @observe.traced("sandbox.write_file")  # --- observe
     async def write_file(self, ref: str, path: str, data: bytes, actor: str = "system") -> str:
         sb, prov = self._running(ref)
         p = self._abs(sb, path)
@@ -856,6 +867,7 @@ class Fleet:
         self.audit(actor, "sandbox.write_file", sb.id, path=p, bytes=len(data))
         return p
 
+    @observe.traced("sandbox.list_files")  # --- observe
     async def list_files(self, ref: str, path: str = ".", depth: int = 1) -> str:
         sb, prov = self._running(ref)
         self.touch(sb.id)
@@ -973,6 +985,7 @@ class Fleet:
         home = f"/home/{self.settings.sandbox_user}"
         rdir = f"{home}/.hangar/runs"
         wd = cwd or sb.info.get("repo_path") or self.settings.workspace_dir
+        env = {**observe.run_env(self.settings, sb, run_id, hname), **(env or {})}  # --- observe: TRACEPARENT, OTel
         await prov.write_file(sb, f"{rdir}/{run_id}.prompt", prompt.encode(), mode=0o600)
         script = (
             "#!/usr/bin/env bash\n"
@@ -1056,6 +1069,7 @@ class Fleet:
             call.cancel()  # only does something when this was cancelled itself
 
     # ================================================================== snapshots / forks
+    @observe.traced("sandbox.snapshot")  # --- observe
     async def snapshot(self, ref: str, label: str | None = None, kind: str = "auto",
                        actor: str = "system") -> Snapshot:
         sb, prov = self._running(ref)

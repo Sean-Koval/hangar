@@ -1,0 +1,44 @@
+# Optional: scrape hangar's /metrics with Google Cloud Managed Service for Prometheus (on by default on GKE
+# Autopilot and recent Standard clusters). Not in the base kustomization. docs/observability.md has the whole setup.
+#
+# /metrics needs a token. Mint one that can read metrics and nothing else:
+#   hangar token create prometheus --scope metrics
+#   kubectl -n hangar create secret generic hangar-metrics-token --from-literal=token=hgr_...
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: hangar
+  namespace: hangar
+spec:
+  selector:
+    matchLabels: {app: hangar}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      authorization:
+        type: Bearer
+        credentials:
+          secret: {name: hangar-metrics-token, key: token}  # namespace defaults to the PodMonitoring's
+---
+# Managed Prometheus's collectors (service account gmp-system/collector) read the token Secret themselves; let
+# them read this one Secret and nothing else in the namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hangar-metrics-token-reader
+  namespace: hangar
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [hangar-metrics-token]
+    verbs: [get, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gmp-collector-reads-hangar-metrics-token
+  namespace: hangar
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: hangar-metrics-token-reader}
+subjects:
+  - {kind: ServiceAccount, name: collector, namespace: gmp-system}

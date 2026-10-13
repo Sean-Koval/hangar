@@ -26,7 +26,7 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel, Field
 
-from hangar import exchange, strategies  # strategies: workstream D (forks/best-of-N)
+from hangar import exchange, observe, strategies  # strategies: workstream D (forks/best-of-N); --- observe
 from hangar.events import resolve_budget, total_usage, usage_line
 from hangar.fleet import Fleet, FleetError, _clip_tail
 from hangar.github import GitHub, GitHubError, parse_repo
@@ -525,6 +525,7 @@ class JobService:
         self._background.add(t)
         t.add_done_callback(self._background.discard)
 
+    @observe.traced("job.process")  # --- observe
     async def _process(self, job_id: str) -> None:
         job = self.get(job_id)
         if job.state in JOB_TERMINAL or job.state == JobState.AWAITING_APPROVAL:  # only approval queues it
@@ -574,6 +575,7 @@ class JobService:
     async def _sh(self, job: Job, command: str, timeout: int = 120, cwd: str | None = None):
         return await self.fleet.exec(job.sandbox_id, command, cwd=cwd, timeout=timeout, actor=f"job:{job.id}")
 
+    @observe.traced("job.provision")  # --- observe
     async def _provision(self, job: Job) -> bool:
         self._event(job, f"starting a sandbox from environment '{job.environment}'", JobState.PROVISIONING)
         s = self.sessions.for_job(
@@ -795,7 +797,9 @@ class JobService:
         repo_path = prov_sb.info.get("repo_path")
         if job.verify and repo_path:
             self._event(job, f"verifying: {job.verify}", JobState.VERIFYING)
-            res = await self._sh(job, job.verify, timeout=self.settings.job_verify_timeout_seconds)
+            with observe.span("job.verify", {"hangar.job.id": job.id}) as sp:  # --- observe
+                res = await self._sh(job, job.verify, timeout=self.settings.job_verify_timeout_seconds)
+                observe.set_attrs(sp, {"hangar.verify.exit_code": res.exit_code})
             job.result.verify_exit_code = res.exit_code
             job.result.verify_tail = self.broker.redact(_clip_tail((res.stdout or "") + (res.stderr or ""))[-4000:])
         verify_ok = not job.verify or job.result.verify_exit_code == 0
@@ -833,6 +837,7 @@ class JobService:
             bits.append(job.result.pr_url)
         return "; ".join(bits)
 
+    @observe.traced("job.deliver")  # --- observe
     async def _deliver(self, job: Job, draft: bool) -> None:
         q = shlex.quote
         st = await self._sh(job, "git status --porcelain")

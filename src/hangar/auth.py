@@ -16,7 +16,8 @@ from hangar.models import ApiToken, Budget, now
 from hangar.store import Store
 
 PREFIX = "hgr_"
-SCOPES = ("admin", "jobs", "mcp")  # admin: everything; jobs: only /api/jobs* (service callers); mcp: only /mcp
+# admin: everything; jobs: only /api/jobs* (service callers); mcp: only /mcp; metrics: only GET /metrics (--- observe)
+SCOPES = ("admin", "jobs", "mcp", "metrics")
 _RESERVED_NAMES = {"admin", "system"}
 
 

@@ -264,3 +264,29 @@ dialog .form-foot { margin-top: 4px; }
 .turns li:first-child { border-top: 0; }
 .turn-summary { margin-top: 4px; white-space: pre-wrap; font-size: 13px; color: var(--ink-2); font-variant-ligatures: none; }
 #ses-idle { width: auto; }
+
+/* ---------- usage (--- observe) ---------- */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-m); padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 2px; }
+.tile-label { color: var(--ink-3); font-size: 13px; }
+.tile-value { font-family: var(--cond); font-size: 30px; font-weight: 600; line-height: 1.1; }
+.usage-chart h3 { margin-bottom: 10px; }
+.bars { position: relative; display: grid; grid-template-columns: auto 1fr; grid-template-rows: 180px auto;
+  gap: 4px 8px; }
+.bars .empty { grid-column: 1 / -1; margin: 0; }
+.bars-axis { display: flex; flex-direction: column; justify-content: space-between; color: var(--ink-3);
+  font-size: 12px; text-align: right; }
+.bars-plot { display: flex; align-items: flex-end; gap: 2px; border-bottom: 1px solid var(--line);
+  background: linear-gradient(var(--line), var(--line)) top / 100% 1px no-repeat; }
+.bar-slot { flex: 1; height: 100%; display: flex; align-items: flex-end; }
+.bar-slot:hover .bar, .bar-slot:focus .bar { filter: brightness(1.15); }
+.bar { width: 100%; background: var(--yellow); border-radius: 4px 4px 0 0; }
+.bars-x { grid-column: 2; display: flex; justify-content: space-between; color: var(--ink-3); font-size: 12px; }
+.bar-tip { position: absolute; top: -6px; padding: 4px 8px; border-radius: var(--radius-s); background: var(--panel-2);
+  border: 1px solid var(--line); font-size: 13px; white-space: nowrap; pointer-events: none; }
+.usage-split { margin-top: 4px; }
+@media (max-width: 700px) {
+  #usage-stops th:nth-child(2), #usage-stops td:nth-child(2), #usage-stops th:nth-child(3),
+  #usage-stops td:nth-child(3) { display: none; }
+}

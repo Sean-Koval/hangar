@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from hangar import exchange
+from hangar import exchange, observe  # --- observe
 from hangar.a2a import A2AServer
 from hangar.auth import SCOPES, TokenAuth, bearer_from_headers
 from hangar.broker import Broker, CredentialError
@@ -275,6 +275,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log.warning("    %s", boot)
             log.warning("=" * 72)
         install_io_executor(h.settings)  # perf: before anything starts blocking provider calls
+        await observe.start(h.settings, redact=h.broker.redact)  # --- observe: OTEL_* traces, /metrics
         await h.fleet.start()
         await h.fleet.gateway.start()  # workstream F: the git gateway's own listener (HANGAR_GATEWAY_PORT)
         await h.sessions.start()  # first: jobs look up their sessions
@@ -305,6 +306,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await h.sessions.stop()
         await h.fleet.gateway.stop()  # workstream F
         await h.fleet.stop()
+        await observe.stop()  # --- observe: flush spans
 
     app = FastAPI(title="hangar", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None,
                   openapi_url=None)
@@ -317,6 +319,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar.frontdoor import FrontDoorMiddleware, RateLimited
 
     app.add_middleware(FrontDoorMiddleware, hangar=h, oauth=oauth)
+    app.add_middleware(observe.HTTPMiddleware)  # --- observe: outermost, so refused requests are seen too
 
     @app.exception_handler(RateLimited)
     async def _rate_limited(_: Request, exc: RateLimited):
@@ -969,6 +972,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import backup  # --- overnight/sweep: database backups (hangar admin)
 
     backup.mount(app, h, A)
+    # --- observe: GET /metrics (admin or `metrics` tokens) and GET /api/usage
+    from hangar import metrics, usage
+
+    metrics.mount(app, h)
+    usage.mount(app, h, A)
 
     @app.get("/api/audit")
     async def audit(limit: int = 200, _: str = A):

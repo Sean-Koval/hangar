@@ -234,6 +234,13 @@ class Settings(BaseSettings):
     # How long `hangar serve` waits for open requests (streams, terminals) on shutdown before cutting them.
     # Long-polls answer at once (shutdown.py). Keep it under the pod's terminationGracePeriodSeconds (45).
     shutdown_grace_seconds: int = 15
+    # --- observe: traces, metrics and the cost view (docs/observability.md). Traces are configured with the
+    # standard OTEL_* variables and are off unless they name an exporter.
+    metrics_enabled: bool = True  # GET /metrics (admin or `metrics` tokens); off: no prometheus_client import
+    # OTLP/HTTP base URL the agents *inside sandboxes* export to (an OpenTelemetry Collector they can reach, e.g.
+    # http://otel-collector.observability.svc:4318). Set: Claude Code and Codex send their own traces, metrics and
+    # logs there, under hangar's trace. Unset: sandboxes only get TRACEPARENT. No headers or secrets are passed.
+    otel_sandbox_endpoint: str | None = None
 
     @property
     def backup_interval_hours(self) -> float:
