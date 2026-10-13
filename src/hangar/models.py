@@ -88,6 +88,8 @@ class CredentialKind(StrEnum):
     SSH_KEY = "ssh_key"
     GIT_TOKEN = "git_token"
     GENERIC = "generic"
+    # --- workstream F: git gateway. JSON {app_id, installation_id?, private_key}; used by the gateway only.
+    GITHUB_APP = "github_app"
 
 
 class Credential(BaseModel):
@@ -435,3 +437,19 @@ class Session(BaseModel):
     parent_id: str | None = None  # the session this one was forked from
     forked_from_checkpoint: str | None = None
     fork_conversation: str | None = None  # the parent's conversation id; the next turn forks it, then clears it
+
+
+# ---------------------------------------------------------------------------- workstream F: git gateway (spec 0003)
+class SandboxGrant(BaseModel):
+    """What one sandbox may do through the git gateway. The sandbox holds only the `hgs_` token, which is
+    useless anywhere but the gateway; the real GitHub credential stays in the control plane."""
+
+    id: str = Field(default_factory=lambda: new_id("gnt"))
+    sandbox_id: str
+    token_hash: str  # sha256 of "hgs_<random>"; the token itself is shown once, to the sandbox
+    host: str = "github.com"
+    repos: list[str] = Field(default_factory=list)  # "owner/name", lower-case
+    push_refs: list[str] = Field(default_factory=list)  # exact refs, or patterns ending in "/**"
+    credential: str  # vault credential (git_token or github_app) the gateway uses upstream
+    created_at: float = Field(default_factory=now)
+    expires_at: float | None = None

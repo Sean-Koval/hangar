@@ -171,6 +171,24 @@ class Settings(BaseSettings):
     # Slack user ids allowed to start and steer jobs (empty: anyone in a mapped channel).
     slack_users: list[str] = Field(default_factory=list)
     slack_api_url: str = "https://slack.com/api"
+    # --- workstream F: git gateway (spec 0003, docs/security.md) -------------
+    # URL sandboxes use to reach the gateway, e.g. http://hangar-gateway.hangar.svc:8788 on GKE or
+    # http://host.docker.internal:8788 on Docker. Unset = no gateway; environments asking for it fail to start.
+    gateway_url: str | None = None
+    # The gateway listens on its own port so a NetworkPolicy can let sandboxes reach it and nothing else of the
+    # control plane. 0 = serve /git on the main port instead.
+    gateway_port: int = 8788
+    gateway_host: str | None = None  # bind address; default HANGAR_HOST
+    # Jobs and sessions use the gateway when it is configured, unless their environment says credential_mode: direct.
+    gateway_for_jobs: bool = True
+    # Upstream git hosts the gateway proxies to: {host: base URL}. Only these hosts get a grant.
+    gateway_upstreams: dict[str, str] = Field(default_factory=lambda: {"github.com": "https://github.com"})
+    # Refs every grant may push besides the sandbox's own branch. "/**" matches anything below.
+    gateway_push_refs: list[str] = Field(default_factory=lambda: ["refs/heads/hangar/**"])
+    gateway_allow_tags: bool = False
+    gateway_credential: str | None = None  # upstream credential when the sandbox has no git credential of its own
+    gateway_max_push_mb: int = 512
+    gateway_timeout_seconds: float = 120.0  # upstream connect/read timeout (per read, not per request)
 
     @property
     def db_path(self) -> Path:

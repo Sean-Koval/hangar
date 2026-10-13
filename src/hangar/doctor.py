@@ -152,5 +152,7 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
     if not (s.session_store or "").startswith("gs://") and "kubernetes" in fleet.providers:
         out.append(_check("durable checkpoints", None, "checkpoints are on the control plane's disk",
                           "set HANGAR_SESSION_STORE=gs://<bucket> (terraform output session_bucket) in hangar-site"))
+    # git gateway (workstream F): reachable, and every GitHub App credential can mint a token
+    out += await fleet.gateway.doctor(transport)
     await asyncio.sleep(0)
     return out

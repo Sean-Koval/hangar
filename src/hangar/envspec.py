@@ -115,6 +115,10 @@ class EnvSpec(BaseModel):
     # ("gvisor", "kata-qemu-runtime-rs", or "" for runc). Lets gVisor and Kata environments share a cluster.
     runtime_class: str | None = None
     sudo: bool = True
+    # --- workstream F: git gateway. direct: git credentials are written into the sandbox (the old way).
+    # gateway: the sandbox gets a grant for its own branch and pushes through hangar's git gateway; no GitHub
+    # token enters it. Unset: direct, except jobs and sessions use the gateway when HANGAR_GATEWAY_URL is set.
+    credential_mode: Literal["direct", "gateway"] | None = None
     source_dir: Path | None = Field(default=None, exclude=True)
     # Resolved by the fleet before a provider sees the spec: harness name -> pack image to mount read-only.
     packs: dict[str, str] = Field(default_factory=dict, exclude=True)

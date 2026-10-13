@@ -457,7 +457,8 @@ def cred_ls():
 def cred_add(
     name: str,
     harness: str = typer.Option(..., help="claude-code | codex | pi | antigravity | git (or any label)"),
-    kind: str = typer.Option(..., help="api_key | oauth_token | auth_file | git_token | ssh_key | generic"),
+    kind: str = typer.Option(..., help="api_key | oauth_token | auth_file | git_token | ssh_key | generic | "
+                             "github_app (git gateway only)"),
     value: str | None = typer.Option(None, help="Secret value; omit to read from --file or stdin."),
     file: Path | None = typer.Option(None, help="Read the secret from a file (e.g. ~/.codex/auth.json)."),
     env_var: str | None = typer.Option(None, "--env-var", help="Env var to inject as, overriding the harness "

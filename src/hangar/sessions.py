@@ -398,7 +398,8 @@ class SessionService:
         sb = await self.fleet.create(
             s.environment, name=f"ses-{s.name[:30]}-{uuid.uuid4().hex[:4]}", repo=s.repo, branch=s.base_branch,
             harness=s.harness, ttl_minutes=ttl, labels={**s.labels, "hangar.session": s.id}, provider=s.provider,
-            actor=f"session:{s.id}", progress=stage)
+            actor=f"session:{s.id}", progress=stage,
+            push_branch=s.branch)  # workstream F: the one branch a gateway-mode sandbox may push
         if s.checkpoints and sb.info.get("repo_path"):
             stage("restoring the last checkpoint")
         note = None
