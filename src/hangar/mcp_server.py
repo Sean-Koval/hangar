@@ -17,9 +17,10 @@ import functools
 import inspect
 from typing import Any
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
+from hangar import exchange
 from hangar.broker import CredentialError
 from hangar.fleet import Fleet, FleetError
 from hangar.jobs import Caller, JobService, SubmitJob
@@ -55,6 +56,13 @@ repo state (commits, uncommitted changes) is restored. list_sessions shows what 
 Or hand off whole pieces of work: submit_job(instructions, repo=..., context=[...]) runs an agent in
 a fresh sandbox, verifies, pushes a branch and opens a draft PR on its own. Check it with get_job,
 continue it with follow_up_job, stop it with cancel_job.
+
+Context in and out (jobs and sessions alike): `context` items can carry files, your uncommitted changes
+({"kind": "patch", "content": <git diff --binary>}) and unpushed commits ({"kind": "bundle", "content":
+<base64 git bundle>, "encoding": "base64", "base_commit": <sha on the remote>}). `output_schema` (JSON
+Schema) asks the agent for a structured result. wait_for_turn(job or session) blocks with progress
+notifications and returns the result, the agent's question (state needs_input: answer it with
+follow_up_job / send_to_session) and its artifacts (get_artifact). get_session_patch gives the code.
 """
 
 
@@ -347,16 +355,22 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         async def new_session(name: str, environment: str | None = None, repo: str | None = None,
                               message: str | None = None, harness: str | None = None, model: str | None = None,
                               base_branch: str | None = None, idle_minutes: int | None = None,
-                              budget: dict[str, Any] | None = None) -> dict[str, Any]:
+                              budget: dict[str, Any] | None = None,
+                              context: list[dict[str, Any]] | None = None,
+                              output_schema: dict[str, Any] | None = None) -> dict[str, Any]:
             """Start a resumable stream of work (like a cloud Claude session): a sandbox of `environment` on branch
             hangar/session/<name>. With `message`, the agent starts on it right away. The conversation and repo
             state are checkpointed after every turn and when the session idles, so it can be picked up days later
-            with send_to_session or open_session. Poll get_session for progress. `budget` caps each agent turn:
-            {"max_minutes": 30, "max_tokens": 2000000, "max_cost_usd": 5}."""
+            with send_to_session or open_session. `context`: attachments for the first turn, including your local
+            work ({"kind": "patch"} uncommitted changes, {"kind": "bundle", "base_commit": ...} unpushed commits).
+            `output_schema`: JSON Schema for a structured result. `budget` caps each agent turn:
+            {"max_minutes": 30, "max_tokens": 2000000, "max_cost_usd": 5}. Then call wait_for_turn(name)."""
             who = current_actor.get()
             req = NewSession(name=name, environment=environment, repo=repo, message=message, harness=harness,
                              model=model, base_branch=base_branch, idle_minutes=idle_minutes,
-                             budget=Budget.model_validate(budget) if budget else None)
+                             budget=Budget.model_validate(budget) if budget else None,
+                             context=[ContextItem.model_validate(c) for c in context or []],
+                             output_schema=output_schema)
             return sessions.view(sessions.new(req, owner=who, requester=who))
 
         @tool()
@@ -364,7 +378,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             """Streams of work, most recently active first: name, state (idle | running | suspended ...), repo,
             branch and the agent's last summary."""
             keep = ("id", "name", "title", "state", "environment", "harness", "repo", "branch", "last_active_at",
-                    "last_summary", "sandbox_id")
+                    "last_summary", "sandbox_id", "needs_input")
             return [{k: v for k, v in sessions.view(s).items() if k in keep}
                     for s in sessions.list(include_archived=include_archived, limit=limit)]
 
@@ -382,10 +396,15 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             return sessions.view(sessions.open(session, requester=current_actor.get(), harness=harness))
 
         @tool()
-        async def send_to_session(session: str, message: str) -> dict[str, Any]:
+        async def send_to_session(session: str, message: str, context: list[dict[str, Any]] | None = None,
+                                  output_schema: dict[str, Any] | None = None) -> dict[str, Any]:
             """Continue a session: the agent resumes its own conversation (full earlier context) in the session's
-            sandbox, booting and restoring it first if the session is suspended. Poll get_session for the result."""
-            return sessions.view(sessions.send(session, message, requester=current_actor.get()))
+            sandbox, booting and restoring it first if the session is suspended. If the agent asked a question
+            (needs_input), the message answers it. `context` and `output_schema` as for new_session. Then call
+            wait_for_turn(session)."""
+            return sessions.view(sessions.send(session, message, requester=current_actor.get(),
+                                               context=[ContextItem.model_validate(c) for c in context or []],
+                                               output_schema=output_schema))
 
         @tool()
         async def keep_session(session: str, idle_minutes: int) -> dict[str, Any]:
@@ -399,6 +418,50 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             """Checkpoint a session and release its sandbox now (idle sessions also suspend on their own)."""
             return sessions.view(sessions.suspend(session, requester=current_actor.get()))
 
+    # ------------------------------------------------------------------ context exchange (workstream E, spec 0011)
+    if sessions is not None:
+        @tool()
+        async def wait_for_turn(ref: str, ctx: Context, timeout_seconds: int = 300) -> dict[str, Any]:
+            """Wait (up to `timeout_seconds`, max 600) for a job's or session's current agent turn to end, with
+            progress notifications while it runs. Returns the turn: `done`, `outcome`, `summary`, `result` (the
+            structured result), `result_error`, `question` (the agent needs input: answer with follow_up_job or
+            send_to_session), `artifacts` (read with get_artifact). `ref`: a job id or a session name. If `done`
+            is false, call it again."""
+
+            async def report(progress: float, total: float | None, message: str) -> None:
+                await ctx.report_progress(progress, total, message)
+
+            return await exchange.wait_for_turn(sessions, jobs, ref, timeout_seconds, report)
+
+        @tool()
+        async def get_artifact(ref: str, turn: int, path: str, max_bytes: int | None = None) -> dict[str, Any]:
+            """Read a file the agent handed back (listed on the turn's `artifacts`). `ref`: a job id or a session
+            name. Text comes back inline, binary as base64, either capped at `max_bytes` (default and max 512 KB;
+            `truncated` says if it was cut). The REST API serves whole files."""
+            s, _ = exchange.resolve(sessions, jobs, ref)
+            a, data = await exchange.read_artifact(sessions, s, turn, path)
+            cap = sessions.settings.exchange_inline_artifact_kb * 1024
+            return exchange.inline(a, data, max(1, min(max_bytes or cap, cap)))
+
+        @tool()
+        async def get_session_patch(ref: str, max_bytes: int = 200_000) -> dict[str, Any]:
+            """The session's (or job's) work as one patch against its base branch: commits, uncommitted changes
+            and new files, ready for `git apply`. Live from the sandbox if it is up, else from the last checkpoint.
+            `files` lists what changed; `truncated` says if the patch was cut at `max_bytes`."""
+            s, _ = exchange.resolve(sessions, jobs, ref)
+            return await exchange.session_patch(sessions, s, max_bytes)
+
+        @mcp.resource("hangar://sessions/{name}/artifacts/{turn}/{+path}", name="session-artifact",
+                      description="A file an agent handed back in a session turn (see get_session).")
+        async def artifact_resource(name: str, turn: str, path: str) -> str | bytes:
+            if not turn.isdigit():
+                raise ValueError("turn must be a number")
+            a, data = await exchange.read_artifact(sessions, sessions.get(name), int(turn), path)
+            try:
+                return data.decode("utf-8")
+            except UnicodeDecodeError:
+                return data
+
     # ------------------------------------------------------------------ jobs (spec 0009)
     if jobs is None:
         return mcp
@@ -408,20 +471,23 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                    title: str | None = None, harness: str | None = None, model: str | None = None,
                    base_branch: str | None = None, verify: str | None = None, deliver: str = "draft_pr",
                    context: list[dict[str, Any]] | None = None, timeout_minutes: int | None = None,
-                   callback_url: str | None = None, budget: dict[str, Any] | None = None) -> dict[str, Any]:
+                   callback_url: str | None = None, budget: dict[str, Any] | None = None,
+                   output_schema: dict[str, Any] | None = None) -> dict[str, Any]:
         """Hand a piece of development work to a cloud agent and get on with other things.
 
         Hangar queues the job, starts a sandbox from `environment` (default: the repo's mapped one), writes
         `context` next to the repo, runs the agent, runs `verify` (the repo's own check, e.g. "pytest -q"),
         commits anything left, pushes branch hangar/<job> and opens a PR (`deliver`: draft_pr | pr | branch |
-        none). `context` items: {"name": "trace.txt", "content": "...", "kind": "log"} or
-        {"name": "spec", "kind": "url", "url": "https://..."}. `budget` caps each agent turn
-        ({"max_minutes": 30, "max_tokens": 2000000, "max_cost_usd": 5}); a turn that crosses it is stopped and
-        what it did is delivered as a draft. Returns the job; poll get_job (it shows usage) or get_events."""
+        none). `context` items: {"name": "trace.txt", "content": "...", "kind": "log"},
+        {"name": "spec", "kind": "url", "url": "https://..."}, or your local work: {"kind": "patch"} and
+        {"kind": "bundle", "base_commit": ...}. `output_schema`: JSON Schema for a structured result
+        (get_job's result.data). `budget` caps each agent turn ({"max_minutes": 30, "max_tokens": 2000000,
+        "max_cost_usd": 5}); a turn that crosses it is stopped and what it did is delivered as a draft.
+        Returns the job; then wait_for_turn(job id), or poll get_job (it shows usage) or get_events."""
         req = SubmitJob(instructions=instructions, repo=repo, environment=environment, title=title, harness=harness,
                         model=model, base_branch=base_branch, verify=verify, deliver=deliver,
                         context=[ContextItem.model_validate(c) for c in context or []],
-                        timeout_minutes=timeout_minutes, callback_url=callback_url,
+                        timeout_minutes=timeout_minutes, callback_url=callback_url, output_schema=output_schema,
                         budget=Budget.model_validate(budget) if budget else None)
         who = current_actor.get()
         return jobs.view(jobs.submit(req, Caller(who, who), source="mcp"))
@@ -435,15 +501,19 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
     @tool()
     async def list_jobs(state: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
         """Recent jobs, newest first (state: queued | provisioning | running | verifying | delivering |
-        succeeded | failed | cancelled)."""
+        needs_input | succeeded | failed | cancelled)."""
         return [{k: v for k, v in jobs.view(j).items() if k not in ("events", "instructions", "turns")}
                 for j in jobs.list(state=state, limit=limit)]
 
     @tool()
-    async def follow_up_job(job: str, message: str) -> dict[str, Any]:
-        """Continue a finished job: the agent picks up `message` in the same sandbox and branch, then hangar
-        verifies and delivers again (the PR updates)."""
-        return jobs.view(jobs.follow_up(job, message, requester=current_actor.get()))
+    async def follow_up_job(job: str, message: str, context: list[dict[str, Any]] | None = None,
+                            output_schema: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Continue a finished job, or answer a job that needs input: the agent picks up `message` in its own
+        conversation on the same branch, then hangar verifies and delivers again (the PR updates). `context` and
+        `output_schema` as for submit_job (the job's schema applies when omitted)."""
+        return jobs.view(jobs.follow_up(job, message, requester=current_actor.get(),
+                                        context=[ContextItem.model_validate(c) for c in context or []],
+                                        output_schema=output_schema))
 
     @tool()
     async def cancel_job(job: str) -> dict[str, Any]:

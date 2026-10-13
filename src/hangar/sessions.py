@@ -25,6 +25,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from hangar import exchange
 from hangar.checkpoints import CheckpointStore, make_store
 from hangar.events import Activity, resolve_budget, total_usage
 from hangar.fleet import Fleet, FleetError, _clip_tail
@@ -33,6 +34,7 @@ from hangar.models import (
     SESSION_LIVE,
     Budget,
     Checkpoint,
+    ContextItem,
     Sandbox,
     SandboxState,
     Session,
@@ -74,6 +76,9 @@ class NewSession(BaseModel):
     idle_minutes: int | None = Field(None, ge=0, le=10080)  # 0 = never auto-suspend
     labels: dict[str, str] = Field(default_factory=dict)
     budget: Budget | None = None  # per agent turn; unset fields fall back to HANGAR_BUDGET_* (workstream C)
+    # workstream E: attachments and local work for the first turn, and the structured result it must produce
+    context: list[ContextItem] = Field(default_factory=list)
+    output_schema: dict[str, Any] | None = None
 
 
 def extract_summary(harness: str | None, log_text: str) -> str | None:
@@ -208,6 +213,10 @@ class SessionService:
         branch = req.branch or f"hangar/session/{req.name}"
         if not _BRANCH_RE.match(branch) or (req.base_branch and req.base_branch == branch):
             raise SessionError(f"invalid branch '{branch}'")
+        context = exchange.check_context(req.context, self.settings)  # workstream E
+        schema = exchange.check_schema(req.output_schema)
+        if (context or schema) and not req.message:
+            raise SessionError("context and output_schema go with a message for the agent")
         s = Session(name=req.name, title=(req.title or (req.message or req.name).strip().splitlines()[0])[:200],
                     owner=owner, environment=env, harness=harness, model=req.model,
                     repo=req.repo or (spec.repo.url if spec.repo else None), base_branch=req.base_branch,
@@ -219,7 +228,8 @@ class SessionService:
         self._set(s, SessionState.STARTING, f"created by {requester}")
         self.fleet.audit(requester, "session.new", s.id, name=s.name, environment=env, repo=s.repo)
         if req.message:
-            s.turns.append(SessionTurn(message=req.message, requester=requester))
+            s.turns.append(SessionTurn(message=req.message, requester=requester, context=context,
+                                       output_schema=schema))
             self._save(s)
             self._busy.add(s.id)
             self._spawn(self._turn(s.id))
@@ -250,12 +260,15 @@ class SessionService:
         self._spawn(self._boot_task(s.id))
         return s
 
-    def send(self, ref: str, message: str, requester: str) -> Session:
+    def send(self, ref: str, message: str, requester: str, context: list[ContextItem] | None = None,
+             output_schema: dict[str, Any] | None = None) -> Session:
         s = self.get(ref)
         if not message.strip():
             raise SessionError("message is empty")
         if len(message) > MAX_MESSAGE:
             raise SessionError("message is too long")
+        context = exchange.check_context(context or [], self.settings)  # workstream E
+        output_schema = exchange.check_schema(output_schema)
         if s.state == SessionState.ARCHIVED:
             raise SessionError(f"session {s.name} is archived")
         if s.job_id:
@@ -263,7 +276,9 @@ class SessionService:
                                "(its turns are verified and delivered)")
         if self.busy(s.id) or s.state in (SessionState.RUNNING, SessionState.SUSPENDING):
             raise SessionError(f"session {s.name} is busy ({s.state}); wait for it to finish")
-        s.turns.append(SessionTurn(message=message, requester=requester))
+        s.turns.append(SessionTurn(message=message, requester=requester, context=context,
+                                   output_schema=output_schema))
+        s.needs_input = None  # this message answers the agent's question, if it had one
         s.last_active_at = now()
         self._busy.add(s.id)
         self._set(s, SessionState.RUNNING if s.sandbox_id and self._alive(s.sandbox_id) else SessionState.STARTING,
@@ -326,7 +341,7 @@ class SessionService:
         for t in d["turns"]:  # workstream C: the collector's read position is internal
             t.pop("event_cursor", None)
         d["usage"] = u.model_dump(mode="json") if (u := total_usage(s.turns)) else None
-        return d
+        return exchange.scrub_turns(d)  # workstream E: attachment contents never leave in a view
 
     # ================================================================== internals: state
     def _env_for_repo(self, repo: str | None) -> str | None:
@@ -509,6 +524,9 @@ class SessionService:
                 f"if [ -s {c}/untracked.list ]; then tar --null -T {c}/untracked.list -czf {c}/untracked.tgz; "
                 f"xargs -0 stat -c '%n %s %Y' < {c}/untracked.list > {c}/untracked.stat 2>/dev/null; fi",
             ]
+            # workstream E: the whole diff against base, so get_session_patch works while the session is suspended
+            diff = exchange.patch_script(q(base), f"{c}/session.patch", max_untracked)
+            script.append(f"if [ -n \"$H\" ]; then {diff}; fi")
         if dirs:
             script.append(f"cd {q(home)} && D=$(ls -d {dirs} 2>/dev/null); "
                           f"if [ -n \"$D\" ]; then tar czf {c}/agent.tgz --ignore-failed-read $D || true; fi")
@@ -537,7 +555,7 @@ class SessionService:
         key = f"{s.id}/{ck.id}"
         max_part = self.settings.session_max_part_mb * 1024 * 1024
         try:
-            for part in PARTS:
+            for part in (*PARTS, *exchange.CHECKPOINT_EXTRA):
                 if part not in sizes:
                     continue
                 cap = max_untracked if part == "untracked.tgz" else max_part
@@ -591,7 +609,9 @@ class SessionService:
             parts.append(f"(You are in a hangar session on branch `{s.branch}`. Commit your work with clear messages "
                          "as you finish steps; don't push unless asked. The session is saved between turns, so it is "
                          "fine to stop and ask a question.)")
-        return "\n\n".join(parts)
+        # workstream E: the I/O protocol (first turn and handoffs), this turn's attachments and result schema
+        return "\n\n".join(parts) + exchange.prompt_notes(self.settings, s, turn,
+                                                         protocol=len(s.turns) == 1 or mode == "handoff")
 
     async def _turn(self, sid: str) -> None:
         s = self._sessions[sid]
@@ -741,10 +761,12 @@ class SessionService:
         self._save(s)
         if prompt is not None and turn.mode == "handoff" and handoff:
             prompt = self._handoff(s) + "\n\n# Now\n\n" + prompt
+        io_env = await exchange.prepare_turn(self, s, turn, sb)  # workstream E: HANGAR_IO, attachments, local work
         res = await self.fleet.run_agent(sb.id, prompt if prompt is not None else self._prompt(s, turn, turn.mode),
-                                         harness=s.harness, model=s.model, env={**(extra_env or {}), **env},
+                                         harness=s.harness, model=s.model, env={**(extra_env or {}), **io_env, **env},
                                          actor=f"session:{s.id}")
         turn.run_id, turn.started_at = res["run_id"], now()
+        turn.context = exchange.strip(turn.context)
         s.model = s.model or res.get("model")
         s.last_active_at = now()
         self._set(s, SessionState.RUNNING, f"agent turn {len(s.turns)} running ({turn.mode})")
@@ -752,7 +774,7 @@ class SessionService:
     async def end_turn(self, s: Session, turn: SessionTurn, timeout_minutes: int | None = None,
                        should_cancel: Callable[[], bool] | None = None) -> tuple[str, str]:
         """Wait for the turn, then record its summary and conversation id and checkpoint.
-        Returns (outcome, raw log): outcome is exited | timed_out | cancelled | gone."""
+        Returns (outcome, raw log): outcome is exited | timed_out | cancelled | gone (| needs_input, workstream E)."""
         tmo = timeout_minutes if timeout_minutes is not None else self.settings.session_turn_timeout_minutes
         deadline = (turn.started_at or now()) + tmo * 60
         errors = 0
@@ -795,6 +817,7 @@ class SessionService:
             s.sandbox_id = None if not self._alive(s.sandbox_id or "") else s.sandbox_id
             self._set(s, SessionState.SUSPENDED if s.checkpoints else SessionState.FAILED,
                       "the sandbox went away during the turn")
+            turn.outcome = outcome  # workstream E
             return outcome, ""
         if outcome in ("cancelled", "timed_out", "error", "over_budget"):
             # Never leave an agent running that nobody is watching (it would keep working, and spending).
@@ -812,6 +835,8 @@ class SessionService:
         except Exception as e:  # noqa: BLE001 - the work is in the sandbox; don't lose the turn over its log
             log.warning("session %s: could not read turn %s output: %s", s.id, turn.run_id, e)
         await watch.finish()  # workstream C: whatever the last polls missed
+        # workstream E: result, question (-> needs_input), artifacts; before the checkpoint so it has them all
+        outcome = await exchange.after_turn(self, s, turn, outcome)
         try:
             async with self._locks[s.id]:
                 await self._checkpoint(s, "turn")

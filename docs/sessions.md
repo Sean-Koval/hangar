@@ -62,8 +62,16 @@ hangar session keep onboarding --idle 0     # stay up until I suspend it
 | `hangar session get NAME` | `get_session` | Turns, summaries, checkpoints, and `resume_command` |
 | `hangar session archive NAME` | | Drop the checkpoints (the record stays) |
 | `hangar session events NAME [--follow]` | `get_events` | What the agent did: messages, commands, file changes, errors, usage ([activity](activity.md)) |
+| `hangar session new NAME MESSAGE --from-local` | `new_session(context=…)` | Continue your local checkout in the cloud: its unpushed commits and uncommitted changes go with the first turn |
+| `--file PATH`, `--text TEXT`, `--schema FILE` on `new` and `send` | `context`, `output_schema` | Attachments, and a JSON Schema for a structured result |
+| | `wait_for_turn` | Block until the turn ends, with progress notifications; returns result, question, artifacts |
+| `hangar session artifacts NAME [--get PATH]` | `get_artifact` | Files the agent handed back |
+| `hangar session patch NAME` | `get_session_patch` | The session's work as one patch against its base |
+| `hangar session pull NAME [--checkout]` | | Its commits onto local branch `hangar/NAME`, plus (with `--checkout`) its uncommitted changes |
 
 `hangar session new` takes a per-turn budget (`--max-cost`, `--max-tokens`, `--max-minutes`; `budget` in the API). A turn that crosses it is stopped with outcome `over_budget`. `get` shows each turn's `usage` and the session's total.
+
+If the agent asks a question (`hangar-agent ask`), the turn ends as `needs_input` and the session shows it in `needs_input`; your next `send` answers it. How context moves in and out of a session is in [context exchange](context-exchange.md).
 
 In the dashboard, the **Sessions** page does all of this:
 - **Resume** a session;

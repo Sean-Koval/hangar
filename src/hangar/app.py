@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from hangar import exchange
 from hangar.auth import SCOPES, TokenAuth, bearer_from_headers
 from hangar.broker import Broker, CredentialError
 from hangar.config import Settings, get_settings
@@ -24,7 +25,7 @@ from hangar.github import verify_signature
 from hangar.harnesses import HARNESSES, PACK_ROOT
 from hangar.jobs import Caller, JobService, SubmitJob, handle_github
 from hangar.mcp_server import build_mcp, current_actor
-from hangar.models import Budget, Credential, CredentialKind, Resources, Sandbox
+from hangar.models import Budget, ContextItem, Credential, CredentialKind, Resources, Sandbox
 from hangar.providers.base import ProviderError
 from hangar.sessions import NewSession, SessionService
 from hangar.store import Store
@@ -166,10 +167,14 @@ class RegisterImage(BaseModel):
 
 class FollowUpBody(BaseModel):
     message: str
+    context: list[ContextItem] = Field(default_factory=list)  # workstream E
+    output_schema: dict[str, Any] | None = None
 
 
 class SendBody(BaseModel):
     message: str
+    context: list[ContextItem] = Field(default_factory=list)  # workstream E
+    output_schema: dict[str, Any] | None = None
 
 
 class OpenBody(BaseModel):
@@ -691,7 +696,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/jobs/{job_id}/follow-up")
     async def job_follow_up(job_id: str, body: FollowUpBody, caller: Caller = J):
         return jobs.view(jobs.follow_up(job_id, body.message, requester=caller.requester,
-                                        owner=owner_filter(caller)))
+                                        owner=owner_filter(caller), context=body.context,
+                                        output_schema=body.output_schema))
 
     @app.post("/api/jobs/{job_id}/cancel")
     async def job_cancel(job_id: str, caller: Caller = J):
@@ -801,7 +807,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/sessions/{ref}/send")
     async def session_send(ref: str, body: SendBody, who: str = A):
-        return sessions.view(sessions.send(ref, body.message, requester=who))
+        return sessions.view(sessions.send(ref, body.message, requester=who, context=body.context,
+                                           output_schema=body.output_schema))
 
     @app.post("/api/sessions/{ref}/idle")
     async def session_idle(ref: str, body: IdleBody, who: str = A):
@@ -824,6 +831,53 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def session_delete(ref: str, who: str = A):
         sessions.delete(ref, requester=who)
         return {"deleted": ref}
+
+    # ------------------------------------------------------------------ workstream E: context exchange (spec 0011)
+    from fastapi.responses import Response
+
+    def _job_session(job_id: str, caller: Caller):
+        s = jobs._session(jobs.get(job_id, owner=owner_filter(caller)))
+        if s is None:
+            raise KeyError(f"job {job_id} has not started yet")
+        return s
+
+    async def _artifact(s, turn: int, path: str) -> Response:
+        a, data = await exchange.read_artifact(sessions, s, turn, path)
+        media, headers = exchange.download_headers(a)
+        return Response(data, media_type=media, headers=headers)
+
+    @app.get("/api/sessions/{ref}/artifacts")
+    async def session_artifacts(ref: str, _: str = A):
+        return exchange.list_artifacts(sessions.get(ref))
+
+    @app.get("/api/sessions/{ref}/artifacts/{turn}/{path:path}")
+    async def session_artifact(ref: str, turn: int, path: str, _: str = A):
+        return await _artifact(sessions.get(ref), turn, path)
+
+    @app.get("/api/sessions/{ref}/patch")
+    async def session_patch(ref: str, max_bytes: int | None = None, _: str = A):
+        return await exchange.session_patch(sessions, sessions.get(ref), max_bytes)
+
+    @app.get("/api/sessions/{ref}/pull")
+    async def session_pull(ref: str, _: str = A):
+        return exchange.pull_manifest(sessions.get(ref))
+
+    @app.get("/api/sessions/{ref}/pull/{checkpoint}/{part}")
+    async def session_pull_part(ref: str, checkpoint: str, part: str, _: str = A):
+        data = await exchange.pull_part(sessions, sessions.get(ref), checkpoint, part)
+        return Response(data, media_type="application/octet-stream")
+
+    @app.get("/api/jobs/{job_id}/artifacts")
+    async def job_artifacts(job_id: str, caller: Caller = J):
+        return exchange.list_artifacts(_job_session(job_id, caller))
+
+    @app.get("/api/jobs/{job_id}/artifacts/{turn}/{path:path}")
+    async def job_artifact(job_id: str, turn: int, path: str, caller: Caller = J):
+        return await _artifact(_job_session(job_id, caller), turn, path)
+
+    @app.get("/api/jobs/{job_id}/patch")
+    async def job_patch(job_id: str, max_bytes: int | None = None, caller: Caller = J):
+        return await exchange.session_patch(sessions, _job_session(job_id, caller), max_bytes)
 
     @app.get("/api/audit")
     async def audit(limit: int = 200, _: str = A):

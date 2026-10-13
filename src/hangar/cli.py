@@ -511,7 +511,7 @@ def _wait_job(job_id: str) -> dict:
         for ev in j["events"][seen:]:
             typer.echo(f"  [{ev['state']}] {ev['message']}")
         seen = len(j["events"])
-        if j["state"] in _JOB_DONE:
+        if j["state"] in _JOB_DONE or j["state"] == "needs_input":  # workstream E: waiting on an answer
             return j
         time.sleep(5)
 
@@ -535,6 +535,9 @@ def job_submit(
     max_cost: float | None = typer.Option(None, "--max-cost", help="Budget: USD per agent turn."),
     max_tokens: int | None = typer.Option(None, "--max-tokens", help="Budget: tokens per agent turn."),
     max_minutes: int | None = typer.Option(None, "--max-minutes", help="Budget: minutes per agent turn."),
+    from_local: bool = typer.Option(False, "--from-local", help="Hand over this checkout's unpushed commits and "
+                                    "uncommitted changes (and default --repo/--base from it)."),
+    schema: Path | None = typer.Option(None, "--schema", help="JSON Schema file for a structured result."),
 ):
     """Submit a job. Example:
 
@@ -543,6 +546,10 @@ def job_submit(
     """
     import base64 as b64
 
+    local: list[dict] = []
+    if from_local:  # workstream E
+        local, info = _from_local()
+        repo, base = repo or info["repo"], base or info["base_branch"]
     text = instructions or (file.expanduser().read_text() if file else sys.stdin.read())
     items = []
     for pth in context:
@@ -555,8 +562,9 @@ def job_submit(
     items += [{"name": f"link-{i + 1}", "kind": "url", "url": u} for i, u in enumerate(link)]
     j = _call("POST", "/api/jobs", json={
         "instructions": text, "repo": repo, "environment": env, "title": title, "harness": harness, "model": model,
-        "base_branch": base, "verify": verify, "deliver": deliver, "context": items, "timeout_minutes": timeout,
-        "budget": _budget(max_minutes, max_tokens, max_cost)})
+        "base_branch": base, "verify": verify, "deliver": deliver, "context": items + local, "timeout_minutes": timeout,
+        "budget": _budget(max_minutes, max_tokens, max_cost),
+        **({"output_schema": _schema(schema)} if schema else {})})
     typer.secho(f"{j['id']} queued: {j['title']}", fg="green")
     if wait:
         j = _wait_job(j["id"])
@@ -565,6 +573,7 @@ def job_submit(
             typer.echo(f"usage: {_usage_line(j['usage'])}")
         if (j.get("result") or {}).get("summary"):
             typer.echo("\n" + j["result"]["summary"])
+        _print_exchange(j.get("result") or {}, f"hangar job follow-up {j['id']}")
         raise typer.Exit(0 if j["state"] == "succeeded" else 1)
 
 
@@ -585,12 +594,20 @@ def job_get(job_id: str, wait: bool = typer.Option(False, "--wait", "-w")):
 
 
 @job_app.command("follow-up")
-def job_follow_up(job_id: str, message: str, wait: bool = typer.Option(False, "--wait", "-w")):
-    """Continue a finished job in the same sandbox and branch."""
-    j = _call("POST", f"/api/jobs/{job_id}/follow-up", json={"message": message})
+def job_follow_up(job_id: str, message: str, wait: bool = typer.Option(False, "--wait", "-w"),
+                  file: list[Path] = typer.Option([], "--file", help="File to hand the agent (repeatable)."),
+                  text: list[str] = typer.Option([], "--text", help="Text to hand the agent (repeatable)."),
+                  schema: Path | None = typer.Option(None, "--schema", help="JSON Schema file for a structured "
+                                                     "result.")):
+    """Continue a finished job in the same sandbox and branch, or answer the agent's question (needs_input)."""
+    j = _call("POST", f"/api/jobs/{job_id}/follow-up", json={
+        "message": message, "context": _attachments(file, text),
+        **({"output_schema": _schema(schema)} if schema else {})})
     typer.secho(f"{j['id']} {j['state']}", fg="green")
     if wait:
-        typer.echo(_job_line(_wait_job(job_id)))
+        j = _wait_job(job_id)
+        typer.echo(_job_line(j))
+        _print_exchange(j.get("result") or {}, f"hangar job follow-up {job_id}")
 
 
 @job_app.command("cancel")
@@ -680,6 +697,8 @@ def _print_summary(x: dict) -> None:
         typer.echo("\n" + x["last_summary"])
     if x.get("usage"):
         typer.echo(f"\nusage: {_usage_line(x['usage'])}")
+    last = (x.get("turns") or [{}])[-1]  # workstream E: result, artifacts, the agent's question
+    _print_exchange(last, f"hangar session send {x['name']}")
     if x.get("resume_command") and x.get("sandbox_id"):
         typer.secho(f"\nWork with the agent interactively: hangar sb attach {x['sandbox_id']}  then  "
                     f"{x['resume_command']}", fg="cyan")
@@ -699,12 +718,28 @@ def session_new(
     max_cost: float | None = typer.Option(None, "--max-cost", help="Budget: USD per agent turn."),
     max_tokens: int | None = typer.Option(None, "--max-tokens", help="Budget: tokens per agent turn."),
     max_minutes: int | None = typer.Option(None, "--max-minutes", help="Budget: minutes per agent turn."),
+    file: list[Path] = typer.Option([], "--file", help="File to hand the agent (repeatable)."),
+    text: list[str] = typer.Option([], "--text", help="Text to hand the agent (repeatable)."),
+    from_local: bool = typer.Option(False, "--from-local", help="Continue this checkout in the cloud: hand over "
+                                    "its unpushed commits and uncommitted changes (and default --repo/--base)."),
+    schema: Path | None = typer.Option(None, "--schema", help="JSON Schema file for a structured result."),
 ):
-    """Start a session. Example:  hangar session new csv-fix "fix unicode in CSV export" -e hangar-jobs -w"""
+    """Start a session. Example:  hangar session new csv-fix "fix unicode in CSV export" -e hangar-jobs -w
+
+    Continue local work in the cloud:  hangar session new csv-fix "finish this and add tests" --from-local -w"""
+    items = _attachments(file, text)  # workstream E
+    if from_local:
+        if not message:
+            typer.secho("--from-local needs a message for the agent", fg="red", err=True)
+            raise typer.Exit(2)
+        local, info = _from_local()
+        items += local
+        repo, base = repo or info["repo"], base or info["base_branch"]
     x = _call("POST", "/api/sessions", json={"name": name, "message": message, "environment": env, "repo": repo,
                                               "base_branch": base, "harness": harness, "model": model,
-                                              "idle_minutes": idle,
-                                              "budget": _budget(max_minutes, max_tokens, max_cost)})
+                                              "idle_minutes": idle, "context": items,
+                                              "budget": _budget(max_minutes, max_tokens, max_cost),
+                                              **({"output_schema": _schema(schema)} if schema else {})})
     typer.secho(f"{x['name']} ({x['id']}) {x['state']} on {x['branch']}", fg="green")
     if wait:
         _print_summary(_wait_session(x["id"]))
@@ -739,9 +774,16 @@ def session_open(ref: str, harness: str | None = None,
 
 
 @session_app.command("send")
-def session_send(ref: str, message: str, wait: bool = typer.Option(True, "--wait/--no-wait")):
-    """Continue a session: the agent resumes its conversation (booting the session first if needed)."""
-    x = _call("POST", f"/api/sessions/{ref}/send", json={"message": message})
+def session_send(ref: str, message: str, wait: bool = typer.Option(True, "--wait/--no-wait"),
+                 file: list[Path] = typer.Option([], "--file", help="File to hand the agent (repeatable)."),
+                 text: list[str] = typer.Option([], "--text", help="Text to hand the agent (repeatable)."),
+                 schema: Path | None = typer.Option(None, "--schema", help="JSON Schema file for a structured "
+                                                    "result.")):
+    """Continue a session: the agent resumes its conversation (booting the session first if needed). If the agent
+    asked a question, the message answers it."""
+    x = _call("POST", f"/api/sessions/{ref}/send", json={
+        "message": message, "context": _attachments(file, text),
+        **({"output_schema": _schema(schema)} if schema else {})})
     typer.secho(f"{x['name']} {x['state']}", fg="green")
     if wait:
         _print_summary(_wait_session(ref))
@@ -777,6 +819,141 @@ def session_keep(ref: str, idle: int = typer.Option(..., "--idle", help="Minutes
     x = _call("POST", f"/api/sessions/{ref}/idle", json={"idle_minutes": idle})
     typer.echo(f"{x['name']}: suspends after {x['idle_minutes']} idle minutes" if x["idle_minutes"]
                else f"{x['name']}: stays up until you suspend it")
+
+
+# ---------------------------------------------------------------------------- workstream E: context exchange
+def _attachments(files: list[Path], texts: list[str]) -> list[dict]:
+    import base64 as b64
+
+    items: list[dict] = []
+    for pth in files:
+        data = pth.expanduser().read_bytes()
+        try:
+            items.append({"name": pth.name, "kind": "file", "content": data.decode()})
+        except UnicodeDecodeError:
+            items.append({"name": pth.name, "kind": "file", "content": b64.b64encode(data).decode(),
+                          "encoding": "base64"})
+    items += [{"name": f"note-{i + 1}.md", "kind": "text", "content": t} for i, t in enumerate(texts)]
+    return items
+
+
+def _schema(path: Path) -> dict:
+    try:
+        return json.loads(path.expanduser().read_text())
+    except (OSError, ValueError) as e:
+        typer.secho(f"can't read the schema {path}: {e}", fg="red", err=True)
+        raise typer.Exit(2) from e
+
+
+def _from_local() -> tuple[list[dict], dict]:
+    from hangar.exchange import ExchangeError, from_local
+
+    try:
+        items, info = from_local(Path.cwd())
+    except ExchangeError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
+    parts = [f"{info['commits']} unpushed commit(s)"] if info["commits"] else []
+    if info["patch_bytes"]:
+        parts.append(f"uncommitted changes ({info['patch_bytes']} bytes)")
+    typer.secho(f"handing over {' and '.join(parts) or 'nothing new (the checkout matches the remote)'}"
+                + (f" on top of {info['base_branch']}" if info["base_branch"] else ""), fg="cyan")
+    return items, info
+
+
+def _print_exchange(t: dict, answer_cmd: str) -> None:
+    if t.get("data") is not None or t.get("result") is not None:
+        typer.secho("\nResult:", fg="cyan")
+        typer.echo(json.dumps(t.get("data") if "data" in t else t.get("result"), indent=2))
+    if t.get("result_error"):
+        typer.secho(f"\nNo valid result: {t['result_error']}", fg="yellow")
+    if t.get("artifacts"):
+        typer.secho("\nArtifacts:", fg="cyan")
+        for a in t["artifacts"]:
+            typer.echo(f"  turn {a['turn']}  {a['path']}  ({a['size']} bytes)")
+    if t.get("question"):
+        typer.secho(f"\nThe agent asks:\n{t['question']}", fg="yellow")
+        typer.secho(f"\nAnswer with: {answer_cmd} \"<your answer>\"", fg="cyan")
+
+
+@session_app.command("artifacts")
+def session_artifacts(ref: str, get: str | None = typer.Option(None, "--get", help="Download this artifact."),
+                      turn: int | None = typer.Option(None, "--turn", help="Which turn's (default: the latest)."),
+                      out: Path | None = typer.Option(None, "--out", "-o", help="Where to save (default: its name).")):
+    """List the files the agent handed back, or download one with --get PATH."""
+    arts = _call("GET", f"/api/sessions/{ref}/artifacts")
+    if not get:
+        if not arts:
+            typer.echo("No artifacts yet.")
+        for a in arts:
+            typer.echo(f"turn {a['turn']:<3} {a['size']:>10}  {a['path']}")
+        return
+    match = [a for a in arts if a["path"] == get and (turn is None or a["turn"] == turn)]
+    if not match:
+        typer.secho(f"no artifact '{get}'" + (f" on turn {turn}" if turn else ""), fg="red", err=True)
+        raise typer.Exit(1)
+    a = match[-1]
+    from urllib.parse import quote
+
+    with _client() as c:
+        r = c.get(f"/api/sessions/{ref}/artifacts/{a['turn']}/{quote(a['path'])}")
+    if r.status_code >= 400:
+        typer.secho(f"error {r.status_code}: {r.text[:300]}", fg="red", err=True)
+        raise typer.Exit(1)
+    dest = out or Path(Path(a["path"]).name)
+    dest.write_bytes(r.content)
+    typer.secho(f"saved {dest} ({len(r.content)} bytes)", fg="green")
+
+
+@session_app.command("patch")
+def session_patch(ref: str, out: Path | None = typer.Option(None, "--out", "-o", help="Write the patch here."),
+                  max_bytes: int | None = typer.Option(None, "--max-bytes")):
+    """The session's work as one patch against its base (commits, uncommitted changes, new files)."""
+    p = _call("GET", f"/api/sessions/{ref}/patch", params={"max_bytes": max_bytes} if max_bytes else {})
+    if out:
+        out.write_text(p["patch"])
+        typer.secho(f"wrote {out}: {len(p['files'])} file(s) from {p['source']}"
+                    + (" (truncated)" if p["truncated"] else ""), fg="green")
+    else:
+        sys.stdout.write(p["patch"])
+    if p["truncated"]:
+        typer.secho("the patch was truncated; use `hangar session pull` for all of it", fg="yellow", err=True)
+
+
+@session_app.command("pull")
+def session_pull(ref: str,
+                 checkout: bool = typer.Option(False, "--checkout", help="Switch to the branch and apply the "
+                                               "session's uncommitted changes to your working tree."),
+                 force: bool = typer.Option(False, "--force", help="Replace a local hangar/<name> branch that has "
+                                            "commits the session doesn't."),
+                 refresh: bool = typer.Option(True, "--refresh/--no-refresh", help="Checkpoint a running session "
+                                              "first, so you get its latest state."),
+                 repo_dir: Path = typer.Option(Path("."), "--dir", help="The local clone (default: here).")):
+    """Bring a session's work into this clone: its commits on branch hangar/<name> (even if never pushed), and its
+    uncommitted changes (applied with --checkout). Your current branch is left alone without --checkout."""
+    from hangar.exchange import ExchangeError, pull_into
+
+    x = _call("GET", f"/api/sessions/{ref}")
+    if refresh and x.get("sandbox_id"):
+        _call("POST", f"/api/sessions/{ref}/checkpoint")
+    m = _call("GET", f"/api/sessions/{ref}/pull")
+    parts: dict[str, bytes] = {}
+    with _client() as c:
+        for part in m["parts"]:
+            r = c.get(f"/api/sessions/{ref}/pull/{m['checkpoint']}/{part}")
+            if r.status_code >= 400:
+                typer.secho(f"error {r.status_code} fetching {part}: {r.text[:300]}", fg="red", err=True)
+                raise typer.Exit(1)
+            parts[part] = r.content
+    try:
+        notes = pull_into(repo_dir, x["name"], m, parts, checkout=checkout, force=force)
+    except ExchangeError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(1) from e
+    for n in notes:
+        typer.echo(n)
+    for w in m.get("warnings") or []:
+        typer.secho(f"warning from the checkpoint: {w}", fg="yellow")
 
 
 @app.command("doctor")

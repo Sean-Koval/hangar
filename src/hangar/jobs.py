@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel, Field
 
+from hangar import exchange
 from hangar.events import resolve_budget, total_usage, usage_line
 from hangar.fleet import Fleet, FleetError, _clip_tail
 from hangar.github import GitHub, GitHubError, parse_repo
@@ -93,6 +94,7 @@ class SubmitJob(BaseModel):
     timeout_minutes: int | None = Field(None, ge=1, le=720)
     keep_minutes: int | None = Field(None, ge=0, le=1440)
     budget: Budget | None = None  # per agent turn; unset fields fall back to HANGAR_BUDGET_* (workstream C)
+    output_schema: dict[str, Any] | None = None  # workstream E: JSON Schema the agent's out/result.json must match
 
 
 def _safe_name(name: str, taken: set[str]) -> str:
@@ -152,7 +154,7 @@ class JobService:
         self._jobs = {j.id: j for j in self.store.list(Job)}
         interrupted: list[Job] = []
         for job in sorted(self._jobs.values(), key=lambda j: j.created_at):
-            if job.state in JOB_TERMINAL:
+            if job.state in JOB_TERMINAL or job.state == JobState.NEEDS_INPUT:  # needs_input waits for a follow-up
                 continue
             if job.state == JobState.AWAITING_APPROVAL:  # still waiting; the triggers loop expires it
                 continue
@@ -181,7 +183,7 @@ class JobService:
         # (it then idles out after keep_minutes like any finished job).
         for job in self._jobs.values():
             s = self._session(job)
-            if s is not None and job.state in JOB_TERMINAL:
+            if s is not None and (job.state in JOB_TERMINAL or job.state == JobState.NEEDS_INPUT):
                 self.sessions.release_restart_hold(s)
         n = max(1, self.settings.job_concurrency)
         self._workers = [asyncio.create_task(self._worker(i)) for i in range(n)]
@@ -272,6 +274,7 @@ class JobService:
         if req.base_branch and (req.base_branch == branch or not _BRANCH_RE.match(req.base_branch)):
             raise JobError("base_branch must be a valid branch name different from the job branch")
         context = self._check_context(req.context)
+        output_schema = exchange.check_schema(req.output_schema)
         if req.callback_url:
             self._check_callback(req.callback_url)
         callback_secret = caller.callback_secret if caller.restricted else req.callback_secret
@@ -290,6 +293,7 @@ class JobService:
             idempotency_key=req.idempotency_key, labels=req.labels,
             timeout_minutes=req.timeout_minutes or self.settings.job_timeout_minutes,
             keep_minutes=req.keep_minutes if req.keep_minutes is not None else self.settings.job_keep_minutes,
+            output_schema=output_schema,
             turns=[Turn(kind="initial", requester=requester,
                         reply_to=source_ref if source_ref and source_ref.startswith("github:") else None)],
             approval=approval, untrusted_source=untrusted_source,
@@ -307,19 +311,25 @@ class JobService:
         return job
 
     def follow_up(self, job_id: str, message: str, requester: str, owner: str | None = None,
-                  reply_to: str | None = None) -> Job:
+                  reply_to: str | None = None, context: list[ContextItem] | None = None,
+                  output_schema: dict[str, Any] | None = None) -> Job:
         job = self.get(job_id, owner)
         if not message.strip():
             raise JobError("follow-up message is empty")
         if len(message) > MAX_INSTRUCTIONS:
             raise JobError("follow-up message is too long")
-        if job.state not in JOB_TERMINAL or job.id in self._active:
+        # workstream E: a job waiting on a question (needs_input) takes the answer as a follow-up
+        if (job.state not in JOB_TERMINAL and job.state != JobState.NEEDS_INPUT) or job.id in self._active:
             raise JobError(f"job {job.id} is {job.state}; wait for the current turn to finish")
+        context = self._check_context(context or [])
+        output_schema = exchange.check_schema(output_schema)
         s = self._session(job)
         if not self._sandbox_alive(job) and not (s and self.sessions.resumable(s)):
             raise JobError(f"job {job.id} has no sandbox or checkpoint to continue from; submit a new job "
                            f"(branch {job.branch} has the work)")
-        job.turns.append(Turn(kind="follow_up", message=message, requester=requester, reply_to=reply_to))
+        job.turns.append(Turn(kind="follow_up", message=message, requester=requester, reply_to=reply_to,
+                              context=context, output_schema=output_schema))
+        job.result.question = None
         job.cancel_requested = False
         self._event(job, f"follow-up from {requester}", JobState.QUEUED, reason=None)
         self.fleet.audit(requester, "job.follow_up", job.id, message=message[:300])
@@ -331,7 +341,10 @@ class JobService:
         if job.state in JOB_TERMINAL:
             raise JobError(f"job {job.id} already {job.state}")
         job.cancel_requested = True
-        if job.state in (JobState.QUEUED, JobState.AWAITING_APPROVAL) and job.id not in self._active:
+        if job.state == JobState.NEEDS_INPUT and job.id not in self._active:  # workstream E: nothing is running
+            self._event(job, f"cancelled by {requester} instead of answering", JobState.CANCELLED, reason="cancelled")
+            self._spawn(self._callback(job, "job.finished"))
+        elif job.state in (JobState.QUEUED, JobState.AWAITING_APPROVAL) and job.id not in self._active:
             self._event(job, f"cancelled by {requester} before it started", JobState.CANCELLED, reason="cancelled")
             self._spawn(self._callback(job, "job.finished"))
         else:
@@ -348,10 +361,10 @@ class JobService:
         s = self._session(job)
         d["session"] = {"name": s.name, "state": s.state.value, "checkpoints": len(s.checkpoints),
                         "resume_command": self.sessions.view(s)["resume_command"]} if s else None
-        d["active"] = job.state not in JOB_TERMINAL
+        d["active"] = job.state not in JOB_TERMINAL and job.state != JobState.NEEDS_INPUT
         # workstream C: the session's turns are the job's turns, and carry live usage while one runs
         d["usage"] = u.model_dump(mode="json") if (u := total_usage(s.turns if s else job.turns)) else None
-        return d
+        return exchange.scrub_turns(d)  # workstream E: attachment contents never leave in a view
 
     def events(self, job_id: str, owner: str | None = None, since: int = 0, limit: int = 200,
                tail: int | None = None) -> list[dict[str, Any]]:
@@ -367,6 +380,9 @@ class JobService:
             raise JobError(f"too many context items (max {self.settings.job_max_context_items})")
         total, taken, out = 0, set(), []
         for it in items:
+            if it.kind in exchange.CODE_KINDS:  # workstream E: local work in progress, with its own size limits
+                out.append(exchange.check_code_item(it, self.settings, _safe_name(it.name, taken)))
+                continue
             if it.kind == "url":
                 if not it.url or urlparse(it.url).scheme not in ("http", "https"):
                     raise JobError(f"context '{it.name}': url items need an http(s) url")
@@ -541,7 +557,7 @@ class JobService:
         _, prov = self.fleet._running(job.sandbox_id)
         sbx = self.fleet.get(job.sandbox_id)
         for it in job.context:
-            if it.kind != "url":
+            if it.kind != "url" and it.kind not in exchange.CODE_KINDS:  # code items are applied with the turn
                 await prov.write_file(sbx, f"{ctx}/{it.name}", _decode(it), mode=0o600)
         await prov.write_file(sbx, f"{ctx}/.keep", b"", mode=0o600)
         self._event(job, f"sandbox {sb.name} ready on branch {job.branch}")
@@ -580,7 +596,7 @@ class JobService:
 
     def _prompt(self, job: Job, turn: Turn, repo_path: str | None, resuming: bool = False) -> str:
         ctx = self._ctxdir(job)
-        files = [c for c in job.context if c.kind != "url"]
+        files = [c for c in job.context if c.kind != "url" and c.kind not in exchange.CODE_KINDS]
         links = [c for c in job.context if c.kind == "url"]
         finish = [
             "Keep the change focused on the task.",
@@ -589,15 +605,20 @@ class JobService:
                "pull request: hangar checks your work and delivers it."] if repo_path else []),
             f"Write a short summary for the people who asked to `{ctx}/RESULT.md`: what you changed, how you "
             "verified it, and anything left open.",
-            "If the task is unclear or cannot be done, do not guess: write your questions to RESULT.md and stop.",
+            # workstream E: a question pauses the job (needs_input) instead of ending it
+            "If you need a decision you can't make yourself, do not guess: run `hangar-agent ask \"<question>\"` "
+            "and end your turn; the job waits for the answer. If the task cannot be done, say why in RESULT.md.",
         ]
         finish_txt = "\n".join(f"- {f}" for f in finish)
         from hangar.triggers import untrusted_note
 
         untrusted = untrusted_note(job)  # workstream A: text from untrusted authors can't steer the agent
+        asked = len(job.turns) > 1 and job.turns[-2].question  # workstream E: this follow-up answers a question
         if turn.kind == "follow_up" and resuming:
             # The agent continues its own conversation: it already has the task, the context and its earlier work.
-            return (f"Follow-up on this task from {turn.requester}:\n\n{turn.message}\n\n"
+            head = f"Answer from {turn.requester} to your question" if asked else \
+                f"Follow-up on this task from {turn.requester}"
+            return (f"{head}:\n\n{turn.message}\n\n"
                     f"## How to finish\n\n{finish_txt}\n")
         if turn.kind == "follow_up":
             prev = next((t.summary for t in reversed(job.turns[:-1]) if t.summary), None)
@@ -605,6 +626,7 @@ class JobService:
                 f"Follow-up on hangar job {job.id} (\"{job.title}\") from {turn.requester}:\n\n"
                 f"{turn.message}\n\n"
                 + (f"## Your previous summary\n\n{prev}\n\n" if prev else "")
+                + (f"## The question you asked (the message above answers it)\n\n{asked}\n\n" if asked else "")
                 + f"## Where things are\n\nRepository: {repo_path or '(none)'}, branch `{job.branch}`. "
                 f"The original task and context are in `{ctx}/` and below.\n\n"
                 f"## Original task\n\n{job.instructions}\n\n"
@@ -650,14 +672,21 @@ class JobService:
         else:
             st = SessionTurn(message=turn.message or job.instructions, requester=turn.requester)
             s.turns.append(st)
+        # workstream E: attachments, local work (with the first turn that runs) and the output schema
+        exchange.job_turn_io(job, turn, st, first=not any(t.run_id for t in job.turns[:-1]))
         self._event(job, f"agent turn {n} starting ({s.harness or 'default harness'}"
                          + (", resuming its conversation" if resuming else "") + ")", JobState.RUNNING, reason=None)
         await self.sessions.begin_turn(
-            s, st, prompt=self._prompt(job, turn, sb.info.get("repo_path"), resuming=resuming),
+            s, st, prompt=self._prompt(job, turn, sb.info.get("repo_path"), resuming=resuming)
+            + exchange.prompt_notes(self.settings, s, st, protocol=not resuming),
             extra_env={"HANGAR_JOB_ID": job.id, "HANGAR_JOB_DIR": ctx}, timeout_minutes=job.timeout_minutes,
             handoff=False)  # the job's own follow-up prompt carries the task, context and last summary
         turn.run_id = st.run_id
         turn.started_at = st.started_at
+        turn.context = exchange.strip(turn.context)
+        job.context = exchange.strip_code(job.context)  # applied now; don't carry a bundle in every save
+        if job.result.base_sha and s.base_sha:
+            job.result.base_sha = s.base_sha  # a bundle of local commits may have moved the base back
         job.harness, job.model = s.harness, s.model
         self._save(job)
         if n == 1:
@@ -677,6 +706,7 @@ class JobService:
         turn.finished_at = now()
         turn.exit_code = st.exit_code
         turn.usage, turn.outcome, turn.outcome_reason = st.usage, st.outcome, st.outcome_reason
+        exchange.record_job_turn(job, turn, st)  # workstream E: result, question, artifacts
         tail = _clip_tail(raw) if raw else ""
         if outcome in ("gone", "error"):
             more = "; follow up to continue from its last checkpoint" if self.sessions.resumable(s) else ""
@@ -692,6 +722,9 @@ class JobService:
         summary = red(raw.decode(errors="replace").strip()[:8000]) if raw else ""
         turn.summary = summary or None
         job.result.summary = summary or (red(_clip_tail(tail)[-3000:]) if tail else None)
+        if outcome == "needs_input":  # workstream E: the agent asked a question; no delivery until it's answered
+            await exchange.job_needs_input(self, job, turn, s)
+            return
         if outcome == "cancelled":
             self._event(job, "cancelled; the agent was stopped", JobState.CANCELLED, reason="cancelled")
             await self._keep(job, s)
@@ -1000,6 +1033,8 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
     if not number or is_pr:
         return {"ignored": "not an issue"}
     ref = f"github:{repo}#{number}"
+    if event == "issue_comment" and (answered := exchange.answer_on_issue(svc, ref, sender, extra)) is not None:
+        return answered  # workstream E: the comment answers a job's question
 
     def running() -> Job | None:
         return next((j for j in svc.list(limit=500) if j.source_ref == ref and j.state not in JOB_TERMINAL), None)
