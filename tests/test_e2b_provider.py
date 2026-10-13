@@ -51,8 +51,8 @@ class FakeE2B:
     a directory with a real hangar-envd on 127.0.0.1. `token=False` answers like CubeAPI: no envdAccessToken, and the
     edge (like CubeProxy) checks the traffic token and authenticates to the daemon itself."""
 
-    def __init__(self, flavor: str, token: bool = True, domain: str = "e2b.app"):
-        self.flavor, self.token, self.domain = flavor, token, domain
+    def __init__(self, flavor: str, token: bool = True, domain: str = "e2b.app", traffic: bool = True):
+        self.flavor, self.token, self.domain, self.traffic = flavor, token, domain, traffic
         self.root = Path(tempfile.mkdtemp(prefix="e2bfake-", dir=scratch_root()))
         self.sbs: dict[str, dict] = {}
         self.calls: list[tuple[str, str]] = []
@@ -74,11 +74,11 @@ class FakeE2B:
                 return JSONResponse({"code": 401, "message": "Invalid API key"}, status_code=401)
             return await call_next(request)
 
-        def view(sid: str) -> dict:
+        def view(sid: str, traffic: bool = True) -> dict:
             sb = self.sbs[sid]
             return {"templateID": sb["template"], "sandboxID": sid, "clientID": "x", "envdVersion": "0.5.7",
                     "envdAccessToken": sb["token"] if self.token else None,
-                    "trafficAccessToken": sb["traffic"], "domain": None}
+                    "trafficAccessToken": sb["traffic"] if traffic else None, "domain": None}
 
         async def create(request: Request):
             if self.full:
@@ -94,7 +94,8 @@ class FakeE2B:
                                capture_output=True, text=True)
             assert p.returncode == 0, p.stderr
             self.sbs[sid] = {"template": body["templateID"], "metadata": body.get("metadata") or {}, "port": port,
-                             "token": token, "traffic": secrets.token_hex(8), "state": "running", "box": box,
+                             "token": token, "traffic": secrets.token_hex(8) if self.traffic else None,
+                             "state": "running", "box": box,
                              "timeout": body.get("timeout")}
             return JSONResponse(view(sid), status_code=201)
 
@@ -127,7 +128,7 @@ class FakeE2B:
         async def get(sid: str):
             if r := known(sid):
                 return r
-            return {**view(sid), "state": self.sbs[sid]["state"]}
+            return {**view(sid, traffic=not cube), "state": self.sbs[sid]["state"]}
 
         @app.delete("/sandboxes/{sid}")
         async def kill(sid: str):
@@ -158,8 +159,11 @@ class FakeE2B:
             sb = self.sbs[sid]
             resumed = sb["state"] == "paused"
             if resumed:  # a restored microVM gets fresh tokens; the daemon's own stays (it is the same process)
-                sb["state"], sb["traffic"] = "running", secrets.token_hex(8)
-            return JSONResponse(view(sid), status_code=201 if resumed and not cube else 200)
+                sb["state"] = "running"
+                if not cube:  # CubeProxy keeps the one CubeMaster stored at create
+                    sb["traffic"] = secrets.token_hex(8)
+            # review(#64): CubeAPI's connect reads the sandbox back without its traffic token (services/sandboxes.rs)
+            return JSONResponse(view(sid, traffic=not cube), status_code=201 if resumed and not cube else 200)
 
         @app.post("/v2/sandboxes/{sid}/connect")
         async def connect_v2(sid: str):
@@ -317,7 +321,9 @@ async def test_lifecycle_exec_files_and_hot_resume(fake_e2b, flavor, domain):
     created = ("POST", "/sandboxes") if flavor == "cube" else ("POST", "/v2/sandboxes")
     assert created in fake.calls and ("POST", "/v2/sandboxes") not in fake.calls[1:]
     assert fake.sbs[sb.provider_ref]["metadata"] == {"hangar_id": sb.id, "hangar_env": "py"}
-    assert sb.info["e2b"] == {"flavor": flavor, "envd_version": "0.5.7"}
+    traffic = fake.sbs[sb.provider_ref]["traffic"]
+    assert {k: v for k, v in sb.info["e2b"].items() if k != "traffic"} == {"flavor": flavor, "envd_version": "0.5.7"}
+    assert traffic not in json.dumps(sb.info) and prov._traffic(sb) == traffic, "kept with the sandbox, sealed"
     assert await prov.status(sb) == SandboxState.RUNNING
     sb.state = SandboxState.RUNNING
 
@@ -351,7 +357,7 @@ async def test_lifecycle_exec_files_and_hot_resume(fake_e2b, flavor, domain):
     await prov.pause(sb)  # already paused: fine
     await prov.resume(sb)
     sb.state = SandboxState.RUNNING
-    assert fake.sbs[sb.provider_ref]["traffic"] != old_traffic
+    assert (fake.sbs[sb.provider_ref]["traffic"] == old_traffic) == (flavor == "cube")
     connect = ("POST", f"/sandboxes/{sb.provider_ref}/connect") if flavor == "cube" else \
         ("POST", f"/v2/sandboxes/{sb.provider_ref}/connect")
     assert connect in fake.calls
@@ -373,6 +379,13 @@ async def test_lifecycle_exec_files_and_hot_resume(fake_e2b, flavor, domain):
     stale()
     await prov.write_file(sb, path, b"#!/bin/sh\necho ok\n")
     assert prov.dataplane._eps[sb.id].headers["e2b-traffic-access-token"] != "stale"
+    if flavor == "cube":  # review(#64): connect never hands it out again; without the sealed copy, envd is unreachable
+        sealed, sb.info["e2b"]["traffic"] = sb.info["e2b"]["traffic"], "garbage"
+        lost = fake.provider(e2b_allow_unauthenticated_envd=True)
+        with pytest.raises(ProviderError, match="neither an envd access token nor a traffic token"):
+            await lost.lookup(sb)
+        await lost.close()
+        sb.info["e2b"]["traffic"] = sealed
 
     await prov.set_expiry(sb, sb.created_at + 7200)
     assert 300 < fake.sbs[sb.provider_ref]["timeout"] <= 7200
@@ -395,6 +408,41 @@ async def test_cube_without_an_envd_token_is_refused_by_default(fake_e2b):
     assert not fake.sbs, "the refused sandbox is killed, not left running"
     assert ("POST", "/v2/sandboxes") not in fake.calls
     await prov.close()
+
+
+@needs_binary
+async def test_unauthenticated_envd_without_a_traffic_token_is_refused(fake_e2b):
+    """review(#64): HANGAR_E2B_ALLOW_UNAUTHENTICATED_ENVD rests on the edge wanting a token only hangar holds. A
+    sandbox created without one (CubeMaster made it public) is refused and killed even with the flag on."""
+    fake = fake_e2b("cube", token=False, domain="cube.test", traffic=False)
+    prov = fake.provider(e2b_allow_unauthenticated_envd=True)
+    with pytest.raises(ProviderError, match="neither an envd access token nor a traffic token"):
+        await prov.create(sandbox(), "tpl-abc")
+    assert not fake.sbs
+    await prov.close()
+
+
+async def test_control_api_answers_are_capped_and_have_a_deadline():
+    """review(#64): an answer is read up to MAX_API_BODY, and a call has one deadline however slowly bytes come."""
+    import hangar.providers.e2b as mod
+
+    async def answer(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/slow"):
+            async def drip():
+                for _ in range(100):
+                    await asyncio.sleep(0.05)
+                    yield b" "
+            return httpx.Response(200, content=drip())
+        return httpx.Response(200, content=b"[" + b" " * (mod.MAX_API_BODY + 10) + b"]")
+
+    p = E2BProvider(Settings(e2b_api_key="k", e2b_request_timeout_seconds=0.5))
+    p.api.http = httpx.AsyncClient(transport=httpx.MockTransport(answer), base_url=p.api.base)
+    with pytest.raises(ProviderError, match="over 8 MiB"):
+        await p.api.list()
+    assert await p.list_refs() is None
+    with pytest.raises(Unavailable, match="took over 0.5s"):
+        await p.api.call("GET", "/slow")
+    await p.close()
 
 
 @needs_binary

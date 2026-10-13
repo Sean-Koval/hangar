@@ -22,12 +22,14 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import hashlib
+import hmac
 import json
 import logging
 import re
 import shlex
 import time
-from base64 import b64encode
+from base64 import b64encode, urlsafe_b64encode
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -48,6 +50,7 @@ MAX_TIMEOUT = 24 * 3600
 # E2B's own domains share one envd host and route by header (the SDK's sandbox_domains.py); others use a host per port.
 E2B_DOMAINS = ("e2b.app", "e2b.dev", "e2b.pro", "e2b-staging.dev")
 UNAVAILABLE = {429, 502, 503, 504}  # full or down: a tier may try another provider
+MAX_API_BODY = 8 << 20  # one control API answer (a list page is 100 sandboxes)
 RAW_UPLOADS = (0, 5, 7)  # envd versions from here take /files as a raw body (spec 0013 §3.7); older, multipart
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$")  # sandbox and template ids, as they go into URL paths
 _DOMAIN = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$")
@@ -86,16 +89,40 @@ class ControlAPI:
     def __init__(self, s: Settings):
         self.flavor = s.e2b_flavor
         self.base = (s.e2b_api_url or f"https://api.{s.e2b_domain or 'e2b.app'}").rstrip("/")
-        headers = {"User-Agent": "hangar"}
+        self.deadline = s.e2b_request_timeout_seconds
+        # identity: a compressed answer could inflate past MAX_API_BODY before it is counted
+        headers = {"User-Agent": "hangar", "Accept-Encoding": "identity"}
         if s.e2b_api_key:
             headers["X-API-Key"] = s.e2b_api_key
         self.http = httpx.AsyncClient(base_url=self.base, headers=headers,
                                       timeout=httpx.Timeout(s.e2b_request_timeout_seconds, connect=10.0))
 
+    async def _send(self, method: str, path: str, body: dict[str, Any] | None,
+                    params: dict[str, Any] | None) -> httpx.Response:
+        """One call, read up to MAX_API_BODY within one deadline: httpx's timeouts are per read, so an API that
+        drips bytes (or never stops sending) would otherwise hold the caller, and its memory, without end."""
+        async with asyncio.timeout(self.deadline):
+            r = await self.http.send(self.http.build_request(method, path, json=body, params=params), stream=True)
+            try:
+                data = bytearray()
+                async for chunk in r.aiter_bytes():
+                    data += chunk
+                    if len(data) > MAX_API_BODY:
+                        raise ProviderError(f"e2b ({self.flavor}) {method} {path}: the answer is over "
+                                            f"{MAX_API_BODY >> 20} MiB")
+            finally:
+                await r.aclose()
+        headers = [(k, v) for k, v in r.headers.multi_items()
+                   if k.lower() not in ("content-encoding", "content-length", "transfer-encoding")]
+        return httpx.Response(r.status_code, headers=headers, content=bytes(data), request=r.request)
+
     async def call(self, method: str, path: str, body: dict[str, Any] | None = None,
                    params: dict[str, Any] | None = None, allow: tuple[int, ...] = ()) -> httpx.Response:
         try:
-            r = await self.http.request(method, path, json=body, params=params)
+            r = await self._send(method, path, body, params)
+        except TimeoutError as e:
+            raise E2BUnavailable(f"e2b ({self.flavor}) API at {self.base}: {method} {path} took over "
+                                 f"{self.deadline:g}s", 0) from e
         except httpx.HTTPError as e:
             raise E2BUnavailable(f"e2b ({self.flavor}) API at {self.base} unreachable: {e or type(e).__name__}",
                                  0) from e
@@ -306,6 +333,7 @@ class E2BProvider(Provider):
         # sandbox must never be served through hangar's own E2B API (that would loop back here).
         self.dataplane = E2BEnvd(self, settings)
         self._aliases: dict[str, str] = {}
+        self._sealer = None  # review(#64): see _fernet
 
     @property
     def capabilities(self) -> Capabilities:
@@ -451,12 +479,19 @@ class E2BProvider(Provider):
     def _endpoint(self, sb: Sandbox, d: dict[str, Any]) -> SandboxEndpoint:
         """Where the sandbox's envd answers, and with which tokens, from a create or connect answer."""
         sid = sb.provider_ref or ""
-        token, traffic = d.get("envdAccessToken"), d.get("trafficAccessToken")
+        token = d.get("envdAccessToken")
+        traffic = d.get("trafficAccessToken") or self._traffic(sb)  # review(#64): CubeAPI's connect has none
         if not token and not self.settings.e2b_allow_unauthenticated_envd:
             raise ProviderError(
                 f"e2b ({self.flavor}) returned no envd access token for {sid}: its envd answers anyone who can reach "
                 "it. Refusing it; on a private network, set HANGAR_E2B_ALLOW_UNAUTHENTICATED_ENVD=true "
                 "(docs/microvm.md, Security)")
+        if not token and not traffic:
+            # review(#64): the flag rests on the edge wanting a token only hangar holds; with none, the sandbox is
+            # public (CubeAPI omits it when CubeMaster made the sandbox reachable by anyone).
+            raise ProviderError(
+                f"e2b ({self.flavor}) returned neither an envd access token nor a traffic token for {sid}: anyone "
+                "who can reach its edge could run commands in it. Refusing it (docs/microvm.md, Security)")
         headers = {"E2b-Sandbox-Id": sid, "E2b-Sandbox-Port": str(PORT)}
         if token:
             headers["X-Access-Token"] = str(token)
@@ -473,6 +508,34 @@ class E2BProvider(Provider):
             url = f"https://{PORT}-{sid}.{domain}"
         return SandboxEndpoint(url=url.rstrip("/"), token=str(token or ""), ref=sid,
                                version=str(d.get("envdVersion") or ""), headers=headers)
+
+    # review(#64): CubeAPI hands out the traffic token only at create (connect and resume read the sandbox back
+    # without it), and CubeProxy wants it on every port of a private sandbox. So it is kept with the sandbox,
+    # sealed with a key derived from hangar's own: a resume or a control plane restart can still reach envd.
+    def _fernet(self):
+        if self._sealer is None:
+            from cryptography.fernet import Fernet
+
+            from hangar.vault import load_or_create_key
+
+            self.settings.data_dir.mkdir(parents=True, exist_ok=True)
+            key = load_or_create_key(self.settings.secret_key, self.settings.data_dir)
+            self._sealer = Fernet(urlsafe_b64encode(hmac.new(key, b"hangar-e2b-traffic", hashlib.sha256).digest()))
+        return self._sealer
+
+    def _seal_traffic(self, sb: Sandbox, traffic: str) -> None:
+        sb.info.setdefault("e2b", {})["traffic"] = self._fernet().encrypt(traffic.encode()).decode()
+
+    def _traffic(self, sb: Sandbox) -> str | None:
+        sealed = (sb.info.get("e2b") or {}).get("traffic")
+        if not isinstance(sealed, str):
+            return None
+        from cryptography.fernet import InvalidToken
+
+        try:
+            return self._fernet().decrypt(sealed.encode()).decode()
+        except (InvalidToken, ValueError):
+            return None
 
     def _ttl(self, sb: Sandbox) -> int:
         left = (sb.expires_at - time.time()) if sb.expires_at else 3600
@@ -496,7 +559,9 @@ class E2BProvider(Provider):
         except ProviderError:
             await self._kill_quietly(sandbox.provider_ref)
             raise
-        sandbox.info["e2b"] = {"flavor": self.flavor, "envd_version": ep.version}
+        sandbox.info.setdefault("e2b", {}).update({"flavor": self.flavor, "envd_version": ep.version})
+        if traffic := ep.headers.get("e2b-traffic-access-token"):
+            self._seal_traffic(sandbox, traffic)
         self.dataplane.remember(sandbox, ep)
 
     async def _kill_quietly(self, ref: str) -> None:
