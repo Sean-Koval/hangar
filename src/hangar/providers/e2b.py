@@ -50,6 +50,7 @@ E2B_DOMAINS = ("e2b.app", "e2b.dev", "e2b.pro", "e2b-staging.dev")
 UNAVAILABLE = {429, 502, 503, 504}  # full or down: a tier may try another provider
 RAW_UPLOADS = (0, 5, 7)  # envd versions from here take /files as a raw body (spec 0013 §3.7); older, multipart
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$")  # sandbox and template ids, as they go into URL paths
+_DOMAIN = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$")
 _USER: contextvars.ContextVar[str | None] = contextvars.ContextVar("hangar_e2b_user", default=None)
 
 
@@ -276,9 +277,10 @@ class E2BEnvd(Envd):
         except httpx.HTTPError as e:
             self._lost(sb, str(e) or type(e).__name__)
             raise ProviderError(f"write of {path} failed: {e or type(e).__name__}") from e
+        if status in (401, 403):
+            self._lost(sb, f"envd answered {status}")
+            return False  # the token may have changed (a resume): the provider asks for it again and retries
         if status != 200:
-            if status in (401, 403):
-                self._lost(sb, f"envd answered {status}")
             why = "the sandbox's disk is full" if status == 507 else body[:200].decode(errors="replace")
             raise ProviderError(f"write of {path} failed ({status}): {why}")
         return True
@@ -461,6 +463,8 @@ class E2BProvider(Provider):
         if traffic:
             headers["e2b-traffic-access-token"] = str(traffic)
         tpl, domain = self.settings.e2b_sandbox_url, d.get("domain") or self.settings.e2b_domain or "e2b.app"
+        if not isinstance(domain, str) or not _DOMAIN.match(domain):  # the tokens go to this host: a name, nothing else
+            raise ProviderError(f"e2b ({self.flavor}): unexpected sandbox domain {str(domain)[:80]!r}")
         if tpl:
             url = tpl.format(sandbox_id=sid, port=PORT) if "{sandbox_id}" in tpl else tpl
         elif domain in E2B_DOMAINS:
@@ -576,11 +580,8 @@ class E2BProvider(Provider):
         return r
 
     async def write_file(self, sandbox, path, data, mode=0o644) -> None:
-        tok = _USER.set(self.settings.sandbox_user)
-        try:
-            await self.dataplane.write_file(sandbox, path, data)
-        finally:
-            _USER.reset(tok)
+        if not await self._retry(sandbox, lambda: self.dataplane.write_file(sandbox, path, data), nothing=(False,)):
+            raise ProviderError(f"write of {path} in {sandbox.id} failed: its envd refused the access token")
         if mode != 0o644:
             await self.exec(sandbox, f"chmod {mode & 0o7777:o} {shlex.quote(path)}", timeout=30)
 

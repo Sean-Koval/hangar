@@ -40,6 +40,12 @@ USER = getpass.getuser()  # the daemons run as whoever runs the tests, and act o
 
 
 # ---------------------------------------------------------------------------- a fake E2B / CubeAPI
+def _streamed(status: int, body: dict) -> httpx.Response:
+    """An edge's own answer as a network one arrives: a stream not read yet (envd.py reads error bodies raw)."""
+    return httpx.Response(status, headers={"content-type": "application/json"},
+                          stream=httpx.ByteStream(json.dumps(body).encode()))
+
+
 class FakeE2B:
     """E2B's control API as `flavor` serves it, plus the sandbox edge (`edge`, an httpx transport). Every sandbox is
     a directory with a real hangar-envd on 127.0.0.1. `token=False` answers like CubeAPI: no envdAccessToken, and the
@@ -200,9 +206,9 @@ class FakeE2B:
             assert request.url.host.split(".", 1)[0] == f"49983-{sid}", request.url.host
         sb = self.sbs.get(sid)
         if sb is None or sb["state"] != "running":
-            return httpx.Response(502, json={"message": "sandbox not running"})
+            return _streamed(502, {"message": "sandbox not running"})
         if request.headers.get("e2b-traffic-access-token") != sb["traffic"]:
-            return httpx.Response(401, json={"message": "traffic token mismatch"})
+            return _streamed(401, {"message": "traffic token mismatch"})
         headers = {k: v for k, v in request.headers.items()
                    if k.lower() not in ("host", "e2b-traffic-access-token", "content-length")}
         if not self.token:
@@ -287,6 +293,9 @@ def test_envd_urls_per_flavour():
     assert one._endpoint(sb, d).url == "http://h/e2b/sandbox"
     with pytest.raises(ProviderError, match="no envd access token"):
         tpl._endpoint(sb, {"trafficAccessToken": "tr"})
+    for bad in ("evil.example/x", "user@evil.example", "a b", "evil.example:443/"):  # the tokens go to this host
+        with pytest.raises(ProviderError, match="unexpected sandbox domain"):
+            own._endpoint(sb, {**d, "domain": bad})
 
 
 def test_templates_map_environments():
@@ -352,6 +361,18 @@ async def test_lifecycle_exec_files_and_hot_resume(fake_e2b, flavor, domain):
     # a control plane restart: the token is asked for again (connect on a running sandbox only extends it)
     again = fake.provider(e2b_allow_unauthenticated_envd=flavor == "cube")
     assert (await again.exec(sb, "echo again")).stdout == "again\n"
+    # a token that stopped working (rotated elsewhere) is asked for again, once, for commands, reads and writes
+    def stale() -> None:
+        h = prov.dataplane._eps[sb.id].headers
+        h.update({k: "stale" for k in ("X-Access-Token", "e2b-traffic-access-token") if k in h})
+
+    stale()
+    assert (await prov.exec(sb, "echo fresh")).stdout == "fresh\n"
+    stale()
+    assert await prov.read_file(sb, path, limit=100) == b"#!/bin/sh\necho ok\n"
+    stale()
+    await prov.write_file(sb, path, b"#!/bin/sh\necho ok\n")
+    assert prov.dataplane._eps[sb.id].headers["e2b-traffic-access-token"] != "stale"
 
     await prov.set_expiry(sb, sb.created_at + 7200)
     assert 300 < fake.sbs[sb.provider_ref]["timeout"] <= 7200
