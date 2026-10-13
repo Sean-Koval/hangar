@@ -188,6 +188,7 @@ class SendBody(BaseModel):
     message: str
     context: list[ContextItem] = Field(default_factory=list)  # workstream E
     output_schema: dict[str, Any] | None = None
+    model: str | None = Field(None, max_length=200)  # --- overnight/cache: switch model (warned: a cold cache)
 
 
 class OpenBody(BaseModel):
@@ -897,7 +898,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/sessions/{ref}/send")
     async def session_send(ref: str, body: SendBody, who: str = A):
         return sessions.view(sessions.send(ref, body.message, requester=who, context=body.context,
-                                           output_schema=body.output_schema))
+                                           output_schema=body.output_schema, model=body.model))
 
     @app.post("/api/sessions/{ref}/idle")
     async def session_idle(ref: str, body: IdleBody, who: str = A):

@@ -319,6 +319,7 @@ echo "attempt $a: done" > "$HANGAR_JOB_DIR/RESULT.md"
 async def jobs(fleet, world, settings, store):
     settings.session_poll_seconds = 0.1
     settings.job_poll_seconds = 0.1
+    settings.cache_stagger_seconds = 1  # --- overnight/cache: this agent prints nothing until it ends
     agent = world["root"] / "job-agent.sh"
     agent.write_text(JOB_AGENT)
     world["mode"], world["judge"] = world["root"] / "mode", world["root"] / "judge"
@@ -464,6 +465,34 @@ async def test_best_of_n_restart_reattaches_to_attempts(jobs, world, fleet):
         assert [a.rank for a in done.attempts] == [3, 2, 1] and len({a.run_id for a in done.attempts}) == 3
     finally:
         await again.stop()
+
+
+async def test_best_of_n_attempts_share_one_prompt_and_one_cache_write(jobs, world, settings, monkeypatch):
+    """--- overnight/cache: the attempts' prompts are identical up to their branch, named at the very end, and all
+    but the first to start wait for it to answer (here: to finish, as this agent prints nothing until then)."""
+    settings.cache_stagger_seconds = 20
+    world["mode"].write_text("slow")  # every attempt takes 1.5 s
+    prompts: dict[str, str] = {}
+    begin = jobs.sessions.begin_turn
+
+    async def spy(s, turn, prompt=None, **kw):
+        prompts[s.id] = prompt
+        return await begin(s, turn, prompt=prompt, **kw)
+
+    monkeypatch.setattr(jobs.sessions, "begin_turn", spy)
+    job = jobs.submit(bon(world), Caller("svc", "svc"))
+    job = await _until(jobs, job.id, DONE, timeout=60)
+    await _idle(jobs, job)
+    assert job.state == JobState.SUCCEEDED, [e.message for e in job.events]
+    heads = set()
+    for a in job.attempts:
+        head, _, tail = prompts[a.session_id].partition("# Your branch")
+        heads.add(head)
+        assert f"branch `{job.branch}-attempt-{a.index}`: commit there" in tail and job.branch not in head
+    assert len(heads) == 1 and "on the branch named at the end of this message" in heads.pop()
+    waits = [next(t for t in jobs.sessions.get(a.session_id).turns if t.run_id == a.run_id).cache_wait_seconds
+             for a in job.attempts]
+    assert waits.count(None) == 1 and all(w >= 0.5 for w in waits if w is not None), waits
 
 
 async def test_best_of_n_validation(jobs, world):

@@ -7,7 +7,7 @@ import time
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 
 def new_id(prefix: str) -> str:
@@ -121,12 +121,24 @@ class Usage(BaseModel):
     cost_usd: float | None = None  # None: no harness-reported cost and no price for the model
     cost_source: Literal["harness", "prices", "mixed"] | None = None
     model: str | None = None
+    # --- overnight/cache: the part of cache_write_tokens written with a 1-hour TTL (priced at 2x input, not
+    # 1.25x), and what caching saved against sending the same tokens uncached, from the price table (negative
+    # when writes cost more than reads saved; None without a price)
+    cache_write_1h_tokens: int = 0
+    saved_usd: float | None = None
 
     @property
     def tokens(self) -> int:
         """New tokens: input, output and cache writes. Cache reads are left out (every model call re-reads the
         cached context, so they would dwarf the rest); they are counted, and priced, separately."""
         return self.input_tokens + self.output_tokens + self.cache_write_tokens
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def cache_hit_ratio(self) -> float | None:
+        """--- overnight/cache: the share of prompt tokens read from the cache (None: no prompt tokens)."""
+        prompt = self.input_tokens + self.cache_read_tokens + self.cache_write_tokens
+        return round(self.cache_read_tokens / prompt, 4) if prompt else None
 
 
 class Budget(BaseModel):
@@ -372,6 +384,7 @@ SESSION_LIVE = {SessionState.STARTING, SessionState.IDLE, SessionState.RUNNING}
 # with its permission checks off, as before), ask = a person answers (denied after HANGAR_APPROVAL_TIMEOUT_SECONDS),
 # deny-risky = hangar answers at once, refusing what its rules call risky (driver.risky).
 ApprovalPolicy = Literal["auto", "ask", "deny-risky"]
+CachePolicy = Literal["auto", "5m", "1h", "off"]  # --- overnight/cache (cache.py)
 
 
 class Approval(BaseModel):
@@ -431,6 +444,10 @@ class SessionTurn(BaseModel):
     approval_policy: ApprovalPolicy | None = None
     approvals: list[Approval] = Field(default_factory=list)
     steers: list[Steer] = Field(default_factory=list)
+    # --- overnight/cache: the prompt-cache TTL the turn asked for (5m | 1h | off; None: the harness has no
+    # setting), and how long it waited for a best-of-N or fork sibling to write the shared prefix first
+    cache_ttl: str | None = None
+    cache_wait_seconds: float | None = None
 
 
 class Checkpoint(BaseModel):
@@ -482,6 +499,7 @@ class Session(BaseModel):
     forked_from_checkpoint: str | None = None
     fork_conversation: str | None = None  # the parent's conversation id; the next turn forks it, then clears it
     approvals: ApprovalPolicy | None = None  # --- workstream steer: unset = the environment's, else HANGAR_APPROVALS
+    cache: CachePolicy | None = None  # --- overnight/cache: unset = the environment's, else HANGAR_CACHE
 
 
 # ---------------------------------------------------------------------------- workstream F: git gateway (spec 0003)

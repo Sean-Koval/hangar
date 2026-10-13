@@ -71,6 +71,31 @@ A model id matches a table entry exactly, or as that entry followed by a date su
 
 The `tokens` total that budgets use leaves out cache reads. Every model call re-reads the cached context, so cache reads would dwarf everything else. They are still counted (`cache_read_tokens`) and priced.
 
+### Prompt cache
+
+Usage also says how well the provider's prompt cache worked. [Sessions](sessions.md#prompt-caching) explains how hangar chooses each turn's cache TTL.
+
+| Field | |
+| --- | --- |
+| `cache_write_1h_tokens` | The part of `cache_write_tokens` written with a 1-hour TTL. Claude Code reports it in `usage.cache_creation.ephemeral_1h_input_tokens` and pi as `cacheWrite1h`. These tokens are priced at 2x input, not 1.25x. |
+| `cache_hit_ratio` | `cache_read_tokens / (input_tokens + cache_read_tokens + cache_write_tokens)`: the share of prompt tokens read from the cache. A multi-turn session should stay above 0.85. |
+| `saved_usd` | What caching saved compared with sending the same tokens as plain input: `reads × (input − read price) − 5m writes × (5m write − input) − 1h writes × (1h write − input)`. It comes from the price table even when the harness reports its own cost. It goes negative when a turn writes cache entries that nothing reads back. It is `null` when the model has no price. |
+
+Turns, sessions and jobs (`get_session`, `get_job`) carry these fields, as do the `usage` events and `/api/usage` rows. Each turn also records `cache_ttl`, the TTL it asked for, and `cache_wait_seconds`, how long it waited for a best-of-N or fork sibling.
+
+Example: Opus 5.5 at $4 input, $0.20 read, $5 5m write and $8 1h write per MTok. A turn reads 9,000 cached tokens, writes 1,000 at 1h and sends 10 new ones. It costs $0.0098 (output aside), not the $0.0400 the same 10,010 tokens would cost uncached, so it saved `9000 × 3.80 − 1000 × 4 = $0.0302`. Its hit ratio is 0.90.
+
+The cost report:
+
+```bash
+hangar usage --by session --cache --since 7d
+SESSION                           TURNS    HIT     READ    WRITE       1H       COST      SAVED
+csv-fix                              12    93%     4.1M   210.0k   210.0k      $2.31     $14.74
+onboarding-fork-2                     3    41%   180.0k   250.0k   250.0k      $1.48     -$0.32
+```
+
+`--by` takes `day`, `model`, `environment`, `requester`, `repo`, `harness`, `session`, `job` or `cache_ttl`. A session with a low hit ratio and little saved is paying for writes it never reads back. Common causes are a model switch, a TTL shorter than its gaps, or forks started together.
+
 ## Budgets
 
 A budget caps each agent turn. That means the job's first run and each follow-up separately, and each message to a session. A best-of-N job's budget caps each attempt and the judge separately, so the job as a whole can spend up to N + 1 budgets. A turn's structured-result repair run counts toward that turn: it is stopped when the turn as a whole goes over, and its usage is the turn's `repair_usage`, included in every total.
@@ -106,3 +131,5 @@ How far a turn overshoots depends on when the harness reports usage:
 | `HANGAR_MODEL_PRICES` | `{}` | JSON, USD per million tokens; merged over the built-in table |
 | `HANGAR_BUDGET_MAX_MINUTES` / `_MAX_TOKENS` / `_MAX_COST_USD` | unset | Default budget for each turn |
 | `HANGAR_EVENTS_MAX_MB` | 20 | Event log size per session before it rotates |
+| `HANGAR_CACHE` | `auto` | Prompt-cache TTL when neither the session nor its environment sets one ([sessions.md](sessions.md#prompt-caching)) |
+| `HANGAR_CACHE_STAGGER_SECONDS` | 15 | How long best-of-N attempts and forks hold back for the first one to answer (0 = no wait) |
