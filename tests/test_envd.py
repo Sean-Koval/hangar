@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import socket
 import stat
 import subprocess
@@ -267,22 +268,34 @@ class FakePod:
         return 0, ""
 
 
-def test_kubernetes_install_uploads_once_then_starts(tmp_path, monkeypatch):
+def k8s_envd(tmp_path, arch: str = ARCH):
+    """A KubernetesEnvd over FakePod whose start script runs for real, with the sandbox's /tmp moved to tmp_path (so
+    the script's look for daemons can only ever match processes this test started)."""
     from hangar.envd import KubernetesEnvd
 
-    (tmp_path / f"hangar-envd-{ARCH}").write_bytes(b"binary")
-    s = Settings(data_dir=tmp_path, envd_dir=tmp_path)
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / f"hangar-envd-{arch}").write_bytes(b"binary")
     pod = FakePod()
-    e = KubernetesEnvd(pod, s)
+    e = KubernetesEnvd(pod, Settings(data_dir=tmp_path, envd_dir=tmp_path / "bin"))
+    e.remote_dir = str(tmp_path / "remote")
+    (tmp_path / "remote").mkdir()
     sb = Sandbox(name="t", environment="x", provider="kubernetes", provider_ref="hangar-sb-1")
+    return e, pod, sb
+
+
+def test_kubernetes_addresses(tmp_path):
+    e, pod, sb = k8s_envd(tmp_path)
     assert asyncio.run(e.urls(sb)) == ["http://10.8.0.7:49983"]
     pod.ip = "fd00::7"
     assert asyncio.run(e.urls(sb)) == ["http://[fd00::7]:49983"]
     pod.ip = "not an ip"
     assert asyncio.run(e.urls(sb)) == []
 
+
+def test_kubernetes_install_uploads_once_then_starts(tmp_path, monkeypatch):
     # The script runs for real: the binary isn't in the pod, so it asks for an upload (exit 42), and the second
     # run finds the uploaded file and starts it. Here the "uploaded" file is a stub that records how it was run.
+    e, pod, sb = k8s_envd(tmp_path)
     remote = e.remote_path(ARCH)
     marker = tmp_path / "ran"
 
@@ -293,25 +306,43 @@ def test_kubernetes_install_uploads_once_then_starts(tmp_path, monkeypatch):
         return 0, ""
 
     monkeypatch.setattr(pod, "_upload_stream_blocking", upload)
+    asyncio.run(e.install(sb, "tok-123"))
+    assert pod.uploads == [(remote, 0o755, len(b"binary"))]
+    assert len(pod.execs) == 2
+    assert marker.read_text().split() == ["tok-123", "--daemon", "--port", "49983", "--workdir", e.s.workspace_dir,
+                                          "--log", "/tmp/hangar-envd.log"]
+    asyncio.run(e.install(sb, "tok-123"))  # already there: one exec, no upload
+    assert len(pod.uploads) == 1 and len(pod.execs) == 3
+
+
+def test_kubernetes_install_replaces_other_versions_but_not_itself(tmp_path):
+    e, pod, sb = k8s_envd(tmp_path)
+    sleep = shutil.which("sleep")
+    # A daemon of another hangar version (here: `sleep` copied under such a name) is stopped, and this one started.
+    old = Path(e.remote_dir) / "hangar-envd-0123456789abcdef-x86_64"
+    shutil.copy(sleep, old)
+    stale = subprocess.Popen([str(old), "30"])
+    Path(e.remote_path(ARCH)).write_text("#!/bin/sh\nexit 0\n")
+    os.chmod(e.remote_path(ARCH), 0o755)
     try:
-        asyncio.run(e.install(sb, "tok-123"))
-        assert pod.uploads == [(remote, 0o755, len(b"binary"))]
-        assert len(pod.execs) == 2
-        assert marker.read_text().split() == ["tok-123", "--daemon", "--port", "49983", "--workdir", s.workspace_dir,
-                                              "--log", "/tmp/hangar-envd.log"]
-        asyncio.run(e.install(sb, "tok-123"))  # already there: one exec, no upload
-        assert len(pod.uploads) == 1 and len(pod.execs) == 3
+        asyncio.run(e.install(sb, "tok"))
+        assert stale.wait(5) == -15
+        # This version already running but unreachable: not started twice, and said so.
+        shutil.copy(sleep, e.remote_path(ARCH))
+        same = subprocess.Popen([e.remote_path(ARCH), "30"])
+        try:
+            with pytest.raises(EnvdError, match="already running.*can't reach it"):
+                asyncio.run(e.install(sb, "tok"))
+            assert same.poll() is None
+        finally:
+            same.kill()
     finally:
-        Path(remote).unlink(missing_ok=True)
+        stale.kill()
 
 
 def test_kubernetes_install_refuses_unknown_cpus(tmp_path):
-    from hangar.envd import KubernetesEnvd
-
     other = "aarch64" if ARCH == "x86_64" else "x86_64"
-    (tmp_path / f"hangar-envd-{other}").write_bytes(b"binary")
-    e = KubernetesEnvd(FakePod(), Settings(data_dir=tmp_path, envd_dir=tmp_path))
-    sb = Sandbox(name="t", environment="x", provider="kubernetes", provider_ref="hangar-sb-1")
+    e, _, sb = k8s_envd(tmp_path, other)
     with pytest.raises(EnvdError, match="43"):
         asyncio.run(e.install(sb, "tok"))
 

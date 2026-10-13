@@ -128,6 +128,7 @@ class Envd:
     def __init__(self, provider: Provider, settings: Settings):
         self.p, self.s = provider, settings
         self.binaries = find_binaries(settings) if settings.envd != "off" else {}
+        self.remote_dir = "/tmp"  # where the binary goes in a sandbox
         self._eps: dict[str, Endpoint] = {}
         self._down: dict[str, float] = {}
         self._starting: dict[str, asyncio.Task] = {}
@@ -156,7 +157,7 @@ class Envd:
         return self._digests[arch]
 
     def remote_path(self, arch: str) -> str:
-        return f"/tmp/hangar-envd-{self.digest(arch)}-{arch}"
+        return f"{self.remote_dir}/hangar-envd-{self.digest(arch)}-{arch}"
 
     def start_args(self) -> list[str]:
         return ["--daemon", "--port", str(PORT), "--workdir", self.s.workspace_dir, "--log", LOG]
@@ -555,9 +556,6 @@ class EnvdTerminal(TerminalStream):
 
 
 # ---------------------------------------------------------------------- providers
-_ARCH = {"amd64": "x86_64", "x86_64": "x86_64", "arm64": "aarch64", "aarch64": "aarch64"}
-
-
 def _http_url(ip: str) -> str | None:
     try:
         a = ipaddress.ip_address(ip)
@@ -566,10 +564,48 @@ def _http_url(ip: str) -> str | None:
     return f"http://[{a}]:{PORT}" if a.version == 6 else f"http://{a}:{PORT}"
 
 
-class DockerEnvd(Envd):
-    """Docker: the binary goes in with one put_archive (root-owned, so the sandbox user can't swap it), the daemon
-    starts with one exec. Reached at the container's IP (Linux hosts, or a control plane on the same network as
-    the sandboxes) or at the port published on 127.0.0.1 (Docker Desktop, where container IPs aren't routable)."""
+class Installer(Envd):
+    """Starting the daemon the same way on every provider: one script, run as the sandbox user, that picks the
+    binary for the CPU, says if it needs uploading (exit 42), refuses to start a second copy of a daemon that is
+    already running (44: it runs but the control plane can't reach it), stops daemons of other hangar versions, and
+    starts this one. The providers differ only in how they run a script and copy a file in."""
+
+    async def run_script(self, sb: Sandbox, token: str) -> tuple[int, str]:
+        """Run the start script in the sandbox as the sandbox user, with the token; (exit code, output)."""
+        raise NotImplementedError
+
+    async def upload(self, sb: Sandbox, path: str, data: bytes) -> None:
+        raise NotImplementedError
+
+    def script(self, inline_token: str | None) -> str:
+        case = " ".join(f"{a}) b={shlex.quote(self.remote_path(a))} ;;" for a in sorted(self.binaries))
+        start = " ".join(shlex.quote(x) for x in self.start_args())
+        env = f"HANGAR_ENVD_TOKEN={shlex.quote(inline_token)} " if inline_token else ""
+        return (f'a=$(uname -m); case "$a" in {case} *) echo "no hangar-envd binary for $a"; exit 43 ;; esac; '
+                f'[ -x "$b" ] || {{ echo "need $a"; exit 42; }}; '
+                'for p in /proc/[0-9]*; do e=$(readlink "$p/exe" 2>/dev/null) || continue; case "$e" in '
+                '"$b") echo "a daemon is already running (pid ${p#/proc/})"; exit 44 ;; '
+                f'{shlex.quote(self.remote_dir)}/hangar-envd-*) kill "${{p#/proc/}}" 2>/dev/null ;; esac; done; '
+                # A daemon of another version just stopped may hold the port for a moment (its shutdown grace).
+                f'for i in 1 2 3 4 5 6 7 8 9 10; do {env}"$b" {start} && exit 0; sleep 0.3; done; exit 1')
+
+    async def install(self, sb: Sandbox, token: str) -> None:
+        code, out = await self.run_script(sb, token)
+        if code == 42:
+            arch = out.strip().rsplit(" ", 1)[-1]
+            if arch not in self.binaries:
+                raise EnvdError(f"no hangar-envd binary for {arch}")
+            await self.upload(sb, self.remote_path(arch), self.binaries[arch].read_bytes())
+            code, out = await self.run_script(sb, token)
+        if code != 0:
+            why = {43: "", 44: "; the control plane can't reach it"}.get(code, "")
+            raise EnvdError(f"hangar-envd did not start ({code}): {out[-300:].strip()}{why}")
+
+
+class DockerEnvd(Installer):
+    """Docker: the binary is copied in with put_archive (root-owned, so the sandbox user can't swap it). Reached at the
+    container's IP (Linux hosts, or a control plane on the same network as the sandboxes) or at the port published on
+    127.0.0.1 (Docker Desktop, where container IPs aren't routable)."""
 
     async def urls(self, sb: Sandbox) -> list[str]:
         api = self.p.client.api  # type: ignore[attr-defined]
@@ -585,37 +621,33 @@ class DockerEnvd(Envd):
                 out.append(u.rsplit(":", 1)[0] + f":{int(b['HostPort'])}")
         return out
 
-    async def install(self, sb: Sandbox, token: str) -> None:
+    async def run_script(self, sb: Sandbox, token: str) -> tuple[int, str]:
         api = self.p.client.api  # type: ignore[attr-defined]
-        attrs = await asyncio.to_thread(api.inspect_container, sb.provider_ref)
-        img = await asyncio.to_thread(api.inspect_image, attrs.get("Image", ""))
-        arch = _ARCH.get(str(img.get("Architecture", "")).lower(), "")
-        if arch not in self.binaries:
-            raise EnvdError(f"no hangar-envd binary for {img.get('Architecture') or 'this'} CPU")
-        data = self.binaries[arch].read_bytes()
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w") as tf:
-            info = tarfile.TarInfo(self.remote_path(arch).rsplit("/", 1)[1])
-            info.size, info.mode, info.mtime = len(data), 0o755, int(time.time())
-            tf.addfile(info, io.BytesIO(data))
-        if not await asyncio.to_thread(api.put_archive, sb.provider_ref, "/tmp", buf.getvalue()):
-            raise EnvdError("could not copy hangar-envd into the sandbox")
 
-        def _start() -> tuple[int | None, bytes]:
-            argv = [self.remote_path(arch), *self.start_args()]
-            eid = api.exec_create(sb.provider_ref, argv, user=self.s.sandbox_user,
+        def _run() -> tuple[int, str]:
+            # The token goes in the exec's environment, not its command line.
+            eid = api.exec_create(sb.provider_ref, ["sh", "-c", self.script(None)], user=self.s.sandbox_user,
                                   environment={"HANGAR_ENVD_TOKEN": token})["Id"]
             out = api.exec_start(eid)
-            return api.exec_inspect(eid).get("ExitCode"), out
+            code = api.exec_inspect(eid).get("ExitCode")
+            return (code if isinstance(code, int) else -1), out.decode(errors="replace")
 
-        code, out = await asyncio.to_thread(_start)
-        if code != 0:
-            raise EnvdError(f"hangar-envd did not start ({code}): {out[-300:].decode(errors='replace').strip()}")
+        return await asyncio.to_thread(_run)
+
+    async def upload(self, sb: Sandbox, path: str, data: bytes) -> None:
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tf:
+            info = tarfile.TarInfo(path.rsplit("/", 1)[1])
+            info.size, info.mode, info.mtime = len(data), 0o755, int(time.time())
+            tf.addfile(info, io.BytesIO(data))
+        api = self.p.client.api  # type: ignore[attr-defined]
+        if not await asyncio.to_thread(api.put_archive, sb.provider_ref, path.rsplit("/", 1)[0], buf.getvalue()):
+            raise EnvdError("could not copy hangar-envd into the sandbox")
 
 
-class KubernetesEnvd(Envd):
-    """Kubernetes: reached at the pod IP (deploy/k8s/envd-network.yaml lets only hangar's pods in). One exec checks
-    for the binary and starts it; the first time in a pod, one streamed upload (~3 MB) comes in between."""
+class KubernetesEnvd(Installer):
+    """Kubernetes: reached at the pod IP (deploy/k8s/envd-network.yaml lets only hangar's pods in). The first start in
+    a pod streams the binary in (~3 MB, one exec)."""
 
     async def urls(self, sb: Sandbox) -> list[str]:
         pod = await self.p._pod(sb)  # type: ignore[attr-defined]
@@ -624,31 +656,20 @@ class KubernetesEnvd(Envd):
         u = _http_url(ip)
         return [u] if u else []
 
-    def _script(self, token: str) -> str:
-        case = " ".join(f"{a}) b={shlex.quote(self.remote_path(a))} ;;" for a in sorted(self.binaries))
-        start = " ".join(shlex.quote(x) for x in self.start_args())
-        return (f'a=$(uname -m); case "$a" in {case} *) echo "no binary for $a"; exit 43 ;; esac; '
-                f'[ -x "$b" ] || {{ echo "need $a"; exit 42; }}; '
-                f'HANGAR_ENVD_TOKEN={shlex.quote(token)} exec "$b" {start}')
-
-    async def install(self, sb: Sandbox, token: str) -> None:
+    async def run_script(self, sb: Sandbox, token: str) -> tuple[int, str]:
+        # pods/exec has no environment: the token is on the start script's command line, readable for a moment
+        # only by the sandbox user (who can read the daemon's memory anyway).
         pod = await self.p._pod(sb)  # type: ignore[attr-defined]
         run: Callable[..., tuple[int, str, str]] = self.p._exec_blocking  # type: ignore[attr-defined]
-        script = self._script(token)
-        code, out, err = await asyncio.to_thread(run, pod, ["sh", "-c", script], 60)
-        if code == 42:
-            arch = out.strip().removeprefix("need ")
-            if arch not in self.binaries:
-                raise EnvdError(f"no hangar-envd binary for {arch}")
-            data = self.binaries[arch].read_bytes()
-            b64 = base64.b64encode(data).decode()
-            upload = self.p._upload_stream_blocking  # type: ignore[attr-defined]
-            ucode, uerr = await asyncio.to_thread(upload, pod, self.remote_path(arch), b64, 0o755, 120, len(data))
-            if ucode != 0:
-                raise EnvdError(f"could not copy hangar-envd into the pod: {uerr[-300:]}")
-            code, out, err = await asyncio.to_thread(run, pod, ["sh", "-c", script], 60)
+        code, out, err = await asyncio.to_thread(run, pod, ["sh", "-c", self.script(token)], 60)
+        return code, out + err
+
+    async def upload(self, sb: Sandbox, path: str, data: bytes) -> None:
+        pod = await self.p._pod(sb)  # type: ignore[attr-defined]
+        upload = self.p._upload_stream_blocking  # type: ignore[attr-defined]
+        code, err = await asyncio.to_thread(upload, pod, path, base64.b64encode(data).decode(), 0o755, 120, len(data))
         if code != 0:
-            raise EnvdError(f"hangar-envd did not start ({code}): {(err or out)[-300:].strip()}")
+            raise EnvdError(f"could not copy hangar-envd into the pod: {err[-300:]}")
 
 
 class Off:
