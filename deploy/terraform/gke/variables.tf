@@ -93,3 +93,30 @@ variable "session_retention_days" {
   type        = number
   default     = 0
 }
+
+variable "enable_power_schedule" {
+  description = "Scale every node pool to 0 at power_down_cron and back at power_up_cron (deploy/gke/power.sh), via Cloud Scheduler and Cloud Run jobs."
+  type        = bool
+  default     = false
+}
+
+variable "power_up_cron" {
+  type    = string
+  default = "0 10 * * *"
+}
+
+variable "power_down_cron" {
+  type    = string
+  default = "0 1 * * *"
+}
+
+variable "power_time_zone" {
+  type    = string
+  default = "America/New_York"
+}
+
+variable "power_image" {
+  description = "Image the power jobs run in: needs gcloud and python3 (kubectl is installed at run time if missing)."
+  type        = string
+  default     = "gcr.io/google.com/cloudsdktool/google-cloud-cli:stable"
+}
