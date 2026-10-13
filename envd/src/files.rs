@@ -68,16 +68,19 @@ pub async fn download(State(app): State<Arc<App>>, Query(q): Query<FileQuery>, h
         Ok(f) => f,
         Err(e) => return error(io_status(&e), format!("cannot open {}: {e}", p.display())),
     };
-    match file.metadata().await {
+    let len = match file.metadata().await {
         Ok(md) if md.is_dir() => return error(StatusCode::BAD_REQUEST, format!("path '{}' is a directory", p.display())),
         Ok(md) if !md.is_file() => return error(StatusCode::BAD_REQUEST, format!("path '{}' is not a regular file", p.display())),
-        Ok(_) => {}
+        Ok(md) => md.len(),
         Err(e) => return error(io_status(&e), format!("cannot stat {}: {e}", p.display())),
-    }
-    let stream = tokio_util::io::ReaderStream::with_capacity(file, 64 * 1024);
+    };
+    // The size as of opening: a file that grows meanwhile is sent as it was, one that shrinks ends the response
+    // early (the client sees a short body, not a wrong one). A known length is also much cheaper to receive.
+    let stream = tokio_util::io::ReaderStream::with_capacity(tokio::io::AsyncReadExt::take(file, len), 256 * 1024);
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::CONTENT_LENGTH, len)
         .body(Body::from_stream(stream))
         .unwrap_or_else(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "response"))
 }

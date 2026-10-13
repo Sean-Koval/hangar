@@ -110,11 +110,11 @@ class Endpoint:
     version: str = ""
 
 
-def sign(token: str, method: str, raw_path: bytes, body: bytes) -> str:
+def sign(token: str, method: str, raw_path: bytes, body_sha256: str) -> str:
     """X-Hangar-Sig (envd/src/auth.rs): HMAC(token; ms, nonce, method, path?query, sha256(body)). The token itself
     never leaves the control plane, so a request that reaches the wrong address is useless to whoever got it."""
     ts, nonce = int(time.time() * 1000), secrets.token_hex(16)
-    msg = f"{ts}\n{nonce}\n{method}\n".encode() + raw_path + b"\n" + hashlib.sha256(body).hexdigest().encode()
+    msg = f"{ts}\n{nonce}\n{method}\n".encode() + raw_path + b"\n" + body_sha256.encode()
     return f"{ts}.{nonce}.{hmac.new(token.encode(), msg, hashlib.sha256).hexdigest()}"
 
 
@@ -199,11 +199,12 @@ class Envd:
 
     def request(self, ep: Endpoint, method: str, path: str, *, params: dict[str, str] | None = None,
                 content: bytes = b"", headers: dict[str, str] | None = None,
-                timeout: httpx.Timeout | None = None) -> httpx.Request:
+                timeout: httpx.Timeout | None = None, content_sha256: str | None = None) -> httpx.Request:
         req = self.http.build_request(method, f"{ep.url}{path}", params=params, content=content, headers=headers,
                                       timeout=timeout or httpx.Timeout(30.0, connect=2.0))
         req.headers["Accept-Encoding"] = "identity"
-        req.headers["X-Hangar-Sig"] = sign(ep.token, method, req.url.raw_path, content)
+        digest = content_sha256 or hashlib.sha256(content).hexdigest()
+        req.headers["X-Hangar-Sig"] = sign(ep.token, method, req.url.raw_path, digest)
         return req
 
     async def send_capped(self, req: httpx.Request, cap: int) -> tuple[int, bytes]:
@@ -463,8 +464,11 @@ class Envd:
         ep = await self.endpoint(sb)
         if ep is None:
             return False
+        # Hashing a big body would hold the event loop (~1 ms per MB), so it runs in a thread.
+        digest = (await asyncio.to_thread(lambda: hashlib.sha256(data).hexdigest())) if len(data) > (1 << 20) \
+            else None
         req = self.request(ep, "POST", "/files", params={"path": path, "mode": f"{mode & 0o7777:o}"}, content=data,
-                           headers={"Content-Type": "application/octet-stream"},
+                           headers={"Content-Type": "application/octet-stream"}, content_sha256=digest,
                            timeout=httpx.Timeout(max(60.0, len(data) / (4 << 20)), connect=2.0))
         try:
             status, _ = await self.send_capped(req, 65536)

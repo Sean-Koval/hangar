@@ -11,6 +11,9 @@ Measures, p50/p95 over --runs:
   resume_total / resume_restore  suspended session -> sandbox ready; the restore part alone
   turn_first_output              send -> first agent event recorded
   turn_end_detect                agent process exited -> hangar noticed (session_poll_seconds matters here)
+  *_provider / *_envd            the same provider calls through `docker exec` and through hangar-envd: exec,
+                                 write/read 64 KiB, 1 MiB and 16 MiB, a burst of 1000 execs 50 at a time, and PTY
+                                 echo (a keystroke into `cat` until it comes back). Needs envd/build.sh first.
 
 The session has a realistic shape: a 1.5 MB JSON-lines conversation that grows each turn, three commits, a modified
 tracked file, ~100 untracked text files and 3 MiB of incompressible untracked data. Needs Docker and git; reuses
@@ -23,6 +26,7 @@ import argparse
 import asyncio
 import base64
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
@@ -211,6 +215,12 @@ async def main(args: argparse.Namespace) -> dict:
                     await fleet.terminal_send(sb.id, "bench", f"echo mark-{i}", wait_ms=5000, wait_for=f"^mark-{i}")
             await fleet.destroy(sb.id)
 
+        if "envd" in phases:  # --- envd: the same calls through `docker exec` and through hangar-envd
+            sb = await fleet.create("sesenv", repo=url, harness="scripted", actor="bench")
+            created.append(sb.id)
+            await envd_phase(rec, prov, fleet.get(sb.id), args.runs)
+            await fleet.destroy(sb.id)
+
         # ---- a session: checkpoint after turns, then suspend/resume
         s0 = svc.new(NewSession(name="bench", environment="sesenv", repo=url, message="setup the work",
                                 idle_minutes=0), owner="bench", requester="bench")
@@ -285,6 +295,60 @@ async def main(args: argparse.Namespace) -> dict:
     return rec.result(provider="docker", runs=args.runs, session_poll_seconds=args.poll)
 
 
+async def envd_phase(rec, prov, sb, runs: int) -> None:
+    """--- envd: provider exec vs hangar-envd on one sandbox. Metrics end in `_provider` or `_envd`."""
+    from hangar.envd import OFF
+
+    router = prov.envd
+    ep = await router.ready(sb)
+    if ep is None:
+        rec.note("envd", "unavailable (no binary, or not reachable): run envd/build.sh")
+        return
+    rec.note("envd", {"url": ep.url, "version": ep.version})
+    small, big, huge = b"x" * 65536, bytes(range(256)) * 4096, os.urandom(16 << 20)
+    for mode in ("provider", "envd"):
+        prov.envd = OFF if mode == "provider" else router
+        await prov.exec(sb, "true")  # warm both paths' connections
+        for _ in range(runs * 5):
+            with rec.time(f"exec_{mode}"):
+                await prov.exec(sb, "true")
+        for name, data in (("64k", small), ("1m", big), ("16m", huge)):
+            for _ in range(runs * (1 if name == "16m" else 3)):
+                with rec.time(f"write_{name}_{mode}"):
+                    await prov.write_file(sb, f"/workspace/bench/{name}.bin", data)
+                with rec.time(f"read_{name}_{mode}"):
+                    got = await prov.read_file(sb, f"/workspace/bench/{name}.bin")
+                assert got == data
+        # A burst: 1000 commands, 50 at a time (what a fleet of agents polling their runs looks like).
+        async def one(sem: asyncio.Semaphore) -> None:
+            async with sem:
+                await prov.exec(sb, "true")
+
+        sem = asyncio.Semaphore(50)
+
+        t = time.perf_counter()
+        await asyncio.gather(*[one(sem) for _ in range(1000)])
+        rec.add(f"burst_1000_{mode}", time.perf_counter() - t)
+        # PTY echo: one keystroke into `cat` on a terminal until it comes back.
+        term = await prov.open_terminal(sb, ["cat"], 80, 24)
+        try:
+            await asyncio.sleep(0.2)
+            for i in range(runs * 3):
+                key = chr(ord("a") + i % 26).encode()
+                t = time.perf_counter()
+                await term.write(key)
+                seen = b""
+                while key not in seen:
+                    seen += await asyncio.wait_for(term.read(), 5)
+                rec.add(f"pty_echo_{mode}", time.perf_counter() - t)
+        finally:
+            await term.close()
+    prov.envd = router
+    res = await prov.exec(sb, "for p in /proc/[0-9]*; do case \"$(cat $p/comm 2>/dev/null)\" in hangar-envd*) "
+                              "grep -E 'VmRSS|VmHWM' $p/status;; esac; done")
+    rec.note("envd_memory_after", " ".join(res.stdout.split()))
+
+
 async def settle(svc, sid: str, timeout: float = 300) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -308,7 +372,7 @@ if __name__ == "__main__":
     p.add_argument("--runs", type=int, default=10)
     p.add_argument("--poll", type=float, default=5.0, help="session_poll_seconds (the production default is 5)")
     p.add_argument("--out", help="also write the JSON result here")
-    p.add_argument("--phases", default="create,io,checkpoint,resume,turn", help="comma-separated subset to run")
+    p.add_argument("--phases", default="create,io,envd,checkpoint,resume,turn", help="comma-separated subset to run")
     a = p.parse_args()
     logging.basicConfig(level=logging.WARNING)
     emit(asyncio.run(main(a)), a.out)
