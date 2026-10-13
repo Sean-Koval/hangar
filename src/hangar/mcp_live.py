@@ -233,13 +233,30 @@ def _slim(schema: Any, inputs: bool) -> Any:
 
 
 class HangarMCP(MCPServer):
-    """MCPServer with compact tool listings (the order stays the registration order, so listings are stable)."""
+    """MCPServer with compact tool listings (the order stays the registration order, so listings are stable) and
+    the current jobs and sessions listed as resources, so clients can offer them (@-mentions in Claude Code)."""
+
+    recent: Any = None  # () -> list[types.Resource], set by build_mcp
 
     async def list_tools(self) -> list[types.Tool]:
         tools = await super().list_tools()
         return [t.model_copy(update={"input_schema": _slim(t.input_schema, True),
                                      "output_schema": _slim(t.output_schema, False) if t.output_schema else None})
                 for t in tools]
+
+    async def list_resources(self) -> list[types.Resource]:
+        return [*await super().list_resources(), *(self.recent() if self.recent else [])]
+
+
+def recent_resources(sessions: Any, jobs: Any, limit: int = 25) -> list[types.Resource]:
+    """The sessions and jobs worth following now: the most recently active, newest first."""
+    out = [types.Resource(uri=session_uri(s.name), name=f"session {s.name}", mime_type="application/json",
+                          description=f"{s.state.value}: {(s.title or s.repo or '')[:100]}")
+           for s in sessions.list(limit=limit)]
+    if jobs is not None:
+        out += [types.Resource(uri=job_uri(j.id), name=f"job {j.id}", mime_type="application/json",
+                               description=f"{j.state.value}: {j.title[:100]}") for j in jobs.list(limit=limit)]
+    return out
 
 
 # ====================================================================== resources and change notifications

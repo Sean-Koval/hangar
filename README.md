@@ -75,14 +75,15 @@ uv run hangar serve            # dashboard: http://localhost:8787
 
 | Area | Tools |
 | --- | --- |
-| Discover | `fleet_overview`, `list_environments`, `describe_environment`, `build_environment`, `list_credentials` |
-| Lifecycle | `create_sandbox`, `create_sandboxes` (N in parallel), `list_sandboxes`, `get_sandbox`, `destroy_sandbox`, `destroy_sandboxes`, `pause_sandbox`, `resume_sandbox`, `extend_sandbox` |
+| Discover | `fleet_overview`, `list_environments`, `describe_environment`, `create_environment` (`dry_run` validates; `extends` clones), `build_environment`, `list_credentials` |
+| Lifecycle | `create_sandbox`, `create_sandboxes` (N in parallel), `list_sandboxes`, `get_sandbox`, `destroy_sandbox` (one, several or by label), `pause_sandbox`, `resume_sandbox`, `extend_sandbox` |
 | Commands and files | `exec`, `read_file`, `write_file`, `list_files` |
 | Terminals | `terminal_open`, `terminal_send` (supports `wait_for` regex), `terminal_read`, `terminal_list`, `terminal_close` |
 | Agents | `run_agent`, `agent_status` |
 | Clone | `snapshot_sandbox`, `list_snapshots`, `fork_sandbox` |
+| Jobs and sessions | `submit_job`, `get_job`, `list_jobs`, `follow_up_job`, `cancel_job`, `new_session`, `send_to_session`, `fork_session`, `wait_for_turn`, `get_events`, `get_artifact`, `get_session_patch`, ... |
 
-Every tool accepts a sandbox id or name. Relative paths resolve against the sandbox's repo checkout, falling back to `/workspace`.
+Every tool accepts a sandbox id or name. Relative paths resolve against the sandbox's repo checkout, falling back to `/workspace`. Tools carry read-only/destructive hints and typed results; long work can run as MCP tasks, agents' questions reach you as elicitations, and jobs and sessions are subscribable resources. See [Using hangar from an MCP client](docs/mcp.md).
 
 ## Environment specs
 

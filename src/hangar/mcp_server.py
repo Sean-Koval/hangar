@@ -44,7 +44,7 @@ EXPECTED = (FleetError, ProviderError, CredentialError, ValueError, KeyError, No
 
 current_actor: contextvars.ContextVar[str] = contextvars.ContextVar("hangar_actor", default="mcp")
 log = logging.getLogger("hangar.mcp")
-ELICIT_WAIT_SECONDS = 900  # how long wait_for_turn waits for you to answer an agent's question (legacy clients)
+ELICIT_WAIT_SECONDS = 900  # how long an agent's question put to you by wait_for_turn waits for your answer
 
 INSTRUCTIONS = """\
 Hangar runs coding agents (Claude Code, Codex, pi, Antigravity) in cloud sandboxes. Pick the level you need:
@@ -154,7 +154,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         """Save a new or updated environment. dry_run=True only checks it: resolves `extends`, validates,
         lists warnings (missing credentials, deprecated harnesses) and returns the Dockerfile. To clone one,
         extend it: {"name": "api-codex", "extends": "api", "harnesses": ["codex"]} (lists and maps merge with the
-        source's, scalars replace). Defaults to extend: bare, python, node, go, polyglot. Then build_environment.
+        source's; scalars, `harnesses` and `credentials` replace). Defaults to extend: bare, python, node, go,
+        polyglot. Then build_environment.
 
         Spec fields: name, description, extends, base | image (prebuilt), tools {apt, mise, script},
         harnesses [claude-code, codex, pi, antigravity, git], default_harness, harness_mode (auto|pack|bake),
@@ -544,6 +545,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
 
         # --- workstream mcp-modern: jobs and sessions as resources clients can follow, and workflow prompts
         live.register_resources(mcp, sessions, jobs)
+        mcp.recent = lambda: live.recent_resources(sessions, jobs)
         live.register_prompts(mcp, sessions)
         fleet.store.on_put.append(feed.on_put)
         if legacy_sessions:

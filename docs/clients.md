@@ -1,6 +1,6 @@
 # Connecting MCP clients
 
-Hangar serves MCP over streamable HTTP at `<public_url>/mcp`, authenticated with a bearer token. Create a token in the dashboard under **Connect**, or with `hangar token create <name>`.
+Hangar serves MCP over streamable HTTP at `<public_url>/mcp`, authenticated with a bearer token. Create a token in the dashboard under **Connect**, or with `hangar token create <name>`. What clients get beyond tool calls (tasks, elicitation, typed results, subscriptions, prompts) is in [mcp.md](mcp.md).
 
 ## Codex (CLI, IDE extension, app)
 

@@ -43,6 +43,7 @@ TASK_TTL_MS = 24 * 3600 * 1000
 KV_PREFIX = "mcp-task:"
 INVALID_PARAMS = -32602
 MAX_ANSWER = 100_000
+MAX_RESPONSES = 20
 ANSWER_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {"answer": {"type": "string", "title": "Your answer",
@@ -288,6 +289,11 @@ class Tasks:
                                   "result": result.model_dump(by_alias=True, mode="json", exclude_none=True)})
 
     def _finish(self, rec: TaskRecord, state: dict[str, Any]) -> dict[str, Any]:
+        """Record the terminal state. If another request got there first (a cancel during a poll), theirs stands:
+        a terminal state never changes."""
+        raw = self.store.kv_get(KV_PREFIX + rec.id)
+        if raw and (done := TaskRecord.model_validate_json(raw).final) is not None:
+            return done
         rec.final = {**state, "lastUpdatedAt": _iso(time.time())}
         self._save(rec)
         return rec.final
@@ -297,6 +303,8 @@ class Tasks:
         rec = self._load(task_id)
         if rec.final is not None or rec.kind not in ("job", "session"):
             return
+        if len(responses) > MAX_RESPONSES:
+            raise MCPError(INVALID_PARAMS, f"at most {MAX_RESPONSES} inputResponses per update")
         for key, raw in responses.items():
             turn_no = rec.asked.get(key)
             if turn_no is None:

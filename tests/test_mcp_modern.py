@@ -360,7 +360,11 @@ async def test_resources_and_modern_subscriptions(fleet, svc, jobs, world):
         templates = {t.uri_template for t in (await c.list_resource_templates()).resource_templates}
         assert {"hangar://sessions/{name}", "hangar://sessions/{name}/events", "hangar://sessions/{name}/patch",
                 "hangar://jobs/{job_id}", "hangar://jobs/{job_id}/events"} <= templates
-        sc(await c.call_tool("new_session", {"name": "watch", "environment": "xenv", "message": "TASK-USE-B"}))
+        async with c.listen(resources_list_changed=True) as sub:  # a new session is a new resource
+            sc(await c.call_tool("new_session", {"name": "watch", "environment": "xenv", "message": "TASK-USE-B"}))
+            ev = await asyncio.wait_for(anext(aiter(sub)), 10)
+            assert type(ev).__name__ == "ResourcesListChanged"
+        assert "hangar://sessions/watch" in {r.uri for r in (await c.list_resources()).resources}
         await settle(svc, "watch")
         view = json.loads((await c.read_resource("hangar://sessions/watch")).contents[0].text)
         assert view["name"] == "watch" and view["turns"][0]["summary"] == "Went with B"
@@ -383,6 +387,7 @@ async def test_resources_and_modern_subscriptions(fleet, svc, jobs, world):
         assert jv["state"] == "succeeded"
 
 
+@pytest.mark.filterwarnings("ignore:resources/(un)?subscribe is removed")  # deliberately the 2025-era path
 async def test_legacy_resource_subscriptions(fleet, svc, jobs):
     got: list[str] = []
 
