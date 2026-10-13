@@ -14,8 +14,8 @@ spec:
 ---
 # Let sandboxes reach the gateway, and nothing else of the control plane.
 #
-# Agent Sandbox's default policy blocks private (RFC1918) destinations, which is what keeps the control plane
-# unreachable from sandboxes today. NetworkPolicies add up (any policy that allows a connection allows it), so
+# sandbox-network.yaml (and Agent Sandbox's managed policy) block private (RFC1918) destinations, which is what keeps
+# the control plane unreachable from sandboxes. NetworkPolicies add up (any policy that allows a connection allows it), so
 # this one opens exactly one destination: hangar pods on port 8788. The dashboard/API/MCP port (8787) stays
 # blocked, which is why the gateway has its own port. Requires a CNI that enforces NetworkPolicy (GKE Dataplane V2).
 apiVersion: networking.k8s.io/v1

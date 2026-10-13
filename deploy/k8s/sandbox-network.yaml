@@ -1,0 +1,45 @@
+# Network baseline for sandbox pods (docs/security.md, threat model). Defence in depth: GKE Agent Sandbox's
+# managed policy already blocks private ranges and the metadata server, but hangar shouldn't depend on it alone
+# (a template switched to `networkPolicyManagement: Unmanaged`, or the open-source controller, has no such policy).
+#
+# NetworkPolicies only ever add allowances, so these say what a sandbox *may* reach; anything else is denied once a
+# pod is selected by an Egress or Ingress policy:
+#   - DNS (kube-dns, and NodeLocal DNSCache at 169.254.20.10 if enabled);
+#   - the public internet, minus RFC1918, CGNAT, loopback and link-local. Link-local covers the metadata server
+#     (169.254.169.254) and GKE's Workload Identity metadata server (169.254.169.252:988), so code in a sandbox
+#     can't mint a token for the node's or a KSA's Google identity (the pod-snapshot KSA can read every snapshot);
+#   - the git gateway on hangar pods (gateway.yaml).
+# Nothing may connect *to* a sandbox pod: hangar reaches sandboxes through the Kubernetes API (exec), not the pod
+# network, so sandboxes can't reach each other either.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-egress-baseline
+  namespace: hangar-sandboxes
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+        - ipBlock: {cidr: 169.254.20.10/32}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16]
+        - ipBlock:
+            cidr: ::/0
+            except: ["fc00::/7", "fe80::/10", "::1/128"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-deny-ingress
+  namespace: hangar-sandboxes
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]

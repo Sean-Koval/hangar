@@ -7,5 +7,6 @@ resources:
   - deployment.yaml
   - ingress.yaml
   - gateway.yaml
+  - sandbox-network.yaml
 # Terraform prints the values to drop in here (project, region, domain):
 #   kustomize edit set image REGION-docker.pkg.dev/PROJECT_ID/hangar/control-plane=<your image>

@@ -6,7 +6,7 @@ Hangar exists to run untrusted, model-generated code. The design assumes any san
 | --- | --- |
 | Sandbox ↔ host | runc (laptop, trusted use), gVisor user-space kernel, or Kata/Firecracker microVM with its own guest kernel |
 | Sandbox ↔ sandbox | Separate containers/pods/VMs; no shared volumes; per-sandbox credentials |
-| Sandbox ↔ network | GKE: default-deny to RFC1918 + metadata server. Docker: use `HANGAR_DOCKER_NETWORK` with an egress-filtered network |
+| Sandbox ↔ network | GKE: `deploy/k8s/sandbox-network.yaml` (and Agent Sandbox's managed policy) deny RFC1918, link-local (metadata server) and all ingress. Docker: use `HANGAR_DOCKER_NETWORK` with an egress-filtered network; the single-VM install drops docker0 → 169.254.169.254 |
 | Client ↔ control plane | Bearer tokens (hashed at rest), single-use tickets for browser streams, TLS via ingress, optional IAP in front |
 | Secrets | Fernet-encrypted vault; never in images, API responses, MCP results, logs, or audit entries |
 
@@ -27,7 +27,7 @@ By default (`credential_mode: direct`) a sandbox gets the GitHub token itself, i
 
 - The sandbox gets a **grant**: an `hgs_…` token that works only at hangar's gateway, only for the sandbox's repo, and only while the sandbox runs. Hangar stores its hash; the token itself is written once, to the sandbox's `~/.git-credentials`.
 - The sandbox's git is pointed at the gateway with `url.<gateway>/git/github.com/.insteadOf https://github.com/` (and the `git@github.com:` and `ssh://` forms). Clones, fetches and pushes keep working with the usual URLs.
-- The gateway reads each push's ref updates before any of the pack is forwarded. It allows only the sandbox's own branch (the job or session branch, or `work_branch`), plus *creating* new branches under `refs/heads/hangar/` (`HANGAR_GATEWAY_PUSH_REFS`); a branch a sandbox created that way becomes its own, and nobody else can update it. It refuses pushes to other branches, deletes, tags (`HANGAR_GATEWAY_ALLOW_TAGS`), push options and signed pushes. Git shows the reason: `! [remote rejected] main -> main (hangar: this sandbox may push only to hangar/job-…)`.
+- The gateway reads each push's ref updates before any of the pack is forwarded. It allows only the sandbox's own branch (the job or session branch, or `work_branch`), plus *creating* new branches under `refs/heads/hangar/` (`HANGAR_GATEWAY_PUSH_REFS`); a branch a sandbox created that way becomes its own, and nobody else can update it. That rule never creates a branch under `hangar/session/`, another session's branch, or one that would block either. It refuses pushes to other branches, deletes, tags (`HANGAR_GATEWAY_ALLOW_TAGS`), push options and signed pushes. Git shows the reason: `! [remote rejected] main -> main (hangar: this sandbox may push only to hangar/job-…)`.
 - Allowed requests are streamed to GitHub with the real credential: a PAT from the vault, or a **GitHub App** installation token minted for that one repo (`contents: write`, `pull_requests: write`), cached in memory until shortly before it expires.
 - Pushes and refusals are in the audit log (`gw.git.push`, `gw.git.deny`) with the refs and the result. The grant is revoked when the sandbox is destroyed, expires or disappears; a fork gets its own grant.
 
@@ -89,6 +89,31 @@ The push is made as the App; commits keep the agent's git identity. PRs for jobs
 - It doesn't cover: what is *in* the pushed branch (review the PR; keep secrets out of `push`-triggered workflows), the GitHub REST API from inside the sandbox (not proxied yet), egress filtering (a sandbox can still reach the internet unless your network policy says otherwise), or the model credential, which is still injected.
 - Force pushes to the sandbox's own branch are allowed (agents rebase); force pushes anywhere else are refused like any other update. Keep branch protection on `main` as a second wall.
 - Inside the cluster the gateway speaks plain HTTP, so the grant crosses the pod network unencrypted. It is worth little: it dies with the sandbox and reaches one branch of one repo.
+
+## Threat model: a compromised sandbox
+
+The attacker controls everything inside one sandbox: the agent's process, its files, `~/.hangar/env` (so every command hangar runs there), its git binary and its network traffic. What it should not get:
+
+| Goal | What stops it | Tests |
+| --- | --- | --- |
+| The upstream GitHub token | Never written into a gateway-mode sandbox (env, files, harness configs). Gateway errors carry exception types, never values; upstream redirects aren't followed or relayed; the host segment must equal the grant's host and a configured upstream, so it can't be pointed elsewhere. | `test_gateway_git.py` |
+| A push outside its grant | The command list is parsed before any pack byte goes upstream: one deadline for the whole list, at most 8 commands, no NUL tricks, no special pkt-lines, strict ref names, no deletes, no tags, no signed pushes, and no push options in any spelling (git enables them for `push-options=<anything>` too). | `test_gateway.py`, `test_sandbox_security.py` |
+| Another job's or session's branch | Exact grants for the sandbox's own branch. The `hangar/**` creation rule can't touch a branch another live sandbox or any session owns, can't create one that blocks it (`a/b` vs `a/b/c`), and can't create anything under `hangar/session/`. A new session starts from its branch if it exists, so a planted branch would otherwise become its starting point. | `test_sandbox_security.py` |
+| A dead or foreign grant | Grants are 256-bit, stored hashed, compared in constant time, and stop working when their sandbox stops, pauses, expires or is destroyed. A fork gets its own. 30 invalid grants a minute from one address get 429 without a lookup. | `test_gateway_git.py`, `test_sandbox_security.py` |
+| The control plane's attention | 8 requests in flight per grant, 512 connections on the gateway listener, deadlines on reading push and fetch requests, push size cap, a single pass over the command list. | `test_sandbox_security.py` |
+| The requester's machine (`session pull --checkout`) | The untracked-files archive is the sandbox's: only regular files, directories and in-tree symlinks are restored, never under `.git` (any spelling), never through a symlink (including one the session's patch created), never over an existing file, at most 20,000 entries. The checkpoint's head must be a commit id. The patch goes through `git apply`, which refuses `.git` paths. | `test_sandbox_security.py` |
+| The dashboard's origin | Artifacts are served as attachments with `Content-Security-Policy: sandbox` and `nosniff`; active types are downgraded to `text/plain`. | `test_exchange.py` |
+| Cloud credentials | GKE node pools use `GKE_METADATA` (Workload Identity), so pods never see the node's service account; sandbox pods mount no Kubernetes token. `sandbox-network.yaml` blocks the metadata server, which matters with Pod snapshots: their KSA can read every sandbox's snapshot. | manifests checked with a server-side dry run |
+| Other sandboxes and the API | GKE: no ingress to sandbox pods, no egress to private ranges; only the gateway port of hangar pods is open. | manifests |
+
+What is **not** covered:
+
+- **Docker on a laptop or VM is a trusted-use setup.** Sandboxes share the default bridge (they can reach each other's ports), can reach the host (and the API port if hangar listens beyond loopback), and get `sudo` unless the environment sets `sudo: false`. On a cloud VM, block the metadata server as the single-VM install does: `iptables -I DOCKER-USER -i docker0 -d 169.254.169.254/32 -j DROP`. For untrusted work use GKE (gVisor/Kata) or a filtered `HANGAR_DOCKER_NETWORK`.
+- **Inside the sandbox the agent is in charge.** Hangar's own reads and writes there (attachments in, results and artifacts out) follow whatever the agent left in place. On Docker with `sudo` that grants nothing new; with `sudo: false`, a symlink placed in `$HANGAR_IO` can make hangar write an attachment, or read a file, as root inside that container.
+- **Secrets the sandbox already holds.** The model credential is still injected. Redaction masks stored values in results, artifacts and logs, not encoded copies. A grant the agent copies out works from anywhere that reaches the gateway until its sandbox stops.
+- **What is in the pushed branch.** Review PRs, and keep secrets out of `push`-triggered workflows.
+- **Egress.** Sandboxes can reach the public internet; there is no allowlist yet (spec 0003).
+- **Predictable custom branch names.** A session or job with a custom branch outside `hangar/session/` can be pre-created by another sandbox before the session or job exists. Jobs refuse to start on an existing branch; sessions continue it.
 
 ## OAuth connectors
 

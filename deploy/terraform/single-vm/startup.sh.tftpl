@@ -3,7 +3,16 @@
 set -euxo pipefail
 exec > >(tee -a /var/log/hangar-startup.log) 2>&1
 
+# Sandboxes run on Docker's default bridge (docker0). Without this rule any of them can ask the GCE metadata server
+# for a token for this VM's service account (cloud-platform scope). DOCKER-USER survives Docker restarts but not
+# reboots, so it's applied on every boot. The control plane runs on the compose network and keeps its access.
+block_metadata() {
+  iptables -C DOCKER-USER -i docker0 -d 169.254.169.254/32 -j DROP 2>/dev/null \
+    || iptables -I DOCKER-USER -i docker0 -d 169.254.169.254/32 -j DROP
+}
+
 if [ -f /opt/hangar/.installed ]; then
+  block_metadata
   cd /opt/hangar/src/deploy/compose && docker compose up -d
   exit 0
 fi
@@ -36,6 +45,7 @@ elif [ "$RUNTIME" = "kata" ]; then
   mv /tmp/d.json /etc/docker/daemon.json
 fi
 systemctl restart docker
+block_metadata
 
 mkdir -p /opt/hangar
 git clone "${repo_url}" /opt/hangar/src

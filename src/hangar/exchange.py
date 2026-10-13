@@ -25,8 +25,12 @@ import io
 import json
 import logging
 import mimetypes
+import os
+import posixpath
 import re
 import shlex
+import shutil
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -57,6 +61,8 @@ _SESSION_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
 _JOB_RE = re.compile(r"^job-[0-9a-f]{8}$")
 MAX_SCHEMA = 64_000
 MAX_QUESTION = 8000
+_OID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")  # a full commit id, as git rev-parse prints it
+MAX_UNTRACKED_FILES = 20_000  # entries restored from a session's untracked-files archive by `session pull`
 # Agent-written files are served as downloads; never let a browser render these on hangar's origin.
 _ACTIVE_TYPES = {"text/html", "image/svg+xml", "application/xhtml+xml", "text/javascript", "application/javascript",
                  "text/xml", "application/xml"}
@@ -415,6 +421,8 @@ async def _apply_bundle(svc: SessionService, s: Session, sb: Sandbox, repo: str,
     if res.exit_code != 0 or len(lines) < 3:
         raise ExchangeError(f"bundle '{c.name}' could not be fetched: {(res.stderr or res.stdout).strip()[-400:]}")
     new, cur, base_sha = lines[-3:]
+    if not all(_OID_RE.match(x) for x in (new, cur, base_sha)):  # sandbox output: it becomes s.base_sha and argv
+        raise ExchangeError(f"bundle '{c.name}' could not be fetched: git printed something other than commit ids")
     if new == cur:
         return
     ff = await svc._sh(sb, f"git merge-base --is-ancestor {cur} {new}", cwd=repo)
@@ -1036,18 +1044,74 @@ def from_local(repo: Path, max_bundle_mb: int = 50, max_patch_mb: int = 10) -> t
     return items, info
 
 
+# --- overnight/sandbox-security: the untracked-files archive is built inside the sandbox, so it is the agent's.
+def _dotgit(name: str) -> bool:
+    """`.git` as git itself refuses it in a path, including the case and trailing-dot spellings that name the same
+    directory on macOS and Windows (and NTFS's short name)."""
+    n = name.lower().rstrip(". ")
+    return n == ".git" or n == "git~1"
+
+
+def _unsafe_member(top: Path, gitdir: os.stat_result, m: tarfile.TarInfo) -> str | None:
+    """Why an untracked-files member must not be extracted, or None. Checked against what is on disk now, so
+    a symlink made by an earlier member (or by the session's patch) is never written through."""
+    parts = [p for p in m.name.split("/") if p not in ("", ".")]
+    if not parts or m.name.startswith("/") or ".." in parts:
+        return "outside the checkout"
+    if any(_dotgit(p) for p in parts):
+        return "inside .git"
+    if not (m.isreg() or m.isdir() or m.issym()):
+        return "not a regular file, directory or symlink"
+    if m.issym():
+        link = posixpath.normpath(posixpath.join(posixpath.dirname("/".join(parts)), m.linkname))
+        if m.linkname.startswith("/") or link == ".." or link.startswith("../") or \
+                any(_dotgit(p) for p in link.split("/")):
+            return "a symlink that leads outside the checkout or into .git"
+    p = top
+    for part in parts[:-1]:
+        p = p / part
+        try:
+            st = os.lstat(p)
+        except FileNotFoundError:
+            break
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            return f"{p.relative_to(top)} is a symlink or a file"
+        if os.path.samestat(st, gitdir):
+            return "inside .git"
+    return None
+
+
 def _extract_untracked(top: Path, data: bytes) -> list[str]:
-    """Untracked files from a checkpoint into the checkout: never outside it, never over an existing file."""
+    """Untracked files from a checkpoint into the checkout: regular files, directories and symlinks that stay in
+    the tree; never under .git, never through a symlink, never over anything that exists. tarfile's own "data"
+    filter isn't enough: it lets a member write through an in-tree symlink (into .git/hooks, say)."""
     notes: list[str] = []
+    gitdir = os.stat(_out(_git(top, "rev-parse", "--absolute-git-dir")))
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
-        for m in tf.getmembers():
-            if (top / m.name).exists() and not m.isdir():
-                notes.append(f"kept your {m.name} (the session also has one)")
+        for i, m in enumerate(tf):
+            if i >= MAX_UNTRACKED_FILES:
+                notes.append(f"the session has more than {MAX_UNTRACKED_FILES} untracked files; restored the first "
+                             f"{MAX_UNTRACKED_FILES}")
+                break
+            if why := _unsafe_member(top, gitdir, m):
+                notes.append(f"skipped {m.name}: {why}")
                 continue
-            try:
-                tf.extract(m, top, filter="data")
-            except tarfile.FilterError as e:
-                notes.append(f"skipped {m.name}: {e}")
+            target = top.joinpath(*[p for p in m.name.split("/") if p not in ("", ".")])
+            if os.path.lexists(target):
+                if not (m.isdir() and target.is_dir() and not target.is_symlink()):
+                    notes.append(f"kept your {m.name} (the session also has one)")
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)  # every existing parent was checked above
+            if m.isdir():
+                target.mkdir(mode=0o755)
+            elif m.issym():
+                os.symlink(m.linkname, target)
+            else:
+                src = tf.extractfile(m)
+                fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                             0o755 if m.mode & 0o100 else 0o644)
+                with os.fdopen(fd, "wb") as out:
+                    shutil.copyfileobj(src, out)  # type: ignore[misc]
     return notes
 
 
@@ -1063,6 +1127,8 @@ def pull_into(repo: Path, session: str, manifest: dict[str, Any], parts: dict[st
     if checkout and _out(_git(top, "status", "--porcelain")):
         raise ExchangeError("your working tree has changes; commit or stash them, or pull without --checkout")
     head = manifest.get("head")
+    if head and not _OID_RE.match(str(head)):  # written by the sandbox at checkpoint time; it reaches git argv here
+        raise ExchangeError(f"the session's checkpoint names {str(head)[:80]!r} as its head, which is not a commit id")
     with tempfile.TemporaryDirectory() as tmp:
         if "repo.bundle" in parts:
             b = Path(tmp) / "repo.bundle"

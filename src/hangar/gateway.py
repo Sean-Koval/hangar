@@ -35,12 +35,13 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 import httpx
 from pydantic import BaseModel, field_validator
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.requests import ClientDisconnect, Request
 from starlette.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from hangar.auth import hash_token
-from hangar.models import Credential, CredentialKind, Sandbox, SandboxGrant, SandboxState, Snapshot, now
+from hangar.models import Credential, CredentialKind, Sandbox, SandboxGrant, SandboxState, Session, Snapshot, now
 
 if TYPE_CHECKING:
     from hangar.envspec import EnvSpec
@@ -57,6 +58,13 @@ MAX_FETCH_REQUEST = 64 * 1024 * 1024  # an upload-pack request lists wants and h
 SERVICES = ("git-upload-pack", "git-receive-pack")
 # Installation tokens live an hour; take a new one when less than this is left.
 TOKEN_REFRESH_SECONDS = 600
+# --- overnight/sandbox-security: limits a sandbox can't talk its way past (docs/security.md, threat model)
+MAX_INFLIGHT_PER_GRANT = 8  # concurrent requests per grant; git uses one or two at a time
+MAX_CONNECTIONS = 512  # the gateway listener as a whole (uvicorn limit_concurrency)
+AUTH_FAILURES = 30  # failed grant checks per source address...
+AUTH_WINDOW = 60.0  # ...per this many seconds, before that address gets 429 without a lookup
+# Session branches are hangar/session/<name>: predictable, so only a sandbox granted one exactly may push there.
+SESSION_REFS = "refs/heads/hangar/session/"
 
 _PATH = re.compile(r"^/git/(?P<host>[A-Za-z0-9.-]{1,253}(?::[0-9]{1,5})?)/(?P<owner>[A-Za-z0-9_.-]{1,100})/"
                    r"(?P<repo>[A-Za-z0-9_.-]{1,100})/(?P<svc>info/refs|git-upload-pack|git-receive-pack)$")
@@ -203,10 +211,58 @@ def parse_commands(buf: bytes) -> tuple[Commands, int] | None:
             raise ProtocolError(f"a push may update at most {MAX_COMMANDS} refs through the hangar gateway")
 
 
-def check_push(grant: SandboxGrant, cmds: Commands, allow_tags: bool, owned_elsewhere: set[str]) -> dict[str, str]:
-    """{ref: reason} for every command the grant does not allow; empty means the push may go upstream."""
+class CommandScanner:
+    """Finds the end of the command list as the request body arrives, then parses it once.
+
+    Re-parsing the whole buffer per chunk was quadratic: a sandbox sending one byte per TCP segment could stall
+    the control plane's event loop, which the gateway shares."""
+
+    def __init__(self) -> None:
+        self.buf = bytearray()
+        self._pos = 0
+
+    def feed(self, chunk: bytes) -> tuple[Commands, int] | None:
+        """(commands, end offset) once the flush-pkt has arrived, else None. Raises ProtocolError."""
+        self.buf += chunk
+        while len(self.buf) - self._pos >= 4:
+            head = bytes(self.buf[self._pos:self._pos + 4])
+            n = int(head, 16) if re.fullmatch(rb"[0-9a-fA-F]{4}", head) else -1
+            if n < 5 or self._pos > MAX_COMMAND_BYTES:  # flush, special or malformed pkt, or too long: decide now
+                return parse_commands(bytes(self.buf))
+            if len(self.buf) - self._pos < n:
+                return None
+            self._pos += n
+        return None
+
+
+# --- overnight/sandbox-security
+def has_cap(caps: list[str], name: str) -> bool:
+    """git-receive-pack turns a capability on for `name` and for `name=<value>` (connect.c parse_feature_value),
+    so a check for the bare name alone can be sidestepped."""
+    return any(c == name or c.startswith(name + "=") for c in caps)
+
+
+def _conflict(ref: str, reserved: dict[str, str]) -> str | None:
+    """Why creating `ref` would take or block a branch someone else needs (`reserved`: ref -> reason). Git keeps
+    refs as paths, so `a/b` blocks `a/b/c` and the other way round, and deletes (the only cleanup) are refused."""
+    if ref.startswith(SESSION_REFS) or SESSION_REFS.startswith(ref + "/"):
+        return "hangar: branches under hangar/session/ are reserved for sessions"
+    for r, why in reserved.items():
+        if ref == r or ref.startswith(r + "/") or r.startswith(ref + "/"):
+            return why
+    return None
+
+
+def check_push(grant: SandboxGrant, cmds: Commands, allow_tags: bool, owned_elsewhere: set[str],
+               session_refs: dict[str, str] | None = None) -> dict[str, str]:
+    """{ref: reason} for every command the grant does not allow; empty means the push may go upstream.
+
+    `owned_elsewhere`: exact refs other live sandboxes may push. `session_refs`: {ref: session name} for the
+    branches of sessions other than the pusher's own."""
     bad: dict[str, str] = {}
-    push_options = "push-options" in cmds.capabilities
+    push_options = has_cap(cmds.capabilities, "push-options")
+    reserved = {r: f"hangar: that branch belongs to session {name}" for r, name in (session_refs or {}).items()}
+    reserved.update({r: "hangar: that branch belongs to another sandbox" for r in owned_elsewhere})
     for c in cmds.commands:
         if push_options:
             bad[c.ref] = "hangar: push options are not allowed"
@@ -227,6 +283,8 @@ def check_push(grant: SandboxGrant, cmds: Commands, allow_tags: bool, owned_else
             # A pattern lets a sandbox create branches; once created they are its own (see record_created).
             # Updating one it didn't create could overwrite another job's pushed work.
             bad[c.ref] = "hangar: this sandbox may create new branches there, not update existing ones"
+        elif c.ref not in grant.push_refs and (why := _conflict(c.ref, reserved)):
+            bad[c.ref] = why
     return bad
 
 
@@ -240,9 +298,9 @@ def rejection(cmds: Commands, bad: dict[str, str]) -> bytes:
         report += pkt(f"ng {c.ref} {why}\n".encode())
     report += FLUSH
     caps = cmds.capabilities
-    if "side-band-64k" not in caps and "side-band" not in caps:
+    if not has_cap(caps, "side-band-64k") and not has_cap(caps, "side-band"):
         return report
-    size = 65515 if "side-band-64k" in caps else 995
+    size = 65515 if has_cap(caps, "side-band-64k") else 995
     first = next(iter(bad.values()), "hangar: push rejected")
     out = pkt(b"\x02" + f"{first}\n".encode())  # band 2: shown as "remote: hangar: …"
     for i in range(0, len(report), size):
@@ -378,7 +436,7 @@ class _Server:
                 yield
 
         self.server = Quiet(uvicorn.Config(app, host=host, port=port, lifespan="off", log_level="warning",
-                                           access_log=False))
+                                           access_log=False, limit_concurrency=MAX_CONNECTIONS))
         self.task: asyncio.Task | None = None
 
     async def _run(self) -> None:
@@ -397,6 +455,71 @@ class _Server:
                 await asyncio.wait_for(self.task, timeout=10)
 
 
+# --- overnight/sandbox-security
+class _AuthFailures:
+    """Failed grant checks per source address in a sliding window. Grants are 256-bit, so this isn't about
+    guessing one; it keeps a sandbox from turning the gateway into a busy loop over the grant table."""
+
+    def __init__(self, limit: int, window: float):
+        self.limit, self.window = limit, window
+        self._hits: dict[str, collections.deque[float]] = {}
+
+    def _recent(self, src: str) -> collections.deque[float] | None:
+        q = self._hits.get(src)
+        cutoff = time.monotonic() - self.window
+        while q and q[0] < cutoff:
+            q.popleft()
+        if q is not None and not q:
+            del self._hits[src]
+            return None
+        return q
+
+    def blocked(self, src: str) -> bool:
+        q = self._recent(src)
+        return q is not None and len(q) >= self.limit
+
+    def add(self, src: str) -> bool:
+        """Record a failure; True when it is the one that blocks the source (worth one audit entry)."""
+        if len(self._hits) > 10_000:  # many sources at once: forget the stalest rather than grow without bound
+            for k in sorted(self._hits, key=lambda k: self._hits[k][-1] if self._hits[k] else 0)[:5_000]:
+                del self._hits[k]
+        q = self._recent(src)
+        if q is None:
+            q = self._hits[src] = collections.deque()
+        q.append(time.monotonic())
+        return len(q) == self.limit
+
+
+class _InflightLimit:
+    """ASGI wrapper around /git: at most MAX_INFLIGHT_PER_GRANT requests per grant at once, counted until the
+    response has been streamed (so a relay that is still running counts)."""
+
+    def __init__(self, app, gateway: Gateway):
+        self.app, self.gateway = app, gateway
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        raw = dict(scope.get("headers") or []).get(b"authorization", b"").decode("latin-1")
+        token = Gateway._token_from_header(raw)
+        key = hash_token(token) if token and token.startswith(PREFIX) and len(token) <= 128 else None
+        n = self.gateway._inflight
+        if key is not None and n.get(key, 0) >= MAX_INFLIGHT_PER_GRANT:
+            await PlainTextResponse(f"hangar: more than {MAX_INFLIGHT_PER_GRANT} requests at once with this grant\n",
+                                    status_code=429, headers={"Retry-After": "5"})(scope, receive, send)
+            return
+        if key is not None:
+            n[key] = n.get(key, 0) + 1
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            if key is not None:
+                n[key] -= 1
+                if n[key] <= 0:
+                    n.pop(key, None)
+
+
 class Gateway:
     def __init__(self, fleet: Fleet, transport: httpx.AsyncBaseTransport | None = None):
         self.fleet = fleet
@@ -408,6 +531,8 @@ class Gateway:
         self._client_loop: asyncio.AbstractEventLoop | None = None
         self.app_tokens = AppTokens(self.settings.github_api_url, self._http)
         self._server: _Server | None = None
+        self._failures = _AuthFailures(AUTH_FAILURES, AUTH_WINDOW)  # overnight/sandbox-security
+        self._inflight: dict[str, int] = {}  # token hash -> requests in flight (_InflightLimit)
 
     # ------------------------------------------------------------------ plumbing
     @property
@@ -429,7 +554,8 @@ class Gateway:
         return Starlette(routes=[Route("/healthz", self.healthz, methods=["GET"]), *self.routes()])
 
     def routes(self) -> list[Route]:
-        return [Route("/git/{rest:path}", self.handle, methods=["GET", "POST"])]
+        return [Route("/git/{rest:path}", self.handle, methods=["GET", "POST"],
+                      middleware=[Middleware(_InflightLimit, gateway=self)])]
 
     async def healthz(self, request: Request) -> Response:
         return JSONResponse({"ok": True, "service": "hangar-gateway"})
@@ -591,7 +717,11 @@ class Gateway:
     # ------------------------------------------------------------------ smart HTTP
     @staticmethod
     def _client_token(request: Request) -> str | None:
-        scheme, _, value = request.headers.get("authorization", "").partition(" ")
+        return Gateway._token_from_header(request.headers.get("authorization", ""))
+
+    @staticmethod
+    def _token_from_header(header: str) -> str | None:
+        scheme, _, value = header.partition(" ")
         if scheme.lower() == "bearer":
             return value.strip() or None
         if scheme.lower() == "basic":
@@ -602,6 +732,24 @@ class Gateway:
             return password or user or None
         return None
 
+    def _session_refs(self, grant: SandboxGrant) -> dict[str, str]:
+        """{ref: session name} for branches of sessions (jobs run in sessions) on this repo that the pusher must
+        not create or block: everyone's but those of its own session. A best-of-N winner's session takes the job
+        branch before delivery, so the job's own session doesn't count against it."""
+        sb = self.store.get(Sandbox, grant.sandbox_id)
+        own_id = sb.labels.get("hangar.session") if sb else None
+        sessions = self.store.list(Session)
+        own = {s.branch for s in sessions if s.id == own_id}
+        out: dict[str, str] = {}
+        for s in sessions:
+            if not s.branch or s.id == own_id or s.branch in own:
+                continue
+            remote = parse_remote(s.repo, self.hosts) if s.repo else None
+            if s.repo and (remote is None or remote[1] not in grant.repos):
+                continue  # another repo, or not one the gateway serves
+            out[f"refs/heads/{s.branch}"] = s.name
+        return out
+
     def _deny(self, grant: SandboxGrant, repo: str, reason: str, refs: list[Command] | None = None) -> None:
         self.fleet.audit(f"sandbox:{grant.sandbox_id}", "gw.git.deny", grant.sandbox_id, repo=repo, reason=reason,
                          refs=[{"ref": c.ref, "old": c.old[:12], "new": c.new[:12]} for c in refs or []])
@@ -611,8 +759,18 @@ class Gateway:
         m = _PATH.match(raw_path.decode("latin-1"))
         if not m or m["owner"] in (".", "..") or m["repo"] in (".", "..", ".git"):
             return PlainTextResponse("hangar: not found\n", status_code=404)
-        grant = self.verify(self._client_token(request))
+        token = self._client_token(request)
+        # overnight/sandbox-security: git's first request carries no credentials; only presented grants count.
+        src = request.client.host if request.client else "unknown"
+        if token is not None and self._failures.blocked(src):
+            return PlainTextResponse("hangar: too many requests with an invalid grant from this address; wait a "
+                                     "minute\n", status_code=429, headers={"Retry-After": str(int(AUTH_WINDOW))})
+        grant = self.verify(token)
         if grant is None:
+            if token is not None and self._failures.add(src):
+                log.warning("gateway: %s sent %d invalid grants in %ds; refusing it for now", src, AUTH_FAILURES,
+                            int(AUTH_WINDOW))
+                self.fleet.audit("gateway", "gw.auth.blocked", None, source=src)
             return PlainTextResponse("hangar: a valid sandbox grant is required\n", status_code=401,
                                      headers={"WWW-Authenticate": 'Basic realm="hangar git gateway"'})
         host, svc = m["host"].lower(), m["svc"]
@@ -654,9 +812,16 @@ class Gateway:
         return self.settings.gateway_max_push_mb * 1024 * 1024
 
     async def _passthrough(self, request: Request) -> AsyncIterator[bytes]:
-        """A fetch request body (wants and haves): small, but still capped."""
-        total = 0
-        async for chunk in request.stream():
+        """A fetch request body (wants and haves): small, but still capped, and a stalled one doesn't hold its
+        upstream connection forever."""
+        total, it = 0, request.stream().__aiter__()
+        while True:
+            try:
+                chunk = await asyncio.wait_for(it.__anext__(), timeout=self.settings.gateway_timeout_seconds)
+            except StopAsyncIteration:
+                return
+            except TimeoutError:
+                raise GatewayError("timed out reading the fetch request") from None
             total += len(chunk)
             if total > MAX_FETCH_REQUEST:
                 raise GatewayError("fetch request too large")
@@ -676,19 +841,26 @@ class Gateway:
                                          f"({self.settings.gateway_max_push_mb} MB)\n", status_code=413)
             headers["content-length"] = length
         it = request.stream().__aiter__()
-        buf = b""
         timeout = self.settings.gateway_timeout_seconds
+        # overnight/sandbox-security: one deadline for the whole command list (git sends it at once), not one per
+        # chunk, which a trickle of bytes could renew forever; and one pass over the bytes (CommandScanner).
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        scan = CommandScanner()
         try:
-            while (parsed := parse_commands(buf)) is None:
+            parsed = scan.feed(b"")
+            while parsed is None:
                 try:
-                    buf += await asyncio.wait_for(it.__anext__(), timeout=timeout)
+                    chunk = await asyncio.wait_for(it.__anext__(), timeout=max(0.0, deadline - loop.time()))
                 except StopAsyncIteration:
                     raise ProtocolError("the push request ended before its command list") from None
+                parsed = scan.feed(chunk)
         except ProtocolError as e:
             self._deny(grant, repo, str(e))
             return PlainTextResponse(f"hangar: {e}\n", status_code=400)
         except (TimeoutError, ClientDisconnect):
             return PlainTextResponse("hangar: timed out reading the push\n", status_code=408)
+        buf = bytes(scan.buf)
         cmds, end = parsed
         if not cmds.commands:  # git's probe before a chunked upload: forward the flush and nothing after it
             headers["content-length"] = str(end)
@@ -699,7 +871,9 @@ class Gateway:
             return await self._forward(request, "POST", url, headers, body=probe(), grant=grant, repo=repo)
         owned = {r for g in self.grants() if g.sandbox_id != grant.sandbox_id and set(g.repos) & set(grant.repos)
                  for r in g.push_refs if not r.endswith("/**")}
-        bad = check_push(grant, cmds, self.settings.gateway_allow_tags, owned)
+        creates = any(c.ref not in grant.push_refs for c in cmds.commands)
+        bad = check_push(grant, cmds, self.settings.gateway_allow_tags, owned,
+                         self._session_refs(grant) if creates else None)
         if bad:
             self._deny(grant, repo, "; ".join(sorted(set(bad.values()))), cmds.commands)
             with contextlib.suppress(Exception):  # drain the pack so git reads our report, not a broken pipe
@@ -718,7 +892,7 @@ class Gateway:
                 yield chunk
 
         headers["accept-encoding"] = "identity"  # so the report can be read for the audit log
-        sideband = "side-band-64k" in cmds.capabilities or "side-band" in cmds.capabilities
+        sideband = has_cap(cmds.capabilities, "side-band-64k") or has_cap(cmds.capabilities, "side-band")
         return await self._forward(request, "POST", url, headers, body=body(), grant=grant, repo=repo,
                                    push=(cmds, sideband))
 
