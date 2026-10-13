@@ -25,7 +25,7 @@ Reply in that thread to follow up. The agent picks up its own conversation, on t
 | `/hangar help` | Usage |
 | A reply in a job's thread | Follow-up once the current turn is done |
 
-Slack doesn't allow slash commands inside threads, so a `/hangar` job gets a new top-level message and the thread hangs off it. An `@hangar` mention inside an existing thread (say, under an alert) runs the job in that thread. The parent message and earlier replies, up to 15 messages and 20 KB, go to the agent as a context file, `slack-thread.md`.
+Slack doesn't allow slash commands inside threads, so a `/hangar` job gets a new top-level message and the thread hangs off it. An `@hangar` mention inside an existing thread (say, under an alert) runs the job in that thread. The parent message and earlier replies, up to 15 messages and 20 KB, go to the agent as a context file, `slack-thread.md`. Other people and other apps wrote that thread, so the file is marked untrusted, and the prompt tells the agent to treat it as a description of the problem, never as instructions.
 
 ## Set it up
 
@@ -64,7 +64,8 @@ Slack doesn't allow slash commands inside threads, so a `/hangar` job gets a new
 | `HANGAR_SLACK_SIGNING_SECRET_CREDENTIAL` | | Vault credential holding the signing secret. The Slack routes return 404 until it is set. |
 | `HANGAR_SLACK_BOT_TOKEN_CREDENTIAL` | | Vault credential holding the bot token |
 | `HANGAR_SLACK_CHANNELS` | `{}` | `{"<channel id>": "owner/repo"}`: the channels that may start jobs, and each one's default repo. An exact git URL also works, as in `HANGAR_GITHUB_REPOS`. |
-| `HANGAR_SLACK_USERS` | `[]` | Slack user IDs (`U…`, or `T…/U…` to pin the workspace) allowed to start and steer jobs. Empty means anyone in a mapped channel. |
+| `HANGAR_SLACK_USERS` | `[]` | Slack user IDs (`U…`, or `T…/U…` to pin the workspace) allowed to start and steer jobs. Empty means anyone in a mapped channel who belongs to the workspace the app is installed in. Members of other organizations (Slack Connect) count only when listed here. |
+| `HANGAR_SLACK_TEAMS` | `[]` | Other workspace IDs (`T…`) whose members count as your own, for Enterprise Grid orgs whose users carry another workspace's ID |
 | `HANGAR_SLACK_API_URL` | `https://slack.com/api` | |
 
 ## How it behaves
@@ -72,6 +73,9 @@ Slack doesn't allow slash commands inside threads, so a `/hangar` job gets a new
 - **Requests are verified.** Each request must carry a valid `X-Slack-Signature`: `v0=` followed by the HMAC-SHA256 of `v0:<timestamp>:<raw body>`, keyed with the signing secret and compared in constant time. Requests whose `X-Slack-Request-Timestamp` is more than 5 minutes off are refused with 401.
 - **Within 3 seconds.** Slack expects an answer within 3 seconds. Hangar acknowledges the command or event at once. It posts to Slack, reads the thread and submits the job in the background.
 - **Exactly once.** Slack retries an event it thinks failed (`X-Slack-Retry-Num`), and a mention in a thread arrives both as `app_mention` and as `message`. Hangar acts once per `event_id` and once per message. The record of handled events survives a restart.
+- **No replays.** Slack doesn't retry slash commands, so a second copy of a signed command (same signature) inside the five-minute window is a replay: hangar answers "That request was already handled." and starts nothing.
+- **Other organizations.** In a Slack Connect channel, messages from another organization's members carry their own workspace ID (`user_team`). Hangar ignores their mentions and thread replies unless they are listed in `HANGAR_SLACK_USERS`, so sharing a channel doesn't give a partner company an agent on your repo. (Slack doesn't let another organization run your app's slash commands at all.)
+- **Limits.** Each Slack user is a caller for [rate limits and the active-job cap](security.md#front-door-limits): by default 10 jobs or follow-ups at once, refilling at 30 a minute, and at most 10 unfinished jobs. Past a limit, hangar says so in the thread.
 - **Only people.** Hangar ignores messages from bots (its own included), edits and deletions.
 - **Who's asking.** The requester is `slack:<team>/<user>`, shown in the job's timeline, PR body and audit log. Slack jobs are fenced in like a `jobs` token: only repos in `HANGAR_GITHUB_REPOS`, only their environments, and no choice of provider.
 - **Who can follow up.** Anyone allowed in a mapped channel can follow up in a job's thread, just as any collaborator can comment `/hangar` on a job's PR. A reply while the agent is still working gets "Can't continue yet"; reply again when the turn is done.
@@ -81,4 +85,6 @@ Slack doesn't allow slash commands inside threads, so a `/hangar` job gets a new
 
 ## Security notes
 
-Treat a mapped channel like write access to its repo's `hangar/*` branches. Anyone who can post there can start an agent, unless `HANGAR_SLACK_USERS` is set. Messages in the thread are context for the agent, and the prompt marks them as data. Even so, they are untrusted input, like issue comments; see [jobs → Security notes](jobs.md#security-notes). Keep PR merges human-approved.
+Treat a mapped channel like write access to its repo's `hangar/*` branches. Anyone in your workspace who can post there can start an agent, unless `HANGAR_SLACK_USERS` is set. Messages in the thread are context for the agent, and the prompt marks them as untrusted data. Even so, they are untrusted input, like issue comments; see [jobs → Security notes](jobs.md#security-notes). A thread reply from an allowed user is a follow-up with that user's authority. Keep PR merges human-approved.
+
+`/hangar status JOB` answers for any job on a repo Slack may use, including jobs started over REST or GitHub, to anyone allowed in a mapped channel. It shows the title, state, requester and latest event.

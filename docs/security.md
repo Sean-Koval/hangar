@@ -94,8 +94,62 @@ The push is made as the App; commits keep the agent's git identity. PRs for jobs
 
 - **Scope:** OAuth access tokens reach `/mcp` only, never the REST API or the dashboard.
 - **Lifetime:** every approval is tied to the hangar token that approved it and stops working when that token is revoked or the app is disconnected. Approvals last at most 90 days.
-- **Registration:** limited to allowlisted redirect hosts and capped in number.
-- **Consent page:** can't be framed, and isn't cached.
+- **Registration:** limited to allowlisted redirect hosts (`HANGAR_OAUTH_REDIRECT_HOSTS`; an empty list allows none, `"*"` any) and capped in number. Redirect URIs must be `https`, or `http` to `localhost`, `127.0.0.1` or `[::1]` for native clients.
+- **Audience:** a client may ask for a token only for hangar's own MCP endpoint (`resource` = `HANGAR_PUBLIC_URL` or `…/mcp`, RFC 8707); any other resource is refused at `/authorize`.
+- **PKCE:** `S256` is required, and the code is bound to its redirect URI (the MCP SDK's token endpoint checks both).
+- **Consent page:** needs an admin token, can't be framed, and isn't cached.
+
+## Front doors
+
+Work enters hangar through REST, MCP, A2A, GitHub webhooks, Slack, signed inbound webhooks and schedules. Each one decides who may start work, and every one of them ends in the same job service, which applies the limits below.
+
+| Front door | Who can start or steer work | Fence |
+| --- | --- | --- |
+| REST, A2A | An admin token: anything. A `jobs` token: its own jobs only (another token's job id or A2A `contextId`/`taskId` is "not found") | `jobs` tokens: repos in `HANGAR_GITHUB_REPOS` and their environments, no provider choice, their `max_budget` |
+| MCP | Admin tokens, and OAuth grants approved with an admin token | none |
+| GitHub | Trusted people ([triggers.md](triggers.md#1-who-can-start-work-from-github)); anyone else's trigger waits for approval, and their comments can't continue a job or answer its question | mapped repos, their environments |
+| Slack | Members of your workspace in a mapped channel (or `HANGAR_SLACK_USERS`); Slack Connect guests from other organizations only when listed | like a `jobs` token |
+| Inbound webhooks | Whoever holds the source's HMAC key | the source's configured repo and environment |
+| Schedules | Admin tokens create them | the template, validated at creation |
+
+Text that hangar's caller didn't write is fenced in the prompt as untrusted: issue bodies and comments by untrusted authors, an untrusted person's `/hangar` request, Slack thread context, and everything from an inbound webhook ([triggers.md](triggers.md#untrusted-text-in-the-prompt)).
+
+### Signed requests
+
+- GitHub (`X-Hub-Signature-256`), Slack (`v0`) and inbound webhooks (per-source HMAC) are verified over the raw body, before anything parses it, and compared in constant time (as bytes, so a malformed header is a 401, not an error).
+- **Replays.** A signed request is identified by what its signature covers, and remembered in the store, so a restart doesn't forget it. GitHub deliveries and inbound webhook deliveries are kept for `HANGAR_WEBHOOK_REPLAY_HOURS` (7 days); a replay with a fresh, unsigned delivery id or timestamp header is still a duplicate and does nothing. Slack events are deduplicated by `event_id`, and slash commands by signature within Slack's five-minute window.
+- A missing secret is reported as "not stored" without naming the credential.
+
+### Outbound webhooks (SSRF)
+
+Job callbacks and A2A push notifications go only to public `https` hosts unless the host is in `HANGAR_JOB_CALLBACK_HOSTS`. Just before each send, the name is resolved, every address is checked, and the connection is made to the checked address itself (TLS still verifies the name). A name that re-resolves to `127.0.0.1` or a metadata address between the check and the connection (DNS rebinding) reaches nothing. Redirects aren't followed, and proxy environment variables are ignored for these requests.
+
+### Front-door limits
+
+| Limit | Default | Applies to |
+| --- | --- | --- |
+| `HANGAR_JOB_RATE_PER_MINUTE`, `HANGAR_JOB_RATE_BURST` | 30, 10 | Job submissions and follow-ups per caller: a `jobs` token, a GitHub user, a Slack user, a webhook source. A token bucket: `BURST` at once, refilling at `PER_MINUTE`. |
+| `HANGAR_JOB_SOURCE_RATE_PER_MINUTE`, `HANGAR_JOB_SOURCE_RATE_BURST` | 120, 60 | The same per front door (`github`, `slack`, `webhook`, `a2a`, `api`), across all its callers |
+| `HANGAR_JOB_MAX_ACTIVE_PER_OWNER` | 10 | Unfinished jobs per caller, counting those waiting for approval or input |
+| `HANGAR_A2A_MAX_STREAMS_PER_OWNER` | 20 | Open A2A streams and blocking sends per token |
+| `HANGAR_MAX_REQUEST_MB` | 100 | Request bodies from a valid token on `/api` and `/mcp` (jobs can carry git bundles) |
+| | 64 KB | Request bodies without a valid token (they get a 401 anyway), and the OAuth endpoints |
+| | 25 MB, 1 MB | `/api/hooks/github` (GitHub's own cap), `/api/hooks/slack/*`; inbound webhooks and `/a2a` keep their own settings |
+
+Admin tokens and schedules aren't rate limited or capped: an admin token can run anything already. Set a rate to 0 to turn it off. REST answers a rate-limited request with `429` and `Retry-After`; other front doors say so in their own way (a JSON-RPC error, a message in the Slack thread, a 429 to the webhook sender). Buckets live in memory, so a restart refills them.
+
+Bodies are capped before the route runs, because FastAPI parses a JSON body before it checks the token.
+
+### Audit
+
+Every approval decision (`job.approve`, `job.reject`, `job.approval_expired`, `job.approve.refused`) and every refused request is in the audit log (`GET /api/audit`, the dashboard's audit view):
+
+- `request.rejected`: any 401, 403, 413 or 429 answer, with the client address, method and path;
+- `job.refused`: a submission or follow-up that was refused, with why (`rate_limited`, `too_many_active`, `invalid`, which covers a token's fence) and the caller;
+- `hook.replay`: a duplicate signed delivery;
+- `github.refused`: an untrusted person's attempt to continue a job or answer its question.
+
+Refusals are themselves limited to `HANGAR_AUDIT_REJECTIONS_PER_MINUTE` (30) per client address or caller, so a flood can't fill the audit log; the next entry that gets through records how many were dropped (`suppressed_before`).
 
 ## Operational advice
 

@@ -1142,8 +1142,10 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
     try:
         job = svc.submit(req, Caller(f"github:{sender}", f"github:{sender}"), source="github", source_ref=ref,
                          approval=approval, untrusted_source=untrusted_source)
-    except RateLimited as e:  # --- front-door-auth: no comment, or a flood of triggers becomes a flood of comments
-        return {"ignored": str(e)}
+    except RateLimited as e:  # --- front-door-auth: tell trusted people; an outsider's flood gets no comments
+        if trusted:
+            svc._spawn(svc._comment(None, ref, f"hangar couldn't start a job for this issue yet: {e}"))
+        return {"ignored": str(e), "rate_limited": True}
     except JobError as e:
         # Say why on the issue; otherwise a misconfiguration looks like hangar ignoring the label.
         svc._spawn(svc._comment(None, ref, f"hangar couldn't start a job for this issue: {e}"))

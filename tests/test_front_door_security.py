@@ -473,3 +473,74 @@ def test_rejection_audit_is_itself_rate_limited(settings):
             client.get("/api/jobs", headers={"Authorization": "Bearer nope"})
         n = sum(e.action == "request.rejected" for e in h.store.audit_tail(200))
         assert 1 <= n <= 6
+
+
+def test_github_rate_limited_trigger_is_a_429_and_a_redelivery_runs_later(settings):
+    app, Fake = _app(settings)
+    with TestClient(app) as client:
+        h = app.state.hangar
+        h.fleet.providers["docker"] = Fake()
+        h.jobs._queue = asyncio.Queue()
+        h.broker.put("gh-hook", "webhook", CredentialKind.GENERIC, "ghsec")
+        h.settings.github_webhook_secret_credential = "gh-hook"
+        h.settings.github_repos = {"o/r": "plain"}
+        h.settings.job_rate_burst = 1
+
+        def labeled(n: int) -> bytes:
+            return json.dumps({"action": "labeled", "label": {"name": "hangar"}, "repository": {"full_name": "o/r"},
+                               "issue": _issue(n, "sean", "MEMBER"), "sender": {"login": "sean"}}).encode()
+
+        def post(body: bytes):
+            return client.post("/api/hooks/github", content=body, headers={**_signed(body), "X-GitHub-Event": "issues"})
+
+        a, b = labeled(1), labeled(2)
+        assert post(a).status_code == 202
+        r = post(b)
+        assert r.status_code == 429 and r.json()["rate_limited"]
+        h.settings.job_rate_burst = 10
+        h.jobs.admission.buckets = type(h.jobs.admission.buckets)()
+        assert post(b).status_code == 202 and len(h.jobs.list()) == 2  # GitHub's redelivery, once the wait is over
+
+
+async def test_follow_ups_are_rate_limited_for_outside_callers(intake, settings):  # noqa: F811
+    from hangar.frontdoor import RateLimited
+
+    settings.job_rate_burst = 1
+    adm = intake.admission
+    adm.admit_follow_up("slack:T1/U1", None)
+    with pytest.raises(RateLimited):
+        adm.admit_follow_up("slack:T1/U1", None)
+    adm.admit_follow_up("svc", "tok-1")
+    with pytest.raises(RateLimited):
+        adm.admit_follow_up("svc", "tok-1")
+    for _ in range(5):
+        adm.admit_follow_up("laptop", None)  # an admin token over REST or MCP
+
+
+async def test_a2a_open_streams_are_capped(jobs, world, settings, store):  # noqa: F811
+    from fastapi import FastAPI
+
+    from hangar.a2a import A2AServer
+    from hangar.auth import TokenAuth
+    from hangar.vault import Vault
+
+    settings.github_repos = {world["url"]: "jobenv"}
+    settings.a2a_max_streams_per_owner = 1
+    server = A2AServer(jobs, TokenAuth(store, "adm"), Vault(store, b"0" * 43 + b"="), settings)
+    app = FastAPI()
+    server.mount(app)
+    server._open["admin"] = 1  # one stream already open for this token
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://h",
+                                 headers={"Authorization": "Bearer adm", "A2A-Version": "1.0"}) as http:
+        def send(method: str, mid: str) -> dict:
+            return {"jsonrpc": "2.0", "id": mid, "method": method, "params": {"message": {
+                "messageId": mid, "role": "ROLE_USER", "parts": [{"text": "x"}], "metadata": {"repo": world["url"]}}}}
+
+        r = await http.post("/a2a", json=send("SendStreamingMessage", "m1"))
+        assert "too many open streams" in r.json()["error"]["message"]
+        t0 = time.monotonic()
+        r = await http.post("/a2a", json=send("SendMessage", "m2"))
+        assert r.json()["result"]["task"]["id"] and time.monotonic() - t0 < 5  # answered without waiting
+    assert server._open == {"admin": 1}
+    for j in jobs.list():
+        jobs.cancel(j.id, "t")

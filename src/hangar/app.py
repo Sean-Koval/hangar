@@ -768,6 +768,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception:
             replays.forget("github", digest)  # nothing happened: let GitHub's redelivery try again
             raise
+        if res.get("error") or res.get("rate_limited"):
+            replays.forget("github", digest)  # a redelivery after the fix (or the wait) should run
+            if res.get("rate_limited"):
+                return JSONResponse(res, status_code=429)
         return JSONResponse(res, status_code=202 if res.get("ok") else 200)
 
     # ------------------------------------------------------------------ triggers (workstream A)
