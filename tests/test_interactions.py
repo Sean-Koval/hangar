@@ -57,6 +57,7 @@ case "$mode:$a" in
          hangar-agent ask "A or B? (attempt $a)"; exit 0 ;;
   askandburn:*) hangar-agent ask "May I spend more?"; spend 900000; sleep 30; exit 0 ;;
   sleep:*) sleep 30; exit 0 ;;
+  slowlast:3) sleep 3 ;;
 esac
 for i in $(seq 1 "$((a > 0 ? a : 1))"); do echo "good $i" >> fix.txt; done
 git add fix.txt && git commit -qm "fix from attempt $a"
@@ -265,6 +266,25 @@ async def test_cancel_while_waiting_for_an_answer_tells_the_thread(jobs, world):
     jobs.cancel(job.id, requester="sean")
     await asyncio.sleep(0.2)
     assert any("**Cancelled**" in c for c in jobs.hooks.comments()), jobs.hooks.comments()
+
+
+# ---------------------------------------------------------------------------- best-of-N x idle suspend
+async def test_finished_attempts_are_not_suspended_while_the_others_run(jobs, world):
+    world["mode"].write_text("slowlast")
+    job = jobs.submit(bon(world, keep_minutes=0), Caller("svc", "svc"))  # attempt sessions idle out after 1 min
+    for _ in range(400):
+        if job.attempts and job.attempts[0].state == "done" and job.attempts[2].state != "done":
+            break
+        await asyncio.sleep(0.05)
+    first = jobs.sessions.get(job.attempts[0].session_id)
+    first.last_active_at -= 3600  # attempt 1 finished long ago, as far as the idle loop can tell
+    sb = jobs.fleet.get(first.sandbox_id)
+    sb.last_activity -= 3600
+    jobs.store.put(sb)
+    await jobs.sessions.tick()
+    job = await until(jobs, job.id, SETTLED)
+    assert job.state == JobState.SUCCEEDED, [e.message for e in job.events]
+    assert job.attempts[0].rank == 1 and not any("went away" in e.message for e in job.events)
 
 
 # ---------------------------------------------------------------------------- best-of-N x triggers x notifications

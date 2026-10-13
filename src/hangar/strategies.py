@@ -298,9 +298,14 @@ async def run_best_of_n(jobs: JobService, job: Job) -> None:
         job.sandbox_id = None
         jobs._save(job)
     pending = [a for a in job.attempts if a.state != "done"]
-    if pending:
-        await asyncio.gather(*(_run_attempt(jobs, job, a) for a in pending))
-    await _finish(jobs, job)
+    async with contextlib.AsyncExitStack() as held:
+        # --- interactions: an attempt that finished early must still be up when the slowest one is done and the
+        # ranking runs; the idle loop would otherwise suspend it (after keep_minutes) and lose the best result.
+        for s in sessions.values():
+            await held.enter_async_context(svc.hold(s))
+        if pending:
+            await asyncio.gather(*(_run_attempt(jobs, job, a) for a in pending))
+        await _finish(jobs, job)
 
 
 async def _run_attempt(jobs: JobService, job: Job, a: Attempt) -> None:
