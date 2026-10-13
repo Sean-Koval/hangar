@@ -822,10 +822,10 @@ class Fleet:
             self.audit(actor, "sandbox.exec", sb.id, command=command[:500], exit_code=res.exit_code)
         return res
 
-    async def read_file(self, ref: str, path: str) -> bytes | None:
+    async def read_file(self, ref: str, path: str, limit: int | None = None) -> bytes | None:
         sb, prov = self._running(ref)
         self._touch(sb)
-        return await prov.read_file(sb, self._abs(sb, path))
+        return await prov.read_file(sb, self._abs(sb, path), limit=limit)
 
     async def write_file(self, ref: str, path: str, data: bytes, actor: str = "system") -> str:
         sb, prov = self._running(ref)

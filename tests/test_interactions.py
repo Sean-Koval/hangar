@@ -211,6 +211,26 @@ async def test_the_judge_turn_is_capped_counted_once_and_in_the_job_stream(jobs,
     assert judge.run_id in {e["run_id"] for e in jobs.events(job.id)}
 
 
+async def test_best_of_n_reads_of_agent_written_files_are_capped(jobs, world, fleet, monkeypatch):
+    """integrate (#48 x #49): attempts' RESULT.md and the judge's RANKING are agent-written, so hangar reads them
+    with a cap like every other agent-written file."""
+    reads: list[tuple[str, int | None]] = []
+    prov = fleet.providers["docker"]
+    real = prov.read_file
+
+    async def spy(sb, path, limit=None):
+        reads.append((path, limit))
+        return await real(sb, path, limit)
+
+    monkeypatch.setattr(prov, "read_file", spy)
+    job = jobs.submit(bon(world, judge=True), Caller("svc", "svc"))
+    job = await until(jobs, job.id, SETTLED)
+    assert job.state == JobState.SUCCEEDED, [e.message for e in job.events]
+    mine = [(p, lim) for p, lim in reads if p.endswith(("/RESULT.md", "/RANKING"))]
+    assert any(p.endswith("/RANKING") for p, _ in mine) and len(mine) >= 4, reads
+    assert all(lim is not None for _, lim in mine), mine
+
+
 async def test_best_of_n_attempts_get_the_schema_repair_turn_and_artifacts(jobs, world):
     world["mode"].write_text("noresult")
     job = jobs.submit(bon(world, output_schema=SCHEMA), Caller("svc", "svc"))

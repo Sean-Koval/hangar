@@ -387,7 +387,7 @@ async def _inspect(jobs: JobService, job: Job, a: Attempt, s: Session) -> None:
     fleet, red = jobs.fleet, jobs.broker.redact
     sb = fleet.get(s.sandbox_id or "")
     actor = f"job:{job.id}"
-    raw = await fleet.read_file(sb.id, f"{jobs._ctxdir(job)}/RESULT.md")
+    raw = await fleet.read_file(sb.id, f"{jobs._ctxdir(job)}/RESULT.md", limit=32_000)  # agent-written (#48)
     if raw:
         a.summary = red(raw.decode(errors="replace").strip()[:8000]) or a.summary
     repo = sb.info.get("repo_path")
@@ -663,7 +663,7 @@ async def _judge(jobs: JobService, job: Job, best: list[Attempt], sessions: dict
                                  extra_env={"HANGAR_JOB_ID": job.id, "HANGAR_JUDGE_DIR": jdir})
             await svc.end_turn(base, st, timeout_minutes=jobs.settings.best_of_n_judge_timeout_minutes,
                                should_cancel=lambda: job.cancel_requested)
-            raw = await prov.read_file(sb, f"{jdir}/RANKING") if svc._alive(sb.id) else None
+            raw = await prov.read_file(sb, f"{jdir}/RANKING", limit=4096) if svc._alive(sb.id) else None
         order: list[int] = []
         for x in re.findall(r"\d+", (raw or b"").decode(errors="replace")):
             if int(x) in {a.index for a in best} and int(x) not in order:
