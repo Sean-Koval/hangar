@@ -319,7 +319,6 @@ echo "attempt $a: done" > "$HANGAR_JOB_DIR/RESULT.md"
 async def jobs(fleet, world, settings, store):
     settings.session_poll_seconds = 0.1
     settings.job_poll_seconds = 0.1
-    settings.cache_stagger_seconds = 1  # --- overnight/cache: this agent prints nothing until it ends
     agent = world["root"] / "job-agent.sh"
     agent.write_text(JOB_AGENT)
     world["mode"], world["judge"] = world["root"] / "mode", world["root"] / "judge"

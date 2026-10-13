@@ -179,6 +179,9 @@ def settings(tmp_path):
     s = Settings(data_dir=tmp_path, env_dirs=[ENVS], default_provider="docker", enabled_providers=[],
                  reaper_interval_seconds=3600)
     s.snapshot_dir.mkdir(parents=True, exist_ok=True)
+    # --- overnight/cache: siblings start together, as before, unless a test is about holding them back (the
+    # scripted agents print nothing until they exit, so a held sibling would wait for the first one to finish)
+    s.cache_stagger_seconds = 0
     return s
 
 
