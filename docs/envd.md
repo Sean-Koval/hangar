@@ -34,9 +34,13 @@ Docker, the same sandbox and the same provider calls, before (`docker exec`) and
 
 Most of the remaining 7 ms per `exec` is `bash -l` reading the login profile; starting `/bin/true` directly takes
 3.0 ms p50 / 4.1 ms p95 (local loopback), against 4.4 / 6.9 ms for upstream E2B envd measured the same way. The
-burst is CPU-bound inside the 1-CPU sandbox. Large writes are slower than `docker cp` because hangar hashes the body
-to sign it and the Python HTTP client is slower than the Docker API's tar stream; writes that size are rare (workspace
-restores). Terminal keystrokes are a little slower than a raw Docker socket and still well under human perception.
+burst is CPU-bound inside the 1-CPU sandbox. Large writes are slower than `docker cp` because every byte is
+authenticated: hangar signs an upload frame by frame as it sends it and the daemon checks each frame before writing
+it, about 13 ms per 16 MiB on each side (SHA-256 with SHA-NI), and the daemon's share runs inside the sandbox's CPU
+limit. Signing as it goes, rather than hashing the whole body before sending it, made 16 MiB writes about 10% faster
+(54 vs 60 ms p50 side by side, 1-CPU sandbox; 1 MiB: 4.7 vs 5.9 ms). An unsigned upload would take about 20 ms; writes
+that size are rare (workspace restores). Terminal keystrokes are a little slower than a raw Docker socket and still
+well under human perception.
 
 **Kubernetes: an estimate, not a measurement (there was no cluster to measure on).** Each provider call today opens a
 new pods/exec websocket (TLS and authentication at the API server), which the API server proxies to the kubelet, which
@@ -72,9 +76,10 @@ runc's), and `agent_status` long-polls to stop holding API-server connections an
 5. **Falling back.** The provider's own path is used whenever the daemon can't be: no binary for the sandbox's CPU,
    no reachable address, a start that failed (then not retried for 5 minutes), `exec` as another user (the daemon is
    unprivileged; Docker's root commands keep `docker exec`), writes under system directories on Docker (they stay
-   root-owned), reads the sandbox user can't do, and any call refused before a command started. A command whose output
-   stream breaks after it started is an error, not a retry: it may have run. A failed transport drops the cached
-   address, so a resumed pod (new IP) is looked up again.
+   root-owned), reads the sandbox user can't do, and any call the daemon refused (an error status, or an error before
+   the start event) or never received (no connection). A command whose request may have arrived and whose answer then
+   broke off, timed out or came from something other than the daemon is an error, not a retry: it may have run. A
+   failed transport drops the cached address, so a resumed pod (new IP) is looked up again.
 
 Exec results match the providers': the same `timeout --kill-after=5 N bash -lc` wrapper, exit code 124 and the
 "timed out" note, the last 256 KiB of each stream with the truncation marker.
@@ -89,7 +94,8 @@ Exec results match the providers': the same `timeout --kill-after=5 N bash -lc` 
 ## Building
 
 ```bash
-envd/build.sh                 # both CPUs into envd/dist/ (rustup; cross builds link with rust-lld, no C toolchain)
+envd/build.sh                 # both CPUs into envd/dist/ (rustup; cross builds link with rust-lld, no C toolchain;
+                              # on a musl host such as rust:alpine its own target links with the system linker)
 ARCHES=x86_64 envd/build.sh   # one
 cd envd && cargo test         # unit and in-process HTTP tests
 ```
@@ -106,14 +112,25 @@ The daemon runs inside a sandbox that runs untrusted code, so the trust boundary
 - **Deny by default.** Everything but `GET /health` needs authentication.
 - **Tokens.** Each sandbox's token is HMAC(vault key, sandbox id): unique per sandbox, never stored, the same after a
   control-plane restart (so a running daemon is found again, not started twice).
-- **Signed requests.** Hangar never sends the token. Each request carries `X-Hangar-Sig`: an HMAC with the token over
-  the time, a random nonce, the method, the path with its query and the body's SHA-256. The daemon accepts a signature
-  once, within five minutes of its time. A request that reaches the wrong daemon (say, a reused container IP) can't
-  be replayed, altered or turned into a token. Uploads are checked after their last byte, before the file is
-  replaced. E2B clients use `X-Access-Token`, compared in constant time.
-- **Untrusted answers.** Exec output keeps a bounded tail as it streams, reads stop at the caller's limit, Connect
-  messages over 4 MiB end the call, small responses are capped, nothing is decompressed (`Accept-Encoding: identity`,
-  raw reads), and a malformed answer is an error. `test_envd.py` runs hangar against a hostile fake daemon.
+- **Signed requests.** Hangar never sends the token. Each request carries `X-Hangar-Sig` (`<ms>.<nonce>.<body>.<mac>`):
+  an HMAC with the token over the time, a random nonce, the method, the path with its query and the body's SHA-256,
+  or `chunked` for an upload whose body is frames each carrying an HMAC chained from the request's. The daemon checks
+  the signature before it reads any of the body and spends the nonce only then, so a peer without the token gets
+  nothing done, buffered or created, and can't burn nonces or fill the nonce table. It accepts a signature once,
+  within five minutes of its time either way (the clocks of hangar and the sandbox may differ by that much). The body
+  is then held to what was signed: in memory for RPCs, and frame by frame for uploads, each frame checked before it
+  is written and the file replaced only after the last. A request that reaches the wrong daemon (say, a reused
+  container IP) can't be replayed, altered, cut short or turned into a token. E2B clients use `X-Access-Token`,
+  compared in constant time.
+- **Answers prove the token.** Every answer to a signed request carries `X-Hangar-Proof`, an HMAC with the token over
+  the request's signature. Hangar refuses answers without it (but a 401), so whatever else answers at a sandbox's
+  address, such as another sandbox that got its IP, is never taken for its daemon: its exec results, file contents and
+  "no such file" are all refused, and the address is looked up again. What it does get is that one request.
+- **Untrusted answers.** Exec output keeps a bounded tail as it streams, reads stop at the caller's limit (64 MiB
+  without one; past that the provider reads the file), Connect messages over 4 MiB end the call, small responses are
+  capped, compressed answers are refused (`Accept-Encoding: identity`, raw reads), a malformed answer is an error, and
+  every call has a deadline (an exec's is its timeout plus 45 s). `test_envd.py` runs hangar against a hostile fake
+  daemon.
 - **Unprivileged.** The daemon runs as the sandbox user and acts only as that user: processes, files and the
   `Authorization: Basic` user an E2B client names (any other user is refused). The token is not a secret from that
   user (it can read its own processes' memory); it protects against everything outside the sandbox.
@@ -122,8 +139,12 @@ The daemon runs inside a sandbox that runs untrusted code, so the trust boundary
 - **Limits.** 512 processes at once, 8 clients attached to one process, 16 queued output chunks per client (a slow
   client slows the process, like a terminal, instead of growing memory; one that takes nothing for a minute is
   dropped), 64 directory watches, 16,384 watched
-  directories per watch, 100,000 entries per listing, 8 MiB signed request bodies, paths up to 4 KiB with no NUL.
-  Paths resolve like E2B's (`~` and relative paths from the user's home, then cleaned lexically).
+  directories per watch, 100,000 entries per listing, 8 MiB signed request bodies, 4 MiB upload frames, paths up to
+  4 KiB with no NUL. Paths resolve like E2B's (`~` and relative paths from the user's home, then cleaned lexically).
+- **Connections.** Anything that can reach the port can connect (on Docker's default bridge that includes other
+  sandboxes), so the daemon holds at most 1,024 connections and 512 from one address, and closes a connection that
+  sends no request, or doesn't finish its headers, for 75 s (longer than hangar keeps idle connections, 30 s). At the
+  total cap it stops accepting until one closes. A panic unwinds the one request it happened in.
 
 ## E2B compatibility
 
