@@ -74,14 +74,15 @@ Then:
 ## Production (GKE)
 
 ```bash
-cd deploy/terraform/gke && cp terraform.tfvars.example terraform.tfvars   # set project_id, region
-terraform init && terraform apply && cd -
-bash deploy/gke/up.sh                     # builds and deploys the control plane, prints its URL
-hangar login https://<ip>.sslip.io --token-file ~/.hangar/gke-admin-token
+cp deploy/terraform/gke/terraform.tfvars.example deploy/terraform/gke/terraform.tfvars   # set project_id, region
+uv run hangar up --gke --dry-run          # the terraform plan; nothing changes
+uv run hangar up --gke                    # asks, then applies that plan, runs deploy/gke/up.sh and logs in
 hangar doctor --fix                       # what's missing, and the fixes it can apply
 hangar setup github                       # token, webhook secret, repo webhook, settings, test delivery
 hangar connect claude-code                # and any other MCP client
 ```
+
+`hangar up --gke` never applies a plan that destroys or replaces anything unless you pass `--allow-destroy`, and without a terminal it applies nothing unless you pass `--yes`. The steps it runs are the ones in [docs/gke.md](docs/gke.md), which you can also run by hand. `up.sh` points `HANGAR_SESSION_STORE` at the checkpoint bucket terraform made, on a first install. If the certificate isn't Active yet, `hangar up --gke` prints the `hangar login` command to run once it is.
 
 Settings you change with `hangar setup` or `hangar config set` are stored in hangar's database, on its volume. They survive redeploys and need no `kubectl`. The full walkthrough is in [docs/gke.md](docs/gke.md).
 

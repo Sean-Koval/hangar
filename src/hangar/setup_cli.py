@@ -309,15 +309,29 @@ def up(
     env: list[str] = typer.Option(["claude-python"], "--env", "-e", help="Environment to build (repeatable)."),
     build: bool = typer.Option(True, "--build/--no-build", help="Build the environments now."),
     connect_to: list[str] = typer.Option([], "--connect", help="Connect this MCP client (repeatable)."),
-    yes: bool = typer.Option(False, "--yes", "-y", help="Connect every detected client without asking."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Connect every detected client without asking (with --gke: "
+                             "apply the plan and deploy without asking)."),
     timeout: int = typer.Option(120, help="Seconds to wait for the server to start."),
+    gke: bool = typer.Option(False, "--gke", help="Install on GKE instead: terraform plan, then (once approved) "
+                             "apply, deploy/gke/up.sh and login."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="With --gke: show the plan and stop; nothing changes."),
+    allow_destroy: bool = typer.Option(False, "--allow-destroy", help="With --gke: apply a plan that destroys or "
+                                       "replaces resources (never done otherwise)."),
+    domain: str | None = typer.Option(None, "--domain", help="With --gke: your DNS name (default <ip>.sslip.io)."),
 ):
     """Run hangar on this machine with Docker: start the server, log in, build environments, connect clients.
 
-    Safe to run again: it reuses the running server, the saved login and built images."""
+    Safe to run again: it reuses the running server, the saved login and built images. `--gke` installs on GKE
+    instead (`--dry-run` shows the terraform plan and changes nothing)."""
     data_dir = _data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
     data_dir.chmod(0o700)
+    if gke:  # --- review: the GKE path (setup_gke.py)
+        from hangar.setup_gke import up_gke
+
+        return up_gke(dry_run, yes, allow_destroy, domain, data_dir)
+    if dry_run or allow_destroy or domain:
+        raise _fail("--dry-run, --allow-destroy and --domain go with --gke", 2)
     if why := _docker_ok():
         raise _fail(f"Docker isn't reachable ({why}). Start Docker Desktop, OrbStack or Colima (macOS), or the "
                     "docker service (Linux: sudo systemctl start docker), then run `hangar up` again.")

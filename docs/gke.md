@@ -2,6 +2,8 @@
 
 The architecture is one control-plane pod (in namespace `hangar`) plus sandbox pods (in namespace `hangar-sandboxes`). Sandbox pods are managed through Agent Sandbox CRDs: a SandboxTemplate and SandboxWarmPool per environment, and a SandboxClaim per sandbox. They run under gVisor by default, or Kata microVMs on an optional nested-virtualization pool.
 
+`uv run hangar up --gke` runs sections 1 and 2 for you: it shows the terraform plan (`--dry-run` stops there, having changed nothing), applies exactly that plan once you approve it, runs `deploy/gke/up.sh`, and logs the CLI in. It refuses a plan that destroys or replaces resources unless you pass `--allow-destroy`.
+
 ## 1. Infrastructure
 
 ```bash
@@ -25,7 +27,7 @@ The quick way is one script. It reads the Terraform outputs, builds the control-
 bash deploy/gke/up.sh            # KATA=1 also installs Kata on the microVM pool (step 4)
 ```
 
-Without `DOMAIN=...` it serves on `https://<static-ip>.sslip.io`, a public wildcard DNS name that resolves to the static IP, so the managed certificate provisions with no DNS setup. The admin token is saved to `~/.hangar/gke-admin-token`. The manual steps below do the same thing by hand.
+Without `DOMAIN=...` it serves on `https://<static-ip>.sslip.io`, a public wildcard DNS name that resolves to the static IP, so the managed certificate provisions with no DNS setup. The admin token is saved to `~/.hangar/gke-admin-token`. On a first install `up.sh` also sets `HANGAR_SESSION_STORE` to the bucket terraform made (`session_bucket`), so checkpoints outlive the control plane's disk. On a hangar that's already running with checkpoints on its disk, it leaves the setting alone, since switching would strand the local checkpoints of suspended sessions. The manual steps below do the same thing by hand.
 
 
 ```bash
