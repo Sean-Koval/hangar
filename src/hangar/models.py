@@ -240,6 +240,12 @@ class Turn(BaseModel):
     result_error: str | None = None
     question: str | None = None
     artifacts: list[Artifact] = Field(default_factory=list)
+    # --- overnight/autofix: why hangar started this turn itself ("verify": its check failed after the turn before;
+    # "autofix:ci" / "autofix:review": the PR's CI or a reviewer), what is left of the budget for it, and how often
+    # the check failed inside the turn (the Stop hook or the driver sent it back to the agent).
+    trigger: str | None = None
+    budget: Budget | None = None
+    verify_rounds: int = 0
 
 
 class JobResult(BaseModel):
@@ -258,6 +264,25 @@ class JobResult(BaseModel):
     result_error: str | None = None
     question: str | None = None
     artifacts: list[Artifact] = Field(default_factory=list)
+    # --- overnight/autofix: existing files the verify command relies on that the agent changed (strategies.py)
+    touched_tests: list[str] = Field(default_factory=list)
+
+
+# --- overnight/autofix: the PR auto-fix loop's memory, per job (autofix.py)
+class AutofixRound(BaseModel):
+    at: float = Field(default_factory=now)
+    trigger: str  # "ci", "review" or "ci,review"
+    head_sha: str | None = None
+    items: list[str] = Field(default_factory=list)  # "check lint: failure", "review by alice: changes_requested"
+
+
+class AutofixState(BaseModel):
+    pending: list[dict[str, Any]] = Field(default_factory=list)  # triggers waiting for the coalescing window
+    due_at: float | None = None
+    rounds: list[AutofixRound] = Field(default_factory=list)
+    seen: list[str] = Field(default_factory=list)  # deliveries already taken (redeliveries do nothing)
+    fixed_shas: list[str] = Field(default_factory=list)  # heads a CI round already ran for: one per push
+    stopped: str | None = None  # why the loop stopped (the round limit, someone else pushed)
 
 
 class JobApproval(BaseModel):
@@ -345,6 +370,11 @@ class Job(BaseModel):
     # --- workstream A: triggers
     approval: JobApproval | None = None
     untrusted_source: str | None = None  # who wrote untrusted task text ("github:<login>", "webhook:<source>")
+    # --- overnight/autofix: the verify gate inside the turn, and the PR auto-fix loop (None: the defaults)
+    verify_in_loop: bool | None = None
+    max_verify_rounds: int | None = None
+    autofix: str | None = None  # "ci,reviews" | "ci" | "reviews" | "off"
+    autofix_state: AutofixState = Field(default_factory=AutofixState)
 
 
 # ---------------------------------------------------------------------------- scheduled jobs (workstream A)

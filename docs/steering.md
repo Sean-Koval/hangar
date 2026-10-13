@@ -96,6 +96,8 @@ The turn still runs in tmux, so `hangar sb attach` and the run log work as befor
 
 **Status and restarts.** The driver's exit status is the turn's: 130 after an interrupt that brought no new message. The driver runs inside the sandbox, so a control-plane restart doesn't affect it. The restarted control plane re-attaches to the turn (from its saved event cursor), and pending approvals can still be answered.
 
+**The job's check.** For a job with `verify`, the driver runs the check whenever a Codex turn completes. If it fails, the driver sends the output back into the same conversation as the next message, up to `max_verify_rounds` times. It doesn't do this after an interrupt that brought no message. Claude Code gets the same check as a Stop hook instead. See [jobs §7](jobs.md#7-an-agent-loop-that-finishes-the-job).
+
 `HANGAR_LIVE_TURNS=false` turns all of this off: every turn runs one-shot, as before.
 
 ## The uid split

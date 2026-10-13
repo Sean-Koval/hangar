@@ -185,7 +185,9 @@ HARNESSES: dict[str, Harness] = {
             '--output-format stream-json --verbose ${HANGAR_MODEL:+--model "$HANGAR_MODEL"} '
             '${HANGAR_SESSION_NEW:+--session-id "$HANGAR_SESSION_NEW"} '
             '${HANGAR_SESSION_RESUME:+--resume "$HANGAR_SESSION_RESUME"} '
-            '${HANGAR_SESSION_FORK:+--resume "$HANGAR_SESSION_FORK" --fork-session}'
+            '${HANGAR_SESSION_FORK:+--resume "$HANGAR_SESSION_FORK" --fork-session} '
+            # --- overnight/autofix: the job's verify as a Stop hook, inline (verifyloop.py)
+            '${HANGAR_CLAUDE_SETTINGS:+--settings "$HANGAR_CLAUDE_SETTINGS"}'
         ),
         # Verified with 2.1.296: the prompt and later messages go on stdin (stream-json), see driver.Claude.
         live="claude",
@@ -194,7 +196,8 @@ HARNESSES: dict[str, Harness] = {
             '${HANGAR_MODEL:+--model "$HANGAR_MODEL"} '
             '${HANGAR_SESSION_NEW:+--session-id "$HANGAR_SESSION_NEW"} '
             '${HANGAR_SESSION_RESUME:+--resume "$HANGAR_SESSION_RESUME"} '
-            '${HANGAR_SESSION_FORK:+--resume "$HANGAR_SESSION_FORK" --fork-session}'
+            '${HANGAR_SESSION_FORK:+--resume "$HANGAR_SESSION_FORK" --fork-session} '
+            '${HANGAR_CLAUDE_SETTINGS:+--settings "$HANGAR_CLAUDE_SETTINGS"}'  # --- overnight/autofix
         ),
         # --- overnight/cache: verified with 2.1.296 against a scripted Messages API: by default an API key gets
         # cache_control without a ttl (5 min); CLAUDE_CODE_PROMPT_CACHE_TTL=1h sends ttl "1h" on the main

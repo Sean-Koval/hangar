@@ -26,7 +26,14 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel, Field
 
-from hangar import exchange, observe, steer, strategies  # strategies: workstream D; --- observe; steer: live turns
+from hangar import (  # strategies: workstream D; --- observe; steer: live turns; --- overnight/autofix
+    autofix,
+    exchange,
+    observe,
+    steer,
+    strategies,
+    verifyloop,
+)
 from hangar.events import resolve_budget, total_usage, usage_line
 from hangar.fleet import Fleet, FleetError, _clip_tail
 from hangar.github import GitHub, GitHubError, parse_repo
@@ -108,6 +115,10 @@ class SubmitJob(BaseModel):
     strategy: Literal["single", "best_of_n"] = "single"
     n: int | None = Field(None, ge=1, le=8)  # attempts for best_of_n (2..HANGAR_BEST_OF_N_MAX; default 3)
     judge: bool = False  # best_of_n: a judge turn orders the attempts that pass verification
+    # --- overnight/autofix: the check inside the agent's turn, and the PR auto-fix loop (docs/jobs.md §7)
+    verify_in_loop: bool | None = None  # default HANGAR_VERIFY_IN_LOOP (on)
+    max_verify_rounds: int | None = Field(None, ge=0, le=10)  # default HANGAR_MAX_VERIFY_ROUNDS (3)
+    autofix: str | None = Field(None, max_length=40)  # "ci,reviews" (default) | "ci" | "reviews" | "off"
 
 
 def _safe_name(name: str, taken: set[str]) -> str:
@@ -210,6 +221,7 @@ class JobService:
             strategies.release_restart_holds(self, job)
         n = max(1, self.settings.job_concurrency)
         self._workers = [asyncio.create_task(self._worker(i)) for i in range(n)]
+        autofix.restore(self)  # --- overnight/autofix: PR triggers still waiting for their window
         for job in interrupted:
             self._spawn(self._report(job))
 
@@ -306,6 +318,7 @@ class JobService:
             raise JobError("base_branch must be a valid branch name different from the job branch")
         context = self._check_context(req.context)
         output_schema = exchange.check_schema(req.output_schema)
+        fix_mode = autofix.check_mode(req.autofix)  # --- overnight/autofix
         if req.callback_url:
             self._check_callback(req.callback_url)
         callback_secret = caller.callback_secret if caller.restricted else req.callback_secret
@@ -332,6 +345,7 @@ class JobService:
         )
         job.budget = resolve_budget(req.budget, self.settings, caller.max_budget if caller.restricted else None)
         job.strategy, job.n, job.judge = req.strategy, attempts, req.judge  # workstream D
+        job.verify_in_loop, job.max_verify_rounds, job.autofix = req.verify_in_loop, req.max_verify_rounds, fix_mode
         self._jobs[job.id] = job
         best = f" (best of {attempts})" if req.strategy == "best_of_n" else ""
         if approval is not None:  # an untrusted trigger: wait for a trusted person instead of queueing
@@ -400,6 +414,7 @@ class JobService:
         # workstream C: the session's turns are the job's turns, and carry live usage while one runs
         d["usage"] = u.model_dump(mode="json") if (u := self.usage(job)) else None
         d["pending_approvals"] = [a.model_dump(mode="json") for a in steer.pending(s)]  # workstream steer
+        d["autofix_state"] = autofix.view(job)  # --- overnight/autofix: what is waiting, not the logs it carries
         return exchange.scrub_turns(d)  # workstream E: attachment contents never leave in a view
 
     def usage(self, job: Job) -> Usage | None:
@@ -743,7 +758,10 @@ class JobService:
         await self.sessions.begin_turn(
             s, st, prompt=self._prompt(job, turn, sb.info.get("repo_path"), resuming=resuming)
             + exchange.prompt_notes(self.settings, s, st, protocol=not resuming),
-            extra_env={"HANGAR_JOB_ID": job.id, "HANGAR_JOB_DIR": ctx}, timeout_minutes=job.timeout_minutes,
+            extra_env={"HANGAR_JOB_ID": job.id, "HANGAR_JOB_DIR": ctx,
+                       **verifyloop.turn_env(self.settings, job, s.harness or sb.info.get("harness"),  # autofix
+                                             sb.info.get("repo_path"), job.timeout_minutes, turn.budget or job.budget)},
+            timeout_minutes=job.timeout_minutes,
             handoff=False)  # the job's own follow-up prompt carries the task, context and last summary
         turn.run_id = st.run_id
         turn.started_at = st.started_at
@@ -764,13 +782,16 @@ class JobService:
         st = next((t for t in reversed(s.turns) if t.run_id == turn.run_id), None)
         if st is None:
             raise JobError(f"turn {turn.run_id} is not in session {s.name}")
-        s.budget = job.budget  # workstream C: the session enforces the job's budget on its turns
+        s.budget = turn.budget or job.budget  # workstream C; --- overnight/autofix: a verify-fix turn gets what's left
         outcome, raw = await self.sessions.end_turn(s, st, timeout_minutes=job.timeout_minutes,
                                                     should_cancel=lambda: job.cancel_requested)
         turn.finished_at = now()
         turn.exit_code = st.exit_code
         turn.usage, turn.outcome, turn.outcome_reason = total_usage([st]), st.outcome, st.outcome_reason
         exchange.record_job_turn(job, turn, st)  # workstream E: result, question, artifacts
+        if job.verify and (rounds := await verifyloop.read_rounds(self, job, turn)):  # --- overnight/autofix
+            turn.verify_rounds = rounds
+            self._event(job, f"the check failed {rounds} time(s) during the turn; each went back to the agent")
         tail = _clip_tail(raw) if raw else ""
         if outcome in ("gone", "error"):
             more = "; follow up to continue from its last checkpoint" if self.sessions.resumable(s) else ""
@@ -822,11 +843,23 @@ class JobService:
             job.result.verify_exit_code = res.exit_code
             job.result.verify_tail = self.broker.redact(_clip_tail((res.stdout or "") + (res.stderr or ""))[-4000:])
         verify_ok = not job.verify or job.result.verify_exit_code == 0
+        # --- overnight/autofix: a failing check goes back to the agent while rounds are left (verifyloop.py); and
+        # with the gate on, a diff that edits the check's own tests is flagged and goes out as a draft
+        if not verify_ok and repo_path and (nxt := verifyloop.fix_turn(self, job, turn, outcome)) is not None:
+            job.turns.append(nxt)
+            await self._start_turn(job, nxt, s)
+            await self._finish_turn(job, nxt, s)
+            return
+        gated = bool(repo_path and verifyloop.max_rounds(self.settings, job))
+        job.result.touched_tests = await verifyloop.touched_tests(self, job) if gated else []
+        if job.result.touched_tests:
+            self._event(job, "the agent changed the check's own tests ("
+                             f"{', '.join(job.result.touched_tests[:5])}); delivering as a draft for review")
         state, reason = JobState.SUCCEEDED, None
         if repo_path:
             self._event(job, "delivering", JobState.DELIVERING)
             try:
-                await self._deliver(job, draft=not (clean and verify_ok))
+                await self._deliver(job, draft=not (clean and verify_ok) or bool(job.result.touched_tests))
             except _DeliveryError as e:
                 self._event(job, str(e))
                 state, reason = JobState.FAILED, "push_failed"
@@ -923,6 +956,9 @@ class JobService:
         if job.verify:
             ok = "passed" if job.result.verify_exit_code == 0 else f"failed (exit {job.result.verify_exit_code})"
             lines.append(f"Verification `{job.verify}`: **{ok}**")
+        if job.result.touched_tests:  # --- overnight/autofix
+            lines.append("**The agent changed the check's own tests:** "
+                         + ", ".join(f"`{p}`" for p in job.result.touched_tests[:10]) + ". Review them.")
         if job.attempts:
             lines += ["", strategies.attempts_table(job), ""]
         lines.append(f"hangar job `{job.id}` · requested by {job.requester} via {job.source} · "
@@ -1079,6 +1115,8 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
     envs = svc.repo_envs(f"https://github.com/{repo}") if repo else []
     if not envs:
         return {"ignored": f"repo '{repo}' is not in HANGAR_GITHUB_REPOS"}
+    if event in autofix.EVENTS:  # --- overnight/autofix: CI results and reviews on hangar's PRs
+        return await autofix.handle(svc, event, delivery, payload)
     issue = payload.get("issue") or {}
     number = issue.get("number")
     is_pr = "pull_request" in issue

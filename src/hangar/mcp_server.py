@@ -652,7 +652,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                    context: list[dict[str, Any]] | None = None, timeout_minutes: int | None = None,
                    callback_url: str | None = None, budget: dict[str, Any] | None = None,
                    output_schema: dict[str, Any] | None = None, strategy: str = "single", n: int | None = None,
-                   judge: bool = False) -> live.JobOut:
+                   judge: bool = False, verify_in_loop: bool | None = None,
+                   autofix: str | None = None) -> live.JobOut:
         """Hand a piece of development work to a cloud agent and get on with other things.
 
         Hangar queues the job, starts a sandbox from `environment` (default: the repo's mapped one), writes
@@ -667,13 +668,17 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
 
         `strategy="best_of_n"` with `n` (2-8) runs n attempts in parallel sandboxes, verifies each, and delivers
         the best (passing verify first; then `judge=True` asks an agent to compare them, else the smallest diff).
-        get_job lists every attempt. It costs n sandboxes and n agent runs."""
+        get_job lists every attempt. It costs n sandboxes and n agent runs.
+
+        `verify` also runs inside the agent's turn and a failure goes back to it (`verify_in_loop`, default on).
+        `autofix` ("ci,reviews" default, "ci", "reviews", "off"): CI failures and trusted reviewers' comments on the
+        PR start follow-up turns by themselves."""
         req = SubmitJob(instructions=instructions, repo=repo, environment=environment, title=title, harness=harness,
                         model=model, base_branch=base_branch, verify=verify, deliver=deliver,
                         context=[ContextItem.model_validate(c) for c in context or []],
                         timeout_minutes=timeout_minutes, callback_url=callback_url, output_schema=output_schema,
                         budget=Budget.model_validate(budget) if budget else None, strategy=strategy, n=n,
-                        judge=judge)
+                        judge=judge, verify_in_loop=verify_in_loop, autofix=autofix)  # --- overnight/autofix
         who = current_actor.get()
         return jobs.view(jobs.submit(req, Caller(who, who), source="mcp"))
 
