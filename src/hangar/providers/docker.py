@@ -417,8 +417,9 @@ class DockerProvider(Provider):
             try:
                 ok = await asyncio.to_thread(c.put_archive, parent, buf.getvalue())
             except NotFound:
+                root = {} if owned else {"environment": {"PATH": SYSTEM_PATH}}  # --- isolation
                 mk = await asyncio.to_thread(c.exec_run, ["mkdir", "-p", parent], user=user if owned else "root",
-                                             environment=None if owned else {"PATH": SYSTEM_PATH})  # --- isolation
+                                             **root)
                 if mk.exit_code != 0:
                     raise ProviderError(f"cannot create {parent}: {mk.output.decode(errors='replace')}") from None
                 ok = await asyncio.to_thread(c.put_archive, parent, buf.getvalue())
