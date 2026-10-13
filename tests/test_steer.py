@@ -5,6 +5,7 @@ against claude 2.1.296 and codex 0.162.1 (tests/fixtures/live)."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -234,7 +235,8 @@ async def test_approval_deny_lets_the_turn_go_on(svc, live, harness):
     with pytest.raises(KeyError):
         await steering.answer(svc, s, "ap-000000000000", "deny", "ana")
     await steering.answer(svc, s, a.id, "deny", "ana", "not in this repo")
-    with pytest.raises(steering.SteerError, match="already answered"):
+    # refused either way; after a deny the turn goes on and may already be over (a loaded machine)
+    with pytest.raises(steering.SteerError, match="already answered|no running turn"):
         await steering.answer(svc, s, a.id, "allow", "mallory")
     s = await settle(svc, "deny")
     t = s.turns[0]
@@ -388,7 +390,9 @@ async def test_a_forged_acknowledgement_is_not_believed(svc, live):
         await steering.interrupt(svc, s, "ana")
         await thief
     finally:
-        os.kill(pid, signal.SIGCONT)
+        # The kill may already have ended it: a stopped process left in an orphaned group gets SIGHUP + SIGCONT
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGCONT)
     s = await settle(svc, "swallow")
     assert (s.turns[0].outcome, s.turns[0].exit_code) == ("interrupted", 130), (s.turns[0].outcome, s.turns[0].summary)
 
