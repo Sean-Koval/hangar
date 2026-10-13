@@ -901,6 +901,10 @@ class SessionService:
         interval, for the same number of round trips (perf). A wait holds a worker thread, so when half the pool
         is already waiting the fleet sleeps instead (review: one bound shared with MCP clients' long-polls)."""
         grow = 0 if watch.parser.next == 0 else None
+        if wait and self.fleet.closing.is_set():
+            # review(sweep): shutting down, agent_status no longer waits in the sandbox; wait here instead of
+            # polling back to back until the app's shutdown cancels this
+            await asyncio.sleep(wait)
         return await self.fleet.agent_status(s.sandbox_id or "", turn.run_id or "", tail_lines=5, quiet=True,
                                              wait_seconds=wait, grow_from=grow)
 

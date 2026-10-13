@@ -38,7 +38,7 @@ log = logging.getLogger("hangar.backup")
 
 PREFIX = "_backups/"
 PENDING = "restore-pending.db"
-_NAME = re.compile(r"^hangar-(\d{8}T\d{6}Z)\.db\.gz\.enc$")
+_NAME = re.compile(r"hangar-(\d{8}T\d{6}Z)\.db\.gz\.enc")  # review(sweep): fullmatch; `$` also matches before a "\n"
 _FIRST_DELAY = 300.0  # the first scheduled backup after a start with none recent: not in the startup rush
 _RETRY = 3600.0  # after a failed scheduled backup
 
@@ -53,7 +53,7 @@ def _stamp(t: float) -> str:
 
 def taken_at(name: str) -> float | None:
     """When a backup was taken, from its name; None for anything that isn't one."""
-    m = _NAME.match(name.rsplit("/", 1)[-1])
+    m = _NAME.fullmatch(name.rsplit("/", 1)[-1])
     return datetime.strptime(m.group(1), "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC).timestamp() if m else None
 
 

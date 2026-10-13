@@ -322,6 +322,35 @@ async def test_wait_for_turn_returns_on_shutdown(fleet, monkeypatch):
     assert await asyncio.wait_for(task, 2) == {"done": False, "session": "w"}
 
 
+@needs_git
+async def test_a_turn_being_waited_on_keeps_its_pace_on_shutdown(jobs, monkeypatch):  # noqa: F811
+    """Review of overnight/sweep: once shutting down, status polls no longer wait in the sandbox, so end_turn paces
+    them itself instead of spinning on provider execs (an API-server call each on GKE) until the app's shutdown
+    cancels it."""
+    ss = jobs.sessions
+    ss.settings.session_poll_seconds = 0.2
+    sb, run = await _running_run(ss.fleet)
+    turn = SessionTurn(message="m", run_id=run, started_at=time.time())
+    s = Session(name="spin", environment="plain", sandbox_id=sb.id, turns=[turn])
+    ss._sessions[s.id] = s
+    calls = 0
+    real = ss.fleet.agent_status
+
+    async def counting(*a, **kw):
+        nonlocal calls
+        calls += 1
+        return await real(*a, **kw)
+
+    monkeypatch.setattr(ss.fleet, "agent_status", counting)
+    ss.fleet.closing.set()
+    task = asyncio.create_task(ss.end_turn(s, turn))
+    await asyncio.sleep(1.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert 2 <= calls <= 8, calls  # about one per HANGAR_SESSION_POLL_SECONDS, not one per exec round trip
+
+
 async def test_the_shutdown_signal_reaches_the_app_before_uvicorn():
     seen: list[str] = []
     before = signal.signal(signal.SIGTERM, lambda sig, frame: seen.append("uvicorn"))
@@ -336,6 +365,13 @@ async def test_the_shutdown_signal_reaches_the_app_before_uvicorn():
         assert seen == ["uvicorn", "uvicorn"]
     finally:
         signal.signal(signal.SIGTERM, before)
+
+
+def test_a_backup_name_is_matched_whole():
+    """Review of overnight/sweep: `$` also matches before a trailing newline, so a restore name with one passed."""
+    assert backup.taken_at("hangar-20261013T010203Z.db.gz.enc") is not None
+    for bad in ("hangar-20261013T010203Z.db.gz.enc\n", "xhangar-20261013T010203Z.db.gz.enc"):
+        assert backup.taken_at(bad) is None
 
 
 def test_pod_grace_covers_the_shutdown_drain():
