@@ -16,7 +16,6 @@ import contextlib
 import hashlib
 import ipaddress
 import json
-import logging
 import math
 import time
 from collections.abc import Awaitable, Callable, Iterator
@@ -32,8 +31,6 @@ from hangar.models import JOB_TERMINAL, AuditEvent
 if TYPE_CHECKING:
     from hangar.jobs import JobService
     from hangar.store import Store
-
-log = logging.getLogger("hangar.frontdoor")
 
 ANON_MAX_BODY = 64 * 1024  # an unauthenticated request: a token exchange or consent form is far smaller
 GITHUB_MAX_BODY = 25 * 1024 * 1024  # GitHub caps webhook payloads at 25 MB and doesn't deliver larger ones
@@ -72,8 +69,8 @@ class Buckets:
             self._b[key] = (tokens - 1, t)
             return 0.0
         self._b[key] = (tokens, t)
-        if len(self._b) > 10_000:  # forget full buckets: they'd start full anyway
-            self._b = {k: v for k, v in self._b.items() if v[0] < burst}
+        if len(self._b) > 10_000:  # forget callers quiet for 10 minutes: their buckets have refilled
+            self._b = {k: v for k, v in self._b.items() if t - v[1] < 600}
         return (1 - tokens) * 60 / per_minute
 
 

@@ -755,16 +755,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(400, "body is not JSON") from e
         # --- front-door-auth: GitHub signs only the body, so the same body is the same delivery, whatever its
         # X-GitHub-Delivery header says. A redelivery or a replay is acknowledged and does nothing.
-        replays = jobs.admission.replays
-        digest = replays.digest(body)
-        if replays.get("github", digest) is not None:
-            delivery = (request.headers.get("x-github-delivery") or "")[:100]
-            jobs.admission.refused("github:replay", "github", "hook.replay", delivery or None)
-            return JSONResponse({"ignored": "duplicate delivery"}, status_code=200)
-        replays.put("github", digest, "", h.settings.webhook_replay_hours * 3600)
+        # Only the events that can start or steer work are remembered; replaying anything else does nothing.
+        event = request.headers.get("x-github-event", "")
+        replays, digest = jobs.admission.replays, jobs.admission.replays.digest(body)
+        if event in ("issues", "issue_comment"):
+            if replays.get("github", digest) is not None:
+                delivery = (request.headers.get("x-github-delivery") or "")[:100]
+                jobs.admission.refused("github:replay", "github", "hook.replay", delivery or None)
+                return JSONResponse({"ignored": "duplicate delivery"}, status_code=200)
+            replays.put("github", digest, "", h.settings.webhook_replay_hours * 3600)
         try:
-            res = await handle_github(jobs, request.headers.get("x-github-event", ""),
-                                      request.headers.get("x-github-delivery"), payload)
+            res = await handle_github(jobs, event, request.headers.get("x-github-delivery"), payload)
         except Exception:
             replays.forget("github", digest)  # nothing happened: let GitHub's redelivery try again
             raise
