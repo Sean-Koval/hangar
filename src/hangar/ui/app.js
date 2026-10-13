@@ -9,7 +9,8 @@ const store = {
   get token() { try { return localStorage.getItem("hangar.token") || ""; } catch { return ""; } },
   set token(v) { try { v ? localStorage.setItem("hangar.token", v) : localStorage.removeItem("hangar.token"); } catch {} },
 };
-const state = { view: "fleet", envs: [], creds: [], harnesses: [], overview: null, sandboxes: [], selectedEnv: null };
+const state = { view: "fleet", envs: [], creds: [], harnesses: [], overview: null, sandboxes: [], selectedEnv: null,
+  jobs: [], selectedJob: null };
 
 async function api(method, path, body, { raw = false } = {}) {
   const opts = { method, headers: { Authorization: `Bearer ${store.token}` } };
@@ -76,10 +77,10 @@ $("#signout").addEventListener("click", () => { store.token = ""; showGate(); })
 /* ------------------------------------------------------------------ routing */
 function route() {
   const v = (location.hash || "#fleet").slice(1);
-  state.view = ["fleet", "environments", "credentials", "snapshots", "connect", "activity"].includes(v) ? v : "fleet";
+  state.view = ["jobs", "fleet", "environments", "credentials", "snapshots", "connect", "activity"].includes(v) ? v : "fleet";
   $$(".view").forEach((s) => (s.hidden = s.id !== `view-${state.view}`));
   $$(".rail a[data-view]").forEach((a) => a.classList.toggle("active", a.dataset.view === state.view));
-  ({ fleet: loadFleet, environments: loadEnvs, credentials: loadCreds, snapshots: loadSnaps, connect: loadConnect,
+  ({ jobs: loadJobs, fleet: loadFleet, environments: loadEnvs, credentials: loadCreds, snapshots: loadSnaps, connect: loadConnect,
      activity: loadAudit })[state.view]();
 }
 window.addEventListener("hashchange", route);
@@ -91,7 +92,12 @@ async function boot() {
   await refreshMeta();
   route();
   clearInterval(pollTimer);
-  pollTimer = setInterval(() => { if (state.view === "fleet" && !document.hidden) loadFleet(true); }, 4000);
+  pollTimer = setInterval(() => {
+    if (document.hidden) return;
+    if (state.view === "fleet") loadFleet(true);
+    if (state.view === "jobs") loadJobs(true);
+  }, 4000);
+  loadJobs(true);  // fills the nav count
 }
 
 async function refreshMeta() {
@@ -403,6 +409,160 @@ function closeTerminalsFor(id) { for (const k of [...terms.keys()]) if (k.starts
   });
   window.addEventListener("resize", () => terms.get(activeTerm)?.fit.fit());
 })();
+
+/* ------------------------------------------------------------------ jobs */
+const JOB_ACTIVE = ["queued", "provisioning", "running", "verifying", "delivering"];
+const JOB_STATE = { queued: "start", provisioning: "start", running: "run", verifying: "run", delivering: "run",
+  succeeded: "ok", failed: "err", cancelled: "stop" };
+
+async function loadJobs(quiet = false) {
+  try {
+    state.jobs = await api("GET", "/api/jobs?limit=200");
+    renderJobs();
+  } catch (e) { if (!quiet && e.message !== "unauthorized") toast(e.message, true); }
+}
+
+function jobRepo(j) {
+  return (j.repo || "").replace(/^https?:\/\/(www\.)?github\.com\//, "").replace(/\.git$/, "");
+}
+
+function renderJobs() {
+  const active = state.jobs.filter((j) => j.active);
+  $("#nav-jobs").textContent = active.length || "";
+  if (state.view !== "jobs") return;
+  const f = $("#jobs-filter").value;
+  const shown = state.jobs.filter((j) => !f || (f === "active" ? j.active : j.state === f));
+  $("#job-list").innerHTML = shown.length ? shown.map((j) => `<li><button data-job="${esc(j.id)}"
+      class="job-row ${j.id === state.selectedJob ? "active" : ""}" data-tone="${JOB_STATE[j.state] || "stop"}">
+      <span class="t"><span class="dot"></span>${esc(j.title)}</span>
+      <span class="d">${esc(j.state)}${j.reason ? ` (${esc(j.reason.replace("_", " "))})` : ""} · ${esc(j.source)}
+        · ${ago(j.created_at)}${j.result?.pr_number ? ` · PR #${j.result.pr_number}` : ""}</span></button></li>`).join("")
+    : `<li class="empty-floor"><p>${state.jobs.length ? "No jobs match this filter."
+      : "No jobs yet. Submit one here, label a GitHub issue <code>hangar</code>, or call submit_job from an MCP client."}</p></li>`;
+  if (state.selectedJob) renderJob(state.jobs.find((j) => j.id === state.selectedJob));
+}
+$("#jobs-filter").addEventListener("change", renderJobs);
+$("#job-list").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-job]");
+  if (!b) return;
+  state.selectedJob = b.dataset.job;
+  renderJobs();
+  if (window.innerWidth < 860) $("#job-detail").scrollIntoView({ behavior: "smooth", block: "start" });
+});
+
+function renderJob(j) {
+  const box = $("#job-detail");
+  if (!j) { box.innerHTML = `<p class="empty">That job is no longer listed.</p>`; return; }
+  // keep a half-typed follow-up across the 4s refresh
+  const draft = $("#job-followup-text")?.value || "";
+  const r = j.result || {};
+  const verify = j.verify ? (r.verify_exit_code == null ? `<span class="tag">not run yet</span>`
+    : r.verify_exit_code === 0 ? `<span class="tag ok">passed</span>` : `<span class="tag bad">failed (exit ${r.verify_exit_code})</span>`) : "";
+  const turns = j.turns || [];
+  const live = !!j.sandbox_id;
+  box.innerHTML = `
+    <div class="env-bar"><h3>${esc(j.title)}</h3>
+      <span class="tag tone" data-tone="${JOB_STATE[j.state] || "stop"}">${esc(j.state)}${j.reason ? ` · ${esc(j.reason.replace("_", " "))}` : ""}</span></div>
+    <dl class="kv">
+      <dt>Asked by</dt><dd>${esc(j.requester)} via ${esc(j.source)}${j.source_ref ? ` (${esc(j.source_ref.replace(/^github:/, ""))})` : ""}, ${ago(j.created_at)}</dd>
+      <dt>Where</dt><dd>${esc(j.environment)} · ${esc(j.harness || "default agent")}${j.model ? ` · ${esc(j.model)}` : ""}</dd>
+      ${j.repo ? `<dt>Repo</dt><dd>${esc(jobRepo(j))} · <code>${esc(j.branch)}</code>${j.base_branch ? ` from <code>${esc(j.base_branch)}</code>` : ""}</dd>` : ""}
+      ${r.pr_url ? `<dt>Pull request</dt><dd><a href="${esc(r.pr_url)}" target="_blank" rel="noopener">#${esc(r.pr_number)}</a></dd>` : ""}
+      ${j.verify ? `<dt>Check</dt><dd><code>${esc(j.verify)}</code> ${verify}</dd>` : ""}
+      ${r.commits?.length ? `<dt>Commits</dt><dd>${r.commits.map((c) => `<div><code>${esc(c)}</code></div>`).join("")}</dd>` : ""}
+      ${j.context?.length ? `<dt>Context</dt><dd>${j.context.map((c) => c.url
+        ? `<a class="tag" href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.name)}</a>`
+        : `<span class="tag">${esc(c.name)} · ${c.size} B</span>`).join(" ")}</dd>` : ""}
+      <dt>Sandbox</dt><dd>${live ? `<code>${esc(j.sandbox_id)}</code>` : `<span class="hint">none</span>`}</dd>
+    </dl>
+    <div class="env-bar">
+      ${live && j.terminal_session ? `<button id="job-watch" class="primary">${j.active ? "Watch the agent" : "Agent's terminal"}</button>` : ""}
+      ${live ? `<button id="job-shell">Open a shell</button>` : ""}
+      ${j.active ? `<button id="job-cancel" class="danger">Cancel job</button>` : ""}
+    </div>
+    ${r.summary ? `<h4>Agent's summary</h4><pre class="log summary">${esc(r.summary)}</pre>` : ""}
+    ${r.verify_tail && r.verify_exit_code ? `<h4>Check output</h4><pre class="log">${esc(r.verify_tail)}</pre>` : ""}
+    ${!j.active && live ? `<form id="job-followup" class="followup">
+        <label>Reply to the agent<textarea id="job-followup-text" rows="3" required
+          placeholder="Also handle the empty-file case, and keep the old function name."></textarea></label>
+        <div class="env-bar"><span class="hint">Runs another turn in the same sandbox and branch; the PR updates.</span>
+          <button class="primary" type="submit">Send</button></div></form>` : ""}
+    <h4>Timeline</h4>
+    <ol class="timeline">${(j.events || []).slice().reverse().map((e) => `<li data-tone="${JOB_STATE[e.state] || "stop"}">
+      <span class="when" title="${new Date(e.ts * 1000).toLocaleString()}">${ago(e.ts)}</span>
+      <span class="what">${esc(e.message)}</span></li>`).join("")}</ol>
+    ${turns.length > 1 ? `<h4>Turns</h4><ol class="turns">${turns.map((t, i) => `<li><b>${i + 1}. ${esc(t.kind.replace("_", "-"))}</b>
+      ${t.requester ? `by ${esc(t.requester)}` : ""}${t.exit_code != null ? ` · exit ${t.exit_code}` : ""}
+      ${t.message ? `<div class="hint">${esc(t.message)}</div>` : ""}</li>`).join("")}</ol>` : ""}
+    <details><summary class="hint">Instructions</summary><pre class="log">${esc(j.instructions)}</pre></details>`;
+  const ta = $("#job-followup-text");
+  if (ta) ta.value = draft;
+  const sb = { id: j.sandbox_id, name: j.id };
+  $("#job-watch")?.addEventListener("click", () => openTerminal(sb, j.terminal_session));
+  $("#job-shell")?.addEventListener("click", () => openTerminal(sb));
+  $("#job-cancel")?.addEventListener("click", (e) => {
+    if (!confirm(`Cancel ${j.id}? The agent is stopped; work committed so far stays in the sandbox.`)) return;
+    busy(e.target, async () => { await api("POST", `/api/jobs/${j.id}/cancel`); toast(`Cancelling ${j.id}`); loadJobs(); });
+  });
+  $("#job-followup")?.addEventListener("submit", (e) => {
+    e.preventDefault();
+    busy($("button[type=submit]", e.target), async () => {
+      await api("POST", `/api/jobs/${j.id}/follow-up`, { message: $("#job-followup-text").value });
+      $("#job-followup-text").value = "";
+      toast(`Sent; ${j.id} is running another turn`);
+      await loadJobs();
+    });
+  });
+}
+
+/* ---- new job ---- */
+function syncJobHarness() {
+  const f = $("#job-form");
+  const env = state.envs.find((e) => e.name === f.environment.value);
+  const hs = (env?.harnesses || []).filter((h) => h !== "git");
+  f.harness.innerHTML = `<option value="">${esc(env?.default_harness || "default")} (default)</option>` +
+    hs.filter((h) => h !== env?.default_harness).map((h) => `<option>${esc(h)}</option>`).join("");
+  f.repo.placeholder = env?.repo ? `${env.repo} (environment default)` : "https://github.com/org/repo.git";
+}
+$("#btn-new-job").addEventListener("click", () => {
+  const f = $("#job-form");
+  // Environments with a repo and credentials first: those are the ones set up for jobs.
+  const agentEnvs = state.envs.filter((e) => !e.error && (e.harnesses || []).some((h) => h !== "git"))
+    .sort((a, b) => (!!b.repo - !!a.repo) || ((b.credentials || []).length - (a.credentials || []).length));
+  f.environment.innerHTML = agentEnvs.map((e) => `<option value="${esc(e.name)}">${esc(e.name)}${e.repo ? ` (${esc(jobRepo(e))})` : ""}</option>`).join("");
+  syncJobHarness();
+  f.hidden = false;
+  f.instructions.focus();
+});
+$("#job-form").environment.addEventListener("change", syncJobHarness);
+$("#job-cancel-form").addEventListener("click", () => ($("#job-form").hidden = true));
+$("#job-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  await busy($("button[type=submit]", f), async () => {
+    const body = Object.fromEntries([...new FormData(f)].filter(([k, v]) => v !== "" && k !== "links"));
+    if (body.timeout_minutes) body.timeout_minutes = Number(body.timeout_minutes);
+    const context = [];
+    for (const file of $("#job-files").files) {
+      const buf = new Uint8Array(await file.arrayBuffer());
+      let text = null;
+      try { text = new TextDecoder("utf-8", { fatal: true }).decode(buf); } catch {}
+      if (text !== null) context.push({ name: file.name, kind: "file", content: text });
+      else {
+        let bin = "";
+        for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+        context.push({ name: file.name, kind: "file", content: btoa(bin), encoding: "base64" });
+      }
+    }
+    f.links.value.split(/\s+/).filter(Boolean).forEach((u, i) => context.push({ name: `link-${i + 1}`, kind: "url", url: u }));
+    body.context = context;
+    const j = await api("POST", "/api/jobs", body);
+    toast(`Queued ${j.id}`);
+    f.hidden = true; f.reset();
+    state.selectedJob = j.id;
+    await loadJobs();
+  });
+});
 
 /* ------------------------------------------------------------------ environments */
 async function loadEnvs() {
