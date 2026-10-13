@@ -45,6 +45,11 @@ class Hangar:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
         self.store = Store(self.settings.db_path)
+        # --- workstream setup: settings stored in the database (`hangar config`), under the environment's
+        from hangar.settings_store import SettingsStore
+
+        self.config = SettingsStore(self.store, self.settings)
+        self.config.apply()
         self.vault = Vault(self.store, load_or_create_key(self.settings.secret_key, self.settings.data_dir))
         self.broker = Broker(self.store, self.vault, self.settings.sandbox_user)
         self.catalog = EnvCatalog(self.settings.env_dirs, save_dir=self.settings.saved_env_dir)
@@ -70,7 +75,7 @@ class MCPAuthMiddleware:
             return await self.app(scope, receive, send)
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
         token = bearer_from_headers(headers)
-        actor = self.auth.verify(token)
+        actor = self.auth.verify(token, scope="mcp")  # --- workstream setup: `mcp` tokens (hangar connect)
         if actor is None and self.oauth is not None:
             actor = await self.oauth.verify(token)
         if actor is None:
@@ -359,7 +364,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def doctor_route(_: str = A):
         from hangar import doctor
 
-        return await doctor.run(h)
+        return await doctor.run(h, h.jobs.transport)  # --- workstream setup: tests inject GitHub/Slack fakes
 
     @app.get("/api/overview")
     async def overview(_: str = A):
@@ -938,6 +943,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/jobs/{job_id}/patch")
     async def job_patch(job_id: str, max_bytes: int | None = None, caller: Caller = J):
         return await exchange.session_patch(sessions, _job_session(job_id, caller), max_bytes)
+
+    # --- workstream setup: database-stored settings (hangar config) and the setup wizards (hangar setup)
+    from hangar import settings_store, setup_api
+
+    settings_store.mount(app, h, A)
+    setup_api.mount(app, h, A)
 
     @app.get("/api/audit")
     async def audit(limit: int = 200, _: str = A):

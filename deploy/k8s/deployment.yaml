@@ -36,7 +36,8 @@ spec:
           ports: [{containerPort: 8787, name: http}, {containerPort: 8788, name: gateway}]  # gateway: gateway.yaml
           envFrom:
             - configMapRef: {name: hangar}
-            # Site settings that deploy/gke/up.sh never overwrites (e.g. jobs + GitHub, docs/jobs.md). Optional.
+            # Site settings that deploy/gke/up.sh never overwrites. Optional: `hangar config set` / `hangar setup`
+            # keep settings in hangar's database instead (docs/gke.md §2a); keys set here win over those.
             - configMapRef: {name: hangar-site, optional: true}
             - secretRef: {name: hangar}
           volumeMounts:

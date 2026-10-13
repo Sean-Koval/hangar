@@ -183,5 +183,6 @@ Refusals are themselves limited to `HANGAR_AUDIT_REJECTIONS_PER_MINUTE` (30) per
 ## Operational advice
 
 - Keep the control plane private: localhost, an IAP tunnel, Tailscale, or IAP on the GKE ingress.
-- Use a separate token per client so you can revoke one without affecting the rest. The audit log records which token did what.
+- Use a separate token per client so you can revoke one without affecting the rest. The audit log records which token did what. `hangar connect` does this for you: each client on each machine gets its own token with the `mcp` scope, which works at `/mcp` and nowhere else. A leaked client config can then drive sandboxes, but it can't read or change the vault, settings or tokens, or approve OAuth apps.
+- Settings stored with `hangar config` can't hold secrets: hangar refuses the admin token, the vault key and provider keys there. Settings that point at secrets name a vault credential instead.
 - Set `HANGAR_SECRET_KEY` explicitly in clusters, from Secret Manager or a Kubernetes Secret, so the vault survives pod restarts.

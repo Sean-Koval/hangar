@@ -47,6 +47,17 @@ kubectl apply -k deploy/k8s
 
 Point your domain's A record at `terraform output static_ip`. The managed certificate provisions in about 15 minutes.
 
+## 2a. Log in, connect and configure
+
+```bash
+hangar login https://<ip>.sslip.io --token-file ~/.hangar/gke-admin-token
+hangar doctor --fix              # each problem, with the fixes it can apply on its own
+hangar setup github              # token, webhook secret, repo webhook, settings, test delivery (jobs.md §4)
+hangar connect claude-code       # or codex, cursor, vscode, gemini, claude-desktop (clients.md)
+```
+
+**Where settings live.** `hangar setup` and `hangar config set` store settings in hangar's database, on the control plane's volume. They survive `up.sh` and redeploys, and you change them without `kubectl`. The `hangar` and `hangar-site` config maps become the pod's environment, which wins over the database for any key both set. Keep the deployment's fixed values in the config maps (provider, registry, runtime class), and use `hangar config` for the rest. `hangar config list` shows where each value comes from. A value that's read at startup (provider, gateway, OAuth, `HANGAR_SESSION_STORE`, `HANGAR_JOB_CONCURRENCY`) applies after `kubectl -n hangar rollout restart deploy/hangar`; `hangar config set` says so.
+
 ## 3. Environment images
 
 The control plane can build with Cloud Build (gcloud ships in the image). Building from your laptop is usually faster, because it reuses your local cache:

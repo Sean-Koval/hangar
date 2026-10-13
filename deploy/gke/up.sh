@@ -61,3 +61,9 @@ echo
 echo "Dashboard + MCP:  https://$DOMAIN   (MCP endpoint https://$DOMAIN/mcp)"
 echo "Admin token:      ~/.hangar/gke-admin-token"
 echo "Certificate:      $(kubectl -n hangar get managedcertificate hangar -o jsonpath='{.status.certificateStatus}' 2>/dev/null || echo unknown)  (Active = ready)"
+echo
+echo "Next (once the certificate is Active):"
+echo "  hangar login https://$DOMAIN --token-file ~/.hangar/gke-admin-token"
+echo "  hangar doctor --fix          # what's missing, and the fixes it can apply"
+echo "  hangar setup github          # token, webhook, settings (kept in hangar's database), test delivery"
+echo "  hangar connect claude-code   # or codex, cursor, vscode, gemini, claude-desktop"

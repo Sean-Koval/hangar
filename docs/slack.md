@@ -29,30 +29,22 @@ Slack doesn't allow slash commands inside threads, so a `/hangar` job gets a new
 
 ## Set it up
 
-1. **Create the app.** At <https://api.slack.com/apps>, choose *Create New App → From a manifest*, pick the workspace and paste [`slack-app-manifest.yaml`](slack-app-manifest.yaml). Before pasting, replace `hangar.example.com` with your hangar's public URL. Install the app to the workspace.
+```bash
+hangar setup slack --manifest slack-app.yaml
+```
 
-   Slack checks the events URL right away. That check fails until step 3 is done; you'll retry it in step 4.
-2. **Store its two secrets in hangar's vault.** Use *Basic Information → Signing Secret* and *OAuth & Permissions → Bot User OAuth Token* (`xoxb-…`). Paste each value when prompted, then press Ctrl-D. Nothing is echoed, and neither value is ever printed back:
-   ```bash
-   hangar cred add slack-signing --harness webhook --kind generic
-   hangar cred add slack-bot --harness webhook --kind generic
-   ```
-   Both stay in the control plane. They are never put into sandboxes.
-3. **Map channels to repos.** Get a channel's ID from *channel name → About*, at the bottom (it looks like `C0123ABCD`). Each repo must also be in `HANGAR_GITHUB_REPOS`, which picks its environment. On GKE, add the keys to the `hangar-site` config map, which `deploy/gke/up.sh` never overwrites:
-   ```bash
-   kubectl -n hangar create configmap hangar-site \
-     --from-literal=HANGAR_SLACK_SIGNING_SECRET_CREDENTIAL=slack-signing \
-     --from-literal=HANGAR_SLACK_BOT_TOKEN_CREDENTIAL=slack-bot \
-     --from-literal=HANGAR_SLACK_CHANNELS='{"C0123ABCD": "acme/app"}' \
-     --from-literal=HANGAR_SLACK_USERS='["U0456EFGH", "U0789IJKL"]' \
-     --from-literal=HANGAR_GITHUB_REPOS='{"acme/app": "python"}' \
-     --from-literal=HANGAR_GITHUB_TOKEN_CREDENTIAL=gh-control \
-     --dry-run=client -o yaml | kubectl apply -f -
-   kubectl -n hangar rollout restart deploy/hangar
-   ```
-   `create configmap … | kubectl apply` replaces the whole map. Keep the keys you already had, such as the GitHub ones from [jobs §4](jobs.md#4-trigger-from-github). Elsewhere, set the same `HANGAR_*` variables in the environment or `.env`.
-4. **Finish in Slack.** Under *Event Subscriptions*, retry the request URL; it should verify now. Then invite the app to each mapped channel with `/invite @hangar`. Thread replies only arrive from channels the app is in.
-5. **Check the setup** with `hangar doctor`. It checks:
+1. **Create the app.** `hangar setup slack` writes the [app manifest](slack-app-manifest.yaml) with your hangar's URL filled in. At <https://api.slack.com/apps>, choose *Create New App → From a manifest*, pick the workspace and paste it. Then install the app to the workspace.
+
+   Slack checks the events URL right away. That check fails until the next step is done; you'll retry it in step 3.
+2. **Give hangar the secrets.** Paste the *Signing Secret* (from *Basic Information*) and the *Bot User OAuth Token* (`xoxb-…`, from *OAuth & Permissions*) when asked. Neither is echoed. Then give the channel to take work from, and its repo. The wizard does four things:
+   - checks the bot token with `auth.test`;
+   - stores both secrets in the vault as `slack-signing` and `slack-bot` (they never go into sandboxes);
+   - saves the Slack settings in hangar's database (no config map to edit);
+   - sends a signed test request through hangar's Slack route.
+
+   To script it: `hangar setup slack --signing-secret-file … --bot-token-file … --channel C0123ABCD=acme/app --user U0456EFGH --non-interactive`. Get a channel's ID from *channel name → About*, at the bottom. Each channel's repo must already be in `HANGAR_GITHUB_REPOS` (`hangar setup github`), which picks its environment.
+3. **Finish in Slack.** Under *Event Subscriptions*, retry the request URL; it should verify now. Then invite the app to each mapped channel with `/invite @hangar`. Thread replies only arrive from channels the app is in.
+4. **Check the setup** with `hangar doctor`. It checks:
    - that both credentials are stored;
    - that the bot token works (`auth.test`);
    - that every mapped channel points at a repo in `HANGAR_GITHUB_REPOS`.

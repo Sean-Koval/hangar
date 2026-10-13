@@ -18,10 +18,16 @@ from hangar.models import Credential, Sandbox, SandboxState, now
 METADATA = "http://metadata.google.internal/computeMetadata/v1"
 
 
-def _check(name: str, ok: bool | None, detail: str, fix: str | None = None) -> dict[str, Any]:
-    """ok: True = pass, False = fail, None = warning / not applicable."""
-    return {"name": name, "status": "ok" if ok else ("fail" if ok is False else "warn"), "detail": detail,
-            "fix": None if ok else fix}
+def _check(name: str, ok: bool | None, detail: str, fix: str | None = None,
+           action: dict[str, Any] | None = None) -> dict[str, Any]:
+    """ok: True = pass, False = fail, None = warning / not applicable.
+
+    `action` (workstream setup) is a fix `hangar doctor --fix` can apply on its own: {"id": ..., ...}."""
+    out = {"name": name, "status": "ok" if ok else ("fail" if ok is False else "warn"), "detail": detail,
+           "fix": None if ok else fix}
+    if action and not ok:
+        out["action"] = action
+    return out
 
 
 async def _metadata_token(transport=None) -> str | None:
@@ -102,13 +108,13 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
                 await gh.close()
     elif s.github_repos:
         out.append(_check("github token", False, "HANGAR_GITHUB_REPOS is set but HANGAR_GITHUB_TOKEN_CREDENTIAL "
-                          "isn't, so hangar can't open PRs or comment", "set it in the hangar-site config map"))
+                          "isn't, so hangar can't open PRs or comment",
+                          "hangar setup github   (stores the token and the setting; or set it in hangar-site)"))
     if s.github_webhook_secret_credential:
         ok = h.store.get(Credential, s.github_webhook_secret_credential) is not None
         out.append(_check("github webhook secret", ok, "stored" if ok else
                           f"credential '{s.github_webhook_secret_credential}' is missing",
-                          f"hangar cred add {s.github_webhook_secret_credential} --harness webhook --kind generic "
-                          "--file ~/.hangar/gh-webhook-secret"))
+                          "hangar setup github   (generates and stores the secret, and sets it on the webhook)"))
     names = set(fleet.catalog.names())
     creds = {c.name for c in h.store.list(Credential)}
     for repo, envs in s.github_repos.items():
@@ -130,7 +136,13 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
                 out.append(_check(f"environment {env}", True if built else None,
                                   "ready" if built else "not built yet: the first job will wait for a build",
                                   f"hangar env build {env}  (or leave HANGAR_PREBUILD_ENVIRONMENTS unset to "
-                                  "build mapped environments at startup)"))
+                                  "build mapped environments at startup)",
+                                  action={"id": "build_environment", "env": env}))
+
+    # --- workstream setup: each mapped repo's webhook exists, is active and sends the events hangar handles
+    from hangar.setup_api import webhook_checks
+
+    out += await webhook_checks(h, transport)
 
     # --- workstream B: slack
     from hangar.slack import doctor_checks as slack_checks
@@ -151,7 +163,8 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
                           "hangar service account)"))
     if not (s.session_store or "").startswith("gs://") and "kubernetes" in fleet.providers:
         out.append(_check("durable checkpoints", None, "checkpoints are on the control plane's disk",
-                          "set HANGAR_SESSION_STORE=gs://<bucket> (terraform output session_bucket) in hangar-site"))
+                          "hangar config set HANGAR_SESSION_STORE gs://<bucket>  (terraform output session_bucket), "
+                          "then restart hangar"))
     # git gateway (workstream F): reachable, and every GitHub App credential can mint a token
     out += await fleet.gateway.doctor(transport)
     await asyncio.sleep(0)
