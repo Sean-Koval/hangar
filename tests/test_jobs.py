@@ -383,3 +383,17 @@ async def test_mcp_job_tools(jobs, world, fleet):
         job = await _until(jobs, jid, DONE)
         assert job.state == JobState.SUCCEEDED and job.result.pushed, [e.message for e in job.events]
         assert _remote_has(world["remote"], job.branch)
+
+
+def test_final_comment_explains_failures(fleet):
+    from hangar.models import Job, JobEvent
+
+    svc = JobService(fleet)
+    job = Job(title="t", instructions="x", environment="e", branch="hangar/j", state=JobState.FAILED, reason="error",
+              events=[JobEvent(state="provisioning", message="starting a sandbox"),
+                      JobEvent(state="failed", message="error: failed to create sandbox: build of e failed: denied")])
+    text = svc._final_comment(job)
+    assert "What went wrong: error: failed to create sandbox" in text
+    assert "on the PR" not in text and "re-add the `hangar` label" in text
+    job.result.pr_url = "https://github.com/o/r/pull/9"
+    assert "on the PR" in svc._final_comment(job)
