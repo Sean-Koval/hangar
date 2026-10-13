@@ -939,14 +939,40 @@ class Gate:
 
     TAIL = 6000
 
-    def __init__(self, spec: dict, out: Out):
+    def __init__(self, spec: dict, out: Out, args: argparse.Namespace | None = None):
         self.command, self.cwd = spec["command"], spec["cwd"]
         self.rounds, self.deadline, self.timeout = spec["rounds"], spec["deadline"], spec["timeout"]
         self.out, self.failed = out, 0
-        self.state = os.path.expanduser(f"~/.hangar/runs/{os.environ.get('HANGAR_RUN_ID') or 'run'}.verify")
+        # integrate(#65 x #66): under the uid split the check is the agent's code (the repo's tests), so it runs as
+        # the agent, in the harness's environment, never as hangar's user, whose capabilities could make it root.
+        # The rounds file is the agent's too, where hangar and the Stop hook read and write it.
+        self.agent: tuple[str, str, str] | None = None
+        home = "~"
+        if args is not None and (user := getattr(args, "as_user", None)):
+            home = pwd.getpwnam(user).pw_dir
+            self.agent = (user, home, args.run_env)
+        self.state = os.path.expanduser(f"{home}/.hangar/runs/{os.environ.get('HANGAR_RUN_ID') or 'run'}.verify")
+
+    def _argv(self, argv: list) -> list:
+        if self.agent is None:
+            return argv
+        user, home, run_env = self.agent
+        return as_agent(user, home, run_env, self.cwd, argv)
+
+    def _record(self, line: str) -> None:
+        try:
+            if self.agent:
+                subprocess.run(self._argv(["sh", "-c", 'printf "%s\\n" "$1" >> "$0"', self.state, line]),
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=30)
+            else:
+                with open(self.state, "a") as f:
+                    f.write(line + "\n")
+        except (OSError, subprocess.SubprocessError):
+            pass
 
     @classmethod
-    def load(cls, out: Out) -> Gate | None:
+    def load(cls, out: Out, args: argparse.Namespace | None = None) -> Gate | None:
         try:
             spec = json.loads(os.environ.get("HANGAR_VERIFY_GATE") or "null")
         except ValueError:
@@ -955,7 +981,7 @@ class Gate:
                 and isinstance(spec.get("cwd"), str) and all(isinstance(spec.get(k), int) and spec[k] >= 0
                                                              for k in ("rounds", "deadline", "timeout"))):
             return None
-        return cls(spec, out)
+        return cls(spec, out, args)
 
     def due(self) -> bool:
         return self.failed < self.rounds and time.time() < self.deadline
@@ -964,18 +990,15 @@ class Gate:
         """Run the check; None when it passes (or can't run: hangar's own check after the turn decides), else
         the message that sends the agent back to work."""
         try:
-            p = subprocess.run(["bash", "-c", self.command], cwd=self.cwd, stdin=subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=max(1, self.timeout))
+            p = subprocess.run(self._argv(["bash", "-c", self.command]), cwd=None if self.agent else self.cwd,
+                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               timeout=max(1, self.timeout))
             code, output = p.returncode, p.stdout or b""
         except subprocess.TimeoutExpired as e:
             code, output = 124, (e.stdout or b"") + f"\n(timed out after {self.timeout} s)".encode()
         except OSError:
             return None
-        try:
-            with open(self.state, "a") as f:
-                f.write("pass\n" if code == 0 else f"fail {code}\n")
-        except OSError:
-            pass
+        self._record("pass" if code == 0 else f"fail {code}")
         if code == 0:
             self.out.event("verify", round=self.failed, exit_code=0, passed=True)
             return None
@@ -1030,7 +1053,7 @@ def main(argv: list | None = None) -> int:
 
     for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         signal.signal(sig, stop)
-    gate = Gate.load(out)  # --- overnight/autofix
+    gate = Gate.load(out, args)  # --- overnight/autofix
     h.start(prompt)
     alive = True
     while alive:

@@ -282,3 +282,37 @@ def test_driver_gate_stops_at_its_rounds_and_ignores_a_bad_spec(tmp_path):
 def test_hook_command_quotes_everything():
     cmd = verifyloop.stop_hook("pytest -k 'a and b'; rm -rf $HOME", "/w/my repo", 3, 100)
     assert shlex.quote("pytest -k 'a and b'; rm -rf $HOME") in cmd and shlex.quote("/w/my repo") in cmd
+
+
+def test_driver_gate_runs_the_check_as_the_agent_under_the_uid_split(tmp_path, monkeypatch):
+    """integrate(#65 x #66): with --as the driver is hangar's user and holds CAP_SETUID, so the check (the repo's own
+    code) must run as the agent, in its environment, and the rounds go to the agent's runs dir where hangar reads
+    them. setpriv itself needs root: the test runs everything after its `--` for real."""
+    import argparse
+    import pwd
+    from types import SimpleNamespace
+
+    home, repo = tmp_path / "agent", tmp_path / "repo"
+    (home / ".hangar" / "runs").mkdir(parents=True)
+    repo.mkdir()
+    (tmp_path / "run.env").write_text("export FROM_RUN_ENV=yes\n")
+    monkeypatch.setattr(pwd, "getpwnam", lambda user: SimpleNamespace(pw_dir=str(home)))
+    monkeypatch.setenv("HANGAR_RUN_ID", "run-split")
+    seen: list[tuple[list, object]] = []
+    real = subprocess.run
+
+    def run(argv, **kw):
+        seen.append((argv, kw.get("cwd")))
+        assert argv[0] == "setpriv" and "--reuid=agent" in argv and "--ambient-caps=-all" in argv
+        return real(argv[argv.index("--") + 1:], **kw)
+
+    monkeypatch.setattr(driver.subprocess, "run", run)
+    events: list[dict] = []
+    out = SimpleNamespace(event=lambda kind, **kw: events.append(kw))
+    args = argparse.Namespace(as_user="agent", run_env=str(tmp_path / "run.env"))
+    spec = {"command": 'echo "$FROM_RUN_ENV in $PWD as $HOME"; exit 3', "cwd": str(repo), "rounds": 2,
+            "deadline": int(now()) + 600, "timeout": 30}
+    fix = driver.Gate(spec, out, args).check()
+    assert fix is not None and f"yes in {repo} as {home}" in fix and events[0]["exit_code"] == 3
+    assert len(seen) == 2 and all(cwd is None for _, cwd in seen)  # hangar's user may not enter the repo
+    assert (home / ".hangar/runs/run-split.verify").read_text() == "fail 3\n"
