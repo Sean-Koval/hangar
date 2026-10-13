@@ -9,7 +9,8 @@ address, a request as root, or a call that fails before the command started.
 The daemon runs as the sandbox user, in a sandbox that runs untrusted code, so nothing it returns is trusted: output
 keeps only a bounded tail, reads stop at the caller's limit, frames are size-capped, and responses are never
 decompressed. Its access token is HMAC(the vault key, sandbox id): unique per sandbox, never stored, and the same
-after a control-plane restart, so an already running daemon is found again rather than started twice.
+after a control-plane restart, so an already running daemon is found again rather than started twice. Requests are
+signed with the token (`sign`) rather than carrying it.
 """
 
 from __future__ import annotations
@@ -17,7 +18,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
-import collections
 import contextlib
 import hashlib
 import hmac
@@ -25,6 +25,7 @@ import io
 import ipaddress
 import json
 import logging
+import secrets
 import shlex
 import tarfile
 import time
@@ -105,19 +106,31 @@ def _text(t: OutputTail[bytes]) -> tuple[str, bool]:
 class Endpoint:
     url: str
     token: str
-    ident: tuple
+    ref: str | None
     version: str = ""
 
 
+def sign(token: str, method: str, raw_path: bytes, body: bytes) -> str:
+    """X-Hangar-Sig (envd/src/auth.rs): HMAC(token; ms, nonce, method, path?query, sha256(body)). The token itself
+    never leaves the control plane, so a request that reaches the wrong address is useless to whoever got it."""
+    ts, nonce = int(time.time() * 1000), secrets.token_hex(16)
+    msg = f"{ts}\n{nonce}\n{method}\n".encode() + raw_path + b"\n" + hashlib.sha256(body).hexdigest().encode()
+    return f"{ts}.{nonce}.{hmac.new(token.encode(), msg, hashlib.sha256).hexdigest()}"
+
+
 class Envd:
-    """Per-provider router: finds or starts each sandbox's daemon and makes calls to it."""
+    """Per-provider router: finds or starts each sandbox's daemon and makes calls to it.
+
+    Starting a daemon happens in the background: the call that finds none running uses the provider, and the
+    sandbox's later calls use the daemon once it answers. A daemon that can't be started or reached isn't tried
+    again for RETRY_AFTER seconds."""
 
     def __init__(self, provider: Provider, settings: Settings):
         self.p, self.s = provider, settings
         self.binaries = find_binaries(settings) if settings.envd != "off" else {}
         self._eps: dict[str, Endpoint] = {}
         self._down: dict[str, float] = {}
-        self._locks: collections.defaultdict[str, asyncio.Lock] = collections.defaultdict(asyncio.Lock)
+        self._starting: dict[str, asyncio.Task] = {}
         self._digests: dict[str, str] = {}
         self._key: bytes | None = None
         self._http: httpx.AsyncClient | None = None
@@ -151,81 +164,132 @@ class Envd:
     @property
     def http(self) -> httpx.AsyncClient:
         if self._http is None:
-            # trust_env=False: a configured HTTP proxy must never see these requests (or their tokens).
+            # trust_env=False: a configured HTTP proxy must never see these requests.
             self._http = httpx.AsyncClient(
                 trust_env=False, timeout=httpx.Timeout(30.0, connect=2.0),
                 limits=httpx.Limits(max_connections=2048, max_keepalive_connections=256, keepalive_expiry=30))
         return self._http
 
     async def close(self) -> None:
+        for t in self._starting.values():
+            t.cancel()
+        self._starting.clear()
         if self._http is not None:
             await self._http.aclose()
             self._http = None
 
     def forget(self, sb: Sandbox) -> None:
-        """The sandbox is gone or was replaced (destroy, pause, resume): find its daemon afresh next time."""
+        """The sandbox is gone (destroy): drop what is known about its daemon."""
         self._eps.pop(sb.id, None)
         self._down.pop(sb.id, None)
+        if t := self._starting.pop(sb.id, None):
+            t.cancel()
 
-    def _ident(self, sb: Sandbox) -> tuple:
-        return (sb.provider_ref, sb.info.get("pod"))
+    def _lost(self, sb: Sandbox, why: str) -> None:
+        """A call failed in transport: the daemon died, or the sandbox moved (a resumed pod has a new IP). Look it
+        up again on the next call rather than trusting the old address."""
+        if self._eps.pop(sb.id, None) is not None:
+            log.info("envd: lost the daemon in %s (%s)", sb.id, why[:200])
 
     def _mark_down(self, sb: Sandbox, why: str) -> None:
-        if sb.id not in self._down:
-            log.info("envd: not using the daemon in %s (%s); falling back to %s exec", sb.id, why, self.p.name)
+        log.info("envd: not using a daemon in %s for %ds (%s); %s exec instead", sb.id, RETRY_AFTER, why[:300],
+                 self.p.name)
         self._eps.pop(sb.id, None)
         self._down[sb.id] = time.monotonic() + RETRY_AFTER
 
+    def request(self, ep: Endpoint, method: str, path: str, *, params: dict[str, str] | None = None,
+                content: bytes = b"", headers: dict[str, str] | None = None,
+                timeout: httpx.Timeout | None = None) -> httpx.Request:
+        req = self.http.build_request(method, f"{ep.url}{path}", params=params, content=content, headers=headers,
+                                      timeout=timeout or httpx.Timeout(30.0, connect=2.0))
+        req.headers["Accept-Encoding"] = "identity"
+        req.headers["X-Hangar-Sig"] = sign(ep.token, method, req.url.raw_path, content)
+        return req
+
+    async def send_capped(self, req: httpx.Request, cap: int) -> tuple[int, bytes]:
+        """Status and raw body of a small response, refusing more than `cap` bytes (and any compression: httpx
+        would otherwise inflate whatever the sandbox sent)."""
+        resp = await self.http.send(req, stream=True)
+        try:
+            if resp.headers.get("content-encoding", "identity") != "identity":
+                raise EnvdError("envd: compressed response, none was asked for")
+            body = bytearray()
+            async for chunk in resp.aiter_raw():
+                body += chunk
+                if len(body) > cap:
+                    raise EnvdError(f"envd: response over {cap} bytes")
+            return resp.status_code, bytes(body)
+        finally:
+            await resp.aclose()
+
     # ------------------------------------------------------------------ finding and starting the daemon
     async def endpoint(self, sb: Sandbox) -> Endpoint | None:
+        """The sandbox's daemon if it is known to be up; otherwise None, starting it in the background."""
         if not self.binaries or not sb.provider_ref:
             return None
         ep = self._eps.get(sb.id)
-        if ep is not None and ep.ident == self._ident(sb):
+        if ep is not None and ep.ref == sb.provider_ref:
             return ep
         if self._down.get(sb.id, 0.0) > time.monotonic():
             return None
-        lock = self._locks[sb.id]
-        if lock.locked():
-            return None  # someone is starting it right now: don't queue behind an upload, use the provider
-        async with lock:
-            try:
-                ep = await asyncio.wait_for(self._connect(sb), START_TIMEOUT)
-            except Exception as e:  # noqa: BLE001 - any failure means "use the provider", never a failed call
-                self._mark_down(sb, str(e)[:300] or type(e).__name__)
-                return None
-            self._eps[sb.id] = ep
-            self._down.pop(sb.id, None)
-            sb.info["envd"] = {"url": ep.url, "version": ep.version}
+        t = self._starting.get(sb.id)
+        if t is None or t.done():
+            self._starting[sb.id] = asyncio.create_task(self._bring_up(sb))
+        return None
+
+    async def ready(self, sb: Sandbox, timeout: float = START_TIMEOUT) -> Endpoint | None:
+        """Start the daemon (or wait for the start under way) and return it: for callers that would rather wait
+        than use the provider meanwhile, like tests and benchmarks."""
+        if (ep := await self.endpoint(sb)) is not None:
             return ep
+        if t := self._starting.get(sb.id):
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(asyncio.shield(t), timeout)
+        return self._eps.get(sb.id)
+
+    async def _bring_up(self, sb: Sandbox) -> None:
+        ref = sb.provider_ref
+        try:
+            ep = await asyncio.wait_for(self._connect(sb), START_TIMEOUT)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 - any failure means "use the provider", never a failed call
+            self._mark_down(sb, str(e) or type(e).__name__)
+            return
+        finally:
+            self._starting.pop(sb.id, None)
+        if sb.provider_ref != ref:
+            return  # replaced meanwhile
+        self._eps[sb.id] = ep
+        self._down.pop(sb.id, None)
+        sb.info["envd"] = {"url": ep.url, "version": ep.version}
 
     async def _connect(self, sb: Sandbox) -> Endpoint:
-        token, ident = self.token(sb), self._ident(sb)
+        token = self.token(sb)
         urls = await self.urls(sb)
         if not urls:
             raise EnvdError("the sandbox has no address the control plane can reach")
-        if ep := await self._probe(urls, token, ident):
+        if ep := await self._probe(sb, urls, token):
             return ep
         await self.install(sb, token)
-        for _ in range(20):  # the daemon listens before `--daemon` returns; this covers address lookups lagging
-            if ep := await self._probe(await self.urls(sb), token, ident):
+        for _ in range(10):  # the daemon listens before `--daemon` returns; this covers address lookups lagging
+            if ep := await self._probe(sb, await self.urls(sb), token):
                 return ep
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.1)
         raise EnvdError(f"started, but not answering at {', '.join(urls)}")
 
-    async def _probe(self, urls: list[str], token: str, ident: tuple) -> Endpoint | None:
+    async def _probe(self, sb: Sandbox, urls: list[str], token: str) -> Endpoint | None:
         for url in urls:
+            ep = Endpoint(url=url, token=token, ref=sb.provider_ref)
             try:
-                r = await self.http.get(f"{url}/info", headers={"X-Access-Token": token},
-                                        timeout=httpx.Timeout(2.0, connect=0.5))
-            except httpx.HTTPError:
+                status, body = await self.send_capped(
+                    self.request(ep, "GET", "/info", timeout=httpx.Timeout(2.0, connect=0.5)), 65536)
+                info = json.loads(body) if status == 200 else None
+            except (httpx.HTTPError, EnvdError, ValueError):
                 continue
-            if r.status_code == 200 and len(r.content) < 65536:
-                try:
-                    version = str(r.json().get("version", ""))[:32]
-                except (ValueError, AttributeError):
-                    continue
-                return Endpoint(url=url, token=token, ident=ident, version=version)
+            if isinstance(info, dict):
+                ep.version = str(info.get("version", ""))[:32]
+                return ep
         return None
 
     async def urls(self, sb: Sandbox) -> list[str]:
@@ -237,36 +301,39 @@ class Envd:
         raise NotImplementedError
 
     # ------------------------------------------------------------------ Connect calls
-    def _headers(self, ep: Endpoint, streaming: bool, timeout: float | None) -> dict[str, str]:
+    @staticmethod
+    def _connect_headers(streaming: bool, timeout: float | None) -> dict[str, str]:
         h = {"Content-Type": "application/connect+json" if streaming else "application/json",
-             "Connect-Protocol-Version": "1", "X-Access-Token": ep.token}
+             "Connect-Protocol-Version": "1"}
         if timeout:
             h["Connect-Timeout-Ms"] = str(int(timeout * 1000))
         return h
 
     async def unary(self, ep: Endpoint, method: str, body: dict[str, Any], timeout: float = 30.0) -> dict[str, Any]:
+        req = self.request(ep, "POST", f"/{method}", content=json.dumps(body).encode(),
+                           headers=self._connect_headers(False, timeout), timeout=httpx.Timeout(timeout + 5, connect=2))
         try:
-            r = await self.http.post(f"{ep.url}/{method}", content=json.dumps(body).encode(),
-                                     headers=self._headers(ep, False, timeout), timeout=timeout + 5)
+            status, raw = await self.send_capped(req, MAX_FRAME)
         except httpx.HTTPError as e:
             raise EnvdError(f"envd {method}: {e}", "transport") from e
-        if r.status_code != 200:
-            code, msg = _connect_error(r.content, r.status_code)
+        if status != 200:
+            code, msg = _connect_error(raw, status)
             raise EnvdError(f"envd {method}: {code}: {msg}", code)
-        if len(r.content) > MAX_FRAME:
-            raise EnvdError(f"envd {method}: response too large")
-        return r.json() if r.content else {}
+        try:
+            out = json.loads(raw) if raw else {}
+        except ValueError as e:
+            raise EnvdError(f"envd {method}: malformed response") from e
+        return out if isinstance(out, dict) else {}
 
     async def stream(self, ep: Endpoint, method: str, body: dict[str, Any], timeout: float | None,
                      keepalive: int | None = None) -> AsyncIterator[dict[str, Any]]:
         """Messages of a server stream. An error before the first message raises EnvdError(started=False): nothing
         ran, so the caller may use the provider instead; after it, started=True."""
-        headers = self._headers(ep, True, timeout)
+        headers = self._connect_headers(True, timeout)
         if keepalive:
             headers["Keepalive-Ping-Interval"] = str(keepalive)
-        req = self.http.build_request(
-            "POST", f"{ep.url}/{method}", content=_frame(json.dumps(body).encode()), headers=headers,
-            timeout=httpx.Timeout(None if timeout is None else timeout + 30, connect=2.0))
+        req = self.request(ep, "POST", f"/{method}", content=_frame(json.dumps(body).encode()), headers=headers,
+                           timeout=httpx.Timeout(None if timeout is None else timeout + 30, connect=2.0))
         try:
             resp = await self.http.send(req, stream=True)
         except httpx.HTTPError as e:
@@ -307,7 +374,7 @@ class Envd:
                         raise EnvdError(f"envd {method}: malformed message", started=started)
                     started = True
                     yield msg
-            raise EnvdError(f"envd {method}: the stream ended without its end message", started=started)
+            raise EnvdError(f"envd {method}: the stream ended without its end message", "transport", started=started)
         except httpx.HTTPError as e:
             raise EnvdError(f"envd {method}: {e}", "transport", started=started) from e
         finally:
@@ -341,16 +408,12 @@ class Envd:
                     elif (e := ev.get("end")) is not None:
                         end = e if isinstance(e, dict) else {}
         except EnvdError as e:
-            if e.started:
-                if end is not None:
-                    pass  # the exit status arrived; only the end-of-stream frame went missing
-                else:
-                    raise ProviderError(f"exec failed: lost the command's output ({e}); it may still be running") \
-                        from e
-            else:
-                if e.code in ("transport", "unauthenticated", "401"):
-                    self._mark_down(sb, str(e))
+            if e.code in ("transport", "unauthenticated"):
+                self._lost(sb, str(e))
+            if not e.started:
                 return None  # refused before starting (no cwd, the process limit, a dead daemon): the provider runs it
+            if end is None:
+                raise ProviderError(f"exec failed: lost the command's output ({e}); it may still be running") from e
         if end is None:
             raise ProviderError("exec failed: the command's output stream ended without an exit status")
         exited = end.get("exited") is True
@@ -368,12 +431,11 @@ class Envd:
         ep = await self.endpoint(sb)
         if ep is None:
             return SKIP
-        req = self.http.build_request("GET", f"{ep.url}/files", params={"path": path},
-                                      headers={"X-Access-Token": ep.token}, timeout=httpx.Timeout(300.0, connect=2.0))
+        req = self.request(ep, "GET", "/files", params={"path": path}, timeout=httpx.Timeout(300.0, connect=2.0))
         try:
             resp = await self.http.send(req, stream=True)
         except httpx.HTTPError as e:
-            self._mark_down(sb, str(e))
+            self._lost(sb, str(e))
             return SKIP
         try:
             if resp.status_code in (400, 404):
@@ -390,7 +452,7 @@ class Envd:
             data = b"".join(parts)
             return data if cap is None else data[:cap]
         except httpx.HTTPError as e:
-            self._mark_down(sb, str(e))
+            self._lost(sb, str(e))
             return SKIP
         finally:
             await resp.aclose()
@@ -401,17 +463,19 @@ class Envd:
         ep = await self.endpoint(sb)
         if ep is None:
             return False
+        req = self.request(ep, "POST", "/files", params={"path": path, "mode": f"{mode & 0o7777:o}"}, content=data,
+                           headers={"Content-Type": "application/octet-stream"},
+                           timeout=httpx.Timeout(max(60.0, len(data) / (4 << 20)), connect=2.0))
         try:
-            r = await self.http.post(f"{ep.url}/files", params={"path": path, "mode": f"{mode & 0o7777:o}"},
-                                     content=data, headers={"X-Access-Token": ep.token,
-                                                            "Content-Type": "application/octet-stream"},
-                                     timeout=httpx.Timeout(max(60.0, len(data) / (4 << 20)), connect=2.0))
+            status, _ = await self.send_capped(req, 65536)
         except httpx.HTTPError as e:
-            self._mark_down(sb, str(e))
+            self._lost(sb, str(e))
             return False
-        if r.status_code != 200:
-            if r.status_code not in (401, 403):
-                log.warning("envd: write of %s in %s failed (%s); using %s", path, sb.id, r.status_code, self.p.name)
+        except EnvdError:
+            return False
+        if status != 200:
+            if status != 403:
+                log.warning("envd: write of %s in %s failed (%s); using %s", path, sb.id, status, self.p.name)
             return False
         return True
 
