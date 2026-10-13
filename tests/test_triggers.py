@@ -314,10 +314,13 @@ def test_inbound_webhook_signature_mapping_and_redelivery(hook_client):
     # redelivery (same delivery id): the same job, not a second one
     again = hook_client.post(url, content=body, headers=hdrs)
     assert again.status_code == 202 and again.json() == {"ok": True, "job": job.id, "duplicate": True}
-    # without a delivery id the body identifies the delivery
+    # the signed body identifies the delivery: without a delivery id, or with another one, it's still a redelivery
     nod = {"Sentry-Hook-Signature": _sig(body)}
-    first = hook_client.post(url, content=body, headers=nod).json()["job"]
-    assert first != job.id and hook_client.post(url, content=body, headers=nod).json()["job"] == first
+    assert hook_client.post(url, content=body, headers=nod).json() == {"ok": True, "job": job.id, "duplicate": True}
+    other = json.dumps({**EVENT, "data": {**EVENT["data"], "id": "43"}}).encode()
+    first = hook_client.post(url, content=other, headers={"Sentry-Hook-Signature": _sig(other)}).json()["job"]
+    assert first != job.id and hook_client.post(url, content=other, headers={
+        "Sentry-Hook-Signature": _sig(other)}).json()["job"] == first
     assert len(h.jobs.list()) == 2
     # a service token can't see the webhook's jobs
     svc_raw, _ = h.auth.create("svc", ["jobs"])

@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
+from hangar import exchange
+from hangar.events import total_usage
 from hangar.fleet import _clip_tail
 from hangar.harnesses import Harness
 from hangar.models import (
@@ -46,7 +48,6 @@ log = logging.getLogger("hangar.strategies")
 
 _TEST_PATH = re.compile(r"(^|/)(tests?|__tests__|specs?)/|(^|/)test_[^/]+\.py$|_(test|spec)\.[^/]+$"
                         r"|\.(test|spec)\.[^/]+$|(^|/)conftest\.py$")
-_COST = re.compile(r'"total_cost_usd"\s*:\s*([0-9]+(?:\.[0-9]+)?)')
 MAX_JUDGE_DIFF = 200_000
 
 
@@ -164,7 +165,7 @@ async def _fork(svc: SessionService, parent: Session, n: int, requester: str, *,
     if ck is None:
         raise SessionError(f"session {parent.name} has nothing to fork yet (no checkpoint and no sandbox)")
     blobs: dict[str, bytes] = {}
-    for part in PARTS:
+    for part in (*PARTS, *exchange.CHECKPOINT_EXTRA):  # --- interactions: session.patch too (get_session_patch)
         if part in ck.parts:
             blob = await svc.blobs.get(f"{parent.id}/{ck.id}/{part}.enc")
             if blob is None:
@@ -184,12 +185,19 @@ async def _fork(svc: SessionService, parent: Session, n: int, requester: str, *,
                 # The conversation is forked on the child's first turn (each child gets its own id), never resumed.
                 harness_session=None, harness_session_for=parent.harness_session_for,
                 fork_conversation=parent.harness_session if parent.harness_session_for else None,
-                # The history (for handoffs and the record); its runs belong to the parent's sandboxes.
-                turns=[t.model_copy(update={"run_id": None}, deep=True) for t in parent.turns],
-                checkpoints=[ck.model_copy(deep=True)])
+                # The history (for handoffs and the record); its runs, their event cursors and their usage belong
+                # to the parent (--- interactions: a child's usage is what the child spent).
+                turns=[t.model_copy(update={"run_id": None, "event_cursor": None, "usage": None,
+                                            "repair_usage": None}, deep=True) for t in parent.turns],
+                needs_input=parent.needs_input, checkpoints=[ck.model_copy(deep=True)])
             for part, blob in blobs.items():
                 await svc.blobs.put(f"{c.id}/{ck.id}/{part}.enc", blob)
             children.append(c)
+        # --- interactions: the inherited turns' artifacts, so each child can still serve them (one at a time)
+        for a in (a for t in parent.turns for a in t.artifacts):
+            if (blob := await svc.blobs.get(exchange.artifact_key(parent, a.turn, a.path))) is not None:
+                for c in children:
+                    await svc.blobs.put(exchange.artifact_key(c, a.turn, a.path), blob)
     except BaseException:
         for c in children:
             svc._spawn(svc._drop(f"{c.id}/"))
@@ -290,9 +298,14 @@ async def run_best_of_n(jobs: JobService, job: Job) -> None:
         job.sandbox_id = None
         jobs._save(job)
     pending = [a for a in job.attempts if a.state != "done"]
-    if pending:
-        await asyncio.gather(*(_run_attempt(jobs, job, a) for a in pending))
-    await _finish(jobs, job)
+    async with contextlib.AsyncExitStack() as held:
+        # --- interactions: an attempt that finished early must still be up when the slowest one is done and the
+        # ranking runs; the idle loop would otherwise suspend it (after keep_minutes) and lose the best result.
+        for s in sessions.values():
+            await held.enter_async_context(svc.hold(s))
+        if pending:
+            await asyncio.gather(*(_run_attempt(jobs, job, a) for a in pending))
+        await _finish(jobs, job)
 
 
 async def _run_attempt(jobs: JobService, job: Job, a: Attempt) -> None:
@@ -318,6 +331,7 @@ async def _attempt_steps(jobs: JobService, job: Job, a: Attempt) -> None:
         a.outcome, a.error = "error", "its session is gone"
         return
     async with svc.hold(s):
+        s.budget = job.budget  # --- interactions: an attempt is an agent turn of the job; its budget applies
         if a.run_id is None:
             if job.cancel_requested:
                 a.outcome = "cancelled"
@@ -331,28 +345,33 @@ async def _attempt_steps(jobs: JobService, job: Job, a: Attempt) -> None:
             else:
                 st = SessionTurn(message=job.instructions, requester=job.requester)
                 s.turns.append(st)
-            # Same task and context; the branch named in the prompt is the attempt's own.
-            prompt = jobs._prompt(job.model_copy(update={"branch": s.branch}), job.turns[0],
-                                  sb.info.get("repo_path"))
+            # Same task and context; the branch named in the prompt is the attempt's own. --- interactions: and the
+            # same exchange as a single job's first turn: local work applied, the output schema and the protocol.
+            exchange.job_turn_io(job, job.turns[0], st, first=True)
+            prompt = (jobs._prompt(job.model_copy(update={"branch": s.branch}), job.turns[0],
+                                   sb.info.get("repo_path"))
+                      + exchange.prompt_notes(jobs.settings, s, st, protocol=True))
             await svc.begin_turn(s, st, prompt=prompt, timeout_minutes=job.timeout_minutes, handoff=False,
                                  extra_env={"HANGAR_JOB_ID": job.id, "HANGAR_JOB_DIR": jobs._ctxdir(job),
                                             "HANGAR_ATTEMPT": str(a.index)})
             a.run_id, a.started_at = st.run_id, st.started_at
+            if all(x.run_id for x in job.attempts):  # every attempt has its copy of the local work now
+                job.context = exchange.strip_code(job.context)
             jobs._save(job)
         st = next((t for t in reversed(s.turns) if t.run_id == a.run_id), None)
         if st is None:
             raise SessionError(f"turn {a.run_id} is not in session {s.name}")
         if a.outcome is None:
-            outcome, raw = await svc.end_turn(s, st, timeout_minutes=job.timeout_minutes,
-                                              should_cancel=lambda: job.cancel_requested)
+            outcome, _ = await svc.end_turn(s, st, timeout_minutes=job.timeout_minutes,
+                                            should_cancel=lambda: job.cancel_requested)
             a.outcome, a.exit_code, a.finished_at = outcome, st.exit_code, now()
-            m = _COST.findall(raw or "")
-            a.cost_usd = float(m[-1]) if m else None
+            u = total_usage([st])  # --- interactions: from the event stream (every harness), repair run included
+            a.cost_usd = u.cost_usd if u else None
             a.summary = st.summary
             jobs._save(job)
             jobs._event(job, f"attempt {a.index}: agent turn {outcome}"
                              + (f", exit {a.exit_code}" if a.exit_code is not None else ""))
-        if a.outcome in ("gone", "error", "cancelled"):
+        if a.outcome in ("gone", "error", "cancelled", "needs_input"):  # a question is not a result to verify
             return
         if not (s.sandbox_id and svc._alive(s.sandbox_id)):
             a.outcome = "gone"
@@ -368,7 +387,7 @@ async def _inspect(jobs: JobService, job: Job, a: Attempt, s: Session) -> None:
     fleet, red = jobs.fleet, jobs.broker.redact
     sb = fleet.get(s.sandbox_id or "")
     actor = f"job:{job.id}"
-    raw = await fleet.read_file(sb.id, f"{jobs._ctxdir(job)}/RESULT.md")
+    raw = await fleet.read_file(sb.id, f"{jobs._ctxdir(job)}/RESULT.md", limit=32_000)  # agent-written (#48)
     if raw:
         a.summary = red(raw.decode(errors="replace").strip()[:8000]) or a.summary
     repo = sb.info.get("repo_path")
@@ -383,7 +402,7 @@ async def _inspect(jobs: JobService, job: Job, a: Attempt, s: Session) -> None:
     if changed and job.deliver != "none" and len(changed) <= 2000:
         await fleet.exec(sb.id, "git add -A && git commit -q -m "
                          + q(f"hangar: uncommitted changes from {job.id} attempt {a.index}"), actor=actor)
-    base = q(job.result.base_sha or f"origin/{job.base_branch}")
+    base = q(s.base_sha or job.result.base_sha or f"origin/{job.base_branch}")  # a bundle may move it back
     head = await fleet.exec(sb.id, "git rev-parse HEAD", actor=actor)
     a.head_sha = head.stdout.strip() or None
     num = await fleet.exec(sb.id, f"git diff --numstat {base}", actor=actor)
@@ -449,13 +468,15 @@ async def _finish(jobs: JobService, job: Job) -> None:
     sessions = _attempt_sessions(jobs, job)
 
     async def stop(message: str, state: JobState, reason: str) -> None:
+        _tally(jobs, job)
         jobs._event(job, message, state, reason=reason)
         await jobs._report(job)
         await _put_away(jobs, job, sessions, keep=None)
 
     if job.cancel_requested:
         return await stop("cancelled; the attempts were stopped", JobState.CANCELLED, "cancelled")
-    cands = [a for a in job.attempts if a.outcome in ("exited", "timed_out")]
+    # --- interactions: an attempt stopped over budget delivers what it did as a draft, like a single job's turn
+    cands = [a for a in job.attempts if a.outcome in ("exited", "timed_out", "over_budget")]
     if cands and not any(a.rank for a in job.attempts):  # ranked already: a restart mid-delivery
         judged: dict[int, int] = {}
         top = sorted(cands, key=lambda a: _rank_key(job, a, {}))
@@ -482,6 +503,16 @@ async def _finish(jobs: JobService, job: Job) -> None:
     for r, a in enumerate(ranked, 1):
         a.rank = r
     jobs._save(job)
+    asked = sorted((a for a in job.attempts if a.outcome == "needs_input" and alive(a)),
+                   key=lambda a: (a.finished_at or math.inf, a.index))
+    if not ranked and asked:  # --- interactions: nothing finished, but an attempt asked: the job waits for an answer
+        a, ws = asked[0], sessions[asked[0].index]
+        _tally(jobs, job)
+        async with svc.hold(ws):
+            _take_over(jobs, job, a, ws)
+            await exchange.job_needs_input(jobs, job, job.turns[0], ws)
+        await _put_away(jobs, job, sessions, keep=a.index)
+        return
     if not ranked:
         gone_all = all(a.outcome == "gone" for a in job.attempts)
         detail = "; ".join(f"attempt {a.index}: {a.outcome}" + (f" ({a.error})" if a.error else "")
@@ -489,15 +520,22 @@ async def _finish(jobs: JobService, job: Job) -> None:
         return await stop(f"no attempt finished: {detail}", JobState.FAILED,
                           "sandbox_gone" if gone_all else "agent_failed")
     winner, ws = ranked[0], sessions[ranked[0].index]
+    _tally(jobs, job)
     async with svc.hold(ws):
         await _deliver_winner(jobs, job, winner, ws, sessions)
     await jobs._report(job)
     await _put_away(jobs, job, sessions, keep=winner.index)
 
 
-async def _deliver_winner(jobs: JobService, job: Job, w: Attempt, ws: Session, sessions: dict[int, Session]) -> None:
-    from hangar.jobs import _DeliveryError
+def _tally(jobs: JobService, job: Job) -> None:
+    """The job's first turn is all its attempts, their repair runs and the judge: record what they used."""
+    job.turns[0].usage = jobs.usage(job)
+    jobs._save(job)
 
+
+def _take_over(jobs: JobService, job: Job, w: Attempt, ws: Session) -> None:
+    """The attempt's session carries the job from here: its turn is the job's first turn, with its summary,
+    structured result, question and artifacts (--- interactions: as a single job's turn records them)."""
     job.session_id, job.sandbox_id = ws.id, ws.sandbox_id  # follow-ups continue the winner's session
     # From here the winner's session works on the job's branch: a resumed sandbox checks it out by that name, and
     # (with the git gateway) its grant lets it push there, which a follow-up needs.
@@ -506,9 +544,20 @@ async def _deliver_winner(jobs: JobService, job: Job, w: Attempt, ws: Session, s
     turn = job.turns[0]
     turn.run_id, turn.started_at, turn.finished_at = w.run_id, w.started_at, w.finished_at
     turn.exit_code, turn.summary = w.exit_code, w.summary
+    if st := next((t for t in reversed(ws.turns) if t.run_id == w.run_id), None):
+        turn.outcome_reason = st.outcome_reason  # why it was stopped (over budget), for the outcome report
+        exchange.record_job_turn(job, turn, st)
     job.harness, job.model = ws.harness, ws.model
+    job.result.base_sha = ws.base_sha or job.result.base_sha  # local work (a bundle) may have moved it back
+    job.result.summary = w.summary
+    jobs._save(job)
+
+
+async def _deliver_winner(jobs: JobService, job: Job, w: Attempt, ws: Session, sessions: dict[int, Session]) -> None:
+    from hangar.jobs import _DeliveryError
+
+    _take_over(jobs, job, w, ws)
     r = job.result
-    r.summary = w.summary
     r.verify_exit_code, r.verify_tail = w.verify_exit_code, w.verify_tail
     jobs._save(job)
     clean = w.outcome == "exited" and w.exit_code == 0
@@ -527,6 +576,8 @@ async def _deliver_winner(jobs: JobService, job: Job, w: Attempt, ws: Session, s
         pass
     elif w.outcome == "timed_out":
         state, reason = JobState.FAILED, "timed_out"
+    elif w.outcome == "over_budget":
+        state, reason = JobState.FAILED, "over_budget"
     elif not clean and not job.result.commits:
         state, reason = JobState.FAILED, "agent_failed"
     elif not verify_ok:
@@ -606,12 +657,13 @@ async def _judge(jobs: JobService, job: Job, best: list[Attempt], sessions: dict
                       f"`{jdir}/RANKING`, then stop.")
             st = SessionTurn(message=f"judge attempts {nums}", requester=f"job:{job.id}")
             base.turns.append(st)
+            base.budget = job.budget  # --- interactions: the judge is an agent turn of the job too
             await svc.begin_turn(base, st, prompt=prompt, handoff=False,
                                  timeout_minutes=jobs.settings.best_of_n_judge_timeout_minutes,
                                  extra_env={"HANGAR_JOB_ID": job.id, "HANGAR_JUDGE_DIR": jdir})
             await svc.end_turn(base, st, timeout_minutes=jobs.settings.best_of_n_judge_timeout_minutes,
                                should_cancel=lambda: job.cancel_requested)
-            raw = await prov.read_file(sb, f"{jdir}/RANKING") if svc._alive(sb.id) else None
+            raw = await prov.read_file(sb, f"{jdir}/RANKING", limit=4096) if svc._alive(sb.id) else None
         order: list[int] = []
         for x in re.findall(r"\d+", (raw or b"").decode(errors="replace")):
             if int(x) in {a.index for a in best} and int(x) not in order:

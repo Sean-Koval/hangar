@@ -14,6 +14,7 @@ caller ──POST /api/jobs──► queue ─► sandbox (env + harness) ─►
 ```bash
 hangar login https://<your hangar> --token-file ~/.hangar/gke-admin-token   # once; no more HANGAR_URL/TOKEN exports
 hangar doctor                                                               # what's broken, and the fix for each
+hangar doctor --fix                                                         # apply the fixes it can make itself
 ```
 
 `hangar doctor` checks:
@@ -22,9 +23,12 @@ hangar doctor                                                               # wh
 - recent failed sandbox starts (quota);
 - the GitHub token's access to each mapped repo;
 - the webhook secret;
+- that each mapped repo has an active JSON webhook to hangar with the issues, issue_comment and pull_request_review_comment events;
 - that each mapped environment exists, has credentials, and is built;
 - Slack, when configured: its credentials, the bot token, and that each mapped channel's repo is allowed;
 - that checkpoint storage is writable.
+
+`hangar doctor --fix` offers each fix it can make safely on its own: building an environment, or creating or repairing a repo's webhook (events, JSON, and the stored secret). `--yes` applies them without asking. For the rest it prints the exact command.
 
 ## 1. Give a service a token
 
@@ -116,28 +120,23 @@ Callbacks go only to public `https` hosts. Plain `http`, non-public addresses an
 
 ## 4. Trigger from GitHub
 
-1. Store a GitHub token for the control plane (it opens PRs and comments; it does not go into sandboxes) and a webhook secret:
-   ```bash
-   hangar cred add gh-control --harness git --kind git_token
-   hangar cred add gh-webhook --harness webhook --kind generic
-   ```
-2. Configure the control plane:
-   ```bash
-   HANGAR_GITHUB_TOKEN_CREDENTIAL=gh-control
-   HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL=gh-webhook
-   HANGAR_GITHUB_REPOS='{"acme/app": "python"}'      # repo -> environment(s), comma-separated
-   ```
-   On GKE, put these in the optional `hangar-site` config map, which `deploy/gke/up.sh` never overwrites, then restart:
-   ```bash
-   kubectl -n hangar create configmap hangar-site \
-     --from-literal=HANGAR_GITHUB_TOKEN_CREDENTIAL=gh-control \
-     --from-literal=HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL=gh-webhook \
-     --from-literal=HANGAR_GITHUB_REPOS='{"acme/app": "python"}' \
-     --from-literal=HANGAR_SESSION_STORE=gs://<project>-hangar-sessions \
-     --dry-run=client -o yaml | kubectl apply -f -
-   kubectl -n hangar rollout restart deploy/hangar
-   ```
-3. In the repo settings, add a webhook to `https://<hangar>/api/hooks/github` with content type `application/json`, the same secret, and the **Issues** and **Issue comments** events.
+```bash
+hangar setup github                    # asks for the repo, its environment and a token
+hangar setup github --repo acme/app=python --token-file ~/.hangar/gh-token --non-interactive
+```
+
+The wizard:
+1. **Checks the token** before storing anything. It must be able to read each repo and write to it, and to manage its webhooks. The token is read from a hidden prompt, `--token-file`, `--token-stdin` or `--token-from-gh` (the `gh` CLI's login), and it is never echoed or printed.
+   - **Which token:** a [fine-grained token](https://github.com/settings/personal-access-tokens/new) for the repos, with repository permissions *Issues* and *Pull requests*: Read and write, and *Webhooks*: Read and write. *Metadata*: Read is added automatically. A classic token needs the `repo` scope.
+   - **What it's for:** the control plane uses it to comment and open PRs; it never goes into a sandbox.
+2. **Stores** the token as `gh-control` and a generated webhook secret as `gh-webhook` in the vault. Running the wizard again keeps the secret. `--rotate-secret` makes a new one and stores it only once every repo's webhook has it: if GitHub refuses one (a token with *Webhooks*: Read only), the hooks already changed are set back and the old secret stays, so deliveries keep verifying.
+3. **Saves** `HANGAR_GITHUB_TOKEN_CREDENTIAL`, `HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL` and `HANGAR_GITHUB_REPOS` in hangar's database. They apply at once and survive redeploys, with no config map to edit. If the server's environment (on GKE, `hangar-site`) also sets one of them, the environment wins, and the wizard tells you.
+4. **Registers the webhook** on each repo, or updates the existing one: `https://<hangar>/api/hooks/github`, JSON, the stored secret, and the **issues**, **issue_comment** and **pull_request_review_comment** events. A hook that only sent `push` gets the missing events added.
+5. **Tests it twice.** First with a signed delivery through hangar's own route, then with a ping from GitHub, whose result it reads back from the hook's recent deliveries.
+
+GitHub can't deliver to `localhost`. On a laptop the wizard still stores everything and skips the webhook; pass `--webhook-url https://<tunnel>` to register one through a tunnel. `--no-webhook` skips it if you'd rather add it by hand. A generated secret is never shown, so bring your own: `openssl rand -hex 32 > ~/.hangar/gh-webhook-secret`, then pass `--webhook-secret-file ~/.hangar/gh-webhook-secret`, and on GitHub use the URL, content type `application/json`, that secret, and the three events above. Updating an existing hook keeps its other events and its SSL verification setting.
+
+To set the same things by hand, use `hangar cred add gh-control --harness git --kind git_token`, `hangar cred add gh-webhook --harness webhook --kind generic`, and `hangar config set HANGAR_GITHUB_REPOS '{"acme/app": "python"}'`, together with the two `*_CREDENTIAL` settings.
 
 Then:
 
@@ -182,15 +181,17 @@ Over REST or MCP: `"strategy": "best_of_n", "n": 3` (2–8), and optionally `"ju
 
 How it runs:
 1. Hangar prepares the job once: a sandbox, the branch checks and the context files. Then it checkpoints that state.
-2. It [forks](sessions.md#forks-and-best-of-n) the job's session into N attempt sessions. Each attempt restores the checkpoint into its own sandbox, on branch `<job branch>-attempt-<i>`, and runs the agent on the same prompt. The agent sees `$HANGAR_ATTEMPT` (1…N).
-3. Each attempt is verified in its own sandbox, and what it left uncommitted is committed there.
+2. It [forks](sessions.md#forks-and-best-of-n) the job's session into N attempt sessions. Each attempt restores the checkpoint into its own sandbox, on branch `<job branch>-attempt-<i>`, and runs the agent on the same prompt. The agent sees `$HANGAR_ATTEMPT` (1…N). Each attempt is a full first turn: it gets the job's local work (`patch`/`bundle` context), its `output_schema` (with the repair run when the result is missing) and the [`HANGAR_IO`](context-exchange.md) protocol, and the job's `budget` caps each attempt (and the judge) as it caps any agent turn.
+3. Each attempt is verified in its own sandbox, and what it left uncommitted is committed there. An attempt stopped over budget or by its timeout is still ranked (below those that finished cleanly), and delivered as a draft if it wins.
 4. Ranking:
    - attempts that pass `verify` come first;
    - among those, a short judge turn orders them when `judge` is set (it reads each attempt's diff and summary); otherwise the smallest diff wins, then the earliest finish;
    - attempts whose diff changes, renames or deletes the verify command's own test files are flagged (`touched_tests`) and ranked last. These are the paths the command names or, when it names none (`pytest -q`, `make test`), any test file. New test files are fine.
-5. The winner is delivered as the job's branch and PR. The PR body has a table of all attempts. The other attempts are checkpointed and their sandboxes released. With `HANGAR_BEST_OF_N_PUSH_ATTEMPTS=true`, they are also pushed as `<job branch>-attempt-<i>`.
+5. The winner is delivered as the job's branch and PR. Its summary, structured result and artifacts are the job's. The PR body has a table of all attempts. The other attempts are checkpointed and their sandboxes released. With `HANGAR_BEST_OF_N_PUSH_ATTEMPTS=true`, they are also pushed as `<job branch>-attempt-<i>`.
 
-`get_job` and `GET /api/jobs/{id}` list `attempts`: session, branch, outcome, exit code, verify result, diffstat, lines changed, `touched_tests`, score, rank, summary and, when the harness reports it, cost.
+If no attempt finished but one asked a question (`hangar-agent ask`), the first to ask carries the job: it goes to `needs_input` with that question, and the answer (a follow-up, a `/hangar` comment, a Slack thread reply or an A2A message) continues that attempt's session.
+
+`get_job` and `GET /api/jobs/{id}` list `attempts`: session, branch, outcome, exit code, verify result, diffstat, lines changed, `touched_tests`, score, rank, summary and cost (from the attempt's [usage](activity.md)). The job's `usage` is the sum over every attempt, its repair run and the judge. `GET /api/jobs/{id}/events` is one stream across all of them (each event from an attempt carries `data.attempt`), so one `since` cursor works before and after delivery.
 
 - **Follow-ups** continue the winner's session: same conversation, sandbox and branch.
 - **Cancel** stops every attempt. A control-plane restart re-attaches to each running attempt. One attempt's sandbox dying (or its agent failing) doesn't fail the job; it is recorded and left out of the ranking.

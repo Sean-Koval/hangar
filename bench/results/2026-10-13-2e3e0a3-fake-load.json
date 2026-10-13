@@ -1,0 +1,166 @@
+{
+  "meta": {
+    "bench": "control-plane",
+    "git": "2e3e0a3",
+    "started": "2026-10-13T02:21:14",
+    "seconds": 114.3,
+    "host": "vm",
+    "cpus": 2,
+    "python": "3.12.3",
+    "provider": "fake",
+    "sessions": 50,
+    "jobs": 50,
+    "latency_ms": 0.0
+  },
+  "metrics": {
+    "api_idle_healthz": {
+      "n": 27,
+      "p50_ms": 2.41,
+      "p95_ms": 4.83,
+      "mean_ms": 2.88,
+      "min_ms": 1.92,
+      "max_ms": 6.82
+    },
+    "api_idle_sessions": {
+      "n": 27,
+      "p50_ms": 2.52,
+      "p95_ms": 6.09,
+      "mean_ms": 3.02,
+      "min_ms": 1.9,
+      "max_ms": 6.42
+    },
+    "api_idle_sandboxes": {
+      "n": 27,
+      "p50_ms": 2.08,
+      "p95_ms": 8.14,
+      "mean_ms": 2.97,
+      "min_ms": 1.46,
+      "max_ms": 9.47
+    },
+    "api_idle_jobs": {
+      "n": 27,
+      "p50_ms": 2.03,
+      "p95_ms": 3.13,
+      "mean_ms": 2.21,
+      "min_ms": 1.45,
+      "max_ms": 5.77
+    },
+    "api_load_healthz": {
+      "n": 468,
+      "p50_ms": 3.19,
+      "p95_ms": 33.21,
+      "mean_ms": 10.93,
+      "min_ms": 1.31,
+      "max_ms": 1024.98
+    },
+    "api_load_sessions": {
+      "n": 468,
+      "p50_ms": 24.55,
+      "p95_ms": 128.37,
+      "mean_ms": 64.02,
+      "min_ms": 11.1,
+      "max_ms": 6839.75
+    },
+    "api_load_sandboxes": {
+      "n": 468,
+      "p50_ms": 13.19,
+      "p95_ms": 77.26,
+      "mean_ms": 25.77,
+      "min_ms": 5.97,
+      "max_ms": 1493.85
+    },
+    "api_load_jobs": {
+      "n": 468,
+      "p50_ms": 19.13,
+      "p95_ms": 81.75,
+      "mean_ms": 29.61,
+      "min_ms": 8.98,
+      "max_ms": 662.73
+    },
+    "api_load_exec": {
+      "n": 293,
+      "p50_ms": 22.43,
+      "p95_ms": 210.72,
+      "mean_ms": 84.73,
+      "min_ms": 6.98,
+      "max_ms": 8207.97
+    },
+    "session_first_output": {
+      "n": 50,
+      "p50_ms": 3768.91,
+      "p95_ms": 4807.03,
+      "mean_ms": 3685.34,
+      "min_ms": 2393.84,
+      "max_ms": 4864.15
+    },
+    "session_turn": {
+      "n": 50,
+      "p50_ms": 8871.83,
+      "p95_ms": 10020.03,
+      "mean_ms": 8806.24,
+      "min_ms": 7409.17,
+      "max_ms": 10051.19
+    },
+    "turn_end_detect": {
+      "n": 50,
+      "p50_ms": 2467.0,
+      "p95_ms": 2663.75,
+      "mean_ms": 2481.4,
+      "min_ms": 2266.2,
+      "max_ms": 2691.12
+    },
+    "job_first_output": {
+      "n": 50,
+      "p50_ms": 42242.19,
+      "p95_ms": 71219.33,
+      "mean_ms": 40684.35,
+      "min_ms": 5079.26,
+      "max_ms": 75724.32
+    },
+    "job_total": {
+      "n": 50,
+      "p50_ms": 47591.1,
+      "p95_ms": 76438.97,
+      "mean_ms": 45962.2,
+      "min_ms": 12120.61,
+      "max_ms": 80925.71
+    },
+    "resume_first_output": {
+      "n": 50,
+      "p50_ms": 13535.95,
+      "p95_ms": 14764.88,
+      "mean_ms": 13084.0,
+      "min_ms": 7147.43,
+      "max_ms": 14825.98
+    }
+  },
+  "notes": {
+    "submit_all_s": 3.81,
+    "phase1_wall_s": 81.46,
+    "server_phase1": {
+      "loop_lag_p50_ms": 1.0,
+      "loop_lag_p95_ms": 41.04,
+      "loop_lag_max_ms": 313.84,
+      "samples": 1403,
+      "threads": 9,
+      "rss_mb": 106.8,
+      "max_rss_mb": 106.6,
+      "cpu_s": 24.19
+    },
+    "job_states": {
+      "succeeded": 50
+    },
+    "suspend_all_s": 3.29,
+    "phase2_wall_s": 21.54,
+    "server_phase2": {
+      "loop_lag_p50_ms": 7.63,
+      "loop_lag_p95_ms": 161.44,
+      "loop_lag_max_ms": 3100.44,
+      "samples": 229,
+      "threads": 9,
+      "rss_mb": 115.4,
+      "max_rss_mb": 115.3,
+      "cpu_s": 29.92
+    }
+  }
+}

@@ -127,7 +127,7 @@ async def main(cmd, *args):
             r = await call("exec", sandbox=args[0], command=args[1], timeout=int(args[2]) if len(args) > 2 else 120)
             print(r["stdout"], r.get("stderr", ""), f"[exit {r['exit_code']}]")
         elif cmd == "teardown":
-            print(await call("destroy_sandboxes", label="run=gke-e2e"))
+            print(await call("destroy_sandbox", label="run=gke-e2e"))
 
 
 if __name__ == "__main__":

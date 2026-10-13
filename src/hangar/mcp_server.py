@@ -15,12 +15,21 @@ import base64
 import contextvars
 import functools
 import inspect
+import json
+import logging
+import time
 from typing import Any
 
-from mcp.server.mcpserver import Context, MCPServer
+import anyio
+from mcp.server.mcpserver import Context, MCPServer, RequestStateSecurity
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.subscriptions import InMemorySubscriptionBus
+from mcp.shared.exceptions import NoBackChannelError
+from mcp_types import CallToolResult, ElicitResult, Icon, InputRequiredResult
+from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
-from hangar import exchange
+from hangar import exchange, mcp_tasks  # workstream mcp-modern: mcp_tasks has tasks and elicitation
+from hangar import mcp_live as live  # workstream mcp-modern: typed results, hints, resources, prompts
 from hangar.broker import CredentialError
 from hangar.fleet import Fleet, FleetError
 from hangar.jobs import Caller, JobService, SubmitJob
@@ -34,39 +43,29 @@ from hangar.triggers import ScheduleSpec, Triggers
 EXPECTED = (FleetError, ProviderError, CredentialError, ValueError, KeyError, NotImplementedError)
 
 current_actor: contextvars.ContextVar[str] = contextvars.ContextVar("hangar_actor", default="mcp")
+log = logging.getLogger("hangar.mcp")
+ELICIT_WAIT_SECONDS = 900  # how long an agent's question put to you by wait_for_turn waits for your answer
 
 INSTRUCTIONS = """\
-Hangar manages a fleet of isolated coding sandboxes (containers or microVMs) built from
-named environments that bundle tools, agent harnesses, dependencies, skills and a repo.
+Hangar runs coding agents (Claude Code, Codex, pi, Antigravity) in cloud sandboxes. Pick the level you need:
 
-Typical flow:
-1. list_environments -> pick one (or build_environment if it has no image yet).
-2. create_sandbox(environment, repo=..., work_branch=...) -> sandbox id.
-3. exec(...) for one-shot commands; terminal_open/terminal_send/terminal_read for
-   long-running or interactive processes; read_file/write_file for files.
-4. run_agent(sandbox, prompt) to hand a task to a coding agent inside the sandbox, then
-   agent_status(...) to poll it.
-5. fork_sandbox(sandbox, count=N) to clone a prepared sandbox for parallel attempts.
-6. destroy_sandbox when done (sandboxes also expire after their TTL).
-Relative paths resolve against the sandbox's repo checkout (or /workspace).
+- submit_job(instructions, repo=..., context=[...]): hand off a piece of work. An agent runs in a fresh sandbox,
+  hangar verifies it, pushes a branch and opens a draft PR. follow_up_job continues it; strategy="best_of_n"
+  runs n attempts and delivers the best.
+- new_session(name, environment, message) / send_to_session(name, message): a stream of work you come back to,
+  even days later; the agent resumes its own conversation and the repo state is restored. fork_session branches it.
+- create_sandbox + exec / terminal_* / read_file / write_file / run_agent: drive a sandbox yourself.
 
-For an ongoing stream of work you'll come back to, use sessions: new_session(name, environment, message)
-then send_to_session(name, message) later, even days later; the agent resumes its own conversation and the
-repo state (commits, uncommitted changes) is restored. list_sessions shows what you can pick up.
+Long work: wait_for_turn(job id or session name) waits with progress and returns the turn (summary, PR, structured
+result, artifacts). If the agent asks a question, hangar asks you (elicitation) when your client supports it and
+continues with your answer; otherwise answer with follow_up_job / send_to_session. Clients with the MCP tasks
+extension get a task handle from the long tools instead. Jobs and sessions are also resources
+(hangar://jobs/<id>, hangar://sessions/<name>, .../events) you can subscribe to instead of polling.
 
-Or hand off whole pieces of work: submit_job(instructions, repo=..., context=[...]) runs an agent in
-a fresh sandbox, verifies, pushes a branch and opens a draft PR on its own. Check it with get_job,
-continue it with follow_up_job, stop it with cancel_job.
-
-Context in and out (jobs and sessions alike): `context` items can carry files, your uncommitted changes
-({"kind": "patch", "content": <git diff --binary>}) and unpushed commits ({"kind": "bundle", "content":
-<base64 git bundle>, "encoding": "base64", "base_commit": <sha on the remote>}). `output_schema` (JSON
-Schema) asks the agent for a structured result. wait_for_turn(job or session) blocks with progress
-notifications and returns the result, the agent's question (state needs_input: answer it with
-follow_up_job / send_to_session) and its artifacts (get_artifact). get_session_patch gives the code.
-
-To try several directions: fork_session(name, n) branches a session (work and conversation) into n sessions;
-submit_job(..., strategy="best_of_n", n=3) runs n attempts in parallel and delivers the one that verifies best.
+Context in: `context` items carry files, your uncommitted changes ({"kind": "patch", "content": <git diff
+--binary>}) and unpushed commits ({"kind": "bundle", "content": <base64 git bundle>, "encoding": "base64",
+"base_commit": <sha on the remote>}). `output_schema` (JSON Schema) asks for a structured result. Code out:
+get_session_patch. The prompts hand_off_to_cloud, best_of_n and pick_up_session walk through common workflows.
 """
 
 
@@ -79,12 +78,30 @@ def _sb(s: Sandbox) -> dict[str, Any]:
     }
 
 
+ICON = Icon(src="data:image/svg+xml;base64," + base64.b64encode(
+    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" '
+    b'fill="#1f2937"/><path d="M4 24 16 8l12 16z" fill="none" stroke="#f59e0b" stroke-width="3" '
+    b'stroke-linejoin="round"/><path d="M11 24h10" stroke="#f59e0b" stroke-width="3"/></svg>').decode(),
+    mime_type="image/svg+xml", sizes=["any"])
+
+
 def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionService | None = None,
-              triggers: Triggers | None = None) -> MCPServer:
-    mcp = MCPServer("hangar", instructions=INSTRUCTIONS, version="0.1.0")
+              triggers: Triggers | None = None, legacy_sessions: bool = True) -> MCPServer:
+    """`legacy_sessions`: pre-2026 clients keep a session (stateful streamable HTTP), so hangar can ask them
+    questions mid-call and tell them about resources they subscribed to."""
+    # --- workstream mcp-modern: tasks extension, change notifications, compact listings
+    bus = InMemorySubscriptionBus()
+    feed = live.ChangeFeed(bus)
+    tasks = mcp_tasks.Tasks(fleet.store, fleet, sessions, jobs, current_actor.get) if sessions is not None else None
+    mcp = live.HangarMCP("hangar", title="Hangar", instructions=INSTRUCTIONS, version="0.1.0", icons=[ICON],
+                         website_url="https://github.com/Sean-Koval/hangar", subscriptions=bus,
+                         extensions=[mcp_tasks.TasksExtension(tasks)] if tasks else None,
+                         # a question put to you in wait_for_turn may wait this long for your answer
+                         request_state_security=RequestStateSecurity.ephemeral(ttl=ELICIT_WAIT_SECONDS))
 
     def tool():
-        """mcp.tool() that reports expected failures to the client instead of a generic error."""
+        """mcp.tool() that reports expected failures to the client instead of a generic error. The description is
+        the docstring without its indentation; hints come from mcp_live.TOOL_HINTS."""
 
         def deco(fn):
             if inspect.iscoroutinefunction(fn):
@@ -101,7 +118,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                         return fn(*a, **kw)
                     except EXPECTED as e:
                         raise ToolError(str(e).strip("'\"")) from e
-            return mcp.tool()(wrapped)
+            return mcp.tool(description=inspect.cleandoc(fn.__doc__ or ""),
+                            annotations=live.TOOL_HINTS.get(fn.__name__))(wrapped)
 
         return deco
 
@@ -132,30 +150,22 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         return job.summary()
 
     @tool()
-    def validate_environment(spec: dict[str, Any]) -> dict[str, Any]:
-        """Check an environment spec without saving it: resolves `extends`, validates fields, lists warnings
-        (missing credentials, deprecated harnesses) and returns the Dockerfile it would build.
+    def create_environment(spec: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
+        """Save a new or updated environment. dry_run=True only checks it: resolves `extends`, validates,
+        lists warnings (missing credentials, deprecated harnesses) and returns the Dockerfile. To clone one,
+        extend it: {"name": "api-codex", "extends": "api", "harnesses": ["codex"]} (lists and maps merge with the
+        source's; scalars, `harnesses` and `credentials` replace). Defaults to extend: bare, python, node, go,
+        polyglot. Then build_environment.
 
         Spec fields: name, description, extends, base | image (prebuilt), tools {apt, mise, script},
         harnesses [claude-code, codex, pi, antigravity, git], default_harness, harness_mode (auto|pack|bake),
         model, dependencies {pip, npm, script}, skills [{path|git, name}], agent_config {instructions, files},
         mcp {name: {url, headers} | {command, args, env}}, secrets {ENV_VAR: credential}, env, repo {url,
         branch, setup, bake}, credentials, resources {cpus, memory_gb}, warm_pool, runtime_class."""
-        return fleet.validate_environment(spec)
-
-    @tool()
-    def create_environment(spec: dict[str, Any]) -> dict[str, Any]:
-        """Save a new or updated environment (same fields as validate_environment). Usually `extends` a
-        default (bare, python, node, go, polyglot) or a team environment. Build it with build_environment."""
+        if dry_run:
+            return fleet.validate_environment(spec)
         s = fleet.save_environment(spec, actor=actor())
-        return {"name": s.name, "harnesses": s.harnesses, "default_harness": s.pick_harness()}
-
-    @tool()
-    def clone_environment(source: str, name: str, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Create environment `name` that extends `source`, applying `overrides` (lists and maps merge with
-        the source's, scalars replace). E.g. overrides={"harnesses": ["codex"], "secrets": {...}}."""
-        s = fleet.clone_environment(source, name, overrides, actor=actor())
-        return {"name": s.name, "extends": source, "harnesses": s.harnesses, "default_harness": s.pick_harness()}
+        return {"name": s.name, "extends": s.extends, "harnesses": s.harnesses, "default_harness": s.pick_harness()}
 
     @tool()
     def list_credentials() -> list[dict[str, Any]]:
@@ -176,7 +186,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         ttl_minutes: int | None = None,
         labels: dict[str, str] | None = None,
         harness: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> live.SandboxOut:
         """Start a sandbox from an environment. Optionally clone `repo` (at `branch`) and check out a
         new `work_branch`. `harness` picks which of the environment's agents this sandbox is for (default:
         the environment's default); only that agent's credentials, config and MCP servers are applied.
@@ -200,7 +210,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         labels: dict[str, str] | None = None,
         harness: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Start `count` (1-20) identical sandboxes concurrently, each on its own work branch."""
+        """Start `count` (1-20) identical sandboxes concurrently, each on its own work branch. To copy one you
+        already prepared (deps installed, files changed), use fork_sandbox."""
         import asyncio
 
         if not 1 <= count <= 20:
@@ -218,48 +229,71 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         return [_sb(r) if isinstance(r, Sandbox) else {"error": str(r)} for r in res]
 
     @tool()
-    def list_sandboxes(include_stopped: bool = False, label: str | None = None) -> list[dict[str, Any]]:
+    def list_sandboxes(include_stopped: bool = False, label: str | None = None) -> list[live.SandboxOut]:
         """List sandboxes. `label` filters by key or key=value."""
         return [_sb(s) for s in fleet.list(include_stopped=include_stopped, label=label)]
 
     @tool()
-    def get_sandbox(sandbox: str) -> dict[str, Any]:
+    def get_sandbox(sandbox: str) -> live.SandboxOut:
         """Details for one sandbox, including recent agent runs."""
         s = fleet.get(sandbox)
         return {**_sb(s), "runs": s.info.get("runs", [])[-10:], "created_at": s.created_at,
                 "last_activity": s.last_activity}
 
     @tool()
-    async def destroy_sandbox(sandbox: str) -> dict[str, Any]:
-        """Stop and delete a sandbox. Exclusive credentials are written back and released."""
-        return _sb(await fleet.destroy(sandbox, actor=actor()))
+    async def destroy_sandbox(sandbox: str | None = None, sandboxes: list[str] | None = None,
+                              label: str | None = None) -> list[str]:
+        """Stop and delete one sandbox, several (`sandboxes`: ids or names) or every active one matching `label`
+        (key or key=value). Exclusive credentials are written back and released. Returns the destroyed ids."""
+        refs = ([sandbox] if sandbox else []) + (sandboxes or [])
+        if not refs and not label:
+            raise ValueError("pass sandbox, sandboxes or label (refusing to destroy the whole fleet implicitly)")
+        if refs and label:
+            raise ValueError("pass sandboxes or a label, not both")
+        if len(refs) == 1:
+            return [(await fleet.destroy(refs[0], actor=actor())).id]
+        return await fleet.destroy_many(refs or None, label=label, actor=actor())
+
+    # --- review: the tools merged above, kept callable under their old names and signatures (not listed:
+    # mcp_live.HIDDEN_TOOLS), so existing scripts and client workflows don't break.
+    @tool()
+    def validate_environment(spec: dict[str, Any]) -> dict[str, Any]:
+        """Deprecated: create_environment(spec, dry_run=True)."""
+        return fleet.validate_environment(spec)
+
+    @tool()
+    def clone_environment(source: str, name: str, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Deprecated: create_environment({"name": ..., "extends": source, ...})."""
+        s = fleet.clone_environment(source, name, overrides, actor=actor())
+        return {"name": s.name, "extends": source, "harnesses": s.harnesses, "default_harness": s.pick_harness()}
 
     @tool()
     async def destroy_sandboxes(sandboxes: list[str] | None = None, label: str | None = None) -> list[str]:
-        """Destroy several sandboxes by id/name, or every active sandbox matching `label`."""
+        """Deprecated: destroy_sandbox(sandboxes=... | label=...)."""
         if not sandboxes and not label:
             raise ValueError("pass sandboxes or label (refusing to destroy the whole fleet implicitly)")
         return await fleet.destroy_many(sandboxes, label=label, actor=actor())
 
     @tool()
-    async def pause_sandbox(sandbox: str) -> dict[str, Any]:
+    async def pause_sandbox(sandbox: str) -> live.SandboxOut:
         """Freeze a sandbox's processes to free CPU (state is kept)."""
         return _sb(await fleet.pause(sandbox, actor=actor()))
 
     @tool()
-    async def resume_sandbox(sandbox: str) -> dict[str, Any]:
+    async def resume_sandbox(sandbox: str) -> live.SandboxOut:
         """Resume a paused sandbox."""
         return _sb(await fleet.resume(sandbox, actor=actor()))
 
     @tool()
-    async def extend_sandbox(sandbox: str, minutes: int = 60) -> dict[str, Any]:
+    async def extend_sandbox(sandbox: str, minutes: int = 60) -> live.SandboxOut:
         """Push back a sandbox's expiry."""
         return _sb(await fleet.extend(sandbox, minutes, actor=actor()))
 
     # ------------------------------------------------------------------ commands & files
     @tool()
-    async def exec(sandbox: str, command: str, cwd: str | None = None, timeout: int = 120) -> dict[str, Any]:
-        """Run a shell command (bash -lc) and wait for it. Returns exit_code, stdout, stderr."""
+    async def exec(sandbox: str, command: str, cwd: str | None = None, timeout: int = 120) -> live.ExecOut:
+        """Run a one-shot shell command (bash -lc) in a sandbox and wait for it: exit_code, stdout, stderr. For
+        servers, REPLs and anything long-running or interactive use terminal_open / terminal_send."""
         r = await fleet.exec(sandbox, command, cwd=cwd, timeout=timeout, actor=actor())
         return r.model_dump()
 
@@ -289,7 +323,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
     @tool()
     async def terminal_open(sandbox: str, session: str = "main", command: str | None = None,
                             cwd: str | None = None) -> dict[str, Any]:
-        """Open (or reuse) a persistent terminal session, optionally running `command` in it."""
+        """Open (or reuse) a persistent tmux terminal in a sandbox, optionally running `command` in it: for dev
+        servers, REPLs, watchers and interactive programs. Drive it with terminal_send / terminal_read."""
         return await fleet.terminal_open(sandbox, session, command, cwd)
 
     @tool()
@@ -320,17 +355,21 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
     # ------------------------------------------------------------------ agents
     @tool()
     async def run_agent(sandbox: str, prompt: str, harness: str | None = None,
-                        cwd: str | None = None, model: str | None = None) -> dict[str, Any]:
+                        cwd: str | None = None, model: str | None = None) -> live.AgentRunOut:
         """Start the sandbox's headless coding agent (claude-code | codex | pi | antigravity) on `prompt`.
         `model` overrides the environment's default model (harness-specific id, e.g. "sonnet", "gpt-5.5",
         "openrouter/qwen/qwen3-coder"). Returns a run_id; its terminal session has the same name. Poll with
-        agent_status."""
+        agent_status (a client with the MCP tasks extension gets a task that ends with the run). For work you
+        want verified and delivered as a PR, submit_job is simpler."""
         return await fleet.run_agent(sandbox, prompt, harness, cwd, model=model, actor=actor())
 
     @tool()
-    async def agent_status(sandbox: str, run_id: str, tail_lines: int = 60) -> dict[str, Any]:
-        """State (running/finished), exit code and output tail of an agent run."""
-        return await fleet.agent_status(sandbox, run_id, tail_lines)
+    async def agent_status(sandbox: str, run_id: str, tail_lines: int = 60,
+                           wait_seconds: int = 0) -> live.AgentRunOut:
+        """State (running/finished), exit code and output tail of a run_agent run. With wait_seconds (up to 25) it
+        answers as soon as the run finishes, or after that long: use it instead of polling quickly."""
+        return await fleet.agent_status(sandbox, run_id, tail_lines,  # perf: long-poll
+                                        wait_seconds=max(0, min(25, wait_seconds)))
 
     # ------------------------------------------------------------------ clone
     @tool()
@@ -346,7 +385,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
     @tool()
     async def fork_sandbox(source: str, count: int = 1, name_prefix: str | None = None,
                            work_branch_prefix: str | None = None, credentials: list[str] | None = None,
-                           provider: str | None = None, ttl_minutes: int | None = None) -> list[dict[str, Any]]:
+                           provider: str | None = None, ttl_minutes: int | None = None) -> list[live.SandboxOut]:
         """Clone a live sandbox (snapshotted first) or a snapshot id into `count` new sandboxes that
         start with the same files, installed deps and repo state. Exclusive credentials are not copied."""
         sbs = await fleet.fork(source, count, name_prefix, credentials, work_branch_prefix, provider,
@@ -361,7 +400,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                               base_branch: str | None = None, idle_minutes: int | None = None,
                               budget: dict[str, Any] | None = None,
                               context: list[dict[str, Any]] | None = None,
-                              output_schema: dict[str, Any] | None = None) -> dict[str, Any]:
+                              output_schema: dict[str, Any] | None = None) -> live.SessionOut:
             """Start a resumable stream of work (like a cloud Claude session): a sandbox of `environment` on branch
             hangar/session/<name>. With `message`, the agent starts on it right away. The conversation and repo
             state are checkpointed after every turn and when the session idles, so it can be picked up days later
@@ -378,7 +417,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             return sessions.view(sessions.new(req, owner=who, requester=who))
 
         @tool()
-        async def list_sessions(include_archived: bool = False, limit: int = 30) -> list[dict[str, Any]]:
+        async def list_sessions(include_archived: bool = False, limit: int = 30) -> list[live.SessionOut]:
             """Streams of work, most recently active first: name, state (idle | running | suspended ...), repo,
             branch and the agent's last summary."""
             keep = ("id", "name", "title", "state", "environment", "harness", "repo", "branch", "last_active_at",
@@ -387,13 +426,13 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                     for s in sessions.list(include_archived=include_archived, limit=limit)]
 
         @tool()
-        async def get_session(session: str) -> dict[str, Any]:
+        async def get_session(session: str) -> live.SessionOut:
             """A session's state, turns (messages and the agent's summaries), checkpoints, sandbox and the command
             to resume its conversation interactively in the sandbox's terminal."""
             return sessions.view(sessions.get(session))
 
         @tool()
-        async def open_session(session: str, harness: str | None = None) -> dict[str, Any]:
+        async def open_session(session: str, harness: str | None = None) -> live.SessionOut:
             """Boot a sandbox for a suspended session and restore its last checkpoint (commits, uncommitted changes,
             untracked files and the agent's conversation). Use it to work in the sandbox yourself; to give the agent
             a task, use send_to_session (it opens the session as needed)."""
@@ -401,7 +440,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
 
         @tool()
         async def send_to_session(session: str, message: str, context: list[dict[str, Any]] | None = None,
-                                  output_schema: dict[str, Any] | None = None) -> dict[str, Any]:
+                                  output_schema: dict[str, Any] | None = None) -> live.SessionOut:
             """Continue a session: the agent resumes its own conversation (full earlier context) in the session's
             sandbox, booting and restoring it first if the session is suspended. If the agent asked a question
             (needs_input), the message answers it. `context` and `output_schema` as for new_session. Then call
@@ -411,20 +450,20 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                                                output_schema=output_schema))
 
         @tool()
-        async def keep_session(session: str, idle_minutes: int) -> dict[str, Any]:
+        async def keep_session(session: str, idle_minutes: int) -> live.SessionOut:
             """How long the session may sit idle before it checkpoints and releases its sandbox (0 = stay up
             until suspended by hand). Work through hangar, open terminals and running turns all count as
             activity, so a session you're using never suspends under you."""
             return sessions.view(sessions.set_idle(session, idle_minutes, requester=current_actor.get()))
 
         @tool()
-        async def suspend_session(session: str) -> dict[str, Any]:
+        async def suspend_session(session: str) -> live.SessionOut:
             """Checkpoint a session and release its sandbox now (idle sessions also suspend on their own)."""
             return sessions.view(sessions.suspend(session, requester=current_actor.get()))
 
         @tool()
         async def fork_session(session: str, n: int = 2, message: str | None = None, harness: str | None = None,
-                               names: list[str] | None = None) -> dict[str, Any]:
+                               names: list[str] | None = None) -> live.ForkOut:
             """Branch a session into `n` new sessions to try different directions from the same point. Each gets
             the session's commits, uncommitted changes and untracked files (its latest checkpoint), its own branch
             (<branch>-fork-<i>) and sandbox, and the agent's conversation forked so far (they diverge from here).
@@ -437,17 +476,62 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
     # ------------------------------------------------------------------ context exchange (workstream E, spec 0011)
     if sessions is not None:
         @tool()
-        async def wait_for_turn(ref: str, ctx: Context, timeout_seconds: int = 300) -> dict[str, Any]:
+        async def wait_for_turn(ref: str, ctx: Context,
+                                timeout_seconds: int = 300) -> live.TurnOut | InputRequiredResult:
             """Wait (up to `timeout_seconds`, max 600) for a job's or session's current agent turn to end, with
             progress notifications while it runs. Returns the turn: `done`, `outcome`, `summary`, `result` (the
-            structured result), `result_error`, `question` (the agent needs input: answer with follow_up_job or
-            send_to_session), `artifacts` (read with get_artifact). `ref`: a job id or a session name. If `done`
-            is false, call it again."""
+            structured result), `result_error`, `artifacts` (read with get_artifact) and `question` when the agent
+            needs input. Hangar puts the question to you as an elicitation if your client supports it, sends your
+            answer and keeps waiting (`elicitation` says what happened); otherwise answer with follow_up_job or
+            send_to_session. `ref`: a job id or a session name. If `done` is false, call it again."""
+            return await _wait_for_turn(ref, ctx, timeout_seconds)
+
+        async def _wait_for_turn(ref: str, ctx: Context, timeout_seconds: int) -> CallToolResult | InputRequiredResult:
+            """wait_for_turn with the agent's questions put to the user (workstream mcp-modern).
+
+            2026-07-28 clients get the question back as an `input_required` result and retry the call with the
+            answer (multi round-trip; the SDK seals `request_state`). Earlier clients get an elicitation request
+            on their session, when it has one. Either way the answer goes to the agent as the follow-up of the
+            turn that asked, at most once."""
 
             async def report(progress: float, total: float | None, message: str) -> None:
                 await ctx.report_progress(progress, total, message)
 
-            return await exchange.wait_for_turn(sessions, jobs, ref, timeout_seconds, report)
+            deadline = time.monotonic() + max(1, min(600, int(timeout_seconds)))
+            modern = ctx.protocol_version in MODERN_PROTOCOL_VERSIONS
+            note = None
+            if ctx.input_responses and ctx.request_state:  # a 2026-07-28 retry carrying the user's answer
+                st = json.loads(ctx.request_state)  # minted below; the SDK verified its seal
+                resp = ctx.input_responses.get(st.get("key", ""))
+                if st.get("ref") == ref and isinstance(resp, ElicitResult):
+                    note = mcp_tasks.answer(sessions, jobs, ref, int(st["turn"]), resp, current_actor.get())
+            while True:
+                left = max(1, int(deadline - time.monotonic()))
+                turn = await exchange.wait_for_turn(sessions, jobs, ref, left, report)
+                q = mcp_tasks.open_question(sessions, jobs, ref) if turn["done"] else None
+                if q is None or note in ("declined", "cancelled") or time.monotonic() >= deadline \
+                        or not mcp_tasks.supports_form_elicitation(ctx.client_capabilities):
+                    break
+                turn_no, question, label = q
+                key = f"answer-{turn_no}"
+                if modern:
+                    state = json.dumps({"ref": ref, "turn": turn_no, "key": key})
+                    return InputRequiredResult(input_requests={key: mcp_tasks.question_request(label, question)},
+                                               request_state=state)
+                try:
+                    with anyio.fail_after(ELICIT_WAIT_SECONDS):
+                        resp = await ctx.elicit(f"{label} asks: {question}", mcp_tasks.Answer)
+                except (NoBackChannelError, TimeoutError, ValueError) as e:
+                    log.info("could not ask the client %s's question: %s", ref, e)
+                    break
+                note = mcp_tasks.answer(sessions, jobs, ref, turn_no, ElicitResult(
+                    action=resp.action, content=resp.data.model_dump() if resp.action == "accept" else None),
+                    current_actor.get())
+                if note != "answered":
+                    break
+            out = {**turn, "elicitation": note} if note else turn
+            uri = live.job_uri(turn["job"]) if turn.get("job") else live.session_uri(turn.get("session") or ref)
+            return mcp_tasks.tool_result(out, out, [uri])
 
         @tool()
         async def get_artifact(ref: str, turn: int, path: str, max_bytes: int | None = None) -> dict[str, Any]:
@@ -463,9 +547,13 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         async def get_session_patch(ref: str, max_bytes: int = 200_000) -> dict[str, Any]:
             """The session's (or job's) work as one patch against its base branch: commits, uncommitted changes
             and new files, ready for `git apply`. Live from the sandbox if it is up, else from the last checkpoint.
-            `files` lists what changed; `truncated` says if the patch was cut at `max_bytes`."""
+            `files` lists what changed; `truncated` says if the patch was cut at `max_bytes` (the whole patch is
+            the resource hangar://sessions/<name>/patch)."""
             s, _ = exchange.resolve(sessions, jobs, ref)
-            return await exchange.session_patch(sessions, s, max_bytes)
+            p = await exchange.session_patch(sessions, s, max_bytes)
+            res = mcp_tasks.tool_result(p, None, [])  # workstream mcp-modern: link the full patch
+            res.content.append(live.patch_link(s.name, p))
+            return res
 
         @mcp.resource("hangar://sessions/{name}/artifacts/{turn}/{+path}", name="session-artifact",
                       description="A file an agent handed back in a session turn (see get_session).")
@@ -478,6 +566,14 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             except UnicodeDecodeError:
                 return data
 
+        # --- workstream mcp-modern: jobs and sessions as resources clients can follow, and workflow prompts
+        live.register_resources(mcp, sessions, jobs)
+        mcp.recent = lambda: live.recent_resources(sessions, jobs)
+        live.register_prompts(mcp, sessions)
+        fleet.store.on_put.append(feed.on_put)
+        if legacy_sessions:
+            feed.install_legacy(mcp)
+
     # ------------------------------------------------------------------ jobs (spec 0009)
     if jobs is None:
         return mcp
@@ -489,7 +585,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                    context: list[dict[str, Any]] | None = None, timeout_minutes: int | None = None,
                    callback_url: str | None = None, budget: dict[str, Any] | None = None,
                    output_schema: dict[str, Any] | None = None, strategy: str = "single", n: int | None = None,
-                   judge: bool = False) -> dict[str, Any]:
+                   judge: bool = False) -> live.JobOut:
         """Hand a piece of development work to a cloud agent and get on with other things.
 
         Hangar queues the job, starts a sandbox from `environment` (default: the repo's mapped one), writes
@@ -515,13 +611,13 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         return jobs.view(jobs.submit(req, Caller(who, who), source="mcp"))
 
     @tool()
-    async def get_job(job: str) -> dict[str, Any]:
-        """A job's state, timeline, result (commits, PR, verification, the agent's summary) and its sandbox
-        and terminal session for watching or taking over."""
+    async def get_job(job: str) -> live.JobOut:
+        """Check on a job: state, timeline, result (commits, PR, verification, the agent's summary), attempts,
+        usage, and its sandbox and terminal session for watching or taking over. To wait for it, wait_for_turn."""
         return jobs.view(jobs.get(job))
 
     @tool()
-    async def list_jobs(state: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+    async def list_jobs(state: str | None = None, limit: int = 20) -> list[live.JobOut]:
         """Recent jobs, newest first (state: queued | provisioning | running | verifying | delivering |
         needs_input | succeeded | failed | cancelled)."""
         return [{k: v for k, v in jobs.view(j).items() if k not in ("events", "instructions", "turns")}
@@ -529,7 +625,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
 
     @tool()
     async def follow_up_job(job: str, message: str, context: list[dict[str, Any]] | None = None,
-                            output_schema: dict[str, Any] | None = None) -> dict[str, Any]:
+                            output_schema: dict[str, Any] | None = None) -> live.JobOut:
         """Continue a finished job, or answer a job that needs input: the agent picks up `message` in its own
         conversation on the same branch, then hangar verifies and delivers again (the PR updates). `context` and
         `output_schema` as for submit_job (the job's schema applies when omitted)."""
@@ -538,16 +634,17 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                                         output_schema=output_schema))
 
     @tool()
-    async def cancel_job(job: str) -> dict[str, Any]:
+    async def cancel_job(job: str) -> live.JobOut:
         """Stop a queued or running job (the agent is killed; work committed so far stays in the sandbox)."""
         return jobs.view(jobs.cancel(job, requester=current_actor.get()))
 
     @tool()
     async def get_events(job: str | None = None, session: str | None = None, since: int = 0,
-                         limit: int = 100) -> dict[str, Any]:
+                         limit: int = 100) -> live.EventsOut:
         """What the agent is doing, as one event stream for every harness: message, tool_call, tool_result,
-        command, file_change, error, usage and progress events, oldest first. Pass a job or a session; poll with
-        `since` = the returned `next` to get only new events."""
+        command, file_change, error, usage and progress events, oldest first. Use it for the step-by-step detail
+        (wait_for_turn gives the outcome). Pass a job or a session; poll with `since` = the returned `next` to get
+        only new events, or subscribe to hangar://sessions/<name>/events."""
         if bool(job) == bool(session):
             raise ValueError("pass exactly one of job or session")
         if job:
@@ -564,13 +661,13 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         after this section still register."""
 
         @tool()
-        async def approve_job(job: str) -> dict[str, Any]:
+        async def approve_job(job: str) -> live.JobOut:
             """Let a job in state awaiting_approval run. Such jobs were started by someone outside the trusted list
             (e.g. a non-collaborator's /hangar comment); read its instructions and context with get_job first."""
             return jobs.view(triggers.approve(job, approver=current_actor.get()))
 
         @tool()
-        async def reject_job(job: str) -> dict[str, Any]:
+        async def reject_job(job: str) -> live.JobOut:
             """Drop a job that is waiting for approval; it is cancelled without running."""
             return jobs.view(triggers.reject(job, approver=current_actor.get()))
 
@@ -602,7 +699,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             return {"deleted": triggers.delete_schedule(schedule, requester=current_actor.get()).id}
 
         @tool()
-        async def run_schedule_now(schedule: str) -> dict[str, Any]:
+        async def run_schedule_now(schedule: str) -> live.JobOut:
             """Submit a schedule's job right away (its regular runs are unaffected). Returns the job."""
             return jobs.view(triggers.run_now(schedule, requester=current_actor.get()))
 

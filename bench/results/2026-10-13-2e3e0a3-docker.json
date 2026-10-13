@@ -1,0 +1,182 @@
+{
+  "meta": {
+    "bench": "sandbox-docker",
+    "git": "5b620d9",
+    "started": "2026-10-13T02:33:40",
+    "seconds": 207.1,
+    "host": "vm",
+    "cpus": 2,
+    "python": "3.12.3",
+    "provider": "docker",
+    "runs": 10,
+    "session_poll_seconds": 5.0
+  },
+  "metrics": {
+    "create_cold": {
+      "n": 10,
+      "p50_ms": 710.56,
+      "p95_ms": 837.16,
+      "mean_ms": 712.4,
+      "min_ms": 606.64,
+      "max_ms": 837.16
+    },
+    "first_exec": {
+      "n": 10,
+      "p50_ms": 89.9,
+      "p95_ms": 114.78,
+      "mean_ms": 93.56,
+      "min_ms": 74.68,
+      "max_ms": 114.78
+    },
+    "create_warm": {
+      "n": 10,
+      "p50_ms": 518.6,
+      "p95_ms": 567.29,
+      "mean_ms": 498.86,
+      "min_ms": 413.42,
+      "max_ms": 567.29
+    },
+    "exec": {
+      "n": 30,
+      "p50_ms": 82.4,
+      "p95_ms": 117.67,
+      "mean_ms": 85.8,
+      "min_ms": 66.97,
+      "max_ms": 127.11
+    },
+    "write_file_64k": {
+      "n": 30,
+      "p50_ms": 87.55,
+      "p95_ms": 118.2,
+      "mean_ms": 87.57,
+      "min_ms": 62.96,
+      "max_ms": 121.98
+    },
+    "read_file_64k": {
+      "n": 30,
+      "p50_ms": 10.61,
+      "p95_ms": 14.8,
+      "mean_ms": 10.84,
+      "min_ms": 6.98,
+      "max_ms": 26.09
+    },
+    "write_file_1m": {
+      "n": 30,
+      "p50_ms": 88.09,
+      "p95_ms": 116.69,
+      "mean_ms": 91.06,
+      "min_ms": 71.56,
+      "max_ms": 184.72
+    },
+    "read_file_1m": {
+      "n": 30,
+      "p50_ms": 14.7,
+      "p95_ms": 23.92,
+      "mean_ms": 15.54,
+      "min_ms": 9.83,
+      "max_ms": 27.76
+    },
+    "terminal_send": {
+      "n": 30,
+      "p50_ms": 487.39,
+      "p95_ms": 565.82,
+      "mean_ms": 496.26,
+      "min_ms": 447.39,
+      "max_ms": 572.3
+    },
+    "checkpoint_turn": {
+      "n": 10,
+      "p50_ms": 1671.5,
+      "p95_ms": 2389.24,
+      "mean_ms": 1711.86,
+      "min_ms": 1338.2,
+      "max_ms": 2389.24
+    },
+    "checkpoint_unchanged": {
+      "n": 10,
+      "p50_ms": 1147.77,
+      "p95_ms": 2360.89,
+      "mean_ms": 1360.83,
+      "min_ms": 988.67,
+      "max_ms": 2360.89
+    },
+    "suspend": {
+      "n": 10,
+      "p50_ms": 2576.84,
+      "p95_ms": 3353.89,
+      "mean_ms": 2416.89,
+      "min_ms": 1587.0,
+      "max_ms": 3353.89
+    },
+    "resume_restore": {
+      "n": 10,
+      "p50_ms": 985.64,
+      "p95_ms": 1401.82,
+      "mean_ms": 995.31,
+      "min_ms": 721.87,
+      "max_ms": 1401.82
+    },
+    "resume_total": {
+      "n": 10,
+      "p50_ms": 1943.18,
+      "p95_ms": 2192.28,
+      "mean_ms": 1875.11,
+      "min_ms": 1365.29,
+      "max_ms": 2192.28
+    },
+    "turn_first_output": {
+      "n": 10,
+      "p50_ms": 705.67,
+      "p95_ms": 884.0,
+      "mean_ms": 711.47,
+      "min_ms": 598.27,
+      "max_ms": 884.0
+    },
+    "turn_end_detect": {
+      "n": 10,
+      "p50_ms": 3260.65,
+      "p95_ms": 3350.9,
+      "mean_ms": 3265.3,
+      "min_ms": 3206.76,
+      "max_ms": 3350.9
+    }
+  },
+  "notes": {
+    "image": "hangar-env/sesenv:acaeadafcf849a58",
+    "calls_create": {
+      "exec": "1x 264ms",
+      "read_file": "1x 9ms",
+      "write_file": "2x 167ms"
+    },
+    "checkpoint_parts_bytes": {
+      "agent.tgz": 275827,
+      "repo.bundle": 836,
+      "wip.patch": 126,
+      "untracked.tgz": 3003651,
+      "session.patch": 3883343
+    },
+    "calls_checkpoint_turn": {
+      "encrypt": "5x 70ms",
+      "exec": "2x 1195ms",
+      "put": "5x 12ms",
+      "read_file": "7x 109ms"
+    },
+    "calls_checkpoint_unchanged": {
+      "exec": "1x 1012ms",
+      "read_file": "2x 12ms"
+    },
+    "calls_restore": {
+      "decrypt": "4x 24ms",
+      "exec": "3x 460ms",
+      "get": "4x 5ms",
+      "write_file": "4x 343ms"
+    },
+    "calls_turn_with_checkpoint": {
+      "encrypt": "5x 74ms",
+      "exec": "11x 1973ms",
+      "put": "5x 12ms",
+      "read_file": "9x 134ms",
+      "write_file": "3x 316ms"
+    }
+  }
+}

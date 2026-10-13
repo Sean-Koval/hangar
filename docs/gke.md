@@ -2,6 +2,8 @@
 
 The architecture is one control-plane pod (in namespace `hangar`) plus sandbox pods (in namespace `hangar-sandboxes`). Sandbox pods are managed through Agent Sandbox CRDs: a SandboxTemplate and SandboxWarmPool per environment, and a SandboxClaim per sandbox. They run under gVisor by default, or Kata microVMs on an optional nested-virtualization pool.
 
+`uv run hangar up --gke` runs sections 1 and 2 for you: it shows the terraform plan (`--dry-run` stops there, having changed nothing), applies exactly that plan once you approve it, runs `deploy/gke/up.sh`, and logs the CLI in. It refuses a plan that destroys or replaces resources unless you pass `--allow-destroy`.
+
 ## 1. Infrastructure
 
 ```bash
@@ -25,7 +27,7 @@ The quick way is one script. It reads the Terraform outputs, builds the control-
 bash deploy/gke/up.sh            # KATA=1 also installs Kata on the microVM pool (step 4)
 ```
 
-Without `DOMAIN=...` it serves on `https://<static-ip>.sslip.io`, a public wildcard DNS name that resolves to the static IP, so the managed certificate provisions with no DNS setup. The admin token is saved to `~/.hangar/gke-admin-token`. The manual steps below do the same thing by hand.
+Without `DOMAIN=...` it serves on `https://<static-ip>.sslip.io`, a public wildcard DNS name that resolves to the static IP, so the managed certificate provisions with no DNS setup. The admin token is saved to `~/.hangar/gke-admin-token`. On a first install `up.sh` also sets `HANGAR_SESSION_STORE` to the bucket terraform made (`session_bucket`), so checkpoints outlive the control plane's disk. On a hangar that's already running with checkpoints on its disk, it leaves the setting alone, since switching would strand the local checkpoints of suspended sessions. The manual steps below do the same thing by hand.
 
 
 ```bash
@@ -46,6 +48,17 @@ kubectl apply -k deploy/k8s
 ```
 
 Point your domain's A record at `terraform output static_ip`. The managed certificate provisions in about 15 minutes.
+
+## 2a. Log in, connect and configure
+
+```bash
+hangar login https://<ip>.sslip.io --token-file ~/.hangar/gke-admin-token
+hangar doctor --fix              # each problem, with the fixes it can apply on its own
+hangar setup github              # token, webhook secret, repo webhook, settings, test delivery (jobs.md §4)
+hangar connect claude-code       # or codex, cursor, vscode, gemini, claude-desktop (clients.md)
+```
+
+**Where settings live.** `hangar setup` and `hangar config set` store settings in hangar's database, on the control plane's volume. They survive `up.sh` and redeploys, and you change them without `kubectl`. The `hangar` and `hangar-site` config maps become the pod's environment, which wins over the database for any key both set. Keep the deployment's fixed values in the config maps (provider, registry, runtime class), and use `hangar config` for the rest. `hangar config list` shows where each value comes from. A value that's read at startup (provider, gateway, OAuth, `HANGAR_SESSION_STORE`, `HANGAR_JOB_CONCURRENCY`) applies after `kubectl -n hangar rollout restart deploy/hangar`; `hangar config set` says so.
 
 ## 3. Environment images
 
@@ -155,7 +168,7 @@ Two things to know:
 
 ## Notes
 
-- **Network.** The default SandboxTemplate network policy allows egress to the public internet only, and blocks RFC1918 ranges and the metadata server. Agents can reach GitHub and package registries but not your VPC.
+- **Network.** The default SandboxTemplate network policy allows egress to the public internet only, and blocks RFC1918 ranges and the metadata server. Agents can reach GitHub and package registries but not your VPC. `deploy/k8s/sandbox-network.yaml` applies the same baseline as hangar's own NetworkPolicies (DNS, public internet minus private and link-local ranges, no ingress), so it still holds if the managed policy is turned off or you run the open-source controller.
 - **Git gateway.** `deploy/k8s/gateway.yaml` adds the `hangar-gateway` Service (port 8788) and a NetworkPolicy that lets sandbox pods reach that port, and only that port, of the control plane. Set `HANGAR_GATEWAY_URL=http://hangar-gateway.hangar.svc:8788` to keep GitHub tokens out of sandboxes ([security.md](security.md#git-credential-gateway)).
 - **Expiry.** Each claim gets `lifecycle.shutdownTime` (sandbox TTL plus 5 minutes) as a backstop to hangar's reaper.
 - **Storage.** The control plane keeps state in SQLite on a 20 Gi PVC. Back it up, or snapshot the disk.

@@ -16,7 +16,7 @@ from hangar.models import ApiToken, Budget, now
 from hangar.store import Store
 
 PREFIX = "hgr_"
-SCOPES = ("admin", "jobs")  # admin: everything; jobs: only /api/jobs* (service callers)
+SCOPES = ("admin", "jobs", "mcp")  # admin: everything; jobs: only /api/jobs* (service callers); mcp: only /mcp
 _RESERVED_NAMES = {"admin", "system"}
 
 
@@ -92,10 +92,21 @@ class TokenAuth:
             return Principal("admin", "admin", ["admin"])
         for tok in self.store.list(ApiToken):
             if hmac.compare_digest(h, tok.token_hash):
-                tok.last_used = now()
-                self.store.put(tok)
+                if now() - (tok.last_used or 0) >= 60:  # perf: not a database write on every request
+                    tok.last_used = now()
+                    self.store.put(tok)
                 return Principal(tok.name, tok.id, list(tok.scopes), tok.callback_secret, tok.max_budget)
         return None
+
+    # --- front-door-auth
+    def valid(self, raw: str | None) -> bool:
+        """Whether `raw` is a live token, without touching last_used (the body-size guard asks before the route)."""
+        if not raw:
+            return False
+        h = hash_token(raw)
+        if self._admin_hash and hmac.compare_digest(h, self._admin_hash):
+            return True
+        return any(hmac.compare_digest(h, tok.token_hash) for tok in self.store.list(ApiToken))
 
     def exists(self, token_id: str | None) -> bool:
         if token_id == "admin":

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
@@ -196,6 +197,46 @@ class Settings(BaseSettings):
     a2a_max_wait_seconds: int = 1800  # a blocking SendMessage returns the task as it stands after this long
     a2a_max_request_bytes: int = 4_000_000  # base64 attachments are ~4/3 of HANGAR_JOB_MAX_CONTEXT_BYTES
     a2a_max_push_configs: int = 5  # push notification configs per task
+    # --- front-door-auth: rate limits, caps and replay protection (docs/security.md) ------------
+    # Job submissions and follow-ups per caller (a jobs token, a GitHub or Slack user, a webhook source): a token
+    # bucket refilling at this rate. Admin tokens and schedules are exempt. 0 = off.
+    job_rate_per_minute: float = 30
+    job_rate_burst: int = 10
+    # The same per front door (github, slack, webhook, a2a, api, mcp), across all its callers.
+    job_source_rate_per_minute: float = 120
+    job_source_rate_burst: int = 60
+    job_max_active_per_owner: int = 10  # unfinished jobs (incl. waiting for approval or input) per caller; 0 = off
+    max_request_mb: int = 100  # request bodies from a valid token (jobs carry bundles); anonymous ones get 64 KB
+    webhook_replay_hours: float = 168  # how long a signed delivery is remembered so a replay is recognised
+    audit_rejections_per_minute: int = 30  # refused requests audited per client address or caller; more are counted
+    slack_teams: list[str] = Field(default_factory=list)  # other workspaces (Enterprise Grid) whose members count
+    a2a_max_streams_per_owner: int = 20  # open A2A streams and blocking sends per caller
+    # --- workstream mcp-modern (docs/mcp.md) --------------------------------
+    # Serve pre-2026 MCP clients statelessly (no Mcp-Session-Id). Only for several replicas without sticky routing:
+    # it costs those clients elicitation (hangar asking you an agent's question) and resource notifications.
+    # 2026-07-28 clients are sessionless either way.
+    mcp_stateless_http: bool = False
+    # --- perf: control-plane responsiveness -----------------------------------
+    # Worker threads for blocking provider calls (docker-py, the kubernetes client, e2b) and file I/O. Python's
+    # default is min(32, CPUs + 4): 6 on a 2-vCPU control plane, so a few long execs (a clone, a verify, a turn
+    # waiting to end) stalled every other call. Also the Docker client's connection pool size.
+    # review(perf): 0 = auto (io_pool). Half the pool is for turns long-polling in their sandbox.
+    io_threads: int = 0
+
+    @property
+    def io_pool(self) -> int:
+        """Worker threads for blocking I/O: HANGAR_IO_THREADS, else 32 per CPU between 64 and 128. Threads waiting
+        on a socket are cheap (~50 KB RSS each, the GIL released), but every busy one competes with the event loop
+        for the GIL: on 2 vCPUs, 128 threads made exec p95 under load 287 ms and resume p50 4.4 s, against 215 ms
+        and 3.7 s with 64, which still gives 32 turns at once their ~0.3 s turn-end notice (scripts/bench/control.py,
+        50 sessions and 50 jobs; see the review of PR #53)."""
+        if self.io_threads > 0:
+            return self.io_threads
+        try:
+            cpus = len(os.sched_getaffinity(0))
+        except (AttributeError, OSError):
+            cpus = os.cpu_count() or 2
+        return max(64, min(128, 32 * cpus))
 
     @property
     def db_path(self) -> Path:

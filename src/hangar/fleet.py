@@ -144,6 +144,9 @@ class Fleet:
         # Live dashboard/CLI terminals per sandbox. Someone watching or typing keeps sessions awake.
         self.attached: collections.Counter[str] = collections.Counter()
         self._warm_applied: dict[str, int] = {}
+        # --- review(perf): an agent_status long-poll holds an I/O worker thread for its whole wait; at most half
+        # the pool waits at once (sessions and MCP clients alike), so waiters can never starve other provider calls.
+        self._waiters: asyncio.Semaphore | None = None  # sized from settings.io_pool on first use
         # --- workstream F: git gateway. Grants for sandboxes in credential_mode: gateway (spec 0003).
         self.gateway = Gateway(self)
 
@@ -822,10 +825,10 @@ class Fleet:
             self.audit(actor, "sandbox.exec", sb.id, command=command[:500], exit_code=res.exit_code)
         return res
 
-    async def read_file(self, ref: str, path: str) -> bytes | None:
+    async def read_file(self, ref: str, path: str, limit: int | None = None) -> bytes | None:
         sb, prov = self._running(ref)
         self._touch(sb)
-        return await prov.read_file(sb, self._abs(sb, path))
+        return await prov.read_file(sb, self._abs(sb, path), limit=limit)
 
     async def write_file(self, ref: str, path: str, data: bytes, actor: str = "system") -> str:
         sb, prov = self._running(ref)
@@ -901,8 +904,10 @@ class Fleet:
         deadline = time.monotonic() + max(wait_ms, 0) / 1000
         pattern = re.compile(wait_for, re.MULTILINE) if wait_for else None
         out = ""
+        delay = 0.05  # perf: most prompts are back within ~100 ms; look early, then back off to the old 0.3 s
         while True:
-            await asyncio.sleep(0.3 if pattern else max(wait_ms, 0) / 1000)
+            await asyncio.sleep(delay if pattern else max(wait_ms, 0) / 1000)
+            delay = min(0.3, delay * 2)
             out = await self.terminal_read(sb.id, session, lines)
             if not pattern or pattern.search(out) or time.monotonic() >= deadline:
                 break
@@ -973,21 +978,44 @@ class Fleet:
         return {"sandbox": sb.id, "run_id": run_id, "harness": hname, "model": model, "terminal_session": run_id,
                 "log": f"{rdir}/{run_id}.log"}
 
-    async def agent_status(self, ref: str, run_id: str, tail_lines: int = 60, quiet: bool = False) -> dict[str, Any]:
+    async def agent_status(self, ref: str, run_id: str, tail_lines: int = 60, quiet: bool = False,
+                           wait_seconds: float = 0, grow_from: int | None = None) -> dict[str, Any]:
+        """`wait_seconds` (perf): first wait in the sandbox, up to that long (max 60), for the run to finish, or
+        with `grow_from` for its log to pass that many bytes. One round trip that answers within ~0.2 s of the
+        change, where a caller sleeping between polls noticed it half a poll interval late on average. When every
+        wait slot is taken, it sleeps here instead and then looks once."""
         sb, prov = self._running(ref)
         if not quiet:
             self.touch(sb.id)  # a client following an agent counts as use; hangar's own polling doesn't
         if not re.fullmatch(r"run-[0-9a-f]{8}", run_id):
             raise FleetError(f"invalid run id '{run_id}'")
         rdir = f"/home/{self.settings.sandbox_user}/.hangar/runs"
-        res = await prov.exec(
-            sb, f"cat {rdir}/{run_id}.exit 2>/dev/null || echo RUNNING; echo '---'; "
-                f"tail -n {int(tail_lines)} {rdir}/{run_id}.log 2>/dev/null", timeout=20)
-        head, _, tail = res.stdout.partition("---\n")
+        wait_seconds = max(0.0, min(60.0, float(wait_seconds)))
+        if self._waiters is None:
+            self._waiters = asyncio.Semaphore(max(1, self.settings.io_pool // 2))
+        if wait_seconds and self._waiters.locked():
+            await asyncio.sleep(wait_seconds)
+            wait_seconds = 0.0
+        wait = ""
+        if wait_seconds:
+            grew = (f" || [ \"$(stat -c %s {rdir}/{run_id}.log 2>/dev/null || echo 0)\" -gt {int(grow_from)} ]"
+                    if grow_from is not None else "")
+            wait = (f"for i in $(seq {max(1, round(wait_seconds * 5))}); do {{ [ -s {rdir}/{run_id}.exit ]{grew}; }} "
+                    "&& break; sleep 0.2; done; ")
+        async with self._waiters if wait_seconds else contextlib.nullcontext():
+            res = await prov.exec(
+                sb, f"{wait}cat {rdir}/{run_id}.exit 2>/dev/null || echo RUNNING; echo '---'; "
+                    f"tail -n {int(tail_lines)} {rdir}/{run_id}.log 2>/dev/null", timeout=20 + int(wait_seconds))
+        head, sep, tail = res.stdout.partition("---\n")
+        if not sep:  # review(perf): cut off (the sandbox went away mid-call): not a run that finished with -1
+            raise FleetError(f"could not read the status of {run_id} (exit {res.exit_code}): "
+                             f"{(res.stderr or res.stdout).strip()[-200:]}")
         status = head.strip()
         tail = _clip_tail(tail)
-        return {"run_id": run_id, "state": "running" if status == "RUNNING" else "finished",
-                "exit_code": None if status == "RUNNING" else int(status or -1), "output_tail": tail}
+        if status in ("RUNNING", ""):  # "": the exit file exists but is still being written
+            return {"run_id": run_id, "state": "running", "exit_code": None, "output_tail": tail}
+        return {"run_id": run_id, "state": "finished",
+                "exit_code": int(status) if re.fullmatch(r"-?\d+", status) else -1, "output_tail": tail}
 
     # ================================================================== snapshots / forks
     async def snapshot(self, ref: str, label: str | None = None, kind: str = "auto",

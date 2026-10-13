@@ -140,25 +140,12 @@ def serve(
                 log_level="info")
 
 
-@app.command()
-def connect():
-    """Print config snippets for connecting Codex / Claude Code to this hangar."""
-    d = _call("GET", "/api/connect")
-    typer.secho("# Codex  (~/.codex/config.toml)", fg="cyan")
-    typer.echo(d["codex_config_toml"])
-    typer.secho("# Codex CLI", fg="cyan")
-    typer.echo(d["codex_cli"] + "\n")
-    typer.secho("# Claude Code", fg="cyan")
-    typer.echo(d["claude_code_cli"] + "\n")
-    typer.secho("Then: export HANGAR_TOKEN=<token from `hangar token create`>", fg="yellow")
-
-
 # ---------------------------------------------------------------------------- tokens
 @token_app.command("create")
 def token_create(name: str = typer.Argument(..., help="Label, e.g. 'codex-laptop'."),
                  scope: list[str] = typer.Option(["admin"], "--scope",
-                                                 help="admin (everything) or jobs (only /api/jobs, for services). "
-                                                      "Repeatable."),
+                                                 help="admin (everything), jobs (only /api/jobs, for services) or "
+                                                      "mcp (only /mcp, for MCP clients). Repeatable."),
                  callback_secret: str | None = typer.Option(
                      None, "--callback-secret",
                      help="jobs tokens: 'webhook' credential that signs this token's job callbacks."),
@@ -1006,7 +993,9 @@ def session_pull(ref: str,
 
 
 @app.command("doctor")
-def doctor_cmd(as_json: bool = typer.Option(False, "--json")):
+def doctor_cmd(as_json: bool = typer.Option(False, "--json"),
+               fix: bool = typer.Option(False, "--fix", help="Offer to apply each safe automatic fix."),
+               yes: bool = typer.Option(False, "--yes", "-y", help="With --fix: apply them without asking.")):
     """Check this hangar for the things that break jobs and sessions, with the fix for each."""
     checks = _call("GET", "/api/doctor")
     if as_json:
@@ -1016,7 +1005,18 @@ def doctor_cmd(as_json: bool = typer.Option(False, "--json")):
         mark, color = marks[c["status"]]
         typer.secho(f"{mark} {c['name']}: {c['detail']}", fg=color)
         if c.get("fix"):
-            typer.echo(f"    fix: {c['fix']}")
+            typer.echo(f"    fix: {c['fix']}" + ("   (automatic: hangar doctor --fix)" if c.get("action") else ""))
+    if fix:  # --- workstream setup
+        from hangar.setup_cli import doctor_fix
+
+        typer.echo("")
+        if doctor_fix(checks, yes):
+            typer.echo("\nChecking again:")
+            checks = _call("GET", "/api/doctor")
+            for c in checks:
+                if c["status"] != "ok":
+                    mark, color = marks[c["status"]]
+                    typer.secho(f"{mark} {c['name']}: {c['detail']}", fg=color)
     fails = sum(c["status"] == "fail" for c in checks)
     typer.echo(f"\n{fails} problem(s)" if fails else "\nall good")
     raise typer.Exit(1 if fails else 0)
@@ -1107,3 +1107,13 @@ def schedule_run(ref: str):
 @schedule_app.command("rm")
 def schedule_rm(ref: str):
     typer.echo(f"deleted {_call('DELETE', f'/api/schedules/{ref}')['deleted']}")
+
+
+# ---------------------------------------------------------------------------- workstream setup (setup_cli.py)
+from hangar import setup_cli as _setup  # noqa: E402
+
+app.command("up")(_setup.up)
+app.command("down")(_setup.down)
+app.command("connect")(_setup.connect)
+app.add_typer(_setup.setup_app, name="setup")
+app.add_typer(_setup.config_app, name="config")

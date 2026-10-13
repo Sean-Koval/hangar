@@ -25,8 +25,12 @@ import io
 import json
 import logging
 import mimetypes
+import os
+import posixpath
 import re
 import shlex
+import shutil
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -37,7 +41,8 @@ from typing import TYPE_CHECKING, Any
 
 import jsonschema
 
-from hangar.models import Artifact, ContextItem, Session, SessionTurn, now
+from hangar.events import add_usage, over_budget
+from hangar.models import Artifact, ContextItem, JobState, Session, SessionTurn, now
 
 if TYPE_CHECKING:
     from hangar.config import Settings
@@ -57,6 +62,9 @@ _SESSION_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
 _JOB_RE = re.compile(r"^job-[0-9a-f]{8}$")
 MAX_SCHEMA = 64_000
 MAX_QUESTION = 8000
+_OID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")  # a full commit id, as git rev-parse prints it
+MAX_UNTRACKED_FILES = 20_000  # entries restored from a session's untracked-files archive by `session pull`
+MAX_UNTRACKED_BYTES = 1 << 30  # ...and bytes: the archive's cap is compressed, and gzip expands ~1000x
 # Agent-written files are served as downloads; never let a browser render these on hangar's origin.
 _ACTIVE_TYPES = {"text/html", "image/svg+xml", "application/xhtml+xml", "text/javascript", "application/javascript",
                  "text/xml", "application/xml"}
@@ -165,7 +173,9 @@ async def install_helper(prov, sb: Sandbox, home: str) -> None:
 
 async def _ensure_on_path(prov, sb: Sandbox, home: str) -> None:
     """Sandboxes started before the helper existed: add ~/.hangar/bin to ~/.hangar/env."""
-    env = await prov.read_file(sb, f"{home}/.hangar/env") or b""
+    env = await prov.read_file(sb, f"{home}/.hangar/env", limit=MB) or b""
+    if len(env) > MB:  # the agent's to grow; don't hold (or rewrite) a runaway one
+        return
     if PATH_LINE.encode() not in env:
         await prov.write_file(sb, f"{home}/.hangar/env", PATH_LINE.encode() + b"\n" + env, mode=0o600)
 
@@ -340,7 +350,8 @@ async def prepare_turn(svc: SessionService, s: Session, turn: SessionTurn, sb: S
     io_path, rel = io_dir(settings, s), io_rel(s)
     if rel not in s.extra_dirs:
         s.extra_dirs.append(rel)  # checkpointed with the session, so it survives suspend and resume
-        svc._save(s)
+    s.needs_input = None  # --- interactions: this turn answers the open question, whoever sent it (job or session)
+    svc._save(s)
     n = _turn_no(s, turn)
     _, prov = svc.fleet._running(sb.id)
     await install_helper(prov, sb, home)
@@ -415,6 +426,8 @@ async def _apply_bundle(svc: SessionService, s: Session, sb: Sandbox, repo: str,
     if res.exit_code != 0 or len(lines) < 3:
         raise ExchangeError(f"bundle '{c.name}' could not be fetched: {(res.stderr or res.stdout).strip()[-400:]}")
     new, cur, base_sha = lines[-3:]
+    if not all(_OID_RE.match(x) for x in (new, cur, base_sha)):  # sandbox output: it becomes s.base_sha and argv
+        raise ExchangeError(f"bundle '{c.name}' could not be fetched: git printed something other than commit ids")
     if new == cur:
         return
     ff = await svc._sh(sb, f"git merge-base --is-ancestor {cur} {new}", cwd=repo)
@@ -461,6 +474,8 @@ async def after_turn(svc: SessionService, s: Session, turn: SessionTurn, outcome
             if (turn.output_schema and turn.result_error and outcome == "exited" and turn.exit_code == 0
                     and not turn.question and not turn.repair_run_id):
                 await _repair(svc, s, turn, sb)
+            if turn.repair_run_id:  # --- interactions: also re-attaches to a repair a restart interrupted
+                await _wait_repair(svc, s, turn, sb)
                 if svc._alive(sb.id):
                     await _read_out(svc, s, turn, sb)
             if svc._alive(sb.id):
@@ -470,7 +485,7 @@ async def after_turn(svc: SessionService, s: Session, turn: SessionTurn, outcome
         turn.warnings.append(f"could not read what the agent handed back: {e}")
     if turn.question and outcome == "exited":
         turn.outcome = "needs_input"
-        s.needs_input = turn.question
+    s.needs_input = turn.question if turn.outcome == "needs_input" else None  # a stopped turn's waits on nobody
     svc._save(s)
     return turn.outcome
 
@@ -491,10 +506,8 @@ async def _read_out(svc: SessionService, s: Session, turn: SessionTurn, sb: Sand
     async def text(name: str, limit: int) -> str:
         if name not in sizes:
             return ""
-        if sizes[name] <= limit:
-            data = await prov.read_file(sb, f"{io_path}/{name}") or b""
-        else:
-            data = (await svc._sh(sb, f"head -c {limit} {shlex.quote(f'{io_path}/{name}')}")).stdout.encode()
+        # The read itself is capped: the sizes above come from commands the agent's ~/.hangar/env can redefine.
+        data = await prov.read_file(sb, f"{io_path}/{name}", limit=limit) or b""
         return data.decode(errors="replace").strip()[:limit]
 
     if summary := await text("RESULT.md", 8000):
@@ -512,7 +525,10 @@ async def _read_out(svc: SessionService, s: Session, turn: SessionTurn, sb: Sand
     if sizes["out/result.json"] > cap:
         turn.result_error = f"out/result.json is {sizes['out/result.json']} bytes; the limit is {cap}"
         return
-    raw = await prov.read_file(sb, f"{io_path}/out/result.json") or b""
+    raw = await prov.read_file(sb, f"{io_path}/out/result.json", limit=cap) or b""
+    if len(raw) > cap:
+        turn.result_error = f"out/result.json is over the limit of {cap} bytes"
+        return
     try:
         data = json.loads(raw)
     except ValueError as e:
@@ -551,12 +567,13 @@ def _repair_prompt(io_path: str, turn: SessionTurn, resuming: bool) -> str:
 
 
 async def _repair(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbox) -> None:
-    """One more turn in the same conversation, asking only for the result."""
-    settings = svc.settings
-    io_path = io_dir(settings, s)
+    """Start one more run in the same conversation, asking only for the result."""
+    io_path = io_dir(svc.settings, s)
     env = {"HANGAR_IO": io_path}
     if s.job_id:
         env.update(HANGAR_JOB_ID=s.job_id, HANGAR_JOB_DIR=io_path)
+    if attempt := s.labels.get("hangar.attempt"):  # --- interactions: a best-of-N attempt's repair is that attempt
+        env["HANGAR_ATTEMPT"] = attempt
     resuming = svc.will_resume(s)
     if resuming:
         env["HANGAR_SESSION_RESUME"] = s.harness_session or ""
@@ -564,25 +581,46 @@ async def _repair(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
                                     model=s.model, env=env, actor=f"session:{s.id}")
     turn.repair_run_id = res["run_id"]
     svc._save(s)
+
+
+async def _wait_repair(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbox) -> None:
+    """Follow the repair run to its end like any agent run (--- interactions): its events go to the session's
+    log, its usage onto the turn (`repair_usage`, re-read whole each time, so it counts once), and it stops at its
+    own time limit or when the turn as a whole goes over its budget."""
+    settings = svc.settings
+    run = SessionTurn(message="repair", run_id=turn.repair_run_id, harness=turn.harness or s.harness,
+                      started_at=now())
+    watch = svc.activity.watch(svc.fleet, s, run, lambda: None)
+    watch.number = _turn_no(s, turn)
     deadline = now() + settings.exchange_repair_timeout_minutes * 60
     errors = 0
     while svc._alive(sb.id):
         try:
-            st = await svc.fleet.agent_status(sb.id, turn.repair_run_id, tail_lines=1, quiet=True)
+            st = await svc.fleet.agent_status(sb.id, run.run_id or "", tail_lines=1, quiet=True)
             errors = 0
         except Exception:  # noqa: BLE001 - transient provider errors
             errors += 1
             if errors >= 5:
-                return
+                break
             st = None
         if st and st["state"] == "finished":
-            return
-        if now() > deadline:
+            break
+        await watch.poll()
+        over = over_budget(s.budget, add_usage(turn.usage, run.usage), turn.started_at)
+        stop = ("the repair turn timed out" if now() > deadline
+                else f"the repair turn was stopped over budget: {over}" if over else None)
+        if stop:
             with contextlib.suppress(Exception):
-                await svc._sh(sb, f"tmux kill-session -t {shlex.quote(turn.repair_run_id)}")
-            turn.warnings.append("the repair turn timed out")
-            return
+                await svc._sh(sb, f"tmux kill-session -t {shlex.quote(run.run_id or '')}")
+            turn.warnings.append(stop)
+            if over:  # --- review: the turn as a whole went over its budget, so that is its outcome
+                turn.outcome, turn.outcome_reason = "over_budget", over
+                watch.note("error", f"stopped: over budget ({over})", reason="over_budget")
+            break
         await asyncio.sleep(settings.session_poll_seconds)
+    # Not on shutdown (CancelledError): a restart re-attaches and reads the whole log again.
+    await watch.finish(alive=svc._alive(sb.id))
+    turn.repair_usage = run.usage or turn.repair_usage
 
 
 def _redact_bytes(svc: SessionService, data: bytes) -> bytes:
@@ -635,9 +673,17 @@ async def _collect_artifacts(svc: SessionService, s: Session, turn: SessionTurn,
         if total + size > max_total:
             turn.warnings.append(f"artifact {path} would take the turn over {max_total // MB} MB; skipped it")
             continue
-        data = await prov.read_file(sb, f"{base}/{path}")
+        data = await prov.read_file(sb, f"{base}/{path}", limit=max_file)
         if data is None:
             continue
+        # The size above is what `find` printed, which the agent's ~/.hangar/env can redefine; the read is capped.
+        if len(data) > max_file:
+            turn.warnings.append(f"artifact {path} is over the {max_file // MB} MB limit; skipped it")
+            continue
+        if total + len(data) > max_total:
+            turn.warnings.append(f"artifact {path} would take the turn over {max_total // MB} MB; skipped it")
+            continue
+        size = len(data)
         sha = hashlib.sha256(data).hexdigest()
         if seen.get(path) == sha:
             continue  # handed back in an earlier turn and unchanged
@@ -721,10 +767,17 @@ def inline(a: Artifact, data: bytes, max_bytes: int) -> dict[str, Any]:
 
 def patch_script(base: str, dest: str, max_untracked: int) -> str:
     """Shell that writes the whole diff from `base` to the working tree, untracked files included (respecting
-    .gitignore), to `dest`, without touching the index or writing objects."""
-    return (f"{{ git diff --binary {base}; git ls-files -z --others --exclude-standard | xargs -0 -r -n1 sh -c "
-            f"'[ \"$(stat -c %s \"$1\")\" -le {int(max_untracked)} ] && git diff --no-index --binary -- /dev/null "
-            f"\"$1\"; true' _; }} > {dest}")
+    .gitignore, at most `max_untracked` bytes each), to `dest`, without touching the index or writing objects.
+
+    perf: one `git diff` over a scratch copy of the index in which the untracked files are marked intent-to-add
+    (no objects written), instead of a `git diff --no-index` process per untracked file (300 files: 1.8 s ->
+    40 ms). Paths go through NUL-separated lists and `./` prefixes, so no file name is read as an option."""
+    return (f"( I=$(mktemp) || exit 1; trap 'rm -f \"$I\" \"$I.lock\"' EXIT; "
+            "cp \"$(git rev-parse --git-path index)\" \"$I\" 2>/dev/null || rm -f \"$I\"; "
+            "export GIT_INDEX_FILE=\"$I\"; "
+            "git ls-files -z --others --exclude-standard | sed -z 's|^|./|' | xargs -0 -r sh -c "
+            f"'find \"$@\" -maxdepth 0 \\( -type f -o -type l \\) ! -size +{int(max_untracked)}c -print0' _ "
+            f"| xargs -0 -r git add -N -- 2>/dev/null; git diff --binary {base} ) > {dest}")
 
 
 def diff_stat(text: str) -> list[dict[str, Any]]:
@@ -764,7 +817,7 @@ async def session_patch(svc: SessionService, s: Session, max_bytes: int | None =
                   "; git rev-parse HEAD")
         res = await svc._sh(sb, script, cwd=sb.info["repo_path"], timeout=300)
         _, prov = svc.fleet._running(sb.id)
-        data = await prov.read_file(sb, f"{tmp}/out.patch")
+        data = await prov.read_file(sb, f"{tmp}/out.patch", limit=max_bytes + 1)  # integrate (#48): capped here
         with contextlib.suppress(Exception):
             await svc._sh(sb, f"rm -rf {tmp}")
         if data is None:
@@ -932,9 +985,10 @@ def job_turn_io(job: Job, turn: Turn, st: SessionTurn, first: bool) -> None:
 def record_job_turn(job: Job, turn: Turn, st: SessionTurn) -> None:
     """Copy what the agent handed back onto the job turn and the job's result (and so its callbacks)."""
     turn.outcome = st.outcome
-    turn.result, turn.result_error, turn.question = st.result, st.result_error, st.question
+    asked = st.question if st.outcome == "needs_input" else None  # a stopped turn's question waits on nobody
+    turn.result, turn.result_error, turn.question = st.result, st.result_error, asked
     turn.artifacts = list(st.artifacts)
-    job.result.data, job.result.result_error, job.result.question = st.result, st.result_error, st.question
+    job.result.data, job.result.result_error, job.result.question = st.result, st.result_error, asked
     job.result.artifacts = [a for t in job.turns for a in t.artifacts]
 
 
@@ -948,8 +1002,6 @@ def question_comment(job: Job, question: str) -> str:
 async def job_needs_input(svc: JobService, job: Job, turn: Turn, s: Session) -> None:
     """The agent asked a question. No verify and no delivery yet: the commits stay in the session (checkpointed
     after the turn) until a follow-up answers it and the job finishes."""
-    from hangar.models import JobState
-
     q = job.result.question or ""
     svc._event(job, f"needs input: {q[:500]}", JobState.NEEDS_INPUT, reason=None)
     await svc._keep(job, s)
@@ -958,10 +1010,17 @@ async def job_needs_input(svc: JobService, job: Job, turn: Turn, s: Session) -> 
         await svc._comment(job, turn.reply_to, question_comment(job, q))
 
 
+def open_question(job: Job) -> str | None:
+    """The agent's unanswered question while the job waits for it (needs_input): one place for every surface."""
+    if job.state != JobState.NEEDS_INPUT:
+        return None
+    return job.result.question or (job.turns[-1].question if job.turns else None)
+
+
 def answer_on_issue(svc: JobService, ref: str, sender: str, text: str) -> dict[str, Any] | None:
-    """A `/hangar …` comment on an issue whose job is waiting on a question answers it (a follow-up)."""
+    """A `/hangar …` comment on an issue whose job is waiting on a question answers it (a follow-up). The caller
+    passes only a trusted person's comment: the answer steers the agent, and anyone can comment on a public issue."""
     from hangar.jobs import JobError
-    from hangar.models import JobState
 
     job = next((j for j in svc.list(limit=500) if j.source_ref == ref and j.state == JobState.NEEDS_INPUT), None)
     if job is None:
@@ -1036,18 +1095,80 @@ def from_local(repo: Path, max_bundle_mb: int = 50, max_patch_mb: int = 10) -> t
     return items, info
 
 
+# --- overnight/sandbox-security: the untracked-files archive is built inside the sandbox, so it is the agent's.
+def _dotgit(name: str) -> bool:
+    """`.git` as git itself refuses it in a path, including the case and trailing-dot spellings that name the same
+    directory on macOS and Windows (and NTFS's short name)."""
+    n = name.lower().rstrip(". ")
+    return n == ".git" or n == "git~1"
+
+
+def _unsafe_member(top: Path, gitdir: os.stat_result, m: tarfile.TarInfo) -> str | None:
+    """Why an untracked-files member must not be extracted, or None. Checked against what is on disk now, so
+    a symlink made by an earlier member (or by the session's patch) is never written through."""
+    parts = [p for p in m.name.split("/") if p not in ("", ".")]
+    if not parts or m.name.startswith("/") or ".." in parts:
+        return "outside the checkout"
+    if any(_dotgit(p) for p in parts):
+        return "inside .git"
+    if not (m.isreg() or m.isdir() or m.issym()):
+        return "not a regular file, directory or symlink"
+    if m.issym():
+        link = posixpath.normpath(posixpath.join(posixpath.dirname("/".join(parts)), m.linkname))
+        if m.linkname.startswith("/") or link == ".." or link.startswith("../") or \
+                any(_dotgit(p) for p in link.split("/")):
+            return "a symlink that leads outside the checkout or into .git"
+    p = top
+    for part in parts[:-1]:
+        p = p / part
+        try:
+            st = os.lstat(p)
+        except FileNotFoundError:
+            break
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            return f"{p.relative_to(top)} is a symlink or a file"
+        if os.path.samestat(st, gitdir):
+            return "inside .git"
+    return None
+
+
 def _extract_untracked(top: Path, data: bytes) -> list[str]:
-    """Untracked files from a checkpoint into the checkout: never outside it, never over an existing file."""
+    """Untracked files from a checkpoint into the checkout: regular files, directories and symlinks that stay in
+    the tree; never under .git, never through a symlink, never over anything that exists. tarfile's own "data"
+    filter isn't enough: it lets a member write through an in-tree symlink (into .git/hooks, say)."""
     notes: list[str] = []
+    gitdir = os.stat(_out(_git(top, "rev-parse", "--absolute-git-dir")))
+    written = 0
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
-        for m in tf.getmembers():
-            if (top / m.name).exists() and not m.isdir():
-                notes.append(f"kept your {m.name} (the session also has one)")
+        for i, m in enumerate(tf):
+            if i >= MAX_UNTRACKED_FILES:
+                notes.append(f"the session has more than {MAX_UNTRACKED_FILES} untracked files; restored the first "
+                             f"{MAX_UNTRACKED_FILES}")
+                break
+            if why := _unsafe_member(top, gitdir, m):
+                notes.append(f"skipped {m.name}: {why}")
                 continue
-            try:
-                tf.extract(m, top, filter="data")
-            except tarfile.FilterError as e:
-                notes.append(f"skipped {m.name}: {e}")
+            if m.isreg() and written + m.size > MAX_UNTRACKED_BYTES:
+                notes.append(f"skipped {m.name}: the session's untracked files would take more than "
+                             f"{MAX_UNTRACKED_BYTES // MB} MB")
+                continue
+            target = top.joinpath(*[p for p in m.name.split("/") if p not in ("", ".")])
+            if os.path.lexists(target):
+                if not (m.isdir() and target.is_dir() and not target.is_symlink()):
+                    notes.append(f"kept your {m.name} (the session also has one)")
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)  # every existing parent was checked above
+            if m.isdir():
+                target.mkdir(mode=0o755)
+            elif m.issym():
+                os.symlink(m.linkname, target)
+            else:
+                src = tf.extractfile(m)
+                fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                             0o755 if m.mode & 0o100 else 0o644)
+                with os.fdopen(fd, "wb") as out:
+                    shutil.copyfileobj(src, out)  # type: ignore[misc]
+                written += m.size
     return notes
 
 
@@ -1063,6 +1184,8 @@ def pull_into(repo: Path, session: str, manifest: dict[str, Any], parts: dict[st
     if checkout and _out(_git(top, "status", "--porcelain")):
         raise ExchangeError("your working tree has changes; commit or stash them, or pull without --checkout")
     head = manifest.get("head")
+    if head and not _OID_RE.match(str(head)):  # written by the sandbox at checkpoint time; it reaches git argv here
+        raise ExchangeError(f"the session's checkpoint names {str(head)[:80]!r} as its head, which is not a commit id")
     with tempfile.TemporaryDirectory() as tmp:
         if "repo.bundle" in parts:
             b = Path(tmp) / "repo.bundle"

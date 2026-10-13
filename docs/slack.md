@@ -25,34 +25,26 @@ Reply in that thread to follow up. The agent picks up its own conversation, on t
 | `/hangar help` | Usage |
 | A reply in a job's thread | Follow-up once the current turn is done |
 
-Slack doesn't allow slash commands inside threads, so a `/hangar` job gets a new top-level message and the thread hangs off it. An `@hangar` mention inside an existing thread (say, under an alert) runs the job in that thread. The parent message and earlier replies, up to 15 messages and 20 KB, go to the agent as a context file, `slack-thread.md`.
+Slack doesn't allow slash commands inside threads, so a `/hangar` job gets a new top-level message and the thread hangs off it. An `@hangar` mention inside an existing thread (say, under an alert) runs the job in that thread. The parent message and earlier replies, up to 15 messages and 20 KB, go to the agent as a context file, `slack-thread.md`. Other people and other apps wrote that thread, so the file is marked untrusted, and the prompt tells the agent to treat it as a description of the problem, never as instructions.
 
 ## Set it up
 
-1. **Create the app.** At <https://api.slack.com/apps>, choose *Create New App → From a manifest*, pick the workspace and paste [`slack-app-manifest.yaml`](slack-app-manifest.yaml). Before pasting, replace `hangar.example.com` with your hangar's public URL. Install the app to the workspace.
+```bash
+hangar setup slack --manifest slack-app.yaml
+```
 
-   Slack checks the events URL right away. That check fails until step 3 is done; you'll retry it in step 4.
-2. **Store its two secrets in hangar's vault.** Use *Basic Information → Signing Secret* and *OAuth & Permissions → Bot User OAuth Token* (`xoxb-…`). Paste each value when prompted, then press Ctrl-D. Nothing is echoed, and neither value is ever printed back:
-   ```bash
-   hangar cred add slack-signing --harness webhook --kind generic
-   hangar cred add slack-bot --harness webhook --kind generic
-   ```
-   Both stay in the control plane. They are never put into sandboxes.
-3. **Map channels to repos.** Get a channel's ID from *channel name → About*, at the bottom (it looks like `C0123ABCD`). Each repo must also be in `HANGAR_GITHUB_REPOS`, which picks its environment. On GKE, add the keys to the `hangar-site` config map, which `deploy/gke/up.sh` never overwrites:
-   ```bash
-   kubectl -n hangar create configmap hangar-site \
-     --from-literal=HANGAR_SLACK_SIGNING_SECRET_CREDENTIAL=slack-signing \
-     --from-literal=HANGAR_SLACK_BOT_TOKEN_CREDENTIAL=slack-bot \
-     --from-literal=HANGAR_SLACK_CHANNELS='{"C0123ABCD": "acme/app"}' \
-     --from-literal=HANGAR_SLACK_USERS='["U0456EFGH", "U0789IJKL"]' \
-     --from-literal=HANGAR_GITHUB_REPOS='{"acme/app": "python"}' \
-     --from-literal=HANGAR_GITHUB_TOKEN_CREDENTIAL=gh-control \
-     --dry-run=client -o yaml | kubectl apply -f -
-   kubectl -n hangar rollout restart deploy/hangar
-   ```
-   `create configmap … | kubectl apply` replaces the whole map. Keep the keys you already had, such as the GitHub ones from [jobs §4](jobs.md#4-trigger-from-github). Elsewhere, set the same `HANGAR_*` variables in the environment or `.env`.
-4. **Finish in Slack.** Under *Event Subscriptions*, retry the request URL; it should verify now. Then invite the app to each mapped channel with `/invite @hangar`. Thread replies only arrive from channels the app is in.
-5. **Check the setup** with `hangar doctor`. It checks:
+1. **Create the app.** `hangar setup slack` writes the [app manifest](slack-app-manifest.yaml) with your hangar's URL filled in. At <https://api.slack.com/apps>, choose *Create New App → From a manifest*, pick the workspace and paste it. Then install the app to the workspace.
+
+   Slack checks the events URL right away. That check fails until the next step is done; you'll retry it in step 3.
+2. **Give hangar the secrets.** Paste the *Signing Secret* (from *Basic Information*) and the *Bot User OAuth Token* (`xoxb-…`, from *OAuth & Permissions*) when asked. Neither is echoed. Then give the channel to take work from, and its repo. The wizard does four things:
+   - checks the bot token with `auth.test`;
+   - stores both secrets in the vault as `slack-signing` and `slack-bot` (they never go into sandboxes);
+   - saves the Slack settings in hangar's database (no config map to edit);
+   - sends a signed test request through hangar's Slack route.
+
+   To script it: `hangar setup slack --signing-secret-file … --bot-token-file … --channel C0123ABCD=acme/app --user U0456EFGH --non-interactive`. Get a channel's ID from *channel name → About*, at the bottom. Each channel's repo must already be in `HANGAR_GITHUB_REPOS` (`hangar setup github`), which picks its environment.
+3. **Finish in Slack.** Under *Event Subscriptions*, retry the request URL; it should verify now. Then invite the app to each mapped channel with `/invite @hangar`. Thread replies only arrive from channels the app is in.
+4. **Check the setup** with `hangar doctor`. It checks:
    - that both credentials are stored;
    - that the bot token works (`auth.test`);
    - that every mapped channel points at a repo in `HANGAR_GITHUB_REPOS`.
@@ -64,7 +56,8 @@ Slack doesn't allow slash commands inside threads, so a `/hangar` job gets a new
 | `HANGAR_SLACK_SIGNING_SECRET_CREDENTIAL` | | Vault credential holding the signing secret. The Slack routes return 404 until it is set. |
 | `HANGAR_SLACK_BOT_TOKEN_CREDENTIAL` | | Vault credential holding the bot token |
 | `HANGAR_SLACK_CHANNELS` | `{}` | `{"<channel id>": "owner/repo"}`: the channels that may start jobs, and each one's default repo. An exact git URL also works, as in `HANGAR_GITHUB_REPOS`. |
-| `HANGAR_SLACK_USERS` | `[]` | Slack user IDs (`U…`, or `T…/U…` to pin the workspace) allowed to start and steer jobs. Empty means anyone in a mapped channel. |
+| `HANGAR_SLACK_USERS` | `[]` | Slack user IDs (`U…`, or `T…/U…` to pin the workspace) allowed to start and steer jobs. Empty means anyone in a mapped channel who belongs to the workspace the app is installed in. Members of other organizations (Slack Connect) count only when listed here. |
+| `HANGAR_SLACK_TEAMS` | `[]` | Other workspace IDs (`T…`) whose members count as your own, for Enterprise Grid orgs whose users carry another workspace's ID |
 | `HANGAR_SLACK_API_URL` | `https://slack.com/api` | |
 
 ## How it behaves
@@ -72,6 +65,9 @@ Slack doesn't allow slash commands inside threads, so a `/hangar` job gets a new
 - **Requests are verified.** Each request must carry a valid `X-Slack-Signature`: `v0=` followed by the HMAC-SHA256 of `v0:<timestamp>:<raw body>`, keyed with the signing secret and compared in constant time. Requests whose `X-Slack-Request-Timestamp` is more than 5 minutes off are refused with 401.
 - **Within 3 seconds.** Slack expects an answer within 3 seconds. Hangar acknowledges the command or event at once. It posts to Slack, reads the thread and submits the job in the background.
 - **Exactly once.** Slack retries an event it thinks failed (`X-Slack-Retry-Num`), and a mention in a thread arrives both as `app_mention` and as `message`. Hangar acts once per `event_id` and once per message. The record of handled events survives a restart.
+- **No replays.** Slack doesn't retry slash commands, so a second copy of a signed command (same signature) inside the five-minute window is a replay: hangar answers "That request was already handled." and starts nothing.
+- **Other organizations.** In a Slack Connect channel, messages from another organization's members carry their own workspace ID (`user_team`). Hangar ignores their mentions and thread replies unless they are listed in `HANGAR_SLACK_USERS`, so sharing a channel doesn't give a partner company an agent on your repo. (Slack doesn't let another organization run your app's slash commands at all.)
+- **Limits.** Each Slack user is a caller for [rate limits and the active-job cap](security.md#front-door-limits): by default 10 jobs or follow-ups at once, refilling at 30 a minute, and at most 10 unfinished jobs. Past a limit, hangar says so in the thread.
 - **Only people.** Hangar ignores messages from bots (its own included), edits and deletions.
 - **Who's asking.** The requester is `slack:<team>/<user>`, shown in the job's timeline, PR body and audit log. Slack jobs are fenced in like a `jobs` token: only repos in `HANGAR_GITHUB_REPOS`, only their environments, and no choice of provider.
 - **Who can follow up.** Anyone allowed in a mapped channel can follow up in a job's thread, just as any collaborator can comment `/hangar` on a job's PR. A reply while the agent is still working gets "Can't continue yet"; reply again when the turn is done.
@@ -81,4 +77,6 @@ Slack doesn't allow slash commands inside threads, so a `/hangar` job gets a new
 
 ## Security notes
 
-Treat a mapped channel like write access to its repo's `hangar/*` branches. Anyone who can post there can start an agent, unless `HANGAR_SLACK_USERS` is set. Messages in the thread are context for the agent, and the prompt marks them as data. Even so, they are untrusted input, like issue comments; see [jobs → Security notes](jobs.md#security-notes). Keep PR merges human-approved.
+Treat a mapped channel like write access to its repo's `hangar/*` branches. Anyone in your workspace who can post there can start an agent, unless `HANGAR_SLACK_USERS` is set. Messages in the thread are context for the agent, and the prompt marks them as untrusted data. Even so, they are untrusted input, like issue comments; see [jobs → Security notes](jobs.md#security-notes). A thread reply from an allowed user is a follow-up with that user's authority. Keep PR merges human-approved.
+
+`/hangar status JOB` answers for any job on a repo Slack may use, including jobs started over REST or GitHub, to anyone allowed in a mapped channel. It shows the title, state, requester and latest event.

@@ -15,9 +15,9 @@ client to prove the two interoperate. See docs/a2a.md.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
-import inspect
 import ipaddress
 import json
 import logging
@@ -36,6 +36,7 @@ from pydantic import BaseModel, ValidationError
 
 from hangar.auth import TokenAuth, bearer_from_headers
 from hangar.config import Settings
+from hangar.exchange import open_question
 from hangar.jobs import Caller, JobError, JobNotFound, JobService, SubmitJob, _internal
 from hangar.models import ContextItem, Job, new_id
 from hangar.vault import Vault
@@ -135,15 +136,6 @@ def _context_of(job: Job) -> str:
 
 def _owner(caller: Caller) -> str | None:
     return caller.owner if caller.restricted else None
-
-
-def _question(job: Job) -> str | None:
-    """The agent's question when a job needs input (workstream E keeps it on the job or its last turn)."""
-    for obj in (job, job.turns[-1] if job.turns else None, job.result):
-        q = getattr(obj, "question", None)
-        if isinstance(q, str) and q.strip():
-            return q
-    return None
 
 
 # ---------------------------------------------------------------------------- inbound parsing
@@ -342,6 +334,7 @@ class A2AServer:
         self.store = jobs.store
         self._push: dict[str, list[PushConfig]] = {}  # job id -> its push configs, mirrored in the kv store
         self._loop_task: asyncio.Task | None = None
+        self._open: dict[str, int] = {}  # front-door-auth: open streams and blocking sends per caller
 
     async def start(self) -> None:
         self._push = {k.removeprefix(_PUSH_KEY): [PushConfig.model_validate(c) for c in self.store.kv_get_json(k, [])]
@@ -465,8 +458,8 @@ class A2AServer:
                 status_code=401, headers={"WWW-Authenticate": 'Bearer realm="hangar"'})
         if p.admin:
             return Caller(p.name, p.id)
-        if "jobs" in p.scopes:
-            return Caller(p.name, p.id, restricted=True, callback_secret=p.callback_secret)
+        if "jobs" in p.scopes:  # front-door-auth: with the token's budget cap, as over REST
+            return Caller(p.name, p.id, restricted=True, callback_secret=p.callback_secret, max_budget=p.max_budget)
         return JSONResponse(_rpc_error(None, RpcError(-32000, f"token scopes {p.scopes} do not allow jobs"), V1),
                             status_code=403)
 
@@ -537,7 +530,7 @@ class A2AServer:
         last = job.events[-1] if job.events else None
         text = last.message if last else None
         if st == INPUT_REQUIRED:
-            text = _question(job) or text
+            text = open_question(job) or text  # --- interactions: one helper for every surface
         elif st == FAILED:
             cause = next((e.message for e in reversed(job.events)
                           if not e.message.startswith(("failed", "succeeded", "cancelled"))), None)
@@ -579,15 +572,10 @@ class A2AServer:
                                "mediaType": "application/json"}])
         if r.diffstat:
             art("diffstat", "Diffstat", [_text(r.diffstat)])
-        # Structured output (workstream E): on the job's result or the last turn, whichever exists.
-        last = job.turns[-1] if job.turns else None
-        structured = getattr(r, "structured", None)
-        if structured is None:
-            structured = getattr(last, "result", None)
-        if structured is not None and not isinstance(structured, str | bytes):
-            if isinstance(structured, BaseModel):
-                structured = structured.model_dump(mode="json")
-            art("result", "Structured result", [{"data": structured, "mediaType": "application/json"}])
+        # Structured output (workstream E): the job's result, as get_job and callbacks show it (--- interactions:
+        # it lives in `result.data`; a follow-up that is still running has no result of its own yet).
+        if r.data is not None and not isinstance(r.data, str):
+            art("result", "Structured result", [{"data": r.data, "mediaType": "application/json"}])
         return out
 
     def _out_task(self, task: dict, ver: str, wrap: bool = False) -> dict:
@@ -608,9 +596,26 @@ class A2AServer:
     # ------------------------------------------------------------------ operations
     async def _op_send(self, caller: Caller, params: dict, ver: str, request: Request) -> dict:
         job, cfg = self._accept(caller, params, ver)
-        if cfg.blocking:
-            await self._wait(job, request, self.settings.a2a_max_wait_seconds)
+        if cfg.blocking and self._room(caller):  # front-door-auth: past the cap, answer at once instead of waiting
+            with self._holding(caller):
+                await self._wait(job, request, self.settings.a2a_max_wait_seconds)
         return self._out_task(self.task(job, cfg.history_length), ver, wrap=True)
+
+    # --- front-door-auth: each caller holds at most HANGAR_A2A_MAX_STREAMS_PER_OWNER connections open
+    def _room(self, caller: Caller) -> bool:
+        cap = self.settings.a2a_max_streams_per_owner
+        return cap <= 0 or self._open.get(caller.owner, 0) < cap
+
+    @contextlib.contextmanager
+    def _holding(self, caller: Caller):
+        self._open[caller.owner] = self._open.get(caller.owner, 0) + 1
+        try:
+            yield
+        finally:
+            if (n := self._open.get(caller.owner, 1) - 1) > 0:
+                self._open[caller.owner] = n
+            else:
+                self._open.pop(caller.owner, None)
 
     async def _op_get(self, caller: Caller, params: dict, ver: str, request: Request) -> dict:
         job = self._job(caller, params.get("id"))
@@ -717,8 +722,6 @@ class A2AServer:
             text = ("Answer this question about the repository. Don't change any files; write the answer to "
                     f"RESULT.md.\n\n{text}")
             opts.setdefault("deliver", "none")
-        if "output_schema" in opts and "output_schema" not in SubmitJob.model_fields:
-            raise _invalid("output_schema needs structured results, which this hangar doesn't support yet")
         if not opts.get("repo") and self.settings.a2a_default_repo:
             opts["repo"] = self.settings.a2a_default_repo
         req = SubmitJob(instructions=text, context=context, idempotency_key=f"a2a:{msg.id}",
@@ -732,17 +735,15 @@ class A2AServer:
                                "cancel it")
         if not text:
             raise _invalid("a follow-up needs a text part with the message")
-        kw: dict[str, Any] = {}
-        if context:
-            if "context" not in inspect.signature(self.jobs.follow_up).parameters:
-                raise _invalid("this hangar doesn't take attachments on follow-ups yet; put them in the text")
-            kw["context"] = context
-        self.jobs.follow_up(job.id, text, requester=caller.requester, owner=_owner(caller), **kw)
+        self.jobs.follow_up(job.id, text, requester=caller.requester, owner=_owner(caller), context=context)
         job.labels[MESSAGE_LABEL] = msg.id
         self.store.put(job)
 
     # ------------------------------------------------------------------ streaming
     async def _stream(self, caller: Caller, params: dict, ver: str, op: str, rid: Any, request: Request) -> Response:
+        if not self._room(caller):  # front-door-auth
+            raise RpcError(-32000, f"too many open streams for this token (the limit is "
+                                   f"{self.settings.a2a_max_streams_per_owner}); close one or poll with GetTask")
         if op == "stream":
             job, _ = self._accept(caller, params, ver)
         else:
@@ -752,13 +753,21 @@ class A2AServer:
                 raise _unsupported(f"task {job.id} is {_V03_STATES[st]}; read it with GetTask")
 
         async def sse() -> AsyncIterator[str]:
+            # Checked again where the stream is counted (no await in between): requests that arrive together all
+            # pass the check above, before any of their streams has started.
+            if not self._room(caller):
+                err = RpcError(-32000, f"too many open streams for this token (the limit is "
+                                       f"{self.settings.a2a_max_streams_per_owner}); close one or poll with GetTask")
+                yield f"data: {json.dumps(_rpc_error(rid, err, ver))}\n\n"
+                return
             try:
-                async for kind, obj in self._events(job, request):
-                    if kind == "keepalive":
-                        yield ": keepalive\n\n"
-                        continue
-                    res = {"jsonrpc": "2.0", "id": rid, "result": self._out_event(kind, obj, ver)}
-                    yield f"data: {json.dumps(res)}\n\n"
+                with self._holding(caller):  # front-door-auth
+                    async for kind, obj in self._events(job, request):
+                        if kind == "keepalive":
+                            yield ": keepalive\n\n"
+                            continue
+                        res = {"jsonrpc": "2.0", "id": rid, "result": self._out_event(kind, obj, ver)}
+                        yield f"data: {json.dumps(res)}\n\n"
             except Exception as e:  # noqa: BLE001 - tell the client, don't just drop the stream
                 yield f"data: {json.dumps(_rpc_error(rid, self._as_rpc(e, 'stream'), ver))}\n\n"
 
@@ -964,7 +973,10 @@ class A2AServer:
                                       "(allow it in HANGAR_JOB_CALLBACK_HOSTS)")
                 return
         err = ""
-        async with httpx.AsyncClient(transport=self.jobs.transport, timeout=10, follow_redirects=False) as client:
+        from hangar.frontdoor import outbound_transport  # front-door-auth: connect to the checked address
+
+        async with httpx.AsyncClient(transport=self.jobs.transport or outbound_transport(self.jobs), timeout=10,
+                                     follow_redirects=False) as client:
             for attempt in range(3):
                 try:
                     r = await client.post(c.url, content=raw, headers=headers)

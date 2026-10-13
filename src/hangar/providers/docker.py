@@ -22,7 +22,7 @@ from hangar.envspec import BuildContext, EnvSpec
 from hangar.harnesses import PACK_ROOT
 from hangar.models import ExecResult, Sandbox, SandboxState
 from hangar.providers._build import docker_build
-from hangar.providers.base import Capabilities, LogFn, Provider, ProviderError, TerminalStream
+from hangar.providers.base import Capabilities, LogFn, OutputTail, Provider, ProviderError, TerminalStream
 
 MAX_OUTPUT = 256 * 1024
 LABEL = "dev.hangar.sandbox"
@@ -44,6 +44,50 @@ def _truncate(s: str) -> tuple[str, bool]:
     if len(s) <= MAX_OUTPUT:
         return s, False
     return "[... truncated ...]\n" + s[-MAX_OUTPUT:], True
+
+
+# --- overnight/sandbox-security review: bounded reads from the sandbox
+def _text(t: OutputTail[bytes]) -> tuple[str, bool]:
+    s, cut = _truncate(t.value().decode(errors="replace"))
+    if t.cut and not cut:
+        return "[... truncated ...]\n" + s, True
+    return s, cut
+
+
+class _Chunks(io.RawIOBase):
+    """A file over get_archive's chunk generator, so tarfile reads the stream as it needs it."""
+
+    def __init__(self, chunks):
+        self._it, self._buf = iter(chunks), b""
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b) -> int:
+        while not self._buf:
+            self._buf = next(self._it, b"")
+            if not self._buf:
+                return 0
+        n = min(len(b), len(self._buf))
+        b[:n], self._buf = self._buf[:n], self._buf[n:]
+        return n
+
+
+def _first_file(stream, limit: int | None) -> bytes | None:
+    """The first regular file in a get_archive stream, reading no more of it than `limit` + 1 bytes."""
+    try:
+        with tarfile.open(fileobj=_Chunks(stream), mode="r|") as tf:
+            for m in tf:
+                if m.isfile():
+                    f = tf.extractfile(m)
+                    if f is None:
+                        return None
+                    return f.read() if limit is None else f.read(limit + 1)
+        return None
+    finally:
+        close = getattr(stream, "close", None)
+        if close is not None:
+            close()
 
 
 class DockerTerminal(TerminalStream):
@@ -98,7 +142,9 @@ class DockerProvider(Provider):
     def __init__(self, settings: Settings):
         self.settings = settings
         try:
-            self.client = docker.from_env()
+            # perf: one connection per concurrent call (turns waiting to end hold one each); the default pool of 10
+            # made every extra call open, and throw away, a new connection.
+            self.client = docker.from_env(max_pool_size=max(10, settings.io_pool))
             self.client.ping()
         except Exception as e:  # noqa: BLE001
             raise ProviderError(
@@ -286,45 +332,49 @@ class DockerProvider(Provider):
         argv = ["timeout", "--kill-after=5", str(int(timeout)), "bash", "-lc", command]
         t0 = time.monotonic()
 
-        def _run():
-            return c.exec_run(argv, user=user or self.settings.sandbox_user,
-                              workdir=cwd or self.settings.workspace_dir, demux=True)
+        def _run() -> tuple[int | None, OutputTail[bytes], OutputTail[bytes]]:
+            # Streamed, keeping only the tail (exec_run without a stream holds everything the command prints, and
+            # the sandbox decides how much that is). Same calls exec_run makes.
+            api = self.client.api
+            eid = api.exec_create(c.id, argv, user=user or self.settings.sandbox_user,
+                                  workdir=cwd or self.settings.workspace_dir)["Id"]
+            out, err = OutputTail(4 * MAX_OUTPUT, b""), OutputTail(4 * MAX_OUTPUT, b"")
+            frames = api.exec_start(eid, stream=True, demux=True)
+            try:
+                for o, e in frames:
+                    if o:
+                        out.add(o)
+                    if e:
+                        err.add(e)
+            finally:
+                frames.close()
+            return api.exec_inspect(eid).get("ExitCode"), out, err
 
         try:
-            res = await asyncio.to_thread(_run)
+            exit_code, out_t, err_t = await asyncio.to_thread(_run)
         except APIError as e:
             raise ProviderError(f"exec failed: {e.explanation or e}") from e
-        out_b, err_b = res.output if res.output else (b"", b"")
-        out, t1 = _truncate((out_b or b"").decode(errors="replace"))
-        err, t2 = _truncate((err_b or b"").decode(errors="replace"))
-        code = res.exit_code if res.exit_code is not None else -1
+        out, t1 = _text(out_t)
+        err, t2 = _text(err_t)
+        code = exit_code if exit_code is not None else -1
         if code == 124:
             err += f"\n[hangar] command timed out after {timeout}s"
         return ExecResult(exit_code=code, stdout=out, stderr=err,
                           duration_ms=int((time.monotonic() - t0) * 1000), truncated=t1 or t2)
 
-    async def read_file(self, sandbox, path) -> bytes | None:
+    async def read_file(self, sandbox, path, limit=None) -> bytes | None:
         c = await self._container(sandbox)
         try:
             stream, _ = await asyncio.to_thread(c.get_archive, path)
         except NotFound:
             return None
-        data = b"".join(await asyncio.to_thread(list, stream))
-        with tarfile.open(fileobj=io.BytesIO(data)) as tf:
-            member = next((m for m in tf.getmembers() if m.isfile()), None)
-            if member is None:
-                return None
-            f = tf.extractfile(member)
-            return f.read() if f else None
+        return await asyncio.to_thread(_first_file, stream, limit)
 
     async def write_file(self, sandbox, path, data, mode=0o644) -> None:
         c = await self._container(sandbox)
         parent = posixpath.dirname(path)
         user = self.settings.sandbox_user
         owned = not path.startswith(SYSTEM_DIRS)
-        mk = await asyncio.to_thread(c.exec_run, ["mkdir", "-p", parent], user=user if owned else "root")
-        if mk.exit_code != 0:
-            raise ProviderError(f"cannot create {parent}: {mk.output.decode(errors='replace')}")
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w") as tf:
             info = tarfile.TarInfo(posixpath.basename(path))
@@ -334,7 +384,17 @@ class DockerProvider(Provider):
             if owned:
                 info.uid = info.gid = 1000
             tf.addfile(info, io.BytesIO(data))
-        ok = await asyncio.to_thread(c.put_archive, parent, buf.getvalue())
+        # perf: the directory usually exists, so try the upload first; a `mkdir` exec costs ~70 ms, the upload ~5.
+        try:
+            try:
+                ok = await asyncio.to_thread(c.put_archive, parent, buf.getvalue())
+            except NotFound:
+                mk = await asyncio.to_thread(c.exec_run, ["mkdir", "-p", parent], user=user if owned else "root")
+                if mk.exit_code != 0:
+                    raise ProviderError(f"cannot create {parent}: {mk.output.decode(errors='replace')}") from None
+                ok = await asyncio.to_thread(c.put_archive, parent, buf.getvalue())
+        except APIError as e:
+            raise ProviderError(f"failed to write {path}: {e.explanation or e}") from e
         if not ok:
             raise ProviderError(f"failed to write {path}")
 

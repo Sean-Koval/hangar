@@ -1,0 +1,126 @@
+{
+  "meta": {
+    "bench": "sandbox.py",
+    "side": "after",
+    "rounds": 2
+  },
+  "metrics": {
+    "create_cold": {
+      "n": 10,
+      "p50_ms": 484.27,
+      "p95_ms": 532.64
+    },
+    "first_exec": {
+      "n": 10,
+      "p50_ms": 72.67,
+      "p95_ms": 76.29
+    },
+    "create_warm": {
+      "n": 10,
+      "p50_ms": 318.26,
+      "p95_ms": 354.32
+    },
+    "exec": {
+      "n": 30,
+      "p50_ms": 74.75,
+      "p95_ms": 94.12
+    },
+    "write_file_64k": {
+      "n": 30,
+      "p50_ms": 6.99,
+      "p95_ms": 80.04
+    },
+    "read_file_64k": {
+      "n": 30,
+      "p50_ms": 6.52,
+      "p95_ms": 12.88
+    },
+    "write_file_1m": {
+      "n": 30,
+      "p50_ms": 7.83,
+      "p95_ms": 11.27
+    },
+    "read_file_1m": {
+      "n": 30,
+      "p50_ms": 9.28,
+      "p95_ms": 13.89
+    },
+    "terminal_send": {
+      "n": 30,
+      "p50_ms": 203.83,
+      "p95_ms": 226.26
+    },
+    "checkpoint_turn": {
+      "n": 10,
+      "p50_ms": 523.97,
+      "p95_ms": 543.63
+    },
+    "checkpoint_unchanged": {
+      "n": 10,
+      "p50_ms": 105.32,
+      "p95_ms": 123.37
+    },
+    "suspend": {
+      "n": 10,
+      "p50_ms": 736.02,
+      "p95_ms": 1025.03
+    },
+    "resume_restore": {
+      "n": 10,
+      "p50_ms": 296.44,
+      "p95_ms": 732.74
+    },
+    "resume_total": {
+      "n": 10,
+      "p50_ms": 745.05,
+      "p95_ms": 1215.73
+    },
+    "turn_first_output": {
+      "n": 10,
+      "p50_ms": 371.82,
+      "p95_ms": 1753.95
+    },
+    "turn_end_detect": {
+      "n": 10,
+      "p50_ms": 44.62,
+      "p95_ms": 208.95
+    }
+  },
+  "notes": {
+    "image": "hangar-env/sesenv:acaeadafcf849a58",
+    "calls_create": {
+      "exec": "1x 184ms",
+      "read_file": "1x 8ms",
+      "write_file": "2x 82ms"
+    },
+    "checkpoint_parts_bytes": {
+      "agent.tgz": 353064,
+      "repo.bundle": 837,
+      "wip.patch": 126,
+      "untracked.tgz": 3004198,
+      "session.patch": 3883343
+    },
+    "calls_checkpoint_turn": {
+      "encrypt": "3x 40ms",
+      "exec": "2x 452ms",
+      "put": "3x 19ms",
+      "read_file": "1x 12ms"
+    },
+    "calls_checkpoint_unchanged": {
+      "exec": "1x 100ms"
+    },
+    "calls_restore": {
+      "decrypt": "4x 34ms",
+      "exec": "1x 235ms",
+      "get": "4x 7ms",
+      "write_file": "1x 13ms"
+    },
+    "calls_turn_with_checkpoint": {
+      "encrypt": "3x 45ms",
+      "exec": "11x 3254ms",
+      "put": "3x 5ms",
+      "read_file": "3x 31ms",
+      "write_file": "3x 117ms"
+    }
+  }
+}

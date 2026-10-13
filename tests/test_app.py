@@ -157,7 +157,7 @@ def test_doctor_reports_with_fixes(client):
     h.settings.github_webhook_secret_credential = "gh-hook"
     checks = {c["name"]: c for c in client.get("/api/doctor").json()}
     assert checks["github token"]["status"] == "fail" and "hangar-site" in checks["github token"]["fix"]
-    assert checks["github webhook secret"]["status"] == "fail" and "hangar cred add gh-hook" in \
+    assert checks["github webhook secret"]["status"] == "fail" and "hangar setup github" in \
         checks["github webhook secret"]["fix"]
     assert checks["environment ghost"]["status"] == "fail"
     assert checks["environment plain"]["status"] == "fail" and "credentials" in checks["environment plain"]["detail"]

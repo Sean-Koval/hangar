@@ -279,7 +279,7 @@ class Attempt(BaseModel):
     score: float | None = None
     rank: int | None = None  # 1 = delivered
     summary: str | None = None
-    cost_usd: float | None = None  # when the harness reports it
+    cost_usd: float | None = None  # from its usage: reported by the harness or priced (--- interactions)
     error: str | None = None
     started_at: float | None = None
     finished_at: float | None = None
@@ -390,6 +390,7 @@ class SessionTurn(BaseModel):
     artifacts: list[Artifact] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     repair_run_id: str | None = None  # the one extra run that asked for a missing or invalid result
+    repair_usage: Usage | None = None  # --- interactions: what that run used (part of the turn's total)
 
 
 class Checkpoint(BaseModel):
@@ -402,6 +403,9 @@ class Checkpoint(BaseModel):
     fingerprint: str | None = None  # HEAD + dirty-tree hash: skip identical checkpoints
     parts: dict[str, int] = Field(default_factory=dict)  # part name -> bytes (plaintext)
     warnings: list[str] = Field(default_factory=list)
+    # --- perf: part name -> sha256 of the plaintext, as the sandbox computed it. A part whose digest matches the
+    # previous checkpoint is copied inside the checkpoint store instead of being read and uploaded again.
+    digests: dict[str, str] = Field(default_factory=dict)
 
 
 class Session(BaseModel):

@@ -19,6 +19,27 @@ from hangar.models import ExecResult, Sandbox, SandboxState
 LogFn = Callable[[str], Awaitable[None] | None]
 
 
+# --- overnight/sandbox-security review: the sandbox decides how much its commands print and how big its files are
+class OutputTail[T: (str, bytes)]:
+    """The last `keep` characters (or bytes) of a stream that may never end, so a command that prints without
+    stopping can't fill the control plane's memory. `cut` says something was dropped."""
+
+    def __init__(self, keep: int, empty: T) -> None:
+        self.keep, self.cut, self._empty = keep, False, empty
+        self._parts: list[T] = []
+        self._n = 0
+
+    def add(self, chunk: T) -> None:
+        self._parts.append(chunk)
+        self._n += len(chunk)
+        if self._n > 2 * self.keep:
+            last = self._empty.join(self._parts)[-self.keep:]
+            self._parts, self._n, self.cut = [last], len(last), True
+
+    def value(self) -> T:
+        return self._empty.join(self._parts)
+
+
 class Capabilities(BaseModel):
     full_snapshots: bool = False  # provider-native memory/filesystem snapshots
     warm_pools: bool = False
@@ -114,7 +135,10 @@ class Provider(abc.ABC):
         """Run `command` with `bash -lc` (so ~/.hangar/env is sourced) and wait for it."""
 
     @abc.abstractmethod
-    async def read_file(self, sandbox: Sandbox, path: str) -> bytes | None: ...
+    async def read_file(self, sandbox: Sandbox, path: str, limit: int | None = None) -> bytes | None:
+        """The file's bytes, or None if it isn't there. With `limit`, no more than `limit` + 1 bytes are read, so
+        a caller can tell a file is over its cap without holding all of it (the sandbox decides its size, and can
+        change it between a size check and the read). Hangar's own reads of agent-written files pass one."""
 
     @abc.abstractmethod
     async def write_file(self, sandbox: Sandbox, path: str, data: bytes, mode: int = 0o644) -> None: ...

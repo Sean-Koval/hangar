@@ -43,6 +43,9 @@ REFRESH_TTL = 30 * 86400
 CODE_TTL = 300
 REQUEST_TTL = 600
 SCOPE = "hangar"
+_LOOPBACK = {"localhost", "127.0.0.1", "::1"}
+# --- review of front-door-auth: never a redirect target, whatever host they name
+_BROWSER_SCHEMES = {"javascript", "data", "file", "vbscript", "blob", "about", "filesystem", "ftp", "ws", "wss"}
 
 
 def _h(token: str) -> str:
@@ -57,7 +60,8 @@ class HangarOAuthProvider:
         self.store = store
         self.auth = auth
         self.public_url = public_url.rstrip("/")
-        self.redirect_hosts = redirect_hosts or ["*"]
+        # front-door-auth: an empty list allows no host (it used to mean "any"); "*" must be asked for.
+        self.redirect_hosts = ["*"] if redirect_hosts is None else redirect_hosts
         self.max_clients = max_clients
         self.grant_seconds = grant_days * 86400
 
@@ -81,10 +85,24 @@ class HangarOAuthProvider:
         return OAuthClientInformationFull.model_validate(v) if v else None
 
     def _host_allowed(self, uri: str) -> bool:
+        u = urlparse(uri)
+        host = (u.hostname or "").lower()
+        # front-door-auth: the code travels in this URL, so it must be https, except to the user's own machine
+        # (native clients such as Claude Code and Codex listen on a loopback port), or a native app's own scheme
+        # (RFC 8252 §7.1: Cursor registers cursor://anysphere.cursor-mcp/...), which the OS hands to that app.
+        # Schemes a browser acts on itself are never allowed.
+        scheme = u.scheme.lower()
+        if not host or scheme in _BROWSER_SCHEMES or (scheme == "http" and host not in _LOOPBACK):
+            return False
         if "*" in self.redirect_hosts:
             return True
-        host = (urlparse(uri).hostname or "").lower()
         return any(host == h or host.endswith("." + h) for h in self.redirect_hosts)
+
+    def _audience_ok(self, resource: str | None) -> bool:
+        """RFC 8707: a client may only ask for a token for hangar's own MCP endpoint (or hangar itself)."""
+        if not resource:
+            return True
+        return resource.rstrip("/") in (self.public_url, f"{self.public_url}/mcp")
 
     def sweep(self) -> None:
         """Drop expired requests/codes/tokens and never-approved clients older than a day."""
@@ -113,6 +131,9 @@ class HangarOAuthProvider:
 
     # ------------------------------------------------------------------ authorize -> consent page
     async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
+        if not self._audience_ok(params.resource):  # front-door-auth
+            raise AuthorizeError(error="invalid_request",
+                                 error_description=f"this server only issues tokens for {self.public_url}/mcp")
         req = secrets.token_urlsafe(24)
         self._put("req", req, {
             "client_id": client.client_id,

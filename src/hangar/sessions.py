@@ -20,13 +20,14 @@ import re
 import shlex
 import uuid
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
+from cryptography.fernet import InvalidToken
 from pydantic import BaseModel, Field
 
-from hangar import exchange
+from hangar import ckpt, exchange
 from hangar.checkpoints import CheckpointStore, make_store
+from hangar.ckpt import CKPT_DIR, CKPT_REF, PACK_READ_LIMIT, PARTS, RESTORE_DIR  # noqa: F401 - re-exported (strategies, exchange)
 from hangar.events import Activity, resolve_budget, total_usage
 from hangar.fleet import Fleet, FleetError, _clip_tail
 from hangar.harnesses import get_harness
@@ -49,10 +50,6 @@ log = logging.getLogger("hangar.sessions")
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
 _BRANCH_RE = re.compile(r"^(?!-)(?!/)(?!.*\.\.)(?!.*//)(?!.*@\{)[A-Za-z0-9._/-]{1,200}(?<!/)(?<!\.lock)(?<!\.)$")
 MAX_MESSAGE = 64_000
-PARTS = ("agent.tgz", "repo.bundle", "wip.patch", "untracked.tgz")
-CKPT_REF = "refs/hangar/checkpoint"
-CKPT_DIR = "/tmp/hangar-ckpt"
-RESTORE_DIR = "/tmp/hangar-restore"
 
 
 class SessionError(ValueError):
@@ -177,6 +174,9 @@ class SessionService:
             with contextlib.suppress(BaseException):
                 await t
         self._tasks.clear()
+        if close := getattr(self.blobs, "close", None):  # perf: the GCS store keeps a connection pool
+            with contextlib.suppress(Exception):
+                await close()
 
     def _spawn(self, coro) -> None:
         t = asyncio.create_task(coro)
@@ -335,13 +335,19 @@ class SessionService:
         last = s.turns[-1] if s.turns else None
         d["terminal_session"] = last.run_id if last else None
         d["last_summary"] = next((t.summary for t in reversed(s.turns) if t.summary), None)
-        d["resume_command"] = (h.resume_hint.format(id=s.harness_session)
-                               if h and h.resume_hint and s.harness_session and s.harness_session_for == s.harness
-                               else None)
+        d["resume_command"] = self.resume_command(s, h)
         for t in d["turns"]:  # workstream C: the collector's read position is internal
             t.pop("event_cursor", None)
         d["usage"] = u.model_dump(mode="json") if (u := total_usage(s.turns)) else None
         return exchange.scrub_turns(d)  # workstream E: attachment contents never leave in a view
+
+    @staticmethod
+    def resume_command(s: Session, h: Any = None) -> str | None:
+        """The harness command that resumes this session's conversation locally, when there is one."""
+        h = h or (get_harness(s.harness) if s.harness else None)
+        if h and h.resume_hint and s.harness_session and s.harness_session_for == s.harness:
+            return h.resume_hint.format(id=s.harness_session)
+        return None
 
     # ================================================================== internals: state
     def _env_for_repo(self, repo: str | None) -> str | None:
@@ -430,9 +436,9 @@ class SessionService:
             if not s.base_branch:
                 res = await self._sh(sb, "git rev-parse --abbrev-ref HEAD", cwd=repo)
                 s.base_branch = res.stdout.strip() or None
-        await self._sh(sb, "git config user.email >/dev/null || git config user.email hangar@localhost; "
-                           "git config user.name >/dev/null || git config user.name hangar", cwd=repo)
         if not s.checkpoints:
+            await self._sh(sb, "git config user.email >/dev/null || git config user.email hangar@localhost; "
+                               "git config user.name >/dev/null || git config user.name hangar", cwd=repo)
             # First boot: continue the session branch if it was pushed before, else start it from the base.
             b = q(s.branch)
             res = await self._sh(sb, f"(git fetch -q origin {b} 2>/dev/null && git checkout -q -B {b} FETCH_HEAD) "
@@ -453,40 +459,35 @@ class SessionService:
         raise SessionError("no checkpoint could be restored: " + "; ".join(errors)[-600:])
 
     async def _restore_checkpoint(self, s: Session, sb: Sandbox, repo: str, ck: Checkpoint) -> None:
-        q = shlex.quote
+        """Parts are fetched and decrypted in parallel, written as one archive and applied by one script (perf: two
+        round trips, where it was one write per part and three execs). Packs are planned from the recorded sizes
+        and sent one at a time, so the control plane holds at most one pack (or one big part) per restore."""
         _, prov = self.fleet._running(sb.id)
-        present: set[str] = set()
-        for part in PARTS:
-            if part not in ck.parts:
-                continue
+
+        async def fetch(part: str) -> tuple[str, bytes]:
             blob = await self.blobs.get(f"{s.id}/{ck.id}/{part}.enc")
             if blob is None:
                 raise SessionError(f"checkpoint part {part} is missing from {self.blobs.description}")
-            data = await asyncio.to_thread(self.vault.decrypt, blob)
-            await prov.write_file(sb, f"{RESTORE_DIR}/{part}", data, mode=0o600)
-            present.add(part)
-        r, home = RESTORE_DIR, f"/home/{self.settings.sandbox_user}"
-        base = ck.base or s.base_sha or "HEAD"
-        target = q(ck.head or base)
-        steps = [
-            # Environment setup may have touched tracked files; start from a clean tree (ignored files stay).
-            "git reset -q --hard && git clean -fdq",
-            (f"git fetch -q {r}/repo.bundle {CKPT_REF} && git checkout -q -B {q(s.branch)} FETCH_HEAD"
-             if "repo.bundle" in present else
-             f"(git cat-file -e {target}^{{commit}} 2>/dev/null || git fetch -q origin {target})"
-             f" && git checkout -q -B {q(s.branch)} {target}"),
-        ]
-        if "wip.patch" in present:
-            steps.append(f"if [ -s {r}/wip.patch ]; then git apply --binary --whitespace=nowarn {r}/wip.patch; fi")
-        if "untracked.tgz" in present:
-            steps.append(f"tar xzf {r}/untracked.tgz -C {q(repo)}")
-        if "agent.tgz" in present:
-            steps.append(f"tar xzf {r}/agent.tgz -C {q(home)}")
-        steps.append(f"rm -rf {r}")
-        res = await self._sh(sb, " && ".join(steps), cwd=repo, timeout=600)
+            try:
+                return part, await asyncio.to_thread(self.vault.decrypt, blob)
+            except InvalidToken as e:  # a damaged blob must fall back to an older checkpoint, not brick the session
+                raise SessionError(f"checkpoint part {part} is corrupt (or was written with another key)") from e
+
+        async def send(i: int, names: list[str]) -> None:
+            group = dict(await asyncio.gather(*(fetch(p) for p in names)))
+            await prov.write_file(sb, f"{packs}.{i}.tar", await asyncio.to_thread(ckpt.pack, group), mode=0o600)
+
+        present = {p: ck.parts[p] for p in PARTS if p in ck.parts}
+        packs = f"{RESTORE_DIR}-{ck.id}"
+        for i, names in enumerate(ckpt.groups(present)):
+            await send(i, names)  # one pack in memory at a time
+        script = ckpt.restore_script(repo=repo, home=f"/home/{self.settings.sandbox_user}", branch=s.branch,
+                                     target=ck.head or ck.base or s.base_sha or "HEAD", present=set(present),
+                                     packs=packs)
+        res = await self._sh(sb, script, cwd=repo, timeout=600)
         if res.exit_code != 0:
             raise SessionError(f"restore failed: {(res.stderr or res.stdout)[-600:]}")
-        head = (await self._sh(sb, "git rev-parse HEAD", cwd=repo)).stdout.strip()
+        head = ckpt.restored_head(res.stdout) or ""
         if ck.head and head != ck.head:
             raise SessionError(f"restore ended at {head[:12]}, expected {ck.head[:12]}")
 
@@ -499,83 +500,97 @@ class SessionService:
         return sorted(set(dirs + s.extra_dirs))
 
     async def _checkpoint(self, s: Session, reason: str, skip_unchanged: bool = False) -> Checkpoint | None:
-        """Snapshot conversation + repo state into the control plane. Caller holds the lock."""
+        """Snapshot conversation + repo state into the control plane. Caller holds the lock.
+
+        One exec builds the parts (a periodic check stops after the fingerprint when nothing changed), one read
+        brings back the parts that changed, and parts identical to the last checkpoint are copied in the store."""
         if not s.sandbox_id or not self._alive(s.sandbox_id):
             return None
         sb = self.fleet.get(s.sandbox_id)
-        repo = sb.info.get("repo_path")
-        q = shlex.quote
-        c, home = CKPT_DIR, f"/home/{self.settings.sandbox_user}"
-        dirs = " ".join(q(x) for x in self._agent_dirs(s))
-        last = s.checkpoints[-1] if s.checkpoints else None
-        base = s.base_sha or "HEAD"
-        max_untracked = self.settings.session_max_untracked_mb * 1024 * 1024
-        # GIT_OPTIONAL_LOCKS=0: never take index.lock, so a checkpoint during a turn can't break the agent's git.
-        script = [f"export GIT_OPTIONAL_LOCKS=0; rm -rf {c} && mkdir -p {c} && chmod 700 {c}"]
-        if repo:
-            # Read HEAD once and pin it, so a commit landing mid-checkpoint can't make head and bundle disagree.
-            script += [
-                f"cd {q(repo)}",
-                f"H=$(git rev-parse --verify -q HEAD) && git update-ref {CKPT_REF} $H && echo $H > {c}/head",
-                f"if [ -n \"$H\" ]; then git bundle create -q {c}/repo.bundle {CKPT_REF} --not --remotes "
-                f"2>/dev/null || git bundle create -q {c}/repo.bundle {CKPT_REF} --not {q(base)} 2>/dev/null "
-                f"|| rm -f {c}/repo.bundle; fi",
-                f"if [ -n \"$H\" ]; then git diff --binary $H > {c}/wip.patch; fi",
-                f"git ls-files -z --others --exclude-standard > {c}/untracked.list",
-                f"if [ -s {c}/untracked.list ]; then tar --null -T {c}/untracked.list -czf {c}/untracked.tgz; "
-                f"xargs -0 stat -c '%n %s %Y' < {c}/untracked.list > {c}/untracked.stat 2>/dev/null; fi",
-            ]
-            # workstream E: the whole diff against base, so get_session_patch works while the session is suspended
-            diff = exchange.patch_script(q(base), f"{c}/session.patch", max_untracked)
-            script.append(f"if [ -n \"$H\" ]; then {diff}; fi")
-        if dirs:
-            script.append(f"cd {q(home)} && D=$(ls -d {dirs} 2>/dev/null); "
-                          f"if [ -n \"$D\" ]; then tar czf {c}/agent.tgz --ignore-failed-read $D || true; fi")
-        # fingerprint: HEAD + tree diff + untracked names + conversation file listing
-        script.append(f"{{ cat {c}/head 2>/dev/null; sha1sum {c}/wip.patch 2>/dev/null | cut -c1-40; "
-                      f"cat {c}/untracked.stat 2>/dev/null; "
-                      f"cd {q(home)} && find {dirs or '/dev/null'} -type f -printf '%P %s %T@\\n' 2>/dev/null"
-                      " | sort; }"
-                      f" | sha1sum | cut -c1-40 > {c}/fingerprint")
-        script.append(f"stat -c '%s %n' {c}/* 2>/dev/null || true")
-        timeout = int(max(30, min(600, self.settings.pre_destroy_timeout_seconds - 30)))
-        res = await self._sh(sb, " && ".join(script[:1]) + "; " + "; ".join(script[1:]), timeout=timeout)
         _, prov = self.fleet._running(sb.id)
-        fp = (await prov.read_file(sb, f"{c}/fingerprint") or b"").decode().strip() or None
-        head = (await prov.read_file(sb, f"{c}/head") or b"").decode().strip() or None
-        if (reason == "interval" or skip_unchanged) and last and fp and fp == last.fingerprint:
+        last = s.checkpoints[-1] if s.checkpoints else None
+        max_untracked = self.settings.session_max_untracked_mb * 1024 * 1024
+        max_part = self.settings.session_max_part_mb * 1024 * 1024
+        skip = last.fingerprint if (reason == "interval" or skip_unchanged) and last and last.fingerprint else None
+        previous = {p: d for p, d in last.digests.items() if p in last.parts} if last else {}
+        script = ckpt.capture_script(repo=sb.info.get("repo_path"), home=f"/home/{self.settings.sandbox_user}",
+                                     dirs=self._agent_dirs(s), base=s.base_sha or "HEAD", max_untracked=max_untracked,
+                                     max_part=max_part, skip_if=skip, previous=previous)
+        timeout = int(max(30, min(600, self.settings.pre_destroy_timeout_seconds - 30)))
+        res = await self._sh(sb, script, timeout=timeout)
+        cap = ckpt.parse_capture(res.stdout)
+        if cap.fingerprint is None:
+            raise SessionError(f"checkpoint failed: {(res.stderr or res.stdout)[-400:]}")
+        if cap.unchanged or (skip and cap.fingerprint == skip):
             self._last_checked[s.id] = now()  # nothing changed; don't re-run the whole thing every minute
             return None
-        sizes = {}
-        for ln in res.stdout.splitlines():
-            parts = ln.split()
-            if len(parts) == 2 and parts[0].isdigit():
-                sizes[Path(parts[1]).name] = int(parts[0])
-        ck = Checkpoint(reason=reason, head=head if head and head != "HEAD" else None, base=s.base_sha,
-                        branch=s.branch, fingerprint=fp)
+        ck = Checkpoint(reason=reason, head=cap.head, base=s.base_sha, branch=s.branch, fingerprint=cap.fingerprint)
         key = f"{s.id}/{ck.id}"
-        max_part = self.settings.session_max_part_mb * 1024 * 1024
+        data: dict[str, bytes] = {}  # parts to encrypt and upload
+        sizes: dict[str, int] = {}  # part -> plaintext bytes stored
+        same: list[str] = []  # parts unchanged since `last`: copied inside the store
+        limits = {p: max_untracked if p == "untracked.tgz" else max_part for p in ckpt.ALL_PARTS}
         try:
-            for part in (*PARTS, *exchange.CHECKPOINT_EXTRA):
-                if part not in sizes:
+            for part in ckpt.ALL_PARTS:
+                if part not in cap.parts:
                     continue
-                cap = max_untracked if part == "untracked.tgz" else max_part
-                if sizes[part] > cap:
-                    ck.warnings.append(f"{part} is {sizes[part] // 1024 // 1024} MB, over the "
-                                       f"{cap // 1024 // 1024} MB limit; not checkpointed")
+                size, digest = cap.parts[part]
+                limit = limits[part]
+                if size > limit:
+                    ck.warnings.append(f"{part} is {size // 1024 // 1024} MB, over the "
+                                       f"{limit // 1024 // 1024} MB limit; not checkpointed")
                     continue
-                data = await prov.read_file(sb, f"{c}/{part}")
-                if data is None:
-                    ck.warnings.append(f"could not read {part}")
-                    continue
-                blob = await asyncio.to_thread(self.vault.encrypt, data)
+                ck.digests[part] = digest
+                if last and previous.get(part) == digest:
+                    same.append(part)
+            fresh = [p for p in ck.digests if p not in same]
+            if packed := set(fresh) & cap.packed:
+                # integrate (#48): every size above came from the sandbox (its `stat` and `tar` are the agent's to
+                # redefine), so the read itself is capped: a pack is PACK_LIMIT plus tar headers.
+                raw = await prov.read_file(sb, f"{CKPT_DIR}/{ckpt.PACK}", limit=PACK_READ_LIMIT) or b""
+                if len(raw) <= PACK_READ_LIMIT:
+                    data = await asyncio.to_thread(ckpt.unpack, raw, {p: limits[p] for p in packed})  # off the loop
+                del raw
+
+            copied: list[str] = []
+
+            async def copy(part: str) -> None:
+                ok = await self.blobs.copy(f"{s.id}/{last.id}/{part}.enc", f"{key}/{part}.enc")
+                (copied if ok else fresh).append(part)  # the earlier copy is gone: send this one
+
+            await asyncio.gather(*(copy(p) for p in same))
+            singles = [p for p in fresh if p not in data]  # not packed (too big), or a copy that failed
+            # Once nothing is left to read, drop the sandbox's copies (its /tmp may be RAM) while the uploads run.
+            cleanup = None if singles else asyncio.ensure_future(self._sh(sb, f"rm -rf {CKPT_DIR}"))
+
+            async def upload(part: str, plain: bytes) -> None:
+                # review: the digest of what is stored, not the one the sandbox reported, decides later copies
+                ck.digests[part], blob = await asyncio.to_thread(ckpt.seal, self.vault, plain)
                 await self.blobs.put(f"{key}/{part}.enc", blob)
-                ck.parts[part] = len(data)
+                sizes[part] = len(plain)
+
+            async def single(part: str) -> None:
+                plain = await prov.read_file(sb, f"{CKPT_DIR}/{part}", limit=limits[part])  # integrate (#48)
+                if plain is None or len(plain) > limits[part]:
+                    ck.warnings.append(f"could not read {part}" if plain is None else
+                                       f"{part} is over the {limits[part] // 1024 // 1024} MB limit; not checkpointed")
+                    ck.digests.pop(part, None)
+                    return
+                await upload(part, plain)
+
+            try:
+                await asyncio.gather(*(upload(p, data.pop(p)) for p in list(data)))
+                for part in singles:  # review: one at a time, as each may be up to session_max_part_mb
+                    await single(part)
+            finally:
+                cleanup = cleanup or asyncio.ensure_future(self._sh(sb, f"rm -rf {CKPT_DIR}"))
+                with contextlib.suppress(Exception):
+                    await cleanup
         except BaseException:
             self._spawn(self._drop(f"{key}/"))  # never leave an unrecorded partial checkpoint
             raise
-        with contextlib.suppress(Exception):
-            await self._sh(sb, f"rm -rf {c}")
+        sizes |= {p: cap.parts[p][0] for p in copied}
+        ck.parts = {p: sizes[p] for p in ckpt.ALL_PARTS if p in sizes}
         s.checkpoints.append(ck)
         keep = max(1, self.settings.session_keep_checkpoints)
         for old in s.checkpoints[:-keep]:
@@ -789,6 +804,7 @@ class SessionService:
         # --- workstream C: collect events and usage from the run log as it grows; stop the turn over budget.
         watch = self.activity.watch(self.fleet, s, turn, lambda: self._save(s))
         over: str | None = None
+        wait = 0.0  # the first look is immediate; later ones wait in the sandbox for the turn to end (perf)
         while True:
             if not s.sandbox_id or not self._alive(s.sandbox_id):
                 outcome = "gone"
@@ -797,7 +813,7 @@ class SessionService:
                 outcome = "cancelled"
                 break
             try:
-                st = await self.fleet.agent_status(s.sandbox_id, turn.run_id or "", tail_lines=5, quiet=True)
+                st = await self._turn_status(s, turn, wait, watch)
                 errors = 0
             except Exception:  # noqa: BLE001 - transient provider errors
                 errors += 1
@@ -805,6 +821,8 @@ class SessionService:
                     outcome = "gone" if not self._alive(s.sandbox_id or "") else "error"
                     break
                 st = None
+                await asyncio.sleep(self.settings.session_poll_seconds)
+            wait = self.settings.session_poll_seconds
             if st and st["state"] == "finished":
                 turn.exit_code = st["exit_code"]
                 break
@@ -814,7 +832,6 @@ class SessionService:
             if over := await watch.poll():  # workstream C
                 outcome = "over_budget"
                 break
-            await asyncio.sleep(self.settings.session_poll_seconds)
         turn.finished_at = now()
         turn.outcome, turn.outcome_reason = outcome, over  # workstream C
         if over:
@@ -836,7 +853,10 @@ class SessionService:
             sb = self.fleet.get(s.sandbox_id)
             _, prov = self.fleet._running(sb.id)
             rlog = f"/home/{self.settings.sandbox_user}/.hangar/runs/{turn.run_id}.log"
-            raw = (await prov.read_file(sb, rlog) or b"")[-2_000_000:].decode(errors="replace")
+            # The log's end, never all of it: the agent decides how big it gets.
+            await self._sh(sb, f"tail -c 2000000 {shlex.quote(rlog)} > {shlex.quote(rlog)}.tail")
+            raw = (await prov.read_file(sb, f"{rlog}.tail", limit=2_000_000) or b"")[-2_000_000:].decode(
+                errors="replace")
             turn.summary = self.fleet.broker.redact(extract_summary(turn.harness, raw) or "") or None
             await self._record_conversation(s, sb, turn, raw)
         except Exception as e:  # noqa: BLE001 - the work is in the sandbox; don't lose the turn over its log
@@ -856,6 +876,15 @@ class SessionService:
             s.sandbox_id = None
             self._set(s, SessionState.SUSPENDED, f"turn {len(s.turns)} finished; sandbox released")
         return outcome, raw
+
+    async def _turn_status(self, s: Session, turn: SessionTurn, wait: float, watch: Any) -> dict[str, Any]:
+        """The run's status after waiting up to `wait` seconds in the sandbox for it to finish (or, before its first
+        output, to print something): the end of a turn is noticed within ~0.2 s, not after up to a whole poll
+        interval, for the same number of round trips (perf). A wait holds a worker thread, so when half the pool
+        is already waiting the fleet sleeps instead (review: one bound shared with MCP clients' long-polls)."""
+        grow = 0 if watch.parser.next == 0 else None
+        return await self.fleet.agent_status(s.sandbox_id or "", turn.run_id or "", tail_lines=5, quiet=True,
+                                             wait_seconds=wait, grow_from=grow)
 
     async def _record_conversation(self, s: Session, sb: Sandbox, turn: SessionTurn, raw_log: str) -> None:
         """Remember the harness's conversation id so the next turn resumes it."""
@@ -972,12 +1001,19 @@ class SessionService:
                 log.exception("session idle loop failed")
 
     async def tick(self) -> None:
-        """One pass: suspend idle sessions, checkpoint changed ones, keep active sandboxes from expiring."""
-        for s in list(self._sessions.values()):
-            try:
-                await self._tick_one(s)
-            except Exception:  # noqa: BLE001 - one bad session must not stall the rest
-                log.exception("session %s: idle check failed", s.id)
+        """One pass: suspend idle sessions, checkpoint changed ones, keep active sandboxes from expiring. Sessions
+        are checked a few at a time (perf: one after another, each costing round trips, a pass over 50 live
+        sessions took tens of seconds and delayed every suspend and periodic checkpoint behind it)."""
+        gate = asyncio.Semaphore(8)
+
+        async def one(s: Session) -> None:
+            async with gate:
+                try:
+                    await self._tick_one(s)
+                except Exception:  # noqa: BLE001 - one bad session must not stall the rest
+                    log.exception("session %s: idle check failed", s.id)
+
+        await asyncio.gather(*(one(s) for s in list(self._sessions.values())))
 
     async def _tick_one(self, s: Session) -> None:
         t = now()

@@ -41,6 +41,7 @@ from hangar.models import (
     JobState,
     SandboxState,
     Turn,
+    Usage,
     new_id,
     now,
 )
@@ -159,6 +160,10 @@ class JobService:
         from hangar.triggers import GitHubTrust
 
         self.trust = GitHubTrust(self)  # workstream A: who may start GitHub-triggered work without approval
+        # --- front-door-auth: rate limits, the per-caller cap, replay memory and refusal audits
+        from hangar.frontdoor import Admission
+
+        self.admission = Admission(self)
 
     # ================================================================== lifecycle
     async def start(self) -> None:
@@ -251,6 +256,13 @@ class JobService:
 
     def submit(self, req: SubmitJob, caller: Caller, source: str = "api", source_ref: str | None = None,
                approval: JobApproval | None = None, untrusted_source: str | None = None) -> Job:
+        # --- front-door-auth: every front door's submissions are rate limited, capped and audited when refused
+        with self.admission.refusals(caller, source):
+            self.admission.admit(req, caller, source, untrusted=approval is not None)
+            return self._submit(req, caller, source, source_ref, approval, untrusted_source)
+
+    def _submit(self, req: SubmitJob, caller: Caller, source: str = "api", source_ref: str | None = None,
+                approval: JobApproval | None = None, untrusted_source: str | None = None) -> Job:
         requester = caller.requester
         if req.idempotency_key:
             for j in self._jobs.values():
@@ -333,6 +345,7 @@ class JobService:
                   reply_to: str | None = None, context: list[ContextItem] | None = None,
                   output_schema: dict[str, Any] | None = None) -> Job:
         job = self.get(job_id, owner)
+        self.admission.admit_follow_up(requester, owner)  # --- front-door-auth
         if not message.strip():
             raise JobError("follow-up message is empty")
         if len(message) > MAX_INSTRUCTIONS:
@@ -362,10 +375,10 @@ class JobService:
         job.cancel_requested = True
         if job.state == JobState.NEEDS_INPUT and job.id not in self._active:  # workstream E: nothing is running
             self._event(job, f"cancelled by {requester} instead of answering", JobState.CANCELLED, reason="cancelled")
-            self._spawn(self._callback(job, "job.finished"))
+            self._spawn(self._report(job))  # --- interactions: the thread hears it too
         elif job.state in (JobState.QUEUED, JobState.AWAITING_APPROVAL) and job.id not in self._active:
             self._event(job, f"cancelled by {requester} before it started", JobState.CANCELLED, reason="cancelled")
-            self._spawn(self._callback(job, "job.finished"))
+            self._spawn(self._report(job))
         else:
             self._event(job, f"cancel requested by {requester}")
         self.fleet.audit(requester, "job.cancel", job.id)
@@ -379,19 +392,29 @@ class JobService:
         d["context_dir"] = self._ctxdir(job)
         s = self._session(job)
         d["session"] = {"name": s.name, "state": s.state.value, "checkpoints": len(s.checkpoints),
-                        "resume_command": self.sessions.view(s)["resume_command"]} if s else None
+                        "resume_command": self.sessions.resume_command(s)} if s else None  # perf: not a full view
         d["active"] = job.state not in JOB_TERMINAL and job.state != JobState.NEEDS_INPUT
         # workstream C: the session's turns are the job's turns, and carry live usage while one runs
-        d["usage"] = u.model_dump(mode="json") if (u := total_usage(s.turns if s else job.turns)) else None
+        d["usage"] = u.model_dump(mode="json") if (u := self.usage(job)) else None
         return exchange.scrub_turns(d)  # workstream E: attachment contents never leave in a view
+
+    def usage(self, job: Job) -> Usage | None:
+        """What the job's agents used (--- interactions): every turn of every session that carried it, so
+        best-of-N attempts, their repair runs and the judge count, each once, and a running turn counts live."""
+        carried = list(self.sessions._sessions.values()) if self.sessions is not None else []
+        turns = [t for s in carried if s.job_id == job.id for t in s.turns]
+        return total_usage(turns) if turns else total_usage(job.turns)
 
     def events(self, job_id: str, owner: str | None = None, since: int = 0, limit: int = 200,
                tail: int | None = None) -> list[dict[str, Any]]:
         """The job's activity events (all its turns), oldest first (workstream C)."""
         job = self.get(job_id, owner)
+        activity = self.sessions.activity
+        if activity.log.last_seq(job.id):  # --- interactions: the job's own stream, across all its sessions
+            return [e.model_dump(mode="json", exclude={"off"}) for e in activity.read(job.id, since, limit, tail)]
         if not job.session_id:
             return []
-        return self.sessions.events(job.session_id, since=since, limit=limit, tail=tail)
+        return self.sessions.events(job.session_id, since=since, limit=limit, tail=tail)  # jobs from before it
 
     # ================================================================== validation
     def _check_context(self, items: list[ContextItem]) -> list[ContextItem]:
@@ -727,7 +750,7 @@ class JobService:
                                                     should_cancel=lambda: job.cancel_requested)
         turn.finished_at = now()
         turn.exit_code = st.exit_code
-        turn.usage, turn.outcome, turn.outcome_reason = st.usage, st.outcome, st.outcome_reason
+        turn.usage, turn.outcome, turn.outcome_reason = total_usage([st]), st.outcome, st.outcome_reason
         exchange.record_job_turn(job, turn, st)  # workstream E: result, question, artifacts
         tail = _clip_tail(raw) if raw else ""
         if outcome in ("gone", "error"):
@@ -739,7 +762,7 @@ class JobService:
             return
         prov_sb = self.fleet.get(job.sandbox_id)
         _, prov = self.fleet._running(job.sandbox_id)
-        raw = await prov.read_file(prov_sb, f"{self._ctxdir(job)}/RESULT.md")
+        raw = await prov.read_file(prov_sb, f"{self._ctxdir(job)}/RESULT.md", limit=32_000)  # agent-written
         red = self.broker.redact
         summary = red(raw.decode(errors="replace").strip()[:8000]) if raw else ""
         turn.summary = summary or None
@@ -868,7 +891,7 @@ class JobService:
             lines += ["", strategies.attempts_table(job), ""]
         lines.append(f"hangar job `{job.id}` · requested by {job.requester} via {job.source} · "
                      f"{job.environment} / {job.harness}" + (f" / {job.model}" if job.model else ""))
-        if usage := total_usage(job.turns):  # workstream C
+        if usage := self.usage(job):  # workstream C
             lines.append(f"Usage: {usage_line(usage)}")
         m = re.match(r"^github:([^#]+)#(\d+)$", job.source_ref or "")
         if m and parse_repo(job.repo) == m.group(1) and job.labels.get("github.kind") == "issue":
@@ -918,7 +941,7 @@ class JobService:
             why = next((t.outcome_reason for t in reversed(job.turns) if t.outcome_reason), None)
             lines += ["", f"Stopped over budget{f' ({why})' if why else ''}. What the agent had done so far is "
                           "delivered as a draft."]
-        if usage := total_usage(job.turns):
+        if usage := self.usage(job):
             lines.append(f"Usage: {usage_line(usage)}")
         if r.summary:
             lines += ["", r.summary[:4000]]
@@ -970,7 +993,10 @@ class JobService:
                                  "(allow it in HANGAR_JOB_CALLBACK_HOSTS)")
                 return
         err = ""
-        async with httpx.AsyncClient(transport=self.transport, timeout=10, follow_redirects=False) as c:
+        from hangar.frontdoor import outbound_transport  # --- front-door-auth: connect to the checked address
+
+        async with httpx.AsyncClient(transport=self.transport or outbound_transport(self), timeout=10,
+                                     follow_redirects=False) as c:
             for attempt in range(3):
                 try:
                     r = await c.post(job.callback_url, content=body, headers=headers)
@@ -1041,6 +1067,8 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
                 return {"ignored": "approvals are for jobs waiting on an issue"}
             return await github_decision(svc, f"github:{repo}#{number}", sender, trusted, decision)
         if is_pr and not trusted:
+            svc.admission.refused(f"owner:github:{sender}", f"github:{sender}", "github.refused",  # front-door-auth
+                                  f"github:{repo}#{number}", why="untrusted follow-up")
             return {"ignored": f"{sender} is not trusted to continue jobs"}
         if is_pr:
             pr_repo = f"https://github.com/{repo}"
@@ -1060,8 +1088,11 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
     if not number or is_pr:
         return {"ignored": "not an issue"}
     ref = f"github:{repo}#{number}"
-    if event == "issue_comment" and (answered := exchange.answer_on_issue(svc, ref, sender, extra)) is not None:
-        return answered  # workstream E: the comment answers a job's question
+    # workstream E: the comment answers a job's question. front-door-auth: only a trusted person's does; anyone
+    # else's would steer the agent with text nobody vetted.
+    if event == "issue_comment" and trusted and \
+            (answered := exchange.answer_on_issue(svc, ref, sender, extra)) is not None:
+        return answered
 
     def running() -> Job | None:
         return next((j for j in svc.list(limit=500) if j.source_ref == ref and j.state not in JOB_TERMINAL), None)
@@ -1069,6 +1100,10 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
     if (busy := running()) is not None:
         if busy.state == JobState.AWAITING_APPROVAL:
             return {"ignored": f"job {busy.id} is waiting for approval on {ref} (/hangar approve)"}
+        if busy.state == JobState.NEEDS_INPUT and not trusted:  # --- front-door-auth
+            svc.admission.refused(f"owner:github:{sender}", f"github:{sender}", "github.refused", ref,
+                                  why="untrusted answer", job=busy.id)
+            return {"ignored": f"{sender} is not trusted to answer job {busy.id}'s question"}
         return {"ignored": f"job {busy.id} is already working on {ref}"}
     env = opts.get("env") or envs[0]
     if env not in envs:
@@ -1113,10 +1148,18 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
         return {"ignored": f"job {busy.id} is already working on {ref}"}
     approval = None if trusted else new_approval(
         svc, f"github:{sender}", f"{sender} is not trusted to start jobs; a trusted person must approve")
+    from hangar.frontdoor import RateLimited, TooManyActive
+
     try:
         job = svc.submit(req, Caller(f"github:{sender}", f"github:{sender}"), source="github", source_ref=ref,
                          approval=approval, untrusted_source=untrusted_source)
+    except RateLimited as e:  # --- front-door-auth: tell trusted people; an outsider's flood gets no comments
+        if trusted:
+            svc._spawn(svc._comment(None, ref, f"hangar couldn't start a job for this issue yet: {e}"))
+        return {"ignored": str(e), "rate_limited": True}
     except JobError as e:
+        if isinstance(e, TooManyActive) and not trusted:  # likewise an outsider past the cap (already audited)
+            return {"ignored": str(e)}
         # Say why on the issue; otherwise a misconfiguration looks like hangar ignoring the label.
         svc._spawn(svc._comment(None, ref, f"hangar couldn't start a job for this issue: {e}"))
         return {"error": str(e)}

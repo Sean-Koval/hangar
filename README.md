@@ -35,54 +35,70 @@ The same control plane runs on your laptop (Docker), on a single VM (Docker + gV
   - Codex's rotating refresh token is *leased* to one sandbox at a time and written back when that sandbox stops, so sandboxes never log each other out.
 - **Terminals that agents and humans share.** MCP clients drive persistent tmux sessions (`terminal_send` / `terminal_read`). From the dashboard you can attach to the same session and watch, or type along.
 - **Agents inside sandboxes.** `run_agent` starts Claude Code, Codex, pi or `agy` (Antigravity) headless on a task, with an optional `model`, so one orchestrator session can fan work out across the fleet.
-- **Bearer tokens or OAuth.** Codex and Claude Code connect with a bearer token. ChatGPT connectors and other OAuth-only clients use hangar's built-in OAuth 2.1 server: discovery, dynamic registration, PKCE, and a consent page where you approve with a hangar token. See [docs/clients.md](docs/clients.md).
+- **Bearer tokens or OAuth.** `hangar connect <client>` writes the client's config with a token scoped to MCP. ChatGPT connectors and other OAuth-only clients use hangar's built-in OAuth 2.1 server: discovery, dynamic registration, PKCE, and a consent page where you approve with a hangar token. See [docs/clients.md](docs/clients.md).
 - **A dashboard.** It covers the fleet, live terminals, the environment editor with streaming builds, credentials and sign-in, snapshots, MCP connect snippets with token management, and an audit log.
 
-## Quickstart (macOS)
+## Quickstart (laptop, 5 minutes)
 
-Requires Docker Desktop, OrbStack or Colima, plus [uv](https://docs.astral.sh/uv/).
+Requires Docker (Docker Desktop, OrbStack or Colima on macOS) and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 git clone https://github.com/Sean-Koval/hangar && cd hangar
 uv sync --all-extras
-uv run hangar serve            # dashboard: http://localhost:8787
+uv run hangar up
 ```
 
-1. **Open the dashboard.** The first start prints a bootstrap admin token and saves it to `~/.hangar/bootstrap-token`. Paste it into the dashboard.
-2. **Build an environment.** Under **Environments**, pick `claude-python` and choose **Build**. The first build takes a few minutes; after that, builds are cached.
-3. **Add credentials.** Under **Credentials**, add an API key, or choose **Sign in to Claude Code / Codex**. From a terminal:
+`hangar up` does five things:
+1. checks that Docker is running;
+2. starts the control plane in the background (log: `~/.hangar/server.log`);
+3. logs the CLI in;
+4. builds the `claude-python` environment;
+5. offers to connect each MCP client it finds.
+
+Running it again is safe: it reuses the running server, the saved login and the built images. `--env NAME` builds other environments, `--no-build` skips building, and `--connect codex` connects a client without asking. `hangar down` stops the server.
+
+Then:
+
+1. **Add credentials.** Use the dashboard at http://localhost:8787 (under **Credentials**), or:
    ```bash
    claude setup-token | uv run hangar cred add claude-max --harness claude-code --kind oauth_token
    uv run hangar cred add codex-chatgpt --harness codex --kind auth_file --file ~/.codex/auth.json
    uv run hangar cred add gh --harness git --kind git_token --value "$(gh auth token)"
    ```
-4. **Connect an MCP client.** Mint a token under **Connect** (or run `uv run hangar token create codex`), then:
-   ```toml
-   # ~/.codex/config.toml
-   [mcp_servers.hangar]
-   url = "http://localhost:8787/mcp"
-   bearer_token_env_var = "HANGAR_TOKEN"
-   tool_timeout_sec = 900
-   ```
-   ```bash
-   export HANGAR_TOKEN=hgr_...
-   # Claude Code:
-   claude mcp add --transport http hangar http://localhost:8787/mcp --header "Authorization: Bearer $HANGAR_TOKEN"
-   ```
-5. **Ask your client to do something.** For example: *"Create 3 claude-python sandboxes on github.com/me/api, each on its own branch, and run the agent in each on 'make the flaky test in tests/test_sync.py deterministic'. Report which attempt passes."*
+2. **Connect an MCP client**, if `hangar up` didn't. Run `uv run hangar connect claude-code` (or `codex`, `cursor`, `vscode`, `gemini`, `claude-desktop`). It adds hangar to the client's own config file, next to your other servers, with a fresh token that can reach `/mcp` and nothing else. `hangar connect --list` shows what's connected. Details are in [docs/clients.md](docs/clients.md).
+3. **Ask your client to do something.** For example: *"Create 3 claude-python sandboxes on github.com/me/api, each on its own branch, and run the agent in each on 'make the flaky test in tests/test_sync.py deterministic'. Report which attempt passes."*
+4. **Optional: take work from GitHub.** `uv run hangar setup github` asks for a repo and a token and stores them. It then registers the repo's webhook and sends a test delivery. GitHub can't reach `localhost`, so on a laptop pass `--webhook-url` with a tunnel URL. See [docs/jobs.md](docs/jobs.md#4-trigger-from-github).
+
+`uv run hangar doctor` checks the setup, and `hangar doctor --fix` applies the fixes it can make on its own.
+
+## Production (GKE)
+
+```bash
+cp deploy/terraform/gke/terraform.tfvars.example deploy/terraform/gke/terraform.tfvars   # set project_id, region
+uv run hangar up --gke --dry-run          # the terraform plan; nothing changes
+uv run hangar up --gke                    # asks, then applies that plan, runs deploy/gke/up.sh and logs in
+hangar doctor --fix                       # what's missing, and the fixes it can apply
+hangar setup github                       # token, webhook secret, repo webhook, settings, test delivery
+hangar connect claude-code                # and any other MCP client
+```
+
+`hangar up --gke` never applies a plan that destroys or replaces anything unless you pass `--allow-destroy`, and without a terminal it applies nothing unless you pass `--yes`. The steps it runs are the ones in [docs/gke.md](docs/gke.md), which you can also run by hand. `up.sh` points `HANGAR_SESSION_STORE` at the checkpoint bucket terraform made, on a first install. If the certificate isn't Active yet, `hangar up --gke` prints the `hangar login` command to run once it is.
+
+Settings you change with `hangar setup` or `hangar config set` are stored in hangar's database, on its volume. They survive redeploys and need no `kubectl`. The full walkthrough is in [docs/gke.md](docs/gke.md).
 
 ## MCP tools
 
 | Area | Tools |
 | --- | --- |
-| Discover | `fleet_overview`, `list_environments`, `describe_environment`, `build_environment`, `list_credentials` |
-| Lifecycle | `create_sandbox`, `create_sandboxes` (N in parallel), `list_sandboxes`, `get_sandbox`, `destroy_sandbox`, `destroy_sandboxes`, `pause_sandbox`, `resume_sandbox`, `extend_sandbox` |
+| Discover | `fleet_overview`, `list_environments`, `describe_environment`, `create_environment` (`dry_run` validates; `extends` clones), `build_environment`, `list_credentials` |
+| Lifecycle | `create_sandbox`, `create_sandboxes` (N in parallel), `list_sandboxes`, `get_sandbox`, `destroy_sandbox` (one, several or by label), `pause_sandbox`, `resume_sandbox`, `extend_sandbox` |
 | Commands and files | `exec`, `read_file`, `write_file`, `list_files` |
 | Terminals | `terminal_open`, `terminal_send` (supports `wait_for` regex), `terminal_read`, `terminal_list`, `terminal_close` |
 | Agents | `run_agent`, `agent_status` |
 | Clone | `snapshot_sandbox`, `list_snapshots`, `fork_sandbox` |
+| Jobs and sessions | `submit_job`, `get_job`, `list_jobs`, `follow_up_job`, `cancel_job`, `new_session`, `send_to_session`, `fork_session`, `wait_for_turn`, `get_events`, `get_artifact`, `get_session_patch`, ... |
 
-Every tool accepts a sandbox id or name. Relative paths resolve against the sandbox's repo checkout, falling back to `/workspace`.
+Every tool accepts a sandbox id or name. Relative paths resolve against the sandbox's repo checkout, falling back to `/workspace`. Tools carry read-only/destructive hints and typed results; long work can run as MCP tasks, agents' questions reach you as elicitations, and jobs and sessions are subscribable resources. See [Using hangar from an MCP client](docs/mcp.md).
 
 ## Environment specs
 
@@ -139,7 +155,12 @@ You can enable several providers on one control plane and pick one per sandbox. 
 
 ## Configuration
 
-Everything is set through `HANGAR_*` environment variables (see `src/hangar/config.py`). The common ones:
+Everything is set through `HANGAR_*` settings (see `src/hangar/config.py`), which come from two places:
+
+- **The environment.** This includes `.env` and, on GKE, the `hangar` and `hangar-site` config maps. It is read at startup, and it wins.
+- **Hangar's database.** Edit it with `hangar config set KEY VALUE`, `get`, `unset` and `list` (admin tokens only). Values are checked against each setting's type and survive redeploys. Most apply at once; `hangar config set` tells you when one needs a restart. Secrets are refused: they go in the vault (`hangar cred add`), and settings name the credential.
+
+`hangar config list` shows each value and where it came from. The common settings:
 
 | Variable | Purpose |
 | --- | --- |

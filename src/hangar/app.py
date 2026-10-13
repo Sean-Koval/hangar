@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 from importlib import resources
 from typing import Any
 
@@ -28,6 +29,7 @@ from hangar.jobs import Caller, JobService, SubmitJob, handle_github
 from hangar.mcp_server import build_mcp, current_actor
 from hangar.models import Budget, ContextItem, Credential, CredentialKind, Resources, Sandbox
 from hangar.providers.base import ProviderError
+from hangar.runtime import FastJSON, install_io_executor  # perf
 from hangar.sessions import NewSession, SessionService
 from hangar.slack import SlackFrontDoor  # workstream B
 from hangar.store import Store
@@ -44,6 +46,11 @@ class Hangar:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
         self.store = Store(self.settings.db_path)
+        # --- workstream setup: settings stored in the database (`hangar config`), under the environment's
+        from hangar.settings_store import SettingsStore
+
+        self.config = SettingsStore(self.store, self.settings)
+        self.config.apply()
         self.vault = Vault(self.store, load_or_create_key(self.settings.secret_key, self.settings.data_dir))
         self.broker = Broker(self.store, self.vault, self.settings.sandbox_user)
         self.catalog = EnvCatalog(self.settings.env_dirs, save_dir=self.settings.saved_env_dir)
@@ -69,7 +76,7 @@ class MCPAuthMiddleware:
             return await self.app(scope, receive, send)
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
         token = bearer_from_headers(headers)
-        actor = self.auth.verify(token)
+        actor = self.auth.verify(token, scope="mcp")  # --- workstream setup: `mcp` tokens (hangar connect)
         if actor is None and self.oauth is not None:
             actor = await self.oauth.verify(token)
         if actor is None:
@@ -244,8 +251,10 @@ def _setup_oauth(app: FastAPI, h: Hangar):
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     h = Hangar(settings)
-    mcp = build_mcp(h.fleet, h.jobs, h.sessions, triggers=h.triggers)
-    mcp_asgi = mcp.streamable_http_app(streamable_http_path="/", stateless_http=True, host="0.0.0.0")
+    # --- workstream mcp-modern: legacy MCP clients keep a session unless HANGAR_MCP_STATELESS_HTTP (docs/mcp.md)
+    stateless = h.settings.mcp_stateless_http
+    mcp = build_mcp(h.fleet, h.jobs, h.sessions, triggers=h.triggers, legacy_sessions=not stateless)
+    mcp_asgi = mcp.streamable_http_app(streamable_http_path="/", stateless_http=stateless, host="0.0.0.0")
     a2a = A2AServer(h.jobs, h.auth, h.vault, h.settings) if h.settings.a2a_enabled else None  # workstream G
 
     @contextlib.asynccontextmanager
@@ -258,6 +267,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log.warning("Bootstrap admin token (also saved to %s/bootstrap-token):", h.settings.data_dir)
             log.warning("    %s", boot)
             log.warning("=" * 72)
+        install_io_executor(h.settings)  # perf: before anything starts blocking provider calls
         await h.fleet.start()
         await h.fleet.gateway.start()  # workstream F: the git gateway's own listener (HANGAR_GATEWAY_PORT)
         await h.sessions.start()  # first: jobs look up their sessions
@@ -288,6 +298,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.oauth = oauth
     app.mount("/mcp", MCPAuthMiddleware(mcp_asgi, h.auth, oauth, rm_url))
     app.add_middleware(MCPPathMiddleware)
+    # --- front-door-auth: body caps before anything parses a body, and an audit entry for refused requests
+    from hangar.frontdoor import FrontDoorMiddleware, RateLimited
+
+    app.add_middleware(FrontDoorMiddleware, hangar=h, oauth=oauth)
+
+    @app.exception_handler(RateLimited)
+    async def _rate_limited(_: Request, exc: RateLimited):
+        return JSONResponse({"error": str(exc)}, status_code=429,
+                            headers={"Retry-After": str(max(1, math.ceil(exc.retry_after)))})
     # --- workstream F: with HANGAR_GATEWAY_PORT=0 the git gateway shares the main port (grant tokens only).
     if h.settings.gateway_url and not h.settings.gateway_port:
         for i, r in enumerate(h.fleet.gateway.routes()):
@@ -304,7 +323,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         status = 404 if isinstance(exc, KeyError) or "no sandbox" in str(exc) else 400
         return JSONResponse({"error": str(exc).strip("'\"")}, status_code=status)
 
-    def actor(request: Request) -> str:
+    async def actor(request: Request) -> str:  # perf: async = no thread hop
         res = h.auth.verify_scopes(bearer_from_headers(request.headers))
         if res is None:
             raise HTTPException(401, "unauthorized", headers={"WWW-Authenticate": "Bearer"})
@@ -312,7 +331,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(403, f"token scopes {res[1]} do not allow this route")
         return f"ui:{res[0]}"
 
-    def job_caller(request: Request) -> Caller:
+    async def job_caller(request: Request) -> Caller:  # perf: async
         """Admin sees every job; a `jobs`-scoped token is restricted and sees only jobs it submitted."""
         p = h.auth.principal(bearer_from_headers(request.headers))
         if p is None:
@@ -347,7 +366,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def doctor_route(_: str = A):
         from hangar import doctor
 
-        return await doctor.run(h)
+        return await doctor.run(h, h.jobs.transport)  # --- workstream setup: tests inject GitHub/Slack fakes
 
     @app.get("/api/overview")
     async def overview(_: str = A):
@@ -482,7 +501,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ------------------------------------------------------------------ sandboxes
     @app.get("/api/sandboxes")
     async def sandboxes(include_stopped: bool = False, label: str | None = None, _: str = A):
-        return [sbd(s) for s in fleet.list(include_stopped, label)]
+        return FastJSON([sbd(s) for s in fleet.list(include_stopped, label)])  # perf: no jsonable_encoder
 
     @app.post("/api/sandboxes")
     async def create_sb(body: CreateSandbox, who: str = A):
@@ -704,7 +723,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/jobs")
     async def job_list(state: str | None = None, limit: int = 50, caller: Caller = J):
-        return [jobs.view(j) for j in jobs.list(state=state, owner=owner_filter(caller), limit=limit)]
+        return FastJSON([jobs.view(j) for j in jobs.list(state=state, owner=owner_filter(caller), limit=limit)])
 
     @app.get("/api/jobs/{job_id}")
     async def job_get(job_id: str, caller: Caller = J):
@@ -732,14 +751,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not name:
             raise HTTPException(404, "GitHub webhook is not configured (HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL)")
         body = await request.body()
-        if not verify_signature(h.broker.secret_text(name), body, request.headers.get("x-hub-signature-256")):
+        try:  # front-door-auth: say nothing about the vault to an anonymous caller
+            secret = h.broker.secret_text(name)
+        except Exception as e:  # noqa: BLE001
+            log.error("GitHub webhook secret credential %s is not usable", name)
+            raise HTTPException(503, "GitHub webhook secret is not stored") from e
+        if not verify_signature(secret, body, request.headers.get("x-hub-signature-256")):
             raise HTTPException(401, "bad signature")
         try:
             payload = json.loads(body)
         except ValueError as e:
             raise HTTPException(400, "body is not JSON") from e
-        res = await handle_github(jobs, request.headers.get("x-github-event", ""),
-                                  request.headers.get("x-github-delivery"), payload)
+        # --- front-door-auth: GitHub signs only the body, so the same body is the same delivery, whatever its
+        # X-GitHub-Delivery header says. A redelivery or a replay is acknowledged and does nothing.
+        # Only the events that can start or steer work are remembered; replaying anything else does nothing.
+        event = request.headers.get("x-github-event", "")
+        replays, digest = jobs.admission.replays, jobs.admission.replays.digest(body)
+        if event in ("issues", "issue_comment"):
+            if replays.get("github", digest) is not None:
+                delivery = (request.headers.get("x-github-delivery") or "")[:100]
+                jobs.admission.refused("github:replay", "github", "hook.replay", delivery or None)
+                return JSONResponse({"ignored": "duplicate delivery"}, status_code=200)
+            replays.put("github", digest, "", h.settings.webhook_replay_hours * 3600)
+        try:
+            res = await handle_github(jobs, event, request.headers.get("x-github-delivery"), payload)
+        except Exception:
+            replays.forget("github", digest)  # nothing happened: let GitHub's redelivery try again
+            raise
+        if res.get("error") or res.get("rate_limited"):
+            replays.forget("github", digest)  # a redelivery after the fix (or the wait) should run
+            if res.get("rate_limited"):
+                return JSONResponse(res, status_code=429)
         return JSONResponse(res, status_code=202 if res.get("ok") else 200)
 
     # ------------------------------------------------------------------ triggers (workstream A)
@@ -808,7 +850,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/sessions")
     async def session_list(include_archived: bool = False, limit: int = 100, _: str = A):
-        return [sessions.view(s) for s in sessions.list(include_archived=include_archived, limit=limit)]
+        return FastJSON([sessions.view(s) for s in sessions.list(include_archived=include_archived, limit=limit)])
 
     @app.get("/api/sessions/{ref}")
     async def session_get(ref: str, _: str = A):
@@ -903,6 +945,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/jobs/{job_id}/patch")
     async def job_patch(job_id: str, max_bytes: int | None = None, caller: Caller = J):
         return await exchange.session_patch(sessions, _job_session(job_id, caller), max_bytes)
+
+    # --- workstream setup: database-stored settings (hangar config) and the setup wizards (hangar setup)
+    from hangar import settings_store, setup_api
+
+    settings_store.mount(app, h, A)
+    setup_api.mount(app, h, A)
 
     @app.get("/api/audit")
     async def audit(limit: int = 200, _: str = A):

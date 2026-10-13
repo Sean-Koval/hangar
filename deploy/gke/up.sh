@@ -13,6 +13,7 @@ cd "$(dirname "$0")/../.."
 TF=deploy/terraform/gke
 tfo() { terraform -chdir=$TF output -raw "$1"; }
 REG=$(tfo registry); SA=$(tfo service_account); IP=$(tfo static_ip)
+BUCKET=$(tfo session_bucket 2>/dev/null || true)  # null (enable_session_bucket=false) fails -raw: no bucket
 PROJECT=$(cut -d/ -f2 <<<"$REG"); REGION=${REG%%-docker.pkg.dev*}
 DOMAIN=${DOMAIN:-$IP.sslip.io}
 IMAGE="$REG/control-plane:$(git rev-parse --short HEAD)$(git diff --quiet HEAD -- src envs pyproject.toml Dockerfile || echo -dirty)"
@@ -43,6 +44,18 @@ sed -i -e "s|REGION-docker.pkg.dev/PROJECT_ID/hangar/control-plane:latest|$IMAGE
        -e "s|REGION-docker.pkg.dev/PROJECT_ID/hangar|$REG|" \
        -e "s|hangar@PROJECT_ID.iam.gserviceaccount.com|$SA|" \
        -e "s|hangar.example.com|$DOMAIN|g" "$OUT"/*.yaml
+# Checkpoints go to the bucket terraform made, so they outlive the control plane's disk (hangar-site still wins).
+# Only on a first install, or where it's already set: moving a running hangar off its disk would strand the local
+# checkpoints of its suspended sessions.
+if [[ "$BUCKET" == gs://* ]]; then
+  live() { kubectl -n hangar get configmap "$1" -o jsonpath='{.data.HANGAR_SESSION_STORE}' 2>/dev/null || true; }
+  LIVE=$(live hangar)
+  if [ -n "$LIVE" ] || ! kubectl -n hangar get deployment hangar >/dev/null 2>&1; then
+    sed -i "s|^  # HANGAR_SESSION_STORE: .*|  HANGAR_SESSION_STORE: \"${LIVE:-$BUCKET}\"|" "$OUT/config.yaml"
+  elif [ -z "$(live hangar-site)" ]; then
+    echo "note: session checkpoints stay on the control plane's disk; $BUCKET is ready for them (docs/sessions.md)"
+  fi
+fi
 kubectl apply -k "$OUT"
 kubectl -n hangar rollout status deploy/hangar --timeout=10m
 
@@ -61,3 +74,9 @@ echo
 echo "Dashboard + MCP:  https://$DOMAIN   (MCP endpoint https://$DOMAIN/mcp)"
 echo "Admin token:      ~/.hangar/gke-admin-token"
 echo "Certificate:      $(kubectl -n hangar get managedcertificate hangar -o jsonpath='{.status.certificateStatus}' 2>/dev/null || echo unknown)  (Active = ready)"
+echo
+echo "Next (once the certificate is Active):"
+echo "  hangar login https://$DOMAIN --token-file ~/.hangar/gke-admin-token"
+echo "  hangar doctor --fix          # what's missing, and the fixes it can apply"
+echo "  hangar setup github          # token, webhook, settings (kept in hangar's database), test delivery"
+echo "  hangar connect claude-code   # or codex, cursor, vscode, gemini, claude-desktop"
