@@ -148,6 +148,7 @@ class SessionService:
                         s.last_active_at = now()
                         self._set(s, SessionState.IDLE, "control plane restarted")
                     elif s.state == SessionState.RUNNING and s.turns and s.turns[-1].run_id:
+                        self._busy.add(s.id)  # steer: busy from now, not from when the task first runs
                         self._spawn(self._resume_wait(s.id))  # re-attach to the running turn
                     else:
                         self._set(s, SessionState.IDLE, "control plane restarted")
@@ -282,7 +283,7 @@ class SessionService:
                                "(its turns are verified and delivered)")
         if self.busy(s.id) or s.state in (SessionState.RUNNING, SessionState.SUSPENDING):
             # --- workstream steer: a live turn takes the message as it runs
-            if not context and not output_schema and steering.can_steer(s):
+            if not context and not output_schema and steering.can_steer(self, s):
                 steering.steer_later(self, s, message, requester)
                 return s
             raise SessionError(f"session {s.name} is busy ({s.state}); wait for it to finish, or interrupt it")

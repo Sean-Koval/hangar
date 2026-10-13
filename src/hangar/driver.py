@@ -499,6 +499,7 @@ class Claude(Harness):
         return not self.last.get("queued_turn_count")
 
     def steer(self, text: str, done) -> None:
+        self.stop_after_interrupt = False  # a message after an interrupt: carry on with it
         self.user(text)
         done(None)
 
@@ -595,6 +596,7 @@ class Codex(Harness):
         self.base: dict | None = None  # thread token totals before the current turn
         self.total: dict | None = None
         self.files: dict = {}  # fileChange item id -> paths (approval requests name only the item)
+        self.held_interrupt: tuple | None = None  # an interrupt that came before the turn started
 
     def call(self, method: str, params: dict, then=None) -> None:
         self.ids += 1
@@ -640,9 +642,10 @@ class Codex(Harness):
     def _fail(self, message: str) -> None:
         self.emit({"type": "turn.failed", "error": {"message": message}})
         self.failed = message
-        for _, done in self.later:
+        waiting = self.later + ([self.held_interrupt] if self.held_interrupt else [])
+        self.later, self.held_interrupt = [], None
+        for _, done in waiting:
             done("the agent could not start: " + message)
-        self.later = []
 
     def _start_turn(self, text: str, done) -> None:
         self.starting = True
@@ -661,10 +664,13 @@ class Codex(Harness):
         self.call("turn/start", {"threadId": self.thread, "input": [{"type": "text", "text": text}]}, started)
 
     def _flush(self) -> None:
-        """Hand waiting steers to the turn that now runs (or start one for them)."""
+        """Hand waiting steers, then a waiting interrupt, to the turn that now runs (or start one for them)."""
         waiting, self.later = self.later, []
         for text, done in waiting:
             self.steer(text, done)
+        if self.held_interrupt and not self.starting:
+            (text, done), self.held_interrupt = self.held_interrupt, None
+            self.interrupt(text, done)
 
     # --- protocol
     def on(self, d: dict, raw: str) -> None:
@@ -752,6 +758,7 @@ class Codex(Harness):
     def steer(self, text: str, done) -> None:
         if self.failed:
             return done("the agent could not start: " + self.failed)
+        self.stop_after_interrupt = False  # a message after an interrupt: carry on with it
         if self.thread is None or self.starting:
             self.later.append((text, done))
         elif self.turn is None:
@@ -766,6 +773,9 @@ class Codex(Harness):
                                      "input": [{"type": "text", "text": text}]}, steered)
 
     def interrupt(self, text: str | None, done) -> None:
+        if self.turn is None and not self.failed and (self.thread is None or self.starting):
+            self.held_interrupt = (text, done)  # for the turn about to start
+            return
         if self.turn is None:
             return self.steer(text, done) if text else done(None)
         if text:
@@ -779,7 +789,7 @@ class Codex(Harness):
         if self.failed:
             return not self.calls
         return (self.completed > 0 and self.turn is None and not self.starting and not self.queue
-                and not self.later and not self.calls)
+                and not self.later and not self.held_interrupt and not self.calls)
 
     def status(self, code: int) -> int:
         if self.failed or self.last_status == "failed":

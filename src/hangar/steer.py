@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 from hangar.driver import DECISIONS, MAX_TEXT, sign
 from hangar.events import RunEvent
-from hangar.harnesses import Harness
+from hangar.harnesses import Harness, get_harness
 from hangar.models import Approval, Session, SessionState, SessionTurn, Steer, new_id, now
 
 if TYPE_CHECKING:
@@ -55,6 +55,10 @@ class TurnEnded(SteerError):
 
 
 class NotLive(SteerError):
+    pass
+
+
+class NotReady(SteerError):
     pass
 
 
@@ -137,7 +141,8 @@ async def command(svc: SessionService, s: Session, turn: SessionTurn, op: str, *
     script = (f"c={c}; for i in $(seq 50); do [ -d \"$c/in\" ] && break; "
               f"{{ [ -e \"$c/done\" ] || [ -e \"$c/one-shot\" ] || [ -s {ended} ]; }} && break; sleep 0.1; done; "
               f"[ -e \"$c/one-shot\" ] && {{ rm -f \"$c/.{cid}\"; exit 4; }}; "
-              f"mv \"$c/.{cid}\" \"$c/in/{cid}.json\" 2>/dev/null || {{ rm -f \"$c/.{cid}\"; exit 3; }}; "
+              f"mv \"$c/.{cid}\" \"$c/in/{cid}.json\" 2>/dev/null || {{ rm -f \"$c/.{cid}\"; "
+              f"[ -e \"$c/done\" ] || [ -s {ended} ] && exit 3; exit 6; }}; "
               f"for i in $(seq {int(ACK_WAIT * 10)}); do grep -F -m1 '\"id\": \"{cid}\"' \"$c/acks\" 2>/dev/null "
               "&& exit 0; sleep 0.1; done; exit 5")
     res = await svc._sh(sb, script, timeout=int(ACK_WAIT) + 30)
@@ -147,6 +152,8 @@ async def command(svc: SessionService, s: Session, turn: SessionTurn, op: str, *
         raise NotLive("this turn runs one-shot (the sandbox has no python3 >= 3.8)")
     if res.exit_code == 5:
         raise SteerError(f"the agent's driver did not answer within {int(ACK_WAIT)} s")
+    if res.exit_code == 6:
+        raise NotReady("the agent is still starting; try again in a moment")
     try:
         ack = json.loads(res.stdout.strip().splitlines()[-1])
     except (ValueError, IndexError) as e:
@@ -196,32 +203,41 @@ async def steer(svc: SessionService, s: Session, text: str, requester: str) -> S
     return st
 
 
-def can_steer(s: Session) -> bool:
-    try:
-        return running_turn(s).live and not s.job_id
-    except SteerError:
+def can_steer(svc: SessionService, s: Session) -> bool:
+    """A busy session takes a message now (a steer, or the next turn once this one is done) when its turns are
+    live, or about to be (a turn starting for a live harness). Job sessions don't: follow-ups to a job are verified
+    and delivered by the job."""
+    t = s.turns[-1] if s.turns else None
+    if t is None or s.job_id or s.state in (SessionState.SUSPENDING, SessionState.ARCHIVED, SessionState.FAILED):
         return False
+    with contextlib.suppress(ValueError):
+        starting = t.run_id is None and not t.finished_at and bool(svc.settings.live_turns
+                                                                   and get_harness(s.harness or "").live)
+        return t.live or starting
+    return False
 
 
 def steer_later(svc: SessionService, s: Session, text: str, requester: str) -> Steer:
-    """A session `send` while a live turn runs: deliver it in the background. If the turn ends first, the message
-    starts the next turn. The session stays busy until then, so waiting for the turn waits for that one too."""
-    t = running_turn(s)
+    """A session `send` while it is busy with a live turn: deliver the message in the background, into the turn
+    running (or starting), else as the next turn once this one is done. The session stays busy until then, so
+    waiting for the turn waits for that one too."""
+    t = s.turns[-1]
     st = Steer(text=text, requester=requester)
     t.steers.append(st)
     svc._save(s)
     svc.fleet.audit(requester, "session.steer", s.id, run=t.run_id, message=text[:300])
-    _later(svc, s, t, st, steer_first=True)
+    _later(svc, s, st)
     return st
 
 
-def _later(svc: SessionService, s: Session, t: SessionTurn, st: Steer, steer_first: bool) -> None:
+def _later(svc: SessionService, s: Session, st: Steer) -> None:
     svc._holds[s.id] += 1  # released by _deliver, right before the next turn takes the session
-    svc._spawn(_deliver(svc, s, t, st, steer_first))
+    svc._spawn(_deliver(svc, s, st))
 
 
-async def _deliver(svc: SessionService, s: Session, t: SessionTurn, st: Steer, steer_first: bool) -> None:
+async def _deliver(svc: SessionService, s: Session, st: Steer) -> None:
     held = True
+    tried: set[str] = set()  # runs that turned out to be over (or one-shot)
 
     def release() -> None:
         nonlocal held
@@ -235,28 +251,30 @@ async def _deliver(svc: SessionService, s: Session, t: SessionTurn, st: Steer, s
         """Steer into `turn`; False when it is over (or one-shot) and the message must wait for the next one."""
         try:
             ack = await command(svc, s, turn, "steer", text=st.text)
+        except NotReady:
+            return False  # try it again
         except (TurnEnded, NotLive):
+            tried.add(turn.run_id or "")
             return False
         st.status, st.error = ("delivered", None) if ack.get("ok") else ("failed", str(ack.get("error")))
         return True
 
     try:
-        if steer_first and await into(t):
-            return
-        st.status = "queued"
-        svc._save(s)
         deadline = now() + svc.settings.session_turn_timeout_minutes * 60 + 600
         while now() < deadline:
-            if s.id not in svc._busy:  # the turn's own task is done with it (summary, checkpoint)
+            cur = s.turns[-1]
+            if (cur.live and cur.run_id and cur.run_id not in tried and not cur.finished_at
+                    and s.state == SessionState.RUNNING):
+                if await into(cur):  # the running turn took it
+                    return
+                continue
+            if s.id not in svc._busy:  # no turn task holds the session (it finished: summary, checkpoint)
                 if s.state in (SessionState.ARCHIVED, SessionState.SUSPENDING):
                     raise SteerError(f"session {s.name} is {s.state}")
                 release()  # and at once, with no await in between, the next turn takes the session
-                svc.start_turn(s, st.text, st.requester or "hangar")  # status stays "queued": it began a turn
+                svc.start_turn(s, st.text, st.requester or "hangar")
+                st.status = "queued"  # it began the next turn
                 return
-            cur = s.turns[-1]
-            if cur is not t and cur.live and cur.run_id and not cur.finished_at and s.state == SessionState.RUNNING:
-                if await into(cur):  # another queued message started a turn first: join it
-                    return
             await asyncio.sleep(0.2)
         raise SteerError("the session stayed busy; send the message again")
     except Exception as e:  # noqa: BLE001 - the message is not lost silently: the turn record says why
@@ -292,7 +310,7 @@ async def interrupt(svc: SessionService, s: Session, requester: str, text: str |
     svc._save(s)
     svc.fleet.audit(requester, "session.interrupt", s.id, run=t.run_id, message=(text or "")[:300])
     if st.status == "queued":  # a one-shot run was stopped: its message starts the next turn
-        _later(svc, s, t, st, steer_first=False)
+        _later(svc, s, st)
     return st
 
 
