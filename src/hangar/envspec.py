@@ -203,10 +203,14 @@ def _deep_merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
 
 
 class EnvCatalog:
-    """Loads *.yaml environment specs from one or more directories and resolves `extends`."""
+    """Loads *.yaml environment specs from one or more directories and resolves `extends`.
 
-    def __init__(self, dirs: list[Path]):
-        self.dirs = dirs
+    Later directories override earlier ones. `save_dir` is where specs created through the API/MCP are written;
+    the server points it at the data volume so they survive redeploys (the shipped envs dir is in the image)."""
+
+    def __init__(self, dirs: list[Path], save_dir: Path | None = None):
+        self.save_dir = save_dir
+        self.dirs = [*dirs, save_dir] if save_dir is not None and save_dir not in dirs else list(dirs)
         self._raw: dict[str, tuple[dict[str, Any], Path]] = {}
         self.reload()
 
@@ -229,10 +233,10 @@ class EnvCatalog:
         name = data["name"]
         if not NAME_RE.match(str(name)):
             raise ValueError(f"invalid environment name '{name}': lowercase letters, digits, '.', '_', '-'")
-        target = save_dir or (self.dirs[0] if self.dirs else Path("envs"))
+        target = save_dir or self.save_dir or (self.dirs[0] if self.dirs else Path("envs"))
         self._raw[name] = (data, target)
         spec = self.get(name)  # validates
-        if save_dir is not None or self.dirs:
+        if save_dir is not None or self.save_dir is not None or self.dirs:
             target.mkdir(parents=True, exist_ok=True)
             (target / f"{name}.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
         return spec

@@ -42,11 +42,9 @@ def test_sandbox_lifecycle_over_rest(client):
     assert client.get("/api/sandboxes/nope").status_code == 404
 
 
-def test_environment_edit_and_context(client, settings, tmp_path):
-    settings.env_dirs.insert(0, tmp_path)
-    client.app.state.hangar.catalog.dirs.insert(0, tmp_path)
+def test_environment_edit_and_context(client, settings):
     r = client.put("/api/environments/mine", content="extends: plain\ndescription: mine\n")
-    assert r.status_code == 200 and (tmp_path / "mine.yaml").exists()
+    assert r.status_code == 200 and (settings.saved_env_dir / "mine.yaml").exists()  # on the data volume
     ctx = client.get("/api/environments/mine/context")
     assert ctx.headers["X-Hangar-Image"].startswith("hangar-env/mine:")
     assert ctx.content[:100]  # tarball
@@ -127,3 +125,18 @@ def test_github_webhook_signature(client):
     r = client.post("/api/hooks/github", content=body, headers={"X-Hub-Signature-256": sig, "X-GitHub-Event": "ping",
                                                                 "Authorization": ""})
     assert r.status_code == 202 and r.json()["pong"] is True
+
+
+def test_created_environments_survive_restart(settings, tmp_path):
+    from hangar.app import Hangar
+
+    shipped = tmp_path / "shipped"
+    shipped.mkdir()
+    (shipped / "base.yaml").write_text("name: base\nharnesses: [claude-code]\n")
+    settings.env_dirs = [shipped]
+    h = Hangar(settings)
+    h.fleet.clone_environment("base", "base-jobs", {"credentials": ["claude-pro"]})
+    assert not (shipped / "base-jobs.yaml").exists()  # the image's envs dir is not written
+    assert (settings.data_dir / "envs" / "base-jobs.yaml").exists()
+    again = Hangar(settings)  # a restart / redeploy with the same data volume
+    assert again.catalog.get("base-jobs").credentials == ["claude-pro"]

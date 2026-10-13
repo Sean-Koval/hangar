@@ -40,7 +40,7 @@ class Hangar:
         self.store = Store(self.settings.db_path)
         self.vault = Vault(self.store, load_or_create_key(self.settings.secret_key, self.settings.data_dir))
         self.broker = Broker(self.store, self.vault, self.settings.sandbox_user)
-        self.catalog = EnvCatalog(self.settings.env_dirs)
+        self.catalog = EnvCatalog(self.settings.env_dirs, save_dir=self.settings.saved_env_dir)
         self.fleet = Fleet(self.settings, self.store, self.broker, self.catalog)
         self.auth = TokenAuth(self.store, self.settings.admin_token)
         self.jobs = JobService(self.fleet)
