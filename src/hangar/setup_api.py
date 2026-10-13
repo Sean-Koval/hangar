@@ -247,7 +247,7 @@ async def setup_github(h, app, body: GitHubSetup, who: str) -> dict[str, Any]:
         except SettingError as e:
             _step(steps, "settings", False, str(e))
             return {"ok": False, "steps": steps}
-        if body.webhook_url:
+        if body.webhook_url and not far:
             h.store.kv_set(_WEBHOOK_URL_KEY, body.webhook_url.rstrip("/"))
         h.fleet.audit(who, "setup.github", ",".join(sorted(repos)))
         _step(steps, "settings", True, "HANGAR_GITHUB_TOKEN_CREDENTIAL, HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL"
@@ -443,14 +443,20 @@ class WebhookFix(BaseModel):
 
 
 def mount(app, h, admin) -> None:
+    # One setup at a time: two wizards racing could each store a new webhook secret and leave GitHub with the other's.
+    lock = asyncio.Lock()
+
     @app.post("/api/setup/github")
     async def setup_github_route(body: GitHubSetup, who: str = admin):
-        return await setup_github(h, app, body, who)
+        async with lock:
+            return await setup_github(h, app, body, who)
 
     @app.post("/api/setup/github/webhook")
     async def setup_github_webhook(body: WebhookFix, who: str = admin):
-        return await fix_webhook(h, body.repo, who)
+        async with lock:
+            return await fix_webhook(h, body.repo, who)
 
     @app.post("/api/setup/slack")
     async def setup_slack_route(body: SlackSetup, who: str = admin):
-        return await setup_slack(h, app, body, who)
+        async with lock:
+            return await setup_slack(h, app, body, who)

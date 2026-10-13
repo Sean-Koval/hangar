@@ -239,11 +239,15 @@ def test_connect_print_writes_nothing_and_oauth(client, home):
     r = runner.invoke(cli.app, ["connect", "codex", "--print"])
     assert r.exit_code == 0 and "[mcp_servers.hangar]" in r.output and "http_headers" in r.output
     assert not (home / ".codex").exists()
+    assert runner.invoke(cli.app, ["connect", "codex"]).exit_code == 0  # rotation spares the printed token
+    assert any(t["name"].endswith("-printed") for t in client.get("/api/tokens").json())
     r = runner.invoke(cli.app, ["connect", "codex", "--auth", "oauth"])
     assert r.exit_code == 0, r.output
     assert "codex mcp login hangar" in r.output
     entry = tomllib.loads((home / ".codex" / "config.toml").read_text())["mcp_servers"]["hangar"]
     assert "http_headers" not in entry and entry["url"].endswith("/mcp")
+    names = [t["name"] for t in client.get("/api/tokens").json()]
+    assert not any(n.startswith("mcp-codex-") and not n.endswith("-printed") for n in names)  # no longer used
     r = runner.invoke(cli.app, ["connect", "vscode", "--auth", "oauth"])
     assert r.exit_code == 2 and "use --auth token" in r.output
     r = runner.invoke(cli.app, ["connect", "nope"])

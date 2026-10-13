@@ -78,6 +78,11 @@ def list_clients() -> None:
         typer.echo(f"{name:16} {'yes' if mcp_clients.installed(name) else 'no':10} {shown:52} {state}")
 
 
+def _label(client: str, name: str) -> str:
+    """One token per client entry and machine, so reconnecting can retire the one it replaces."""
+    return f"mcp-{client}-{_host()}" + ("" if name == "hangar" else f"-{name}")
+
+
 def connect_client(client: str, auth: str = "token", name: str = "hangar", config: Path | None = None,
                    print_only: bool = False) -> None:
     cli = _cli()
@@ -103,7 +108,9 @@ def connect_client(client: str, auth: str = "token", name: str = "hangar", confi
         raise _fail("--auth must be token or oauth", 2)
     else:
         # A token per client and machine, limited to MCP: a leaked client config can't mint tokens or read the vault.
-        res = cli._call("POST", "/api/tokens", json={"name": f"mcp-{client}-{_host()}", "scopes": ["mcp"]})
+        # --print is for another machine: its token must survive this machine's next rotation.
+        res = cli._call("POST", "/api/tokens", json={"name": _label(client, name) + ("-printed" if print_only else ""),
+                                                      "scopes": ["mcp"]})
         token, tok_id = res["token"], res["id"]
     if print_only:
         e = mcp_clients.entry(client, url, token)
@@ -126,11 +133,10 @@ def connect_client(client: str, auth: str = "token", name: str = "hangar", confi
         typer.secho(f"{err}\nAdd this to {path} by hand:\n", fg="yellow", err=True)
         typer.echo(mcp_clients.render(client, name, e))
         raise typer.Exit(1) from err
-    if tok_id:  # the entry now holds the new token: retire this client's older ones on this machine
-        tok_name = f"mcp-{client}-{_host()}"
-        for t in cli._call("GET", "/api/tokens"):
-            if t["name"] == tok_name and t["id"] != tok_id:
-                cli._call("DELETE", f"/api/tokens/{t['id']}")
+    # The entry now holds the new token (or none, for OAuth): retire the ones it held before.
+    for t in cli._call("GET", "/api/tokens"):
+        if t["name"] == _label(client, name) and t["id"] != tok_id:
+            cli._call("DELETE", f"/api/tokens/{t['id']}")
     shown = str(path).replace(str(Path.home()), "~", 1)
     typer.secho(f"{how} '{name}' in {shown} ({c.title}) -> {url}" + (f" with token {tok_id} (scope mcp)"
                                                                     if tok_id else " (OAuth)"), fg="green")
