@@ -110,6 +110,11 @@ class Settings(BaseSettings):
         return self.data_dir / "hangar.db"
 
     @property
+    def saved_env_dir(self) -> Path:
+        """Environments created through the API/MCP/dashboard (on the data volume, so they survive redeploys)."""
+        return self.data_dir / "envs"
+
+    @property
     def snapshot_dir(self) -> Path:
         return self.data_dir / "snapshots"
 
