@@ -253,8 +253,10 @@ impl Filesystem for Fs {
         let p = self.path(&ctx, request.path)?;
         let names = self.names.clone();
         let entry = Self::blocking(move || {
-            if std::fs::symlink_metadata(&p).is_ok() {
-                return Err(ConnectError::already_exists(format!("{} already exists", p.display())));
+            match std::fs::metadata(&p) {
+                Ok(m) if m.is_dir() => return Err(ConnectError::already_exists(format!("{} already exists", p.display()))),
+                Ok(_) => return Err(ConnectError::invalid_argument(format!("{} exists and is not a directory", p.display()))),
+                Err(_) => {}
             }
             std::fs::create_dir_all(&p).map_err(|e| io_err("mkdir", &p, e))?;
             entry_info(&names, &p).map_err(|e| io_err("stat", &p, e))
@@ -289,7 +291,12 @@ impl Filesystem for Fs {
     async fn remove(&self, ctx: RequestContext, request: ServiceRequest<'_, RemoveRequest>) -> ServiceResult<RemoveResponse> {
         let p = self.path(&ctx, request.path)?;
         Self::blocking(move || {
-            let md = std::fs::symlink_metadata(&p).map_err(|e| io_err("remove", &p, e))?;
+            // `rm -rf` (Go's os.RemoveAll, as upstream envd): a path that isn't there is already removed.
+            let md = match std::fs::symlink_metadata(&p) {
+                Ok(md) => md,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(e) => return Err(io_err("remove", &p, e)),
+            };
             if md.is_dir() {
                 std::fs::remove_dir_all(&p).map_err(|e| io_err("remove", &p, e))
             } else {

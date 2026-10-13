@@ -171,15 +171,35 @@ impl Proc {
     }
 }
 
+/// How long an exited process's end event stays available to `Connect` (upstream envd keeps 30 s).
+const EXITED_RETENTION: Duration = Duration::from_secs(30);
+
+type Exited = Arc<std::sync::Mutex<HashMap<u32, (std::time::Instant, Option<String>, EndEvent)>>>;
+
 pub struct Procs {
     cfg: Arc<Config>,
     table: Arc<std::sync::Mutex<HashMap<u32, Arc<Proc>>>>,
+    exited: Exited,
     live: Arc<AtomicUsize>,
 }
 
 impl Procs {
     pub fn new(cfg: Arc<Config>) -> Self {
-        Procs { cfg, table: Default::default(), live: Default::default() }
+        Procs { cfg, table: Default::default(), exited: Default::default(), live: Default::default() }
+    }
+
+    /// The end event of a process that exited within EXITED_RETENTION.
+    fn recently_exited(&self, sel: Option<&ProcessSelector>) -> Option<(u32, EndEvent)> {
+        use crate::proto::process::process_selector::Selector;
+        let mut ex = self.exited.lock().unwrap();
+        ex.retain(|_, (t, _, _)| t.elapsed() < EXITED_RETENTION);
+        match sel.and_then(|s| s.selector.as_ref())? {
+            Selector::Pid(pid) => ex.get(pid).map(|(_, _, e)| (*pid, e.clone())),
+            Selector::Tag(tag) => ex
+                .iter()
+                .find(|(_, (_, t, _))| t.as_deref() == Some(tag.as_str()))
+                .map(|(pid, (_, _, e))| (*pid, e.clone())),
+        }
     }
 
     pub fn running(&self) -> usize {
@@ -214,7 +234,7 @@ impl Procs {
         }
         let cwd = resolve(&self.cfg, pc.cwd.as_deref().unwrap_or(self.cfg.workdir.to_str().unwrap_or("/")))?;
         if !cwd.is_dir() {
-            return Err(ConnectError::failed_precondition(format!("cwd {} is not an existing directory", cwd.display())));
+            return Err(ConnectError::invalid_argument(format!("cwd '{}' does not exist", cwd.display())));
         }
         let mut cmd = Command::new(&pc.cmd);
         cmd.args(&pc.args).current_dir(&cwd).envs(&pc.envs);
@@ -252,6 +272,7 @@ impl Procs {
                         if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
                             return Err(io::Error::last_os_error());
                         }
+                        prefer_for_oom_kill();
                         Ok(())
                     });
                 }
@@ -266,6 +287,13 @@ impl Procs {
                     .stdin(if stdin { Stdio::piped() } else { Stdio::null() })
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped());
+                // SAFETY: open/write/close only, all async-signal-safe.
+                unsafe {
+                    cmd.pre_exec(|| {
+                        prefer_for_oom_kill();
+                        Ok(())
+                    });
+                }
                 let mut child = cmd.spawn().map_err(err)?;
                 let input = Input::Pipe(tokio::sync::Mutex::new(child.stdin.take()));
                 Ok((child, input, None))
@@ -297,6 +325,7 @@ impl Procs {
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let registry = self.table.clone();
+        let exited = self.exited.clone();
         tokio::spawn(async move {
             let status = match pty {
                 Some(pty) => pump_pty(&p, &mut child, pty).await,
@@ -308,6 +337,7 @@ impl Procs {
                 s.finished = true;
                 std::mem::take(&mut s.list)
             };
+            exited.lock().unwrap().insert(p.pid, (std::time::Instant::now(), p.tag.clone(), end.clone()));
             registry.lock().unwrap().remove(&p.pid);
             drop(slot);
             for s in subs {
@@ -323,6 +353,19 @@ struct Slot(Arc<AtomicUsize>);
 impl Drop for Slot {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Raise this (forked, not yet exec'd) process's OOM score, so that under memory pressure the kernel kills the
+/// workload before the daemon. Raising needs no privilege. Best effort; only async-signal-safe calls.
+fn prefer_for_oom_kill() {
+    // SAFETY: a NUL-terminated path and a buffer that outlive the calls.
+    unsafe {
+        let fd = libc::open(c"/proc/self/oom_score_adj".as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
+        if fd >= 0 {
+            libc::write(fd, b"100".as_ptr().cast(), 3);
+            libc::close(fd);
+        }
     }
 }
 
@@ -412,11 +455,18 @@ fn signal_name(sig: i32) -> String {
 fn end_event(status: io::Result<ExitStatus>) -> EndEvent {
     match status {
         Ok(s) => match (s.code(), s.signal()) {
-            (Some(c), _) => EndEvent { exit_code: c, exited: true, status: format!("exit status {c}"), ..Default::default() },
+            (Some(c), _) => EndEvent {
+                exit_code: c,
+                exited: true,
+                status: format!("exit status {c}"),
+                error: (c != 0).then(|| format!("exit status {c}")),
+                ..Default::default()
+            },
             (None, Some(sig)) => EndEvent {
                 exit_code: -1,
                 exited: false,
                 status: format!("signal: {}", signal_name(sig)),
+                error: Some(format!("signal: {}", signal_name(sig))),
                 ..Default::default()
             },
             _ => EndEvent { exit_code: -1, status: "unknown".into(), ..Default::default() },
@@ -489,15 +539,32 @@ impl Process for Procs {
     async fn connect(&self, ctx: RequestContext, request: ServiceRequest<'_, ConnectRequest>) -> ServiceResult<ServiceStream<ConnectResponse>> {
         check_user_header(&self.cfg, ctx.headers())?;
         let req = request.to_owned_message();
-        let p = self.find(req.process.as_option())?;
-        let rx = p.subscribe()?;
-        Ok(Response::new(event_stream(&ctx, p.pid, rx, as_connect)))
+        let found = self.find(req.process.as_option()).and_then(|p| p.subscribe().map(|rx| (p.pid, rx)));
+        match found {
+            Ok((pid, rx)) => Ok(Response::new(event_stream(&ctx, pid, rx, as_connect))),
+            Err(e) => {
+                let Some((pid, end)) = self.recently_exited(req.process.as_option()) else { return Err(e) };
+                let (tx, rx) = mpsc::channel(1);
+                let _ = tx.try_send(Ev::End(end));
+                Ok(Response::new(event_stream(&ctx, pid, rx, as_connect)))
+            }
+        }
     }
 
     async fn start(&self, ctx: RequestContext, request: ServiceRequest<'_, StartRequest>) -> ServiceResult<ServiceStream<StartResponse>> {
         check_user_header(&self.cfg, ctx.headers())?;
         let req = request.to_owned_message();
         let (p, rx) = self.launch(req)?;
+        if let Some(deadline) = ctx.deadline() {
+            // Upstream envd's semantics: Connect-Timeout-Ms on Start bounds the process, not just the stream.
+            let p = p.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                if !p.subs.lock().unwrap().finished {
+                    let _ = p.signal(Sig::SIGKILL);
+                }
+            });
+        }
         Ok(Response::new(event_stream(&ctx, p.pid, rx, as_start)))
     }
 

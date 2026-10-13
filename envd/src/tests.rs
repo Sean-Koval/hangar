@@ -187,7 +187,7 @@ async fn refuses_before_starting() {
         .stream("process.Process/Start", json!({"process": {"cmd": "true", "cwd": "/nonexistent/dir"}}))
         .await;
     assert!(msgs.is_empty());
-    assert_eq!(end["error"]["code"], "failed_precondition");
+    assert_eq!(end["error"]["code"], "invalid_argument");
     let (_, end) = c.stream("process.Process/Start", json!({"process": {"cmd": "/no/such/binary"}})).await;
     assert_eq!(end["error"]["code"], "not_found");
 }
@@ -328,4 +328,32 @@ async fn filesystem_rpcs() {
     assert_eq!(s, StatusCode::OK);
     let (s, r) = c.unary("filesystem.Filesystem/Stat", json!({"path": "a"})).await;
     assert_eq!((s, r["code"].as_str()), (StatusCode::NOT_FOUND, Some("not_found")));
+    let (s, _) = c.unary("filesystem.Filesystem/Remove", json!({"path": "a"})).await;
+    assert_eq!(s, StatusCode::OK, "removing what isn't there is fine (rm -rf)");
+    let (s, r) = c.unary("filesystem.Filesystem/MakeDir", json!({"path": "c/g"})).await;
+    assert_eq!((s, r["code"].as_str()), (StatusCode::BAD_REQUEST, Some("invalid_argument")));
+}
+
+#[tokio::test]
+async fn start_deadline_bounds_the_process_and_connect_sees_recent_exits() {
+    let d = tempfile::tempdir().unwrap();
+    let c = Client::new(cfg(d.path(), 4));
+    let body = frame(&json!({"process": {"cmd": "sleep", "args": ["30"]}}));
+    let mut req = Client::req("POST", "/process.Process/Start", "application/connect+json", body);
+    req.headers_mut().insert("connect-timeout-ms", "300".parse().unwrap());
+    let t = std::time::Instant::now();
+    let (_, b) = c.send(req).await;
+    let (_, end) = unframe(&b);
+    assert_eq!(end["error"]["code"], "deadline_exceeded");
+    assert!(t.elapsed() < Duration::from_secs(5));
+    // The process was killed, and its end is still there for a client that reconnects.
+    let (msgs, _) = c.stream("process.Process/Start", json!({"process": {"cmd": "sh", "args": ["-c", "cat /proc/self/oom_score_adj; exit 4"]}, "tag": "done"})).await;
+    assert_eq!(output(&msgs, "stdout"), "100\n", "children are the OOM killer's first choice");
+    let (msgs, end) = c.stream("process.Process/Connect", json!({"process": {"tag": "done"}})).await;
+    assert_eq!(end, json!({}));
+    assert_eq!(msgs.len(), 2);
+    assert_eq!(msgs[1]["event"]["end"]["exitCode"].as_i64(), Some(4));
+    assert_eq!(msgs[1]["event"]["end"]["error"], "exit status 4");
+    let (_, end) = c.stream("process.Process/Connect", json!({"process": {"pid": 1}})).await;
+    assert_eq!(end["error"]["code"], "not_found");
 }
