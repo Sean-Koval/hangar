@@ -432,6 +432,14 @@ async def test_auth_and_ownership(hangar):
     assert any(e.action == "request.rejected" and (e.target or "").startswith("/e2b/")
                for e in hangar.h.store.audit_tail(200))
 
+    # Hangar's own sandboxes (a job's, a session's, the REST API's) aren't any sandboxes token's; the admin's only.
+    own = await hangar.h.fleet.create("plain", actor="test")
+    assert own.id not in [s.sandbox_id for s in await AsyncSandbox.list(**hangar.opts(alice)).next_items()]
+    with pytest.raises(NotFoundException):
+        await AsyncSandbox.connect(own.id, **hangar.opts(alice))
+    assert own.id in [s.sandbox_id for s in await AsyncSandbox.list(**hangar.opts(ADMIN)).next_items()]
+    await hangar.h.fleet.destroy(own.id)
+
     # A sandboxes token is good for the E2B API and nothing else.
     async with httpx.AsyncClient(base_url=hangar.url) as c:
         auth = {"Authorization": f"Bearer {alice}"}

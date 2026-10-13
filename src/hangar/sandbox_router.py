@@ -13,8 +13,8 @@ over the method, path and body), so the daemon's token never leaves the control 
 anywhere but here. RPC bodies (up to 8 MiB) are read whole and signed with their hash; uploads stream through as
 signed frames (`hangar.envd.chunked_body`), inflated on the way if they came gzip-encoded (the daemon doesn't), and
 every answer must carry the daemon's X-Hangar-Proof. Envd also gets the sandbox's envVars added to every process
-it starts. Other ports are plain HTTP and WebSocket proxying,
-authenticated with the traffic token or the access token; no port is public.
+it starts. Other ports are plain HTTP and WebSocket proxying to the address the daemon proved, authenticated with
+the traffic token or the access token; no port is public.
 
 Responses stream back as they arrive (process output, watch events), and a client that goes away closes the
 upstream request. Python is fast enough here for now (docs/e2b.md has the numbers); a Rust edge is the follow-up.
