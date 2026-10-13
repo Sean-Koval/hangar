@@ -12,7 +12,7 @@ Measures, p50/p95 over --runs:
   turn_first_output              send -> first agent event recorded
   turn_end_detect                agent process exited -> hangar noticed (session_poll_seconds matters here)
 
-The session has a realistic shape: a 2 MiB conversation file that grows each turn, three commits, a modified
+The session has a realistic shape: a 1.5 MB JSON-lines conversation that grows each turn, three commits, a modified
 tracked file, ~100 untracked text files and 3 MiB of incompressible untracked data. Needs Docker and git; reuses
 the `sesenv` image the Docker e2e tests build (builds it on first use).
 """
@@ -43,13 +43,14 @@ id="${HANGAR_SESSION_RESUME:-$HANGAR_SESSION_NEW}"
 echo '{"type":"system","subtype":"init"}'
 msg="$(head -1 "$HANGAR_PROMPT_FILE")"
 case "$msg" in
-  setup*)
-    head -c 1500000 /dev/urandom | base64 -w 120 > "$conv/$id.jsonl"
+  setup*)  # conversation: JSON lines quoting code, which compresses like a real transcript
+    cat src/*.py | head -c 1500000 | sed 's/^/{"type":"assistant","text":"/; s/$/"}/' > "$conv/$id.jsonl"
     for i in 1 2 3; do echo "change $i" >> "f$i.txt"; git add "f$i.txt"; git commit -qm "step $i"; done
     echo "edited" >> README.md
     mkdir -p notes && for i in $(seq 1 100); do echo "note $i $(date +%s%N)" > "notes/n$i.md"; done
     head -c 3000000 /dev/urandom > blob.bin ;;
-  *) head -c 50000 /dev/urandom | base64 -w 120 >> "$conv/$id.jsonl"; echo "turn" >> README.md
+  *) cat src/m1.py | head -c 50000 | sed 's/^/{"type":"user","text":"/; s/$/"}/' >> "$conv/$id.jsonl"
+     echo "turn" >> README.md
      sleep "${BENCH_AGENT_SLEEP:-2}" ;;
 esac
 echo '{"type":"result","result":"done"}'
@@ -57,21 +58,42 @@ echo '{"type":"result","result":"done"}'
 
 
 class Calls:
-    """Counts provider round trips (exec, read_file, write_file) per phase: fewer calls is the main lever."""
+    """Counts provider round trips (exec, read_file, write_file) per phase, and where the time went (those
+    calls, encryption, the checkpoint store): fewer calls is the main lever."""
 
-    def __init__(self, prov):
+    def __init__(self, prov, svc):
         self.n: dict[str, int] = {}
-        for name in ("exec", "read_file", "write_file"):
-            orig = getattr(prov, name)
+        self.s: dict[str, float] = {}
+        for obj, names in ((prov, ("exec", "read_file", "write_file")), (svc.blobs, ("put", "get")),
+                           (svc.vault, ("encrypt", "decrypt"))):
+            for name in names:
+                self._wrap(obj, name)
 
-            async def wrapped(*a, _orig=orig, _name=name, **kw):
-                self.n[_name] = self.n.get(_name, 0) + 1
-                return await _orig(*a, **kw)
+    def _wrap(self, obj, name: str) -> None:
+        orig = getattr(obj, name)
+        if asyncio.iscoroutinefunction(orig):
+            async def wrapped(*a, **kw):
+                t = time.perf_counter()
+                try:
+                    return await orig(*a, **kw)
+                finally:
+                    self._add(name, time.perf_counter() - t)
+        else:
+            def wrapped(*a, **kw):
+                t = time.perf_counter()
+                try:
+                    return orig(*a, **kw)
+                finally:
+                    self._add(name, time.perf_counter() - t)
+        setattr(obj, name, wrapped)
 
-            setattr(prov, name, wrapped)
+    def _add(self, name: str, secs: float) -> None:
+        self.n[name] = self.n.get(name, 0) + 1
+        self.s[name] = self.s.get(name, 0.0) + secs
 
-    def take(self) -> dict[str, int]:
-        out, self.n = dict(self.n), {}
+    def take(self) -> dict[str, str]:
+        out = {k: f"{v}x {self.s[k] * 1000:.0f}ms" for k, v in sorted(self.n.items())}
+        self.n, self.s = {}, {}
         return out
 
 
@@ -109,6 +131,7 @@ async def main(args: argparse.Namespace) -> dict:
     from hangar.vault import Vault, load_or_create_key
 
     rec = Recorder("sandbox-docker")
+    phases = set(args.phases.split(","))
     root = Path(tempfile.mkdtemp(prefix="hangar-bench-"))
     url, daemon = git_remote(root)
     script = base64.b64encode(AGENT.encode()).decode()
@@ -137,54 +160,56 @@ async def main(args: argparse.Namespace) -> dict:
         spec = fleet.catalog.get("sesenv")
         image = await fleet._ensure_image(spec, "docker", "bench", "scripted")
         rec.note("image", image)
-        calls = Calls(prov)
+        calls = Calls(prov, svc)
 
-        # ---- create: cold, then warm (pool of one, refilled between runs)
-        for i in range(args.runs):
-            calls.take()
-            with rec.time("create_cold"):
-                sb = await fleet.create("sesenv", repo=url, harness="scripted", actor="bench")
-            if i == 0:
-                rec.note("calls_create", calls.take())
-            created.append(sb.id)
-            with rec.time("first_exec"):
-                await fleet.exec(sb.id, "true")
-            await fleet.destroy(sb.id)
-        (envs / "sesenv.yaml").write_text(ENV + "warm_pool: 1\n")
-        fleet.catalog.reload()
-        wspec = fleet.catalog.get("sesenv")
-        assert fleet._tag_for(wspec, "docker")[0] == fleet._tag_for(spec, "docker")[0], "warm_pool changed the tag"
-        for _ in range(args.runs):
-            await prov.sync_warm_pool(wspec, image)
-            with rec.time("create_warm"):
-                sb = await fleet.create("sesenv", repo=url, harness="scripted", actor="bench")
-            assert sb.info.get("warm"), "expected a warm claim"
-            created.append(sb.id)
-            await fleet.destroy(sb.id)
-        (envs / "sesenv.yaml").write_text(ENV + "warm_pool: 0\n")
-        fleet.catalog.reload()
-        await prov.sync_warm_pool(fleet.catalog.get("sesenv"), image)
+        if "create" in phases:
+            # ---- create: cold, then warm (pool of one, refilled between runs)
+            for i in range(args.runs):
+                calls.take()
+                with rec.time("create_cold"):
+                    sb = await fleet.create("sesenv", repo=url, harness="scripted", actor="bench")
+                if i == 0:
+                    rec.note("calls_create", calls.take())
+                created.append(sb.id)
+                with rec.time("first_exec"):
+                    await fleet.exec(sb.id, "true")
+                await fleet.destroy(sb.id)
+            (envs / "sesenv.yaml").write_text(ENV + "warm_pool: 1\n")
+            fleet.catalog.reload()
+            wspec = fleet.catalog.get("sesenv")
+            assert fleet._tag_for(wspec, "docker")[0] == fleet._tag_for(spec, "docker")[0], "warm_pool changed the tag"
+            for _ in range(args.runs):
+                await prov.sync_warm_pool(wspec, image)
+                with rec.time("create_warm"):
+                    sb = await fleet.create("sesenv", repo=url, harness="scripted", actor="bench")
+                assert sb.info.get("warm"), "expected a warm claim"
+                created.append(sb.id)
+                await fleet.destroy(sb.id)
+            (envs / "sesenv.yaml").write_text(ENV + "warm_pool: 0\n")
+            fleet.catalog.reload()
+            await prov.sync_warm_pool(fleet.catalog.get("sesenv"), image)
 
-        # ---- I/O round trips on one sandbox
-        sb = await fleet.create("sesenv", repo=url, harness="scripted", actor="bench")
-        created.append(sb.id)
-        small, big = b"x" * 65536, bytes(range(256)) * 4096
-        for _ in range(args.runs * 3):
-            with rec.time("exec"):
-                await fleet.exec(sb.id, "true")
-            with rec.time("write_file_64k"):
-                await fleet.write_file(sb.id, "bench/small.bin", small)
-            with rec.time("read_file_64k"):
-                await fleet.read_file(sb.id, "bench/small.bin")
-            with rec.time("write_file_1m"):
-                await fleet.write_file(sb.id, "bench/big.bin", big)
-            with rec.time("read_file_1m"):
-                await fleet.read_file(sb.id, "bench/big.bin")
-        await fleet.terminal_open(sb.id, "bench")
-        for i in range(args.runs * 3):
-            with rec.time("terminal_send"):
-                await fleet.terminal_send(sb.id, "bench", f"echo mark-{i}", wait_ms=5000, wait_for=f"^mark-{i}")
-        await fleet.destroy(sb.id)
+        if "io" in phases:
+            # ---- I/O round trips on one sandbox
+            sb = await fleet.create("sesenv", repo=url, harness="scripted", actor="bench")
+            created.append(sb.id)
+            small, big = b"x" * 65536, bytes(range(256)) * 4096
+            for _ in range(args.runs * 3):
+                with rec.time("exec"):
+                    await fleet.exec(sb.id, "true")
+                with rec.time("write_file_64k"):
+                    await fleet.write_file(sb.id, "bench/small.bin", small)
+                with rec.time("read_file_64k"):
+                    await fleet.read_file(sb.id, "bench/small.bin")
+                with rec.time("write_file_1m"):
+                    await fleet.write_file(sb.id, "bench/big.bin", big)
+                with rec.time("read_file_1m"):
+                    await fleet.read_file(sb.id, "bench/big.bin")
+            await fleet.terminal_open(sb.id, "bench")
+            for i in range(args.runs * 3):
+                with rec.time("terminal_send"):
+                    await fleet.terminal_send(sb.id, "bench", f"echo mark-{i}", wait_ms=5000, wait_for=f"^mark-{i}")
+            await fleet.destroy(sb.id)
 
         # ---- a session: checkpoint after turns, then suspend/resume
         s0 = svc.new(NewSession(name="bench", environment="sesenv", repo=url, message="setup the work",
@@ -193,8 +218,8 @@ async def main(args: argparse.Namespace) -> dict:
         sess = svc.get(s0.id)
         assert sess.turns[-1].exit_code == 0, sess.turns[-1]
         rec.note("checkpoint_parts_bytes", dict(sess.checkpoints[-1].parts))
-        for i in range(args.runs):
-            await fleet.exec(sess.sandbox_id, "head -c 50000 /dev/urandom | base64 -w 120 >> "
+        for i in range(args.runs if "checkpoint" in phases else 0):
+            await fleet.exec(sess.sandbox_id, "sed 's/^/{\"type\":\"user\",\"text\":\"/; s/$/\"}/' src/m2.py >> "
                                               f"~/.fake/sessions/{sess.harness_session}.jsonl; echo x >> README.md")
             calls.take()
             with rec.time("checkpoint_turn"):
@@ -219,7 +244,7 @@ async def main(args: argparse.Namespace) -> dict:
             return out
 
         svc._restore = timed_restore
-        for _ in range(args.runs):
+        for _ in range(args.runs if "resume" in phases else 0):
             with rec.time("suspend"):
                 await svc.release(sess, "bench")
             with rec.time("resume_total"):
@@ -227,7 +252,7 @@ async def main(args: argparse.Namespace) -> dict:
         await verify_restored(fleet, sess)
 
         # ---- turns: time to first output and to noticing the agent exited
-        for i in range(args.runs):
+        for i in range(args.runs if "turn" in phases else 0):
             t0 = time.time()
             before = len(svc.events(sess.id, tail=1000))
             calls.take()
@@ -283,6 +308,7 @@ if __name__ == "__main__":
     p.add_argument("--runs", type=int, default=10)
     p.add_argument("--poll", type=float, default=5.0, help="session_poll_seconds (the production default is 5)")
     p.add_argument("--out", help="also write the JSON result here")
+    p.add_argument("--phases", default="create,io,checkpoint,resume,turn", help="comma-separated subset to run")
     a = p.parse_args()
     logging.basicConfig(level=logging.WARNING)
     emit(asyncio.run(main(a)), a.out)
