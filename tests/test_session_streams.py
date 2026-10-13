@@ -7,6 +7,7 @@ import json
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -180,8 +181,27 @@ async def test_idle_suspend_and_interval_checkpoint(svc, world, fleet, settings)
     await svc.tick()
     assert len(s.checkpoints) == 1  # nothing changed since: fingerprint matches, no new checkpoint
     assert svc._last_checked.get(s.id)  # ...and it won't re-run the check every minute
-    # idle past idle_minutes -> suspended
+    # idle past idle_minutes, but someone used the sandbox through hangar a minute ago -> stays up
     s.last_active_at -= 6 * 60
+    def used(ago):
+        sb = fleet.get(s.sandbox_id)
+        sb.last_activity = time.time() - ago
+        fleet.store.put(sb)
+        return sb
+
+    sb = used(60)
+    await svc.tick()
+    assert s.state == SessionState.IDLE and s.sandbox_id
+    # an open dashboard/CLI terminal keeps it up too
+    s.last_active_at -= 6 * 60
+    used(600)
+    fleet.attached[sb.id] += 1
+    await svc.tick()
+    assert s.state == SessionState.IDLE
+    fleet.attached.clear()
+    # truly idle -> suspended; hangar's own checks (checkpoints, tmux probes) don't count as activity
+    s.last_active_at -= 6 * 60
+    used(600)
     await svc.tick()
     s = await settle(svc, "idle")
     assert s.state == SessionState.SUSPENDED and s.sandbox_id is None

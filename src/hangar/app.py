@@ -44,8 +44,8 @@ class Hangar:
         self.catalog = EnvCatalog(self.settings.env_dirs, save_dir=self.settings.saved_env_dir)
         self.fleet = Fleet(self.settings, self.store, self.broker, self.catalog)
         self.auth = TokenAuth(self.store, self.settings.admin_token)
-        self.jobs = JobService(self.fleet)
         self.sessions = SessionService(self.fleet, self.vault)
+        self.jobs = JobService(self.fleet, self.sessions)
 
 
 # ---------------------------------------------------------------------------- MCP auth
@@ -243,12 +243,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log.warning("    %s", boot)
             log.warning("=" * 72)
         await h.fleet.start()
+        await h.sessions.start()  # first: jobs look up their sessions
         await h.jobs.start()
-        await h.sessions.start()
         async with mcp.session_manager.run():
             yield
-        await h.sessions.stop()
         await h.jobs.stop()
+        await h.sessions.stop()
         await h.fleet.stop()
 
     app = FastAPI(title="hangar", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None,
@@ -537,6 +537,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 msg = await ws.receive()
                 if msg["type"] == "websocket.disconnect":
                     break
+                fleet.touch(ref)  # someone is using this terminal: keep its session awake
                 if msg.get("bytes") is not None:
                     await term.write(msg["bytes"])
                 elif msg.get("text") is not None:
@@ -554,6 +555,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             out_task.cancel()
             await term.close()
+            with contextlib.suppress(Exception):
+                fleet.detach(ref)
 
     # ------------------------------------------------------------------ snapshots
     @app.get("/api/snapshots")

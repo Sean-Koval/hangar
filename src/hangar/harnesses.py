@@ -279,8 +279,16 @@ HARNESSES: dict[str, Harness] = {
         # which sandboxes lack. Use the service-account key above, or a GEMINI_API_KEY (Gemini API billing).
         run=(
             'agy -p "$(cat "$HANGAR_PROMPT_FILE")" --output-format stream-json '
-            '--dangerously-skip-permissions ${HANGAR_MODEL:+--model "$HANGAR_MODEL"}'
+            '--dangerously-skip-permissions ${HANGAR_MODEL:+--model "$HANGAR_MODEL"} '
+            '${HANGAR_SESSION_RESUME:+--conversation "$HANGAR_SESSION_RESUME"}'
         ),
+        # Verified with agy 1.3.3: stream-json's first event is {"event":"init","conversation_id":...}; each
+        # conversation is a SQLite file under conversations/; an unknown --conversation id silently starts a new
+        # one, which the session's post-turn check (is <id> on disk?) catches.
+        session_dirs=[".gemini/antigravity-cli/conversations", ".gemini/antigravity-cli/conversation_summaries.db"],
+        resume="capture",
+        session_id_regex=r'"conversation_id"\s*:\s*"([0-9a-f-]{36})"',
+        resume_hint="agy --conversation {id}",
         skills_dir=".gemini/skills",
         instructions_file=".gemini/GEMINI.md",
         mcp_format="antigravity",

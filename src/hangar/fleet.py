@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import contextlib
 import json
 import logging
 import re
@@ -138,6 +139,8 @@ class Fleet:
         # Called with a running sandbox just before it is destroyed (any reason: user, reaper, job). Sessions
         # (spec 0010) use it to checkpoint first. Hooks must be quick and must not raise.
         self.pre_destroy: list[Callable[[Sandbox], Awaitable[None]]] = []
+        # Live dashboard/CLI terminals per sandbox. Someone watching or typing keeps sessions awake.
+        self.attached: collections.Counter[str] = collections.Counter()
 
     # ================================================================== setup
     async def start(self) -> None:
@@ -421,6 +424,20 @@ class Fleet:
         sb.last_activity = now()
         self.store.put(sb)
 
+    def touch(self, ref: str, min_interval: float = 30.0) -> None:
+        """Record activity on a sandbox (throttled): terminals in use, API calls on its behalf."""
+        with contextlib.suppress(FleetError):
+            sb = self.get(ref)
+            if now() - (sb.last_activity or 0) >= min_interval:
+                self._touch(sb)
+
+    def detach(self, ref: str) -> None:
+        sid = self.get(ref).id if not ref.startswith("sb-") else ref
+        self.attached[sid] -= 1
+        if self.attached[sid] <= 0:
+            del self.attached[sid]
+        self.touch(sid, 0)
+
     async def create(
         self,
         environment: str,
@@ -698,11 +715,15 @@ class Fleet:
 
     # ================================================================== I/O
     async def exec(self, ref: str, command: str, cwd: str | None = None, timeout: int = 120,
-                   actor: str = "system") -> ExecResult:
+                   actor: str = "system", quiet: bool = False) -> ExecResult:
+        """`quiet` is for hangar's own housekeeping (checkpoints, idle checks): it neither counts as activity
+        nor fills the audit log."""
         sb, prov = self._running(ref)
-        self._touch(sb)
+        if not quiet:
+            self._touch(sb)
         res = await prov.exec(sb, command, timeout=timeout, cwd=cwd or sb.info.get("repo_path"))
-        self.audit(actor, "sandbox.exec", sb.id, command=command[:500], exit_code=res.exit_code)
+        if not quiet:
+            self.audit(actor, "sandbox.exec", sb.id, command=command[:500], exit_code=res.exit_code)
         return res
 
     async def read_file(self, ref: str, path: str) -> bytes | None:
@@ -805,7 +826,9 @@ class Fleet:
             wd = sb.info.get("repo_path") or self.settings.workspace_dir
             cmd = ["bash", "-lc", f"cd {shlex.quote(wd)} 2>/dev/null; exec bash -l"]
         self._touch(sb)
-        return await prov.open_terminal(sb, cmd, cols, rows)
+        term = await prov.open_terminal(sb, cmd, cols, rows)
+        self.attached[sb.id] += 1
+        return term
 
     # ================================================================== agent runs
     async def run_agent(self, ref: str, prompt: str, harness: str | None = None, cwd: str | None = None,

@@ -20,6 +20,7 @@ import re
 import shlex
 import shutil
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -126,7 +127,9 @@ class SessionService:
         for s in self._sessions.values():
             if s.state in SESSION_LIVE or s.state == SessionState.SUSPENDING:
                 if s.sandbox_id and self._alive(s.sandbox_id):
-                    if s.state == SessionState.RUNNING and s.turns and s.turns[-1].run_id:
+                    if s.job_id:
+                        self._set(s, SessionState.IDLE, "control plane restarted")  # the job re-attaches itself
+                    elif s.state == SessionState.RUNNING and s.turns and s.turns[-1].run_id:
                         self._spawn(self._resume_wait(s.id))  # re-attach to the running turn
                     else:
                         self._set(s, SessionState.IDLE, "control plane restarted")
@@ -231,6 +234,9 @@ class SessionService:
             raise SessionError("message is too long")
         if s.state == SessionState.ARCHIVED:
             raise SessionError(f"session {s.name} is archived")
+        if s.job_id:
+            raise SessionError(f"session {s.name} carries job {s.job_id}; follow up on the job instead "
+                               "(its turns are verified and delivered)")
         if s.id in self._busy or s.state in (SessionState.RUNNING, SessionState.SUSPENDING):
             raise SessionError(f"session {s.name} is busy ({s.state}); wait for it to finish")
         s.turns.append(SessionTurn(message=message, requester=requester))
@@ -337,7 +343,8 @@ class SessionService:
         ttl = max(s.idle_minutes * 3, 120) + self.settings.session_turn_timeout_minutes
         sb = await self.fleet.create(
             s.environment, name=f"ses-{s.name[:30]}-{uuid.uuid4().hex[:4]}", repo=s.repo, branch=s.base_branch,
-            harness=s.harness, ttl_minutes=ttl, labels={**s.labels, "hangar.session": s.id}, actor=f"session:{s.id}")
+            harness=s.harness, ttl_minutes=ttl, labels={**s.labels, "hangar.session": s.id}, provider=s.provider,
+            actor=f"session:{s.id}")
         note = None
         try:
             if sb.info.get("repo_path"):
@@ -354,7 +361,8 @@ class SessionService:
         return sb
 
     async def _sh(self, sb: Sandbox, cmd: str, timeout: int = 300, cwd: str | None = None):
-        return await self.fleet.exec(sb.id, cmd, cwd=cwd, timeout=timeout, actor="session")
+        # Housekeeping: must not count as activity (or the idle check would keep every session awake forever).
+        return await self.fleet.exec(sb.id, cmd, cwd=cwd, timeout=timeout, actor="session", quiet=True)
 
     async def _restore(self, s: Session, sb: Sandbox) -> str | None:
         q = shlex.quote
@@ -429,7 +437,7 @@ class SessionService:
         for t in {s.harness, s.harness_session_for} - {None}:
             with contextlib.suppress(KeyError):
                 dirs += get_harness(t).session_dirs
-        return sorted(set(dirs))
+        return sorted(set(dirs + s.extra_dirs))
 
     async def _checkpoint(self, s: Session, reason: str) -> Checkpoint | None:
         """Snapshot conversation + repo state into the control plane. Caller holds the lock."""
@@ -546,31 +554,9 @@ class SessionService:
         s = self._sessions[sid]
         turn = s.turns[-1]
         try:
-            async with self._locks[sid]:
-                sb = await self._boot(s)
-            # The sandbox must outlive this turn (the idle loop skips busy sessions, so extend now).
-            want = now() + (self.settings.session_turn_timeout_minutes + max(s.idle_minutes, 30) + 30) * 60
-            if sb.expires_at is not None and sb.expires_at < want:
-                await self.fleet.extend(sb.id, int((want - sb.expires_at) / 60) + 1, actor=f"session:{s.id}")
-            h = get_harness(s.harness)
-            env: dict[str, str] = {}
-            same = s.harness_session and s.harness_session_for == s.harness
-            if h.resume and same:
-                turn.mode = "resume"
-                env["HANGAR_SESSION_RESUME"] = s.harness_session
-            else:
-                turn.mode = "handoff" if len(s.turns) > 1 else "new"
-                if h.resume == "preset":
-                    env["HANGAR_SESSION_NEW"] = str(uuid.uuid4())
-            turn.harness = s.harness
-            turn.conversation = env.get("HANGAR_SESSION_RESUME") or env.get("HANGAR_SESSION_NEW")
-            self._save(s)
-            res = await self.fleet.run_agent(sb.id, self._prompt(s, turn, turn.mode), harness=s.harness,
-                                             model=s.model, env=env, actor=f"session:{s.id}")
-            turn.run_id, turn.started_at = res["run_id"], now()
-            s.model = s.model or res.get("model")
-            self._set(s, SessionState.RUNNING, f"agent turn {len(s.turns)} running ({turn.mode})")
-            await self._wait_turn(s, turn, env)
+            await self.ensure_sandbox(s)
+            await self.begin_turn(s, turn)
+            await self.end_turn(s, turn)
         except Exception as e:  # noqa: BLE001
             log.exception("session %s turn failed", sid)
             turn.finished_at = turn.finished_at or now()
@@ -585,68 +571,176 @@ class SessionService:
         s = self._sessions[sid]
         self._busy.add(sid)
         try:
-            await self._wait_turn(s, s.turns[-1], {})
+            await self.end_turn(s, s.turns[-1])
         except Exception as e:  # noqa: BLE001
             self._set(s, SessionState.IDLE if self._alive(s.sandbox_id or "") else SessionState.SUSPENDED,
                       f"turn interrupted: {e}")
         finally:
             self._busy.discard(sid)
 
-    async def _wait_turn(self, s: Session, turn: SessionTurn, env: dict[str, str]) -> None:
-        deadline = (turn.started_at or now()) + self.settings.session_turn_timeout_minutes * 60
+    # ================================================================== jobs (spec 0010 M2)
+    def for_job(self, *, job_id: str, environment: str, harness: str | None, model: str | None, repo: str | None,
+                base_branch: str | None, branch: str, provider: str | None, labels: dict[str, str],
+                extra_dirs: list[str], idle_minutes: int) -> Session:
+        """The session that carries a job: same sandbox lifecycle, checkpoints and conversation resume, but turns
+        are driven by the job service (which verifies and delivers them)."""
+        existing = next((x for x in self._sessions.values() if x.job_id == job_id), None)
+        if existing:
+            return existing
+        s = Session(name=f"job-{job_id.removeprefix('job-')}", title=f"job {job_id}", owner="jobs",
+                    environment=environment, harness=harness, model=model, repo=repo, base_branch=base_branch,
+                    branch=branch, provider=provider, labels={**labels, "hangar.job": job_id}, job_id=job_id,
+                    extra_dirs=extra_dirs, idle_minutes=max(1, idle_minutes))
+        self._sessions[s.id] = s
+        self._set(s, SessionState.SUSPENDED, f"carries job {job_id}")
+        return s
+
+    @contextlib.contextmanager
+    def hold(self, s: Session):
+        """Keep the idle loop away (no suspend, no interval checkpoint) while a caller drives the session."""
+        self._busy.add(s.id)
+        try:
+            yield s
+        finally:
+            self._busy.discard(s.id)
+
+    def will_resume(self, s: Session) -> bool:
+        """Will the next turn continue the harness's own conversation (vs. start fresh or hand off)?"""
+        h = get_harness(s.harness) if s.harness else None
+        return bool(h and h.resume and s.harness_session and s.harness_session_for == s.harness)
+
+    def resumable(self, s: Session) -> bool:
+        return bool(s.sandbox_id and self._alive(s.sandbox_id)) or bool(s.checkpoints)
+
+    async def release(self, s: Session, why: str, checkpoint: bool = True) -> None:
+        """Suspend now (checkpoint and release the sandbox); with checkpoint=False, just drop the sandbox
+        (used when a job fails before doing any work)."""
+        async with self._locks[s.id]:
+            if checkpoint:
+                await self._suspend(s, why)
+                return
+            sid, s.sandbox_id = s.sandbox_id, None
+            self._set(s, SessionState.SUSPENDED, why)
+            if sid:
+                with contextlib.suppress(Exception):
+                    await self.fleet.destroy(sid, actor=f"session:{s.id}")
+
+    def touch(self, s: Session, idle_minutes: int | None = None) -> None:
+        if idle_minutes is not None:
+            s.idle_minutes = max(1, idle_minutes)
+        s.last_active_at = now()
+        self._save(s)
+
+    # ================================================================== turns (also used by jobs)
+    async def ensure_sandbox(self, s: Session) -> Sandbox:
+        """A running sandbox for the session: the current one, or a new one restored from the last checkpoint."""
+        async with self._locks[s.id]:
+            return await self._boot(s)
+
+    async def begin_turn(self, s: Session, turn: SessionTurn, prompt: str | None = None,
+                         extra_env: dict[str, str] | None = None, timeout_minutes: int | None = None) -> None:
+        """Start one agent turn in the session's (running) sandbox, resuming the harness's own conversation when
+        it can. `prompt` overrides the session's prompt (jobs write their own)."""
+        sb = self.fleet.get(s.sandbox_id or "")
+        # The sandbox must outlive this turn (the idle loop skips busy sessions, so extend now).
+        tmo = timeout_minutes if timeout_minutes is not None else self.settings.session_turn_timeout_minutes
+        want = now() + (tmo + max(s.idle_minutes, 30) + 30) * 60
+        if sb.expires_at is not None and sb.expires_at < want:
+            await self.fleet.extend(sb.id, int((want - sb.expires_at) / 60) + 1, actor=f"session:{s.id}")
+        h = get_harness(s.harness)
+        env: dict[str, str] = {}
+        if self.will_resume(s):
+            turn.mode = "resume"
+            env["HANGAR_SESSION_RESUME"] = s.harness_session
+        else:
+            turn.mode = "handoff" if len(s.turns) > 1 else "new"
+            if h.resume == "preset":
+                env["HANGAR_SESSION_NEW"] = str(uuid.uuid4())
+        turn.harness = s.harness
+        turn.conversation = env.get("HANGAR_SESSION_RESUME") or env.get("HANGAR_SESSION_NEW")
+        self._save(s)
+        if prompt is not None and turn.mode == "handoff":
+            prompt = self._handoff(s) + "\n\n# Now\n\n" + prompt
+        res = await self.fleet.run_agent(sb.id, prompt if prompt is not None else self._prompt(s, turn, turn.mode),
+                                         harness=s.harness, model=s.model, env={**(extra_env or {}), **env},
+                                         actor=f"session:{s.id}")
+        turn.run_id, turn.started_at = res["run_id"], now()
+        s.model = s.model or res.get("model")
+        s.last_active_at = now()
+        self._set(s, SessionState.RUNNING, f"agent turn {len(s.turns)} running ({turn.mode})")
+
+    async def end_turn(self, s: Session, turn: SessionTurn, timeout_minutes: int | None = None,
+                       should_cancel: Callable[[], bool] | None = None) -> tuple[str, str]:
+        """Wait for the turn, then record its summary and conversation id and checkpoint.
+        Returns (outcome, raw log): outcome is exited | timed_out | cancelled | gone."""
+        tmo = timeout_minutes if timeout_minutes is not None else self.settings.session_turn_timeout_minutes
+        deadline = (turn.started_at or now()) + tmo * 60
         errors = 0
+        outcome = "exited"
         while True:
             if not s.sandbox_id or not self._alive(s.sandbox_id):
-                raise SessionError("the sandbox went away during the turn")
+                outcome = "gone"
+                break
+            if should_cancel and should_cancel():
+                outcome = "cancelled"
+                break
             try:
                 st = await self.fleet.agent_status(s.sandbox_id, turn.run_id or "", tail_lines=5)
                 errors = 0
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 - transient provider errors
                 errors += 1
                 if errors >= 5:
-                    raise
+                    outcome = "gone" if not self._alive(s.sandbox_id or "") else "error"
+                    break
                 st = None
             if st and st["state"] == "finished":
                 turn.exit_code = st["exit_code"]
                 break
             if now() > deadline:
-                with contextlib.suppress(Exception):
-                    await self.fleet.exec(s.sandbox_id, f"tmux kill-session -t {shlex.quote(turn.run_id or '')}")
-                turn.exit_code = -1
+                outcome = "timed_out"
                 break
             await asyncio.sleep(self.settings.session_poll_seconds)
         turn.finished_at = now()
+        if outcome == "gone":
+            s.sandbox_id = None if not self._alive(s.sandbox_id or "") else s.sandbox_id
+            self._set(s, SessionState.SUSPENDED if s.checkpoints else SessionState.FAILED,
+                      "the sandbox went away during the turn")
+            return outcome, ""
+        if outcome in ("cancelled", "timed_out"):
+            with contextlib.suppress(Exception):
+                await self._sh(self.fleet.get(s.sandbox_id), f"tmux kill-session -t {shlex.quote(turn.run_id or '')}")
+            turn.exit_code = turn.exit_code if turn.exit_code is not None else -1
         sb = self.fleet.get(s.sandbox_id)
         _, prov = self.fleet._running(sb.id)
         rlog = f"/home/{self.settings.sandbox_user}/.hangar/runs/{turn.run_id}.log"
         raw = (await prov.read_file(sb, rlog) or b"")[-2_000_000:].decode(errors="replace")
         turn.summary = self.fleet.broker.redact(extract_summary(turn.harness, raw) or "") or None
-        await self._record_conversation(s, sb, turn, env, raw)
+        await self._record_conversation(s, sb, turn, raw)
         async with self._locks[s.id]:
             await self._checkpoint(s, "turn")
         s.last_active_at = now()
         if s.sandbox_id and self._alive(s.sandbox_id):
-            self._set(s, SessionState.IDLE, f"turn {len(s.turns)} finished (exit {turn.exit_code})")
+            self._set(s, SessionState.IDLE, f"turn {len(s.turns)} {outcome} (exit {turn.exit_code})")
         else:  # destroyed while we were finishing up (the pre-destroy hook checkpointed it)
             s.sandbox_id = None
             self._set(s, SessionState.SUSPENDED, f"turn {len(s.turns)} finished; sandbox released")
+        return outcome, raw
 
-    async def _record_conversation(self, s: Session, sb: Sandbox, turn: SessionTurn, env: dict[str, str],
-                                   raw_log: str) -> None:
+    async def _record_conversation(self, s: Session, sb: Sandbox, turn: SessionTurn, raw_log: str) -> None:
         """Remember the harness's conversation id so the next turn resumes it."""
         h = get_harness(turn.harness or s.harness)
-        # No env means we re-attached after a restart: use what the turn recorded before it started.
-        cid: str | None = (env.get("HANGAR_SESSION_RESUME") or env.get("HANGAR_SESSION_NEW")) if env \
-            else (turn.conversation or s.harness_session)
+        cid: str | None = turn.conversation
         if h.resume == "capture" and h.session_id_regex:
             m = re.search(h.session_id_regex, raw_log)
             cid = m.group(1) if m else cid
         if cid and h.session_dirs:
-            # Only keep the id if the harness actually saved that conversation (a crash may not have).
+            # Only keep the id if the harness actually saved that conversation (a crash may not have; agy starts a
+            # fresh one when asked to resume an id it doesn't know).
             dirs = " ".join(shlex.quote(f"/home/{self.settings.sandbox_user}/{d}") for d in h.session_dirs)
             res = await self._sh(sb, f"find {dirs} -type f -name {shlex.quote('*' + cid + '*')} 2>/dev/null | head -1")
             if not res.stdout.strip():
                 cid = None
+        turn.conversation = cid
         s.harness_session = cid
         s.harness_session_for = (turn.harness or s.harness) if cid else None
         self._save(s)
@@ -698,6 +792,27 @@ class SessionService:
                 why = "sandbox was destroyed before anything was checkpointed; resumes from the base branch"
             self._set(s, SessionState.SUSPENDED, why)
 
+    async def _in_use(self, sb: Sandbox) -> bool:
+        """Someone is working in the sandbox: a dashboard/CLI terminal is open, a tmux client is attached (e.g.
+        `hangar sb attach`), or anything used it through hangar (exec, files, terminals) since the last check."""
+        if self.fleet.attached.get(sb.id):
+            return True
+        if sb.last_activity and now() - sb.last_activity < 90:
+            return True
+        res = await self._sh(sb, "tmux list-clients 2>/dev/null | wc -l", timeout=20)
+        return res.stdout.strip() not in ("", "0")
+
+    def set_idle(self, ref: str, idle_minutes: int, requester: str) -> Session:
+        """Change how long a session may sit idle before suspending (0 = stay up until suspended by hand)."""
+        if idle_minutes < 0 or idle_minutes > 10080:
+            raise SessionError("idle_minutes must be between 0 and 10080")
+        s = self.get(ref)
+        s.idle_minutes = idle_minutes
+        s.last_active_at = now()
+        self._save(s)
+        self.fleet.audit(requester, "session.idle", s.id, idle_minutes=idle_minutes)
+        return s
+
     async def _idle_loop(self) -> None:
         while True:
             try:
@@ -730,8 +845,7 @@ class SessionService:
             await self.fleet.extend(sb.id, 60, actor=f"session:{s.id}")
         if s.id in self._busy:
             return
-        attached = await self._sh(sb, "tmux list-clients 2>/dev/null | wc -l", timeout=20)
-        if attached.stdout.strip() not in ("", "0"):
+        if await self._in_use(sb):
             s.last_active_at = now()
             self._save(s)
         if s.id in self._busy:  # a send landed while we were checking

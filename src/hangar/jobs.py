@@ -39,6 +39,7 @@ from hangar.models import (
     new_id,
     now,
 )
+from hangar.sessions import SessionService
 
 log = logging.getLogger("hangar.jobs")
 
@@ -124,8 +125,9 @@ def _decode(item: ContextItem) -> bytes:
 
 
 class JobService:
-    def __init__(self, fleet: Fleet, transport: httpx.AsyncBaseTransport | None = None):
+    def __init__(self, fleet: Fleet, sessions: SessionService, transport: httpx.AsyncBaseTransport | None = None):
         self.fleet = fleet
+        self.sessions = sessions  # every job runs in a session (spec 0010 M2): checkpoints, resume, follow-ups
         self.settings = fleet.settings
         self.store = fleet.store
         self.broker = fleet.broker
@@ -154,7 +156,10 @@ class JobService:
                             else "control plane restarted before the turn started; starting it now")
                 self._queue.put_nowait(job.id)
             else:
-                self._event(job, "control plane restarted and the sandbox is gone", JobState.FAILED,
+                s = self._session(job)
+                tail = ("; follow up to continue from its last checkpoint"
+                        if s and self.sessions.resumable(s) else "")
+                self._event(job, "control plane restarted and the sandbox is gone" + tail, JobState.FAILED,
                             reason="interrupted")
             if job.state == JobState.FAILED:
                 interrupted.append(job)
@@ -282,8 +287,10 @@ class JobService:
             raise JobError("follow-up message is too long")
         if job.state not in JOB_TERMINAL or job.id in self._active:
             raise JobError(f"job {job.id} is {job.state}; wait for the current turn to finish")
-        if not self._sandbox_alive(job):
-            raise JobError(f"job {job.id}'s sandbox is gone; submit a new job (branch {job.branch} has the work)")
+        s = self._session(job)
+        if not self._sandbox_alive(job) and not (s and self.sessions.resumable(s)):
+            raise JobError(f"job {job.id} has no sandbox or checkpoint to continue from; submit a new job "
+                           f"(branch {job.branch} has the work)")
         job.turns.append(Turn(kind="follow_up", message=message, requester=requester, reply_to=reply_to))
         job.cancel_requested = False
         self._event(job, f"follow-up from {requester}", JobState.QUEUED, reason=None)
@@ -310,6 +317,9 @@ class JobService:
         last = job.turns[-1] if job.turns else None
         d["terminal_session"] = last.run_id if last else None
         d["context_dir"] = self._ctxdir(job)
+        s = self._session(job)
+        d["session"] = {"name": s.name, "state": s.state.value, "checkpoints": len(s.checkpoints),
+                        "resume_command": self.sessions.view(s)["resume_command"]} if s else None
         d["active"] = job.state not in JOB_TERMINAL
         return d
 
@@ -359,6 +369,14 @@ class JobService:
     def _ctxdir(self, job: Job) -> str:
         return f"/home/{self.settings.sandbox_user}/.hangar/jobs/{job.id}"
 
+    def _session(self, job: Job):
+        if not job.session_id:
+            return None
+        try:
+            return self.sessions.get(job.session_id)
+        except KeyError:
+            return None
+
     def _sandbox_alive(self, job: Job) -> bool:
         if not job.sandbox_id:
             return False
@@ -396,13 +414,23 @@ class JobService:
                 self._event(job, "cancelled before it started", JobState.CANCELLED, reason="cancelled")
                 await self._report(job)
                 return
-            if not job.sandbox_id:
+            s = self._session(job)
+            if s is None:
                 if not await self._provision(job):
                     return
-            turn = job.turns[-1]
-            if turn.run_id is None:
-                await self._start_turn(job, turn)
-            await self._finish_turn(job, turn)
+                s = self._session(job)
+            with self.sessions.hold(s):
+                if not self._sandbox_alive(job):
+                    # A follow-up after the sandbox was released: resume the job's session from its checkpoint.
+                    self._event(job, "resuming the job's session from its last checkpoint", JobState.PROVISIONING)
+                    sb = await self.sessions.ensure_sandbox(s)
+                    job.sandbox_id = sb.id
+                    self._save(job)
+                    self._event(job, f"sandbox {sb.name} ready (restored) on branch {job.branch}")
+                turn = job.turns[-1]
+                if turn.run_id is None:
+                    await self._start_turn(job, turn, s)
+                await self._finish_turn(job, turn, s)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
@@ -417,11 +445,14 @@ class JobService:
 
     async def _provision(self, job: Job) -> bool:
         self._event(job, f"starting a sandbox from environment '{job.environment}'", JobState.PROVISIONING)
-        sb = await self.fleet.create(
-            job.environment, name=f"job-{job.id[4:]}", repo=job.repo, branch=job.base_branch,
-            work_branch=job.branch if job.repo else None, provider=job.provider,
-            ttl_minutes=job.timeout_minutes * max(1, len(job.turns)) + job.keep_minutes + 30,
-            labels={**job.labels, "hangar.job": job.id}, harness=job.harness, actor=f"job:{job.id}")
+        s = self.sessions.for_job(
+            job_id=job.id, environment=job.environment, harness=job.harness, model=job.model, repo=job.repo,
+            base_branch=job.base_branch, branch=job.branch, provider=job.provider, labels=job.labels,
+            extra_dirs=[f".hangar/jobs/{job.id}"], idle_minutes=job.keep_minutes)
+        job.session_id = s.id
+        self._save(job)
+        with self.sessions.hold(s):
+            sb = await self.sessions.ensure_sandbox(s)
         job.sandbox_id = sb.id
         job.harness = job.harness or sb.info.get("harness")
         job.repo = job.repo or sb.repo
@@ -444,8 +475,7 @@ class JobService:
                                  "jobs only push to new branches", JobState.FAILED, reason="bad_branch")
                 await self._report(job)
                 return False
-            res = await self._sh(job, "git rev-parse HEAD")
-            job.result.base_sha = res.stdout.strip() or None
+            job.result.base_sha = s.base_sha
             # Commits need an identity; keep whatever the environment configured.
             await self._sh(job, "git config user.email >/dev/null || git config user.email hangar@localhost; "
                                 f"git config user.name >/dev/null || git config user.name {q('hangar')}")
@@ -460,13 +490,18 @@ class JobService:
         return True
 
     async def _discard_sandbox(self, job: Job) -> None:
-        if job.sandbox_id:
+        s = self._session(job)
+        if s is not None:
+            with contextlib.suppress(Exception):
+                await self.sessions.release(s, "job could not start", checkpoint=False)
+                self.sessions.archive(s.id, requester=f"job:{job.id}")
+        elif job.sandbox_id:
             with contextlib.suppress(Exception):
                 await self.fleet.destroy(job.sandbox_id, actor=f"job:{job.id}")
-            job.sandbox_id = None
-            self._save(job)
+        job.sandbox_id = None
+        self._save(job)
 
-    def _prompt(self, job: Job, turn: Turn, repo_path: str | None) -> str:
+    def _prompt(self, job: Job, turn: Turn, repo_path: str | None, resuming: bool = False) -> str:
         ctx = self._ctxdir(job)
         files = [c for c in job.context if c.kind != "url"]
         links = [c for c in job.context if c.kind == "url"]
@@ -480,6 +515,10 @@ class JobService:
             "If the task is unclear or cannot be done, do not guess: write your questions to RESULT.md and stop.",
         ]
         finish_txt = "\n".join(f"- {f}" for f in finish)
+        if turn.kind == "follow_up" and resuming:
+            # The agent continues its own conversation: it already has the task, the context and its earlier work.
+            return (f"Follow-up on this task from {turn.requester}:\n\n{turn.message}\n\n"
+                    f"## How to finish\n\n{finish_txt}\n")
         if turn.kind == "follow_up":
             prev = next((t.summary for t in reversed(job.turns[:-1]) if t.summary), None)
             return (
@@ -511,23 +550,24 @@ class JobService:
         parts.append(f"# How to finish\n\n{finish_txt}")
         return "\n\n".join(parts) + "\n"
 
-    async def _start_turn(self, job: Job, turn: Turn) -> None:
+    async def _start_turn(self, job: Job, turn: Turn, s) -> None:
+        from hangar.models import SessionTurn
+
         sb = self.fleet.get(job.sandbox_id)
         ctx = self._ctxdir(job)
         await self._sh(job, f"rm -f {shlex.quote(ctx)}/RESULT.md")
         n = len(job.turns)
-        # The sandbox must outlive this turn plus the follow-up window, whatever its current expiry.
-        want = now() + (job.timeout_minutes + job.keep_minutes + 10) * 60
-        if sb.expires_at is not None and sb.expires_at < want:
-            await self.fleet.extend(sb.id, int((want - sb.expires_at) / 60) + 1, actor=f"job:{job.id}")
-        self._event(job, f"agent turn {n} starting ({job.harness or 'default harness'})", JobState.RUNNING,
-                    reason=None)
-        res = await self.fleet.run_agent(
-            job.sandbox_id, self._prompt(job, turn, sb.info.get("repo_path")), harness=job.harness, model=job.model,
-            actor=f"job:{job.id}", env={"HANGAR_JOB_ID": job.id, "HANGAR_JOB_DIR": ctx})
-        turn.run_id = res["run_id"]
-        turn.started_at = now()
-        job.harness, job.model = res["harness"], res["model"]
+        resuming = self.sessions.will_resume(s)
+        st = SessionTurn(message=turn.message or job.instructions, requester=turn.requester)
+        s.turns.append(st)
+        self._event(job, f"agent turn {n} starting ({s.harness or 'default harness'}"
+                         + (", resuming its conversation" if resuming else "") + ")", JobState.RUNNING, reason=None)
+        await self.sessions.begin_turn(
+            s, st, prompt=self._prompt(job, turn, sb.info.get("repo_path"), resuming=resuming),
+            extra_env={"HANGAR_JOB_ID": job.id, "HANGAR_JOB_DIR": ctx}, timeout_minutes=job.timeout_minutes)
+        turn.run_id = st.run_id
+        turn.started_at = st.started_at
+        job.harness, job.model = s.harness, s.model
         self._save(job)
         if n == 1:
             self._spawn(self._callback(job, "job.started"))
@@ -536,43 +576,20 @@ class JobService:
                                     f"Agent started on hangar job `{job.id}` ({job.environment}, {job.harness}"
                                     f"{', ' + job.model if job.model else ''}), branch `{job.branch}`.")
 
-    async def _wait(self, job: Job, turn: Turn) -> tuple[str, str]:
-        deadline = (turn.started_at or now()) + job.timeout_minutes * 60
-        errors = 0
-        while True:
-            if job.cancel_requested:
-                await self._kill(job, turn)
-                return "cancelled", ""
-            try:
-                st = await self.fleet.agent_status(job.sandbox_id, turn.run_id, tail_lines=40)
-                errors = 0
-            except FleetError:
-                if not self._sandbox_alive(job):
-                    return "gone", ""
-                errors += 1
-                st = None
-            except Exception:  # noqa: BLE001 - transient provider errors
-                errors += 1
-                st = None
-            if errors >= 5:
-                return "gone", ""
-            if st and st["state"] == "finished":
-                turn.exit_code = st["exit_code"]
-                return "exited", st.get("output_tail", "")
-            if now() > deadline:
-                await self._kill(job, turn)
-                return "timed_out", (st or {}).get("output_tail", "")
-            await asyncio.sleep(self.settings.job_poll_seconds)
-
-    async def _kill(self, job: Job, turn: Turn) -> None:
-        with contextlib.suppress(Exception):
-            await self._sh(job, f"tmux kill-session -t {shlex.quote(turn.run_id or '')} 2>/dev/null; true")
-
-    async def _finish_turn(self, job: Job, turn: Turn) -> None:
-        outcome, tail = await self._wait(job, turn)
+    async def _finish_turn(self, job: Job, turn: Turn, s) -> None:
+        st = next((t for t in reversed(s.turns) if t.run_id == turn.run_id), None)
+        if st is None:
+            raise JobError(f"turn {turn.run_id} is not in session {s.name}")
+        outcome, raw = await self.sessions.end_turn(s, st, timeout_minutes=job.timeout_minutes,
+                                                    should_cancel=lambda: job.cancel_requested)
         turn.finished_at = now()
-        if outcome == "gone":
-            self._event(job, "the sandbox went away during the turn", JobState.FAILED, reason="sandbox_gone")
+        turn.exit_code = st.exit_code
+        tail = _clip_tail(raw) if raw else ""
+        if outcome in ("gone", "error"):
+            more = "; follow up to continue from its last checkpoint" if self.sessions.resumable(s) else ""
+            self._event(job, "the sandbox went away during the turn" + more, JobState.FAILED, reason="sandbox_gone")
+            if not self._sandbox_alive(job):
+                job.sandbox_id = None
             await self._report(job)
             return
         prov_sb = self.fleet.get(job.sandbox_id)
@@ -584,7 +601,7 @@ class JobService:
         job.result.summary = summary or (red(_clip_tail(tail)[-3000:]) if tail else None)
         if outcome == "cancelled":
             self._event(job, "cancelled; the agent was stopped", JobState.CANCELLED, reason="cancelled")
-            await self._keep(job)
+            await self._keep(job, s)
             await self._report(job)
             return
         clean = outcome == "exited" and turn.exit_code == 0
@@ -617,7 +634,7 @@ class JobService:
         elif not commits:
             reason = "no_changes"
         self._event(job, self._outcome_line(job, state, reason), state, reason=reason)
-        await self._keep(job)
+        await self._keep(job, s)
         await self._report(job)
 
     @staticmethod
@@ -702,19 +719,19 @@ class JobService:
             lines.append(f"Closes #{m.group(2)}")
         return "\n".join(lines)
 
-    async def _keep(self, job: Job) -> None:
-        """Keep the sandbox `keep_minutes` past now for follow-ups and take-over (0 = destroy now)."""
+    async def _keep(self, job: Job, s) -> None:
+        """Keep the sandbox for follow-ups and take-over while it's in use, and at least `keep_minutes`; then the
+        session checkpoints and releases it. keep_minutes=0 releases it now. Either way follow-ups still work:
+        they resume the session from its checkpoint."""
         if not self._sandbox_alive(job):
             return
         if job.keep_minutes == 0:
             with contextlib.suppress(Exception):
-                await self.fleet.destroy(job.sandbox_id, actor=f"job:{job.id}")
+                await self.sessions.release(s, "job turn done (keep_minutes=0)")
+            job.sandbox_id = None
+            self._save(job)
             return
-        sb = self.fleet.get(job.sandbox_id)
-        sb.expires_at = now() + job.keep_minutes * 60
-        self.store.put(sb)
-        with contextlib.suppress(Exception):
-            await self.fleet.provider(sb.provider).set_expiry(sb, sb.expires_at)
+        self.sessions.touch(s, idle_minutes=job.keep_minutes)
 
     # ================================================================== reporting
     async def _report(self, job: Job) -> None:

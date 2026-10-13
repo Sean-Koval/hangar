@@ -97,3 +97,19 @@ def test_agent_output_tail_is_clipped():
     assert len(out) < 3000 and "chars clipped" in out and out.endswith("line 4")
     many = _clip_tail("\n".join("y" * 1500 for _ in range(100)))
     assert len(many) <= 24100 and many.startswith("[")
+
+
+def test_every_agent_harness_can_resume():
+    """Spec 0010: sessions resume the harness's own conversation. Verified CLIs: claude 2.x, codex 0.162, pi 1.1,
+    agy 1.3.3 (`--conversation <id>`, id from the stream-json init event)."""
+    import re as _re
+
+    for name in ("claude-code", "codex", "pi", "antigravity"):
+        h = HARNESSES[name]
+        assert h.resume in ("preset", "capture") and h.session_dirs and h.resume_hint, name
+        assert "$HANGAR_SESSION_RESUME" in h.run, name
+        if h.resume == "capture":
+            assert h.session_id_regex
+    agy = HARNESSES["antigravity"]
+    init = '{"event":"init","conversation_id":"b6ad8358-0824-45b8-b4a2-a8bc956d00dc","init":{"cwd":"/w"}}'
+    assert _re.search(agy.session_id_regex, init).group(1) == "b6ad8358-0824-45b8-b4a2-a8bc956d00dc"

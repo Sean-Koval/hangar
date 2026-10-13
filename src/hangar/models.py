@@ -212,6 +212,7 @@ class Job(BaseModel):
     reason: str | None = None
     cancel_requested: bool = False
     sandbox_id: str | None = None
+    session_id: str | None = None  # the session that carries this job's sandbox, conversation and checkpoints
     turns: list[Turn] = Field(default_factory=list)
     result: JobResult = Field(default_factory=JobResult)
     events: list[JobEvent] = Field(default_factory=list)
@@ -278,7 +279,9 @@ class Session(BaseModel):
     turns: list[SessionTurn] = Field(default_factory=list)
     checkpoints: list[Checkpoint] = Field(default_factory=list)
     idle_minutes: int = 30
-    job_id: str | None = None
+    job_id: str | None = None  # set when the session carries a job (spec 0009/0010 M2)
+    provider: str | None = None
+    extra_dirs: list[str] = Field(default_factory=list)  # more $HOME-relative paths to checkpoint (job context)
     labels: dict[str, str] = Field(default_factory=dict)
     created_at: float = Field(default_factory=now)
     last_active_at: float = Field(default_factory=now)
