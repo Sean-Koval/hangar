@@ -541,8 +541,8 @@ class SessionService:
         timeout = int(max(30, min(600, self.settings.pre_destroy_timeout_seconds - 30)))
         res = await self._sh(sb, " && ".join(script[:1]) + "; " + "; ".join(script[1:]), timeout=timeout)
         _, prov = self.fleet._running(sb.id)
-        fp = (await prov.read_file(sb, f"{c}/fingerprint") or b"").decode().strip() or None
-        head = (await prov.read_file(sb, f"{c}/head") or b"").decode().strip() or None
+        fp = (await prov.read_file(sb, f"{c}/fingerprint", limit=4096) or b"").decode(errors="replace").strip() or None
+        head = (await prov.read_file(sb, f"{c}/head", limit=4096) or b"").decode(errors="replace").strip() or None
         if (reason == "interval" or skip_unchanged) and last and fp and fp == last.fingerprint:
             self._last_checked[s.id] = now()  # nothing changed; don't re-run the whole thing every minute
             return None
@@ -564,9 +564,12 @@ class SessionService:
                     ck.warnings.append(f"{part} is {sizes[part] // 1024 // 1024} MB, over the "
                                        f"{cap // 1024 // 1024} MB limit; not checkpointed")
                     continue
-                data = await prov.read_file(sb, f"{c}/{part}")
+                data = await prov.read_file(sb, f"{c}/{part}", limit=cap)
                 if data is None:
                     ck.warnings.append(f"could not read {part}")
+                    continue
+                if len(data) > cap:  # the size above came from `stat` in the sandbox, which the agent can redefine
+                    ck.warnings.append(f"{part} is over the {cap // 1024 // 1024} MB limit; not checkpointed")
                     continue
                 blob = await asyncio.to_thread(self.vault.encrypt, data)
                 await self.blobs.put(f"{key}/{part}.enc", blob)
@@ -836,7 +839,10 @@ class SessionService:
             sb = self.fleet.get(s.sandbox_id)
             _, prov = self.fleet._running(sb.id)
             rlog = f"/home/{self.settings.sandbox_user}/.hangar/runs/{turn.run_id}.log"
-            raw = (await prov.read_file(sb, rlog) or b"")[-2_000_000:].decode(errors="replace")
+            # The log's end, never all of it: the agent decides how big it gets.
+            await self._sh(sb, f"tail -c 2000000 {shlex.quote(rlog)} > {shlex.quote(rlog)}.tail")
+            raw = (await prov.read_file(sb, f"{rlog}.tail", limit=2_000_000) or b"")[-2_000_000:].decode(
+                errors="replace")
             turn.summary = self.fleet.broker.redact(extract_summary(turn.harness, raw) or "") or None
             await self._record_conversation(s, sb, turn, raw)
         except Exception as e:  # noqa: BLE001 - the work is in the sandbox; don't lose the turn over its log

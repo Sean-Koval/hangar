@@ -22,6 +22,7 @@ import pytest
 from hangar import exchange
 from hangar.gateway import FLUSH, pkt
 from hangar.models import Session
+from tests.test_exchange import settle, svc, world  # noqa: F401 - fixtures
 from tests.test_gateway_git import _box, _git, gw, upstream  # noqa: F401 - fixtures
 
 ZERO = "0" * 40
@@ -325,6 +326,53 @@ def test_untracked_archive_cannot_fill_the_requesters_disk(tmp_path, monkeypatch
 
 
 # ============================================================================ review of #48 (second pass)
+# An agent whose ~/.hangar/env (sourced by every command hangar runs) makes `stat` and `find` report 1 byte, then
+# leaves files over every cap. Hangar checked sizes with those commands, then read the files whole into memory.
+LIAR = r"""#!/usr/bin/env bash
+cat >> "$HOME/.hangar/env" <<'EOF'
+stat() { local f=""; [ "$1" = -c ] && { f="$2"; shift 2; }; for a in "$@"; do
+  if [ "$f" = "%s %n" ]; then echo "1 $a"; else echo 1; fi; done; }
+find() { command find "$@" | tr '\0' '\n' | sed -E 's/^[0-9]+ /1 /' | tr '\n' '\0'; }
+EOF
+head -c 3000000 /dev/zero > "$HANGAR_IO/out/artifacts/big.bin"
+printf '"%s"' "$(head -c 3000000 /dev/zero | tr '\0' a)" > "$HANGAR_IO/out/result.json"
+head -c 3000000 /dev/urandom > untracked-big.bin
+echo '{"type":"result","result":"done"}'
+"""
+
+
+async def test_sizes_reported_by_the_sandbox_do_not_bound_what_hangar_reads(svc, world, fleet, monkeypatch):  # noqa: F811
+    from hangar.harnesses import HARNESSES, Harness
+    from hangar.sessions import NewSession
+
+    agent = world["root"] / "liar.sh"
+    agent.write_text(LIAR)
+    monkeypatch.setitem(HARNESSES, "liar", Harness(name="liar", title="Liar", run=f"bash {agent}"))
+    (world["envs"] / "liar.yaml").write_text("name: liar\nharnesses: [liar]\n")
+    fleet.catalog.reload()
+    svc.settings.exchange_max_artifact_mb = 1
+    svc.settings.exchange_max_result_kb = 1024
+    svc.settings.session_max_untracked_mb = 1
+    reads: list[tuple[str, int | None, int]] = []
+    prov = fleet.providers["docker"]
+    real = prov.read_file
+
+    async def spy(sb, path, limit=None):
+        data = await real(sb, path, limit)
+        reads.append((path, limit, len(data or b"")))
+        return data
+
+    monkeypatch.setattr(prov, "read_file", spy)
+    svc.new(NewSession(name="liar", environment="liar", repo=world["url"], message="go"), owner="admin",
+            requester="sean")
+    s = await settle(svc, "liar")
+    t = s.turns[0]
+    assert not t.artifacts and any("big.bin" in w and "limit" in w for w in t.warnings), t.warnings
+    assert t.result is None and "limit" in (t.result_error or ""), t.result_error
+    ck = s.checkpoints[-1]
+    assert "untracked.tgz" not in ck.parts and any("untracked.tgz" in w for w in ck.warnings), ck.warnings
+    big = [(p, n) for p, _, n in reads if n > 1_100_000]
+    assert not big, f"read whole from the sandbox: {big}"
 async def test_idle_connections_cannot_lock_other_sandboxes_out(fleet):
     """uvicorn's limit_concurrency counts open connections, including ones that never send a request (there is no
     header timeout), and answers everyone 503 past it. So one sandbox holding a few hundred idle sockets locked
@@ -399,3 +447,65 @@ async def test_pattern_cannot_squat_a_queued_jobs_branch(fleet, gw, upstream, st
     assert "job-abcd1234" not in upstream.refs()
     res = await fleet.exec(sb.id, "git push -q origin HEAD:refs/heads/hangar/job-done0000-followup")
     assert res.exit_code == 0, res.stderr
+
+
+class _Flood:
+    """An exec websocket whose command prints `frames` chunks of stdout (Kubernetes provider)."""
+
+    def __init__(self, chunks: list[str]):
+        self.chunks, self.returncode = chunks, None
+
+    def update(self, timeout=0):
+        pass
+
+    def is_open(self):
+        return bool(self.chunks)
+
+    def peek_stdout(self):
+        return bool(self.chunks)
+
+    def read_stdout(self):
+        chunk = self.chunks.pop()
+        if not self.chunks:
+            self.returncode = 0
+        return chunk
+
+    def peek_stderr(self):
+        return False
+
+    def close(self):
+        pass
+
+
+async def test_kubernetes_exec_and_reads_keep_bounded_output(monkeypatch):
+    """The Kubernetes provider kept every byte a command printed, then cut it to the last 256 KB."""
+    import tracemalloc
+
+    import hangar.providers.kubernetes as k
+    from hangar.models import Sandbox
+    from tests.test_kubernetes import provider
+
+    p = provider()
+    p.core = type("Core", (), {"connect_get_namespaced_pod_exec": None})()
+    sb = Sandbox(name="a", environment="py", provider="kubernetes", info={"pod": "pod-1"})
+    chunk = "a" * (1 << 20)
+    monkeypatch.setattr(k, "k8s_stream", lambda fn, pod, ns, **kw: _Flood([chunk] * 200))
+    tracemalloc.start()
+    try:
+        res = await p.exec(sb, "yes")
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert res.exit_code == 0 and res.truncated and len(res.stdout) == k.MAX_OUTPUT
+    assert peak < 32 * 1024 * 1024, f"exec held {peak // 1024 // 1024} MB"
+
+    def head(fn, pod, ns, **kw):  # a real `head -c N | base64`
+        n = int(kw["command"][-1].split("head -c ")[1].split()[0])
+        return _Flood([base64.b64encode(b"x" * min(n, 5000)).decode()])
+
+    monkeypatch.setattr(k, "k8s_stream", head)
+    assert await p.read_file(sb, "/home/agent/f", limit=100) == b"x" * 101
+    assert await p.read_file(sb, "/home/agent/f", limit=10_000) == b"x" * 5000
+    # something in the sandbox that isn't head: more than head prints is refused, not decoded
+    monkeypatch.setattr(k, "k8s_stream", lambda fn, pod, ns, **kw: _Flood([chunk] * 3))
+    assert await p.read_file(sb, "/home/agent/f", limit=100) is None

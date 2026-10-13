@@ -172,7 +172,9 @@ async def install_helper(prov, sb: Sandbox, home: str) -> None:
 
 async def _ensure_on_path(prov, sb: Sandbox, home: str) -> None:
     """Sandboxes started before the helper existed: add ~/.hangar/bin to ~/.hangar/env."""
-    env = await prov.read_file(sb, f"{home}/.hangar/env") or b""
+    env = await prov.read_file(sb, f"{home}/.hangar/env", limit=MB) or b""
+    if len(env) > MB:  # the agent's to grow; don't hold (or rewrite) a runaway one
+        return
     if PATH_LINE.encode() not in env:
         await prov.write_file(sb, f"{home}/.hangar/env", PATH_LINE.encode() + b"\n" + env, mode=0o600)
 
@@ -500,10 +502,8 @@ async def _read_out(svc: SessionService, s: Session, turn: SessionTurn, sb: Sand
     async def text(name: str, limit: int) -> str:
         if name not in sizes:
             return ""
-        if sizes[name] <= limit:
-            data = await prov.read_file(sb, f"{io_path}/{name}") or b""
-        else:
-            data = (await svc._sh(sb, f"head -c {limit} {shlex.quote(f'{io_path}/{name}')}")).stdout.encode()
+        # The read itself is capped: the sizes above come from commands the agent's ~/.hangar/env can redefine.
+        data = await prov.read_file(sb, f"{io_path}/{name}", limit=limit) or b""
         return data.decode(errors="replace").strip()[:limit]
 
     if summary := await text("RESULT.md", 8000):
@@ -521,7 +521,10 @@ async def _read_out(svc: SessionService, s: Session, turn: SessionTurn, sb: Sand
     if sizes["out/result.json"] > cap:
         turn.result_error = f"out/result.json is {sizes['out/result.json']} bytes; the limit is {cap}"
         return
-    raw = await prov.read_file(sb, f"{io_path}/out/result.json") or b""
+    raw = await prov.read_file(sb, f"{io_path}/out/result.json", limit=cap) or b""
+    if len(raw) > cap:
+        turn.result_error = f"out/result.json is over the limit of {cap} bytes"
+        return
     try:
         data = json.loads(raw)
     except ValueError as e:
@@ -644,9 +647,17 @@ async def _collect_artifacts(svc: SessionService, s: Session, turn: SessionTurn,
         if total + size > max_total:
             turn.warnings.append(f"artifact {path} would take the turn over {max_total // MB} MB; skipped it")
             continue
-        data = await prov.read_file(sb, f"{base}/{path}")
+        data = await prov.read_file(sb, f"{base}/{path}", limit=max_file)
         if data is None:
             continue
+        # The size above is what `find` printed, which the agent's ~/.hangar/env can redefine; the read is capped.
+        if len(data) > max_file:
+            turn.warnings.append(f"artifact {path} is over the {max_file // MB} MB limit; skipped it")
+            continue
+        if total + len(data) > max_total:
+            turn.warnings.append(f"artifact {path} would take the turn over {max_total // MB} MB; skipped it")
+            continue
+        size = len(data)
         sha = hashlib.sha256(data).hexdigest()
         if seen.get(path) == sha:
             continue  # handed back in an earlier turn and unchanged

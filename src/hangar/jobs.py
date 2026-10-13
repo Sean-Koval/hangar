@@ -751,7 +751,7 @@ class JobService:
             return
         prov_sb = self.fleet.get(job.sandbox_id)
         _, prov = self.fleet._running(job.sandbox_id)
-        raw = await prov.read_file(prov_sb, f"{self._ctxdir(job)}/RESULT.md")
+        raw = await prov.read_file(prov_sb, f"{self._ctxdir(job)}/RESULT.md", limit=32_000)  # agent-written
         red = self.broker.redact
         summary = red(raw.decode(errors="replace").strip()[:8000]) if raw else ""
         turn.summary = summary or None

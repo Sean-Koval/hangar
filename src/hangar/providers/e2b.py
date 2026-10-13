@@ -218,13 +218,28 @@ class E2BProvider(Provider):
                           duration_ms=int((time.monotonic() - t0) * 1000),
                           truncated=len(out) > MAX_OUTPUT or len(err) > MAX_OUTPUT)
 
-    async def read_file(self, sandbox, path) -> bytes | None:
+    async def read_file(self, sandbox, path, limit=None) -> bytes | None:
         sbx = await self._sbx(sandbox)
+        user = self.settings.sandbox_user
+
+        def _read() -> bytes:
+            if limit is None:
+                return bytes(sbx.files.read(path, format="bytes", user=user))
+            out = bytearray()  # streamed (e2b>=2.50), so a file bigger than the cap is never held whole
+            stream = sbx.files.read(path, format="stream", user=user)
+            try:
+                for chunk in stream:
+                    out += chunk[:limit + 1 - len(out)]
+                    if len(out) > limit:
+                        break
+            finally:
+                stream.close()
+            return bytes(out)
+
         try:
-            data = await asyncio.to_thread(sbx.files.read, path, format="bytes", user=self.settings.sandbox_user)
+            return await asyncio.to_thread(_read)
         except Exception:  # noqa: BLE001
             return None
-        return bytes(data)
 
     async def write_file(self, sandbox, path, data, mode=0o644) -> None:
         sbx = await self._sbx(sandbox)

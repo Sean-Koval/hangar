@@ -32,7 +32,7 @@ from hangar.envspec import BuildContext, EnvSpec
 from hangar.harnesses import PACK_ROOT
 from hangar.models import ExecResult, Sandbox, SandboxState
 from hangar.providers._build import docker_available, docker_build, run_cli
-from hangar.providers.base import Capabilities, LogFn, Provider, ProviderError, TerminalStream
+from hangar.providers.base import Capabilities, LogFn, OutputTail, Provider, ProviderError, TerminalStream
 
 try:
     from kubernetes import client, config
@@ -407,23 +407,27 @@ class KubernetesProvider(Provider):
         return out
 
     # ------------------------------------------------------------------ I/O
-    def _exec_blocking(self, pod: str, argv: list[str], timeout: int) -> tuple[int, str, str]:
+    def _exec_blocking(self, pod: str, argv: list[str], timeout: int,
+                       keep: int | None = 2 * MAX_OUTPUT) -> tuple[int, str, str]:
+        """Only the last `keep` characters of each stream are kept (None: all of them, for hangar's own uploads
+        and reads): the sandbox decides how much its commands print."""
         ws = k8s_stream(self.core.connect_get_namespaced_pod_exec, pod, self.ns, container=CONTAINER,
                         command=argv, stderr=True, stdin=False, stdout=True, tty=False,
                         _preload_content=False)
-        out, err = [], []
+        big = 1 << 62
+        out, err = OutputTail(keep or big, ""), OutputTail(keep or big, "")
         try:
             deadline = time.monotonic() + timeout + 10
             while ws.is_open() and time.monotonic() < deadline:
                 ws.update(timeout=1)
                 if ws.peek_stdout():
-                    out.append(ws.read_stdout())
+                    out.add(ws.read_stdout())
                 if ws.peek_stderr():
-                    err.append(ws.read_stderr())
+                    err.add(ws.read_stderr())
             code = ws.returncode
         finally:
             ws.close()
-        return (code if code is not None else -1), "".join(out), "".join(err)
+        return (code if code is not None else -1), out.value(), err.value()
 
     async def exec(self, sandbox, command, timeout=120, cwd=None, user=None) -> ExecResult:
         pod = await self._pod(sandbox)
@@ -441,11 +445,18 @@ class KubernetesProvider(Provider):
         return ExecResult(exit_code=code, stdout=out[-MAX_OUTPUT:], stderr=err[-MAX_OUTPUT:],
                           duration_ms=int((time.monotonic() - t0) * 1000), truncated=trunc)
 
-    async def read_file(self, sandbox, path) -> bytes | None:
+    async def read_file(self, sandbox, path, limit=None) -> bytes | None:
         pod = await self._pod(sandbox)
+        q = shlex.quote(path)
+        if limit is None:
+            code, out, _ = await asyncio.to_thread(
+                self._exec_blocking, pod, ["sh", "-c", f"base64 -w0 {q}"], 300, None)
+            return base64.b64decode(out) if code == 0 else None
+        want = 4 * ((limit + 3) // 3)  # base64 of limit + 1 bytes
         code, out, _ = await asyncio.to_thread(
-            self._exec_blocking, pod, ["sh", "-c", f"base64 -w0 {shlex.quote(path)}"], 300)
-        if code != 0:
+            self._exec_blocking, pod, ["sh", "-c", f"[ -f {q} ] && head -c {limit + 1} {q} | base64 -w0"], 300,
+            want + 16)
+        if code != 0 or len(out) > want:  # more than head prints: something in the sandbox isn't head
             return None
         return base64.b64decode(out)
 

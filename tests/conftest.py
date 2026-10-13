@@ -116,9 +116,12 @@ class FakeProvider(Provider):
                            cwd=str(self._map(sandbox, cwd)) if cwd and self._map(sandbox, cwd).exists() else str(box))
         return ExecResult(exit_code=p.returncode, stdout=p.stdout, stderr=p.stderr)
 
-    async def read_file(self, sandbox, path):
+    async def read_file(self, sandbox, path, limit=None):
         p = self._map(sandbox, path)
-        return p.read_bytes() if p.is_file() else None
+        if not p.is_file():
+            return None
+        with p.open("rb") as f:
+            return f.read() if limit is None else f.read(limit + 1)
 
     async def write_file(self, sandbox, path, data, mode=0o644):
         p = self._map(sandbox, path)
