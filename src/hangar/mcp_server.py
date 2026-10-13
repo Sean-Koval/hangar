@@ -413,8 +413,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             with send_to_session or open_session. `context`: attachments for the first turn, including your local
             work ({"kind": "patch"} uncommitted changes, {"kind": "bundle", "base_commit": ...} unpushed commits).
             `output_schema`: JSON Schema for a structured result. `budget` caps each agent turn:
-            {"max_minutes": 30, "max_tokens": 2000000, "max_cost_usd": 5}. `approvals`: ask = you approve the
-            agent's tool calls (wait_for_turn asks you), deny-risky, or auto. Then call wait_for_turn(name)."""
+            {"max_minutes": 30, "max_tokens": 2000000, "max_cost_usd": 5}. `approvals`: ask (you approve tool
+            calls) | deny-risky | auto. Then call wait_for_turn(name)."""
             who = current_actor.get()
             req = NewSession(name=name, environment=environment, repo=repo, message=message, harness=harness,
                              model=model, base_branch=base_branch, idle_minutes=idle_minutes,

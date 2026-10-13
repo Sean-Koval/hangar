@@ -88,10 +88,9 @@ def register(mcp: Any, tool: Any, sessions: Any, jobs: Any, caller: Any) -> None
 
     @tool()
     async def steer_turn(ref: str, message: str | None = None, interrupt: bool = False) -> dict[str, Any]:
-        """Steer a running agent turn (`ref`: a job id or a session name). `message` alone is folded into the
-        turn: the agent reads it at its next step. `interrupt=true` stops the turn (outcome interrupted); with a
-        `message`, the agent carries on with that instead. Claude Code and Codex turns take both; other harnesses
-        take interrupts only."""
+        """Steer a running turn (`ref`: job id or session name). A `message` is folded into it; the agent reads it
+        at its next step. `interrupt=true` stops the turn, or with a `message`, has the agent switch to that. pi
+        and agy turns take interrupts only."""
         s, _ = exchange.resolve(sessions, jobs, ref)
         if interrupt:
             st = await steering.interrupt(sessions, s, caller(), message)
@@ -101,9 +100,8 @@ def register(mcp: Any, tool: Any, sessions: Any, jobs: Any, caller: Any) -> None
 
     @tool()
     async def answer_approval(ref: str, approval: str, decision: str, message: str | None = None) -> dict[str, Any]:
-        """Answer a tool call the agent waits on (`pending_approvals` on get_session / get_job, under the `ask`
-        policy). `decision`: allow, deny, or allow_always (also allow this kind of call for the rest of the
-        agent's conversation). `message` is sent to the agent with a denial."""
+        """Answer a tool call the agent waits on (`pending_approvals` on get_session/get_job): `decision` allow |
+        deny | allow_always (for the rest of its conversation). `message` goes to the agent."""
         s, _ = exchange.resolve(sessions, jobs, ref)
         a = await steering.answer(sessions, s, approval, decision, caller(), message)
         return a.model_dump(mode="json")
