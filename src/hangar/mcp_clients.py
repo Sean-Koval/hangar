@@ -57,7 +57,10 @@ CLIENTS: dict[str, Client] = {c.name: c for c in (
            "Start a new Claude Code session; `claude mcp get {name}` shows the connection."),
     Client("codex", "Codex", "codex", True, "run `codex mcp login {name}`",
            "Start a new Codex session; `codex mcp get {name}` shows the entry."),
-    Client("cursor", "Cursor", "cursor", True, "open Cursor Settings → MCP and sign in to {name}",
+    # integrate (#50): Cursor registers cursor://anysphere.cursor-mcp/..., a host hangar allows only when listed
+    Client("cursor", "Cursor", "cursor", True, "make sure HANGAR_OAUTH_REDIRECT_HOSTS lists anysphere.cursor-mcp "
+           "(Cursor's redirect host; `hangar config set` it and restart), then open Cursor Settings → MCP and sign "
+           "in to {name}",
            "Cursor picks it up in Settings → MCP (toggle the server if it was already listed)."),
     Client("vscode", "VS Code", "code", False, "",
            "VS Code picks it up from its user mcp.json; start the server from the MCP: List Servers command."),

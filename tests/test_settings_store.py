@@ -109,4 +109,6 @@ def test_settings_read_at_startup_say_so():
     from hangar.settings_store import needs_restart
 
     assert needs_restart("sandbox_user") and needs_restart("events_max_mb")
+    # integrate: #52's transport mode is fixed when the app is built; #50's limits are read on every request
+    assert needs_restart("mcp_stateless_http") and not needs_restart("job_rate_per_minute")
     assert not needs_restart("job_keep_minutes") and not needs_restart("github_repos")

@@ -44,7 +44,8 @@ REFUSED: dict[str, str] = {
 # Read once at startup (providers, listeners, OAuth, worker pools): a change applies after the next restart.
 _RESTART = ("public_url", "oauth_", "env_dirs", "image_prefix", "registry", "extra_ca_bundle", "default_provider",
             "enabled_providers", "docker_", "k8s_", "e2b_", "gateway_", "a2a_", "job_concurrency", "session_store",
-            "prebuild_environments", "github_api_url", "sandbox_user", "events_max_mb")
+            "prebuild_environments", "github_api_url", "sandbox_user", "events_max_mb",
+            "mcp_stateless_http")  # integrate: #52's MCP transport mode is chosen when the app is built
 
 
 class SettingError(ValueError):
