@@ -3,3 +3,9 @@ region           = "us-central1"
 zone             = "us-central1-a"
 domain           = "hangar.example.com"
 enable_kata_pool = false
+
+# Nodes off 1 AM - 10 AM (deploy/gke/power.sh on Cloud Scheduler)
+# enable_power_schedule = true
+# power_up_cron         = "0 10 * * *"
+# power_down_cron       = "0 1 * * *"
+# power_time_zone       = "America/New_York"

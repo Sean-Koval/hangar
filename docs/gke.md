@@ -124,6 +124,35 @@ curl -s -m 5 -H 'Metadata-Flavor: Google' \
   http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token
 ```
 
+## 6. Turning it off at night (optional)
+
+`deploy/gke/power.sh` scales every node pool to zero and back. Nothing is deleted: the control plane's disk, images, session checkpoints and the IP stay, so the same hangar comes back at the same URL.
+
+```bash
+bash deploy/gke/power.sh down     # suspend sessions (each checkpoints), stop hangar, 0 nodes
+bash deploy/gke/power.sh up       # node pools back to their autoscaling ranges, start hangar (~3-5 min)
+bash deploy/gke/power.sh status
+```
+
+`down` waits up to 10 minutes for running agent turns to finish; anything still running resumes from its last checkpoint. Each pool's autoscaling range is saved as a label on the cluster, and `up` restores it.
+
+To run it on a schedule, set these in `terraform.tfvars` and run `terraform apply`:
+
+```hcl
+enable_power_schedule = true
+power_up_cron         = "0 10 * * *"   # 10 AM
+power_down_cron       = "0 1 * * *"    # 1 AM
+power_time_zone       = "America/New_York"
+```
+
+This creates two Cloud Run jobs (`hangar-power-up`, `hangar-power-down`) that run the same script, Cloud Scheduler entries that start them, and a `hangar-power` service account with `roles/container.admin`. To run one by hand: `gcloud run jobs execute hangar-power-up --region <region> --wait`.
+
+While it's down, you pay for disks, images, the bucket and the load balancer, not nodes. GKE's free tier covers the management fee of one zonal cluster per billing account. The URL returns 502 until `up` finishes.
+
+Two things to know:
+- `terraform apply` while it's down turns autoscaling back on, so the system pool starts a node. Run `power.sh up` first, or `power.sh down` again after.
+- `deploy/gke/up.sh` while it's down sets hangar back to one replica, but it won't start until `power.sh up` brings the nodes back.
+
 ## Notes
 
 - **Network.** The default SandboxTemplate network policy allows egress to the public internet only, and blocks RFC1918 ranges and the metadata server. Agents can reach GitHub and package registries but not your VPC.
