@@ -18,6 +18,7 @@ from hangar.store import Store
 PREFIX = "hgr_"
 # admin: everything; jobs: only /api/jobs* (service callers); mcp: only /mcp; metrics: only GET /metrics (--- observe)
 SCOPES = ("admin", "jobs", "mcp", "metrics")
+SCOPES += ("sandboxes",)  # --- e2b-api: only the E2B-compatible API (/e2b) for the sandboxes it creates
 _RESERVED_NAMES = {"admin", "system"}
 
 

@@ -86,6 +86,22 @@ class Settings(BaseSettings):
     envd: Literal["auto", "off"] = "auto"  # auto: Docker and Kubernetes sandboxes use it when it can be reached
     envd_dir: Path | None = None  # holds hangar-envd-<arch>; default /usr/local/lib/hangar, then envd/dist
 
+    # --- e2b-api: E2B-compatible API and sandbox URLs for the e2b SDKs (docs/e2b.md) ---
+    e2b_api_path: str = "/e2b"  # where the control API is mounted; "" turns the API and sandbox routing off
+    # What E2B clients set as E2B_DOMAIN: the API also answers at api.<domain>, sandboxes at <port>-<id>.<domain>.
+    e2b_api_domain: str | None = None
+    e2b_templates: dict[str, str] = Field(default_factory=dict)  # E2B template name -> environment, e.g. base
+    # Environments a `sandboxes` token gets with their credentials, secrets and gateway grant (admin tokens always
+    # do). Any other environment is created for such tokens with no credentials, or refused if it needs secrets.
+    e2b_trusted_environments: list[str] = Field(default_factory=list)
+    e2b_max_timeout_seconds: int = 86400  # E2B's own limit (24 h on Pro)
+    e2b_max_sandboxes_per_owner: int = 20  # running and paused, per `sandboxes` token; 0 = off
+    e2b_rate_per_minute: float = 600  # control API requests per `sandboxes` token (a token bucket); 0 = off
+    e2b_rate_burst: int = 120
+    e2b_create_per_minute: float = 30  # sandbox creations per `sandboxes` token
+    e2b_create_burst: int = 10
+    e2b_max_streams_per_sandbox: int = 256  # requests in flight through the sandbox router, per sandbox
+
     # --- fleet defaults -----------------------------------------------------
     default_ttl_minutes: int = 240
     max_sandboxes: int = 50

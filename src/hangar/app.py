@@ -305,6 +305,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await h.jobs.stop()
         await h.sessions.stop()
         await h.fleet.gateway.stop()  # workstream F
+        if e2b := getattr(app.state, "e2b", None):  # --- e2b-api
+            await e2b.close()
         await h.fleet.stop()
         await observe.stop()  # --- observe: flush spans
 
@@ -331,6 +333,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.router.routes.insert(i, r)
     if a2a:
         a2a.mount(app)  # /.well-known/agent-card.json and JSON-RPC at /a2a (docs/a2a.md)
+    # --- e2b-api: the E2B-compatible API at HANGAR_E2B_API_PATH, and sandbox URLs in front of everything (docs/e2b.md)
+    if h.settings.e2b_api_path:
+        from hangar.e2b_api import E2BService, build_api
+        from hangar.sandbox_router import SandboxRouter
+
+        app.state.e2b = E2BService(h)
+        app.mount(h.settings.e2b_api_path.rstrip("/"), build_api(app.state.e2b))
+        app.add_middleware(SandboxRouter, svc=app.state.e2b)  # outermost: sandbox traffic skips the body caps
 
     @app.exception_handler(FleetError)
     @app.exception_handler(CredentialError)
