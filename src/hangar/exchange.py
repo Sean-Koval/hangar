@@ -478,29 +478,41 @@ async def after_turn(svc: SessionService, s: Session, turn: SessionTurn, outcome
 async def _read_out(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbox) -> None:
     settings, red = svc.settings, svc.fleet.broker.redact
     io_path = io_dir(settings, s)
-    _, prov = svc.fleet._running(sb.id)
-    summary = await prov.read_file(sb, f"{io_path}/RESULT.md")
-    if summary and summary.strip():
-        turn.summary = red(summary.decode(errors="replace").strip()[:8000])
-    question = await prov.read_file(sb, f"{io_path}/out/QUESTION.md")
-    q = question.decode(errors="replace").strip() if question else ""
-    turn.question = red(q[:MAX_QUESTION]) or None
-    progress = await prov.read_file(sb, f"{io_path}/out/progress.jsonl")
-    if progress:
-        for ln in reversed(progress.decode(errors="replace").splitlines()[-200:]):
-            if (ev := _progress_line(ln)) is not None:
-                turn.progress = red(ev)
-                break
-    raw = await prov.read_file(sb, f"{io_path}/out/result.json")
-    turn.result, turn.result_error = None, None
     cap = settings.exchange_max_result_kb * 1024
-    if raw is None:
+    # Sizes first: the agent wrote these files, so read only what we will keep (never a runaway file whole).
+    res = await svc._sh(sb, f"cd {shlex.quote(io_path)} || exit 0; for f in RESULT.md out/QUESTION.md "
+                            "out/result.json; do [ -f \"$f\" ] && echo \"$(stat -c %s \"$f\") $f\"; done; "
+                            "echo ---; [ -f out/progress.jsonl ] && tail -n 200 out/progress.jsonl; true", timeout=60)
+    head, _, progress = res.stdout.partition("---\n")
+    sizes = {name: int(size) for size, _, name in (ln.partition(" ") for ln in head.splitlines())
+             if size.isdigit()}
+    _, prov = svc.fleet._running(sb.id)
+
+    async def text(name: str, limit: int) -> str:
+        if name not in sizes:
+            return ""
+        if sizes[name] <= limit:
+            data = await prov.read_file(sb, f"{io_path}/{name}") or b""
+        else:
+            data = (await svc._sh(sb, f"head -c {limit} {shlex.quote(f'{io_path}/{name}')}")).stdout.encode()
+        return data.decode(errors="replace").strip()[:limit]
+
+    if summary := await text("RESULT.md", 8000):
+        turn.summary = red(summary)
+    turn.question = red(await text("out/QUESTION.md", MAX_QUESTION)) or None
+    for ln in reversed(progress.splitlines()):
+        if (ev := _progress_line(ln)) is not None:
+            turn.progress = red(ev)
+            break
+    turn.result, turn.result_error = None, None
+    if "out/result.json" not in sizes:
         if turn.output_schema:
             turn.result_error = "the agent wrote no result (out/result.json)"
         return
-    if len(raw) > cap:
-        turn.result_error = f"out/result.json is {len(raw)} bytes; the limit is {cap}"
+    if sizes["out/result.json"] > cap:
+        turn.result_error = f"out/result.json is {sizes['out/result.json']} bytes; the limit is {cap}"
         return
+    raw = await prov.read_file(sb, f"{io_path}/out/result.json") or b""
     try:
         data = json.loads(raw)
     except ValueError as e:
@@ -592,7 +604,8 @@ async def _collect_artifacts(svc: SessionService, s: Session, turn: SessionTurn,
     settings = svc.settings
     n = _turn_no(s, turn)
     base = f"{io_dir(settings, s)}/out/artifacts"
-    res = await svc._sh(sb, f"cd {shlex.quote(base)} 2>/dev/null || exit 0; "
+    b = shlex.quote(base)
+    res = await svc._sh(sb, f"[ -L {b} ] && {{ printf 'L .\\0'; exit 0; }}; cd {b} 2>/dev/null || exit 0; "
                             "find . -type l -printf 'L %P\\0'; find . -type f -printf '%s %P\\0'", timeout=60)
     entries: list[tuple[int, str]] = []
     for rec in res.stdout.split("\0"):
@@ -693,12 +706,16 @@ def download_headers(a: Artifact) -> tuple[str, dict[str, str]]:
 
 def inline(a: Artifact, data: bytes, max_bytes: int) -> dict[str, Any]:
     """An artifact for an MCP client: text inline, binary as base64, both capped."""
-    d: dict[str, Any] = {**a.model_dump(mode="json"), "truncated": len(data) > max_bytes}
+    truncated = len(data) > max_bytes
+    d: dict[str, Any] = {**a.model_dump(mode="json"), "truncated": truncated}
     data = data[:max_bytes]
     try:
         d["text"] = data.decode("utf-8")
-    except UnicodeDecodeError:
-        d["base64"] = base64.b64encode(data).decode()
+    except UnicodeDecodeError as e:
+        if truncated and e.start >= len(data) - 3:  # text cut in the middle of a character
+            d["text"] = data[:e.start].decode("utf-8", errors="replace")
+        else:
+            d["base64"] = base64.b64encode(data).decode()
     return d
 
 
@@ -909,6 +926,7 @@ def job_turn_io(job: Job, turn: Turn, st: SessionTurn, first: bool) -> None:
     code = [c for c in job.context if c.kind in CODE_KINDS] if first else []
     st.context = code + list(turn.context)
     st.output_schema = turn.output_schema or job.output_schema
+    st.outcome, st.summary, st.warnings = None, None, []  # a turn reused after a failed start begins clean
 
 
 def record_job_turn(job: Job, turn: Turn, st: SessionTurn) -> None:

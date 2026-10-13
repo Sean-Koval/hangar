@@ -378,7 +378,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             """Streams of work, most recently active first: name, state (idle | running | suspended ...), repo,
             branch and the agent's last summary."""
             keep = ("id", "name", "title", "state", "environment", "harness", "repo", "branch", "last_active_at",
-                    "last_summary", "sandbox_id")
+                    "last_summary", "sandbox_id", "needs_input")
             return [{k: v for k, v in sessions.view(s).items() if k in keep}
                     for s in sessions.list(include_archived=include_archived, limit=limit)]
 

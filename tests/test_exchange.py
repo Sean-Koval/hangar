@@ -255,6 +255,11 @@ async def test_repair_turn_for_an_invalid_result(svc, world):
     s = await settle(svc, "fix")
     assert s.turns[2].result is None and s.turns[2].result_error is None and not s.turns[2].repair_run_id
 
+    svc.settings.exchange_max_result_kb = 0  # an oversized result is refused without reading it
+    svc.send("fix", "TASK-BADRESULT big", requester="sean")
+    s = await settle(svc, "fix")
+    assert "the limit is 0" in s.turns[3].result_error
+
 
 async def test_session_question_then_answer_resumes(svc, world, fleet):
     svc.new(NewSession(name="ask", environment="xenv", repo=world["url"], message="TASK-ASK"), owner="admin",
@@ -324,6 +329,14 @@ async def test_validation():
         exchange.check_schema({"type": "nope"})
     assert exchange.validate({"ok": 1}, SCHEMA) == ["(root): 'files' is a required property",
                                                      "ok: 1 is not of type 'boolean'"]
+    from hangar.models import Artifact
+
+    a = Artifact(path="r.md", turn=1, size=4, sha256="x", media_type="text/markdown")
+    assert exchange.inline(a, "héé".encode(), 2) == {**a.model_dump(), "truncated": True, "text": "h"}
+    assert "base64" in exchange.inline(a, b"\x00\xff\xfe", 100)
+    html = Artifact(path="x.html", turn=1, size=1, sha256="x", media_type="text/html")
+    media, headers = exchange.download_headers(html)
+    assert media == "text/plain" and headers["Content-Disposition"].startswith("attachment")
 
 
 async def test_context_validation(svc, world):
