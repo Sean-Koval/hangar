@@ -21,6 +21,7 @@ from hangar.models import Budget, CredentialKind, JobState, SessionState
 from hangar.sessions import NewSession, SessionService
 from hangar.vault import Vault
 from tests.conftest import scratch_root
+from tests.test_gateway_git import gw, upstream  # noqa: F401 - fixtures
 from tests.test_jobs import Hooks
 
 pytestmark = pytest.mark.skipif(not shutil.which("tmux") or not shutil.which("git"), reason="needs tmux and git")
@@ -47,7 +48,7 @@ case "$msg" in
     spend 300; sleep "$(cat "$REPAIR_SLEEP" 2>/dev/null || echo 0)"
     hangar-agent result "{\"attempt\": $a}"; exit 0 ;;
   *TASK-ANSWER*)
-    echo B > choice.txt && git add choice.txt && git commit -qm "choose B"; spend 500
+    echo B >> choice.txt && git add choice.txt && git commit -qm "choose B"; spend 500
     hangar-agent done "Went with B"; exit 0 ;;
 esac
 case "$mode:$a" in
@@ -421,3 +422,64 @@ async def test_repair_run_is_counted_once_and_survives_a_restart(sessions, world
         assert again.view(s)["usage"]["input_tokens"] == 1300
     finally:
         await again.stop()
+
+
+# ---------------------------------------------------------------------------- best-of-N x the git gateway
+async def test_best_of_n_through_the_gateway_winner_losers_and_follow_ups_push(jobs, world, gw, upstream,  # noqa: F811
+                                                                               tmp_path):
+    from tests.test_gateway_git import PAT, _files_containing
+
+    jobs.fleet.catalog.add({"name": "gwseam", "harnesses": ["seam"], "credentials": ["gh-pat"],
+                            "credential_mode": "gateway",
+                            "repo": {"url": "https://github.com/acme/widgets.git", "branch": "main"}},
+                           save_dir=tmp_path)
+    jobs.settings.best_of_n_push_attempts = True
+    job = jobs.submit(SubmitJob(instructions="make fix.txt say good", repo="https://github.com/acme/widgets.git",
+                                environment="gwseam", verify="grep -q good fix.txt", strategy="best_of_n", n=2,
+                                deliver="branch"), Caller("svc", "svc"))
+    job = await until(jobs, job.id, SETTLED)
+    assert job.state == JobState.SUCCEEDED, [e.message for e in job.events]
+    refs = upstream.refs()
+    # the winner pushed the job branch and the loser its own attempt branch, each with only its own grant
+    assert f"refs/heads/{job.branch}\n" in refs and f"refs/heads/{job.branch}-attempt-2" in refs, refs
+    assert job.attempts[0].rank == 1 and job.attempts[1].pushed_branch == f"{job.branch}-attempt-2"
+    for a in job.attempts:
+        s = jobs.sessions.get(a.session_id)
+        if s.sandbox_id:
+            assert _files_containing(jobs.fleet.providers["docker"].boxes[s.sandbox_id], PAT) == []
+
+    # a follow-up in the winner's sandbox updates the job branch it created...
+    jobs.follow_up(job.id, "TASK-ANSWER", requester="svc")
+    job = await until(jobs, job.id, SETTLED)
+    assert job.state == JobState.SUCCEEDED and job.result.pushed, [e.message for e in job.events]
+    head = subprocess.run(["git", "--git-dir", str(upstream.root / "acme/widgets.git"), "log", "-1", "--format=%s",
+                           job.branch], capture_output=True, text=True).stdout.strip()
+    assert head == "choose B"
+    # ...and so does one in a fresh sandbox restored from the winner's checkpoint (its grant names the job branch)
+    await jobs.sessions.release(jobs.sessions.get(job.session_id), "test: free the sandbox")
+    jobs.follow_up(job.id, "TASK-ANSWER again", requester="svc")
+    job = await until(jobs, job.id, SETTLED)
+    assert job.state == JobState.SUCCEEDED, [e.message for e in job.events]
+    assert jobs.fleet.get(job.sandbox_id).info["git"]["push_refs"][0] == f"refs/heads/{job.branch}"
+    log = subprocess.run(["git", "--git-dir", str(upstream.root / "acme/widgets.git"), "log", "--format=%s",
+                          job.branch], capture_output=True, text=True).stdout.splitlines()
+    assert log[:2] == ["choose B", "choose B"], log
+
+
+# ---------------------------------------------------------------------------- surfaces read what jobs keep
+def test_surfaces_read_the_question_and_the_result_where_jobs_keep_them():
+    from hangar.a2a import _STATES, A2AServer
+    from hangar.models import Job, Turn
+    from hangar.slack import render
+
+    assert set(_STATES) == {s.value for s in JobState}  # no state silently falls back to "working"
+    job = Job(title="t", instructions="x", environment="e",
+              turns=[Turn(result={"ok": True}), Turn(kind="follow_up", message="more")])  # the follow-up is running
+    job.result.data = {"ok": True}
+    arts = A2AServer._artifacts(A2AServer.__new__(A2AServer), job)
+    assert [p["data"] for a in arts if a["name"] == "Structured result" for p in a["parts"]] == [{"ok": True}]
+    job.state, job.result.question, job.result.summary = JobState.NEEDS_INPUT, "A or B?", "half done"
+    assert exchange.open_question(job) == "A or B?"
+    assert "> A or B?" in render(job, "(fallback)", "note")
+    job.state = JobState.FAILED  # a question nobody waits on is not shown as one
+    assert exchange.open_question(job) is None

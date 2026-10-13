@@ -24,6 +24,7 @@ import httpx
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from hangar.exchange import open_question
 from hangar.github import parse_repo
 from hangar.jobs import NOTIFIERS, Caller, JobError, JobNotFound, JobService, SubmitJob
 from hangar.models import ContextItem, Credential, Job, now
@@ -230,21 +231,11 @@ def _cause(job: Job) -> str | None:
                  if not e.message.startswith(("failed", "succeeded", "cancelled", "delivering", "verifying"))), None)
 
 
-def _question(job: Job, body: str) -> str:
-    """The agent's question for a `needs_input` job (workstream E). Where E keeps it isn't settled yet, so look in
-    the likely places and fall back to the message hangar was about to post."""
-    turn = job.turns[-1] if job.turns else None
-    for v in (getattr(job, "question", None), getattr(turn, "question", None), getattr(job.result, "question", None),
-              job.result.summary):
-        if isinstance(v, str) and v.strip():
-            return v.strip()
-    return body.strip()
-
-
 def render(job: Job | None, body: str, kind: str) -> str:
     """Slack text for a job notification. `body` is GitHub-flavoured; the outcome report is rebuilt for Slack."""
     if job is not None and str(job.state) == "needs_input":
-        return (f"*Needs input*: hangar job `{job.id}` has a question.\n{_quote(escape(_question(job, body)), 2500)}\n"
+        q = open_question(job) or body  # --- interactions: the one place the question is read from
+        return (f"*Needs input*: hangar job `{job.id}` has a question.\n{_quote(escape(q), 2500)}\n"
                 "Reply in this thread to answer; the agent picks up where it left off.")
     if job is None or kind != "final":
         return _clip(re.sub(r"\*\*(.+?)\*\*", r"*\1*", escape(body)))

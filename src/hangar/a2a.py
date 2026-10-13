@@ -18,7 +18,6 @@ import asyncio
 import contextlib
 import hashlib
 import hmac
-import inspect
 import ipaddress
 import json
 import logging
@@ -37,6 +36,7 @@ from pydantic import BaseModel, ValidationError
 
 from hangar.auth import TokenAuth, bearer_from_headers
 from hangar.config import Settings
+from hangar.exchange import open_question
 from hangar.jobs import Caller, JobError, JobNotFound, JobService, SubmitJob, _internal
 from hangar.models import ContextItem, Job, new_id
 from hangar.vault import Vault
@@ -136,15 +136,6 @@ def _context_of(job: Job) -> str:
 
 def _owner(caller: Caller) -> str | None:
     return caller.owner if caller.restricted else None
-
-
-def _question(job: Job) -> str | None:
-    """The agent's question when a job needs input (workstream E keeps it on the job or its last turn)."""
-    for obj in (job, job.turns[-1] if job.turns else None, job.result):
-        q = getattr(obj, "question", None)
-        if isinstance(q, str) and q.strip():
-            return q
-    return None
 
 
 # ---------------------------------------------------------------------------- inbound parsing
@@ -539,7 +530,7 @@ class A2AServer:
         last = job.events[-1] if job.events else None
         text = last.message if last else None
         if st == INPUT_REQUIRED:
-            text = _question(job) or text
+            text = open_question(job) or text  # --- interactions: one helper for every surface
         elif st == FAILED:
             cause = next((e.message for e in reversed(job.events)
                           if not e.message.startswith(("failed", "succeeded", "cancelled"))), None)
@@ -581,15 +572,10 @@ class A2AServer:
                                "mediaType": "application/json"}])
         if r.diffstat:
             art("diffstat", "Diffstat", [_text(r.diffstat)])
-        # Structured output (workstream E): on the job's result or the last turn, whichever exists.
-        last = job.turns[-1] if job.turns else None
-        structured = getattr(r, "structured", None)
-        if structured is None:
-            structured = getattr(last, "result", None)
-        if structured is not None and not isinstance(structured, str | bytes):
-            if isinstance(structured, BaseModel):
-                structured = structured.model_dump(mode="json")
-            art("result", "Structured result", [{"data": structured, "mediaType": "application/json"}])
+        # Structured output (workstream E): the job's result, as get_job and callbacks show it (--- interactions:
+        # it lives in `result.data`; a follow-up that is still running has no result of its own yet).
+        if r.data is not None and not isinstance(r.data, str):
+            art("result", "Structured result", [{"data": r.data, "mediaType": "application/json"}])
         return out
 
     def _out_task(self, task: dict, ver: str, wrap: bool = False) -> dict:
@@ -736,8 +722,6 @@ class A2AServer:
             text = ("Answer this question about the repository. Don't change any files; write the answer to "
                     f"RESULT.md.\n\n{text}")
             opts.setdefault("deliver", "none")
-        if "output_schema" in opts and "output_schema" not in SubmitJob.model_fields:
-            raise _invalid("output_schema needs structured results, which this hangar doesn't support yet")
         if not opts.get("repo") and self.settings.a2a_default_repo:
             opts["repo"] = self.settings.a2a_default_repo
         req = SubmitJob(instructions=text, context=context, idempotency_key=f"a2a:{msg.id}",
@@ -751,12 +735,7 @@ class A2AServer:
                                "cancel it")
         if not text:
             raise _invalid("a follow-up needs a text part with the message")
-        kw: dict[str, Any] = {}
-        if context:
-            if "context" not in inspect.signature(self.jobs.follow_up).parameters:
-                raise _invalid("this hangar doesn't take attachments on follow-ups yet; put them in the text")
-            kw["context"] = context
-        self.jobs.follow_up(job.id, text, requester=caller.requester, owner=_owner(caller), **kw)
+        self.jobs.follow_up(job.id, text, requester=caller.requester, owner=_owner(caller), context=context)
         job.labels[MESSAGE_LABEL] = msg.id
         self.store.put(job)
 

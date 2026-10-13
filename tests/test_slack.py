@@ -188,9 +188,9 @@ def test_render_outcomes_and_needs_input(fleet):
     assert "*Done*" in text and "PR: <https://github.com/o/r/pull/7|o/r#7>" in text
     assert "Verification `pytest -q`: passed" in text and "What went wrong" not in text
     assert render(job, "Agent started on **job**", "note") == "Agent started on *job*"
-    # workstream E's needs_input state (compared as a string; it may not exist yet)
-    job.state = "needs_input"
-    job.result.summary = "Should I drop Python 3.9 support?"
+    # workstream E's needs_input state: the question is where jobs keep it (exchange.open_question)
+    job.state = JobState.NEEDS_INPUT
+    job.result.question = "Should I drop Python 3.9 support?"
     text = render(job, "", "final")
     assert text.startswith("*Needs input*") and "> Should I drop Python 3.9 support?" in text
     assert "Reply in this thread to answer" in text
