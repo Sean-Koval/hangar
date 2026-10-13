@@ -501,3 +501,86 @@ async def test_http_legacy_session_elicits_and_attributes_each_request(settings,
         assert ("admin", "session.new") in actors and ("bob", "session.suspend") in actors, actors
     finally:
         srv.stop()
+
+
+# ---------------------------------------------------------------------------- review: spec, fallbacks, compatibility
+async def test_task_methods_refuse_clients_that_did_not_declare_the_extension(fleet, svc, jobs, world):
+    """SEP-2663: -32021 for non-declaring clients issuing tasks/get, tasks/update and tasks/cancel."""
+    from mcp.shared.exceptions import MCPError
+
+    async with Client(build_mcp(fleet, jobs, svc), extensions=[TasksClient()]) as c:
+        created = await c.session.call_tool("submit_job", {"instructions": "TASK-USE-B", "repo": world["url"],
+                                                           "environment": "xenv", "deliver": "branch"},
+                                            allow_claimed=True)
+    async with Client(build_mcp(fleet, jobs, svc)) as c:  # the same caller, without the extension
+        for method, extra in (("tasks/get", {}), ("tasks/cancel", {}), ("tasks/update", {"inputResponses": {}})):
+            with pytest.raises(MCPError) as e:
+                await task_call(c.session, method, created.task_id, **extra)
+            assert e.value.code == -32021, (method, e.value)
+            assert mcp_tasks.TASKS_EXT in e.value.data["requiredCapabilities"]["extensions"]
+    [job] = jobs.list()
+    assert not job.cancel_requested  # the refused cancel did nothing
+    await _until(jobs, job.id, {JobState.SUCCEEDED, JobState.FAILED})
+
+
+async def test_a_session_task_follows_its_session_not_a_later_one_with_the_same_name(fleet, svc, jobs):
+    async with Client(build_mcp(fleet, jobs, svc), extensions=[TasksClient()]) as c:
+        created = await c.session.call_tool("new_session", {"name": "dup", "environment": "xenv",
+                                                            "message": "TASK-USE-B"}, allow_claimed=True)
+        first = await settle(svc, "dup")
+        svc.suspend("dup", requester="t")
+        await settle(svc, "dup")
+        svc.archive("dup", requester="t")
+        sc(await c.call_tool("new_session", {"name": "dup", "environment": "xenv", "message": "TASK-ASK x"}))
+        await settle(svc, "dup")
+        t = await task_call(c.session, "tasks/get", created.task_id)
+    assert t["status"] == "completed", t
+    out = t["result"]["structuredContent"]
+    assert out["id"] == first.id and out["turn"]["summary"] == "Went with B", out
+
+
+async def test_old_tool_names_and_destroy_output_still_work(fleet, svc, jobs):
+    async with Client(build_mcp(fleet, jobs, svc)) as c:
+        listed = {t.name for t in (await c.list_tools()).tools}
+        assert not {"validate_environment", "clone_environment", "destroy_sandboxes"} & listed  # not advertised
+        v = sc(await c.call_tool("validate_environment", {"spec": {"name": "xenv-v", "extends": "xenv"}}))
+        assert "dockerfile" in json.dumps(v).lower()
+        cl = sc(await c.call_tool("clone_environment", {"source": "xenv", "name": "xenv-c"}))
+        assert cl["name"] == "xenv-c" and cl["extends"] == "xenv"
+        a = sc(await c.call_tool("create_sandbox", {"environment": "xenv", "name": "old-a"}))
+        b = sc(await c.call_tool("create_sandbox", {"environment": "xenv", "name": "old-b"}))
+        assert sc(await c.call_tool("destroy_sandboxes", {"sandboxes": [b["id"]]})) == [b["id"]]
+        assert sc(await c.call_tool("destroy_sandbox", {"sandbox": a["id"]})) == [a["id"]]
+    assert "xenv-c" in fleet.catalog.names() and "xenv-v" not in fleet.catalog.names()
+
+
+async def test_stateless_legacy_client_with_elicitation_gets_the_question(settings, world):
+    """HANGAR_MCP_STATELESS_HTTP=true: a 2025-era request has no back-channel, so the question comes back."""
+    import httpx2
+    from mcp.client.streamable_http import streamable_http_client
+
+    from hangar.app import create_app
+    from tests.conftest import ENVS, FakeProvider
+
+    settings.admin_token = "t0ken"
+    settings.env_dirs = [world["envs"], ENVS]
+    settings.session_poll_seconds = 0.1
+    settings.mcp_stateless_http = True
+    app = create_app(settings)
+    h = app.state.hangar
+    srv = AppThread(app)
+    h.fleet.providers["docker"] = FakeProvider()
+    h.fleet.provider_errors.pop("docker", None)
+    asked: list[str] = []
+    try:
+        url = f"http://127.0.0.1:{srv.port}/mcp"
+        async with httpx2.AsyncClient(headers={"Authorization": "Bearer t0ken"}, timeout=60) as http:
+            async with Client(streamable_http_client(url, http_client=http), mode="legacy",
+                              elicitation_callback=answering("TASK-USE-B", asked=asked)) as c:
+                sc(await c.call_tool("new_session", {"name": "nob", "environment": "xenv",
+                                                     "message": "TASK-ASK pick one"}))
+                t = sc(await asyncio.wait_for(c.call_tool("wait_for_turn", {"ref": "nob", "timeout_seconds": 60}),
+                                              90))
+        assert t["done"] and t["question"] == "Use A or B?" and asked == [], t
+    finally:
+        srv.stop()

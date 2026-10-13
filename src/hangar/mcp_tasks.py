@@ -25,6 +25,7 @@ from typing import Any, Literal
 import mcp_types as types
 from mcp.server.context import ServerRequestContext
 from mcp.server.extension import Extension, MethodBinding
+from mcp.server.mcpserver import require_client_extension
 from mcp.shared.exceptions import MCPError
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 from pydantic import BaseModel, Field, ValidationError
@@ -92,7 +93,7 @@ def answer(sessions: Any, jobs: Any, ref: str, turn_no: int, resp: types.ElicitR
         else:
             if s is None or not s.needs_input or len(s.turns) != turn_no:
                 return "stale"
-            sessions.send(s.name, text, requester=requester)
+            sessions.send(s.id, text, requester=requester)
     except (JobError, SessionError):  # moved on between the check and the send (busy, archived...)
         return "stale"
     return "answered"
@@ -189,11 +190,12 @@ class Tasks:
         elif tool in ("new_session", "send_to_session"):
             if tool == "new_session" and not args.get("message"):
                 return None  # the session was only created; no turn runs
-            kind, refs = "session", [data.get("name")]
+            # --- review: by id; a name can be archived and taken by a later session
+            kind, refs = "session", [data.get("id")]
         elif tool == "fork_session":
             if not args.get("message"):
                 return None
-            kind, refs = "forks", [f.get("name") for f in data.get("forks", [])]
+            kind, refs = "forks", [f.get("id") for f in data.get("forks", [])]
         elif tool == "run_agent":
             kind, refs = "agent", [data.get("sandbox"), data.get("run_id")]
         else:
@@ -352,14 +354,18 @@ class TasksExtension(Extension):
     def methods(self) -> list[MethodBinding]:
         modern = frozenset(MODERN_PROTOCOL_VERSIONS)
 
+        # --- review: SEP-2663 requires -32021 for clients that did not declare the extension on these requests
         async def get(ctx: ServerRequestContext[Any], params: TaskIdParams) -> dict[str, Any]:
+            require_client_extension(ctx, TASKS_EXT)
             return await self.tasks.get(params.task_id, ctx.session.client_capabilities)
 
         async def update(ctx: ServerRequestContext[Any], params: TaskUpdateParams) -> dict[str, Any]:
+            require_client_extension(ctx, TASKS_EXT)
             self.tasks.update(params.task_id, params.input_responses)
             return {}
 
         async def cancel(ctx: ServerRequestContext[Any], params: TaskIdParams) -> dict[str, Any]:
+            require_client_extension(ctx, TASKS_EXT)
             await self.tasks.cancel(params.task_id)
             return {}
 

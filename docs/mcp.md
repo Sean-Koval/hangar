@@ -65,7 +65,7 @@ The agent continues the same conversation and the task goes back to `working`. D
 
 `tasks/cancel` cancels a job or stops an agent run. For a session turn it only stops the task (the turn keeps running; `suspend_session` stops it).
 
-A task belongs to the token that created it: any other caller gets "unknown task". Tasks are stored in the control plane's database and derive their state from the job or session, so they survive a restart. They expire 24 hours after creation.
+A task belongs to the token that created it: any other caller gets "unknown task". `tasks/get`, `tasks/update` and `tasks/cancel` need the extension declared on the request too (`-32021` otherwise, as SEP-2663 requires). Tasks are stored in the control plane's database and derive their state from the job or session, so they survive a restart. They expire 24 hours after creation.
 
 ## Resources and subscriptions
 
@@ -86,7 +86,7 @@ The main tools publish an `outputSchema`, and their results carry `structuredCon
 
 Every tool is annotated: `readOnlyHint` for the get/list/read tools, `destructiveHint` for destroy, cancel, delete, `exec` and file writes, `idempotentHint` where repeating is harmless, and `openWorldHint` for tools whose effects leave hangar (agents that push branches and open PRs, commands with network). Clients use these to decide when to ask before calling.
 
-The listing is compact: descriptions without docstring indentation, input schemas without pydantic's generated titles or `anyOf [T, null]` wrappers. The part models read on every turn (names, descriptions, input schemas) went from 31.2 KB to 22.4 KB.
+The listing is compact: descriptions without docstring indentation, input schemas without pydantic's generated titles or `anyOf [T, null]` wrappers. The part models read on every turn (names, descriptions, input schemas) went from 31.2 KB to 22.4 KB. `validate_environment`, `clone_environment` and `destroy_sandboxes` were merged into `create_environment(dry_run)` and `destroy_sandbox`; the old names are no longer listed but still answer with their old arguments and results, so existing scripts keep working.
 
 ## Prompts
 
@@ -101,4 +101,4 @@ Claude Code and VS Code show them as slash commands.
 ## Deployment notes
 
 - Legacy clients keep a session (`Mcp-Session-Id`), so hangar can ask them questions mid-call and notify them about subscriptions. Sessions live in the control plane's memory: with one replica (the supported setup) nothing else is needed; after a restart, clients start a new session. With several replicas and no sticky routing, set `HANGAR_MCP_STATELESS_HTTP=true`: legacy clients then lose elicitation and subscriptions. 2026-07-28 clients are sessionless either way.
-- The SDK seals the `requestState` of an `input_required` round with a per-process key that lives 15 minutes. After a restart, or a longer wait, the client's retry is refused and `wait_for_turn` simply asks again.
+- The SDK seals the `requestState` of an `input_required` round with a per-process key that lives 15 minutes. After a restart, or a longer wait, the client's retry is refused (`-32602`, "Invalid or expired requestState"); calling `wait_for_turn` again asks the question again.

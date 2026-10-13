@@ -254,6 +254,26 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             return [(await fleet.destroy(refs[0], actor=actor())).id]
         return await fleet.destroy_many(refs or None, label=label, actor=actor())
 
+    # --- review: the tools merged above, kept callable under their old names and signatures (not listed:
+    # mcp_live.HIDDEN_TOOLS), so existing scripts and client workflows don't break.
+    @tool()
+    def validate_environment(spec: dict[str, Any]) -> dict[str, Any]:
+        """Deprecated: create_environment(spec, dry_run=True)."""
+        return fleet.validate_environment(spec)
+
+    @tool()
+    def clone_environment(source: str, name: str, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Deprecated: create_environment({"name": ..., "extends": source, ...})."""
+        s = fleet.clone_environment(source, name, overrides, actor=actor())
+        return {"name": s.name, "extends": source, "harnesses": s.harnesses, "default_harness": s.pick_harness()}
+
+    @tool()
+    async def destroy_sandboxes(sandboxes: list[str] | None = None, label: str | None = None) -> list[str]:
+        """Deprecated: destroy_sandbox(sandboxes=... | label=...)."""
+        if not sandboxes and not label:
+            raise ValueError("pass sandboxes or label (refusing to destroy the whole fleet implicitly)")
+        return await fleet.destroy_many(sandboxes, label=label, actor=actor())
+
     @tool()
     async def pause_sandbox(sandbox: str) -> live.SandboxOut:
         """Freeze a sandbox's processes to free CPU (state is kept)."""
