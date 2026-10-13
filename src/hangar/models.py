@@ -316,6 +316,8 @@ class Job(BaseModel):
     cancel_requested: bool = False
     sandbox_id: str | None = None
     session_id: str | None = None  # the session that carries this job's sandbox, conversation and checkpoints
+    # --- overnight/sweep: usage of the sessions that carried this job and were deleted since (session id -> total)
+    deleted_session_usage: dict[str, Usage] = Field(default_factory=dict)
     turns: list[Turn] = Field(default_factory=list)
     result: JobResult = Field(default_factory=JobResult)
     events: list[JobEvent] = Field(default_factory=list)

@@ -227,6 +227,19 @@ class Settings(BaseSettings):
     io_threads: int = 0
     # --- overnight/sweep: a workspace snapshot archive is read whole into memory, so it is capped
     snapshot_max_mb: int = 512
+    # --- overnight/sweep: database backups into the session store (backup.py, docs/gke.md). Unset = every 24 hours
+    # when HANGAR_SESSION_STORE is a GCS bucket, else off; 0 = off. `hangar admin backup` works either way.
+    backup_hours: float | None = None
+    backup_keep: int = 14  # newest backups kept; older ones are deleted after each backup
+    # How long `hangar serve` waits for open requests (streams, terminals) on shutdown before cutting them.
+    # Long-polls answer at once (shutdown.py). Keep it under the pod's terminationGracePeriodSeconds (45).
+    shutdown_grace_seconds: int = 15
+
+    @property
+    def backup_interval_hours(self) -> float:
+        if self.backup_hours is not None:
+            return max(0.0, self.backup_hours)
+        return 24.0 if (self.session_store or "").startswith("gs://") else 0.0
 
     @property
     def io_pool(self) -> int:

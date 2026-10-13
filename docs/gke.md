@@ -166,9 +166,75 @@ Two things to know:
 - `terraform apply` while it's down turns autoscaling back on, so the system pool starts a node. Run `power.sh up` first, or `power.sh down` again after.
 - `deploy/gke/up.sh` while it's down sets hangar back to one replica, but it won't start until `power.sh up` brings the nodes back.
 
+## 7. Backups and restore
+
+Everything hangar knows is one SQLite file on the `hangar-data` volume: sessions and their checkpoint lists, jobs, schedules, tokens, the vault and the settings `hangar config` stores. Checkpoints themselves are in the bucket. Losing the disk loses the database, so back it up.
+
+**Backups.** With `HANGAR_SESSION_STORE` on a bucket (what `up.sh` sets), hangar backs up its database every 24 hours into `gs://<bucket>/_backups/` and keeps the newest 14. Each backup is taken with SQLite's online backup API in one step (one read transaction: hangar keeps working, and the copy never holds half a write), gzipped, and encrypted with the vault key.
+
+```bash
+hangar admin backup        # one now
+hangar admin backups       # what's there, newest first
+hangar doctor              # "database backups": fails when the newest is more than two intervals old
+```
+
+`HANGAR_BACKUP_HOURS` changes the interval (`0` turns it off; unset means 24 with a bucket, off without one) and `HANGAR_BACKUP_KEEP` the count. Both apply without a restart, from the next scheduled run (within an hour when backups were off). Without a bucket, backups go to `<data dir>/sessions/_backups`, which is the same disk: use PD snapshots instead (below).
+
+**Keep the vault key somewhere else.** A backup is useless without the `HANGAR_SECRET_KEY` it was encrypted with, and so is everything in the vault. `up.sh` keeps it in the `hangar` Secret, which dies with the cluster. Save a copy in Secret Manager or your password manager:
+
+```bash
+kubectl -n hangar get secret hangar -o jsonpath='{.data.HANGAR_SECRET_KEY}' | base64 -d
+```
+
+**Restore.** A restore is staged, then applied by the next start, before anything opens the database. The database it replaces is kept beside it as `hangar.db.before-restore-<time>`.
+
+```bash
+hangar admin restore latest          # or a name from `hangar admin backups`
+kubectl -n hangar rollout restart deploy/hangar
+```
+
+If hangar can't start at all, stage the restore from a one-off pod with the same image, settings and volume:
+
+```bash
+kubectl -n hangar scale deploy/hangar --replicas=0
+IMAGE=$(kubectl -n hangar get deploy/hangar -o jsonpath='{.spec.template.spec.containers[0].image}')
+kubectl -n hangar run hangar-restore --rm -i --restart=Never --image="$IMAGE" --overrides='{"spec": {
+  "serviceAccountName": "hangar", "enableServiceLinks": false, "securityContext": {"fsGroup": 1000},
+  "containers": [{"name": "hangar-restore", "image": "'"$IMAGE"'",
+    "command": ["hangar", "admin", "restore", "--local", "latest"],
+    "envFrom": [{"configMapRef": {"name": "hangar"}}, {"configMapRef": {"name": "hangar-site", "optional": true}},
+                {"secretRef": {"name": "hangar"}}],
+    "volumeMounts": [{"name": "data", "mountPath": "/data"}]}],
+  "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": "hangar-data"}}]}}'
+kubectl -n hangar scale deploy/hangar --replicas=1
+```
+
+After a restore:
+- Tokens and credentials are as they were at the backup. A token revoked since then works again: revoke it again, or rotate them all.
+- Jobs and turns that were running at the backup restart or are marked interrupted, as after any restart.
+- A session restores from the checkpoints the backup lists. Hangar keeps 5 per session (`HANGAR_SESSION_KEEP_CHECKPOINTS`), so a session that checkpointed more than 5 times after the backup has none of those left in the bucket and can't resume. Restore from a recent backup.
+
+**PD snapshots** are the other option, or a second layer: they copy the whole volume (database, local checkpoints, logs) and don't need the vault key to restore the disk. A snapshot of a running hangar is crash-consistent: SQLite recovers it like a power loss, and may drop the last second of commits. Schedule them on the volume's disk:
+
+```bash
+PV=$(kubectl -n hangar get pvc hangar-data -o jsonpath='{.spec.volumeName}')
+kubectl get pv "$PV" -o jsonpath='{.spec.csi.volumeHandle}'   # projects/<p>/zones/<zone>/disks/<disk>
+gcloud compute resource-policies create snapshot-schedule hangar-data-daily --region <region> \
+  --daily-schedule --start-time 04:00 --max-retention-days 14 --on-source-disk-delete keep-auto-snapshots
+gcloud compute disks add-resource-policies <disk> --zone <zone> --resource-policies hangar-data-daily
+```
+
+To restore one, create a disk from the snapshot, then a PV and PVC for it (or swap it in for `hangar-data`), with hangar scaled to 0.
+
+## Shutdown
+
+`kubectl rollout restart`, `power.sh down` and node upgrades stop hangar with SIGTERM. Requests that wait (MCP `agent_status` with `wait_seconds`, `wait_for_turn`, a blocking A2A send) answer at once with the state as it is, and their clients ask again. Event streams and terminals are cut after `HANGAR_SHUTDOWN_GRACE_SECONDS` (15). Then hangar stops its loops and closes its connections. The pod's `terminationGracePeriodSeconds` is 45 to cover that.
+
+Sandboxes, agent turns and sessions don't stop with the control plane. A new pod re-attaches to them. Shutdown takes no checkpoints. A checkpoint, destroy or backup cut off by it is redone after the restart (the idle check and the reaper run again), so the 300 s pre-destroy budget doesn't need to fit in the grace period.
+
 ## Notes
 
 - **Network.** The default SandboxTemplate network policy allows egress to the public internet only, and blocks RFC1918 ranges and the metadata server. Agents can reach GitHub and package registries but not your VPC. `deploy/k8s/sandbox-network.yaml` applies the same baseline as hangar's own NetworkPolicies (DNS, public internet minus private and link-local ranges, no ingress), so it still holds if the managed policy is turned off or you run the open-source controller.
 - **Git gateway.** `deploy/k8s/gateway.yaml` adds the `hangar-gateway` Service (port 8788) and a NetworkPolicy that lets sandbox pods reach that port, and only that port, of the control plane. Set `HANGAR_GATEWAY_URL=http://hangar-gateway.hangar.svc:8788` to keep GitHub tokens out of sandboxes ([security.md](security.md#git-credential-gateway)).
 - **Expiry.** Each claim gets `lifecycle.shutdownTime` (sandbox TTL plus 5 minutes) as a backstop to hangar's reaper.
-- **Storage.** The control plane keeps state in SQLite on a 20 Gi PVC. Back it up, or snapshot the disk.
+- **Storage.** The control plane keeps state in SQLite on a 20 Gi PVC. It backs itself up to the bucket; PD snapshots are the alternative (§7).

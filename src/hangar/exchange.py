@@ -967,9 +967,11 @@ async def wait_for_turn(sessions: SessionService, jobs: JobService | None, ref: 
             n += 1
             with contextlib.suppress(Exception):
                 await report(float(n), None, msg[:500])
-        if done or time.monotonic() >= deadline:
+        closing = sessions.fleet.closing  # --- overnight/sweep: a shutdown answers now, as a timeout would
+        if done or time.monotonic() >= deadline or closing.is_set():
             return {"done": done, **turn_view(s, job)}
-        await asyncio.sleep(interval)
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(closing.wait(), interval)
 
 
 # ====================================================================== jobs

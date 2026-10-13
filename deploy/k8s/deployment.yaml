@@ -28,6 +28,9 @@ spec:
       # The Service is named "hangar", so Kubernetes' legacy service-link env vars would inject
       # HANGAR_PORT=tcp://... and collide with hangar's own HANGAR_* settings.
       enableServiceLinks: false
+      # SIGTERM -> long-polls answer at once, streams cut after HANGAR_SHUTDOWN_GRACE_SECONDS (15), then hangar's own
+      # shutdown. Sandboxes and sessions outlive the pod, so no checkpoint has to fit in here (docs/gke.md, Shutdown).
+      terminationGracePeriodSeconds: 45
       securityContext:
         fsGroup: 1000
       containers:

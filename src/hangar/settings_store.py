@@ -39,6 +39,9 @@ REFUSED: dict[str, str] = {
     "data_dir": "it says where this database lives: set HANGAR_DATA_DIR in the environment",
     "host": "it is read before the server starts: use `hangar serve --host` or HANGAR_HOST",
     "port": "it is read before the server starts: use `hangar serve --port` or HANGAR_PORT",
+    # --- overnight/sweep
+    "shutdown_grace_seconds": "it is read before the server starts: set HANGAR_SHUTDOWN_GRACE_SECONDS in the "
+                              "environment",
 }
 
 # Read once at startup (providers, listeners, OAuth, worker pools): a change applies after the next restart.

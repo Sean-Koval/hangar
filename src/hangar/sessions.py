@@ -128,6 +128,8 @@ class SessionService:
         self._loop: asyncio.Task | None = None
         self._last_checked: dict[str, float] = {}  # last time a checkpoint ran (taken or found unchanged)
         self.activity = Activity(self.settings, fleet.broker.redact)  # workstream C: events, usage, budgets
+        # --- overnight/sweep: called with a session just before it is deleted (jobs keep its usage); must not raise
+        self.on_delete: list[Callable[[Session], None]] = []
 
     # ================================================================== lifecycle
     async def start(self) -> None:
@@ -315,6 +317,11 @@ class SessionService:
 
     def delete(self, ref: str, requester: str) -> None:
         s = self.archive(ref, requester)
+        for fn in self.on_delete:  # --- overnight/sweep
+            try:
+                fn(s)
+            except Exception:  # noqa: BLE001 - a listener must never block a delete
+                log.exception("session delete listener failed")
         self.store.delete(Session, s.id)
         self._sessions.pop(s.id, None)
         self.activity.log.drop(s.id)
@@ -517,7 +524,8 @@ class SessionService:
                                      dirs=self._agent_dirs(s), base=s.base_sha or "HEAD", max_untracked=max_untracked,
                                      max_part=max_part, skip_if=skip, previous=previous)
         timeout = int(max(30, min(600, self.settings.pre_destroy_timeout_seconds - 30)))
-        res = await self._sh(sb, script, timeout=timeout)
+        # --- overnight/sweep: run from $HOME, so a repo directory that is gone can't fail the exec itself
+        res = await self._sh(sb, script, timeout=timeout, cwd=f"/home/{self.settings.sandbox_user}")
         cap = ckpt.parse_capture(res.stdout)
         if cap.fingerprint is None:
             raise SessionError(f"checkpoint failed: {(res.stderr or res.stdout)[-400:]}")
@@ -530,6 +538,16 @@ class SessionService:
         sizes: dict[str, int] = {}  # part -> plaintext bytes stored
         same: list[str] = []  # parts unchanged since `last`: copied inside the store
         limits = {p: max_untracked if p == "untracked.tgz" else max_part for p in ckpt.ALL_PARTS}
+        carried: dict[str, int] = {}  # --- overnight/sweep: repo parts kept from `last` when the checkout is gone
+        if cap.norepo:
+            if last:
+                carried = {p: last.parts[p] for p in ckpt.REPO_PARTS if p in last.parts and p in last.digests}
+                ck.digests |= {p: last.digests[p] for p in carried}
+                same += list(carried)
+                ck.head = ck.head or last.head
+            kept = f"its code is kept as of checkpoint {last.id}" if last and carried else \
+                "only the conversation was checkpointed"
+            ck.warnings.append(f"the repo directory {sb.info.get('repo_path')} is gone; {kept}")
         try:
             for part in ckpt.ALL_PARTS:
                 if part not in cap.parts:
@@ -589,7 +607,7 @@ class SessionService:
         except BaseException:
             self._spawn(self._drop(f"{key}/"))  # never leave an unrecorded partial checkpoint
             raise
-        sizes |= {p: cap.parts[p][0] for p in copied}
+        sizes |= {p: carried[p] if p in carried else cap.parts[p][0] for p in copied}
         ck.parts = {p: sizes[p] for p in ckpt.ALL_PARTS if p in sizes}
         s.checkpoints.append(ck)
         keep = max(1, self.settings.session_keep_checkpoints)
