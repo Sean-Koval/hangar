@@ -184,6 +184,18 @@ async def test_best_of_n_caps_each_attempt_and_sums_usage(jobs, world):
     assert any("902.0k tokens" in c for c in jobs.hooks.comments())
 
 
+async def test_the_judge_turn_is_capped_counted_once_and_in_the_job_stream(jobs, world):
+    job = jobs.submit(bon(world, judge=True, budget=Budget(max_tokens=100_000)), Caller("svc", "svc"))
+    job = await until(jobs, job.id, SETTLED)
+    assert job.state == JobState.SUCCEEDED and any("(judge)" in e.message for e in job.events)
+    assert job.attempts[2].rank == 1  # the judge's pick
+    base = next(s for s in jobs.sessions._sessions.values() if s.job_id == job.id and not s.parent_id)
+    judge = base.turns[-1]
+    assert judge.message.startswith("judge") and base.budget == job.budget
+    assert jobs.view(job)["usage"]["input_tokens"] == 3 * 1000 + 7000
+    assert judge.run_id in {e["run_id"] for e in jobs.events(job.id)}
+
+
 async def test_best_of_n_attempts_get_the_schema_repair_turn_and_artifacts(jobs, world):
     world["mode"].write_text("noresult")
     job = jobs.submit(bon(world, output_schema=SCHEMA), Caller("svc", "svc"))
