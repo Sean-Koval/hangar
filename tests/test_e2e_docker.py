@@ -58,5 +58,5 @@ async def _scenario(c):
     for f in forks:
         got = data(await c.call_tool("read_file", {"sandbox": f["id"], "path": "/workspace/f.txt"}))
         assert got["content"] == "hi\n"
-    gone = data(await c.call_tool("destroy_sandboxes", {"label": "e2e"}))
+    gone = data(await c.call_tool("destroy_sandbox", {"label": "e2e"}))
     assert len(gone) == 3

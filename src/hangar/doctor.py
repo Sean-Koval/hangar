@@ -115,7 +115,7 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
         for env in [e.strip() for e in envs.split(",") if e.strip()]:
             if env not in names:
                 out.append(_check(f"environment {env}", False, f"mapped for {repo} but doesn't exist",
-                                  "add envs/<name>.yaml or create it with clone_environment"))
+                                  "add envs/<name>.yaml or create it with create_environment (extends)"))
                 continue
             spec = fleet.catalog.get(env)
             missing = [c for c in spec.credentials if c not in creds]

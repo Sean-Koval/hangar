@@ -8,8 +8,10 @@ a laptop or a single VM. On GKE the file lives on a PersistentVolume (one replic
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import TypeVar
 
@@ -18,6 +20,7 @@ from pydantic import BaseModel
 from hangar.models import ApiToken, AuditEvent, Credential, Job, Sandbox, SandboxGrant, ScheduledJob, Session, Snapshot
 
 T = TypeVar("T", bound=BaseModel)
+log = logging.getLogger("hangar.store")
 
 _TABLES: dict[type[BaseModel], tuple[str, str]] = {
     Sandbox: ("sandboxes", "id"),
@@ -45,6 +48,8 @@ class Store:
             "CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, data TEXT)"
         )
         self._db.execute("CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT)")
+        # --- workstream mcp-modern: called after every put (MCP resource-updated notifications); must not raise
+        self.on_put: list[Callable[[BaseModel], None]] = []
 
     # --- generic model CRUD -------------------------------------------------
     def put(self, obj: BaseModel) -> None:
@@ -55,6 +60,11 @@ class Store:
                 "ON CONFLICT(key) DO UPDATE SET data=excluded.data",
                 (getattr(obj, key_field), obj.model_dump_json()),
             )
+        for fn in self.on_put:  # workstream mcp-modern
+            try:
+                fn(obj)
+            except Exception:  # noqa: BLE001 - a listener must never fail a write
+                log.exception("store listener failed")
 
     def get(self, cls: type[T], key: str) -> T | None:
         table, _ = _TABLES[cls]

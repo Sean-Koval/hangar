@@ -210,6 +210,11 @@ class Settings(BaseSettings):
     audit_rejections_per_minute: int = 30  # refused requests audited per client address or caller; more are counted
     slack_teams: list[str] = Field(default_factory=list)  # other workspaces (Enterprise Grid) whose members count
     a2a_max_streams_per_owner: int = 20  # open A2A streams and blocking sends per caller
+    # --- workstream mcp-modern (docs/mcp.md) --------------------------------
+    # Serve pre-2026 MCP clients statelessly (no Mcp-Session-Id). Only for several replicas without sticky routing:
+    # it costs those clients elicitation (hangar asking you an agent's question) and resource notifications.
+    # 2026-07-28 clients are sessionless either way.
+    mcp_stateless_http: bool = False
 
     @property
     def db_path(self) -> Path:

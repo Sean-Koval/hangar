@@ -245,8 +245,10 @@ def _setup_oauth(app: FastAPI, h: Hangar):
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     h = Hangar(settings)
-    mcp = build_mcp(h.fleet, h.jobs, h.sessions, triggers=h.triggers)
-    mcp_asgi = mcp.streamable_http_app(streamable_http_path="/", stateless_http=True, host="0.0.0.0")
+    # --- workstream mcp-modern: legacy MCP clients keep a session unless HANGAR_MCP_STATELESS_HTTP (docs/mcp.md)
+    stateless = h.settings.mcp_stateless_http
+    mcp = build_mcp(h.fleet, h.jobs, h.sessions, triggers=h.triggers, legacy_sessions=not stateless)
+    mcp_asgi = mcp.streamable_http_app(streamable_http_path="/", stateless_http=stateless, host="0.0.0.0")
     a2a = A2AServer(h.jobs, h.auth, h.vault, h.settings) if h.settings.a2a_enabled else None  # workstream G
 
     @contextlib.asynccontextmanager
