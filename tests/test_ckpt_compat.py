@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import shlex
 import shutil
 import subprocess
@@ -154,6 +155,11 @@ async def test_checkpoints_written_by_the_old_capture_still_restore(svc, world, 
     # the first checkpoint after the upgrade has nothing to copy from, uploads everything, and restores too
     new = s.checkpoints[-1]
     assert new.reason == "turn" and set(new.digests) == set(new.parts)
+    for part, size in new.parts.items():  # every part is encrypted at rest and matches its recorded digest
+        blob = (svc.root / s.id / new.id / f"{part}.enc").read_bytes()
+        plain = svc.vault.decrypt(blob)
+        assert blob.startswith(b"gAAAAA") and len(plain) == size
+        assert hashlib.sha256(plain).hexdigest() == new.digests[part]
     svc.suspend("legacy", requester="sean")
     s = await settle(svc, "legacy")
     svc.open("legacy", requester="sean")
