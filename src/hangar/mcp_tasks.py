@@ -331,7 +331,7 @@ class Tasks:
                 aid = key.removeprefix("approve-")
                 outcome = await mcp_steer.answer_elicited(self.sessions, self.jobs, rec.refs[0], aid, resp,
                                                           self.actor())
-                if outcome in ("declined", "cancelled") and aid not in rec.declined_approvals:
+                if outcome in ("declined", "cancelled", "stale") and aid not in rec.declined_approvals:
                     rec.declined_approvals.append(aid)
                 elif outcome == "invalid":
                     raise MCPError(INVALID_PARAMS, "the answer needs a decision: allow, deny or allow_always")

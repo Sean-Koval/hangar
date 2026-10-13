@@ -114,11 +114,11 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
     return run_id, command
 
 
-def forget(svc: SessionService, turn: SessionTurn) -> None:
-    """The turn is over: its key is of no more use."""
-    if turn.live and turn.run_id:
+def forget(svc: SessionService, run_id: str | None) -> None:
+    """The run is over (or never started): its key is of no more use."""
+    if run_id:
         with contextlib.suppress(Exception):
-            svc.store.kv_delete(KV + turn.run_id)
+            svc.store.kv_delete(KV + run_id)
 
 
 # ====================================================================== the control channel
@@ -323,7 +323,10 @@ async def kill(svc: SessionService, s: Session, t: SessionTurn) -> None:
 
 # ====================================================================== approvals
 def track(turn: SessionTurn, events: list[RunEvent]) -> bool:
-    """Record approval requests and answers from the driver's events on the turn. True if anything changed."""
+    """Record approval requests and answers from the driver's events on the turn. True if anything changed. Only a
+    live turn's log is the driver's: in a one-shot run's log such a line could come from anything."""
+    if not turn.live:
+        return False
     changed = False
     for ev in events:
         aid = ev.data.get("id")
@@ -350,11 +353,11 @@ def track(turn: SessionTurn, events: list[RunEvent]) -> bool:
 
 
 def pending(s: Session | None) -> list[Approval]:
-    """The running turn's unanswered approvals."""
+    """The running turn's unanswered approvals (not those past their deadline: the driver has denied them)."""
     t = s.turns[-1] if s is not None and s.turns else None
     if t is None or t.finished_at or not t.live:
         return []
-    return [a for a in t.approvals if a.status == "pending"]
+    return [a for a in t.approvals if a.status == "pending" and (a.expires_at is None or a.expires_at > now())]
 
 
 def view(s: Session) -> dict[str, Any]:

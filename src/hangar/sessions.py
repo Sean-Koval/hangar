@@ -821,10 +821,15 @@ class SessionService:
         if prompt is not None and turn.mode == "handoff" and handoff:
             prompt = self._handoff(s) + "\n\n# Now\n\n" + prompt
         run_id, command = await steering.prepare(self, s, turn, sb, h)  # workstream steer: live (driver) or one-shot
-        io_env = await exchange.prepare_turn(self, s, turn, sb)  # workstream E: HANGAR_IO, attachments, local work
-        res = await self.fleet.run_agent(sb.id, prompt if prompt is not None else self._prompt(s, turn, turn.mode),
-                                         harness=s.harness, model=s.model, env={**(extra_env or {}), **io_env, **env},
-                                         actor=f"session:{s.id}", run_id=run_id, command=command)
+        try:
+            io_env = await exchange.prepare_turn(self, s, turn, sb)  # workstream E: HANGAR_IO, attachments, local work
+            res = await self.fleet.run_agent(sb.id, prompt if prompt is not None else self._prompt(s, turn, turn.mode),
+                                             harness=s.harness, model=s.model,
+                                             env={**(extra_env or {}), **io_env, **env}, actor=f"session:{s.id}",
+                                             run_id=run_id, command=command)
+        except BaseException:
+            steering.forget(self, run_id)  # workstream steer: the run never started
+            raise
         turn.run_id, turn.started_at = res["run_id"], now()
         turn.context = exchange.strip(turn.context)
         s.model = s.model or res.get("model")
@@ -874,7 +879,7 @@ class SessionService:
         turn.finished_at = now()
         if outcome == "exited" and turn.exit_code == 130:  # --- workstream steer: stopped by an interrupt
             outcome = "interrupted"
-        steering.forget(self, turn)
+        steering.forget(self, turn.run_id if turn.live else None)
         turn.outcome, turn.outcome_reason = outcome, over  # workstream C
         if over:
             watch.note("error", f"stopped: over budget ({over})", reason="over_budget")

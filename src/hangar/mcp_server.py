@@ -515,7 +515,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                 if st.get("ref") == ref and isinstance(resp, ElicitResult) and st.get("approval"):
                     approved = await mcp_steer.answer_elicited(sessions, jobs, ref, str(st["approval"]), resp,
                                                                current_actor.get())
-                    skip += [str(st["approval"])] if approved in ("declined", "cancelled") else []
+                    skip += [str(st["approval"])] if approved in ("declined", "cancelled", "stale") else []
                 elif st.get("ref") == ref and isinstance(resp, ElicitResult):
                     note = mcp_tasks.answer(sessions, jobs, ref, int(st["turn"]), resp, current_actor.get())
             asks = mcp_tasks.supports_form_elicitation(ctx.client_capabilities)
@@ -547,7 +547,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                     approved = await mcp_steer.answer_elicited(sessions, jobs, ref, a.id, ElicitResult(
                         action=form.action, content=form.data.model_dump() if form.action == "accept" else None),
                         current_actor.get())
-                    skip += [a.id] if approved in ("declined", "cancelled") else []
+                    skip += [a.id] if approved in ("declined", "cancelled", "stale") else []
                     continue
                 if not turn["done"] and time.monotonic() < deadline:  # the approval was answered elsewhere
                     continue
