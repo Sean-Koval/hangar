@@ -127,5 +127,6 @@ curl -s -m 5 -H 'Metadata-Flavor: Google' \
 ## Notes
 
 - **Network.** The default SandboxTemplate network policy allows egress to the public internet only, and blocks RFC1918 ranges and the metadata server. Agents can reach GitHub and package registries but not your VPC.
+- **Git gateway.** `deploy/k8s/gateway.yaml` adds the `hangar-gateway` Service (port 8788) and a NetworkPolicy that lets sandbox pods reach that port, and only that port, of the control plane. Set `HANGAR_GATEWAY_URL=http://hangar-gateway.hangar.svc:8788` to keep GitHub tokens out of sandboxes ([security.md](security.md#git-credential-gateway)).
 - **Expiry.** Each claim gets `lifecycle.shutdownTime` (sandbox TTL plus 5 minutes) as a backstop to hangar's reaper.
 - **Storage.** The control plane keeps state in SQLite on a 20 Gi PVC. Back it up, or snapshot the disk.

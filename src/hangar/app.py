@@ -247,6 +247,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log.warning("    %s", boot)
             log.warning("=" * 72)
         await h.fleet.start()
+        await h.fleet.gateway.start()  # workstream F: the git gateway's own listener (HANGAR_GATEWAY_PORT)
         await h.sessions.start()  # first: jobs look up their sessions
         await h.jobs.start()
         pre = h.settings.prebuild_environments
@@ -259,6 +260,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             prebuild.cancel()
         await h.jobs.stop()
         await h.sessions.stop()
+        await h.fleet.gateway.stop()  # workstream F
         await h.fleet.stop()
 
     app = FastAPI(title="hangar", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None,
@@ -268,6 +270,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.oauth = oauth
     app.mount("/mcp", MCPAuthMiddleware(mcp_asgi, h.auth, oauth, rm_url))
     app.add_middleware(MCPPathMiddleware)
+    # --- workstream F: with HANGAR_GATEWAY_PORT=0 the git gateway shares the main port (grant tokens only).
+    if h.settings.gateway_url and not h.settings.gateway_port:
+        for i, r in enumerate(h.fleet.gateway.routes()):
+            app.router.routes.insert(i, r)
 
     @app.exception_handler(FleetError)
     @app.exception_handler(CredentialError)

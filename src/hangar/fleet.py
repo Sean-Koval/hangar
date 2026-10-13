@@ -19,6 +19,7 @@ from typing import Any
 from hangar.broker import Broker, CredentialError
 from hangar.config import Settings
 from hangar.envspec import BuildContext, EnvCatalog, EnvSpec, image_tag, render, repo_dirname, warm_pool_now
+from hangar.gateway import Gateway
 from hangar.harnesses import (
     HARNESSES,
     Harness,
@@ -142,6 +143,8 @@ class Fleet:
         # Live dashboard/CLI terminals per sandbox. Someone watching or typing keeps sessions awake.
         self.attached: collections.Counter[str] = collections.Counter()
         self._warm_applied: dict[str, int] = {}
+        # --- workstream F: git gateway. Grants for sandboxes in credential_mode: gateway (spec 0003).
+        self.gateway = Gateway(self)
 
     # ================================================================== setup
     async def start(self) -> None:
@@ -468,9 +471,11 @@ class Fleet:
         _restore_workspace: str | None = None,
         _skip_repo: bool = False,
         progress: Callable[[str], None] | None = None,
+        push_branch: str | None = None,
     ) -> Sandbox:
         """`progress` gets short plain-language updates while the sandbox starts (image build, waiting for a
-        node, cloning...), so callers can show where the time goes."""
+        node, cloning...), so callers can show where the time goes. `push_branch` (default: `work_branch`) is
+        the branch a gateway-mode sandbox may push."""
         active = [s for s in self.store.list(Sandbox) if s.state in ACTIVE]
         if len(active) >= self.settings.max_sandboxes:
             raise FleetError(f"fleet is at max_sandboxes={self.settings.max_sandboxes}; destroy some first")
@@ -532,6 +537,8 @@ class Fleet:
             await self._wait_running(prov, sb, stage=stage)
             if _parent:
                 await self._scrub_inherited_secrets(prov, sb)
+            # workstream F: in gateway mode this mints the grant and drops git secrets before anything is injected
+            creds = await self.gateway.attach(prov, sb, spec, creds, push_branch or work_branch, _parent)
             await self._apply_session(prov, sb, spec, hname, creds)
             if _restore_workspace:
                 await self._restore_workspace(prov, sb, _restore_workspace)
@@ -553,6 +560,7 @@ class Fleet:
 
             async def _cleanup() -> None:
                 try:
+                    self.gateway.revoke(sb.id)  # workstream F
                     await self.broker.release(sb, prov, write_back=False)
                     await prov.destroy(sb)
                 except Exception:  # noqa: BLE001
@@ -743,6 +751,7 @@ class Fleet:
                     log.warning("pre-destroy hook for %s failed: %s", sb.id, e)
         sb.state = SandboxState.STOPPING
         self.store.put(sb)
+        self.gateway.revoke(sb.id)  # workstream F: the grant dies before the sandbox does
         if prov:
             await self.broker.release(sb, prov, write_back=True)
             try:
@@ -780,6 +789,7 @@ class Fleet:
         sb = self.get(ref)
         sb.expires_at = max(sb.expires_at or now(), now()) + minutes * 60
         self.store.put(sb)
+        self.gateway.extend(sb)  # workstream F
         prov = self.providers.get(sb.provider)
         if prov and sb.state in ACTIVE:
             await prov.set_expiry(sb, sb.expires_at)
@@ -1073,6 +1083,7 @@ class Fleet:
                 _parent=snap.id,
                 _restore_workspace=snap.ref if snap.kind == SnapshotKind.WORKSPACE else None,
                 _skip_repo=same_provider or snap.kind == SnapshotKind.WORKSPACE,
+                push_branch=f"{work_branch_prefix}-{i + 1}" if work_branch_prefix else None,  # workstream F
             )
             if parent and parent.info.get("repo_path"):
                 sb.info["repo_path"] = parent.info["repo_path"]
@@ -1165,6 +1176,7 @@ class Fleet:
         sb.state = SandboxState.STOPPED
         sb.error = reason
         self.store.put(sb)
+        self.gateway.revoke(sb.id)  # workstream F
         for c in self.store.list(Credential):
             if c.leased_to == sb.id:  # the auth file is gone with the sandbox; keep the vault copy
                 c.leased_to = None

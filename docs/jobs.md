@@ -170,4 +170,4 @@ Issue text, comments and service context are untrusted input to the agent. Today
 - pushes only to new `hangar/` branches, never forced;
 - a prompt that marks context as data.
 
-Known gap: the callback check resolves the host before sending but doesn't pin the address, so DNS rebinding is not fully blocked. Until spec 0003 lands, the agent's sandbox still holds a git credential, so restrict `HANGAR_GITHUB_REPOS` to repos where a mistaken push to a `hangar/*` branch is acceptable, and keep PR merges human-approved.
+Known gap: the callback check resolves the host before sending but doesn't pin the address, so DNS rebinding is not fully blocked. Without the [git gateway](security.md#git-credential-gateway) the agent's sandbox holds a git credential, so restrict `HANGAR_GITHUB_REPOS` to repos where a mistaken push to a `hangar/*` branch is acceptable, and keep PR merges human-approved. With `HANGAR_GATEWAY_URL` set, jobs push through the gateway: the sandbox has no GitHub token and can push only its own branch and `hangar/**`.
