@@ -59,9 +59,13 @@ SETUP = r"""u={user}
 uid=$(id -u "$u" 2>/dev/null) || {{ echo "there is no user $u"; exit 3; }}
 [ "$uid" != 0 ] || {{ echo "the sandbox user is root"; exit 3; }}
 for t in setpriv tmux bash; do command -v $t >/dev/null || {{ echo "the image has no $t"; exit 3; }}; done
+as_agent() {{ setpriv --reuid="$u" --regid="$u" --init-groups "$@" </dev/null 2>&1; }}
+# What root and hangar's user run is found on this PATH (the provider's SYSTEM_PATH): none of it may be the agent's.
+for p in $(echo "$PATH" | tr : ' ') $(command -v setpriv tmux bash python3 tar timeout env tee); do
+  [ ! -e "$p" ] || ! as_agent test -w "$p" >/dev/null || {{ echo "$u can write $p (hangar's commands)"; exit 3; }}
+done
 # any sudo rights at all without a password (sudo -l needs none then): the agent may be root whenever it likes. Asked
 # under a terminal too when sudo wants one (`Defaults requiretty`): the agent can get one (script, tmux).
-as_agent() {{ setpriv --reuid="$u" --regid="$u" --init-groups "$@" </dev/null 2>&1; }}
 if command -v sudo >/dev/null; then
   out=$(as_agent sudo -n -l) && {{ echo "$u can use sudo (the environment has sudo: true)"; exit 3; }}
   case $out in *tty*|*terminal*)

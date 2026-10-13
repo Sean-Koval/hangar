@@ -296,7 +296,7 @@ async def test_the_agent_cant_reach_the_driver_on_docker(tmp_path, monkeypatch):
         await fleet.stop()
 
 
-async def test_sudo_that_wants_a_terminal_still_keeps_the_sandbox_single_user(tmp_path):
+async def test_the_setup_stays_single_user_where_the_agent_could_get_back_in(tmp_path):
     """`Defaults requiretty` makes `sudo -n -l` fail without a terminal, and the agent can get one (script, tmux):
     the setup must not take that for "no sudo" and split a sandbox whose agent can become root."""
     from hangar import isolation
@@ -326,6 +326,13 @@ async def test_sudo_that_wants_a_terminal_still_keeps_the_sandbox_single_user(tm
         await root(f"rm /etc/sudoers.d/{s.sandbox_user}")
         del sb.info["isolation"]
         assert await isolation.ensure(fleet, prov, sb) is True, sb.info["isolation"]
+
+        # hangar's user and root find their commands on the system PATH: one the agent can write is no split at all
+        # (a `tmux` it plants there runs as hangar's user, with CAP_SETUID).
+        await root("chmod 0777 /usr/local/bin")
+        del sb.info["isolation"]
+        assert await isolation.ensure(fleet, prov, sb) is False
+        assert "/usr/local/bin" in sb.info["isolation"]["why"], sb.info["isolation"]
     finally:
         await fleet.destroy_many(label="e2e-iso")
         await fleet.stop()
