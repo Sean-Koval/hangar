@@ -594,31 +594,30 @@ async def _wait_repair(svc: SessionService, s: Session, turn: SessionTurn, sb: S
     watch.number = _turn_no(s, turn)
     deadline = now() + settings.exchange_repair_timeout_minutes * 60
     errors = 0
-    try:
-        while svc._alive(sb.id):
-            try:
-                st = await svc.fleet.agent_status(sb.id, run.run_id or "", tail_lines=1, quiet=True)
-                errors = 0
-            except Exception:  # noqa: BLE001 - transient provider errors
-                errors += 1
-                if errors >= 5:
-                    return
-                st = None
-            if st and st["state"] == "finished":
-                return
-            await watch.poll()
-            over = over_budget(s.budget, add_usage(turn.usage, run.usage), turn.started_at)
-            stop = ("the repair turn timed out" if now() > deadline
-                    else f"the repair turn was stopped over budget: {over}" if over else None)
-            if stop:
-                with contextlib.suppress(Exception):
-                    await svc._sh(sb, f"tmux kill-session -t {shlex.quote(run.run_id or '')}")
-                turn.warnings.append(stop)
-                return
-            await asyncio.sleep(settings.session_poll_seconds)
-    finally:
-        await watch.finish(alive=svc._alive(sb.id))
-        turn.repair_usage = run.usage
+    while svc._alive(sb.id):
+        try:
+            st = await svc.fleet.agent_status(sb.id, run.run_id or "", tail_lines=1, quiet=True)
+            errors = 0
+        except Exception:  # noqa: BLE001 - transient provider errors
+            errors += 1
+            if errors >= 5:
+                break
+            st = None
+        if st and st["state"] == "finished":
+            break
+        await watch.poll()
+        over = over_budget(s.budget, add_usage(turn.usage, run.usage), turn.started_at)
+        stop = ("the repair turn timed out" if now() > deadline
+                else f"the repair turn was stopped over budget: {over}" if over else None)
+        if stop:
+            with contextlib.suppress(Exception):
+                await svc._sh(sb, f"tmux kill-session -t {shlex.quote(run.run_id or '')}")
+            turn.warnings.append(stop)
+            break
+        await asyncio.sleep(settings.session_poll_seconds)
+    # Not on shutdown (CancelledError): a restart re-attaches and reads the whole log again.
+    await watch.finish(alive=svc._alive(sb.id))
+    turn.repair_usage = run.usage or turn.repair_usage
 
 
 def _redact_bytes(svc: SessionService, data: bytes) -> bytes:
