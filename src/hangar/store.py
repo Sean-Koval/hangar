@@ -40,6 +40,10 @@ class Store:
         self._lock = threading.RLock()
         self._db = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
         self._db.execute("PRAGMA journal_mode=WAL")
+        # perf: in WAL mode NORMAL syncs at checkpoints, not on every commit; a crash of hangar loses nothing and
+        # the file stays consistent (only a power loss can roll back the last commits). Writes run on the event
+        # loop, so an fsync per state change was loop stall on network disks.
+        self._db.execute("PRAGMA synchronous=NORMAL")
         self._db.execute("PRAGMA busy_timeout=5000")
         for table, _ in _TABLES.values():
             self._db.execute(f"CREATE TABLE IF NOT EXISTS {table} (key TEXT PRIMARY KEY, data TEXT NOT NULL)")

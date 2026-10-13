@@ -392,7 +392,7 @@ class JobService:
         d["context_dir"] = self._ctxdir(job)
         s = self._session(job)
         d["session"] = {"name": s.name, "state": s.state.value, "checkpoints": len(s.checkpoints),
-                        "resume_command": self.sessions.view(s)["resume_command"]} if s else None
+                        "resume_command": self.sessions.resume_command(s)} if s else None  # perf: not a full view
         d["active"] = job.state not in JOB_TERMINAL and job.state != JobState.NEEDS_INPUT
         # workstream C: the session's turns are the job's turns, and carry live usage while one runs
         d["usage"] = u.model_dump(mode="json") if (u := self.usage(job)) else None

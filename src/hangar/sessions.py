@@ -127,6 +127,8 @@ class SessionService:
         self._tasks: set[asyncio.Task] = set()
         self._loop: asyncio.Task | None = None
         self._last_checked: dict[str, float] = {}  # last time a checkpoint ran (taken or found unchanged)
+        # perf: turns wait for their end inside the sandbox, which holds an I/O thread; keep half the pool free
+        self._waiters = asyncio.Semaphore(max(1, self.settings.io_threads // 2))
         self.activity = Activity(self.settings, fleet.broker.redact)  # workstream C: events, usage, budgets
 
     # ================================================================== lifecycle
@@ -335,13 +337,19 @@ class SessionService:
         last = s.turns[-1] if s.turns else None
         d["terminal_session"] = last.run_id if last else None
         d["last_summary"] = next((t.summary for t in reversed(s.turns) if t.summary), None)
-        d["resume_command"] = (h.resume_hint.format(id=s.harness_session)
-                               if h and h.resume_hint and s.harness_session and s.harness_session_for == s.harness
-                               else None)
+        d["resume_command"] = self.resume_command(s, h)
         for t in d["turns"]:  # workstream C: the collector's read position is internal
             t.pop("event_cursor", None)
         d["usage"] = u.model_dump(mode="json") if (u := total_usage(s.turns)) else None
         return exchange.scrub_turns(d)  # workstream E: attachment contents never leave in a view
+
+    @staticmethod
+    def resume_command(s: Session, h: Any = None) -> str | None:
+        """The harness command that resumes this session's conversation locally, when there is one."""
+        h = h or (get_harness(s.harness) if s.harness else None)
+        if h and h.resume_hint and s.harness_session and s.harness_session_for == s.harness:
+            return h.resume_hint.format(id=s.harness_session)
+        return None
 
     # ================================================================== internals: state
     def _env_for_repo(self, repo: str | None) -> str | None:
@@ -778,6 +786,7 @@ class SessionService:
         # --- workstream C: collect events and usage from the run log as it grows; stop the turn over budget.
         watch = self.activity.watch(self.fleet, s, turn, lambda: self._save(s))
         over: str | None = None
+        wait = 0.0  # the first look is immediate; later ones wait in the sandbox for the turn to end (perf)
         while True:
             if not s.sandbox_id or not self._alive(s.sandbox_id):
                 outcome = "gone"
@@ -786,7 +795,7 @@ class SessionService:
                 outcome = "cancelled"
                 break
             try:
-                st = await self.fleet.agent_status(s.sandbox_id, turn.run_id or "", tail_lines=5, quiet=True)
+                st = await self._turn_status(s, turn, wait, watch)
                 errors = 0
             except Exception:  # noqa: BLE001 - transient provider errors
                 errors += 1
@@ -794,6 +803,8 @@ class SessionService:
                     outcome = "gone" if not self._alive(s.sandbox_id or "") else "error"
                     break
                 st = None
+                await asyncio.sleep(self.settings.session_poll_seconds)
+            wait = self.settings.session_poll_seconds
             if st and st["state"] == "finished":
                 turn.exit_code = st["exit_code"]
                 break
@@ -803,7 +814,6 @@ class SessionService:
             if over := await watch.poll():  # workstream C
                 outcome = "over_budget"
                 break
-            await asyncio.sleep(self.settings.session_poll_seconds)
         turn.finished_at = now()
         turn.outcome, turn.outcome_reason = outcome, over  # workstream C
         if over:
@@ -848,6 +858,20 @@ class SessionService:
             s.sandbox_id = None
             self._set(s, SessionState.SUSPENDED, f"turn {len(s.turns)} finished; sandbox released")
         return outcome, raw
+
+    async def _turn_status(self, s: Session, turn: SessionTurn, wait: float, watch: Any) -> dict[str, Any]:
+        """The run's status after waiting up to `wait` seconds in the sandbox for it to finish (or, before its first
+        output, to print something): the end of a turn is noticed within ~0.2 s, not after up to a whole poll
+        interval, for the same number of round trips (perf). A wait holds a worker thread, so when half the pool
+        is already waiting this sleeps here instead."""
+        grow = 0 if watch.parser.next == 0 else None
+        if wait > 0 and not self._waiters.locked():
+            async with self._waiters:
+                return await self.fleet.agent_status(s.sandbox_id or "", turn.run_id or "", tail_lines=5, quiet=True,
+                                                     wait_seconds=wait, grow_from=grow)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        return await self.fleet.agent_status(s.sandbox_id or "", turn.run_id or "", tail_lines=5, quiet=True)
 
     async def _record_conversation(self, s: Session, sb: Sandbox, turn: SessionTurn, raw_log: str) -> None:
         """Remember the harness's conversation id so the next turn resumes it."""
@@ -964,12 +988,19 @@ class SessionService:
                 log.exception("session idle loop failed")
 
     async def tick(self) -> None:
-        """One pass: suspend idle sessions, checkpoint changed ones, keep active sandboxes from expiring."""
-        for s in list(self._sessions.values()):
-            try:
-                await self._tick_one(s)
-            except Exception:  # noqa: BLE001 - one bad session must not stall the rest
-                log.exception("session %s: idle check failed", s.id)
+        """One pass: suspend idle sessions, checkpoint changed ones, keep active sandboxes from expiring. Sessions
+        are checked a few at a time (perf: one after another, each costing round trips, a pass over 50 live
+        sessions took tens of seconds and delayed every suspend and periodic checkpoint behind it)."""
+        gate = asyncio.Semaphore(8)
+
+        async def one(s: Session) -> None:
+            async with gate:
+                try:
+                    await self._tick_one(s)
+                except Exception:  # noqa: BLE001 - one bad session must not stall the rest
+                    log.exception("session %s: idle check failed", s.id)
+
+        await asyncio.gather(*(one(s) for s in list(self._sessions.values())))
 
     async def _tick_one(self, s: Session) -> None:
         t = now()

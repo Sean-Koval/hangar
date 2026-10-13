@@ -92,8 +92,9 @@ class TokenAuth:
             return Principal("admin", "admin", ["admin"])
         for tok in self.store.list(ApiToken):
             if hmac.compare_digest(h, tok.token_hash):
-                tok.last_used = now()
-                self.store.put(tok)
+                if now() - (tok.last_used or 0) >= 60:  # perf: not a database write on every request
+                    tok.last_used = now()
+                    self.store.put(tok)
                 return Principal(tok.name, tok.id, list(tok.scopes), tok.callback_secret, tok.max_budget)
         return None
 

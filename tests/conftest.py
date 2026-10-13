@@ -111,10 +111,21 @@ class FakeProvider(Provider):
         # `tmux kill-server` (fork scrubbing) hits the real tmux server of whoever runs the tests,
         # e.g. the hangar agent session running this suite inside a sandbox.
         env = {"HOME": f"{box}/home/agent", "PATH": "/usr/bin:/bin:/usr/local/bin", "TMUX_TMPDIR": f"{box}/tmp"}
-        p = subprocess.run(["bash", "-c", f"set -a; . {box}/home/agent/.hangar/env; set +a; {cmd}"],
-                           capture_output=True, text=True, env=env,
-                           cwd=str(self._map(sandbox, cwd)) if cwd and self._map(sandbox, cwd).exists() else str(box))
-        return ExecResult(exit_code=p.returncode, stdout=p.stdout, stderr=p.stderr)
+        # Asynchronous, like a real provider's exec (a worker thread): a command that waits (a turn's end, a
+        # clone) must not freeze the event loop and everything else under test.
+        p = await asyncio.create_subprocess_exec(
+            "bash", "-c", f"set -a; . {box}/home/agent/.hangar/env; set +a; {cmd}", env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cwd=str(self._map(sandbox, cwd)) if cwd and self._map(sandbox, cwd).exists() else str(box))
+        try:
+            out, err = await p.communicate()
+        except BaseException:  # cancelled (a test ending mid-turn): don't leave the process to a closed loop
+            if p.returncode is None:
+                p.kill()
+            await asyncio.shield(p.wait())
+            raise
+        return ExecResult(exit_code=p.returncode, stdout=out.decode(errors="replace"),
+                          stderr=err.decode(errors="replace"))
 
     async def read_file(self, sandbox, path, limit=None):
         p = self._map(sandbox, path)

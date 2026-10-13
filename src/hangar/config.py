@@ -215,6 +215,11 @@ class Settings(BaseSettings):
     # it costs those clients elicitation (hangar asking you an agent's question) and resource notifications.
     # 2026-07-28 clients are sessionless either way.
     mcp_stateless_http: bool = False
+    # --- perf: control-plane responsiveness -----------------------------------
+    # Worker threads for blocking provider calls (docker-py, the kubernetes client, e2b) and file I/O. Python's
+    # default is min(32, CPUs + 4): 6 on a 2-vCPU control plane, so a few long execs (a clone, a verify, a turn
+    # waiting to end) stalled every other call. Also the Docker client's connection pool size.
+    io_threads: int = 128
 
     @property
     def db_path(self) -> Path:

@@ -29,6 +29,7 @@ from hangar.jobs import Caller, JobService, SubmitJob, handle_github
 from hangar.mcp_server import build_mcp, current_actor
 from hangar.models import Budget, ContextItem, Credential, CredentialKind, Resources, Sandbox
 from hangar.providers.base import ProviderError
+from hangar.runtime import FastJSON, install_io_executor  # perf
 from hangar.sessions import NewSession, SessionService
 from hangar.slack import SlackFrontDoor  # workstream B
 from hangar.store import Store
@@ -266,6 +267,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log.warning("Bootstrap admin token (also saved to %s/bootstrap-token):", h.settings.data_dir)
             log.warning("    %s", boot)
             log.warning("=" * 72)
+        install_io_executor(h.settings)  # perf: before anything starts blocking provider calls
         await h.fleet.start()
         await h.fleet.gateway.start()  # workstream F: the git gateway's own listener (HANGAR_GATEWAY_PORT)
         await h.sessions.start()  # first: jobs look up their sessions
@@ -321,7 +323,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         status = 404 if isinstance(exc, KeyError) or "no sandbox" in str(exc) else 400
         return JSONResponse({"error": str(exc).strip("'\"")}, status_code=status)
 
-    def actor(request: Request) -> str:
+    async def actor(request: Request) -> str:  # perf: async = no thread hop
         res = h.auth.verify_scopes(bearer_from_headers(request.headers))
         if res is None:
             raise HTTPException(401, "unauthorized", headers={"WWW-Authenticate": "Bearer"})
@@ -329,7 +331,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(403, f"token scopes {res[1]} do not allow this route")
         return f"ui:{res[0]}"
 
-    def job_caller(request: Request) -> Caller:
+    async def job_caller(request: Request) -> Caller:  # perf: async
         """Admin sees every job; a `jobs`-scoped token is restricted and sees only jobs it submitted."""
         p = h.auth.principal(bearer_from_headers(request.headers))
         if p is None:
@@ -499,7 +501,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ------------------------------------------------------------------ sandboxes
     @app.get("/api/sandboxes")
     async def sandboxes(include_stopped: bool = False, label: str | None = None, _: str = A):
-        return [sbd(s) for s in fleet.list(include_stopped, label)]
+        return FastJSON([sbd(s) for s in fleet.list(include_stopped, label)])  # perf: no jsonable_encoder
 
     @app.post("/api/sandboxes")
     async def create_sb(body: CreateSandbox, who: str = A):
@@ -721,7 +723,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/jobs")
     async def job_list(state: str | None = None, limit: int = 50, caller: Caller = J):
-        return [jobs.view(j) for j in jobs.list(state=state, owner=owner_filter(caller), limit=limit)]
+        return FastJSON([jobs.view(j) for j in jobs.list(state=state, owner=owner_filter(caller), limit=limit)])
 
     @app.get("/api/jobs/{job_id}")
     async def job_get(job_id: str, caller: Caller = J):
@@ -848,7 +850,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/sessions")
     async def session_list(include_archived: bool = False, limit: int = 100, _: str = A):
-        return [sessions.view(s) for s in sessions.list(include_archived=include_archived, limit=limit)]
+        return FastJSON([sessions.view(s) for s in sessions.list(include_archived=include_archived, limit=limit)])
 
     @app.get("/api/sessions/{ref}")
     async def session_get(ref: str, _: str = A):

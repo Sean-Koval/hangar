@@ -975,16 +975,27 @@ class Fleet:
         return {"sandbox": sb.id, "run_id": run_id, "harness": hname, "model": model, "terminal_session": run_id,
                 "log": f"{rdir}/{run_id}.log"}
 
-    async def agent_status(self, ref: str, run_id: str, tail_lines: int = 60, quiet: bool = False) -> dict[str, Any]:
+    async def agent_status(self, ref: str, run_id: str, tail_lines: int = 60, quiet: bool = False,
+                           wait_seconds: float = 0, grow_from: int | None = None) -> dict[str, Any]:
+        """`wait_seconds` (perf): first wait in the sandbox, up to that long (max 60), for the run to finish, or
+        with `grow_from` for its log to pass that many bytes. One round trip that answers within ~0.2 s of the
+        change, where a caller sleeping between polls noticed it half a poll interval late on average."""
         sb, prov = self._running(ref)
         if not quiet:
             self.touch(sb.id)  # a client following an agent counts as use; hangar's own polling doesn't
         if not re.fullmatch(r"run-[0-9a-f]{8}", run_id):
             raise FleetError(f"invalid run id '{run_id}'")
         rdir = f"/home/{self.settings.sandbox_user}/.hangar/runs"
+        wait_seconds = max(0.0, min(60.0, float(wait_seconds)))
+        wait = ""
+        if wait_seconds:
+            grew = (f" || [ \"$(stat -c %s {rdir}/{run_id}.log 2>/dev/null || echo 0)\" -gt {int(grow_from)} ]"
+                    if grow_from is not None else "")
+            wait = (f"for i in $(seq {max(1, round(wait_seconds * 5))}); do {{ [ -s {rdir}/{run_id}.exit ]{grew}; }} "
+                    "&& break; sleep 0.2; done; ")
         res = await prov.exec(
-            sb, f"cat {rdir}/{run_id}.exit 2>/dev/null || echo RUNNING; echo '---'; "
-                f"tail -n {int(tail_lines)} {rdir}/{run_id}.log 2>/dev/null", timeout=20)
+            sb, f"{wait}cat {rdir}/{run_id}.exit 2>/dev/null || echo RUNNING; echo '---'; "
+                f"tail -n {int(tail_lines)} {rdir}/{run_id}.log 2>/dev/null", timeout=20 + int(wait_seconds))
         head, _, tail = res.stdout.partition("---\n")
         status = head.strip()
         tail = _clip_tail(tail)

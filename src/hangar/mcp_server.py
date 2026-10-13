@@ -364,9 +364,12 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         return await fleet.run_agent(sandbox, prompt, harness, cwd, model=model, actor=actor())
 
     @tool()
-    async def agent_status(sandbox: str, run_id: str, tail_lines: int = 60) -> live.AgentRunOut:
-        """Check on a run_agent run: state (running/finished), exit code and output tail."""
-        return await fleet.agent_status(sandbox, run_id, tail_lines)
+    async def agent_status(sandbox: str, run_id: str, tail_lines: int = 60,
+                           wait_seconds: int = 0) -> live.AgentRunOut:
+        """State (running/finished), exit code and output tail of a run_agent run. With wait_seconds (up to 25) it
+        answers as soon as the run finishes, or after that long: use it instead of polling quickly."""
+        return await fleet.agent_status(sandbox, run_id, tail_lines,  # perf: long-poll
+                                        wait_seconds=max(0, min(25, wait_seconds)))
 
     # ------------------------------------------------------------------ clone
     @tool()
