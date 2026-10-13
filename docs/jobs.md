@@ -220,10 +220,17 @@ Rounds and limits:
 - **Budget:** the rounds share the turn's [budget](activity.md). Follow-up turns get what is left of it, not a fresh one.
 - **Job view:** each turn shows `verify_rounds`, and hangar's follow-up turns show `trigger: "verify"`.
 
-**Hangar's own check after the turn still decides delivery.** The gate runs inside the sandbox, where the agent works, so hangar doesn't rely on it:
+**Hangar's own check after the turn still decides delivery.** The gate is advisory: it helps an agent that wants to pass the check, and it is not a control against one that doesn't. It runs inside the sandbox, as the agent's user, so the agent can get past it:
 
-- **The hook can't be edited or switched off.** It lives on the command line, not in a file. Its `disableAllHooks: false` outranks the user, project and local settings files the agent can write. This was verified with Claude Code 2.1.296: `disableAllHooks: true` in all three files leaves the hook running. Only an operator's managed settings rank higher.
-- **The check stays the job's own.** The command is the job's `verify`, stored by hangar. The agent can change files the check reads, though. So when the gate is on, hangar runs [best-of-N's test check](#6-forks-and-best-of-n) on every job: a diff that changes, renames or deletes the check's own test files is listed in `result.touched_tests`. It is also called out in the PR body, and the PR is delivered as a draft.
+- **Settings files don't switch the hook off.** It lives on the command line, not in a file, and its `disableAllHooks: false` outranks the user, project and local settings files. This was verified with Claude Code 2.1.296: `disableAllHooks: true` in all three files leaves the hook running.
+- **Other ways around it remain.** Managed settings (`/etc/claude-code/managed-settings.json`) outrank the command line, and the agent can write them when the image gives it `sudo`, which is the default. The agent can also use up the rounds by writing to the rounds file, or put its own `claude`, `pytest` or other command first on `PATH` for this turn or, through `~/.hangar/env`, for later ones.
+
+What decides is hangar's check after the turn. The hook's result never feeds delivery: hangar runs the job's `verify` itself, and only that exit code decides between a PR and a draft.
+
+That check also runs in the sandbox, through the agent's `~/.hangar/env` (see the [threat model](security.md)). So it tells you whether the work passes, and it can't prove that the agent didn't game it. Review the PR as you would any contributor's. Two things help:
+
+- **The check stays the job's own.** The command is the job's `verify`, stored by hangar, and the agent can't change it.
+- **Edited tests are flagged.** The agent can change files the check reads. So when the gate is on, hangar runs [best-of-N's test check](#6-forks-and-best-of-n) on every job: a diff that changes, renames or deletes the check's own test files is listed in `result.touched_tests`. It is also called out in the PR body, and the PR is delivered as a draft. The check covers the test files only. When `verify` names paths, it covers those paths; otherwise, any test file and `conftest.py`. It doesn't cover runner configs such as `pyproject.toml`, `pytest.ini`, `package.json` or a `Makefile`.
 
 Turn the gate off per job with `"verify_in_loop": false` (`--no-verify-in-loop`), or for everything with `HANGAR_VERIFY_IN_LOOP=false`.
 
@@ -233,7 +240,9 @@ After hangar opens a job's PR, it reacts to the PR's CI results and reviews. It 
 
 - **CI:** a `check_run` or `check_suite` that completes as `failure`, `timed_out` or `startup_failure`, or a commit `status` of `failure` or `error`. It counts only on the commit hangar last pushed to the PR (the job's `result.head_sha`).
   - The agent gets `ci-failures.md` with each failing check's output and annotations, and, for GitHub Actions, the end of the job's log (`HANGAR_AUTOFIX_LOG_BYTES`, plus the `##[error]` lines before it).
-  - Logs are read with the control plane's token, and the download link GitHub redirects to is fetched without the token.
+  - Logs are read with the control plane's token. The download link GitHub redirects to is fetched without the token, and only from GitHub's log storage (`*.actions.githubusercontent.com`, `*.blob.core.windows.net`) or the API's own host. For other hosts the agent gets the check's output without the log.
+  - Only checks tied to the job's own PR count: by its number or the job's branch, and the job's head commit. A fork's PR can reuse the branch name and the commit, but its checks arrive without either.
+  - Anyone who can post a check or a status on that commit can start a round: people with write access, and apps with the *Checks* or *Commit statuses* permission. What they post is fenced as untrusted text in the agent's prompt, and the round limit applies.
 - **Reviews:** a review that requests changes, or that comments with inline comments, and inline review comments.
   - They count only from [trusted](triggers.md) people (by default the repo's owners, members and collaborators, or `HANGAR_GITHUB_TRUSTED`), never from hangar's own GitHub account or comments.
   - The agent gets `review-comments.md` with each comment's file, line and diff hunk. It is told to ask (`hangar-agent ask`, so the job goes to `needs_input`) when a comment is ambiguous, instead of guessing.
@@ -287,6 +296,6 @@ Issue text, comments and service context are untrusted input to the agent. Today
 - secret redaction of everything the agent writes that leaves hangar (summaries, verification output, PR bodies, comments, callbacks);
 - pushes only to new `hangar/` branches, never forced;
 - a prompt that marks context as data;
-- CI logs handed to auto-fix turns are marked as what CI printed, not instructions, and only trusted reviewers' comments start a turn.
+- CI output and logs handed to auto-fix turns are untrusted attachments, fenced in the prompt like an outsider's issue text, and only trusted reviewers' comments start a turn.
 
 Known gap: the callback check resolves the host before sending but doesn't pin the address, so DNS rebinding is not fully blocked. Without the [git gateway](security.md#git-credential-gateway) the agent's sandbox holds a git credential, so restrict `HANGAR_GITHUB_REPOS` to repos where a mistaken push to a `hangar/*` branch is acceptable, and keep PR merges human-approved. With `HANGAR_GATEWAY_URL` set, jobs push through the gateway: the sandbox has no GitHub token and can push only its own branch and `hangar/**`.

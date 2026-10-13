@@ -50,6 +50,10 @@ MAX_LOG_READ = 20_000_000  # bytes of an Actions log read to find its end
 _ACTIONS_JOB = re.compile(r"/actions/runs/\d+/job/(\d+)")
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _STAMP = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z ", re.M)
+# Where the logs endpoint's signed redirect may point: the hosts GitHub documents for Actions logs (self-hosted
+# runners' communication requirements: results-receiver.actions.githubusercontent.com and *.blob.core.windows.net
+# "for job summaries, logs, workflow artifacts and caches"), and the API's own host (GitHub Enterprise Server).
+LOG_HOSTS = (".actions.githubusercontent.com", ".blob.core.windows.net")
 
 
 # ====================================================================== settings
@@ -112,7 +116,8 @@ def _url(u: Any) -> str | None:
 
 
 def find_job(svc: JobService, repo: str, numbers: list[int], branches: list[str], sha: str | None) -> Job | None:
-    """The hangar job behind a PR: by PR number, else by branch, else by the head commit hangar pushed."""
+    """The hangar job behind a PR: by PR number, else by branch, else by the head commit hangar pushed. Callers pass
+    only what ties an event to the job's own PR: a fork's PR can reuse the branch name and even the head commit."""
     cands = [j for j in svc._jobs.values() if j.result.pr_number and (parse_repo(j.repo) or "").lower() == repo.lower()]
     for test in (lambda j: j.result.pr_number in numbers, lambda j: j.branch in branches,
                  lambda j: bool(sha) and j.result.head_sha == sha):
@@ -154,7 +159,9 @@ async def handle(svc: JobService, event: str, delivery: str | None, payload: dic
         sha = obj.get("head_sha") if isinstance(obj.get("head_sha"), str) else None
         numbers = [_int(_d(p).get("number")) for p in obj.get("pull_requests") or []]
         branch = obj.get("head_branch") or _d(obj.get("check_suite")).get("head_branch")
-        job = find_job(svc, repo, numbers, [branch] if isinstance(branch, str) else [], sha)
+        # Not by commit alone: a fork's PR whose head is the job's commit gets checks too, with an empty
+        # `pull_requests` and no `head_branch` (GitHub's webhook docs), run against a base the fork chose.
+        job = find_job(svc, repo, numbers, [branch] if isinstance(branch, str) else [], None)
         app, out = _d(obj.get("app")), _d(obj.get("output"))
         item = {"kind": event, "id": obj.get("id"), "sha": sha, "conclusion": obj.get("conclusion"),
                 "name": _clip(obj.get("name") or app.get("name") or event, 200), "app": app.get("slug"),
@@ -186,7 +193,7 @@ async def handle(svc: JobService, event: str, delivery: str | None, payload: dic
         body = obj.get("body") if isinstance(obj.get("body"), str) else ""
         if MARKER in body or (user and user == await own_login(svc)):
             return {"ignored": "hangar's own review"}
-        job = find_job(svc, repo, [_int(pr.get("number"))], [str(_d(pr.get("head")).get("ref") or "")], None)
+        job = find_job(svc, repo, [_int(pr.get("number"))], [], None)  # this PR: another may reuse the branch name
         if job is None:
             return {"ignored": "PR was not opened by a hangar job"}
         if not await svc.trust.trusted(user, obj.get("author_association")):
@@ -464,7 +471,8 @@ async def actions_log(svc: JobService, gh: GitHub, repo: str, job_id: int, cap: 
         r = await gh._client.get(f"/repos/{repo}/actions/jobs/{job_id}/logs")
         if r.status_code in (301, 302, 303, 307, 308):
             loc = r.headers.get("location") or ""
-            if not loc.startswith("https://"):
+            if not _log_host_ok(gh, loc):
+                log.info("auto-fix: Actions log for job %s: not following a redirect to %r", job_id, loc[:200])
                 return None
             buf = b""
             seen = 0
@@ -490,6 +498,19 @@ async def actions_log(svc: JobService, gh: GitHub, repo: str, job_id: int, cap: 
     tail = text[-cap:]
     errors = [ln for ln in text[:-cap].splitlines() if "##[error]" in ln][-20:]
     return ("\n".join(errors) + "\n…\n" if errors else "") + tail.strip()
+
+
+def _log_host_ok(gh: GitHub, url: str) -> bool:
+    """Whether a log redirect points at GitHub's storage, over https: it is fetched by the control plane, so a bad
+    one must not reach an internal address."""
+    try:
+        u = httpx.URL(url)
+    except (httpx.InvalidURL, ValueError):
+        return False
+    host = (u.host or "").lower().rstrip(".")
+    if u.scheme != "https" or not host or u.userinfo:
+        return False
+    return host == gh._client.base_url.host.lower() or host.endswith(LOG_HOSTS)
 
 
 async def _review_context(svc: JobService, gh: GitHub, repo: str, number: int, items: list[dict[str, Any]]

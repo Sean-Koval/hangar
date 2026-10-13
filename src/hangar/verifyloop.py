@@ -5,15 +5,17 @@ failure before it stops, and fixes it in the same conversation:
 
 * Claude Code: a Stop hook that runs the check and blocks the end of the turn with its output (exit 2). It is passed
   inline with `--settings` (HANGAR_CLAUDE_SETTINGS), so no file in the repo or in $HOME carries it, and it sets
-  `disableAllHooks: false`, which outranks the user, project and local settings the agent can write.
+  `disableAllHooks: false`, which outranks the user, project and local settings files.
 * Codex in a live turn: hangar's driver runs the check when the turn completes and steers the failure back into the
   conversation (HANGAR_VERIFY_GATE, read once at start).
 * One-shot harnesses (pi, agy, codex without python3): hangar starts a follow-up turn with the failure.
 
 Each failure sent back is a round; a turn and the follow-ups it needs share `max_verify_rounds`, the turn's time
 limit and its budget. Both in-turn gates record their rounds in `~/.hangar/runs/<run>.verify`, which hangar reads
-after the turn. They run in the sandbox, where the agent could change them, so hangar's own check after the turn
-stays the referee, and a diff that edits the check's own tests is flagged and delivered as a draft.
+after the turn. Both are advisory: they run in the sandbox as the agent's user, which can get past them (managed
+settings with the image's sudo, the rounds file, a command of its own first on PATH). So nothing they report feeds
+delivery: hangar's own check after the turn decides it, and a diff that edits the check's own tests is flagged and
+delivered as a draft.
 """
 
 from __future__ import annotations
