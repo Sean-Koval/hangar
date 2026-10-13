@@ -1006,11 +1006,16 @@ class Fleet:
             res = await prov.exec(
                 sb, f"{wait}cat {rdir}/{run_id}.exit 2>/dev/null || echo RUNNING; echo '---'; "
                     f"tail -n {int(tail_lines)} {rdir}/{run_id}.log 2>/dev/null", timeout=20 + int(wait_seconds))
-        head, _, tail = res.stdout.partition("---\n")
+        head, sep, tail = res.stdout.partition("---\n")
+        if not sep:  # review(perf): cut off (the sandbox went away mid-call): not a run that finished with -1
+            raise FleetError(f"could not read the status of {run_id} (exit {res.exit_code}): "
+                             f"{(res.stderr or res.stdout).strip()[-200:]}")
         status = head.strip()
         tail = _clip_tail(tail)
-        return {"run_id": run_id, "state": "running" if status == "RUNNING" else "finished",
-                "exit_code": None if status == "RUNNING" else int(status or -1), "output_tail": tail}
+        if status in ("RUNNING", ""):  # "": the exit file exists but is still being written
+            return {"run_id": run_id, "state": "running", "exit_code": None, "output_tail": tail}
+        return {"run_id": run_id, "state": "finished",
+                "exit_code": int(status) if re.fullmatch(r"-?\d+", status) else -1, "output_tail": tail}
 
     # ================================================================== snapshots / forks
     async def snapshot(self, ref: str, label: str | None = None, kind: str = "auto",

@@ -175,3 +175,20 @@ def test_io_pool_is_sized_from_the_cpus_unless_set(settings, monkeypatch):
     assert settings.io_pool == 128
     settings.io_threads = 12
     assert settings.io_pool == 12
+
+
+async def test_a_long_poll_cut_off_by_a_dying_sandbox_is_not_a_finished_run(fleet, monkeypatch):
+    """A long-poll spans most of a turn, so the sandbox going away mid-call is likely: the Kubernetes exec websocket
+    closes (exit -1, no output) and so does a Docker exec. That is an error to retry, never "finished, exit -1"."""
+    from hangar.fleet import FleetError
+    from hangar.models import ExecResult
+
+    sb = await fleet.create("base")
+    prov = fleet.providers["docker"]
+
+    async def cut_off(*_a, **_kw):
+        return ExecResult(exit_code=-1, stdout="", stderr="")
+
+    monkeypatch.setattr(prov, "exec", cut_off)
+    with pytest.raises(FleetError, match="status"):
+        await fleet.agent_status(sb.id, "run-0000abcd", wait_seconds=5)
