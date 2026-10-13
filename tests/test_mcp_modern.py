@@ -447,7 +447,9 @@ class AppThread:
         self.sock = socket.socket()
         self.sock.bind(("127.0.0.1", 0))
         self.port = self.sock.getsockname()[1]
-        self.server = uvicorn.Server(uvicorn.Config(app, log_level="warning"))
+        # integrate (#53): the fake provider's exec is an asyncio subprocess now. uvloop learns of child exits
+        # through SIGCHLD, which only the main thread receives, so on this thread's loop they would never finish.
+        self.server = uvicorn.Server(uvicorn.Config(app, log_level="warning", loop="asyncio"))
         self.thread = threading.Thread(target=self.server.run, kwargs={"sockets": [self.sock]}, daemon=True)
         self.thread.start()
         deadline = time.time() + 15
