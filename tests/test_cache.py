@@ -461,6 +461,39 @@ async def test_forks_keep_the_cache_policy_and_take_the_new_harness_model(svc, w
     assert _env(fleet, other, other.turns[-1])["HANGAR_MODEL"] == "claude-sonnet-5-5"
 
 
+@pytestmark_tmux
+async def test_a_split_turn_hands_the_harness_its_cache_env(svc, world, fleet, monkeypatch):
+    """integrate(#63 x #66): under the uid split the harness runs as the agent through setpriv, so the TTL env has to
+    travel in the run's exports file, which the driver's LAUNCH sources as the agent after ~/.hangar/env."""
+    from hangar import driver, isolation
+    from hangar.models import ExecResult
+
+    seen: dict[str, str] = {}
+
+    async def ensure(fleet_, prov, sb):
+        return True
+
+    async def start(prov, sb, settings, run_id, prompt, exports, command):
+        seen["exports"], seen["command"] = exports, command
+        return ExecResult(exit_code=1, stdout="", stderr="stopped by the test", duration_ms=1)
+
+    monkeypatch.setattr(isolation, "ensure", ensure)
+    monkeypatch.setattr(isolation, "start", start)
+    svc.new(NewSession(name="split", environment="cacheenv", repo=world["url"], message="start"),
+            owner="admin", requester="sean")
+    await settle(svc, "split")
+    assert "--reuid=agent" in seen["command"] and "export CLAUDE_CODE_PROMPT_CACHE_TTL=1h\n" in seen["exports"]
+    home, run_env = world["root"] / "agent-home", world["root"] / "run.env"
+    (home / ".hangar").mkdir(parents=True)
+    (home / ".hangar/env").write_text("CLAUDE_CODE_PROMPT_CACHE_TTL=5m\n")  # the run's exports come after it
+    run_env.write_text(seen["exports"])
+    out = subprocess.run(["bash", "-c", driver.LAUNCH, "hangar-agent", str(run_env), str(world["root"]), "env"],
+                         env={"HOME": str(home), "PATH": os.environ["PATH"]}, capture_output=True, text=True,
+                         check=True)
+    env = dict(ln.split("=", 1) for ln in out.stdout.splitlines() if "=" in ln)
+    assert env["CLAUDE_CODE_PROMPT_CACHE_TTL"] == "1h" and env["HANGAR_MODEL"] == "claude-opus-5-5"
+
+
 # ====================================================================== the real CLIs, offline
 CLAUDE, PI = os.environ.get("HANGAR_TEST_CLAUDE"), os.environ.get("HANGAR_TEST_PI")
 USAGE = {"input_tokens": 5, "output_tokens": 1, "cache_read_input_tokens": 300, "cache_creation_input_tokens": 1000,
