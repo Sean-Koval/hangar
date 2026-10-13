@@ -5,6 +5,7 @@
 //! request but `/health`. It runs as the sandbox user and can do nothing that user couldn't: the trust boundary is
 //! the control plane, which treats every answer from it as untrusted.
 
+mod auth;
 mod config;
 mod entry;
 mod files;
@@ -12,6 +13,8 @@ mod fs;
 mod paths;
 mod process;
 mod stream;
+#[cfg(test)]
+mod tests;
 
 pub mod proto {
     connectrpc::include_generated!();
@@ -27,7 +30,6 @@ use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use subtle::ConstantTimeEq;
 
 use crate::config::{Config, TOKEN_ENV};
 use crate::entry::Names;
@@ -37,16 +39,39 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub struct App {
     pub cfg: Arc<Config>,
     pub procs: Arc<process::Procs>,
+    pub auth: auth::Auth,
 }
 
-/// Deny by default: everything but `/health` needs `X-Access-Token`, compared in constant time.
-async fn require_token(State(app): State<Arc<App>>, req: Request, next: Next) -> Response {
-    let given = req.headers().get("x-access-token").map(|v| v.as_bytes()).unwrap_or_default();
-    if bool::from(given.ct_eq(app.cfg.token.as_bytes())) {
-        return next.run(req).await;
-    }
-    let body = serde_json::json!({"code": "unauthenticated", "message": "missing or wrong X-Access-Token"});
+fn denied(why: &str) -> Response {
+    let body = serde_json::json!({"code": "unauthenticated", "message": why});
     (StatusCode::UNAUTHORIZED, [("content-type", "application/json")], body.to_string()).into_response()
+}
+
+/// Deny by default: everything but `/health` needs the token or a signature made with it (auth.rs).
+async fn require_auth(State(app): State<Arc<App>>, req: Request, next: Next) -> Response {
+    let h = req.headers();
+    let token = h.get("x-access-token").map(|v| v.as_bytes());
+    let sig = h.get("x-hangar-sig").and_then(|v| v.to_str().ok());
+    let pq = req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/");
+    match app.auth.check(token, sig, req.method().as_str(), pq) {
+        auth::Check::Ok => next.run(req).await,
+        auth::Check::Denied(why) => denied(why),
+        auth::Check::Body(p) if req.method() == axum::http::Method::POST && req.uri().path() == "/files" => {
+            let mut req = req;
+            req.extensions_mut().insert(p); // checked by the upload handler once the body is on disk
+            next.run(req).await
+        }
+        auth::Check::Body(p) => {
+            let (parts, body) = req.into_parts();
+            let Ok(bytes) = axum::body::to_bytes(body, auth::MAX_SIGNED_BODY).await else {
+                return denied("signed request body is too large or was cut off");
+            };
+            if !app.auth.verify(&p, &bytes) {
+                return denied("X-Hangar-Sig does not match the request");
+            }
+            next.run(Request::from_parts(parts, axum::body::Body::from(bytes))).await
+        }
+    }
 }
 
 /// Hangar extension: who and what this daemon is. Authenticated, so a 200 also proves the token is the right one.
@@ -75,14 +100,15 @@ pub fn router(cfg: Arc<Config>) -> (Router, Arc<process::Procs>) {
     let procs = Arc::new(process::Procs::new(cfg.clone()));
     let names = Arc::new(Names::default());
     let fs = Arc::new(fs::Fs::new(cfg.clone(), names));
-    let app = Arc::new(App { cfg, procs: procs.clone() });
+    let auth = auth::Auth::new(cfg.token.clone());
+    let app = Arc::new(App { cfg, procs: procs.clone(), auth });
     let connect = connectrpc::Router::new().add_service(procs.clone()).add_service(fs);
     let protected = Router::new()
         .route("/files", get(files::download).post(files::upload))
         .route("/info", get(info))
         .route("/envs", get(envs))
         .fallback_service(connectrpc::ConnectRpcService::new(connect))
-        .layer(middleware::from_fn_with_state(app.clone(), require_token))
+        .layer(middleware::from_fn_with_state(app.clone(), require_auth))
         .with_state(app);
     let r = Router::new().route("/health", get(|| async { StatusCode::NO_CONTENT })).merge(protected);
     (r, procs)

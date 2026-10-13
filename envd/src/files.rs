@@ -20,6 +20,8 @@ use serde::Deserialize;
 use tokio::io::AsyncWriteExt;
 
 use crate::App;
+use crate::auth::PendingSig;
+use sha2::{Digest, Sha256};
 use crate::paths::{check_user, check_user_header, resolve};
 
 #[derive(Deserialize)]
@@ -87,6 +89,7 @@ async fn write_stream<E: std::fmt::Display>(
     dst: &Path,
     mode: Option<u32>,
     mut body: impl Stream<Item = Result<Bytes, E>> + Unpin,
+    sig: Option<(&App, &PendingSig)>,
 ) -> Result<(), Response> {
     let parent = dst.parent().unwrap_or(Path::new("/"));
     let name = dst.file_name().ok_or_else(|| error(StatusCode::BAD_REQUEST, "path names a directory"))?;
@@ -108,11 +111,18 @@ async fn write_stream<E: std::fmt::Display>(
             .open(&tmp)
             .await
             .map_err(|e| error(io_status(&e), format!("cannot create {}: {e}", tmp.display())))?;
+        let mut hash = Sha256::new();
         while let Some(chunk) = body.next().await {
             let chunk = chunk.map_err(|e| error(StatusCode::BAD_REQUEST, format!("upload interrupted: {e}")))?;
+            hash.update(&chunk);
             f.write_all(&chunk).await.map_err(|e| error(io_status(&e), format!("cannot write {}: {e}", dst.display())))?;
         }
         f.flush().await.map_err(|e| error(io_status(&e), format!("cannot write {}: {e}", dst.display())))?;
+        if let Some((app, p)) = sig
+            && !p.verify(app.auth.token(), &hash.finalize())
+        {
+            return Err(error(StatusCode::UNAUTHORIZED, "X-Hangar-Sig does not match the upload"));
+        }
         let perm = std::fs::Permissions::from_mode(mode.or(existing_mode).unwrap_or(0o644));
         tokio::fs::set_permissions(&tmp, perm)
             .await
@@ -144,6 +154,7 @@ fn written(paths: &[PathBuf]) -> Response {
 
 pub async fn upload(State(app): State<Arc<App>>, Query(q): Query<FileQuery>, req: Request) -> Response {
     let headers = req.headers().clone();
+    let sig = req.extensions().get::<PendingSig>().cloned();
     if headers.get(header::CONTENT_ENCODING).is_some_and(|v| v != "identity") {
         return error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "compressed uploads are not supported; send the file as is");
     }
@@ -154,6 +165,9 @@ pub async fn upload(State(app): State<Arc<App>>, Query(q): Query<FileQuery>, req
     };
     let ctype = headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("").to_ascii_lowercase();
     if ctype.starts_with("multipart/form-data") {
+        if sig.is_some() {
+            return error(StatusCode::UNAUTHORIZED, "signed uploads must be application/octet-stream");
+        }
         let mut mp = match Multipart::from_request(req, &()).await {
             Ok(m) => m,
             Err(e) => return error(StatusCode::BAD_REQUEST, format!("bad multipart body: {e}")),
@@ -178,7 +192,7 @@ pub async fn upload(State(app): State<Arc<App>>, Query(q): Query<FileQuery>, req
                     Err(e) => Some((Err(e), f)),
                 }
             }));
-            if let Err(r) = write_stream(&dst, mode, chunks).await {
+            if let Err(r) = write_stream(&dst, mode, chunks, None).await {
                 return r;
             }
             done.push(dst);
@@ -193,7 +207,7 @@ pub async fn upload(State(app): State<Arc<App>>, Query(q): Query<FileQuery>, req
         Err(r) => return r,
     };
     let body = req.into_body().into_data_stream();
-    match write_stream(&dst, mode, body).await {
+    match write_stream(&dst, mode, body, sig.as_ref().map(|p| (&*app, p))).await {
         Ok(()) => written(&[dst]),
         Err(r) => r,
     }
