@@ -100,6 +100,8 @@ A `jobs` token can carry a budget cap (`hangar token create svc --scope jobs --m
 
 To run several attempts and keep the best, see [§6](#6-forks-and-best-of-n).
 
+From another agent (Google ADK's `RemoteA2aAgent`, any A2A client): hangar is an A2A agent at `/a2a`, with its card at `/.well-known/agent-card.json`. A task is a job, and a message in the same context is a follow-up. See [a2a.md](a2a.md).
+
 ## 3. Verify callbacks
 
 Each callback is `POST` with `{"event": "job.started" | "job.needs_input" | "job.finished", "job": {...}}` and the header `X-Hangar-Signature: sha256=<hex HMAC-SHA256 of the raw body>`. A receiver checks it like this:

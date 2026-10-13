@@ -189,6 +189,13 @@ class Settings(BaseSettings):
     gateway_credential: str | None = None  # upstream credential when the sandbox has no git credential of its own
     gateway_max_push_mb: int = 512
     gateway_timeout_seconds: float = 120.0  # upstream connect/read timeout (per read, not per request)
+    # --- workstream G: a2a (spec 0011, docs/a2a.md) -------------------------
+    a2a_enabled: bool = True  # agent card at /.well-known/agent-card.json, JSON-RPC at /a2a
+    a2a_default_repo: str | None = None  # repo for A2A tasks that don't name one in their metadata
+    a2a_poll_seconds: float = 1.0  # how often streams and push notifications look for job changes
+    a2a_max_wait_seconds: int = 1800  # a blocking SendMessage returns the task as it stands after this long
+    a2a_max_request_bytes: int = 4_000_000  # base64 attachments are ~4/3 of HANGAR_JOB_MAX_CONTEXT_BYTES
+    a2a_max_push_configs: int = 5  # push notification configs per task
 
     @property
     def db_path(self) -> Path:

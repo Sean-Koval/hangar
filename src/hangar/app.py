@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from hangar import exchange
+from hangar.a2a import A2AServer
 from hangar.auth import SCOPES, TokenAuth, bearer_from_headers
 from hangar.broker import Broker, CredentialError
 from hangar.config import Settings, get_settings
@@ -245,6 +246,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     h = Hangar(settings)
     mcp = build_mcp(h.fleet, h.jobs, h.sessions, triggers=h.triggers)
     mcp_asgi = mcp.streamable_http_app(streamable_http_path="/", stateless_http=True, host="0.0.0.0")
+    a2a = A2AServer(h.jobs, h.auth, h.vault, h.settings) if h.settings.a2a_enabled else None  # workstream G
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -261,6 +263,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await h.sessions.start()  # first: jobs look up their sessions
         await h.jobs.start()
         await h.triggers.start()  # after jobs: it expires approvals and submits scheduled jobs
+        if a2a:
+            await a2a.start()
         pre = h.settings.prebuild_environments
         if pre is None:
             pre = [e.strip() for v in h.settings.github_repos.values() for e in v.split(",") if e.strip()]
@@ -270,6 +274,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if prebuild:
             prebuild.cancel()
         await h.triggers.stop()
+        if a2a:
+            await a2a.stop()
         await h.jobs.stop()
         await h.sessions.stop()
         await h.fleet.gateway.stop()  # workstream F
@@ -286,6 +292,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if h.settings.gateway_url and not h.settings.gateway_port:
         for i, r in enumerate(h.fleet.gateway.routes()):
             app.router.routes.insert(i, r)
+    if a2a:
+        a2a.mount(app)  # /.well-known/agent-card.json and JSON-RPC at /a2a (docs/a2a.md)
 
     @app.exception_handler(FleetError)
     @app.exception_handler(CredentialError)
@@ -359,6 +367,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 f'claude mcp add --transport http hangar {url} --header "Authorization: Bearer $HANGAR_TOKEN"'
             ),
             "oauth": app.state.oauth is not None,
+            "a2a_agent_card": (h.settings.public_url.rstrip("/") + "/.well-known/agent-card.json") if a2a else None,
             "chatgpt": (
                 f"In ChatGPT: Settings → Connectors → Create. MCP server URL: {url}. Authentication: OAuth. "
                 "ChatGPT registers itself and opens Hangar's approval page, where you paste a hangar token."
