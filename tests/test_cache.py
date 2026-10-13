@@ -151,6 +151,10 @@ async def test_stagger_waits_at_most_seconds_after_the_leader_started():
     assert await st.wait("p", 0) == 0.0 and await st.wait("q", 0) == 0.0  # HANGAR_CACHE_STAGGER_SECONDS=0
     st.group(["solo"])
     assert await st.wait("solo", 5) == 0.0
+    st.group(["l", "f"])
+    await st.wait("l", 5)
+    assert await st.wait("l", 5) == 0.0  # the leader's next turn (it never answered): never waits on itself
+    assert await st.wait("f", 5) == 0.0 and not {"l", "f"} & set(st._of)  # and its sibling goes ahead
 
 
 def test_stagger_forgets_siblings_that_never_started(monkeypatch):

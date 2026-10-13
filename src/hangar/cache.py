@@ -191,6 +191,9 @@ class Stagger:
         if g is None or seconds <= 0:
             return 0.0
         g.members.discard(sid)
+        if g.leader == sid:  # the leader's next turn: its first one has ended, whatever the others saw
+            g.ready.set()
+            return 0.0
         if g.leader is None:
             g.leader, g.led_at = sid, time.monotonic()
             if g.members:
