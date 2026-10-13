@@ -11,14 +11,16 @@ A session turn of a harness with a structured mode (Claude Code, Codex) runs und
   event watcher records it on the turn (`approvals`), and anyone with the session (REST, MCP, CLI) answers it.
 
 Commands reach the driver as files moved into `<run>.ctl/in/`, each signed with a per-run key that hangar keeps
-encrypted in its store (the driver deletes its copy at start), so nothing else in the sandbox can approve a tool
-call or steer the agent by writing a file.
+encrypted in its store (the driver deletes its copy at start and keeps the agent out of its memory), and the driver
+signs its answers, so the agent can't answer for a person or for the driver by writing files. It shares a user with
+the driver, though: code a person allows to run can tamper with later turns (docs/steering.md).
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import hmac
 import json
 import logging
 import re
@@ -27,7 +29,7 @@ import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from hangar.driver import DECISIONS, MAX_TEXT, sign
+from hangar.driver import DECISIONS, ENDED, MAX_TEXT, sign
 from hangar.events import RunEvent
 from hangar.harnesses import Harness, get_harness
 from hangar.models import Approval, Session, SessionState, SessionTurn, Steer, new_id, now
@@ -107,8 +109,9 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
     q = shlex.quote
     fallback = (f"{h.run}" if pol == "auto" else
                 f"echo 'hangar: approvals={pol} needs python3 >= 3.8 in the sandbox' >&2; false")
-    command = (f"if python3 -c 'import sys; sys.exit(sys.version_info < (3, 8))' 2>/dev/null; then "
-               f"python3 {q(driver)} --harness {h.live} --ctl {q(ctl)} --approvals {pol} "
+    # -I: no PYTHON* variables, user site-packages or modules beside the driver, all of which the agent can write
+    command = (f"if python3 -I -c 'import sys; sys.exit(sys.version_info < (3, 8))' 2>/dev/null; then "
+               f"python3 -I {q(driver)} --harness {h.live} --ctl {q(ctl)} --approvals {pol} "
                f"--approval-timeout {int(svc.settings.approval_timeout_seconds)} -- {h.live_run}; "
                f"else touch {q(ctl)}/one-shot; {fallback}; fi")
     return run_id, command
@@ -143,7 +146,7 @@ async def command(svc: SessionService, s: Session, turn: SessionTurn, op: str, *
               f"[ -e \"$c/one-shot\" ] && {{ rm -f \"$c/.{cid}\"; exit 4; }}; "
               f"mv \"$c/.{cid}\" \"$c/in/{cid}.json\" 2>/dev/null || {{ rm -f \"$c/.{cid}\"; "
               f"[ -e \"$c/done\" ] || [ -s {ended} ] && exit 3; exit 6; }}; "
-              f"for i in $(seq {int(ACK_WAIT * 10)}); do grep -F -m1 '\"id\": \"{cid}\"' \"$c/acks\" 2>/dev/null "
+              f"for i in $(seq {int(ACK_WAIT * 10)}); do grep -F '\"id\": \"{cid}\"' \"$c/acks\" 2>/dev/null "
               "&& exit 0; sleep 0.1; done; exit 5")
     res = await svc._sh(sb, script, timeout=int(ACK_WAIT) + 30)
     if res.exit_code == 3:
@@ -154,11 +157,25 @@ async def command(svc: SessionService, s: Session, turn: SessionTurn, op: str, *
         raise SteerError(f"the agent's driver did not answer within {int(ACK_WAIT)} s")
     if res.exit_code == 6:
         raise NotReady("the agent is still starting; try again in a moment")
+    if res.exit_code != 0:
+        raise SteerError(f"could not reach the turn: {(res.stderr or res.stdout).strip()[-300:]}")
+    # Only the driver's own answer counts: the agent runs as the same user and can write to `acks` as well.
+    ack = next((a for a in map(_json, res.stdout.splitlines()) if a.get("id") == cid
+                and isinstance(a.get("mac"), str) and hmac.compare_digest(a["mac"], sign(key, a))), None)
+    if ack is None:
+        raise SteerError("the answer to this command was not signed by the turn's driver: something in the sandbox "
+                         "is tampering with hangar's control channel")
+    if not ack.get("ok") and ack.get("error") == ENDED:
+        raise TurnEnded("the turn has ended")
+    return ack
+
+
+def _json(line: str) -> dict[str, Any]:
     try:
-        ack = json.loads(res.stdout.strip().splitlines()[-1])
-    except (ValueError, IndexError) as e:
-        raise SteerError(f"could not reach the turn: {(res.stderr or res.stdout).strip()[-300:]}") from e
-    return ack if isinstance(ack, dict) else {"ok": False, "error": "malformed answer"}
+        d = json.loads(line)
+    except ValueError:
+        return {}
+    return d if isinstance(d, dict) else {}
 
 
 def running_turn(s: Session) -> SessionTurn:
@@ -295,22 +312,25 @@ async def interrupt(svc: SessionService, s: Session, requester: str, text: str |
     if t.live:
         try:
             ack = await command(svc, s, t, "interrupt", **({"text": text} if text else {}))
-            if not ack.get("ok"):
-                raise SteerError(f"the agent did not take the interrupt: {ack.get('error')}")
-            st.status = "delivered"
+            if ack.get("ok"):
+                st.status = "delivered"
+            else:
+                log.warning("session %s: the driver refused an interrupt (%s); stopping the run", s.id,
+                            ack.get("error"))
         except NotLive:
             t.live = False  # the sandbox had no python3: stop the one-shot run below
-    if not t.live:
-        if text and s.job_id:
-            raise SteerError("this turn runs one-shot and can't take a message: interrupt it without one, then "
-                             "follow up on the job")
+        except TurnEnded:
+            raise
+        except SteerError as e:  # still starting, no answer, or an answer not signed by the driver
+            log.warning("session %s: an interrupt was not confirmed (%s); stopping the run", s.id, e)
+    if st.status != "delivered":  # one-shot, or the driver didn't confirm it: an interrupt always stops the run
         await kill(svc, s, t)
         st.status = "queued" if text else "delivered"
     t.steers.append(st)
     svc._save(s)
     svc.fleet.audit(requester, "session.interrupt", s.id, run=t.run_id, message=(text or "")[:300])
-    if st.status == "queued":  # a one-shot run was stopped: its message starts the next turn
-        _later(svc, s, st)
+    if st.status == "queued" and not s.job_id:  # the run was stopped: its message starts the next turn
+        _later(svc, s, st)  # (a job's turn ends `interrupted`, and the job carries on with it: jobs.py)
     return st
 
 
@@ -336,8 +356,10 @@ def track(turn: SessionTurn, events: list[RunEvent]) -> bool:
         if ev.data.get("status") == "pending":
             if a is None:
                 exp = ev.data.get("expires_at")
+                detail = ev.data.get("detail")
                 turn.approvals.append(Approval(id=aid, tool=str(ev.data.get("tool") or ""),
-                                               detail=ev.text.split(": ", 1)[-1], requested_at=ev.ts,
+                                               detail=detail if isinstance(detail, str) else ev.text.split(": ", 1)[-1],
+                                               requested_at=ev.ts,
                                                expires_at=float(exp) if isinstance(exp, int | float) else None))
                 changed = True
         elif a is not None and a.status == "pending" and ev.data.get("status") in (
@@ -370,8 +392,8 @@ def view(s: Session) -> dict[str, Any]:
 
 async def answer(svc: SessionService, s: Session, approval_id: str, decision: str, requester: str,
                  message: str | None = None) -> Approval:
-    """Allow or deny a tool call the agent is waiting on. `allow_always` also allows the same kind of call for
-    the rest of this conversation (never written to the repo's settings)."""
+    """Allow or deny a tool call the agent is waiting on. `allow_always` also allows calls like it for the
+    rest of this turn (never written to any settings; the next turn asks again)."""
     if decision not in DECISIONS:
         raise SteerError(f"decision must be one of {', '.join(DECISIONS)}")
     if message is not None and len(message) > MAX_MESSAGE:

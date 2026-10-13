@@ -600,9 +600,10 @@ def _driver_event(e: dict[str, Any]) -> list[RunEvent]:
     t, aid = e["type"].removeprefix("hangar."), e.get("id")
     if t == "approval_request" and isinstance(aid, str):
         detail = e.get("detail") if isinstance(e.get("detail"), str) else ""
-        return [RunEvent(kind="approval_request", text=_clip(f"{e.get('tool') or '?'}: {detail}"),
-                         data=_small({"id": aid, "tool": e.get("tool"), "status": "pending", "policy": e.get("policy"),
-                                      "expires_at": e.get("expires_at")}))]
+        data = _small({"id": aid, "tool": e.get("tool"), "status": "pending", "policy": e.get("policy"),
+                       "expires_at": e.get("expires_at")})
+        data["detail"] = detail[:2200]  # whole (driver.shown): the person approving must see all of it
+        return [RunEvent(kind="approval_request", text=_clip(f"{e.get('tool') or '?'}: {detail}"), data=data)]
     if t == "approval_resolved" and isinstance(aid, str) and e.get("decision") in _DECIDED:
         status = _DECIDED[e["decision"]]
         by = e.get("by") or "hangar"

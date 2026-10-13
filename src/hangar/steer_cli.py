@@ -34,7 +34,7 @@ def interrupt(ref: str = typer.Argument(..., help="Session name or id."),
 def approvals(ref: str = typer.Argument(..., help="Session name or id."),
               allow: str | None = typer.Option(None, "--allow", help="Allow this approval id."),
               always: str | None = typer.Option(None, "--always", help="Allow it, and calls like it for the rest of "
-                                                "the conversation."),
+                                                "this turn."),
               deny: str | None = typer.Option(None, "--deny", help="Deny this approval id."),
               message: str | None = typer.Option(None, "--message", "-m", help="Note to the agent (with --deny)."),
               watch: bool = typer.Option(False, "--watch", "-w", help="Keep listing until the turn ends."),
@@ -48,7 +48,7 @@ def approvals(ref: str = typer.Argument(..., help="Session name or id."),
     if chosen:
         decision, aid = chosen[0]
         a = cli._call("POST", f"/api/sessions/{ref}/approvals/{aid}", json={"decision": decision, "message": message})
-        return typer.secho(f"{a['id']} {a['status']}: {a['tool']} {a['detail'][:200]}", fg="green")
+        return typer.secho(f"{a['id']} {a['status']}: {a['tool']} {a['detail']}", fg="green")
     shown: set[str] = set()
     while True:
         v = cli._call("GET", f"/api/sessions/{ref}/approvals")
@@ -58,7 +58,7 @@ def approvals(ref: str = typer.Argument(..., help="Session name or id."),
             if a["id"] not in shown and not as_json:
                 shown.add(a["id"])
                 left = int((a.get("expires_at") or time.time()) - time.time())
-                typer.echo(f"{a['id']}  {a['tool']}: {a['detail'][:300]}  (denied in {max(0, left)}s if unanswered)")
+                typer.echo(f"{a['id']}  {a['tool']}: {a['detail']}  (denied in {max(0, left)}s if unanswered)")
         if not watch or not v["running"]:
             if not v["pending"] and not as_json:
                 typer.echo("No tool calls are waiting." + ("" if v["running"] else " (no turn is running)"))

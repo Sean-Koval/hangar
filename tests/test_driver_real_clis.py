@@ -33,25 +33,31 @@ KEY = b"0123456789abcdef"
 class Turn:
     """One driver run around a real CLI, with hangar's side of the control channel."""
 
-    def __init__(self, which: str, tmp: Path, approvals: str = "ask", delay: float = 0.0):
-        self.srv, port = fake_models.serve(delay)
-        home, self.ctl = tmp / "home", tmp / "ctl"
+    def __init__(self, which: str, tmp: Path, approvals: str = "ask", delay: float = 0.0,
+                 call: tuple[str, dict] | None = None, shell: str | None = None, resume: str | None = None,
+                 prompt: str = "RUN please make the probe file"):
+        """`resume`: a later turn of a conversation (Claude Code), in the same home as the turn before."""
+        self.srv, port = fake_models.serve(delay, call, shell)
+        home, self.ctl = tmp / "home", tmp / f"ctl-{uuid.uuid4().hex[:6]}"
         self.work = home / "work"
-        self.work.mkdir(parents=True)
+        self.work.mkdir(parents=True, exist_ok=True)
         self.ctl.mkdir()
         (self.ctl / "key").write_bytes(KEY)
-        (tmp / "prompt").write_text("RUN please make the probe file")
+        (self.ctl / "prompt").write_text(prompt)
         env = {k: v for k, v in os.environ.items() if not k.startswith(("ANTHROPIC", "CLAUDE", "OPENAI", "CODEX"))}
-        env.update(HOME=str(home), HANGAR_PROMPT_FILE=str(tmp / "prompt"))
+        env.update(HOME=str(home), HANGAR_PROMPT_FILE=str(self.ctl / "prompt"))
+        self.session = resume or str(uuid.uuid4())
         if which == "claude":
             (home / ".claude.json").write_text(json.dumps({"hasCompletedOnboarding": True}))
             env.update(ANTHROPIC_API_KEY="sk-ant-fake", ANTHROPIC_BASE_URL=f"http://127.0.0.1:{port}",
                        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1", DISABLE_AUTOUPDATER="1")
             cmd = [CLIS[which], "-p", "--input-format", "stream-json", "--output-format", "stream-json",
-                   "--verbose", "--session-id", str(uuid.uuid4()), "--model", "claude-sonnet-5-5"]
+                   "--verbose", "--resume" if resume else "--session-id", self.session, "--model", "claude-sonnet-5-5"]
         else:
-            (home / ".codex").mkdir()
+            (home / ".codex").mkdir(exist_ok=True)
             env.update(CODEX_HOME=str(home / ".codex"), HANGAR_MODEL="gpt-5.3-codex")
+            if resume:
+                env["HANGAR_SESSION_RESUME"] = resume  # the driver opens it with thread/resume
             cmd = [CLIS[which], "-c", f'model_providers.fake={{name="fake",base_url="http://127.0.0.1:{port}/v1",'
                                       'wire_api="responses"}', "-c", "model_provider=fake", "app-server"]
         self.p = subprocess.Popen([sys.executable, driver.__file__, "--harness", which, "--ctl", str(self.ctl),
@@ -149,3 +155,34 @@ def test_auto_runs_without_prompts(cli, tmp_path):
     t = Turn(cli, tmp_path, approvals="auto")
     assert t.finish() == 0 and (t.work / "probe.txt").exists()
     assert not [x for x in t.lines if x.get("type") == "hangar.approval_request"]
+
+
+@pytest.mark.skipif("claude" not in CLIS, reason="set HANGAR_TEST_CLAUDE")
+def test_deny_risky_refuses_reading_credentials_claude(tmp_path):
+    """Claude Code asks before reading outside the working tree; deny-risky must refuse credentials."""
+    secret = tmp_path / "home" / ".ssh" / "id_ed25519"
+    secret.parent.mkdir(parents=True)
+    secret.write_text("PRIVATE-KEY-9911")
+    t = Turn("claude", tmp_path, approvals="deny-risky", call=("Read", {"file_path": str(secret)}))
+    assert t.finish() == 0
+    resolved = [x for x in t.lines if x.get("type") == "hangar.approval_resolved"]
+    assert [r["decision"] for r in resolved] == ["deny"] and "credentials" in resolved[0]["message"]
+    assert "PRIVATE-KEY-9911" not in json.dumps(t.lines)
+
+
+def test_allow_always_lasts_for_the_turn_only(cli, tmp_path):
+    """`allow_always` is Claude Code's own suggestions with destination `session`, or codex's `acceptForSession`:
+    nothing is written to the repo's or the user's settings, and the next turn (a new process resuming the
+    conversation) asks again."""
+    t = Turn(cli, tmp_path)
+    req = t.wait_for("hangar.approval_request")
+    t.command("approve", request=req["id"], decision="allow_always", by="test")
+    assert t.finish() == 0 and (t.work / "probe.txt").exists()
+    assert not list((tmp_path / "home").rglob("settings*.json"))
+    assert not list(t.work.rglob("*.toml")) and not list(t.work.rglob(".claude*"))
+    (t.work / "probe.txt").unlink()
+    thread = next((x["thread_id"] for x in t.lines if x.get("type") == "thread.started"), None)
+    again = Turn(cli, tmp_path, resume=t.session if cli == "claude" else thread, prompt="RUN AGAIN please")
+    req = again.wait_for("hangar.approval_request")
+    again.command("approve", request=req["id"], decision="deny", by="test")
+    assert again.finish() == 0 and not (again.work / "probe.txt").exists()

@@ -27,6 +27,7 @@ import json
 import os
 import re
 import select
+import shlex
 import shutil
 import signal
 import subprocess
@@ -39,6 +40,7 @@ MAX_COMMAND = 256 * 1024
 MAX_TEXT = 64_000
 DETAIL = 2000  # how much of a tool's input an approval request shows
 OPS = ("steer", "interrupt", "approve")
+ENDED = "the turn has ended"  # a command's answer when the harness is gone: hangar takes it as not delivered
 DECISIONS = ("allow", "deny", "allow_always")
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
@@ -57,6 +59,16 @@ def clip(s: object, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+def shown(s: object) -> str:
+    """What a person approving a tool call is shown: all of it, or both ends of a long one with the cut marked,
+    so padding can't push the dangerous part out of sight."""
+    s = s if isinstance(s, str) else json.dumps(s, ensure_ascii=False, default=str)
+    if len(s) <= DETAIL:
+        return s
+    head, tail = DETAIL * 3 // 5, DETAIL // 4
+    return f"{s[:head]} […{len(s) - head - tail} characters not shown…] {s[-tail:]}"
+
+
 # ====================================================================== the run log
 class Out:
     """stdout is the run log (the turn's script tees it): harness lines as they come, and hangar.* events."""
@@ -70,6 +82,24 @@ class Out:
 
 
 # ====================================================================== the control channel
+PR_SET_DUMPABLE = 4
+
+
+def private() -> str | None:
+    """Close this process to the agent, which runs as the same uid: no ptrace and no /proc/<pid>/mem or environ
+    (Docker leaves same-uid ptrace to the kernel's Yama setting, which is often 0 or absent), so the run key can't
+    be read out of memory. The harness gets the normal setting back when it execs. Returns why it failed."""
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
+            return os.strerror(ctypes.get_errno())
+    except (ImportError, OSError, AttributeError) as e:
+        return str(e) or type(e).__name__
+    return None
+
+
 class Control:
     """Commands from hangar: `<ctl>/in/*.json`, each signed; outcomes appended to `<ctl>/acks` as JSON lines."""
 
@@ -137,7 +167,11 @@ class Control:
         return cmd, None
 
     def ack(self, cid: str, ok: bool, **info: object) -> None:
-        line = json.dumps({"id": cid, "ok": ok, "ts": round(time.time(), 3), **info}, ensure_ascii=False)
+        """Signed like the commands: the agent can write to `acks` too, and must not answer for the driver."""
+        rec: dict = {"id": cid, "ok": ok, "ts": round(time.time(), 3), **info}
+        if self.key:
+            rec["mac"] = sign(self.key, rec)
+        line = json.dumps(rec, ensure_ascii=False)
         with open(self.acks, "a") as f:
             f.write(line + "\n")
 
@@ -165,39 +199,89 @@ class Control:
 
 # ====================================================================== policy
 # deny-risky: what is refused without asking anyone. A guard rail against an agent's mistakes, not a sandbox.
+_SECRETS = re.compile(r"\.ssh/|\.git-credentials|\.hangar/|\.config/hangar|/proc/[^/\s]+/(environ|mem)\b")
 _RISKY_SHELL = [
     (re.compile(r"\bgit\s+push\b[^|;&]*(\s-f\b|--force|--delete|\s:\S|\s\+\S)"),
      "force-push or remote branch deletion"),
     (re.compile(r"(^|[;&|('\"`]\s*|\s)(sudo|su|doas)\s"), "privilege escalation"),
     (re.compile(r"\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(ba|z|da)?sh\b"), "piping a download into a shell"),
-    (re.compile(r"\brm\s+(-[a-zA-Z]*\s+)*-[a-zA-Z]*[rR][a-zA-Z]*\s+(-[a-zA-Z]+\s+)*(/|~|\$HOME|\.\.)(\s|/?$|/\*)"),
-     "recursive delete outside the working tree"),
     (re.compile(r"\b(mkfs(\.\w+)?|shutdown|reboot|halt|poweroff)\b|\bdd\b[^|;&]*\bof=/dev/"), "system-level change"),
-    (re.compile(r"\.ssh/|\.git-credentials|\.hangar/|\.config/hangar|/proc/[^/\s]+/environ"),
-     "credentials or hangar's own files"),
+    (_SECRETS, "credentials or hangar's own files"),
 ]
 _FILE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit", "apply_patch"}
+_PATH_KEYS = ("file_path", "notebook_path", "path")  # where tools name the file they read or write
+_SEGMENT = re.compile(r"&&|\|\||[;&|\n()`]")
+
+
+def _inside(path: str, root: str) -> bool:
+    return path == root or path.startswith(root + os.sep)
+
+
+def _io_free(command: str) -> str:
+    """The command with the turn's own $HANGAR_IO (where it writes RESULT.md and reads attachments, under
+    ~/.hangar) taken out, so the rule for hangar's private files leaves it alone. A path climbing out stays."""
+    io = os.environ.get("HANGAR_IO") or ""
+    if not io.startswith("/"):
+        return command
+    home = os.path.expanduser("~")
+    forms = [r"\$\{?HANGAR_IO\}?", re.escape(io)]
+    if _inside(io, home) and io != home:
+        forms += [re.escape("~" + io[len(home):]), r"\$\{?HOME\}?" + re.escape(io[len(home):])]
+    return re.sub(rf"(?:{'|'.join(forms)})(?!/\.\.)(?=/|\s|$|[\"'])", "HANGAR_IO", command)
+
+
+def _deletes_outside(command: str, root: str, depth: int = 0) -> bool:
+    """A recursive `rm` of the working tree itself or of anything outside it (`bash -c '...'` looked into). It
+    resolves paths against the turn's directory, so `cd elsewhere && rm -r x` slips by: a guard rail."""
+    for seg in _SEGMENT.split(command):
+        try:
+            words = shlex.split(seg)
+        except ValueError:
+            words = seg.split()
+        for i, w in enumerate(words):
+            if depth < 3 and i and re.fullmatch(r"-[a-z]*c", words[i - 1]) and " " in w:
+                if _deletes_outside(w, root, depth + 1):
+                    return True
+            if os.path.basename(w) != "rm":
+                continue
+            args = words[i + 1:]
+            flags = [a for a in args if a.startswith("-") and a != "-"]
+            if not any(a == "--recursive" or (not a.startswith("--") and re.search("[rR]", a)) for a in flags):
+                continue
+            for target in (a for a in args if not a.startswith("-")):
+                full = os.path.realpath(os.path.join(root, os.path.expandvars(os.path.expanduser(target))))
+                if full == root or not _inside(full, root):
+                    return True
+    return False
 
 
 def risky(tool: str, data: dict, cwd: str) -> str | None:
     """Why a tool call is too risky to allow without a person, or None."""
+    root = os.path.realpath(cwd)
+    io = os.environ.get("HANGAR_IO") or ""
+    io = os.path.realpath(io) if io.startswith("/") else ""
     command = data.get("command")
     if isinstance(command, list):
         command = " ".join(str(c) for c in command)
     if isinstance(command, str):
         for pattern, why in _RISKY_SHELL:
-            if pattern.search(command):
+            if pattern.search(_io_free(command) if pattern is _SECRETS else command):
                 return why
-    if tool in _FILE_TOOLS:
-        root = os.path.realpath(cwd)
-        for path in data.get("paths") or [data.get("file_path") or data.get("notebook_path") or data.get("path")]:
-            if not isinstance(path, str) or not path:
-                continue
-            full = os.path.realpath(os.path.join(cwd, os.path.expanduser(path)))
-            if full != root and not full.startswith(root + os.sep):
-                return f"writes outside the working tree ({path})"
-            if _RISKY_SHELL[-1][0].search(full + "/"):
-                return "writes hangar's or credential files"
+        if _deletes_outside(command, root):
+            return "recursive delete outside the working tree"
+    paths = data.get("paths") if isinstance(data.get("paths"), list) else [data.get(k) for k in _PATH_KEYS]
+    if tool == "Glob":
+        paths = [*paths, data.get("pattern")]
+    for path in paths:
+        if not isinstance(path, str) or not path:
+            continue
+        full = os.path.realpath(os.path.join(cwd, os.path.expanduser(path)))
+        if io and _inside(full, io):
+            continue  # the turn's own $HANGAR_IO
+        if _SECRETS.search(full + "/"):
+            return f"credentials or hangar's own files ({path})"
+        if tool in _FILE_TOOLS and not _inside(full, root):
+            return f"writes outside the working tree ({path})"
     return None
 
 
@@ -214,15 +298,22 @@ class Driver:
         self.args, self.out, self.ctl = args, out, ctl
         self.pending: dict = {}
         self.harness: Harness | None = None
+        self.unanswered: set = set()  # commands taken whose outcome isn't known yet
+
+    def ended(self) -> None:
+        """The harness is gone: what it never took is answered so (hangar then starts the next turn with it)."""
+        for cid in sorted(self.unanswered):
+            self.ctl.ack(cid, False, error=ENDED)
+        self.unanswered.clear()
 
     # --- approvals
     def request(self, key: object, tool: str, data: dict, answer) -> None:
         """The harness asks to use a tool; `answer(decision, message)` replies to it (decision in DECISIONS)."""
         aid = "ap-" + uuid.uuid4().hex[:12]
         policy = self.args.approvals
-        shown = data.get("command") if isinstance(data.get("command"), str) else data
+        what = data.get("command") if isinstance(data.get("command"), str) else data
         expires = time.time() + self.args.approval_timeout
-        self.out.event("approval_request", id=aid, tool=tool, detail=clip(shown, DETAIL), policy=policy,
+        self.out.event("approval_request", id=aid, tool=tool, detail=shown(what), policy=policy,
                        expires_at=round(expires))
         a = Approval(aid, key, tool, answer, expires)
         if policy == "ask":
@@ -265,8 +356,12 @@ class Driver:
         cid, op, args = cmd["id"], cmd["op"], cmd["args"]
         h = self.harness
         assert h is not None
+        self.unanswered.add(cid)
 
         def done(err: str | None = None) -> None:
+            if cid not in self.unanswered:
+                return
+            self.unanswered.discard(cid)
             if err:
                 self.ctl.ack(cid, False, error=err)
             else:
@@ -310,13 +405,17 @@ class Harness:
         self.buf = b""
         self.stop_after_interrupt = False  # an interrupt without a new message: exit 130 once the turn stops
 
-    def send(self, obj: dict) -> None:
+    def send(self, obj: dict) -> bool:
+        """False when the harness has exited (the read loop then sees EOF)."""
+        if self.proc.poll() is not None:
+            return False
         try:
             assert self.proc.stdin is not None
             self.proc.stdin.write((json.dumps(obj, ensure_ascii=False) + "\n").encode())
             self.proc.stdin.flush()
         except (OSError, ValueError):
-            pass  # it exited; the read loop sees EOF
+            return False
+        return True
 
     def read(self, timeout: float) -> bool:
         """Read and handle what the harness wrote within `timeout`. False once its stdout is closed."""
@@ -418,12 +517,12 @@ class Claude(Harness):
     def start(self, prompt: str) -> None:
         self.user(prompt)
 
-    def user(self, text: str) -> None:
+    def user(self, text: str) -> bool:
         u = str(uuid.uuid4())
         self.sent[u] = "sent"
         self.results = 0
-        self.send({"type": "user", "message": {"role": "user", "content": text}, "parent_tool_use_id": None,
-                   "uuid": u})
+        return self.send({"type": "user", "message": {"role": "user", "content": text}, "parent_tool_use_id": None,
+                          "uuid": u})
 
     def on(self, d: dict, raw: str) -> None:
         t = d.get("type")
@@ -484,7 +583,7 @@ class Claude(Harness):
             else:
                 resp = {"behavior": "allow", "updatedInput": data}
                 if decision == "allow_always" and suggestions:
-                    # for this conversation only: never a settings file in the repo
+                    # this process only (the turn): never a settings file; the next turn asks again
                     resp["updatedPermissions"] = [dict(s, destination="session") for s in suggestions]
             self.send({"type": "control_response",
                        "response": {"subtype": "success", "request_id": rid, "response": resp}})
@@ -499,14 +598,17 @@ class Claude(Harness):
         return not self.last.get("queued_turn_count")
 
     def steer(self, text: str, done) -> None:
+        if not self.user(text):
+            return done(ENDED)
         self.stop_after_interrupt = False  # a message after an interrupt: carry on with it
-        self.user(text)
         done(None)
 
     def interrupt(self, text: str | None, done) -> None:
+        if self.proc.poll() is not None:
+            return done(ENDED)
         if self._idle() and not self.interrupts:  # nothing is running
-            if text:
-                self.user(text)
+            if text and not self.user(text):
+                return done(ENDED)
             return done(None)
         self.n += 1
         rid = f"hangar-interrupt-{self.n}"
@@ -601,7 +703,8 @@ class Codex(Harness):
     def call(self, method: str, params: dict, then=None) -> None:
         self.ids += 1
         self.calls[self.ids] = then
-        self.send({"id": self.ids, "method": method, "params": params})
+        if not self.send({"id": self.ids, "method": method, "params": params}):
+            self.calls.pop(self.ids, None)  # it exited: nothing will answer; Driver.ended() answers for it
 
     def emit(self, obj: dict) -> None:
         self.out.line(json.dumps(obj, ensure_ascii=False))
@@ -767,7 +870,9 @@ class Codex(Harness):
             def steered(result: object, error: object) -> None:
                 if error and self.turn is None:  # it ended meanwhile: the message starts the next turn
                     return self.steer(text, done)
-                done(self._err(error) if error else None)
+                if error:  # the turn is ending (-32600 can come before turn/completed): the next one takes it
+                    return self.later.append((text, done))
+                done(None)
 
             self.call("turn/steer", {"threadId": self.thread, "expectedTurnId": self.turn,
                                      "input": [{"type": "text", "text": text}]}, steered)
@@ -811,6 +916,15 @@ def main(argv: list | None = None) -> int:
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not command:
         ap.error("the harness command is missing")
+    why = private()  # before the key is read
+    if why and args.approvals != "auto":  # deny by default: the agent could answer its own approvals
+        sys.stderr.write(f"hangar: approvals={args.approvals} needs the turn driver to keep its key from the agent, "
+                         f"and it could not (prctl PR_SET_DUMPABLE: {why})\n")
+        try:
+            os.unlink(os.path.join(args.ctl, "key"))
+        except OSError:
+            pass
+        return 1
     with open(os.environ["HANGAR_PROMPT_FILE"], encoding="utf-8", errors="replace") as f:
         prompt = f.read()
     out, ctl = Out(), Control(args.ctl)
@@ -820,6 +934,7 @@ def main(argv: list | None = None) -> int:
 
     def stop(signum: int, _frame: object) -> None:
         h.kill()
+        drv.ended()
         ctl.finish()
         os._exit(128 + signum)
 
@@ -829,6 +944,8 @@ def main(argv: list | None = None) -> int:
     alive = True
     while alive:
         alive = h.read(POLL)
+        if not alive:  # the harness went away: nothing would read what came in now
+            break
         for cmd in ctl.commands():
             drv.handle(cmd)
         drv.expire()
@@ -841,7 +958,8 @@ def main(argv: list | None = None) -> int:
                 drv.handle(cmd)
     if not alive:  # the harness went away on its own
         for cmd in ctl.close():
-            ctl.ack(cmd["id"], False, error="the turn has ended")
+            ctl.ack(cmd["id"], False, error=ENDED)
+        drv.ended()
     drv.drop_all()
     ctl.finish()
     return h.status(h.finish())

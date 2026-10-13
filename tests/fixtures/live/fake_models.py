@@ -27,6 +27,8 @@ def _texts(content: Any) -> list[str]:
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     delay = 0.0  # seconds before each answer, so a test can act while the model "thinks"
+    call: tuple[str, dict[str, Any]] = ("Bash", {"command": "touch probe.txt"})  # Claude Code's one tool call
+    shell = "touch probe.txt"  # Codex's one command
 
     def log_message(self, *_: Any) -> None:
         pass
@@ -64,11 +66,12 @@ class Handler(BaseHTTPRequestHandler):
                "usage": {"input_tokens": 50, "output_tokens": 1, "cache_read_input_tokens": 0,
                          "cache_creation_input_tokens": 0}}
         events: list[dict[str, Any]] = [{"type": "message_start", "message": msg}]
-        if "Bash" in tools and not answered and ran == 0 and "RUN" in json.dumps(msgs):
+        last = " ".join(t for m in msgs[-2:] for t in _texts(m.get("content")))  # AGAIN: call it in a later turn
+        if self.call[0] in tools and not answered and (ran == 0 or "AGAIN" in last) and "RUN" in json.dumps(msgs):
             events += [{"type": "content_block_start", "index": 0, "content_block": {
-                           "type": "tool_use", "id": f"toolu_{time.time_ns()}", "name": "Bash", "input": {}}},
+                           "type": "tool_use", "id": f"toolu_{time.time_ns()}", "name": self.call[0], "input": {}}},
                        {"type": "content_block_delta", "index": 0, "delta": {
-                           "type": "input_json_delta", "partial_json": json.dumps({"command": "touch probe.txt"})}}]
+                           "type": "input_json_delta", "partial_json": json.dumps(self.call[1])}}]
             stop = "tool_use"
         else:
             events += [{"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
@@ -84,13 +87,15 @@ class Handler(BaseHTTPRequestHandler):
     def _openai(self, body: dict[str, Any]) -> None:
         items = body.get("input") or []
         tools = [t.get("name") or t.get("type") for t in body.get("tools") or []]
-        answered = any(isinstance(i, dict) and i.get("type") == "function_call_output" for i in items)
+        users = [n for n, i in enumerate(items) if isinstance(i, dict) and i.get("role") == "user"]
+        again = bool(users) and "AGAIN" in json.dumps(items[users[-1]])  # a later turn: from its message on
+        answered = any(isinstance(i, dict) and i.get("type") == "function_call_output"
+                       for i in items[users[-1] if again else 0:])
         rid = f"resp_{time.time_ns()}"
         events: list[dict[str, Any]] = [{"type": "response.created", "response": {"id": rid}}]
         if tools and not answered:
             name = "exec_command" if "exec_command" in tools else "shell"
-            args = {"cmd": "touch probe.txt"} if name == "exec_command" else {"command": ["bash", "-lc",
-                                                                                            "touch probe.txt"]}
+            args = {"cmd": self.shell} if name == "exec_command" else {"command": ["bash", "-lc", self.shell]}
             item = {"type": "function_call", "id": "fc_1", "call_id": f"call_{time.time_ns()}", "name": name,
                     "arguments": json.dumps(args), "status": "completed"}
         else:
@@ -106,8 +111,10 @@ class Handler(BaseHTTPRequestHandler):
         self._send(_sse(events), "text/event-stream")
 
 
-def serve(delay: float = 0.0) -> tuple[ThreadingHTTPServer, int]:
-    handler = type("H", (Handler,), {"delay": delay})
+def serve(delay: float = 0.0, call: tuple[str, dict[str, Any]] | None = None,
+          shell: str | None = None) -> tuple[ThreadingHTTPServer, int]:
+    """`call` (Claude Code) and `shell` (Codex) replace the turn's one tool call, `touch probe.txt`."""
+    handler = type("H", (Handler,), {"delay": delay, "call": call or Handler.call, "shell": shell or Handler.shell})
     srv = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv, srv.server_address[1]

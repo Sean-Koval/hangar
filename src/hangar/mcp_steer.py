@@ -17,8 +17,7 @@ from hangar import exchange
 from hangar import steer as steering
 from hangar.models import Approval, Session
 
-DECISION_HELP = ("allow, deny, or allow_always (also allow this kind of call for the rest of the agent's "
-                 "conversation)")
+DECISION_HELP = "allow, deny, or allow_always (also allow calls like it for the rest of this turn)"
 APPROVAL_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -55,7 +54,7 @@ def first_pending(sessions: Any, jobs: Any, ref: str, skip: list[str] | tuple[st
 
 
 def message(label: str, a: Approval) -> str:
-    return f"{label}: the agent asks to use {a.tool or 'a tool'}: {a.detail[:1500]}"
+    return f"{label}: the agent asks to use {a.tool or 'a tool'}: {a.detail}"
 
 
 def approval_request(label: str, a: Approval) -> types.ElicitRequest:
@@ -101,7 +100,7 @@ def register(mcp: Any, tool: Any, sessions: Any, jobs: Any, caller: Any) -> None
     @tool()
     async def answer_approval(ref: str, approval: str, decision: str, message: str | None = None) -> dict[str, Any]:
         """Answer a tool call the agent waits on (`pending_approvals` on get_session/get_job): `decision` allow |
-        deny | allow_always (for the rest of its conversation). `message` goes to the agent."""
+        deny | allow_always (for the rest of the turn). `message` goes to the agent."""
         s, _ = exchange.resolve(sessions, jobs, ref)
         a = await steering.answer(sessions, s, approval, decision, caller(), message)
         return a.model_dump(mode="json")
