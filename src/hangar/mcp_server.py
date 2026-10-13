@@ -378,8 +378,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
     async def run_agent(sandbox: str, prompt: str, harness: str | None = None,
                         cwd: str | None = None, model: str | None = None) -> live.AgentRunOut:
         """Start the sandbox's headless coding agent (claude-code | codex | pi | antigravity) on `prompt`.
-        `model` overrides the environment's default model (harness-specific id, e.g. "sonnet", "gpt-5.5",
-        "openrouter/qwen/qwen3-coder"). Returns a run_id; its terminal session has the same name. Poll with
+        `model` overrides the environment's default model (harness-specific id, e.g. "sonnet", "gpt-5.5").
+        Returns a run_id; its terminal session has the same name. Poll with
         agent_status (a client with the MCP tasks extension gets a task that ends with the run). For work you
         want verified and delivered as a PR, submit_job is simpler."""
         return await fleet.run_agent(sandbox, prompt, harness, cwd, model=model, actor=actor())
@@ -423,15 +423,13 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                               context: list[dict[str, Any]] | None = None,
                               output_schema: dict[str, Any] | None = None,
                               approvals: str | None = None, cache: str | None = None) -> live.SessionOut:
-            """Start a resumable stream of work (like a cloud Claude session): a sandbox of `environment` on branch
-            hangar/session/<name>. With `message`, the agent starts on it right away. The conversation and repo
-            state are checkpointed after every turn and when the session idles, so it can be picked up days later
-            with send_to_session or open_session. `context`: attachments for the first turn, including your local
-            work ({"kind": "patch"} uncommitted changes, {"kind": "bundle", "base_commit": ...} unpushed commits).
-            `output_schema`: JSON Schema for a structured result. `budget` caps each agent turn:
-            {"max_minutes": 30, "max_tokens": 2000000, "max_cost_usd": 5}. `approvals`: ask (you approve tool
-            calls) | deny-risky | auto. `cache`: prompt-cache TTL auto | 5m | 1h | off. Then call
-            wait_for_turn(name)."""
+            """Start a resumable stream of work: a sandbox of `environment` on branch hangar/session/<name>. With
+            `message`, the agent starts on it right away. The conversation and repo state are checkpointed after
+            every turn and when the session idles, so it can be picked up days later with send_to_session or
+            open_session. `context`: attachments for the first turn, as for submit_job (your local work too:
+            "patch", "bundle"). `output_schema`: JSON Schema for a structured result. `budget` caps each agent
+            turn, as for submit_job. `approvals`: ask (you approve tool calls) | deny-risky | auto. `cache`:
+            prompt-cache TTL auto | 5m | 1h | off. Then call wait_for_turn(name)."""
             who = current_actor.get()
             req = NewSession(name=name, environment=environment, repo=repo, message=message, harness=harness,
                              model=model, base_branch=base_branch, idle_minutes=idle_minutes,
@@ -467,7 +465,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                                   output_schema: dict[str, Any] | None = None,
                                   model: str | None = None) -> live.SessionOut:
             """Continue a session: the agent resumes its own conversation (full earlier context) in the session's
-            sandbox, booting and restoring it first if the session is suspended. If the agent asked a question
+            sandbox (booted and restored first if suspended). If the agent asked a question
             (needs_input), the message answers it. `context` and `output_schema` as for new_session. `model`:
             switch model (costs one uncached turn). Then call wait_for_turn(session)."""
             return sessions.view(sessions.send(session, message, requester=current_actor.get(),
@@ -663,16 +661,15 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         {"name": "spec", "kind": "url", "url": "https://..."}, or your local work: {"kind": "patch"} and
         {"kind": "bundle", "base_commit": ...}. `output_schema`: JSON Schema for a structured result
         (get_job's result.data). `budget` caps each agent turn ({"max_minutes": 30, "max_tokens": 2000000,
-        "max_cost_usd": 5}); a turn that crosses it is stopped and what it did is delivered as a draft.
-        Returns the job; then wait_for_turn(job id), or poll get_job (it shows usage) or get_events.
+        "max_cost_usd": 5}); a turn over it stops and its work is delivered as a draft.
+        Returns the job; then wait_for_turn(job id), or poll get_job (with usage) or get_events.
 
         `strategy="best_of_n"` with `n` (2-8) runs n attempts in parallel sandboxes, verifies each, and delivers
         the best (passing verify first; then `judge=True` asks an agent to compare them, else the smallest diff).
-        get_job lists every attempt. It costs n sandboxes and n agent runs.
+        It costs n sandboxes and n agent runs; get_job lists every attempt.
 
-        `verify` also runs inside the agent's turn and a failure goes back to it (`verify_in_loop`, default on).
-        `autofix` ("ci,reviews" default, "ci", "reviews", "off"): CI failures and trusted reviewers' comments on the
-        PR start follow-up turns by themselves."""
+        `verify_in_loop` (default on): `verify` also runs in the turn and failures go back to the agent.
+        `autofix` (ci,reviews | ci | reviews | off): CI failures and trusted reviews on the PR start follow-up turns."""
         req = SubmitJob(instructions=instructions, repo=repo, environment=environment, title=title, harness=harness,
                         model=model, base_branch=base_branch, verify=verify, deliver=deliver,
                         context=[ContextItem.model_validate(c) for c in context or []],
