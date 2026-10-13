@@ -308,3 +308,80 @@ def test_untracked_archive_is_bounded(tmp_path, monkeypatch):
     data = _tgz([("file", f"f{i}", b"x") for i in range(5)])
     notes = exchange.pull_into(repo, "s1", {"head": head}, {"untracked.tgz": data}, checkout=True)
     assert sum((repo / f"f{i}").exists() for i in range(5)) == 3 and any("more than 3" in n for n in notes)
+
+
+# ============================================================================ review of #48 (second pass)
+async def test_idle_connections_cannot_lock_other_sandboxes_out(fleet):
+    """uvicorn's limit_concurrency counts open connections, including ones that never send a request (there is no
+    header timeout), and answers everyone 503 past it. So one sandbox holding a few hundred idle sockets locked
+    every other sandbox out of the gateway."""
+    import resource
+
+    from hangar.gateway import _Server
+
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if soft < 2048:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (min(hard, 4096), hard))
+        except (ValueError, OSError):
+            pytest.skip("needs ~1300 file descriptors")
+    srv = _Server(fleet.gateway.asgi_app(), "127.0.0.1", 0)
+    srv.start()
+    held = []
+    try:
+        for _ in range(200):
+            if srv.server.started:
+                break
+            await asyncio.sleep(0.02)
+        port = srv.server.servers[0].sockets[0].getsockname()[1]
+        for _ in range(600):
+            held.append(await asyncio.open_connection("127.0.0.1", port))
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.get(f"http://127.0.0.1:{port}/healthz")
+        assert r.status_code == 200, r.text
+    finally:
+        for _, w in held:
+            w.close()
+        await srv.stop()
+
+
+async def test_inflight_cap_reads_the_same_authorization_header_as_the_gateway(fleet, gw, upstream):  # noqa: F811
+    """The cap keyed on the last Authorization header and the gateway authenticated with the first, so a second,
+    made-up grant on every request sidestepped the per-grant cap."""
+    from hangar import gateway
+
+    sb = await fleet.create("gw", work_branch="hangar/job-1")
+    grant = fleet.gateway.grants(sb.id)[0]
+    fleet.gateway._inflight[grant.token_hash] = gateway.MAX_INFLIGHT_PER_GRANT
+    port = int(fleet.settings.gateway_url.rsplit(":", 1)[1])
+    good = base64.b64encode(f"x-access-token:{_grant(fleet, sb)}".encode()).decode()
+    decoy = base64.b64encode(b"x-access-token:hgs_decoy").decode()
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        writer.write(f"GET /git/github.com/acme/widgets.git/info/refs?service=git-upload-pack HTTP/1.1\r\n"
+                     f"Host: x\r\nAuthorization: Basic {good}\r\nAuthorization: Basic {decoy}\r\n"
+                     f"Connection: close\r\n\r\n".encode())
+        status = await asyncio.wait_for(reader.readline(), timeout=10)
+    finally:
+        writer.close()
+        fleet.gateway._inflight.pop(grant.token_hash, None)
+    assert b" 429 " in status, status
+
+
+async def test_pattern_cannot_squat_a_queued_jobs_branch(fleet, gw, upstream, store):  # noqa: F811
+    """A job that is still queued has no session or sandbox yet, but its branch is already decided (and shown on
+    its issue). Creating it, or a branch below it, made the job fail with bad_branch when it started."""
+    from hangar.models import Job, JobState
+
+    url = "https://github.com/acme/widgets.git"
+    store.put(Job(title="t", instructions="x", environment="gw", repo=url, branch="hangar/job-abcd1234"))
+    store.put(Job(title="t", instructions="x", environment="gw", repo=url, branch="hangar/job-done0000",
+                  state=JobState.SUCCEEDED))
+    sb = await fleet.create("gw", work_branch="hangar/job-1")
+    await fleet.exec(sb.id, "git commit -q --allow-empty -m planted")
+    for ref in ("refs/heads/hangar/job-abcd1234", "refs/heads/hangar/job-abcd1234/x"):
+        res = await fleet.exec(sb.id, f"git push origin HEAD:{ref}")
+        assert res.exit_code != 0 and "belongs to job job-" in res.stderr, (ref, res.stderr)
+    assert "job-abcd1234" not in upstream.refs()
+    res = await fleet.exec(sb.id, "git push -q origin HEAD:refs/heads/hangar/job-done0000-followup")
+    assert res.exit_code == 0, res.stderr

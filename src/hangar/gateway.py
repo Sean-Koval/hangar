@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 import httpx
 from pydantic import BaseModel, field_validator
 from starlette.applications import Starlette
+from starlette.datastructures import Headers
 from starlette.middleware import Middleware
 from starlette.requests import ClientDisconnect, Request
 from starlette.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
@@ -60,7 +61,6 @@ SERVICES = ("git-upload-pack", "git-receive-pack")
 TOKEN_REFRESH_SECONDS = 600
 # --- overnight/sandbox-security: limits a sandbox can't talk its way past (docs/security.md, threat model)
 MAX_INFLIGHT_PER_GRANT = 8  # concurrent requests per grant; git uses one or two at a time
-MAX_CONNECTIONS = 512  # the gateway listener as a whole (uvicorn limit_concurrency)
 AUTH_FAILURES = 30  # failed grant checks per source address...
 AUTH_WINDOW = 60.0  # ...per this many seconds, before that address gets 429 without a lookup
 # Session branches are hangar/session/<name>: predictable, so only a sandbox granted one exactly may push there.
@@ -257,11 +257,11 @@ def check_push(grant: SandboxGrant, cmds: Commands, allow_tags: bool, owned_else
                session_refs: dict[str, str] | None = None) -> dict[str, str]:
     """{ref: reason} for every command the grant does not allow; empty means the push may go upstream.
 
-    `owned_elsewhere`: exact refs other live sandboxes may push. `session_refs`: {ref: session name} for the
-    branches of sessions other than the pusher's own."""
+    `owned_elsewhere`: exact refs other live sandboxes may push. `session_refs`: {ref: owner} ("session x",
+    "job job-…") for the branches of sessions and unfinished jobs other than the pusher's own."""
     bad: dict[str, str] = {}
     push_options = has_cap(cmds.capabilities, "push-options")
-    reserved = {r: f"hangar: that branch belongs to session {name}" for r, name in (session_refs or {}).items()}
+    reserved = {r: f"hangar: that branch belongs to {who}" for r, who in (session_refs or {}).items()}
     reserved.update({r: "hangar: that branch belongs to another sandbox" for r in owned_elsewhere})
     for c in cmds.commands:
         if push_options:
@@ -436,7 +436,9 @@ class _Server:
                 yield
 
         self.server = Quiet(uvicorn.Config(app, host=host, port=port, lifespan="off", log_level="warning",
-                                           access_log=False, limit_concurrency=MAX_CONNECTIONS))
+                                           access_log=False))
+        # No limit_concurrency: uvicorn counts idle connections against it (there is no header timeout) and then
+        # answers everyone 503, so one sandbox holding sockets open would lock all the others out.
         self.task: asyncio.Task | None = None
 
     async def _run(self) -> None:
@@ -501,8 +503,9 @@ class _InflightLimit:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        raw = dict(scope.get("headers") or []).get(b"authorization", b"").decode("latin-1")
-        token = Gateway._token_from_header(raw)
+        # The first Authorization header, as Request.headers (and so handle()) reads it: a later, made-up one
+        # must not get a count of its own.
+        token = Gateway._token_from_header(Headers(scope=scope).get("authorization", ""))
         key = hash_token(token) if token and token.startswith(PREFIX) and len(token) <= 128 else None
         n = self.gateway._inflight
         if key is not None and n.get(key, 0) >= MAX_INFLIGHT_PER_GRANT:
@@ -733,21 +736,27 @@ class Gateway:
         return None
 
     def _session_refs(self, grant: SandboxGrant) -> dict[str, str]:
-        """{ref: session name} for branches of sessions (jobs run in sessions) on this repo that the pusher must
-        not create or block: everyone's but those of its own session. A best-of-N winner's session takes the job
-        branch before delivery, so the job's own session doesn't count against it."""
+        """{ref: owner} for branches of sessions (jobs run in sessions) on this repo that the pusher must not
+        create or block: everyone's but those of its own session. A best-of-N winner's session takes the job
+        branch before delivery, so the job's own session doesn't count against it. Unfinished jobs count too: a
+        queued one has no session yet, but its branch is decided (and shown on its issue), and a job refuses to
+        start on a branch that already exists."""
+        from hangar.models import JOB_TERMINAL, Job
+
         sb = self.store.get(Sandbox, grant.sandbox_id)
         own_id = sb.labels.get("hangar.session") if sb else None
         sessions = self.store.list(Session)
         own = {s.branch for s in sessions if s.id == own_id}
+        owners = [(s.branch, s.repo, f"session {s.name}") for s in sessions if s.id != own_id] + \
+            [(j.branch, j.repo, f"job {j.id}") for j in self.store.list(Job) if j.state not in JOB_TERMINAL]
         out: dict[str, str] = {}
-        for s in sessions:
-            if not s.branch or s.id == own_id or s.branch in own:
+        for branch, repo, who in owners:
+            if not branch or branch in own:
                 continue
-            remote = parse_remote(s.repo, self.hosts) if s.repo else None
-            if s.repo and (remote is None or remote[1] not in grant.repos):
+            remote = parse_remote(repo, self.hosts) if repo else None
+            if repo and (remote is None or remote[1] not in grant.repos):
                 continue  # another repo, or not one the gateway serves
-            out[f"refs/heads/{s.branch}"] = s.name
+            out.setdefault(f"refs/heads/{branch}", who)
         return out
 
     def _deny(self, grant: SandboxGrant, repo: str, reason: str, refs: list[Command] | None = None) -> None:
