@@ -26,6 +26,7 @@ from hangar.jobs import Caller, JobService, SubmitJob, handle_github
 from hangar.mcp_server import build_mcp, current_actor
 from hangar.models import Credential, CredentialKind, Resources, Sandbox
 from hangar.providers.base import ProviderError
+from hangar.sessions import NewSession, SessionService
 from hangar.store import Store
 from hangar.vault import Vault, load_or_create_key
 
@@ -43,7 +44,8 @@ class Hangar:
         self.catalog = EnvCatalog(self.settings.env_dirs, save_dir=self.settings.saved_env_dir)
         self.fleet = Fleet(self.settings, self.store, self.broker, self.catalog)
         self.auth = TokenAuth(self.store, self.settings.admin_token)
-        self.jobs = JobService(self.fleet)
+        self.sessions = SessionService(self.fleet, self.vault)
+        self.jobs = JobService(self.fleet, self.sessions)
 
 
 # ---------------------------------------------------------------------------- MCP auth
@@ -164,6 +166,18 @@ class FollowUpBody(BaseModel):
     message: str
 
 
+class SendBody(BaseModel):
+    message: str
+
+
+class OpenBody(BaseModel):
+    harness: str | None = None
+
+
+class IdleBody(BaseModel):
+    idle_minutes: int = Field(ge=0, le=10080)  # 0 = stay up until suspended by hand
+
+
 class TokenBody(BaseModel):
     name: str
     scopes: list[str] = Field(default_factory=lambda: ["admin"])
@@ -219,7 +233,7 @@ def _setup_oauth(app: FastAPI, h: Hangar):
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     h = Hangar(settings)
-    mcp = build_mcp(h.fleet, h.jobs)
+    mcp = build_mcp(h.fleet, h.jobs, h.sessions)
     mcp_asgi = mcp.streamable_http_app(streamable_http_path="/", stateless_http=True, host="0.0.0.0")
 
     @contextlib.asynccontextmanager
@@ -233,10 +247,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log.warning("    %s", boot)
             log.warning("=" * 72)
         await h.fleet.start()
+        await h.sessions.start()  # first: jobs look up their sessions
         await h.jobs.start()
+        pre = h.settings.prebuild_environments
+        if pre is None:
+            pre = [e.strip() for v in h.settings.github_repos.values() for e in v.split(",") if e.strip()]
+        prebuild = asyncio.create_task(h.fleet.prebuild(pre)) if pre else None
         async with mcp.session_manager.run():
             yield
+        if prebuild:
+            prebuild.cancel()
         await h.jobs.stop()
+        await h.sessions.stop()
         await h.fleet.stop()
 
     app = FastAPI(title="hangar", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None,
@@ -293,6 +315,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/me")
     async def me(who: str = A):
         return {"actor": who}
+
+    @app.get("/api/doctor")
+    async def doctor_route(_: str = A):
+        from hangar import doctor
+
+        return await doctor.run(h)
 
     @app.get("/api/overview")
     async def overview(_: str = A):
@@ -525,6 +553,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 msg = await ws.receive()
                 if msg["type"] == "websocket.disconnect":
                     break
+                fleet.touch(ref)  # someone is using this terminal: keep its session awake
                 if msg.get("bytes") is not None:
                     await term.write(msg["bytes"])
                 elif msg.get("text") is not None:
@@ -540,8 +569,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except WebSocketDisconnect:
             pass
         finally:
-            out_task.cancel()
-            await term.close()
+            try:
+                out_task.cancel()
+                with contextlib.suppress(Exception):
+                    await term.close()
+            finally:
+                with contextlib.suppress(Exception):
+                    fleet.detach(ref)
 
     # ------------------------------------------------------------------ snapshots
     @app.get("/api/snapshots")
@@ -671,6 +705,51 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         res = await handle_github(jobs, request.headers.get("x-github-event", ""),
                                   request.headers.get("x-github-delivery"), payload)
         return JSONResponse(res, status_code=202 if res.get("ok") else 200)
+
+    # ------------------------------------------------------------------ sessions (spec 0010)
+    sessions = h.sessions
+
+    @app.post("/api/sessions")
+    async def session_new(body: NewSession, who: str = A):
+        return sessions.view(sessions.new(body, owner=who, requester=who))
+
+    @app.get("/api/sessions")
+    async def session_list(include_archived: bool = False, limit: int = 100, _: str = A):
+        return [sessions.view(s) for s in sessions.list(include_archived=include_archived, limit=limit)]
+
+    @app.get("/api/sessions/{ref}")
+    async def session_get(ref: str, _: str = A):
+        return sessions.view(sessions.get(ref))
+
+    @app.post("/api/sessions/{ref}/open")
+    async def session_open(ref: str, body: OpenBody | None = None, who: str = A):
+        return sessions.view(sessions.open(ref, requester=who, harness=body.harness if body else None))
+
+    @app.post("/api/sessions/{ref}/send")
+    async def session_send(ref: str, body: SendBody, who: str = A):
+        return sessions.view(sessions.send(ref, body.message, requester=who))
+
+    @app.post("/api/sessions/{ref}/idle")
+    async def session_idle(ref: str, body: IdleBody, who: str = A):
+        return sessions.view(sessions.set_idle(ref, body.idle_minutes, requester=who))
+
+    @app.post("/api/sessions/{ref}/suspend")
+    async def session_suspend(ref: str, who: str = A):
+        return sessions.view(sessions.suspend(ref, requester=who))
+
+    @app.post("/api/sessions/{ref}/checkpoint")
+    async def session_checkpoint(ref: str, who: str = A):
+        ck = await sessions.checkpoint_now(ref, requester=who)
+        return {"checkpoint": ck.model_dump(mode="json") if ck else None}
+
+    @app.post("/api/sessions/{ref}/archive")
+    async def session_archive(ref: str, who: str = A):
+        return sessions.view(sessions.archive(ref, requester=who))
+
+    @app.delete("/api/sessions/{ref}")
+    async def session_delete(ref: str, who: str = A):
+        sessions.delete(ref, requester=who)
+        return {"deleted": ref}
 
     @app.get("/api/audit")
     async def audit(limit: int = 200, _: str = A):

@@ -1,2 +1,4 @@
 name: plain
 description: no harness, no repo
+warm_pool: 2
+warm_pool_hours: Mon-Sun 00:00-00:00

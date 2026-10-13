@@ -25,6 +25,7 @@ from hangar.fleet import Fleet, FleetError
 from hangar.jobs import Caller, JobService, SubmitJob
 from hangar.models import ContextItem, Sandbox
 from hangar.providers.base import ProviderError
+from hangar.sessions import NewSession, SessionService
 
 # Failures an agent can act on (bad name, quota, build error...). Anything else is a crash and stays generic.
 EXPECTED = (FleetError, ProviderError, CredentialError, ValueError, KeyError, NotImplementedError)
@@ -46,6 +47,10 @@ Typical flow:
 6. destroy_sandbox when done (sandboxes also expire after their TTL).
 Relative paths resolve against the sandbox's repo checkout (or /workspace).
 
+For an ongoing stream of work you'll come back to, use sessions: new_session(name, environment, message)
+then send_to_session(name, message) later, even days later; the agent resumes its own conversation and the
+repo state (commits, uncommitted changes) is restored. list_sessions shows what you can pick up.
+
 Or hand off whole pieces of work: submit_job(instructions, repo=..., context=[...]) runs an agent in
 a fresh sandbox, verifies, pushes a branch and opens a draft PR on its own. Check it with get_job,
 continue it with follow_up_job, stop it with cancel_job.
@@ -61,7 +66,7 @@ def _sb(s: Sandbox) -> dict[str, Any]:
     }
 
 
-def build_mcp(fleet: Fleet, jobs: JobService | None = None) -> MCPServer:
+def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionService | None = None) -> MCPServer:
     mcp = MCPServer("hangar", instructions=INSTRUCTIONS, version="0.1.0")
 
     def tool():
@@ -333,6 +338,61 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None) -> MCPServer:
         sbs = await fleet.fork(source, count, name_prefix, credentials, work_branch_prefix, provider,
                                ttl_minutes, actor=actor())
         return [_sb(s) for s in sbs]
+
+    # ------------------------------------------------------------------ sessions (spec 0010)
+    if sessions is not None:
+        @tool()
+        async def new_session(name: str, environment: str | None = None, repo: str | None = None,
+                              message: str | None = None, harness: str | None = None, model: str | None = None,
+                              base_branch: str | None = None, idle_minutes: int | None = None) -> dict[str, Any]:
+            """Start a resumable stream of work (like a cloud Claude session): a sandbox of `environment` on branch
+            hangar/session/<name>. With `message`, the agent starts on it right away. The conversation and repo
+            state are checkpointed after every turn and when the session idles, so it can be picked up days later
+            with send_to_session or open_session. Poll get_session for progress."""
+            who = current_actor.get()
+            req = NewSession(name=name, environment=environment, repo=repo, message=message, harness=harness,
+                             model=model, base_branch=base_branch, idle_minutes=idle_minutes)
+            return sessions.view(sessions.new(req, owner=who, requester=who))
+
+        @tool()
+        async def list_sessions(include_archived: bool = False, limit: int = 30) -> list[dict[str, Any]]:
+            """Streams of work, most recently active first: name, state (idle | running | suspended ...), repo,
+            branch and the agent's last summary."""
+            keep = ("id", "name", "title", "state", "environment", "harness", "repo", "branch", "last_active_at",
+                    "last_summary", "sandbox_id")
+            return [{k: v for k, v in sessions.view(s).items() if k in keep}
+                    for s in sessions.list(include_archived=include_archived, limit=limit)]
+
+        @tool()
+        async def get_session(session: str) -> dict[str, Any]:
+            """A session's state, turns (messages and the agent's summaries), checkpoints, sandbox and the command
+            to resume its conversation interactively in the sandbox's terminal."""
+            return sessions.view(sessions.get(session))
+
+        @tool()
+        async def open_session(session: str, harness: str | None = None) -> dict[str, Any]:
+            """Boot a sandbox for a suspended session and restore its last checkpoint (commits, uncommitted changes,
+            untracked files and the agent's conversation). Use it to work in the sandbox yourself; to give the agent
+            a task, use send_to_session (it opens the session as needed)."""
+            return sessions.view(sessions.open(session, requester=current_actor.get(), harness=harness))
+
+        @tool()
+        async def send_to_session(session: str, message: str) -> dict[str, Any]:
+            """Continue a session: the agent resumes its own conversation (full earlier context) in the session's
+            sandbox, booting and restoring it first if the session is suspended. Poll get_session for the result."""
+            return sessions.view(sessions.send(session, message, requester=current_actor.get()))
+
+        @tool()
+        async def keep_session(session: str, idle_minutes: int) -> dict[str, Any]:
+            """How long the session may sit idle before it checkpoints and releases its sandbox (0 = stay up
+            until suspended by hand). Work through hangar, open terminals and running turns all count as
+            activity, so a session you're using never suspends under you."""
+            return sessions.view(sessions.set_idle(session, idle_minutes, requester=current_actor.get()))
+
+        @tool()
+        async def suspend_session(session: str) -> dict[str, Any]:
+            """Checkpoint a session and release its sandbox now (idle sessions also suspend on their own)."""
+            return sessions.view(sessions.suspend(session, requester=current_actor.get()))
 
     # ------------------------------------------------------------------ jobs (spec 0009)
     if jobs is None:

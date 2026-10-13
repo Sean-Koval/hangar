@@ -9,6 +9,22 @@ caller ──POST /api/jobs──► queue ─► sandbox (env + harness) ─►
                      engineer: follow-up (API, MCP, CLI, `/hangar` on the PR) or attach to the terminal
 ```
 
+## 0. Log in and check your setup
+
+```bash
+hangar login https://<your hangar> --token-file ~/.hangar/gke-admin-token   # once; no more HANGAR_URL/TOKEN exports
+hangar doctor                                                               # what's broken, and the fix for each
+```
+
+`hangar doctor` checks:
+- the providers;
+- Cloud Build permissions (the `actAs` grant);
+- recent failed sandbox starts (quota);
+- the GitHub token's access to each mapped repo;
+- the webhook secret;
+- that each mapped environment exists, has credentials, and is built;
+- that checkpoint storage is writable.
+
 ## 1. Give a service a token
 
 A `jobs` token can submit and read its own jobs and nothing else. It gets 403 on every other route and 401 on `/mcp`, and it can't be exchanged for an MCP OAuth grant. Within jobs it is fenced in:
@@ -103,6 +119,7 @@ Callbacks go only to public `https` hosts. Plain `http`, non-public addresses an
      --from-literal=HANGAR_GITHUB_TOKEN_CREDENTIAL=gh-control \
      --from-literal=HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL=gh-webhook \
      --from-literal=HANGAR_GITHUB_REPOS='{"acme/app": "python"}' \
+     --from-literal=HANGAR_SESSION_STORE=gs://<project>-hangar-sessions \
      --dry-run=client -o yaml | kubectl apply -f -
    kubectl -n hangar rollout restart deploy/hangar
    ```
@@ -118,10 +135,17 @@ Only owners, members and collaborators can trigger with comments. Only repos in 
 
 ## 5. Work with the agent
 
+Every job runs in a [session](sessions.md). The agent keeps its conversation between turns, and the job's sandbox, context and work in progress are checkpointed. So a reply always works:
+- a `/hangar` comment on the PR a week later;
+- `hangar job follow-up`;
+- the dashboard's reply box.
+
+If the sandbox was released, hangar starts a new one from the job's last checkpoint, and the agent continues where it left off.
+
 - **Watch:** attach to the job's sandbox terminal from the dashboard, or with `hangar sb attach <sandbox_id>` (the run is tmux session `terminal_session`).
 - **Steer:** follow up from the API, MCP, CLI or a PR comment. Each follow-up is a new agent turn with your message and the previous summary, on the same branch. The PR updates in place.
 - **Take over:** work in the sandbox yourself. Your commits go out with the next follow-up's delivery.
-- The sandbox stays `keep_minutes` (default 120) after each turn, then expires. The branch keeps the work.
+- After a turn the sandbox stays up while anyone is using it, and at least `keep_minutes` (default 120). Then it is checkpointed and released.
 
 ## Settings
 

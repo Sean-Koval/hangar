@@ -108,6 +108,9 @@ class EnvSpec(BaseModel):
     credentials: list[str] = Field(default_factory=list)  # default credentials to attach
     resources: Resources = Field(default_factory=Resources)
     warm_pool: int = 0
+    # Keep the warm pool only during these hours (outside them it scales to 0, so idle nodes can go away), e.g.
+    # "Mon-Fri 08:00-20:00 America/New_York". Days: Mon..Sun, ranges or commas; time zone optional (UTC).
+    warm_pool_hours: str | None = None
     # Kubernetes only: RuntimeClass for this environment's pods, overriding HANGAR_K8S_RUNTIME_CLASS
     # ("gvisor", "kata-qemu-runtime-rs", or "" for runc). Lets gVisor and Kata environments share a cluster.
     runtime_class: str | None = None
@@ -121,6 +124,13 @@ class EnvSpec(BaseModel):
     def _known_harnesses(cls, v: list[str]) -> list[str]:
         for h in v:
             get_harness(h)
+        return v
+
+    @field_validator("warm_pool_hours")
+    @classmethod
+    def _check_hours(cls, v: str | None) -> str | None:
+        if v:
+            parse_hours(v)
         return v
 
     @field_validator("secrets")
@@ -489,3 +499,46 @@ def image_tag(spec: EnvSpec, ctx: BuildContext, prefix: str, registry: str | Non
 
 
 __all__ = ["EnvSpec", "EnvCatalog", "BuildContext", "render", "image_tag", "repo_dirname", "HARNESSES"]
+
+
+_DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+_HOURS_RE = re.compile(r"^\s*([A-Za-z,\-]+)\s+(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})(?:\s+(\S+))?\s*$")
+
+
+def parse_hours(text: str) -> tuple[set[int], int, int, str]:
+    """"Mon-Fri 08:00-20:00 America/New_York" -> ({0..4}, 480, 1200, "America/New_York")."""
+    m = _HOURS_RE.match(text or "")
+    if not m:
+        raise ValueError(f"warm_pool_hours '{text}': expected like 'Mon-Fri 08:00-20:00 America/New_York'")
+    days: set[int] = set()
+    for part in m.group(1).lower().split(","):
+        a, _, b = part.partition("-")
+        if a[:3] not in _DAYS or (b and b[:3] not in _DAYS):
+            raise ValueError(f"warm_pool_hours: unknown day in '{part}'")
+        i, j = _DAYS.index(a[:3]), _DAYS.index((b or a)[:3])
+        days |= set(range(i, j + 1)) if i <= j else set(range(i, 7)) | set(range(0, j + 1))
+    start, end = int(m.group(2)) * 60 + int(m.group(3)), int(m.group(4)) * 60 + int(m.group(5))
+    tz = m.group(6) or "UTC"
+    from zoneinfo import ZoneInfo
+
+    ZoneInfo(tz)  # validate
+    return days, start, end, tz
+
+
+def warm_pool_now(spec: EnvSpec, when: float | None = None) -> int:
+    """The warm pool size that applies right now (spec.warm_pool, or 0 outside warm_pool_hours)."""
+    if not spec.warm_pool or not spec.warm_pool_hours:
+        return max(0, spec.warm_pool)
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+
+    days, start, end, tz = parse_hours(spec.warm_pool_hours)
+    t = _dt.datetime.fromtimestamp(when if when is not None else _dt.datetime.now().timestamp(), ZoneInfo(tz))
+    minute, day = t.hour * 60 + t.minute, t.weekday()
+    if start == end:  # "00:00-00:00": all day on the listed days
+        inside = day in days
+    elif start < end:
+        inside = day in days and start <= minute < end
+    else:  # past midnight: the early-morning part belongs to the window that started the day before
+        inside = (day in days and minute >= start) or ((day - 1) % 7 in days and minute < end)
+    return spec.warm_pool if inside else 0

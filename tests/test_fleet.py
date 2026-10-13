@@ -130,7 +130,7 @@ def test_login_token_capture_stops_at_token_boundary():
 async def test_fork_of_repo_sandbox_does_not_reclone(fleet, monkeypatch):
     calls = []
 
-    async def fake_setup(prov, sb, spec, work_branch):
+    async def fake_setup(prov, sb, spec, work_branch, stage=None):
         calls.append(sb.id)
         sb.info["repo_path"] = "/workspace/proj"
 
@@ -210,3 +210,22 @@ async def test_fork_scrub_does_not_touch_the_callers_tmux(fleet):
         assert alive.returncode == 0, "fork scrubbing killed a tmux server outside the fake sandbox"
     finally:
         subprocess.run(["tmux", "kill-session", "-t", name], env=env, capture_output=True)
+
+
+async def test_prebuild_and_scheduled_pools(fleet):
+    fake = fleet.providers["docker"]
+    before = len(fake.images)
+    await fleet.prebuild(["plain", "plain", "nope"])  # duplicates and unknown names are fine
+    assert len(fake.images) == before + 1
+    synced = []
+
+    async def sync(spec, image):
+        synced.append((spec.name, spec.warm_pool))
+
+    fake.sync_warm_pool = sync
+    raw = fleet.catalog.raw("plain")
+    fleet.catalog.add({**raw, "warm_pool": 2, "warm_pool_hours": "Mon-Sun 00:00-00:00"})  # all day, every day
+    fleet.store.kv_set("image:docker:plain", "img")
+    await fleet.sync_scheduled_pools()
+    await fleet.sync_scheduled_pools()  # unchanged: not re-applied
+    assert synced == [("plain", 2)]

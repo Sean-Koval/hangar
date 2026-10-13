@@ -140,3 +140,33 @@ def test_created_environments_survive_restart(settings, tmp_path):
     assert (settings.data_dir / "envs" / "base-jobs.yaml").exists()
     again = Hangar(settings)  # a restart / redeploy with the same data volume
     assert again.catalog.get("base-jobs").credentials == ["claude-pro"]
+
+
+def test_session_routes_accept_json_bodies(client):
+    # body models must be module-level: FastAPI can't resolve function-local annotations (they become query params)
+    assert client.post("/api/sessions/nope/send", json={"message": "hi"}).status_code == 404
+    assert client.post("/api/sessions/nope/open", json={"harness": None}).status_code == 404
+    assert client.post("/api/sessions", json={"name": "x"}).status_code == 400
+
+
+def test_doctor_reports_with_fixes(client):
+    from hangar.models import CredentialKind
+
+    h = client.app.state.hangar
+    h.settings.github_repos = {"acme/app": "plain,ghost"}
+    h.settings.github_webhook_secret_credential = "gh-hook"
+    checks = {c["name"]: c for c in client.get("/api/doctor").json()}
+    assert checks["github token"]["status"] == "fail" and "hangar-site" in checks["github token"]["fix"]
+    assert checks["github webhook secret"]["status"] == "fail" and "hangar cred add gh-hook" in \
+        checks["github webhook secret"]["fix"]
+    assert checks["environment ghost"]["status"] == "fail"
+    assert checks["environment plain"]["status"] == "fail" and "credentials" in checks["environment plain"]["detail"]
+    assert checks["session checkpoint storage"]["status"] == "ok"
+    h.broker.put("gh-hook", "webhook", CredentialKind.GENERIC, "s")
+    assert {c["name"]: c for c in client.get("/api/doctor").json()}["github webhook secret"]["status"] == "ok"
+
+
+def test_session_idle_route(client):
+    r = client.post("/api/sessions/nope/idle", json={"idle_minutes": 0})
+    assert r.status_code == 404
+    assert client.post("/api/sessions/nope/idle", json={"idle_minutes": -1}).status_code == 422

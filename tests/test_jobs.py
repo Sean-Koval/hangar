@@ -17,6 +17,7 @@ import pytest
 from hangar.harnesses import HARNESSES, Harness
 from hangar.jobs import Caller, JobError, JobService, SubmitJob, handle_github, parse_command
 from hangar.models import ContextItem, CredentialKind, JobState
+from tests.conftest import scratch_root
 
 pytestmark = pytest.mark.skipif(not shutil.which("tmux") or not shutil.which("git"), reason="needs tmux and git")
 
@@ -40,8 +41,7 @@ esac
 @pytest.fixture
 def world(monkeypatch):
     """A bare git remote, a scripted harness and an environment that uses it."""
-    base = Path.home() / ".cache" / "hangar-tests"  # not under /tmp: the fake provider remaps /tmp/
-    base.mkdir(parents=True, exist_ok=True)
+    base = scratch_root()
     root = Path(tempfile.mkdtemp(prefix="jobs-", dir=base))
     remote = root / "remote.git"
     seed = root / "seed"
@@ -105,13 +105,25 @@ class Hooks:
 
 
 @pytest.fixture
-async def jobs(fleet, world, settings):
+async def sessions(fleet, store, settings):
+    from hangar.sessions import SessionService
+    from hangar.vault import Vault
+
+    settings.session_poll_seconds = 0.1
+    svc = SessionService(fleet, Vault(store, b"0" * 43 + b"="))
+    await svc.start()
+    yield svc
+    await svc.stop()
+
+
+@pytest.fixture
+async def jobs(fleet, world, settings, sessions):
     settings.job_poll_seconds = 0.1
     settings.job_concurrency = 2
     fleet.catalog.dirs.insert(0, world["envs"])
     fleet.catalog.reload()
     hooks = Hooks()
-    svc = JobService(fleet, transport=httpx.MockTransport(hooks))
+    svc = JobService(fleet, sessions, transport=httpx.MockTransport(hooks))
     svc.hooks = hooks
 
     async def resolve(host):
@@ -228,6 +240,41 @@ async def test_follow_up_same_branch(jobs, world):
     assert " y" in out and "fix: add fix.txt" in out
 
 
+async def test_follow_up_after_the_sandbox_was_released_resumes_the_session(jobs, world, fleet):
+    """Spec 0010 M2: a follow-up days later resumes the job's session from its checkpoint instead of failing."""
+    job = jobs.submit(SubmitJob(instructions="x", repo=world["url"], environment="jobenv", keep_minutes=0,
+                                context=[ContextItem(name="trace.txt", content="Traceback...")]),
+                      Caller("svc", "svc"))
+    job = await _until(jobs, job.id, DONE)
+    while job.id in jobs._active:  # the release happens just after the outcome is recorded
+        await asyncio.sleep(0.05)
+    assert job.state == JobState.SUCCEEDED and job.sandbox_id is None  # released right away (keep_minutes=0)
+    first = job.turns[0].run_id
+    s = jobs.sessions.get(job.session_id)
+    assert s.state == "suspended" and s.checkpoints and s.job_id == job.id
+    world["mode"].write_text("followup")
+    job.keep_minutes = 60  # keep the second sandbox so we can look inside
+    jobs.follow_up(job.id, "also do Y", requester="svc")
+    job = await _until(jobs, job.id, DONE)
+    while job.id in jobs._active:
+        await asyncio.sleep(0.05)
+    assert job.state == JobState.SUCCEEDED, [e.message for e in job.events]
+    assert any("resuming the job's session" in e.message for e in job.events)
+    assert job.turns[1].run_id != first and len(job.result.commits) == 2
+    out = subprocess.run(["git", "--git-dir", str(world["remote"]), "log", "--oneline", job.branch],
+                         capture_output=True, text=True).stdout
+    assert " y" in out and "fix: add fix.txt" in out
+    # the job's context came back with the session (it is checkpointed with it)
+    box = fleet.providers["docker"].boxes[job.sandbox_id]
+    assert (box / f"home/agent/.hangar/jobs/{job.id}/trace.txt").read_text() == "Traceback..."
+    assert "trace.txt" in (box / f"home/agent/.hangar/jobs/seen-{job.id}.txt").read_text()
+    # sessions that carry jobs can't be driven directly (their turns must be verified and delivered)
+    from hangar.sessions import SessionError
+
+    with pytest.raises(SessionError, match="follow up on the job"):
+        jobs.sessions.send(s.id, "hi", requester="svc")
+
+
 async def test_restart_reattaches_running_turn(jobs, world, fleet):
     world["mode"].write_text("slow")
     job = jobs.submit(SubmitJob(instructions="x", repo=world["url"], environment="jobenv"), Caller("svc", "svc"))
@@ -235,7 +282,7 @@ async def test_restart_reattaches_running_turn(jobs, world, fleet):
     while not jobs.get(job.id).turns[0].run_id:
         await asyncio.sleep(0.05)
     await jobs.stop()  # control plane goes down mid-turn
-    again = JobService(fleet, transport=jobs.transport)
+    again = JobService(fleet, jobs.sessions, transport=jobs.transport)
     await again.start()
     try:
         done = await _until(again, job.id, DONE)
@@ -288,7 +335,7 @@ async def test_github_issue_triggers_job(fleet, settings, broker, world):
     fleet.catalog.dirs.insert(0, world["envs"])
     fleet.catalog.reload()
     hooks = Hooks()
-    svc = JobService(fleet, transport=httpx.MockTransport(hooks))  # not started: we only check intake
+    svc = JobService(fleet, None, transport=httpx.MockTransport(hooks))  # not started: we only check intake
     _gh_settings(svc, broker)
     issue = {"number": 12, "title": "CSV drops unicode", "body": "Steps: ...", "html_url": "https://github.com/o/r/issues/12",
              "user": {"login": "cust"}, "labels": [{"name": "bug"}]}
@@ -385,10 +432,62 @@ async def test_mcp_job_tools(jobs, world, fleet):
         assert _remote_has(world["remote"], job.branch)
 
 
+async def test_restart_while_resuming_keeps_the_checkpoints(jobs, world, fleet):
+    job = jobs.submit(SubmitJob(instructions="x", repo=world["url"], environment="jobenv", keep_minutes=0),
+                      Caller("svc", "svc"))
+    job = await _until(jobs, job.id, DONE)
+    while job.id in jobs._active:
+        await asyncio.sleep(0.05)
+    s = jobs.sessions.get(job.session_id)
+    kept = [c.id for c in s.checkpoints]
+    assert kept and s.sandbox_id is None
+    # the control plane went down while a follow-up was resuming the session
+    world["mode"].write_text("followup")
+    await jobs.stop()
+    from hangar.models import Turn
+
+    job.turns.append(Turn(kind="follow_up", message="also do Y", requester="svc"))
+    job.state = JobState.PROVISIONING
+    job.keep_minutes = 60  # keep this sandbox so we can look at the prompt
+    jobs.store.put(job)
+    again = JobService(fleet, jobs.sessions, transport=jobs.transport)
+    await again.start()
+    try:
+        done = await _until(again, job.id, DONE)
+        assert done.state == JobState.SUCCEEDED, [e.message for e in done.events]
+        assert s.state != "archived" and len(done.result.commits) == 2
+        # the follow-up prompt carries the job's own history; no session handoff on top of it
+        box = fleet.providers["docker"].boxes[done.sandbox_id]
+        prompts = sorted((box / "home/agent/.hangar/runs").glob("*.prompt"), key=lambda p: p.stat().st_mtime)
+        assert "also do Y" in prompts[-1].read_text() and "Earlier in this session" not in prompts[-1].read_text()
+    finally:
+        await again.stop()
+
+
+async def test_job_from_before_sessions_is_adopted(jobs, world, fleet):
+    """A job that started before sessions existed carries on in its own sandbox instead of a new one."""
+    job = jobs.submit(SubmitJob(instructions="x", repo=world["url"], environment="jobenv"), Caller("svc", "svc"))
+    job = await _until(jobs, job.id, DONE)
+    while job.id in jobs._active:
+        await asyncio.sleep(0.05)
+    sandbox = job.sandbox_id
+    old = jobs.sessions.get(job.session_id)
+    old.job_id = None  # pretend it never had one
+    job.session_id = None
+    world["mode"].write_text("followup")
+    jobs.follow_up(job.id, "also do Y", requester="svc")
+    job = await _until(jobs, job.id, DONE)
+    assert job.state == JobState.SUCCEEDED, [e.message for e in job.events]
+    assert job.sandbox_id == sandbox and job.session_id and job.session_id != old.id
+    s = jobs.sessions.get(job.session_id)
+    assert s.sandbox_id == sandbox and fleet.get(sandbox).labels["hangar.session"] == s.id
+    assert [t.run_id for t in s.turns] == [t.run_id for t in job.turns]
+
+
 def test_final_comment_explains_failures(fleet):
     from hangar.models import Job, JobEvent
 
-    svc = JobService(fleet)
+    svc = JobService(fleet, None)
     job = Job(title="t", instructions="x", environment="e", branch="hangar/j", state=JobState.FAILED, reason="error",
               events=[JobEvent(state="provisioning", message="starting a sandbox"),
                       JobEvent(state="failed", message="error: failed to create sandbox: build of e failed: denied")])

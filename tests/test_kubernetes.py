@@ -127,7 +127,7 @@ async def test_warm_pool_and_claim():
 
 
 async def test_write_file_uses_exec_in_chunks(monkeypatch):
-    p = provider()
+    p = provider(k8s_stream_uploads=False)
     calls = []
 
     def fake_exec(pod, argv, timeout):
@@ -271,3 +271,65 @@ async def test_cloud_build_runs_as_configured_service_account(monkeypatch, tmp_p
     await p._cloud_build(render(spec()), "r.example/x/py:1", None)
     assert "--service-account=projects/-/serviceAccounts/hangar@p.iam.gserviceaccount.com" in seen["args"]
     assert "CLOUD_LOGGING_ONLY" in seen["yaml"]
+
+
+def test_pending_events_are_explained():
+    from hangar.providers.kubernetes import _explain_event
+
+    assert "adding a node" in _explain_event("TriggeredScaleUp", "pod triggered scale-up: [{pool 0->1 (max: 4)}]")
+    q = _explain_event("NotTriggerScaleUp", "pod didn't trigger scale-up: 1 GCE quota exceeded (SSD_TOTAL_GB)")
+    assert "quota" in q and "SSD_TOTAL_GB" in q
+    assert "maximum size" in _explain_event("NotTriggerScaleUp", "1 max node group size reached")
+    assert "pulling the environment image" in _explain_event("Pulling", 'Pulling image "x"')
+    assert "no node has room" in _explain_event("FailedScheduling", "0/2 nodes are available: 2 Insufficient cpu.")
+
+
+class FakeWS:
+    """Stands in for the exec websocket: runs the receiving shell script for real against the bytes written."""
+
+    def __init__(self, command, root):
+        self.command, self.root, self.buf, self.open, self.returncode = command, root, [], True, None
+
+    def write_stdin(self, data):
+        self.buf.append(data)
+
+    def update(self, timeout=0):
+        import re as _re
+        import subprocess as sp
+
+        need = int(_re.search(r"head -c (\d+)", self.command[-1]).group(1))
+        if not self.open or sum(map(len, self.buf)) < need:  # like the real process: waits for N bytes
+            return
+        script = self.command[-1].replace("/tmp/", f"{self.root}/tmp-").replace("/home/agent", f"{self.root}/home")
+        p = sp.run(["sh", "-c", script], input="".join(self.buf).encode(), capture_output=True)
+        self.returncode, self.open = p.returncode, False
+
+    def is_open(self):
+        return self.open
+
+    def peek_stderr(self):
+        return False
+
+    def close(self):
+        pass
+
+
+async def test_write_file_streams_in_one_exec(monkeypatch, tmp_path):
+    import hangar.providers.kubernetes as k
+
+    p = provider()
+    streams = []
+
+    def fake_stream(fn, pod, ns, **kw):
+        ws = FakeWS(kw["command"], tmp_path)
+        streams.append(ws)
+        return ws
+
+    monkeypatch.setattr(k, "k8s_stream", fake_stream)
+    p.core = type("Core", (), {"connect_get_namespaced_pod_exec": None})()
+    p._exec_blocking = lambda *a: (_ for _ in ()).throw(AssertionError("no chunked fallback expected"))
+    sb = Sandbox(name="a", environment="py", provider="kubernetes", info={"pod": "pod-1"})
+    data = bytes(range(256)) * 4000  # 1 MB, binary
+    await p.write_file(sb, "/home/agent/ckpt/agent.tgz", data, mode=0o600)
+    assert len(streams) == 1 and "head -c" in streams[0].command[-1]
+    assert (tmp_path / "home/ckpt/agent.tgz").read_bytes() == data

@@ -28,3 +28,7 @@ output "next_steps" {
 output "pod_snapshot_bucket" {
   value = var.enable_pod_snapshots ? google_storage_bucket.pod_snapshots[0].name : null
 }
+
+output "session_bucket" {
+  value = var.enable_session_bucket ? "gs://${google_storage_bucket.sessions[0].name}" : null
+}

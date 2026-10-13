@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -21,14 +22,33 @@ from hangar.vault import Vault, load_or_create_key
 ENVS = Path(__file__).parent / "fixtures" / "envs"
 
 
+@pytest.fixture(autouse=True)
+def _isolated_cli_config(tmp_path, monkeypatch):
+    """Never read or write the developer's real ~/.hangar/cli.json (hangar login) in tests."""
+    monkeypatch.setenv("HANGAR_CLI_CONFIG", str(tmp_path / "cli.json"))
+
+
+def scratch_root() -> Path:
+    """Where fake sandboxes and test git remotes live. The fake provider rewrites /home/agent, /workspace and
+    /tmp/ inside commands, so this path must contain none of them. Inside a hangar sandbox $HOME *is*
+    /home/agent, so fall back to /dev/shm there (override with HANGAR_TEST_ROOT)."""
+    if os.environ.get("HANGAR_TEST_ROOT"):
+        base = Path(os.environ["HANGAR_TEST_ROOT"])
+    else:
+        base = Path.home() / ".cache" / "hangar-tests"
+        if any(x in str(base) for x in ("/home/agent", "/workspace", "/tmp/")):
+            base = Path("/dev/shm/hangar-tests")
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
 class FakeProvider(Provider):
     """Each sandbox is a temp dir; exec runs bash locally with HOME/workspace remapped into it."""
 
     name = "fake"
 
     def __init__(self):
-        base = Path.home() / ".cache" / "hangar-tests"  # must not contain /tmp/ or /workspace (path remapping)
-        base.mkdir(parents=True, exist_ok=True)
+        base = scratch_root()
         self.root = Path(tempfile.mkdtemp(prefix="fake-", dir=base))
         self.boxes: dict[str, Path] = {}
         self.images: set[str] = set()

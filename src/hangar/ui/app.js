@@ -10,7 +10,7 @@ const store = {
   set token(v) { try { v ? localStorage.setItem("hangar.token", v) : localStorage.removeItem("hangar.token"); } catch {} },
 };
 const state = { view: "fleet", envs: [], creds: [], harnesses: [], overview: null, sandboxes: [], selectedEnv: null,
-  jobs: [], selectedJob: null };
+  jobs: [], selectedJob: null, sessions: [], selectedSession: null };
 
 async function api(method, path, body, { raw = false } = {}) {
   const opts = { method, headers: { Authorization: `Bearer ${store.token}` } };
@@ -77,10 +77,10 @@ $("#signout").addEventListener("click", () => { store.token = ""; showGate(); })
 /* ------------------------------------------------------------------ routing */
 function route() {
   const v = (location.hash || "#fleet").slice(1);
-  state.view = ["jobs", "fleet", "environments", "credentials", "snapshots", "connect", "activity"].includes(v) ? v : "fleet";
+  state.view = ["jobs", "sessions", "fleet", "environments", "credentials", "snapshots", "connect", "activity"].includes(v) ? v : "fleet";
   $$(".view").forEach((s) => (s.hidden = s.id !== `view-${state.view}`));
   $$(".rail a[data-view]").forEach((a) => a.classList.toggle("active", a.dataset.view === state.view));
-  ({ jobs: loadJobs, fleet: loadFleet, environments: loadEnvs, credentials: loadCreds, snapshots: loadSnaps, connect: loadConnect,
+  ({ jobs: loadJobs, sessions: loadSessions, fleet: loadFleet, environments: loadEnvs, credentials: loadCreds, snapshots: loadSnaps, connect: loadConnect,
      activity: loadAudit })[state.view]();
 }
 window.addEventListener("hashchange", route);
@@ -96,8 +96,10 @@ async function boot() {
     if (document.hidden) return;
     if (state.view === "fleet") loadFleet(true);
     if (state.view === "jobs") loadJobs(true);
+    if (state.view === "sessions") loadSessions(true);
   }, 4000);
-  loadJobs(true);  // fills the nav count
+  loadJobs(true);  // fills the nav counts
+  loadSessions(true);
 }
 
 async function refreshMeta() {
@@ -301,8 +303,8 @@ function forkDialog(sb) {
 const terms = new Map(); // key -> {term, ws, fit, el, tab, sb, session}
 let activeTerm = null;
 
-function openTerminal(sb, session = null) {
-  const key = `${sb.id}:${session || "shell"}`;
+function openTerminal(sb, session = null, initial = null) {
+  const key = `${sb.id}:${session || (initial ? "agent" : "shell")}`;
   $("#drawer").hidden = false;
   document.body.style.setProperty("--drawer-pad", "var(--drawer-h)");
   if (terms.has(key)) return activateTerm(key);
@@ -323,7 +325,7 @@ function openTerminal(sb, session = null) {
   tab.addEventListener("click", (e) => { if (e.target.classList.contains("x")) closeTerm(key); else activateTerm(key); });
   const extra = $("#drawer-tabs .tab-extra");
   $("#drawer-tabs").insertBefore(tab, extra);
-  const entry = { term, fit, el, tab, sb, session, ws: null };
+  const entry = { term, fit, el, tab, sb, session, ws: null, initial };
   terms.set(key, entry);
   activateTerm(key);
   connectTerm(entry);
@@ -344,6 +346,11 @@ async function connectTerm(entry) {
   const ws = new WebSocket(`${proto}://${location.host}/api/sandboxes/${sb.id}/attach?${q}`);
   ws.binaryType = "arraybuffer";
   entry.ws = ws;
+  if (entry.initial) {  // e.g. resume the agent's conversation interactively in this shell
+    const cmd = entry.initial;
+    entry.initial = null;
+    ws.addEventListener("open", () => setTimeout(() => ws.send(new TextEncoder().encode(cmd + "\r")), 400));
+  }
   ws.onmessage = (ev) => {
     if (typeof ev.data === "string") {
       try { const m = JSON.parse(ev.data); if (m.type === "error") term.writeln(`\r\n\x1b[31m${m.message}\x1b[0m`); } catch { term.write(ev.data); }
@@ -473,7 +480,9 @@ function renderJob(j) {
       ${j.context?.length ? `<dt>Context</dt><dd>${j.context.map((c) => c.url
         ? `<a class="tag" href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.name)}</a>`
         : `<span class="tag">${esc(c.name)} · ${c.size} B</span>`).join(" ")}</dd>` : ""}
-      <dt>Sandbox</dt><dd>${live ? `<code>${esc(j.sandbox_id)}</code>` : `<span class="hint">none</span>`}</dd>
+      <dt>Sandbox</dt><dd>${live ? `<code>${esc(j.sandbox_id)}</code>` : `<span class="hint">released; a reply resumes it from the last checkpoint</span>`}</dd>
+      ${j.session ? `<dt>Session</dt><dd><a href="#sessions" data-goto-ses="${esc(j.session_id)}">${esc(j.session.name)}</a>
+        · ${esc(j.session.state)} · ${j.session.checkpoints} checkpoint(s)</dd>` : ""}
     </dl>
     <div class="env-bar">
       ${live && j.terminal_session ? `<button id="job-watch" class="primary">${j.active ? "Watch the agent" : "Agent's terminal"}</button>` : ""}
@@ -482,7 +491,7 @@ function renderJob(j) {
     </div>
     ${r.summary ? `<h4>Agent's summary</h4><pre class="log summary">${esc(r.summary)}</pre>` : ""}
     ${r.verify_tail && r.verify_exit_code ? `<h4>Check output</h4><pre class="log">${esc(r.verify_tail)}</pre>` : ""}
-    ${!j.active && live ? `<form id="job-followup" class="followup">
+    ${!j.active && (live || j.session?.checkpoints) ? `<form id="job-followup" class="followup">
         <label>Reply to the agent<textarea id="job-followup-text" rows="3" required
           placeholder="Also handle the empty-file case, and keep the old function name."></textarea></label>
         <div class="env-bar"><span class="hint">Runs another turn in the same sandbox and branch; the PR updates.</span>
@@ -500,6 +509,10 @@ function renderJob(j) {
   const sb = { id: j.sandbox_id, name: j.id };
   $("#job-watch")?.addEventListener("click", () => openTerminal(sb, j.terminal_session));
   $("#job-shell")?.addEventListener("click", () => openTerminal(sb));
+  $("[data-goto-ses]", box)?.addEventListener("click", (e) => {
+    state.selectedSession = e.target.dataset.gotoSes;
+    $("#ses-jobs").checked = true;
+  });
   $("#job-cancel")?.addEventListener("click", (e) => {
     if (!confirm(`Cancel ${j.id}? The agent is stopped; work committed so far stays in the sandbox.`)) return;
     busy(e.target, async () => { await api("POST", `/api/jobs/${j.id}/cancel`); toast(`Cancelling ${j.id}`); loadJobs(); });
@@ -514,6 +527,138 @@ function renderJob(j) {
     });
   });
 }
+
+/* ------------------------------------------------------------------ sessions */
+const SES_TONE = { starting: "start", idle: "ok", running: "run", suspending: "start", suspended: "stop",
+  failed: "err", archived: "stop" };
+
+async function loadSessions(quiet = false) {
+  try {
+    state.sessions = await api("GET", "/api/sessions?limit=200");
+    renderSessions();
+  } catch (e) { if (!quiet && e.message !== "unauthorized") toast(e.message, true); }
+}
+
+function renderSessions() {
+  const showJobs = $("#ses-jobs").checked;
+  const mine = state.sessions.filter((x) => showJobs || !x.job_id);
+  $("#nav-sessions").textContent = mine.filter((x) => ["idle", "running", "starting"].includes(x.state)).length || "";
+  if (state.view !== "sessions") return;
+  $("#session-list").innerHTML = mine.length ? mine.map((x) => `<li><button data-ses="${esc(x.id)}"
+      class="job-row ${x.id === state.selectedSession ? "active" : ""}" data-tone="${SES_TONE[x.state] || "stop"}">
+      <span class="t"><span class="dot"></span>${esc(x.name)}</span>
+      <span class="d">${esc(x.state)}${x.busy && x.state !== "running" ? "…" : ""} · ${esc(x.environment)}
+        · ${ago(x.last_active_at)}</span></button></li>`).join("")
+    : `<li class="empty-floor"><p>No sessions yet. Start one here, or from an MCP client with new_session.</p></li>`;
+  if (state.selectedSession) renderSession(state.sessions.find((x) => x.id === state.selectedSession));
+}
+$("#ses-jobs").addEventListener("change", renderSessions);
+$("#session-list").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-ses]");
+  if (!b) return;
+  state.selectedSession = b.dataset.ses;
+  renderSessions();
+  if (window.innerWidth < 860) $("#session-detail").scrollIntoView({ behavior: "smooth", block: "start" });
+});
+
+function renderSession(x) {
+  const box = $("#session-detail");
+  if (!x) { box.innerHTML = `<p class="empty">That session is no longer listed.</p>`; return; }
+  const draft = $("#ses-msg")?.value || "";
+  const live = !!x.sandbox_id && ["idle", "running"].includes(x.state);
+  const ck = x.checkpoints?.at(-1);
+  const keep = x.idle_minutes;
+  box.innerHTML = `
+    <div class="env-bar"><h3>${esc(x.name)}</h3>
+      <span class="tag tone" data-tone="${SES_TONE[x.state] || "stop"}">${esc(x.state)}</span></div>
+    ${x.reason ? `<p class="hint">${esc(x.reason)}</p>` : ""}
+    <dl class="kv">
+      <dt>Where</dt><dd>${esc(x.environment)} · ${esc(x.harness || "default agent")}${x.model ? ` · ${esc(x.model)}` : ""}</dd>
+      ${x.repo ? `<dt>Repo</dt><dd>${esc(jobRepo(x))} · <code>${esc(x.branch)}</code></dd>` : ""}
+      <dt>Conversation</dt><dd>${x.harness_session ? `<code>${esc(x.harness_session)}</code> (resumes natively)`
+        : `<span class="hint">${x.turns.length ? "summary handoff on the next turn" : "starts with the first message"}</span>`}</dd>
+      <dt>Saved</dt><dd>${x.checkpoint_count ? `${x.checkpoint_count} checkpoint(s), last ${ago(x.last_checkpoint_at)}
+        (${esc(ck?.reason || "")})${ck?.warnings?.length ? ` · <span class="tag bad">${esc(ck.warnings.join("; "))}</span>` : ""}`
+        : `<span class="hint">nothing yet</span>`}</dd>
+      <dt>Idle</dt><dd><select id="ses-idle">${[[15, "suspend after 15 min idle"], [30, "after 30 min"],
+        [120, "after 2 h"], [480, "after 8 h"], [0, "stay up until I suspend it"]].map(([v, t]) =>
+        `<option value="${v}" ${v === keep ? "selected" : ""}>${t}</option>`).join("")}${[15, 30, 120, 480, 0].includes(keep)
+        ? "" : `<option value="${keep}" selected>after ${keep} min</option>`}</select></dd>
+      ${x.job_id ? `<dt>Job</dt><dd><a href="#jobs" data-goto-job="${esc(x.job_id)}">${esc(x.job_id)}</a></dd>` : ""}
+    </dl>
+    <div class="env-bar">
+      ${live ? "" : (x.state === "archived" ? "" : `<button id="ses-open" class="primary">${x.checkpoint_count ? "Resume" : "Open"}</button>`)}
+      ${live && x.resume_command && x.state !== "running" ? `<button id="ses-agent" class="primary">Talk to the agent here</button>` : ""}
+      ${live && x.terminal_session ? `<button id="ses-watch">Last turn's terminal</button>` : ""}
+      ${live ? `<button id="ses-shell">Open a shell</button><button id="ses-suspend">Suspend</button>` : ""}
+    </div>
+    ${x.last_summary ? `<h4>Agent's last summary</h4><pre class="log summary">${esc(x.last_summary)}</pre>` : ""}
+    ${x.job_id || x.state === "archived" ? "" : `<form id="ses-send" class="followup">
+      <label>Message the agent<textarea id="ses-msg" rows="3" required ${x.state === "running" ? "disabled" : ""}
+        placeholder="${x.state === "suspended" ? "Resumes the session, then the agent continues with this." : "What next?"}"></textarea></label>
+      <div class="env-bar"><span class="hint">${x.state === "running" ? "The agent is working…"
+        : "The agent continues its own conversation with everything it knew."}</span>
+        <button class="primary" type="submit" ${x.state === "running" || x.busy ? "disabled" : ""}>Send</button></div></form>`}
+    ${x.turns.length ? `<h4>Turns</h4><ol class="turns">${x.turns.slice().reverse().map((t) => `<li>
+      <b>${esc(t.message.split("\n")[0].slice(0, 140))}</b>
+      <div class="hint">${esc(t.harness || "")} · ${esc(t.mode)}${t.exit_code != null ? ` · exit ${t.exit_code}` : t.run_id ? " · running" : ""}
+        ${t.started_at ? ` · ${ago(t.started_at)}` : ""}</div>
+      ${t.summary ? `<div class="turn-summary">${esc(t.summary.slice(0, 600))}</div>` : ""}</li>`).join("")}</ol>` : ""}`;
+  const ta = $("#ses-msg");
+  if (ta) ta.value = draft;
+  const sb = { id: x.sandbox_id, name: x.name };
+  $("#ses-open")?.addEventListener("click", (e) => busy(e.target, async () => {
+    await api("POST", `/api/sessions/${x.id}/open`, {}); toast(`Resuming ${x.name}`); loadSessions(); }));
+  $("#ses-shell")?.addEventListener("click", () => openTerminal(sb));
+  $("#ses-watch")?.addEventListener("click", () => openTerminal(sb, x.terminal_session));
+  $("#ses-agent")?.addEventListener("click", () => openTerminal(sb, null, x.resume_command));
+  $("#ses-suspend")?.addEventListener("click", (e) => busy(e.target, async () => {
+    await api("POST", `/api/sessions/${x.id}/suspend`); toast(`Suspending ${x.name}: saving, then releasing the sandbox`);
+    closeTerminalsFor(x.sandbox_id); loadSessions(); }));
+  $("#ses-idle")?.addEventListener("change", (e) => busy(e.target, async () => {
+    await api("POST", `/api/sessions/${x.id}/idle`, { idle_minutes: Number(e.target.value) }); loadSessions(); }));
+  $("[data-goto-job]", box)?.addEventListener("click", (e) => { state.selectedJob = e.target.dataset.gotoJob; });
+  $("#ses-send")?.addEventListener("submit", (e) => {
+    e.preventDefault();
+    busy($("button[type=submit]", e.target), async () => {
+      await api("POST", `/api/sessions/${x.id}/send`, { message: $("#ses-msg").value });
+      $("#ses-msg").value = "";
+      toast(x.state === "suspended" ? `Resuming ${x.name}, then sending` : "Sent");
+      await loadSessions();
+    });
+  });
+}
+
+function syncSessionHarness() {
+  const f = $("#session-form");
+  const env = state.envs.find((e) => e.name === f.environment.value);
+  const hs = (env?.harnesses || []).filter((h) => h !== "git");
+  f.harness.innerHTML = `<option value="">${esc(env?.default_harness || "default")} (default)</option>` +
+    hs.filter((h) => h !== env?.default_harness).map((h) => `<option>${esc(h)}</option>`).join("");
+}
+$("#btn-new-session").addEventListener("click", () => {
+  const f = $("#session-form");
+  const envs = state.envs.filter((e) => !e.error && (e.harnesses || []).some((h) => h !== "git"))
+    .sort((a, b) => (!!b.repo - !!a.repo) || ((b.credentials || []).length - (a.credentials || []).length));
+  f.environment.innerHTML = envs.map((e) => `<option value="${esc(e.name)}">${esc(e.name)}${e.repo ? ` (${esc(jobRepo(e))})` : ""}</option>`).join("");
+  syncSessionHarness();
+  f.hidden = false;
+  f.name.focus();
+});
+$("#session-form").environment.addEventListener("change", syncSessionHarness);
+$("#session-cancel").addEventListener("click", () => ($("#session-form").hidden = true));
+$("#session-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  await busy($("button[type=submit]", f), async () => {
+    const body = Object.fromEntries([...new FormData(f)].filter(([, v]) => v !== ""));
+    const x = await api("POST", "/api/sessions", body);
+    toast(`Starting ${x.name}`);
+    f.hidden = true; f.reset();
+    state.selectedSession = x.id;
+    await loadSessions();
+  });
+});
 
 /* ---- new job ---- */
 function syncJobHarness() {

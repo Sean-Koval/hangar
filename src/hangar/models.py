@@ -212,8 +212,77 @@ class Job(BaseModel):
     reason: str | None = None
     cancel_requested: bool = False
     sandbox_id: str | None = None
+    session_id: str | None = None  # the session that carries this job's sandbox, conversation and checkpoints
     turns: list[Turn] = Field(default_factory=list)
     result: JobResult = Field(default_factory=JobResult)
     events: list[JobEvent] = Field(default_factory=list)
     created_at: float = Field(default_factory=now)
+    updated_at: float = Field(default_factory=now)
+
+
+# ---------------------------------------------------------------------------- sessions (spec 0010)
+class SessionState(StrEnum):
+    STARTING = "starting"  # booting a sandbox and restoring the last checkpoint
+    IDLE = "idle"  # sandbox attached, no agent turn running
+    RUNNING = "running"  # an agent turn is running
+    SUSPENDING = "suspending"
+    SUSPENDED = "suspended"  # no sandbox; resumable from the last checkpoint
+    ARCHIVED = "archived"  # checkpoints dropped; record kept
+    FAILED = "failed"  # the last boot failed; retry with open
+
+
+SESSION_LIVE = {SessionState.STARTING, SessionState.IDLE, SessionState.RUNNING}
+
+
+class SessionTurn(BaseModel):
+    message: str
+    requester: str | None = None
+    run_id: str | None = None
+    harness: str | None = None
+    mode: Literal["new", "resume", "handoff"] = "new"
+    conversation: str | None = None  # the harness conversation id this turn used (preset ids are known up front)
+    started_at: float | None = None
+    finished_at: float | None = None
+    exit_code: int | None = None
+    summary: str | None = None
+
+
+class Checkpoint(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("ckpt"))
+    ts: float = Field(default_factory=now)
+    reason: str = "turn"  # turn | suspend | destroy | interval | manual
+    head: str | None = None
+    base: str | None = None
+    branch: str | None = None
+    fingerprint: str | None = None  # HEAD + dirty-tree hash: skip identical checkpoints
+    parts: dict[str, int] = Field(default_factory=dict)  # part name -> bytes (plaintext)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class Session(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("ses"))
+    name: str
+    title: str = ""
+    owner: str = "admin"
+    environment: str
+    harness: str | None = None
+    model: str | None = None
+    repo: str | None = None
+    base_branch: str | None = None
+    base_sha: str | None = None
+    branch: str = ""
+    harness_session: str | None = None  # the harness's own conversation id
+    harness_session_for: str | None = None  # which harness that id belongs to
+    sandbox_id: str | None = None
+    state: SessionState = SessionState.SUSPENDED
+    reason: str | None = None
+    turns: list[SessionTurn] = Field(default_factory=list)
+    checkpoints: list[Checkpoint] = Field(default_factory=list)
+    idle_minutes: int = 30
+    job_id: str | None = None  # set when the session carries a job (spec 0009/0010 M2)
+    provider: str | None = None
+    extra_dirs: list[str] = Field(default_factory=list)  # more $HOME-relative paths to checkpoint (job context)
+    labels: dict[str, str] = Field(default_factory=dict)
+    created_at: float = Field(default_factory=now)
+    last_active_at: float = Field(default_factory=now)
     updated_at: float = Field(default_factory=now)

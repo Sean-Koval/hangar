@@ -63,3 +63,33 @@ variable "domain" {
   type        = string
   default     = ""
 }
+
+variable "sandbox_disk_gb" {
+  description = "Boot disk per sandbox node. pd-balanced/pd-ssd count against SSD_TOTAL_GB (500 GB default quota): 100 leaves room to scale. Changing it recreates the sandbox nodes."
+  type        = number
+  default     = 200
+}
+
+variable "sandbox_disk_type" {
+  description = "Boot disk type for sandbox nodes (null = GKE's default). Changing it recreates the sandbox nodes."
+  type        = string
+  default     = null
+}
+
+variable "image_streaming" {
+  description = "GKE image streaming for sandbox nodes: pods start before the whole image is pulled. Turning it on recreates the sandbox nodes."
+  type        = bool
+  default     = false
+}
+
+variable "enable_session_bucket" {
+  description = "GCS bucket for session checkpoints (HANGAR_SESSION_STORE=gs://<bucket>)."
+  type        = bool
+  default     = true
+}
+
+variable "session_retention_days" {
+  description = "Delete checkpoint objects older than this many days; 0 = never. A suspended session's newest checkpoint is its only copy of the work, so set this longer than any session should sit suspended."
+  type        = number
+  default     = 0
+}

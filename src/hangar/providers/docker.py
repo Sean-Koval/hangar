@@ -169,6 +169,8 @@ class DockerProvider(Provider):
             for c in pool:
                 if c not in alive:
                     await asyncio.to_thread(c.remove, force=True)
+            for c in alive[max(0, spec.warm_pool):]:  # scaled down (e.g. a schedule's hours ended)
+                await asyncio.to_thread(c.remove, force=True)
             for _ in range(max(0, spec.warm_pool - len(alive))):
                 name = f"hangar-pool-{spec.name}-{int(time.time() * 1000) % 10**8}"
                 kw = self._run_kwargs(name, image, spec.resources, {POOL_LABEL: image, "dev.hangar.env": spec.name},
