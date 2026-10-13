@@ -10,11 +10,30 @@ import hashlib
 import hmac
 import secrets
 import time
+from typing import NamedTuple
 
 from hangar.models import ApiToken, now
 from hangar.store import Store
 
 PREFIX = "hgr_"
+SCOPES = ("admin", "jobs")  # admin: everything; jobs: only /api/jobs* (service callers)
+_RESERVED_NAMES = {"admin", "system"}
+
+
+class Principal(NamedTuple):
+    name: str  # display name (not unique)
+    id: str  # token id: the ownership key
+    scopes: list[str]
+    callback_secret: str | None = None
+
+    @property
+    def admin(self) -> bool:
+        return "admin" in self.scopes
+
+
+def check_token_name(name: str) -> None:
+    if not name or ":" in name or name.lower() in _RESERVED_NAMES or len(name) > 100:
+        raise ValueError(f"token name '{name}' is not allowed (no ':', not 'admin' or 'system', ≤100 chars)")
 
 
 def hash_token(token: str) -> str:
@@ -42,9 +61,12 @@ class TokenAuth:
         actor, exp = self._tickets.pop(ticket, (None, 0.0))
         return actor if actor and exp > time.time() else None
 
-    def create(self, name: str, scopes: list[str] | None = None) -> tuple[str, ApiToken]:
+    def create(self, name: str, scopes: list[str] | None = None,
+               callback_secret: str | None = None) -> tuple[str, ApiToken]:
+        check_token_name(name)
         raw = PREFIX + secrets.token_urlsafe(32)
-        tok = ApiToken(name=name, token_hash=hash_token(raw), scopes=scopes or ["admin"])
+        tok = ApiToken(name=name, token_hash=hash_token(raw), scopes=scopes or ["admin"],
+                       callback_secret=callback_secret)
         self.store.put(tok)
         return raw, tok
 
@@ -55,15 +77,23 @@ class TokenAuth:
         self.store.delete(ApiToken, token_id)
 
     def identify(self, raw: str | None) -> tuple[str, str] | None:
-        """(actor name, token id) for a valid token. The admin token's id is 'admin'."""
+        """(actor name, token id) for a valid *admin* token. The admin token's id is 'admin'.
+
+        Used for OAuth consent: an MCP grant carries full tool access, so narrower tokens are refused."""
+        p = self.principal(raw)
+        return (p.name, p.id) if p and p.admin else None
+
+    def principal(self, raw: str | None) -> Principal | None:
         if not raw:
             return None
         h = hash_token(raw)
         if self._admin_hash and hmac.compare_digest(h, self._admin_hash):
-            return "admin", "admin"
+            return Principal("admin", "admin", ["admin"])
         for tok in self.store.list(ApiToken):
             if hmac.compare_digest(h, tok.token_hash):
-                return tok.name, tok.id
+                tok.last_used = now()
+                self.store.put(tok)
+                return Principal(tok.name, tok.id, list(tok.scopes), tok.callback_secret)
         return None
 
     def exists(self, token_id: str | None) -> bool:
@@ -71,19 +101,18 @@ class TokenAuth:
             return self._admin_hash is not None
         return bool(token_id) and self.store.get(ApiToken, token_id) is not None
 
-    def verify(self, raw: str | None) -> str | None:
-        """Return the actor name for a valid token, else None."""
-        if not raw:
+    def verify_scopes(self, raw: str | None) -> tuple[str, list[str]] | None:
+        """(actor name, scopes) for a valid token, else None."""
+        p = self.principal(raw)
+        return (p.name, p.scopes) if p else None
+
+    def verify(self, raw: str | None, scope: str = "admin") -> str | None:
+        """Return the actor name for a valid token that holds `admin` (or `scope`), else None."""
+        res = self.verify_scopes(raw)
+        if res is None:
             return None
-        h = hash_token(raw)
-        if self._admin_hash and hmac.compare_digest(h, self._admin_hash):
-            return "admin"
-        for tok in self.store.list(ApiToken):
-            if hmac.compare_digest(h, tok.token_hash):
-                tok.last_used = now()
-                self.store.put(tok)
-                return tok.name
-        return None
+        name, scopes = res
+        return name if "admin" in scopes or scope in scopes else None
 
     def ensure_bootstrap(self) -> str | None:
         """If no admin token is configured and no tokens exist, mint one and return it (shown once)."""

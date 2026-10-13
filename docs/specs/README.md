@@ -2,6 +2,8 @@
 
 Design specs for the next round of work. They came out of the first live GKE run on 2026-10-11: two Claude Code agents in gVisor sandboxes made real changes and opened PRs (#13, #14), and the run exposed the gaps these specs close. Each spec was drafted by a Claude Code agent in its own hangar sandbox, working in parallel. This page reconciles them.
 
+**North star (owner, 2026-10-12):** a software factory. Coding agents run on our own infrastructure and do development work that clients, applications and services hand them, with context, while engineers follow, steer and take over. Hangar is the control plane for that: environments, harnesses, sandboxes, credentials and runs are the factory floor; jobs (0009) are the front door; evals, labeling and learning are features built from the work it does.
+
 | Spec | Owns | PR |
 | --- | --- | --- |
 | [0001 Agent runs](0001-agent-runs.md) | The `Run` record and its lifecycle states, the supervisor and liveness watcher, structured events and status, plan-usage tracking and the per-credential queue, `resume_agent` / `cancel_agent` / `send_input`, baked dependencies | #16 |
@@ -12,6 +14,7 @@ Design specs for the next round of work. They came out of the first live GKE run
 | [0006 Environments and harness packs](0006-environments-and-harness-packs.md) | Image/runtime/session split, harness packs, per-sandbox harness selection, `mcp:` and `secrets:`, default and team environments | #22 (M1–M3 built) |
 | [0007 Experiments, policy and team learning](0007-experiments-policy-and-team-learning.md) | The MCP gateway, the `policy:` block and where each rule is enforced, experiments over environment variants, the label taxonomy and labeler cascade, links from runs to tickets and objectives, team learnings, and the performance fixes they depend on | this PR |
 | [0008 Swarms, the improvement loop and RL](0008-swarm-improvement-loop-and-rl.md) | `swarm` and sandbox pools for spreading coding work across sandboxes, memory vs filesystem fork per backend, the Harbor sandbox adapter and ATIF export, the scheduled improvement loop that ends in a PR, the labeling review tab and reports, the RL path (best-of-N → datasets → rollout backend), and reward-hacking defenses | this PR |
+| [0009 Jobs, the factory front door](0009-jobs-and-the-factory-front-door.md) | Jobs: how clients, services, MCP clients, the CLI and GitHub issues hand work to cloud agents with a context bundle; queueing, verification with the repo's own check, delivery as a branch and PR, signed callbacks, follow-ups and take-over by engineers, `jobs`-scoped service tokens | #30 (M1–M2 built) |
 
 ## Cross-spec decisions
 

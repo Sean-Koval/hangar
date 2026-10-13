@@ -22,7 +22,8 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from hangar.broker import CredentialError
 from hangar.fleet import Fleet, FleetError
-from hangar.models import Sandbox
+from hangar.jobs import Caller, JobService, SubmitJob
+from hangar.models import ContextItem, Sandbox
 from hangar.providers.base import ProviderError
 
 # Failures an agent can act on (bad name, quota, build error...). Anything else is a crash and stays generic.
@@ -44,6 +45,10 @@ Typical flow:
 5. fork_sandbox(sandbox, count=N) to clone a prepared sandbox for parallel attempts.
 6. destroy_sandbox when done (sandboxes also expire after their TTL).
 Relative paths resolve against the sandbox's repo checkout (or /workspace).
+
+Or hand off whole pieces of work: submit_job(instructions, repo=..., context=[...]) runs an agent in
+a fresh sandbox, verifies, pushes a branch and opens a draft PR on its own. Check it with get_job,
+continue it with follow_up_job, stop it with cancel_job.
 """
 
 
@@ -56,7 +61,7 @@ def _sb(s: Sandbox) -> dict[str, Any]:
     }
 
 
-def build_mcp(fleet: Fleet) -> MCPServer:
+def build_mcp(fleet: Fleet, jobs: JobService | None = None) -> MCPServer:
     mcp = MCPServer("hangar", instructions=INSTRUCTIONS, version="0.1.0")
 
     def tool():
@@ -328,5 +333,53 @@ def build_mcp(fleet: Fleet) -> MCPServer:
         sbs = await fleet.fork(source, count, name_prefix, credentials, work_branch_prefix, provider,
                                ttl_minutes, actor=actor())
         return [_sb(s) for s in sbs]
+
+    # ------------------------------------------------------------------ jobs (spec 0009)
+    if jobs is None:
+        return mcp
+
+    @tool()
+    async def submit_job(instructions: str, repo: str | None = None, environment: str | None = None,
+                   title: str | None = None, harness: str | None = None, model: str | None = None,
+                   base_branch: str | None = None, verify: str | None = None, deliver: str = "draft_pr",
+                   context: list[dict[str, Any]] | None = None, timeout_minutes: int | None = None,
+                   callback_url: str | None = None) -> dict[str, Any]:
+        """Hand a piece of development work to a cloud agent and get on with other things.
+
+        Hangar queues the job, starts a sandbox from `environment` (default: the repo's mapped one), writes
+        `context` next to the repo, runs the agent, runs `verify` (the repo's own check, e.g. "pytest -q"),
+        commits anything left, pushes branch hangar/<job> and opens a PR (`deliver`: draft_pr | pr | branch |
+        none). `context` items: {"name": "trace.txt", "content": "...", "kind": "log"} or
+        {"name": "spec", "kind": "url", "url": "https://..."}. Returns the job; poll get_job."""
+        req = SubmitJob(instructions=instructions, repo=repo, environment=environment, title=title, harness=harness,
+                        model=model, base_branch=base_branch, verify=verify, deliver=deliver,
+                        context=[ContextItem.model_validate(c) for c in context or []],
+                        timeout_minutes=timeout_minutes, callback_url=callback_url)
+        who = current_actor.get()
+        return jobs.view(jobs.submit(req, Caller(who, who), source="mcp"))
+
+    @tool()
+    async def get_job(job: str) -> dict[str, Any]:
+        """A job's state, timeline, result (commits, PR, verification, the agent's summary) and its sandbox
+        and terminal session for watching or taking over."""
+        return jobs.view(jobs.get(job))
+
+    @tool()
+    async def list_jobs(state: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+        """Recent jobs, newest first (state: queued | provisioning | running | verifying | delivering |
+        succeeded | failed | cancelled)."""
+        return [{k: v for k, v in jobs.view(j).items() if k not in ("events", "instructions", "turns")}
+                for j in jobs.list(state=state, limit=limit)]
+
+    @tool()
+    async def follow_up_job(job: str, message: str) -> dict[str, Any]:
+        """Continue a finished job: the agent picks up `message` in the same sandbox and branch, then hangar
+        verifies and delivers again (the PR updates)."""
+        return jobs.view(jobs.follow_up(job, message, requester=current_actor.get()))
+
+    @tool()
+    async def cancel_job(job: str) -> dict[str, Any]:
+        """Stop a queued or running job (the agent is killed; work committed so far stays in the sandbox)."""
+        return jobs.view(jobs.cancel(job, requester=current_actor.get()))
 
     return mcp

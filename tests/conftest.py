@@ -102,6 +102,9 @@ class FakeProvider(Provider):
 
     async def write_file(self, sandbox, path, data, mode=0o644):
         p = self._map(sandbox, path)
+        if path.endswith(".sh"):  # scripts fleet writes (agent runs) name sandbox paths; remap like exec does
+            box = str(self.boxes[sandbox.provider_ref]).encode()
+            data = data.replace(b"/home/agent", box + b"/home/agent").replace(b"/workspace", box + b"/workspace")
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(data)
         p.chmod(mode)

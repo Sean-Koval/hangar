@@ -5,7 +5,7 @@ from __future__ import annotations
 import secrets
 import time
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -111,6 +111,8 @@ class ApiToken(BaseModel):
     name: str
     token_hash: str
     scopes: list[str] = Field(default_factory=lambda: ["admin"])
+    # jobs-scoped tokens: the vault `webhook` credential that signs this token's job callbacks (set by an admin)
+    callback_secret: str | None = None
     created_at: float = Field(default_factory=now)
     last_used: float | None = None
 
@@ -121,3 +123,97 @@ class AuditEvent(BaseModel):
     action: str
     target: str | None = None
     detail: dict[str, Any] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------- jobs (spec 0009)
+class JobState(StrEnum):
+    QUEUED = "queued"
+    PROVISIONING = "provisioning"
+    RUNNING = "running"
+    VERIFYING = "verifying"
+    DELIVERING = "delivering"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+JOB_TERMINAL = {JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED}
+
+
+class ContextItem(BaseModel):
+    """One piece of context handed to the agent as a file (or, for `url`, a link listed in the prompt)."""
+
+    name: str
+    kind: Literal["text", "file", "log", "issue", "diff", "url"] = "text"
+    content: str | None = None
+    encoding: Literal["utf-8", "base64"] = "utf-8"
+    url: str | None = None
+
+    def size(self) -> int:
+        return len(self.content or "")
+
+
+class JobEvent(BaseModel):
+    ts: float = Field(default_factory=now)
+    state: str
+    message: str = ""
+
+
+class Turn(BaseModel):
+    kind: Literal["initial", "follow_up"] = "initial"
+    message: str | None = None  # follow-up text
+    requester: str | None = None
+    reply_to: str | None = None  # "github:owner/repo#N": where to post progress for this turn
+    run_id: str | None = None
+    started_at: float | None = None
+    finished_at: float | None = None
+    exit_code: int | None = None
+    summary: str | None = None
+
+
+class JobResult(BaseModel):
+    base_sha: str | None = None
+    head_sha: str | None = None
+    commits: list[str] = Field(default_factory=list)  # "abc1234 subject", newest first
+    diffstat: str | None = None
+    pushed: bool = False
+    pr_url: str | None = None
+    pr_number: int | None = None
+    verify_exit_code: int | None = None
+    verify_tail: str | None = None
+    summary: str | None = None
+
+
+class Job(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("job"))
+    title: str
+    instructions: str
+    source: Literal["api", "mcp", "cli", "github"] = "api"
+    source_ref: str | None = None  # e.g. "github:owner/repo#12"
+    requester: str = "system"
+    owner: str | None = None  # token id ("tok-…"), "admin", or "github:<login>"; jobs-scoped tokens see only theirs
+    repo: str | None = None
+    base_branch: str | None = None
+    branch: str = ""
+    environment: str
+    harness: str | None = None
+    model: str | None = None
+    provider: str | None = None
+    verify: str | None = None
+    deliver: Literal["draft_pr", "pr", "branch", "none"] = "draft_pr"
+    context: list[ContextItem] = Field(default_factory=list)
+    callback_url: str | None = None
+    callback_secret: str | None = None  # vault credential name holding the HMAC key
+    idempotency_key: str | None = None
+    labels: dict[str, str] = Field(default_factory=dict)
+    timeout_minutes: int = 60
+    keep_minutes: int = 120
+    state: JobState = JobState.QUEUED
+    reason: str | None = None
+    cancel_requested: bool = False
+    sandbox_id: str | None = None
+    turns: list[Turn] = Field(default_factory=list)
+    result: JobResult = Field(default_factory=JobResult)
+    events: list[JobEvent] = Field(default_factory=list)
+    created_at: float = Field(default_factory=now)
+    updated_at: float = Field(default_factory=now)
