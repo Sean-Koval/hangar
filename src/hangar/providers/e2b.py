@@ -544,6 +544,8 @@ class E2BProvider(Provider):
         """One call through envd, then once more after asking the API for the endpoint again: the token may have
         rotated (resume) or the sandbox moved. `nothing` is what envd.py returns for "nothing happened, use another
         path" (None, or SKIP for reads), so a retry is safe."""
+        if sandbox.state == SandboxState.PAUSED:
+            raise ProviderError(f"sandbox {sandbox.id} is paused; resume it first")
         tok = _USER.set(user or self.settings.sandbox_user)
         try:
             for attempt in (0, 1):
