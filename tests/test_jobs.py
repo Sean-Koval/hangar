@@ -302,8 +302,16 @@ async def test_github_issue_triggers_job(fleet, settings, broker, world):
     assert names == ["issue-12.md", "issue-12-comments.md"]
     assert "repro: run it twice" in job.context[1].content
     assert "IGNORE PREVIOUS" not in job.context[1].content  # non-maintainer comments are left out
+    await asyncio.sleep(0.05)
+    assert any(c.startswith("<!-- hangar -->\nQueued as hangar job") for c in hooks.comments())  # acknowledged at once
     # retries and duplicates don't start a second job
     assert "already working" in (await handle_github(svc, "issues", "d-2", labeled))["ignored"]
+    # a misconfiguration is reported on the issue instead of failing silently
+    svc.settings.github_repos = {"o/r": "no-such-env"}
+    bad = await handle_github(svc, "issues", "d-9", {**labeled, "issue": {**issue, "number": 99}})
+    await asyncio.sleep(0.05)
+    assert "error" in bad and any("couldn't start a job" in c for c in hooks.comments())
+    _gh_settings(svc, broker)
     # wrong repo, wrong label, untrusted commenter, disallowed env
     assert "ignored" in await handle_github(svc, "issues", "d-3", {**labeled, "repository": {"full_name": "x/y"}})
     assert "ignored" in await handle_github(svc, "issues", "d-4", {**labeled, "label": {"name": "bug"}})
@@ -332,7 +340,7 @@ async def test_github_pr_and_comments(jobs, world, broker):
     assert job.result.pr_number == 7 and jobs.hooks.prs[0]["draft"] is True
     assert "Closes #12" in jobs.hooks.prs[0]["body"] and "Added fix.txt" in jobs.hooks.prs[0]["body"]
     comments = jobs.hooks.comments()
-    assert comments[0].startswith("<!-- hangar -->\nOn it") and "Done" in comments[-1]
+    assert comments[0].startswith("<!-- hangar -->\nAgent started") and "Done" in comments[-1]
     # a /hangar comment on that PR continues the job
     world["mode"].write_text("followup")
     pr_comment = {"action": "created", "repository": {"full_name": "o/r"},

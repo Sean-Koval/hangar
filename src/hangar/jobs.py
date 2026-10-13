@@ -228,7 +228,10 @@ class JobService:
         env = req.environment or (allowed_envs[0] if allowed_envs else None)
         if not env:
             raise JobError("environment is required (or a repo listed in HANGAR_GITHUB_REPOS)")
-        spec = self.fleet.catalog.get(env)
+        try:
+            spec = self.fleet.catalog.get(env)
+        except KeyError as e:
+            raise JobError(str(e).strip("'\"")) from e
         try:
             spec.pick_harness(req.harness)
         except ValueError as e:
@@ -530,8 +533,8 @@ class JobService:
             self._spawn(self._callback(job, "job.started"))
             if turn.reply_to:
                 await self._comment(job, turn.reply_to,
-                                    f"On it: hangar job `{job.id}` ({job.environment}, {job.harness}"
-                                    f"{', ' + job.model if job.model else ''}). Branch `{job.branch}`.")
+                                    f"Agent started on hangar job `{job.id}` ({job.environment}, {job.harness}"
+                                    f"{', ' + job.model if job.model else ''}), branch `{job.branch}`.")
 
     async def _wait(self, job: Job, turn: Turn) -> tuple[str, str]:
         deadline = (turn.started_at or now()) + job.timeout_minutes * 60
@@ -736,7 +739,7 @@ class JobService:
         lines += ["", "Reply with `/hangar <message>` on the PR to continue in the same sandbox."]
         return "\n".join(lines)
 
-    async def _comment(self, job: Job, ref: str, body: str) -> None:
+    async def _comment(self, job: Job | None, ref: str, body: str) -> None:
         m = re.match(r"^github:([^#]+)#(\d+)$", ref)
         gh = self._github() if m else None
         if gh is None:
@@ -744,7 +747,10 @@ class JobService:
         try:
             await gh.comment(m.group(1), int(m.group(2)), body)
         except (GitHubError, httpx.HTTPError) as e:
-            self._event(job, f"could not comment on {ref}: {e}")
+            if job is not None:
+                self._event(job, f"could not comment on {ref}: {e}")
+            else:
+                log.warning("could not comment on %s: %s", ref, e)
         finally:
             await gh.close()
 
@@ -896,5 +902,13 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
                     labels={"github.kind": "issue", "github.issue": str(number)})
     if (busy := running()) is not None:  # another delivery got here while we fetched comments
         return {"ignored": f"job {busy.id} is already working on {ref}"}
-    job = svc.submit(req, Caller(f"github:{sender}", f"github:{sender}"), source="github", source_ref=ref)
+    try:
+        job = svc.submit(req, Caller(f"github:{sender}", f"github:{sender}"), source="github", source_ref=ref)
+    except JobError as e:
+        # Say why on the issue; otherwise a misconfiguration looks like hangar ignoring the label.
+        svc._spawn(svc._comment(None, ref, f"hangar couldn't start a job for this issue: {e}"))
+        return {"error": str(e)}
+    # Acknowledge right away: provisioning (and a first image build) can take minutes before the agent starts.
+    svc._spawn(svc._comment(job, ref, f"Queued as hangar job `{job.id}` in `{job.environment}`. I'll comment here "
+                                      "when the agent starts and again with the result."))
     return {"ok": True, "job": job.id}
