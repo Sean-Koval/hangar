@@ -168,7 +168,7 @@ class Control:
 _RISKY_SHELL = [
     (re.compile(r"\bgit\s+push\b[^|;&]*(\s-f\b|--force|--delete|\s:\S|\s\+\S)"),
      "force-push or remote branch deletion"),
-    (re.compile(r"(^|[;&|]\s*|\s)(sudo|su|doas)\s"), "privilege escalation"),
+    (re.compile(r"(^|[;&|('\"`]\s*|\s)(sudo|su|doas)\s"), "privilege escalation"),
     (re.compile(r"\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(ba|z|da)?sh\b"), "piping a download into a shell"),
     (re.compile(r"\brm\s+(-[a-zA-Z]*\s+)*-[a-zA-Z]*[rR][a-zA-Z]*\s+(-[a-zA-Z]+\s+)*(/|~|\$HOME|\.\.)(\s|/?$|/\*)"),
      "recursive delete outside the working tree"),
