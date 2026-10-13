@@ -40,6 +40,7 @@ from urllib.parse import parse_qsl, quote, urlencode
 import httpx
 
 from hangar.envd import PORT as ENVD_PORT
+from hangar.envd import Endpoint, EnvdError, sign
 from hangar.fleet import ACTIVE
 from hangar.models import Sandbox, SandboxState, now
 
@@ -49,6 +50,8 @@ if TYPE_CHECKING:
 log = logging.getLogger("hangar.e2b")
 
 MAX_RPC_BODY = 8 << 20  # hangar-envd checks signed bodies up to this size in memory
+_SMALL = 1 << 20  # responses up to this size (with a length) are relayed in one piece
+_TIMEOUTS = httpx.Timeout(None, connect=2.0).as_dict()  # streams live for hours; a dead daemon fails fast
 _SPOOL_MEM = 4 << 20  # uploads bigger than this go to disk while they are hashed
 _SID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 _HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "trailers",
@@ -297,16 +300,13 @@ class SandboxRouter:
             with tempfile.SpooledTemporaryFile(max_size=_SPOOL_MEM) as f:
                 size, digest = await self._spool(body, f)
                 hdr["content-length"] = str(size)
-                await self._forward(receive, send, sb, envd, envd.request(
-                    ep, method, target, content=self._chunks(f), headers=hdr, content_sha256=digest,
-                    timeout=httpx.Timeout(None, connect=2.0)))
+                await self._forward(receive, send, sb, envd, _signed(ep, method, target, self._chunks(f), hdr, digest))
             return
         data = await self._read(receive, MAX_RPC_BODY)
         if raw_path == b"/process.Process/Start" and (env := self.svc.env_vars(sb.id, rec)):
             data = _with_env(data, hdr.get("content-type", ""), env)
-        await self._forward(receive, send, sb, envd, envd.request(
-            ep, method, target, content=data, headers=hdr, content_sha256=hashlib.sha256(data).hexdigest(),
-            timeout=httpx.Timeout(None, connect=2.0)))
+        digest = hashlib.sha256(data).hexdigest()
+        await self._forward(receive, send, sb, envd, _signed(ep, method, target, data, hdr, digest))
 
     async def _forward(self, receive, send, sb: Sandbox, envd, req: httpx.Request) -> None:
         try:
@@ -340,12 +340,11 @@ class SandboxRouter:
                     raise Refused(400, {"code": 400, "message": "a file part has no path (its filename)"})
                 q = urlencode([(k, v) for k, v in pairs if k != "path"] + [("path", dest)], quote_via=quote)
                 size, digest = await asyncio.to_thread(_hash_file, up.file)
-                req = envd.request(ep, "POST", f"{path}?{q}", content=self._chunks(up.file),
-                                   headers={"content-type": "application/octet-stream", "content-length": str(size)},
-                                   content_sha256=digest, timeout=httpx.Timeout(None, connect=2.0))
+                req = _signed(ep, "POST", f"{path}?{q}", self._chunks(up.file),
+                              {"content-type": "application/octet-stream", "content-length": str(size)}, digest)
                 try:
                     status, raw = await envd.send_capped(req, 1 << 20)
-                except httpx.HTTPError as e:
+                except (httpx.HTTPError, EnvdError) as e:
                     envd._lost(sb, str(e))
                     raise _gone(sb.id, f"hangar-envd didn't answer: {type(e).__name__}") from e
                 try:
@@ -420,8 +419,14 @@ class SandboxRouter:
         try:
             skip = _HOP | {"date", "server"}
             headers = [(k, v) for k, v in resp.headers.raw if k.lower().decode("latin-1") not in skip]
-            if (n := resp.headers.get("content-length")) is not None:
+            n = resp.headers.get("content-length")
+            if n is not None:
                 headers.append((b"content-length", n.encode()))
+            if n is not None and n.isdigit() and int(n) <= _SMALL:  # most RPCs: one write, no watcher task
+                body = b"".join([c async for c in resp.aiter_raw()])
+                await send({"type": "http.response.start", "status": resp.status_code, "headers": headers})
+                await send({"type": "http.response.body", "body": body})
+                return
             await send({"type": "http.response.start", "status": resp.status_code, "headers": headers})
 
             async def pump() -> None:
@@ -543,6 +548,16 @@ class SandboxRouter:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             await up.close()
+
+
+def _signed(ep: Endpoint, method: str, target: str, content: Any, headers: dict[str, str],
+            digest: str) -> httpx.Request:
+    """A request to the daemon signed with its token (X-Hangar-Sig over the method, path, query and body digest).
+    Built directly rather than with the client's build_request, which costs more than everything else here."""
+    url = httpx.URL(ep.url + target)
+    h = {**headers, "accept-encoding": "identity",
+         "x-hangar-sig": sign(ep.token, method, url.raw_path, digest)}
+    return httpx.Request(method, url, headers=h, content=content, extensions={"timeout": _TIMEOUTS})
 
 
 def _with_env(body: bytes, content_type: str, env: dict[str, str]) -> bytes:
