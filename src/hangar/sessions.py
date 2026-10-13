@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field
 
 from hangar import ckpt, exchange
 from hangar.checkpoints import CheckpointStore, make_store
-from hangar.ckpt import CKPT_DIR, CKPT_REF, PARTS, RESTORE_DIR  # noqa: F401 - re-exported (strategies, exchange)
+from hangar.ckpt import CKPT_DIR, CKPT_REF, PACK_READ_LIMIT, PARTS, RESTORE_DIR  # noqa: F401 - re-exported (strategies, exchange)
 from hangar.events import Activity, resolve_budget, total_usage
 from hangar.fleet import Fleet, FleetError, _clip_tail
 from hangar.harnesses import get_harness
@@ -529,12 +529,13 @@ class SessionService:
         data: dict[str, bytes] = {}  # parts to encrypt and upload
         sizes: dict[str, int] = {}  # part -> plaintext bytes stored
         same: list[str] = []  # parts unchanged since `last`: copied inside the store
+        limits = {p: max_untracked if p == "untracked.tgz" else max_part for p in ckpt.ALL_PARTS}
         try:
             for part in ckpt.ALL_PARTS:
                 if part not in cap.parts:
                     continue
                 size, digest = cap.parts[part]
-                limit = max_untracked if part == "untracked.tgz" else max_part
+                limit = limits[part]
                 if size > limit:
                     ck.warnings.append(f"{part} is {size // 1024 // 1024} MB, over the "
                                        f"{limit // 1024 // 1024} MB limit; not checkpointed")
@@ -544,8 +545,11 @@ class SessionService:
                     same.append(part)
             fresh = [p for p in ck.digests if p not in same]
             if packed := set(fresh) & cap.packed:
-                raw = await prov.read_file(sb, f"{CKPT_DIR}/{ckpt.PACK}") or b""
-                data = await asyncio.to_thread(ckpt.unpack, raw, packed)  # off the loop: packs can be big
+                # integrate (#48): every size above came from the sandbox (its `stat` and `tar` are the agent's to
+                # redefine), so the read itself is capped: a pack is PACK_LIMIT plus tar headers.
+                raw = await prov.read_file(sb, f"{CKPT_DIR}/{ckpt.PACK}", limit=PACK_READ_LIMIT) or b""
+                if len(raw) <= PACK_READ_LIMIT:
+                    data = await asyncio.to_thread(ckpt.unpack, raw, {p: limits[p] for p in packed})  # off the loop
                 del raw
 
             copied: list[str] = []
@@ -566,9 +570,10 @@ class SessionService:
                 sizes[part] = len(plain)
 
             async def single(part: str) -> None:
-                plain = await prov.read_file(sb, f"{CKPT_DIR}/{part}")
-                if plain is None:
-                    ck.warnings.append(f"could not read {part}")
+                plain = await prov.read_file(sb, f"{CKPT_DIR}/{part}", limit=limits[part])  # integrate (#48)
+                if plain is None or len(plain) > limits[part]:
+                    ck.warnings.append(f"could not read {part}" if plain is None else
+                                       f"{part} is over the {limits[part] // 1024 // 1024} MB limit; not checkpointed")
                     ck.digests.pop(part, None)
                     return
                 await upload(part, plain)

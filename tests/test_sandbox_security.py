@@ -20,6 +20,7 @@ import httpx
 import pytest
 
 from hangar import exchange
+from hangar.ckpt import PACK_READ_LIMIT
 from hangar.gateway import FLUSH, pkt
 from hangar.models import Session
 from tests.test_exchange import settle, svc, world  # noqa: F401 - fixtures
@@ -341,9 +342,15 @@ echo '{"type":"result","result":"done"}'
 """
 
 
-async def test_sizes_reported_by_the_sandbox_do_not_bound_what_hangar_reads(svc, world, fleet, monkeypatch):  # noqa: F811
+@pytest.mark.parametrize("packed", [True, False])  # integrate (#53): parts come back in a pack, or one by one
+async def test_sizes_reported_by_the_sandbox_do_not_bound_what_hangar_reads(svc, world, fleet, monkeypatch,  # noqa: F811
+                                                                            packed):
+    from hangar import ckpt
     from hangar.harnesses import HARNESSES, Harness
     from hangar.sessions import NewSession
+
+    if not packed:
+        monkeypatch.setattr(ckpt, "PACK_LIMIT", 0)  # nothing fits a pack: every part is read on its own
 
     agent = world["root"] / "liar.sh"
     agent.write_text(LIAR)
@@ -371,7 +378,11 @@ async def test_sizes_reported_by_the_sandbox_do_not_bound_what_hangar_reads(svc,
     assert t.result is None and "limit" in (t.result_error or ""), t.result_error
     ck = s.checkpoints[-1]
     assert "untracked.tgz" not in ck.parts and any("untracked.tgz" in w for w in ck.warnings), ck.warnings
-    big = [(p, n) for p, _, n in reads if n > 1_100_000]
+    # integrate (#53): the checkpoint's parts come back as one pack, a single read capped at PACK_READ_LIMIT; the
+    # untracked.tgz inside it was over its own cap, so it was dropped (above) rather than kept
+    packs = [(lim, n) for p, lim, n in reads if p.endswith("/pack.tar")]
+    assert bool(packs) == packed and all(lim is not None and lim <= PACK_READ_LIMIT for lim, _ in packs), packs
+    big = [(p, n) for p, _, n in reads if n > 1_100_000 and not p.endswith("/pack.tar")]
     assert not big, f"read whole from the sandbox: {big}"
 async def test_idle_connections_cannot_lock_other_sandboxes_out(fleet):
     """uvicorn's limit_concurrency counts open connections, including ones that never send a request (there is no

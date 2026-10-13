@@ -36,6 +36,7 @@ CKPT_DIR = "/tmp/hangar-ckpt"
 RESTORE_DIR = "/tmp/hangar-restore"
 PACK = "pack.tar"
 PACK_LIMIT = 64 * 1024 * 1024
+PACK_READ_LIMIT = PACK_LIMIT + 1024 * 1024  # integrate (#48): a pack read is capped; tar headers fit in 1 MB
 _LINE = re.compile(r"^HANGAR-(FP|HEAD|PART|PACK|UNCHANGED)(?: (.*))?$")
 _SHA = re.compile(r"^[0-9a-f]{64}$")
 
@@ -109,8 +110,8 @@ def parse_capture(stdout: str) -> Capture:
         if not m:
             continue
         kind, rest = m.group(1), (m.group(2) or "").strip()
-        if kind == "FP":
-            out.fingerprint = rest or None
+        if kind == "FP":  # integrate (#48): the sandbox prints it, so only a short hex digest is recorded
+            out.fingerprint = rest if re.fullmatch(r"[0-9a-f]{1,64}", rest) else None
         elif kind == "HEAD":
             out.head = rest if re.fullmatch(r"[0-9a-f]{40,64}", rest) else None
         elif kind == "UNCHANGED":
@@ -141,12 +142,16 @@ def seal(vault: Vault, plain: bytes) -> tuple[str, bytes]:
     return hashlib.sha256(plain).hexdigest(), vault.encrypt(plain)
 
 
-def unpack(data: bytes, expected: set[str]) -> dict[str, bytes]:
-    """Parts from a capture pack. The sandbox wrote it, so only regular files with an expected name are taken."""
+def unpack(data: bytes, limits: dict[str, int]) -> dict[str, bytes]:
+    """Parts from a capture pack: part name -> its byte cap. The sandbox wrote the pack, so only plain regular
+    files with an expected name, within that part's cap, are taken (integrate, #48: a sparse member's header can
+    claim any size, and reading it would expand that much in the control plane's memory). A part left out is read
+    on its own, under the same cap."""
     out: dict[str, bytes] = {}
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as tf:
         for m in tf:
-            if m.isfile() and m.name in expected and m.name not in out:
+            if m.type in (tarfile.REGTYPE, tarfile.AREGTYPE) and m.name in limits and m.size <= limits[m.name] \
+                    and m.name not in out:
                 f = tf.extractfile(m)
                 out[m.name] = f.read() if f else b""
     return out

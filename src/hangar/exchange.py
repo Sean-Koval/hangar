@@ -817,7 +817,7 @@ async def session_patch(svc: SessionService, s: Session, max_bytes: int | None =
                   "; git rev-parse HEAD")
         res = await svc._sh(sb, script, cwd=sb.info["repo_path"], timeout=300)
         _, prov = svc.fleet._running(sb.id)
-        data = await prov.read_file(sb, f"{tmp}/out.patch")
+        data = await prov.read_file(sb, f"{tmp}/out.patch", limit=max_bytes + 1)  # integrate (#48): capped here
         with contextlib.suppress(Exception):
             await svc._sh(sb, f"rm -rf {tmp}")
         if data is None:

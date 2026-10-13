@@ -146,7 +146,9 @@ def test_groups_and_unpack_take_only_what_is_expected():
             if kind == tarfile.SYMTYPE:
                 info.linkname = "/etc/passwd"
             tf.addfile(info, io.BytesIO(b"abc") if kind == tarfile.REGTYPE else None)
-    assert ckpt.unpack(buf.getvalue(), {"agent.tgz", "wip.patch", "repo.bundle"}) == {"repo.bundle": b"abc"}
+    assert ckpt.unpack(buf.getvalue(), dict.fromkeys(("agent.tgz", "wip.patch", "repo.bundle"), 3)) == \
+        {"repo.bundle": b"abc"}
+    assert ckpt.unpack(buf.getvalue(), {"repo.bundle": 2}) == {}  # integrate: over its cap, it is read alone
     out = ckpt.parse_capture("noise\nHANGAR-FP abc\nHANGAR-HEAD nothex\nHANGAR-PART agent.tgz 12 " + "f" * 64
                              + "\nHANGAR-PART ../x 1 " + "f" * 64 + "\nHANGAR-PACK agent.tgz evil\n")
     assert out.fingerprint == "abc" and out.head is None and list(out.parts) == ["agent.tgz"]
@@ -300,8 +302,8 @@ async def test_capture_holds_one_unpacked_part_at_a_time(svc, world, fleet, monk
     prov, vault = fleet.providers["docker"], svc.vault
     read, encrypt = prov.read_file, vault.encrypt
 
-    async def counting_read(sb, path):
-        data = await read(sb, path)
+    async def counting_read(sb, path, limit=None):
+        data = await read(sb, path, limit)
         held[0] += len(data or b"")
         held[1] = max(held)
         return data
