@@ -97,6 +97,8 @@ A `jobs` token can carry a budget cap (`hangar token create svc --scope jobs --m
 
 **Questions.** An agent that needs a decision runs `hangar-agent ask "…"`. The job goes to state `needs_input` with `result.question`: nothing is verified or pushed yet, a `job.needs_input` callback is sent, and a GitHub job comments the question on its issue or PR. Answer with a follow-up (`/hangar <answer>` on GitHub); the agent continues in the same conversation. Cancelling a job that needs input ends it.
 
+To run several attempts and keep the best, see [§6](#6-forks-and-best-of-n).
+
 ## 3. Verify callbacks
 
 Each callback is `POST` with `{"event": "job.started" | "job.needs_input" | "job.finished", "job": {...}}` and the header `X-Hangar-Signature: sha256=<hex HMAC-SHA256 of the raw body>`. A receiver checks it like this:
@@ -158,6 +160,36 @@ If the sandbox was released, hangar starts a new one from the job's last checkpo
 - **Take over:** work in the sandbox yourself. Your commits go out with the next follow-up's delivery.
 - After a turn the sandbox stays up while anyone is using it, and at least `keep_minutes` (default 120). Then it is checkpointed and released.
 
+## 6. Forks and best-of-N
+
+For work where one try often misses (a flaky test, a tricky bug, an ambiguous refactor), ask for several attempts and keep the best:
+
+```bash
+hangar job submit "fix the flaky test_export" --repo https://github.com/acme/app --verify "pytest tests/test_export.py -q" \
+  --best-of 3 --wait          # add --judge to have an agent compare the attempts that pass
+hangar job attempts job-3fa2c1d0
+```
+
+Over REST or MCP: `"strategy": "best_of_n", "n": 3` (2–8), and optionally `"judge": true`.
+
+How it runs:
+1. Hangar prepares the job once: a sandbox, the branch checks and the context files. Then it checkpoints that state.
+2. It [forks](sessions.md#forks-and-best-of-n) the job's session into N attempt sessions. Each attempt restores the checkpoint into its own sandbox, on branch `<job branch>-attempt-<i>`, and runs the agent on the same prompt. The agent sees `$HANGAR_ATTEMPT` (1…N).
+3. Each attempt is verified in its own sandbox, and what it left uncommitted is committed there.
+4. Ranking:
+   - attempts that pass `verify` come first;
+   - among those, a short judge turn orders them when `judge` is set (it reads each attempt's diff and summary); otherwise the smallest diff wins, then the earliest finish;
+   - attempts whose diff changes, renames or deletes the verify command's own test files are flagged (`touched_tests`) and ranked last. These are the paths the command names or, when it names none (`pytest -q`, `make test`), any test file. New test files are fine.
+5. The winner is delivered as the job's branch and PR. The PR body has a table of all attempts. The other attempts are checkpointed and their sandboxes released. With `HANGAR_BEST_OF_N_PUSH_ATTEMPTS=true`, they are also pushed as `<job branch>-attempt-<i>`.
+
+`get_job` and `GET /api/jobs/{id}` list `attempts`: session, branch, outcome, exit code, verify result, diffstat, lines changed, `touched_tests`, score, rank, summary and, when the harness reports it, cost.
+
+- **Follow-ups** continue the winner's session: same conversation, sandbox and branch.
+- **Cancel** stops every attempt. A control-plane restart re-attaches to each running attempt. One attempt's sandbox dying (or its agent failing) doesn't fail the job; it is recorded and left out of the ranking.
+- To carry on with an attempt that wasn't delivered, fork its session: `hangar session fork job-3fa2c1d0-attempt-2 "..."`.
+
+**Cost:** N attempts are N sandboxes running at the same time and N agent runs (the judge adds one more short run in a sandbox of its own). The preparation runs once. A job holds one worker slot (`HANGAR_JOB_CONCURRENCY`) however many attempts it runs, so the sandbox count, not the job count, is what to watch: `HANGAR_BEST_OF_N_MAX` caps N, and `HANGAR_MAX_SANDBOXES` caps the fleet.
+
 ## Settings
 
 | Variable | Default | |
@@ -169,6 +201,9 @@ If the sandbox was released, hangar starts a new one from the job's last checkpo
 | `HANGAR_JOB_MAX_CONTEXT_BYTES` / `_ITEMS` | 2 MB / 50 | |
 | `HANGAR_JOB_CALLBACK_HOSTS` | `[]` | Hosts allowed for http or internal callbacks |
 | `HANGAR_BUDGET_MAX_MINUTES` / `_MAX_TOKENS` / `_MAX_COST_USD`, `HANGAR_MODEL_PRICES` | unset | Default budget per turn and the price table; see [activity.md](activity.md) |
+| `HANGAR_BEST_OF_N_MAX` | 8 | Most attempts per best-of-N job |
+| `HANGAR_BEST_OF_N_PUSH_ATTEMPTS` | false | Also push attempts that weren't delivered |
+| `HANGAR_BEST_OF_N_JUDGE_TIMEOUT_MINUTES` | 15 | The judge turn's limit |
 | `HANGAR_GITHUB_TOKEN_CREDENTIAL`, `HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL`, `HANGAR_GITHUB_REPOS`, `HANGAR_GITHUB_TRIGGER_LABEL` | | See §4 |
 | `HANGAR_GITHUB_TRUSTED`, `HANGAR_JOB_APPROVAL_TTL_HOURS`, `HANGAR_INBOUND_WEBHOOKS`, `HANGAR_SCHEDULE_POLL_SECONDS` | | See [triggers.md](triggers.md) |
 

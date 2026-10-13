@@ -25,7 +25,7 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel, Field
 
-from hangar import exchange
+from hangar import exchange, strategies  # strategies: workstream D (forks/best-of-N)
 from hangar.events import resolve_budget, total_usage, usage_line
 from hangar.fleet import Fleet, FleetError, _clip_tail
 from hangar.github import GitHub, GitHubError, parse_repo
@@ -95,6 +95,10 @@ class SubmitJob(BaseModel):
     keep_minutes: int | None = Field(None, ge=0, le=1440)
     budget: Budget | None = None  # per agent turn; unset fields fall back to HANGAR_BUDGET_* (workstream C)
     output_schema: dict[str, Any] | None = None  # workstream E: JSON Schema the agent's out/result.json must match
+    # --- workstream D: forks/best-of-N
+    strategy: Literal["single", "best_of_n"] = "single"
+    n: int | None = Field(None, ge=1, le=8)  # attempts for best_of_n (2..HANGAR_BEST_OF_N_MAX; default 3)
+    judge: bool = False  # best_of_n: a judge turn orders the attempts that pass verification
 
 
 def _safe_name(name: str, taken: set[str]) -> str:
@@ -167,6 +171,9 @@ class JobService:
             elif job.state == JobState.PROVISIONING:
                 await self._discard_sandbox(job)
                 self._event(job, "control plane restarted while provisioning", JobState.FAILED, reason="interrupted")
+            elif strategies.can_reattach(job):
+                self._event(job, "control plane restarted; re-attaching to the attempts")
+                self._queue.put_nowait(job.id)
             elif job.turns and self._sandbox_alive(job):
                 self._event(job, "control plane restarted; re-attached to the job" if job.turns[-1].run_id
                             else "control plane restarted before the turn started; starting it now")
@@ -185,6 +192,7 @@ class JobService:
             s = self._session(job)
             if s is not None and (job.state in JOB_TERMINAL or job.state == JobState.NEEDS_INPUT):
                 self.sessions.release_restart_hold(s)
+            strategies.release_restart_holds(self, job)
         n = max(1, self.settings.job_concurrency)
         self._workers = [asyncio.create_task(self._worker(i)) for i in range(n)]
         for job in interrupted:
@@ -264,6 +272,7 @@ class JobService:
             spec.pick_harness(req.harness)
         except ValueError as e:
             raise JobError(str(e)) from e
+        attempts = strategies.check_submit(req, self.settings.best_of_n_max)
         repo = req.repo or (spec.repo.url if spec.repo else None)
         if not repo and req.deliver != "none":
             raise JobError("a repo is required unless deliver='none' (none given and the environment has no repo)")
@@ -299,12 +308,14 @@ class JobService:
             approval=approval, untrusted_source=untrusted_source,
         )
         job.budget = resolve_budget(req.budget, self.settings, caller.max_budget if caller.restricted else None)
+        job.strategy, job.n, job.judge = req.strategy, attempts, req.judge  # workstream D
         self._jobs[job.id] = job
+        best = f" (best of {attempts})" if req.strategy == "best_of_n" else ""
         if approval is not None:  # an untrusted trigger: wait for a trusted person instead of queueing
-            self._event(job, f"waiting for approval: {approval.reason or approval.requested_by}",
+            self._event(job, f"waiting for approval: {approval.reason or approval.requested_by}{best}",
                         JobState.AWAITING_APPROVAL)
         else:
-            self._event(job, f"queued by {requester} via {source}")
+            self._event(job, f"queued by {requester} via {source}{best}")
         self.fleet.audit(requester, "job.submit", job.id, environment=env, repo=repo, source=source)
         if approval is None:
             self._queue.put_nowait(job.id)
@@ -480,6 +491,9 @@ class JobService:
             if job.cancel_requested:
                 self._event(job, "cancelled before it started", JobState.CANCELLED, reason="cancelled")
                 await self._report(job)
+                return
+            if strategies.is_attempt_phase(job):
+                await strategies.run_best_of_n(self, job)
                 return
             s = self._session(job)
             if s is None and job.sandbox_id:
@@ -842,6 +856,8 @@ class JobService:
         if job.verify:
             ok = "passed" if job.result.verify_exit_code == 0 else f"failed (exit {job.result.verify_exit_code})"
             lines.append(f"Verification `{job.verify}`: **{ok}**")
+        if job.attempts:
+            lines += ["", strategies.attempts_table(job), ""]
         lines.append(f"hangar job `{job.id}` · requested by {job.requester} via {job.source} · "
                      f"{job.environment} / {job.harness}" + (f" / {job.model}" if job.model else ""))
         if usage := total_usage(job.turns):  # workstream C

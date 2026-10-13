@@ -497,7 +497,7 @@ class SessionService:
                 dirs += get_harness(t).session_dirs
         return sorted(set(dirs + s.extra_dirs))
 
-    async def _checkpoint(self, s: Session, reason: str) -> Checkpoint | None:
+    async def _checkpoint(self, s: Session, reason: str, skip_unchanged: bool = False) -> Checkpoint | None:
         """Snapshot conversation + repo state into the control plane. Caller holds the lock."""
         if not s.sandbox_id or not self._alive(s.sandbox_id):
             return None
@@ -542,7 +542,7 @@ class SessionService:
         _, prov = self.fleet._running(sb.id)
         fp = (await prov.read_file(sb, f"{c}/fingerprint") or b"").decode().strip() or None
         head = (await prov.read_file(sb, f"{c}/head") or b"").decode().strip() or None
-        if reason == "interval" and last and fp and fp == last.fingerprint:
+        if (reason == "interval" or skip_unchanged) and last and fp and fp == last.fingerprint:
             self._last_checked[s.id] = now()  # nothing changed; don't re-run the whole thing every minute
             return None
         sizes = {}
@@ -647,7 +647,7 @@ class SessionService:
                 extra_dirs: list[str], idle_minutes: int) -> Session:
         """The session that carries a job: same sandbox lifecycle, checkpoints and conversation resume, but turns
         are driven by the job service (which verifies and delivers them)."""
-        existing = next((x for x in self._sessions.values() if x.job_id == job_id), None)
+        existing = next((x for x in self._sessions.values() if x.job_id == job_id and not x.parent_id), None)
         if existing:
             return existing
         s = Session(name=f"job-{job_id.removeprefix('job-')}", title=f"job {job_id}", owner="jobs",
@@ -747,8 +747,11 @@ class SessionService:
         want = now() + (tmo + max(s.idle_minutes, 30) + 30) * 60
         if sb.expires_at is not None and sb.expires_at < want:
             await self.fleet.extend(sb.id, int((want - sb.expires_at) / 60) + 1, actor=f"session:{s.id}")
+        from hangar.strategies import claim_conversation, fork_turn_env  # workstream D (import cycle)
+
         h = get_harness(s.harness)
         env: dict[str, str] = {}
+        claim_conversation(self, s)
         if self.will_resume(s):
             turn.mode = "resume"
             env["HANGAR_SESSION_RESUME"] = s.harness_session
@@ -756,6 +759,9 @@ class SessionService:
             turn.mode = "handoff" if len(s.turns) > 1 else "new"
             if h.resume == "preset":
                 env["HANGAR_SESSION_NEW"] = str(uuid.uuid4())
+            if forked := fork_turn_env(s, h):
+                turn.mode = "fork"
+                env.update(forked)
         turn.harness = s.harness
         turn.conversation = env.get("HANGAR_SESSION_RESUME") or env.get("HANGAR_SESSION_NEW")
         self._save(s)
@@ -867,6 +873,10 @@ class SessionService:
         turn.conversation = cid
         s.harness_session = cid
         s.harness_session_for = (turn.harness or s.harness) if cid else None
+        if cid:
+            s.fork_conversation = None  # a forked session has its own conversation now
+        elif turn.mode == "fork":
+            s.harness_session_for = turn.harness or s.harness  # the fork didn't take: fork again next turn
         self._save(s)
 
     # ================================================================== internals: suspend / idle

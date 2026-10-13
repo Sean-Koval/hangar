@@ -86,6 +86,10 @@ class Harness(BaseModel):
     resume: Literal["preset", "capture"] | None = None
     session_id_regex: str | None = None
     resume_hint: str | None = None
+    # --- workstream D: forks/best-of-N. The CLI can branch a conversation into a new one: the run command then
+    # reads $HANGAR_SESSION_FORK (the conversation to fork), plus $HANGAR_SESSION_NEW for "preset" harnesses (the
+    # new id). Without it, a forked session starts fresh with a summary handoff.
+    fork: bool = False
 
     @property
     def prefix(self) -> str:
@@ -172,10 +176,13 @@ HARNESSES: dict[str, Harness] = {
             'claude -p "$(cat "$HANGAR_PROMPT_FILE")" --dangerously-skip-permissions '
             '--output-format stream-json --verbose ${HANGAR_MODEL:+--model "$HANGAR_MODEL"} '
             '${HANGAR_SESSION_NEW:+--session-id "$HANGAR_SESSION_NEW"} '
-            '${HANGAR_SESSION_RESUME:+--resume "$HANGAR_SESSION_RESUME"}'
+            '${HANGAR_SESSION_RESUME:+--resume "$HANGAR_SESSION_RESUME"} '
+            '${HANGAR_SESSION_FORK:+--resume "$HANGAR_SESSION_FORK" --fork-session}'
         ),
         session_dirs=[".claude/projects"],
         resume="preset",
+        # Verified with 2.1.296: --session-id may be combined with --resume only together with --fork-session.
+        fork=True,
         resume_hint="claude --resume {id}",
         skills_dir=".claude/skills",
         instructions_file=".claude/CLAUDE.md",
@@ -210,11 +217,15 @@ HARNESSES: dict[str, Harness] = {
         # it cannot work under gVisor anyway.
         run=(
             'codex exec ${HANGAR_SESSION_RESUME:+resume "$HANGAR_SESSION_RESUME"} '
+            '${HANGAR_SESSION_FORK:+fork "$HANGAR_SESSION_FORK"} '
             "--json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "
             '${HANGAR_MODEL:+-m "$HANGAR_MODEL"} "$(cat "$HANGAR_PROMPT_FILE")"'
         ),
         session_dirs=[".codex/sessions"],
         resume="capture",
+        # Verified with 0.162.1: `codex exec fork <id>` starts a new thread (its thread_id is in thread.started)
+        # whose rollout records forked_from_id; the parent's rollout must stay on disk (it is in the checkpoint).
+        fork=True,
         session_id_regex=r'"thread_id"\s*:\s*"([0-9A-Za-z-]{8,})"',
         resume_hint="codex resume {id}",
         skills_dir=".codex/skills",
@@ -241,10 +252,12 @@ HARNESSES: dict[str, Harness] = {
             'pi -p --mode json --approve ${HANGAR_MODEL:+--model "$HANGAR_MODEL"} '
             '${HANGAR_SESSION_NEW:+--session-id "$HANGAR_SESSION_NEW"} '
             '${HANGAR_SESSION_RESUME:+--session-id "$HANGAR_SESSION_RESUME"} '
+            '${HANGAR_SESSION_FORK:+--fork "$HANGAR_SESSION_FORK"} '
             '"$(cat "$HANGAR_PROMPT_FILE")"'
         ),
         session_dirs=[".pi/agent/sessions"],
         resume="preset",
+        fork=True,  # verified with 1.1.0 and 1.2.0: --fork <id> --session-id <new id>
         resume_hint="pi --session-id {id}",
         skills_dir=".pi/agent/skills",
         instructions_file=".pi/agent/AGENTS.md",
@@ -289,6 +302,8 @@ HARNESSES: dict[str, Harness] = {
         resume="capture",
         session_id_regex=r'"conversation_id"\s*:\s*"([0-9a-f-]{36})"',
         resume_hint="agy --conversation {id}",
+        # No fork flag in agy 1.3.3 (only --conversation/--continue), so forked sessions get a summary handoff.
+        fork=False,
         skills_dir=".gemini/skills",
         instructions_file=".gemini/GEMINI.md",
         mcp_format="antigravity",

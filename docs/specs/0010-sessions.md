@@ -208,7 +208,7 @@ This works for any harness. It is used when a harness has no resume support, or 
 | M2 ✓ | Jobs run in sessions: every job's turns resume the agent's conversation; job context is checkpointed with it; `keep_minutes` releases via suspend; follow-ups after the sandbox is gone resume the session instead of failing | M | M1 |
 | M3 ✓ | Dashboard Sessions page; activity-based keep-alive; idle control; Antigravity resume (verified, agy 1.3.3) | M | M1 |
 | M4 (partly ✓) | Speed and durability. Done: GCS checkpoint store; streamed uploads; startup progress and pending reasons; scheduled warm pools; prebuild; image streaming. Not yet: sandbox-side fetch of checkpoints (signed URL); hot resume with GKE Pod Snapshots (opt-in). | M | M1, 0004 M2 |
-| M5 | `fork_session(n)`: restore one checkpoint into N sandboxes and fork the conversation (Claude `--fork-session`, Codex `fork`, pi `--fork`). Best-of-N and swarms (0008) on top of sessions. | M | M1 |
+| M5 ✓ | `fork_session(n)`: restore one checkpoint into N sandboxes and fork the conversation (Claude `--fork-session`, Codex `exec fork`, pi `--fork`; Antigravity hands off). Best-of-N jobs on top of sessions (0009 M3). Swarms (0008) later. | M | M1 |
 
 ## 8. Acceptance
 

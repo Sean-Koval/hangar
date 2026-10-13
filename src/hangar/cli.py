@@ -538,6 +538,8 @@ def job_submit(
     from_local: bool = typer.Option(False, "--from-local", help="Hand over this checkout's unpushed commits and "
                                     "uncommitted changes (and default --repo/--base from it)."),
     schema: Path | None = typer.Option(None, "--schema", help="JSON Schema file for a structured result."),
+    best_of: int | None = typer.Option(None, "--best-of", help="Run N attempts in parallel and deliver the best."),
+    judge: bool = typer.Option(False, "--judge", help="With --best-of: an agent compares the passing attempts."),
 ):
     """Submit a job. Example:
 
@@ -564,13 +566,15 @@ def job_submit(
         "instructions": text, "repo": repo, "environment": env, "title": title, "harness": harness, "model": model,
         "base_branch": base, "verify": verify, "deliver": deliver, "context": items + local, "timeout_minutes": timeout,
         "budget": _budget(max_minutes, max_tokens, max_cost),
-        **({"output_schema": _schema(schema)} if schema else {})})
+        **({"output_schema": _schema(schema)} if schema else {}),
+        **({"strategy": "best_of_n", "n": best_of, "judge": judge} if best_of else {})})
     typer.secho(f"{j['id']} queued: {j['title']}", fg="green")
     if wait:
         j = _wait_job(j["id"])
         typer.echo(_job_line(j))
         if j.get("usage"):
             typer.echo(f"usage: {_usage_line(j['usage'])}")
+        _print_attempts(j)
         if (j.get("result") or {}).get("summary"):
             typer.echo("\n" + j["result"]["summary"])
         _print_exchange(j.get("result") or {}, f"hangar job follow-up {j['id']}")
@@ -591,6 +595,30 @@ def job_list(state: str | None = None, limit: int = 20, as_json: bool = typer.Op
 @job_app.command("get")
 def job_get(job_id: str, wait: bool = typer.Option(False, "--wait", "-w")):
     _print(_wait_job(job_id) if wait else _call("GET", f"/api/jobs/{job_id}"))
+
+
+# --- workstream D: forks/best-of-N
+def _print_attempts(j: dict) -> None:
+    """The attempts of a best-of-N job, one line each."""
+    attempts = j.get("attempts") or []
+    if attempts:
+        typer.echo(f"\nBest of {j.get('n')}:")
+    for a in attempts:
+        verify = "-" if a.get("verify_exit_code") is None else ("pass" if a["verify_exit_code"] == 0 else "FAIL")
+        diff = "-" if a.get("diff_lines") is None else f"{len(a.get('files') or [])} files/{a['diff_lines']} lines"
+        flag = "  changed the verify's tests" if a.get("touched_tests") else ""
+        mark = "*" if a.get("rank") == 1 else " "
+        typer.echo(f" {mark} #{a['index']}  {a.get('outcome') or a['state']:10} verify {verify:5} {diff:20} "
+                   f"rank {a.get('rank') or '-'}{flag}")
+
+
+@job_app.command("attempts")
+def job_attempts(job_id: str):
+    """The attempts of a best-of-N job (* = delivered)."""
+    j = _call("GET", f"/api/jobs/{job_id}")
+    if not j.get("attempts"):
+        typer.echo(f"{job_id} is not a best-of-N job.")
+    _print_attempts(j)
 
 
 @job_app.command("follow-up")
@@ -811,6 +839,26 @@ def session_events(ref: str, since: int = typer.Option(0, help="Only events afte
         return x["state"] in _SES_SETTLED and not x.get("busy")
 
     _follow_events(f"/api/sessions/{ref}/events", settled, since, follow, as_json)
+
+
+@session_app.command("fork")
+def session_fork(
+    ref: str,
+    message: str = typer.Argument(None, help="Give every fork this message right away (optional)."),
+    n: int = typer.Option(2, "-n", help="How many forks."),
+    harness: str | None = typer.Option(None, help="Run the forks with another harness (summary handoff)."),
+    name: list[str] = typer.Option([], "--name", help="Name for each fork (repeat n times)."),
+    wait: bool = typer.Option(False, "--wait", "-w", help="Wait until every fork is ready (or its turn is done)."),
+):
+    """Branch a session into N sessions from its latest state. Example:  hangar session fork csv-fix -n 3"""
+    x = _call("POST", f"/api/sessions/{ref}/fork", json={"n": n, "message": message, "harness": harness,
+                                                         "names": name or None})
+    for c in x["forks"]:
+        typer.secho(f"{c['name']} ({c['id']}) {c['state']} on {c['branch']}", fg="green")
+    if wait:
+        for c in x["forks"]:
+            typer.echo(f"{c['name']}:")
+            _print_summary(_wait_session(c["id"]))
 
 
 @session_app.command("keep")

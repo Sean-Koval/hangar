@@ -198,7 +198,7 @@ Comments count only when the author's association is `OWNER`, `MEMBER` or `COLLA
 | --- | --- | --- | --- |
 | M1 | Job model, store, runner (queue, provision, context, prompt, poll, verify, commit/push, PR, callbacks, follow-up, cancel, restart), REST with `jobs` scope, MCP tools, CLI | L | — |
 | M2 | GitHub trigger: webhook, label/comment triggers, issue status comments, PR-comment follow-ups; `deliver` on demand | M | M1 |
-| M3 | Strategies: `strategy=best_of_n\|map` through 0008 `swarm`; job view lists attempts | M | 0008 M3 |
+| M3 (partly ✓) | Strategies: `strategy=best_of_n\|map` through 0008 `swarm`; job view lists attempts. Done: `best_of_n` on session forks (0010 M5), with verify-first ranking, an optional judge turn and a test-tampering flag. Not yet: `map`. | M | 0008 M3 |
 | M4 | Jobs own 0004 tasks (plan, sub-tasks, supervision); a job's PR stack | L | 0004 M6 |
 | M5 | Dashboard Jobs page: queue, timeline, context, attach, follow-up box | M | M1 |
 | M6 | More triggers: Slack slash command and app mention, generic signed inbound webhook, scheduled jobs | M | M1 |
