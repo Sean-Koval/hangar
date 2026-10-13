@@ -613,6 +613,9 @@ async def _wait_repair(svc: SessionService, s: Session, turn: SessionTurn, sb: S
             with contextlib.suppress(Exception):
                 await svc._sh(sb, f"tmux kill-session -t {shlex.quote(run.run_id or '')}")
             turn.warnings.append(stop)
+            if over:  # --- review: the turn as a whole went over its budget, so that is its outcome
+                turn.outcome, turn.outcome_reason = "over_budget", over
+                watch.note("error", f"stopped: over budget ({over})", reason="over_budget")
             break
         await asyncio.sleep(settings.session_poll_seconds)
     # Not on shutdown (CancelledError): a restart re-attaches and reads the whole log again.

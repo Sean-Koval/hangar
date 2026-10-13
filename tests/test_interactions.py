@@ -58,6 +58,8 @@ case "$mode:$a" in
   ask:*) echo "half $a" > "half-$a.txt" && git add . && git commit -qm "half $a"; spend 1000
          hangar-agent ask "A or B? (attempt $a)"; exit 0 ;;
   askandburn:*) hangar-agent ask "May I spend more?"; spend 900000; sleep 30; exit 0 ;;
+  slowask:*) sleep 3; echo "half $a" > "half-$a.txt" && git add . && git commit -qm "half $a"; spend 1000
+             hangar-agent ask "A or B? (attempt $a)"; exit 0 ;;
   sleep:*) sleep 30; exit 0 ;;
   slowlast:3) sleep 3 ;;
 esac
@@ -573,3 +575,113 @@ def test_surfaces_read_the_question_and_the_result_where_jobs_keep_them():
     assert "> A or B?" in render(job, "(fallback)", "note")
     job.state = JobState.FAILED  # a question nobody waits on is not shown as one
     assert exchange.open_question(job) is None
+
+
+# ---------------------------------------------------------------------------- review: the riskiest seams again
+async def _restart(jobs: JobService, fleet, store) -> tuple[SessionService, JobService]:
+    """The whole control plane goes down and comes back: sessions and jobs both start again from the store."""
+    await jobs.stop()
+    await jobs.sessions.stop()
+    sessions = SessionService(fleet, Vault(store, b"0" * 43 + b"="))
+    await sessions.start()
+    again = JobService(fleet, sessions, transport=jobs.transport)
+    again.hooks, again.resolve = jobs.hooks, jobs.resolve
+    await again.start()
+    return sessions, again
+
+
+async def test_restart_while_best_of_n_attempts_are_about_to_ask(jobs, world, fleet, store):
+    world["mode"].write_text("slowask")
+    job = github(jobs, bon(world, verify="test -f choice.txt"))
+    while not (job.attempts and all(a.run_id for a in job.attempts)):
+        await asyncio.sleep(0.05)
+    sessions, again = await _restart(jobs, fleet, store)  # every attempt is still working on its question
+    try:
+        job = await until(again, job.id, SETTLED)
+        assert job.state == JobState.NEEDS_INPUT, [e.message for e in job.events]
+        assert [a.outcome for a in job.attempts] == ["needs_input"] * 3
+        asker = sessions.get(job.session_id)
+        assert asker.needs_input == job.result.question and job.result.question.startswith("A or B?")
+        await asyncio.sleep(0.2)
+        assert sum("needs your input" in c for c in jobs.hooks.comments()) == 1, jobs.hooks.comments()
+        # the asker is held for nobody now: its job waits on a person, not on a restart
+        assert asker.id not in sessions._restart_holds and not sessions._holds[asker.id]
+
+        again.follow_up(job.id, "TASK-ANSWER: B", requester="github:sean", reply_to="github:o/r#12")
+        job = await until(again, job.id, SETTLED)
+        assert job.state == JobState.SUCCEEDED, [e.message for e in job.events]
+        assert remote_log(world, job.branch)[0] == "choose B"
+        assert again.view(job)["usage"]["input_tokens"] == 3 * 1000 + 500
+    finally:
+        await again.stop()
+        await sessions.stop()
+
+
+async def test_a_job_whose_repair_run_goes_over_budget_is_stopped_over_budget(jobs, world):
+    world["mode"].write_text("noresult")
+    world["repair"].write_text("20")  # the repair would take 20 s; the budget stops it at its first poll
+    job = jobs.submit(SubmitJob(instructions="x", repo=world["url"], environment="seamenv", output_schema=SCHEMA,
+                                verify="grep -q good fix.txt", budget=Budget(max_tokens=1200)), Caller("svc", "svc"))
+    job = await until(jobs, job.id, SETTLED, timeout=15)
+    st = jobs.sessions.get(job.session_id).turns[-1]
+    assert st.repair_run_id and st.repair_usage.input_tokens == 300
+    # the turn as a whole (1000 + 300 tokens) went over its 1200: that is the job's outcome, as for any turn
+    assert job.state == JobState.FAILED and job.reason == "over_budget", [e.message for e in job.events]
+    assert job.turns[0].outcome == "over_budget" and "1,300 tokens" in (job.turns[0].outcome_reason or "")
+    assert job.result.pushed and jobs.view(job)["usage"]["input_tokens"] == 1300
+
+
+async def test_a_best_of_n_attempt_whose_repair_goes_over_budget_ranks_as_over_budget(jobs, world):
+    world["mode"].write_text("noresult")
+    world["repair"].write_text("20")
+    job = jobs.submit(bon(world, n=2, output_schema=SCHEMA, budget=Budget(max_tokens=1200)), Caller("svc", "svc"))
+    job = await until(jobs, job.id, SETTLED, timeout=20)
+    assert [a.outcome for a in job.attempts] == ["over_budget", "over_budget"], [e.message for e in job.events]
+    assert job.state == JobState.FAILED and job.reason == "over_budget"
+
+
+async def test_fork_of_a_session_waiting_on_a_question(sessions, world):
+    from hangar.strategies import fork_session
+
+    world["mode"].write_text("ask")
+    sessions.new(NewSession(name="q", environment="seamenv", repo=world["url"], message="pick one"), owner="admin",
+                 requester="sean")
+    p = await settle(sessions, "q")
+    assert p.needs_input == "A or B? (attempt 0)"
+    # one child is answered by its first message, the other is just restored and still waits
+    [answered] = await fork_session(sessions, "q", 1, "sean", message="TASK-ANSWER: B")
+    [waiting] = await fork_session(sessions, "q", 1, "sean")
+    answered, waiting = await settle(sessions, answered.id), await settle(sessions, waiting.id)
+    assert answered.turns[-1].summary == "Went with B" and answered.needs_input is None
+    assert answered.turns[-1].usage.input_tokens == 500 and sessions.view(answered)["usage"]["input_tokens"] == 500
+    assert waiting.needs_input == p.needs_input and exchange.turn_view(waiting)["question"] == p.needs_input
+    assert sessions.get("q").needs_input == "A or B? (attempt 0)"  # the parent's question is still its own
+    sessions.send(waiting.id, "TASK-ANSWER: B", requester="sean")
+    waiting = await settle(sessions, waiting.id)
+    assert waiting.needs_input is None and waiting.turns[-1].summary == "Went with B"
+    assert sessions.get("q").needs_input == "A or B? (attempt 0)"
+
+
+async def test_best_of_n_question_answered_after_a_resume_pushes_through_the_gateway(
+        jobs, world, gw, upstream, tmp_path):  # noqa: F811
+    jobs.fleet.catalog.add({"name": "gwseam", "harnesses": ["seam"], "credentials": ["gh-pat"],
+                            "credential_mode": "gateway",
+                            "repo": {"url": "https://github.com/acme/widgets.git", "branch": "main"}},
+                           save_dir=tmp_path)
+    world["mode"].write_text("ask")
+    job = jobs.submit(SubmitJob(instructions="pick", repo="https://github.com/acme/widgets.git", environment="gwseam",
+                                verify="test -f choice.txt", strategy="best_of_n", n=2, deliver="branch"),
+                      Caller("svc", "svc"))
+    job = await until(jobs, job.id, SETTLED)
+    assert job.state == JobState.NEEDS_INPUT, [e.message for e in job.events]
+    asker = jobs.sessions.get(job.session_id)
+    # nobody answers for a while: the asker's sandbox is put away, and the answer resumes it in a new one
+    await jobs.sessions.release(asker, "test: idle")
+    jobs.follow_up(job.id, "TASK-ANSWER: B", requester="svc")
+    job = await until(jobs, job.id, SETTLED)
+    assert job.state == JobState.SUCCEEDED and job.result.pushed, [e.message for e in job.events]
+    assert jobs.fleet.get(job.sandbox_id).info["git"]["push_refs"][0] == f"refs/heads/{job.branch}"
+    log = subprocess.run(["git", "--git-dir", str(upstream.root / "acme/widgets.git"), "log", "--format=%s",
+                          job.branch], capture_output=True, text=True).stdout.splitlines()
+    asked = next(a.index for a in job.attempts if a.session_id == asker.id)
+    assert log[:2] == ["choose B", f"half {asked}"], log
