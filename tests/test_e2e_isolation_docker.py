@@ -80,6 +80,17 @@ out["ptrace the driver"] = ("allowed" if libc.ptrace(16, d, None, None) == 0
 print(json.dumps(out))
 """
 
+# Run as hangar's user with the driver's capabilities: the driver's verify gate for a split run (run env, repo).
+GATE = r"""
+import argparse, sys
+sys.path.insert(0, "/var/lib/hangar")
+import driver
+spec = {"command": "id -un > /tmp/gate-ran-as; pwd >> /tmp/gate-ran-as; exit 3", "cwd": sys.argv[2], "rounds": 1,
+        "deadline": 2**31, "timeout": 30}
+fix = driver.Gate(spec, driver.Out(), argparse.Namespace(as_user="agent", run_env=sys.argv[1])).check()
+print("exit 3" if fix and "(exit 3)" in fix else f"no fix: {fix!r}")
+"""
+
 
 async def _reach(fleet, ref: str, host: str, port: int) -> bool:
     """Whether a TCP connection from the sandbox to host:port opens within 3 s."""
@@ -243,6 +254,18 @@ async def test_the_agent_cant_reach_the_driver_on_docker(tmp_path, monkeypatch):
         assert (t.outcome, t.live, [x.status for x in t.approvals]) == ("exited", True, ["allowed"]), t.summary
         r = await fleet.exec(sid, f"stat -c %U /workspace/tool-ran.txt; readlink ~/.hangar/runs/{t.run_id}.log")
         assert r.stdout.split() == ["agent", f"{isolation.RUNS}/{t.run_id}.log"], r
+
+        # integrate(#65 x #66): the driver's verify gate, started as the driver is (hangar's user, ambient caps),
+        # runs the job's check as the agent and records its round in the agent's runs dir.
+        q = shlex.quote
+        gate = (f"cd {isolation.HOME} && HANGAR_RUN_ID=run-gate setpriv --reuid={isolation.USER} "
+                f"--regid={isolation.USER} --init-groups --inh-caps={isolation.CAPS} --ambient-caps={isolation.CAPS} "
+                f"-- env HOME={isolation.HOME} python3 -I -c {q(GATE)} {q(f'{isolation.RUNS}/{t.run_id}.env')} "
+                f"{q(sb.info.get('repo_path') or s.workspace_dir)}")
+        r = await fleet.provider("docker").exec(sb, gate, timeout=60, user="root", cwd="/")
+        assert r.exit_code == 0 and '"hangar.verify"' in r.stdout and "exit 3" in r.stdout, r
+        r = await fleet.exec(sid, "cat /tmp/gate-ran-as ~/.hangar/runs/run-gate.verify")
+        assert r.stdout.split() == ["agent", sb.info.get("repo_path") or s.workspace_dir, "fail", "3"], r
 
         # A ~/.hangar/env the agent rewrote runs as the agent, in the harness's environment only.
         await fleet.exec(sid, "echo 'id -un >> /tmp/env-ran-as' >> ~/.hangar/env")
