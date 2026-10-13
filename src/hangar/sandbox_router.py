@@ -10,9 +10,10 @@ to its own port, by host name. This ASGI middleware sits in front of hangar's ap
 Port 49983 goes to the sandbox's hangar-envd. The client authenticates with the sandbox's E2B access token (or a
 pre-signed `/files` URL made with it); the router checks it and signs its own request to the daemon (X-Hangar-Sig,
 over the method, path and body), so the daemon's token never leaves the control plane and E2B's token is useless
-anywhere but here. Requests are read whole before they are signed: RPC bodies up to 8 MiB in memory, uploads
-spooled to a temporary file (gzip-encoded ones are inflated on the way, which the daemon doesn't do). Envd also
-gets the sandbox's envVars added to every process it starts. Other ports are plain HTTP and WebSocket proxying,
+anywhere but here. RPC bodies (up to 8 MiB) are read whole and signed with their hash; uploads stream through as
+signed frames (`hangar.envd.chunked_body`), inflated on the way if they came gzip-encoded (the daemon doesn't), and
+every answer must carry the daemon's X-Hangar-Proof. Envd also gets the sandbox's envVars added to every process
+it starts. Other ports are plain HTTP and WebSocket proxying,
 authenticated with the traffic token or the access token; no port is public.
 
 Responses stream back as they arrive (process output, watch events), and a client that goes away closes the
@@ -29,7 +30,6 @@ import hmac
 import json
 import logging
 import re
-import tempfile
 import time
 import zlib
 from collections import Counter
@@ -40,7 +40,7 @@ from urllib.parse import parse_qsl, quote, urlencode
 import httpx
 
 from hangar.envd import PORT as ENVD_PORT
-from hangar.envd import Endpoint, EnvdError, sign
+from hangar.envd import UPLOAD_CHUNK, Endpoint, EnvdError, frames, proof, sign
 from hangar.fleet import ACTIVE
 from hangar.models import Sandbox, SandboxState, now
 
@@ -52,7 +52,6 @@ log = logging.getLogger("hangar.e2b")
 MAX_RPC_BODY = 8 << 20  # hangar-envd checks signed bodies up to this size in memory
 _SMALL = 1 << 20  # responses up to this size (with a length) are relayed in one piece
 _TIMEOUTS = httpx.Timeout(None, connect=2.0).as_dict()  # streams live for hours; a dead daemon fails fast
-_SPOOL_MEM = 4 << 20  # uploads bigger than this go to disk while they are hashed
 _SID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 _HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "trailers",
         "transfer-encoding", "upgrade", "host", "content-length"}
@@ -84,16 +83,6 @@ async def _send_json(send, status: int, body: Any, headers: list[tuple[bytes, by
                 "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(data)).encode()),
                             *(headers or [])]})
     await send({"type": "http.response.body", "body": data})
-
-
-def _hash_file(f) -> tuple[int, str]:
-    h, size = hashlib.sha256(), 0
-    f.seek(0)
-    while chunk := f.read(1 << 20):
-        h.update(chunk)
-        size += len(chunk)
-    f.seek(0)
-    return size, h.hexdigest()
 
 
 def _is_files(raw_path: bytes) -> bool:
@@ -302,11 +291,11 @@ class SandboxRouter:
             body = self._body(receive, gz)
             if hdr.get("content-type", "").lower().startswith("multipart/form-data"):
                 return await self._multipart(scope, send, sb, envd, ep, target, body)
-            with tempfile.SpooledTemporaryFile(max_size=_SPOOL_MEM) as f:
-                size, digest = await self._spool(body, f)
-                hdr["content-length"] = str(size)
-                await self._forward(receive, send, sb, envd, _signed(ep, method, target, self._chunks(f), hdr, digest))
-            return
+            # Streamed as signed frames: the daemon writes nothing it hasn't checked and replaces the file only once
+            # the last frame arrives, so an upload cut short here (a 413, a client gone) changes nothing.
+            return await self._forward(receive, send, sb, envd, _signed(ep, method, target, body, hdr, "chunked"))
+        if raw_path == b"/health" and method == "GET":
+            return await self._health(send, sb, envd, ep)
         data = await self._read(receive, MAX_RPC_BODY)
         if raw_path == b"/process.Process/Start" and (env := self.svc.env_vars(sb.id, rec)):
             data = _with_env(data, hdr.get("content-type", ""), env)
@@ -319,11 +308,30 @@ class SandboxRouter:
         except httpx.HTTPError as e:
             envd._lost(sb, str(e))
             raise _gone(sb.id, f"hangar-envd didn't answer: {type(e).__name__}") from e
+        try:
+            _proven(envd, sb, req, resp)
+        except Refused:
+            await resp.aclose()
+            raise
         await self._relay(resp, receive, send)
 
+    async def _health(self, send, sb: Sandbox, envd, ep) -> None:
+        """The daemon's /health answers anyone, so it proves nothing about who answered: ask its signed /info."""
+        req = _signed(ep, "GET", "/info", b"", {}, hashlib.sha256(b"").hexdigest())
+        try:
+            status, _ = await envd.send_capped(req, 65536)
+        except (httpx.HTTPError, EnvdError) as e:
+            envd._lost(sb, str(e))
+            raise _gone(sb.id, f"hangar-envd didn't answer: {type(e).__name__}") from e
+        if status != 200:
+            envd._lost(sb, f"/info answered {status}")
+            raise _gone(sb.id, f"hangar-envd answered {status}")
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
     async def _multipart(self, scope, send, sb: Sandbox, envd, ep, target: str, body: AsyncIterator[bytes]) -> None:
-        """E2B's multipart upload (one part per file, its filename the path) as one signed octet-stream upload per
-        file: the daemon checks a signature over a body it has read whole, which it won't do for several files."""
+        """E2B's multipart upload (one part per file, its filename the path) as one signed upload per file: the
+        daemon takes signed uploads as octet-stream only."""
         from starlette.datastructures import Headers, UploadFile
         from starlette.formparsers import MultiPartException, MultiPartParser
 
@@ -344,14 +352,17 @@ class SandboxRouter:
                 if not dest:
                     raise Refused(400, {"code": 400, "message": "a file part has no path (its filename)"})
                 q = urlencode([(k, v) for k, v in pairs if k != "path"] + [("path", dest)], quote_via=quote)
-                size, digest = await asyncio.to_thread(_hash_file, up.file)
+                await asyncio.to_thread(up.file.seek, 0)
                 req = _signed(ep, "POST", f"{path}?{q}", self._chunks(up.file),
-                              {"content-type": "application/octet-stream", "content-length": str(size)}, digest)
+                              {"content-type": "application/octet-stream"}, "chunked")
                 try:
                     status, raw = await envd.send_capped(req, 1 << 20)
                 except (httpx.HTTPError, EnvdError) as e:
                     envd._lost(sb, str(e))
                     raise _gone(sb.id, f"hangar-envd didn't answer: {type(e).__name__}") from e
+                if status == 401:
+                    envd._lost(sb, "the daemon refused hangar's signature")
+                    raise _gone(sb.id, "hangar-envd refused hangar's signature (its token or clock)")
                 try:
                     out = json.loads(raw)
                 except ValueError:
@@ -401,17 +412,6 @@ class SandboxRouter:
                 break
         if inflate is not None and not inflate.eof:
             raise Refused(400, {"code": 400, "message": "truncated gzip body"})
-
-    @staticmethod
-    async def _spool(body: AsyncIterator[bytes], f) -> tuple[int, str]:
-        """Write the body to `f`, returning its size and SHA-256 (the signature covers it)."""
-        h, size = hashlib.sha256(), 0
-        async for chunk in body:
-            h.update(chunk)
-            f.write(chunk)
-            size += len(chunk)
-        f.seek(0)
-        return size, h.hexdigest()
 
     @staticmethod
     async def _chunks(f) -> AsyncIterator[bytes]:
@@ -556,13 +556,51 @@ class SandboxRouter:
 
 
 def _signed(ep: Endpoint, method: str, target: str, content: Any, headers: dict[str, str],
-            digest: str) -> httpx.Request:
-    """A request to the daemon signed with its token (X-Hangar-Sig over the method, path, query and body digest).
-    Built directly rather than with the client's build_request, which costs more than everything else here."""
+            body: str) -> httpx.Request:
+    """A request to the daemon signed with its token (X-Hangar-Sig over the method, path, query and `body`: the
+    body's SHA-256, or "chunked" for an upload, whose `content` (an async iterator) then goes as signed frames).
+    The answer's expected X-Hangar-Proof rides in the request's extensions (`_proven`). Built directly rather than
+    with the client's build_request, which costs more than everything else here."""
     url = httpx.URL(ep.url + target)
-    h = {**headers, "accept-encoding": "identity",
-         "x-hangar-sig": sign(ep.token, method, url.raw_path, digest)}
-    return httpx.Request(method, url, headers=h, content=content, extensions={"timeout": _TIMEOUTS})
+    sig, mac = sign(ep.token, method, url.raw_path, body)
+    if body == "chunked":
+        content = _framed(content, ep.token, mac)
+    h = {**headers, "accept-encoding": "identity", "x-hangar-sig": sig}
+    return httpx.Request(method, url, headers=h, content=content,
+                         extensions={"timeout": _TIMEOUTS, "hangar_proof": proof(ep.token, mac)})
+
+
+async def _framed(chunks: AsyncIterator[bytes], token: str, mac: bytes) -> AsyncIterator[bytes]:
+    """An upload's bytes as `chunked_body` frames of UPLOAD_CHUNK bytes, each signed (chained from the request's
+    MAC) as it goes, then the empty frame that tells the daemon the upload is complete."""
+    buf, prev, end = bytearray(), mac, False
+    while not end:
+        chunk = await anext(chunks, None)
+        if chunk is None:
+            end = True
+        else:
+            buf += chunk
+        while len(buf) >= UPLOAD_CHUNK or (end and buf):
+            part = bytes(buf[:UPLOAD_CHUNK])
+            del buf[:UPLOAD_CHUNK]
+            frame = next(frames(token, prev, [memoryview(part)]))
+            prev = frame[-32:]
+            yield frame
+    yield next(frames(token, prev, [memoryview(b"")]))
+
+
+def _proven(envd, sb: Sandbox, req: httpx.Request, resp: httpx.Response) -> None:
+    """The answer must come from this sandbox's daemon (X-Hangar-Proof): anything else at its address (a sandbox
+    that got its old IP) is refused and the address looked up again. A 401 is the daemon refusing hangar's own
+    signature (its token or clock), which the E2B client can do nothing about: a 502 too, not a token error."""
+    try:
+        envd.check_proof(req, resp)
+    except EnvdError as e:
+        envd._lost(sb, str(e))
+        raise _gone(sb.id, "something other than this sandbox's hangar-envd answered at its address") from e
+    if resp.status_code == 401:
+        envd._lost(sb, "the daemon refused hangar's signature")
+        raise _gone(sb.id, "hangar-envd refused hangar's signature (its token or clock)")
 
 
 def _with_env(body: bytes, content_type: str, env: dict[str, str]) -> bytes:

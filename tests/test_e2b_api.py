@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import gzip
 import json
 import os
@@ -395,6 +396,47 @@ async def test_host_routing_signed_urls_and_unsupported(hangar):
         assert logs[0]["message"].startswith("sandbox.create by e2b:wire")
         r = await c.get(f"/e2b/v2/sandboxes/{sid}/logs?cursor=x", headers={"X-API-Key": key})
         assert r.status_code == 400 and r.json()["code"] == 400  # E2B's error shape, not FastAPI's
+    await sb.kill()
+
+
+@needs_binary
+async def test_answers_must_prove_the_daemon_and_cut_uploads_change_nothing(hangar):
+    """Uploads go to the daemon as signed frames; one the router stops (over the cap) leaves the file as it was.
+    Anything at the sandbox's address that can't prove the daemon's token (a reused IP) gets a 502, not belief."""
+    from e2b import AsyncSandbox
+
+    key = token(hangar, "proofs")
+    sb = await AsyncSandbox.create(template="plain", **hangar.opts(key))
+    sid, tok = sb.sandbox_id, sb._envd_access_token
+    path = hangar.prov.boxes[sid] / "workspace" / "kept.txt"
+    host = {"Host": f"49983-{sid}.{DOMAIN}", "X-Access-Token": tok}
+    async with httpx.AsyncClient(base_url=hangar.url, timeout=30) as c:
+        up = {**host, "Content-Type": "application/octet-stream"}
+        r = await c.post("/files", params={"path": str(path)}, content=b"k" * (600 << 10), headers=up)
+        assert r.status_code == 200 and path.read_bytes() == b"k" * (600 << 10)  # three frames
+        hangar.h.settings.max_request_mb = 1
+        r = await c.post("/files", params={"path": str(path)}, content=b"x" * (3 << 20), headers=up)
+        assert r.status_code == 413
+        assert path.read_bytes() == b"k" * (600 << 10)
+        assert not [p for p in path.parent.iterdir() if p.name != "kept.txt"]  # no temporary file left behind
+
+        impostor_port = free_port()
+        impostor = subprocess.Popen(["python3", "-m", "http.server", str(impostor_port), "--bind", "127.0.0.1"],
+                                    cwd=hangar.prov.boxes[sid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(50):
+                with contextlib.suppress(httpx.HTTPError):
+                    if (await c.get(f"http://127.0.0.1:{impostor_port}/workspace/kept.txt")).status_code == 200:
+                        break
+                await asyncio.sleep(0.1)
+            envd = hangar.prov.envd
+            envd._eps[sid].url = f"http://127.0.0.1:{impostor_port}"
+            r = await c.get("/files", params={"path": "/workspace/kept.txt"}, headers=host)
+            assert r.status_code == 502 and "answered at its address" in r.json()["message"]
+            assert sid not in envd._eps  # looked up again on the next call, which finds the real daemon
+            assert (await sb.files.read(str(path))) == "k" * (600 << 10)
+        finally:
+            impostor.kill()
     await sb.kill()
 
 
