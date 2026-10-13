@@ -46,8 +46,8 @@ def _empty(key: str) -> dict[str, Any]:
             "cache_write_tokens": 0, "tokens": 0, "cost_usd": 0.0, "unpriced_turns": 0, "budget_stops": 0}
 
 
-def _add(row: dict[str, Any], u: Any, over_budget: bool) -> None:
-    row["turns"] += 1
+def _add(row: dict[str, Any], u: Any, over_budget: bool, turns: int = 1) -> None:
+    row["turns"] += turns
     row["budget_stops"] += int(over_budget)
     if u is None:
         return
@@ -86,8 +86,15 @@ def _turns(sessions: Any, jobs: Any) -> list[dict[str, Any]]:
                         "harness": t.harness or s.harness, "environment": s.environment, "repo": s.repo,
                         "requester": t.requester or (job.requester if job else s.owner),
                         "session": s.name, "job": s.job_id})
-    for job in job_map.values():  # jobs from before sessions carried them: their own turn records
-        if job.id in carried:
+    live = sessions._sessions
+    for job in job_map.values():
+        # integrate (#57): a session deleted since keeps its total on the job (Job.deleted_session_usage), not its
+        # turns, so it counts on the day the job was created, as no turns
+        gone = [u for sid, u in job.deleted_session_usage.items() if sid not in live]
+        out += [{"ts": job.created_at, "usage": u, "outcome": None, "reason": None, "model": job.model,
+                 "harness": job.harness, "environment": job.environment, "repo": job.repo,
+                 "requester": job.requester, "session": None, "job": job.id, "turns": 0} for u in gone]
+        if job.id in carried or gone:  # else: a job from before sessions carried it, with its own turn records
             continue
         for t in job.turns:
             if not (t.run_id or t.usage):
@@ -123,8 +130,8 @@ def aggregate(sessions: Any, jobs: Any, group_by: str = "day", since: float | No
             continue
         key = _key(rec, group_by)
         over = rec["outcome"] == "over_budget"
-        _add(rows.setdefault(key, _empty(key)), rec["usage"], over)
-        _add(total, rec["usage"], over)
+        _add(rows.setdefault(key, _empty(key)), rec["usage"], over, rec.get("turns", 1))
+        _add(total, rec["usage"], over, rec.get("turns", 1))
         if over:
             u = rec["usage"]
             stops.append({"ts": rec["ts"], "session": rec["session"], "job": rec["job"], "reason": rec["reason"],

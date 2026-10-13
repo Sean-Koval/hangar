@@ -409,6 +409,27 @@ def _world():
             SimpleNamespace(_jobs={j.id: j for j in (j1, legacy)}))
 
 
+async def test_usage_keeps_a_deleted_sessions_spend(jobs):  # noqa: F811
+    """integrate (#57): deleting a session of a job no longer drops its spend from /api/usage, as from the job's own
+    usage; the job's turn mirror isn't counted on top."""
+    ss = jobs.sessions
+    job = Job(title="t", instructions="x", environment="plain", requester="bob")
+    job.turns = [Turn(run_id="run-0000000c", started_at=T0, usage=Usage(input_tokens=100, cost_usd=0.5))]  # mirror
+    jobs._jobs[job.id] = job
+    jobs._save(job)
+    for i, cost in ((1, 0.5), (2, 0.25)):
+        s = Session(name=f"att-{i}", environment="plain", job_id=job.id, owner="jobs",
+                    turns=[_turn(T0, cost, tokens=100 * i)])
+        ss._sessions[s.id] = s
+        ss.store.put(s)
+    assert usage.aggregate(ss, jobs, "requester", 0)["total"]["cost_usd"] == pytest.approx(0.75)
+    ss.delete("att-1", requester="sean")
+    ss.delete("att-2", requester="sean")
+    out = usage.aggregate(ss, jobs, "requester", 0)
+    assert out["total"]["cost_usd"] == pytest.approx(0.75) and out["rows"][0]["key"] == "bob"
+    assert jobs.usage(job).cost_usd == pytest.approx(0.75)
+
+
 def test_usage_aggregation():
     ses, jbs = _world()
     since = T0 - DAY
@@ -499,3 +520,33 @@ async def test_codex_otel_config(settings):
     other = _Files({})
     await observe.configure_harness(other, sb, "claude-code", "/home/agent", settings)
     assert other.files == {}
+
+
+async def test_database_backups_are_traced_and_counted(settings, store, otel):
+    """integrate (#57): a backup is a span with its sizes, and /metrics has its count and last success time."""
+    from hangar.backup import Backups
+    from hangar.checkpoints import LocalStore
+    from hangar.vault import Vault, load_or_create_key
+
+    vault = Vault(store, load_or_create_key(None, settings.data_dir))
+    b = Backups(settings, vault, LocalStore(settings.data_dir / "sessions"))
+    res = await b.run()
+    await b.stage("latest")
+    spans = by_name(otel)
+    sp = one(spans, "db.backup")
+    assert sp.attributes["hangar.backup.name"] == res["name"] and sp.attributes["hangar.backup.db_bytes"] > 0
+    assert one(spans, "db.restore_stage").attributes["hangar.backup.name"] == "latest"
+    assert sample("hangar_db_backups_total", result="ok") == 1
+    assert sample("hangar_db_backup_last_success_timestamp_seconds") == pytest.approx(time.time(), abs=60)
+
+
+async def test_codex_otel_config_reads_a_capped_file(settings):
+    """integrate (#57): the sandbox decides how big config.toml is; one over fleet's cap is left alone."""
+    from hangar.fleet import CONFIG_READ_LIMIT
+
+    settings.otel_sandbox_endpoint = "http://collector:4318"
+    path = "/home/agent/.codex/config.toml"
+    big = _Files({path: b"#" * (CONFIG_READ_LIMIT + 1)})
+    sb = SimpleNamespace(info={})
+    await observe.configure_harness(big, sb, "codex", "/home/agent", settings)
+    assert len(big.files[path]) == CONFIG_READ_LIMIT + 1 and "is over 8 MB" in sb.info["warnings"][0]

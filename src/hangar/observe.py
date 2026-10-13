@@ -344,6 +344,12 @@ _SPECS: dict[str, _Spec] = {
         record=_record_restore),
     "session.boot": _Spec(attrs=lambda a: {"hangar.session.id": a["s"].id, "hangar.environment": a["s"].environment},
                           result=_sb_attrs),
+    # integrate (#57): database backups (scheduled, or `hangar admin backup`) and staged restores
+    "db.backup": _Spec(result=lambda r: {"hangar.backup.name": r["name"], "hangar.backup.db_bytes": r["db_bytes"],
+                                         "hangar.backup.stored_bytes": r["stored_bytes"]},
+                       record=lambda a, r, err, secs: metrics.db_backup(err is None, secs)),
+    "db.restore_stage": _Spec(attrs=lambda a: {"hangar.backup.name": a.get("name")},
+                              result=lambda r: {"hangar.backup.db_bytes": r["db_bytes"]}),
     "job.process": _Spec(attrs=_job_attrs),
     "job.provision": _Spec(attrs=_job_attrs),
     "job.deliver": _Spec(attrs=lambda a: {**_job_attrs(a), "hangar.job.draft": a.get("draft"),
@@ -507,8 +513,15 @@ async def configure_harness(prov: Any, sb: Any, harness: str, home: str, setting
     ep = sandbox_endpoint(settings)
     if ep is None or harness != "codex":
         return
+    from hangar.fleet import CONFIG_READ_LIMIT  # integrate (#57): the sandbox decides the file's size
+
     path = f"{home}/.codex/config.toml"
-    cur = (await prov.read_file(sb, path) or b"").decode(errors="replace")
+    raw = await prov.read_file(sb, path, limit=CONFIG_READ_LIMIT) or b""
+    if len(raw) > CONFIG_READ_LIMIT:
+        sb.info.setdefault("warnings", []).append(
+            f"Codex telemetry not configured: {path} is over {CONFIG_READ_LIMIT // 1024 // 1024} MB")
+        return
+    cur = raw.decode(errors="replace")
     start, end = CODEX_BLOCK
     body = re.sub(re.escape(start) + r".*?" + re.escape(end) + r"\n?", "", cur, flags=re.S).rstrip()
     if re.search(r"(?m)^\s*(\[\s*otel\s*[\].]|otel\s*[.=])", body):

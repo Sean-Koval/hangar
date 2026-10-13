@@ -78,6 +78,12 @@ class Metrics:
                                      registry=r)
         self.http = Histogram("hangar_http_request_seconds", "REST, dashboard and MCP HTTP requests",
                               ["method", "route", "status"], buckets=_SECONDS, registry=r)
+        # integrate (#57): database backups, so an alert can fire on a stale one
+        self.backups = Counter("hangar_db_backups", "Database backups taken", ["result"], registry=r)
+        self.backup_seconds = Histogram("hangar_db_backup_seconds", "Time to take and store a database backup",
+                                        buckets=_SLOW, registry=r)
+        self.backup_last = Gauge("hangar_db_backup_last_success_timestamp_seconds", "When this process last stored "
+                                 "a database backup (Unix time)", registry=r)
         self.lag = Histogram("hangar_event_loop_lag_seconds", f"How late a {LAG_INTERVAL}s sleep on the event loop "
                              "woke up", buckets=_LAG, registry=r)
         self.lag_last = Gauge("hangar_event_loop_lag_last_seconds", "The latest event-loop lag sample", registry=r)
@@ -210,6 +216,15 @@ def checkpoint(op: str, result: str, seconds: float, reason: str | None = None, 
     M.ckpt_seconds.labels(op, result).observe(seconds)
     if size is not None:
         M.ckpt_bytes.labels(M.label("reason", reason)).observe(size)
+
+
+def db_backup(ok: bool, seconds: float) -> None:  # integrate (#57)
+    if M is None:
+        return
+    M.backups.labels("ok" if ok else "error").inc()
+    if ok:
+        M.backup_seconds.observe(seconds)
+        M.backup_last.set_to_current_time()
 
 
 def gateway_push(result: str) -> None:

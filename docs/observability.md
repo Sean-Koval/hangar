@@ -43,6 +43,7 @@ Notes on the settings:
 | `sandbox.destroy`, `sandbox.snapshot` | internal | | |
 | `sandbox.exec`, `sandbox.read_file`, `sandbox.write_file`, `sandbox.list_files` | internal | only inside another span | `hangar.exec.exit_code`, `hangar.file.bytes`. Commands and file contents are never recorded. |
 | `checkpoint.capture`, `checkpoint.restore` | internal | the turn, boot or suspend | `hangar.checkpoint.reason`, `.stored`, `.bytes` |
+| `db.backup`, `db.restore_stage` | internal | root, or `hangar admin`'s request | A database backup and a staged restore (gke.md §7): `hangar.backup.name`, `.db_bytes`, `.stored_bytes` |
 | `invoke_agent <harness>` | internal | `job.process`, or the request that sent the message | One per agent turn, from start until hangar has collected its result and checkpointed. GenAI semantic conventions: `gen_ai.operation.name=invoke_agent`, `gen_ai.agent.name` (the harness), `gen_ai.provider.name` (`anthropic` for Claude Code, `openai` for Codex, `gcp.gemini` for Antigravity), `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.conversation.id`, `gen_ai.usage.input_tokens` (cached tokens included, as the convention says), `.output_tokens`, `.cache_read.input_tokens`, `.cache_write.input_tokens`. Hangar adds `hangar.cost_usd`, `.cost_source`, `.turn.outcome`, `.turn.exit_code`, `.run.id`, `.session.id`, `.job.id`. A turn that timed out, went over budget or lost its sandbox is an error span. |
 
 Failed spans carry `error.type`: the exception class, `cancelled`, `tool_error`, or the turn's outcome. Their status message is the error, with stored credential values masked (`broker.redact`). Exceptions and stack traces are not recorded as span events.
@@ -107,7 +108,8 @@ Claude Code sends that header on HTTP MCP requests when its tracing beta is on. 
 | `hangar_gateway_pushes_total` | counter | `result` (`ok`, `failed`) |
 | `hangar_gateway_denials_total` | counter | `reason` (`repo_not_granted`, `ref_policy`, `too_large`, `protocol`) |
 | `hangar_mcp_calls_total`, `hangar_mcp_call_seconds` | counter, histogram | `tool`, `status` (`ok`, `tool_error`, `error`) |
-| `hangar_http_request_seconds` | histogram | `method`, `route` (the template), `status` |
+| `hangar_http_request_seconds` | histogram | `method` (a method outside HTTP's standard ones is `_OTHER`), `route` (the template), `status` |
+| `hangar_db_backups_total`, `hangar_db_backup_seconds`, `hangar_db_backup_last_success_timestamp_seconds` | counter, histogram, gauge | `result` (`ok`, `error`). Alert when `time() - hangar_db_backup_last_success_timestamp_seconds` passes two backup intervals; the gauge starts empty after a restart. |
 | `hangar_event_loop_lag_seconds`, `hangar_event_loop_lag_last_seconds` | histogram, gauge | How late a 0.5 s sleep on the event loop wakes up. Sustained lag means something blocks the loop. |
 | `hangar_io_pool_queue_depth`, `hangar_io_pool_threads`, `hangar_io_pool_max_threads` | gauge | Blocking provider calls waiting for a worker thread (`HANGAR_IO_THREADS`, see `runtime.py`) |
 
@@ -157,6 +159,7 @@ The numbers come from agent turns, each counted once:
 
 - **Session turns.** A job's turns are the turns of the sessions that carry it, so best-of-N attempts, repair runs and the judge are all included. A fork's copy of its parent's history is not counted again.
 - **Older jobs.** Jobs from before sessions carried them use their own turn records.
+- **Deleted sessions.** A deleted session that carried a job keeps its total on the job, so its spend stays in the view. It counts on the day the job was created, with no turns.
 - **Running turns.** A running turn counts with its live usage, on the day it started.
 - **Costs.** `cost_usd` adds the known costs. `unpriced_turns` counts turns whose model has no price ([activity.md](activity.md#usage)).
 - **Repos.** Repos are shown as `owner/name` for GitHub, and never with credentials from a URL.
