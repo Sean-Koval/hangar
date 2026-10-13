@@ -114,6 +114,9 @@ class EnvSpec(BaseModel):
     # Kubernetes only: RuntimeClass for this environment's pods, overriding HANGAR_K8S_RUNTIME_CLASS
     # ("gvisor", "kata-qemu-runtime-rs", or "" for runc). Lets gVisor and Kata environments share a cluster.
     runtime_class: str | None = None
+    # --- providers-e2b: fast (microVMs restored from a snapshot), isolated or default; picks the provider when a
+    # create names none (tiers.py, HANGAR_TIERS). Unset: HANGAR_DEFAULT_PROVIDER.
+    tier: Literal["fast", "isolated", "default"] | None = None
     sudo: bool = True
     # --- workstream F: git gateway. direct: git credentials are written into the sandbox (the old way).
     # gateway: the sandbox gets a grant for its own branch and pushes through hangar's git gateway; no GitHub
