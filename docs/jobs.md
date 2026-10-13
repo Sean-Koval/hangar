@@ -97,6 +97,15 @@ Callbacks go only to public `https` hosts. Plain `http`, non-public addresses an
    HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL=gh-webhook
    HANGAR_GITHUB_REPOS='{"acme/app": "python"}'      # repo -> environment(s), comma-separated
    ```
+   On GKE, put these in the optional `hangar-site` config map, which `deploy/gke/up.sh` never overwrites, then restart:
+   ```bash
+   kubectl -n hangar create configmap hangar-site \
+     --from-literal=HANGAR_GITHUB_TOKEN_CREDENTIAL=gh-control \
+     --from-literal=HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL=gh-webhook \
+     --from-literal=HANGAR_GITHUB_REPOS='{"acme/app": "python"}' \
+     --dry-run=client -o yaml | kubectl apply -f -
+   kubectl -n hangar rollout restart deploy/hangar
+   ```
 3. In the repo settings, add a webhook to `https://<hangar>/api/hooks/github` with content type `application/json`, the same secret, and the **Issues** and **Issue comments** events.
 
 Then:
