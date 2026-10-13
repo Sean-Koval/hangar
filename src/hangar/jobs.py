@@ -806,9 +806,20 @@ class JobService:
             lines.append(f"Branch: `{job.branch}`")
         if job.verify and r.verify_exit_code is not None:
             lines.append(f"Verification `{job.verify}`: {'passed' if r.verify_exit_code == 0 else 'failed'}")
+        if job.state == JobState.FAILED and job.reason in ("error", "interrupted", "sandbox_gone", "bad_branch",
+                                                           "push_failed", "agent_failed", "timed_out"):
+            # Say what went wrong: the last event that isn't the outcome line itself.
+            cause = next((e.message for e in reversed(job.events)
+                          if not e.message.startswith(("failed", "succeeded", "cancelled"))), None)
+            if cause:
+                lines += ["", f"What went wrong: {cause[:1500]}"]
         if r.summary:
             lines += ["", r.summary[:4000]]
-        lines += ["", "Reply with `/hangar <message>` on the PR to continue in the same sandbox."]
+        if r.pr_url:
+            lines += ["", "Reply with `/hangar <message>` on the PR to continue where it left off."]
+        else:
+            lines += ["", "Comment `/hangar` here (optionally with more instructions), or remove and re-add the "
+                          f"`{self.settings.github_trigger_label}` label, to try again."]
         return "\n".join(lines)
 
     async def _comment(self, job: Job | None, ref: str, body: str) -> None:

@@ -482,3 +482,17 @@ async def test_job_from_before_sessions_is_adopted(jobs, world, fleet):
     s = jobs.sessions.get(job.session_id)
     assert s.sandbox_id == sandbox and fleet.get(sandbox).labels["hangar.session"] == s.id
     assert [t.run_id for t in s.turns] == [t.run_id for t in job.turns]
+
+
+def test_final_comment_explains_failures(fleet):
+    from hangar.models import Job, JobEvent
+
+    svc = JobService(fleet, None)
+    job = Job(title="t", instructions="x", environment="e", branch="hangar/j", state=JobState.FAILED, reason="error",
+              events=[JobEvent(state="provisioning", message="starting a sandbox"),
+                      JobEvent(state="failed", message="error: failed to create sandbox: build of e failed: denied")])
+    text = svc._final_comment(job)
+    assert "What went wrong: error: failed to create sandbox" in text
+    assert "on the PR" not in text and "re-add the `hangar` label" in text
+    job.result.pr_url = "https://github.com/o/r/pull/9"
+    assert "on the PR" in svc._final_comment(job)
