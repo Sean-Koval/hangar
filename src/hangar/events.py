@@ -770,6 +770,13 @@ class TurnWatcher:
         if keep:
             try:
                 self.a.append(self.s.id, keep)
+                if self.s.job_id:
+                    # --- interactions: a job's sessions (best-of-N attempts, the judge, the winner that carries
+                    # on) also feed the job's own stream, so its readers keep one cursor across all of them.
+                    attempt = self.s.labels.get("hangar.attempt")
+                    extra = {"attempt": int(attempt)} if attempt and attempt.isdigit() else {}
+                    self.a.append(self.s.job_id, [ev.model_copy(update={"data": {**ev.data, **extra}})
+                                                  for ev in keep])
             except OSError as e:  # e.g. a full disk: lose the events, not the turn
                 log.warning("session %s: could not record events: %s", self.s.id, e)
 

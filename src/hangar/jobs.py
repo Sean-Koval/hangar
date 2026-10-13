@@ -409,9 +409,12 @@ class JobService:
                tail: int | None = None) -> list[dict[str, Any]]:
         """The job's activity events (all its turns), oldest first (workstream C)."""
         job = self.get(job_id, owner)
+        activity = self.sessions.activity
+        if activity.log.last_seq(job.id):  # --- interactions: the job's own stream, across all its sessions
+            return [e.model_dump(mode="json", exclude={"off"}) for e in activity.read(job.id, since, limit, tail)]
         if not job.session_id:
             return []
-        return self.sessions.events(job.session_id, since=since, limit=limit, tail=tail)
+        return self.sessions.events(job.session_id, since=since, limit=limit, tail=tail)  # jobs from before it
 
     # ================================================================== validation
     def _check_context(self, items: list[ContextItem]) -> list[ContextItem]:

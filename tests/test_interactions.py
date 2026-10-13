@@ -264,3 +264,160 @@ async def test_cancel_while_waiting_for_an_answer_tells_the_thread(jobs, world):
     jobs.cancel(job.id, requester="sean")
     await asyncio.sleep(0.2)
     assert any("**Cancelled**" in c for c in jobs.hooks.comments()), jobs.hooks.comments()
+
+
+# ---------------------------------------------------------------------------- best-of-N x triggers x notifications
+async def test_approved_best_of_n_posts_one_message_per_step(jobs, world):
+    from hangar.triggers import approve, new_approval
+
+    job = jobs.submit(bon(world, callback_url="https://hooks.example/cb"), Caller("github:rando", "github:rando"),
+                      source="github", source_ref="github:o/r#12",
+                      approval=new_approval(jobs, "github:rando", "not trusted"))
+    assert job.state == JobState.AWAITING_APPROVAL and job.n == 3
+    approve(jobs, job.id, "github:sean")
+    job = await until(jobs, job.id, SETTLED)
+    assert job.state == JobState.SUCCEEDED, [e.message for e in job.events]
+    assert job.approval.decided_by == "github:sean" and all(a.run_id for a in job.attempts)
+    await asyncio.sleep(0.2)
+    comments = jobs.hooks.comments()
+    assert sum("Approved by github:sean" in c for c in comments) == 1
+    assert sum("started on hangar job" in c for c in comments) == 1, comments
+    assert sum("**Done**" in c for c in comments) == 1, comments
+    events = [json.loads(c.content)["event"] for c in jobs.hooks.callbacks()]
+    assert events == ["job.started", "job.finished"], events
+
+
+async def test_slack_thread_hears_a_best_of_n_question_once_and_the_answer_resumes(jobs, world, broker):
+    from hangar import slack  # noqa: F401 - registers the slack: notifier
+    from tests.test_slack import TOKEN, FakeSlack
+
+    fake = FakeSlack()
+    jobs.transport = httpx.MockTransport(fake)
+    broker.put("slack-bot", "webhook", CredentialKind.GENERIC, TOKEN)
+    jobs.settings.slack_bot_token_credential = "slack-bot"
+    thread = "1700000000.000001"
+    world["mode"].write_text("ask")
+    job = jobs.submit(bon(world, verify="test -f choice.txt"), Caller("slack:T1/U1", "slack:T1/U1"),
+                      source="slack", source_ref=f"slack:C1:{thread}")
+    job = await until(jobs, job.id, SETTLED)
+    assert job.state == JobState.NEEDS_INPUT, [e.message for e in job.events]
+    await asyncio.sleep(0.1)
+    msgs = fake.thread(thread)
+    assert sum("started" in t for t in msgs) == 1 and sum(t.startswith("*Needs input*") for t in msgs) == 1, msgs
+    assert job.result.question in next(t for t in msgs if t.startswith("*Needs input*"))
+
+    # the control plane restarts while the job waits; the answer from the thread still resumes the asker
+    await jobs.stop()
+    again = JobService(jobs.fleet, jobs.sessions, transport=jobs.transport)
+    await again.start()
+    try:
+        assert again.get(job.id).state == JobState.NEEDS_INPUT
+        again.follow_up(job.id, "TASK-ANSWER: B", requester="slack:T1/U1", reply_to=f"slack:C1:{thread}")
+        job = await until(again, job.id, SETTLED)
+        assert job.state == JobState.SUCCEEDED, [e.message for e in job.events]
+        await asyncio.sleep(0.1)
+        msgs = fake.thread(thread)
+        assert sum(t.startswith("*Done*") for t in msgs) == 1 and "Went with B" in msgs[-1], msgs
+    finally:
+        await again.stop()
+
+
+# ---------------------------------------------------------------------------- events x best-of-N
+async def test_job_events_have_one_cursor_across_attempts_and_follow_ups(jobs, world):
+    job = jobs.submit(bon(world), Caller("svc", "svc"))
+    seen, cursor = [], 0
+    for _ in range(800):
+        evs = jobs.events(job.id, since=cursor)
+        seen += evs
+        cursor = evs[-1]["seq"] if evs else cursor
+        if jobs.get(job.id).state in DONE and job.id not in jobs._active:
+            break
+        await asyncio.sleep(0.05)
+    seen += jobs.events(job.id, since=cursor)
+    job = jobs.get(job.id)
+    assert job.state == JobState.SUCCEEDED
+    seqs = [e["seq"] for e in seen]
+    assert seqs == sorted(set(seqs))
+    runs = {e["run_id"] for e in seen}
+    assert {a.run_id for a in job.attempts} <= runs  # every attempt's activity, not just the winner's
+    assert {e.get("data", {}).get("attempt") for e in seen if e["run_id"] == job.attempts[1].run_id} == {2}
+    cursor = seqs[-1]
+    jobs.follow_up(job.id, "TASK-ANSWER", requester="svc")
+    job = await until(jobs, job.id, SETTLED)
+    more = jobs.events(job.id, since=cursor)
+    assert more and more[0]["seq"] == cursor + 1 and job.turns[1].run_id in {e["run_id"] for e in more}
+
+
+# ---------------------------------------------------------------------------- restarts x exactly once
+async def test_restart_while_delivering_delivers_and_reports_once(jobs, world, fleet, monkeypatch):
+    async def hang(*a, **kw):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(jobs, "_deliver", hang)  # the control plane goes down in the middle of delivering
+    job = github(jobs, SubmitJob(instructions="x", repo=world["url"], environment="seamenv",
+                                 verify="grep -q good fix.txt", callback_url="https://hooks.example/cb"))
+    for _ in range(400):
+        if jobs.get(job.id).state == JobState.DELIVERING:
+            break
+        await asyncio.sleep(0.05)
+    assert jobs.get(job.id).state == JobState.DELIVERING
+    await jobs.stop()
+    again = JobService(fleet, jobs.sessions, transport=jobs.transport)
+    again.resolve = jobs.resolve
+    await again.start()
+    try:
+        job = await until(again, job.id, SETTLED)
+        assert job.state == JobState.SUCCEEDED, [e.message for e in job.events]
+        await asyncio.sleep(0.2)
+        events = [json.loads(c.content)["event"] for c in jobs.hooks.callbacks()]
+        assert events.count("job.started") == 1 and events.count("job.finished") == 1, events
+        assert sum("**Done**" in c for c in jobs.hooks.comments()) == 1
+        assert again.view(job)["usage"]["input_tokens"] == 1000  # the turn's log was read twice, counted once
+    finally:
+        await again.stop()
+
+
+# ---------------------------------------------------------------------------- forks x exchange x usage
+async def test_fork_children_own_their_usage_and_keep_artifacts_and_patch(sessions, world):
+    from hangar.strategies import _fork
+
+    sessions.new(NewSession(name="p", environment="seamenv", repo=world["url"], message="do it"), owner="admin",
+                 requester="sean")
+    p = await settle(sessions, "p")
+    assert p.turns[0].usage.input_tokens == 1000 and p.turns[0].artifacts
+    [c] = await _fork(sessions, p, 1, "sean")
+    assert c.sandbox_id is None and c.state == SessionState.SUSPENDED
+    assert c.turns[0].usage is None and c.turns[0].event_cursor is None
+    assert sessions.view(c)["usage"] is None and sessions.view(p)["usage"]["input_tokens"] == 1000
+    # what the parent handed back is still there from the child, and so is its work as a patch
+    _, data = await exchange.read_artifact(sessions, c, 1, "report-0.md")
+    assert data == b"attempt 0 report\n"
+    patch = await exchange.session_patch(sessions, c)
+    assert patch["source"].startswith("checkpoint") and "fix.txt" in {f["path"] for f in patch["files"]}
+
+
+# ---------------------------------------------------------------------------- repair runs x events x restarts
+async def test_repair_run_is_counted_once_and_survives_a_restart(sessions, world, fleet, store):
+    world["mode"].write_text("noresult")
+    world["repair"].write_text("2")
+    sessions.new(NewSession(name="r", environment="seamenv", repo=world["url"], message="do it",
+                            output_schema=SCHEMA), owner="admin", requester="sean")
+    for _ in range(400):
+        s = sessions.get("r")
+        if s.turns and s.turns[-1].repair_run_id:
+            break
+        await asyncio.sleep(0.05)
+    await sessions.stop()  # the control plane goes down while the repair run works
+    again = SessionService(fleet, Vault(store, b"0" * 43 + b"="))
+    await again.start()
+    try:
+        s = await settle(again, "r")
+        t = s.turns[-1]
+        assert t.result == {"attempt": 0} and t.result_error is None, (t.result_error, t.warnings)
+        assert t.usage.input_tokens == 1000 and t.repair_usage.input_tokens == 300
+        assert again.view(s)["usage"]["input_tokens"] == 1300
+        assert {e["run_id"] for e in again.events("r")} == {t.run_id, t.repair_run_id}
+        await exchange.after_turn(again, s, t, "exited")  # finishing the turn again counts nothing twice
+        assert again.view(s)["usage"]["input_tokens"] == 1300
+    finally:
+        await again.stop()
