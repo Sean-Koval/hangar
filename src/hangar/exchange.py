@@ -471,8 +471,10 @@ async def after_turn(svc: SessionService, s: Session, turn: SessionTurn, outcome
         if s.sandbox_id and svc._alive(s.sandbox_id):
             sb = svc.fleet.get(s.sandbox_id)
             await _read_out(svc, s, turn, sb)
+            # --- workstream steer: the repair run is one-shot with permission checks off, so not under a turn
+            # whose tool calls need approving (ask, deny-risky)
             if (turn.output_schema and turn.result_error and outcome == "exited" and turn.exit_code == 0
-                    and not turn.question and not turn.repair_run_id):
+                    and not turn.question and not turn.repair_run_id and turn.approval_policy in (None, "auto")):
                 await _repair(svc, s, turn, sb)
             if turn.repair_run_id:  # --- interactions: also re-attaches to a repair a restart interrupted
                 await _wait_repair(svc, s, turn, sb)

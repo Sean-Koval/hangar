@@ -42,6 +42,17 @@ When the agent stops on a question (`hangar-agent ask`, state `needs_input`), ha
 
 An answer goes to the agent at most once: if the question was already answered (another client, a retry), hangar sends nothing.
 
+### Tool approvals and steering
+
+When a session or its environment uses `approvals: ask`, the agent waits for a person before it runs a command or edits a file. `wait_for_turn` puts each such request to you in the same way as a question:
+- an `input_required` round for 2026-07-28 clients, or `elicitation/create` for earlier ones;
+- the form has `decision` (`allow`, `deny` or `allow_always`) and an optional `message` for the agent;
+- the result's `approval` says what happened.
+
+A task turns `input_required` with the same form (keys `approve-<id>`).
+
+Clients without elicitation see the requests in `pending_approvals` (on `wait_for_turn`, `get_session` and `get_job`) and answer with `answer_approval`. `steer_turn(ref, message)` tells a running agent something mid-turn; `steer_turn(ref, interrupt=true)` stops it. See [steering](steering.md).
+
 ## Long tools as tasks
 
 For a client that declares the [tasks extension](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/seps/2663-tasks-extension.md) on a call, these tools return a task handle at once instead of their usual result: `submit_job`, `follow_up_job`, `new_session` and `send_to_session` (with a message), `fork_session` (with a message) and `run_agent`.
