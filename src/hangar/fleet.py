@@ -16,6 +16,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
+from hangar import exchange
 from hangar.broker import Broker, CredentialError
 from hangar.config import Settings
 from hangar.envspec import BuildContext, EnvCatalog, EnvSpec, image_tag, render, repo_dirname, warm_pool_now
@@ -584,6 +585,9 @@ class Fleet:
             extra_env["HANGAR_HARNESS"] = h.name
         for var, cred in spec.secrets.items():
             extra_env[var] = self.broker.secret_text(cred)
+        # workstream E: the `hangar-agent` helper (context exchange), installed per sandbox: no image rebuild
+        await exchange.install_helper(prov, sb, f"/home/{self.settings.sandbox_user}")
+        prelude.append(exchange.PATH_LINE)
         env = await self.broker.inject(sb, prov, creds, extra_env=extra_env, prelude=prelude)
         if not h:
             return

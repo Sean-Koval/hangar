@@ -145,6 +145,15 @@ class Settings(BaseSettings):
     inbound_webhooks: dict[str, dict[str, Any]] = Field(default_factory=dict)
     inbound_max_body_bytes: int = 1_000_000
     schedule_poll_seconds: float = 10.0  # scheduler and approval-expiry loop
+    # --- workstream E: context exchange (spec 0011 §2) ---------------------
+    exchange_max_patch_mb: int = 10  # a `patch` context item, and get_session_patch's largest answer
+    exchange_max_bundle_mb: int = 50  # a `bundle` context item (unpushed commits)
+    exchange_max_result_kb: int = 1024  # out/result.json
+    exchange_max_artifacts: int = 50  # new artifacts collected per turn; more are skipped with a warning
+    exchange_max_artifact_mb: int = 25  # per file
+    exchange_max_artifacts_mb: int = 100  # per turn
+    exchange_inline_artifact_kb: int = 512  # MCP get_artifact returns at most this much (text or base64)
+    exchange_repair_timeout_minutes: int = 10  # the one repair run for a missing or invalid result
 
     @property
     def db_path(self) -> Path:

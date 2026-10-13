@@ -165,6 +165,7 @@ class JobState(StrEnum):
     CANCELLED = "cancelled"
     # --- workstream A: triggers. Started by someone untrusted; waits (not queued) until a trusted person approves.
     AWAITING_APPROVAL = "awaiting_approval"
+    NEEDS_INPUT = "needs_input"  # workstream E: the agent asked a question; a follow-up answers it (not terminal)
 
 
 JOB_TERMINAL = {JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED}
@@ -174,14 +175,27 @@ class ContextItem(BaseModel):
     """One piece of context handed to the agent as a file (or, for `url`, a link listed in the prompt)."""
 
     name: str
-    kind: Literal["text", "file", "log", "issue", "diff", "url"] = "text"
+    kind: Literal["text", "file", "log", "issue", "diff", "url", "patch", "bundle"] = "text"
     content: str | None = None
     encoding: Literal["utf-8", "base64"] = "utf-8"
     url: str | None = None
     untrusted: bool = False  # written by someone outside the trusted list; the prompt says so (workstream A)
+    # workstream E: `patch` is a binary diff applied before the turn; `bundle` a base64 bundle of unpushed
+    # commits built on `base_commit` (a commit the remote has)
+    base_commit: str | None = None
 
     def size(self) -> int:
         return len(self.content or "")
+
+
+class Artifact(BaseModel):
+    """A file the agent handed back (workstream E), stored encrypted next to the session's checkpoints."""
+
+    path: str  # relative to out/artifacts
+    turn: int  # the session turn that produced it
+    size: int
+    sha256: str
+    media_type: str = "application/octet-stream"
 
 
 class JobEvent(BaseModel):
@@ -201,8 +215,15 @@ class Turn(BaseModel):
     exit_code: int | None = None
     summary: str | None = None
     usage: Usage | None = None  # workstream C
-    outcome: str | None = None  # exited | timed_out | cancelled | over_budget | gone | error
+    outcome: str | None = None  # exited | timed_out | cancelled | over_budget | gone | error | needs_input
     outcome_reason: str | None = None
+    # --- workstream E: context exchange
+    context: list[ContextItem] = Field(default_factory=list)  # attachments (contents dropped once it starts)
+    output_schema: dict[str, Any] | None = None
+    result: Any = None
+    result_error: str | None = None
+    question: str | None = None
+    artifacts: list[Artifact] = Field(default_factory=list)
 
 
 class JobResult(BaseModel):
@@ -216,6 +237,11 @@ class JobResult(BaseModel):
     verify_exit_code: int | None = None
     verify_tail: str | None = None
     summary: str | None = None
+    # --- workstream E: the latest turn's structured result and open question; artifacts of every turn
+    data: Any = None
+    result_error: str | None = None
+    question: str | None = None
+    artifacts: list[Artifact] = Field(default_factory=list)
 
 
 class JobApproval(BaseModel):
@@ -254,6 +280,7 @@ class Job(BaseModel):
     timeout_minutes: int = 60
     keep_minutes: int = 120
     budget: Budget | None = None  # per agent turn (workstream C)
+    output_schema: dict[str, Any] | None = None  # workstream E: JSON Schema for the agent's out/result.json
     state: JobState = JobState.QUEUED
     reason: str | None = None
     cancel_requested: bool = False
@@ -315,9 +342,19 @@ class SessionTurn(BaseModel):
     exit_code: int | None = None
     summary: str | None = None
     usage: Usage | None = None  # workstream C: live while the turn runs, final after
-    outcome: str | None = None  # exited | timed_out | cancelled | over_budget | gone | error
+    outcome: str | None = None  # exited | timed_out | cancelled | over_budget | gone | error | needs_input
     outcome_reason: str | None = None
     event_cursor: dict[str, Any] | None = None  # where event collection is in the run log (restart-safe)
+    # --- workstream E: context exchange
+    context: list[ContextItem] = Field(default_factory=list)  # attachments (contents dropped once it starts)
+    output_schema: dict[str, Any] | None = None
+    result: Any = None  # out/result.json (valid against output_schema when there is one)
+    result_error: str | None = None
+    question: str | None = None  # out/QUESTION.md
+    progress: dict[str, Any] | None = None  # the last out/progress.jsonl line
+    artifacts: list[Artifact] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    repair_run_id: str | None = None  # the one extra run that asked for a missing or invalid result
 
 
 class Checkpoint(BaseModel):
@@ -357,6 +394,7 @@ class Session(BaseModel):
     extra_dirs: list[str] = Field(default_factory=list)  # more $HOME-relative paths to checkpoint (job context)
     budget: Budget | None = None  # per agent turn (workstream C)
     labels: dict[str, str] = Field(default_factory=dict)
+    needs_input: str | None = None  # workstream E: the agent's open question; the next send answers it
     created_at: float = Field(default_factory=now)
     last_active_at: float = Field(default_factory=now)
     updated_at: float = Field(default_factory=now)
