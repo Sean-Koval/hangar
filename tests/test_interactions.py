@@ -53,6 +53,8 @@ case "$msg" in
 esac
 case "$mode:$a" in
   budget:1) spend 900000; sleep 30; exit 0 ;;
+  burnall:*) echo "good $a" > fix.txt && git add fix.txt && git commit -qm "partial $a"; spend 900000; sleep 30
+             exit 0 ;;
   ask:*) echo "half $a" > "half-$a.txt" && git add . && git commit -qm "half $a"; spend 1000
          hangar-agent ask "A or B? (attempt $a)"; exit 0 ;;
   askandburn:*) hangar-agent ask "May I spend more?"; spend 900000; sleep 30; exit 0 ;;
@@ -182,6 +184,17 @@ async def test_best_of_n_caps_each_attempt_and_sums_usage(jobs, world):
     assert "902.0k tokens" in jobs._pr_body(job)
     await asyncio.sleep(0.1)
     assert any("902.0k tokens" in c for c in jobs.hooks.comments())
+
+
+async def test_a_best_of_n_winner_stopped_over_budget_is_a_draft_that_says_why(jobs, world):
+    world["mode"].write_text("burnall")
+    job = github(jobs, bon(world, n=2, budget=Budget(max_tokens=100_000)))
+    job = await until(jobs, job.id, SETTLED)
+    assert [a.outcome for a in job.attempts] == ["over_budget", "over_budget"]
+    assert job.state == JobState.FAILED and job.reason == "over_budget" and job.result.pushed
+    assert job.turns[0].outcome_reason.startswith("used 900,000 tokens")
+    await asyncio.sleep(0.1)
+    assert any("Stopped over budget (used 900,000 tokens" in c for c in jobs.hooks.comments())
 
 
 async def test_the_judge_turn_is_capped_counted_once_and_in_the_job_stream(jobs, world):

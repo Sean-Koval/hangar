@@ -545,6 +545,7 @@ def _take_over(jobs: JobService, job: Job, w: Attempt, ws: Session) -> None:
     turn.run_id, turn.started_at, turn.finished_at = w.run_id, w.started_at, w.finished_at
     turn.exit_code, turn.summary = w.exit_code, w.summary
     if st := next((t for t in reversed(ws.turns) if t.run_id == w.run_id), None):
+        turn.outcome_reason = st.outcome_reason  # why it was stopped (over budget), for the outcome report
         exchange.record_job_turn(job, turn, st)
     job.harness, job.model = ws.harness, ws.model
     job.result.base_sha = ws.base_sha or job.result.base_sha  # local work (a bundle) may have moved it back
