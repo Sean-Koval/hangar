@@ -221,3 +221,37 @@ dialog .form-foot { margin-top: 4px; }
   .grid .wide { grid-column: auto; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* ---- jobs ---- */
+.jobs-split { grid-template-columns: minmax(260px, 360px) 1fr; }
+.job-row { --tone: var(--stop); }
+.job-row .t { display: flex; gap: 8px; align-items: center; }
+.job-row .dot, .timeline li::before { background: var(--tone); }
+[data-tone="run"] { --tone: var(--run); }
+[data-tone="start"] { --tone: var(--start); }
+[data-tone="ok"] { --tone: var(--run); }
+[data-tone="err"] { --tone: var(--err); }
+[data-tone="stop"] { --tone: var(--stop); }
+.job-row[data-tone="run"] .dot, .job-row[data-tone="start"] .dot { animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .job-row .dot { animation: none !important; } }
+.tag.tone { color: var(--tone); border: 1px solid var(--tone); background: transparent; }
+.tag.ok { color: var(--run); } .tag.bad { color: var(--err); }
+.job-detail h4 { margin: 20px 0 8px; font-family: var(--cond); font-size: 15px; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-2); }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 14px 0; }
+.kv dt { color: var(--ink-3); font-size: 13px; }
+.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.log.summary { font-family: var(--sans); font-size: 14px; white-space: pre-wrap; max-height: 360px;
+  font-variant-ligatures: none; font-feature-settings: "liga" 0, "calt" 0; }
+#view-jobs .actions { flex-wrap: nowrap; }
+#view-jobs .actions button, #view-jobs .actions select { white-space: nowrap; width: auto; }
+.timeline, .turns { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.timeline li { display: grid; grid-template-columns: 10px 72px 1fr; gap: 8px; align-items: baseline; font-size: 13px; }
+.timeline li::before { content: ""; width: 8px; height: 8px; border-radius: 50%; }
+.timeline .when { color: var(--ink-3); }
+.timeline .what { overflow-wrap: anywhere; }
+.followup { margin-top: 16px; }
+.followup textarea { width: 100%; }
+.new-form > label.wide { display: block; margin-bottom: 12px; }
+.new-form > label.wide textarea { width: 100%; }
+@media (max-width: 860px) { .jobs-split { grid-template-columns: 1fr; } }

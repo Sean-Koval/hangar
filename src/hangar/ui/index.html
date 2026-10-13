@@ -30,6 +30,7 @@
       <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M2 30V14L16 4l14 10v16h-6V18H8v12z"/></svg>
       <span>Hangar</span>
     </a>
+    <a href="#jobs" data-view="jobs">Jobs <span id="nav-jobs" class="pill"></span></a>
     <a href="#fleet" data-view="fleet">Fleet <span id="nav-count" class="pill"></span></a>
     <a href="#environments" data-view="environments">Environments</a>
     <a href="#credentials" data-view="credentials">Credentials</a>
@@ -43,6 +44,55 @@
   </nav>
 
   <main id="main">
+    <!-- JOBS -->
+    <section id="view-jobs" class="view" hidden>
+      <header class="view-head">
+        <div>
+          <h2>Jobs</h2>
+          <p id="jobs-sub" class="sub">Work handed to cloud agents by people, services and GitHub. Each job ends as a
+            verified branch and PR; reply to steer it, or open its terminal to work alongside the agent.</p>
+        </div>
+        <div class="actions">
+          <select id="jobs-filter" aria-label="Filter jobs">
+            <option value="">All jobs</option><option value="active">In progress</option>
+            <option value="succeeded">Succeeded</option><option value="failed">Failed</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
+          <button class="primary" id="btn-new-job">New job</button>
+        </div>
+      </header>
+      <form id="job-form" class="panel new-form" hidden>
+        <label class="wide">What should the agent do?<textarea name="instructions" rows="5" required
+          placeholder="CSV export drops non-ASCII characters. Fix it and add a regression test."></textarea></label>
+        <div class="grid">
+          <label>Environment<select name="environment" required></select></label>
+          <label>Agent<select name="harness"></select></label>
+          <label>Model<input name="model" placeholder="environment default"></label>
+          <label class="wide">Repo<input name="repo" placeholder="environment default"></label>
+          <label>Base branch<input name="base_branch" placeholder="repo default"></label>
+          <label>Check with<input name="verify" placeholder="pytest -q"></label>
+          <label>Deliver as<select name="deliver">
+            <option value="draft_pr">Draft PR</option><option value="pr">PR</option>
+            <option value="branch">Branch only</option><option value="none">Nothing (keep in sandbox)</option></select></label>
+          <label>Minutes per turn<input name="timeout_minutes" type="number" min="1" max="720" placeholder="60"></label>
+        </div>
+        <div class="grid">
+          <label class="wide">Context files<input type="file" id="job-files" multiple></label>
+          <label class="wide">Links (one per line)<textarea name="links" rows="2" placeholder="https://…"></textarea></label>
+        </div>
+        <div class="form-foot">
+          <span class="hint">Files land next to the repo in ~/.hangar/jobs/&lt;job&gt;/, never in the repo itself.</span>
+          <button type="button" class="ghost" id="job-cancel-form">Cancel</button>
+          <button class="primary" type="submit">Submit job</button>
+        </div>
+      </form>
+      <div class="split jobs-split">
+        <ul id="job-list" class="list"></ul>
+        <div id="job-detail" class="panel job-detail"><p class="empty">Choose a job to see its timeline, result and
+          sandbox.</p></div>
+      </div>
+    </section>
+
     <!-- FLEET -->
     <section id="view-fleet" class="view">
       <header class="view-head">
