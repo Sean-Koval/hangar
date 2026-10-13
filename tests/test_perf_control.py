@@ -140,3 +140,27 @@ async def test_long_polls_cannot_take_every_io_thread(fleet, settings, monkeypat
         assert all(st["state"] == "running" for st in await asyncio.gather(*polls))
     finally:
         pool.shutdown(wait=False)
+
+
+def test_security_writes_stay_durable_across_a_power_loss(store):
+    """synchronous=NORMAL in WAL mode keeps the database consistent, but "a transaction committed in WAL mode with
+    synchronous=NORMAL might roll back following a power loss or system crash" (sqlite.org/pragma.html). A revoked
+    token or a deleted credential must not come back after a node crash, so those commits sync the WAL."""
+    statements: list[str] = []
+    store._db.set_trace_callback(statements.append)
+    auth = TokenAuth(store, None)
+    _, tok = auth.create("ci", scopes=["jobs"])
+    auth.revoke(tok.id)
+    store.put_secret("cred:x", b"blob")
+    store.delete_secret("cred:x")
+    store.kv_set("k", "v")  # everyday state stays on NORMAL
+    store._db.set_trace_callback(None)
+    writes = [s.split()[0] for s in statements if not s.startswith("PRAGMA")]
+    synced, mode = [], "NORMAL"
+    for s in statements:
+        if s.startswith("PRAGMA synchronous="):
+            mode = s.split("=")[1]
+        elif not s.startswith("PRAGMA"):
+            synced.append(mode == "FULL")
+    assert writes == ["INSERT", "DELETE", "INSERT", "DELETE", "INSERT"] and synced == [True] * 4 + [False]
+    assert store._db.execute("PRAGMA synchronous").fetchone()[0] == 1

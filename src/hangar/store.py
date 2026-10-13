@@ -7,11 +7,12 @@ a laptop or a single VM. On GKE the file lives on a PersistentVolume (one replic
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import sqlite3
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TypeVar
 
@@ -32,6 +33,9 @@ _TABLES: dict[type[BaseModel], tuple[str, str]] = {
     ScheduledJob: ("schedules", "id"),  # workstream A
     SandboxGrant: ("sandbox_grants", "id"),  # workstream F: git gateway
 }
+# --- review(perf): access control must not roll back on a node crash (a revoked token coming back), so these
+# commits, and the secrets table's, sync the WAL like synchronous=FULL; everything else stays on NORMAL.
+_DURABLE: frozenset[type[BaseModel]] = frozenset({ApiToken, Credential, SandboxGrant})
 
 
 class Store:
@@ -41,8 +45,9 @@ class Store:
         self._db = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
         self._db.execute("PRAGMA journal_mode=WAL")
         # perf: in WAL mode NORMAL syncs at checkpoints, not on every commit; a crash of hangar loses nothing and
-        # the file stays consistent (only a power loss can roll back the last commits). Writes run on the event
-        # loop, so an fsync per state change was loop stall on network disks.
+        # the file stays consistent (only a power loss or OS crash can roll back the last commits). Writes run on
+        # the event loop, so an fsync per state change was loop stall on network disks. Verified against
+        # sqlite.org/pragma.html#pragma_synchronous and sqlite.org/wal.html. Access-control writes: _DURABLE.
         self._db.execute("PRAGMA synchronous=NORMAL")
         self._db.execute("PRAGMA busy_timeout=5000")
         for table, _ in _TABLES.values():
@@ -55,10 +60,22 @@ class Store:
         # --- workstream mcp-modern: called after every put (MCP resource-updated notifications); must not raise
         self.on_put: list[Callable[[BaseModel], None]] = []
 
+    @contextlib.contextmanager
+    def _synced(self, durable: bool) -> Iterator[None]:
+        """Commit what runs inside with a WAL sync (review: see _DURABLE). Caller holds the lock."""
+        if not durable:
+            yield
+            return
+        self._db.execute("PRAGMA synchronous=FULL")
+        try:
+            yield
+        finally:
+            self._db.execute("PRAGMA synchronous=NORMAL")
+
     # --- generic model CRUD -------------------------------------------------
     def put(self, obj: BaseModel) -> None:
         table, key_field = _TABLES[type(obj)]
-        with self._lock:
+        with self._lock, self._synced(type(obj) in _DURABLE):
             self._db.execute(
                 f"INSERT INTO {table}(key, data) VALUES(?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET data=excluded.data",
@@ -84,12 +101,12 @@ class Store:
 
     def delete(self, cls: type[BaseModel], key: str) -> None:
         table, _ = _TABLES[cls]
-        with self._lock:
+        with self._lock, self._synced(cls in _DURABLE):
             self._db.execute(f"DELETE FROM {table} WHERE key=?", (key,))
 
     # --- encrypted secret blobs (encryption handled by the vault) ----------
     def put_secret(self, name: str, blob: bytes) -> None:
-        with self._lock:
+        with self._lock, self._synced(True):
             self._db.execute(
                 "INSERT INTO secrets(name, blob) VALUES(?, ?) ON CONFLICT(name) DO UPDATE SET blob=excluded.blob",
                 (name, blob),
@@ -101,7 +118,7 @@ class Store:
         return row[0] if row else None
 
     def delete_secret(self, name: str) -> None:
-        with self._lock:
+        with self._lock, self._synced(True):
             self._db.execute("DELETE FROM secrets WHERE name=?", (name,))
 
     # --- audit --------------------------------------------------------------
