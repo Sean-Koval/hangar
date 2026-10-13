@@ -237,3 +237,31 @@ async def test_a_waking_sandbox_is_not_evicted_under_it(svc, world, fleet, hot, 
     s = await settle(svc, "claimed")
     assert s.state == SessionState.IDLE and s.sandbox_id == parked
     assert fleet.get(parked).state == SandboxState.RUNNING
+
+
+async def test_a_woken_session_keeps_its_cache_policy_and_model_and_a_harness_switch_boots_cold(
+        svc, world, fleet, hot, monkeypatch):  # noqa: F811
+    """integrate(#64 x #63): the cache policy and the pinned model are the session's, so the turn after a hot resume
+    runs with both; a session switched to another harness while parked gets a sandbox made for that harness."""
+    from hangar.harnesses import HARNESSES
+
+    monkeypatch.setitem(HARNESSES, "preset-agent", HARNESSES["preset-agent"].model_copy(
+        update={"cache_env": HARNESSES["claude-code"].cache_env}))
+    svc.new(NewSession(name="pinned", environment="sesenv", repo=world["url"], message="start the work", cache="5m",
+                       model="m-pinned"), owner="admin", requester="sean")
+    s = await settle(svc, "pinned")
+    parked = s.sandbox_id
+    assert s.turns[-1].cache_ttl == "5m"
+    await suspend(svc, "pinned")
+    svc.send("pinned", "more work", requester="sean")
+    s = await settle(svc, "pinned")
+    assert s.state == SessionState.IDLE and s.sandbox_id == parked and ("resume", parked) in hot.calls
+    assert (s.cache, s.model, s.turns[-1].cache_ttl) == ("5m", "m-pinned", "5m")
+    assert fleet.get(parked).info["runs"][-1]["model"] == "m-pinned"
+
+    await suspend(svc, "pinned")
+    assert hot_resume._record(svc, s.id)["sandbox"] == parked
+    svc.open("pinned", requester="sean", harness="plain-agent")
+    s = await settle(svc, "pinned")
+    assert s.state == SessionState.IDLE and s.sandbox_id != parked, s.reason
+    assert fleet.get(s.sandbox_id).info["harness"] == "plain-agent" and hot_resume._record(svc, s.id) is None

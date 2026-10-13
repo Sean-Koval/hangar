@@ -170,7 +170,11 @@ async def wake(svc: SessionService, s: Session, stage: Callable[[str], None]) ->
         sb = svc.fleet.get(rec["sandbox"])
     except FleetError:
         return None
-    if sb.state != SandboxState.PAUSED or sb.labels.get("hangar.session") != s.id or rec.get("checkpoint") != latest:
+    # integrate(#64 x #63): a session switched to another harness while parked (open(harness=), which re-pins the
+    # model) needs a sandbox made for that harness; this one has the old harness's config and credentials.
+    other_harness = bool(s.harness and sb.info.get("harness") not in (None, s.harness))
+    if (sb.state != SandboxState.PAUSED or sb.labels.get("hangar.session") != s.id or rec.get("checkpoint") != latest
+            or other_harness):
         with contextlib.suppress(Exception):
             await svc.fleet.destroy(sb.id, actor=f"session:{s.id}")
         return None
