@@ -249,9 +249,10 @@ def _toml_replace(path: Path, text: str, name: str, e: dict[str, Any]) -> str:
 
 
 def write_private(path: Path, text: str) -> None:
-    """Atomic replace; a new file is 0600, an existing one keeps its mode."""
+    """Atomic replace; a new file is 0600, an existing one keeps its owner's bits but loses group and other access,
+    since it now holds a bearer token (clients often create these files 0644)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
+    mode = path.stat().st_mode & 0o700 if path.exists() else 0o600
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "w") as f:

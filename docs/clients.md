@@ -7,13 +7,13 @@ hangar connect claude-code      # or codex, cursor, vscode, gemini, claude-deskt
 hangar connect --list           # each client, its config file, and whether hangar is in it
 ```
 
-`hangar connect <client>` mints a token for that client on this machine and writes hangar into the client's own config file. The token is named `mcp-<client>-<host>` and has the `mcp` scope, so it reaches `/mcp` and nothing else: no REST API, no vault, no settings, no other tokens. The other servers in the file, and every other key, are left as they were. Connecting again replaces the entry and revokes that client's previous token. Options:
+`hangar connect <client>` mints a token for that client on this machine and writes hangar into the client's own config file. The token is named `mcp-<client>-<host>-<file id>` and has the `mcp` scope, so it reaches `/mcp` and nothing else. It can't call the REST API, so it can't read or change the vault, settings or tokens. It can still do anything an MCP client can, including starting sandboxes that use stored credentials, so keep it as private as a password. The other servers in the file, and every other key, are left as they were. Connecting the same file again replaces the entry and revokes the token it held before; tokens in the client's other config files (a project's `.cursor/mcp.json`, another `CLAUDE_CONFIG_DIR`) are left alone. Options:
 
 - `--print` shows the entry (with a new token) and writes nothing. Use it to configure another machine.
 - `--auth oauth` writes the URL without a token. The client then signs in through hangar's OAuth server. This works for Claude Code, Codex, Cursor and Gemini CLI, and needs an https (or localhost) `HANGAR_PUBLIC_URL`.
 - `--name` sets the server name (default `hangar`), and `--config PATH` writes another file, for example a VS Code Insiders profile.
 
-Files are replaced atomically. A new file is created with mode 600, an existing one keeps its mode, and a symlinked file (dotfiles) is written through the link. If a file isn't plain JSON (VS Code and Gemini allow comments) or the TOML can't be edited safely, hangar leaves it alone and prints the entry for you to paste.
+Files are replaced atomically. A new file is created with mode 600. An existing one keeps its owner's permissions but loses group and other access, since it now holds a token, and a symlinked file (dotfiles) is written through the link. If a file isn't plain JSON (VS Code and Gemini allow comments) or the TOML can't be edited safely, hangar leaves it alone and prints the entry for you to paste.
 
 | Client | File | Entry | After connecting |
 | --- | --- | --- | --- |

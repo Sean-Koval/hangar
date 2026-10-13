@@ -94,13 +94,17 @@ def hook_problem(hook: dict[str, Any] | None) -> str | None:
 
 
 async def ensure_hook(gh: GitHub, repo: str, url: str, secret: str) -> tuple[dict[str, Any], str]:
-    """Create the repo's webhook to `url`, or bring an existing one in line (events, JSON, active, our secret)."""
+    """Create the repo's webhook to `url`, or bring an existing one in line (events, JSON, active, our secret).
+
+    Only adds: the hook's other events stay, and so does its TLS choice (a hangar behind a self-signed certificate
+    needs insecure_ssl "1")."""
     config = {"url": url, "content_type": "json", "secret": secret, "insecure_ssl": "0"}
     hook = await find_hook(gh, repo, url)
     if hook is None:
         made = await gh._req("POST", f"/repos/{repo}/hooks", json={
             "name": "web", "active": True, "events": list(HOOK_EVENTS), "config": config})
         return made, "created"
+    config["insecure_ssl"] = str((hook.get("config") or {}).get("insecure_ssl") or "0")
     events = sorted(set(hook.get("events") or []) | set(HOOK_EVENTS))
     made = await gh._req("PATCH", f"/repos/{repo}/hooks/{hook['id']}",
                          json={"active": True, "events": events, "config": config})
@@ -148,6 +152,8 @@ class GitHubSetup(BaseModel):
     webhook_url: str | None = None  # where GitHub delivers (a tunnel for a laptop); default HANGAR_PUBLIC_URL
     register_webhook: bool = True
     rotate_secret: bool = False
+    # A secret the user chose, for a webhook they add by hand: one hangar generates is never shown.
+    webhook_secret: str | None = Field(None, repr=False)
 
 
 async def _check_token(gh: GitHub, repos: list[str], need_hooks: bool, steps: list) -> bool:
@@ -221,24 +227,45 @@ async def setup_github(h, app, body: GitHubSetup, who: str) -> dict[str, Any]:
         token = h.broker.secret_text(body.token_credential).strip()
     url = hook_url(h, body.webhook_url)
     far = unreachable(url) if body.register_webhook else None
+    registering = body.register_webhook and not far
+    old = (h.broker.secret_text(body.secret_credential).strip()
+           if h.store.get(Credential, body.secret_credential) is not None else None)
+    given = body.webhook_secret.strip() if body.webhook_secret else None
+    if given is not None and len(given) < 16:
+        _step(steps, "webhook secret", False, "the webhook secret is too short: use at least 16 characters "
+              "(openssl rand -hex 32)")
+        return {"ok": False, "steps": steps}
+    own = ("generate one (openssl rand -hex 32 > ~/.hangar/gh-webhook-secret), pass it with --webhook-secret-file, "
+           "and paste it into the webhook's Secret field on GitHub")
+    if not body.register_webhook and not (given or old):
+        _step(steps, "webhook secret", False, f"adding the webhook by hand needs a secret you know: {own}")
+        return {"ok": False, "steps": steps}
+    if body.rotate_secret and not given and not registering:
+        _step(steps, "webhook secret", False, "a new secret has to reach GitHub too, and hangar isn't registering the "
+              f"webhook here ({far or '--no-webhook'}): let it (a public URL, or --webhook-url), or {own}")
+        return {"ok": False, "steps": steps}
+    new = given or (secrets.token_hex(32) if body.rotate_secret or old is None else None)
+    if new == old:
+        new = None
+    # A new secret replacing one GitHub signs with waits until every hook has it (_rotate). Otherwise it's stored
+    # right away: nothing signs with it yet, or the user is giving it to GitHub by hand.
+    rotating = new is not None and old is not None and registering
     gh = GitHub(token, s.github_api_url, transport=transport)
     try:
-        if not await _check_token(gh, sorted(repos) or all_repos, body.register_webhook and not far, steps):
+        if not await _check_token(gh, sorted(repos) or all_repos, registering, steps):
             return {"ok": False, "steps": steps}
         # Checks passed: store the credentials and the settings.
         if body.token:
             h.broker.put(body.token_credential, "git", CredentialKind.GIT_TOKEN, token,
                          "GitHub token the control plane uses for PRs and comments (hangar setup github)")
             h.fleet.audit(who, "credential.put", body.token_credential, harness="git", kind="git_token")
-        stored_secret = h.store.get(Credential, body.secret_credential) is not None
-        if body.rotate_secret or not stored_secret:
-            h.broker.put(body.secret_credential, "webhook", CredentialKind.GENERIC, secrets.token_hex(32),
-                         "GitHub webhook secret (hangar setup github)")
-            h.fleet.audit(who, "credential.put", body.secret_credential, harness="webhook", kind="generic")
-            _step(steps, "webhook secret", True, f"generated and stored as '{body.secret_credential}'")
-        else:
+        if new is not None and not rotating:
+            _put_secret(h, body.secret_credential, new, who)
+            _step(steps, "webhook secret", True, ("stored your secret" if given else "generated and stored")
+                  + f" as '{body.secret_credential}'")
+        elif new is None:
             _step(steps, "webhook secret", True, f"kept the stored '{body.secret_credential}'")
-        secret = h.broker.secret_text(body.secret_credential).strip()
+        secret = old if rotating else h.broker.secret_text(body.secret_credential).strip()
         try:
             h.config.set("github_token_credential", body.token_credential)
             h.config.set("github_webhook_secret_credential", body.secret_credential)
@@ -253,14 +280,21 @@ async def setup_github(h, app, body: GitHubSetup, who: str) -> dict[str, Any]:
         _step(steps, "settings", True, "HANGAR_GITHUB_TOKEN_CREDENTIAL, HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL"
               + (", HANGAR_GITHUB_REPOS" if repos else "") + " saved in hangar's database (survive redeploys)")
         _pinned_note(h, ["github_token_credential", "github_webhook_secret_credential", "github_repos"], steps)
+        moved: list[tuple[str, int]] = []
+        if rotating and (moved := await _rotate(h, gh, sorted(repos) or all_repos, url, old, new,
+                                                 body.secret_credential, who, steps)):
+            secret = new
         ok, detail = await self_test_github(app, secret)
         _step(steps, "local delivery", ok, detail)
         if not body.register_webhook:
-            _step(steps, "webhook", None, f"skipped: add a webhook to {url} with content type application/json, the "
-                  f"secret stored as '{body.secret_credential}', and events {', '.join(HOOK_EVENTS)}")
+            _step(steps, "webhook", None, f"skipped: add a webhook to {url} with content type application/json, "
+                  f"your secret (stored as '{body.secret_credential}'), and events {', '.join(HOOK_EVENTS)}")
         elif far:
             _step(steps, "webhook", None, f"skipped: GitHub can't deliver to {url} ({far}). Set HANGAR_PUBLIC_URL to "
                   "the public https URL, or pass --webhook-url (e.g. a tunnel to this machine), and run this again.")
+        elif rotating:
+            for repo, hook_id in moved:  # GitHub signs with the new secret now: prove hangar verifies it
+                await _ping(gh, repo, hook_id, steps, fast=transport is not None)
         else:
             for repo in sorted(repos) or all_repos:
                 await _register(gh, repo, url, secret, steps, fast=transport is not None)
@@ -271,18 +305,58 @@ async def setup_github(h, app, body: GitHubSetup, who: str) -> dict[str, Any]:
     return {"ok": all(x["status"] != "fail" for x in steps), "steps": h.broker.redact(steps), "webhook_url": url}
 
 
+def _put_secret(h, name: str, secret: str, who: str) -> None:
+    h.broker.put(name, "webhook", CredentialKind.GENERIC, secret, "GitHub webhook secret (hangar setup github)")
+    h.fleet.audit(who, "credential.put", name, harness="webhook", kind="generic")
+
+
 async def _register(gh: GitHub, repo: str, url: str, secret: str, steps: list, fast: bool) -> None:
     try:
         hook, how = await ensure_hook(gh, repo, url, secret)
     except GitHubError as e:
-        _step(steps, f"webhook: {repo}", False, f"couldn't register the webhook: {str(e)[:300]}")
+        hint = (" (the token needs Webhooks: Read and write)" if _status(e) in ("HTTP 403", "HTTP 404") else "")
+        _step(steps, f"webhook: {repo}", False, f"couldn't register the webhook: {str(e)[:300]}{hint}")
         return
     _step(steps, f"webhook: {repo}", True, f"{how} {url} for {', '.join(HOOK_EVENTS)}")
+    await _ping(gh, repo, hook["id"], steps, fast)
+
+
+async def _ping(gh: GitHub, repo: str, hook_id: int, steps: list, fast: bool) -> None:
     try:
-        ok, detail = await ping_hook(gh, repo, hook["id"], fast=fast)
+        ok, detail = await ping_hook(gh, repo, hook_id, fast=fast)
     except GitHubError as e:
         ok, detail = None, f"couldn't ask GitHub for a test delivery: {str(e)[:300]}"
     _step(steps, f"test delivery: {repo}", ok, detail)
+
+
+async def _rotate(h, gh: GitHub, repos: list[str], url: str, old: str, new: str, name: str, who: str,
+                  steps: list) -> list[tuple[str, int]]:
+    """Move every repo's hook to the new secret, then the vault; returns the hooks moved, or [] when it kept the old
+    secret. A token with Webhooks: Read passes the token check but can't change a hook: if GitHub refuses one, the
+    hooks already moved go back to the old secret and the vault keeps it, so deliveries verify either way."""
+    moved: list[tuple[str, int]] = []
+    for repo in repos:
+        try:
+            hook, how = await ensure_hook(gh, repo, url, new)
+        except (GitHubError, httpx.HTTPError) as e:
+            _step(steps, f"webhook: {repo}", False, f"couldn't set the new secret: {str(e)[:300]}")
+            break
+        moved.append((repo, hook["id"]))
+        _step(steps, f"webhook: {repo}", True, f"{how} {url} for {', '.join(HOOK_EVENTS)}, with the new secret")
+    else:
+        _put_secret(h, name, new, who)
+        _step(steps, "webhook secret", True, f"rotated '{name}' on GitHub and in the vault")
+        return moved
+    stuck = []
+    for repo, _ in moved:
+        try:
+            await ensure_hook(gh, repo, url, old)
+        except (GitHubError, httpx.HTTPError):
+            stuck.append(repo)
+    _step(steps, "webhook secret", False, f"kept the old '{name}', since GitHub refused the new one" + (
+        f"; {', '.join(stuck)} still has the new secret and fails deliveries: run `hangar setup github` again"
+        if stuck else "; every hook still has it"))
+    return []
 
 
 async def fix_webhook(h, repo: str, who: str) -> dict[str, Any]:

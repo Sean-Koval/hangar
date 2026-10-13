@@ -22,9 +22,10 @@ class FakeGitHub:
     """Repos, their webhooks and deliveries. A ping is "delivered" by checking its signature with the secret the
     hook was registered with against the secret in hangar's vault (what hangar's route does)."""
 
-    def __init__(self, vault_secret, can_hooks=True, readable=("acme/app",)):
+    def __init__(self, vault_secret, can_hooks=True, readable=("acme/app",), read_only_hooks=()):
         self.vault_secret = vault_secret  # () -> the webhook secret hangar holds
         self.can_hooks, self.readable = can_hooks, set(readable)
+        self.read_only_hooks = set(read_only_hooks)  # repos where the token has Webhooks: Read only
         self.hooks: dict[str, list[dict]] = {}
         self.deliveries: dict[int, list[dict]] = {}
         self.calls: list[tuple[str, str]] = []
@@ -41,6 +42,8 @@ class FakeGitHub:
             return httpx.Response(200, json={"full_name": repo, "default_branch": "main",
                                              "permissions": {"admin": False, "push": True, "pull": True}})
         if rest[:1] == ["hooks"] and not self.can_hooks:
+            return httpx.Response(403, json={"message": "Resource not accessible by personal access token"})
+        if rest[:1] == ["hooks"] and repo in self.read_only_hooks and m in ("POST", "PATCH") and rest[2:] != ["pings"]:
             return httpx.Response(403, json={"message": "Resource not accessible by personal access token"})
         hooks = self.hooks.setdefault(repo, [])
         if rest == ["hooks"] and m == "GET":
@@ -183,10 +186,66 @@ def test_token_problems_store_nothing(client):
 
 
 def test_without_webhook_permission_no_webhook_mode_works(client):
+    """Adding the webhook by hand needs a secret the user knows: theirs, never one hangar made up and hid."""
+    h = client.app.state.hangar
     _gh(client, can_hooks=False)
     res = _setup(client, register_webhook=False)
+    assert not res["ok"] and "--webhook-secret-file" in json.dumps(res)
+    assert h.store.get(Credential, "gh-webhook") is None
+    res = _setup(client, register_webhook=False, webhook_secret="my-own-secret-0123456789")
     assert res["ok"], res
+    assert h.broker.secret_text("gh-webhook") == "my-own-secret-0123456789"
+    assert "my-own-secret" not in json.dumps(res)
     assert {s["step"]: s for s in res["steps"]}["webhook"]["status"] == "warn"
+    # rotating to a secret nobody can see, with no webhook to give it to, would break every delivery
+    res = _setup(client, register_webhook=False, rotate_secret=True)
+    assert not res["ok"] and h.broker.secret_text("gh-webhook") == "my-own-secret-0123456789"
+
+
+def test_rotation_that_github_refuses_keeps_the_working_secret(client):
+    """Webhooks: Read passes the token check, but the PATCH that sets the new secret is refused: the vault must keep
+    the secret GitHub still signs with, or every delivery fails."""
+    h = client.app.state.hangar
+    gh = _gh(client)
+    assert _setup(client)["ok"]
+    old = h.broker.secret_text("gh-webhook")
+    gh.read_only_hooks.add("acme/app")
+    res = _setup(client, rotate_secret=True)
+    assert not res["ok"]
+    assert h.broker.secret_text("gh-webhook") == old == gh.hooks["acme/app"][0]["config"]["secret"]
+    assert "kept" in json.dumps(res)
+    # several repos, one refused: the ones already moved to the new secret are put back
+    gh.read_only_hooks.clear()
+    gh.readable.add("acme/lib")
+    assert _setup(client, repos={"acme/lib": "plain"})["ok"]
+    gh.read_only_hooks.add("acme/lib")
+    res = _setup(client, repos={"acme/app": "plain", "acme/lib": "plain"}, rotate_secret=True)
+    assert not res["ok"] and h.broker.secret_text("gh-webhook") == old
+    assert gh.hooks["acme/app"][0]["config"]["secret"] == old
+    # and a rotation GitHub accepts moves every hook and the vault together; the pings prove it
+    gh.read_only_hooks.clear()
+    res = _setup(client, repos={"acme/app": "plain", "acme/lib": "plain"}, rotate_secret=True)
+    assert res["ok"], res
+    new = h.broker.secret_text("gh-webhook")
+    assert new != old and {gh.hooks[r][0]["config"]["secret"] for r in ("acme/app", "acme/lib")} == {new}
+    assert {s["step"]: s for s in res["steps"]}["test delivery: acme/lib"]["status"] == "ok"
+
+
+def test_repair_keeps_the_hooks_tls_choice(client):
+    """doctor --fix only adds what's missing: a hook set to skip TLS verification (self-signed hangar) stays so."""
+    gh = _gh(client)
+    assert _setup(client)["ok"]
+    hook = gh.hooks["acme/app"][0]
+    hook["config"]["insecure_ssl"] = "1"
+    hook["events"] = ["push"]
+    assert client.post("/api/setup/github/webhook", json={"repo": "acme/app"}).json()["ok"]
+    assert hook["config"]["insecure_ssl"] == "1" and set(hook["events"]) == {"push", *HOOK_EVENTS}
+    # a token that can only read hooks: the fix fails, says why, and changes nothing
+    hook["events"] = ["push"]
+    gh.read_only_hooks.add("acme/app")
+    r = runner.invoke(cli.app, ["doctor", "--fix", "--yes"])
+    assert "Webhooks: Read and write" in r.output and r.exit_code == 1, r.output
+    assert hook["events"] == ["push"]
 
 
 def test_laptop_skips_webhook_but_wires_everything_else(client):
@@ -246,7 +305,7 @@ def test_doctor_fix_builds_and_prints_the_rest(client, monkeypatch):
     monkeypatch.setattr(cli, "env_build", lambda name, provider=None, force=False: built.append(name))
     r = runner.invoke(cli.app, ["doctor", "--fix", "--yes"])
     assert built == ["built-later"], r.output
-    assert "github token: run  hangar setup github" in r.output
+    assert "github token (not automatic): hangar setup github" in r.output
 
 
 def test_cli_setup_github_never_echoes_the_token(client):
@@ -308,3 +367,17 @@ def test_cli_setup_slack_with_files_and_manifest(client, tmp_path):
     assert r.exit_code == 0, r.output
     assert "xoxb" not in r.output and "https://hangar.acme.dev/api/hooks/slack/events" in man.read_text()
     assert "hangar.acme.dev" in r.output
+
+
+def test_cli_manual_webhook_with_own_secret(client, tmp_path):
+    h = client.app.state.hangar
+    _gh(client, can_hooks=False)
+    (tmp_path / "tok").write_text(TOKEN)
+    (tmp_path / "sec").write_text("s3cret-" + "a" * 20 + "\n")
+    args = ["setup", "github", "--repo", "acme/app=plain", "--token-file", str(tmp_path / "tok"), "--no-webhook",
+            "--non-interactive"]
+    r = runner.invoke(cli.app, args)
+    assert r.exit_code == 1 and "--webhook-secret-file" in r.output
+    r = runner.invoke(cli.app, [*args, "--webhook-secret-file", str(tmp_path / "sec")])
+    assert r.exit_code == 0, r.output
+    assert "s3cret" not in r.output and h.broker.secret_text("gh-webhook") == "s3cret-" + "a" * 20

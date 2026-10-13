@@ -66,14 +66,14 @@ def test_json_clients_merge_without_clobbering(tmp_path, client, box, expected):
     path = tmp_path / "conf.json"
     other = {"command": "npx", "args": ["-y", "other-server"]}
     path.write_text(json.dumps({"theme": "dark", box: {"other": other}, "projects": {"/x": {"a": 1}}}))
-    path.chmod(0o640)
+    path.chmod(0o740)
     e = mcp_clients.entry(client, URL, "hgr_1")
     assert e == expected
     assert mcp_clients.write(client, path, "hangar", e) == "added"
     data = json.loads(path.read_text())
     assert data[box] == {"other": other, "hangar": expected}
     assert data["theme"] == "dark" and data["projects"] == {"/x": {"a": 1}}
-    assert stat.S_IMODE(path.stat().st_mode) == 0o640  # an existing file keeps its mode
+    assert stat.S_IMODE(path.stat().st_mode) == 0o700  # owner bits kept; group and others lose access (a token)
     assert mcp_clients.write(client, path, "hangar", e) == "unchanged"
     e2 = mcp_clients.entry(client, URL, "hgr_2")
     assert mcp_clients.write(client, path, "hangar", e2) == "updated"
@@ -262,3 +262,28 @@ def test_connect_falls_back_to_printing(client, home):
     assert r.exit_code == 1 and "by hand" in r.output and '"mcpServers"' in r.output
     assert p.read_text() == "{ // comment\n}"
     assert os.path.exists(p)
+
+
+def test_each_config_file_keeps_its_own_token(client, home):
+    """Rotation is per config file: connecting a project's .cursor/mcp.json (or a second CLAUDE_CONFIG_DIR) must not
+    revoke the token in the user's global file."""
+    assert runner.invoke(cli.app, ["connect", "cursor"]).exit_code == 0
+    glob = home / ".cursor" / "mcp.json"
+    first = json.loads(glob.read_text())["mcpServers"]["hangar"]["headers"]["Authorization"].removeprefix("Bearer ")
+    proj = home / "proj" / ".cursor" / "mcp.json"
+    assert runner.invoke(cli.app, ["connect", "cursor", "--config", str(proj)]).exit_code == 0
+    assert _mcp_ok(client, first) == 200
+    second = json.loads(proj.read_text())["mcpServers"]["hangar"]["headers"]["Authorization"].removeprefix("Bearer ")
+    # reconnecting the project file rotates only its own token
+    assert runner.invoke(cli.app, ["connect", "cursor", "--config", str(proj)]).exit_code == 0
+    assert _mcp_ok(client, second) == 401 and _mcp_ok(client, first) == 200
+
+
+def test_token_never_lands_in_a_world_readable_file(tmp_path):
+    """Client configs created by the client itself are often 0644; once hangar puts a bearer token in one, only its
+    owner may read it."""
+    p = tmp_path / "mcp.json"
+    p.write_text("{}")
+    p.chmod(0o644)
+    mcp_clients.write("cursor", p, "hangar", mcp_clients.entry("cursor", URL, "hgr_1"))
+    assert stat.S_IMODE(p.stat().st_mode) == 0o600

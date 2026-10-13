@@ -102,3 +102,11 @@ def test_settings_routes_admin_only(client):
         assert client.get("/api/settings", headers=hdr).status_code == 403
         assert client.put("/api/settings/github_repos", json={"value": "{}"}, headers=hdr).status_code == 403
     assert any(e["action"] == "settings.set" for e in client.get("/api/audit").json())
+
+
+def test_settings_read_at_startup_say_so():
+    """The broker copies sandbox_user and the event log copies events_max_mb when hangar starts."""
+    from hangar.settings_store import needs_restart
+
+    assert needs_restart("sandbox_user") and needs_restart("events_max_mb")
+    assert not needs_restart("job_keep_minutes") and not needs_restart("github_repos")

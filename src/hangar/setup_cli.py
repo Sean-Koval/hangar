@@ -7,6 +7,7 @@ the same against a laptop hangar and a GKE one, except `up`/`down`, which manage
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -78,9 +79,11 @@ def list_clients() -> None:
         typer.echo(f"{name:16} {'yes' if mcp_clients.installed(name) else 'no':10} {shown:52} {state}")
 
 
-def _label(client: str, name: str) -> str:
-    """One token per client entry and machine, so reconnecting can retire the one it replaces."""
-    return f"mcp-{client}-{_host()}" + ("" if name == "hangar" else f"-{name}")
+def _label(client: str, name: str, path: Path) -> str:
+    """One token per client entry, config file and machine, so reconnecting retires only the token it replaces (a
+    project's .cursor/mcp.json and the global one each keep their own)."""
+    file_id = hashlib.sha256(str(path.expanduser().resolve()).encode()).hexdigest()[:6]
+    return f"mcp-{client}-{_host()}" + ("" if name == "hangar" else f"-{name}") + f"-{file_id}"
 
 
 def connect_client(client: str, auth: str = "token", name: str = "hangar", config: Path | None = None,
@@ -109,8 +112,8 @@ def connect_client(client: str, auth: str = "token", name: str = "hangar", confi
     else:
         # A token per client and machine, limited to MCP: a leaked client config can't mint tokens or read the vault.
         # --print is for another machine: its token must survive this machine's next rotation.
-        res = cli._call("POST", "/api/tokens", json={"name": _label(client, name) + ("-printed" if print_only else ""),
-                                                      "scopes": ["mcp"]})
+        label = _label(client, name, path) + ("-printed" if print_only else "")
+        res = cli._call("POST", "/api/tokens", json={"name": label, "scopes": ["mcp"]})
         token, tok_id = res["token"], res["id"]
     if print_only:
         e = mcp_clients.entry(client, url, token)
@@ -135,7 +138,7 @@ def connect_client(client: str, auth: str = "token", name: str = "hangar", confi
         raise typer.Exit(1) from err
     # The entry now holds the new token (or none, for OAuth): retire the ones it held before.
     for t in cli._call("GET", "/api/tokens"):
-        if t["name"] == _label(client, name) and t["id"] != tok_id:
+        if t["name"] == _label(client, name, path) and t["id"] != tok_id:
             cli._call("DELETE", f"/api/tokens/{t['id']}")
     shown = str(path).replace(str(Path.home()), "~", 1)
     typer.secho(f"{how} '{name}' in {shown} ({c.title}) -> {url}" + (f" with token {tok_id} (scope mcp)"
@@ -433,6 +436,9 @@ def setup_github(
                                            "HANGAR_PUBLIC_URL), e.g. a tunnel to your laptop."),
     no_webhook: bool = typer.Option(False, "--no-webhook", help="Don't register the repo webhook."),
     rotate_secret: bool = typer.Option(False, "--rotate-secret", help="Generate a new webhook secret."),
+    webhook_secret_file: Path | None = typer.Option(
+        None, "--webhook-secret-file", help="Use this webhook secret (from a file) instead of a generated one: for "
+        "a webhook you add by hand (--no-webhook), since a generated secret is never shown."),
     token_credential: str = typer.Option("gh-control", "--token-credential", help="Vault name for the token."),
     secret_credential: str = typer.Option("gh-webhook", "--secret-credential", help="Vault name for the secret."),
     non_interactive: bool = typer.Option(False, "--non-interactive", help="Never prompt (for scripts)."),
@@ -460,9 +466,11 @@ def setup_github(
         token = _secret("GitHub token", token_file, token_stdin, interactive, allow_keep=True)
     typer.secho(f"Setting up GitHub for {', '.join(repos) or 'the mapped repos'} (webhook events: "
                 f"{', '.join(HOOK_EVENTS)})", fg="cyan")
+    hook_secret = _secret("", webhook_secret_file, False, False, False) if webhook_secret_file else None
     res = cli._call("POST", "/api/setup/github", json={
         "token": token, "repos": repos, "webhook_url": webhook_url, "register_webhook": not no_webhook,
-        "rotate_secret": rotate_secret, "token_credential": token_credential, "secret_credential": secret_credential})
+        "rotate_secret": rotate_secret, "token_credential": token_credential, "secret_credential": secret_credential,
+        "webhook_secret": hook_secret})
     _print_steps(res)
     if not res.get("ok"):
         raise typer.Exit(1)
@@ -593,12 +601,12 @@ def doctor_fix(checks: list[dict], yes: bool) -> int:
         action = c.get("action")
         if not action:
             if c.get("fix"):
-                typer.echo(f"  {c['name']}: run  {c['fix']}")
+                typer.echo(f"  {c['name']} (not automatic): {c['fix']}")
             continue
         what = {"build_environment": f"build environment {action.get('env')}",
                 "github_webhook": f"register/repair the webhook on {action.get('repo')}"}.get(action["id"])
         if what is None:
-            typer.echo(f"  {c['name']}: run  {c['fix']}")
+            typer.echo(f"  {c['name']} (not automatic): {c['fix']}")
             continue
         if not (yes or (sys.stdin.isatty() and typer.confirm(f"Fix '{c['name']}': {what}?", default=True))):
             typer.echo(f"  {c['name']}: skipped; to fix it yourself: {c['fix']}")
