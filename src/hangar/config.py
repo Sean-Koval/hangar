@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
@@ -219,7 +220,23 @@ class Settings(BaseSettings):
     # Worker threads for blocking provider calls (docker-py, the kubernetes client, e2b) and file I/O. Python's
     # default is min(32, CPUs + 4): 6 on a 2-vCPU control plane, so a few long execs (a clone, a verify, a turn
     # waiting to end) stalled every other call. Also the Docker client's connection pool size.
-    io_threads: int = 128
+    # review(perf): 0 = auto (io_pool). Half the pool is for turns long-polling in their sandbox.
+    io_threads: int = 0
+
+    @property
+    def io_pool(self) -> int:
+        """Worker threads for blocking I/O: HANGAR_IO_THREADS, else 32 per CPU between 64 and 128. Threads waiting
+        on a socket are cheap (~50 KB RSS each, the GIL released), but every busy one competes with the event loop
+        for the GIL: on 2 vCPUs, 128 threads made exec p95 under load 287 ms and resume p50 4.4 s, against 215 ms
+        and 3.7 s with 64, which still gives 32 turns at once their ~0.3 s turn-end notice (scripts/bench/control.py,
+        50 sessions and 50 jobs; see the review of PR #53)."""
+        if self.io_threads > 0:
+            return self.io_threads
+        try:
+            cpus = len(os.sched_getaffinity(0))
+        except (AttributeError, OSError):
+            cpus = os.cpu_count() or 2
+        return max(64, min(128, 32 * cpus))
 
     @property
     def db_path(self) -> Path:

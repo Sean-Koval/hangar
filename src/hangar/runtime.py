@@ -20,7 +20,7 @@ from hangar.config import Settings
 
 def install_io_executor(settings: Settings) -> ThreadPoolExecutor:
     """Give the running loop a worker pool sized for blocking provider I/O (HANGAR_IO_THREADS)."""
-    pool = ThreadPoolExecutor(max_workers=max(8, settings.io_threads), thread_name_prefix="hangar-io")
+    pool = ThreadPoolExecutor(max_workers=max(8, settings.io_pool), thread_name_prefix="hangar-io")
     asyncio.get_running_loop().set_default_executor(pool)
     return pool
 

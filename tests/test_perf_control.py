@@ -164,3 +164,14 @@ def test_security_writes_stay_durable_across_a_power_loss(store):
             synced.append(mode == "FULL")
     assert writes == ["INSERT", "DELETE", "INSERT", "DELETE", "INSERT"] and synced == [True] * 4 + [False]
     assert store._db.execute("PRAGMA synchronous").fetchone()[0] == 1
+
+
+def test_io_pool_is_sized_from_the_cpus_unless_set(settings, monkeypatch):
+    import os
+
+    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: {0, 1})
+    assert settings.io_threads == 0 and settings.io_pool == 64  # a 2-vCPU control plane (e2-standard-2)
+    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: set(range(16)))
+    assert settings.io_pool == 128
+    settings.io_threads = 12
+    assert settings.io_pool == 12

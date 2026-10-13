@@ -146,7 +146,7 @@ class Fleet:
         self._warm_applied: dict[str, int] = {}
         # --- review(perf): an agent_status long-poll holds an I/O worker thread for its whole wait; at most half
         # the pool waits at once (sessions and MCP clients alike), so waiters can never starve other provider calls.
-        self._waiters: asyncio.Semaphore | None = None  # sized from settings.io_threads on first use
+        self._waiters: asyncio.Semaphore | None = None  # sized from settings.io_pool on first use
         # --- workstream F: git gateway. Grants for sandboxes in credential_mode: gateway (spec 0003).
         self.gateway = Gateway(self)
 
@@ -992,7 +992,7 @@ class Fleet:
         rdir = f"/home/{self.settings.sandbox_user}/.hangar/runs"
         wait_seconds = max(0.0, min(60.0, float(wait_seconds)))
         if self._waiters is None:
-            self._waiters = asyncio.Semaphore(max(1, self.settings.io_threads // 2))
+            self._waiters = asyncio.Semaphore(max(1, self.settings.io_pool // 2))
         if wait_seconds and self._waiters.locked():
             await asyncio.sleep(wait_seconds)
             wait_seconds = 0.0

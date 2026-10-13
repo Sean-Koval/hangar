@@ -144,7 +144,7 @@ class DockerProvider(Provider):
         try:
             # perf: one connection per concurrent call (turns waiting to end hold one each); the default pool of 10
             # made every extra call open, and throw away, a new connection.
-            self.client = docker.from_env(max_pool_size=max(10, settings.io_threads))
+            self.client = docker.from_env(max_pool_size=max(10, settings.io_pool))
             self.client.ping()
         except Exception as e:  # noqa: BLE001
             raise ProviderError(
