@@ -12,7 +12,7 @@ import logging
 import re
 import shlex
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from hangar.broker import Broker, CredentialError
@@ -135,6 +135,9 @@ class Fleet:
         self._build_locks: dict[str, asyncio.Lock] = collections.defaultdict(asyncio.Lock)
         self._reaper: asyncio.Task | None = None
         self.logins: dict[str, dict[str, Any]] = {}
+        # Called with a running sandbox just before it is destroyed (any reason: user, reaper, job). Sessions
+        # (spec 0010) use it to checkpoint first. Hooks must be quick and must not raise.
+        self.pre_destroy: list[Callable[[Sandbox], Awaitable[None]]] = []
 
     # ================================================================== setup
     async def start(self) -> None:
@@ -634,6 +637,12 @@ class Fleet:
     async def destroy(self, ref: str, actor: str = "system") -> Sandbox:
         sb = self.get(ref)
         prov = self.providers.get(sb.provider)
+        if prov and sb.state == SandboxState.RUNNING:
+            for hook in list(self.pre_destroy):
+                try:
+                    await asyncio.wait_for(hook(sb), timeout=self.settings.pre_destroy_timeout_seconds)
+                except Exception as e:  # noqa: BLE001 - never block a destroy
+                    log.warning("pre-destroy hook for %s failed: %s", sb.id, e)
         sb.state = SandboxState.STOPPING
         self.store.put(sb)
         if prov:

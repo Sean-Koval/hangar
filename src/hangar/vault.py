@@ -52,5 +52,12 @@ class Vault:
         v = self.get(name)
         return v.decode() if v is not None else None
 
+    def encrypt(self, data: bytes) -> bytes:
+        """Encrypt an arbitrary blob with the vault key (session checkpoints, spec 0010)."""
+        return self._fernet.encrypt(data)
+
+    def decrypt(self, blob: bytes) -> bytes:
+        return self._fernet.decrypt(blob)
+
     def delete(self, name: str) -> None:
         self._store.delete_secret(name)

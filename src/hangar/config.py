@@ -95,6 +95,15 @@ class Settings(BaseSettings):
     # Hosts allowed for plain-http callbacks or private-address callbacks (https to public hosts always allowed).
     job_callback_hosts: list[str] = Field(default_factory=list)
 
+    # --- sessions (spec 0010) -----------------------------------------------
+    session_idle_minutes: int = 30  # suspend (checkpoint + release the sandbox) after this long idle
+    session_checkpoint_minutes: int = 10  # periodic checkpoint while a sandbox is attached and changed
+    session_keep_checkpoints: int = 5
+    session_max_untracked_mb: int = 20  # untracked files above this are not checkpointed (warning)
+    session_poll_seconds: float = 5.0
+    session_turn_timeout_minutes: int = 120
+    pre_destroy_timeout_seconds: float = 120.0
+
     # --- GitHub (jobs delivery and trigger) ---------------------------------
     github_api_url: str = "https://api.github.com"
     # Vault credential holding a GitHub token the *control plane* uses to open PRs and comment.

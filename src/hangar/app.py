@@ -26,6 +26,7 @@ from hangar.jobs import Caller, JobService, SubmitJob, handle_github
 from hangar.mcp_server import build_mcp, current_actor
 from hangar.models import Credential, CredentialKind, Resources, Sandbox
 from hangar.providers.base import ProviderError
+from hangar.sessions import NewSession, SessionService
 from hangar.store import Store
 from hangar.vault import Vault, load_or_create_key
 
@@ -44,6 +45,7 @@ class Hangar:
         self.fleet = Fleet(self.settings, self.store, self.broker, self.catalog)
         self.auth = TokenAuth(self.store, self.settings.admin_token)
         self.jobs = JobService(self.fleet)
+        self.sessions = SessionService(self.fleet, self.vault)
 
 
 # ---------------------------------------------------------------------------- MCP auth
@@ -164,6 +166,14 @@ class FollowUpBody(BaseModel):
     message: str
 
 
+class SendBody(BaseModel):
+    message: str
+
+
+class OpenBody(BaseModel):
+    harness: str | None = None
+
+
 class TokenBody(BaseModel):
     name: str
     scopes: list[str] = Field(default_factory=lambda: ["admin"])
@@ -219,7 +229,7 @@ def _setup_oauth(app: FastAPI, h: Hangar):
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     h = Hangar(settings)
-    mcp = build_mcp(h.fleet, h.jobs)
+    mcp = build_mcp(h.fleet, h.jobs, h.sessions)
     mcp_asgi = mcp.streamable_http_app(streamable_http_path="/", stateless_http=True, host="0.0.0.0")
 
     @contextlib.asynccontextmanager
@@ -234,8 +244,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log.warning("=" * 72)
         await h.fleet.start()
         await h.jobs.start()
+        await h.sessions.start()
         async with mcp.session_manager.run():
             yield
+        await h.sessions.stop()
         await h.jobs.stop()
         await h.fleet.stop()
 
@@ -671,6 +683,47 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         res = await handle_github(jobs, request.headers.get("x-github-event", ""),
                                   request.headers.get("x-github-delivery"), payload)
         return JSONResponse(res, status_code=202 if res.get("ok") else 200)
+
+    # ------------------------------------------------------------------ sessions (spec 0010)
+    sessions = h.sessions
+
+    @app.post("/api/sessions")
+    async def session_new(body: NewSession, who: str = A):
+        return sessions.view(sessions.new(body, owner=who, requester=who))
+
+    @app.get("/api/sessions")
+    async def session_list(include_archived: bool = False, limit: int = 100, _: str = A):
+        return [sessions.view(s) for s in sessions.list(include_archived=include_archived, limit=limit)]
+
+    @app.get("/api/sessions/{ref}")
+    async def session_get(ref: str, _: str = A):
+        return sessions.view(sessions.get(ref))
+
+    @app.post("/api/sessions/{ref}/open")
+    async def session_open(ref: str, body: OpenBody | None = None, who: str = A):
+        return sessions.view(sessions.open(ref, requester=who, harness=body.harness if body else None))
+
+    @app.post("/api/sessions/{ref}/send")
+    async def session_send(ref: str, body: SendBody, who: str = A):
+        return sessions.view(sessions.send(ref, body.message, requester=who))
+
+    @app.post("/api/sessions/{ref}/suspend")
+    async def session_suspend(ref: str, who: str = A):
+        return sessions.view(sessions.suspend(ref, requester=who))
+
+    @app.post("/api/sessions/{ref}/checkpoint")
+    async def session_checkpoint(ref: str, who: str = A):
+        ck = await sessions.checkpoint_now(ref, requester=who)
+        return {"checkpoint": ck.model_dump(mode="json") if ck else None}
+
+    @app.post("/api/sessions/{ref}/archive")
+    async def session_archive(ref: str, who: str = A):
+        return sessions.view(sessions.archive(ref, requester=who))
+
+    @app.delete("/api/sessions/{ref}")
+    async def session_delete(ref: str, who: str = A):
+        sessions.delete(ref, requester=who)
+        return {"deleted": ref}
 
     @app.get("/api/audit")
     async def audit(limit: int = 200, _: str = A):

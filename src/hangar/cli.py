@@ -29,6 +29,9 @@ app.add_typer(cred_app, name="cred")
 app.add_typer(token_app, name="token")
 app.add_typer(pack_app, name="pack")
 app.add_typer(job_app, name="job")
+session_app = typer.Typer(no_args_is_help=True,
+                          help="Sessions: resumable streams of work (conversation + repo state survive the sandbox).")
+app.add_typer(session_app, name="session")
 
 
 def _client() -> httpx.Client:
@@ -526,3 +529,108 @@ def job_cancel(job_id: str):
 
 if __name__ == "__main__":
     app()
+
+
+# ---------------------------------------------------------------------------- sessions (spec 0010)
+_SES_SETTLED = {"idle", "suspended", "failed", "archived"}
+
+
+def _session_line(x: dict) -> str:
+    import time
+
+    age = int(time.time() - (x.get("last_active_at") or time.time()))
+    when = f"{age // 86400}d" if age >= 86400 else f"{age // 3600}h" if age >= 3600 else f"{age // 60}m"
+    return f"{x['name']:24} {x['state']:10} {when:>4} ago  {x['environment']:14} {x.get('branch', '')}"
+
+
+def _wait_session(ref: str) -> dict:
+    import time
+
+    last = None
+    while True:
+        x = _call("GET", f"/api/sessions/{ref}")
+        msg = f"  [{x['state']}] {x.get('reason') or ''}"
+        if msg != last:
+            typer.echo(msg)
+            last = msg
+        if x["state"] in _SES_SETTLED and not x.get("busy"):
+            return x
+        time.sleep(3)
+
+
+def _print_summary(x: dict) -> None:
+    if x.get("last_summary"):
+        typer.echo("\n" + x["last_summary"])
+    if x.get("resume_command") and x.get("sandbox_id"):
+        typer.secho(f"\nWork with the agent interactively: hangar sb attach {x['sandbox_id']}  then  "
+                    f"{x['resume_command']}", fg="cyan")
+
+
+@session_app.command("new")
+def session_new(
+    name: str = typer.Argument(..., help="Short name you'll use to come back to it, e.g. csv-fix."),
+    message: str = typer.Argument(None, help="First thing to ask the agent (optional)."),
+    env: str | None = typer.Option(None, "--env", "-e", help="Environment (default: the repo's mapped one)."),
+    repo: str | None = typer.Option(None, help="Git URL (default: the environment's repo)."),
+    base: str | None = typer.Option(None, help="Base branch (default: the repo's default branch)."),
+    harness: str | None = None,
+    model: str | None = None,
+    idle: int | None = typer.Option(None, help="Minutes idle before suspending (0 = never)."),
+    wait: bool = typer.Option(False, "--wait", "-w", help="Follow it until the agent finishes."),
+):
+    """Start a session. Example:  hangar session new csv-fix "fix unicode in CSV export" -e hangar-jobs -w"""
+    x = _call("POST", "/api/sessions", json={"name": name, "message": message, "environment": env, "repo": repo,
+                                              "base_branch": base, "harness": harness, "model": model,
+                                              "idle_minutes": idle})
+    typer.secho(f"{x['name']} ({x['id']}) {x['state']} on {x['branch']}", fg="green")
+    if wait:
+        _print_summary(_wait_session(x["id"]))
+
+
+@session_app.command("list")
+def session_list(all_: bool = typer.Option(False, "--all", help="Include archived."),
+                 as_json: bool = typer.Option(False, "--json")):
+    xs = _call("GET", "/api/sessions", params={"include_archived": all_})
+    if as_json:
+        return _print(xs)
+    if not xs:
+        typer.echo("No sessions. Start one with: hangar session new <name> \"<what to do>\" --env <env>")
+    for x in xs:
+        typer.echo(_session_line(x))
+
+
+@session_app.command("get")
+def session_get(ref: str):
+    _print(_call("GET", f"/api/sessions/{ref}"))
+
+
+@session_app.command("open")
+def session_open(ref: str, harness: str | None = None,
+                 wait: bool = typer.Option(True, "--wait/--no-wait", help="Wait until the sandbox is ready.")):
+    """Boot a sandbox for a session and restore where it left off."""
+    x = _call("POST", f"/api/sessions/{ref}/open", json={"harness": harness})
+    typer.secho(f"{x['name']} {x['state']}", fg="green")
+    if wait:
+        x = _wait_session(ref)
+        _print_summary(x)
+
+
+@session_app.command("send")
+def session_send(ref: str, message: str, wait: bool = typer.Option(True, "--wait/--no-wait")):
+    """Continue a session: the agent resumes its conversation (booting the session first if needed)."""
+    x = _call("POST", f"/api/sessions/{ref}/send", json={"message": message})
+    typer.secho(f"{x['name']} {x['state']}", fg="green")
+    if wait:
+        _print_summary(_wait_session(ref))
+
+
+@session_app.command("suspend")
+def session_suspend(ref: str):
+    x = _call("POST", f"/api/sessions/{ref}/suspend")
+    typer.echo(f"{x['name']} suspending")
+
+
+@session_app.command("archive")
+def session_archive(ref: str):
+    x = _call("POST", f"/api/sessions/{ref}/archive")
+    typer.echo(f"{x['name']} {x['state']}")

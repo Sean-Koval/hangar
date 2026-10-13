@@ -41,7 +41,8 @@ def test_credential_slots_are_well_formed():
 
 def test_codex_runs_without_its_own_sandbox_or_prompts():
     run = HARNESSES["codex"].run
-    assert "codex exec --json" in run and "--dangerously-bypass-approvals-and-sandbox" in run
+    assert run.startswith("codex exec ") and "--json" in run and "--dangerously-bypass-approvals-and-sandbox" in run
+    assert '${HANGAR_SESSION_RESUME:+resume "$HANGAR_SESSION_RESUME"}' in run  # spec 0010 resume
     assert "--skip-git-repo-check" in run and "--full-auto" not in run
 
 

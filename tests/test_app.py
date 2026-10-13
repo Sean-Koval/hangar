@@ -140,3 +140,10 @@ def test_created_environments_survive_restart(settings, tmp_path):
     assert (settings.data_dir / "envs" / "base-jobs.yaml").exists()
     again = Hangar(settings)  # a restart / redeploy with the same data volume
     assert again.catalog.get("base-jobs").credentials == ["claude-pro"]
+
+
+def test_session_routes_accept_json_bodies(client):
+    # body models must be module-level: FastAPI can't resolve function-local annotations (they become query params)
+    assert client.post("/api/sessions/nope/send", json={"message": "hi"}).status_code == 404
+    assert client.post("/api/sessions/nope/open", json={"harness": None}).status_code == 404
+    assert client.post("/api/sessions", json={"name": "x"}).status_code == 400

@@ -77,6 +77,15 @@ class Harness(BaseModel):
     mcp_format: McpFormat | None = None
     verify: str = "true"
     deprecated: str | None = None  # reason, shown in listings; still usable
+    # Sessions (spec 0010). Directories (relative to $HOME) where the harness keeps resumable conversations;
+    # `resume` says how a conversation id is obtained: "preset" (hangar picks it and passes
+    # $HANGAR_SESSION_NEW), "capture" (the harness assigns it; `session_id_regex` finds it in the run log),
+    # or None (no native resume: sessions fall back to a summary handoff). The run command reads
+    # $HANGAR_SESSION_NEW / $HANGAR_SESSION_RESUME. `resume_hint` is the interactive command for engineers.
+    session_dirs: list[str] = Field(default_factory=list)
+    resume: Literal["preset", "capture"] | None = None
+    session_id_regex: str | None = None
+    resume_hint: str | None = None
 
     @property
     def prefix(self) -> str:
@@ -161,8 +170,13 @@ HARNESSES: dict[str, Harness] = {
         ],
         run=(
             'claude -p "$(cat "$HANGAR_PROMPT_FILE")" --dangerously-skip-permissions '
-            '--output-format stream-json --verbose ${HANGAR_MODEL:+--model "$HANGAR_MODEL"}'
+            '--output-format stream-json --verbose ${HANGAR_MODEL:+--model "$HANGAR_MODEL"} '
+            '${HANGAR_SESSION_NEW:+--session-id "$HANGAR_SESSION_NEW"} '
+            '${HANGAR_SESSION_RESUME:+--resume "$HANGAR_SESSION_RESUME"}'
         ),
+        session_dirs=[".claude/projects"],
+        resume="preset",
+        resume_hint="claude --resume {id}",
         skills_dir=".claude/skills",
         instructions_file=".claude/CLAUDE.md",
         # Skip the first-run wizard and the bypass-permissions warning in interactive sessions.
@@ -195,9 +209,14 @@ HARNESSES: dict[str, Harness] = {
         # The sandbox is the isolation boundary, so codex's own (Landlock/seccomp) sandbox is bypassed;
         # it cannot work under gVisor anyway.
         run=(
-            "codex exec --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "
+            'codex exec ${HANGAR_SESSION_RESUME:+resume "$HANGAR_SESSION_RESUME"} '
+            "--json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "
             '${HANGAR_MODEL:+-m "$HANGAR_MODEL"} "$(cat "$HANGAR_PROMPT_FILE")"'
         ),
+        session_dirs=[".codex/sessions"],
+        resume="capture",
+        session_id_regex=r'"thread_id"\s*:\s*"([0-9A-Za-z-]{8,})"',
+        resume_hint="codex resume {id}",
         skills_dir=".codex/skills",
         instructions_file=".codex/AGENTS.md",
         mcp_format="codex",
@@ -220,8 +239,13 @@ HARNESSES: dict[str, Harness] = {
         ],
         run=(
             'pi -p --mode json --approve ${HANGAR_MODEL:+--model "$HANGAR_MODEL"} '
+            '${HANGAR_SESSION_NEW:+--session-id "$HANGAR_SESSION_NEW"} '
+            '${HANGAR_SESSION_RESUME:+--session-id "$HANGAR_SESSION_RESUME"} '
             '"$(cat "$HANGAR_PROMPT_FILE")"'
         ),
+        session_dirs=[".pi/agent/sessions"],
+        resume="preset",
+        resume_hint="pi --session-id {id}",
         skills_dir=".pi/agent/skills",
         instructions_file=".pi/agent/AGENTS.md",
         mcp_format="pi",
