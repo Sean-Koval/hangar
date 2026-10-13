@@ -101,12 +101,18 @@ class TokenAuth:
     # --- front-door-auth
     def valid(self, raw: str | None) -> bool:
         """Whether `raw` is a live token, without touching last_used (the body-size guard asks before the route)."""
+        return self.scopes_of(raw) is not None
+
+    def scopes_of(self, raw: str | None) -> list[str] | None:
+        """A live token's scopes, without touching last_used (--- overnight/sweep: the body-size guard sizes the cap
+        by what the token may reach)."""
         if not raw:
-            return False
+            return None
         h = hash_token(raw)
         if self._admin_hash and hmac.compare_digest(h, self._admin_hash):
-            return True
-        return any(hmac.compare_digest(h, tok.token_hash) for tok in self.store.list(ApiToken))
+            return ["admin"]
+        return next((list(tok.scopes) for tok in self.store.list(ApiToken) if hmac.compare_digest(h, tok.token_hash)),
+                    None)
 
     def exists(self, token_id: str | None) -> bool:
         if token_id == "admin":

@@ -33,7 +33,10 @@ if TYPE_CHECKING:
     from hangar.store import Store
 
 ANON_MAX_BODY = 64 * 1024  # an unauthenticated request: a token exchange or consent form is far smaller
-GITHUB_MAX_BODY = 25 * 1024 * 1024  # GitHub caps webhook payloads at 25 MB and doesn't deliver larger ones
+# --- overnight/sweep: buffered before the signature is checked, so anyone can send it. GitHub's cap is 25 MB, but
+# hangar acts only on issues and issue_comment, whose bodies are at most 65,536 characters each: well under 1 MB
+# with the repository and user objects. A bigger delivery (a push of many refs) is one hangar ignores anyway.
+GITHUB_MAX_BODY = 2 * 1024 * 1024
 _PRUNE_SECONDS = 600
 _MAX_BUCKETS = 10_000  # rate-limit buckets kept per Buckets (callers or client addresses)
 _EXEMPT_SOURCES = {"api", "mcp", "a2a"}  # ...when the caller is an admin token (not restricted)
@@ -111,7 +114,9 @@ class ReplayGuard:
 
     def put(self, scope: str, digest: str, value: str, ttl_seconds: float) -> None:
         t = time.time()
-        self.store.kv_set(f"{self.prefix}{scope}:{digest}", json.dumps({"exp": t + ttl_seconds, "v": value}))
+        # --- overnight/sweep: synced like tokens, so a power loss can't forget a delivery hangar already acted on
+        self.store.kv_set(f"{self.prefix}{scope}:{digest}", json.dumps({"exp": t + ttl_seconds, "v": value}),
+                          durable=True)
         if t - self._last_prune > _PRUNE_SECONDS:
             self._last_prune = t
             for key in self.store.kv_keys(self.prefix):
@@ -121,7 +126,7 @@ class ReplayGuard:
                 self.store.kv_delete(key)
 
     def forget(self, scope: str, digest: str) -> None:
-        self.store.kv_delete(f"{self.prefix}{scope}:{digest}")
+        self.store.kv_delete(f"{self.prefix}{scope}:{digest}", durable=True)  # a redelivery must not come back refused
 
 
 # ====================================================================== admission
@@ -308,17 +313,24 @@ class FrontDoorMiddleware:
             return self.h.settings.a2a_max_request_bytes
         return self.h.settings.max_request_mb * 1024 * 1024
 
-    async def _authed(self, path: str, headers: dict[str, str]) -> bool:
+    async def _may_send(self, path: str, headers: dict[str, str]) -> bool:
+        """Whether the request's token may use this route, and so send it a big body (--- overnight/sweep: a `jobs`
+        or `mcp` token gets the anonymous cap on the routes it would be refused on). Mirrors the routes' own checks:
+        `jobs` reaches /api/jobs* and /a2a, `mcp` (and an OAuth token) reaches /mcp, `admin` everything."""
         from hangar.auth import bearer_from_headers
 
         token = bearer_from_headers(headers)
         if not token:
             return False
-        if self.h.auth.valid(token):
+        scopes = self.h.auth.scopes_of(token)
+        if scopes is None:
+            return path.startswith("/mcp") and self.oauth is not None \
+                and await self.oauth.load_access_token(token) is not None
+        if "admin" in scopes:
             return True
-        if path.startswith("/mcp") and self.oauth is not None:
-            return await self.oauth.load_access_token(token) is not None
-        return False
+        if path.startswith("/mcp"):
+            return "mcp" in scopes
+        return "jobs" in scopes and (path in ("/a2a", "/api/jobs") or path.startswith("/api/jobs/"))
 
     def _audit(self, scope, status: int) -> None:
         client = (scope.get("client") or ("?", 0))[0]
@@ -344,7 +356,7 @@ class FrontDoorMiddleware:
         length = headers.get("content-length")
         if cap == -1:
             small = length is not None and length.isdigit() and int(length) <= ANON_MAX_BODY
-            cap = ANON_MAX_BODY if not small and not await self._authed(path, headers) else self._authed_cap(path)
+            cap = ANON_MAX_BODY if not small and not await self._may_send(path, headers) else self._authed_cap(path)
         if length is not None and (not length.isdigit() or int(length) > cap):
             return await _reject(scope, receive, send_)
         body, more, chunks = 0, True, []

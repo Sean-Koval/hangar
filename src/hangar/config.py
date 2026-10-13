@@ -23,9 +23,12 @@ class Settings(BaseSettings):
     # Built-in OAuth 2.1 server for MCP clients that need it (ChatGPT/claude.ai connectors).
     # public_url must be https (or localhost) for OAuth to be enabled.
     oauth_enabled: bool = True
-    # Redirect hosts OAuth clients may register (suffix match). "*" allows any (not recommended).
+    # Redirect hosts OAuth clients may register: a host (https, and http for loopback; subdomains too) or an exact
+    # "scheme://host" for a native app's own scheme. "*" allows any (not recommended). --- overnight/sweep: Cursor's
+    # app scheme is allowed by default, like the loopback ports native clients use (docs/security.md).
     oauth_redirect_hosts: list[str] = Field(default_factory=lambda: [
-        "chatgpt.com", "chat.openai.com", "openai.com", "claude.ai", "claude.com", "localhost", "127.0.0.1"])
+        "chatgpt.com", "chat.openai.com", "openai.com", "claude.ai", "claude.com", "localhost", "127.0.0.1",
+        "cursor://anysphere.cursor-mcp"])
     oauth_max_clients: int = 200
     oauth_grant_days: int = 90  # absolute lifetime of an approval, refreshes included
 
@@ -222,6 +225,8 @@ class Settings(BaseSettings):
     # waiting to end) stalled every other call. Also the Docker client's connection pool size.
     # review(perf): 0 = auto (io_pool). Half the pool is for turns long-polling in their sandbox.
     io_threads: int = 0
+    # --- overnight/sweep: a workspace snapshot archive is read whole into memory, so it is capped
+    snapshot_max_mb: int = 512
 
     @property
     def io_pool(self) -> int:

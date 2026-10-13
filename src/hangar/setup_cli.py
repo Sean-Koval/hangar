@@ -86,6 +86,24 @@ def _label(client: str, name: str, path: Path) -> str:
     return f"mcp-{client}-{_host()}" + ("" if name == "hangar" else f"-{name}") + f"-{file_id}"
 
 
+CURSOR_REDIRECT = "cursor://anysphere.cursor-mcp"  # --- overnight/sweep: in the default list (config.py)
+
+
+def _check_cursor_redirect(cli) -> None:
+    """Say how to allow Cursor's app-scheme sign-in when this hangar's redirect list was changed to leave it out."""
+    d = cli._call("GET", "/api/settings/oauth_redirect_hosts")
+    hosts = [str(h).lower().rstrip("/") for h in d["value"]]
+    if "*" in hosts or CURSOR_REDIRECT in hosts:
+        return
+    if d["source"] == "environment":
+        how = f"add \"{CURSOR_REDIRECT}\" where it is set (on GKE, the hangar-site config map) and restart hangar"
+    else:
+        how = (f"allow it with:\n    hangar config set HANGAR_OAUTH_REDIRECT_HOSTS "
+               f"'{json.dumps([*d['value'], CURSOR_REDIRECT])}'\nthen restart hangar")
+    typer.secho(f"This hangar's HANGAR_OAUTH_REDIRECT_HOSTS leaves out Cursor's sign-in redirect ({CURSOR_REDIRECT}), "
+                f"so Cursor versions that sign in through it will be refused; {how}", fg="yellow", err=True)
+
+
 def connect_client(client: str, auth: str = "token", name: str = "hangar", config: Path | None = None,
                    print_only: bool = False) -> None:
     cli = _cli()
@@ -107,6 +125,8 @@ def connect_client(client: str, auth: str = "token", name: str = "hangar", confi
         if not info.get("oauth"):
             raise _fail("hangar's OAuth server is off: set HANGAR_PUBLIC_URL to the https URL clients reach it at "
                         "(or localhost), or use --auth token", 2)
+        if client == "cursor":  # --- overnight/sweep
+            _check_cursor_redirect(cli)
     elif auth != "token":
         raise _fail("--auth must be token or oauth", 2)
     else:

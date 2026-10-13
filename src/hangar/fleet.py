@@ -17,7 +17,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from hangar import exchange
-from hangar.broker import Broker, CredentialError
+from hangar.broker import AUTH_FILE_LIMIT, Broker, CredentialError
 from hangar.config import Settings
 from hangar.envspec import BuildContext, EnvCatalog, EnvSpec, image_tag, render, repo_dirname, warm_pool_now
 from hangar.gateway import Gateway
@@ -55,6 +55,8 @@ log = logging.getLogger("hangar.fleet")
 ACTIVE = {SandboxState.PENDING, SandboxState.STARTING, SandboxState.RUNNING, SandboxState.PAUSED}
 _NAME_RE = re.compile(r"[^a-z0-9-]+")
 _ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]*")
+# --- overnight/sweep: what hangar reads back from files the sandbox can grow (it decides their size)
+CONFIG_READ_LIMIT = 8 * 1024 * 1024  # a harness config hangar merges into (~/.claude.json, ~/.codex/config.toml)
 
 
 class FleetError(RuntimeError):
@@ -620,14 +622,27 @@ class Fleet:
         if resolved and h.mcp_format:
             rel, content = mcp_config(h.mcp_format, resolved)
             if isinstance(content, str):
-                cur = (await prov.read_file(sb, f"{home}/{rel}") or b"").decode()
-                await prov.write_file(sb, f"{home}/{rel}", merge_codex_toml(cur, content).encode(), mode=0o600)
+                if (cur := await self._read_config(prov, sb, f"{home}/{rel}")) is not None:
+                    await prov.write_file(sb, f"{home}/{rel}", merge_codex_toml(cur.decode(), content).encode(),
+                                          mode=0o600)
             else:
                 await self._merge_json(prov, sb, f"{home}/{rel}", content)
             sb.info["mcp"] = sorted(resolved)
 
+    async def _read_config(self, prov: Provider, sb: Sandbox, path: str) -> bytes | None:
+        """A config file to merge into (b"" when missing), or None, with a warning, when it is over
+        CONFIG_READ_LIMIT: then it is left as it is rather than read whole or overwritten."""
+        raw = await prov.read_file(sb, path, limit=CONFIG_READ_LIMIT)
+        if raw is not None and len(raw) > CONFIG_READ_LIMIT:
+            sb.info.setdefault("warnings", []).append(
+                f"{path} is over {CONFIG_READ_LIMIT // 1024 // 1024} MB; hangar's settings were not merged into it")
+            return None
+        return raw or b""
+
     async def _merge_json(self, prov: Provider, sb: Sandbox, path: str, patch: dict[str, Any]) -> None:
-        raw = await prov.read_file(sb, path)
+        raw = await self._read_config(prov, sb, path)  # --- overnight/sweep: capped
+        if raw is None:
+            return
         try:
             cur = json.loads(raw) if raw else {}
         except ValueError:
@@ -1043,10 +1058,15 @@ class Fleet:
         res = await prov.exec(sb, f"tar czf {tmp} -C {self.settings.workspace_dir} .", timeout=900)
         if res.exit_code not in (0, 1):  # 1 = files changed while reading, still usable
             raise FleetError(f"workspace snapshot failed: {res.stderr[-500:]}")
-        data = await prov.read_file(sb, tmp)
+        cap = self.settings.snapshot_max_mb * 1024 * 1024  # --- overnight/sweep: the sandbox decides its size
+        data = await prov.read_file(sb, tmp, limit=cap)
         await prov.exec(sb, f"rm -f {tmp}", timeout=30)
         if data is None:
             raise FleetError("workspace snapshot produced no archive")
+        if len(data) > cap:
+            raise FleetError(f"the workspace archive is over HANGAR_SNAPSHOT_MAX_MB ({self.settings.snapshot_max_mb} "
+                             "MB); remove build outputs from the workspace, or use kind=full where the provider "
+                             "has it")
         path = self.settings.snapshot_dir / f"{snap_id}.tgz"
         path.write_bytes(data)
         return Snapshot(id=snap_id, sandbox_id=sb.id, environment=sb.environment, provider=sb.provider,
@@ -1171,7 +1191,10 @@ class Fleet:
             m = re.findall(flow.token_regex + r"(?![0-9A-Za-z_\-])", out)
             value = m[-1] if m else None
         elif flow.capture_file:
-            value = await self.read_file(lg["sandbox"], f"~/{flow.capture_file}")
+            value = await self.read_file(lg["sandbox"], f"~/{flow.capture_file}", limit=AUTH_FILE_LIMIT)
+            if value is not None and len(value) > AUTH_FILE_LIMIT:  # --- overnight/sweep: not a login file
+                raise FleetError(f"~/{flow.capture_file} is over {AUTH_FILE_LIMIT // 1024} KB, which no login "
+                                 "writes; not storing it")
         if not value:
             raise FleetError("login not finished yet: no token/credential file found. Finish the flow in the "
                              "terminal, then complete again.")

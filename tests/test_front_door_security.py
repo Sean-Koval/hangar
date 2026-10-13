@@ -653,9 +653,10 @@ async def test_oauth_allows_native_app_schemes_it_was_told_about(settings, store
                                           redirect_uris=[AnyUrl(uri)])
 
     auth = TokenAuth(store, "adm")
-    p = HangarOAuthProvider(store, auth, "https://hangar.example", ["claude.ai", "anysphere.cursor-mcp"])
+    # overnight/sweep: a custom scheme is listed as "scheme://host"; a bare host covers https only
+    p = HangarOAuthProvider(store, auth, "https://hangar.example", ["claude.ai", "cursor://anysphere.cursor-mcp"])
     await p.register_client(client("cursor://anysphere.cursor-mcp/oauth/callback"))
-    for bad in ("cursor://evil.example/cb", "http://anysphere.cursor-mcp/cb"):
+    for bad in ("cursor://evil.example/cb", "http://anysphere.cursor-mcp/cb", "cursor://claude.ai/cb"):
         with pytest.raises(RegistrationError):
             await p.register_client(client(bad))
     anyhost = HangarOAuthProvider(store, auth, "https://hangar.example", ["*"])
