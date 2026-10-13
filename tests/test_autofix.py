@@ -312,6 +312,23 @@ async def test_pending_triggers_survive_a_restart(jobs, world, gh, fleet):  # no
         await again.stop()
 
 
+async def test_malformed_payloads_are_ignored(jobs, world, gh):  # noqa: F811
+    job = await _pr_job(jobs, world, gh)
+    repo = {"full_name": "o/r"}
+    weird = [("check_run", {"action": "completed", "repository": repo, "check_run": "x"}),
+             ("check_run", {"action": "completed", "repository": repo,
+                            "check_run": {"conclusion": "failure", "head_sha": 7, "pull_requests": ["x", None],
+                                          "output": "y", "app": 3}}),
+             ("status", {"repository": repo, "state": "failure", "sha": ["a"], "branches": "main"}),
+             ("pull_request_review", {"action": "submitted", "repository": repo, "review": None,
+                                      "pull_request": "7"}),
+             ("pull_request_review_comment", {"action": "created", "repository": repo,
+                                              "comment": {"user": "sean", "body": 5}, "pull_request": {"number": "7"}})]
+    for event, payload in weird:
+        assert "ignored" in await handle_github(jobs, event, "w", payload), (event, payload)
+    assert not job.autofix_state.pending
+
+
 def test_the_webhook_subscribes_the_new_events():
     old = {"events": ["issues", "issue_comment", "pull_request_review_comment"], "active": True,
            "config": {"content_type": "json"}}

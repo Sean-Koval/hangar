@@ -98,6 +98,15 @@ def _clip(s: Any, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+def _d(x: Any) -> dict[str, Any]:
+    """A payload object, or {} for anything else: deliveries are signed, but the shape is still checked."""
+    return x if isinstance(x, dict) else {}
+
+
+def _int(x: Any) -> int:
+    return x if isinstance(x, int) and not isinstance(x, bool) else 0
+
+
 def _url(u: Any) -> str | None:
     return u if isinstance(u, str) and u.startswith(("https://", "http://")) else None
 
@@ -135,50 +144,49 @@ async def own_login(svc: JobService) -> str | None:
 
 async def handle(svc: JobService, event: str, delivery: str | None, payload: dict[str, Any]) -> dict[str, Any]:
     """A verified webhook about a PR's CI or reviews: queue it for the job's next auto-fix round."""
-    repo = (payload.get("repository") or {}).get("full_name") or ""
+    repo = _d(payload.get("repository")).get("full_name") or ""
     action = payload.get("action")
     sha: str | None = None
     if event in ("check_run", "check_suite"):
-        obj = payload.get(event) or {}
+        obj = _d(payload.get(event))
         if action != "completed" or obj.get("conclusion") not in FAILED:
             return {"ignored": f"{event} {action} {obj.get('conclusion')}: not a failure"}
-        sha = obj.get("head_sha")
-        numbers = [p.get("number") for p in obj.get("pull_requests") or [] if isinstance(p, dict)]
-        branch = obj.get("head_branch") or (obj.get("check_suite") or {}).get("head_branch")
-        job = find_job(svc, repo, numbers, [branch] if branch else [], sha)
-        app = obj.get("app") or {}
-        out = obj.get("output") or {}
+        sha = obj.get("head_sha") if isinstance(obj.get("head_sha"), str) else None
+        numbers = [_int(_d(p).get("number")) for p in obj.get("pull_requests") or []]
+        branch = obj.get("head_branch") or _d(obj.get("check_suite")).get("head_branch")
+        job = find_job(svc, repo, numbers, [branch] if isinstance(branch, str) else [], sha)
+        app, out = _d(obj.get("app")), _d(obj.get("output"))
         item = {"kind": event, "id": obj.get("id"), "sha": sha, "conclusion": obj.get("conclusion"),
                 "name": _clip(obj.get("name") or app.get("name") or event, 200), "app": app.get("slug"),
                 "url": _url(obj.get("html_url")) or _url(obj.get("details_url")),
                 "details_url": _url(obj.get("details_url")),
                 "output": {k: _clip(out.get(k), 4000) for k in ("title", "summary", "text") if out.get(k)},
-                "annotations": int(out.get("annotations_count") or 0)}
+                "annotations": _int(out.get("annotations_count"))}
         what = "ci"
     elif event == "status":
         if payload.get("state") not in ("failure", "error"):
             return {"ignored": f"status {payload.get('state')}: not a failure"}
-        sha = payload.get("sha")
-        branches = [b.get("name") for b in payload.get("branches") or [] if isinstance(b, dict) and b.get("name")]
+        sha = payload.get("sha") if isinstance(payload.get("sha"), str) else None
+        branches = [n for b in payload.get("branches") or [] if isinstance(n := _d(b).get("name"), str)]
         job = find_job(svc, repo, [], branches, sha)
         item = {"kind": "status", "id": payload.get("id"), "sha": sha, "conclusion": payload.get("state"),
                 "name": _clip(payload.get("context") or "status", 200), "url": _url(payload.get("target_url")),
                 "description": _clip(payload.get("description"), 1000)}
         what = "ci"
     elif event in ("pull_request_review", "pull_request_review_comment"):
-        pr = payload.get("pull_request") or {}
+        pr = _d(payload.get("pull_request"))
         review = event == "pull_request_review"
-        obj = payload.get("review" if review else "comment") or {}
-        state = (obj.get("state") or "").lower()
+        obj = _d(payload.get("review" if review else "comment"))
+        state = str(obj.get("state") or "").lower()
         if review and (action != "submitted" or state not in ("changes_requested", "commented")):
             return {"ignored": f"review {action} {state}: nothing to fix"}
         if not review and action != "created":
             return {"ignored": f"review comment {action}"}
-        user = (obj.get("user") or {}).get("login") or ""
-        body = obj.get("body") or ""
+        user = str(_d(obj.get("user")).get("login") or "")
+        body = obj.get("body") if isinstance(obj.get("body"), str) else ""
         if MARKER in body or (user and user == await own_login(svc)):
             return {"ignored": "hangar's own review"}
-        job = find_job(svc, repo, [pr.get("number")], [(pr.get("head") or {}).get("ref") or ""], None)
+        job = find_job(svc, repo, [_int(pr.get("number"))], [str(_d(pr.get("head")).get("ref") or "")], None)
         if job is None:
             return {"ignored": "PR was not opened by a hangar job"}
         if not await svc.trust.trusted(user, obj.get("author_association")):
@@ -432,12 +440,12 @@ async def _ci_context(svc: JobService, gh: GitHub, repo: str, items: list[dict[s
 
 
 def _run_item(r: dict[str, Any]) -> dict[str, Any]:
-    out = r.get("output") or {}
+    out = _d(r.get("output"))
     return {"kind": "check_run", "id": r.get("id"), "sha": r.get("head_sha"), "conclusion": r.get("conclusion"),
             "name": _clip(r.get("name") or "check", 200), "app": (r.get("app") or {}).get("slug"),
             "url": _url(r.get("html_url")) or _url(r.get("details_url")), "details_url": _url(r.get("details_url")),
             "output": {k: _clip(out.get(k), 4000) for k in ("title", "summary", "text") if out.get(k)},
-            "annotations": int(out.get("annotations_count") or 0)}
+            "annotations": _int(out.get("annotations_count"))}
 
 
 def _actions_job(r: dict[str, Any]) -> int | None:
