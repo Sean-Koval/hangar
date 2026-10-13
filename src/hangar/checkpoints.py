@@ -8,6 +8,7 @@ so no Google client library is needed. Blobs arrive already encrypted (vault key
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import time
 from pathlib import Path
@@ -25,6 +26,10 @@ class CheckpointStore(Protocol):
     async def get(self, key: str) -> bytes | None: ...
 
     async def delete_prefix(self, prefix: str) -> None: ...
+
+    async def copy(self, src: str, dst: str) -> bool:
+        """Copy a blob inside the store (an unchanged checkpoint part). False when `src` does not exist."""
+        ...
 
 
 class LocalStore:
@@ -57,9 +62,27 @@ class LocalStore:
         p = self._path(prefix.rstrip("/") + "/x").parent
         await asyncio.to_thread(shutil.rmtree, p, True)
 
+    async def copy(self, src: str, dst: str) -> bool:
+        s, d = self._path(src), self._path(dst)
+
+        def link() -> bool:
+            if not s.is_file():
+                return False
+            d.parent.mkdir(parents=True, exist_ok=True)
+            tmp = d.with_suffix(d.suffix + ".part")
+            tmp.unlink(missing_ok=True)
+            try:
+                os.link(s, tmp)  # blobs are never modified in place, so sharing the inode is safe
+            except OSError:
+                shutil.copyfile(s, tmp)
+            tmp.replace(d)
+            return True
+
+        return await asyncio.to_thread(link)
+
 
 class GCSStore:
-    """Minimal GCS JSON API client (upload, download, list+delete) with metadata-server tokens."""
+    """Minimal GCS JSON API client (upload, download, copy, list+delete) with metadata-server tokens."""
 
     API = "https://storage.googleapis.com"
     ATTEMPTS = 5
@@ -75,6 +98,21 @@ class GCSStore:
         self._transport = transport
         self._token, self._exp = token, (float("inf") if token else 0.0)
         self._lock = asyncio.Lock()
+        self._http: httpx.AsyncClient | None = None
+        self._http_loop: asyncio.AbstractEventLoop | None = None
+
+    def _client(self) -> httpx.AsyncClient:
+        """One connection pool per event loop, so parts uploaded in parallel and back-to-back checkpoints reuse
+        connections instead of each paying a TLS handshake."""
+        loop = asyncio.get_running_loop()
+        if self._http is None or self._http_loop is not loop or self._http.is_closed:
+            self._http, self._http_loop = httpx.AsyncClient(transport=self._transport, timeout=60), loop
+        return self._http
+
+    async def close(self) -> None:
+        if self._http is not None and self._http_loop is asyncio.get_running_loop():
+            await self._http.aclose()
+        self._http = None
 
     def _name(self, key: str) -> str:
         return f"{self.prefix}/{key}" if self.prefix else key
@@ -115,21 +153,36 @@ class GCSStore:
         raise RuntimeError("unreachable")
 
     async def put(self, key: str, data: bytes) -> None:
-        async with httpx.AsyncClient(transport=self._transport, timeout=300) as c:
-            r = await self._request(c, "POST", f"{self.API}/upload/storage/v1/b/{self.bucket}/o",
-                                    params={"uploadType": "media", "name": self._name(key)}, content=data,
-                                    headers={"Content-Type": "application/octet-stream"})
-            r.raise_for_status()
+        r = await self._request(self._client(), "POST", f"{self.API}/upload/storage/v1/b/{self.bucket}/o",
+                                params={"uploadType": "media", "name": self._name(key)}, content=data,
+                                headers={"Content-Type": "application/octet-stream"}, timeout=300)
+        r.raise_for_status()
 
     async def get(self, key: str) -> bytes | None:
-        async with httpx.AsyncClient(transport=self._transport, timeout=300) as c:
-            r = await self._request(c, "GET",
-                                    f"{self.API}/storage/v1/b/{self.bucket}/o/{quote(self._name(key), safe='')}",
-                                    params={"alt": "media"})
+        r = await self._request(self._client(), "GET",
+                                f"{self.API}/storage/v1/b/{self.bucket}/o/{quote(self._name(key), safe='')}",
+                                params={"alt": "media"}, timeout=300)
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        return r.content
+
+    async def copy(self, src: str, dst: str) -> bool:
+        """Server-side copy (objects.rewrite): nothing is downloaded or uploaded. Within one bucket (same location
+        and storage class) it finishes in one call; the token loop covers the general case."""
+        url = (f"{self.API}/storage/v1/b/{self.bucket}/o/{quote(self._name(src), safe='')}"
+               f"/rewriteTo/b/{self.bucket}/o/{quote(self._name(dst), safe='')}")
+        params: dict[str, str] = {"fields": "done,rewriteToken"}
+        for _ in range(1000):
+            r = await self._request(self._client(), "POST", url, params=params, timeout=300)
             if r.status_code == 404:
-                return None
+                return False
             r.raise_for_status()
-            return r.content
+            j = r.json()
+            if j.get("done"):
+                return True
+            params = {"fields": "done,rewriteToken", "rewriteToken": j["rewriteToken"]}
+        raise RuntimeError(f"copy of {src} did not finish")
 
     async def delete_prefix(self, prefix: str) -> None:
         async with httpx.AsyncClient(transport=self._transport, timeout=60) as c:

@@ -373,9 +373,6 @@ class DockerProvider(Provider):
         parent = posixpath.dirname(path)
         user = self.settings.sandbox_user
         owned = not path.startswith(SYSTEM_DIRS)
-        mk = await asyncio.to_thread(c.exec_run, ["mkdir", "-p", parent], user=user if owned else "root")
-        if mk.exit_code != 0:
-            raise ProviderError(f"cannot create {parent}: {mk.output.decode(errors='replace')}")
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w") as tf:
             info = tarfile.TarInfo(posixpath.basename(path))
@@ -385,7 +382,17 @@ class DockerProvider(Provider):
             if owned:
                 info.uid = info.gid = 1000
             tf.addfile(info, io.BytesIO(data))
-        ok = await asyncio.to_thread(c.put_archive, parent, buf.getvalue())
+        # perf: the directory usually exists, so try the upload first; a `mkdir` exec costs ~70 ms, the upload ~5.
+        try:
+            try:
+                ok = await asyncio.to_thread(c.put_archive, parent, buf.getvalue())
+            except NotFound:
+                mk = await asyncio.to_thread(c.exec_run, ["mkdir", "-p", parent], user=user if owned else "root")
+                if mk.exit_code != 0:
+                    raise ProviderError(f"cannot create {parent}: {mk.output.decode(errors='replace')}") from None
+                ok = await asyncio.to_thread(c.put_archive, parent, buf.getvalue())
+        except APIError as e:
+            raise ProviderError(f"failed to write {path}: {e.explanation or e}") from e
         if not ok:
             raise ProviderError(f"failed to write {path}")
 

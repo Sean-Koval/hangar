@@ -901,8 +901,10 @@ class Fleet:
         deadline = time.monotonic() + max(wait_ms, 0) / 1000
         pattern = re.compile(wait_for, re.MULTILINE) if wait_for else None
         out = ""
+        delay = 0.05  # perf: most prompts are back within ~100 ms; look early, then back off to the old 0.3 s
         while True:
-            await asyncio.sleep(0.3 if pattern else max(wait_ms, 0) / 1000)
+            await asyncio.sleep(delay if pattern else max(wait_ms, 0) / 1000)
+            delay = min(0.3, delay * 2)
             out = await self.terminal_read(sb.id, session, lines)
             if not pattern or pattern.search(out) or time.monotonic() >= deadline:
                 break

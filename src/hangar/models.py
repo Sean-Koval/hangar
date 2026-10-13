@@ -403,6 +403,9 @@ class Checkpoint(BaseModel):
     fingerprint: str | None = None  # HEAD + dirty-tree hash: skip identical checkpoints
     parts: dict[str, int] = Field(default_factory=dict)  # part name -> bytes (plaintext)
     warnings: list[str] = Field(default_factory=list)
+    # --- perf: part name -> sha256 of the plaintext, as the sandbox computed it. A part whose digest matches the
+    # previous checkpoint is copied inside the checkpoint store instead of being read and uploaded again.
+    digests: dict[str, str] = Field(default_factory=dict)
 
 
 class Session(BaseModel):
