@@ -18,6 +18,8 @@ import docker
 from docker.errors import APIError, ImageNotFound, NotFound
 
 from hangar.config import Settings
+from hangar.envd import OFF, SKIP, DockerEnvd, Off  # --- envd
+from hangar.envd import PORT as ENVD_PORT  # --- envd
 from hangar.envspec import BuildContext, EnvSpec
 from hangar.harnesses import PACK_ROOT
 from hangar.models import ExecResult, Sandbox, SandboxState
@@ -138,6 +140,7 @@ def _supports_image_mounts(client) -> bool:
 
 class DockerProvider(Provider):
     name = "docker"
+    envd: DockerEnvd | Off = OFF  # --- envd: set in __init__
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -154,6 +157,7 @@ class DockerProvider(Provider):
         self._image_volumes = settings.docker_image_volumes
         if self._image_volumes is None:
             self._image_volumes = _supports_image_mounts(self.client)
+        self.envd = DockerEnvd(self, settings)  # --- envd: exec, files and terminals through the in-sandbox daemon
 
     @property
     def capabilities(self) -> Capabilities:
@@ -194,6 +198,9 @@ class DockerProvider(Provider):
         # workstream F: on Linux, host.docker.internal (the git gateway on the host) needs an explicit mapping
         if "host.docker.internal" in (self.settings.gateway_url or ""):
             kw["extra_hosts"] = {"host.docker.internal": "host-gateway"}
+        # --- envd: the daemon's port on loopback too, for hosts that can't route to container IPs (Docker Desktop)
+        if self.envd.enabled and (self.settings.docker_network or "") not in ("host", "none"):
+            kw["ports"] = {f"{ENVD_PORT}/tcp": ("127.0.0.1", None)}
         if packs:
             kw["mounts"] = [{"Type": "image", "Source": ref, "Target": f"{PACK_ROOT}/{n}", "ReadOnly": True}
                             for n, ref in sorted(packs.items())]
@@ -286,6 +293,7 @@ class DockerProvider(Provider):
         return _STATE.get(c.status, SandboxState.ERROR)
 
     async def destroy(self, sandbox: Sandbox) -> None:
+        self.envd.forget(sandbox)  # --- envd
         try:
             c = await self._container(sandbox)
         except ProviderError:
@@ -328,6 +336,8 @@ class DockerProvider(Provider):
 
     # ------------------------------------------------------------------ I/O
     async def exec(self, sandbox, command, timeout=120, cwd=None, user=None) -> ExecResult:
+        if (res := await self.envd.exec(sandbox, command, timeout, cwd, user)) is not None:  # --- envd
+            return res
         c = await self._container(sandbox)
         argv = ["timeout", "--kill-after=5", str(int(timeout)), "bash", "-lc", command]
         t0 = time.monotonic()
@@ -363,6 +373,8 @@ class DockerProvider(Provider):
                           duration_ms=int((time.monotonic() - t0) * 1000), truncated=t1 or t2)
 
     async def read_file(self, sandbox, path, limit=None) -> bytes | None:
+        if (got := await self.envd.read_file(sandbox, path, limit)) is not SKIP:  # --- envd
+            return got
         c = await self._container(sandbox)
         try:
             stream, _ = await asyncio.to_thread(c.get_archive, path)
@@ -371,6 +383,9 @@ class DockerProvider(Provider):
         return await asyncio.to_thread(_first_file, stream, limit)
 
     async def write_file(self, sandbox, path, data, mode=0o644) -> None:
+        # --- envd: system paths keep this provider's root-owned writes
+        if not path.startswith(SYSTEM_DIRS) and await self.envd.write_file(sandbox, path, data, mode):
+            return
         c = await self._container(sandbox)
         parent = posixpath.dirname(path)
         user = self.settings.sandbox_user
@@ -399,6 +414,8 @@ class DockerProvider(Provider):
             raise ProviderError(f"failed to write {path}")
 
     async def open_terminal(self, sandbox, command, cols=120, rows=32) -> TerminalStream:
+        if (term := await self.envd.open_terminal(sandbox, command, cols, rows)) is not None:  # --- envd
+            return term
         c = await self._container(sandbox)
         api = self.client.api
         ex = await asyncio.to_thread(
@@ -432,4 +449,5 @@ class DockerProvider(Provider):
             pass
 
     async def close(self) -> None:
+        await self.envd.close()  # --- envd
         self.client.close()

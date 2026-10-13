@@ -82,6 +82,10 @@ class Settings(BaseSettings):
     e2b_registry_username: str | None = None  # any other registry (basic auth)
     e2b_registry_password: str | None = None
 
+    # --- envd: in-sandbox daemon for exec, files and terminals (docs/envd.md) ---
+    envd: Literal["auto", "off"] = "auto"  # auto: Docker and Kubernetes sandboxes use it when it can be reached
+    envd_dir: Path | None = None  # holds hangar-envd-<arch>; default /usr/local/lib/hangar, then envd/dist
+
     # --- fleet defaults -----------------------------------------------------
     default_ttl_minutes: int = 240
     max_sandboxes: int = 50

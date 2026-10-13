@@ -28,6 +28,7 @@ import uuid
 from pathlib import Path
 
 from hangar.config import Settings
+from hangar.envd import OFF, SKIP, KubernetesEnvd, Off  # --- envd
 from hangar.envspec import BuildContext, EnvSpec
 from hangar.harnesses import PACK_ROOT
 from hangar.models import ExecResult, Sandbox, SandboxState
@@ -113,6 +114,7 @@ class K8sTerminal(TerminalStream):
 
 class KubernetesProvider(Provider):
     name = "kubernetes"
+    envd: KubernetesEnvd | Off = OFF  # --- envd: set in __init__
 
     def __init__(self, settings: Settings):
         if client is None:
@@ -130,6 +132,7 @@ class KubernetesProvider(Provider):
             raise ProviderError(f"cannot load kubernetes config: {e}") from e
         self.core = client.CoreV1Api()
         self.crd = client.CustomObjectsApi()
+        self.envd = KubernetesEnvd(self, settings)  # --- envd: exec, files and terminals through the in-sandbox daemon
         self._known_images: set[str] = set()
         self._synced: dict[str, tuple] = {}
         try:
@@ -360,6 +363,7 @@ class KubernetesProvider(Provider):
         return SandboxState.STARTING
 
     async def destroy(self, sandbox: Sandbox) -> None:
+        self.envd.forget(sandbox)  # --- envd
         if not sandbox.provider_ref:
             return
         await self._cleanup_triggers(sandbox)
@@ -430,6 +434,8 @@ class KubernetesProvider(Provider):
         return (code if code is not None else -1), out.value(), err.value()
 
     async def exec(self, sandbox, command, timeout=120, cwd=None, user=None) -> ExecResult:
+        if (res := await self.envd.exec(sandbox, command, timeout, cwd, user)) is not None:  # --- envd
+            return res
         pod = await self._pod(sandbox)
         wd = cwd or self.settings.workspace_dir
         script = f"cd {shlex.quote(wd)} 2>/dev/null; {command}"
@@ -446,6 +452,8 @@ class KubernetesProvider(Provider):
                           duration_ms=int((time.monotonic() - t0) * 1000), truncated=trunc)
 
     async def read_file(self, sandbox, path, limit=None) -> bytes | None:
+        if (got := await self.envd.read_file(sandbox, path, limit)) is not SKIP:  # --- envd
+            return got
         pod = await self._pod(sandbox)
         q = shlex.quote(path)
         if limit is None:
@@ -494,6 +502,8 @@ class KubernetesProvider(Provider):
         return (code if code is not None else -1), "".join(err)
 
     async def write_file(self, sandbox, path, data, mode=0o644) -> None:
+        if await self.envd.write_file(sandbox, path, data, mode):  # --- envd
+            return
         pod = await self._pod(sandbox)
         q = shlex.quote(path)
         d = shlex.quote(str(Path(path).parent))
@@ -614,6 +624,8 @@ class KubernetesProvider(Provider):
                 pass
 
     async def open_terminal(self, sandbox, command, cols=120, rows=32) -> TerminalStream:
+        if (term := await self.envd.open_terminal(sandbox, command, cols, rows)) is not None:  # --- envd
+            return term
         pod = await self._pod(sandbox)
 
         def _open():
@@ -625,6 +637,9 @@ class KubernetesProvider(Provider):
         term = K8sTerminal(ws)
         await term.resize(cols, rows)
         return term
+
+    async def close(self) -> None:  # --- envd
+        await self.envd.close()
 
 
 def _explain_event(reason: str, message: str) -> str:
