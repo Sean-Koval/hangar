@@ -477,7 +477,7 @@ class SessionService:
         parts = dict(await asyncio.gather(*(fetch(p) for p in PARTS if p in ck.parts)))
         packs = f"{RESTORE_DIR}-{ck.id}"
         for i, group in enumerate(ckpt.groups(parts)):
-            await prov.write_file(sb, f"{packs}.{i}.tar", ckpt.pack(group), mode=0o600)
+            await prov.write_file(sb, f"{packs}.{i}.tar", await asyncio.to_thread(ckpt.pack, group), mode=0o600)
         script = ckpt.restore_script(repo=repo, home=f"/home/{self.settings.sandbox_user}", branch=s.branch,
                                      target=ck.head or ck.base or s.base_sha or "HEAD", present=set(parts),
                                      packs=packs)
@@ -540,7 +540,8 @@ class SessionService:
                     same.append(part)
             fresh = [p for p in ck.digests if p not in same]
             if set(fresh) & cap.packed:
-                data = ckpt.unpack(await prov.read_file(sb, f"{CKPT_DIR}/{ckpt.PACK}") or b"", set(fresh))
+                raw = await prov.read_file(sb, f"{CKPT_DIR}/{ckpt.PACK}") or b""
+                data = await asyncio.to_thread(ckpt.unpack, raw, set(fresh))  # off the loop: packs can be big
 
             copied: list[str] = []
 
