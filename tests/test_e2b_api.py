@@ -454,3 +454,58 @@ async def test_other_ports_http_and_websocket(hangar, monkeypatch):
     finally:
         httpd.kill()
         await sb.kill()
+
+
+@needs_binary
+async def test_code_interpreter_sdk_reaches_port_49999(hangar, monkeypatch):
+    """e2b-code-interpreter talks to the Jupyter-backed server E2B's template runs on port 49999, through the same
+    router (X-Access-Token, a streamed NDJSON answer). A stand-in for that server shows hangar's side works; the real
+    one needs an environment that runs E2B's code-interpreter server (docs/e2b.md)."""
+    import socket
+    import threading
+
+    import uvicorn
+    from starlette.applications import Starlette
+    from starlette.responses import StreamingResponse
+    from starlette.routing import Route
+
+    ci = pytest.importorskip("e2b_code_interpreter")
+    with socket.socket() as s:
+        try:
+            s.bind(("127.0.0.1", 49999))
+        except OSError:
+            pytest.skip("port 49999 is taken on this machine")
+
+    async def execute(request):
+        body = await request.json()
+        assert "x-access-token" not in request.headers  # the router keeps E2B's tokens to itself
+
+        async def lines():
+            yield json.dumps({"type": "stdout", "text": f"ran {body['code']}\n"}) + "\n"
+            await asyncio.sleep(0.05)
+            yield json.dumps({"type": "result", "text": "2", "is_main_result": True}) + "\n"
+            yield json.dumps({"type": "end_of_execution"}) + "\n"
+
+        return StreamingResponse(lines(), media_type="application/x-ndjson")
+
+    server = uvicorn.Server(uvicorn.Config(Starlette(routes=[Route("/execute", execute, methods=["POST"])]),
+                                           host="127.0.0.1", port=49999, log_level="warning", loop="asyncio"))
+    t = threading.Thread(target=server.run, daemon=True)
+    t.start()
+
+    async def local(self, sb):
+        return "127.0.0.1"
+
+    monkeypatch.setattr(SandboxRouter, "_host", local)
+    try:
+        for _ in range(100):
+            if server.started:
+                break
+            await asyncio.sleep(0.05)
+        sb = await ci.AsyncSandbox.create(template="plain", **hangar.opts(token(hangar, "ci")))
+        ex = await sb.run_code("1 + 1")
+        assert ex.logs.stdout == ["ran 1 + 1\n"] and ex.results[0].text == "2"
+        await sb.kill()
+    finally:
+        server.should_exit = True
+        t.join(10)

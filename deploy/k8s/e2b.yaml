@@ -1,0 +1,86 @@
+# E2B sandbox URLs on GKE (docs/gke.md §7). Optional, and not in kustomization.yaml: apply it after filling in
+# E2B_DOMAIN (the domain E2B clients set as E2B_DOMAIN, e.g. e2b.example.com) and creating the certificate map and
+# static IP the comments name.
+#
+# The E2B SDKs reach a sandbox's daemon at https://49983-<id>.<domain> and an app in it at https://<port>-<id>.<domain>.
+# Hangar serves both itself (the sandbox router), so this only puts *.<domain> in front of the hangar Service. GKE
+# Ingress can't serve a wildcard: Google-managed certificates don't support wildcards, and Ingress doesn't take
+# Certificate Manager certificates. A Gateway does, with a Certificate Manager certificate authorized by DNS.
+#
+# Without a domain of your own (the sslip.io install), skip this file: point E2B_SANDBOX_URL at
+# https://<ip>.sslip.io/e2b/sandbox and the SDKs route by header through the existing Ingress (docs/e2b.md).
+
+# 1. Let hangar's pods reach every port of a sandbox, for apps behind <port>-<id>.<domain>. sandbox-network.yaml
+#    denies all ingress and envd-network.yaml opens only 49983; NetworkPolicies add up, and sandboxes still can't
+#    reach each other.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-hangar-sandbox-ports
+  namespace: hangar-sandboxes
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: hangar}
+          podSelector:
+            matchLabels: {app: hangar}
+      ports: [{protocol: TCP, port: 1, endPort: 65535}]
+---
+# 2. A global external Gateway for *.E2B_DOMAIN. Needs the Gateway API on the cluster (gcloud container clusters
+#    update ... --gateway-api=standard), the static IP `hangar-e2b-ip` (gcloud compute addresses create hangar-e2b-ip
+#    --global) and the certificate map `hangar-e2b` (docs/gke.md §7).
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: hangar-e2b
+  namespace: hangar
+  annotations:
+    networking.gke.io/certmap: hangar-e2b
+spec:
+  gatewayClassName: gke-l7-global-external-managed
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      allowedRoutes: {namespaces: {from: Same}}
+  addresses:
+    - type: NamedAddress
+      value: hangar-e2b-ip
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: hangar-e2b
+  namespace: hangar
+spec:
+  parentRefs: [{name: hangar-e2b}]
+  hostnames: ["*.E2B_DOMAIN"]  # api.<domain> (the control API) and <port>-<id>.<domain> (sandboxes)
+  rules:
+    - backendRefs: [{name: hangar, port: 80}]
+---
+# Streams (a command's output, a terminal, a file watch) live as long as the backend timeout allows, like the
+# Ingress's BackendConfig. Unlike Ingress, a Gateway doesn't read the health check from the pod.
+apiVersion: networking.gke.io/v1
+kind: GCPBackendPolicy
+metadata:
+  name: hangar
+  namespace: hangar
+spec:
+  default:
+    timeoutSec: 3600
+  targetRef: {group: "", kind: Service, name: hangar}
+---
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: hangar
+  namespace: hangar
+spec:
+  default:
+    config:
+      type: HTTP
+      httpHealthCheck: {requestPath: /healthz}
+  targetRef: {group: "", kind: Service, name: hangar}
