@@ -135,3 +135,26 @@ async def test_a_task_turns_input_required_for_an_approval(fleet, svc, live):
     assert asks and next(iter(asks[0]["inputRequests"])).startswith("approve-ap-"), asks
     s = svc.get("task-ask")
     assert s.turns[0].approvals[0].status == "denied" and not repo_file(svc, s, "tool-ran.txt").exists()
+
+
+async def test_an_approval_answer_does_not_undo_a_cancel_that_came_meanwhile(store, monkeypatch):
+    """tasks/update now awaits the driver (up to its ack wait) between reading and saving the task record: a
+    tasks/cancel in that window must stand (a terminal state never changes)."""
+    from hangar import mcp_steer, mcp_tasks
+
+    tasks = mcp_tasks.Tasks(store, None, None, None, lambda: "alice")
+    created = tasks.create("send_to_session", types.CallToolResult(content=[], structured_content={"id": "ses-1"}),
+                           {})
+    tid = created["taskId"]
+    rec = tasks._load(tid)
+    rec.asked["approve-ap-0123456789ab"] = 1
+    tasks._save(rec)
+
+    async def answered_while_cancelled(*_a, **_k):
+        await tasks.cancel(tid)
+        return "answered"
+
+    monkeypatch.setattr(mcp_steer, "answer_elicited", answered_while_cancelled)
+    await tasks.update(tid, {"approve-ap-0123456789ab": {"action": "accept", "content": {"decision": "allow"}}})
+    final = tasks._load(tid).final
+    assert final is not None and final["status"] == "cancelled", final

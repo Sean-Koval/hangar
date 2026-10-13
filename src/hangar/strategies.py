@@ -177,6 +177,7 @@ async def _fork(svc: SessionService, parent: Session, n: int, requester: str, *,
                 extra_dirs=list(parent.extra_dirs), idle_minutes=parent.idle_minutes,
                 labels={**labels, **({"hangar.job": job_id, "hangar.attempt": str(i)} if job_id else {})},
                 job_id=job_id, parent_id=parent.id, forked_from_checkpoint=ck.id,
+                approvals=parent.approvals,  # --- workstream steer: a fork never runs with fewer checks
                 # The conversation is forked on the child's first turn (each child gets its own id), never resumed.
                 harness_session=None, harness_session_for=parent.harness_session_for,
                 fork_conversation=parent.harness_session if parent.harness_session_for else None,
