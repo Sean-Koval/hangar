@@ -29,6 +29,7 @@ from hangar.models import Budget, ContextItem, Credential, CredentialKind, Resou
 from hangar.providers.base import ProviderError
 from hangar.sessions import NewSession, SessionService
 from hangar.store import Store
+from hangar.strategies import SessionForkBody, fork_session  # workstream D: forks/best-of-N
 from hangar.triggers import ScheduleSpec, ScheduleUpdate, Triggers
 from hangar.vault import Vault, load_or_create_key
 
@@ -822,6 +823,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def session_checkpoint(ref: str, who: str = A):
         ck = await sessions.checkpoint_now(ref, requester=who)
         return {"checkpoint": ck.model_dump(mode="json") if ck else None}
+
+    @app.post("/api/sessions/{ref}/fork")
+    async def session_fork(ref: str, body: SessionForkBody, who: str = A):
+        children = await fork_session(sessions, ref, body.n, requester=who, harness=body.harness,
+                                      names=body.names, message=body.message)
+        return {"parent": sessions.get(ref).name, "forks": [sessions.view(c) for c in children]}
 
     @app.post("/api/sessions/{ref}/archive")
     async def session_archive(ref: str, who: str = A):

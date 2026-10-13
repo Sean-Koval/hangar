@@ -115,6 +115,12 @@ class Settings(BaseSettings):
     # environments mapped in HANGAR_GITHUB_REPOS; [] = none.
     prebuild_environments: list[str] | None = None
 
+    # --- workstream D: forks/best-of-N --------------------------------------
+    fork_max: int = 8  # children per fork_session call
+    best_of_n_max: int = 8  # attempts per best-of-N job (each is a sandbox running at the same time)
+    best_of_n_push_attempts: bool = False  # also push the losing attempts as <job branch>-attempt-<i>
+    best_of_n_judge_timeout_minutes: int = 15
+
     # --- GitHub (jobs delivery and trigger) ---------------------------------
     github_api_url: str = "https://api.github.com"
     # Vault credential holding a GitHub token the *control plane* uses to open PRs and comment.

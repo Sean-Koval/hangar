@@ -255,6 +255,34 @@ class JobApproval(BaseModel):
     decision: Literal["approved", "rejected", "expired"] | None = None
 
 
+# --- workstream D: forks/best-of-N
+class Attempt(BaseModel):
+    """One of a best-of-N job's attempts: a session forked from the job's prepared base session."""
+
+    index: int  # 1-based; the agent sees it as $HANGAR_ATTEMPT
+    session_id: str | None = None
+    branch: str | None = None  # the attempt session's own branch (inside its sandbox)
+    pushed_branch: str | None = None  # set when losers are pushed (HANGAR_BEST_OF_N_PUSH_ATTEMPTS)
+    state: Literal["pending", "running", "verifying", "done"] = "pending"
+    outcome: str | None = None  # exited | timed_out | cancelled | gone | error
+    run_id: str | None = None
+    exit_code: int | None = None
+    verify_exit_code: int | None = None
+    verify_tail: str | None = None
+    head_sha: str | None = None
+    diffstat: str | None = None
+    diff_lines: int | None = None  # lines added + deleted against the base
+    files: list[str] = Field(default_factory=list)  # "M path" lines from git diff --name-status (capped)
+    touched_tests: list[str] = Field(default_factory=list)  # existing test/verify files it changed or removed
+    score: float | None = None
+    rank: int | None = None  # 1 = delivered
+    summary: str | None = None
+    cost_usd: float | None = None  # when the harness reports it
+    error: str | None = None
+    started_at: float | None = None
+    finished_at: float | None = None
+
+
 class Job(BaseModel):
     id: str = Field(default_factory=lambda: new_id("job"))
     title: str
@@ -291,6 +319,11 @@ class Job(BaseModel):
     events: list[JobEvent] = Field(default_factory=list)
     created_at: float = Field(default_factory=now)
     updated_at: float = Field(default_factory=now)
+    # --- workstream D: forks/best-of-N
+    strategy: Literal["single", "best_of_n"] = "single"
+    n: int = 1
+    judge: bool = False
+    attempts: list[Attempt] = Field(default_factory=list)
     # --- workstream A: triggers
     approval: JobApproval | None = None
     untrusted_source: str | None = None  # who wrote untrusted task text ("github:<login>", "webhook:<source>")
@@ -335,7 +368,7 @@ class SessionTurn(BaseModel):
     requester: str | None = None
     run_id: str | None = None
     harness: str | None = None
-    mode: Literal["new", "resume", "handoff"] = "new"
+    mode: Literal["new", "resume", "handoff", "fork"] = "new"
     conversation: str | None = None  # the harness conversation id this turn used (preset ids are known up front)
     started_at: float | None = None
     finished_at: float | None = None
@@ -398,3 +431,7 @@ class Session(BaseModel):
     created_at: float = Field(default_factory=now)
     last_active_at: float = Field(default_factory=now)
     updated_at: float = Field(default_factory=now)
+    # --- workstream D: forks/best-of-N
+    parent_id: str | None = None  # the session this one was forked from
+    forked_from_checkpoint: str | None = None
+    fork_conversation: str | None = None  # the parent's conversation id; the next turn forks it, then clears it

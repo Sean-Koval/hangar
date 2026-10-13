@@ -27,6 +27,7 @@ from hangar.jobs import Caller, JobService, SubmitJob
 from hangar.models import Budget, ContextItem, Sandbox
 from hangar.providers.base import ProviderError
 from hangar.sessions import NewSession, SessionService
+from hangar.strategies import fork_session as _fork_session  # workstream D: forks/best-of-N
 from hangar.triggers import ScheduleSpec, Triggers
 
 # Failures an agent can act on (bad name, quota, build error...). Anything else is a crash and stays generic.
@@ -63,6 +64,9 @@ Context in and out (jobs and sessions alike): `context` items can carry files, y
 Schema) asks the agent for a structured result. wait_for_turn(job or session) blocks with progress
 notifications and returns the result, the agent's question (state needs_input: answer it with
 follow_up_job / send_to_session) and its artifacts (get_artifact). get_session_patch gives the code.
+
+To try several directions: fork_session(name, n) branches a session (work and conversation) into n sessions;
+submit_job(..., strategy="best_of_n", n=3) runs n attempts in parallel and delivers the one that verifies best.
 """
 
 
@@ -418,6 +422,18 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             """Checkpoint a session and release its sandbox now (idle sessions also suspend on their own)."""
             return sessions.view(sessions.suspend(session, requester=current_actor.get()))
 
+        @tool()
+        async def fork_session(session: str, n: int = 2, message: str | None = None, harness: str | None = None,
+                               names: list[str] | None = None) -> dict[str, Any]:
+            """Branch a session into `n` new sessions to try different directions from the same point. Each gets
+            the session's commits, uncommitted changes and untracked files (its latest checkpoint), its own branch
+            (<branch>-fork-<i>) and sandbox, and the agent's conversation forked so far (they diverge from here).
+            With `message`, every fork starts on it at once; otherwise use send_to_session on each. Each fork is
+            a sandbox while it runs."""
+            children = await _fork_session(sessions, session, n, requester=current_actor.get(), harness=harness,
+                                           names=names, message=message)
+            return {"parent": sessions.get(session).name, "forks": [sessions.view(c) for c in children]}
+
     # ------------------------------------------------------------------ context exchange (workstream E, spec 0011)
     if sessions is not None:
         @tool()
@@ -472,7 +488,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                    base_branch: str | None = None, verify: str | None = None, deliver: str = "draft_pr",
                    context: list[dict[str, Any]] | None = None, timeout_minutes: int | None = None,
                    callback_url: str | None = None, budget: dict[str, Any] | None = None,
-                   output_schema: dict[str, Any] | None = None) -> dict[str, Any]:
+                   output_schema: dict[str, Any] | None = None, strategy: str = "single", n: int | None = None,
+                   judge: bool = False) -> dict[str, Any]:
         """Hand a piece of development work to a cloud agent and get on with other things.
 
         Hangar queues the job, starts a sandbox from `environment` (default: the repo's mapped one), writes
@@ -483,12 +500,17 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         {"kind": "bundle", "base_commit": ...}. `output_schema`: JSON Schema for a structured result
         (get_job's result.data). `budget` caps each agent turn ({"max_minutes": 30, "max_tokens": 2000000,
         "max_cost_usd": 5}); a turn that crosses it is stopped and what it did is delivered as a draft.
-        Returns the job; then wait_for_turn(job id), or poll get_job (it shows usage) or get_events."""
+        Returns the job; then wait_for_turn(job id), or poll get_job (it shows usage) or get_events.
+
+        `strategy="best_of_n"` with `n` (2-8) runs n attempts in parallel sandboxes, verifies each, and delivers
+        the best (passing verify first; then `judge=True` asks an agent to compare them, else the smallest diff).
+        get_job lists every attempt. It costs n sandboxes and n agent runs."""
         req = SubmitJob(instructions=instructions, repo=repo, environment=environment, title=title, harness=harness,
                         model=model, base_branch=base_branch, verify=verify, deliver=deliver,
                         context=[ContextItem.model_validate(c) for c in context or []],
                         timeout_minutes=timeout_minutes, callback_url=callback_url, output_schema=output_schema,
-                        budget=Budget.model_validate(budget) if budget else None)
+                        budget=Budget.model_validate(budget) if budget else None, strategy=strategy, n=n,
+                        judge=judge)
         who = current_actor.get()
         return jobs.view(jobs.submit(req, Caller(who, who), source="mcp"))
 
