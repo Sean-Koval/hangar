@@ -14,7 +14,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from hangar import exchange
+from hangar import exchange, mcp_tasks
 from hangar.harnesses import HARNESSES, Harness
 from hangar.jobs import Caller, JobService, SubmitJob, handle_github
 from hangar.models import Budget, CredentialKind, JobState, SessionState
@@ -267,6 +267,8 @@ async def test_best_of_n_question_waits_for_an_answer_then_delivers(jobs, world,
     asked = next(a for a in job.attempts if a.session_id == job.session_id)
     others = [jobs.sessions.get(a.session_id) for a in job.attempts if a is not asked]
     assert all(o.sandbox_id is None for o in others)
+    # integrate (#49 x #52): MCP clients are asked the same question (wait_for_turn elicitation, tasks)
+    assert mcp_tasks.open_question(jobs.sessions, jobs, job.id) == (1, q, f"Job {job.id} ({job.title})")
 
     jobs.follow_up(job.id, "TASK-ANSWER: B", requester="github:sean", reply_to="github:o/r#12")
     job = await until(jobs, job.id, SETTLED)

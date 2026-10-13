@@ -104,9 +104,9 @@ def open_question(sessions: Any, jobs: Any, ref: str) -> tuple[int, str, str] | 
     s, job = exchange._lookup(sessions, jobs, ref)  # noqa: SLF001
     if not exchange._settled(sessions, jobs, s, job):  # noqa: SLF001
         return None
-    if job is not None:
-        q = job.result.question or (s.needs_input if s else None)
-        return (len(job.turns), q, f"Job {job.id} ({job.title})") if job.state == JobState.NEEDS_INPUT and q else None
+    if job is not None:  # where every surface reads a job's question (#49), best-of-N attempts included
+        q = exchange.open_question(job)
+        return (len(job.turns), q, f"Job {job.id} ({job.title})") if q else None
     if s is not None and s.needs_input:
         return len(s.turns), s.needs_input, f"Session {s.name}"
     return None
