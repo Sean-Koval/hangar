@@ -11,7 +11,10 @@ Design specs for the next round of work. They came out of the first live GKE run
 | [0003 Sandbox security](0003-sandbox-security.md) | Branch protection, the credential gateway (git smart-HTTP inspection, GitHub REST allowlist, grants, GitHub App tokens), the model-API proxy, egress allowlists, token scopes and limits, dashboard hardening | #17 |
 | [0004 Supervisor, scheduling, performance](0004-supervisor-scheduling-performance.md) | Tasks and sub-task graphs, the deterministic supervisor and its intervention ladder, scheduler v2 (priority, fair share, plan-aware pacing, model tiers), warm-pool forecasting, image distribution, workspace checkpoints, right-sizing, benchmarks | #21 |
 | [0005 Traces and decision model](0005-traces-and-decision-model.md) | OpenTelemetry collection from harnesses, trace storage and redaction, the `DecisionService` (Microsoft Decision-1 first, rules and local fallbacks), decision tasks, shadow/advisory/acting modes, the optimization and evaluation loop | #20 |
-| [0009 Jobs, the factory front door](0009-jobs-and-the-factory-front-door.md) | Jobs: how clients, services, MCP clients, the CLI and GitHub issues hand work to cloud agents with a context bundle; queueing, verification with the repo's own check, delivery as a branch and PR, signed callbacks, follow-ups and take-over by engineers, `jobs`-scoped service tokens | this PR (M1–M2 built) |
+| [0006 Environments and harness packs](0006-environments-and-harness-packs.md) | Image/runtime/session split, harness packs, per-sandbox harness selection, `mcp:` and `secrets:`, default and team environments | #22 (M1–M3 built) |
+| [0007 Experiments, policy and team learning](0007-experiments-policy-and-team-learning.md) | The MCP gateway, the `policy:` block and where each rule is enforced, experiments over environment variants, the label taxonomy and labeler cascade, links from runs to tickets and objectives, team learnings, and the performance fixes they depend on | this PR |
+| [0008 Swarms, the improvement loop and RL](0008-swarm-improvement-loop-and-rl.md) | `swarm` and sandbox pools for spreading coding work across sandboxes, memory vs filesystem fork per backend, the Harbor sandbox adapter and ATIF export, the scheduled improvement loop that ends in a PR, the labeling review tab and reports, the RL path (best-of-N → datasets → rollout backend), and reward-hacking defenses | this PR |
+| [0009 Jobs, the factory front door](0009-jobs-and-the-factory-front-door.md) | Jobs: how clients, services, MCP clients, the CLI and GitHub issues hand work to cloud agents with a context bundle; queueing, verification with the repo's own check, delivery as a branch and PR, signed callbacks, follow-ups and take-over by engineers, `jobs`-scoped service tokens | #30 (M1–M2 built) |
 
 ## Cross-spec decisions
 
@@ -45,8 +48,22 @@ Where a spec conflicts with this list, this list wins. Specs will be updated to 
     - The queue orders by class, priority, fair share and age, with adaptive concurrency under a hard cap.
     - `Run` gains `task_id`, `subtask_id`, `attempt_no`, `priority`, `queue_class`, `owner` and `model`.
     - The workspace half of 0001 M10 (checkpoints) moves to phase 2 as 0004 M4, because Spot preemption is the normal case on GKE.
-14. **Harnesses come from packs (spec 0006, in planning).** Harness binaries ship as read-only OCI image volumes mounted at sandbox start, not baked into environment images. This was verified on GKE 1.36 with gVisor. Baking is the fallback for E2B and for Docker without the containerd image store. 0004's `model_flag` and 0005's per-harness parsers attach to the harness profile, not the environment.
+14. **Harnesses come from packs (spec 0006, M1–M3 built and live-tested 2026-10-12).** Harness binaries ship as read-only OCI image volumes mounted at sandbox start, not baked into environment images. This was verified on GKE 1.36 with gVisor. Baking is the fallback for E2B and for Docker without the containerd image store. 0004's `model_flag` and 0005's per-harness parsers attach to the harness profile, not the environment.
 
+
+15. **0007 extends 0003, 0005 and 0006; it does not fork them.**
+    - **MCP gateway:** a second protocol on 0003's gateway grant model, not a separate trust system.
+    - **Policy:** 0007's `policy:` block absorbs 0003's `network:` block as `policy.egress`.
+    - **Experiments:** 0007's `run_experiment` replaces 0005 M10's two-config `POST /api/evals`, keeping all eight of 0005's evaluation rules.
+    - **Parsers:** the Codex, pi and Antigravity parsers move from 0001 M7 and 0005 M3 into 0007 M6, starting from `evals/semver/spans.py`.
+
+16. **Hangar is a development control plane first; evals are a feature (owner, 2026-10-12).**
+    - **Priority:** sandboxes with agent harnesses for scaling coding work come first. Evals, labeling, the improvement loop and RL are built from the traces that real work produces. When the two conflict, development throughput and UX win.
+    - **Tasks:** development work is GitHub issues, 0004 tasks and `swarm` calls, checked by the repo's own commands. Harbor's task layout (`task.toml`, instruction, `tests/test.sh` → `reward.json`) is the only format for *graded* work (0007 experiments, regression sets, RL); `save_as_task` turns a finished run into one.
+    - **Forks:** disk-level forks on GKE are the default. Memory fork is opt-in (GKE Pod Snapshots, then E2B), chosen by 0008 M2's benchmark.
+    - **Trajectories:** ATIF v1.7 is the stored per-run export, built from 0007 M6's normalized spans; OTel stays the live channel.
+    - **Learned changes:** the improvement loop opens PRs and never merges to a team environment's default channel (consistent with 0002's human-approved landing).
+    - **Tickets:** GitHub Issues only (0007 OQ4); Linear is not planned.
 
 ## Build order
 
@@ -54,13 +71,14 @@ Phases are in order. Within a phase, items can run in parallel. Sizes: S ≤ 1 d
 
 | Phase | Goal | Milestones |
 | --- | --- | --- |
-| 0. Now | Close the open hole and capture test data | 0003 M0 (branch protection: **applied 2026-10-11**; `repo_guard` still to do) · 0001 M0 (fixtures, flag checks, baselines) · 0004 M0 (benchmarks) · 0005 M0 (OTLP fixtures) |
+| 0. Now | Close the open hole, capture test data, unblock capacity | 0003 M0 (branch protection: **applied 2026-10-11**; `repo_guard` still to do) · 0001 M0 (fixtures, flag checks, baselines) · 0004 M0 (benchmarks) · 0005 M0 (OTLP fixtures) · 0007 M0 (quota, disk, CPU requests) · 0007 M1 (async create) · 0007 M2 (builds without a laptop) |
 | 1. Runs you can trust | No more silent crashes, readable status, usage visible | 0001 M1 run model · 0001 M2 supervisor, liveness, cancel (with decision 1's probe rules) · 0001 M3 events and status · 0001 M4 usage and queue · 0004 M1 quick wins · 0005 M1 scrubbing |
-| 2. Real results | Results from git and GitHub, verification by hangar, fast starts | 0002 M2 collector and publish · 0002 M3 verification · 0001 M5 resume · 0001 M9 baked dependencies (independent, can start in phase 1) · 0004 M2 warm-pool forecasting · 0004 M3 image distribution · 0004 M4 checkpoints · 0004 M5 scheduler v2 · 0005 M2 OTLP ingest · 0005 M4 decision core (shadow mode, rules backend) |
+| 2. Real results | Results from git and GitHub, verification by hangar, fast starts | 0002 M2 collector and publish · 0002 M3 verification · 0001 M5 resume · 0001 M9 baked dependencies (independent, can start in phase 1) · 0004 M2 warm-pool forecasting · 0004 M3 image distribution · 0004 M4 checkpoints · 0004 M5 scheduler v2 · 0005 M2 OTLP ingest · 0005 M4 decision core (shadow mode, rules backend) · 0007 M3–M4 policy and budgets · 0007 M6 harness parsers · 0007 M7 `run_experiment` |
 | 3. Credentials out of sandboxes, tasks | Agents hold grants, not tokens; goals become supervised task graphs | 0003 M1 scopes (including `land`/`approve`) · 0003 M2 gateway skeleton · 0003 M3 git inspector · 0003 M4 App tokens, REST allowlist, PR tools · 0004 M6 task model · 0004 M7 detectors and ladder · 0004 M8 planner · 0005 M5 Decision-1 backend |
 | 4. Landing | Human-approved merges, parallel PRs, best-of-N | 0002 M7 land core · 0002 M8 notifiers · 0002 M11 conflicts and rebase · 0002 M5 fan-out and ranking · 0004 M9 decisions and escalations · 0004 M10 routing · 0004 M11 right-sizing · 0005 M6 remaining decision tasks |
 | 5. Network and front door | Default-deny egress, hardened dashboard | 0003 M5 dashboard hardening · 0003 M6 egress audit mode · 0003 M7 egress enforce · 0003 M8 IAP/SSO · 0003 M10 OAuth scopes and step-up · 0003 M11 E2B egress |
-| 6. Polish | One dashboard, more harnesses, optional extras | One combined dashboard (0001 M8, 0002 M9, 0004 M12, 0005 M8) · 0001 M7 harness parsers (now Codex, pi, Antigravity) · 0005 M3 pi parser · 0001 M10 stdin and transcript archive · 0005 M9–M10 insights and evals · 0003 M9 model proxy (if decision 9 clears) |
+| 6. Polish | One dashboard, team learning, optional extras | One combined dashboard (0001 M8, 0002 M9, 0004 M12, 0005 M8) · 0007 M5 MCP gateway (with phase 5's egress) · 0007 M8 labels and gold set · 0007 M9 lifecycle links · 0007 M10 team learnings · 0001 M10 stdin and transcript archive · 0005 M9–M10 insights and evals · 0003 M9 model proxy (if decision 9 clears) |
+| 7. Swarms and learning | Sandbox swarms for MCP clients, the improvement loop, the RL path | 0008 M1 nano profile and `exec_many` · M2 fork benchmark · M4 Harbor adapter (can start in phase 2) · M10 reward-hacking defenses (with M4) · M3 `swarm` · M5 ATIF export · M6–M8 review tab and reports (with 0007 M8) · M9 improvement loop · M11 rollout readiness (needs 0003 M9) · M12 Agents SDK provider |
 
 Each phase ends with its specs' live acceptance checks on GKE (0001 §8.2, 0002 §8, 0003 §8.2), recorded in the PR that closes the phase. The docs milestones (0001 M11, 0002 M12, 0003 M12) are folded into those phase-closing PRs.
 
