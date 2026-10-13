@@ -28,7 +28,7 @@ from mcp.shared.exceptions import NoBackChannelError
 from mcp_types import CallToolResult, ElicitResult, Icon, InputRequiredResult
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
-from hangar import exchange, mcp_tasks, observe  # mcp-modern: mcp_tasks has tasks and elicitation; --- observe
+from hangar import exchange, mcp_steer, mcp_tasks, observe  # mcp_tasks: tasks and elicitation; mcp_steer: live turns; --- observe
 from hangar import mcp_live as live  # workstream mcp-modern: typed results, hints, resources, prompts
 from hangar.broker import CredentialError
 from hangar.fleet import Fleet, FleetError
@@ -405,20 +405,22 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                               base_branch: str | None = None, idle_minutes: int | None = None,
                               budget: dict[str, Any] | None = None,
                               context: list[dict[str, Any]] | None = None,
-                              output_schema: dict[str, Any] | None = None) -> live.SessionOut:
+                              output_schema: dict[str, Any] | None = None,
+                              approvals: str | None = None) -> live.SessionOut:
             """Start a resumable stream of work (like a cloud Claude session): a sandbox of `environment` on branch
             hangar/session/<name>. With `message`, the agent starts on it right away. The conversation and repo
             state are checkpointed after every turn and when the session idles, so it can be picked up days later
             with send_to_session or open_session. `context`: attachments for the first turn, including your local
             work ({"kind": "patch"} uncommitted changes, {"kind": "bundle", "base_commit": ...} unpushed commits).
             `output_schema`: JSON Schema for a structured result. `budget` caps each agent turn:
-            {"max_minutes": 30, "max_tokens": 2000000, "max_cost_usd": 5}. Then call wait_for_turn(name)."""
+            {"max_minutes": 30, "max_tokens": 2000000, "max_cost_usd": 5}. `approvals`: ask = you approve the
+            agent's tool calls (wait_for_turn asks you), deny-risky, or auto. Then call wait_for_turn(name)."""
             who = current_actor.get()
             req = NewSession(name=name, environment=environment, repo=repo, message=message, harness=harness,
                              model=model, base_branch=base_branch, idle_minutes=idle_minutes,
                              budget=Budget.model_validate(budget) if budget else None,
                              context=[ContextItem.model_validate(c) for c in context or []],
-                             output_schema=output_schema)
+                             output_schema=output_schema, approvals=approvals)
             return sessions.view(sessions.new(req, owner=who, requester=who))
 
         @tool()
@@ -504,15 +506,51 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
 
             deadline = time.monotonic() + max(1, min(600, int(timeout_seconds)))
             modern = ctx.protocol_version in MODERN_PROTOCOL_VERSIONS
-            note = None
+            note = approved = None
+            skip: list[str] = []  # --- workstream steer: approvals the user declined to answer here
             if ctx.input_responses and ctx.request_state:  # a 2026-07-28 retry carrying the user's answer
                 st = json.loads(ctx.request_state)  # minted below; the SDK verified its seal
                 resp = ctx.input_responses.get(st.get("key", ""))
-                if st.get("ref") == ref and isinstance(resp, ElicitResult):
+                skip = [str(x) for x in st.get("skip") or []][-50:]
+                if st.get("ref") == ref and isinstance(resp, ElicitResult) and st.get("approval"):
+                    approved = await mcp_steer.answer_elicited(sessions, jobs, ref, str(st["approval"]), resp,
+                                                               current_actor.get())
+                    skip += [str(st["approval"])] if approved in ("declined", "cancelled") else []
+                elif st.get("ref") == ref and isinstance(resp, ElicitResult):
                     note = mcp_tasks.answer(sessions, jobs, ref, int(st["turn"]), resp, current_actor.get())
+            asks = mcp_tasks.supports_form_elicitation(ctx.client_capabilities)
+
+            def approval_waits() -> bool:
+                return mcp_steer.first_pending(sessions, jobs, ref, skip) is not None
+
             while True:
                 left = max(1, int(deadline - time.monotonic()))
-                turn = await exchange.wait_for_turn(sessions, jobs, ref, left, report)
+                turn = await exchange.wait_for_turn(sessions, jobs, ref, left, report,
+                                                    until=approval_waits if asks else None)
+                # --- workstream steer: the agent waits on a tool approval; ask the user
+                ap = mcp_steer.first_pending(sessions, jobs, ref, skip) if asks and not turn["done"] else None
+                if ap is not None and time.monotonic() < deadline:
+                    label, a = ap
+                    key = f"approve-{a.id}"
+                    if modern:
+                        state = json.dumps({"ref": ref, "approval": a.id, "key": key, "skip": skip})
+                        return InputRequiredResult(input_requests={key: mcp_steer.approval_request(label, a)},
+                                                   request_state=state)
+                    try:
+                        wait = min(ELICIT_WAIT_SECONDS, max(1.0, (a.expires_at or 0) - time.time()))
+                        with anyio.fail_after(wait):
+                            form = await ctx.elicit(mcp_steer.message(label, a), mcp_steer.ApprovalForm)
+                    except (NoBackChannelError, TimeoutError, ValueError) as e:
+                        log.info("could not ask the client about %s's approval: %s", ref, e)
+                        asks = False
+                        continue
+                    approved = await mcp_steer.answer_elicited(sessions, jobs, ref, a.id, ElicitResult(
+                        action=form.action, content=form.data.model_dump() if form.action == "accept" else None),
+                        current_actor.get())
+                    skip += [a.id] if approved in ("declined", "cancelled") else []
+                    continue
+                if not turn["done"] and time.monotonic() < deadline:  # the approval was answered elsewhere
+                    continue
                 q = mcp_tasks.open_question(sessions, jobs, ref) if turn["done"] else None
                 if q is None or note in ("declined", "cancelled") or time.monotonic() >= deadline \
                         or not mcp_tasks.supports_form_elicitation(ctx.client_capabilities):
@@ -535,6 +573,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                 if note != "answered":
                     break
             out = {**turn, "elicitation": note} if note else turn
+            if approved:  # workstream steer
+                out = {**out, "approval": approved}
             uri = live.job_uri(turn["job"]) if turn.get("job") else live.session_uri(turn.get("session") or ref)
             return mcp_tasks.tool_result(out, out, [uri])
 
@@ -570,6 +610,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                 return data.decode("utf-8")
             except UnicodeDecodeError:
                 return data
+
+        mcp_steer.register(mcp, tool, sessions, jobs, current_actor.get)  # workstream steer: steer_turn, approvals
 
         # --- workstream mcp-modern: jobs and sessions as resources clients can follow, and workflow prompts
         live.register_resources(mcp, sessions, jobs)

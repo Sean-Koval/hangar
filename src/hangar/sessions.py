@@ -34,6 +34,7 @@ from hangar.fleet import Fleet, FleetError, _clip_tail
 from hangar.harnesses import get_harness
 from hangar.models import (
     SESSION_LIVE,
+    ApprovalPolicy,
     Budget,
     Checkpoint,
     ContextItem,
@@ -77,6 +78,7 @@ class NewSession(BaseModel):
     # workstream E: attachments and local work for the first turn, and the structured result it must produce
     context: list[ContextItem] = Field(default_factory=list)
     output_schema: dict[str, Any] | None = None
+    approvals: ApprovalPolicy | None = None  # workstream steer: auto | ask | deny-risky (default: the environment's)
 
 
 def extract_summary(harness: str | None, log_text: str) -> str | None:
@@ -224,7 +226,7 @@ class SessionService:
         s = Session(name=req.name, title=(req.title or (req.message or req.name).strip().splitlines()[0])[:200],
                     owner=owner, environment=env, harness=harness, model=req.model,
                     repo=req.repo or (spec.repo.url if spec.repo else None), base_branch=req.base_branch,
-                    branch=branch, labels=req.labels,
+                    branch=branch, labels=req.labels, approvals=req.approvals,
                     idle_minutes=(req.idle_minutes if req.idle_minutes is not None
                                   else self.settings.session_idle_minutes))
         s.budget = resolve_budget(req.budget, self.settings)

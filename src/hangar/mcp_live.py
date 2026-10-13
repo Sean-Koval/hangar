@@ -73,6 +73,9 @@ class TurnOut(_Out):
     pr_url: str | None = None
     branch: str | None = None
     elicitation: str | None = None  # what happened when hangar asked you the agent's question
+    # --- workstream steer: tool calls the agent waits on, and what happened when hangar asked you about one
+    pending_approvals: list[dict[str, Any]] = []
+    approval: str | None = None
 
 
 class JobResultOut(_Out):
@@ -97,6 +100,7 @@ class JobOut(_Out):
     result: JobResultOut | None = None
     usage: dict[str, Any] | None = None
     turn: dict[str, Any] | None = None  # when it ran as a task: its last turn, as wait_for_turn returns it
+    pending_approvals: list[dict[str, Any]] = []  # workstream steer: answer with answer_approval
 
 
 class SessionOut(_Out):
@@ -111,6 +115,7 @@ class SessionOut(_Out):
     last_summary: str | None = None
     sandbox_id: str | None = None
     turn: dict[str, Any] | None = None  # when it ran as a task: the turn, as wait_for_turn returns it
+    pending_approvals: list[dict[str, Any]] = []  # workstream steer: answer with answer_approval
 
 
 class ForkOut(_Out):
@@ -196,6 +201,9 @@ TOOL_HINTS: dict[str, ToolAnnotations] = {
     "create_schedule": _hint(open_world=True),
     "delete_schedule": _hint(destructive=True, idempotent=True),
     "run_schedule_now": _hint(open_world=True),
+    # --- workstream steer
+    "steer_turn": _hint(open_world=True),
+    "answer_approval": _hint(open_world=True),
 }
 
 
