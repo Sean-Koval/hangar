@@ -341,3 +341,14 @@ async def test_recorded_digests_are_of_what_was_stored(svc, world, fleet, monkey
     ck = await svc.checkpoint_now("torn", requester="sean")
     stored = svc.vault.decrypt((svc.root / s.id / ck.id / "wip.patch.enc").read_bytes())
     assert ck.digests["wip.patch"] == hashlib.sha256(stored).hexdigest()
+
+
+async def test_local_store_put_never_writes_through_a_shared_inode(tmp_path):
+    """Copies are hard links. A copy interrupted between link and rename leaves `<key>.part` sharing the source's
+    inode; a later put to that key must replace it, not write into the earlier checkpoint's blob."""
+    s = LocalStore(tmp_path)
+    await s.put("ses/a/x.enc", b"earlier checkpoint")
+    (tmp_path / "ses/b").mkdir(parents=True)
+    os.link(tmp_path / "ses/a/x.enc", tmp_path / "ses/b/x.enc.part")
+    await s.put("ses/b/x.enc", b"new")
+    assert await s.get("ses/a/x.enc") == b"earlier checkpoint" and await s.get("ses/b/x.enc") == b"new"

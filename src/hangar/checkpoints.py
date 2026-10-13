@@ -49,6 +49,7 @@ class LocalStore:
         def write() -> None:
             p.parent.mkdir(parents=True, exist_ok=True)
             tmp = p.with_suffix(p.suffix + ".part")
+            tmp.unlink(missing_ok=True)  # review(perf): a leftover may be a hard link to another checkpoint's blob
             tmp.write_bytes(data)
             tmp.replace(p)
 
