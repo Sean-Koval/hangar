@@ -63,6 +63,7 @@ MAX_SCHEMA = 64_000
 MAX_QUESTION = 8000
 _OID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")  # a full commit id, as git rev-parse prints it
 MAX_UNTRACKED_FILES = 20_000  # entries restored from a session's untracked-files archive by `session pull`
+MAX_UNTRACKED_BYTES = 1 << 30  # ...and bytes: the archive's cap is compressed, and gzip expands ~1000x
 # Agent-written files are served as downloads; never let a browser render these on hangar's origin.
 _ACTIVE_TYPES = {"text/html", "image/svg+xml", "application/xhtml+xml", "text/javascript", "application/javascript",
                  "text/xml", "application/xml"}
@@ -1087,6 +1088,7 @@ def _extract_untracked(top: Path, data: bytes) -> list[str]:
     filter isn't enough: it lets a member write through an in-tree symlink (into .git/hooks, say)."""
     notes: list[str] = []
     gitdir = os.stat(_out(_git(top, "rev-parse", "--absolute-git-dir")))
+    written = 0
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
         for i, m in enumerate(tf):
             if i >= MAX_UNTRACKED_FILES:
@@ -1095,6 +1097,10 @@ def _extract_untracked(top: Path, data: bytes) -> list[str]:
                 break
             if why := _unsafe_member(top, gitdir, m):
                 notes.append(f"skipped {m.name}: {why}")
+                continue
+            if m.isreg() and written + m.size > MAX_UNTRACKED_BYTES:
+                notes.append(f"skipped {m.name}: the session's untracked files would take more than "
+                             f"{MAX_UNTRACKED_BYTES // MB} MB")
                 continue
             target = top.joinpath(*[p for p in m.name.split("/") if p not in ("", ".")])
             if os.path.lexists(target):
@@ -1112,6 +1118,7 @@ def _extract_untracked(top: Path, data: bytes) -> list[str]:
                              0o755 if m.mode & 0o100 else 0o644)
                 with os.fdopen(fd, "wb") as out:
                     shutil.copyfileobj(src, out)  # type: ignore[misc]
+                written += m.size
     return notes
 
 

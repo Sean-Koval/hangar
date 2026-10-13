@@ -310,6 +310,20 @@ def test_untracked_archive_is_bounded(tmp_path, monkeypatch):
     assert sum((repo / f"f{i}").exists() for i in range(5)) == 3 and any("more than 3" in n for n in notes)
 
 
+def test_untracked_archive_cannot_fill_the_requesters_disk(tmp_path, monkeypatch):
+    """The archive is capped compressed, not expanded: a few MB of gzip can expand to many GB on the requester's
+    machine. What is restored is capped in bytes too."""
+    monkeypatch.setattr(exchange, "MAX_UNTRACKED_BYTES", 1 << 20, raising=False)
+    repo = _repo(tmp_path)
+    head = _git("rev-parse", "HEAD", cwd=repo).strip()
+    data = _tgz([("file", "small", b"ok\n"), ("file", "bomb", bytes(2 << 20)), ("file", "after", b"ok\n")])
+    assert len(data) < 64 * 1024
+    notes = exchange.pull_into(repo, "s1", {"head": head}, {"untracked.tgz": data}, checkout=True)
+    assert not (repo / "bomb").exists()
+    assert (repo / "small").read_bytes() == b"ok\n" and (repo / "after").read_bytes() == b"ok\n"
+    assert any("bomb" in n and "MB" in n for n in notes), notes
+
+
 # ============================================================================ review of #48 (second pass)
 async def test_idle_connections_cannot_lock_other_sandboxes_out(fleet):
     """uvicorn's limit_concurrency counts open connections, including ones that never send a request (there is no
