@@ -740,6 +740,8 @@ def session_new(
     from_local: bool = typer.Option(False, "--from-local", help="Continue this checkout in the cloud: hand over "
                                     "its unpushed commits and uncommitted changes (and default --repo/--base)."),
     schema: Path | None = typer.Option(None, "--schema", help="JSON Schema file for a structured result."),
+    approvals: str | None = typer.Option(None, "--approvals", help="Tool approvals: ask (you answer, see `hangar "
+                                         "session approvals`), deny-risky, or auto (default: the environment's)."),
 ):
     """Start a session. Example:  hangar session new csv-fix "fix unicode in CSV export" -e hangar-jobs -w
 
@@ -756,7 +758,8 @@ def session_new(
                                               "base_branch": base, "harness": harness, "model": model,
                                               "idle_minutes": idle, "context": items,
                                               "budget": _budget(max_minutes, max_tokens, max_cost),
-                                              **({"output_schema": _schema(schema)} if schema else {})})
+                                              **({"output_schema": _schema(schema)} if schema else {}),
+                                              **({"approvals": approvals} if approvals else {})})
     typer.secho(f"{x['name']} ({x['id']}) {x['state']} on {x['branch']}", fg="green")
     if wait:
         _print_summary(_wait_session(x["id"]))
@@ -1109,6 +1112,11 @@ def schedule_run(ref: str):
 def schedule_rm(ref: str):
     typer.echo(f"deleted {_call('DELETE', f'/api/schedules/{ref}')['deleted']}")
 
+
+# ---------------------------------------------------------------------------- workstream steer (steer_cli.py)
+from hangar import steer_cli as _steer  # noqa: E402
+
+_steer.register(session_app)
 
 # ---------------------------------------------------------------------------- workstream setup (setup_cli.py)
 from hangar import setup_cli as _setup  # noqa: E402
