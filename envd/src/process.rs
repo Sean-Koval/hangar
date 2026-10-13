@@ -35,6 +35,8 @@ const CHUNK: usize = 32 * 1024;
 /// Chunks queued per attached client before the process waits for it.
 const SUB_QUEUE: usize = 16;
 const MAX_SUBSCRIBERS: usize = 8;
+/// How long the process waits for one client to take a chunk before giving up on that client.
+const STALLED_CLIENT: Duration = Duration::from_secs(60);
 /// After the process exits, how long to keep reading output its leftover children still write to the same pipes.
 const DRAIN_AFTER_EXIT: Duration = Duration::from_secs(2);
 
@@ -151,14 +153,20 @@ impl Proc {
         Ok(rx)
     }
 
+    /// Hands `ev` to every attached client, waiting for each: output is never queued beyond SUB_QUEUE chunks per
+    /// client. A client that takes nothing for STALLED_CLIENT (a dead connection nobody closed) is let go, so it
+    /// can't hold the process up for good; its stream ends without an exit event.
     async fn fanout(&self, ev: Ev) {
         let subs: Vec<mpsc::Sender<Ev>> = self.subs.lock().unwrap().list.clone();
-        let mut closed = false;
+        let mut gone = Vec::new();
         for s in &subs {
-            closed |= s.send(ev.clone()).await.is_err();
+            match tokio::time::timeout(STALLED_CLIENT, s.send(ev.clone())).await {
+                Ok(Ok(())) => {}
+                _ => gone.push(s.clone()),
+            }
         }
-        if closed {
-            self.subs.lock().unwrap().list.retain(|t| !t.is_closed());
+        if !gone.is_empty() {
+            self.subs.lock().unwrap().list.retain(|t| !t.is_closed() && !gone.iter().any(|g| g.same_channel(t)));
         }
     }
 

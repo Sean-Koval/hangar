@@ -1,3 +1,6 @@
+// Vendored unchanged from github.com/e2b-dev/infra, packages/envd/spec (Apache-2.0), fetched 2026-10-13.
+// hangar-envd implements this service so the stock E2B SDKs can talk to it; see docs/envd.md.
+
 syntax = "proto3";
 
 package filesystem;

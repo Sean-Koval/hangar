@@ -120,7 +120,8 @@ The daemon runs inside a sandbox that runs untrusted code, so the trust boundary
 - **Process hygiene.** The token is removed from the daemon's environment before anything starts, so commands don't
   inherit it. Commands get `oom_score_adj` 100, so the OOM killer takes them before the daemon.
 - **Limits.** 512 processes at once, 8 clients attached to one process, 16 queued output chunks per client (a slow
-  client slows the process, like a terminal, instead of growing memory), 64 directory watches, 16,384 watched
+  client slows the process, like a terminal, instead of growing memory; one that takes nothing for a minute is
+  dropped), 64 directory watches, 16,384 watched
   directories per watch, 100,000 entries per listing, 8 MiB signed request bodies, paths up to 4 KiB with no NUL.
   Paths resolve like E2B's (`~` and relative paths from the user's home, then cleaned lexically).
 

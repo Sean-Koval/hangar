@@ -259,7 +259,8 @@ class Envd:
             self._mark_down(sb, str(e) or type(e).__name__)
             return
         finally:
-            self._starting.pop(sb.id, None)
+            if self._starting.get(sb.id) is asyncio.current_task():
+                del self._starting[sb.id]
         if sb.provider_ref != ref:
             return  # replaced meanwhile
         self._eps[sb.id] = ep
@@ -552,7 +553,9 @@ class EnvdTerminal(TerminalStream):
             pass  # already gone
         aclose = getattr(self._events, "aclose", None)
         if aclose is not None:
-            await aclose()
+            # A read still unwinding from its task's cancellation holds the stream; the killed process ends it then.
+            with contextlib.suppress(RuntimeError):
+                await aclose()
 
 
 # ---------------------------------------------------------------------- providers
