@@ -1,0 +1,306 @@
+{
+  "meta": {
+    "bench": "control.py",
+    "side": "before",
+    "rounds": 1
+  },
+  "metrics": {
+    "api_idle_healthz": {
+      "n": 28,
+      "p50_ms": 1.85,
+      "p95_ms": 4.03
+    },
+    "api_idle_sessions": {
+      "n": 28,
+      "p50_ms": 1.95,
+      "p95_ms": 2.92
+    },
+    "api_idle_sandboxes": {
+      "n": 28,
+      "p50_ms": 1.71,
+      "p95_ms": 2.19
+    },
+    "api_idle_jobs": {
+      "n": 28,
+      "p50_ms": 1.58,
+      "p95_ms": 1.9
+    },
+    "api_load_healthz": {
+      "n": 531,
+      "p50_ms": 2.05,
+      "p95_ms": 8.55
+    },
+    "api_load_sessions": {
+      "n": 531,
+      "p50_ms": 18.77,
+      "p95_ms": 45.14
+    },
+    "api_load_sandboxes": {
+      "n": 531,
+      "p50_ms": 10.04,
+      "p95_ms": 29.01
+    },
+    "api_load_jobs": {
+      "n": 531,
+      "p50_ms": 14.74,
+      "p95_ms": 40.56
+    },
+    "api_load_exec": {
+      "n": 296,
+      "p50_ms": 12.15,
+      "p95_ms": 94.28
+    },
+    "session_first_output": {
+      "n": 50,
+      "p50_ms": 3455.03,
+      "p95_ms": 3928.16
+    },
+    "session_turn": {
+      "n": 50,
+      "p50_ms": 8478.49,
+      "p95_ms": 9052.38
+    },
+    "turn_end_detect": {
+      "n": 50,
+      "p50_ms": 2307.86,
+      "p95_ms": 2638.94
+    },
+    "job_first_output": {
+      "n": 50,
+      "p50_ms": 37639.61,
+      "p95_ms": 65728.78
+    },
+    "job_total": {
+      "n": 50,
+      "p50_ms": 42862.79,
+      "p95_ms": 70885.85
+    },
+    "resume_first_output": {
+      "n": 50,
+      "p50_ms": 2956.4,
+      "p95_ms": 3437.49
+    }
+  },
+  "notes": {
+    "submit_all_s": 3.16,
+    "phase1_wall_s": 75.81,
+    "server_phase1": {
+      "loop_lag_p50_ms": 0.41,
+      "loop_lag_p95_ms": 16.1,
+      "loop_lag_max_ms": 317.3,
+      "samples": 1399,
+      "threads": 10,
+      "rss_mb": 109.4,
+      "max_rss_mb": 109.2,
+      "cpu_s": 24.11,
+      "blocked_stacks": [
+        {
+          "samples": 2,
+          "stack": [
+            "fastapi/routing.py:2786 app",
+            "fastapi/routing.py:1310 handle",
+            "starlette/routing.py:282 handle",
+            "fastapi/routing.py:165 app",
+            "starlette/_exception_handler.py:42 wrapped_app",
+            "fastapi/routing.py:151 app",
+            "fastapi/routing.py:727 app",
+            "fastapi/routing.py:360 run_endpoint_function",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/app.py:807 session_new",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/sessions.py:233 new",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/sessions.py:365 _save",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/store.py:53 put",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run"
+          ]
+        },
+        {
+          "samples": 2,
+          "stack": [
+            "uvicorn/main.py:632 run",
+            "uvicorn/server.py:86 run",
+            "/usr/lib/python3.12/asyncio/runners.py:194 run",
+            "/usr/lib/python3.12/asyncio/runners.py:118 run",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/jobs.py:222 _worker",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/jobs.py:510 _process",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/jobs.py:551 _provision",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/sessions.py:733 ensure_sandbox",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/sessions.py:398 _boot",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/fleet.py:547 create",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/fleet.py:521 stage",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/store.py:53 put",
+            "  other: pathlib.py:1313 mkdir < pathlib.py:1318 mkdir < conftest.py:86 create",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run"
+          ]
+        },
+        {
+          "samples": 1,
+          "stack": [
+            "fastapi/routing.py:2786 app",
+            "fastapi/routing.py:1310 handle",
+            "starlette/routing.py:282 handle",
+            "fastapi/routing.py:165 app",
+            "starlette/_exception_handler.py:42 wrapped_app",
+            "fastapi/routing.py:151 app",
+            "fastapi/routing.py:727 app",
+            "fastapi/routing.py:360 run_endpoint_function",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/app.py:807 session_new",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/sessions.py:233 new",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/sessions.py:365 _save",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/store.py:53 put",
+            "  other: selectors.py:428 select < subprocess.py:2161 _communicate < subprocess.py:1230 communicate",
+            "  other: selectors.py:428 select < subprocess.py:2161 _communicate < subprocess.py:1230 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: pathlib.py:1313 mkdir < pathlib.py:1318 mkdir < pathlib.py:1318 mkdir",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: threading.py:365 wait < queue.py:165 get < _asyncio.py:1089 run",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: selectors.py:428 select < subprocess.py:2161 _communicate < subprocess.py:1230 communicate",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run"
+          ]
+        },
+        {
+          "samples": 1,
+          "stack": [
+            "fastapi/routing.py:1310 handle",
+            "starlette/routing.py:282 handle",
+            "fastapi/routing.py:165 app",
+            "starlette/_exception_handler.py:42 wrapped_app",
+            "fastapi/routing.py:151 app",
+            "fastapi/routing.py:727 app",
+            "fastapi/routing.py:360 run_endpoint_function",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/app.py:807 session_new",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/sessions.py:228 new",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/sessions.py:370 _set",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/sessions.py:365 _save",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/store.py:53 put",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run"
+          ]
+        },
+        {
+          "samples": 1,
+          "stack": [
+            "/home/claude/hangar/.claude/worktrees/agent-a6acacadc70443a7b/scripts/bench/fakeserver.py:134 <module>",
+            "/home/claude/hangar/.claude/worktrees/agent-a6acacadc70443a7b/scripts/bench/fakeserver.py:127 main",
+            "uvicorn/main.py:632 run",
+            "uvicorn/server.py:86 run",
+            "/usr/lib/python3.12/asyncio/runners.py:194 run",
+            "/usr/lib/python3.12/asyncio/runners.py:118 run",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/sessions.py:622 _turn",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/sessions.py:772 begin_turn",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/fleet.py:971 run_agent",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/fleet.py:440 _touch",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/store.py:53 put",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: selectors.py:428 select < subprocess.py:2161 _communicate < subprocess.py:1230 communicate",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run"
+          ]
+        },
+        {
+          "samples": 1,
+          "stack": [
+            "/home/claude/hangar/.claude/worktrees/agent-a6acacadc70443a7b/scripts/bench/fakeserver.py:134 <module>",
+            "/home/claude/hangar/.claude/worktrees/agent-a6acacadc70443a7b/scripts/bench/fakeserver.py:127 main",
+            "uvicorn/main.py:632 run",
+            "uvicorn/server.py:86 run",
+            "/usr/lib/python3.12/asyncio/runners.py:194 run",
+            "/usr/lib/python3.12/asyncio/runners.py:118 run",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/sessions.py:622 _turn",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/sessions.py:768 begin_turn",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/sessions.py:365 _save",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/store.py:53 put",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run"
+          ]
+        },
+        {
+          "samples": 1,
+          "stack": [
+            "fastapi/routing.py:1310 handle",
+            "starlette/routing.py:282 handle",
+            "fastapi/routing.py:165 app",
+            "starlette/_exception_handler.py:42 wrapped_app",
+            "fastapi/routing.py:151 app",
+            "fastapi/routing.py:727 app",
+            "fastapi/routing.py:360 run_endpoint_function",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/app.py:703 job_submit",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/jobs.py:326 submit",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/jobs.py:486 _event",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/jobs.py:477 _save",
+            "/tmp/claude-0/-home-claude-hangar/56a7e70a-6e57-5d43-9d5d-4e2eab0c5308/scratchpad/perf/main/src/hangar/store.py:53 put",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run"
+          ]
+        }
+      ]
+    },
+    "job_states": {
+      "succeeded": 50
+    },
+    "suspend_all_s": 1.76,
+    "phase2_wall_s": 9.85,
+    "server_phase2": {
+      "loop_lag_p50_ms": 2.92,
+      "loop_lag_p95_ms": 60.52,
+      "loop_lag_max_ms": 125.0,
+      "samples": 207,
+      "threads": 10,
+      "rss_mb": 116.5,
+      "max_rss_mb": 116.4,
+      "cpu_s": 29.37,
+      "blocked_stacks": []
+    }
+  }
+}
