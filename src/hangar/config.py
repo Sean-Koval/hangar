@@ -100,9 +100,11 @@ class Settings(BaseSettings):
     session_checkpoint_minutes: int = 10  # periodic checkpoint while a sandbox is attached and changed
     session_keep_checkpoints: int = 5
     session_max_untracked_mb: int = 20  # untracked files above this are not checkpointed (warning)
+    session_max_part_mb: int = 100  # any other checkpoint part above this is skipped (warning)
+    session_handoff_turns: int = 10  # earlier turns summarised in a handoff prompt
     session_poll_seconds: float = 5.0
     session_turn_timeout_minutes: int = 120
-    pre_destroy_timeout_seconds: float = 120.0
+    pre_destroy_timeout_seconds: float = 300.0
 
     # --- GitHub (jobs delivery and trigger) ---------------------------------
     github_api_url: str = "https://api.github.com"

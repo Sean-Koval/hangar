@@ -239,6 +239,7 @@ class SessionTurn(BaseModel):
     run_id: str | None = None
     harness: str | None = None
     mode: Literal["new", "resume", "handoff"] = "new"
+    conversation: str | None = None  # the harness conversation id this turn used (preset ids are known up front)
     started_at: float | None = None
     finished_at: float | None = None
     exit_code: int | None = None

@@ -176,8 +176,10 @@ async def test_idle_suspend_and_interval_checkpoint(svc, world, fleet, settings)
     await svc.tick()
     assert [c.reason for c in s.checkpoints] == ["interval"]
     s.checkpoints[-1].ts -= 3600
+    svc._last_checked.pop(s.id, None)
     await svc.tick()
-    assert len(s.checkpoints) == 1  # nothing changed since
+    assert len(s.checkpoints) == 1  # nothing changed since: fingerprint matches, no new checkpoint
+    assert svc._last_checked.get(s.id)  # ...and it won't re-run the check every minute
     # idle past idle_minutes -> suspended
     s.last_active_at -= 6 * 60
     await svc.tick()
@@ -237,3 +239,33 @@ def test_extract_summary():
     assert extract_summary("codex", codex) == "Codex done."
     assert extract_summary("pi", pi) == "pi done"
     assert extract_summary(None, "plain output\nlast line") .endswith("last line")
+
+
+async def test_bad_checkpoint_falls_back_and_turn_extends_ttl(svc, world, fleet, settings):
+    svc.new(NewSession(name="fb", environment="sesenv", repo=world["url"], message="start"), owner="admin",
+            requester="sean")
+    s = await settle(svc, "fb")
+    good = s.checkpoints[-1]
+    # the sandbox must outlive a whole turn
+    assert fleet.get(s.sandbox_id).expires_at > s.turns[0].started_at + settings.session_turn_timeout_minutes * 60
+    svc.suspend("fb", requester="sean")
+    s = await settle(svc, "fb")
+    s.checkpoints[-1].head = "0" * 40  # newest is unrestorable (e.g. head/bundle mismatch)
+    svc.open("fb", requester="sean")
+    s = await settle(svc, "fb")
+    assert s.state == SessionState.IDLE and "older checkpoint" in (s.reason or ""), s.reason
+    repo = box(fleet, s.sandbox_id) / "workspace" / "remote"
+    assert (repo / "a.txt").exists() and (repo / "notes.txt").exists() and good.head
+    # switching harness on a live session is refused (its sandbox holds the other harness's credentials)
+    with pytest.raises(SessionError, match="suspend"):
+        svc.open("fb", requester="sean", harness="plain-agent")
+
+
+def test_handoff_is_capped(svc, settings):
+    from hangar.models import Session, SessionTurn
+
+    settings.session_handoff_turns = 3
+    s = Session(name="h", environment="sesenv", branch="b",
+                turns=[SessionTurn(message=f"m{i} " + "x" * 5000, summary="s" * 5000) for i in range(20)])
+    text = svc._handoff(s)
+    assert "16 earlier turns omitted" in text and "m16" in text and "m15" not in text and len(text) < 6000

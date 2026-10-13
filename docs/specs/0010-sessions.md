@@ -99,8 +99,8 @@ These steps run in the sandbox. Each artifact is read back by the control plane 
 | Part | How | Notes |
 | --- | --- | --- |
 | `agent.tgz` | `tar czf - -C ~ <harness session dirs that exist>` | Conversation files only. Credential files are never in these directories. |
-| `repo.bundle` | `git bundle create - <base>..HEAD` when there are commits beyond `base` | `base` is the commit the session started from, or the last pushed one |
-| `wip.patch` | `git diff --binary HEAD` | Staged and unstaged changes |
+| `repo.bundle` | HEAD is read once and pinned to `refs/hangar/checkpoint`, then `git bundle create … refs/hangar/checkpoint --not --remotes` (falling back to `--not <base>`) | Commits the remote doesn't have. Pinning HEAD means a commit landing mid-checkpoint can't make the recorded head and the bundle disagree. |
+| `wip.patch` | `git diff --binary <pinned HEAD>` | Staged and unstaged changes |
 | `untracked.tgz` | `git ls-files -z --others --exclude-standard \| tar --null -T - -czf -` | Respects `.gitignore`. Skipped with a warning above `session_max_untracked_mb` (default 50). |
 | `meta.json` | branch, head, base, harness, harness_session, cwd | |
 
@@ -112,14 +112,21 @@ Checkpoints are taken:
 
 The last `session_keep_checkpoints` (default 5) are kept.
 
+**Limits:**
+- Every part is capped: `session_max_part_mb` (default 100), and `session_max_untracked_mb` (default 20) for untracked files. An oversized part is skipped with a warning on the checkpoint.
+- A partial checkpoint (timeout, error) is deleted, never recorded.
+- Interval checkpoints compare a fingerprint first: HEAD, the diff hash, untracked file names/sizes/mtimes, and the conversation files' listing. They skip when nothing changed.
+
 ### 5.3 Resume
 
 `open(session)`:
 1. Create a sandbox from `environment` with the session's `harness`, on `repo` at `base_branch`, with labels `hangar.session=<id>`. The sandbox comes from the warm pool when there is one.
-2. Fetch `origin/<branch>` if it exists, then fetch the bundle on top of `base`. Check out `branch` at `head`.
+2. Reset the tree (`git reset --hard && git clean -fd`, in case environment setup touched tracked files). Fetch the bundle (or the head commit) and check out `branch` at `head`.
 3. `git apply --binary wip.patch`, then untar `untracked.tgz`.
 4. Untar `agent.tgz` into `~`.
-5. State `ACTIVE`. The terminal hint is `claude --resume <harness_session>` (or the equivalent).
+5. State `IDLE`. The terminal hint is `claude --resume <harness_session>` (or the equivalent).
+
+If the newest checkpoint doesn't restore (for example, its head is missing), the older ones are tried in turn, newest first. The session's status says which one was used, so one bad checkpoint can't brick a session.
 
 `send(session, message)` resumes first if the session is suspended, then runs one agent turn with the resume flags:
 - **Claude Code:** `--session-id <new uuid>` on the first turn, `--resume <uuid>` after that.
@@ -165,8 +172,9 @@ This works for any harness. It is used when a harness has no resume support (Ant
 ## 6. Security
 
 - Checkpoints are encrypted at rest with the vault key, and can only be read through the owner's session API.
-- **Credentials are never checkpointed.** The harness session directories don't contain them. `~/.hangar/env`, `.codex/auth.json` and `.claude.json` are excluded explicitly, and secrets are injected fresh on resume.
-- Transcripts may contain things the agent read, including secrets in the repo or in tool output. They are treated as sensitive, like the audit log. `broker.redact` is applied to summaries shown in lists and comments. The raw transcript is only restored into the owner's sandboxes.
+- **Credential files are not checkpointed.** Only the harnesses' conversation directories are archived (`~/.claude/projects`, `~/.codex/sessions`, `~/.pi/agent/sessions`). Auth files and `~/.hangar/env` live elsewhere, and secrets are injected fresh on resume.
+- **Transcripts can still contain secrets** if the agent printed one (for example `env`, or a key in a file it read). Transcripts are not redacted, because that would break resume. They are treated as sensitive, like the audit log. Summaries shown in lists and comments go through `broker.redact`.
+- **Access:** M1 sessions are admin-only (REST `admin` scope and MCP), and every admin can see and resume every session. Per-owner restriction comes with user accounts (0002 OQ11).
 - Restore runs inside the new sandbox; the control plane does not run git on untrusted bundles.
 
 ## 7. Milestones
