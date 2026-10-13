@@ -486,6 +486,51 @@ async def test_best_of_n_through_the_gateway_winner_losers_and_follow_ups_push(j
     assert log[:2] == ["choose B", "choose B"], log
 
 
+# ---------------------------------------------------------------------------- needs_input x A2A x idle suspend
+async def test_a2a_input_required_then_a_reply_by_task_id_finishes_the_job(jobs, world, settings, store):
+    from fastapi import FastAPI
+
+    from hangar.a2a import COMPLETED, INPUT_REQUIRED, A2AServer
+    from hangar.auth import TokenAuth
+    from tests.test_a2a import ADMIN, BASE, _http, msg, rpc
+
+    settings.public_url, settings.a2a_poll_seconds = BASE, 0.05
+    server = A2AServer(jobs, TokenAuth(store, ADMIN), Vault(store, b"0" * 43 + b"="), settings)
+    app = FastAPI()
+    server.mount(app)
+    world["mode"].write_text("ask")
+    async with _http(app) as http:
+        meta = {"repo": world["url"], "environment": "seamenv", "verify": "test -f choice.txt"}
+        task = (await rpc(http, "SendMessage", {"message": msg("pick one"), "metadata": meta}))["result"]["task"]
+        assert task["status"]["state"] == INPUT_REQUIRED, task["status"]
+        assert task["status"]["message"]["parts"][0]["text"] == "A or B? (attempt 0)"
+        res = await rpc(http, "SendMessage", {"message": msg("TASK-ANSWER: B", taskId=task["id"])})
+        task = res["result"]["task"]
+    assert task["status"]["state"] == COMPLETED, task["status"]
+    assert any(p.get("text") == "Went with B" for a in task["artifacts"] for p in a["parts"])
+    job = jobs.get(task["id"])
+    assert len(job.turns) == 2 and jobs.sessions.get(job.session_id).needs_input is None
+
+
+async def test_a_session_question_survives_an_idle_suspend(sessions, world):
+    world["mode"].write_text("ask")
+    sessions.new(NewSession(name="q", environment="seamenv", repo=world["url"], message="pick one"), owner="admin",
+                 requester="sean")
+    s = await settle(sessions, "q")
+    assert s.needs_input == "A or B? (attempt 0)"
+    s.last_active_at -= 3600
+    sb = sessions.fleet.get(s.sandbox_id)
+    sb.last_activity -= 3600
+    sessions.store.put(sb)
+    await sessions.tick()
+    s = await settle(sessions, "q")
+    assert s.state == SessionState.SUSPENDED and s.sandbox_id is None
+    assert s.needs_input == "A or B? (attempt 0)" and exchange.turn_view(s)["question"] == s.needs_input
+    sessions.send("q", "TASK-ANSWER: B", requester="sean")
+    s = await settle(sessions, "q")
+    assert s.turns[-1].mode == "resume" and s.turns[-1].summary == "Went with B" and s.needs_input is None
+
+
 # ---------------------------------------------------------------------------- surfaces read what jobs keep
 def test_surfaces_read_the_question_and_the_result_where_jobs_keep_them():
     from hangar.a2a import _STATES, A2AServer

@@ -98,7 +98,7 @@ MCP `fork_session(session, n, message?, harness?, names?)`; REST `POST /api/sess
 
 Each fork is a new session:
 - `parent_id` names the session it came from, and `forked_from_checkpoint` names the checkpoint it started from. If the parent's sandbox is up and anything changed since its last checkpoint, hangar takes a fresh one first. A parent that is mid-turn can't be forked; wait for the turn to finish.
-- It has the parent's commits, uncommitted changes, untracked files and conversation files, on its own branch `<parent branch>-fork-<i>`, in its own sandbox.
+- It has the parent's commits, uncommitted changes, untracked files and conversation files, on its own branch `<parent branch>-fork-<i>`, in its own sandbox. It keeps the parent's turns as history, with their artifacts (still downloadable from the fork), the parent's open question if it had one, and `get_session_patch` works on it before it ever boots. The inherited turns carry no usage: a fork's `usage` is what the fork spent.
 - **The conversation forks too.** The fork's first turn branches the agent's conversation with the CLI's own fork: each fork remembers everything up to the fork, and the forks diverge from there. Later turns resume the fork's own conversation.
 
   | Harness | Fork (verified 2026-10-13) |

@@ -279,7 +279,7 @@ class Attempt(BaseModel):
     score: float | None = None
     rank: int | None = None  # 1 = delivered
     summary: str | None = None
-    cost_usd: float | None = None  # when the harness reports it
+    cost_usd: float | None = None  # from its usage: reported by the harness or priced (--- interactions)
     error: str | None = None
     started_at: float | None = None
     finished_at: float | None = None
