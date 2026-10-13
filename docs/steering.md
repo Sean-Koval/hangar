@@ -126,7 +126,8 @@ What the agent can't do then (`tests/test_e2e_isolation_docker.py` checks each f
 **Where it applies.** The split needs Docker (runc, gVisor or Kata runtimes), whose exec picks the uid, and an agent that can't become root. Hangar sets it up when a sandbox's first turn starts:
 - it adds the user with `useradd --system`;
 - it checks for `setpriv` (util-linux), `tmux` and `bash`;
-- it checks that the agent can't `sudo`.
+- it checks that the agent can't `sudo`, asking again under a terminal (`script`) when sudo wants one (`Defaults requiretty`: the agent can get a terminal whenever it likes);
+- it checks, as the agent, that it can't write any directory on that fixed system `PATH` or the commands root and `hangar` run from it (`setpriv`, `tmux`, `bash`, `python3`, `tar`, `timeout`, `env`, `tee`). `hangar` holds `CAP_SETUID`, so whatever runs as it can become root.
 
 Nothing is built into images, so existing environments get the split without a rebuild. Everywhere else turns run single-user, as before, and `sb.info.isolation.why` says why:
 - **environments with `sudo: true` (the default).** The agent is root whenever it likes, so a second user would protect nothing. Set `sudo: false` for the split.
@@ -139,6 +140,8 @@ An `ask` turn in a single-user sandbox carries a warning on the turn. With `HANG
 **What the split doesn't cover.**
 - **The harness is still the agent's.** Its binaries on the agent's `PATH`, its settings (`~/.claude/settings.json` and the repository's `.claude/`, `~/.codex/config.toml`) and `~/.hangar/env` are the agent's to change. Code you allow can, for example, add a Claude Code permission rule that pre-approves later tool calls, and the driver never sees a prompt for them. The split keeps the driver, its key and your answers out of reach; whether the harness asks is up to its configuration. Hangar-owned harness settings (Claude Code's `--setting-sources`/`--settings`, Codex's equivalents) are a follow-up.
 - **`~/.hangar/env` stays writable by the agent, on purpose.** Hangar's user never reads or runs it: only the harness's environment, as the agent, comes from it. A hangar-owned copy would not protect the harness while its settings stay writable.
+- **What hangar reads about a run goes through the agent's links.** The log, exit status and pid are read through `~/.hangar/runs`, which the agent owns, and the harness's output reaches the log. So the agent can still fake what the log says (hide an approval request, so it times out and is denied), as without the split. Answers and acks are signed, so it can't fake those.
+- **Setuid programs other than `sudo`.** The agent keeps the full bounding set, so a setuid-root program in the image that grants root without a password would undo the split. Images ship none by default (root's password is locked).
 - **deny-risky resolves paths as `hangar`.** It can't follow symlinks inside directories only the agent can enter, such as a repository under the agent's home (0750). It is a guard rail, as before.
 
 `hangar-envd` stays the agent's. It runs as the sandbox user and serves everything hangar does as that user; what runs as `hangar` (starting and stopping a turn, its commands, the view of its terminal) goes through `docker exec`. A daemon able to switch users would be the most exposed process in the sandbox and the most privileged one, and Kubernetes couldn't run it anyway.
