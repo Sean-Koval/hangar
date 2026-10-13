@@ -966,7 +966,10 @@ class Fleet:
     # ================================================================== agent runs
     async def run_agent(self, ref: str, prompt: str, harness: str | None = None, cwd: str | None = None,
                         extra_args: str = "", model: str | None = None, actor: str = "system",
-                        env: dict[str, str] | None = None) -> dict[str, Any]:
+                        env: dict[str, str] | None = None, run_id: str | None = None,
+                        command: str | None = None) -> dict[str, Any]:
+        """`run_id` and `command` (workstream steer): a run id chosen by the caller, and a command that replaces the
+        harness's one-shot `run` (a session's live turn runs the harness under hangar's driver)."""
         sb, prov = self._running(ref)
         spec = self.catalog.get(sb.environment)
         selected = sb.info.get("harness")
@@ -981,7 +984,9 @@ class Fleet:
             raise FleetError(f"environment {sb.environment} has no agent harness enabled")
         h = get_harness(hname)
         model = model or spec.model_for(hname)
-        run_id = new_id("run")
+        if run_id is not None and not re.fullmatch(r"run-[0-9a-f]{8}", run_id):
+            raise FleetError(f"invalid run id '{run_id}'")
+        run_id = run_id or new_id("run")
         home = f"/home/{self.settings.sandbox_user}"
         rdir = f"{home}/.hangar/runs"
         wd = cwd or sb.info.get("repo_path") or self.settings.workspace_dir
@@ -994,7 +999,7 @@ class Fleet:
             + (f"export HANGAR_MODEL={shlex.quote(model)}\n" if model else "")
             + "".join(f"export {k}={shlex.quote(v)}\n" for k, v in (env or {}).items() if _ENV_NAME.fullmatch(k)) +
             f"cd {shlex.quote(wd)}\n"
-            f"{{ {h.run} {extra_args}; }} 2>&1 | tee {rdir}/{run_id}.log\n"
+            f"{{ {command or h.run + ' ' + extra_args}; }} 2>&1 | tee {rdir}/{run_id}.log\n"
             f"echo ${{PIPESTATUS[0]}} > {rdir}/{run_id}.exit\n"
         )
         await prov.write_file(sb, f"{rdir}/{run_id}.sh", script.encode(), mode=0o700)

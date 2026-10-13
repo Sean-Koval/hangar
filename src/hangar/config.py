@@ -219,6 +219,14 @@ class Settings(BaseSettings):
     # it costs those clients elicitation (hangar asking you an agent's question) and resource notifications.
     # 2026-07-28 clients are sessionless either way.
     mcp_stateless_http: bool = False
+    # --- workstream steer: live turns (docs/steering.md) ----------------------
+    # Run Claude Code and Codex turns under hangar's driver, so they can be steered, interrupted and asked for tool
+    # approvals. Off (or a sandbox without python3): one-shot turns, as before.
+    live_turns: bool = True
+    # How tool permission prompts are answered when neither the session nor its environment says: auto (no
+    # prompts), ask (a person answers; denied after approval_timeout_seconds) or deny-risky (hangar's rules).
+    approvals: Literal["auto", "ask", "deny-risky"] = "auto"
+    approval_timeout_seconds: int = Field(600, ge=10, le=86400)
     # --- perf: control-plane responsiveness -----------------------------------
     # Worker threads for blocking provider calls (docker-py, the kubernetes client, e2b) and file I/O. Python's
     # default is min(32, CPUs + 4): 6 on a 2-vCPU control plane, so a few long execs (a clone, a verify, a turn

@@ -26,7 +26,7 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel, Field
 
-from hangar import exchange, observe, strategies  # strategies: workstream D (forks/best-of-N); --- observe
+from hangar import exchange, observe, steer, strategies  # strategies: workstream D (forks/best-of-N); --- observe; steer: live turns
 from hangar.events import resolve_budget, total_usage, usage_line
 from hangar.fleet import Fleet, FleetError, _clip_tail
 from hangar.github import GitHub, GitHubError, parse_repo
@@ -399,6 +399,7 @@ class JobService:
         d["active"] = job.state not in JOB_TERMINAL and job.state != JobState.NEEDS_INPUT
         # workstream C: the session's turns are the job's turns, and carry live usage while one runs
         d["usage"] = u.model_dump(mode="json") if (u := self.usage(job)) else None
+        d["pending_approvals"] = [a.model_dump(mode="json") for a in steer.pending(s)]  # workstream steer
         return exchange.scrub_turns(d)  # workstream E: attachment contents never leave in a view
 
     def usage(self, job: Job) -> Usage | None:
@@ -818,6 +819,8 @@ class JobService:
             state, reason = JobState.FAILED, "timed_out"
         elif outcome == "over_budget":
             state, reason = JobState.FAILED, "over_budget"
+        elif outcome == "interrupted":  # --- workstream steer: stopped by hand; follow_up_job continues it
+            state, reason = JobState.FAILED, "interrupted"
         elif not clean and not commits:
             state, reason = JobState.FAILED, "agent_failed"
         elif not verify_ok:

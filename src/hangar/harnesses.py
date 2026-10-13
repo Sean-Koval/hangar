@@ -90,6 +90,11 @@ class Harness(BaseModel):
     # reads $HANGAR_SESSION_FORK (the conversation to fork), plus $HANGAR_SESSION_NEW for "preset" harnesses (the
     # new id). Without it, a forked session starts fresh with a summary handoff.
     fork: bool = False
+    # --- workstream steer: live turns. `live` names the structured protocol hangar's driver speaks with this CLI
+    # (driver.py); `live_run` is the command it starts (shell words; the driver adds the permission flags and, for
+    # codex, opens or resumes the conversation itself). Without them, turns run `run` one-shot.
+    live: Literal["claude", "codex"] | None = None
+    live_run: str = ""
 
     @property
     def prefix(self) -> str:
@@ -179,6 +184,15 @@ HARNESSES: dict[str, Harness] = {
             '${HANGAR_SESSION_RESUME:+--resume "$HANGAR_SESSION_RESUME"} '
             '${HANGAR_SESSION_FORK:+--resume "$HANGAR_SESSION_FORK" --fork-session}'
         ),
+        # Verified with 2.1.296: the prompt and later messages go on stdin (stream-json), see driver.Claude.
+        live="claude",
+        live_run=(
+            'claude -p --input-format stream-json --output-format stream-json --verbose '
+            '${HANGAR_MODEL:+--model "$HANGAR_MODEL"} '
+            '${HANGAR_SESSION_NEW:+--session-id "$HANGAR_SESSION_NEW"} '
+            '${HANGAR_SESSION_RESUME:+--resume "$HANGAR_SESSION_RESUME"} '
+            '${HANGAR_SESSION_FORK:+--resume "$HANGAR_SESSION_FORK" --fork-session}'
+        ),
         session_dirs=[".claude/projects"],
         resume="preset",
         # Verified with 2.1.296: --session-id may be combined with --resume only together with --fork-session.
@@ -221,6 +235,9 @@ HARNESSES: dict[str, Harness] = {
             "--json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "
             '${HANGAR_MODEL:+-m "$HANGAR_MODEL"} "$(cat "$HANGAR_PROMPT_FILE")"'
         ),
+        # Verified with 0.162.1: thread/start, thread/resume and thread/fork from $HANGAR_SESSION_*, see driver.Codex.
+        live="codex",
+        live_run="codex app-server",
         session_dirs=[".codex/sessions"],
         resume="capture",
         # Verified with 0.162.1: `codex exec fork <id>` starts a new thread (its thread_id is in thread.started)
