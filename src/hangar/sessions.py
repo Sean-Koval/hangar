@@ -25,7 +25,7 @@ from typing import Any
 from cryptography.fernet import InvalidToken
 from pydantic import BaseModel, Field
 
-from hangar import ckpt, exchange, observe  # --- observe
+from hangar import ckpt, exchange, isolation, observe  # --- observe, isolation
 from hangar import steer as steering  # workstream steer: live turns
 from hangar.checkpoints import CheckpointStore, make_store
 from hangar.ckpt import CKPT_DIR, CKPT_REF, PACK_READ_LIMIT, PARTS, RESTORE_DIR  # noqa: F401 - re-exported (strategies, exchange)
@@ -893,7 +893,8 @@ class SessionService:
         if outcome in ("cancelled", "timed_out", "error", "over_budget"):
             # Never leave an agent running that nobody is watching (it would keep working, and spending).
             with contextlib.suppress(Exception):
-                await self._sh(self.fleet.get(s.sandbox_id), f"tmux kill-session -t {shlex.quote(turn.run_id or '')}")
+                ksb, kprov = self.fleet._running(s.sandbox_id or "")
+                await isolation.kill(kprov, ksb, self.settings, turn.run_id or "")  # --- isolation: where it runs
             turn.exit_code = turn.exit_code if turn.exit_code is not None else -1
         raw = ""
         try:
@@ -1025,7 +1026,9 @@ class SessionService:
         rdir = f"/home/{self.settings.sandbox_user}/.hangar/runs"
         res = await self._sh(sb, f"n=0; for f in {rdir}/run-*.sh; do [ -e \"$f\" ] || continue; "
                                  "r=$(basename \"$f\" .sh); "
-                                 f"if [ ! -e {rdir}/$r.exit ] && tmux has-session -t \"$r\" 2>/dev/null; "
+                                 # --- isolation: a split run's tmux is hangar's user's; its pid file says
+                                 f"if [ ! -e {rdir}/$r.exit ] && {{ tmux has-session -t \"$r\" 2>/dev/null || "
+                                 f"{{ p=$(cat {rdir}/$r.pid 2>/dev/null); [ -n \"$p\" ] && [ -d /proc/$p ]; }}; }}; "
                                  "then n=$((n+1)); fi; done; "
                                  "echo $(( n + $(tmux list-clients 2>/dev/null | wc -l) ))", timeout=20)
         return res.stdout.strip() not in ("", "0")

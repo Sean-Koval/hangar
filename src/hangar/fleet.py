@@ -17,7 +17,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
-from hangar import exchange, observe  # --- observe
+from hangar import exchange, isolation, observe  # --- observe, isolation
 from hangar.broker import AUTH_FILE_LIMIT, Broker, CredentialError
 from hangar.config import Settings
 from hangar.envspec import BuildContext, EnvCatalog, EnvSpec, image_tag, render, repo_dirname, warm_pool_now
@@ -908,8 +908,11 @@ class Fleet:
     async def terminal_read(self, ref: str, session: str = "main", lines: int = 200) -> str:
         sb, prov = self._running(ref)
         self.touch(sb.id)  # someone watching a terminal is using the sandbox
-        res = await prov.exec(
-            sb, f"tmux capture-pane -p -J -t {shlex.quote(_slug(session))} -S -{int(lines)}", timeout=15)
+        capture = f"capture-pane -p -J -t {shlex.quote(_slug(session))} -S -{int(lines)}"
+        if isolation.run_split(sb, _slug(session)):  # --- isolation: a split run's terminal is hangar's user's
+            res = await isolation.sh(prov, sb, f"{isolation.TMUX} {capture}", timeout=15)
+        else:
+            res = await prov.exec(sb, f"tmux {capture}", timeout=15)
         if res.exit_code != 0:
             raise FleetError(f"no terminal session '{session}' in {sb.id} (open one with terminal_open)")
         return res.stdout.rstrip("\n")
@@ -952,6 +955,11 @@ class Fleet:
         """Live PTY for the dashboard. Attaching to a tmux session lets you watch the same
         terminal an MCP client or agent is driving."""
         sb, prov = self._running(ref)
+        if session and (watch := isolation.attach_command(sb, session)) is not None:  # --- isolation: a split run
+            self._touch(sb)
+            term = await isolation.open_terminal(prov, sb, watch, cols, rows)
+            self.attached[sb.id] += 1
+            return term
         if session:
             await self.terminal_open(sb.id, session)
             cmd = ["tmux", "attach-session", "-t", _slug(session)]
@@ -988,31 +996,39 @@ class Fleet:
             raise FleetError(f"invalid run id '{run_id}'")
         run_id = run_id or new_id("run")
         home = f"/home/{self.settings.sandbox_user}"
-        rdir = f"{home}/.hangar/runs"
+        split = await isolation.ensure(self, prov, sb)  # --- isolation: the run as hangar's user, the agent as its own
+        rdir = isolation.runs_dir(self.settings, split)
         wd = cwd or sb.info.get("repo_path") or self.settings.workspace_dir
         env = {**observe.run_env(self.settings, sb, run_id, hname), **(env or {})}  # --- observe: TRACEPARENT, OTel
-        await prov.write_file(sb, f"{rdir}/{run_id}.prompt", prompt.encode(), mode=0o600)
-        script = (
-            "#!/usr/bin/env bash\n"
-            "set -a; [ -f ~/.hangar/env ] && . ~/.hangar/env; set +a\n"
+        exports = (
             f"export HANGAR_PROMPT_FILE={rdir}/{run_id}.prompt HANGAR_RUN_ID={run_id}\n"
             + (f"export HANGAR_MODEL={shlex.quote(model)}\n" if model else "")
-            + "".join(f"export {k}={shlex.quote(v)}\n" for k, v in (env or {}).items() if _ENV_NAME.fullmatch(k)) +
-            f"cd {shlex.quote(wd)}\n"
-            f"{{ {command or h.run + ' ' + extra_args}; }} 2>&1 | tee {rdir}/{run_id}.log\n"
-            f"echo ${{PIPESTATUS[0]}} > {rdir}/{run_id}.exit\n"
-        )
-        await prov.write_file(sb, f"{rdir}/{run_id}.sh", script.encode(), mode=0o700)
-        res = await prov.exec(sb, f"tmux new-session -d -s {run_id} -x 200 -y 50 -c {shlex.quote(wd)} "
-                                  f"'bash {rdir}/{run_id}.sh; exec bash -l'", timeout=20)
+            + "".join(f"export {k}={shlex.quote(v)}\n" for k, v in (env or {}).items() if _ENV_NAME.fullmatch(k)))
+        if split:
+            res = await isolation.start(prov, sb, self.settings, run_id, prompt, exports, command or
+                                        isolation.agent_command(self.settings, run_id, wd, h.run + " " + extra_args))
+        else:
+            await prov.write_file(sb, f"{rdir}/{run_id}.prompt", prompt.encode(), mode=0o600)
+            script = (
+                "#!/usr/bin/env bash\n"
+                "set -a; [ -f ~/.hangar/env ] && . ~/.hangar/env; set +a\n"
+                + exports +
+                f"cd {shlex.quote(wd)}\n"
+                f"{{ {command or h.run + ' ' + extra_args}; }} 2>&1 | tee {rdir}/{run_id}.log\n"
+                f"echo ${{PIPESTATUS[0]}} > {rdir}/{run_id}.exit\n"
+            )
+            await prov.write_file(sb, f"{rdir}/{run_id}.sh", script.encode(), mode=0o700)
+            res = await prov.exec(sb, f"tmux new-session -d -s {run_id} -x 200 -y 50 -c {shlex.quote(wd)} "
+                                      f"'bash {rdir}/{run_id}.sh; exec bash -l'", timeout=20)
         if res.exit_code != 0:
-            raise FleetError(f"failed to start agent: {res.stderr}")
+            raise FleetError(f"failed to start agent: {res.stderr or res.stdout}")
         runs = sb.info.setdefault("runs", [])
-        runs.append({"id": run_id, "harness": hname, "model": model, "started_at": now(), "prompt": prompt[:200]})
+        runs.append({"id": run_id, "harness": hname, "model": model, "started_at": now(), "prompt": prompt[:200],
+                     **({"split": True} if split else {})})  # --- isolation
         self._touch(sb)
         self.audit(actor, "agent.run", sb.id, run=run_id, harness=hname, model=model, prompt=prompt[:300])
         return {"sandbox": sb.id, "run_id": run_id, "harness": hname, "model": model, "terminal_session": run_id,
-                "log": f"{rdir}/{run_id}.log"}
+                "log": f"{home}/.hangar/runs/{run_id}.log"}  # --- isolation: a link to it under the split
 
     async def agent_status(self, ref: str, run_id: str, tail_lines: int = 60, quiet: bool = False,
                            wait_seconds: float = 0, grow_from: int | None = None) -> dict[str, Any]:
@@ -1036,7 +1052,8 @@ class Fleet:
         wait = ""
         wake = f"{rdir}/.wake-{run_id}-{secrets.token_hex(4)}"
         if wait_seconds:
-            grew = (f" || [ \"$(stat -c %s {rdir}/{run_id}.log 2>/dev/null || echo 0)\" -gt {int(grow_from)} ]"
+            # --- isolation: -L, the log of a split run is a link (isolation.py)
+            grew = (f" || [ \"$(stat -L -c %s {rdir}/{run_id}.log 2>/dev/null || echo 0)\" -gt {int(grow_from)} ]"
                     if grow_from is not None else "")
             wait = (f"for i in $(seq {max(1, round(wait_seconds * 5))}); do {{ [ -s {rdir}/{run_id}.exit ]{grew} "
                     f"|| [ -e {wake} ]; }} && break; sleep 0.2; done; rm -f {wake}; ")

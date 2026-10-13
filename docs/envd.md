@@ -163,7 +163,7 @@ semantics for `Remove`, 409 for an existing directory on `MakeDir`, inotify even
 
 Not (yet) implemented: gzip on `/files` (uploads with `Content-Encoding: gzip` get 415; downloads are sent
 uncompressed, which clients accept), pre-signed `/files` URLs, `X-Metadata-*` xattrs, `/files/compose`, `/init`,
-`/metrics`, and switching users (upstream envd runs as root; this one doesn't). Processes inherit the daemon's
+`/metrics`, and switching users (upstream envd runs as root; this one doesn't, by design: what hangar runs as its own user goes through `docker exec`, [steering.md](steering.md#the-uid-split)). Processes inherit the daemon's
 environment (the sandbox's, as `docker exec` gives) rather than upstream's minimal one. A hangar API that hands this
 daemon to E2B clients should report envd version `0.5.7`, the newest whose SDK features are all here.
 

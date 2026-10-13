@@ -12,8 +12,9 @@ A session turn of a harness with a structured mode (Claude Code, Codex) runs und
 
 Commands reach the driver as files moved into `<run>.ctl/in/`, each signed with a per-run key that hangar keeps
 encrypted in its store (the driver deletes its copy at start and keeps the agent out of its memory), and the driver
-signs its answers, so the agent can't answer for a person or for the driver by writing files. It shares a user with
-the driver, though: code a person allows to run can tamper with later turns (docs/steering.md).
+signs its answers, so the agent can't answer for a person or for the driver by writing files. Where the sandbox
+allows it the driver also runs as a user of its own (isolation.py, the uid split); elsewhere it shares a user with
+the agent, and code a person allows to run can tamper with later turns (docs/steering.md).
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from hangar import isolation  # --- isolation
 from hangar.driver import DECISIONS, ENDED, MAX_TEXT, sign
 from hangar.events import RunEvent
 from hangar.harnesses import Harness, get_harness
@@ -75,12 +77,9 @@ def policy(svc: SessionService, s: Session) -> str:
     return svc.settings.approvals
 
 
-def _runs(svc: SessionService) -> str:
-    return f"/home/{svc.settings.sandbox_user}/.hangar/runs"
-
-
-def ctl_dir(svc: SessionService, run_id: str) -> str:
-    return f"{_runs(svc)}/{run_id}.ctl"
+def ctl_dir(svc: SessionService, run_id: str, sb: Sandbox | None = None) -> str:
+    """`sb`: where a split run (isolation.py) keeps it; without it, the agent's ~/.hangar/runs."""
+    return isolation.ctl_dir(svc.settings, run_id, sb is not None and isolation.run_split(sb, run_id))
 
 
 async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbox, h: Harness
@@ -100,19 +99,38 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
         return run_id, None
     key = secrets.token_hex(32)
     _, prov = svc.fleet._running(sb.id)
-    ctl = ctl_dir(svc, run_id)
-    driver = f"/home/{svc.settings.sandbox_user}/.hangar/driver.py"
-    await asyncio.gather(prov.write_file(sb, driver, DRIVER.read_bytes(), mode=0o644),
-                         prov.write_file(sb, f"{ctl}/key", key.encode(), mode=0o600))
+    # --- isolation: a driver of its own user where the sandbox allows it; `ask` says so, or refuses, where not
+    split = await isolation.ensure(svc.fleet, prov, sb)
+    if pol == "ask" and not split:
+        why = isolation.why_not(svc.settings, sb)
+        if svc.settings.uid_split == "required":
+            raise SteerError(f"approvals=ask needs hangar's driver to run as a user of its own, and this sandbox can't "
+                             f"({why}); HANGAR_UID_SPLIT=required (docs/steering.md)")
+        turn.warnings.append(f"hangar's driver runs as the agent's own user here ({why}): code you allow to run can "
+                             "tamper with later turns (docs/steering.md)")
+    ctl = isolation.ctl_dir(svc.settings, run_id, split)
+    wd = sb.info.get("repo_path") or svc.settings.workspace_dir  # where fleet.run_agent runs it
+    if split:
+        driver = isolation.DRIVER
+        await asyncio.gather(
+            isolation.put(prov, sb, isolation.HOME, {"driver.py": (DRIVER.read_bytes(), 0o644)}),
+            isolation.put(prov, sb, isolation.RUNS, {f"{run_id}.ctl": (None, 0o700),
+                                                     f"{run_id}.ctl/key": (key.encode(), 0o600)}))
+    else:
+        driver = f"/home/{svc.settings.sandbox_user}/.hangar/driver.py"
+        await asyncio.gather(prov.write_file(sb, driver, DRIVER.read_bytes(), mode=0o644),
+                             prov.write_file(sb, f"{ctl}/key", key.encode(), mode=0o600))
     svc.store.kv_set(KV + run_id, svc.vault.encrypt(key.encode()).decode(), durable=True)
     turn.live, turn.approval_policy = True, pol  # type: ignore[assignment]
     q = shlex.quote
-    fallback = (f"{h.run}" if pol == "auto" else
+    one_shot = isolation.agent_command(svc.settings, run_id, wd, h.run) if split else h.run
+    fallback = (f"{one_shot}" if pol == "auto" else
                 f"echo 'hangar: approvals={pol} needs python3 >= 3.8 in the sandbox' >&2; false")
+    split_args = f" {isolation.driver_args(svc.settings, run_id, wd)}" if split else ""
     # -I: no PYTHON* variables, user site-packages or modules beside the driver, all of which the agent can write
     command = (f"if python3 -I -c 'import sys; sys.exit(sys.version_info < (3, 8))' 2>/dev/null; then "
                f"python3 -I {q(driver)} --harness {h.live} --ctl {q(ctl)} --approvals {pol} "
-               f"--approval-timeout {int(svc.settings.approval_timeout_seconds)} -- {h.live_run}; "
+               f"--approval-timeout {int(svc.settings.approval_timeout_seconds)}{split_args} -- {h.live_run}; "
                f"else touch {q(ctl)}/one-shot; {fallback}; fi")
     return run_id, command
 
@@ -136,9 +154,13 @@ async def command(svc: SessionService, s: Session, turn: SessionTurn, op: str, *
     cmd["mac"] = sign(key, cmd)
     sb = svc.fleet.get(s.sandbox_id)
     _, prov = svc.fleet._running(sb.id)
-    ctl = ctl_dir(svc, turn.run_id or "")
-    await prov.write_file(sb, f"{ctl}/.{cid}", json.dumps(cmd).encode(), mode=0o600)
-    c, ended = shlex.quote(ctl), shlex.quote(f"{_runs(svc)}/{turn.run_id}.exit")
+    split = isolation.run_split(sb, turn.run_id)  # --- isolation: the control files are hangar's user's
+    ctl = isolation.ctl_dir(svc.settings, turn.run_id or "", split)
+    if split:
+        await isolation.put(prov, sb, ctl, {f".{cid}": (json.dumps(cmd).encode(), 0o600)})
+    else:
+        await prov.write_file(sb, f"{ctl}/.{cid}", json.dumps(cmd).encode(), mode=0o600)
+    c, ended = shlex.quote(ctl), shlex.quote(f"{isolation.runs_dir(svc.settings, split)}/{turn.run_id}.exit")
     # Wait for the inbox (the driver may be starting, or between closing and reopening it), unless the turn is
     # over. A move into it is atomic: either the driver gets the command, or it fails to land.
     script = (f"c={c}; for i in $(seq 50); do [ -d \"$c/in\" ] && break; "
@@ -148,7 +170,8 @@ async def command(svc: SessionService, s: Session, turn: SessionTurn, op: str, *
               f"[ -e \"$c/done\" ] || [ -s {ended} ] && exit 3; exit 6; }}; "
               f"for i in $(seq {int(ACK_WAIT * 10)}); do grep -F '\"id\": \"{cid}\"' \"$c/acks\" 2>/dev/null "
               "&& exit 0; sleep 0.1; done; exit 5")
-    res = await svc._sh(sb, script, timeout=int(ACK_WAIT) + 30)
+    res = (await isolation.sh(prov, sb, script, timeout=int(ACK_WAIT) + 30) if split
+           else await svc._sh(sb, script, timeout=int(ACK_WAIT) + 30))
     if res.exit_code == 3:
         raise TurnEnded("the turn has ended")
     if res.exit_code == 4:
@@ -159,7 +182,7 @@ async def command(svc: SessionService, s: Session, turn: SessionTurn, op: str, *
         raise NotReady("the agent is still starting; try again in a moment")
     if res.exit_code != 0:
         raise SteerError(f"could not reach the turn: {(res.stderr or res.stdout).strip()[-300:]}")
-    # Only the driver's own answer counts: the agent runs as the same user and can write to `acks` as well.
+    # Only the driver's own answer counts: without the uid split the agent can write to `acks` as well.
     ack = next((a for a in map(_json, res.stdout.splitlines()) if a.get("id") == cid
                 and isinstance(a.get("mac"), str) and hmac.compare_digest(a["mac"], sign(key, a))), None)
     if ack is None:
@@ -336,9 +359,8 @@ async def interrupt(svc: SessionService, s: Session, requester: str, text: str |
 
 async def kill(svc: SessionService, s: Session, t: SessionTurn) -> None:
     """Stop a run outright; exit status 130 marks it interrupted (unless it had just finished)."""
-    sb = svc.fleet.get(s.sandbox_id or "")
-    run, ended = shlex.quote(t.run_id or ""), shlex.quote(f"{_runs(svc)}/{t.run_id}.exit")
-    await svc._sh(sb, f"tmux kill-session -t {run} 2>/dev/null; [ -s {ended} ] || echo 130 > {ended}")
+    sb, prov = svc.fleet._running(s.sandbox_id or "")
+    await isolation.kill(prov, sb, svc.settings, t.run_id or "", interrupted=True)  # --- isolation: where it runs
 
 
 # ====================================================================== approvals

@@ -31,6 +31,9 @@ MAX_OUTPUT = 256 * 1024
 LABEL = "dev.hangar.sandbox"
 POOL_LABEL = "dev.hangar.pool"
 SYSTEM_DIRS = ("/etc/", "/usr/", "/opt/", "/root/", "/var/", "/bin/", "/sbin/", "/lib")
+# --- isolation: the PATH of a command run as anyone but the sandbox user. Docker resolves a command with the image's
+# PATH, which starts with directories the sandbox user owns (~/.local/bin): a `timeout` planted there would run as root.
+SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 _STATE = {
     "created": SandboxState.STARTING,
@@ -354,8 +357,10 @@ class DockerProvider(Provider):
             # Streamed, keeping only the tail (exec_run without a stream holds everything the command prints, and
             # the sandbox decides how much that is). Same calls exec_run makes.
             api = self.client.api
+            other = user and user != self.settings.sandbox_user  # --- isolation: root, hangar's user
             eid = api.exec_create(c.id, argv, user=user or self.settings.sandbox_user,
-                                  workdir=cwd or self.settings.workspace_dir)["Id"]
+                                  workdir=cwd or self.settings.workspace_dir,
+                                  environment={"PATH": SYSTEM_PATH} if other else None)["Id"]
             out, err = OutputTail(4 * MAX_OUTPUT, b""), OutputTail(4 * MAX_OUTPUT, b"")
             frames = api.exec_start(eid, stream=True, demux=True)
             try:
@@ -412,7 +417,8 @@ class DockerProvider(Provider):
             try:
                 ok = await asyncio.to_thread(c.put_archive, parent, buf.getvalue())
             except NotFound:
-                mk = await asyncio.to_thread(c.exec_run, ["mkdir", "-p", parent], user=user if owned else "root")
+                mk = await asyncio.to_thread(c.exec_run, ["mkdir", "-p", parent], user=user if owned else "root",
+                                             environment=None if owned else {"PATH": SYSTEM_PATH})  # --- isolation
                 if mk.exit_code != 0:
                     raise ProviderError(f"cannot create {parent}: {mk.output.decode(errors='replace')}") from None
                 ok = await asyncio.to_thread(c.put_archive, parent, buf.getvalue())

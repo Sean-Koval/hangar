@@ -14,6 +14,8 @@ one-shot command, so attaching and resuming work as before. Standard library onl
   instead of being lost; one that landed before is still carried out (a late steer continues the turn).
 * Tool approvals follow `--approvals`: `auto` runs without prompts (today's behaviour), `ask` waits for hangar's
   answer and denies after `--approval-timeout` seconds, `deny-risky` answers at once from the rules in `risky()`.
+* With `--as` (the uid split, hangar/isolation.py) the driver runs as hangar's own user and starts the harness as the
+  agent's, with no capabilities: the agent can't read the key, change the driver's files, or signal or trace it.
 
 Exit status: the harness's own, 1 when its last turn failed, 130 after an interrupt that brought no new message.
 """
@@ -25,6 +27,7 @@ import hashlib
 import hmac
 import json
 import os
+import pwd
 import re
 import select
 import shlex
@@ -81,14 +84,32 @@ class Out:
         self.line(json.dumps({"type": "hangar." + kind, "ts": round(time.time(), 3), **data}, ensure_ascii=False))
 
 
+# ====================================================================== the agent's user (--- isolation)
+# With the uid split (hangar/isolation.py) the driver runs as hangar's own user and starts the harness as the agent's.
+# The driver holds CAP_SETUID, CAP_SETGID and CAP_KILL in its ambient set for that; setpriv drops all of them for the
+# harness (a uid change between two non-root users keeps capabilities otherwise). The harness's environment is built
+# as the agent, in the order a single-user run has: its ~/.hangar/env, then the run's own exports.
+LAUNCH = ('PATH="${HANGAR_AGENT_PATH:-$PATH}"; set -a; [ -f "$HOME/.hangar/env" ] && . "$HOME/.hangar/env"; . "$1"; '
+          'set +a; unset HANGAR_AGENT_PATH; cd -- "$2" || exit 1; shift 2; exec "$@"')
+
+
+def as_agent(user: str, home: str, run_env: str, cwd: str, argv: list) -> list:
+    """`argv` run as `user` (home `home`), with no capabilities, from `cwd`, in that user's environment. Also used,
+    joined, for the one-shot command in the turn's script."""
+    return ["setpriv", f"--reuid={user}", f"--regid={user}", "--init-groups", "--inh-caps=-all", "--ambient-caps=-all",
+            "--", "env", f"HOME={home}", f"USER={user}", f"LOGNAME={user}", "bash", "-c", LAUNCH, "hangar-agent",
+            run_env, cwd, *argv]
+
+
 # ====================================================================== the control channel
 PR_SET_DUMPABLE = 4
 
 
 def private() -> str | None:
-    """Close this process to the agent, which runs as the same uid: no ptrace and no /proc/<pid>/mem or environ
-    (Docker leaves same-uid ptrace to the kernel's Yama setting, which is often 0 or absent), so the run key can't
-    be read out of memory. The harness gets the normal setting back when it execs. Returns why it failed."""
+    """Close this process to the agent, which runs as the same uid without the uid split: no ptrace and no
+    /proc/<pid>/mem or environ (Docker leaves same-uid ptrace to the kernel's Yama setting, which is often 0 or
+    absent), so the run key can't be read out of memory. The harness gets the normal setting back when it execs.
+    Returns why it failed."""
     try:
         import ctypes
 
@@ -300,6 +321,10 @@ class Driver:
         self.harness: Harness | None = None
         self.unanswered: set = set()  # commands taken whose outcome isn't known yet
 
+    def cwd(self) -> str:
+        """The turn's working directory: --cwd under the uid split, where the driver doesn't run in it."""
+        return getattr(self.args, "cwd", None) or os.getcwd()
+
     def ended(self) -> None:
         """The harness is gone: what it never took is answered so (hangar then starts the next turn with it)."""
         for cid in sorted(self.unanswered):
@@ -319,7 +344,7 @@ class Driver:
         if policy == "ask":
             self.pending[aid] = a
             return
-        why = risky(tool, data, os.getcwd()) if policy == "deny-risky" else None
+        why = risky(tool, data, self.cwd()) if policy == "deny-risky" else None
         self._answer(a, "deny" if why else "allow", ("Denied by hangar's deny-risky policy: " + why) if why else "",
                      "policy")
 
@@ -401,6 +426,8 @@ class Harness:
 
     def __init__(self, drv: Driver, argv: list):
         self.drv, self.out = drv, drv.out
+        if user := getattr(drv.args, "as_user", None):  # --- isolation
+            argv = as_agent(user, pwd.getpwnam(user).pw_dir, drv.args.run_env, drv.cwd(), argv)
         self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
         self.buf = b""
         self.stop_after_interrupt = False  # an interrupt without a new message: exit 130 once the turn stops
@@ -722,7 +749,7 @@ class Codex(Harness):
         if error:
             return self._fail("initialize failed: " + self._err(error))
         self.send({"method": "initialized"})
-        params: dict = {"cwd": os.getcwd(), "sandbox": "danger-full-access",
+        params: dict = {"cwd": self.drv.cwd(), "sandbox": "danger-full-access",
                         "approvalPolicy": "never" if self.drv.args.approvals == "auto" else "untrusted"}
         if os.environ.get("HANGAR_MODEL"):
             params["model"] = os.environ["HANGAR_MODEL"]
@@ -911,11 +938,17 @@ def main(argv: list | None = None) -> int:
     ap.add_argument("--ctl", required=True, help="the run's control directory")
     ap.add_argument("--approvals", choices=("auto", "ask", "deny-risky"), default="auto")
     ap.add_argument("--approval-timeout", type=int, default=600)
+    # --- isolation: the uid split
+    ap.add_argument("--as", dest="as_user", help="start the harness as this user (the driver runs as hangar's own)")
+    ap.add_argument("--run-env", help="with --as: the run's exports, sourced for the harness after ~/.hangar/env")
+    ap.add_argument("--cwd", help="the turn's working directory (default: the current one)")
     ap.add_argument("command", nargs=argparse.REMAINDER, help="-- the harness command")
     args = ap.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not command:
         ap.error("the harness command is missing")
+    if args.as_user and not args.run_env:  # --- isolation
+        ap.error("--as needs --run-env")
     why = private()  # before the key is read
     if why and args.approvals != "auto":  # deny by default: the agent could answer its own approvals
         sys.stderr.write(f"hangar: approvals={args.approvals} needs the turn driver to keep its key from the agent, "

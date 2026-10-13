@@ -249,6 +249,11 @@ class Settings(BaseSettings):
     # prompts), ask (a person answers; denied after approval_timeout_seconds) or deny-risky (hangar's rules).
     approvals: Literal["auto", "ask", "deny-risky"] = "auto"
     approval_timeout_seconds: int = Field(600, ge=10, le=86400)
+    # --- isolation: run each turn's driver as hangar's own user and the agent as the sandbox user, so code the agent
+    # runs can't reach the driver, its key or its control files (docs/steering.md). auto: wherever the sandbox allows
+    # it (Docker, an agent without sudo), else one user, with a warning; off: always one user; required: like auto,
+    # and `ask` turns fail where the agent would share the driver's user.
+    uid_split: Literal["auto", "off", "required"] = "auto"
     # --- perf: control-plane responsiveness -----------------------------------
     # Worker threads for blocking provider calls (docker-py, the kubernetes client, e2b) and file I/O. Python's
     # default is min(32, CPUs + 4): 6 on a 2-vCPU control plane, so a few long execs (a clone, a verify, a turn
