@@ -36,6 +36,8 @@ spec:
           ports: [{containerPort: 8787, name: http}]
           envFrom:
             - configMapRef: {name: hangar}
+            # Site settings that deploy/gke/up.sh never overwrites (e.g. jobs + GitHub, docs/jobs.md). Optional.
+            - configMapRef: {name: hangar-site, optional: true}
             - secretRef: {name: hangar}
           volumeMounts:
             - {name: data, mountPath: /data}
