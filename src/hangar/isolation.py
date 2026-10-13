@@ -11,7 +11,7 @@ driver deletes it, edit the turn's script or the driver, or signal and trace the
         <run>.ctl/              0700: the key, in/, acks
       tmux/                     hangar's tmux socket (0700)
 
-The control plane writes there with Docker's put_archive as hangar's uid, and runs the turn as that user: root starts
+The control plane writes there as hangar's user (`put`), and runs the turn as that user: root starts
 the turn's tmux through setpriv with CAP_SETUID, CAP_SETGID and CAP_KILL in the ambient set, and the driver starts the
 harness through setpriv as the agent, every capability dropped (driver.as_agent). The agent can read the run's files
 but not change them, and can't signal, trace or read the memory of anything hangar's user runs. Its own
@@ -32,6 +32,7 @@ import asyncio
 import io
 import logging
 import shlex
+import socket
 import tarfile
 import time
 from typing import TYPE_CHECKING, Any
@@ -139,23 +140,51 @@ async def _probe(settings: Settings, prov: Provider, sb: Sandbox) -> dict[str, A
 
 
 async def put(prov: Provider, sb: Sandbox, parent: str, files: dict[str, tuple[bytes | None, int]]) -> None:
-    """Write files (None: a directory) under `parent`, owned by hangar's user, in one copy. Docker's put_archive
-    writes them as root, keeping the archive's owners, and resolves `parent` inside the container."""
-    iso = sb.info["isolation"]
+    """Write files (None: a directory) under `parent` as hangar's user, in one exec: `tar -x` reading the archive
+    from its stdin. Written from inside the sandbox, not with Docker's put_archive, which writes the container's root
+    filesystem from the host: gVisor (its rootfs overlay) and Kata (a block-device rootfs) may never show that to the
+    sandbox. Nothing secret is ever on a command line or in a file the agent can read on the way."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tf:
         for name, (data, mode) in files.items():
             info = tarfile.TarInfo(name)
-            info.uid, info.gid, info.mode, info.mtime = iso["uid"], iso["gid"], mode, int(time.time())
+            info.mode, info.mtime = mode, int(time.time())
             if data is None:
                 info.type = tarfile.DIRTYPE
                 tf.addfile(info)
             else:
                 info.size = len(data)
                 tf.addfile(info, io.BytesIO(data))
+    from hangar.providers.docker import SYSTEM_PATH
+
     container = await prov._container(sb)  # type: ignore[attr-defined]
-    if not await asyncio.to_thread(container.put_archive, parent, buf.getvalue()):
-        raise RuntimeError(f"could not write into {parent} in sandbox {sb.id}")
+    api = prov.client.api  # type: ignore[attr-defined]
+    archive = buf.getvalue()
+
+    def run() -> tuple[int, bytes]:
+        eid = api.exec_create(container.id, ["tar", "-xpf", "-", "-C", parent], stdin=True, user=USER, workdir=HOME,
+                              environment={"PATH": SYSTEM_PATH})["Id"]
+        sock = api.exec_start(eid, socket=True)
+        raw = getattr(sock, "_sock", sock)
+        try:
+            raw.sendall(archive)
+            raw.shutdown(socket.SHUT_WR)  # end of stdin: tar finishes
+            out = b""
+            while chunk := raw.recv(65536):  # tar's messages (multiplexed frames), bounded
+                out = (out + chunk)[-65536:]
+        finally:
+            raw.close()
+        for _ in range(100):  # the exit code lands a moment after the stream ends
+            st = api.exec_inspect(eid)
+            if not st.get("Running"):
+                return int(st.get("ExitCode") or 0), out
+            time.sleep(0.05)
+        return -1, out
+
+    code, out = await asyncio.wait_for(asyncio.to_thread(run), 60)
+    if code != 0:
+        raise RuntimeError(f"could not write into {parent} in sandbox {sb.id} (tar exit {code}): "
+                           f"{out.decode(errors='replace')[-300:]}")
 
 
 async def sh(prov: Provider, sb: Sandbox, command: str, timeout: int = 60) -> ExecResult:
