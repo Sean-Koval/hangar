@@ -49,6 +49,14 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
     for name, p in ov["providers"].items():
         out.append(_check(f"provider {name}", p["ok"], "reachable" if p["ok"] else p.get("error", "unavailable"),
                           "check the provider's credentials / cluster access (docs/gke.md)"))
+    # --- isolation: Docker sandboxes can't reach each other's ports
+    if (dp := fleet.providers.get("docker")) is not None and hasattr(dp, "client"):
+        from hangar.providers.docker_net import doctor_check
+
+        try:
+            out.append(await asyncio.to_thread(doctor_check, dp.client, s))
+        except Exception as e:  # noqa: BLE001 - a check, not a failure of the run
+            out.append(_check("docker sandbox network", None, f"could not check: {e}"))
 
     # Cloud Build can run as the build service account (actAs on itself)
     sa = getattr(s, "k8s_build_service_account", None)

@@ -42,6 +42,7 @@ import httpx
 from hangar.config import Settings
 from hangar.models import ExecResult, Sandbox
 from hangar.providers.base import OutputTail, Provider, ProviderError, TerminalStream
+from hangar.providers.docker_net import network  # --- isolation
 
 log = logging.getLogger("hangar.envd")
 
@@ -708,7 +709,7 @@ class DockerEnvd(Installer):
         attrs = await asyncio.to_thread(api.inspect_container, sb.provider_ref)
         ns = attrs.get("NetworkSettings") or {}
         nets: dict[str, dict] = ns.get("Networks") or {}
-        order = sorted(nets, key=lambda n: n != self.s.docker_network)
+        order = sorted(nets, key=lambda n: n != network(self.s))  # --- isolation: hangar's network first
         out = [u for n in order if (u := _http_url((nets[n] or {}).get("IPAddress") or ""))]
         for b in (ns.get("Ports") or {}).get(f"{PORT}/tcp") or []:
             host = b.get("HostIp") or "127.0.0.1"

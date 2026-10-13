@@ -68,9 +68,13 @@ runc's), and `agent_status` long-polls to stop holding API-server connections an
 3. **Starting it.** `hangar-envd --daemon` binds the port, then detaches (new session, stdio to `/dev/null` and the log
    at `/tmp/hangar-envd.log`), so the start exec returns as soon as it listens. It runs as the sandbox user.
 4. **Reaching it.**
-   - Docker: the container's IP (Linux hosts, or a control plane on the same Docker network: set
-     `HANGAR_DOCKER_NETWORK` when hangar itself runs in a container), else the port published on `127.0.0.1` (Docker
-     Desktop, where container IPs aren't routable). Containers created before this change have no published port.
+   - Docker: the container's IP (Linux hosts), else the port published on `127.0.0.1` (Docker Desktop, where
+     container IPs aren't routable). Containers created before this change have no published port. Sandboxes run on
+     hangar's own network, where containers can't reach each other ([security](security.md#sandbox-networking-on-docker)),
+     and that includes a container attached to it: a control plane that runs in a container (Docker Compose) can't
+     reach the daemon there, and uses `docker exec`. Pointing `HANGAR_DOCKER_NETWORK` at a network shared with the
+     control plane makes the daemon reachable, and lets sandboxes reach each other and the control plane
+     (`hangar doctor` warns).
    - Kubernetes: the pod IP. [`deploy/k8s/envd-network.yaml`](../deploy/k8s/envd-network.yaml) lets hangar's pods,
      and only them, reach port 49983; everything else stays denied by `sandbox-network.yaml`.
 5. **Falling back.** The provider's own path is used whenever the daemon can't be: no binary for the sandbox's CPU,
@@ -141,8 +145,8 @@ The daemon runs inside a sandbox that runs untrusted code, so the trust boundary
   dropped), 64 directory watches, 16,384 watched
   directories per watch, 100,000 entries per listing, 8 MiB signed request bodies, 4 MiB upload frames, paths up to
   4 KiB with no NUL. Paths resolve like E2B's (`~` and relative paths from the user's home, then cleaned lexically).
-- **Connections.** Anything that can reach the port can connect (on Docker's default bridge that includes other
-  sandboxes), so the daemon holds at most 1,024 connections and 512 from one address, and closes a connection that
+- **Connections.** Anything that can reach the port can connect (on Docker's default bridge, or any network created
+  without `enable_icc=false`, that includes other sandboxes), so the daemon holds at most 1,024 connections and 512 from one address, and closes a connection that
   sends no request, or doesn't finish its headers, for 75 s (longer than hangar keeps idle connections, 30 s). At the
   total cap it stops accepting until one closes. A panic unwinds the one request it happened in.
 

@@ -25,6 +25,7 @@ from hangar.harnesses import PACK_ROOT
 from hangar.models import ExecResult, Sandbox, SandboxState
 from hangar.providers._build import docker_build
 from hangar.providers.base import Capabilities, LogFn, OutputTail, Provider, ProviderError, TerminalStream
+from hangar.providers.docker_net import Network, joined, network  # --- isolation
 
 MAX_OUTPUT = 256 * 1024
 LABEL = "dev.hangar.sandbox"
@@ -141,6 +142,7 @@ def _supports_image_mounts(client) -> bool:
 class DockerProvider(Provider):
     name = "docker"
     envd: DockerEnvd | Off = OFF  # --- envd: set in __init__
+    network: Network | None = None  # --- isolation: set in __init__
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -158,6 +160,7 @@ class DockerProvider(Provider):
         if self._image_volumes is None:
             self._image_volumes = _supports_image_mounts(self.client)
         self.envd = DockerEnvd(self, settings)  # --- envd: exec, files and terminals through the in-sandbox daemon
+        self.network = Network(self.client, settings)  # --- isolation: sandboxes can't reach each other
 
     @property
     def capabilities(self) -> Capabilities:
@@ -193,13 +196,12 @@ class DockerProvider(Provider):
         )
         if self.settings.docker_runtime:
             kw["runtime"] = self.settings.docker_runtime
-        if self.settings.docker_network:
-            kw["network"] = self.settings.docker_network
+        kw["network"] = network(self.settings)  # --- isolation: hangar's own network unless one is named
         # workstream F: on Linux, host.docker.internal (the git gateway on the host) needs an explicit mapping
         if "host.docker.internal" in (self.settings.gateway_url or ""):
             kw["extra_hosts"] = {"host.docker.internal": "host-gateway"}
         # --- envd: the daemon's port on loopback too, for hosts that can't route to container IPs (Docker Desktop)
-        if self.envd.enabled and (self.settings.docker_network or "") not in ("host", "none"):
+        if self.envd.enabled and kw["network"] not in ("host", "none"):
             kw["ports"] = {f"{ENVD_PORT}/tcp": ("127.0.0.1", None)}
         if packs:
             kw["mounts"] = [{"Type": "image", "Source": ref, "Target": f"{PACK_ROOT}/{n}", "ReadOnly": True}
@@ -221,12 +223,15 @@ class DockerProvider(Provider):
             for c in stale:
                 if c.name.startswith("hangar-pool-") and c.labels.get(POOL_LABEL) != image:
                     await asyncio.to_thread(c.remove, force=True)
-            alive = [c for c in pool if c.status in ("running", "created")]
+            # --- isolation: members started on another network (before hangar had its own) are replaced too
+            alive = [c for c in pool if c.status in ("running", "created") and joined(c.attrs, network(self.settings))]
             for c in pool:
                 if c not in alive:
                     await asyncio.to_thread(c.remove, force=True)
             for c in alive[max(0, spec.warm_pool):]:  # scaled down (e.g. a schedule's hours ended)
                 await asyncio.to_thread(c.remove, force=True)
+            if self.network and spec.warm_pool > len(alive):
+                await self.network.ensure()  # --- isolation
             for _ in range(max(0, spec.warm_pool - len(alive))):
                 name = f"hangar-pool-{spec.name}-{int(time.time() * 1000) % 10**8}"
                 kw = self._run_kwargs(name, image, spec.resources, {POOL_LABEL: image, "dev.hangar.env": spec.name},
@@ -239,7 +244,8 @@ class DockerProvider(Provider):
                 self.client.containers.list,
                 filters={"label": f"{POOL_LABEL}={image}", "status": "running", "name": "hangar-pool-"},
             )
-            pool = [c for c in pool if c.name.startswith("hangar-pool-")]
+            pool = [c for c in pool if c.name.startswith("hangar-pool-")
+                    and joined(c.attrs, network(self.settings))]  # --- isolation
             if not pool:
                 return None
             # Rename inside the lock so two concurrent claims can never take the same container.
@@ -268,6 +274,8 @@ class DockerProvider(Provider):
             sandbox.info["pool_image"] = image
             return
         labels = {LABEL: sandbox.id, "dev.hangar.env": sandbox.environment}
+        if self.network:
+            await self.network.ensure()  # --- isolation
         kw = self._run_kwargs(name, image, sandbox.resources, labels, hostname=sandbox.name,
                               packs=spec.packs if spec else None)
         try:

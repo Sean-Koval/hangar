@@ -52,6 +52,8 @@ class Settings(BaseSettings):
 
     # docker
     docker_runtime: str | None = None  # e.g. "runsc" for gVisor, "kata" if configured
+    # --- isolation: unset = hangar's own network (hangar-sandboxes, bridge hangar0), where sandboxes can't reach each
+    # other; a name = that network as it is (`bridge` is Docker's default, where they can). providers/docker_net.py
     docker_network: str | None = None
     # Mount harness packs with `--mount type=image` (Docker 28+ with the containerd image store). None = detect.
     docker_image_volumes: bool | None = None
