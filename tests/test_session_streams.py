@@ -15,6 +15,7 @@ from hangar.harnesses import HARNESSES, Harness
 from hangar.models import SessionState
 from hangar.sessions import NewSession, SessionError, SessionService, extract_summary
 from hangar.vault import Vault
+from tests.conftest import scratch_root
 
 pytestmark = pytest.mark.skipif(not shutil.which("tmux") or not shutil.which("git"), reason="needs tmux and git")
 
@@ -49,8 +50,7 @@ echo "{\"type\":\"result\",\"result\":\"did: $(echo "$msg" | head -1)\"}"
 
 @pytest.fixture
 def world(monkeypatch):
-    base = Path.home() / ".cache" / "hangar-tests"
-    base.mkdir(parents=True, exist_ok=True)
+    base = scratch_root()
     root = Path(tempfile.mkdtemp(prefix="ses-", dir=base))
     remote, seed = root / "remote.git", root / "seed"
     git = ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "init.defaultBranch=main"]

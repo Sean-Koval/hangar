@@ -17,6 +17,7 @@ import pytest
 from hangar.harnesses import HARNESSES, Harness
 from hangar.jobs import Caller, JobError, JobService, SubmitJob, handle_github, parse_command
 from hangar.models import ContextItem, CredentialKind, JobState
+from tests.conftest import scratch_root
 
 pytestmark = pytest.mark.skipif(not shutil.which("tmux") or not shutil.which("git"), reason="needs tmux and git")
 
@@ -40,8 +41,7 @@ esac
 @pytest.fixture
 def world(monkeypatch):
     """A bare git remote, a scripted harness and an environment that uses it."""
-    base = Path.home() / ".cache" / "hangar-tests"  # not under /tmp: the fake provider remaps /tmp/
-    base.mkdir(parents=True, exist_ok=True)
+    base = scratch_root()
     root = Path(tempfile.mkdtemp(prefix="jobs-", dir=base))
     remote = root / "remote.git"
     seed = root / "seed"
