@@ -189,7 +189,8 @@ This works for any harness. It is used when a harness has no resume support, or 
   - The start timeout is 15 minutes (it was 5), long enough for a node scale-up plus a first image pull.
 - **Warm pools on a schedule:** `warm_pool_hours: "Mon-Fri 08:00-20:00 America/New_York"` keeps the pool only in working hours. Outside them it scales to 0, so the node pool can scale down. A warm sandbox makes resume about 10 seconds. Without one, it is a cold start: image already built, node already present, so about 30–60 seconds.
 - **Prebuilt images:** at startup hangar builds the environments mapped for jobs (`HANGAR_GITHUB_REPOS`, or `HANGAR_PREBUILD_ENVIRONMENTS`), so the first job or session doesn't wait on a build.
-- **Cluster settings:** terraform enables GKE image streaming on the sandbox pool and sizes node disks at 100 GB. pd-balanced counts against the 500 GB SSD quota that blocked scale-up.
+- **Cluster settings (opt-in):** terraform variables `image_streaming = true` (GKE image streaming on the sandbox pool) and `sandbox_disk_gb = 100` (pd-balanced counts against the 500 GB SSD quota that blocked scale-up). Both default to the old values because changing them recreates the sandbox nodes: suspend sessions first, they resume from their checkpoints.
+- **Checkpoint bucket:** no lifecycle deletion by default (`session_retention_days = 0`); hangar prunes old checkpoints itself, and a suspended session's newest checkpoint is its only copy of the work. Note that the hangar service account (which Cloud Build also runs as) can read and write the bucket: environment builds run with the same identity. Checkpoints are encrypted with the vault key, so a build step can't read them, but it could delete them; a separate build service account closes that.
 
 ## 6. Security
 

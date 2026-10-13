@@ -534,6 +534,11 @@ def warm_pool_now(spec: EnvSpec, when: float | None = None) -> int:
 
     days, start, end, tz = parse_hours(spec.warm_pool_hours)
     t = _dt.datetime.fromtimestamp(when if when is not None else _dt.datetime.now().timestamp(), ZoneInfo(tz))
-    minute = t.hour * 60 + t.minute
-    inside = (start <= minute < end) if start <= end else (minute >= start or minute < end)
-    return spec.warm_pool if t.weekday() in days and inside else 0
+    minute, day = t.hour * 60 + t.minute, t.weekday()
+    if start == end:  # "00:00-00:00": all day on the listed days
+        inside = day in days
+    elif start < end:
+        inside = day in days and start <= minute < end
+    else:  # past midnight: the early-morning part belongs to the window that started the day before
+        inside = (day in days and minute >= start) or ((day - 1) % 7 in days and minute < end)
+    return spec.warm_pool if inside else 0

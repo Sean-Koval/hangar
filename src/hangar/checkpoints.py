@@ -62,6 +62,8 @@ class GCSStore:
     """Minimal GCS JSON API client (upload, download, list+delete) with metadata-server tokens."""
 
     API = "https://storage.googleapis.com"
+    ATTEMPTS = 5
+    BACKOFF = 0.5
     METADATA = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
 
     def __init__(self, url: str, transport: httpx.AsyncBaseTransport | None = None, token: str | None = None):
@@ -77,8 +79,10 @@ class GCSStore:
     def _name(self, key: str) -> str:
         return f"{self.prefix}/{key}" if self.prefix else key
 
-    async def _auth(self) -> dict[str, str]:
+    async def _auth(self, refresh: bool = False) -> dict[str, str]:
         async with self._lock:
+            if refresh and self._exp != float("inf"):
+                self._token = None
             if not self._token or time.time() > self._exp - 60:
                 async with httpx.AsyncClient(transport=self._transport, timeout=10) as c:
                     r = await c.get(self.METADATA, headers={"Metadata-Flavor": "Google"})
@@ -87,17 +91,41 @@ class GCSStore:
                 self._token, self._exp = j["access_token"], time.time() + int(j.get("expires_in", 300))
         return {"Authorization": f"Bearer {self._token}"}
 
+    async def _request(self, c: httpx.AsyncClient, method: str, url: str, **kw) -> httpx.Response:
+        """Retries what GCS says to retry (429, 5xx, dropped connections) with backoff, and refreshes the token
+        once on 401. Uploads are whole-object and idempotent, so re-sending is safe."""
+        headers = kw.pop("headers", {})
+        refreshed = False
+        for attempt in range(self.ATTEMPTS):
+            try:
+                r = await c.request(method, url, headers={**headers, **await self._auth()}, **kw)
+            except (httpx.TransportError, httpx.TimeoutException):
+                if attempt == self.ATTEMPTS - 1:
+                    raise
+            else:
+                if r.status_code == 401 and not refreshed:
+                    refreshed = True
+                    await self._auth(refresh=True)
+                    continue
+                if r.status_code not in (408, 429) and r.status_code < 500:
+                    return r
+                if attempt == self.ATTEMPTS - 1:
+                    return r
+            await asyncio.sleep(min(8.0, self.BACKOFF * 2 ** attempt))
+        raise RuntimeError("unreachable")
+
     async def put(self, key: str, data: bytes) -> None:
         async with httpx.AsyncClient(transport=self._transport, timeout=300) as c:
-            r = await c.post(f"{self.API}/upload/storage/v1/b/{self.bucket}/o",
-                             params={"uploadType": "media", "name": self._name(key)}, content=data,
-                             headers={**await self._auth(), "Content-Type": "application/octet-stream"})
+            r = await self._request(c, "POST", f"{self.API}/upload/storage/v1/b/{self.bucket}/o",
+                                    params={"uploadType": "media", "name": self._name(key)}, content=data,
+                                    headers={"Content-Type": "application/octet-stream"})
             r.raise_for_status()
 
     async def get(self, key: str) -> bytes | None:
         async with httpx.AsyncClient(transport=self._transport, timeout=300) as c:
-            r = await c.get(f"{self.API}/storage/v1/b/{self.bucket}/o/{quote(self._name(key), safe='')}",
-                            params={"alt": "media"}, headers=await self._auth())
+            r = await self._request(c, "GET",
+                                    f"{self.API}/storage/v1/b/{self.bucket}/o/{quote(self._name(key), safe='')}",
+                                    params={"alt": "media"})
             if r.status_code == 404:
                 return None
             r.raise_for_status()
@@ -110,12 +138,12 @@ class GCSStore:
                 params = {"prefix": self._name(prefix.rstrip("/") + "/"), "fields": "items(name),nextPageToken"}
                 if token:
                     params["pageToken"] = token
-                r = await c.get(f"{self.API}/storage/v1/b/{self.bucket}/o", params=params, headers=await self._auth())
+                r = await self._request(c, "GET", f"{self.API}/storage/v1/b/{self.bucket}/o", params=params)
                 r.raise_for_status()
                 j = r.json()
                 for it in j.get("items", []):
-                    d = await c.delete(f"{self.API}/storage/v1/b/{self.bucket}/o/{quote(it['name'], safe='')}",
-                                       headers=await self._auth())
+                    d = await self._request(c, "DELETE",
+                                            f"{self.API}/storage/v1/b/{self.bucket}/o/{quote(it['name'], safe='')}")
                     if d.status_code not in (200, 204, 404):
                         d.raise_for_status()
                 token = j.get("nextPageToken")

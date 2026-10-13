@@ -569,10 +569,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except WebSocketDisconnect:
             pass
         finally:
-            out_task.cancel()
-            await term.close()
-            with contextlib.suppress(Exception):
-                fleet.detach(ref)
+            try:
+                out_task.cancel()
+                with contextlib.suppress(Exception):
+                    await term.close()
+            finally:
+                with contextlib.suppress(Exception):
+                    fleet.detach(ref)
 
     # ------------------------------------------------------------------ snapshots
     @app.get("/api/snapshots")

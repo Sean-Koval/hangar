@@ -205,6 +205,12 @@ def test_warm_pool_hours():
     assert warm_pool_now(spec, tue_10am) == 2
     assert warm_pool_now(spec, tue_9pm) == 0 and warm_pool_now(spec, sat_10am) == 0
     assert warm_pool_now(EnvSpec(name="y", warm_pool=1)) == 1  # no schedule: always
+    late = EnvSpec(name="w", warm_pool=1, warm_pool_hours="Fri 22:00-02:00 America/New_York")
+    assert warm_pool_now(late, dt.datetime(2026, 10, 16, 23, 0, tzinfo=ny).timestamp()) == 1  # Fri 11pm
+    assert warm_pool_now(late, dt.datetime(2026, 10, 17, 1, 0, tzinfo=ny).timestamp()) == 1  # Sat 1am: Friday's
+    assert warm_pool_now(late, dt.datetime(2026, 10, 16, 1, 0, tzinfo=ny).timestamp()) == 0  # Fri 1am: Thursday's
+    allday = EnvSpec(name="v", warm_pool=1, warm_pool_hours="Tue 00:00-00:00 America/New_York")
+    assert warm_pool_now(allday, tue_9pm) == 1 and warm_pool_now(allday, sat_10am) == 0
     import pytest
 
     with pytest.raises(ValueError):

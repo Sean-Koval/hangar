@@ -397,7 +397,12 @@ class Fleet:
         if registered and registered == prov.image_ref(tag):
             return registered
         if await prov.image_exists(tag):
-            return prov.image_ref(tag)
+            ref = prov.image_ref(tag)
+            if bake == self._bake_for(spec, pname, spec.pick_harness()):
+                # Built earlier (another replica, a lost data volume): record it, so warm pools and
+                # `hangar doctor` see the environment as built.
+                self.store.kv_set(f"image:{pname}:{spec.name}", ref)
+            return ref
         if stage:
             stage(f"building the {spec.name} image (first use or the environment changed; usually a few minutes)")
         if bake and bake != self._bake_for(spec, pname, spec.pick_harness()):
@@ -799,6 +804,7 @@ class Fleet:
             self._touch(sb)
         res = await prov.exec(sb, command, timeout=timeout, cwd=cwd or sb.info.get("repo_path"))
         if not quiet:
+            self.touch(sb.id, 0)  # a long command is activity for its whole run, not just its start
             self.audit(actor, "sandbox.exec", sb.id, command=command[:500], exit_code=res.exit_code)
         return res
 
@@ -817,6 +823,7 @@ class Fleet:
 
     async def list_files(self, ref: str, path: str = ".", depth: int = 1) -> str:
         sb, prov = self._running(ref)
+        self.touch(sb.id)
         p = self._abs(sb, path)
         res = await prov.exec(
             sb, f"find {shlex.quote(p)} -mindepth 1 -maxdepth {int(depth)} -not -path '*/.git/*' "
@@ -853,6 +860,7 @@ class Fleet:
 
     async def terminal_read(self, ref: str, session: str = "main", lines: int = 200) -> str:
         sb, prov = self._running(ref)
+        self.touch(sb.id)  # someone watching a terminal is using the sandbox
         res = await prov.exec(
             sb, f"tmux capture-pane -p -J -t {shlex.quote(_slug(session))} -S -{int(lines)}", timeout=15)
         if res.exit_code != 0:
@@ -951,8 +959,10 @@ class Fleet:
         return {"sandbox": sb.id, "run_id": run_id, "harness": hname, "model": model, "terminal_session": run_id,
                 "log": f"{rdir}/{run_id}.log"}
 
-    async def agent_status(self, ref: str, run_id: str, tail_lines: int = 60) -> dict[str, Any]:
+    async def agent_status(self, ref: str, run_id: str, tail_lines: int = 60, quiet: bool = False) -> dict[str, Any]:
         sb, prov = self._running(ref)
+        if not quiet:
+            self.touch(sb.id)  # a client following an agent counts as use; hangar's own polling doesn't
         if not re.fullmatch(r"run-[0-9a-f]{8}", run_id):
             raise FleetError(f"invalid run id '{run_id}'")
         rdir = f"/home/{self.settings.sandbox_user}/.hangar/runs"

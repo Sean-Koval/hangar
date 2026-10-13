@@ -148,6 +148,10 @@ class JobService:
                 continue
             if job.state == JobState.QUEUED:
                 self._queue.put_nowait(job.id)
+            elif job.state == JobState.PROVISIONING and (s := self._session(job)) and s.checkpoints:
+                # Restarted while resuming a follow-up: the checkpoints are the job's work; just resume again.
+                self._event(job, "control plane restarted while resuming; resuming again")
+                self._queue.put_nowait(job.id)
             elif job.state == JobState.PROVISIONING:
                 await self._discard_sandbox(job)
                 self._event(job, "control plane restarted while provisioning", JobState.FAILED, reason="interrupted")
@@ -163,6 +167,12 @@ class JobService:
                             reason="interrupted")
             if job.state == JobState.FAILED:
                 interrupted.append(job)
+        # Sessions held their job's sandbox through the restart; jobs that won't run again let go of it now
+        # (it then idles out after keep_minutes like any finished job).
+        for job in self._jobs.values():
+            s = self._session(job)
+            if s is not None and job.state in JOB_TERMINAL:
+                self.sessions.release_restart_hold(s)
         n = max(1, self.settings.job_concurrency)
         self._workers = [asyncio.create_task(self._worker(i)) for i in range(n)]
         for job in interrupted:
@@ -428,11 +438,13 @@ class JobService:
                 await self._report(job)
                 return
             s = self._session(job)
+            if s is None and job.sandbox_id:
+                s = self._adopt(job)  # a job from before sessions: carry on in its sandbox
             if s is None:
                 if not await self._provision(job):
                     return
                 s = self._session(job)
-            with self.sessions.hold(s):
+            async with self.sessions.hold(s):
                 if not self._sandbox_alive(job):
                     # A follow-up after the sandbox was released: resume the job's session from its checkpoint.
                     self._event(job, "resuming the job's session from its last checkpoint", JobState.PROVISIONING)
@@ -440,6 +452,11 @@ class JobService:
                     job.sandbox_id = sb.id
                     self._save(job)
                     self._event(job, f"sandbox {sb.name} ready (restored) on branch {job.branch}")
+                    if job.cancel_requested:
+                        self._event(job, "cancelled while resuming", JobState.CANCELLED, reason="cancelled")
+                        await self._keep(job, s)
+                        await self._report(job)
+                        return
                 turn = job.turns[-1]
                 if turn.run_id is None:
                     await self._start_turn(job, turn, s)
@@ -464,7 +481,7 @@ class JobService:
             extra_dirs=[f".hangar/jobs/{job.id}"], idle_minutes=job.keep_minutes)
         job.session_id = s.id
         self._save(job)
-        with self.sessions.hold(s):
+        async with self.sessions.hold(s):
             sb = await self.sessions.ensure_sandbox(s, progress=self._progress(job))
         job.sandbox_id = sb.id
         job.harness = job.harness or sb.info.get("harness")
@@ -502,12 +519,31 @@ class JobService:
         self._event(job, f"sandbox {sb.name} ready on branch {job.branch}")
         return True
 
+    def _adopt(self, job: Job):
+        """Give a job that predates sessions a session around its live sandbox; None if there's nothing to adopt."""
+        from hangar.models import SessionTurn
+
+        if not self._sandbox_alive(job):
+            return None
+        s = self.sessions.for_job(
+            job_id=job.id, environment=job.environment, harness=job.harness, model=job.model, repo=job.repo,
+            base_branch=job.base_branch, branch=job.branch, provider=job.provider, labels=job.labels,
+            extra_dirs=[f".hangar/jobs/{job.id}"], idle_minutes=job.keep_minutes)
+        turns = [SessionTurn(message=t.message or job.instructions, requester=t.requester, run_id=t.run_id,
+                             harness=job.harness, started_at=t.started_at, finished_at=t.finished_at,
+                             exit_code=t.exit_code, summary=t.summary) for t in job.turns if t.run_id]
+        self.sessions.adopt(s, job.sandbox_id, job.result.base_sha, turns)
+        job.session_id = s.id
+        self._event(job, f"carrying on in sandbox {job.sandbox_id} under session {s.name}")
+        return s
+
     async def _discard_sandbox(self, job: Job) -> None:
         s = self._session(job)
         if s is not None:
             with contextlib.suppress(Exception):
                 await self.sessions.release(s, "job could not start", checkpoint=False)
-                self.sessions.archive(s.id, requester=f"job:{job.id}")
+                if not s.checkpoints:  # never throw away work a session already saved
+                    self.sessions.archive(s.id, requester=f"job:{job.id}")
         elif job.sandbox_id:
             with contextlib.suppress(Exception):
                 await self.fleet.destroy(job.sandbox_id, actor=f"job:{job.id}")
@@ -571,13 +607,19 @@ class JobService:
         await self._sh(job, f"rm -f {shlex.quote(ctx)}/RESULT.md")
         n = len(job.turns)
         resuming = self.sessions.will_resume(s)
-        st = SessionTurn(message=turn.message or job.instructions, requester=turn.requester)
-        s.turns.append(st)
+        last = s.turns[-1] if s.turns else None
+        if last is not None and last.run_id is None and last.finished_at is None:
+            st = last  # restarted before this turn began: reuse it rather than leave a phantom turn behind
+            st.message, st.requester = turn.message or job.instructions, turn.requester
+        else:
+            st = SessionTurn(message=turn.message or job.instructions, requester=turn.requester)
+            s.turns.append(st)
         self._event(job, f"agent turn {n} starting ({s.harness or 'default harness'}"
                          + (", resuming its conversation" if resuming else "") + ")", JobState.RUNNING, reason=None)
         await self.sessions.begin_turn(
             s, st, prompt=self._prompt(job, turn, sb.info.get("repo_path"), resuming=resuming),
-            extra_env={"HANGAR_JOB_ID": job.id, "HANGAR_JOB_DIR": ctx}, timeout_minutes=job.timeout_minutes)
+            extra_env={"HANGAR_JOB_ID": job.id, "HANGAR_JOB_DIR": ctx}, timeout_minutes=job.timeout_minutes,
+            handoff=False)  # the job's own follow-up prompt carries the task, context and last summary
         turn.run_id = st.run_id
         turn.started_at = st.started_at
         job.harness, job.model = s.harness, s.model

@@ -449,25 +449,30 @@ class KubernetesProvider(Provider):
             return None
         return base64.b64decode(out)
 
-    def _upload_stream_blocking(self, pod: str, path: str, b64: str, mode: int, timeout: int) -> tuple[int, str]:
+    def _upload_stream_blocking(self, pod: str, path: str, b64: str, mode: int, timeout: int,
+                                size: int | None = None) -> tuple[int, str]:
         """One exec, data on stdin. The exec websocket can't signal EOF to the process, so the receiver reads an
         exact byte count (`head -c N`) instead: no EOF needed, and ~1 round trip instead of one per 96 KB."""
         q, d = shlex.quote(path), shlex.quote(str(Path(path).parent))
         tmp = f"/tmp/.hangar-upload-{uuid.uuid4().hex[:10]}"
-        script = (f"mkdir -p {d} && head -c {len(b64)} | base64 -d > {tmp} && chmod {mode:o} {tmp} && mv {tmp} {q}"
-                  f"; rc=$?; rm -f {tmp}; exit $rc")
+        # The size check guards against a short read (a dropped stream) ever replacing the file with a truncation.
+        check = f' && [ "$(wc -c < {tmp})" -eq {int(size)} ]' if size is not None else ""
+        script = (f"mkdir -p {d} && head -c {len(b64)} | base64 -d > {tmp}{check} && chmod {mode:o} {tmp} "
+                  f"&& mv {tmp} {q}; rc=$?; rm -f {tmp}; exit $rc")
         ws = k8s_stream(self.core.connect_get_namespaced_pod_exec, pod, self.ns, container=CONTAINER,
                         command=["sh", "-c", script], stderr=True, stdin=True, stdout=True, tty=False,
                         _preload_content=False)
         err: list[str] = []
+        deadline = time.monotonic() + timeout
         try:
             step = 256 * 1024
             for i in range(0, len(b64), step):
+                if time.monotonic() > deadline or not ws.is_open():
+                    raise ProviderError(f"upload of {path} stalled after {i} of {len(b64)} bytes")
                 ws.write_stdin(b64[i:i + step])
                 ws.update(timeout=0)
                 if ws.peek_stderr():
                     err.append(ws.read_stderr())
-            deadline = time.monotonic() + timeout
             while ws.is_open() and time.monotonic() < deadline:
                 ws.update(timeout=1)
                 if ws.peek_stderr():
@@ -485,7 +490,7 @@ class KubernetesProvider(Provider):
         if self.settings.k8s_stream_uploads and len(b64) > 64 * 1024:
             try:
                 code, err = await asyncio.to_thread(self._upload_stream_blocking, pod, path, b64, mode,
-                                                    max(60, len(b64) // (512 * 1024)))
+                                                    max(60, len(b64) // (512 * 1024)), len(data))
                 if code == 0:
                     return
                 log.warning("streamed upload of %s failed (exit %s: %s); falling back to chunks", path, code,

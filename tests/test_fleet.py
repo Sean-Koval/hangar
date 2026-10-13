@@ -224,8 +224,8 @@ async def test_prebuild_and_scheduled_pools(fleet):
 
     fake.sync_warm_pool = sync
     raw = fleet.catalog.raw("plain")
-    fleet.catalog.add({**raw, "warm_pool": 2, "warm_pool_hours": "Mon-Sun 00:00-00:00"})  # an empty window: off
+    fleet.catalog.add({**raw, "warm_pool": 2, "warm_pool_hours": "Mon-Sun 00:00-00:00"})  # all day, every day
     fleet.store.kv_set("image:docker:plain", "img")
     await fleet.sync_scheduled_pools()
     await fleet.sync_scheduled_pools()  # unchanged: not re-applied
-    assert synced == [("plain", 0)]
+    assert synced == [("plain", 2)]

@@ -430,3 +430,55 @@ async def test_mcp_job_tools(jobs, world, fleet):
         job = await _until(jobs, jid, DONE)
         assert job.state == JobState.SUCCEEDED and job.result.pushed, [e.message for e in job.events]
         assert _remote_has(world["remote"], job.branch)
+
+
+async def test_restart_while_resuming_keeps_the_checkpoints(jobs, world, fleet):
+    job = jobs.submit(SubmitJob(instructions="x", repo=world["url"], environment="jobenv", keep_minutes=0),
+                      Caller("svc", "svc"))
+    job = await _until(jobs, job.id, DONE)
+    while job.id in jobs._active:
+        await asyncio.sleep(0.05)
+    s = jobs.sessions.get(job.session_id)
+    kept = [c.id for c in s.checkpoints]
+    assert kept and s.sandbox_id is None
+    # the control plane went down while a follow-up was resuming the session
+    world["mode"].write_text("followup")
+    await jobs.stop()
+    from hangar.models import Turn
+
+    job.turns.append(Turn(kind="follow_up", message="also do Y", requester="svc"))
+    job.state = JobState.PROVISIONING
+    job.keep_minutes = 60  # keep this sandbox so we can look at the prompt
+    jobs.store.put(job)
+    again = JobService(fleet, jobs.sessions, transport=jobs.transport)
+    await again.start()
+    try:
+        done = await _until(again, job.id, DONE)
+        assert done.state == JobState.SUCCEEDED, [e.message for e in done.events]
+        assert s.state != "archived" and len(done.result.commits) == 2
+        # the follow-up prompt carries the job's own history; no session handoff on top of it
+        box = fleet.providers["docker"].boxes[done.sandbox_id]
+        prompts = sorted((box / "home/agent/.hangar/runs").glob("*.prompt"), key=lambda p: p.stat().st_mtime)
+        assert "also do Y" in prompts[-1].read_text() and "Earlier in this session" not in prompts[-1].read_text()
+    finally:
+        await again.stop()
+
+
+async def test_job_from_before_sessions_is_adopted(jobs, world, fleet):
+    """A job that started before sessions existed carries on in its own sandbox instead of a new one."""
+    job = jobs.submit(SubmitJob(instructions="x", repo=world["url"], environment="jobenv"), Caller("svc", "svc"))
+    job = await _until(jobs, job.id, DONE)
+    while job.id in jobs._active:
+        await asyncio.sleep(0.05)
+    sandbox = job.sandbox_id
+    old = jobs.sessions.get(job.session_id)
+    old.job_id = None  # pretend it never had one
+    job.session_id = None
+    world["mode"].write_text("followup")
+    jobs.follow_up(job.id, "also do Y", requester="svc")
+    job = await _until(jobs, job.id, DONE)
+    assert job.state == JobState.SUCCEEDED, [e.message for e in job.events]
+    assert job.sandbox_id == sandbox and job.session_id and job.session_id != old.id
+    s = jobs.sessions.get(job.session_id)
+    assert s.sandbox_id == sandbox and fleet.get(sandbox).labels["hangar.session"] == s.id
+    assert [t.run_id for t in s.turns] == [t.run_id for t in job.turns]

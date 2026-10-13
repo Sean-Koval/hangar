@@ -116,7 +116,9 @@ class SessionService:
         self.blobs: CheckpointStore = make_store(self.settings.session_store, self.settings.data_dir)
         self._sessions: dict[str, Session] = {}
         self._locks: dict[str, asyncio.Lock] = collections.defaultdict(asyncio.Lock)
-        self._busy: set[str] = set()  # sessions with a turn or boot in flight
+        self._busy: set[str] = set()  # sessions with a turn, boot or suspend of their own in flight
+        self._holds: collections.Counter[str] = collections.Counter()  # outside holders (jobs), refcounted
+        self._restart_holds: set[str] = set()  # job sessions held from startup until their job re-attaches
         self._tasks: set[asyncio.Task] = set()
         self._loop: asyncio.Task | None = None
         self._last_checked: dict[str, float] = {}  # last time a checkpoint ran (taken or found unchanged)
@@ -129,7 +131,11 @@ class SessionService:
             if s.state in SESSION_LIVE or s.state == SessionState.SUSPENDING:
                 if s.sandbox_id and self._alive(s.sandbox_id):
                     if s.job_id:
-                        self._set(s, SessionState.IDLE, "control plane restarted")  # the job re-attaches itself
+                        # The job re-attaches itself; until then, nothing may suspend it under a running agent.
+                        self._holds[s.id] += 1
+                        self._restart_holds.add(s.id)
+                        s.last_active_at = now()
+                        self._set(s, SessionState.IDLE, "control plane restarted")
                     elif s.state == SessionState.RUNNING and s.turns and s.turns[-1].run_id:
                         self._spawn(self._resume_wait(s.id))  # re-attach to the running turn
                     else:
@@ -139,7 +145,19 @@ class SessionService:
                     self._set(s, SessionState.SUSPENDED, "control plane restarted; resuming from the last checkpoint")
         if self._hook not in self.fleet.pre_destroy:
             self.fleet.pre_destroy.append(self._hook)
+        orphans = [sb.id for sb in self.fleet.list(label="hangar.session")
+                   if (o := self._sessions.get(sb.labels.get("hangar.session", ""))) is None or o.sandbox_id != sb.id]
+        if orphans:
+            self._spawn(self._destroy_orphans(orphans))
         self._loop = asyncio.create_task(self._idle_loop())
+
+    async def _destroy_orphans(self, ids: list[str]) -> None:
+        """Sandboxes a session started but never attached (the control plane restarted mid-boot): nothing will
+        ever use them, and they cost money until their TTL."""
+        for sid in ids:
+            log.info("destroying orphaned session sandbox %s", sid)
+            with contextlib.suppress(Exception):
+                await self.fleet.destroy(sid, actor="session")
 
     async def stop(self) -> None:
         with contextlib.suppress(ValueError):
@@ -210,7 +228,7 @@ class SessionService:
         if s.state == SessionState.ARCHIVED:
             raise SessionError(f"session {s.name} is archived")
         live = bool(s.sandbox_id and self._alive(s.sandbox_id))
-        if harness and harness != s.harness and (live or s.id in self._busy):
+        if harness and harness != s.harness and (live or self.busy(s.id)):
             raise SessionError(f"session {s.name} is running {s.harness}; suspend it before switching to {harness}")
         if harness and harness != s.harness:
             spec = self.fleet.catalog.get(s.environment)
@@ -219,7 +237,7 @@ class SessionService:
             except ValueError as e:
                 raise SessionError(str(e)) from e
             self._save(s)
-        if s.id in self._busy or (live and s.state in SESSION_LIVE):
+        if self.busy(s.id) or (live and s.state in SESSION_LIVE):
             return s
         self._busy.add(s.id)
         self._set(s, SessionState.STARTING, f"opened by {requester}")
@@ -238,7 +256,7 @@ class SessionService:
         if s.job_id:
             raise SessionError(f"session {s.name} carries job {s.job_id}; follow up on the job instead "
                                "(its turns are verified and delivered)")
-        if s.id in self._busy or s.state in (SessionState.RUNNING, SessionState.SUSPENDING):
+        if self.busy(s.id) or s.state in (SessionState.RUNNING, SessionState.SUSPENDING):
             raise SessionError(f"session {s.name} is busy ({s.state}); wait for it to finish")
         s.turns.append(SessionTurn(message=message, requester=requester))
         s.last_active_at = now()
@@ -251,7 +269,7 @@ class SessionService:
 
     def suspend(self, ref: str, requester: str) -> Session:
         s = self.get(ref)
-        if s.id in self._busy:
+        if self.busy(s.id):
             raise SessionError(f"session {s.name} is busy ({s.state}); wait for it to finish")
         if not s.sandbox_id:
             return s
@@ -267,7 +285,7 @@ class SessionService:
 
     def archive(self, ref: str, requester: str) -> Session:
         s = self.get(ref)
-        if s.sandbox_id or s.id in self._busy:
+        if s.sandbox_id or self.busy(s.id):
             raise SessionError(f"suspend session {s.name} before archiving it")
         self._spawn(self._drop(f"{s.id}/"))
         s.checkpoints = []
@@ -287,7 +305,7 @@ class SessionService:
         d["checkpoints"] = [c.model_dump(mode="json") for c in cps[-3:]]
         d["checkpoint_count"] = len(cps)
         d["last_checkpoint_at"] = cps[-1].ts if cps else None
-        d["busy"] = s.id in self._busy
+        d["busy"] = self.busy(s.id)
         last = s.turns[-1] if s.turns else None
         d["terminal_session"] = last.run_id if last else None
         d["last_summary"] = next((t.summary for t in reversed(s.turns) if t.summary), None)
@@ -462,7 +480,8 @@ class SessionService:
         last = s.checkpoints[-1] if s.checkpoints else None
         base = s.base_sha or "HEAD"
         max_untracked = self.settings.session_max_untracked_mb * 1024 * 1024
-        script = [f"rm -rf {c} && mkdir -p {c} && chmod 700 {c}"]
+        # GIT_OPTIONAL_LOCKS=0: never take index.lock, so a checkpoint during a turn can't break the agent's git.
+        script = [f"export GIT_OPTIONAL_LOCKS=0; rm -rf {c} && mkdir -p {c} && chmod 700 {c}"]
         if repo:
             # Read HEAD once and pin it, so a commit landing mid-checkpoint can't make head and bundle disagree.
             script += [
@@ -477,8 +496,8 @@ class SessionService:
                 f"xargs -0 stat -c '%n %s %Y' < {c}/untracked.list > {c}/untracked.stat 2>/dev/null; fi",
             ]
         if dirs:
-            script.append(f"cd {q(home)} && ls -d {dirs} >/dev/null 2>&1 && "
-                          f"tar czf {c}/agent.tgz --ignore-failed-read $(ls -d {dirs} 2>/dev/null) || true")
+            script.append(f"cd {q(home)} && D=$(ls -d {dirs} 2>/dev/null); "
+                          f"if [ -n \"$D\" ]; then tar czf {c}/agent.tgz --ignore-failed-read $D || true; fi")
         # fingerprint: HEAD + tree diff + untracked names + conversation file listing
         script.append(f"{{ cat {c}/head 2>/dev/null; sha1sum {c}/wip.patch 2>/dev/null | cut -c1-40; "
                       f"cat {c}/untracked.stat 2>/dev/null; "
@@ -605,14 +624,44 @@ class SessionService:
         self._set(s, SessionState.SUSPENDED, f"carries job {job_id}")
         return s
 
-    @contextlib.contextmanager
-    def hold(self, s: Session):
-        """Keep the idle loop away (no suspend, no interval checkpoint) while a caller drives the session."""
-        self._busy.add(s.id)
+    def adopt(self, s: Session, sandbox_id: str, base_sha: str | None, turns: list[SessionTurn]) -> None:
+        """Attach an already-running sandbox to a session (jobs started before sessions existed), so it gets
+        checkpoints, suspend and resume from here on."""
+        sb = self.fleet.get(sandbox_id)
+        sb.labels["hangar.session"] = s.id
+        self.store.put(sb)
+        s.sandbox_id, s.base_sha = sb.id, s.base_sha or base_sha
+        s.harness = s.harness or sb.info.get("harness")
+        s.turns = turns
+        s.last_active_at = now()
+        self._set(s, SessionState.IDLE, "adopted a running sandbox")
+
+    def busy(self, sid: str) -> bool:
+        return sid in self._busy or self._holds[sid] > 0
+
+    @contextlib.asynccontextmanager
+    async def hold(self, s: Session):
+        """Keep the idle loop away (no suspend, no interval checkpoint) while a caller drives the session.
+        Refcounted, and taken under the session lock, so it waits for an in-flight suspend to finish first:
+        afterwards the caller sees the truth about the sandbox (gone -> resume it)."""
+        async with self._locks[s.id]:
+            self._holds[s.id] += 1
+        self.release_restart_hold(s)
         try:
             yield s
         finally:
-            self._busy.discard(s.id)
+            self._holds[s.id] -= 1
+            if self._holds[s.id] <= 0:
+                del self._holds[s.id]
+            s.last_active_at = now()
+            self._save(s)
+
+    def release_restart_hold(self, s: Session) -> None:
+        if s.id in self._restart_holds:
+            self._restart_holds.discard(s.id)
+            self._holds[s.id] -= 1
+            if self._holds[s.id] <= 0:
+                del self._holds[s.id]
 
     def will_resume(self, s: Session) -> bool:
         """Will the next turn continue the harness's own conversation (vs. start fresh or hand off)?"""
@@ -645,12 +694,19 @@ class SessionService:
     async def ensure_sandbox(self, s: Session, progress: Callable[[str], None] | None = None) -> Sandbox:
         """A running sandbox for the session: the current one, or a new one restored from the last checkpoint."""
         async with self._locks[s.id]:
-            return await self._boot(s, progress=progress)
+            try:
+                return await self._boot(s, progress=progress)
+            except Exception as e:
+                self._set(s, SessionState.SUSPENDED if s.checkpoints else SessionState.FAILED,
+                          f"could not start: {e}")
+                raise
 
     async def begin_turn(self, s: Session, turn: SessionTurn, prompt: str | None = None,
-                         extra_env: dict[str, str] | None = None, timeout_minutes: int | None = None) -> None:
+                         extra_env: dict[str, str] | None = None, timeout_minutes: int | None = None,
+                         handoff: bool = True) -> None:
         """Start one agent turn in the session's (running) sandbox, resuming the harness's own conversation when
-        it can. `prompt` overrides the session's prompt (jobs write their own)."""
+        it can. `prompt` overrides the session's prompt (jobs write their own); handoff=False when that prompt
+        already carries the history."""
         sb = self.fleet.get(s.sandbox_id or "")
         # The sandbox must outlive this turn (the idle loop skips busy sessions, so extend now).
         tmo = timeout_minutes if timeout_minutes is not None else self.settings.session_turn_timeout_minutes
@@ -669,7 +725,7 @@ class SessionService:
         turn.harness = s.harness
         turn.conversation = env.get("HANGAR_SESSION_RESUME") or env.get("HANGAR_SESSION_NEW")
         self._save(s)
-        if prompt is not None and turn.mode == "handoff":
+        if prompt is not None and turn.mode == "handoff" and handoff:
             prompt = self._handoff(s) + "\n\n# Now\n\n" + prompt
         res = await self.fleet.run_agent(sb.id, prompt if prompt is not None else self._prompt(s, turn, turn.mode),
                                          harness=s.harness, model=s.model, env={**(extra_env or {}), **env},
@@ -695,7 +751,7 @@ class SessionService:
                 outcome = "cancelled"
                 break
             try:
-                st = await self.fleet.agent_status(s.sandbox_id, turn.run_id or "", tail_lines=5)
+                st = await self.fleet.agent_status(s.sandbox_id, turn.run_id or "", tail_lines=5, quiet=True)
                 errors = 0
             except Exception:  # noqa: BLE001 - transient provider errors
                 errors += 1
@@ -716,18 +772,26 @@ class SessionService:
             self._set(s, SessionState.SUSPENDED if s.checkpoints else SessionState.FAILED,
                       "the sandbox went away during the turn")
             return outcome, ""
-        if outcome in ("cancelled", "timed_out"):
+        if outcome in ("cancelled", "timed_out", "error"):
+            # Never leave an agent running that nobody is watching (it would keep working, and spending).
             with contextlib.suppress(Exception):
                 await self._sh(self.fleet.get(s.sandbox_id), f"tmux kill-session -t {shlex.quote(turn.run_id or '')}")
             turn.exit_code = turn.exit_code if turn.exit_code is not None else -1
-        sb = self.fleet.get(s.sandbox_id)
-        _, prov = self.fleet._running(sb.id)
-        rlog = f"/home/{self.settings.sandbox_user}/.hangar/runs/{turn.run_id}.log"
-        raw = (await prov.read_file(sb, rlog) or b"")[-2_000_000:].decode(errors="replace")
-        turn.summary = self.fleet.broker.redact(extract_summary(turn.harness, raw) or "") or None
-        await self._record_conversation(s, sb, turn, raw)
-        async with self._locks[s.id]:
-            await self._checkpoint(s, "turn")
+        raw = ""
+        try:
+            sb = self.fleet.get(s.sandbox_id)
+            _, prov = self.fleet._running(sb.id)
+            rlog = f"/home/{self.settings.sandbox_user}/.hangar/runs/{turn.run_id}.log"
+            raw = (await prov.read_file(sb, rlog) or b"")[-2_000_000:].decode(errors="replace")
+            turn.summary = self.fleet.broker.redact(extract_summary(turn.harness, raw) or "") or None
+            await self._record_conversation(s, sb, turn, raw)
+        except Exception as e:  # noqa: BLE001 - the work is in the sandbox; don't lose the turn over its log
+            log.warning("session %s: could not read turn %s output: %s", s.id, turn.run_id, e)
+        try:
+            async with self._locks[s.id]:
+                await self._checkpoint(s, "turn")
+        except Exception as e:  # noqa: BLE001 - the next interval/suspend checkpoint retries
+            log.warning("session %s: checkpoint after turn failed: %s", s.id, e)
         s.last_active_at = now()
         if s.sandbox_id and self._alive(s.sandbox_id):
             self._set(s, SessionState.IDLE, f"turn {len(s.turns)} {outcome} (exit {turn.exit_code})")
@@ -756,10 +820,12 @@ class SessionService:
         self._save(s)
 
     # ================================================================== internals: suspend / idle
-    async def _suspend_task(self, sid: str, why: str) -> None:
+    async def _suspend_task(self, sid: str, why: str, idle: bool = False) -> None:
         s = self._sessions[sid]
         try:
             async with self._locks[sid]:
+                if idle and self._holds[sid] > 0:
+                    return  # someone took hold while we were deciding; it's not idle any more
                 await self._suspend(s, why)
         except Exception as e:  # noqa: BLE001
             log.exception("session %s failed to suspend", sid)
@@ -815,7 +881,12 @@ class SessionService:
             return True
         if sb.last_activity and now() - sb.last_activity < 90:
             return True
-        res = await self._sh(sb, "tmux list-clients 2>/dev/null | wc -l", timeout=20)
+        rdir = f"/home/{self.settings.sandbox_user}/.hangar/runs"
+        res = await self._sh(sb, f"n=0; for f in {rdir}/run-*.sh; do [ -e \"$f\" ] || continue; "
+                                 "r=$(basename \"$f\" .sh); "
+                                 f"if [ ! -e {rdir}/$r.exit ] && tmux has-session -t \"$r\" 2>/dev/null; "
+                                 "then n=$((n+1)); fi; done; "
+                                 "echo $(( n + $(tmux list-clients 2>/dev/null | wc -l) ))", timeout=20)
         return res.stdout.strip() not in ("", "0")
 
     def set_idle(self, ref: str, idle_minutes: int, requester: str) -> Session:
@@ -852,26 +923,33 @@ class SessionService:
         if s.state not in (SessionState.IDLE, SessionState.RUNNING) or not s.sandbox_id:
             return
         if not self._alive(s.sandbox_id):
-            if s.id not in self._busy:
+            if not self.busy(s.id):
                 s.sandbox_id = None
                 self._set(s, SessionState.SUSPENDED, "sandbox is gone; resumes from the last checkpoint")
             return
         sb = self.fleet.get(s.sandbox_id)
         if sb.expires_at and sb.expires_at - t < 30 * 60:  # busy or not: never let the reaper take it mid-work
             await self.fleet.extend(sb.id, 60, actor=f"session:{s.id}")
-        if s.id in self._busy:
+        if self.busy(s.id):
+            # Mid-turn: no suspend, but keep checkpointing, so a long turn isn't lost with its sandbox.
+            if s.sandbox_id and not self._locks[s.id].locked() and self._checkpoint_due(s):
+                async with self._locks[s.id]:
+                    await self._checkpoint(s, "interval")
             return
         if await self._in_use(sb):
             s.last_active_at = now()
             self._save(s)
-        if s.id in self._busy:  # a send landed while we were checking
+        if self.busy(s.id):  # a send landed while we were checking
             return
         if s.idle_minutes and now() - s.last_active_at > s.idle_minutes * 60:
             self._busy.add(s.id)
-            await self._suspend_task(s.id, f"idle for {s.idle_minutes} min")
+            await self._suspend_task(s.id, f"idle for {s.idle_minutes} min", idle=True)
             return
-        last = max(s.checkpoints[-1].ts if s.checkpoints else s.created_at, self._last_checked.get(s.id, 0))
-        if now() - last > self.settings.session_checkpoint_minutes * 60:
+        if self._checkpoint_due(s):
             async with self._locks[s.id]:
                 await self._checkpoint(s, "interval")
+
+    def _checkpoint_due(self, s: Session) -> bool:
+        last = max(s.checkpoints[-1].ts if s.checkpoints else s.created_at, self._last_checked.get(s.id, 0))
+        return now() - last > self.settings.session_checkpoint_minutes * 60
 

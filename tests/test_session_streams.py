@@ -98,7 +98,7 @@ async def svc(fleet, world, settings, store):
 async def settle(svc: SessionService, ref: str, states=frozenset({"idle", "suspended", "failed"}), timeout=20.0):
     for _ in range(int(timeout / 0.05)):
         s = svc.get(ref)
-        if s.state.value in states and s.id not in svc._busy:
+        if s.state.value in states and not svc.busy(s.id):
             return s
         await asyncio.sleep(0.05)
     s = svc.get(ref)
@@ -289,3 +289,88 @@ def test_handoff_is_capped(svc, settings):
                 turns=[SessionTurn(message=f"m{i} " + "x" * 5000, summary="s" * 5000) for i in range(20)])
     text = svc._handoff(s)
     assert "16 earlier turns omitted" in text and "m16" in text and "m15" not in text and len(text) < 6000
+
+
+async def test_holds_keep_a_session_up_and_survive_a_restart(svc, world, fleet):
+    svc.new(NewSession(name="held", environment="sesenv", repo=world["url"], idle_minutes=5), owner="admin",
+            requester="sean")
+    s = await settle(svc, "held")
+    sb = fleet.get(s.sandbox_id)
+    sb.last_activity = time.time() - 600
+    fleet.store.put(sb)
+    async with svc.hold(s), svc.hold(s):  # refcounted: nested holders (a job and its delivery, say)
+        s.last_active_at -= 3600
+        (box(fleet, s.sandbox_id) / "workspace/remote/mid-turn.txt").write_text("x\n")
+        s.created_at -= 3600
+        await svc.tick()
+        assert s.state == SessionState.IDLE and s.sandbox_id and svc.busy(s.id)
+        assert [c.reason for c in s.checkpoints] == ["interval"]  # still checkpointed while held
+    assert not svc.busy(s.id)
+
+    # a job's session stays held across a control-plane restart until the job re-attaches
+    s.job_id = "job-12345678"
+    svc._save(s)
+    await svc.stop()
+    again = SessionService(fleet, svc.vault)
+    await again.start()
+    try:
+        r = again.get("held")
+        assert again.busy(r.id) and r.sandbox_id == sb.id
+        r.last_active_at -= 3600
+        await again.tick()
+        assert r.state == SessionState.IDLE and r.sandbox_id  # not suspended under a running agent
+        again.release_restart_hold(r)
+        again.release_restart_hold(r)  # idempotent
+        assert not again.busy(r.id)
+        r.last_active_at -= 3600
+        await again.tick()
+        r = await settle(again, "held")
+        assert r.state == SessionState.SUSPENDED
+    finally:
+        await again.stop()
+
+
+async def test_unfinished_agent_runs_count_as_use(svc, world, fleet):
+    svc.new(NewSession(name="runs", environment="sesenv", repo=world["url"]), owner="admin", requester="sean")
+    s = await settle(svc, "runs")
+    await fleet.exec(s.sandbox_id, "mkdir -p ~/.hangar/runs && touch ~/.hangar/runs/run-0badc0de.sh "
+                                   "&& tmux new-session -d -s run-0badc0de 'sleep 60'")
+    sb = fleet.get(s.sandbox_id)
+    sb.last_activity = time.time() - 600
+    assert await svc._in_use(sb)
+    await fleet.exec(s.sandbox_id, "echo 0 > ~/.hangar/runs/run-0badc0de.exit")
+    sb = fleet.get(s.sandbox_id)
+    sb.last_activity = time.time() - 600
+    assert not await svc._in_use(sb)
+    # a run whose tmux session is gone without an exit file (killed) doesn't keep it up forever either
+    await fleet.exec(s.sandbox_id, "touch ~/.hangar/runs/run-0dead0ff.sh")
+    sb = fleet.get(s.sandbox_id)
+    sb.last_activity = time.time() - 600
+    assert not await svc._in_use(sb)
+
+
+async def test_failed_checkpoint_does_not_fail_the_turn(svc, world, monkeypatch):
+    async def boom(s, reason):
+        raise RuntimeError("bucket unavailable")
+
+    monkeypatch.setattr(svc, "_checkpoint", boom)
+    svc.new(NewSession(name="ck", environment="sesenv", repo=world["url"], message="start"), owner="admin",
+            requester="sean")
+    s = await settle(svc, "ck")
+    assert s.state == SessionState.IDLE and s.turns[0].exit_code == 0 and s.turns[0].summary == "did: start"
+
+
+async def test_orphaned_session_sandboxes_are_destroyed_at_startup(svc, world, fleet):
+    svc.new(NewSession(name="orph", environment="sesenv", repo=world["url"]), owner="admin", requester="sean")
+    s = await settle(svc, "orph")
+    stray = await fleet.create("sesenv", labels={"hangar.session": s.id})  # a boot the restart cut off
+    again = SessionService(fleet, svc.vault)
+    await again.start()
+    try:
+        for _ in range(100):
+            if fleet.get(stray.id).state == "stopped":
+                break
+            await asyncio.sleep(0.05)
+        assert fleet.get(stray.id).state == "stopped" and fleet.get(s.sandbox_id).state == "running"
+    finally:
+        await again.stop()

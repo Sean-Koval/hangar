@@ -36,9 +36,11 @@ All four agents resume their own conversation: Claude Code, Codex, pi and Antigr
 ## Staying open while you work
 
 A session never suspends while it's in use. Any of these keeps it up:
-- an agent turn running;
+- an agent turn running, or any agent run started in its sandbox (`run_agent`) that hasn't finished;
 - a terminal open on it (dashboard or `hangar sb attach`);
-- anything using the sandbox through hangar (commands, files, MCP tools).
+- anything using the sandbox through hangar: commands (for their whole run), files, reading terminals, following an agent.
+
+A job's session is held for the whole turn, delivery included, and across a control-plane restart until the job picks it up again.
 
 It suspends only after it has been idle for its idle time: 30 minutes by default. To change that:
 
@@ -87,3 +89,5 @@ To work alongside the agent interactively from a terminal:
 - **Suspended session:** a few MB on the control plane's volume.
 - **Resume:** a sandbox start plus the restore (seconds for typical sizes). That's about 10 s from a warm pool, or 30–60 s cold when the image is built and a node is up.
 - **Keeping a sandbox running overnight instead:** it pins a sandbox node, roughly $280/month on demand for an n2-standard-8.
+- **Faster cold starts on GKE (opt-in, recreates the sandbox nodes):** terraform `image_streaming = true` starts pods before the image is fully pulled, and `sandbox_disk_gb = 100` lets more nodes fit the default 500 GB SSD quota. Suspend sessions before applying; they resume from their checkpoints.
+- **Durability:** with `HANGAR_SESSION_STORE=gs://…`, checkpoints survive the control plane's disk. Uploads retry on throttling and server errors. The bucket has no age-based deletion unless you set `session_retention_days`.

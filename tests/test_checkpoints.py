@@ -61,3 +61,28 @@ def test_make_store(tmp_path):
     assert isinstance(make_store(None, tmp_path), LocalStore)
     g = make_store("gs://b/p", tmp_path)
     assert isinstance(g, GCSStore) and g.bucket == "b" and g.prefix == "p"
+
+
+async def test_gcs_store_retries_and_refreshes_its_token():
+    tokens = iter(["old", "new"])
+    seen = []
+    fails = {"n": 2}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.host == "metadata.google.internal":
+            return httpx.Response(200, json={"access_token": next(tokens), "expires_in": 3600})
+        seen.append(req.headers["Authorization"])
+        if req.headers["Authorization"] == "Bearer old":
+            return httpx.Response(401)
+        if fails["n"]:
+            fails["n"] -= 1
+            return httpx.Response(503)
+        return httpx.Response(200, json={})
+
+    s = GCSStore("gs://bkt", transport=httpx.MockTransport(handler))
+    s.BACKOFF = 0
+    await s.put("k", b"v")
+    assert seen == ["Bearer old", "Bearer new", "Bearer new", "Bearer new"]
+    fails["n"] = 99
+    with pytest.raises(httpx.HTTPStatusError):
+        await s.put("k", b"v")  # gives up after a few attempts

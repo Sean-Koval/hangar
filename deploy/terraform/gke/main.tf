@@ -8,6 +8,7 @@ resource "google_project_service" "apis" {
     "artifactregistry.googleapis.com",
     "cloudbuild.googleapis.com",
     "iam.googleapis.com",
+    "containerfilesystem.googleapis.com", # image streaming (var.image_streaming)
   ])
   service            = each.value
   disable_on_destroy = false
@@ -86,7 +87,8 @@ resource "google_container_node_pool" "sandboxes" {
     machine_type = var.sandbox_machine_type
     image_type   = "COS_CONTAINERD"
     spot         = var.sandbox_spot
-    # pd-balanced counts against the SSD_TOTAL_GB quota (500 GB by default): 100 GB nodes leave room to scale.
+    # Changing disk size/type or image streaming recreates the sandbox nodes (and every sandbox on them):
+    # suspend sessions first (`hangar session suspend`), they resume from their checkpoints afterwards.
     disk_size_gb = var.sandbox_disk_gb
     disk_type    = var.sandbox_disk_type
     oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
@@ -94,8 +96,11 @@ resource "google_container_node_pool" "sandboxes" {
       type = "GVISOR"
     }
     # Image streaming: pods start before the whole environment image is pulled (Artifact Registry images).
-    gcfs_config {
-      enabled = var.image_streaming
+    dynamic "gcfs_config" { # only when on, so existing pools see no change
+      for_each = var.image_streaming ? [1] : []
+      content {
+        enabled = true
+      }
     }
     workload_metadata_config {
       mode = "GKE_METADATA"
@@ -259,12 +264,17 @@ resource "google_storage_bucket" "sessions" {
   location                    = var.region
   uniform_bucket_level_access = true
   public_access_prevention    = "enforced"
-  lifecycle_rule {
-    condition {
-      age = var.session_retention_days
-    }
-    action {
-      type = "Delete"
+  # Off by default: hangar deletes old checkpoints itself, and a suspended session's newest checkpoint is
+  # its only copy of the work, however old it is.
+  dynamic "lifecycle_rule" {
+    for_each = var.session_retention_days > 0 ? [1] : []
+    content {
+      condition {
+        age = var.session_retention_days
+      }
+      action {
+        type = "Delete"
+      }
     }
   }
 }
