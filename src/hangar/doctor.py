@@ -132,6 +132,11 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
                                   f"hangar env build {env}  (or leave HANGAR_PREBUILD_ENVIRONMENTS unset to "
                                   "build mapped environments at startup)"))
 
+    # --- workstream B: slack
+    from hangar.slack import doctor_checks as slack_checks
+
+    out += await slack_checks(h, transport)
+
     # checkpoint storage is writable
     key = f"_doctor/{now():.0f}"
     try:

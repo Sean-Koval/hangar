@@ -160,6 +160,17 @@ class Settings(BaseSettings):
     exchange_max_artifacts_mb: int = 100  # per turn
     exchange_inline_artifact_kb: int = 512  # MCP get_artifact returns at most this much (text or base64)
     exchange_repair_timeout_minutes: int = 10  # the one repair run for a missing or invalid result
+    # --- workstream B: slack (docs/slack.md) ---------------------------------
+    # Vault credentials: the app's signing secret (verifies requests; the routes are off until it's set) and its
+    # bot token (xoxb-…, posts replies and reads threads).
+    slack_signing_secret_credential: str | None = None
+    slack_bot_token_credential: str | None = None
+    # Channels that may start jobs, each with its default repo: {"C0123ABCD": "owner/repo"}. Repos must also be
+    # in HANGAR_GITHUB_REPOS (an exact git URL works too, as there).
+    slack_channels: dict[str, str] = Field(default_factory=dict)
+    # Slack user ids allowed to start and steer jobs (empty: anyone in a mapped channel).
+    slack_users: list[str] = Field(default_factory=list)
+    slack_api_url: str = "https://slack.com/api"
 
     @property
     def db_path(self) -> Path:

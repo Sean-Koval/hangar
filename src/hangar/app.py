@@ -28,6 +28,7 @@ from hangar.mcp_server import build_mcp, current_actor
 from hangar.models import Budget, ContextItem, Credential, CredentialKind, Resources, Sandbox
 from hangar.providers.base import ProviderError
 from hangar.sessions import NewSession, SessionService
+from hangar.slack import SlackFrontDoor  # workstream B
 from hangar.store import Store
 from hangar.strategies import SessionForkBody, fork_session  # workstream D: forks/best-of-N
 from hangar.triggers import ScheduleSpec, ScheduleUpdate, Triggers
@@ -780,6 +781,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/schedules/{ref}/run")
     async def schedule_run(ref: str, who: str = A):
         return jobs.view(triggers.run_now(ref, requester=who))
+    # --- workstream B: slack (/api/hooks/slack/commands and /api/hooks/slack/events; docs/slack.md)
+    SlackFrontDoor(jobs).mount(app)
 
     # ------------------------------------------------------------------ sessions (spec 0010)
     sessions = h.sessions

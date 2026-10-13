@@ -1,0 +1,35 @@
+# Slack app manifest for hangar's Slack front door (docs/slack.md).
+# Create the app at https://api.slack.com/apps -> Create New App -> From a manifest, pick the workspace and paste
+# this file. Replace hangar.example.com with your hangar's public URL (HANGAR_PUBLIC_URL) first.
+display_information:
+  name: hangar
+  description: Hand coding work to cloud agents and follow it in a thread.
+  background_color: "#1f2937"
+features:
+  bot_user:
+    display_name: hangar
+    always_online: true
+  slash_commands:
+    - command: /hangar
+      url: https://hangar.example.com/api/hooks/slack/commands
+      description: Start a coding job on this channel's repo
+      usage_hint: "[repo=owner/repo] [env=NAME] [harness=NAME] [model=NAME] <instructions> | status JOB | help"
+      should_escape: false
+oauth_config:
+  scopes:
+    bot:
+      - commands            # /hangar
+      - chat:write          # start, needs-input and finish messages in the job's thread
+      - app_mentions:read   # @hangar <instructions>
+      - channels:history    # replies in a job's thread (public channels), and a thread as context
+      - groups:history      # the same in private channels
+settings:
+  event_subscriptions:
+    request_url: https://hangar.example.com/api/hooks/slack/events
+    bot_events:
+      - app_mention
+      - message.channels
+      - message.groups
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
