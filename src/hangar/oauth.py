@@ -50,6 +50,12 @@ log = logging.getLogger("hangar.oauth")
 _BROWSER_SCHEMES = {"javascript", "data", "file", "vbscript", "blob", "about", "filesystem", "ftp", "ws", "wss"}
 
 
+def _private_use(scheme: str) -> bool:
+    """A reverse-domain private-use scheme (RFC 8252 §7.1: com.example.app), which names no host. Review of
+    overnight/sweep: a "scheme://host" entry can't express it, so such an app could not be allowed at all."""
+    return "." in scheme and scheme not in _BROWSER_SCHEMES
+
+
 def _h(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
@@ -94,6 +100,10 @@ class HangarOAuthProvider:
         # (RFC 8252 §7.1: Cursor registers cursor://anysphere.cursor-mcp/...), which the OS hands to that app.
         # Schemes a browser acts on itself are never allowed.
         scheme = u.scheme.lower()
+        if not host and _private_use(scheme):
+            # review(sweep): RFC 8252 §7.1's own form, a reverse-domain scheme with no host
+            # (com.example.app:/oauth2redirect), allowed by an exact "scheme:" entry
+            return "*" in self.redirect_hosts or f"{scheme}:" in {e.lower() for e in self.redirect_hosts}
         if not host or scheme in _BROWSER_SCHEMES or (scheme == "http" and host not in _LOOPBACK):
             return False
         if "*" in self.redirect_hosts:
@@ -111,6 +121,8 @@ class HangarOAuthProvider:
         """The HANGAR_OAUTH_REDIRECT_HOSTS entry that would allow `uri`, or None when nothing can."""
         u = urlparse(uri)
         host, scheme = (u.hostname or "").lower(), u.scheme.lower()
+        if not host and _private_use(scheme):
+            return f"{scheme}:"  # review(sweep): RFC 8252 §7.1 form
         if not host or scheme in _BROWSER_SCHEMES or (scheme == "http" and host not in _LOOPBACK):
             return None
         return host if scheme in ("http", "https") else f"{scheme}://{host}"
@@ -349,7 +361,10 @@ _HEADERS = {"X-Frame-Options": "DENY", "Content-Security-Policy": "frame-ancesto
 
 
 def _page(req: str, client: OAuthClientInformationFull, params: dict[str, Any], error: str = "") -> HTMLResponse:
-    host = urlparse(str(params.get("redirect_uri", ""))).netloc or "the app"
+    u = urlparse(str(params.get("redirect_uri", "")))
+    # review(sweep): an app's own scheme is shown with its host, so a custom scheme can't pass for that host's site
+    host = (u.netloc if u.scheme in ("http", "https") else f"{u.scheme}:{'//' + u.netloc if u.netloc else ''}") \
+        if u.scheme else "the app"
     body = _PAGE.format(name=html.escape(client.client_name or client.client_id), host=html.escape(host),
                         req=html.escape(req), error=f'<p class="e">{html.escape(error)}</p>' if error else "")
     return HTMLResponse(body, headers=_HEADERS)

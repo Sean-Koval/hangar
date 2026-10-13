@@ -262,3 +262,29 @@ def test_connect_cursor_says_how_to_allow_its_redirect(client, home):  # noqa: F
     assert r.exit_code == 0, r.output
     assert """hangar config set HANGAR_OAUTH_REDIRECT_HOSTS '["claude.ai", "cursor://anysphere.cursor-mcp"]'""" \
         in r.output
+
+
+# ---------------------------------------------------------------------- review of overnight/sweep
+async def test_rfc8252_reverse_domain_schemes_can_be_allowed(store):
+    """RFC 8252 §7.1's form (com.example.app:/path) has no host: a "scheme:" entry allows it, and only it."""
+    auth = TokenAuth(store, "adm")
+    uri = "com.example.app:/oauth2redirect/hangar"
+    with pytest.raises(RegistrationError) as e:
+        await HangarOAuthProvider(store, auth, "https://hangar.example", ["claude.ai"]).register_client(_client(uri))
+    assert 'add "com.example.app:" to HANGAR_OAUTH_REDIRECT_HOSTS' in e.value.error_description
+    p = HangarOAuthProvider(store, auth, "https://hangar.example", ["claude.ai", "com.example.app:"])
+    await p.register_client(_client(uri))
+    for bad in ("com.example.evil:/cb", "javascript:alert(1)", "com.example.app://evil.example/cb"):
+        with pytest.raises(RegistrationError):
+            await p.register_client(_client(bad))
+
+
+def test_consent_page_shows_an_app_schemes_name():
+    """The consent page names `cursor://anysphere.cursor-mcp`, not just the host, so a custom scheme can't pass for
+    the website of the same name."""
+    from hangar.oauth import _page
+
+    c = _client(CURSOR[0])
+    assert "<code>cursor://anysphere.cursor-mcp</code>" in _page("r", c, {"redirect_uri": CURSOR[0]}).body.decode()
+    assert "<code>claude.ai</code>" in _page("r", c, {"redirect_uri": "https://claude.ai/cb"}).body.decode()
+    assert "<code>com.example.app:</code>" in _page("r", c, {"redirect_uri": "com.example.app:/cb"}).body.decode()
