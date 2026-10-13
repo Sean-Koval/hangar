@@ -111,7 +111,7 @@ pub fn entry_info(names: &Names, path: &Path) -> io::Result<EntryInfo> {
         r#type: ty.into(),
         path: path.to_string_lossy().into_owned(),
         size: shown.len() as i64,
-        mode: shown.permissions().mode() & 0o7777,
+        mode: shown.permissions().mode() & 0o777, // Go's FileMode.Perm(), as E2B reports it
         permissions: permissions(&lmd),
         owner: names.user(lmd.uid()),
         group: names.group(lmd.gid()),
