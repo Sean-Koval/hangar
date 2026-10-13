@@ -242,6 +242,80 @@ async def test_file_reads_are_not_decompressed_and_stop_at_the_limit(tmp_path):
         await fake.__aexit__()
 
 
+# ---------------------------------------------------------------------- Kubernetes
+class FakePod:
+    """What KubernetesEnvd uses of the provider: the pod's name and IP, exec and the streamed upload."""
+
+    name = "kubernetes"
+    ns = "hangar-sandboxes"
+
+    def __init__(self, ip: str = "10.8.0.7"):
+        self.ip, self.execs, self.uploads = ip, [], []
+        self.core = SimpleNamespace(read_namespaced_pod=lambda pod, ns: SimpleNamespace(
+            status=SimpleNamespace(pod_ip=self.ip)))
+
+    async def _pod(self, sb):
+        return "pod-1"
+
+    def _exec_blocking(self, pod, argv, timeout, keep=None):
+        self.execs.append(argv)
+        p = subprocess.run(argv, capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
+        return p.returncode, p.stdout, p.stderr
+
+    def _upload_stream_blocking(self, pod, path, b64, mode, timeout, size=None):
+        self.uploads.append((path, mode, size))
+        return 0, ""
+
+
+def test_kubernetes_install_uploads_once_then_starts(tmp_path, monkeypatch):
+    from hangar.envd import KubernetesEnvd
+
+    (tmp_path / f"hangar-envd-{ARCH}").write_bytes(b"binary")
+    s = Settings(data_dir=tmp_path, envd_dir=tmp_path)
+    pod = FakePod()
+    e = KubernetesEnvd(pod, s)
+    sb = Sandbox(name="t", environment="x", provider="kubernetes", provider_ref="hangar-sb-1")
+    assert asyncio.run(e.urls(sb)) == ["http://10.8.0.7:49983"]
+    pod.ip = "fd00::7"
+    assert asyncio.run(e.urls(sb)) == ["http://[fd00::7]:49983"]
+    pod.ip = "not an ip"
+    assert asyncio.run(e.urls(sb)) == []
+
+    # The script runs for real: the binary isn't in the pod, so it asks for an upload (exit 42), and the second
+    # run finds the uploaded file and starts it. Here the "uploaded" file is a stub that records how it was run.
+    remote = e.remote_path(ARCH)
+    marker = tmp_path / "ran"
+
+    def upload(pod_, path, b64, mode, timeout, size=None):
+        pod.uploads.append((path, mode, size))
+        Path(path).write_text(f'#!/bin/sh\necho "$HANGAR_ENVD_TOKEN $*" > {marker}\n')
+        os.chmod(path, 0o755)
+        return 0, ""
+
+    monkeypatch.setattr(pod, "_upload_stream_blocking", upload)
+    try:
+        asyncio.run(e.install(sb, "tok-123"))
+        assert pod.uploads == [(remote, 0o755, len(b"binary"))]
+        assert len(pod.execs) == 2
+        assert marker.read_text().split() == ["tok-123", "--daemon", "--port", "49983", "--workdir", s.workspace_dir,
+                                              "--log", "/tmp/hangar-envd.log"]
+        asyncio.run(e.install(sb, "tok-123"))  # already there: one exec, no upload
+        assert len(pod.uploads) == 1 and len(pod.execs) == 3
+    finally:
+        Path(remote).unlink(missing_ok=True)
+
+
+def test_kubernetes_install_refuses_unknown_cpus(tmp_path):
+    from hangar.envd import KubernetesEnvd
+
+    other = "aarch64" if ARCH == "x86_64" else "x86_64"
+    (tmp_path / f"hangar-envd-{other}").write_bytes(b"binary")
+    e = KubernetesEnvd(FakePod(), Settings(data_dir=tmp_path, envd_dir=tmp_path))
+    sb = Sandbox(name="t", environment="x", provider="kubernetes", provider_ref="hangar-sb-1")
+    with pytest.raises(EnvdError, match="43"):
+        asyncio.run(e.install(sb, "tok"))
+
+
 def test_binaries_are_found_by_arch(tmp_path):
     (tmp_path / "hangar-envd-x86_64").write_bytes(b"a")
     (tmp_path / "hangar-envd-aarch64").write_bytes(b"b")
