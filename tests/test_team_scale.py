@@ -236,12 +236,12 @@ async def test_fair_queue_serves_the_person_with_fewest_running_first_and_caps_e
 def test_job_service_uses_the_fair_queue_and_derived_slots(fleet, settings):
     from hangar.jobs import JobService
 
-    svc = JobService(fleet, None)  # type: ignore[arg-type] - the queue needs no sessions
-    assert isinstance(svc._queue, FairJobQueue)
+    jobs = JobService(fleet, None)  # type: ignore[arg-type] - the queue needs no sessions
+    assert isinstance(jobs._queue, FairJobQueue)
     job = Job(title="t", instructions="x", environment="plain", requester="ui:sean", owner="tok-1",
               state=JobState.QUEUED)
-    svc._jobs[job.id] = job
-    assert svc._person(job.id) == "sean" and svc._person("job-missing") == ""
+    jobs._jobs[job.id] = job
+    assert jobs._person(job.id) == "sean" and jobs._person("job-missing") == ""
     assert fairness.job_cap(settings) == 2
 
 
