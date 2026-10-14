@@ -323,6 +323,20 @@ What is **not** covered:
 - **E2B command output.** The E2B SDK buffers a command's whole output before hangar sees it, so on E2B a sandbox can still make one of hangar's commands return a very large output.
 - **Idle connections.** The gateway listener has no connection cap (uvicorn's counts idle sockets and would let one sandbox lock out the rest), so many idle connections from one sandbox are bounded only by the process's file limit.
 
+## The agent's screen and its requests
+
+- **Screens** ([computer-use.md](computer-use.md)): VNC listens on 127.0.0.1 inside the sandbox and is reached only
+  through hangar, over the provider's own exec stream; no port is exposed. Tickets are single-use, last 60 seconds,
+  are minted only for the work's owner or an admin, and are stored hashed. Watching is view-only unless the ticket
+  asked for control, and hangar enforces that by dropping the viewer's input messages itself. Every ticket, view and
+  takeover is audited.
+- **Media links** in PR bodies are signed (HMAC with a key derived from the vault key), name one artifact and expire
+  (`HANGAR_PR_MEDIA_LINK_DAYS`); the link is the credential. `HANGAR_PR_MEDIA_LINKS=off` lists files instead.
+- **Requests** (`hangar-agent env request`) carry a variable name or a host and a redacted reason, never a value.
+  They are never granted automatically: only the owner or an admin decides, once, and every decision is audited.
+- **What a sandbox learns about itself** (`~/.hangar/envstatus.json`) is names, versions, health checks and the
+  egress policy, never a secret value.
+
 ## People
 
 One hangar serves a team: run one per team rather than splitting one between teams. Every token belongs to a person, and a person is an **admin** or a **member**.

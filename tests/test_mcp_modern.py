@@ -133,7 +133,8 @@ async def test_tool_listing_has_hints_slim_schemas_and_typed_results(fleet, svc,
                              for t in tools], separators=(",", ":"))
     # was 31,157 bytes before this workstream; --- stream: +0.65 KB for exec(stream) and the process tool (review
     # #68: their descriptions trimmed, and the cap kept just over what they need)
-    assert len(model_view) < 24_700, len(model_view)
+    # --- computer: +0.95 KB for open_screen, list_env_requests and answer_env_request
+    assert len(model_view) < 25_700, len(model_view)
     # optional arguments are plain types (nullable still accepted by the tool)
     assert by["submit_job"].input_schema["properties"]["repo"] == {"type": "string"}
 

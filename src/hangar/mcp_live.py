@@ -207,6 +207,10 @@ TOOL_HINTS: dict[str, ToolAnnotations] = {
     "steer_turn": _hint(open_world=True),
     "answer_approval": _hint(open_world=True),
     "process": _hint(destructive=True, open_world=True),  # --- stream: starts, feeds and kills commands
+    # --- computer
+    "list_env_requests": READ,
+    "answer_env_request": _hint(),  # a person's decision; egress approvals change what a sandbox reaches
+    "open_screen": _hint(),  # mints a one-time viewer link
 }
 
 

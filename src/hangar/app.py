@@ -69,6 +69,9 @@ class Hangar:
         self.auth = TokenAuth(self.store, self.settings.admin_token)
         self.sessions = SessionService(self.fleet, self.vault)
         self.jobs = JobService(self.fleet, self.sessions)
+        from hangar.envrequests import EnvRequests  # --- computer: what agents ask their owners for
+
+        self.env_requests = EnvRequests(self.fleet, self.sessions, self.jobs)
         self.triggers = Triggers(self.jobs)  # workstream A: approvals, inbound webhooks, schedules
         from hangar.backup import Backups  # --- overnight/sweep: database backups into the session store
 
@@ -1065,6 +1068,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     settings_store.mount(app, h, A)
     identity_api.mount(app, h, A)  # --- identity: people, credential exposure and owners
+    from hangar import computer_api  # --- computer: the agent's screen, media links, env requests
+
+    computer_api.mount(app, h, U)
     setup_api.mount(app, h, A)
     from hangar import repopolicy  # --- frontdoor: per-repo policy (hangar repo)
 

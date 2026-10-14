@@ -31,11 +31,13 @@ from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
 import hangar.identity as identity  # --- identity
 import hangar.people as people  # --- identity
+from hangar import computer_api as computer_api  # --- computer
 from hangar import exchange, mcp_steer, mcp_tasks, observe  # mcp_tasks: elicitation; mcp_steer: live turns; --- observe
 from hangar import mcp_deadline as contract  # --- deadlines: the client-deadline contract
 from hangar import mcp_fresh as fresh  # --- deadlines: server version, stale tool lists
 from hangar import mcp_live as live  # workstream mcp-modern: typed results, hints, resources, prompts
 from hangar.broker import CredentialError
+from hangar.envrequests import EnvRequests  # --- computer
 from hangar.fleet import Fleet, FleetError, _slug
 from hangar.jobs import Caller, JobService, SubmitJob
 from hangar.models import Budget, ContextItem, Sandbox, new_id
@@ -652,13 +654,17 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             # --- deadlines: timeout_seconds arrives clamped to mcp_tool_wait_seconds (mcp_deadline)
             deadline = time.monotonic() + max(1, min(600, int(timeout_seconds)))
             modern = ctx.protocol_version in MODERN_PROTOCOL_VERSIONS
-            note = approved = None
+            note = approved = request = None  # --- computer: request
             skip: list[str] = []  # --- workstream steer: approvals the user declined to answer here
             if ctx.input_responses and ctx.request_state:  # a 2026-07-28 retry carrying the user's answer
                 st = json.loads(ctx.request_state)  # minted below; the SDK verified its seal
                 resp = ctx.input_responses.get(st.get("key", ""))
                 skip = [str(x) for x in st.get("skip") or []][-50:]
-                if st.get("ref") == ref and isinstance(resp, ElicitResult) and st.get("approval"):
+                if st.get("ref") == ref and isinstance(resp, ElicitResult) and st.get("env_request"):  # --- computer
+                    request = await computer_api.answer_elicited(sessions, str(st["env_request"]), resp,
+                                                                 current_actor.get())
+                    skip += [str(st["env_request"])]
+                elif st.get("ref") == ref and isinstance(resp, ElicitResult) and st.get("approval"):
                     approved = await mcp_steer.answer_elicited(sessions, jobs, ref, str(st["approval"]), resp,
                                                                current_actor.get())
                     skip += [str(st["approval"])] if approved in ("declined", "cancelled", "stale") else []
@@ -667,7 +673,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             asks = mcp_tasks.supports_form_elicitation(ctx.client_capabilities)
 
             def approval_waits() -> bool:
-                return mcp_steer.first_pending(sessions, jobs, ref, skip) is not None
+                return (mcp_steer.first_pending(sessions, jobs, ref, skip) is not None
+                        or computer_api.first_pending(sessions, jobs, ref, skip) is not None)  # --- computer
 
             closing = fleet.closing  # integrate (#57): on shutdown, answer with the turn as it stands
             while True:
@@ -697,6 +704,27 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                         current_actor.get())
                     skip += [a.id] if approved in ("declined", "cancelled", "stale") else []
                     continue
+                # --- computer: the agent asks its owner for a secret or a host; put it to the person following
+                er = computer_api.first_pending(sessions, jobs, ref, skip) if asks else None
+                if er is not None and time.monotonic() < deadline:
+                    label, r = er
+                    key = f"request-{r.id}"
+                    if modern:
+                        state = json.dumps({"ref": ref, "env_request": r.id, "key": key, "skip": skip})
+                        return InputRequiredResult(input_requests={key: computer_api.elicit_request(label, r)},
+                                                   request_state=state)
+                    try:
+                        form = await _elicit(ctx, closing, ELICIT_WAIT_SECONDS, computer_api.message(label, r),
+                                             computer_api.RequestForm)
+                    except (NoBackChannelError, TimeoutError, ValueError) as e:
+                        log.info("could not ask the client about %s's request: %s", ref, e)
+                        asks = False
+                        continue
+                    request = await computer_api.answer_elicited(sessions, r.id, ElicitResult(
+                        action=form.action, content=form.data.model_dump() if form.action == "accept" else None),
+                        current_actor.get())
+                    skip += [r.id]
+                    continue
                 if not turn["done"] and time.monotonic() < deadline:  # the approval was answered elsewhere
                     continue
                 q = mcp_tasks.open_question(sessions, jobs, ref) if turn["done"] else None
@@ -723,6 +751,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             out = {**turn, "elicitation": note} if note else turn
             if approved:  # workstream steer
                 out = {**out, "approval": approved}
+            if request:  # --- computer
+                out = {**out, "env_request": request}
             uri = live.job_uri(turn["job"]) if turn.get("job") else live.session_uri(turn.get("session") or ref)
             return mcp_tasks.tool_result(out, out, [uri])
 
@@ -761,6 +791,9 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                 return data
 
         mcp_steer.register(mcp, tool, sessions, jobs, current_actor.get)  # workstream steer: steer_turn, approvals
+        if sessions.env_requests is None:  # --- computer: a server built without the app (tests, the CLI)
+            EnvRequests(fleet, sessions, jobs)
+        computer_api.register(tool, fleet, sessions, jobs, current_actor.get)  # --- computer: screen, requests
 
         # --- workstream mcp-modern: jobs and sessions as resources clients can follow, and workflow prompts
         live.register_resources(mcp, sessions, jobs, guard)  # --- identity: guard

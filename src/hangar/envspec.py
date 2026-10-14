@@ -35,7 +35,9 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from hangar import computer as _computer  # --- computer
 from hangar.cloudcreds import CloudSpec  # --- egress
+from hangar.computer import ComputerSpec  # --- computer
 from hangar.egress import EgressSpec  # --- egress
 from hangar.harnesses import HARNESSES, McpServer, get_harness, pack_script, pack_stage
 from hangar.models import Resources
@@ -142,6 +144,9 @@ class EnvSpec(BaseModel):
     # --- egress: short-lived cloud credentials instead of stored keys: {gcp: {provider, service_account},
     # aws: {role_arn}, lifetime_minutes} (cloudcreds.py). Needs an admin to set.
     cloud: CloudSpec | None = None
+    # --- computer: a display, Chromium (Playwright), VNC and screen recording for the agent (docs/computer-use.md).
+    # `true` or {resolution, autostart, browser_mcp, record_max_seconds}.
+    computer: ComputerSpec | None = None
     source_dir: Path | None = Field(default=None, exclude=True)
     # Resolved by the fleet before a provider sees the spec: harness name -> pack image to mount read-only.
     packs: dict[str, str] = Field(default_factory=dict, exclude=True)
@@ -152,6 +157,11 @@ class EnvSpec(BaseModel):
         for h in v:
             get_harness(h)
         return v
+
+    @field_validator("computer", mode="before")  # --- computer
+    @classmethod
+    def _computer_flag(cls, v: Any) -> Any:
+        return _computer.coerce(v)
 
     @field_validator("warm_pool_hours")
     @classmethod
@@ -357,6 +367,8 @@ def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace",
         mise.setdefault("node", "22")
     if spec.dependencies.pip:
         mise.setdefault("uv", "latest")
+    if spec.computer and spec.computer.browser_mcp:  # --- computer: Playwright's MCP server runs on Node
+        mise.setdefault("node", "22")
 
     df: list[str] = [f"# hangar environment: {spec.name}"]
     baked = [h for h in baked if h.install]
@@ -393,6 +405,9 @@ def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace",
                   "GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt")
     if spec.tools.script:
         df.append(_step(spec.tools.script))
+    if spec.computer:  # --- computer: display, VNC, ffmpeg, Chromium
+        df.append(_step(_computer.root_script(spec.computer, user)))
+        df.append(_computer.IMAGE_ENV)
 
     # 2. language runtimes via mise
     path_env = f"{home}/.local/bin:{home}/.local/share/mise/shims"
@@ -424,6 +439,8 @@ def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace",
         dep_steps.append(spec.dependencies.script)
     if dep_steps:
         df.append(_step("\n".join(dep_steps), as_user=user))
+    if spec.computer and (mcp_step := _computer.user_script(spec.computer)):  # --- computer
+        df.append(_step(mcp_step, as_user=user))
 
     # 5. skills, agent config and files -> staged in the build context, then COPY'd
     staged: dict[str, str] = {}  # context path -> absolute destination

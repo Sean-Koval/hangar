@@ -255,6 +255,7 @@ For an existing deployment, read [the upgrade guide](docs/upgrading.md) before u
 | Resumable conversations and repo state | [Sessions](docs/sessions.md) |
 | Messages, interrupts, and approvals | [Steering](docs/steering.md) |
 | Live command and agent events | [Streaming](docs/streaming.md) |
+| The agent's browser, screen, demos, and self-diagnosis | [Computer use](docs/computer-use.md) |
 | Usage, cost, metrics, and traces | [Activity](docs/activity.md) · [Observability](docs/observability.md) |
 | Environment specs, configuration, and operations | [Full reference](docs/guide.md) |
 | Design decisions | [Specs](docs/specs/README.md) |

@@ -22,6 +22,7 @@ import hangar.identity as identity  # --- identity
 import hangar.people as people  # --- identity
 from hangar import cloudcreds as cloudcreds  # --- egress
 from hangar import egress as egress  # --- egress
+from hangar import envdoctor as envdoctor  # --- computer
 from hangar import exchange, harden, images, isolation, observe  # --- observe, isolation, harden, images
 from hangar import fairness as fairness  # --- scale
 from hangar import metrics as metrics  # --- reconciler
@@ -803,6 +804,7 @@ class Fleet:
         # workstream E: the `hangar-agent` helper (context exchange), installed per sandbox: no image rebuild
         await exchange.install_helper(prov, sb, f"/home/{self.settings.sandbox_user}")
         prelude.append(exchange.PATH_LINE)
+        await envdoctor.install(self, prov, sb, spec, h, extra_env)  # --- computer: hangar-env, the display, status
         env = await self.broker.inject(sb, prov, creds, extra_env=extra_env, prelude=prelude)
         if not h:
             return
@@ -810,6 +812,7 @@ class Fleet:
         for rel, patch in h.config.items():
             await self._merge_json(prov, sb, f"{home}/{rel}", patch)
         servers = {n: s for n, s in spec.mcp.items() if s.harnesses is None or h.name in s.harnesses}
+        servers.update(envdoctor.builtin_mcp(spec, self.settings, home))  # --- computer: hangar-env, browser
         resolved = {}
         for n, srv in servers.items():
             missing: set[str] = set()
