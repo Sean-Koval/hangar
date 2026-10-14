@@ -17,7 +17,7 @@ code:
 
 ```yaml
 # .hangar/environment.yaml
-extends: python                  # a hangar environment; must be one HANGAR_GITHUB_REPOS allows for the repo
+extends: python                  # a hangar environment the repo's HANGAR_GITHUB_REPOS entry allows
 install: uv sync --frozen        # idempotent; runs on every build, in the repo's root, never when a sandbox starts
 start: ./scripts/seed-db.sh      # once each time a sandbox starts, before the terminals
 terminals:                       # long-running processes the supervisor keeps up
@@ -63,8 +63,11 @@ place is read as the link's text, so it can't make hangar read another file in t
 Per field: **what the job asked for, then the repo's file, then the repo's policy** ([repo-policy.md](repo-policy.md)),
 **then the environment spec**. Before a job's sandbox exists, hangar uses the file as the default branch had it at
 the last clone. So a repo's `extends` and `verify` apply to every front door (GitHub issues, Slack, schedules, MCP)
-from the second job on. `extends` picks the environment only when `HANGAR_GITHUB_REPOS` allows that environment for
-the repo, if it lists any.
+from the second job on. `extends` picks the environment only when the repo's `HANGAR_GITHUB_REPOS` entry allows
+that environment; a repo with no entry doesn't pick its environment (an environment decides credentials, secrets
+and egress, so an admin says which ones a repo may name). Hangar uses the file only as a sandbox of the job's own
+environment, or of one the allowlist names, last saw it: never as another environment's sandbox recorded it (its
+`setup` and `install` run before the read, and members make environments).
 
 ## Builds
 

@@ -2,7 +2,7 @@
 
 The file lives with the code, so the environment changes in the same commit as the code that needs it:
 
-    extends: python               # a hangar environment (one HANGAR_GITHUB_REPOS allows for the repo, if it lists any)
+    extends: python               # a hangar environment the repo's HANGAR_GITHUB_REPOS entry allows (none: ignored)
     install: uv sync --frozen     # idempotent; runs in a build sandbox on every build, never on a claim
     start: ./scripts/seed-db.sh   # once each time a sandbox starts, before the terminals
     terminals:                    # kept up by the supervisor (`hangar-agent svc`)
@@ -273,6 +273,9 @@ def check(text: str | bytes, settings: Settings, catalog: Any, repo: str | None 
         elif allowed_envs and cfg.extends not in allowed_envs:
             errors.append(f"extends: '{cfg.extends}' isn't allowed for {repo} (HANGAR_GITHUB_REPOS allows "
                           f"{', '.join(allowed_envs)})")
+        elif repo and not allowed_envs:
+            warnings.append(f"extends: ignored for {repo}, which has no HANGAR_GITHUB_REPOS entry (an admin says "
+                            "which environments a repo may name)")
     spec = None
     if env and env in catalog.names():
         try:

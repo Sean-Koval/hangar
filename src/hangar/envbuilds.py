@@ -205,15 +205,14 @@ class EnvBuilds:
         except ValidationError:
             return None
 
-    def any_seen_config(self, repo: str | None) -> repoenv.RepoEnvironment | None:
-        """The repo's config from whichever environment last cloned it (its `extends` picks the environment)."""
+    def newest_seen_config(self, repo: str | None, envs: list[str]) -> repoenv.RepoEnvironment | None:
+        """The repo's config as the newest clone in one of `envs` saw it. Only those: what a sandbox recorded is as
+        good as its environment (its `setup` and `install` run before the read, and members make environments)."""
         key = repo_key(repo)
-        if not key:
-            return None
         best: Seen | None = None
-        for k in self.store.kv_keys(KV_SEEN):
-            if k[len(KV_SEEN):].split(":", 1)[-1] == key:
-                raw = self.store.kv_get(k)
+        for env in dict.fromkeys(envs) if key else ():
+            with contextlib.suppress(ValidationError):
+                raw = self.store.kv_get(f"{KV_SEEN}{env}:{key}")
                 s = Seen.model_validate_json(raw) if raw else None
                 if s and s.config and (best is None or s.at > best.at):
                     best = s
@@ -753,20 +752,36 @@ def checkout_path(settings: Any, spec: EnvSpec, sb: Sandbox) -> str:
     return f"{settings.workspace_dir}/{repo_dirname(sb.repo or '')}"
 
 
-def job_defaults(fleet: Fleet, repo: str | None, allowed: list[str]) -> tuple[repoenv.RepoEnvironment | None,
-                                                                              str | None]:
+def job_defaults(fleet: Fleet, repo: str | None, allowed: list[str], environment: str | None = None
+                 ) -> tuple[repoenv.RepoEnvironment | None, str | None]:
     """For a job's submission, before any clone: the repo's config as its default branch last had it, and the
-    environment its `extends` names when the repo's allowlist (HANGAR_GITHUB_REPOS) permits it. The file comes before
-    the repo's policy, which comes before the environment (repoenv's resolution order)."""
+    environment its `extends` names. The file comes before the repo's policy, which comes before the environment
+    (repoenv's resolution order).
+
+    The file is the repo's to write, and an environment decides credentials, secrets and egress, so `extends` picks
+    only among the environments the repo's HANGAR_GITHUB_REPOS entry (an admin) allows; with no entry it picks none.
+    The config is read only as the job's own environment (when it names one) or those allowed environments saw it,
+    never as another environment's sandbox (a member's, whose `setup` ran first) recorded it."""
     if not fleet.settings.env_builds or not repo:
         return None, None
-    cfg = of(fleet).any_seen_config(repo)
+    if environment:
+        return of(fleet).seen_config(environment, repo), None
+    cfg = of(fleet).newest_seen_config(repo, allowed)
     if cfg is None or not cfg.extends:
         return cfg, None
-    if (allowed and cfg.extends not in allowed) or cfg.extends not in fleet.catalog.names():
+    if cfg.extends not in allowed or cfg.extends not in fleet.catalog.names():
         log.info("%s's %s extends %s, which isn't allowed for it here; ignoring", repo, repoenv.PATH, cfg.extends)
         return cfg, None
     return cfg, cfg.extends
+
+
+def job_config(fleet: Fleet, repo: str | None, environment: str,
+               cfg: repoenv.RepoEnvironment | None) -> repoenv.RepoEnvironment | None:
+    """The config whose `verify` a job uses once its environment is decided: `cfg` (job_defaults'), else the repo's
+    file as that environment last saw it."""
+    if cfg is not None or not fleet.settings.env_builds or not repo:
+        return cfg
+    return of(fleet).seen_config(environment, repo)
 
 
 def environment_for(jobs: Any, repo: str, environment: str | None) -> str:

