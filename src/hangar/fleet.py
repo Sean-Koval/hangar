@@ -20,13 +20,13 @@ from typing import Any
 
 import hangar.identity as identity  # --- identity
 import hangar.people as people  # --- identity
-from hangar import exchange, harden, isolation, observe  # --- observe, isolation, harden
+from hangar import exchange, harden, images, isolation, observe  # --- observe, isolation, harden, images
 from hangar import fairness as fairness  # --- scale
 from hangar import metrics as metrics  # --- reconciler
 from hangar import reconciler as reconciler  # --- reconciler
 from hangar.broker import AUTH_FILE_LIMIT, Broker, CredentialError
 from hangar.config import Settings
-from hangar.envspec import BuildContext, EnvCatalog, EnvSpec, image_tag, render, repo_dirname, warm_pool_now
+from hangar.envspec import BuildContext, EnvCatalog, EnvSpec, render, repo_dirname, warm_pool_now
 from hangar.gateway import Gateway
 from hangar.harnesses import (
     HARNESSES,
@@ -40,6 +40,7 @@ from hangar.harnesses import (
     pack_script,
     pack_tag,
     resolve_refs,
+    version_from_log,  # --- images
 )
 from hangar.membudget import MemoryBudget  # --- scale
 from hangar.models import (
@@ -227,6 +228,11 @@ class Fleet:
                 "skills": len(spec.skills), "warm_pool": spec.warm_pool,
                 "resources": spec.resources.model_dump(), "credentials": spec.credentials,
                 "images": {k: v for k, v in images.items() if v},
+                # --- images: per agent harness, the locked version and what each provider's pack installed
+                "harness_versions": {h: {"locked": HARNESSES[h].version,
+                                         "installed": {p: v for p in self.providers
+                                                       if (v := self.harness_version(p, h))}}
+                                     for h in spec.agent_harnesses if HARNESSES[h].install},
             })
         return out
 
@@ -287,9 +293,7 @@ class Fleet:
         return self.save_environment(data, actor=actor)
 
     def _tag_for(self, spec: EnvSpec, provider: str, bake: list[str] | None = None) -> tuple[str, Any]:
-        ctx = render(spec, self.settings.sandbox_user, self.settings.workspace_dir, self._extra_ca(), bake=bake)
-        registry = self.settings.registry if provider in ("kubernetes", "e2b") else None
-        return image_tag(spec, ctx, self.settings.image_prefix, registry), ctx
+        return images.env_tag(self.settings, spec, provider, bake)  # --- images: one tag rule for CI and hangar
 
     # ================================================================== harness packs
     def _uses_packs(self, spec: EnvSpec, pname: str) -> bool:
@@ -315,14 +319,24 @@ class Fleet:
         tag, ctx = self.pack_context(harness, pname)
         async with self._build_locks[f"{pname}:pack:{harness}"]:
             if not force and self.store.kv_get(f"pack:{pname}:{harness}") == tag:
-                return tag  # built or registered (hangar pack publish) earlier
+                if self._pack_info(pname, harness).get("tag") != tag:  # --- images: recorded before digests were
+                    return await self._record_pack(prov, pname, harness, tag)
+                return self._pack_mount(pname, harness, tag)  # built or registered (hangar pack publish) earlier
+            version = None
             if force or not await prov.image_exists(tag):
-                if log_fn:
-                    await log_fn(f"building harness pack {tag}")
-                tag = await prov.build_template(EnvSpec(name=f"harness-{h.name}"), ctx, tag, log=log_fn)
+                lines: list[str] = []
+
+                async def logged(line: str) -> None:  # --- images: the build log names the installed version
+                    lines.append(line)
+                    if log_fn:
+                        await log_fn(line)
+
+                await logged(f"building harness pack {tag}")
+                tag = await prov.build_template(EnvSpec(name=f"harness-{h.name}"), ctx, tag, log=logged)
+                version = version_from_log(lines)
                 self.audit(actor, "harness.pack_build", harness, provider=pname, image=tag)
-        self.store.kv_set(f"pack:{pname}:{harness}", tag)
-        return tag
+            self.store.kv_set(f"pack:{pname}:{harness}", tag)
+            return await self._record_pack(prov, pname, harness, tag, version)  # --- images: mounted by digest
 
     def pack_context(self, harness: str, provider: str | None = None) -> tuple[str, BuildContext]:
         """Pack image tag + build context, for building on another machine (hangar pack publish)."""
@@ -335,15 +349,55 @@ class Fleet:
                            digest=pack_digest(h))
         return pack_tag(h, self.settings.image_prefix, registry), ctx
 
-    def register_pack(self, harness: str, image: str, provider: str | None = None, actor: str = "system") -> str:
+    async def register_pack(self, harness: str, image: str, provider: str | None = None,
+                            actor: str = "system") -> str:
+        """Record a pack built elsewhere (hangar pack publish). --- images: returns what sandboxes mount, the image's
+        digest when the registry tells it."""
         get_harness(harness)
         pname = provider or self.settings.default_provider
         prov = self.provider(pname)
+        tag, _, digest = image.partition("@")
+        if digest and not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            raise FleetError(f"not a sha256 digest: {digest[:80]}")
+        repo = tag[:i] if (i := tag.rfind(":")) > tag.rfind("/") else tag
         if hasattr(prov, "_known_images"):
-            prov._known_images.add(image)  # type: ignore[attr-defined]
-        self.store.kv_set(f"pack:{pname}:{harness}", image)
-        self.audit(actor, "harness.pack_register", harness, provider=pname, image=image)
-        return image
+            prov._known_images.add(tag)  # type: ignore[attr-defined]
+        async with self._build_locks[f"{pname}:pack:{harness}"]:
+            self.store.kv_set(f"pack:{pname}:{harness}", tag)
+            ref = await self._record_pack(prov, pname, harness, tag, pinned=f"{repo}@{digest}" if digest else None)
+        self.audit(actor, "harness.pack_register", harness, provider=pname, image=ref)
+        return ref
+
+    # --- images: per pack, what sandboxes mount (repo@sha256:... when the provider's registry tells the digest, so a
+    # tag that moves can't mix versions on a fleet), the CLI version it installed, and the ref it replaced.
+    def _pack_info(self, pname: str, harness: str) -> dict[str, Any]:
+        try:
+            info = json.loads(self.store.kv_get(f"packinfo:{pname}:{harness}") or "{}")
+        except ValueError:
+            return {}
+        return info if isinstance(info, dict) else {}
+
+    def _pack_mount(self, pname: str, harness: str, tag: str) -> str:
+        info = self._pack_info(pname, harness)
+        return (info.get("ref") or tag) if info.get("tag") == tag else tag
+
+    async def _record_pack(self, prov: Provider, pname: str, harness: str, tag: str, version: str | None = None,
+                           pinned: str | None = None) -> str:
+        ref = await prov.image_digest(tag) or pinned
+        if ref and version is None:
+            version = await prov.pack_version(ref)
+        old = self._pack_info(pname, harness)
+        info = {"tag": tag, "ref": ref, "version": version, "locked": get_harness(harness).version}
+        if (prev := old.get("ref") or old.get("tag")) and prev != (ref or tag):
+            info["prev"] = prev  # the last good pack, for whoever wants to keep mounting it during a rebuild
+        self.store.kv_set(f"packinfo:{pname}:{harness}", json.dumps(info))
+        return ref or tag
+
+    def harness_version(self, pname: str, harness: str) -> str | None:
+        """The installed CLI version of the pack sandboxes on `pname` mount for `harness`, when it is known."""
+        info = self._pack_info(pname, harness)
+        tag = self.store.kv_get(f"pack:{pname}:{harness}")
+        return info.get("version") if tag and info.get("tag") == tag else None
 
     async def _resolve_packs(self, spec: EnvSpec, pname: str, actor: str, log_fn: Any = None,
                              only: str | None = None, lazy: bool = False) -> EnvSpec:
@@ -364,7 +418,7 @@ class Fleet:
                 tag = pack_tag(get_harness(hname), self.settings.image_prefix,
                                self.settings.registry if pname in ("kubernetes", "e2b") else None)
                 if self.store.kv_get(f"pack:{pname}:{hname}") == tag:
-                    spec.packs[hname] = tag
+                    spec.packs[hname] = self._pack_mount(pname, hname, tag)  # --- images
                 else:
                     self._pack_in_background(hname, pname, actor)
                 continue
@@ -663,6 +717,8 @@ class Fleet:
             await self._resolve_packs(spec, pname, actor, log_fn=pack_stage, only=hname, lazy=True)
             if spec.packs:
                 sb.info["packs"] = dict(spec.packs)
+                if hname in spec.packs and (v := self.harness_version(pname, hname)):  # --- images
+                    sb.info["harness_version"] = v
             stage("starting the sandbox")
             with observe.span("sandbox.start", {"hangar.sandbox.id": sb.id, "hangar.provider": pname}):  # --- observe
                 await prov.create(sb, image, self._warm(spec))  # image may be a snapshot ref (forks)
@@ -1168,12 +1224,14 @@ class Fleet:
         if res.exit_code != 0:
             raise FleetError(f"failed to start agent: {res.stderr or res.stdout}")
         runs = sb.info.setdefault("runs", [])
+        hver = sb.info.get("harness_version") if hname == selected else None  # --- images: what the pack installed
         runs.append({"id": run_id, "harness": hname, "model": model, "started_at": now(), "prompt": prompt[:200],
-                     **({"split": True} if split else {})})  # --- isolation
+                     **({"split": True} if split else {}), **({"harness_version": hver} if hver else {})})
         self._touch(sb)
         self.audit(actor, "agent.run", sb.id, run=run_id, harness=hname, model=model, prompt=prompt[:300])
         return {"sandbox": sb.id, "run_id": run_id, "harness": hname, "model": model, "terminal_session": run_id,
-                "log": f"{home}/.hangar/runs/{run_id}.log"}  # --- isolation: a link to it under the split
+                "log": f"{home}/.hangar/runs/{run_id}.log",  # --- isolation: a link to it under the split
+                "harness_version": hver}  # --- images
 
     async def agent_status(self, ref: str, run_id: str, tail_lines: int = 60, quiet: bool = False,
                            wait_seconds: float = 0, grow_from: int | None = None) -> dict[str, Any]:

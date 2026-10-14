@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any, Literal
 
+import yaml
 from pydantic import BaseModel, Field, model_validator
 
 from hangar.models import CredentialKind
@@ -61,7 +63,10 @@ class Harness(BaseModel):
     name: str
     title: str
     agent: bool = True  # False for helpers such as git that are not a coding agent
-    version: str = "latest"  # pinned into the pack tag; bump to roll a fleet forward
+    version: str = "latest"  # pinned into the pack tag; set from harnesses.lock.yaml for every harness with `install`
+    # --- images: the lock's other fields for this harness (checksums, build ids), exported to `install` as
+    # upper-case variables: `sha256: {x86_64: ...}` becomes $SHA256_X86_64.
+    pin: dict[str, str] = Field(default_factory=dict)
     # Shell run as root in the pack builder with $PREFIX (= PACK_ROOT/<name>), $VERSION and a throwaway $HOME.
     # Must leave runnable entrypoints in $PREFIX/bin and nothing outside $PREFIX that they depend on.
     install: str = ""
@@ -104,9 +109,18 @@ class Harness(BaseModel):
         return f"{PACK_ROOT}/{self.name}"
 
 
+# --- images: the locked release's binary straight from the vendor's release bucket (what install.sh would fetch for
+# that version), checked against the lock's sha256, rather than install.sh, which starts from whatever is latest.
 _CLAUDE_INSTALL = r"""
-curl -fsSL https://claude.ai/install.sh | bash ${VERSION:+-s "$VERSION"}
-install -D -m 755 "$(readlink -f "$HOME/.local/bin/claude")" "$PREFIX/bin/claude"
+case "$(uname -m)" in
+  x86_64) P=linux-x64 SUM=$SHA256_X86_64 ;;
+  aarch64) P=linux-arm64 SUM=$SHA256_AARCH64 ;;
+  *) echo "no Claude Code build for $(uname -m)" >&2; exit 1 ;;
+esac
+curl -fsSL "https://downloads.claude.ai/claude-code-releases/$VERSION/$P/claude" -o /tmp/claude
+echo "$SUM  /tmp/claude" | sha256sum -c -
+install -D -m 755 /tmp/claude "$PREFIX/bin/claude"
+rm -f /tmp/claude
 """
 
 # The npm package is a node launcher around a static musl binary; ship the binary, its helper binaries and
@@ -141,9 +155,19 @@ SH
 chmod 755 "$PREFIX/bin/pi"
 """
 
+# --- images: agy's install.sh takes no version (it installs the updater's current one), so fetch the locked build's
+# archive, the one install.sh downloads for that version, and check it against the lock's sha512.
 _AGY_INSTALL = r"""
-curl -fsSL https://antigravity.google/cli/install.sh | bash
-install -D -m 755 "$(readlink -f "$HOME/.local/bin/agy")" "$PREFIX/bin/agy"
+case "$(uname -m)" in
+  x86_64) P=linux-x64/cli_linux_x64 SUM=$SHA512_X86_64 ;;
+  aarch64) P=linux-arm/cli_linux_arm64 SUM=$SHA512_AARCH64 ;;
+  *) echo "no Antigravity CLI build for $(uname -m)" >&2; exit 1 ;;
+esac
+curl -fsSL "https://storage.googleapis.com/antigravity-public/antigravity-cli/$VERSION-$BUILD/$P.tar.gz" -o /tmp/agy.tgz
+echo "$SUM  /tmp/agy.tgz" | sha512sum -c -
+tar -xzf /tmp/agy.tgz -C /tmp antigravity
+install -D -m 755 /tmp/antigravity "$PREFIX/bin/agy"
+rm -f /tmp/agy.tgz /tmp/antigravity
 """
 
 # A GCP service-account key, billed to the key's own project. The project comes from the key file;
@@ -166,7 +190,6 @@ HARNESSES: dict[str, Harness] = {
         name="claude-code",
         title="Claude Code",
         install=_CLAUDE_INSTALL,
-        version="",  # the installer takes an optional version; empty = latest stable
         env={"DISABLE_AUTOUPDATER": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"},
         credentials=[
             CredentialSlot(kind=CredentialKind.API_KEY, env_var="ANTHROPIC_API_KEY"),
@@ -220,7 +243,6 @@ HARNESSES: dict[str, Harness] = {
     "codex": Harness(
         name="codex",
         title="OpenAI Codex CLI",
-        version="0.162.1",
         install=_CODEX_INSTALL,
         credentials=[
             CredentialSlot(
@@ -268,7 +290,6 @@ HARNESSES: dict[str, Harness] = {
     "pi": Harness(
         name="pi",
         title="pi coding agent",
-        version="1.1.0",
         install=_PI_INSTALL,
         credentials=[
             # Any provider key works: pass env_var (OPENAI_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY...)
@@ -404,6 +425,43 @@ HARNESSES: dict[str, Harness] = {
 }
 
 
+# --- images: the harness lock (harnesses.lock.yaml): every harness hangar installs is pinned there, nowhere else.
+LOCK_FILE = Path(__file__).with_name("harnesses.lock.yaml")
+_PIN_VALUE = re.compile(r"[A-Za-z0-9._-]+")  # exported unquoted-safe into the install script
+
+
+def _flatten(prefix: str, value: Any, out: dict[str, str]) -> None:
+    if isinstance(value, dict):
+        for k, v in value.items():
+            _flatten(f"{prefix}_{k}" if prefix else str(k), v, out)
+        return
+    if not _PIN_VALUE.fullmatch(str(value)):
+        raise ValueError(f"{LOCK_FILE.name}: {prefix} = {value!r} is not a plain version, checksum or id")
+    key = re.sub(r"[^A-Z0-9_]", "_", prefix.upper())
+    if not re.fullmatch(r"[A-Z][A-Z0-9_]*", key) or key in ("PREFIX", "VERSION", "HOME", "PATH"):
+        raise ValueError(f"{LOCK_FILE.name}: {prefix!r} can't be an install variable")
+    out[key] = str(value)
+
+
+def apply_lock(harnesses: dict[str, Harness], lock: dict[str, Any]) -> None:
+    """Pin each harness to its lock entry. A harness that installs something must have one, so nothing floats."""
+    if unknown := sorted(set(lock) - set(harnesses)):
+        raise ValueError(f"{LOCK_FILE.name} names unknown harnesses: {', '.join(unknown)}")
+    for name, h in harnesses.items():
+        entry = dict(lock.get(name) or {})
+        if not h.install:
+            continue
+        version = str(entry.pop("version", "") or "")
+        if not _PIN_VALUE.fullmatch(version) or version == "latest":
+            raise ValueError(f"{LOCK_FILE.name}: {name} needs an exact `version`")
+        pin: dict[str, str] = {}
+        _flatten("", entry, pin)
+        h.version, h.pin = version, pin
+
+
+apply_lock(HARNESSES, yaml.safe_load(LOCK_FILE.read_text()) or {})
+
+
 def get_harness(name: str) -> Harness:
     try:
         return HARNESSES[name]
@@ -419,13 +477,29 @@ def slot_for(harness: str, kind: CredentialKind) -> CredentialSlot | None:
 
 
 # --------------------------------------------------------------------------- packs
+# --- images: what the installed CLI says it is (`verify`, its --version). The pack build prints it on a marker line
+# (VERSION_MARKER), fails when it doesn't name the locked version, and keeps it in VERSION_FILE: its own last layer,
+# so hangar can read it from the registry without pulling the pack, and mounted at <prefix>/.hangar-version.
+VERSION_MARKER = "hangar-harness-version: "
+VERSION_FILE = ".hangar-version"
+
+
 def pack_script(h: Harness) -> str:
+    pins = "".join(f" {k}={v}" for k, v in sorted(h.pin.items()))
     return (
         "#!/bin/bash\nset -euxo pipefail\n"
-        f"export PREFIX={h.prefix} VERSION={json.dumps(h.version)} HOME=/tmp/pack-home\n"
+        f"export PREFIX={h.prefix} VERSION={json.dumps(h.version)} HOME=/tmp/pack-home{pins}\n"
         'mkdir -p "$HOME" "$PREFIX"\n'
         f"{h.install.strip()}\n"
-        f'PATH="$PREFIX/bin:$PATH" {h.verify}\n'
+        f'OUT=$(PATH="$PREFIX/bin:$PATH" {h.verify} 2>&1)\n'
+        "{ set +x; } 2>/dev/null\n"
+        # the line naming the version (a runtime may warn first), else the first line, for the error
+        'INSTALLED=$(printf \'%s\\n\' "$OUT" | grep -F -m1 -- "$VERSION" || true)\n'
+        "if [ -z \"$INSTALLED\" ]; then echo \"installed '${OUT%%$'\\n'*}', but the lock pins $VERSION\" >&2; "
+        "exit 1; fi\n"
+        f"printf '%s\\n' \"$INSTALLED\" > /{VERSION_FILE}\n"
+        f"echo \"{VERSION_MARKER}$INSTALLED\"\n"
+        "set -x\n"
         'rm -rf "$HOME" /tmp/*-npm\n'
     )
 
@@ -438,8 +512,18 @@ def pack_stage(h: Harness) -> str:
 
 
 def pack_dockerfile(h: Harness) -> str:
-    # The image's root *is* the prefix: it is mounted at PACK_ROOT/<name>.
-    return pack_stage(h) + f"FROM scratch\nCOPY --from=pack-{h.name} {h.prefix}/ /\n"
+    # The image's root *is* the prefix: it is mounted at PACK_ROOT/<name>. The version file is a layer of its own,
+    # the last one (--- images).
+    return (pack_stage(h) + f"FROM scratch\nCOPY --from=pack-{h.name} {h.prefix}/ /\n"
+            f"COPY --from=pack-{h.name} /{VERSION_FILE} /{VERSION_FILE}\n")
+
+
+def version_from_log(lines: list[str] | str) -> str | None:
+    """The installed version a pack build printed (VERSION_MARKER), from its build log."""
+    for line in (lines.splitlines() if isinstance(lines, str) else lines):
+        if (i := line.find(VERSION_MARKER)) >= 0 and "echo" not in line[:i]:
+            return line[i + len(VERSION_MARKER):].strip()[:200] or None
+    return None
 
 
 def pack_digest(h: Harness) -> str:

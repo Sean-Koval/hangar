@@ -537,7 +537,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/harnesses/{harness}/images")
     async def pack_register(harness: str, body: RegisterImage, who: str = A):
-        return {"harness": harness, "image": fleet.register_pack(harness, body.image, body.provider, actor=who)}
+        return {"harness": harness,  # --- images: registering resolves the digest sandboxes mount
+                "image": await fleet.register_pack(harness, body.image, body.provider, actor=who)}
 
     @app.post("/api/environments/{name}/build")
     async def env_build(name: str, body: BuildBody, who: str = A):
@@ -725,6 +726,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def harnesses(_: str = A):
         return [
             {"name": x.name, "title": x.title, "agent": x.agent, "version": x.version or "latest",
+             # --- images: the CLI version each provider's pack installed (the lock's is `version`)
+             "installed": {p: v for p in fleet.providers if x.install and (v := fleet.harness_version(p, x.name))},
              "deprecated": x.deprecated, "pack": f"{PACK_ROOT}/{x.name}" if x.install else None,
              "credential_kinds": [{"kind": s.kind.value, "env_var": s.env_var, "file_path": s.file_path,
                                    "exclusive": s.exclusive} for s in x.credentials],

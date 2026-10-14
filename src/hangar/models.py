@@ -255,6 +255,7 @@ class Turn(BaseModel):
     requester: str | None = None
     reply_to: str | None = None  # "github:owner/repo#N": where to post progress for this turn
     run_id: str | None = None
+    harness_version: str | None = None  # --- images: the agent CLI version the turn ran (its session turn's)
     started_at: float | None = None
     finished_at: float | None = None
     exit_code: int | None = None
@@ -506,6 +507,7 @@ class SessionTurn(BaseModel):
     requester: str | None = None
     run_id: str | None = None
     harness: str | None = None
+    harness_version: str | None = None  # --- images: what the harness's pack installed (`--version`), when known
     mode: Literal["new", "resume", "handoff", "fork"] = "new"
     conversation: str | None = None  # the harness conversation id this turn used (preset ids are known up front)
     started_at: float | None = None

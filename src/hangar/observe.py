@@ -372,7 +372,8 @@ def _turn_attrs(s: Any, turn: Any) -> dict[str, Any]:
             "gen_ai.provider.name": _PROVIDERS.get(harness or ""), "gen_ai.request.model": s.model,
             "gen_ai.conversation.id": turn.conversation, "hangar.session.id": s.id, "hangar.job.id": s.job_id,
             "hangar.environment": s.environment, "hangar.run.id": turn.run_id, "hangar.turn.mode": turn.mode,
-            "hangar.harness": harness}
+            "hangar.harness": harness,
+            "hangar.harness.version": getattr(turn, "harness_version", None)}  # --- images
 
 
 def turn_begin(fn: Callable[..., Any]) -> Callable[..., Any]:

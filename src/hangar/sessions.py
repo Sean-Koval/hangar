@@ -876,6 +876,7 @@ class SessionService:
             caching.STAGGER.responded(s.id)  # --- overnight/cache: nor will it answer; siblings go ahead
             raise
         turn.run_id, turn.started_at = res["run_id"], now()
+        turn.harness_version = res.get("harness_version")  # --- images
         turn.context = exchange.strip(turn.context)
         s.model = s.model or res.get("model")
         s.last_active_at = now()
