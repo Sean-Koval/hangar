@@ -30,11 +30,12 @@ import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from hangar import isolation  # --- isolation
+from hangar import harden, isolation  # --- isolation, harden
 from hangar.driver import DECISIONS, ENDED, MAX_TEXT, sign
 from hangar.events import RunEvent
 from hangar.harnesses import Harness, get_harness
 from hangar.models import Approval, Session, SessionState, SessionTurn, Steer, new_id, now
+from hangar.verifyloop import CLAUDE_ENV
 
 if TYPE_CHECKING:
     from hangar.models import Sandbox
@@ -82,9 +83,10 @@ def ctl_dir(svc: SessionService, run_id: str, sb: Sandbox | None = None) -> str:
     return isolation.ctl_dir(svc.settings, run_id, sb is not None and isolation.run_split(sb, run_id))
 
 
-async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbox, h: Harness
-                  ) -> tuple[str, str | None]:
-    """The turn's run id, and the command that runs it under the driver (None: one-shot `run`, as before).
+async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbox, h: Harness,
+                  env: dict[str, str] | None = None) -> tuple[str, str | None]:
+    """The turn's run id, and the command that runs it under the driver (None: one-shot `run`, as before). `env`:
+    the turn's own (the job's verify gate goes into hangar's harness settings, harden.py).
 
     Installs the driver and the run's key in the sandbox. Without python3 there, an `auto` turn falls back to the
     one-shot command; an `ask` or `deny-risky` one fails rather than run with permission checks off."""
@@ -101,21 +103,37 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
     _, prov = svc.fleet._running(sb.id)
     # --- isolation: a driver of its own user where the sandbox allows it; `ask` says so, or refuses, where not
     split = await isolation.ensure(svc.fleet, prov, sb)
-    if pol == "ask" and not split:
+    # --- harden: `required` covers deny-risky too: its rules answer prompts, and the agent could switch those off
+    guarded = pol != "auto"
+    required = svc.settings.uid_split == "required"
+    if guarded and not split:
         why = isolation.why_not(svc.settings, sb)
-        if svc.settings.uid_split == "required":
-            raise SteerError(f"approvals=ask needs hangar's driver to run as a user of its own, and this sandbox can't "
-                             f"({why}); HANGAR_UID_SPLIT=required (docs/steering.md)")
+        if required:
+            raise SteerError(f"approvals={pol} needs hangar's driver to run as a user of its own, and this sandbox "
+                             f"can't ({why}); HANGAR_UID_SPLIT=required (docs/steering.md)")
         turn.warnings.append(f"hangar's driver runs as the agent's own user here ({why}): code you allow to run can "
-                             "tamper with later turns (docs/steering.md)")
+                             "tamper with later turns: change the harness's settings, environment and binary so it "
+                             "doesn't ask, and fake the run log, approval requests and exit status hangar reads "
+                             "(docs/steering.md#the-uid-split)")
     ctl = isolation.ctl_dir(svc.settings, run_id, split)
     wd = sb.info.get("repo_path") or svc.settings.workspace_dir  # where fleet.run_agent runs it
+    hard = harden.plan(svc.fleet, sb, h, run_id, wd, env or {}) if split and guarded else None  # --- harden
+    if isinstance(hard, str):
+        if required:
+            raise SteerError(f"approvals={pol} needs hangar to own the harness's settings, and it can't in this "
+                             f"sandbox ({hard}); HANGAR_UID_SPLIT=required (docs/steering.md)")
+        turn.warnings.append(f"the agent's own harness settings apply here ({hard}): code you allow to run can change "
+                             "them so that later turns don't ask (docs/steering.md#hangar-owned-harness-settings)")
+        hard = None
+    elif hard is not None:
+        turn.warnings.extend(hard.warnings)
     if split:
         driver = isolation.DRIVER
         await asyncio.gather(
             isolation.put(prov, sb, isolation.HOME, {"driver.py": (DRIVER.read_bytes(), 0o644)}),
             isolation.put(prov, sb, isolation.RUNS, {f"{run_id}.ctl": (None, 0o700),
-                                                     f"{run_id}.ctl/key": (key.encode(), 0o600)}))
+                                                     f"{run_id}.ctl/key": (key.encode(), 0o600),
+                                                     **(hard.files if hard else {})}))
     else:
         driver = f"/home/{svc.settings.sandbox_user}/.hangar/driver.py"
         await asyncio.gather(prov.write_file(sb, driver, DRIVER.read_bytes(), mode=0o644),
@@ -127,10 +145,14 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
     fallback = (f"{one_shot}" if pol == "auto" else
                 f"echo 'hangar: approvals={pol} needs python3 >= 3.8 in the sandbox' >&2; false")
     split_args = f" {isolation.driver_args(svc.settings, run_id, wd)}" if split else ""
+    if hard:  # --- harden: the harness by its path, with hangar's settings and environment
+        split_args += f" {hard.driver_args}"
     # -I: no PYTHON* variables, user site-packages or modules beside the driver, all of which the agent can write
-    command = (f"if python3 -I -c 'import sys; sys.exit(sys.version_info < (3, 8))' 2>/dev/null; then "
+    command = (f"{f'unset {CLAUDE_ENV}; ' if hard else ''}"  # --- harden: the gate is in hangar's settings file
+               f"if python3 -I -c 'import sys; sys.exit(sys.version_info < (3, 8))' 2>/dev/null; then "
                f"python3 -I {q(driver)} --harness {h.live} --ctl {q(ctl)} --approvals {pol} "
-               f"--approval-timeout {int(svc.settings.approval_timeout_seconds)}{split_args} -- {h.live_run}; "
+               f"--approval-timeout {int(svc.settings.approval_timeout_seconds)}{split_args} -- "
+               f"{hard.live_run if hard else h.live_run}; "
                f"else touch {q(ctl)}/one-shot; {fallback}; fi")
     return run_id, command
 

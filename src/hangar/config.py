@@ -277,7 +277,8 @@ class Settings(BaseSettings):
     # --- isolation: run each turn's driver as hangar's own user and the agent as the sandbox user, so code the agent
     # runs can't reach the driver, its key or its control files (docs/steering.md). auto: wherever the sandbox allows
     # it (Docker, an agent without sudo), else one user, with a warning; off: always one user; required: like auto,
-    # and `ask` turns fail where the agent would share the driver's user.
+    # and `ask` and `deny-risky` turns fail where the agent would share the driver's user, or where hangar can't own
+    # the harness's settings (--- harden).
     uid_split: Literal["auto", "off", "required"] = "auto"
     # --- overnight/cache: prompt caching (cache.py, docs/sessions.md#prompt-caching). The TTL turns ask for when
     # neither the session nor its environment says: auto (1h when the session waits on people for more than

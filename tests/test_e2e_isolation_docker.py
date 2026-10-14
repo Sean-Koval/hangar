@@ -255,7 +255,9 @@ async def test_the_agent_cant_reach_the_driver_on_docker(tmp_path, monkeypatch):
         t = svc.get("iso").turns[-1]
         sb = fleet.get(sid)
         assert isolation.split(sb) and isolation.run_split(sb, t.run_id), sb.info.get("isolation")
-        assert not t.warnings
+        # --- harden: the scripted harness isn't in a harness prefix, so its settings stay its own (and the turn says
+        # so); test_e2e_harden_docker.py installs one where a pack would
+        assert [w.split(" (")[0] for w in t.warnings] == ["the agent's own harness settings apply here"], t.warnings
 
         # A key as the next turn gets it (the running driver deleted its own at start).
         run_id, _ = await steering.prepare(svc, svc.get("iso"), SessionTurn(message="x"), sb, HARNESSES["live-claude"])
@@ -338,7 +340,7 @@ async def test_the_agent_cant_reach_the_driver_on_docker(tmp_path, monkeypatch):
         if x.sandbox_id:
             sids.append(x.sandbox_id)
             assert fleet.get(x.sandbox_id).info["isolation"] == {
-                "mode": "shared", "why": "agent can use sudo (the environment has sudo: true)"}
+                "mode": "shared", "why": "agent can use sudo (the environment has sudo: true)", "v": isolation.VERSION}
         assert "HANGAR_UID_SPLIT=required" in (x.reason or ""), x.reason
     finally:
         await svc.stop()

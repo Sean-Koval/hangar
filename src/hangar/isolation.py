@@ -8,22 +8,24 @@ driver deletes it, edit the turn's script or the driver, or signal and trace the
     /var/lib/hangar             hangar's home, 0755 hangar
       driver.py                 the driver (0644)
       runs/                     0755: <run>.sh, .env, .prompt (0644, written by hangar), .log, .exit, .pid (the run's)
-        <run>.ctl/              0700: the key, in/, acks
+        <run>.ctl/              0700: the key, in/, acks, approvals (the driver's copy of its requests and answers)
       tmux/                     hangar's tmux socket (0700)
 
 The control plane writes there as hangar's user (`put`), and runs the turn as that user: root starts
 the turn's tmux through setpriv with CAP_SETUID, CAP_SETGID and CAP_KILL in the ambient set, and the driver starts the
-harness through setpriv as the agent, every capability dropped (driver.as_agent). The agent can read the run's files
-but not change them, and can't signal, trace or read the memory of anything hangar's user runs. Its own
-~/.hangar/runs/<run>.{log,exit,pid,sh} are symlinks into runs/, so whatever reads a run as the agent (status, events,
-logs, checkpoints) reads it as before.
+harness through setpriv as the agent, every capability dropped and no_new_privs set (driver.as_agent). The agent can
+read the run's files but not change them, and can't signal, trace or read the memory of anything hangar's user runs.
+Its own ~/.hangar/runs/<run>.{log,exit,pid,sh} are symlinks into runs/, so what reads a run as the agent reads it as
+before; hangar itself reads a split run's status, log and approvals from runs/ as its own user (--- harden: the links
+are the agent's to point anywhere). For a turn that asks, hangar also owns the harness's binary, environment and
+settings (harden.py), where the setup found the harness and the managed settings out of the agent's reach.
 
 Only Docker can do this: its exec picks the uid (runc, gVisor and Kata alike), with no setuid binary in the sandbox.
 GKE's sandbox policy runs a pod as one non-root user without capabilities, so there is no second user to switch to;
 E2B is not wired up. A sandbox whose agent can become root (an environment with `sudo: true`, the default) gains
 nothing from it. Everything else runs as before, in one user, with a warning; HANGAR_UID_SPLIT=required makes `ask`
-turns fail there instead. Nothing is built into images: the user is added when a sandbox's first turn starts, so
-existing environments get it without a rebuild.
+and `deny-risky` turns fail there instead. Nothing is built into images: the user is added when a sandbox's first turn
+starts, so existing environments get it without a rebuild.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import re
 import shlex
 import socket
 import tarfile
@@ -42,6 +45,7 @@ from hangar.models import ExecResult, Sandbox
 
 if TYPE_CHECKING:
     from hangar.config import Settings
+    from hangar.harnesses import Harness
     from hangar.providers.base import Provider
 
 log = logging.getLogger("hangar.isolation")
@@ -53,6 +57,11 @@ TMUX = f"TMUX_TMPDIR={HOME}/tmux tmux"
 DRIVER = f"{HOME}/driver.py"
 CAPS = "+setuid,+setgid,+kill"
 LINKED = ("log", "exit", "pid", "sh")  # what the agent's ~/.hangar/runs points at
+# --- harden: the setup's checks changed (2: sudo under requiretty, the system PATH, the harness and managed settings);
+# a sandbox whose answer was cached under another version is probed again
+VERSION = 2
+# --- harden: a hardened turn's harness files hold its environment and MCP servers' secrets: only while it runs
+CLEANUP = "rm -rf {r}.agent-env {r}.settings.json {r}.mcp.json {r}.memory"
 
 # Run as root in the sandbox. Exit 3 with a reason: this sandbox stays single-user.
 SETUP = r"""u={user}
@@ -81,6 +90,26 @@ id -u {hangar} >/dev/null 2>&1 \
   || {{ echo "could not add the user {hangar}"; exit 3; }}
 h=$(id -u {hangar})
 [ "$h" != 0 ] && [ "$h" != "$uid" ] || {{ echo "user {hangar} has uid $h"; exit 3; }}
+# --- harden: can hangar own the harness's settings here? Only if the agent can't change the harness's binary, a
+# directory above it or anything in its prefix (codex's wrapper runs libexec/), nor the managed settings that outrank
+# hangar's own (Claude Code's, Codex's requirements).
+changeable() {{ local p=$1; while :; do [ ! -e "$p" ] || ! as_agent test -w "$p" >/dev/null || return 0; \
+  [ "$p" = / ] && return 1; p=$(dirname "$p"); done; }}
+harness="ok"
+b={bin}
+if [ -z "$b" ]; then harness="the harness has no structured mode"
+elif [ ! -x "$b" ]; then harness="$b is not there (the harness isn't in its pack or baked prefix)"
+elif changeable "$b" || changeable "$(readlink -f "$b")"; then harness="$u can change $b"
+elif w=$(as_agent sh -c 'find "$0" -writable -print -quit 2>/dev/null' "${{b%/bin/*}}") && [ -n "$w" ]; then
+  harness="$u can change $w"
+elif [ "$(head -c 2 "$b")" = "#!" ] && grep -q '\$(' "$b"; then  # e.g. codex's wrapper from before
+  harness="$b runs commands through the agent's PATH to find its way (an older pack: a new sandbox has the fixed one)"
+else
+  for p in /etc/claude-code /etc/claude-code/* /etc/claude-code/*/* /etc/codex /etc/codex/*; do
+    ! changeable "$p" || {{ harness="$u can change $p (managed settings)"; break; }}
+  done
+fi
+echo "harness $harness"
 for d in {home} {runs} {home}/tmux; do [ ! -L "$d" ] || {{ echo "$d is a symlink"; exit 3; }}; done
 install -d -o {hangar} -g "$(id -g {hangar})" -m 0755 {home} {runs} || exit 3
 install -d -o {hangar} -g "$(id -g {hangar})" -m 0700 {home}/tmux || exit 3
@@ -88,6 +117,19 @@ setpriv --reuid={hangar} --regid={hangar} --init-groups --inh-caps={caps} --ambi
   || {{ echo "setpriv can't keep capabilities for {hangar} (the sandbox drops them)"; exit 3; }}
 echo "split $h $(id -g {hangar})"
 """
+
+
+def pinned(sb: Sandbox) -> str | None:
+    """--- harden: the harness binary hangar starts by its path in a split sandbox (one the agent can't change), or
+    None: hangar can't own the harness's settings there (`harness_why` says why)."""
+    iso = sb.info.get("isolation") or {}
+    return iso.get("harness") if iso.get("mode") == "split" else None
+
+
+def live_bin(h: Harness | None) -> str:
+    """Where the harness's structured-mode binary is in its pack or baked prefix ("" when it has none)."""
+    word = (h.live_run.split() or [""])[0] if h is not None and h.live else ""
+    return f"{h.prefix}/bin/{word}" if h is not None and re.fullmatch(r"[A-Za-z0-9._-]+", word) else ""
 
 
 def split(sb: Sandbox) -> bool:
@@ -123,7 +165,7 @@ async def ensure(fleet: Any, prov: Provider, sb: Sandbox) -> bool:
     if fleet.settings.uid_split == "off":
         return False
     iso = sb.info.get("isolation")
-    if iso is None:
+    if iso is None or iso.get("v") != VERSION:  # --- harden: set up before the checks changed: probe again
         iso = await _probe(fleet.settings, prov, sb)
         sb.info["isolation"] = iso
         fleet.store.put(sb)
@@ -133,21 +175,33 @@ async def ensure(fleet: Any, prov: Provider, sb: Sandbox) -> bool:
     return iso["mode"] == "split"
 
 
+def supported(prov: Provider) -> bool:
+    """Only Docker's exec picks the uid (see the module docstring)."""
+    return prov.name == "docker"
+
+
 async def _probe(settings: Settings, prov: Provider, sb: Sandbox) -> dict[str, Any]:
-    if prov.name != "docker":
+    if not supported(prov):
         why = ("Kubernetes sandboxes run as one non-root user without capabilities (GKE Sandbox's policy)"
                if prov.name == "kubernetes" else f"the {prov.name} provider doesn't support it yet")
-        return {"mode": "shared", "why": why}
-    script = SETUP.format(user=shlex.quote(settings.sandbox_user), hangar=USER, home=HOME, runs=RUNS, caps=CAPS)
+        return {"mode": "shared", "why": why, "v": VERSION}
+    from hangar.harnesses import HARNESSES
+
+    binary = live_bin(HARNESSES.get(sb.info.get("harness") or ""))
+    script = SETUP.format(user=shlex.quote(settings.sandbox_user), hangar=USER, home=HOME, runs=RUNS, caps=CAPS,
+                          bin=shlex.quote(binary))
     try:
         res = await prov.exec(sb, script, timeout=60, user="root", cwd="/")
     except Exception as e:  # noqa: BLE001 - any failure leaves the sandbox as it was: single-user
-        return {"mode": "shared", "why": f"setting it up failed: {e}"[:300]}
-    words = res.stdout.split()
+        return {"mode": "shared", "why": f"setting it up failed: {e}"[:300], "v": VERSION}
+    lines = res.stdout.strip().splitlines()
+    words = (lines or [""])[-1].split()
     if res.exit_code == 0 and len(words) == 3 and words[0] == "split" and all(w.isdigit() for w in words[1:]):
-        return {"mode": "split", "uid": int(words[1]), "gid": int(words[2])}
-    why = (res.stdout.strip().splitlines() or [res.stderr.strip()[-200:] or f"exit {res.exit_code}"])[-1]
-    return {"mode": "shared", "why": why[:300]}
+        harness = next((ln[8:].strip() for ln in lines if ln.startswith("harness ")), "not checked")
+        return {"mode": "split", "uid": int(words[1]), "gid": int(words[2]), "v": VERSION,
+                **({"harness": binary} if harness == "ok" else {"harness_why": harness[:300]})}
+    why = (lines or [res.stderr.strip()[-200:] or f"exit {res.exit_code}"])[-1]
+    return {"mode": "shared", "why": why[:300], "v": VERSION}
 
 
 async def put(prov: Provider, sb: Sandbox, parent: str, files: dict[str, tuple[bytes | None, int]]) -> None:
@@ -239,6 +293,7 @@ async def start(prov: Provider, sb: Sandbox, settings: Settings, run_id: str, pr
         f"echo $$ > {r}.pid\n"
         f"{{ {command}; }} 2>&1 | tee {r}.log\n"
         f"echo ${{PIPESTATUS[0]}} > {r}.exit\n"
+        f"{CLEANUP.format(r=r)}\n"  # --- harden
     )
     await put(prov, sb, RUNS, {f"{run_id}.prompt": (prompt.encode(), 0o644), f"{run_id}.env": (exports.encode(), 0o644),
                                f"{run_id}.sh": (script.encode(), 0o644)})
@@ -264,7 +319,7 @@ async def kill(prov: Provider, sb: Sandbox, settings: Settings, run_id: str, int
     if interrupted:
         cmd += f"; [ -s {ended} ] || echo 130 > {ended}"
     if s:
-        await sh(prov, sb, cmd, timeout=30)
+        await sh(prov, sb, f"{cmd}; {CLEANUP.format(r=q(f'{RUNS}/{run_id}'))}", timeout=30)  # --- harden
     else:
         await prov.exec(sb, cmd, timeout=30)
 

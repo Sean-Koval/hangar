@@ -109,7 +109,8 @@ The driver holds the run's key and answers for whoever approves. In a single use
   - `runs/` (0755): each run's script, exports, prompt, log and exit status;
   - each run's `<run>.ctl/` (0700): the key, `in/` and `acks`.
 - **The agent runs the harness, as the sandbox user, with every capability dropped.** The driver starts the harness through `setpriv`. Its environment is built as the agent, in the same order as a single-user run: `~/.hangar/env`, then the run's exports. The harness starts in the turn's directory.
-- **Readers work as before.** The agent's `~/.hangar/runs/<run>.log`, `.exit`, `.pid` and `.sh` are links into `runs/`. So anything that reads a run (status, events, the log, `grep … ~/.hangar/runs/*.log`) reads it as it did.
+- **The agent's readers work as before.** The agent's `~/.hangar/runs/<run>.log`, `.exit`, `.pid` and `.sh` are links into `runs/`, so `grep … ~/.hangar/runs/*.log` in the sandbox reads a run as it did.
+- **Hangar reads its own copy.** Those links are the agent's to point anywhere, so hangar never reads a split run through them. It reads the run's log, exit status and pid from `runs/` as `hangar`, with the system `PATH`. It takes the run's approval requests and answers from `<run>.ctl/approvals`, which the driver writes next to the run log, and which only `hangar` can write. The run log also carries the harness's output. The agent can write into that output, because the harness's stdout and stderr are its own. The driver also defuses a `hangar.*` line that comes from the harness: the line is kept in the log as text, so the parser never reads it as an event.
 - **The dashboard's "Watch the agent" is a read-only view** of the run's tmux session.
 
 What the agent can't do then (`tests/test_e2e_isolation_docker.py` checks each from inside a real sandbox while a turn waits on an approval):
@@ -118,6 +119,11 @@ What the agent can't do then (`tests/test_e2e_isolation_docker.py` checks each f
 - signal the driver, trace it (`ptrace`), or read its environment or memory;
 - get back to the driver's uid (`setuid`);
 - have a program it planted on its `PATH` run as root or as `hangar`.
+
+`tests/test_e2e_harden_docker.py` checks these in a real sandbox:
+- **Gain privileges through a setuid program.** The harness, and everything it starts (its tools, the verify gate, a one-shot run), runs with `no_new_privs`. A setuid-root `id` stays the agent's uid. A `NOPASSWD` sudo rule added behind the setup's back is refused with "the no new privileges flag is set". Tools that don't need sudo work as before (checked: `git`, `python3 -m venv`).
+- **Fake what hangar reads.** In the test the agent points its links at a log and an exit file of its own, and writes a forged "approved" line into the run log through the harness. Hangar still sees the turn running and the approval pending.
+- **Change hangar's harness settings for the next turn, or turn off the Stop hook.** See [hangar-owned harness settings](#hangar-owned-harness-settings).
 
 **How it starts.**
 - Root starts the turn's tmux through `setpriv` as `hangar`, with `CAP_SETUID`, `CAP_SETGID` and `CAP_KILL` in its ambient set. The driver needs the first two to start the harness as the agent, and the third to stop it.
@@ -130,6 +136,9 @@ What the agent can't do then (`tests/test_e2e_isolation_docker.py` checks each f
 - it checks for `setpriv` (util-linux), `tmux` and `bash`;
 - it checks that the agent can't `sudo`, asking again under a terminal (`script`) when sudo wants one (`Defaults requiretty`: the agent can get a terminal whenever it likes);
 - it checks, as the agent, that it can't write any directory on that fixed system `PATH` or the commands root and `hangar` run from it (`setpriv`, `tmux`, `bash`, `python3`, `tar`, `timeout`, `env`, `tee`). `hangar` holds `CAP_SETUID`, so whatever runs as it can become root.
+- it checks whether hangar can own the harness's settings. The agent must not be able to change the harness's binary in its pack or baked prefix, any directory above it, or the managed settings in `/etc/claude-code` and `/etc/codex`. If it can, the sandbox is still split, and the reason is kept in `sb.info.isolation.harness_why`.
+
+The answer is cached in `sb.info.isolation` with a version (`v`). A sandbox set up before the checks changed, for example before the `requiretty` check, is probed again at its next turn.
 
 Nothing is built into images, so existing environments get the split without a rebuild. Everywhere else turns run single-user, as before, and `sb.info.isolation.why` says why:
 - **environments with `sudo: true` (the default).** The agent is root whenever it likes, so a second user would protect nothing. Set `sudo: false` for the split.
@@ -137,14 +146,54 @@ Nothing is built into images, so existing environments get the split without a r
 - **E2B.** Its envd can run commands as another user, but this isn't wired up.
 - **`HANGAR_UID_SPLIT=off`.**
 
-An `ask` turn in a single-user sandbox carries a warning on the turn. With `HANGAR_UID_SPLIT=required` it fails instead, saying why. `auto` turns have no approvals to protect and run either way.
+An `ask` or `deny-risky` turn in a single-user sandbox carries a warning on the turn. The warning says what isn't protected: code the person allows can change the harness's settings, environment and binary so later turns don't ask, and can fake the run log, approval requests and exit status hangar reads. With `HANGAR_UID_SPLIT=required` the turn fails instead, saying why. The same applies when the sandbox is split but hangar can't own the harness's settings there.
+
+`required` covers `deny-risky` as well as `ask`. Its rules answer the harness's prompts, so an agent that can switch the prompts off, or answer for the driver, gets past them just as it would get past a person. `auto` turns have no approvals to protect and run either way.
 
 **What the split doesn't cover.**
-- **The harness is still the agent's.** Its binaries on the agent's `PATH`, its settings (`~/.claude/settings.json` and the repository's `.claude/`, `~/.codex/config.toml`) and `~/.hangar/env` are the agent's to change. Code you allow can, for example, add a Claude Code permission rule that pre-approves later tool calls, and the driver never sees a prompt for them. The split keeps the driver, its key and your answers out of reach; whether the harness asks is up to its configuration. Hangar-owned harness settings (Claude Code's `--setting-sources`/`--settings`, Codex's equivalents) are a follow-up.
-- **`~/.hangar/env` stays writable by the agent, on purpose.** Hangar's user never reads or runs it: only the harness's environment, as the agent, comes from it. A hangar-owned copy would not protect the harness while its settings stay writable.
-- **What hangar reads about a run goes through the agent's links.** The log, exit status and pid are read through `~/.hangar/runs`, which the agent owns, and the harness's output reaches the log. So the agent can still fake what the log says (hide an approval request, so it times out and is denied), as without the split. Answers and acks are signed, so it can't fake those.
-- **Setuid programs other than `sudo`.** The agent keeps the full bounding set, so a setuid-root program in the image that grants root without a password would undo the split. Images ship none by default (root's password is locked).
+- **The harness is a process of the agent's uid.** Docker leaves same-uid `ptrace` to the kernel's Yama setting, and this repo's Docker hosts have no Yama at all. Where the kernel allows it, code running as the agent can change the running harness in memory. That code can be code you allowed in this turn, or a process it left running into a later turn. Changed this way, the harness can skip prompts or print anything into the run log. Hangar's own state (approvals, exit status, answers) doesn't come from the harness. Tokens and cost read from the log can still be faked, and so can budget stops. Closing this needs the harness to run non-dumpable, or a ptrace policy for the sandbox. That is a follow-up.
+- **Commands hangar runs as the agent outside a turn don't get `no_new_privs`** (`hangar sb exec`, hangar-envd). A setuid program in the image that grants root without a password still undoes the split from there. That is why the setup refuses an agent with sudo. Images ship no other such program by default (root's password is locked).
+- **`auto` turns start the harness as before:** the agent's binary on its `PATH`, its environment and its settings. There is nothing to approve, so the only control there is the job's verify gate, which stays advisory ([jobs §7](jobs.md#7-an-agent-loop-that-finishes-the-job)). Hangar's own check after the turn decides delivery.
 - **deny-risky resolves paths as `hangar`.** It can't follow symlinks inside directories only the agent can enter, such as a repository under the agent's home (0750). It is a guard rail, as before.
+
+## Hangar-owned harness settings
+
+The split keeps the driver, its key and your answers out of the agent's reach. The harness itself used to start from what the agent owns:
+- its binary, found through the agent's `PATH`;
+- its environment, from `~/.hangar/env`;
+- its settings, from `~/.claude`, the repository's `.claude/` and `~/.codex`.
+
+So code you allowed could set up a later turn so that it never asks. It could add a Claude Code permission rule or a `PreToolUse` hook that allows every call, or a Codex hook. It could also switch off the verify gate's Stop hook. For an `ask` or `deny-risky` turn in a split sandbox, hangar now decides all of these itself (`src/hangar/harden.py`):
+
+- **The binary.** The harness starts by its path in its pack or baked prefix (`/opt/hangar/harness/<name>/bin`). The setup checked that the agent can't change it, any directory above it, or anything in the prefix. A `claude` the agent puts first on its `PATH` never runs. Codex's wrapper script used to find its prefix with `dirname` and `readlink`, which it looked up on the agent's `PATH`. The wrapper now names its prefix. The setup doesn't trust a wrapper from an older pack (a new sandbox has the fixed one).
+- **The environment.** When hangar sets up a sandbox, it keeps its own copy of the `~/.hangar/env` it writes there, in its vault, before anything of the agent's has run. For each turn it writes that copy to a 0600 file. The driver reads the file and deletes it before the harness starts, then hands it to the harness on a pipe. What the agent adds to `~/.hangar/env` (`LD_PRELOAD`, `PATH`, settings paths) never reaches the harness. Nothing on the agent's `PATH` runs before the harness does.
+- **Claude Code's settings** (verified with 2.1.296 and a scripted model API; `tests/test_harden_real_clis.py`):
+  - **`--setting-sources ''`.** No user, project or local settings load. That covers their permission rules, hooks, `defaultMode`, `disableAllHooks` and `.mcp.json` servers. The legacy `allowedTools` in `~/.claude.json` doesn't apply either way.
+  - **`--settings`** is a file of hangar's: the environment's own `~/.claude/settings.json` from its spec (`agent_config.files` or `files`), with the job's verify gate added. The two are merged into one file because only the last `--settings` counts.
+  - **`--strict-mcp-config --mcp-config`** loads the environment's MCP servers (`mcp:`), as hangar rendered them when it set up the sandbox.
+  - **CLAUDE.md.** Without setting sources Claude Code also skips CLAUDE.md files and skills. `--add-dir` with `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1` brings back the repository's CLAUDE.md and the environment's `instructions`.
+- **Codex** (0.162.1):
+  - `--disable hooks`: a command-line override outranks `config.toml`.
+  - `approvalsReviewer: "user"` on the thread, next to `approvalPolicy`. An `approvals_reviewer = "auto_review"` in the agent's config doesn't route the turn's approvals elsewhere.
+
+**What still applies, and what doesn't.**
+- **Still applied:** the environment's settings, which are its allowed tools, permission rules and hooks; its MCP servers; its instructions; and the repository's CLAUDE.md.
+- **Not loaded in these turns:** the repository's `.claude/settings.json` and `.claude/settings.local.json`, and skills. The agent can write all of them. A skill's `allowed-tools` is a permission rule, so a skill could pre-approve calls. Put what should apply in the environment's `agent_config.files`.
+- **Plugins don't load either, even ones the environment enables.** Claude Code finds an enabled plugin through `~/.claude/plugins` (`installed_plugins.json`, `known_marketplaces.json`), which the agent can write. Verified with 2.1.296: a plugin whose `PreToolUse` hook allows every call let the call through. Hangar drops `enabledPlugins` and `extraKnownMarketplaces` from its `--settings`, and the turn says so.
+- **The environment's hooks run as the agent.** They see the agent's `PATH`, which starts with `~/.hangar/bin`, and its files. A hook that decides permissions (`PreToolUse`, `PermissionRequest`) is only as strong as what it runs: name programs by absolute path in places the agent can't write, with no `#!/usr/bin/env` lookups, and no scripts from the repository or the home directory.
+- **Turns that don't ask** (`auto`) start their harness as before. In a split sandbox their harness also runs with `no_new_privs`, so setuid and file-capability programs don't gain privileges there either.
+
+**Managed settings outrank all of this.** Verified: a managed `permissions.allow`, `disableAllHooks` or `allowManagedHooksOnly` wins over `--setting-sources ''` and `--settings`. They are root's, and the split requires an agent without sudo, so the agent can't write them. The setup checks that. Hangar doesn't write managed settings of its own: they would replace the image's, and they aren't needed for this.
+
+**Where hangar can't own them, the turn says so.** This happens when the harness isn't in a prefix the agent can't change, for example a prebuilt `image:` with the CLI in `~/.local/bin`. It also happens when the managed settings are writable, or when the sandbox was set up before this change: a new sandbox fixes that, so suspend and resume the session. The turn carries a warning, or fails under `HANGAR_UID_SPLIT=required`.
+
+**What stays open.**
+- **Codex command rules.** Codex loads `.rules` files from `~/.codex/rules` and from the repository's `.codex/rules`, even for an untrusted project. A `prefix_rule(..., decision="allow")` lets a command run without asking, and codex 0.162 has no switch for the app server to turn rules off. `codex exec` has `--ignore-rules`. Every hardened Codex turn carries a warning saying so. `tests/test_harden_real_clis.py::test_codex_rules_still_apply` will fail once Codex gains a switch.
+- **The rest of the agent's Codex config still loads**, from `~/.codex/config.toml` and a trusted project's `.codex/config.toml`. That covers the model provider and features other than hooks. The approval policy, reviewer and sandbox are the thread's.
+- **Codex MCP servers.** They are part of that config too. Verified with 0.162.1: a server the agent adds with `default_tools_approval_mode = "approve"` runs its tool without asking (`test_codex_mcp_servers_the_agent_adds_still_apply`). Without that key, Codex asks through an MCP elicitation, which the driver declines, so the tool doesn't run. The Codex warning names this too. Hangar can't pass the environment's servers on the command line instead: they carry its secrets.
+- **The image's own environment** (its `ENV`) still reaches the harness. It is the operator's.
+
+**Root's commands on Docker.** Docker starts an exec with umask 0000 (verified with Docker 29.8). A directory that root or `hangar` created there without an explicit mode was writable by everyone, so the agent could change it. Hangar's commands as those users now start with umask 022.
 
 `hangar-envd` stays the agent's. It runs as the sandbox user and serves everything hangar does as that user; what runs as `hangar` (starting and stopping a turn, its commands, the view of its terminal) goes through `docker exec`. A daemon able to switch users would be the most exposed process in the sandbox and the most privileged one, and Kubernetes couldn't run it anyway.
 

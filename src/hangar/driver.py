@@ -15,7 +15,10 @@ one-shot command, so attaching and resuming work as before. Standard library onl
 * Tool approvals follow `--approvals`: `auto` runs without prompts (today's behaviour), `ask` waits for hangar's
   answer and denies after `--approval-timeout` seconds, `deny-risky` answers at once from the rules in `risky()`.
 * With `--as` (the uid split, hangar/isolation.py) the driver runs as hangar's own user and starts the harness as the
-  agent's, with no capabilities: the agent can't read the key, change the driver's files, or signal or trace it.
+  agent's, with no capabilities and no_new_privs: the agent can't read the key, change the driver's files, or signal
+  or trace it. Approval requests and answers also go to `<ctl>/approvals`, which only hangar's user can write: hangar
+  reads a split turn's approvals from there, not from the log the harness writes into (--- harden). `--base-env`
+  replaces the agent's ~/.hangar/env with hangar's own copy (hangar/harden.py).
 
 Exit status: the harness's own, 1 when its last turn failed, 130 after an interrupt that brought no new message.
 """
@@ -23,6 +26,7 @@ Exit status: the harness's own, 1 when its last turn failed, 130 after an interr
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import hmac
 import json
@@ -35,6 +39,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
@@ -80,25 +85,61 @@ class Out:
         sys.stdout.write(raw.rstrip("\r\n") + "\n")
         sys.stdout.flush()
 
-    def event(self, kind: str, **data: object) -> None:
-        self.line(json.dumps({"type": "hangar." + kind, "ts": round(time.time(), 3), **data}, ensure_ascii=False))
+    def event(self, kind: str, **data: object) -> str:
+        line = json.dumps({"type": "hangar." + kind, "ts": round(time.time(), 3), **data}, ensure_ascii=False)
+        self.line(line)
+        return line
 
 
 # ====================================================================== the agent's user (--- isolation)
 # With the uid split (hangar/isolation.py) the driver runs as hangar's own user and starts the harness as the agent's.
 # The driver holds CAP_SETUID, CAP_SETGID and CAP_KILL in its ambient set for that; setpriv drops all of them for the
-# harness (a uid change between two non-root users keeps capabilities otherwise). The harness's environment is built
-# as the agent, in the order a single-user run has: its ~/.hangar/env, then the run's own exports.
-LAUNCH = ('PATH="${HANGAR_AGENT_PATH:-$PATH}"; set -a; [ -f "$HOME/.hangar/env" ] && . "$HOME/.hangar/env"; . "$1"; '
-          'set +a; unset HANGAR_AGENT_PATH; cd -- "$2" || exit 1; shift 2; exec "$@"')
+# harness (a uid change between two non-root users keeps capabilities otherwise), and sets no_new_privs, so neither the
+# harness nor anything it starts gains privileges through a setuid program (sudo, su, one planted in the image).
+# The harness's environment is built as the agent, in the order a single-user run has: its ~/.hangar/env, then the
+# run's own exports. --- harden: with hangar's copy of that env on a pipe (HANGAR_ENV_FD), it comes from there instead,
+# read with builtins only, before the agent's PATH applies: nothing the agent planted runs before the harness does.
+LAUNCH = ('if [ -n "${HANGAR_ENV_FD:-}" ]; then __hangar_env=; IFS= read -r -d "" -u "$HANGAR_ENV_FD" __hangar_env; '
+          'unset HANGAR_ENV_FD; fi; PATH="${HANGAR_AGENT_PATH:-$PATH}"; set -a; '
+          'if [ -n "${__hangar_env+x}" ]; then eval "$__hangar_env"; '
+          'elif [ -f "$HOME/.hangar/env" ]; then . "$HOME/.hangar/env"; fi; . "$1"; '
+          'set +a; unset HANGAR_AGENT_PATH __hangar_env; cd -- "$2" || exit 1; shift 2; exec "$@"')
 
 
 def as_agent(user: str, home: str, run_env: str, cwd: str, argv: list) -> list:
     """`argv` run as `user` (home `home`), with no capabilities, from `cwd`, in that user's environment. Also used,
     joined, for the one-shot command in the turn's script."""
     return ["setpriv", f"--reuid={user}", f"--regid={user}", "--init-groups", "--inh-caps=-all", "--ambient-caps=-all",
-            "--", "env", f"HOME={home}", f"USER={user}", f"LOGNAME={user}", "bash", "-c", LAUNCH, "hangar-agent",
-            run_env, cwd, *argv]
+            "--no-new-privs", "--", "env", f"HOME={home}", f"USER={user}", f"LOGNAME={user}", "bash", "-c", LAUNCH,
+            "hangar-agent", run_env, cwd, *argv]
+
+
+BASE_ENV: bytes | None = None  # --- harden: --base-env, read once at start and deleted (like the key)
+
+
+@contextlib.contextmanager
+def agent_env():
+    """Keyword arguments for starting a process as the agent: with --base-env, hangar's copy of its environment on a
+    pipe the process inherits (HANGAR_ENV_FD, read by LAUNCH); {} without, and LAUNCH reads ~/.hangar/env."""
+    if BASE_ENV is None:
+        yield {}
+        return
+    r, w = os.pipe()
+
+    def feed(data: bytes) -> None:
+        try:
+            while data:
+                data = data[os.write(w, data):]
+        except OSError:
+            pass  # the process went away without reading it
+        finally:
+            os.close(w)
+
+    threading.Thread(target=feed, args=(BASE_ENV,), daemon=True).start()
+    try:
+        yield {"pass_fds": (r,), "env": dict(os.environ, HANGAR_ENV_FD=str(r))}
+    finally:
+        os.close(r)
 
 
 # ====================================================================== the control channel
@@ -208,6 +249,16 @@ class Control:
             return self._drain(dest)
         finally:
             shutil.rmtree(dest, ignore_errors=True)
+
+    def record(self, line: str) -> None:
+        """--- harden: an approval request or answer, also into `<ctl>/approvals`. Under the uid split only hangar's
+        user can write there, so it is what hangar takes a split turn's approvals from; the run log is the harness's
+        output too, and the agent can write into that (its stdout and stderr are the agent's)."""
+        try:
+            with open(os.path.join(self.dir, "approvals"), "a") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
 
     def reopen(self) -> None:
         os.makedirs(self.inbox, mode=0o700, exist_ok=True)
@@ -338,7 +389,7 @@ class Driver:
         policy = self.args.approvals
         what = data.get("command") if isinstance(data.get("command"), str) else data
         expires = time.time() + self.args.approval_timeout
-        self.out.event("approval_request", id=aid, tool=tool, detail=shown(what), policy=policy,
+        self._approval("approval_request", id=aid, tool=tool, detail=shown(what), policy=policy,
                        expires_at=round(expires))
         a = Approval(aid, key, tool, answer, expires)
         if policy == "ask":
@@ -359,7 +410,7 @@ class Driver:
         """The harness took a request back (an interrupt cancels its prompts)."""
         for a in [a for a in self.pending.values() if a.key == key]:
             del self.pending[a.id]
-            self.out.event("approval_resolved", id=a.id, decision="cancelled", by="harness")
+            self._approval("approval_resolved", id=a.id, decision="cancelled", by="harness")
 
     def expire(self) -> None:
         t = time.time()
@@ -370,11 +421,14 @@ class Driver:
     def drop_all(self) -> None:
         for aid in list(self.pending):
             del self.pending[aid]
-            self.out.event("approval_resolved", id=aid, decision="cancelled", by="harness")
+            self._approval("approval_resolved", id=aid, decision="cancelled", by="harness")
 
     def _answer(self, a: Approval, decision: str, message: str, by: str) -> None:
         a.answer(decision, message or ("Denied by hangar." if decision == "deny" else ""))
-        self.out.event("approval_resolved", id=a.id, decision=decision, by=by, message=clip(message or "", 500))
+        self._approval("approval_resolved", id=a.id, decision=decision, by=by, message=clip(message or "", 500))
+
+    def _approval(self, kind: str, **data: object) -> None:
+        self.ctl.record(self.out.event(kind, **data))  # --- harden: the log, and hangar's own copy
 
     # --- commands
     def handle(self, cmd: dict) -> None:
@@ -428,7 +482,8 @@ class Harness:
         self.drv, self.out = drv, drv.out
         if user := getattr(drv.args, "as_user", None):  # --- isolation
             argv = as_agent(user, pwd.getpwnam(user).pw_dir, drv.args.run_env, drv.cwd(), argv)
-        self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
+        with agent_env() as kw:  # --- harden
+            self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0, **kw)
         self.buf = b""
         self.stop_after_interrupt = False  # an interrupt without a new message: exit 130 once the turn stops
 
@@ -473,6 +528,9 @@ class Harness:
             d = None
         if not isinstance(d, dict):
             self.out.line(text)  # not protocol: keep it in the log as it was
+            return
+        if str(d.get("type") or "").startswith("hangar."):  # --- harden: only the driver speaks for hangar
+            self.out.line("[harness] " + text)  # kept, but no longer a line hangar's parser reads as an event
             return
         self.on(d, text)
 
@@ -751,6 +809,8 @@ class Codex(Harness):
         self.send({"method": "initialized"})
         params: dict = {"cwd": self.drv.cwd(), "sandbox": "danger-full-access",
                         "approvalPolicy": "never" if self.drv.args.approvals == "auto" else "untrusted"}
+        if self.drv.args.approvals != "auto":  # --- harden: to hangar, whatever the agent's config.toml says
+            params["approvalsReviewer"] = "user"
         if os.environ.get("HANGAR_MODEL"):
             params["model"] = os.environ["HANGAR_MODEL"]
         fork, resume = os.environ.get("HANGAR_SESSION_FORK"), os.environ.get("HANGAR_SESSION_RESUME")
@@ -962,9 +1022,10 @@ class Gate:
     def _record(self, line: str) -> None:
         try:
             if self.agent:
-                subprocess.run(self._argv(["sh", "-c", 'printf "%s\\n" "$1" >> "$0"', self.state, line]),
-                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                               timeout=30)
+                with agent_env() as kw:  # --- harden
+                    subprocess.run(self._argv(["sh", "-c", 'printf "%s\\n" "$1" >> "$0"', self.state, line]),
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   timeout=30, **kw)
             else:
                 with open(self.state, "a") as f:
                     f.write(line + "\n")
@@ -990,9 +1051,10 @@ class Gate:
         """Run the check; None when it passes (or can't run: hangar's own check after the turn decides), else
         the message that sends the agent back to work."""
         try:
-            p = subprocess.run(self._argv(["bash", "-c", self.command]), cwd=None if self.agent else self.cwd,
-                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                               timeout=max(1, self.timeout))
+            with agent_env() as kw:  # --- harden
+                p = subprocess.run(self._argv(["bash", "-c", self.command]), cwd=None if self.agent else self.cwd,
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                   timeout=max(1, self.timeout), **kw)
             code, output = p.returncode, p.stdout or b""
         except subprocess.TimeoutExpired as e:
             code, output = 124, (e.stdout or b"") + f"\n(timed out after {self.timeout} s)".encode()
@@ -1013,6 +1075,7 @@ class Gate:
 
 # ====================================================================== main
 def main(argv: list | None = None) -> int:
+    global BASE_ENV  # --- harden
     ap = argparse.ArgumentParser(description="Run one agent turn for hangar (see the module docstring).")
     ap.add_argument("--harness", choices=("claude", "codex"), required=True)
     ap.add_argument("--ctl", required=True, help="the run's control directory")
@@ -1022,6 +1085,8 @@ def main(argv: list | None = None) -> int:
     ap.add_argument("--as", dest="as_user", help="start the harness as this user (the driver runs as hangar's own)")
     ap.add_argument("--run-env", help="with --as: the run's exports, sourced for the harness after ~/.hangar/env")
     ap.add_argument("--cwd", help="the turn's working directory (default: the current one)")
+    ap.add_argument("--base-env", help="with --as: hangar's copy of the agent's ~/.hangar/env, used in its place; "
+                                       "read and deleted at start (--- harden)")
     ap.add_argument("command", nargs=argparse.REMAINDER, help="-- the harness command")
     args = ap.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -1029,15 +1094,26 @@ def main(argv: list | None = None) -> int:
         ap.error("the harness command is missing")
     if args.as_user and not args.run_env:  # --- isolation
         ap.error("--as needs --run-env")
+    if args.base_env and not args.as_user:  # --- harden
+        ap.error("--base-env needs --as")
     why = private()  # before the key is read
     if why and args.approvals != "auto":  # deny by default: the agent could answer its own approvals
         sys.stderr.write(f"hangar: approvals={args.approvals} needs the turn driver to keep its key from the agent, "
                          f"and it could not (prctl PR_SET_DUMPABLE: {why})\n")
-        try:
-            os.unlink(os.path.join(args.ctl, "key"))
-        except OSError:
-            pass
+        for path in (os.path.join(args.ctl, "key"), args.base_env):
+            try:
+                os.unlink(path or "")
+            except OSError:
+                pass
         return 1
+    if args.base_env:  # --- harden: in memory only from here on, like the key
+        try:
+            with open(args.base_env, "rb") as f:
+                BASE_ENV = f.read()
+            os.unlink(args.base_env)
+        except OSError as e:
+            sys.stderr.write(f"hangar: could not read the harness's environment ({args.base_env}: {e.strerror})\n")
+            return 1
     with open(os.environ["HANGAR_PROMPT_FILE"], encoding="utf-8", errors="replace") as f:
         prompt = f.read()
     out, ctl = Out(), Control(args.ctl)
