@@ -1042,7 +1042,8 @@ def open_question(job: Job) -> str | None:
     return job.result.question or (job.turns[-1].question if job.turns else None)
 
 
-def answer_on_issue(svc: JobService, ref: str, sender: str, text: str) -> dict[str, Any] | None:
+def answer_on_issue(svc: JobService, ref: str, sender: str, text: str,
+                    sender_person: str | None = None) -> dict[str, Any] | None:
     """A `/hangar …` comment on an issue whose job is waiting on a question answers it (a follow-up). The caller
     passes only a trusted person's comment: the answer steers the agent, and anyone can comment on a public issue."""
     from hangar.jobs import JobError
@@ -1051,7 +1052,8 @@ def answer_on_issue(svc: JobService, ref: str, sender: str, text: str) -> dict[s
     if job is None:
         return None
     try:
-        svc.follow_up(job.id, text or "Continue with the task.", requester=f"github:{sender}", reply_to=ref)
+        svc.follow_up(job.id, text or "Continue with the task.", requester=f"github:{sender}", reply_to=ref,
+                      front_door=True, sender_person=sender_person)  # --- review: only the job's person answers
     except JobError as e:
         svc._spawn(svc._comment(job, ref, f"Can't continue yet: {e}"))
         return {"ignored": str(e)}

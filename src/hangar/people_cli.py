@@ -59,14 +59,17 @@ def person_token(person_id: str, name: str = typer.Option("login", help="Label, 
 @person_app.command("link")
 def person_link(person_id: str,
                 source: str = typer.Argument(..., help="github | slack | jira | email"),
-                external_id: str = typer.Argument(..., help="GitHub login, Slack user id (U…), Jira account id, or "
-                                                            "email.")):
-    """Link someone's account elsewhere to them: the jobs it starts from GitHub, Slack, Jira or GitHub Projects run
-    for them, with their own login, count against their caps and budget, and show up in their lists. Trust (who may
-    start work without approval) stays as the front door decides it.
+                external_id: str = typer.Argument(..., help="GitHub login or user id, Slack TEAM/USER id, Jira "
+                                                            "account id, or email.")):
+    """Link someone's account elsewhere to them: it then acts as them. Its jobs from GitHub, Slack, Jira or GitHub
+    Projects start without approval, run with their own login, count against their caps and budget, and show up in
+    their lists; and only they continue their jobs there. A GitHub login is stored as its numeric user id, which a
+    rename doesn't change.
 
-    Example:  hangar person link alice github alice-gh;  hangar person link alice slack U012AB3CD"""
+    Example:  hangar person link alice github alice-gh;  hangar person link alice slack T0123ABCD/U012AB3CD"""
     p = _cli()._call("POST", f"/api/people/{person_id}/links", json={"source": source, "id": external_id})
+    if seen := p.get("looked_up"):  # --- review
+        typer.echo(f"GitHub {seen['login']} is user id {seen['id']}")
     typer.echo(f"{p['id']}: {', '.join(p['links'])}")
 
 

@@ -4,7 +4,7 @@ Besides the API, MCP, the CLI and GitHub issues ([jobs.md](jobs.md)), jobs can s
 
 ## 1. Who can start work from GitHub
 
-By default, a `/hangar` comment counts only when its author is an owner, member or collaborator of the repo. A label counts when the labeler has triage rights. The exception is an issue form that adds the label for whoever opens the issue: then the issue author's association decides.
+An account an admin linked to a hangar person (`hangar person link`) is always trusted: it acts as that person ([team.md](team.md#who-is-trusted)), and a person's job is continued from GitHub only by their own linked account. For everyone else, by default, a `/hangar` comment counts only when its author is an owner, member or collaborator of the repo. A label counts when the labeler has triage rights. The exception is an issue form that adds the label for whoever opens the issue: then the issue author's association decides.
 
 To choose exactly who is trusted, list GitHub logins and teams:
 

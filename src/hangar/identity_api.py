@@ -205,14 +205,16 @@ def mount(app: FastAPI, h: Any, A: Any) -> None:
     # --- teamcreds: a person's accounts elsewhere, so the jobs they start there run for them
     @app.post("/api/people/{person_id}/links")
     async def link_person(person_id: str, body: LinkBody, who: str = A):
-        p = people.link(h.store, person_id, body.source, body.id)
-        h.fleet.audit(who, "person.link", person_id, link=people.external_key(body.source, body.id))
-        return p.model_dump(mode="json")
+        ext, login = await teamcreds.link_id(h, body.source, body.id)  # --- review: a GitHub login -> its id
+        p = people.link(h.store, person_id, body.source, ext)
+        h.fleet.audit(who, "person.link", person_id, link=people.external_key(body.source, ext), login=login)
+        return {**p.model_dump(mode="json"), **({"looked_up": {"login": login, "id": ext}} if login else {})}
 
     @app.delete("/api/people/{person_id}/links")
     async def unlink_person(person_id: str, source: str = Query(...), id: str = Query(...), who: str = A):
-        p = people.unlink(h.store, person_id, source, id)
-        h.fleet.audit(who, "person.unlink", person_id, link=people.external_key(source, id))
+        ext, _ = await teamcreds.link_id(h, source, id)  # --- review
+        p = people.unlink(h.store, person_id, source, ext)
+        h.fleet.audit(who, "person.unlink", person_id, link=people.external_key(source, ext))
         return p.model_dump(mode="json")
 
     @app.post("/api/people/{person_id}/tokens")

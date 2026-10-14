@@ -21,10 +21,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 import time
 from collections import Counter
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
+
+import httpx
 
 import hangar.identity as identity
 from hangar.broker import CredentialError
@@ -140,8 +143,10 @@ def _pick(chosen: list[Credential]) -> tuple[list[Credential], str | None]:
         picked.add((free or pool)[0].name)
         if not free:
             whose = pool[0].person or "the team"
+            # --- review: no sandbox ids: a team login is busy in other people's sandboxes, and this text reaches
+            # the job's thread (a Jira or GitHub comment) when the wait runs out
             busy.append(f"{whose}'s {pool[0].harness} login{'s' if len(pool) > 1 else ''} "
-                        + ", ".join(f"{c.name} (in sandbox {c.leased_to})" for c in pool))
+                        + ", ".join(c.name for c in pool) + (" (all in use)" if len(pool) > 1 else " (in use)"))
     return [c for c in chosen if not c.exclusive or c.name in picked], "; ".join(busy) or None
 
 
@@ -216,6 +221,49 @@ async def for_sandbox(fleet: Fleet, names: list[str], person: str | None, harnes
                 progress(f"waiting for a free login (queued): {why}")
             said = why
         await asyncio.sleep(POLL_SECONDS)
+
+
+# ---------------------------------------------------------------------------- linked accounts (--- review)
+_LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
+
+
+async def link_id(h: Any, source: str, value: str) -> tuple[str, str | None]:
+    """(the id to link, the login it was looked up from). A GitHub account links by its numeric user id, which
+    survives a rename; an admin may give the login, which is looked up here with the control plane's GitHub token."""
+    from hangar.github import GitHubError
+    from hangar.people import PeopleError
+
+    v = (value or "").strip().removeprefix("@")
+    if (source or "").strip().lower() not in ("github", "github_projects", "github-projects") or v.isdigit():
+        return value, None
+    if not _LOGIN.match(v):
+        raise PeopleError(f"'{value}' isn't a GitHub login or user id")
+    gh = h.jobs._github()
+    if gh is None:
+        raise PeopleError(f"can't look up the GitHub login '{v}': no GitHub token is stored "
+                          f"(HANGAR_GITHUB_TOKEN_CREDENTIAL). Link by user id instead: it's the `id` at "
+                          f"https://api.github.com/users/{v}")
+    try:
+        user = await gh._req("GET", f"/users/{v}")
+    except (GitHubError, httpx.HTTPError) as e:
+        raise PeopleError(f"can't look up the GitHub login '{v}': {e}") from e
+    finally:
+        await gh.close()
+    uid = (user or {}).get("id")
+    if not isinstance(uid, int) or isinstance(uid, bool) or str((user or {}).get("type")) not in ("User", "Bot"):
+        raise PeopleError(f"GitHub's answer for '{v}' has no user id")
+    return str(uid), str(user.get("login") or v)
+
+
+def may_continue(job_person: str | None, sender: str | None) -> str | None:
+    """Why a sender at a front door (GitHub, Slack, Jira) may not continue or answer a job, or None. A person's job
+    runs with their own login and budget: only they continue it there. Admins too go through hangar itself
+    (`hangar job follow-up`), since in direct mode an agent can comment as the account behind its git token. A team
+    job (no person) is anyone's the front door trusts."""
+    if job_person is None or sender == job_person:
+        return None
+    return (f"this is {job_person}'s job, and it runs with their own login: only {job_person} continues it here "
+            "(an admin can with hangar job follow-up). Start your own with /hangar")
 
 
 # ---------------------------------------------------------------------------- hangar doctor
@@ -317,8 +365,7 @@ def doctor_checks(h: Any) -> list[dict[str, Any]]:
     if frequent:
         cmds = []
         for who, _ in frequent[:3]:
-            src, _, ext = who.partition(":")
-            ext = ext.rpartition("/")[2]  # slack:<team>/<user>
+            src, _, ext = who.partition(":")  # github:<login> (looked up when linked), slack:<team>/<user>
             cmds.append(f"hangar person link PERSON {src} {ext}")
         out.append(_check("unlinked senders", "warn",
                           f"started jobs in the last {UNLINKED_DAYS} days but are linked to nobody, so their jobs run "

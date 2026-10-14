@@ -41,6 +41,7 @@ from hangar import (  # strategies: workstream D; --- observe; steer: live turns
 from hangar import fairness as fairness  # --- scale
 from hangar import people as people  # --- teamcreds: GitHub senders linked to people
 from hangar import restarts as restarts  # --- reconciler: interrupted jobs resume after a restart
+from hangar import teamcreds as teamcreds  # --- review: only a job's person continues it from a front door
 from hangar.events import resolve_budget, total_usage, usage_line
 from hangar.fleet import Fleet, FleetError, _clip_tail
 from hangar.github import GitHub, GitHubError, parse_repo
@@ -410,8 +411,14 @@ class JobService:
 
     def follow_up(self, job_id: str, message: str, requester: str, owner: str | None = None,
                   reply_to: str | None = None, context: list[ContextItem] | None = None,
-                  output_schema: dict[str, Any] | None = None) -> Job:
+                  output_schema: dict[str, Any] | None = None,
+                  front_door: bool = False, sender_person: str | None = None) -> Job:
         job = self.get(job_id, owner)
+        # --- review: from a front door (GitHub, Slack, Jira; `sender_person` is the sender's linked person): a
+        # person's job runs with their own login, so only they continue it there (teamcreds.may_continue)
+        if front_door and (why := teamcreds.may_continue(job.person, sender_person)):
+            self.admission.refused(f"owner:{requester}", requester, "job.follow_up.refused", job.id, why=why)
+            raise JobError(why)
         self.admission.admit_follow_up(requester, owner)  # --- front-door-auth
         if not message.strip():
             raise JobError("follow-up message is empty")
@@ -1205,14 +1212,16 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
                 svc.settings.github_trigger_label:
             return {"ignored": "not the trigger label"}
         sender = (payload.get("sender") or {}).get("login", "unknown")
-        trusted = await svc.trust.labeler_trusted(sender, issue)
+        linked = people.resolve_external(svc.store, "github", (payload.get("sender") or {}).get("id"))  # --- review
+        trusted = linked is not None or await svc.trust.labeler_trusted(sender, issue)  # --- review: acts as them
     elif event == "issue_comment":
         c = payload.get("comment") or {}
         body = c.get("body") or ""
         if payload.get("action") != "created" or MARKER in body or not body.lstrip().startswith("/hangar"):
             return {"ignored": "not a /hangar comment"}
         sender = (c.get("user") or {}).get("login", "unknown")
-        trusted = await svc.trust.trusted(sender, c.get("author_association"))
+        linked = people.resolve_external(svc.store, "github", (c.get("user") or {}).get("id"))  # --- review
+        trusted = linked is not None or await svc.trust.trusted(sender, c.get("author_association"))  # --- review
         opts, extra = parse_command(body)
         if decision := approval_command(extra):
             if is_pr:
@@ -1230,7 +1239,8 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
                 return {"ignored": "PR was not opened by a hangar job"}
             try:
                 svc.follow_up(job.id, extra or "Continue with the task.", requester=f"github:{sender}",
-                              reply_to=f"github:{repo}#{number}")
+                              reply_to=f"github:{repo}#{number}", front_door=True,  # --- review
+                              sender_person=linked.id if linked else None)
             except JobError as e:
                 await svc._comment(job, f"github:{repo}#{number}", f"Can't continue yet: {e}")
                 return {"ignored": str(e)}
@@ -1243,7 +1253,8 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
     # workstream E: the comment answers a job's question. front-door-auth: only a trusted person's does; anyone
     # else's would steer the agent with text nobody vetted.
     if event == "issue_comment" and trusted and \
-            (answered := exchange.answer_on_issue(svc, ref, sender, extra)) is not None:
+            (answered := exchange.answer_on_issue(svc, ref, sender, extra,
+                                                  sender_person=linked.id if linked else None)) is not None:
         return answered
 
     def running() -> Job | None:
@@ -1264,7 +1275,8 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
     labels = ", ".join(lb.get("name", "") for lb in issue.get("labels") or [])
     author = (issue.get("user") or {}).get("login", "?")
     assoc = issue.get("author_association", "NONE")
-    author_trusted = await svc.trust.trusted(author, assoc)
+    author_trusted = await svc.trust.trusted(author, assoc) or \
+        people.resolve_external(svc.store, "github", (issue.get("user") or {}).get("id")) is not None  # --- review
     context = [ContextItem(name=f"issue-{number}.md", kind="issue", untrusted=not author_trusted, content=(
         f"# {title}\n\n{issue.get('body') or '(no description)'}\n\n---\n{issue.get('html_url', '')}\n"
         f"Opened by {author} ({assoc.lower()})" + (f"; labels: {labels}" if labels else "")))]
@@ -1303,7 +1315,7 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
     from hangar.frontdoor import RateLimited, TooManyActive
 
     try:
-        linked = people.resolve_external(svc.store, "github", sender)  # --- teamcreds: theirs if linked
+        # --- teamcreds: theirs if linked (--- review: resolved by user id above)
         job = svc.submit(req, Caller(f"github:{sender}", f"github:{sender}", person=linked.id if linked else None),
                          source="github", source_ref=ref, approval=approval, untrusted_source=untrusted_source)
     except RateLimited as e:  # --- front-door-auth: tell trusted people; an outsider's flood gets no comments

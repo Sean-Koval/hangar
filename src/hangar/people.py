@@ -10,8 +10,9 @@ person id in `person`; that is also the key per-person quotas use (`identity.per
   goes into their sandboxes; one without is a team credential. Those stored before people became the owner's
   (teamcreds.migrate). A sandbox for a person who has their own credential for its harness uses that one instead
   of the team's (teamcreds.resolve).
-* **Linked identities.** A person's GitHub login, Slack user id and Jira account id or email: work those senders
-  start runs for the person (`resolve_external`), counts against their caps and is visible to them.
+* **Linked identities.** A person's GitHub user id, Slack workspace/user id and Jira account id or email: those
+  accounts act as the person (`resolve_external`): trusted, their caps and login, visible to them, and only they
+  continue their jobs from a front door (docs/team.md#who-is-trusted).
 * **Visibility.** Enforced at the front doors (MCP tools and resources, REST routes), not inside the services:
   the job and session machinery runs work for everyone and must see all of it.
 """
@@ -116,27 +117,31 @@ def check_token_scopes(person: Person, scopes: list[str]) -> None:
 
 # ---------------------------------------------------------------------------- linked identities (--- teamcreds)
 SOURCES = ("github", "slack", "jira", "email")
-# What intake may call a source: a GitHub Projects item's actor is a GitHub login
+# What intake may call a source: a GitHub Projects item's actor is a GitHub user
 _SOURCE_ALIASES = {"github_projects": "github", "github-projects": "github"}
 _EXTERNAL_RE = {
-    "github": re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,38})$"),  # GitHub logins: case-insensitive
-    "slack": re.compile(r"^[UW][A-Z0-9]{1,30}$"),  # a Slack user id (W… on Enterprise Grid)
-    "jira": re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$"),  # an Atlassian account id
+    # --- review: a GitHub user's numeric id, never the login: a renamed login can be registered by anyone, who
+    # would then act as this person (their trust, budget and own login). The REST link route looks a login up.
+    "github": re.compile(r"^[1-9][0-9]{0,19}$"),
+    # --- review: a Slack user id is unique only within its workspace (Slack's user object: use it "together with
+    # team_id as a unique key"), and a Slack Connect channel carries other organizations' users
+    "slack": re.compile(r"^[TE][A-Z0-9]{1,30}/[UW][A-Z0-9]{1,30}$"),
+    "jira": re.compile(r"^[A-Za-z0-9][A-Za-z0-9.:_-]{0,127}$"),  # an Atlassian account id; a Data Center user key
     "email": re.compile(r"^[^@\s]{1,64}@[^@\s]{1,253}\.[^@\s]{2,63}$"),
 }
-_EXTERNAL_HINT = {"github": "a GitHub login", "slack": "a Slack user id (like U012AB3CD)",
+_EXTERNAL_HINT = {"github": "a GitHub user id (a number; hangar person link looks one up from a login)",
+                  "slack": "a Slack workspace and user id (like T0123ABCD/U012AB3CD)",
                   "jira": "a Jira (Atlassian) account id", "email": "an email address"}
 
 
-def external_key(source: str, external_id: str) -> str:
-    """`source:id`, normalized the way each source compares ids (GitHub logins and emails ignore case)."""
+def external_key(source: str, external_id: str | int) -> str:
+    """`source:id`, normalized the way each source compares ids (emails ignore case)."""
     src = (source or "").strip().lower()
     src = _SOURCE_ALIASES.get(src, src)
     if src not in SOURCES:
         raise PeopleError(f"source must be one of {', '.join(SOURCES)}")
-    v = (external_id or "").strip()
-    v = v.removeprefix("@").lower() if src == "github" else v.lower() if src == "email" else \
-        v.upper() if src == "slack" else v
+    v = str(external_id if external_id is not None else "").strip()
+    v = v.lower() if src == "email" else v.upper() if src == "slack" else v
     if not _EXTERNAL_RE[src].match(v):
         raise PeopleError(f"'{external_id}' isn't {_EXTERNAL_HINT[src]}")
     return f"{src}:{v}"
@@ -172,13 +177,16 @@ def unlink(store: Store, person_id: str, source: str, external_id: str) -> Perso
     return p
 
 
-def resolve_external(store: Store, source: str, external_id: str | None) -> Person | None:
-    """The person a GitHub login, Slack user id, or Jira account id or email is linked to, for intake to attribute a
-    job (`Caller(..., person=p.id)`). None for anyone linked to nobody, and for an id that isn't one: their work runs
-    for the team, and the front door's own trust rules decide what it may do. A Jira id with an `@` is looked up as
-    an email."""
-    if not external_id:
+def resolve_external(store: Store, source: str, external_id: str | int | None) -> Person | None:
+    """The person an account elsewhere is linked to, for a front door to attribute a job (`Caller(...,
+    person=p.id)`): a GitHub user's numeric id (the payload's `sender.id`, never the login), a Slack `TEAM/USER`
+    (the poster's own workspace: `user_team` in a Slack Connect channel), a Jira account id (Data Center: the user
+    key) or an email. None for anyone linked to nobody, and for an id that isn't one. A linked account acts as its
+    person (docs/team.md#who-is-trusted); anyone else's work runs for the team under the front door's own trust
+    rule. A Jira id with an `@` is looked up as an email."""
+    if external_id is None or external_id == "" or isinstance(external_id, bool):
         return None
+    external_id = str(external_id)
     if (source or "").strip().lower() == "jira" and "@" in external_id:
         source = "email"
     try:

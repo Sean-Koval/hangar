@@ -188,7 +188,7 @@ async def test_a_pool_of_codex_logins_and_a_queue_when_all_are_in_use(fleet, bro
     a = await fleet.create("cx", harness="codex")
     b = await fleet.create("cx", harness="codex")
     assert sorted([*a.credentials, *b.credentials]) == ["codex-1", "codex-2"]
-    with pytest.raises(CredentialError, match=r"the team's codex logins codex-1 \(in sandbox .*\), codex-2"):
+    with pytest.raises(CredentialError, match=r"the team's codex logins codex-1, codex-2 \(all in use\)"):
         await fleet.create("cx", harness="codex")
     said: list[str] = []
     waiting = asyncio.create_task(fleet.create("cx", harness="codex", progress=said.append))
@@ -281,29 +281,32 @@ def test_cli(monkeypatch):
 def test_linking_and_resolving(store):
     people.add(store, "alice")
     people.add(store, "bob")
-    people.link(store, "alice", "github", "@Alice-GH")
-    people.link(store, "alice", "slack", "u012ab3cd")
+    people.link(store, "alice", "github", "583231")  # a GitHub user id (the REST route looks up a login)
+    people.link(store, "alice", "slack", "t0123abcd/u012ab3cd")
     people.link(store, "alice", "jira", "5b10ac8d82e05b22cc7d4ef5")
     people.link(store, "bob", "email", "Bob@Example.com")
-    people.link(store, "owner", "github", "sean")  # the owner too, though they were never added
+    people.link(store, "owner", "github", "9919")  # the owner too, though they were never added
     r = people.resolve_external
-    assert r(store, "github", "alice-gh").id == "alice" and r(store, "github", "ALICE-GH").id == "alice"
-    assert r(store, "github_projects", "alice-gh").id == "alice"  # a GitHub Projects item's actor
-    assert r(store, "slack", "U012AB3CD").id == "alice"
+    assert r(store, "github", "583231").id == "alice" and r(store, "github", 583231).id == "alice"
+    assert r(store, "github_projects", 583231).id == "alice"  # a GitHub Projects item's actor
+    assert r(store, "slack", "T0123ABCD/U012AB3CD").id == "alice"
     assert r(store, "jira", "5b10ac8d82e05b22cc7d4ef5").id == "alice"
     assert r(store, "jira", "bob@example.com").id == "bob"  # a Jira user known by email
-    assert r(store, "github", "sean").id == "owner"
+    assert r(store, "github", "9919").id == "owner"
     for source, ext in (("github", "stranger"), ("github", "dependabot[bot]"), ("github", ""), ("linear", "x"),
-                        ("slack", "not an id"), ("github", None)):
+                        ("slack", "not an id"), ("github", None), ("github", True), ("slack", "U012AB3CD"),
+                        ("slack", "T9/U012AB3CD")):
         assert r(store, source, ext) is None
     with pytest.raises(people.PeopleError, match="linked to alice"):
-        people.link(store, "bob", "github", "alice-gh")
-    with pytest.raises(people.PeopleError, match="isn't a GitHub login"):
-        people.link(store, "bob", "github", "no spaces")
+        people.link(store, "bob", "github", "583231")
+    with pytest.raises(people.PeopleError, match="isn't a GitHub user id"):
+        people.link(store, "bob", "github", "alice-gh")  # logins are renamed and re-registered: ids only
+    with pytest.raises(people.PeopleError, match="Slack workspace and user id"):
+        people.link(store, "bob", "slack", "U012AB3CD")  # unique only within a workspace
     with pytest.raises(KeyError):
-        people.link(store, "carol", "github", "carol")
-    people.unlink(store, "alice", "github", "Alice-GH")
-    assert r(store, "github", "alice-gh") is None
+        people.link(store, "carol", "github", "1")
+    people.unlink(store, "alice", "github", "583231")
+    assert r(store, "github", "583231") is None
     people.remove(store, "bob")
     assert r(store, "email", "bob@example.com") is None
 
@@ -312,29 +315,34 @@ def test_linking_over_rest_is_for_admins(app_client):
     c = app_client
     login = c.post("/api/people", json={"id": "alice"}, headers=ADMIN_H).json()["login"]
     alice = {"Authorization": f"Bearer {login['token']}"}
-    r = c.post("/api/people/alice/links", json={"source": "github", "id": "alice-gh"}, headers=ADMIN_H)
-    assert r.json()["links"] == ["github:alice-gh"]
-    assert c.post("/api/people/alice/links", json={"source": "github", "id": "owner-gh"},
+    r = c.post("/api/people/alice/links", json={"source": "github", "id": "583231"}, headers=ADMIN_H)
+    assert r.json()["links"] == ["github:583231"]
+    assert c.post("/api/people/alice/links", json={"source": "github", "id": "9919"},
                   headers=alice).status_code == 403  # else a member could claim someone else's jobs
     assert c.post("/api/people/alice/links", json={"source": "linear", "id": "x"}, headers=ADMIN_H).status_code == 400
-    assert c.get("/api/people", headers=ADMIN_H).json()[1]["links"] == ["github:alice-gh"]
-    r = c.delete("/api/people/alice/links", params={"source": "github", "id": "alice-gh"}, headers=ADMIN_H)
+    # a login needs a lookup, and this hangar has no GitHub token: it says how to link by id instead
+    r = c.post("/api/people/alice/links", json={"source": "github", "id": "alice-gh"}, headers=ADMIN_H)
+    assert r.status_code == 400 and "api.github.com/users/alice-gh" in r.text
+    assert c.get("/api/people", headers=ADMIN_H).json()[1]["links"] == ["github:583231"]
+    r = c.delete("/api/people/alice/links", params={"source": "github", "id": "583231"}, headers=ADMIN_H)
     assert r.json()["links"] == []
-    assert c.delete("/api/people/alice/links", params={"source": "github", "id": "alice-gh"},
+    assert c.delete("/api/people/alice/links", params={"source": "github", "id": "583231"},
                     headers=ADMIN_H).status_code == 404
 
 
 async def test_github_jobs_run_for_the_linked_person(intake, settings):  # noqa: F811
-    """A linked sender's job is theirs: their caps, their daily budget, their lists. An unlinked one runs for the
-    team. Trust is unchanged either way: a linked outsider still waits for approval."""
+    """A linked sender's job is theirs: their caps, their daily budget, their lists, and (review) their trust: a
+    linked account acts as its person, who could start the job over MCP anyway. An unlinked one runs for the team,
+    trusted as before."""
     from hangar.jobs import handle_github
 
     people.add(intake.store, "alice")
     people.add(intake.store, "bob")
-    people.link(intake.store, "alice", "github", "sean")  # trusted (a collaborator on the fake)
-    people.link(intake.store, "bob", "github", "rando")  # not trusted
+    people.link(intake.store, "alice", "github", "101")  # sean: trusted (a collaborator on the fake)
+    people.link(intake.store, "bob", "github", "102")  # rando: not trusted by GitHub's rule
     labeled = {"action": "labeled", "label": {"name": "hangar"}, "repository": {"full_name": "o/r"}}
-    res = await handle_github(intake, "issues", "d-1", {**labeled, "issue": _issue(1), "sender": {"login": "sean"}})
+    res = await handle_github(intake, "issues", "d-1", {**labeled, "issue": _issue(1),
+                                                        "sender": {"login": "sean", "id": 101}})
     job = intake.get(res["job"])
     assert job.person == "alice" and job.state == JobState.QUEUED and job.requester == "github:sean"
     assert fairness.person_of(job.requester, job.person) == "alice"
@@ -342,11 +350,18 @@ async def test_github_jobs_run_for_the_linked_person(intake, settings):  # noqa:
     assert [c.name for c in jobbudget.caps(intake, job.repo, job.person)] == ["alice's daily cap"]
     with As(ALICE):
         assert people.mine([job]) == [job]
-    res = await handle_github(intake, "issues", "d-2", {**labeled, "issue": _issue(2), "sender": {"login": "rando"}})
-    held = intake.get(res["job"])
-    assert held.person == "bob" and held.state == JobState.AWAITING_APPROVAL  # linked, still untrusted
-    people.unlink(intake.store, "bob", "github", "rando")
-    res = await handle_github(intake, "issues", "d-3", {**labeled, "issue": _issue(3), "sender": {"login": "rando"}})
+    res = await handle_github(intake, "issues", "d-2", {**labeled, "issue": _issue(2),
+                                                        "sender": {"login": "rando", "id": 102}})
+    bobs = intake.get(res["job"])
+    assert bobs.person == "bob" and bobs.state == JobState.QUEUED  # linked: acts as bob, no approval
+    # whoever registers a login a linked person renamed away from is not that person: links are by user id
+    res = await handle_github(intake, "issues", "d-2b", {**labeled, "issue": _issue(4),
+                                                         "sender": {"login": "rando", "id": 666}})
+    squatter = intake.get(res["job"])
+    assert squatter.person is None and squatter.state == JobState.AWAITING_APPROVAL
+    people.unlink(intake.store, "bob", "github", "102")
+    res = await handle_github(intake, "issues", "d-3", {**labeled, "issue": _issue(3),
+                                                        "sender": {"login": "rando", "id": 102}})
     team = intake.get(res["job"])
     assert team.person is None and team.state == JobState.AWAITING_APPROVAL
     assert fairness.person_of(team.requester, team.person) == "github:rando"
@@ -357,7 +372,9 @@ async def test_github_jobs_run_for_the_linked_person(intake, settings):  # noqa:
 async def test_slack_jobs_run_for_the_linked_person(slack):  # noqa: F811
     svc, fake = slack["svc"], slack["fake"]
     people.add(svc.store, "alice")
-    people.link(svc.store, "alice", "slack", "U1")
+    people.add(svc.store, "bob")
+    people.link(svc.store, "alice", "slack", "T1/U1")
+    people.link(svc.store, "bob", "slack", "T2/U2")  # --- review: U2 of another workspace is not T1's U2
     await command(slack["client"], "add fix.txt")
     await command(slack["client"], "add fix.txt", user="U2")
     await until_posted(fake, lambda: sum("Queued as hangar job" in p["text"] for p in fake.posts) == 2)
@@ -365,6 +382,86 @@ async def test_slack_jobs_run_for_the_linked_person(slack):  # noqa: F811
     assert jobs["slack:T1/U1"].person == "alice" and jobs["slack:T1/U2"].person is None
     for j in jobs.values():
         await settle(svc, j.id)
+
+
+async def test_only_a_jobs_person_continues_it_from_a_front_door(intake):  # noqa: F811
+    """Review: a person's job runs with their own login. A trusted collaborator who is someone else (bob, or a
+    collaborator linked to nobody) must not steer it, by a PR comment or by answering its question: their text would
+    run with alice's Claude login. Alice herself may; an admin uses hangar itself, since in direct mode an agent can
+    comment as the account behind its git token."""
+    from hangar.jobs import handle_github
+
+    for p in ("alice", "bob"):
+        people.add(intake.store, p)
+    people.link(intake.store, "alice", "github", "101")
+    people.link(intake.store, "bob", "github", "102")
+    people.link(intake.store, "owner", "github", "103")
+    labeled = {"action": "labeled", "label": {"name": "hangar"}, "repository": {"full_name": "o/r"}}
+    res = await handle_github(intake, "issues", "d-1", {**labeled, "issue": _issue(7),
+                                                        "sender": {"login": "alice-gh", "id": 101}})
+    job = intake.get(res["job"])
+    assert job.person == "alice"
+
+    def comment(on: dict, login: str, uid: int | None, body: str = "/hangar push it", assoc: str = "COLLABORATOR"):
+        return {"action": "created", "repository": {"full_name": "o/r"}, "issue": on,
+                "comment": {"body": body, "author_association": assoc,
+                            "user": {"login": login, **({"id": uid} if uid else {})}}}
+
+    # the question on the issue: bob's answer and an unlinked collaborator's are refused, with the reason
+    job.state = JobState.NEEDS_INPUT
+    for login, uid in (("bob-gh", 102), ("collab", None)):
+        res = await handle_github(intake, "issue_comment", f"q-{login}", comment(_issue(7), login, uid, "/hangar yes"))
+        assert "alice's job" in res["ignored"], res
+    # the PR the job opened: likewise
+    job.state, job.result.pr_number = JobState.SUCCEEDED, 9
+    pr = {**_issue(9), "pull_request": {}}
+    for login, uid in (("bob-gh", 102), ("collab", None), ("sean", 103)):
+        res = await handle_github(intake, "issue_comment", f"pr-{login}", comment(pr, login, uid))
+        assert "alice's job" in res["ignored"], res
+    assert len(job.turns) == 1
+    # alice gets past it (this fake job has no sandbox to continue in)
+    res = await handle_github(intake, "issue_comment", "pr-ok", comment(pr, "alice-gh", 101))
+    assert "no sandbox or checkpoint" in res["ignored"], res
+    # over MCP and REST the Guard decides (owner scoping), as before; admins continue anyone's there
+    with pytest.raises(Exception, match="no sandbox or checkpoint"):
+        intake.follow_up(job.id, "go on", requester="admin")
+
+
+async def test_link_id_looks_up_a_github_login():
+    import httpx
+
+    from hangar.github import GitHub
+
+    def gh(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/users/alice-gh":
+            return httpx.Response(200, json={"login": "Alice-GH", "id": 583231, "type": "User"})
+        if request.url.path == "/users/acme":
+            return httpx.Response(200, json={"login": "acme", "id": 5, "type": "Organization"})
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    jobs = SimpleNamespace(_github=lambda: GitHub("ghp_x", transport=httpx.MockTransport(gh)))
+    h = SimpleNamespace(jobs=jobs)
+    assert await teamcreds.link_id(h, "github", "@alice-gh") == ("583231", "Alice-GH")
+    assert await teamcreds.link_id(h, "github_projects", "583231") == ("583231", None)
+    assert await teamcreds.link_id(h, "slack", "T1/U1") == ("T1/U1", None)
+    for bad, why in (("nobody", "Not Found"), ("acme", "no user id"), ("no spaces", "isn't a GitHub login")):
+        with pytest.raises(people.PeopleError, match=why):
+            await teamcreds.link_id(h, "github", bad)
+    with pytest.raises(people.PeopleError, match="api.github.com/users/alice-gh"):
+        await teamcreds.link_id(SimpleNamespace(jobs=SimpleNamespace(_github=lambda: None)), "github", "alice-gh")
+
+
+async def test_a_linked_slack_user_acts_as_their_person(slack, settings):  # noqa: F811
+    """Review: past HANGAR_SLACK_USERS too (they could start the job over MCP), keyed by their own workspace."""
+    from hangar.slack import SlackFrontDoor
+
+    door = SlackFrontDoor(slack["svc"])
+    settings.slack_users = ["U9"]
+    people.add(slack["svc"].store, "carol")
+    people.link(slack["svc"].store, "carol", "slack", "T7/U5")
+    assert door._refusal("T1", "C1", "U5") is not None  # T1's U5 is someone else
+    assert door._refusal("T1", "C1", "U5", user_team="T7") is None  # carol, from her own workspace (Slack Connect)
+    assert door._refusal("T7", "C1", "U5") is None
 
 
 # ====================================================================== hangar doctor
@@ -405,10 +502,10 @@ async def test_doctor(intake, settings, broker):  # noqa: F811
     assert unlinked["status"] == "warn" and "github:rando (3 jobs)" in unlinked["detail"]
     assert unlinked["fix"] == "hangar person link PERSON github rando"
     people.add(intake.store, "randy")
-    people.link(intake.store, "randy", "github", "rando")
+    people.link(intake.store, "randy", "github", "103")
     for n in range(3):  # jobs from now on are randy's; the old ones stay the team's until they age out
         await handle_github(intake, "issue_comment", f"e-{n}", {
             "action": "created", "repository": {"full_name": "o/r"}, "issue": _issue(50 + n),
-            "comment": {"body": "/hangar", "author_association": "NONE", "user": {"login": "rando"}}})
+            "comment": {"body": "/hangar", "author_association": "NONE", "user": {"login": "rando", "id": 103}}})
     later = [j for j in intake.list() if j.labels.get("github.issue", "").startswith("5")]
     assert len(later) == 3 and {j.person for j in later} == {"randy"}
