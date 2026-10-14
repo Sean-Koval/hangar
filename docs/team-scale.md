@@ -134,6 +134,11 @@ Each sandbox keeps its 2-vCPU limit and its full 4 GiB; only the CPU it is *guar
 Memory is never overcommitted, so nothing is OOM-killed for its neighbours. gVisor enforces both limits only when all
 containers set them (they do) ([GKE Sandbox][sandbox]).
 
+**Services** ([environments.md](environments.md#services)) are sidecars in the sandbox's pod, so their requests add to
+it, up to `HANGAR_ENV_SERVICES_MAX_CPUS` and `HANGAR_ENV_SERVICES_MAX_MEMORY_GB` (2 and 2 GiB by default; the repo
+writes each service's size, the budget caps the sum). A sandbox that uses the whole budget requests 2 vCPU and 6 GiB:
+7 a node (CPU-bound) instead of 14. Size the node count for the share of sessions whose repos declare services.
+
 **gVisor overhead.** Google gives no number for gVisor ("dynamic overhead with low base memory for the userspace
 kernel") and declares no pod overhead for it ([GKE Sandbox][sandbox]). Google doesn't say where the sentry's memory is
 charged; gVisor runs it in the pod's cgroup, so expect it to come out of the sandbox's own 4 GiB rather than the

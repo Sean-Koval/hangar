@@ -59,6 +59,37 @@ def test_images_off_the_allowlist_and_unsupported_providers_are_reported(fleet):
     assert "service_specs" not in sb.info and "doesn't run services yet" in sb.info["setup_failures"][0]["message"]
 
 
+def test_services_fit_the_sandboxs_service_budget(fleet):
+    """Review: `resources` is an admin's, but each service carries its own cpus and memory_gb, which the repo writes:
+    8 services of 4 CPUs and 8 GiB would ask a node for 64 GiB on top of the sandbox (docs/team-scale.md packs 14
+    sandboxes of 4 GiB on a node). Their sum must fit HANGAR_ENV_SERVICES_MAX_CPUS and _MEMORY_GB; the rest stay out."""
+    fleet.settings.env_services_max_cpus = 1.0
+    fleet.settings.env_services_max_memory_gb = 1.0
+    spec = EnvSpec(name="e", services={"a": {"image": "redis", "port": 6379},
+                                       "b": {"image": "postgres:17", "port": 5432},
+                                       "c": {"image": "redis", "port": 6380, "cpus": 4, "memory_gb": 8}})
+    sb = _sb()
+    envservices.prepare(fleet, spec, sb, None)
+    assert set(envservices.specs(sb)) == {"a", "b"}
+    fails = [f for f in sb.info["setup_failures"] if f["step"] == "service:c"]
+    assert fails and "HANGAR_ENV_SERVICES_MAX_MEMORY_GB" in fails[0]["message"]
+
+
+def test_services_never_run_hangars_own_images(fleet):
+    """Review: hangar's own images (environments, and repo builds that hold other repos' checkouts) are never a
+    service, whatever HANGAR_ENV_SERVICE_IMAGES allows."""
+    fleet.settings.env_service_images = ["**"]
+    fleet.settings.registry = "us-docker.pkg.dev/acme/hangar"
+    spec = EnvSpec(name="e", services={
+        "x": {"image": "us-docker.pkg.dev/acme/hangar/appenv-repo:abc-0a1b2c3d", "port": 1},
+        "y": {"image": f"{fleet.settings.image_prefix}/appenv-repo:abc", "port": 2},
+        "z": {"image": "us-docker.pkg.dev/acme/services/pg:17", "port": 3}})
+    sb = _sb()
+    envservices.prepare(fleet, spec, sb, None)
+    assert set(envservices.specs(sb)) == {"z"}
+    assert not repoenv.service_image_allowed(fleet.settings, "us-docker.pkg.dev/acme/hangar/appenv:x")
+
+
 def test_prepare_never_fails_a_create(fleet):
     fleet.store.kv_set(f"{KV_SEEN}e:{repo_key('https://github.com/o/r.git')}", "{broken")
     sb = _sb()

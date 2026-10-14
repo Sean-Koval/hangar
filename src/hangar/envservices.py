@@ -91,12 +91,21 @@ def _prepare(fleet: Fleet, spec: EnvSpec, sb: Sandbox, build_config: dict[str, A
                    "them yourself if the task needs them")
         return
     allowed: dict[str, Service] = {}
-    for name, svc in wanted.items():
-        if repoenv.service_image_allowed(fleet.settings, svc.image):
-            allowed[name] = svc
-        else:
+    st = fleet.settings
+    cpus = mem = 0.0
+    for name, svc in sorted(wanted.items()):
+        if not repoenv.service_image_allowed(st, svc.image):
             eb.failure(sb, f"service:{name}", f"image {svc.image} isn't allowed here (HANGAR_ENV_SERVICE_IMAGES); "
                        "an admin can add it")
+        elif cpus + svc.cpus > st.env_services_max_cpus or mem + svc.memory_gb > st.env_services_max_memory_gb:
+            # --- review: the repo writes each service's resources; together they fit an admin's budget
+            eb.failure(sb, f"service:{name}", f"{svc.cpus:g} CPU / {svc.memory_gb:g} GiB would take the sandbox's "
+                       f"services past HANGAR_ENV_SERVICES_MAX_CPUS ({st.env_services_max_cpus:g}) or "
+                       f"HANGAR_ENV_SERVICES_MAX_MEMORY_GB ({st.env_services_max_memory_gb:g}); ask for less, or an "
+                       "admin can raise them")
+        else:
+            allowed[name] = svc
+            cpus, mem = cpus + svc.cpus, mem + svc.memory_gb
     if not allowed:
         return
     sb.info["service_specs"] = {n: s.model_dump(mode="json") for n, s in allowed.items()}
