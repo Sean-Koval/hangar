@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Long MCP tools no longer die with the client.** `create_sandbox`, `create_sandboxes`, `fork_sandbox` and `build_environment` answer within `HANGAR_MCP_TOOL_WAIT_SECONDS` (150 s). Past that they return the sandbox or build as it stands (`starting`, with a `stage` saying what it waits on) and keep going in the background. Before, an MCP client that gave up on the call (claude.ai stops after about 230 s) cancelled the create, and the sandbox ended in `error`.
+- **A create waits only on its own harness's pack.** Packs for the environment's other harnesses are mounted when they're already built. A stale one, after an upgrade changed that harness, is rebuilt in the background instead of holding up the sandbox. This is why the first `python` sandbox after the #69 upgrade took minutes: it rebuilt the Codex pack for a Claude Code sandbox.
+
 ## The overnight stack (#48–#69)
 
 Twenty-one feature PRs (#48–#66, #68, #69) on top of `2e3e0a3` (main after #43), and the upgrade guide and acceptance script (#67). Upgrading a running hangar: [docs/upgrading.md](docs/upgrading.md), which lists every default that changes. Proving it on GKE: `bash scripts/acceptance/gke.sh`.

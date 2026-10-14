@@ -1,5 +1,6 @@
 """Harness selection at claim time: credentials, config, MCP servers, models and packs for one harness."""
 
+import asyncio
 import json
 import tomllib
 
@@ -97,6 +98,47 @@ async def test_packs_are_mounted_not_baked(fleet, creds):
     assert a.image == b.image, "one harness-free image serves every harness"
     pack_images = {t for t in fake.images if "/harness-" in t}
     assert len(pack_images) == 3
+
+
+def stale_codex_pack(fleet, gate: asyncio.Event) -> None:
+    """An upgrade changed the codex pack: its new tag isn't built yet, and building it takes minutes."""
+    fake = fleet.providers["docker"]
+    fleet.store.kv_set("pack:docker:codex", "an-older-codex-pack")
+    fake.images = {t for t in fake.images if "/harness-codex" not in t}
+    real = fake.build_template
+
+    async def build(spec, ctx, tag, log=None):
+        if "/harness-codex" in tag:
+            await gate.wait()
+        return await real(spec, ctx, tag, log)
+
+    fake.build_template = build
+
+
+async def test_a_stale_pack_for_another_harness_does_not_hold_up_a_create(fleet, creds):
+    fleet.providers["docker"].image_volumes = True
+    await fleet.create("agents")  # the environment and its packs are built
+    gate = asyncio.Event()
+    stale_codex_pack(fleet, gate)
+    a = await asyncio.wait_for(fleet.create("agents"), 10)
+    assert "codex" not in a.info["packs"] and "claude-code" in a.info["packs"]
+    gate.set()
+    await asyncio.gather(*fleet._pack_builds.values())
+    b = await fleet.create("agents")
+    assert "codex" in b.info["packs"]
+
+
+async def test_a_create_still_waits_on_its_own_harness_pack(fleet, creds):
+    fleet.providers["docker"].image_volumes = True
+    await fleet.create("agents")
+    gate = asyncio.Event()
+    stale_codex_pack(fleet, gate)
+    pending = asyncio.create_task(fleet.create("agents", harness="codex"))
+    await asyncio.sleep(0.3)
+    assert not pending.done(), "a codex sandbox needs the codex pack"
+    gate.set()
+    sb = await asyncio.wait_for(pending, 10)
+    assert "codex" in sb.info["packs"]
 
 
 async def test_without_image_volumes_only_the_selected_harness_is_baked(fleet, creds):

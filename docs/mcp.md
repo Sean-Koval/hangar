@@ -116,5 +116,6 @@ Claude Code and VS Code show them as slash commands.
 
 ## Deployment notes
 
+- Long tools (`create_sandbox`, `create_sandboxes`, `fork_sandbox`, `build_environment`) answer within `HANGAR_MCP_TOOL_WAIT_SECONDS` (150 s), below the few minutes MCP clients wait on a call. A sandbox that isn't ready by then comes back `starting`, with a `stage` saying what it waits on, and a build comes back `running`. The work carries on in the background even if the client disconnects; poll `get_sandbox` or `list_sandboxes`.
 - Legacy clients keep a session (`Mcp-Session-Id`), so hangar can ask them questions mid-call and notify them about subscriptions. Sessions live in the control plane's memory: with one replica (the supported setup) nothing else is needed; after a restart, clients start a new session. With several replicas and no sticky routing, set `HANGAR_MCP_STATELESS_HTTP=true`: legacy clients then lose elicitation and subscriptions. 2026-07-28 clients are sessionless either way.
 - The SDK seals the `requestState` of an `input_required` round with a per-process key that lives 15 minutes. After a restart, or a longer wait, the client's retry is refused (`-32602`, "Invalid or expired requestState"); calling `wait_for_turn` again asks the question again.
