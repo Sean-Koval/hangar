@@ -198,8 +198,9 @@ async def test_ci_failure_becomes_one_follow_up_turn_with_the_logs(jobs, world, 
 async def test_reviews_from_trusted_people_only(jobs, world, gh):  # noqa: F811
     job = await _pr_job(jobs, world, gh)
     world["mode"].write_text("review")
-    assert "not trusted" in (await handle_github(jobs, "pull_request_review", "r-1",
-                                                 _review(30, "rando", "changes_requested", "do X", "NONE")))["ignored"]
+    # not trusted on GitHub: whether they own the code is checked off the request (review #101), then refused
+    assert "checking" in (await handle_github(jobs, "pull_request_review", "r-1",
+                                              _review(30, "rando", "changes_requested", "do X", "NONE")))
     assert "own review" in (await handle_github(jobs, "pull_request_review", "r-2",
                                                 _review(31, "hangar-bot", "changes_requested")))["ignored"]
     assert "own review" in (await handle_github(jobs, "pull_request_review", "r-3",
@@ -219,8 +220,10 @@ async def test_reviews_from_trusted_people_only(jobs, world, gh):  # noqa: F811
     assert (await handle_github(jobs, "pull_request_review_comment", "r-6", inline))["ok"]
     outsider = {**inline, "comment": {**inline["comment"], "id": 903, "user": {"login": "rando"},
                                       "author_association": "CONTRIBUTOR"}}
-    assert "not trusted" in (await handle_github(jobs, "pull_request_review_comment", "r-7", outsider))["ignored"]
+    assert "checking" in await handle_github(jobs, "pull_request_review_comment", "r-7", outsider)
     job = await _turns(jobs, job, 2)
+    refused = [a for a in jobs.store.audit_tail(50) if a.action == "github.refused" and a.actor == "github:rando"]
+    assert len(refused) == 2 and all(a.detail["why"] == "untrusted review" for a in refused)
     assert job.turns[1].trigger == "autofix:review" and any("rename foo to bar" in c for c in job.result.commits)
     md = _attachment(jobs, job, "review-comments.md")
     assert "`app.py` line 3 (@sean)" in md and "rename foo to bar" in md and "+foo = 1" in md

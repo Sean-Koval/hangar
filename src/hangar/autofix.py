@@ -200,17 +200,29 @@ async def handle(svc: JobService, event: str, delivery: str | None, payload: dic
         job = find_job(svc, repo, [_int(pr.get("number"))], [], None)  # this PR: another may reuse the branch name
         if job is None:
             return {"ignored": "PR was not opened by a hangar job"}
-        # --- trust: the round runs with the job's person's login, so only someone they or the repo policy trust
-        if await reviewtrust.why_trusted(svc, job, _d(obj.get("user")), obj.get("author_association")) is None:
-            svc.admission.refused(f"owner:github:{user}", f"github:{user}", "github.refused",
-                                  f"github:{repo}#{pr.get('number')}", why="untrusted review", job=job.id)
-            return {"ignored": f"{user} is not trusted to ask for changes on this job"}
         item = {"kind": "review" if review else "review_comment", "id": obj.get("id"), "user": user,
                 "state": state or "commented", "body": _clip(body, 8000), "sha": obj.get("commit_id"),
                 "url": _url(obj.get("html_url")), "path": obj.get("path"),
                 "line": obj.get("line") or obj.get("original_line"), "diff_hunk": _clip(obj.get("diff_hunk"), 3000),
                 "review_id": obj.get("pull_request_review_id")}
         what = "reviews"
+        if what not in mode(svc.settings, job):
+            return {"ignored": f"auto-fix on {what} is off for job {job.id}"}
+        # --- trust: the round runs with the job's person's login, so only someone they or the repo policy trust.
+        # --- review (#101): what needs GitHub (CODEOWNERS, the PR's files, teams) runs off the request.
+        if reviewtrust.quick(svc, job, _d(obj.get("user")), obj.get("author_association")) is None:
+            job_id, number = job.id, pr.get("number")
+
+            def refused() -> None:
+                svc.admission.refused(f"owner:github:{user}", f"github:{user}", "github.refused",
+                                      f"github:{repo}#{number}", why="untrusted review", job=job_id)
+
+            def then(why: str) -> None:
+                if (j := svc._jobs.get(job_id)) is not None:
+                    _queue(svc, j, item, delivery)
+
+            reviewtrust.check_later(svc, job_id, _d(obj.get("user")), obj.get("author_association"), then, refused)
+            return {"ok": True, "checking": f"whether {user} may ask for changes on job {job_id}"}
     else:
         return {"ignored": f"event '{event}'"}
     if job is None:
@@ -219,6 +231,11 @@ async def handle(svc: JobService, event: str, delivery: str | None, payload: dic
         return {"ignored": f"auto-fix on {what} is off for job {job.id}"}
     if what == "ci" and (not sha or sha != job.result.head_sha):
         return {"ignored": f"not the job's own head commit ({(job.result.head_sha or '?')[:7]})"}
+    return _queue(svc, job, item, delivery)
+
+
+def _queue(svc: JobService, job: Job, item: dict[str, Any], delivery: str | None) -> dict[str, Any]:
+    """A trigger the job's PR may act on: pending until the coalescing window closes (once per trigger)."""
     st = job.autofix_state
     key = f"{item['kind']}:{item.get('id')}:{item.get('sha') or ''}"
     if key in st.seen:
