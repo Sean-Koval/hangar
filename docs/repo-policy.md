@@ -4,7 +4,8 @@ Work reaches hangar through many doors: MCP, REST, the CLI, GitHub issues, Slack
 
 ```bash
 hangar repo set acme/app --verify "uv run pytest -q" --env python
-hangar repo set acme/app --model claude-code=opus --model codex=gpt-5.5
+hangar repo set acme/app --model frontier            # every harness: its provider's strongest model
+hangar repo set acme/app --model claude-code=balanced --model codex=gpt-6.1-sol
 hangar repo list
 hangar repo get acme/app            # the policy, and the environment it falls back to
 hangar repo unset acme/app model    # clear one field
@@ -18,7 +19,7 @@ hangar repo set acme/app --land auto_after_approval --approver alice --risk-path
 | `verify` | The repo's check (see [jobs §7](jobs.md#7-an-agent-loop-that-finishes-the-job)). `""` means no check, even if the environment has one. |
 | `environment` | The environment jobs run in when they don't name one. For a repo in `HANGAR_GITHUB_REPOS`, it must be one of the environments listed there. |
 | `harness` | The default harness. It must be enabled in the environment; when a job runs in an environment without it, the job uses the environment's default and its events say why. |
-| `model` | One model id, or one per harness (`{"claude-code": "opus", "codex": "gpt-5.5"}`), as in an environment's `model:`. A single id applies only to the policy's harness, or, without one, to jobs that didn't pick a harness: a model id means nothing to another harness. |
+| `model` | One model id, or one per harness (`{"claude-code": "opus", "codex": "gpt-5.5"}`), as in an environment's `model:`. A single id applies only to the policy's harness, or, without one, to jobs that didn't pick a harness: a model id means nothing to another harness. A policy (`frontier`, `balanced`) applies to every harness and is resolved to a concrete id when the job starts ([harnesses.md](harnesses.md#models-the-latest-strong-model-per-provider)). |
 | `budget` | The default per-turn budget (`max_minutes`, `max_tokens`, `max_cost_usd`), field by field under the job's own. |
 | `job_budget` | The default [job budget](#budgets) (`max_cost_usd`, `max_tokens`, `max_turns`). |
 | `max_usd_per_day` | The repo's [daily spend cap](#budgets). |

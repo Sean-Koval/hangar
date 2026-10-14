@@ -30,6 +30,7 @@ from hangar import fairness as fairness  # --- scale
 from hangar import ghapi as ghapi  # --- egress2
 from hangar import k8sgc as k8sgc  # --- durable
 from hangar import metrics as metrics  # --- reconciler
+from hangar import modelpolicy as modelpolicy  # --- canary: `model: frontier` resolved to an id
 from hangar import opstatus as opstatus  # --- clouddoctor: the day's failures and credential health in the overview
 from hangar import power as power  # --- ops: the sandbox pools' power schedule
 from hangar import reconciler as reconciler  # --- reconciler
@@ -255,6 +256,9 @@ class Fleet:
                                          "installed": {p: v for p in self.providers
                                                        if (v := self.harness_version(p, h))}}
                                      for h in spec.agent_harnesses if HARNESSES[h].install},
+                # --- canary: what `model` resolves to now for each harness (a policy: from the provider's list)
+                "models": {h: modelpolicy.of(self).resolve(h, spec.model_for(h), record=False).to_dict()
+                           for h in spec.agent_harnesses},
             })
         return out
 
@@ -713,6 +717,10 @@ class Fleet:
         )
         if hname:
             sb.info["harness"] = hname
+            # --- canary: the environment's model for it, a policy resolved now and pinned for the sandbox's runs
+            res = modelpolicy.of(self).resolve(hname, spec.model_for(hname))
+            sb.info.update({k: v for k, v in (("model", res.model), ("model_policy", res.policy),
+                                              ("model_note", res.note)) if v})
         self.reconciler.own(sb.id, "create")  # --- reconciler: this task owns the row until it settles
         self.store.put(sb)
         self.audit(actor, "sandbox.create", sb.id, environment=environment, provider=pname, name=sb.name)
@@ -749,6 +757,8 @@ class Fleet:
                 sb.info["packs"] = dict(spec.packs)
                 if hname in spec.packs and (v := self.harness_version(pname, hname)):  # --- images
                     sb.info["harness_version"] = v
+                if hname in spec.packs:  # --- canary: the locked version its pack was built for (pins.py)
+                    sb.info["harness_lock"] = get_harness(hname).version
             stage("starting the sandbox")
             with observe.span("sandbox.start", {"hangar.sandbox.id": sb.id, "hangar.provider": pname}):  # --- observe
                 # image may be a snapshot ref (forks); --- envbuilds: a build's own template on Kubernetes
@@ -1243,7 +1253,9 @@ class Fleet:
         if not hname:
             raise FleetError(f"environment {sb.environment} has no agent harness enabled")
         h = get_harness(hname)
-        model = model or spec.model_for(hname)
+        models = modelpolicy.of(self)  # --- canary: a policy is a concrete id by the time a run starts
+        model = models.concrete(hname, model) or (sb.info.get("model") if hname == selected else None) \
+            or models.concrete(hname, spec.model_for(hname))
         if run_id is not None and not re.fullmatch(r"run-[0-9a-f]{8}", run_id):
             raise FleetError(f"invalid run id '{run_id}'")
         run_id = run_id or new_id("run")

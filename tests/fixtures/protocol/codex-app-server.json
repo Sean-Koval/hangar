@@ -1,0 +1,4571 @@
+{
+ "client": {
+  "all": [
+   "account/gatewayOAuth/cancel",
+   "account/gatewayOAuth/login",
+   "account/gatewayOAuth/read",
+   "account/login/cancel",
+   "account/login/start",
+   "account/logout",
+   "account/rateLimitResetCredit/consume",
+   "account/rateLimits/read",
+   "account/read",
+   "account/sendAddCreditsNudgeEmail",
+   "account/usage/read",
+   "account/workspaceMessages/read",
+   "app/installed",
+   "app/list",
+   "app/read",
+   "command/exec",
+   "command/exec/resize",
+   "command/exec/terminate",
+   "command/exec/write",
+   "config/batchWrite",
+   "config/mcpServer/reload",
+   "config/read",
+   "config/value/write",
+   "configRequirements/read",
+   "experimentalFeature/enablement/set",
+   "experimentalFeature/list",
+   "externalAgentConfig/detect",
+   "externalAgentConfig/import",
+   "externalAgentConfig/import/readHistories",
+   "externalAgentConfig/import/recordHistory",
+   "feedback/upload",
+   "fs/copy",
+   "fs/createDirectory",
+   "fs/getMetadata",
+   "fs/readDirectory",
+   "fs/readFile",
+   "fs/remove",
+   "fs/unwatch",
+   "fs/watch",
+   "fs/writeFile",
+   "fuzzyFileSearch",
+   "hooks/list",
+   "initialize",
+   "marketplace/add",
+   "marketplace/remove",
+   "marketplace/upgrade",
+   "mcpServer/oauth/login",
+   "mcpServer/resource/read",
+   "mcpServer/tool/call",
+   "mcpServerStatus/list",
+   "model/list",
+   "modelProvider/capabilities/read",
+   "permissionProfile/list",
+   "plugin/install",
+   "plugin/installed",
+   "plugin/list",
+   "plugin/read",
+   "plugin/reconcile",
+   "plugin/share/checkout",
+   "plugin/share/delete",
+   "plugin/share/list",
+   "plugin/share/save",
+   "plugin/share/updateTargets",
+   "plugin/skill/read",
+   "plugin/uninstall",
+   "review/start",
+   "skills/config/write",
+   "skills/extraRoots/set",
+   "skills/list",
+   "thread/approveGuardianDeniedAction",
+   "thread/archive",
+   "thread/attachment/add",
+   "thread/attachment/list",
+   "thread/attachment/remove",
+   "thread/attachmentOwner/list",
+   "thread/compact/start",
+   "thread/delete",
+   "thread/fork",
+   "thread/goal/clear",
+   "thread/goal/get",
+   "thread/goal/set",
+   "thread/inject_items",
+   "thread/items/list",
+   "thread/list",
+   "thread/loaded/list",
+   "thread/metadata/update",
+   "thread/name/set",
+   "thread/read",
+   "thread/resume",
+   "thread/revert",
+   "thread/section/move",
+   "thread/shellCommand",
+   "thread/start",
+   "thread/turns/list",
+   "thread/unarchive",
+   "thread/unsubscribe",
+   "threadSection/create",
+   "threadSection/delete",
+   "threadSection/list",
+   "threadSection/update",
+   "turn/interrupt",
+   "turn/start",
+   "turn/steer",
+   "windowsSandbox/readiness",
+   "windowsSandbox/setupStart"
+  ],
+  "driver": {
+   "initialize": {
+    "answer": {
+     "properties": {
+      "codexHome": {
+       "allOf": [
+        {
+         "$ref": "AbsolutePathBuf"
+        }
+       ]
+      },
+      "platformFamily": {
+       "type": "string"
+      },
+      "platformOs": {
+       "type": "string"
+      },
+      "userAgent": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "codexHome",
+      "platformFamily",
+      "platformOs",
+      "userAgent"
+     ],
+     "type": "object"
+    },
+    "params": {
+     "$ref": "InitializeParams"
+    }
+   },
+   "thread/fork": {
+    "answer": {
+     "properties": {
+      "approvalPolicy": {
+       "$ref": "AskForApproval"
+      },
+      "approvalsReviewer": {
+       "allOf": [
+        {
+         "$ref": "ApprovalsReviewer"
+        }
+       ]
+      },
+      "cwd": {
+       "$ref": "AbsolutePathBuf"
+      },
+      "disabledPluginIds": {
+       "default": [],
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "instructionSources": {
+       "default": [],
+       "items": {
+        "$ref": "LegacyAppPathString"
+       },
+       "type": "array"
+      },
+      "model": {
+       "type": "string"
+      },
+      "modelProvider": {
+       "type": "string"
+      },
+      "reasoningEffort": {
+       "anyOf": [
+        {
+         "$ref": "ReasoningEffort"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "sandbox": {
+       "allOf": [
+        {
+         "$ref": "SandboxPolicy"
+        }
+       ]
+      },
+      "serviceTier": {
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "thread": {
+       "$ref": "Thread"
+      }
+     },
+     "required": [
+      "approvalPolicy",
+      "approvalsReviewer",
+      "cwd",
+      "model",
+      "modelProvider",
+      "sandbox",
+      "thread"
+     ],
+     "type": "object"
+    },
+    "params": {
+     "$ref": "ThreadForkParams"
+    }
+   },
+   "thread/resume": {
+    "answer": {
+     "properties": {
+      "approvalPolicy": {
+       "$ref": "AskForApproval"
+      },
+      "approvalsReviewer": {
+       "allOf": [
+        {
+         "$ref": "ApprovalsReviewer"
+        }
+       ]
+      },
+      "collaborationMode": {
+       "anyOf": [
+        {
+         "$ref": "CollaborationMode"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "cwd": {
+       "$ref": "AbsolutePathBuf"
+      },
+      "disabledPluginIds": {
+       "default": [],
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "instructionSources": {
+       "default": [],
+       "items": {
+        "$ref": "LegacyAppPathString"
+       },
+       "type": "array"
+      },
+      "itemsBackwardsCursor": {
+       "default": null,
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "model": {
+       "type": "string"
+      },
+      "modelProvider": {
+       "type": "string"
+      },
+      "reasoningEffort": {
+       "anyOf": [
+        {
+         "$ref": "ReasoningEffort"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "sandbox": {
+       "allOf": [
+        {
+         "$ref": "SandboxPolicy"
+        }
+       ]
+      },
+      "serviceTier": {
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "thread": {
+       "$ref": "Thread"
+      },
+      "turnsBackwardsCursor": {
+       "default": null,
+       "type": [
+        "string",
+        "null"
+       ]
+      }
+     },
+     "required": [
+      "approvalPolicy",
+      "approvalsReviewer",
+      "cwd",
+      "model",
+      "modelProvider",
+      "sandbox",
+      "thread"
+     ],
+     "type": "object"
+    },
+    "params": {
+     "$ref": "ThreadResumeParams"
+    }
+   },
+   "thread/start": {
+    "answer": {
+     "properties": {
+      "approvalPolicy": {
+       "$ref": "AskForApproval"
+      },
+      "approvalsReviewer": {
+       "allOf": [
+        {
+         "$ref": "ApprovalsReviewer"
+        }
+       ]
+      },
+      "cwd": {
+       "$ref": "AbsolutePathBuf"
+      },
+      "disabledPluginIds": {
+       "default": [],
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "instructionSources": {
+       "default": [],
+       "items": {
+        "$ref": "LegacyAppPathString"
+       },
+       "type": "array"
+      },
+      "model": {
+       "type": "string"
+      },
+      "modelProvider": {
+       "type": "string"
+      },
+      "reasoningEffort": {
+       "anyOf": [
+        {
+         "$ref": "ReasoningEffort"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "sandbox": {
+       "allOf": [
+        {
+         "$ref": "SandboxPolicy"
+        }
+       ]
+      },
+      "serviceTier": {
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "thread": {
+       "$ref": "Thread"
+      }
+     },
+     "required": [
+      "approvalPolicy",
+      "approvalsReviewer",
+      "cwd",
+      "model",
+      "modelProvider",
+      "sandbox",
+      "thread"
+     ],
+     "type": "object"
+    },
+    "params": {
+     "$ref": "ThreadStartParams"
+    }
+   },
+   "turn/interrupt": {
+    "answer": {
+     "type": "object"
+    },
+    "params": {
+     "$ref": "TurnInterruptParams"
+    }
+   },
+   "turn/start": {
+    "answer": {
+     "properties": {
+      "turn": {
+       "$ref": "Turn"
+      }
+     },
+     "required": [
+      "turn"
+     ],
+     "type": "object"
+    },
+    "params": {
+     "$ref": "TurnStartParams"
+    }
+   },
+   "turn/steer": {
+    "answer": {
+     "properties": {
+      "turnId": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "turnId"
+     ],
+     "type": "object"
+    },
+    "params": {
+     "$ref": "TurnSteerParams"
+    }
+   }
+  }
+ },
+ "server_notifications": {
+  "all": [
+   "account/gatewayOAuth/changed",
+   "account/login/completed",
+   "account/rateLimits/updated",
+   "account/updated",
+   "app/list/updated",
+   "autoApprovalReview/strictReviewRequired",
+   "command/exec/outputDelta",
+   "configWarning",
+   "deprecationNotice",
+   "error",
+   "externalAgentConfig/import/completed",
+   "externalAgentConfig/import/progress",
+   "fs/changed",
+   "fuzzyFileSearch/sessionCompleted",
+   "fuzzyFileSearch/sessionUpdated",
+   "guardianWarning",
+   "hook/completed",
+   "hook/started",
+   "item/agentMessage/delta",
+   "item/autoApprovalReview/completed",
+   "item/autoApprovalReview/started",
+   "item/commandExecution/outputDelta",
+   "item/commandExecution/terminalInteraction",
+   "item/completed",
+   "item/fileChange/outputDelta",
+   "item/fileChange/patchUpdated",
+   "item/mcpToolCall/progress",
+   "item/plan/delta",
+   "item/reasoning/summaryPartAdded",
+   "item/reasoning/summaryTextDelta",
+   "item/reasoning/textDelta",
+   "item/started",
+   "mcpServer/event/stream/notification",
+   "mcpServer/oauthLogin/completed",
+   "mcpServer/startupStatus/updated",
+   "model/rerouted",
+   "model/safetyBuffering/updated",
+   "model/verification",
+   "modelProvider/authRecoveryCompleted",
+   "modelProvider/authRecoveryStarted",
+   "process/exited",
+   "process/outputDelta",
+   "project/changed",
+   "remoteControl/status/changed",
+   "serverRequest/resolved",
+   "skills/changed",
+   "thread/archived",
+   "thread/attachment/updated",
+   "thread/closed",
+   "thread/compacted",
+   "thread/deleted",
+   "thread/environment/connected",
+   "thread/environment/disconnected",
+   "thread/goal/cleared",
+   "thread/goal/updated",
+   "thread/name/updated",
+   "thread/prediction/updated",
+   "thread/project/updated",
+   "thread/queue/changed",
+   "thread/realtime/closed",
+   "thread/realtime/error",
+   "thread/realtime/item/completed",
+   "thread/realtime/item/started",
+   "thread/realtime/item/transcript/delta",
+   "thread/realtime/itemAdded",
+   "thread/realtime/outputAudio/delta",
+   "thread/realtime/sdp",
+   "thread/realtime/started",
+   "thread/realtime/transcript/delta",
+   "thread/realtime/transcript/done",
+   "thread/reverted",
+   "thread/settings/updated",
+   "thread/started",
+   "thread/status/changed",
+   "thread/tokenUsage/updated",
+   "thread/unarchived",
+   "turn/completed",
+   "turn/diff/updated",
+   "turn/moderationMetadata",
+   "turn/plan/updated",
+   "turn/started",
+   "warning",
+   "windows/worldWritableWarning",
+   "windowsSandbox/setupCompleted"
+  ],
+  "driver": {
+   "error": {
+    "params": {
+     "$ref": "ErrorNotification"
+    }
+   },
+   "item/completed": {
+    "params": {
+     "$ref": "ItemCompletedNotification"
+    }
+   },
+   "item/started": {
+    "params": {
+     "$ref": "ItemStartedNotification"
+    }
+   },
+   "serverRequest/resolved": {
+    "params": {
+     "$ref": "ServerRequestResolvedNotification"
+    }
+   },
+   "thread/tokenUsage/updated": {
+    "params": {
+     "$ref": "ThreadTokenUsageUpdatedNotification"
+    }
+   },
+   "turn/completed": {
+    "params": {
+     "$ref": "TurnCompletedNotification"
+    }
+   },
+   "turn/started": {
+    "params": {
+     "$ref": "TurnStartedNotification"
+    }
+   }
+  }
+ },
+ "server_requests": {
+  "all": [
+   "account/chatgptAuthTokens/refresh",
+   "applyPatchApproval",
+   "attestation/generate",
+   "execCommandApproval",
+   "item/commandExecution/requestApproval",
+   "item/fileChange/requestApproval",
+   "item/permissions/requestApproval",
+   "item/tool/call",
+   "item/tool/requestUserInput",
+   "mcpServer/elicitation/request"
+  ],
+  "driver": {
+   "item/commandExecution/requestApproval": {
+    "answer": {
+     "properties": {
+      "decision": {
+       "$ref": "CommandExecutionApprovalDecision"
+      }
+     },
+     "required": [
+      "decision"
+     ],
+     "type": "object"
+    },
+    "params": {
+     "$ref": "CommandExecutionRequestApprovalParams"
+    }
+   },
+   "item/fileChange/requestApproval": {
+    "answer": {
+     "properties": {
+      "decision": {
+       "$ref": "FileChangeApprovalDecision"
+      }
+     },
+     "required": [
+      "decision"
+     ],
+     "type": "object"
+    },
+    "params": {
+     "$ref": "FileChangeRequestApprovalParams"
+    }
+   }
+  }
+ },
+ "types": {
+  "AbsolutePathBuf": {
+   "type": "string"
+  },
+  "AgentMessageDelivery": {
+   "enum": [
+    "async"
+   ],
+   "type": "string"
+  },
+  "AgentPath": {
+   "type": "string"
+  },
+  "ApprovalsReviewer": {
+   "enum": [
+    "user",
+    "auto_review",
+    "guardian_subagent"
+   ],
+   "type": "string"
+  },
+  "AskForApproval": {
+   "oneOf": [
+    {
+     "enum": [
+      "untrusted",
+      "on-request",
+      "never"
+     ],
+     "type": "string"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "granular": {
+       "properties": {
+        "mcp_elicitations": {
+         "type": "boolean"
+        },
+        "request_permissions": {
+         "default": false,
+         "type": "boolean"
+        },
+        "rules": {
+         "type": "boolean"
+        },
+        "sandbox_approval": {
+         "type": "boolean"
+        },
+        "skill_approval": {
+         "default": false,
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "mcp_elicitations",
+        "rules",
+        "sandbox_approval"
+       ],
+       "type": "object"
+      }
+     },
+     "required": [
+      "granular"
+     ],
+     "type": "object"
+    }
+   ]
+  },
+  "AsyncUserInputQuestion": {
+   "additionalProperties": false,
+   "properties": {
+    "options": {
+     "items": {
+      "type": "string"
+     },
+     "type": [
+      "array",
+      "null"
+     ]
+    }
+   },
+   "required": [
+    "title"
+   ],
+   "type": "object"
+  },
+  "ByteRange": {
+   "properties": {
+    "end": {
+     "format": "uint",
+     "minimum": 0.0,
+     "type": "integer"
+    },
+    "start": {
+     "format": "uint",
+     "minimum": 0.0,
+     "type": "integer"
+    }
+   },
+   "required": [
+    "end",
+    "start"
+   ],
+   "type": "object"
+  },
+  "ClientInfo": {
+   "properties": {
+    "name": {
+     "type": "string"
+    },
+    "version": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "name",
+    "version"
+   ],
+   "type": "object"
+  },
+  "CodexErrorInfo": {
+   "anyOf": [
+    {
+     "enum": [
+      "contextWindowExceeded",
+      "sessionBudgetExceeded",
+      "usageLimitExceeded",
+      "rateLimitExceeded",
+      "flexUnavailable",
+      "serverOverloaded",
+      "cyberPolicy",
+      "misalignmentPolicyViolation",
+      "tooManyDenials",
+      "internalServerError",
+      "unauthorized",
+      "badRequest",
+      "threadRollbackFailed",
+      "sandboxError",
+      "other"
+     ],
+     "type": "string"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "httpConnectionFailed": {
+       "properties": {
+        "httpStatusCode": {
+         "format": "uint16",
+         "minimum": 0.0,
+         "type": [
+          "integer",
+          "null"
+         ]
+        }
+       },
+       "type": "object"
+      }
+     },
+     "required": [
+      "httpConnectionFailed"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "responseStreamConnectionFailed": {
+       "properties": {
+        "httpStatusCode": {
+         "format": "uint16",
+         "minimum": 0.0,
+         "type": [
+          "integer",
+          "null"
+         ]
+        }
+       },
+       "type": "object"
+      }
+     },
+     "required": [
+      "responseStreamConnectionFailed"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "responseStreamDisconnected": {
+       "properties": {
+        "httpStatusCode": {
+         "format": "uint16",
+         "minimum": 0.0,
+         "type": [
+          "integer",
+          "null"
+         ]
+        }
+       },
+       "type": "object"
+      }
+     },
+     "required": [
+      "responseStreamDisconnected"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "responseTooManyFailedAttempts": {
+       "properties": {
+        "httpStatusCode": {
+         "format": "uint16",
+         "minimum": 0.0,
+         "type": [
+          "integer",
+          "null"
+         ]
+        }
+       },
+       "type": "object"
+      }
+     },
+     "required": [
+      "responseTooManyFailedAttempts"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "activeTurnNotSteerable": {
+       "properties": {
+        "turnKind": {
+         "$ref": "NonSteerableTurnKind"
+        }
+       },
+       "required": [
+        "turnKind"
+       ],
+       "type": "object"
+      }
+     },
+     "required": [
+      "activeTurnNotSteerable"
+     ],
+     "type": "object"
+    },
+    {
+     "type": [
+      "string",
+      "object"
+     ]
+    }
+   ]
+  },
+  "CollabAgentState": {
+   "properties": {
+    "message": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "status": {
+     "$ref": "CollabAgentStatus"
+    }
+   },
+   "required": [
+    "status"
+   ],
+   "type": "object"
+  },
+  "CollabAgentStatus": {
+   "enum": [
+    "pendingInit",
+    "running",
+    "interrupted",
+    "completed",
+    "errored",
+    "shutdown",
+    "notFound"
+   ],
+   "type": "string"
+  },
+  "CollabAgentTool": {
+   "enum": [
+    "spawnAgent",
+    "sendInput",
+    "resumeAgent",
+    "wait",
+    "closeAgent",
+    "sendMessage",
+    "followupTask",
+    "interruptAgent",
+    "listAgents"
+   ],
+   "type": "string"
+  },
+  "CollabAgentToolCallStatus": {
+   "enum": [
+    "inProgress",
+    "completed",
+    "failed",
+    "interrupted"
+   ],
+   "type": "string"
+  },
+  "CollaborationMode": {
+   "properties": {
+    "mode": {
+     "$ref": "ModeKind"
+    },
+    "settings": {
+     "$ref": "Settings"
+    }
+   },
+   "required": [
+    "mode",
+    "settings"
+   ],
+   "type": "object"
+  },
+  "CommandAction": {
+   "oneOf": [
+    {
+     "properties": {
+      "command": {
+       "type": "string"
+      },
+      "name": {
+       "type": "string"
+      },
+      "path": {
+       "$ref": "LegacyAppPathString"
+      },
+      "type": {
+       "enum": [
+        "read"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "command",
+      "name",
+      "path",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "command": {
+       "type": "string"
+      },
+      "path": {
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "type": {
+       "enum": [
+        "listFiles"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "command",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "command": {
+       "type": "string"
+      },
+      "path": {
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "query": {
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "type": {
+       "enum": [
+        "search"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "command",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "command": {
+       "type": "string"
+      },
+      "type": {
+       "enum": [
+        "unknown"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "command",
+      "type"
+     ],
+     "type": "object"
+    }
+   ]
+  },
+  "CommandExecutionApprovalDecision": {
+   "oneOf": [
+    {
+     "enum": [
+      "accept"
+     ],
+     "type": "string"
+    },
+    {
+     "enum": [
+      "acceptForSession"
+     ],
+     "type": "string"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "acceptWithExecpolicyAmendment": {
+       "properties": {
+        "execpolicy_amendment": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        }
+       },
+       "required": [
+        "execpolicy_amendment"
+       ],
+       "type": "object"
+      }
+     },
+     "required": [
+      "acceptWithExecpolicyAmendment"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "applyNetworkPolicyAmendment": {
+       "properties": {
+        "network_policy_amendment": {
+         "$ref": "NetworkPolicyAmendment"
+        }
+       },
+       "required": [
+        "network_policy_amendment"
+       ],
+       "type": "object"
+      }
+     },
+     "required": [
+      "applyNetworkPolicyAmendment"
+     ],
+     "type": "object"
+    },
+    {
+     "enum": [
+      "decline"
+     ],
+     "type": "string"
+    },
+    {
+     "enum": [
+      "cancel"
+     ],
+     "type": "string"
+    }
+   ]
+  },
+  "CommandExecutionApprovalKind": {
+   "enum": [
+    "command",
+    "writeStdin"
+   ],
+   "type": "string"
+  },
+  "CommandExecutionRequestApprovalParams": {
+   "properties": {
+    "approvalId": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "command": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "commandActions": {
+     "items": {
+      "$ref": "CommandAction"
+     },
+     "type": [
+      "array",
+      "null"
+     ]
+    },
+    "cwd": {
+     "anyOf": [
+      {
+       "$ref": "LegacyAppPathString"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "environmentId": {
+     "default": null,
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "itemId": {
+     "type": "string"
+    },
+    "kind": {
+     "allOf": [
+      {
+       "$ref": "CommandExecutionApprovalKind"
+      }
+     ],
+     "default": "command"
+    },
+    "networkApprovalContext": {
+     "anyOf": [
+      {
+       "$ref": "NetworkApprovalContext"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "proposedExecpolicyAmendment": {
+     "items": {
+      "type": "string"
+     },
+     "type": [
+      "array",
+      "null"
+     ]
+    },
+    "proposedNetworkPolicyAmendments": {
+     "items": {
+      "$ref": "NetworkPolicyAmendment"
+     },
+     "type": [
+      "array",
+      "null"
+     ]
+    },
+    "reason": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "startedAtMs": {
+     "format": "int64",
+     "type": "integer"
+    },
+    "threadId": {
+     "type": "string"
+    },
+    "turnId": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "itemId",
+    "startedAtMs",
+    "threadId",
+    "turnId"
+   ],
+   "type": "object"
+  },
+  "CommandExecutionSource": {
+   "enum": [
+    "agent",
+    "userShell",
+    "unifiedExecStartup",
+    "unifiedExecInteraction"
+   ],
+   "type": "string"
+  },
+  "CommandExecutionStatus": {
+   "enum": [
+    "inProgress",
+    "completed",
+    "failed",
+    "declined"
+   ],
+   "type": "string"
+  },
+  "DynamicToolCallOutputContentItem": {
+   "oneOf": [
+    {
+     "properties": {
+      "text": {
+       "type": "string"
+      },
+      "type": {
+       "enum": [
+        "inputText"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "text",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "imageUrl": {
+       "type": "string"
+      },
+      "type": {
+       "enum": [
+        "inputImage"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "imageUrl",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "audioUrl": {
+       "type": "string"
+      },
+      "type": {
+       "enum": [
+        "inputAudio"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "audioUrl",
+      "type"
+     ],
+     "type": "object"
+    }
+   ]
+  },
+  "DynamicToolCallStatus": {
+   "enum": [
+    "inProgress",
+    "completed",
+    "failed"
+   ],
+   "type": "string"
+  },
+  "ErrorNotification": {
+   "properties": {
+    "error": {
+     "$ref": "TurnError"
+    },
+    "threadId": {
+     "type": "string"
+    },
+    "turnId": {
+     "type": "string"
+    },
+    "willRetry": {
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "error",
+    "threadId",
+    "turnId",
+    "willRetry"
+   ],
+   "type": "object"
+  },
+  "FileChangeApprovalDecision": {
+   "oneOf": [
+    {
+     "enum": [
+      "accept"
+     ],
+     "type": "string"
+    },
+    {
+     "enum": [
+      "acceptForSession"
+     ],
+     "type": "string"
+    },
+    {
+     "enum": [
+      "decline"
+     ],
+     "type": "string"
+    },
+    {
+     "enum": [
+      "cancel"
+     ],
+     "type": "string"
+    }
+   ]
+  },
+  "FileChangeRequestApprovalParams": {
+   "properties": {
+    "grantRoot": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "itemId": {
+     "type": "string"
+    },
+    "reason": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "startedAtMs": {
+     "format": "int64",
+     "type": "integer"
+    },
+    "threadId": {
+     "type": "string"
+    },
+    "turnId": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "itemId",
+    "startedAtMs",
+    "threadId",
+    "turnId"
+   ],
+   "type": "object"
+  },
+  "FileUpdateChange": {
+   "properties": {
+    "diff": {
+     "type": "string"
+    },
+    "kind": {
+     "$ref": "PatchChangeKind"
+    },
+    "path": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "diff",
+    "kind",
+    "path"
+   ],
+   "type": "object"
+  },
+  "FunctionCallOutputBody": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "items": {
+      "$ref": "FunctionCallOutputContentItem"
+     },
+     "type": "array"
+    }
+   ]
+  },
+  "FunctionCallOutputContentItem": {
+   "oneOf": [
+    {
+     "properties": {
+      "text": {
+       "type": "string"
+      },
+      "type": {
+       "enum": [
+        "input_text"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "text",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "anyOf": [
+      {
+       "properties": {
+        "image_url": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "image_url"
+       ],
+       "type": "object"
+      },
+      {
+       "properties": {
+        "file_id": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "file_id"
+       ],
+       "type": "object"
+      }
+     ],
+     "properties": {
+      "detail": {
+       "anyOf": [
+        {
+         "$ref": "ImageDetail"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "type": {
+       "enum": [
+        "input_image"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "audio_url": {
+       "type": "string"
+      },
+      "type": {
+       "enum": [
+        "input_audio"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "audio_url",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "encrypted_content": {
+       "type": "string"
+      },
+      "type": {
+       "enum": [
+        "encrypted_content"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "encrypted_content",
+      "type"
+     ],
+     "type": "object"
+    }
+   ]
+  },
+  "GitInfo": {
+   "properties": {
+    "branch": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "originUrl": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "sha": {
+     "type": [
+      "string",
+      "null"
+     ]
+    }
+   },
+   "type": "object"
+  },
+  "HookPromptFragment": {
+   "properties": {
+    "hookRunId": {
+     "type": "string"
+    },
+    "text": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "hookRunId",
+    "text"
+   ],
+   "type": "object"
+  },
+  "ImageDetail": {
+   "enum": [
+    "auto",
+    "low",
+    "high",
+    "original"
+   ],
+   "type": "string"
+  },
+  "ImageGenerationFailure": {
+   "oneOf": [
+    {
+     "properties": {
+      "limitId": {
+       "type": "string"
+      },
+      "resetsAt": {
+       "format": "int64",
+       "type": [
+        "integer",
+        "null"
+       ]
+      },
+      "type": {
+       "enum": [
+        "usageLimitExceeded"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "limitId",
+      "type"
+     ],
+     "type": "object"
+    }
+   ]
+  },
+  "InitializeCapabilities": {
+   "properties": {
+    "experimentalApi": {
+     "default": false,
+     "type": "boolean"
+    },
+    "explicitGatewayOauth": {
+     "type": "boolean"
+    },
+    "extensions": {
+     "additionalProperties": true,
+     "type": [
+      "object",
+      "null"
+     ]
+    },
+    "mcpServerOpenaiFormElicitation": {
+     "type": "boolean"
+    },
+    "optOutNotificationMethods": {
+     "items": {
+      "type": "string"
+     },
+     "type": [
+      "array",
+      "null"
+     ]
+    },
+    "requestAttestation": {
+     "default": false,
+     "type": "boolean"
+    }
+   },
+   "type": "object"
+  },
+  "InitializeParams": {
+   "properties": {
+    "capabilities": {
+     "anyOf": [
+      {
+       "$ref": "InitializeCapabilities"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "clientInfo": {
+     "$ref": "ClientInfo"
+    }
+   },
+   "required": [
+    "clientInfo"
+   ],
+   "type": "object"
+  },
+  "ItemCompletedNotification": {
+   "properties": {
+    "completedAtMs": {
+     "format": "int64",
+     "type": "integer"
+    },
+    "item": {
+     "$ref": "ThreadItem"
+    },
+    "threadId": {
+     "type": "string"
+    },
+    "turnId": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "completedAtMs",
+    "item",
+    "threadId",
+    "turnId"
+   ],
+   "type": "object"
+  },
+  "ItemStartedNotification": {
+   "properties": {
+    "item": {
+     "$ref": "ThreadItem"
+    },
+    "startedAtMs": {
+     "format": "int64",
+     "type": "integer"
+    },
+    "threadId": {
+     "type": "string"
+    },
+    "turnId": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "item",
+    "startedAtMs",
+    "threadId",
+    "turnId"
+   ],
+   "type": "object"
+  },
+  "LegacyAppPathString": {
+   "type": "string"
+  },
+  "McpAppDisplayMode": {
+   "enum": [
+    "inline",
+    "fullscreen"
+   ],
+   "type": "string"
+  },
+  "McpAppUi": {
+   "properties": {
+    "preferredModelDisplayMode": {
+     "$ref": "McpAppDisplayMode"
+    },
+    "resourceUri": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "preferredModelDisplayMode",
+    "resourceUri"
+   ],
+   "type": "object"
+  },
+  "McpToolCallAppContext": {
+   "properties": {
+    "actionName": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "appName": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "connectorId": {
+     "type": "string"
+    },
+    "linkId": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "resourceUri": {
+     "type": [
+      "string",
+      "null"
+     ]
+    }
+   },
+   "required": [
+    "connectorId"
+   ],
+   "type": "object"
+  },
+  "McpToolCallError": {
+   "properties": {
+    "message": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "message"
+   ],
+   "type": "object"
+  },
+  "McpToolCallResult": {
+   "properties": {
+    "_meta": true,
+    "content": {
+     "items": true,
+     "type": "array"
+    },
+    "structuredContent": true
+   },
+   "required": [
+    "content"
+   ],
+   "type": "object"
+  },
+  "McpToolCallStatus": {
+   "enum": [
+    "inProgress",
+    "completed",
+    "failed"
+   ],
+   "type": "string"
+  },
+  "MemoryCitation": {
+   "properties": {
+    "entries": {
+     "items": {
+      "$ref": "MemoryCitationEntry"
+     },
+     "type": "array"
+    },
+    "threadIds": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "entries",
+    "threadIds"
+   ],
+   "type": "object"
+  },
+  "MemoryCitationEntry": {
+   "properties": {
+    "lineEnd": {
+     "format": "uint32",
+     "minimum": 0.0,
+     "type": "integer"
+    },
+    "lineStart": {
+     "format": "uint32",
+     "minimum": 0.0,
+     "type": "integer"
+    },
+    "note": {
+     "type": "string"
+    },
+    "path": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "lineEnd",
+    "lineStart",
+    "note",
+    "path"
+   ],
+   "type": "object"
+  },
+  "MessagePhase": {
+   "oneOf": [
+    {
+     "enum": [
+      "commentary"
+     ],
+     "type": "string"
+    },
+    {
+     "enum": [
+      "partial_answer"
+     ],
+     "type": "string"
+    },
+    {
+     "enum": [
+      "final_answer"
+     ],
+     "type": "string"
+    }
+   ]
+  },
+  "MisalignmentErrorDetails": {
+   "properties": {
+    "detailedExplanation": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "errorType": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "reviewTarget": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "steer": {
+     "anyOf": [
+      {
+       "$ref": "MisalignmentSteer"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    }
+   },
+   "type": "object"
+  },
+  "MisalignmentSteer": {
+   "properties": {
+    "message": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "message"
+   ],
+   "type": "object"
+  },
+  "ModeKind": {
+   "enum": [
+    "plan",
+    "default"
+   ],
+   "type": "string"
+  },
+  "NetworkAccess": {
+   "enum": [
+    "restricted",
+    "enabled"
+   ],
+   "type": "string"
+  },
+  "NetworkApprovalContext": {
+   "properties": {
+    "host": {
+     "type": "string"
+    },
+    "protocol": {
+     "$ref": "NetworkApprovalProtocol"
+    }
+   },
+   "required": [
+    "host",
+    "protocol"
+   ],
+   "type": "object"
+  },
+  "NetworkApprovalProtocol": {
+   "enum": [
+    "http",
+    "https",
+    "socks5Tcp",
+    "socks5Udp"
+   ],
+   "type": "string"
+  },
+  "NetworkPolicyAmendment": {
+   "properties": {
+    "action": {
+     "$ref": "NetworkPolicyRuleAction"
+    },
+    "host": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "action",
+    "host"
+   ],
+   "type": "object"
+  },
+  "NetworkPolicyRuleAction": {
+   "enum": [
+    "allow",
+    "deny"
+   ],
+   "type": "string"
+  },
+  "NonSteerableTurnKind": {
+   "enum": [
+    "review",
+    "compact"
+   ],
+   "type": "string"
+  },
+  "PatchApplyStatus": {
+   "enum": [
+    "inProgress",
+    "completed",
+    "failed",
+    "declined"
+   ],
+   "type": "string"
+  },
+  "PatchChangeKind": {
+   "oneOf": [
+    {
+     "properties": {
+      "type": {
+       "enum": [
+        "add"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "type": {
+       "enum": [
+        "delete"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "move_path": {
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "type": {
+       "enum": [
+        "update"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "type"
+     ],
+     "type": "object"
+    }
+   ]
+  },
+  "Personality": {
+   "enum": [
+    "none",
+    "friendly",
+    "pragmatic"
+   ],
+   "type": "string"
+  },
+  "ReasoningEffort": {
+   "minLength": 1,
+   "type": "string"
+  },
+  "ReasoningSummary": {
+   "oneOf": [
+    {
+     "enum": [
+      "auto",
+      "concise",
+      "detailed"
+     ],
+     "type": "string"
+    },
+    {
+     "enum": [
+      "none"
+     ],
+     "type": "string"
+    }
+   ]
+  },
+  "RequestId": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "format": "int64",
+     "type": "integer"
+    }
+   ]
+  },
+  "SandboxMode": {
+   "enum": [
+    "read-only",
+    "workspace-write",
+    "danger-full-access"
+   ],
+   "type": "string"
+  },
+  "SandboxPolicy": {
+   "oneOf": [
+    {
+     "properties": {
+      "type": {
+       "enum": [
+        "dangerFullAccess"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "networkAccess": {
+       "default": false,
+       "type": "boolean"
+      },
+      "type": {
+       "enum": [
+        "readOnly"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "networkAccess": {
+       "allOf": [
+        {
+         "$ref": "NetworkAccess"
+        }
+       ],
+       "default": "restricted"
+      },
+      "type": {
+       "enum": [
+        "externalSandbox"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "excludeSlashTmp": {
+       "default": false,
+       "type": "boolean"
+      },
+      "excludeTmpdirEnvVar": {
+       "default": false,
+       "type": "boolean"
+      },
+      "networkAccess": {
+       "default": false,
+       "type": "boolean"
+      },
+      "type": {
+       "enum": [
+        "workspaceWrite"
+       ],
+       "type": "string"
+      },
+      "writableRoots": {
+       "default": [],
+       "items": {
+        "$ref": "AbsolutePathBuf"
+       },
+       "type": "array"
+      }
+     },
+     "required": [
+      "type"
+     ],
+     "type": "object"
+    }
+   ]
+  },
+  "ServerRequestResolvedNotification": {
+   "properties": {
+    "requestId": {
+     "$ref": "RequestId"
+    },
+    "threadId": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "requestId",
+    "threadId"
+   ],
+   "type": "object"
+  },
+  "SessionSource": {
+   "oneOf": [
+    {
+     "enum": [
+      "cli",
+      "vscode",
+      "exec",
+      "appServer",
+      "unknown"
+     ],
+     "type": "string"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "custom": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "custom"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "subAgent": {
+       "$ref": "SubAgentSource"
+      }
+     },
+     "required": [
+      "subAgent"
+     ],
+     "type": "object"
+    }
+   ]
+  },
+  "Settings": {
+   "properties": {
+    "developer_instructions": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "model": {
+     "type": "string"
+    },
+    "reasoning_effort": {
+     "anyOf": [
+      {
+       "$ref": "ReasoningEffort"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    }
+   },
+   "required": [
+    "model"
+   ],
+   "type": "object"
+  },
+  "SubAgentActivityKind": {
+   "enum": [
+    "started",
+    "interacted",
+    "interrupted",
+    "completed"
+   ],
+   "type": "string"
+  },
+  "SubAgentSource": {
+   "oneOf": [
+    {
+     "enum": [
+      "review",
+      "compact",
+      "memory_consolidation"
+     ],
+     "type": "string"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "thread_spawn": {
+       "properties": {
+        "agent_nickname": {
+         "default": null,
+         "type": [
+          "string",
+          "null"
+         ]
+        },
+        "agent_path": {
+         "anyOf": [
+          {
+           "$ref": "AgentPath"
+          },
+          {
+           "type": "null"
+          }
+         ],
+         "default": null
+        },
+        "agent_role": {
+         "default": null,
+         "type": [
+          "string",
+          "null"
+         ]
+        },
+        "depth": {
+         "format": "int32",
+         "type": "integer"
+        },
+        "parent_thread_id": {
+         "$ref": "ThreadId"
+        }
+       },
+       "required": [
+        "depth",
+        "parent_thread_id"
+       ],
+       "type": "object"
+      }
+     },
+     "required": [
+      "thread_spawn"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "other": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "other"
+     ],
+     "type": "object"
+    }
+   ]
+  },
+  "TextElement": {
+   "properties": {
+    "byteRange": {
+     "allOf": [
+      {
+       "$ref": "ByteRange"
+      }
+     ]
+    },
+    "placeholder": {
+     "type": [
+      "string",
+      "null"
+     ]
+    }
+   },
+   "required": [
+    "byteRange"
+   ],
+   "type": "object"
+  },
+  "Thread": {
+   "properties": {
+    "agentNickname": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "agentRole": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "cliVersion": {
+     "type": "string"
+    },
+    "createdAt": {
+     "format": "int64",
+     "type": "integer"
+    },
+    "cwd": {
+     "allOf": [
+      {
+       "$ref": "AbsolutePathBuf"
+      }
+     ]
+    },
+    "ephemeral": {
+     "type": "boolean"
+    },
+    "forkedFromId": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "gitInfo": {
+     "anyOf": [
+      {
+       "$ref": "GitInfo"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "historyMode": {
+     "allOf": [
+      {
+       "$ref": "ThreadHistoryMode"
+      }
+     ],
+     "default": "legacy"
+    },
+    "id": {
+     "type": "string"
+    },
+    "model": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "modelProvider": {
+     "type": "string"
+    },
+    "name": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "originator": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "parentThreadId": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "path": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "preview": {
+     "type": "string"
+    },
+    "projectId": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "reasoningEffort": {
+     "anyOf": [
+      {
+       "$ref": "ReasoningEffort"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "recencyAt": {
+     "format": "int64",
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "section": {
+     "anyOf": [
+      {
+       "$ref": "ThreadSection"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "sectionEnteredAt": {
+     "default": null,
+     "format": "int64",
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "sessionId": {
+     "type": "string"
+    },
+    "source": {
+     "allOf": [
+      {
+       "$ref": "SessionSource"
+      }
+     ]
+    },
+    "status": {
+     "allOf": [
+      {
+       "$ref": "ThreadStatus"
+      }
+     ]
+    },
+    "threadSource": {
+     "anyOf": [
+      {
+       "$ref": "ThreadSource"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "turns": {
+     "items": {
+      "$ref": "Turn"
+     },
+     "type": "array"
+    },
+    "updatedAt": {
+     "format": "int64",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "cliVersion",
+    "createdAt",
+    "cwd",
+    "ephemeral",
+    "id",
+    "modelProvider",
+    "preview",
+    "projectId",
+    "sessionId",
+    "source",
+    "status",
+    "turns",
+    "updatedAt"
+   ],
+   "type": "object"
+  },
+  "ThreadActiveFlag": {
+   "enum": [
+    "waitingOnApproval",
+    "waitingOnUserInput"
+   ],
+   "type": "string"
+  },
+  "ThreadForkParams": {
+   "properties": {
+    "approvalPolicy": {
+     "anyOf": [
+      {
+       "$ref": "AskForApproval"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "approvalsReviewer": {
+     "anyOf": [
+      {
+       "$ref": "ApprovalsReviewer"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "baseInstructions": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "config": {
+     "additionalProperties": true,
+     "type": [
+      "object",
+      "null"
+     ]
+    },
+    "cwd": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "developerInstructions": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "ephemeral": {
+     "type": "boolean"
+    },
+    "excludeTurns": {
+     "type": "boolean"
+    },
+    "lastTurnId": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "model": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "modelProvider": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "sandbox": {
+     "anyOf": [
+      {
+       "$ref": "SandboxMode"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "serviceTier": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "threadId": {
+     "type": "string"
+    },
+    "threadSource": {
+     "anyOf": [
+      {
+       "$ref": "ThreadSource"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    }
+   },
+   "required": [
+    "threadId"
+   ],
+   "type": "object"
+  },
+  "ThreadHistoryMode": {
+   "enum": [
+    "legacy",
+    "paginated"
+   ],
+   "type": "string"
+  },
+  "ThreadId": {
+   "type": "string"
+  },
+  "ThreadItem": {
+   "oneOf": [
+    {
+     "properties": {
+      "clientId": {
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "content": {
+       "items": {
+        "$ref": "UserInput"
+       },
+       "type": "array"
+      },
+      "id": {
+       "type": "string"
+      },
+      "type": {
+       "enum": [
+        "userMessage"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "content",
+      "id",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "fragments": {
+       "items": {
+        "$ref": "HookPromptFragment"
+       },
+       "type": "array"
+      },
+      "id": {
+       "type": "string"
+      },
+      "type": {
+       "enum": [
+        "hookPrompt"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "fragments",
+      "id",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "delivery": {
+       "anyOf": [
+        {
+         "$ref": "AgentMessageDelivery"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null
+      },
+      "id": {
+       "type": "string"
+      },
+      "memoryCitation": {
+       "anyOf": [
+        {
+         "$ref": "MemoryCitation"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null
+      },
+      "phase": {
+       "anyOf": [
+        {
+         "$ref": "MessagePhase"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null
+      },
+      "questions": {
+       "default": null,
+       "items": {
+        "$ref": "AsyncUserInputQuestion"
+       },
+       "type": [
+        "array",
+        "null"
+       ]
+      },
+      "text": {
+       "type": "string"
+      },
+      "type": {
+       "enum": [
+        "agentMessage"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "id",
+      "text",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "type": "string"
+      },
+      "name": {
+       "type": "string"
+      },
+      "namespace": {
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "output": {
+       "$ref": "FunctionCallOutputBody"
+      },
+      "type": {
+       "enum": [
+        "functionCallOutput"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "id",
+      "name",
+      "output",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "type": "string"
+      },
+      "text": {
+       "type": "string"
+      },
+      "type": {
+       "enum": [
+        "plan"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "id",
+      "text",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "content": {
+       "default": [],
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "id": {
+       "type": "string"
+      },
+      "summary": {
+       "default": [],
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "type": {
+       "enum": [
+        "reasoning"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "id",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "aggregatedOutput": {
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "command": {
+       "type": "string"
+      },
+      "commandActions": {
+       "items": {
+        "$ref": "CommandAction"
+       },
+       "type": "array"
+      },
+      "cwd": {
+       "allOf": [
+        {
+         "$ref": "LegacyAppPathString"
+        }
+       ]
+      },
+      "durationMs": {
+       "format": "int64",
+       "type": [
+        "integer",
+        "null"
+       ]
+      },
+      "exitCode": {
+       "format": "int32",
+       "type": [
+        "integer",
+        "null"
+       ]
+      },
+      "id": {
+       "type": "string"
+      },
+      "pluginId": {
+       "default": null,
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "processId": {
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "scriptPath": {
+       "default": null,
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "source": {
+       "allOf": [
+        {
+         "$ref": "CommandExecutionSource"
+        }
+       ],
+       "default": "agent"
+      },
+      "status": {
+       "$ref": "CommandExecutionStatus"
+      },
+      "type": {
+       "enum": [
+        "commandExecution"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "command",
+      "commandActions",
+      "cwd",
+      "id",
+      "status",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "changes": {
+       "items": {
+        "$ref": "FileUpdateChange"
+       },
+       "type": "array"
+      },
+      "id": {
+       "type": "string"
+      },
+      "status": {
+       "$ref": "PatchApplyStatus"
+      },
+      "type": {
+       "enum": [
+        "fileChange"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "changes",
+      "id",
+      "status",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "appContext": {
+       "anyOf": [
+        {
+         "$ref": "McpToolCallAppContext"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "arguments": true,
+      "durationMs": {
+       "format": "int64",
+       "type": [
+        "integer",
+        "null"
+       ]
+      },
+      "error": {
+       "anyOf": [
+        {
+         "$ref": "McpToolCallError"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "id": {
+       "type": "string"
+      },
+      "mcpAppResourceUri": {
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "mcpAppUi": {
+       "anyOf": [
+        {
+         "$ref": "McpAppUi"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "pluginId": {
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "readOnlyHint": {
+       "type": [
+        "boolean",
+        "null"
+       ]
+      },
+      "result": {
+       "anyOf": [
+        {
+         "$ref": "McpToolCallResult"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "server": {
+       "type": "string"
+      },
+      "status": {
+       "$ref": "McpToolCallStatus"
+      },
+      "tool": {
+       "type": "string"
+      },
+      "type": {
+       "enum": [
+        "mcpToolCall"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "arguments",
+      "id",
+      "server",
+      "status",
+      "tool",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "arguments": true,
+      "contentItems": {
+       "items": {
+        "$ref": "DynamicToolCallOutputContentItem"
+       },
+       "type": [
+        "array",
+        "null"
+       ]
+      },
+      "durationMs": {
+       "format": "int64",
+       "type": [
+        "integer",
+        "null"
+       ]
+      },
+      "id": {
+       "type": "string"
+      },
+      "namespace": {
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "status": {
+       "$ref": "DynamicToolCallStatus"
+      },
+      "success": {
+       "type": [
+        "boolean",
+        "null"
+       ]
+      },
+      "tool": {
+       "type": "string"
+      },
+      "type": {
+       "enum": [
+        "dynamicToolCall"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "arguments",
+      "id",
+      "status",
+      "tool",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "agentsStates": {
+       "additionalProperties": {
+        "$ref": "CollabAgentState"
+       },
+       "type": "object"
+      },
+      "id": {
+       "type": "string"
+      },
+      "model": {
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "prompt": {
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "reasoningEffort": {
+       "anyOf": [
+        {
+         "$ref": "ReasoningEffort"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "receiverThreadIds": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "senderThreadId": {
+       "type": "string"
+      },
+      "status": {
+       "allOf": [
+        {
+         "$ref": "CollabAgentToolCallStatus"
+        }
+       ]
+      },
+      "tool": {
+       "allOf": [
+        {
+         "$ref": "CollabAgentTool"
+        }
+       ]
+      },
+      "type": {
+       "enum": [
+        "collabAgentToolCall"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "agentsStates",
+      "id",
+      "receiverThreadIds",
+      "senderThreadId",
+      "status",
+      "tool",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "agentPath": {
+       "type": "string"
+      },
+      "agentThreadId": {
+       "type": "string"
+      },
+      "id": {
+       "type": "string"
+      },
+      "kind": {
+       "$ref": "SubAgentActivityKind"
+      },
+      "model": {
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "reasoningEffort": {
+       "anyOf": [
+        {
+         "$ref": "ReasoningEffort"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "type": {
+       "enum": [
+        "subAgentActivity"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "agentPath",
+      "agentThreadId",
+      "id",
+      "kind",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "action": {
+       "anyOf": [
+        {
+         "$ref": "WebSearchAction"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "id": {
+       "type": "string"
+      },
+      "query": {
+       "type": "string"
+      },
+      "results": {
+       "default": null,
+       "items": true,
+       "type": [
+        "array",
+        "null"
+       ]
+      },
+      "type": {
+       "enum": [
+        "webSearch"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "id",
+      "query",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "type": "string"
+      },
+      "path": {
+       "$ref": "LegacyAppPathString"
+      },
+      "type": {
+       "enum": [
+        "imageView"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "id",
+      "path",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "durationMs": {
+       "format": "uint64",
+       "minimum": 0.0,
+       "type": "integer"
+      },
+      "id": {
+       "type": "string"
+      },
+      "type": {
+       "enum": [
+        "sleep"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "durationMs",
+      "id",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "failure": {
+       "anyOf": [
+        {
+         "$ref": "ImageGenerationFailure"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null
+      },
+      "id": {
+       "type": "string"
+      },
+      "result": {
+       "type": "string"
+      },
+      "revisedPrompt": {
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "savedPath": {
+       "anyOf": [
+        {
+         "$ref": "AbsolutePathBuf"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "status": {
+       "type": "string"
+      },
+      "transparentBackground": {
+       "default": null,
+       "type": [
+        "boolean",
+        "null"
+       ]
+      },
+      "type": {
+       "enum": [
+        "imageGeneration"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "id",
+      "result",
+      "status",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "type": "string"
+      },
+      "review": {
+       "type": "string"
+      },
+      "type": {
+       "enum": [
+        "enteredReviewMode"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "id",
+      "review",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "type": "string"
+      },
+      "review": {
+       "type": "string"
+      },
+      "type": {
+       "enum": [
+        "exitedReviewMode"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "id",
+      "review",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "type": "string"
+      },
+      "type": {
+       "enum": [
+        "contextCompaction"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "id",
+      "type"
+     ],
+     "type": "object"
+    }
+   ]
+  },
+  "ThreadResumeParams": {
+   "properties": {
+    "approvalPolicy": {
+     "anyOf": [
+      {
+       "$ref": "AskForApproval"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "approvalsReviewer": {
+     "anyOf": [
+      {
+       "$ref": "ApprovalsReviewer"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "baseInstructions": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "config": {
+     "additionalProperties": true,
+     "type": [
+      "object",
+      "null"
+     ]
+    },
+    "cwd": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "developerInstructions": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "excludeTurns": {
+     "type": "boolean"
+    },
+    "model": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "modelProvider": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "personality": {
+     "anyOf": [
+      {
+       "$ref": "Personality"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "sandbox": {
+     "anyOf": [
+      {
+       "$ref": "SandboxMode"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "serviceTier": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "threadId": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "threadId"
+   ],
+   "type": "object"
+  },
+  "ThreadSection": {
+   "properties": {
+    "appearance": {
+     "anyOf": [
+      {
+       "$ref": "ThreadSectionAppearance"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "id": {
+     "type": "string"
+    },
+    "name": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "id",
+    "name"
+   ],
+   "type": "object"
+  },
+  "ThreadSectionAppearance": {
+   "properties": {
+    "color": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "icon": {
+     "type": [
+      "string",
+      "null"
+     ]
+    }
+   },
+   "type": "object"
+  },
+  "ThreadSource": {
+   "type": "string"
+  },
+  "ThreadStartParams": {
+   "properties": {
+    "approvalPolicy": {
+     "anyOf": [
+      {
+       "$ref": "AskForApproval"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "approvalsReviewer": {
+     "anyOf": [
+      {
+       "$ref": "ApprovalsReviewer"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "baseInstructions": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "config": {
+     "additionalProperties": true,
+     "type": [
+      "object",
+      "null"
+     ]
+    },
+    "cwd": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "developerInstructions": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "ephemeral": {
+     "type": [
+      "boolean",
+      "null"
+     ]
+    },
+    "model": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "modelProvider": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "personality": {
+     "anyOf": [
+      {
+       "$ref": "Personality"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "sandbox": {
+     "anyOf": [
+      {
+       "$ref": "SandboxMode"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "serviceName": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "serviceTier": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "sessionStartSource": {
+     "anyOf": [
+      {
+       "$ref": "ThreadStartSource"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "threadSource": {
+     "anyOf": [
+      {
+       "$ref": "ThreadSource"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    }
+   },
+   "type": "object"
+  },
+  "ThreadStartSource": {
+   "enum": [
+    "startup",
+    "clear"
+   ],
+   "type": "string"
+  },
+  "ThreadStatus": {
+   "oneOf": [
+    {
+     "properties": {
+      "type": {
+       "enum": [
+        "notLoaded"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "type": {
+       "enum": [
+        "idle"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "type": {
+       "enum": [
+        "systemError"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "activeFlags": {
+       "items": {
+        "$ref": "ThreadActiveFlag"
+       },
+       "type": "array"
+      },
+      "type": {
+       "enum": [
+        "active"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "activeFlags",
+      "type"
+     ],
+     "type": "object"
+    }
+   ]
+  },
+  "ThreadTokenUsage": {
+   "properties": {
+    "last": {
+     "$ref": "TokenUsageBreakdown"
+    },
+    "modelContextWindow": {
+     "format": "int64",
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "total": {
+     "$ref": "TokenUsageBreakdown"
+    }
+   },
+   "required": [
+    "last",
+    "total"
+   ],
+   "type": "object"
+  },
+  "ThreadTokenUsageUpdatedNotification": {
+   "properties": {
+    "threadId": {
+     "type": "string"
+    },
+    "tokenUsage": {
+     "$ref": "ThreadTokenUsage"
+    },
+    "turnId": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "threadId",
+    "tokenUsage",
+    "turnId"
+   ],
+   "type": "object"
+  },
+  "TokenUsageBreakdown": {
+   "properties": {
+    "cacheWriteInputTokens": {
+     "default": 0,
+     "format": "int64",
+     "type": "integer"
+    },
+    "cachedInputTokens": {
+     "format": "int64",
+     "type": "integer"
+    },
+    "inputTokens": {
+     "format": "int64",
+     "type": "integer"
+    },
+    "outputTokens": {
+     "format": "int64",
+     "type": "integer"
+    },
+    "reasoningOutputTokens": {
+     "format": "int64",
+     "type": "integer"
+    },
+    "totalTokens": {
+     "format": "int64",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "cachedInputTokens",
+    "inputTokens",
+    "outputTokens",
+    "reasoningOutputTokens",
+    "totalTokens"
+   ],
+   "type": "object"
+  },
+  "Turn": {
+   "properties": {
+    "completedAt": {
+     "format": "int64",
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "durationMs": {
+     "format": "int64",
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "error": {
+     "anyOf": [
+      {
+       "$ref": "TurnError"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "id": {
+     "type": "string"
+    },
+    "items": {
+     "items": {
+      "$ref": "ThreadItem"
+     },
+     "type": "array"
+    },
+    "itemsView": {
+     "allOf": [
+      {
+       "$ref": "TurnItemsView"
+      }
+     ],
+     "default": "full"
+    },
+    "rootTurnId": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "startedAt": {
+     "format": "int64",
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "status": {
+     "$ref": "TurnStatus"
+    }
+   },
+   "required": [
+    "id",
+    "items",
+    "status"
+   ],
+   "type": "object"
+  },
+  "TurnCompletedNotification": {
+   "properties": {
+    "threadId": {
+     "type": "string"
+    },
+    "turn": {
+     "$ref": "Turn"
+    }
+   },
+   "required": [
+    "threadId",
+    "turn"
+   ],
+   "type": "object"
+  },
+  "TurnError": {
+   "properties": {
+    "additionalDetails": {
+     "default": null,
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "codexErrorInfo": {
+     "anyOf": [
+      {
+       "$ref": "CodexErrorInfo"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "message": {
+     "type": "string"
+    },
+    "misalignment": {
+     "anyOf": [
+      {
+       "$ref": "MisalignmentErrorDetails"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    }
+   },
+   "required": [
+    "message"
+   ],
+   "type": "object"
+  },
+  "TurnInterruptParams": {
+   "properties": {
+    "threadId": {
+     "type": "string"
+    },
+    "turnId": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "threadId",
+    "turnId"
+   ],
+   "type": "object"
+  },
+  "TurnItemsView": {
+   "oneOf": [
+    {
+     "enum": [
+      "notLoaded"
+     ],
+     "type": "string"
+    },
+    {
+     "enum": [
+      "summary"
+     ],
+     "type": "string"
+    },
+    {
+     "enum": [
+      "full"
+     ],
+     "type": "string"
+    }
+   ]
+  },
+  "TurnStartParams": {
+   "properties": {
+    "approvalPolicy": {
+     "anyOf": [
+      {
+       "$ref": "AskForApproval"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "approvalsReviewer": {
+     "anyOf": [
+      {
+       "$ref": "ApprovalsReviewer"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "clientUserMessageId": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "cwd": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "disabledPluginIds": {
+     "items": {
+      "type": "string"
+     },
+     "type": [
+      "array",
+      "null"
+     ]
+    },
+    "effort": {
+     "anyOf": [
+      {
+       "$ref": "ReasoningEffort"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "input": {
+     "items": {
+      "$ref": "UserInput"
+     },
+     "type": "array"
+    },
+    "model": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "outputSchema": {},
+    "parentTurnId": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "personality": {
+     "anyOf": [
+      {
+       "$ref": "Personality"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "rootTurnId": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "sandboxPolicy": {
+     "anyOf": [
+      {
+       "$ref": "SandboxPolicy"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "serviceTier": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "serviceTierForTurn": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "summary": {
+     "anyOf": [
+      {
+       "$ref": "ReasoningSummary"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "threadId": {
+     "type": "string"
+    },
+    "toolOutput": {
+     "anyOf": [
+      {
+       "$ref": "TurnToolOutput"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "turnTrigger": {
+     "type": [
+      "string",
+      "null"
+     ]
+    }
+   },
+   "required": [
+    "input",
+    "threadId"
+   ],
+   "type": "object"
+  },
+  "TurnStartedNotification": {
+   "properties": {
+    "threadId": {
+     "type": "string"
+    },
+    "turn": {
+     "$ref": "Turn"
+    }
+   },
+   "required": [
+    "threadId",
+    "turn"
+   ],
+   "type": "object"
+  },
+  "TurnStatus": {
+   "enum": [
+    "completed",
+    "interrupted",
+    "failed",
+    "inProgress"
+   ],
+   "type": "string"
+  },
+  "TurnSteerParams": {
+   "properties": {
+    "clientUserMessageId": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "expectedTurnId": {
+     "type": "string"
+    },
+    "input": {
+     "items": {
+      "$ref": "UserInput"
+     },
+     "type": "array"
+    },
+    "threadId": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "expectedTurnId",
+    "input",
+    "threadId"
+   ],
+   "type": "object"
+  },
+  "TurnToolOutput": {
+   "properties": {
+    "name": {
+     "type": "string"
+    },
+    "namespace": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "output": {
+     "$ref": "FunctionCallOutputBody"
+    }
+   },
+   "required": [
+    "name",
+    "output"
+   ],
+   "type": "object"
+  },
+  "UserInput": {
+   "oneOf": [
+    {
+     "properties": {
+      "text": {
+       "type": "string"
+      },
+      "text_elements": {
+       "default": [],
+       "items": {
+        "$ref": "TextElement"
+       },
+       "type": "array"
+      },
+      "type": {
+       "enum": [
+        "text"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "text",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "anyOf": [
+      {
+       "properties": {
+        "url": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "url"
+       ],
+       "type": "object"
+      },
+      {
+       "properties": {
+        "fileId": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "fileId"
+       ],
+       "type": "object"
+      }
+     ],
+     "properties": {
+      "detail": {
+       "anyOf": [
+        {
+         "$ref": "ImageDetail"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null
+      },
+      "type": {
+       "enum": [
+        "image"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "detail": {
+       "anyOf": [
+        {
+         "$ref": "ImageDetail"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null
+      },
+      "path": {
+       "type": "string"
+      },
+      "type": {
+       "enum": [
+        "localImage"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "path",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "type": {
+       "enum": [
+        "audio"
+       ],
+       "type": "string"
+      },
+      "url": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "type",
+      "url"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "path": {
+       "type": "string"
+      },
+      "type": {
+       "enum": [
+        "localAudio"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "path",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "name": {
+       "type": "string"
+      },
+      "path": {
+       "type": "string"
+      },
+      "type": {
+       "enum": [
+        "skill"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "name",
+      "path",
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "name": {
+       "type": "string"
+      },
+      "path": {
+       "type": "string"
+      },
+      "type": {
+       "enum": [
+        "mention"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "name",
+      "path",
+      "type"
+     ],
+     "type": "object"
+    }
+   ]
+  },
+  "WebSearchAction": {
+   "oneOf": [
+    {
+     "properties": {
+      "queries": {
+       "items": {
+        "type": "string"
+       },
+       "type": [
+        "array",
+        "null"
+       ]
+      },
+      "query": {
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "type": {
+       "enum": [
+        "search"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "type": {
+       "enum": [
+        "openPage"
+       ],
+       "type": "string"
+      },
+      "url": {
+       "type": [
+        "string",
+        "null"
+       ]
+      }
+     },
+     "required": [
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "pattern": {
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "type": {
+       "enum": [
+        "findInPage"
+       ],
+       "type": "string"
+      },
+      "url": {
+       "type": [
+        "string",
+        "null"
+       ]
+      }
+     },
+     "required": [
+      "type"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "type": {
+       "enum": [
+        "other"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "type"
+     ],
+     "type": "object"
+    }
+   ]
+  }
+ }
+}

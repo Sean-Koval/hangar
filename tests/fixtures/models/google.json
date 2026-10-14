@@ -1,0 +1,11 @@
+{
+ "models": [
+  {"name": "models/gemini-3.8-flash", "version": "3.8", "displayName": "Gemini 3.8 Flash", "inputTokenLimit": 1048576, "outputTokenLimit": 65536, "supportedGenerationMethods": ["generateContent", "countTokens", "createCachedContent"]},
+  {"name": "models/gemini-3.7-flash", "version": "3.7", "displayName": "Gemini 3.7 Flash", "inputTokenLimit": 1048576, "outputTokenLimit": 65536, "supportedGenerationMethods": ["generateContent", "countTokens"]},
+  {"name": "models/gemini-3.5-flash-lite", "version": "3.5", "displayName": "Gemini 3.5 Flash-Lite", "inputTokenLimit": 1048576, "outputTokenLimit": 65536, "supportedGenerationMethods": ["generateContent", "countTokens"]},
+  {"name": "models/gemini-3.1-pro-preview", "version": "3.1-preview", "displayName": "Gemini 3.1 Pro Preview", "inputTokenLimit": 1048576, "outputTokenLimit": 65536, "supportedGenerationMethods": ["generateContent", "countTokens"]},
+  {"name": "models/gemini-3.1-pro-preview-customtools", "version": "3.1-preview", "displayName": "Gemini 3.1 Pro Preview (custom tools)", "supportedGenerationMethods": ["generateContent"]},
+  {"name": "models/gemini-3-pro-image", "version": "3", "displayName": "Gemini 3 Pro Image", "supportedGenerationMethods": ["generateContent"]}
+ ],
+ "nextPageToken": "page-2"
+}

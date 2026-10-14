@@ -145,7 +145,7 @@ name: my-service
 extends: python                    # bare + Python 3.12/uv/ruff/pytest; bare = Ubuntu + git/gh/tmux/rg
 harnesses: [claude-code, codex]    # agents this env allows: claude-code, codex, pi, antigravity
 default_harness: claude-code
-model: { claude-code: opus, codex: gpt-5.5 }  # default per harness for run_agent; or one string
+model: { claude-code: frontier, codex: balanced }  # per harness, or one: a policy or a pinned id (harnesses.md)
 tools:
   apt: [postgresql-client]
   mise: { go: "1.23" }

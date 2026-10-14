@@ -22,6 +22,7 @@ from hangar import drain as drain  # --- reconciler
 from hangar import envbuilds as envbuilds  # --- envbuilds
 from hangar import exchange, observe  # --- observe
 from hangar import ghprojects as ghprojects  # --- intake: registers the GitHub Projects write-back
+from hangar import modelpolicy as modelpolicy  # --- canary
 from hangar import people as people  # --- teamcreds
 from hangar import redeliver as redeliver  # --- reconciler
 from hangar import teamcreds as teamcreds  # --- teamcreds
@@ -346,6 +347,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         h.rotation.resume()  # --- durable: a key rotation a restart interrupted carries on
         h.retention.start()  # --- scale
         h.ops.start()  # --- clouddoctor
+        modelpolicy.of(h.fleet).start()  # --- canary: providers' model lists, fetched now and kept fresh
         missed = redeliver.start(h)  # --- reconciler: GitHub deliveries that failed while hangar was down
         async with mcp.session_manager.run():
             yield
@@ -356,6 +358,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await h.rotation.stop()  # --- durable
         await h.retention.stop()  # --- scale
         await h.ops.stop()  # --- clouddoctor
+        await modelpolicy.of(h.fleet).stop()  # --- canary
         if prebuild:
             prebuild.cancel()
         await h.triggers.stop()

@@ -33,6 +33,7 @@ from hangar import flightrec as flightrec  # --- clouddoctor: failed and slow tu
 from hangar import hot_resume as hot_resume  # --- providers-e2b
 from hangar import keys as keys  # --- durable
 from hangar import metrics as metrics  # --- reconciler
+from hangar import pins as pins  # --- canary: the model and the CLI version a session is pinned to
 from hangar import resident as resident  # --- durable: live and recent sessions in memory, the rest in the store
 from hangar import slo as slo  # --- clouddoctor: turn-start and resume times for `hangar status`
 from hangar import steer as steering  # workstream steer: live turns
@@ -312,6 +313,7 @@ class SessionService:
                     person=person)  # --- identity
         s.budget = resolve_budget(req.budget, self.settings)
         caching.pin_model(self, s)  # --- overnight/cache
+        pins.pin(self, s)  # --- canary: a policy becomes a concrete id; the CLI version
         self._sessions[s.id] = s
         self._set(s, SessionState.STARTING, f"created by {requester}")
         self.fleet.audit(requester, "session.new", s.id, name=s.name, environment=env, repo=s.repo)
@@ -340,6 +342,7 @@ class SessionService:
             except ValueError as e:
                 raise SessionError(str(e)) from e
             s.model = spec.model_for(s.harness)  # --- overnight/cache: model ids are per harness; a switch hands off
+            pins.pin(self, s)  # --- canary
             self._save(s)
         if self.busy(s.id) or (live and s.state in SESSION_LIVE):
             return s
@@ -366,6 +369,7 @@ class SessionService:
             model = caching.check_model(model)  # --- overnight/cache
         except ValueError as e:
             raise SessionError(str(e)) from e
+        model = pins.concrete(self, s, model)  # --- canary: `frontier` names a model now, not each turn
         if s.state == SessionState.ARCHIVED:
             raise SessionError(f"session {s.name} is archived")
         if s.job_id:
@@ -818,6 +822,7 @@ class SessionService:
                     environment=environment, harness=harness, model=model, repo=repo, base_branch=base_branch,
                     branch=branch, provider=provider, labels={**labels, "hangar.job": job_id}, job_id=job_id,
                     extra_dirs=extra_dirs, idle_minutes=max(1, idle_minutes), person=person)  # --- identity
+        pins.pin(self, s)  # --- canary: jobs default to `frontier`
         self._sessions[s.id] = s
         self._set(s, SessionState.SUSPENDED, f"carries job {job_id}")
         return s
@@ -917,6 +922,7 @@ class SessionService:
 
         h = get_harness(s.harness)
         env: dict[str, str] = {}
+        pins.before_turn(self, s, sb, turn)  # --- canary: another CLI version than the conversation's hands off
         claim_conversation(self, s)
         if self.will_resume(s):
             turn.mode = "resume"

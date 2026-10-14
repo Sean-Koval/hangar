@@ -1,0 +1,718 @@
+{
+ "data": [
+  {
+   "id": "anthropic/claude-haiku-5.5",
+   "canonical_slug": "anthropic/claude-haiku-5.5-20261007",
+   "name": "Anthropic: Claude Haiku 5.5",
+   "created": 1791397883,
+   "context_length": 1000000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "text",
+     "image",
+     "file"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Claude",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "anthropic/claude-haiku-5.5:batch",
+   "canonical_slug": "anthropic/claude-haiku-5.5-20261007",
+   "name": "Anthropic: Claude Haiku 5.5 (batch)",
+   "created": 1791397883,
+   "context_length": 1000000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "text",
+     "image",
+     "file"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Claude",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "openai/gpt-6.1-sol",
+   "canonical_slug": "openai/gpt-6.1-sol-20260929",
+   "name": "OpenAI: GPT-6.1 Sol",
+   "created": 1790702882,
+   "context_length": 1050000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "file",
+     "image",
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "GPT",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "openai/gpt-6.1-sol:batch",
+   "canonical_slug": "openai/gpt-6.1-sol-20260929",
+   "name": "OpenAI: GPT-6.1 Sol (batch)",
+   "created": 1790702882,
+   "context_length": 1050000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "file",
+     "image",
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "GPT",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "anthropic/claude-sonnet-5.5",
+   "canonical_slug": "anthropic/claude-sonnet-5.5-20260928",
+   "name": "Anthropic: Claude Sonnet 5.5",
+   "created": 1790618686,
+   "context_length": 1000000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "text",
+     "image",
+     "file"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Claude",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "anthropic/claude-sonnet-5.5:batch",
+   "canonical_slug": "anthropic/claude-sonnet-5.5-20260928",
+   "name": "Anthropic: Claude Sonnet 5.5 (batch)",
+   "created": 1790618686,
+   "context_length": 1000000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "text",
+     "image",
+     "file"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Claude",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "openai/gpt-6-luna",
+   "canonical_slug": "openai/gpt-6-luna-20260922",
+   "name": "OpenAI: GPT-6 Luna",
+   "created": 1790100786,
+   "context_length": 1050000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "file",
+     "image",
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "GPT",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "openai/gpt-6-luna:batch",
+   "canonical_slug": "openai/gpt-6-luna-20260922",
+   "name": "OpenAI: GPT-6 Luna (batch)",
+   "created": 1790100786,
+   "context_length": 1050000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "file",
+     "image",
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "GPT",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "openai/gpt-6-sol",
+   "canonical_slug": "openai/gpt-6-sol-20260922",
+   "name": "OpenAI: GPT-6 Sol",
+   "created": 1790100775,
+   "context_length": 1050000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "file",
+     "image",
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "GPT",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "openai/gpt-6-sol:batch",
+   "canonical_slug": "openai/gpt-6-sol-20260922",
+   "name": "OpenAI: GPT-6 Sol (batch)",
+   "created": 1790100775,
+   "context_length": 1050000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "file",
+     "image",
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "GPT",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "anthropic/claude-opus-5.5",
+   "canonical_slug": "anthropic/claude-opus-5.5-20260921",
+   "name": "Anthropic: Claude Opus 5.5",
+   "created": 1790094732,
+   "context_length": 1000000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "text",
+     "image",
+     "file"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Claude",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "anthropic/claude-opus-5.5:batch",
+   "canonical_slug": "anthropic/claude-opus-5.5-20260921",
+   "name": "Anthropic: Claude Opus 5.5 (batch)",
+   "created": 1790094732,
+   "context_length": 1000000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "text",
+     "image",
+     "file"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Claude",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "~openai/gpt-astra-latest",
+   "canonical_slug": "~openai/gpt-astra-latest",
+   "name": "OpenAI: GPT Astra Latest",
+   "created": 1789130932,
+   "context_length": 1050000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "file",
+     "image",
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Router",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "openai/gpt-6-astra",
+   "canonical_slug": "openai/gpt-6-astra-20260903",
+   "name": "OpenAI: GPT-6 Astra",
+   "created": 1788552838,
+   "context_length": 1050000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "file",
+     "image",
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "GPT",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "openai/gpt-6-astra:batch",
+   "canonical_slug": "openai/gpt-6-astra-20260903",
+   "name": "OpenAI: GPT-6 Astra (batch)",
+   "created": 1788552838,
+   "context_length": 1050000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "file",
+     "image",
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "GPT",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "openai/gpt-6-astra-pro",
+   "canonical_slug": "openai/gpt-6-astra-pro-20260903",
+   "name": "OpenAI: GPT-6 Astra Pro",
+   "created": 1788552835,
+   "context_length": 1050000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "file",
+     "image",
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "GPT",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "openai/gpt-6-astra-pro:batch",
+   "canonical_slug": "openai/gpt-6-astra-pro-20260903",
+   "name": "OpenAI: GPT-6 Astra Pro (batch)",
+   "created": 1788552835,
+   "context_length": 1050000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "file",
+     "image",
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "GPT",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "google/gemini-3.8-flash",
+   "canonical_slug": "google/gemini-3.8-flash-20260902",
+   "name": "Google: Gemini 3.8 Flash",
+   "created": 1788362056,
+   "context_length": 1048576,
+   "architecture": {
+    "modality": "text+image+file+audio+video->text",
+    "input_modalities": [
+     "text",
+     "image",
+     "video",
+     "file",
+     "audio"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Gemini",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "google/gemini-3.8-flash:batch",
+   "canonical_slug": "google/gemini-3.8-flash-20260902",
+   "name": "Google: Gemini 3.8 Flash (batch)",
+   "created": 1788362056,
+   "context_length": 1048576,
+   "architecture": {
+    "modality": "text+image+file+audio+video->text",
+    "input_modalities": [
+     "text",
+     "image",
+     "video",
+     "file",
+     "audio"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Gemini",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "anthropic/claude-fable-5.1",
+   "canonical_slug": "anthropic/claude-fable-5.1-20260831",
+   "name": "Anthropic: Claude Fable 5.1",
+   "created": 1788285838,
+   "context_length": 1000000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "text",
+     "image",
+     "file"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Claude",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "anthropic/claude-fable-5.1:batch",
+   "canonical_slug": "anthropic/claude-fable-5.1-20260831",
+   "name": "Anthropic: Claude Fable 5.1 (batch)",
+   "created": 1788285838,
+   "context_length": 1000000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "text",
+     "image",
+     "file"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Claude",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "anthropic/claude-opus-5",
+   "canonical_slug": "anthropic/claude-opus-5-20260723",
+   "name": "Anthropic: Claude Opus 5",
+   "created": 1784912544,
+   "context_length": 1000000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "text",
+     "image",
+     "file"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Claude",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "anthropic/claude-opus-5:batch",
+   "canonical_slug": "anthropic/claude-opus-5-20260723",
+   "name": "Anthropic: Claude Opus 5 (batch)",
+   "created": 1784912544,
+   "context_length": 1000000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "text",
+     "image",
+     "file"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Claude",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "google/gemini-3.5-flash-lite",
+   "canonical_slug": "google/gemini-3.5-flash-lite-20260721",
+   "name": "Google: Gemini 3.5 Flash Lite",
+   "created": 1784646726,
+   "context_length": 1048576,
+   "architecture": {
+    "modality": "text+image+file+audio+video->text",
+    "input_modalities": [
+     "text",
+     "image",
+     "video",
+     "file",
+     "audio"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Gemini",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "google/gemini-3.5-flash-lite:batch",
+   "canonical_slug": "google/gemini-3.5-flash-lite-20260721",
+   "name": "Google: Gemini 3.5 Flash Lite (batch)",
+   "created": 1784646726,
+   "context_length": 1048576,
+   "architecture": {
+    "modality": "text+image+file+audio+video->text",
+    "input_modalities": [
+     "text",
+     "image",
+     "video",
+     "file",
+     "audio"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Gemini",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "openai/gpt-5.6-terra",
+   "canonical_slug": "openai/gpt-5.6-terra-20260709",
+   "name": "OpenAI: GPT-5.6 Terra",
+   "created": 1783590857,
+   "context_length": 1050000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "file",
+     "image",
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "GPT",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "openai/gpt-5.6-terra:batch",
+   "canonical_slug": "openai/gpt-5.6-terra-20260709",
+   "name": "OpenAI: GPT-5.6 Terra (batch)",
+   "created": 1783590857,
+   "context_length": 1050000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "file",
+     "image",
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "GPT",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "google/gemini-3-pro-image",
+   "canonical_slug": "google/gemini-3-pro-image-20260528",
+   "name": "Google: Nano Banana Pro (Gemini 3 Pro Image)",
+   "created": 1781754054,
+   "context_length": 131072,
+   "architecture": {
+    "modality": "text+image->text+image",
+    "input_modalities": [
+     "image",
+     "text"
+    ],
+    "output_modalities": [
+     "image",
+     "text"
+    ],
+    "tokenizer": "Gemini",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "~anthropic/claude-fable-latest",
+   "canonical_slug": "~anthropic/claude-fable-latest",
+   "name": "Anthropic: Claude Fable Latest",
+   "created": 1781029944,
+   "context_length": 1000000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "text",
+     "image",
+     "file"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Router",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "anthropic/claude-fable-5",
+   "canonical_slug": "anthropic/claude-5-fable-20260609",
+   "name": "Anthropic: Claude Fable 5",
+   "created": 1781007515,
+   "context_length": 1000000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "text",
+     "image",
+     "file"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Claude",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "anthropic/claude-fable-5:batch",
+   "canonical_slug": "anthropic/claude-5-fable-20260609",
+   "name": "Anthropic: Claude Fable 5 (batch)",
+   "created": 1781007515,
+   "context_length": 1000000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "text",
+     "image",
+     "file"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Claude",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "~google/gemini-pro-latest",
+   "canonical_slug": "~google/gemini-pro-latest",
+   "name": "Google: Gemini Pro Latest",
+   "created": 1777318451,
+   "context_length": 1048576,
+   "architecture": {
+    "modality": "text+image+file+audio+video->text",
+    "input_modalities": [
+     "audio",
+     "file",
+     "image",
+     "text",
+     "video"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Router",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "openai/gpt-5.3-codex",
+   "canonical_slug": "openai/gpt-5.3-codex-20260224",
+   "name": "OpenAI: GPT-5.3-Codex",
+   "created": 1771959164,
+   "context_length": 400000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "text",
+     "image",
+     "file"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "GPT",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "google/gemini-3.1-pro-preview",
+   "canonical_slug": "google/gemini-3.1-pro-preview-20260219",
+   "name": "Google: Gemini 3.1 Pro Preview",
+   "created": 1771509627,
+   "context_length": 1048576,
+   "architecture": {
+    "modality": "text+image+file+audio+video->text",
+    "input_modalities": [
+     "audio",
+     "file",
+     "image",
+     "text",
+     "video"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Gemini",
+    "instruct_type": null
+   }
+  },
+  {
+   "id": "google/gemini-3.1-pro-preview:batch",
+   "canonical_slug": "google/gemini-3.1-pro-preview-20260219",
+   "name": "Google: Gemini 3.1 Pro Preview (batch)",
+   "created": 1771509627,
+   "context_length": 1048576,
+   "architecture": {
+    "modality": "text+image+file+audio+video->text",
+    "input_modalities": [
+     "audio",
+     "file",
+     "image",
+     "text",
+     "video"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Gemini",
+    "instruct_type": null
+   }
+  }
+ ]
+}
