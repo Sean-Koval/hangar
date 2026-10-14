@@ -31,6 +31,7 @@ import time
 from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, NamedTuple
+from urllib.parse import urlsplit
 
 import httpx
 from pydantic import BaseModel, field_validator
@@ -41,7 +42,9 @@ from starlette.requests import ClientDisconnect, Request
 from starlette.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 from starlette.routing import Route
 
+from hangar import ghapi as ghapi  # --- egress2
 from hangar import observe  # --- observe
+from hangar import pkgmirror as pkgmirror  # --- egress2
 from hangar import pushscan as pushscan  # --- egress2
 from hangar.auth import hash_token
 from hangar.models import Credential, CredentialKind, Sandbox, SandboxGrant, SandboxState, Session, Snapshot, now
@@ -545,6 +548,8 @@ class Gateway:
         self._failures = _AuthFailures(AUTH_FAILURES, AUTH_WINDOW)  # overnight/sandbox-security
         self._inflight: dict[str, int] = {}  # token hash -> requests in flight (_InflightLimit)
         self.scanner = pushscan.Scanner(self)  # --- egress2: secret scanning of pushes, before they go upstream
+        self.mirror = pkgmirror.Mirror(self)  # --- egress2: read-only package mirrors at /pkg
+        self.github = ghapi.GitHubRead(self)  # --- egress2: the read-only GitHub API at /gh/api
 
     # ------------------------------------------------------------------ plumbing
     @property
@@ -568,7 +573,8 @@ class Gateway:
 
     def routes(self) -> list[Route]:
         return [Route("/git/{rest:path}", self.handle, methods=["GET", "POST"],
-                      middleware=[Middleware(_InflightLimit, gateway=self)])]
+                      middleware=[Middleware(_InflightLimit, gateway=self)]),
+                *self.github.routes(), *(self.mirror.routes() if self.settings.package_mirror else [])]  # --- egress2
 
     async def healthz(self, request: Request) -> Response:
         return JSONResponse({"ok": True, "service": "hangar-gateway"})
@@ -717,6 +723,10 @@ class Gateway:
         scheme, _, rest = gw.partition("://")
         body = f"{scheme}://x-access-token:{token}@{rest.split('/', 1)[0]}\n" if token else ""
         await prov.write_file(sb, f"{home}/.git-credentials", body.encode(), mode=0o600)
+        if token and (host := urlsplit(gw).hostname):  # --- egress2: `curl -n` for the read-only GitHub API
+            cur = await prov.read_file(sb, f"{home}/.netrc", limit=65536) or b""
+            await prov.write_file(sb, f"{home}/.netrc", ghapi.netrc(cur.decode(errors="replace"), host, token).encode(),
+                                  mode=0o600)
 
     # ------------------------------------------------------------------ upstream
     async def upstream_token(self, grant: SandboxGrant, repo: str) -> str:

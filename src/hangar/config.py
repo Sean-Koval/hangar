@@ -294,6 +294,13 @@ class Settings(BaseSettings):
     # addresses (the metadata servers) are refused regardless.
     egress_private_hosts: list[str] = Field(default_factory=list)
     egress_max_connections_per_sandbox: int = 128  # one person's 10 sandboxes stay well under MAX_CONNECTIONS
+    # --- egress2: read-only package mirrors at /pkg/<pypi|npm|go>/ on the git gateway's port (pkgmirror.py). With
+    # it on (and HANGAR_GATEWAY_URL set) the pypi, npm and go presets point proxied sandboxes there, and the public
+    # registries' hosts, which take uploads too, stay closed. Upstreams default to the public registries; on GKE
+    # point them at Artifact Registry remote repositories: {"pypi": "https://us-python.pkg.dev/PROJECT/REPO", ...}.
+    package_mirror: bool = True
+    package_mirrors: dict[str, str] = Field(default_factory=dict)
+    package_mirror_cache_mb: int = Field(1024, ge=0)  # immutable files kept on the data volume; 0: no cache
     # --- egress: secret scanning before hangar pushes a job's branch (secretscan.py). block: a hit stops the push
     # and goes back to the agent (at most secret_scan_rounds fix turns); warn: job events only; off.
     secret_scan: Literal["block", "warn", "off"] = "block"

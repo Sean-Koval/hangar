@@ -604,6 +604,17 @@ class EgressProxy:
             u = self._usage[key] = [0, 0, 0, rule.text, rule.source, mode]
         u[0] += 1
 
+    def record(self, sb: Sandbox, host: str, port: int, rule: str, mode: str, out: int, in_: int) -> None:
+        """--- egress2: a request hangar served the sandbox itself (the package mirror), summed into the same
+        egress.allow entries as proxied traffic."""
+        metrics.egress_connection("allow", "mirror", mode)
+        if len(self._usage) > 50_000:
+            self.flush()
+        u = self._usage.setdefault((sb.id, host, port), [0, 0, 0, rule, "mirror", mode])
+        u[0] += 1
+        u[1] += out
+        u[2] += in_
+
     def _event(self, sb: Sandbox, text: str, data: dict[str, Any]) -> None:
         sid = sb.labels.get("hangar.session")
         if not sid or self.activity is None:

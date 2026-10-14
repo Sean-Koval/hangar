@@ -465,11 +465,7 @@ class Scanner:
         """A file at a commit, from GitHub's contents API with the gateway's own credential; b"" when it isn't
         there, None when it can't be read."""
         gw = self.gw
-        host = grant.host
-        if host == "github.com":
-            api = gw.settings.github_api_url.rstrip("/")
-        else:  # GitHub Enterprise Server: the API lives under /api/v3 of the same host
-            api = (gw.settings.gateway_upstreams.get(host) or f"https://{host}").rstrip("/") + "/api/v3"
+        api = gw.github.api_base(grant.host)
         try:
             token = await gw.upstream_token(grant, repo)
             r = await gw._http().get(f"{api}/repos/{repo}/contents/{quote(path)}", params={"ref": ref},
