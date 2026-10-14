@@ -108,6 +108,10 @@ class Credential(BaseModel):
     # How to materialize inside a sandbox; filled from the harness profile when omitted.
     env_var: str | None = None
     file_path: str | None = None
+    # --- identity: where it may go (identity.exposure). Unset: derived (control-plane for signing keys, GitHub App
+    # keys and the GitHub tokens hangar's settings name; sandbox for the rest). `sandbox` shares a control-plane
+    # GitHub token with sandboxes; signing keys and App keys stay control-plane whatever this says.
+    exposure: Literal["sandbox", "control_plane"] | None = None
 
 
 # ---------------------------------------------------------------------------- workstream C: events/usage/budgets

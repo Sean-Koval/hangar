@@ -17,6 +17,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
+import hangar.identity as identity  # --- identity
 from hangar import exchange, harden, isolation, observe  # --- observe, isolation, harden
 from hangar.broker import AUTH_FILE_LIMIT, Broker, CredentialError
 from hangar.config import Settings
@@ -134,6 +135,7 @@ class Fleet:
         self.settings = settings
         self.store = store
         self.broker = broker
+        broker.settings = settings  # --- identity: the broker refuses the credentials these settings name
         self.catalog = catalog
         self.providers: dict[str, Provider] = {}
         self.provider_errors: dict[str, str] = {}
@@ -225,6 +227,7 @@ class Fleet:
                 "digest": ctx.digest}
 
     def save_environment(self, data: dict[str, Any], actor: str = "system") -> EnvSpec:
+        identity.check_environment(data, self.store, self.settings)  # --- identity: admin fields, control-plane secrets
         spec = self.catalog.add(data)
         self.audit(actor, "environment.save", spec.name)
         return spec
@@ -577,6 +580,8 @@ class Fleet:
                           if self._cred_harness(c) in (hname, None) or not self._is_agent(self._cred_harness(c))]
         for c in [*cred_names, *spec.secrets.values()]:
             self.broker.get(c)  # fail fast on typos
+        for c in spec.secrets.values():  # --- identity: and on control-plane credentials mapped in (B4)
+            self.broker.check_sandbox(c)
         ttl = ttl_minutes if ttl_minutes is not None else self.settings.default_ttl_minutes
         base_name = _slug(name or f"{environment}-{new_id('x')[2:]}")
         taken = {s.name for s in active}
@@ -686,7 +691,7 @@ class Fleet:
             extra_env.update(h.env)
             extra_env["HANGAR_HARNESS"] = h.name
         for var, cred in spec.secrets.items():
-            extra_env[var] = self.broker.secret_text(cred)
+            extra_env[var] = self.broker.sandbox_secret(cred)  # --- identity: refuses control-plane credentials
         # workstream E: the `hangar-agent` helper (context exchange), installed per sandbox: no image rebuild
         await exchange.install_helper(prov, sb, f"/home/{self.settings.sandbox_user}")
         prelude.append(exchange.PATH_LINE)
