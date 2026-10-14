@@ -41,6 +41,10 @@ def person_of(actor: str | None) -> str | None:
         if a.startswith(prefix):
             a = a[len(prefix):]
             break
+    # --- identity: a teammate's actors are `@<person>:<token name>` (identity.actor_name), so all their tokens and
+    # connectors share one person's caps
+    if a.startswith("@") and ":" in a:
+        return a[1:].split(":", 1)[0] or None
     if a.startswith("oauth:") and a.endswith(")") and "(" in a:
         subject = a[a.index("(") + 1:-1]
         if subject and subject != "?":

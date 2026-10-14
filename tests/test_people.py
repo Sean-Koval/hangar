@@ -339,7 +339,7 @@ def test_teammates_actor_names_cannot_collide():
     same = "mcp-claude-code-laptop-abc123"
     a = identity.actor_name(ALICE._replace(name=same))
     b = identity.actor_name(BOB._replace(name=same))
-    assert a != b and a == f"alice:{same}"
+    assert a != b and a == f"@alice:{same}"
     assert identity.actor_name(ADMIN._replace(name=same)) == same  # the owner's stay as they were
 
 
@@ -405,7 +405,7 @@ def test_removing_someone_stops_their_schedules(store):
     from hangar.models import ScheduledJob
 
     people.add(store, "alice")
-    s = ScheduledJob(name="nightly", cron="0 3 * * *", template={"instructions": "x"}, owner="alice:laptop",
+    s = ScheduledJob(name="nightly", cron="0 3 * * *", template={"instructions": "x"}, owner="@alice:laptop",
                      person="alice")
     other = ScheduledJob(name="team", cron="0 4 * * *", template={"instructions": "y"})
     store.put(s)
@@ -479,3 +479,15 @@ async def test_the_rest_of_the_tool_surface_answers_not_found_to_a_teammate(flee
                 await c.read_resource("hangar://sessions/alice-work/artifacts/0/x")
             assert all("alice" not in str(r.uri) for r in (await c.list_resources()).resources)
         assert triggers.get_schedule(sch["id"]).person == "alice" and fleet.get(box["id"]).state.value == "running"
+
+
+def test_a_members_tokens_share_their_caps():
+    """The per-person caps (#89, fairness.person_of) keyed on the actor string, one per token. A member mints
+    their own tokens now, so each new one was a fresh set of caps."""
+    from hangar import fairness
+
+    laptop, desktop = identity.actor_name(ALICE), identity.actor_name(ALICE._replace(name="desktop"))
+    oauth = identity.actor_name(ALICE._replace(name="oauth:claude-ai(login-alice)"))
+    assert {fairness.person_of(f"mcp:{laptop}"), fairness.person_of(desktop), fairness.person_of(f"mcp:{oauth}")} \
+        == {"alice"}
+    assert fairness.person_of("mcp:laptop") == "laptop"  # the owner's, as before

@@ -57,8 +57,10 @@ def sees_all() -> bool:
 
 def actor_name(p: Principal) -> str:
     """The MCP actor: what audit entries, task handles and stream caps are keyed by. Token names aren't unique, so
-    a teammate's are prefixed with their person (`:` can't occur in a token name); the owner's stay as they were."""
-    return p.name if p.person in (None, "owner") else f"{p.person}:{p.name}"
+    a teammate's are prefixed with their person (`:` can't occur in a token name); the owner's stay as they were.
+    The `@` keeps them apart from requesters such as `github:octocat`, so per-person caps (fairness.person_of)
+    find the person in them (review)."""
+    return p.name if p.person in (None, "owner") else f"@{p.person}:{p.name}"
 
 
 def is_admin() -> bool:
