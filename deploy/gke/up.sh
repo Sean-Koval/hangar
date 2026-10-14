@@ -33,7 +33,12 @@ fi
 # registry lookup per tag. Docker if it runs here, else Cloud Build.
 if [ "${PREBUILD:-1}" = 1 ]; then
   echo "== environment images and harness packs"
-  HANGAR_REGISTRY="$REG" ${HANGAR_CLI:-uv run --quiet hangar} images build --provider kubernetes \
+  if [ -z "${HANGAR_CLI:-}" ]; then
+    if command -v uv >/dev/null; then HANGAR_CLI="uv run --quiet hangar"
+    elif command -v hangar >/dev/null; then HANGAR_CLI=hangar
+    else echo "the prebuild needs uv or the hangar CLI (or PREBUILD=0)" >&2; exit 1; fi
+  fi
+  HANGAR_REGISTRY="$REG" $HANGAR_CLI images build --provider kubernetes \
       --builder "${BUILDER:-auto}" --jobs "${JOBS:-3}" ||
     { echo "prebuild failed (above). Fix it, or deploy anyway with PREBUILD=0: creates then build what's missing." >&2
       exit 1; }

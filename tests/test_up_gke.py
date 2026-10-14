@@ -65,7 +65,7 @@ def gke(tmp_path, monkeypatch):
     subprocess.run([*git, "-C", str(root), "commit", "-qm", "x"], check=True)
     bin_ = tmp_path / "bin"
     bin_.mkdir()
-    for tool in ("terraform", "gcloud", "kubectl"):
+    for tool in ("terraform", "gcloud", "kubectl", "hangar"):  # --- images: hangar = up.sh's prebuild
         (bin_ / tool).write_text(FAKE.format(python=sys.executable))
         (bin_ / tool).chmod(0o755)
     log, capture = tmp_path / "calls.log", tmp_path / "config.yaml"
@@ -78,6 +78,7 @@ def gke(tmp_path, monkeypatch):
     monkeypatch.setenv("HANGAR_DATA_DIR", str(tmp_path / "home" / ".hangar"))
     monkeypatch.setenv("FAKE_LOG", str(log))
     monkeypatch.setenv("FAKE_CAPTURE", str(capture))
+    monkeypatch.setenv("HANGAR_CLI", str(bin_ / "hangar"))
     monkeypatch.setattr(setup_gke, "checkout", lambda: root)
     monkeypatch.setattr(setup_cli, "_token_ok", lambda url, token: False)  # the certificate isn't Active yet
 
@@ -141,6 +142,19 @@ def test_fresh_install_applies_deploys_and_wires_the_session_bucket(gke):
     assert "https://34.1.2.3.sslip.io" in config
     assert "hangar login https://34.1.2.3.sslip.io --token-file" in r.output
     assert (Path.home() / ".hangar" / "gke-admin-token").exists()
+
+
+def test_up_sh_prebuilds_images_and_packs_before_rollout(gke, monkeypatch):
+    """--- images: what the new control plane needs is built before it serves (and PREBUILD=0 skips it)."""
+    assert runner.invoke(cli.app, ["up", "--gke", "--yes"]).exit_code == 0
+    calls = gke.calls()
+    build = next(i for i, c in enumerate(calls) if c[:3] == ["hangar", "images", "build"])
+    rollout = next(i for i, c in enumerate(calls) if c[:2] == ["kubectl", "apply"] and "-k" in c)
+    assert build < rollout and "kubernetes" in calls[build]
+    monkeypatch.setenv("PREBUILD", "0")
+    n = len(calls)
+    assert runner.invoke(cli.app, ["up", "--gke", "--yes"]).exit_code == 0
+    assert not [c for c in gke.calls()[n:] if c[0] == "hangar"]
 
 
 def test_up_sh_leaves_a_running_hangars_checkpoints_where_they_are(gke):
