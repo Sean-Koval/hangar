@@ -104,7 +104,6 @@
   "fast_mode_state",
   "first_content_frame_ms",
   "first_request_input_tokens",
-  "flag_fetch_kick",
   "is_error",
   "modelUsage",
   "num_turns",
@@ -129,8 +128,6 @@
   "subagent_stats.started_in_background",
   "subtype",
   "terminal_reason",
-  "time_origin_ms",
-  "time_to_request_from_spawn_ms",
   "time_to_request_ms",
   "total_cost_usd",
   "ttft_ms",
@@ -151,8 +148,7 @@
   "usage.speed",
   "user_message_uuid",
   "user_message_uuids",
-  "uuid",
-  "warm_spare_claimed"
+  "uuid"
  ],
  "system/init": [
   "agents",
