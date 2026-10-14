@@ -24,6 +24,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import secrets
 import time
 from collections import Counter
 from typing import TYPE_CHECKING, Any
@@ -48,6 +49,7 @@ class Previews:
     def __init__(self, h: Hangar):
         self.h, self.settings, self.fleet, self.store = h, h.settings, h.fleet, h.store
         self._key: bytes | None = None
+        self._used: dict[str, float] = {}  # --- review: tickets already opened -> when they expire
 
     @property
     def domain(self) -> str | None:
@@ -61,7 +63,8 @@ class Previews:
         return hmac.new(self._key, b"hangar-preview\0" + data.encode(), hashlib.sha256).hexdigest()
 
     def token(self, kind: str, sid: str, port: int, person: str | None, seconds: float) -> str:
-        data = f"{kind}|{sid}|{port}|{person or ''}|{int(time.time() + seconds)}"
+        nonce = secrets.token_urlsafe(9)  # --- review: no two tickets alike, so each one can be spent once
+        data = f"{kind}|{sid}|{port}|{person or ''}|{int(time.time() + seconds)}|{nonce}"
         return base64.urlsafe_b64encode(data.encode()).decode().rstrip("=") + "." + self._mac(data)
 
     def check(self, token: str, kind: str, sid: str, port: int) -> str | None:
@@ -75,11 +78,24 @@ class Previews:
         if not hmac.compare_digest(mac.encode(), self._mac(data).encode()):
             return None
         parts = data.split("|")
-        if len(parts) != 5 or parts[0] != kind or parts[1] != sid or parts[2] != str(port):
+        if len(parts) != 6 or parts[0] != kind or parts[1] != sid or parts[2] != str(port):
             return None
         if not parts[4].isdigit() or int(parts[4]) < time.time():
             return None
         return parts[3]
+
+    def spend(self, ticket: str) -> bool:
+        """A valid ticket, opened for the first time: False when it was opened before. A ticket rides in the link's
+        URL (browser history, a proxy's access log), so it signs a browser in once. One control plane holds the
+        state; a restart forgets it, and the ticket's two minutes bound that."""
+        t = time.time()
+        for k in [k for k, exp in self._used.items() if exp < t]:
+            del self._used[k]
+        mac = ticket.rpartition(".")[2]
+        if mac in self._used:
+            return False
+        self._used[mac] = t + TICKET_SECONDS + 5
+        return True
 
     @staticmethod
     def ports(sb: Sandbox) -> list[dict[str, Any]]:
@@ -151,7 +167,7 @@ class PreviewRouter(SandboxRouter):
         t = (parse_qs(scope.get("query_string", b"").decode("latin-1")).get("t") or [""])[0]
         sb = self.svc.store.get(Sandbox, sid)
         person = self.previews.check(t, "t", sid, int(port_s)) if port_s.isdigit() else None
-        if person is None or sb is None or not self.previews.allowed(person, sb):
+        if person is None or sb is None or not self.previews.allowed(person, sb) or not self.previews.spend(t):
             self._refused(scope, sid, "preview.denied")
             return await _send_json(send, 401, {"message": "this preview link expired or isn't yours; open the "
                                                            "preview from hangar again"})

@@ -110,6 +110,20 @@ async def test_the_owner_opens_a_link_and_the_app_sees_nothing_of_hangar(world):
     assert any(e.action == "preview.link" for e in w.store.audit_tail(10))
 
 
+async def test_a_link_opens_once(world):
+    """Review: the ticket is in the link's URL (browser history, a proxy's or load balancer's access log). Opened a
+    second time within its two minutes, it signs nobody in."""
+    w = world
+    link = (await links(w, "tok-alice")).json()["previews"][0]
+    path = link["url"].split(host(w), 1)[1]
+    assert (await w.client.get(path, headers={"host": host(w)})).status_code == 303
+    r = await w.client.get(path, headers={"host": host(w)})
+    assert r.status_code == 401 and "set-cookie" not in r.headers
+    again = (await links(w, "tok-alice")).json()["previews"][0]  # a new link, even within the same second
+    assert again["url"] != link["url"]
+    assert (await w.client.get(again["url"].split(host(w), 1)[1], headers={"host": host(w)})).status_code == 303
+
+
 async def test_without_a_session_or_with_someone_elses_it_is_refused(world):
     w = world
     assert (await w.client.get("/", headers={"host": host(w)})).status_code == 401
