@@ -140,6 +140,30 @@ async def test_a_captured_codex_login_is_checked_with_codex_login_status(fleet, 
     assert c.health["status"] == "fail" and "exited 1: Not logged in" in c.health["detail"]
     # a sandbox that's gone never fails the capture
     await credhealth.on_capture(fleet, cred, "sb-gone")
+    # --- review: `codex login status` prints an API key's first 8 and last 5 characters; neither is kept
+    (bindir / "codex").write_text("#!/bin/sh\necho 'Logged in using an API key - sk-proj-***Q7xZ9' >&2\nexit 0\n")
+    await credhealth.on_capture(fleet, cred, sb.id)
+    c = store.get(Credential, "cx")
+    assert c.health["status"] == "ok" and "Q7xZ9" not in json.dumps(c.health), c.health
+    assert "API key" in c.health["detail"]
+
+
+async def test_a_check_of_a_replaced_value_isnt_recorded_on_the_new_one(fleet, broker, store, monkeypatch):
+    """--- review: a value stored again while its old one was being checked starts over; the old result is dropped."""
+    import asyncio
+
+    broker.put("cx", "codex", CredentialKind.AUTH_FILE, "{}")  # fails
+    real = credhealth.check
+
+    async def slow(c, value, gcloud=None):
+        res = await real(c, value, gcloud)
+        broker.put("cx", "codex", CredentialKind.AUTH_FILE, CODEX)  # renewed meanwhile
+        await asyncio.sleep(0)
+        return res
+
+    monkeypatch.setattr(credhealth, "check", slow)
+    await credhealth.check_all(fleet, "test")
+    assert store.get(Credential, "cx").health is None  # the next check looks at the new value
 
 
 async def test_who_hears_about_an_expiring_credential(fleet, broker, store, monkeypatch):

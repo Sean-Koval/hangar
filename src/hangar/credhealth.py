@@ -29,6 +29,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 from datetime import UTC, datetime
@@ -151,6 +152,11 @@ async def _run(argv: list[str], env: dict[str, str]) -> tuple[int, str, str]:
     return p.returncode or 0, out.decode(errors="replace"), err.decode(errors="replace")
 
 
+# --- review: `codex login status` says "Logged in using an API key - sk-proj-***Q7xZ9", the key's first 8 and last 5
+# characters (codex-rs/cli/src/login.rs, safe_format_key); what is recorded keeps neither.
+_KEY_HINT = re.compile(r"\s+-\s+\S*\*\*\*\S*")
+
+
 def _last_line(text: str) -> str:
     lines = [ln.strip() for ln in text.strip().splitlines() if ln.strip()]
     return lines[-1][:300] if lines else "no output"
@@ -222,10 +228,11 @@ async def check(c: Credential, value: bytes | None, gcloud: str | None = None) -
         return Result("unknown", f"the check failed: {type(e).__name__}", None, "error")
 
 
-def record(store: Store, name: str, res: Result, by: str) -> Credential | None:
-    """Write a result onto the credential as it is now (re-read: a lease may have changed meanwhile)."""
+def record(store: Store, name: str, res: Result, by: str, stored_at: float | None = None) -> Credential | None:
+    """Write a result onto the credential as it is now (re-read: a lease may have changed meanwhile). `stored_at`
+    (--- review): the value's `updated_at` when the check read it; a value stored again since waits for its own."""
     c = store.get(Credential, name)
-    if c is None:
+    if c is None or (stored_at is not None and c.updated_at != stored_at):
         return None
     t = now()
     c.health = {"status": res.status, "detail": res.detail, "checked_at": t, "method": res.method, "by": by}
@@ -249,11 +256,14 @@ async def check_all(fleet: Fleet, by: str, max_age: float | None = None, names: 
 
     async def one(c: Credential) -> dict[str, Any] | None:
         async with sem:
+            cur = fleet.store.get(Credential, c.name)  # --- review: as it is when its value is read
+            if cur is None:
+                return None
             value = await asyncio.to_thread(fleet.broker.vault.get, f"cred:{c.name}")
-            res = await check(c, value, gcloud)
+            res = await check(cur, value, gcloud)
         if res is None:
             return None
-        record(fleet.store, c.name, res, by)
+        record(fleet.store, c.name, res, by, stored_at=cur.updated_at)
         return {"name": c.name, **res._asdict()}
 
     tasks = [asyncio.create_task(one(c)) for c in creds]
@@ -272,6 +282,7 @@ async def on_capture(fleet: Fleet, cred: Credential, sandbox_id: str) -> None:
             cmd = 'set -a; . "$HOME/.hangar/env" 2>/dev/null; set +a; codex login status'
             out = await asyncio.wait_for(fleet.exec(sandbox_id, cmd, timeout=int(TIMEOUT), quiet=True), TIMEOUT + 5)
             said = _last_line(fleet.broker.redact((out.stdout or "") + "\n" + (out.stderr or "")))
+            said = _KEY_HINT.sub("", said)  # --- review: never an API key's ends
             res = Result("ok", f"codex login status: {said}", None, "codex login status") if out.exit_code == 0 \
                 else Result("fail", f"codex login status exited {out.exit_code}: {said}", None, "codex login status")
         else:
