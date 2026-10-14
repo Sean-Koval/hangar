@@ -162,7 +162,14 @@ sandbox never sees any of them. The scan catches a value written as it is, not o
 
 - Docker and Kubernetes run builds. On E2B a repo's sandboxes start from the environment's image, with the warning.
 - A sandbox started from a build starts cold: the environment's warm pool holds its own image. On Kubernetes each
-  build has its own SandboxTemplate, with no warm pool, deleted with the build.
+  build has its own SandboxTemplate, with no warm pool. The reaper deletes it once the build is out of the history
+  and no live sandbox runs on it (a session started from it before a rollback keeps it), as it does a set of
+  services' template that nothing uses any more (`k8sgc.py`).
+- A build's `.git` keeps only what hangar and git need: its remotes, branches and core settings. Hooks (but their
+  samples) and the rest of its config, such as `core.hooksPath`, `core.fsmonitor`, filters, aliases and includes, are
+  dropped before the checkout is captured. Otherwise every sandbox from the build would run what `install` set up,
+  hangar's own checkout first, long after the commit that set it up was gone. A repo that wants git hooks in every
+  sandbox sets them up in `start` (husky: `git config core.hooksPath .husky`).
 - On providers that bake harnesses into images (no image volumes), builds are made for the environment's default
   harness. A sandbox for another harness starts from that harness's image variant, with the warning.
 - Builds are made from the default branch, as Cursor's are. A feature branch's new dependencies are the agent's to

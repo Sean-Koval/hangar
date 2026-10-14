@@ -28,6 +28,7 @@ from hangar import envservices as envservices  # --- envbuilds
 from hangar import exchange, harden, images, isolation, observe  # --- observe, isolation, harden, images
 from hangar import fairness as fairness  # --- scale
 from hangar import ghapi as ghapi  # --- egress2
+from hangar import k8sgc as k8sgc  # --- durable
 from hangar import metrics as metrics  # --- reconciler
 from hangar import power as power  # --- ops: the sandbox pools' power schedule
 from hangar import reconciler as reconciler  # --- reconciler
@@ -1591,6 +1592,7 @@ class Fleet:
                                      return_exceptions=True)
                 await self.sync_scheduled_pools()  # --- reconciler: reconcile runs on its own task now
                 await envservices.sweep(self)  # --- envbuilds: services whose sandbox is gone (Docker)
+                await k8sgc.sweep(self)  # --- durable: build and services templates nothing uses (Kubernetes)
                 metrics.loop_tick("reaper")  # --- reconciler: heartbeat
             except asyncio.CancelledError:
                 return

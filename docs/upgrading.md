@@ -5,7 +5,7 @@ Two guides, newest first:
 - [**This release**](#upgrading-to-the-team-release-75100) (#75–#100): one ordered procedure for everything since the overnight stack. Wave 1 (#75–#90): one hangar for a team of six at ~60 sessions, people and per-person credentials, front-door defaults and job budgets, the reconciler, the MCP deadline contract, and images built before anyone waits. Wave 2 (#91–#100): team credentials and linked accounts, Jira and GitHub Projects intake, egress allowlists, secret scanning and short-lived cloud credentials, a computer for every agent, environments that live with the repo, an approval that lands the PR, the always-on control plane and gated deploys.
 - [**The overnight stack**](#upgrading-from-before-the-overnight-stack-4869) (#48–#69), for a hangar older than that. Do its backup and read its defaults first, then follow this release's procedure: its prebuild also covers the overnight guide's "republish the Codex pack" step.
 
-On top of this release, [**history out of memory**](#history-out-of-memory) changes what hangar holds in memory and how listings page; read it before deploying a build that has it.
+On top of this release: [**history out of memory**](#history-out-of-memory) changes what hangar holds in memory and how listings page, [**rotating the vault key**](#rotating-the-vault-key) adds a key ring and `hangar admin rotate-key`, and [**repo builds and their templates**](#repo-builds-and-their-templates) changes what a build's `.git` passes on. Read them before deploying a build that has them.
 
 Both are written for the GKE install from [gke.md](gke.md): one zonal cluster, gVisor sandboxes, the control plane with SQLite on the `hangar-data` PVC, checkpoints in the session bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / `power.sh`. [CHANGELOG.md](../CHANGELOG.md) lists what each adds.
 
@@ -383,6 +383,15 @@ One key encrypted the vault, every checkpoint and every backup, with no way to r
 | **`HANGAR_BACKUP_STORE`** | → optional: backups in a bucket of their own, ideally one hangar may only write to. `hangar doctor` warns (`backup isolation`) while backups share the checkpoints' bucket and service account. |
 
 **Rolling back** to a build without it: before rolling back, put a single key back in `HANGAR_SECRET_KEY`, the one `hangar admin rotate-key --status` lists as encrypting (finish or don't start a rotation first). The previous version reads one key, and doesn't start with two; anything sealed with another is unreadable to it. With a key file, `secret.key` holds one key again once the rotation is retired (the retired one moves to `secret.key.retired`, which the previous version ignores); during a rotation it holds two, so finish the rotation first.
+
+## Repo builds and their templates
+
+From the #99 review: what changes as soon as it starts, with nothing to configure.
+
+| What | Before → now |
+| --- | --- |
+| **A build's `.git`** | hooks and git config that `install` left went into every sandbox from the build → hooks (but the samples) and every config key but remotes, branches, user and core settings are removed before the checkout is captured; hangar's own git commands in those sandboxes run with hooks off. Builds made before keep theirs until the next rebuild, but hangar's checkout no longer runs them. A repo that relied on `install` setting up hooks (husky's `prepare`) sets them up in `start` instead. |
+| **Kubernetes templates per build and per set of services** | services' templates were never deleted; a build's was deleted the moment it left the history, under any session still running from it → the reaper deletes either, with its warm pool, once no live sandbox uses it (at most every 10 minutes, and not in its first 10 minutes). The first sweep after the upgrade deletes the services' templates that piled up. |
 
 ## Deploying with deploy.yml
 

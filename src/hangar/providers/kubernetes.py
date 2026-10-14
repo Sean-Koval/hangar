@@ -351,6 +351,7 @@ class KubernetesProvider(Provider):
         if self._synced.get(spec.name) != key:
             await self.sync_warm_pool(spec, image)  # idempotent; keeps template image and packs current
             self._synced[spec.name] = key
+        sandbox.info["k8s_template"] = f"hangar-{spec.name}"  # --- durable: k8sgc keeps it while the sandbox lives
         claim = f"hangar-{sandbox.id}"
         body = {
             "apiVersion": f"{EXT_GROUP}/{EXT_V}", "kind": "SandboxClaim",

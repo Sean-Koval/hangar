@@ -153,6 +153,37 @@ async def test_first_sandbox_falls_back_and_the_next_starts_from_the_build(fl, w
     assert not envbuilds.wait_for_tasks(fl)  # nothing moved: no rebuild
 
 
+async def test_a_builds_git_hooks_and_config_dont_carry_into_later_sandboxes(fl, world):
+    """#99 review: the build's `.git` came from after `install` and every sandbox started from the build got it, so a
+    hook `install` left (or a hooksPath, fsmonitor, filter or alias it configured) ran in all of them, starting with
+    hangar's own checkout, and outlived the commit that put it there until a rebuild."""
+    push(world, ".hangar/environment.yaml", "install: |\n"
+         "  mkdir -p node_modules .githooks\n"
+         "  printf '#!/bin/sh\\ntouch \"$HOME/hooked-$(basename $0)\"\\n' > .git/hooks/post-checkout\n"
+         "  cp .git/hooks/post-checkout .githooks/post-checkout\n"
+         "  chmod +x .git/hooks/post-checkout .githooks/post-checkout\n"
+         "  git config core.hooksPath .githooks\n"
+         "  git config core.fsmonitor .githooks/post-checkout\n"
+         "  git config filter.x.smudge 'touch $HOME/smudged'\n"
+         "  git config alias.st status\n"
+         "  git config include.path ../../extra.cfg\n")
+    eb = envbuilds.of(fl)
+    await fl.create("appenv", repo=world.url)
+    await drain(fl)
+    b = eb.active("docker", "appenv", repo_key(world.url))
+    assert b is not None and b.state == "succeeded", b and (b.error, b.log)
+    sb = await fl.create("appenv", repo=world.url, work_branch="hangar/x")
+    assert sb.info["env_build"]["fallback"] is False
+    hooks = (await sh(fl, sb, "ls /workspace/app/.git/hooks")).split()
+    assert hooks and all(h.endswith(".sample") for h in hooks), hooks
+    cfg = await sh(fl, sb, "cd /workspace/app && git config --local --no-includes --name-only --list")
+    assert "remote.origin.url" in cfg
+    for key in ("core.hookspath", "core.fsmonitor", "filter.x.smudge", "alias.st", "include.path"):
+        assert key not in cfg, cfg
+    assert (await sh(fl, sb, "ls -a /home/agent")).split().count("hooked-post-checkout") == 0  # nothing ran
+    assert (await sh(fl, sb, "cd /workspace/app && git rev-parse --abbrev-ref HEAD")).strip() == "hangar/x"
+
+
 async def test_drift_rebuilds_in_the_background_and_the_checkout_is_current(fl, world):
     eb = envbuilds.of(fl)
     await fl.create("appenv", repo=world.url)
@@ -460,7 +491,10 @@ def test_checkout_script_quotes_and_defaults_to_the_remote_head():
     s = envbuilds.EnvBuilds.checkout_script(sb, "/workspace/a b")
     assert "cd '/workspace/a b'" in s and "'https://x/a b.git'" in s and "-B 'feat/'\"'\"'x'\"'\"''" in s
     sb.branch = None
-    assert "refs/remotes/origin/HEAD" in envbuilds.EnvBuilds.checkout_script(sb, "/w")
+    s = envbuilds.EnvBuilds.checkout_script(sb, "/w")
+    assert "refs/remotes/origin/HEAD" in s
+    # --- durable: no hook runs in hangar's own git commands there (a build from before kept its hooks)
+    assert s.count("git -c core.hooksPath=/dev/null -c core.fsmonitor=false") == s.count("git ") == 5
 
 
 # ---------------------------------------------------------------------- jobs, MCP, REST
