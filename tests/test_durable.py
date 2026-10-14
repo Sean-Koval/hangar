@@ -329,3 +329,46 @@ async def test_metrics_count_jobs_and_sessions_in_the_store_off_the_loop(store):
             break
     assert counts["jobs"] == {("succeeded", None): 1, ("failed", "timed_out"): 1}
     assert counts["sessions"] == {("suspended",): 1}
+
+
+# ====================================================================== review
+def test_a_cursor_holds_the_time_as_sqlite_reads_it(store):
+    """--- review: the cursor carried the time as Python parsed it, and the next page compared it with SQLite's
+    reading of the same JSON, which can differ by one ulp (SQLite 3.45: 1739142721.649526 reads as …6495261). Of
+    jobs made at that instant, a walk skipped all but the first."""
+    t = 1739142721.649526
+    if sqlite3.connect(":memory:").execute("SELECT json_extract(?, '$.t')", (f'{{"t":{t!r}}}',)).fetchone()[0] == t:
+        pytest.skip("this SQLite reads the time exactly")
+    jobs = [Job(id=f"job-tie{i}", title="t", instructions="x", environment="plain", created_at=t, updated_at=t)
+            for i in range(3)]
+    _seed(store, jobs)
+    seen, at = [], None
+    for _ in range(10):
+        rows = store.page(Job, 1, at, archived=True)
+        if not rows:
+            break
+        ((job, order),) = rows
+        seen.append(job.id)
+        at = (order, job.id)
+    assert sorted(seen) == [j.id for j in jobs] and len(seen) == 3
+
+
+def test_a_record_handed_back_by_a_rollback_is_in_one_table_after_the_upgrade(settings):
+    """--- review: rolling back copied the archive into the main table (docs/upgrading.md) and left the archive as
+    it was. Upgraded again, every record was listed twice, read() counted it twice (the usage report, the daily
+    caps), and a page could take the archive's stale copy into memory, whose next save overwrote what the
+    previous version had changed meanwhile."""
+    from hangar.store import Store
+
+    store = Store(settings.db_path)
+    old = _job(age_days=90)
+    _seed(store, [old], archived=True)
+    con = sqlite3.connect(store.path)  # the rollback, then the previous version changing the job
+    with con:
+        con.execute("INSERT OR IGNORE INTO jobs(key, data) SELECT key, data FROM jobs_archive")
+        newer = old.model_copy(update={"title": "changed by the previous version"})
+        con.execute("UPDATE jobs SET data=? WHERE key=?", (newer.model_dump_json(), old.id))
+    con.close()
+    store = Store(settings.db_path)  # upgraded again
+    assert [j.title for j, _ in store.page(Job, 10, archived=True)] == ["changed by the previous version"]
+    assert [j.title for j in store.list_where(Job, archived=True, id=old.id)] == ["changed by the previous version"]

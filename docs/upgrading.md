@@ -357,13 +357,16 @@ Hangar used to load every job and session ever made at startup and keep them in 
 | **Archive** | → finished jobs untouched for 30 days and settled sessions for 30 days move to `jobs_archive` and `sessions_archive`: still found by id and name, in listings, in the usage report; never deleted. Kept out of the archive: open or approved PRs, merged or closed ones whose session hasn't ended, auto-fix triggers waiting, a schedule's last job, sessions with checkpoints, a session a job still points at. | `HANGAR_JOB_RETENTION_DAYS=0`, `HANGAR_SESSION_RETENTION_DAYS=0` |
 | **`/metrics`** | `hangar_jobs` and `hangar_sessions` counted every record in memory → counted by SQLite in a worker thread, at most a minute old; archived ones are left out, as for `hangar_sandboxes` | — |
 
-**Rolling back** to a build without it: the previous version runs on the upgraded database (it ignores the archive tables and keeps the new indexes up to date as it writes), but it doesn't see archived jobs and sessions. Hand them back first, then roll back:
+**Rolling back** to a build without it: the previous version runs on the upgraded database (it ignores the archive tables and keeps the new indexes up to date as it writes), but it doesn't see archived jobs and sessions. Move them back first, in one transaction, then roll back:
 
 ```bash
 kubectl -n hangar exec deploy/hangar -- python3 -c "import sqlite3; db = sqlite3.connect('/data/hangar.db'); \
-[db.execute(f'INSERT OR IGNORE INTO {t}(key, data) SELECT key, data FROM {t}_archive') for t in ('jobs', 'sessions')]; \
+[db.execute(q.format(t=t)) for t in ('jobs', 'sessions') for q in ( \
+'INSERT OR IGNORE INTO {t}(key, data) SELECT key, data FROM {t}_archive', 'DELETE FROM {t}_archive')]; \
 db.commit()"
 ```
+
+Move them, don't copy them: the previous version changes only the main table's copy, so an archive copy left behind is stale. (An upgraded hangar drops any archive row whose key is also in the main table when it starts, so a copy left by an earlier rollback is harmless.)
 
 The previous version loads every job and session again at startup, so give its pod the memory the history needs.
 

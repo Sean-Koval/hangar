@@ -347,8 +347,9 @@ class JobService:
         limit = max(1, min(limit, 500))
         fields = {k: v for k, v in (("state", state), ("owner", owner), ("person", person)) if v is not None}
         rows = self.store.page(Job, limit + 1, resident.after(cursor), archived=True, **fields)
-        marks = [resident.cursor(r.created_at, r.id) for r in rows[:limit]]
-        return list(zip(self._jobs.adopt(rows[:limit]), marks, strict=True)), (marks[-1] if len(rows) > limit else None)
+        marks = [resident.cursor(at, r.id) for r, at in rows[:limit]]  # --- review: SQLite's reading of the time
+        jobs = self._jobs.adopt([r for r, _ in rows[:limit]])
+        return list(zip(jobs, marks, strict=True)), (marks[-1] if len(rows) > limit else None)
 
     def repo_envs(self, repo: str | None) -> list[str]:
         """Environments allowed for a repo in HANGAR_GITHUB_REPOS (`{"owner/repo": "env[,env2]"}`)."""

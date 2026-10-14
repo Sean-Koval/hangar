@@ -132,6 +132,10 @@ class Store:
         for cls in _ARCHIVABLE:
             self._db.execute(f"CREATE TABLE IF NOT EXISTS {_TABLES[cls][0]}_archive "
                              "(key TEXT PRIMARY KEY, data TEXT NOT NULL, archived_at REAL NOT NULL)")
+            # --- review: a record is in one table. One in both was handed back by a rollback (docs/upgrading.md),
+            # and the previous version wrote only the main table's copy since: the archive's is stale.
+            t = _TABLES[cls][0]
+            self._db.execute(f"DELETE FROM {t}_archive WHERE key IN (SELECT key FROM {t})")
         for cls, (order, by) in _ORDERED.items():  # --- durable: the same indexes on the archive, and ordered ones
             table = _TABLES[cls][0]
             for t in (table, f"{table}_archive"):
@@ -217,11 +221,14 @@ class Store:
         return [cls.model_validate_json(r[0]) for r in rows]
 
     def page(self, cls: type[T], limit: int, after: tuple[Any, str] | None = None, archived: bool = False,
-             **fields: Any) -> list[T]:
+             **fields: Any) -> list[tuple[T, Any]]:
         """--- durable: up to `limit` records matching `fields`, newest first by the kind's _ORDERED field, from
         just after `after` (the order value and key of the last record of the page before). A keyset page: what
         any page costs doesn't grow with history, and records added meanwhile don't shift the pages after them.
-        Filtering on one of the kind's _ORDERED filters walks that filter's index in order and stops at `limit`."""
+        Filtering on one of the kind's _ORDERED filters walks that filter's index in order and stops at `limit`.
+        --- review: each record comes with its order value as SQLite reads it, which is what `after` must carry:
+        SQLite's reading of a JSON number can be a ulp away from Python's, and a cursor holding Python's skipped
+        records made at the same instant."""
         order, _ = _ORDERED[cls]
         table, _ = _TABLES[cls]
         o = _field(order)
@@ -234,7 +241,7 @@ class Store:
             sql, params = f"{sql} UNION ALL SELECT key, data, {o} FROM {table}_archive WHERE {where}", params * 2
         with self._lock:
             rows = self._db.execute(f"{sql} ORDER BY 3 DESC, 1 DESC LIMIT ?", [*params, max(0, limit)]).fetchall()
-        return [cls.model_validate_json(r[1]) for r in rows]
+        return [(cls.model_validate_json(r[1]), r[2]) for r in rows]
 
     def count_where(self, cls: type[BaseModel], **fields: Any) -> int:
         where, params = _where(fields)

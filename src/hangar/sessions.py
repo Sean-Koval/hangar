@@ -227,8 +227,8 @@ class SessionService:
         if person is not None:
             fields["person"] = person
         rows = self.store.page(Session, limit + 1, resident.after(cursor), archived=True, **fields)
-        marks = [resident.cursor(r.last_active_at, r.id) for r in rows[:limit]]
-        return (list(zip(self._sessions.adopt(rows[:limit]), marks, strict=True)),
+        marks = [resident.cursor(at, r.id) for r, at in rows[:limit]]  # --- review: SQLite's reading of the time
+        return (list(zip(self._sessions.adopt([r for r, _ in rows[:limit]]), marks, strict=True)),
                 marks[-1] if len(rows) > limit else None)
 
     # --- durable: lookups that see every session, not just those in memory
