@@ -39,6 +39,7 @@ from hangar import (  # strategies: workstream D; --- observe; steer: live turns
     strategies,
     verifyloop,
 )
+from hangar import autoinstall as autoinstall  # --- autoinstall: agent-led environment setup jobs
 from hangar import clouddoctor as clouddoctor  # --- clouddoctor: its own jobs report back; its fixes are fenced
 from hangar import computer as computer  # --- computer
 from hangar import envbuilds as envbuilds  # --- envbuilds
@@ -215,6 +216,8 @@ class JobService:
         interrupted: list[Job] = []
         resumed: list[str] = []  # --- reconciler: interrupted jobs that go back to the queue, a few at a time
         for job in sorted(self._jobs.values(), key=lambda j: j.created_at):
+            if autoinstall.restore(self, job):  # --- autoinstall: an env setup's runner picks up where it was
+                continue
             if job.state in JOB_TERMINAL or job.state == JobState.NEEDS_INPUT:  # needs_input waits for a follow-up
                 continue
             if job.state == JobState.AWAITING_APPROVAL:  # still waiting; the triggers loop expires it
@@ -375,6 +378,8 @@ class JobService:
         if req.idempotency_key:  # --- durable: the store's index, so a retry months later still finds its job
             for j in self.where(idempotency_key=req.idempotency_key, owner=caller.owner):
                 return j
+        if autoinstall.is_setup_req(req):  # --- autoinstall
+            autoinstall.check_submit(self, req)
         allowed_envs = self.repo_envs(req.repo)
         if caller.restricted:
             # Service tokens run only against repos the operator mapped, in the environments mapped for them.
@@ -491,6 +496,8 @@ class JobService:
             raise JobError("follow-up message is empty")
         if len(message) > MAX_INSTRUCTIONS:
             raise JobError("follow-up message is too long")
+        if autoinstall.is_setup(job):  # --- autoinstall: answers the question one of its agents asked
+            return autoinstall.follow_up(self, job, message, requester, reply_to, front_door, sender_person)
         # workstream E: a job waiting on a question (needs_input) takes the answer as a follow-up
         if (job.state not in JOB_TERMINAL and job.state != JobState.NEEDS_INPUT) or job.id in self._active:
             raise JobError(f"job {job.id} is {job.state}; wait for the current turn to finish")
@@ -679,6 +686,9 @@ class JobService:
             return
         self._active.add(job.id)
         try:
+            if autoinstall.is_setup(job):  # --- autoinstall: its runner drives child jobs; it holds no slot
+                await autoinstall.process(self, job)
+                return
             if job.cancel_requested:
                 self._event(job, "cancelled before it started", JobState.CANCELLED, reason="cancelled")
                 await self._report(job)
@@ -1336,8 +1346,8 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
     opts: dict[str, str] = {}
     extra = ""
     if event == "issues":
-        if payload.get("action") != "labeled" or (payload.get("label") or {}).get("name") != \
-                svc.settings.github_trigger_label:
+        if payload.get("action") != "labeled" or (payload.get("label") or {}).get("name") not in \
+                (svc.settings.github_trigger_label, svc.settings.env_setup_label):  # --- autoinstall
             return {"ignored": "not the trigger label"}
         sender = (payload.get("sender") or {}).get("login", "unknown")
         linked = people.resolve_external(svc.store, "github", (payload.get("sender") or {}).get("id"))  # --- review
@@ -1435,7 +1445,10 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
                     repo=f"https://github.com/{repo}.git", environment=env, harness=opts.get("harness"),
                     model=opts.get("model"), context=context,
                     idempotency_key=f"github-delivery:{delivery}" if delivery else None,
-                    labels={"github.kind": "issue", "github.issue": str(number)})
+                    labels={"github.kind": "issue", "github.issue": str(number),
+                            **autoinstall.kind_labels(svc.settings, [  # --- autoinstall: labelled for an env setup
+                                *(lb.get("name", "") for lb in issue.get("labels") or []),
+                                (payload.get("label") or {}).get("name", "")])})
     if (busy := running()) is not None:  # another delivery got here while we fetched comments
         return {"ignored": f"job {busy.id} is already working on {ref}"}
     approval = None if trusted else new_approval(

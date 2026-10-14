@@ -1273,6 +1273,9 @@ from hangar import envbuilds_cli as _envbuilds  # noqa: E402
 
 _envbuilds.register(env_app)
 _envbuilds.register_sb(sb_app)
+from hangar import autoinstall_cli as _autoinstall  # noqa: E402  --- autoinstall: hangar env setup
+
+_autoinstall.register(env_app)
 # ---------------------------------------------------------------------------- --- landing: hangar inbox (inbox_cli.py)
 from hangar import inbox_cli as _inbox  # noqa: E402
 

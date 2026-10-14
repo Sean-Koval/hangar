@@ -13,6 +13,8 @@ The file lives with the code, so the environment changes in the same commit as t
     verify: uv run pytest -q
     build_secrets: [NPM_TOKEN]    # ids only: an admin maps them to credentials (environment or repo policy)
     lockfiles: [vendor/*.lock]    # more files whose change means a rebuild (the usual lockfiles are watched anyway)
+    mocks:                        # stand-ins for real dependencies, recorded so nobody mistakes them (autoinstall)
+      - {what: S3, how: "MinIO service at minio:9000", why: no cloud credentials in sandboxes}
 
 It is untrusted: anyone who can push to the repo writes it. It is parsed strictly (unknown fields are refused, no
 YAML aliases, size caps) and can set only the fields above. What an admin decides stays out of its reach: the image
@@ -71,6 +73,16 @@ class RepoEnvError(ValueError):
     pass
 
 
+class Mock(BaseModel):
+    """--- autoinstall: a stand-in the environment uses for a real dependency (MinIO for S3, a local Postgres with a
+    dev password, a stub file), recorded in the file and the setup PR so it is never mistaken for the real thing."""
+
+    model_config = ConfigDict(extra="forbid")
+    what: str = Field(min_length=1, max_length=200)
+    how: str = Field(min_length=1, max_length=500)
+    why: str | None = Field(None, max_length=500)
+
+
 class RepoEnvironment(BaseModel):
     """The repo file's schema. Its models are the environment spec's own (envspec.Terminal, Service, PreviewPort)."""
 
@@ -84,6 +96,7 @@ class RepoEnvironment(BaseModel):
     verify: str | None = Field(None, max_length=2000)
     build_secrets: list[str] = Field(default_factory=list, max_length=32)
     lockfiles: list[str] = Field(default_factory=list, max_length=32)
+    mocks: list[Mock] = Field(default_factory=list, max_length=32)  # --- autoinstall: documentation, never applied
 
     @field_validator("extends")
     @classmethod

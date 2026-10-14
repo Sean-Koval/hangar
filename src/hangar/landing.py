@@ -890,6 +890,9 @@ class Landing:
         if demos:
             out.append("- **Recorded demos:** " + ", ".join(
                 f"[{_code(a.path)}]({base}/api/jobs/{job.id}/artifacts/{a.turn}/{quote(a.path)})" for a in demos[:10]))
+        from hangar import autoinstall  # --- autoinstall: an env setup's PR: what was validated, mocked, missing
+
+        out += autoinstall.packet_lines(svc, job)
         if policy and policy.land == "auto_after_approval":
             who = ", ".join(f"@{a}" for a in policy.approvers or []) or "a code owner"
             out.append(f"- **Landing:** an approval from {who}" + (" or a code owner" if policy.approvers else "")

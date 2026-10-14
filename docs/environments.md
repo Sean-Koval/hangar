@@ -43,9 +43,12 @@ ports:                           # the owner can open these in a browser, throug
 verify: uv run pytest -q         # the check jobs run, unless the job names one
 build_secrets: [NPM_TOKEN]       # ids only; an admin maps each to a credential (see Build secrets)
 lockfiles: [vendor/*.lock]       # more files whose change means a rebuild
+mocks:                           # stand-ins for real dependencies, so nobody mistakes them (agent-led setup)
+  - {what: S3, how: "MinIO service at minio:9000", why: no cloud credentials in sandboxes}
 ```
 
-Every field is optional. Each field the file sets replaces the environment's own: an environment spec takes the same
+Every field is optional. `mocks` is documentation: hangar applies nothing from it, but agent-led setup (below)
+requires every stand-in to be listed there and in its PR. Each field the file sets replaces the environment's own: an environment spec takes the same
 `install`, `start`, `terminals`, `services`, `ports` and `verify` fields, so a team can share defaults there and a repo can override them.
 `hangar env check` validates a file against your hangar without saving or building anything:
 
@@ -292,6 +295,82 @@ in the [image contract](specs/0006-environments-and-harness-packs.md)), installe
 Under the [uid split](steering.md#the-uid-split) it stays the agent's: hangar's own user never runs it, and it never
 reaches hangar's runs.
 
+## Agent-led setup
+
+A repo nobody has configured yet gets its `.hangar/environment.yaml` from agents, validated by hangar, as a PR.
+This follows Cursor's [autoinstall](https://cursor.com/blog/bootstrapping-composer-with-autoinstall) and its
+[agent-driven setup](https://cursor.com/docs/cloud-agents/setup).
+
+```console
+$ hangar env setup acme/app --wait
+env setup job-1a2b3c4d of acme/app (python): queued
+  [running] both agents run on claude-opus-5-5 (the strongest current model in anthropic's model list)
+  [running] goal: job-5e6f7a8b reads the repo and proposes the commands
+  [running] goal: 9 commands proposed at 3f2c1a9e0; core: install, lint, unit-tests, serve
+  [running] setup: job-9c0d1e2f makes the commands work on branch hangar/job-9c0d1e2f
+  [running] validating attempt 1: a clean sandbox of hangar/job-9c0d1e2f at 81aa04c2d
+  [running] attempt 1: failed: `uv run pytest -q` exit 1, expected 0
+  [running] validating attempt 2: a clean sandbox of hangar/job-9c0d1e2f at c4d5e6f70
+  [running] attempt 2: passed
+  [succeeded] succeeded: https://github.com/acme/app/pull/42
+$ hangar env setup acme/app --every "0 9 * * 1"     # admin: re-run weekly, only when the environment broke
+```
+
+It is a job (`hangar.kind: env-setup` in its labels), so it also starts from `POST /api/env/setup {repo,
+environment?, harness?, model?, notes?, mode?, job_budget?}`, from `POST /api/jobs` with that label, from a
+schedule's or an inbound webhook's job template, and from an issue carrying the `HANGAR_ENV_SETUP_LABEL` label
+(`hangar-env-setup`): a GitHub issue given it, a Jira issue that reaches the trigger status (or label) with it, a
+GitHub Projects item whose issue has it. The job's events, its result, its tracker write-back and the inbox work
+like any job's.
+
+1. **Goal.** An agent reads the repo at the commit its sandbox cloned: README, Makefile, manifests and lockfiles,
+   `.github/workflows` (the best evidence of how the repo really builds and tests), devcontainer and compose files.
+   It proposes about ten target commands (install, build, lint, unit tests, start the app, a smoke request), each
+   with the expected outcome in words and marked core or not, plus the services and secrets the repo needs. It is a
+   job of its own (`deliver: none`) with a structured result.
+2. **Setup.** A fresh agent, in another job (`deliver: branch`), makes at least the core commands work. It writes
+   the file (services from the allowlisted images, such as `postgres`, `redis` or a MinIO image an admin allows,
+   standing in for real dependencies; long-running processes as terminals under `hangar-agent svc`; `verify` set to
+   the unit-test command), records every stand-in under `mocks:`, writes a "Development environment" section in
+   `AGENTS.md`, and commits. A real secret it lacks is filed with `hangar-agent env request secret NAME`, never
+   invented; it reports which commands that blocks.
+3. **Validation, by hangar.** The file is checked like `POST /api/envbuilds/validate`, and must set `verify` and
+   list every mock the agent reported. Then a clean sandbox of the setup branch (no repo build; the proposed
+   services beside it; the environment the file's `extends` picks when the repo's allowlist permits it) runs the
+   file's `install` through the build path's install step, starts the supervisor and waits for its services and
+   terminals, and runs the core commands, the ones the agent says work, and `verify`. Exit codes decide first. Only
+   for commands the goal agent marked `check_output` does it judge the output against its own description, in a
+   follow-up turn of the goal job. A failure goes back to the setup agent with the output, as files it can read, up to
+   `HANGAR_ENV_SETUP_RETRIES` (5) times. After that the job fails, and its summary says exactly what is missing:
+   each failing command and why, file errors, and the secrets nobody gave.
+4. **The PR.** The setup job's branch becomes a PR through [the landing path](landing.md): the App identity, the
+   review packet, and an approval that lands it. The PR body has the validated commands as a table, what is mocked,
+   the secrets still needed, and `verify`. The packet adds an "Environment setup" line. A setup that passes except
+   for commands blocked by secrets the agent requested opens as a draft (`reason: secrets_needed`). Merged, the file
+   gets builds like any other (above).
+
+**Re-running on drift.** `mode: drift` (`--drift`; the schedules `--every` creates) runs setup only when the
+repo's environment is broken: the default branch has no config or an invalid one, or the repo's latest environment
+build failed (after a lockfile or CI change). It doesn't run while an earlier env-setup PR for the repo is still
+open. Otherwise it ends at once (`no_changes`), with no agent started. The agents get the failing build's output
+and update the existing file.
+
+**Models and budget.** Both agents run on the strongest current model of their harness's provider, picked from
+the provider's own model list (`hangar.modelpick`): Anthropic's, OpenAI's or Google's, read with the team's API
+key for the harness, or OpenRouter's public list without one. Only general models of the newest generation count,
+ranked by list price (`HANGAR_MODEL_PRICES` and the built-in table; a release not priced yet takes its line's
+price). A job's own `model` wins, and `HANGAR_ENV_SETUP_MODELS` pins one per harness. When no list can be read,
+the harness's own default applies, and the job's events say so. The job budget is the job's, else the repo
+policy's, else `HANGAR_ENV_SETUP_MAX_COST_USD` and `HANGAR_ENV_SETUP_MAX_TURNS`. The goal job gets a quarter of it
+(the proposal and the judging), and the setup job gets the rest (every attempt), so together they can't exceed it.
+
+**Safety.** The validation sandbox runs code an agent wrote on an unmerged branch, so it gets less than a build:
+no agent or person credentials, and no build secrets. A repo whose install needs a private registry token fails
+validation and names the token, and an admin maps it as a build secret for the merged file. The env-setup job
+holds no job slot while it waits: a background task drives its stages and keeps its state in the job's
+`result.data`, so a restart resumes it. A follow-up to it answers whichever of its agents asked a question.
+Cancelling it cancels both agents and removes the validation sandbox.
+
 ## Settings
 
 | Setting | Default | |
@@ -304,6 +383,12 @@ reaches hangar's runs.
 | `HANGAR_ENV_SERVICES_MAX_CPUS`, `HANGAR_ENV_SERVICES_MAX_MEMORY_GB` | 2, 2 | What a sandbox's services may add up to |
 | `HANGAR_PREVIEW_DOMAIN` | unset (off) | `<port>-<sandbox>.<domain>` serves preview ports (a registrable domain of its own) |
 | `HANGAR_PREVIEW_SESSION_HOURS` | 12 | How long an opened preview stays signed in |
+| `HANGAR_ENV_SETUP_RETRIES` | 5 | Setup turns after a failed validation, each with the failure's output |
+| `HANGAR_ENV_SETUP_MAX_COST_USD`, `HANGAR_ENV_SETUP_MAX_TURNS` | 30, 16 | An env setup's job budget when neither the job nor the repo's policy sets one |
+| `HANGAR_ENV_SETUP_VALIDATE_MINUTES` | 45 | One validation: the sandbox, install, the services and every command |
+| `HANGAR_ENV_SETUP_MODELS` | unset | `{"claude-code": "...", "codex": "..."}`: pin the agents' model per harness instead of the pick |
+| `HANGAR_ENV_SETUP_MODEL_CACHE_HOURS` | 6 | How long providers' model lists are cached |
+| `HANGAR_ENV_SETUP_LABEL` | `hangar-env-setup` | An issue (GitHub, Jira, GitHub Projects) with this label starts an env setup |
 
 ## REST
 
@@ -316,6 +401,7 @@ reaches hangar's runs.
 | `POST /api/envbuilds/{id}/rollback` | admin | Make it active, pinned |
 | `POST /api/envbuilds/unpin {repo, environment?, provider?}` | admin | Let new builds replace the active one again |
 | `POST /api/envbuilds/validate {content, repo?, environment?}` | member | Check a file; nothing is saved |
+| `POST /api/env/setup {repo, environment?, harness?, model?, notes?, mode?, job_budget?}` | admin, `jobs` token | Agent-led setup: an env-setup job (as `POST /api/jobs` returns it) |
 | `GET /api/sandboxes/{ref}/previews` | owner, admin | Two-minute links to its preview ports |
 
 The environment, when not named, is the one a job for the repo would get.
