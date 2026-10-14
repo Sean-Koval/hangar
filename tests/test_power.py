@@ -451,3 +451,46 @@ def test_hangar_power_cli(monkeypatch):
     assert "last deploy:" in r.output and "passed" in r.output and "overdue: sessions" in r.output
     r = CliRunner().invoke(cli.app, ["power", "up"])
     assert r.exit_code == 0 and "powering on" in r.output and calls[-1] == ("POST", "/api/admin/power/up")
+
+
+# ====================================================================== deploy.yml
+def _workflow(name: str) -> tuple[str, dict]:
+    import yaml
+
+    from tests.test_acceptance_script import ROOT
+
+    text = (ROOT / ".github" / "workflows" / name).read_text()
+    return text, yaml.safe_load(text)
+
+
+def test_the_deploy_secrets_are_behind_the_approval():
+    """The admin token and the deploy identity are `production` environment secrets: as repository secrets any
+    workflow on any branch could read them, so the required reviewer would gate nothing. No fallback to the images
+    identity (impersonable from every ref), and no trigger that runs a pull request's code with them."""
+    from tests.test_acceptance_script import ROOT
+
+    text, wf = _workflow("deploy.yml")
+    assert set(wf[True]) == {"workflow_dispatch", "push"} and wf[True]["push"] == {"tags": ["v*"]}
+    for f in (ROOT / ".github" / "workflows").glob("*.yml"):
+        assert "pull_request_target" not in f.read_text(), f
+    deploy = wf["jobs"]["deploy"]
+    assert deploy["environment"] == "production"
+    for name, job in wf["jobs"].items():
+        if name != "deploy":
+            named = json.dumps(job)
+            assert "HANGAR_DEPLOY_TOKEN" not in named and "GCP_DEPLOY_SERVICE_ACCOUNT" not in named, name
+    assert "secrets.GCP_SERVICE_ACCOUNT" not in json.dumps(deploy)
+    assert "environment secrets" in text
+
+
+def test_the_rollback_restores_the_image_it_replaced():
+    """`rollout undo` goes back one revision: when `set image` failed, or the run redeployed the running image (no
+    new revision), it rolled back to the version *before* the running one. A cancelled or timed-out run rolls back
+    too, and a doctor failure from before the deploy doesn't roll it back (test_acceptance_script)."""
+    _, wf = _workflow("deploy.yml")
+    steps = {s.get("name") or s.get("uses"): s for s in wf["jobs"]["deploy"]["steps"]}
+    rb = steps["Roll back"]
+    assert "rollout undo" not in rb["run"] and 'hangar="$PREVIOUS"' in rb["run"]
+    assert "cancelled()" in rb["if"] and "${{" not in rb["run"]
+    assert steps["Acceptance"].get("timeout-minutes") and "--doctor-baseline" in steps["Acceptance"]["run"]
+    assert "doctor-failing" in steps["Before (power state, the server's tools, the running image)"]["run"]

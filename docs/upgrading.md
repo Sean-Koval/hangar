@@ -199,43 +199,65 @@ The first `power.sh down` after the upgrade leaves hangar and the system pool up
 
 1. **Images.** It calls `images.yml`, which builds every environment image and harness pack tag the commit needs ([gke.md](gke.md#images-and-packs-built-in-ci)), and builds and pushes the control-plane image, `<registry>/control-plane:<sha>`, by digest.
 2. **Approval.** The deploy job uses the `production` environment, so it waits for a required reviewer (the owner) to approve it ([deployments and environments][envs]).
-3. **Preflight.** It reads hangar's power state and **refuses while the sandbox pools are powered down** (the checks need sandboxes) unless the run's `force` input is set; a forced deploy runs only the checks that need no sandbox (`doctor`, `power`, `metrics`). It lists the server's MCP tools and records the running image.
+3. **Preflight.** It reads hangar's power state and **refuses while the sandbox pools are powered down** (the checks need sandboxes) unless the run's `force` input is set; a forced deploy runs only the checks that need no sandbox (`doctor`, `power`, `metrics`). It lists the server's MCP tools and records the running image and the doctor checks already failing.
 4. **Drain**, then `kubectl set image deploy/hangar hangar=<image>`, `kubectl rollout status`, and `/healthz` through the public URL.
 5. **Acceptance:** `scripts/acceptance/gke.sh --no-kubectl --skip model,steer,gateway`, so every check talks to hangar's REST, MCP and E2B endpoints, including #86's MCP deadline check; none uses kubectl.
 6. **Run summary:** the server version before → after (`<version>+tools.<hash>`), the MCP tools added and removed, each check's result, and the warm and cold create times.
-7. **On any failure after the image changed:** `kubectl rollout undo deploy/hangar`, wait for it, and fail the run. Either way it records the result in hangar (`POST /api/admin/deploys`), which `hangar doctor` and `hangar power` show.
+7. **On any failure after the image changed**, a cancelled or timed-out run included: `kubectl set image` back to the image it replaced (recorded in step 3; not `rollout undo`, which would go one revision further back when the run redeployed the running image), wait for it, and fail the run. A `doctor` check that already failed before the deploy (step 3 records them) is reported in the summary and doesn't roll back: a rollback can't fix it, and would block every deploy, the fix included. Either way it records the result in hangar (`POST /api/admin/deploys`), which `hangar doctor` and `hangar power` show.
 
-Until its secrets exist (or on a fork) it skips with a notice and stays green. **Secrets** (repository secrets; the `production` environment holds none, it is only the gate):
+Until the repository secrets below exist (or on a fork) it skips with a notice and stays green. The deploy's own secrets are **`production` environment secrets**, which GitHub releases to a job only once the required reviewer approves it. As repository secrets, any workflow on any branch could read the admin token, and the approval would gate nothing.
 
-| Secret | Value |
-| --- | --- |
-| `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT`, `HANGAR_REGISTRY` | shared with `images.yml` ([gke.md](gke.md#images-and-packs-built-in-ci)); `GCP_SERVICE_ACCOUNT` pushes the control-plane image |
-| `GCP_DEPLOY_SERVICE_ACCOUNT` | `hangar-deploy@<project>.iam.gserviceaccount.com`: `roles/container.developer`, impersonable only from the `production` environment (below). Optional: without it `GCP_SERVICE_ACCOUNT` deploys, and needs that role |
-| `GKE_CLUSTER`, `GKE_LOCATION` | the cluster's name and zone (`hangar`, `us-central1-a`; `terraform output get_credentials`) |
-| `HANGAR_URL` | `https://<your hangar>` |
-| `HANGAR_DEPLOY_TOKEN` | an admin token for the acceptance checks and the deploy record: `hangar token create deploy --scope admin` |
+| Secret | Where | Value |
+| --- | --- | --- |
+| `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT`, `HANGAR_REGISTRY` | repository | shared with `images.yml` ([gke.md](gke.md#images-and-packs-built-in-ci)); `GCP_SERVICE_ACCOUNT` pushes the control-plane image, and never deploys |
+| `GCP_DEPLOY_SERVICE_ACCOUNT` | `production` | `hangar-deploy@<project>.iam.gserviceaccount.com`, impersonable only from the `production` environment, with only what a deploy needs (below). Required: there is no fallback to `GCP_SERVICE_ACCOUNT`, which every branch's workflows can impersonate |
+| `GKE_CLUSTER`, `GKE_LOCATION` | `production` | the cluster's name and zone (`hangar`, `us-central1-a`; `terraform output get_credentials`) |
+| `HANGAR_URL` | `production` | `https://<your hangar>` |
+| `HANGAR_DEPLOY_TOKEN` | `production` | an admin token for the acceptance checks and the deploy record: `hangar token create deploy --scope admin` |
 
-One-time setup, as a project owner, after the images setup in gke.md (same `PROJECT`, `NUM`, `REPO`):
+First, in *Settings → Environments*, create `production`, add yourself under *Required reviewers*, and under *Deployment branches and tags* allow only `main` and `v*` tags. Required reviewers need a public repository, or GitHub Enterprise for a private one ([deployments and environments][envs]). Then, as a project owner, after the images setup in gke.md (same `PROJECT`, `NUM`, `REPO`):
 
 ```bash
 gcloud iam service-accounts create hangar-deploy --project "$PROJECT"
-gcloud projects add-iam-policy-binding "$PROJECT" --role roles/container.developer \
+# IAM: only enough to fetch the cluster's credentials (container.clusters.get); what it may do inside the cluster
+# comes from the Role below, in the hangar namespace only
+gcloud projects add-iam-policy-binding "$PROJECT" --role roles/container.clusterViewer \
   --member "serviceAccount:hangar-deploy@$PROJECT.iam.gserviceaccount.com"
+kubectl apply -f - <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: hangar-deploy, namespace: hangar}
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [hangar]
+    verbs: [get, watch, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: hangar-deploy, namespace: hangar}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: hangar-deploy}
+subjects:
+  - {kind: User, name: hangar-deploy@$PROJECT.iam.gserviceaccount.com}
+EOF
 # Only jobs in the production environment (subject repo:OWNER/REPO:environment:production) may act as it
 gcloud iam service-accounts add-iam-policy-binding "hangar-deploy@$PROJECT.iam.gserviceaccount.com" --project "$PROJECT" \
   --role roles/iam.workloadIdentityUser \
   --member "principal://iam.googleapis.com/projects/$NUM/locations/global/workloadIdentityPools/github/subject/repo:$REPO:environment:production"
-gh secret set GCP_DEPLOY_SERVICE_ACCOUNT --body "hangar-deploy@$PROJECT.iam.gserviceaccount.com"
-gh secret set GKE_CLUSTER --body hangar
-gh secret set GKE_LOCATION --body "$(terraform -chdir=deploy/terraform/gke output -raw get_credentials | sed -E 's/.*--zone ([^ ]+).*/\1/')"
-gh secret set HANGAR_URL --body "https://<your hangar>"
-hangar token create deploy --scope admin | tail -1 | gh secret set HANGAR_DEPLOY_TOKEN
+gh secret set GCP_DEPLOY_SERVICE_ACCOUNT --env production --body "hangar-deploy@$PROJECT.iam.gserviceaccount.com"
+gh secret set GKE_CLUSTER --env production --body hangar
+gh secret set GKE_LOCATION --env production --body "$(terraform -chdir=deploy/terraform/gke output -raw get_credentials | sed -E 's/.*--zone ([^ ]+).*/\1/')"
+gh secret set HANGAR_URL --env production --body "https://<your hangar>"
+hangar token create deploy --scope admin | tail -1 | gh secret set HANGAR_DEPLOY_TOKEN --env production
 ```
 
-Then in *Settings → Environments*, create `production`, add yourself under *Required reviewers*, and optionally limit it to the `main` branch and `v*` tags. Required reviewers need a public repository, or GitHub Enterprise for a private one ([deployments and environments][envs]). `roles/container.developer` covers `container.clusters.get` (for the credentials), updating and rolling back Deployments and reading ReplicaSets ([GKE roles][gkeroles]); the kubeconfig `get-gke-credentials` writes holds a token that lasts an hour, so the workflow fetches a fresh one before a rollback.
+Moving from an earlier setup of this workflow: set the four secrets above with `--env production`, delete the repository copies (`gh secret delete HANGAR_DEPLOY_TOKEN`, and the others), and replace `roles/container.developer` with the binding above. That role reads every Secret and can exec into every pod in every cluster of the project, which a deploy doesn't need, and a deploy run executes the commit's dependencies (`uv sync`) with it.
+
+The deploy needs `get`, `watch` and `patch` on the `hangar` Deployment (`kubectl get`, `set image`, `rollout status`) and `container.clusters.get` to fetch credentials ([GKE roles][gkeroles], [RBAC on GKE: a service account is a `User` subject named by its email, and `container.clusters.get` authenticates without authorizing anything in the cluster][gkerbac]). The kubeconfig `get-gke-credentials` writes holds a token that lasts an hour, so the workflow fetches a fresh one before a rollback.
 
 [envs]: https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments
 [gkeroles]: https://docs.cloud.google.com/iam/docs/roles-permissions/container
+[gkerbac]: https://docs.cloud.google.com/kubernetes-engine/docs/how-to/role-based-access-control
 
 ## Upgrading from before the overnight stack (#48–#69)
 

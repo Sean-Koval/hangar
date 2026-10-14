@@ -5,19 +5,21 @@
 #   3. scripts/acceptance/gke.sh against the new server over its REST and MCP endpoints (no kubectl in the checks);
 #   4. the run summary gets the MCP tool-list diff, the new server version and the acceptance results, and hangar
 #      records the deploy (`hangar doctor`, `hangar power`).
-# Any failure once the image has changed rolls it back (kubectl rollout undo) and fails the run.
+# Any failure once the image has changed, a cancel or a timeout included, puts the image it replaced back and fails
+# the run. A doctor check that already failed before the deploy is reported, not rolled back for.
 #
 # It refuses to deploy while the sandbox pools are powered down (the checks need sandboxes) unless `force` is set; a
 # forced deploy then runs only the checks that need no sandbox.
 #
-# Repository secrets (the `production` environment holds none; it is the gate):
-#   GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_SERVICE_ACCOUNT, HANGAR_REGISTRY   shared with images.yml (docs/gke.md)
-#   GCP_DEPLOY_SERVICE_ACCOUNT   deploy-only: roles/container.developer, usable only from the production
-#                                environment (docs/upgrading.md); without it, GCP_SERVICE_ACCOUNT deploys
+# Repository secrets, shared with images.yml (docs/gke.md): GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_SERVICE_ACCOUNT,
+# HANGAR_REGISTRY. Without them (before setup, or on a fork) it skips with a notice and stays green.
+# `production` environment secrets, released only once the required reviewer approves (as repository secrets any
+# workflow on any branch could read them, and the approval would gate nothing):
+#   GCP_DEPLOY_SERVICE_ACCOUNT   the deploy identity, impersonable only from the production environment
+#                                (docs/upgrading.md); there is no fallback to GCP_SERVICE_ACCOUNT
 #   GKE_CLUSTER, GKE_LOCATION    the cluster's name and zone
 #   HANGAR_URL                   https://<your hangar>
 #   HANGAR_DEPLOY_TOKEN          an admin token: the acceptance checks and the deploy record
-# Without them (before setup, or on a fork) it skips with a notice and stays green.
 name: deploy
 on:
   workflow_dispatch:
@@ -47,16 +49,12 @@ jobs:
       WIF_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
       WIF_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
       HANGAR_REGISTRY: ${{ secrets.HANGAR_REGISTRY }}
-      GKE_CLUSTER: ${{ secrets.GKE_CLUSTER }}
-      GKE_LOCATION: ${{ secrets.GKE_LOCATION }}
-      HANGAR_URL: ${{ secrets.HANGAR_URL }}
-      HANGAR_DEPLOY_TOKEN: ${{ secrets.HANGAR_DEPLOY_TOKEN }}
     steps:
       - name: Check setup
         id: check
         run: |
           missing=()
-          for v in WIF_PROVIDER WIF_SERVICE_ACCOUNT HANGAR_REGISTRY GKE_CLUSTER GKE_LOCATION HANGAR_URL HANGAR_DEPLOY_TOKEN; do
+          for v in WIF_PROVIDER WIF_SERVICE_ACCOUNT HANGAR_REGISTRY; do
             [ -n "${!v}" ] || missing+=("$v")
           done
           if [ ${#missing[@]} -eq 0 ]; then
@@ -121,7 +119,7 @@ jobs:
     if: needs.setup.outputs.ready == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
-    environment: production  # the owner approves here (a required reviewer)
+    environment: production  # the owner approves here (a required reviewer); its secrets exist only past this
     permissions:
       contents: read
       id-token: write
@@ -133,6 +131,18 @@ jobs:
       FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
       NS: hangar
     steps:
+      - name: Check the production environment's secrets
+        env:
+          DEPLOY_SA: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          GKE_CLUSTER: ${{ secrets.GKE_CLUSTER }}
+          GKE_LOCATION: ${{ secrets.GKE_LOCATION }}
+        run: |
+          missing=()
+          for v in DEPLOY_SA GKE_CLUSTER GKE_LOCATION HANGAR_URL HANGAR_TOKEN; do [ -n "${!v}" ] || missing+=("$v"); done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error title=deploy: not set up::The production environment lacks: ${missing[*]} (DEPLOY_SA is GCP_DEPLOY_SERVICE_ACCOUNT, HANGAR_TOKEN is HANGAR_DEPLOY_TOKEN). They are environment secrets, not repository ones: docs/upgrading.md, \"Deploying with deploy.yml\"."
+            exit 1
+          fi
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
         with:
@@ -144,7 +154,7 @@ jobs:
       - uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT || secrets.GCP_SERVICE_ACCOUNT }}
+          service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
       - uses: google-github-actions/get-gke-credentials@v3
         with:
           cluster_name: ${{ secrets.GKE_CLUSTER }}
@@ -167,7 +177,12 @@ jobs:
             echo "::warning::Forced while the sandbox pools are $power: only the checks that need no sandbox run."
           fi
           uv run --locked python scripts/acceptance/hangar_accept.py tools > before.json || echo '{}' > before.json
+          # what the doctor already fails on: the acceptance reports it, and doesn't roll back for it
+          uv run --locked python scripts/acceptance/hangar_accept.py doctor-failing > doctor-before.json ||
+            echo '[]' > doctor-before.json
+          echo "doctor failing before the deploy: $(cat doctor-before.json)"
           prev=$(kubectl -n "$NS" get deploy hangar -o jsonpath='{.spec.template.spec.containers[?(@.name=="hangar")].image}')
+          [ -n "$prev" ] || { echo "::error::can't read the running image, so there would be nothing to roll back to"; exit 1; }
           echo "previous=$prev" >> "$GITHUB_OUTPUT"
           echo "running $prev; deploying $IMAGE"
       - name: Drain (creates and destroys in flight finish before hangar restarts)
@@ -190,8 +205,13 @@ jobs:
           for _ in $(seq 60); do curl -fsS --max-time 10 "$HANGAR_URL/healthz" > /dev/null && exit 0; sleep 5; done
           echo "::error::$HANGAR_URL/healthz didn't answer within 5 min of the rollout"; exit 1
       - name: Acceptance
+        timeout-minutes: 75  # a step timeout fails the step (and rolls back); the job's would cancel it
+        env:
+          ONLY: ${{ steps.pre.outputs.only }}
         run: |
-          bash scripts/acceptance/gke.sh --no-kubectl --skip model,steer,gateway --record accept.jsonl ${{ steps.pre.outputs.only }}
+          # shellcheck disable=SC2086 # ONLY is empty or "--only a,b,c"
+          bash scripts/acceptance/gke.sh --no-kubectl --skip model,steer,gateway --record accept.jsonl \
+            --doctor-baseline doctor-before.json $ONLY
       - name: Summary (version, tool-list diff, acceptance)
         if: always() && steps.rollout.outputs.changed == 'true'
         run: |
@@ -229,21 +249,26 @@ jobs:
                   print(f"\nCreate latency on `{r['data']['environment']}`: {runs}")
           PY
       # The kubeconfig's token lasts an hour, which a long acceptance run can outlast: a fresh one for the rollback.
+      # A cancelled run (by hand, or the job's timeout) rolls back too.
       - uses: google-github-actions/get-gke-credentials@v3
-        if: failure() && steps.rollout.outputs.changed == 'true'
+        if: (failure() || cancelled()) && steps.rollout.outputs.changed == 'true'
         with:
           cluster_name: ${{ secrets.GKE_CLUSTER }}
           location: ${{ secrets.GKE_LOCATION }}
           project_id: ${{ steps.project.outputs.id }}
+      # The image it replaced, not `rollout undo`: undo goes back one revision, which is the version *before* the
+      # running one when `set image` failed or redeployed the running image (no new revision).
       - name: Roll back
         id: rollback
-        if: failure() && steps.rollout.outputs.changed == 'true'
+        if: (failure() || cancelled()) && steps.rollout.outputs.changed == 'true'
+        env:
+          PREVIOUS: ${{ steps.pre.outputs.previous }}
         run: |
-          echo "::error::Rolling back to ${{ steps.pre.outputs.previous }}"
-          kubectl -n "$NS" rollout undo deploy/hangar
+          echo "::error::Rolling back to $PREVIOUS"
+          kubectl -n "$NS" set image deploy/hangar hangar="$PREVIOUS"
           kubectl -n "$NS" rollout status deploy/hangar --timeout=15m
           for _ in $(seq 60); do curl -fsS --max-time 10 "$HANGAR_URL/healthz" > /dev/null && break; sleep 5; done
-          echo "## Rolled back to \`${{ steps.pre.outputs.previous }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Rolled back to \`$PREVIOUS\`" >> "$GITHUB_STEP_SUMMARY"
       - name: Record the deploy in hangar
         if: always() && steps.rollout.outputs.changed == 'true'
         env:
@@ -270,7 +295,8 @@ jobs:
           )
           curl -fsS --max-time 30 -X POST -H "Authorization: Bearer $HANGAR_TOKEN" -H 'Content-Type: application/json' \
             -d "$body" "$HANGAR_URL/api/admin/deploys" > /dev/null || echo "::warning::couldn't record the deploy in hangar"
-      - name: End the drain (nothing was deployed)
-        if: always() && steps.drain.outputs.began == 'true' && steps.rollout.outputs.changed != 'true'
+      # A restarted hangar starts undrained; one that never restarted (set image failed, or the same image) doesn't
+      - name: End the drain
+        if: always() && steps.drain.outputs.began == 'true'
         run: |
           curl -fsS --max-time 30 -X DELETE -H "Authorization: Bearer $HANGAR_TOKEN" "$HANGAR_URL/api/admin/drain" > /dev/null || true

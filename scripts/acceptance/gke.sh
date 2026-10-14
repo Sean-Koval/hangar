@@ -37,6 +37,7 @@ usage: $0 [options]
   --warm-env NAME       environment with a warm pool the warmstart check times a warm and a cold create on
                         (default: claude-python)
   --record FILE         also append each check's result (and its numbers) to FILE as JSON lines
+  --doctor-baseline F   JSON list of doctor checks already failing before a deploy: reported, not failed on
   --exec-calls N        exec round trips to time (default: 20)
   --internet-probe H:P  an address sandboxes must reach, so closed ports in the isolation check mean a policy
                         and not a sandbox with no network (default: github.com:443)
@@ -53,7 +54,7 @@ EOF
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --env|--session-env|--repo|--gateway-repo|--model|--exec-calls|--internet-probe|--mcp-env|--warm-env|--record)
+    --env|--session-env|--repo|--gateway-repo|--model|--exec-calls|--internet-probe|--mcp-env|--warm-env|--record|--doctor-baseline)
       [ $# -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; }
       ARGS+=("$1" "$2"); shift 2 ;;
     --with-model) WITH_MODEL=1; shift ;;

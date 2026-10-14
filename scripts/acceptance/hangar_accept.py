@@ -224,16 +224,45 @@ def by_transport(before: dict[str, float], after: dict[str, float]) -> dict[str,
 
 
 # ---------------------------------------------------------------------------- checks
+def _baseline(opts: argparse.Namespace) -> set[str]:
+    """--- ops: the doctor checks that failed before a deploy (deploy.yml's `doctor-failing`); empty if unknown."""
+    path = getattr(opts, "doctor_baseline", None)
+    try:
+        names = json.loads(Path(path).read_text()) if path else []
+    except (OSError, ValueError):
+        return set()
+    return {n for n in names if isinstance(n, str)} if isinstance(names, list) else set()
+
+
 def check_doctor(api: Api, state: State, opts: argparse.Namespace) -> str:
     checks = api.call("GET", "/api/doctor")
     fails = [c for c in checks if c["status"] == "fail"]
     warns = [c for c in checks if c["status"] == "warn"]
     for c in fails + warns:
         say(f"{c['status']}: {c['name']}: {c['detail']}" + (f"  (fix: {c['fix']})" if c.get("fix") else ""))
-    if fails:
-        raise Fail(f"{len(fails)} problem(s): {', '.join(c['name'] for c in fails)}; `hangar doctor --fix` repairs "
-                   "what it can")
-    return f"{len(checks)} checks, no failures" + (f", {len(warns)} warning(s)" if warns else "")
+    # --- ops: a deploy rolls back for what it broke, not for what was already red before it (a rollback can't fix
+    # that, and would block every deploy, the fix for it included); those are reported
+    before = _baseline(opts)
+    old = [c["name"] for c in fails if c["name"] in before]
+    new = [c for c in fails if c["name"] not in before]
+    also = f"; already failing before the deploy: {', '.join(old)}" if old else ""
+    if new:
+        raise Fail(f"{len(new)} {'new ' if before else ''}problem(s): {', '.join(c['name'] for c in new)}; `hangar "
+                   f"doctor --fix` repairs what it can{also}")
+    return f"{len(checks)} checks, no {'new ' if old else ''}failures" + (
+        f", {len(warns)} warning(s)" if warns else "") + also
+
+
+def doctor_failing() -> int:
+    """--- ops: the names of the doctor's failing checks as JSON (deploy.yml's baseline before a rollout); 2 if
+    hangar can't be asked, so the caller falls back to no baseline (every failure then counts)."""
+    try:
+        checks = Api(*target()).call("GET", "/api/doctor")
+    except Exception as e:  # noqa: BLE001
+        print(f"can't read the doctor: {type(e).__name__}: {e}", file=sys.stderr)
+        return 2
+    print(json.dumps(sorted({c["name"] for c in checks if c.get("status") == "fail"})))
+    return 0
 
 
 def check_k8s(api: Api, state: State, opts: argparse.Namespace) -> str:
@@ -1023,6 +1052,8 @@ def main(argv: list[str]) -> int:
         return whoami()
     if argv[:1] == ["tools"]:  # --- ops
         return tools()
+    if argv[:1] == ["doctor-failing"]:  # --- ops
+        return doctor_failing()
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("check", choices=sorted(CHECKS))
     p.add_argument("--state", type=Path, required=True)
@@ -1046,6 +1077,8 @@ def main(argv: list[str]) -> int:
     p.add_argument("--turn-timeout", type=float, default=900.0)
     p.add_argument("--warm-env", default="claude-python", help="an environment with a warm pool (warmstart check)")
     p.add_argument("--record", type=Path, default=None, help="append each check's result to this JSON-lines file")
+    p.add_argument("--doctor-baseline", type=Path, default=None,
+                   help="JSON list of doctor checks already failing before a deploy: reported, not failed on")
     opts = p.parse_args(argv)
     if opts.gateway_repo and not re.fullmatch(r"[\w.-]+/[\w.-]+", opts.gateway_repo):
         p.error("--gateway-repo is OWNER/REPO")

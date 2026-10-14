@@ -465,3 +465,35 @@ def test_mcp_check_over_http(tmp_path, monkeypatch, world, wait, ok):  # noqa: F
                 ha.check_mcp(api, state, opts)
     finally:
         srv.stop()
+
+
+def test_the_doctor_check_fails_only_on_what_a_deploy_broke(tmp_path, monkeypatch, capsys):
+    """deploy.yml records the doctor's failing checks before the rollout (`doctor-failing`) and passes them as
+    --doctor-baseline: a probe that was already red (a flaky Slack, an expired token) is reported, not rolled back,
+    since a rollback can't fix it and would block every deploy, its fix included. Without a baseline (hangar was
+    unreachable before) every failure counts."""
+    import argparse
+    import json
+
+    sys.path.insert(0, str(ROOT / "scripts" / "acceptance"))
+    try:
+        import hangar_accept as ha
+    finally:
+        sys.path.pop(0)
+    checks = [{"name": "slack", "status": "fail", "detail": "invalid_auth"},
+              {"name": "store", "status": "ok", "detail": ""}]
+    monkeypatch.setattr(ha.Api, "call", lambda self, *a, **kw: checks)
+    monkeypatch.setattr(ha, "target", lambda: ("http://hangar.invalid", "t"))
+    assert ha.main(["doctor-failing"]) == 0
+    before = tmp_path / "doctor-before.json"
+    before.write_text(capsys.readouterr().out)
+    assert json.loads(before.read_text()) == ["slack"]
+    api = ha.Api("http://hangar.invalid", "t")
+    assert "already failing before the deploy: slack" in ha.check_doctor(
+        api, None, argparse.Namespace(doctor_baseline=before))
+    checks[1]["status"] = "fail"  # the new version broke the store
+    with pytest.raises(ha.Fail, match="1 new problem") as e:
+        ha.check_doctor(api, None, argparse.Namespace(doctor_baseline=before))
+    assert "store" in str(e.value)
+    with pytest.raises(ha.Fail, match="2 problem"):
+        ha.check_doctor(api, None, argparse.Namespace(doctor_baseline=None))
