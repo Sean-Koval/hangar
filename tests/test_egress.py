@@ -475,8 +475,11 @@ async def test_the_docker_egress_network_is_internal_and_checked():
     from hangar.providers.docker_net import EGRESS_NAME, EGRESS_OPTIONS, Network
 
     class Api:
-        def __init__(self, nets=None):
-            self.nets, self.created = dict(nets or {}), []
+        def __init__(self, nets=None, version="27.3.1"):
+            self.nets, self.created, self._version = dict(nets or {}), [], version
+
+        def version(self):
+            return {"Version": self._version}
 
         def inspect_network(self, name):
             if name not in self.nets:
@@ -496,6 +499,13 @@ async def test_the_docker_egress_network_is_internal_and_checked():
     bad = Api({EGRESS_NAME: {"Driver": "bridge", "Options": EGRESS_OPTIONS, "Internal": False}})
     with pytest.raises(ProviderError, match="isn't internal"):
         await Network(SimpleNamespace(api=bad), Settings()).egress_gateway()
+    # review: before Moby 26.0.0 / 25.0.4 / 23.0.11 an internal network forwards DNS to the host's resolver
+    # (CVE-2024-29018), a tunnel out through query names
+    for old in ("24.0.7", "25.0.3", "23.0.10", "20.10.24", "garbage"):
+        with pytest.raises(ProviderError, match="CVE-2024-29018"):
+            await Network(SimpleNamespace(api=Api(version=old)), Settings()).egress_gateway()
+    for ok in ("26.0.0", "25.0.4", "23.0.11", "28.1.1", "27.0.0-rc.1"):
+        assert await Network(SimpleNamespace(api=Api(version=ok)), Settings()).egress_gateway() == "172.31.0.1"
 
 
 def test_kubernetes_labels_proxied_pods_and_gives_their_template_its_own_policy():
@@ -509,12 +519,62 @@ def test_kubernetes_labels_proxied_pods_and_gives_their_template_its_own_policy(
     pol = egress.k8s_template_policy()
     assert pol["ingress"] == []
     ports = sorted(p["port"] for r in pol["egress"] for p in r["ports"])
-    assert ports == [53, 53, 3128, 8788]
-    assert not any("ipBlock" in peer and peer["ipBlock"]["cidr"] != "169.254.20.10/32"
-                   for r in pol["egress"] for peer in r["to"])
+    assert ports == [3128, 8788]  # no DNS: kube-dns recurses to the internet (review: DNS tunnelling)
+    assert not any("ipBlock" in peer for r in pol["egress"] for peer in r["to"])
 
 
-def test_the_manifests_give_proxied_pods_dns_the_gateway_and_the_proxy_and_nothing_else():
+def test_proxied_pods_resolve_hangar_from_their_hosts_file_and_have_no_resolver():
+    """Review: kube-dns answers any name by asking the internet, so a proxied sandbox with DNS could tunnel data out
+    in queries for names under a domain an attacker serves. Proxied pods need no DNS (the proxy resolves names), only
+    hangar's own Service names, which go into /etc/hosts."""
+    pytest.importorskip("kubernetes")
+    from hangar.providers.kubernetes import KubernetesProvider
+
+    prov = KubernetesProvider.__new__(KubernetesProvider)
+    prov.settings = Settings(k8s_runtime_class="")
+    dns = {"dnsPolicy": "None", "dnsConfig": {"nameservers": ["127.0.0.1"]},
+           "hostAliases": [{"ip": "10.4.0.9", "hostnames": ["hangar-gateway.hangar.svc"]}]}
+    pod = prov._pod_template(spec(mode="allowlist"), "img", dns)["spec"]
+    assert pod["dnsPolicy"] == "None" and pod["dnsConfig"]["nameservers"] == ["127.0.0.1"]
+    assert pod["hostAliases"] == dns["hostAliases"]
+    assert "dnsPolicy" not in prov._pod_template(spec(), "img")["spec"]
+
+
+def test_the_hosts_file_names_hangars_services_and_fails_closed(monkeypatch):
+    calls = []
+
+    def fake(host, *a, **k):
+        calls.append(host)
+        if host == "hangar-gateway.hangar.svc":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.4.0.9", 0))]
+        if host == "otel.opentelemetry.svc":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.4.0.20", 0))]
+        raise socket.gaierror("no")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake)
+    s = Settings(egress_url="http://hangar-gateway.hangar.svc:3128", gateway_url="http://hangar-gateway.hangar.svc:8788",
+                 otel_sandbox_endpoint="http://otel.opentelemetry.svc:4318")
+    dns = egress.k8s_pod_dns(s)
+    assert dns["dnsPolicy"] == "None" and dns["dnsConfig"] == {"nameservers": ["127.0.0.1"]}
+    assert dns["hostAliases"] == [{"ip": "10.4.0.20", "hostnames": ["otel.opentelemetry.svc"]},
+                                  {"ip": "10.4.0.9", "hostnames": ["hangar-gateway.hangar.svc"]}]
+    assert egress.k8s_pod_dns(Settings(egress_url="http://10.4.0.9:3128"))["hostAliases"] == []
+    with pytest.raises(egress.EgressError, match="nowhere.svc"):
+        egress.k8s_pod_dns(Settings(egress_url="http://nowhere.svc:3128"))
+
+
+async def test_the_otel_endpoint_bypasses_the_proxy(fleet):
+    """The harness exports telemetry to HANGAR_OTEL_SANDBOX_ENDPOINT, an in-cluster collector the proxy would refuse
+    (not on the allowlist, a private address): it goes direct, as before."""
+    sb = Sandbox(name="s", environment="plain", provider="docker", info={"harness": "claude-code"})
+    locked = fleet.catalog.get("plain").model_copy(update={"egress": egress.EgressSpec(mode="allowlist")})
+    fleet.settings.egress_url = "http://hangar-gateway.hangar.svc:3128"
+    fleet.settings.otel_sandbox_endpoint = "http://otel.opentelemetry.svc:4318"
+    env = await egress.attach(fleet, SimpleNamespace(name="kubernetes"), sb, locked)
+    assert "otel.opentelemetry.svc" in env["NO_PROXY"].split(",")
+
+
+def test_the_manifests_give_proxied_pods_the_gateway_and_the_proxy_and_nothing_else():
     k8s = Path(__file__).parents[1] / "deploy" / "k8s"
     docs = [d for f in sorted(k8s.rglob("*.yaml")) for d in yaml.safe_load_all(f.read_text())
             if isinstance(d, dict) and d.get("kind") == "NetworkPolicy"
@@ -535,9 +595,91 @@ def test_the_manifests_give_proxied_pods_dns_the_gateway_and_the_proxy_and_nothi
     assert rules
     for r in rules:
         for peer in r["to"]:
-            if "ipBlock" in peer:  # NodeLocal DNS only: no address block reaches the internet
-                assert peer["ipBlock"]["cidr"] == "169.254.20.10/32", peer
-            else:  # in-cluster services only (hangar's pods, kube-dns, an OTel collector)
-                assert peer.get("namespaceSelector"), peer
+            assert "ipBlock" not in peer, peer  # no address block: not the internet, not NodeLocal DNS
+            assert peer.get("namespaceSelector"), peer  # in-cluster services only (hangar's pods, an OTel collector)
+            assert (peer["namespaceSelector"].get("matchLabels") or {}).get("kubernetes.io/metadata.name") != \
+                "kube-system", peer  # kube-dns resolves any name by asking the internet: a tunnel out
     ports = {p["port"] for r in rules for p in r["ports"]}
-    assert {53, 3128, 8788} <= ports
+    assert {3128, 8788} <= ports and 53 not in ports
+
+
+# ============================================================================ review: an agent trying to get out
+def test_ipv6_forms_that_carry_a_private_ipv4_address_are_not_public():
+    """NAT64 (64:ff9b::/96), IPv4-compatible (::/96) and SIIT (::ffff:0:0:0/96) addresses reach the IPv4 address
+    they embed wherever a translator exists, and Python calls them global. 6to4 is refused too."""
+    import ipaddress as ip
+
+    for a in ("64:ff9b::a9fe:a9fe", "64:ff9b::a00:1", "::a9fe:a9fe", "::ffff:0:a9fe:a9fe", "2002:a9fe:a9fe::1",
+              "::1", "::"):
+        assert not egress_proxy.public(ip.ip_address(a)), a
+    for a in ("64:ff9b::a9fe:a9fe", "::a9fe:a9fe", "::ffff:0:7f00:1", "::1", "::"):
+        assert not egress_proxy.reachable_private(ip.ip_address(a)), a
+    assert egress_proxy.public(ip.ip_address("2606:4700::6810:84e5"))
+    assert egress_proxy.public(ip.ip_address("64:ff9b::808:808"))  # NAT64 of a public address is that address
+
+
+async def test_a_client_that_stops_reading_holds_little_of_the_proxys_memory(proxied, monkeypatch):
+    """A sandbox can open its maximum of tunnels to a fast host and read nothing; what the proxy buffers for each
+    must stay small, or a few sandboxes run the control plane out of memory (3 GiB on GKE)."""
+    import contextlib
+
+    p = proxied
+    held: list = []
+    real_splice = p.fleet.egress._splice
+
+    async def spy(cr, cw, ur, uw, n):
+        held.append((cw, ur))
+        return await real_splice(cr, cw, ur, uw, n)
+
+    monkeypatch.setattr(p.fleet.egress, "_splice", spy)
+    blast_port = free_port()
+
+    async def blast(reader, writer):
+        await reader.read(65536)
+        chunk = b"x" * 65536
+        with contextlib.suppress(ConnectionError):
+            for _ in range(512):  # 32 MB, far more than the kernel's loopback buffers take
+                writer.write(chunk)
+                await writer.drain()
+
+    server = await asyncio.start_server(blast, "127.0.0.1", blast_port)
+    egress.approve(p.store, "session", "ses-1", f"upstream.test:{blast_port}", None, "ann")
+    p.fleet.egress.invalidate()
+    first, r, w = await ask(p.px, f"CONNECT upstream.test:{blast_port} HTTP/1.1\r\n{auth(p.fleet, p.sb)}",
+                            client_hello("upstream.test"))
+    assert first.startswith(b"HTTP/1.1 200")
+    r._transport.pause_reading()  # the client reads nothing more
+    await asyncio.sleep(1.5)
+    [(cw, ur)] = held
+    buffered = len(ur._buffer) + cw.transport.get_write_buffer_size()
+    assert buffered <= 256 * 1024, buffered
+    w.close()
+    server.close()
+
+
+def test_a_member_cant_widen_egress_with_a_remote_mcp_server(fleet, tmp_path):
+    """`egress` needs an admin, but `mcp` doesn't: a member's environment that extends a locked one must not put
+    its own MCP server's host on the allowlist, by adding a server or by pointing the parent's at another host."""
+    from hangar import people
+
+    fleet.catalog.save_dir = tmp_path  # where API-made environments go (not the shipped fixtures)
+    people.add(fleet.store, "bob", role="member")
+    people.add(fleet.store, "boss", role="admin")
+    fleet.catalog.add({"name": "locked", "harnesses": ["claude-code"], "egress": {"mode": "allowlist", "presets": []},
+                       "mcp": {"docs": {"url": "https://mcp.example.com/mcp"}}})
+    for name, owner, mcp in (("mine", "bob", {"evil": {"url": "https://evil.example/mcp"}}),
+                             ("swap", "bob", {"docs": {"url": "https://evil.example/mcp"}}),
+                             ("admins", "boss", {"more": {"url": "https://more.example/mcp"}})):
+        fleet.catalog.add({"name": name, "extends": "locked", "mcp": mcp})
+        fleet.store.kv_set(f"identity:env-owner:{name}", owner)
+
+    def pol(env):
+        return egress.for_sandbox(fleet, Sandbox(name="s", environment=env, provider="docker",
+                                                 info={"harness": "claude-code"}))
+
+    assert pol("locked").allows("mcp.example.com", 443)
+    mine = pol("mine")
+    assert mine.allows("mcp.example.com", 443) and mine.allows("evil.example", 443) is None
+    assert any("evil.example" in n for n in mine.notes)
+    assert pol("swap").allows("evil.example", 443) is None
+    assert pol("admins").allows("more.example", 443)

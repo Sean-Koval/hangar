@@ -225,7 +225,7 @@ class KubernetesProvider(Provider):
     async def _cloud_build(self, ctx: BuildContext, tag: str, log: LogFn | None) -> None:
         await cloud_build(ctx, tag, log, self.settings.k8s_build_service_account)  # --- images: shared with the CLI
 
-    def _pod_template(self, spec: EnvSpec, image: str) -> dict:
+    def _pod_template(self, spec: EnvSpec, image: str, dns: dict | None = None) -> dict:
         s = self.settings
         res = spec.resources
         pod: dict = {
@@ -276,6 +276,7 @@ class KubernetesProvider(Provider):
         labels = {**MANAGED, "dev.hangar/env": spec.name}
         if egress.proxied(s, spec):  # --- egress: left out of the internet baseline (deploy/k8s/gateway.yaml)
             labels[egress.K8S_LABEL] = "proxied"
+            pod.update(dns or {})  # --- review(egress): no resolver, hangar's names in /etc/hosts (egress.k8s_pod_dns)
         if s.k8s_pod_snapshots and rc == "gvisor":
             # Pod snapshots need gVisor, a KSA with access to the snapshot bucket, and the policy's label.
             labels.update(SNAPSHOT_LABEL)
@@ -313,7 +314,13 @@ class KubernetesProvider(Provider):
         name = f"hangar-{spec.name}"
         meta = {"name": name, "labels": {**MANAGED, "dev.hangar/env": spec.name},
                 "annotations": {"dev.hangar/image": image}}
-        tspec: dict = {"podTemplate": self._pod_template(spec, image)}
+        dns = None
+        if egress.proxied(self.settings, spec):  # --- review(egress): kube-dns would be a tunnel out
+            try:
+                dns = await asyncio.to_thread(egress.k8s_pod_dns, self.settings)
+            except egress.EgressError as e:
+                raise ProviderError(str(e)) from e
+        tspec: dict = {"podTemplate": self._pod_template(spec, image, dns)}
         if egress.proxied(self.settings, spec):  # --- egress: not Agent Sandbox's default policy (public internet)
             tspec["networkPolicy"] = egress.k8s_template_policy()
         await self._apply("sandboxtemplates", {

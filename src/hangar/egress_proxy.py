@@ -1,7 +1,8 @@
 """The egress proxy (--- egress): an HTTP CONNECT proxy in the control plane, next to the git gateway.
 
-Sandboxes in an `allowlist` or `none` environment can reach nothing but this proxy, DNS and the git gateway; their
-tools find the proxy in HTTPS_PROXY/HTTP_PROXY (egress.py). For each connection the proxy:
+Sandboxes in an `allowlist` or `none` environment can reach nothing but this proxy and the git gateway, with no DNS
+that recurses to the internet; their tools find the proxy in HTTPS_PROXY/HTTP_PROXY (egress.py). For each connection
+the proxy:
 
 1. authenticates the sandbox (Basic auth: sandbox id and HMAC(vault key, sandbox id); a sandbox that isn't running
    gets nothing);
@@ -15,7 +16,7 @@ tools find the proxy in HTTPS_PROXY/HTTP_PROXY (egress.py). For each connection 
 
 Why here and not a separate proxy: the decision needs what the control plane has (the sandbox, its person, its
 session's approvals, the audit log and the activity stream), and a connection costs one dictionary lookup and a
-SQLite read by primary key at most. Relaying is plain socket copying on the event loop with 256 KB reads.
+SQLite read by primary key at most. Relaying is plain socket copying on the event loop with 64 KB reads.
 
 Every connection is accounted for per sandbox and person: a denied one is an `egress.deny` audit entry (at most
 DENY_AUDITS_PER_MINUTE per sandbox, the rest counted in the next entry) and an event in the sandbox's session;
@@ -48,7 +49,10 @@ HEAD_SECONDS = 15.0  # to send the request head, and (CONNECT) the first TLS rec
 CONNECT_SECONDS = 15.0
 IDLE_SECONDS = 900.0  # no byte either way for this long ends a tunnel (model streams send keep-alives)
 CLOSE_GRACE_SECONDS = 15.0  # after the far side closes, how long the client side may still send
-BUF = 256 * 1024
+# What one tunnel may hold per direction: a stream reader pauses its socket at 2 * BUF, a socket read takes at most
+# BUF (asyncio's default is 256 KB), and a write waits for the 64 KB high-water mark. A client that stops reading
+# then pins about 4 * BUF, so even MAX_CONNECTIONS stalled tunnels fit the control plane's memory.
+BUF = 64 * 1024
 TLS_RECORD_MAX = 16384 + 2048  # a TLSPlaintext fragment is at most 2^14 bytes; leave room for what clients send
 MAX_CONNECTIONS = 4096  # the process's file limit is the real bound; leave room for everything else
 POLICY_SECONDS = 5.0  # an approval or a policy change applies within this long (approve() also invalidates)
@@ -142,18 +146,40 @@ def sni(record: bytes) -> str | None:
     return None
 
 
+# IPv6 ranges that carry an IPv4 address in their last 32 bits and reach it wherever a translator exists: NAT64's
+# well-known prefix (RFC 6052), IPv4-compatible (RFC 4291, deprecated) and SIIT's IPv4-translated (RFC 2765). Python
+# calls them global.
+_EMBEDS_V4 = tuple(ipaddress.ip_network(n) for n in ("64:ff9b::/96", "::/96", "::ffff:0:0:0/96"))
+_THIS_NET = ipaddress.ip_network("0.0.0.0/8")
+
+
+def _addresses(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> list[ipaddress.IPv4Address |
+                                                                          ipaddress.IPv6Address]:
+    """The address and any IPv4 address inside it (mapped, 6to4, NAT64, compatible, translated): a connection may
+    end up at either, so both must pass."""
+    out: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = [ip]
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped:
+            out.append(ip.ipv4_mapped)
+        elif ip.sixtofour:
+            out.append(ip.sixtofour)
+        elif any(ip in n for n in _EMBEDS_V4):
+            out.append(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF))
+    return out
+
+
 def public(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
-        ip = ip.ipv4_mapped
+    addrs = _addresses(ip)
+    if len(addrs) > 1:  # judged by the IPv4 address it reaches; 6to4 needs a relay hangar doesn't trust
+        return not ip.sixtofour and addrs[1].is_global and not addrs[1].is_multicast and not ip.is_loopback
     return ip.is_global and not ip.is_multicast
 
 
 def reachable_private(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """A private address an operator may open to named hosts (an internal mirror): never loopback, link-local
-    (the metadata servers), unspecified or multicast."""
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
-        ip = ip.ipv4_mapped
-    return not (ip.is_loopback or ip.is_link_local or ip.is_unspecified or ip.is_multicast or ip.is_reserved)
+    (the metadata servers), unspecified or multicast, written as IPv4 or inside an IPv6 address."""
+    return not any(a.is_loopback or a.is_link_local or a.is_unspecified or a.is_multicast or a.is_reserved
+                   or a in _THIS_NET for a in _addresses(ip))
 
 
 def _response(status: int, text: str, extra: dict[str, str] | None = None) -> bytes:
@@ -479,6 +505,10 @@ class EgressProxy:
                       uw: asyncio.StreamWriter, n: list[int]) -> None:
         loop = asyncio.get_running_loop()
         last = [loop.time()]
+        for w in (cw, uw):  # bound each socket read too (see BUF); a transport without the attribute just ignores it
+            with contextlib.suppress(Exception):
+                if getattr(w.transport, "max_size", 0) > BUF:
+                    w.transport.max_size = BUF
 
         async def pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter, i: int) -> None:
             try:

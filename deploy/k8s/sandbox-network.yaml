@@ -27,7 +27,7 @@
 # hangar's API port among them. Keep pod IPv6 ranges internal (ULA, fc00::/7), as GKE's internal IPv6 access does.
 #
 # --- egress: sandboxes of an `allowlist`/`none` environment (label dev.hangar/egress=proxied) are left out of this
-# baseline, so they get no internet at all: gateway.yaml's sandbox-egress-proxied gives them DNS and the egress proxy.
+# baseline, so they get no internet and no DNS at all: gateway.yaml's sandbox-egress-proxied gives them the egress proxy.
 # allow-hangar-gateway (gateway.yaml) still selects every sandbox pod for Egress.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

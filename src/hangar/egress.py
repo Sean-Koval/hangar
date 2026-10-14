@@ -4,9 +4,10 @@ Three modes, set per environment (`egress:`) and tightened per repo (the repo po
 
 * `open`: today's baseline. The network policy lets the sandbox reach the public internet directly (never private
   ranges or the metadata server); nothing is proxied.
-* `allowlist`: the sandbox reaches nothing but DNS, the git gateway and hangar's egress proxy. The proxy lets a
-  connection through when its host matches the allowlist: the harness's own API hosts, the presets (package
-  registries by default) and the hosts listed, plus hosts an owner approved for the session or environment.
+* `allowlist`: the sandbox reaches nothing but the git gateway and hangar's egress proxy (and no DNS that recurses:
+  k8s_pod_dns). The proxy lets a connection through when its host matches the allowlist: the harness's own API
+  hosts, the presets (package registries by default) and the hosts listed, plus hosts an owner approved for the
+  session or environment.
 * `none`: the same network, with nothing on the list but the harness's API hosts (the agent has to reach its model)
   and approved requests.
 
@@ -233,8 +234,11 @@ def _presets_for(e: EgressSpec | None, mode: str) -> list[str]:
 
 
 def resolve(settings: Settings, spec: EnvSpec, repo: EgressSpec | None = None, harness: str | None = None,
-            approved: list[dict[str, Any]] | None = None) -> Policy:
-    """The policy for a sandbox of `spec`, under its repo's policy, running `harness`, with approved requests."""
+            approved: list[dict[str, Any]] | None = None,
+            mcp_trusted: set[tuple[str, int | None]] | None = None) -> Policy:
+    """The policy for a sandbox of `spec`, under its repo's policy, running `harness`, with approved requests.
+    `mcp_trusted` (from `trusted_mcp`) limits which of the spec's remote MCP servers count; None takes them all,
+    for a spec the caller vouches for."""
     env = getattr(spec, "egress", None)
     base = env_mode(settings, spec)
     mode, notes = base, []
@@ -251,7 +255,13 @@ def resolve(settings: Settings, spec: EnvSpec, repo: EgressSpec | None = None, h
     rules: list[Rule] = []
     if mode != "open":
         rules += [Rule(h, False, None, "harness") for h in HARNESS_HOSTS.get(harness or "", ())]
-        rules += _mcp_rules(spec)  # the environment's own remote MCP servers, which an admin configured
+        for key, r in _mcp_rules(spec):  # the environment's remote MCP servers, where an admin configured them
+            if mcp_trusted is None or (r.host, r.port) in mcp_trusted:
+                rules.append(r)
+            else:
+                notes.append(f"MCP server '{key}' ({r.text}) isn't on the egress allowlist: it comes from an "
+                             "environment that neither sets egress nor belongs to an admin, and only an admin widens "
+                             f"egress (egress.allow, or approve `{request_hint(r.host, r.port or 443)}`)")
         if mode == "allowlist":  # none: the harness's hosts and approved requests only
             presets = _presets_for(env, mode)
             presets += [p for p in (repo.presets or [] if repo else []) if p not in presets]
@@ -272,20 +282,52 @@ def resolve(settings: Settings, spec: EnvSpec, repo: EgressSpec | None = None, h
     return Policy(mode, tuple(out[:MAX_RULES * 4]), is_proxied, tuple(notes))
 
 
-def _mcp_rules(spec: EnvSpec) -> list[Rule]:
+def _mcp_rule(url: Any) -> Rule | None:
+    if not isinstance(url, str) or not url:
+        return None
+    try:
+        u = urlsplit(url)
+        if u.hostname and "$" not in u.netloc:
+            default = 443 if u.scheme == "https" else 80
+            return Rule(normalize_host(u.hostname), False, None if (u.port or default) == default else u.port, "mcp")
+    except (ValueError, EgressError):
+        pass
+    return None
+
+
+def _mcp_rules(spec: EnvSpec) -> list[tuple[str, Rule]]:
     out = []
-    for srv in (getattr(spec, "mcp", None) or {}).values():
-        url = getattr(srv, "url", None)
-        if not url:
-            continue
-        try:
-            u = urlsplit(url)
-            if u.hostname and "$" not in u.netloc:
-                default = 443 if u.scheme == "https" else 80
-                out.append(Rule(normalize_host(u.hostname), False, None if (u.port or default) == default
-                                else u.port, "mcp"))
-        except (ValueError, EgressError):
-            continue
+    for key, srv in (getattr(spec, "mcp", None) or {}).items():
+        if (r := _mcp_rule(getattr(srv, "url", None))) is not None:
+            out.append((key, r))
+    return out
+
+
+def trusted_mcp(fleet: Fleet, environment: str) -> set[tuple[str, int | None]]:
+    """The remote MCP servers (host, port) that count toward an environment's allowlist: those written by someone who
+    may widen egress. `egress:` needs an admin and `mcp:` doesn't, so a member's environment that extends a locked one
+    could otherwise add any host as an MCP server (or repoint the parent's). An environment in the chain counts when
+    it sets `egress` itself (an admin wrote it), when its recorded owner is an admin, or when it has no owner and
+    ships with hangar's environment files rather than the API's save directory. Each is judged on its own: a member's
+    edit to an environment an admin's extends doesn't count."""
+    from hangar import people
+
+    cat, out, seen = fleet.catalog, set(), set()
+    name: str | None = environment
+    while name and name not in seen and name in cat.names():
+        seen.add(name)
+        data, src = cat._raw[name]
+        owner = fleet.store.kv_get(f"identity:env-owner:{name}")
+        if owner:
+            p = people.get(fleet.store, owner)
+            ok = p is not None and p.role == "admin"
+        else:
+            ok = cat.save_dir is None or src != cat.save_dir
+        if ok or (isinstance(data.get("egress"), dict) and data["egress"]):
+            for srv in (data.get("mcp") or {}).values():
+                if isinstance(srv, dict) and (r := _mcp_rule(srv.get("url"))) is not None:
+                    out.add((r.host, r.port))
+        name = data.get("extends")
     return out
 
 
@@ -305,7 +347,8 @@ def for_sandbox(fleet: Fleet, sb: Sandbox, spec: EnvSpec | None = None) -> Polic
     spec = spec or fleet.catalog.get(sb.environment)
     session = sb.labels.get("hangar.session")
     approved = approvals(fleet.store, environment=sb.environment, session=session)
-    return resolve(fleet.settings, spec, repo_egress(fleet.store, sb.repo), sb.info.get("harness"), approved)
+    return resolve(fleet.settings, spec, repo_egress(fleet.store, sb.repo), sb.info.get("harness"), approved,
+                   trusted_mcp(fleet, sb.environment))
 
 
 # ============================================================================ approvals
@@ -387,10 +430,50 @@ async def attach(fleet: Fleet, prov: Provider, sb: Sandbox, spec: EnvSpec) -> di
         sb.info["egress"] = info
         return {}
     proxy = await _proxy_url(fleet, prov, sb)
-    gw = urlsplit(fleet.settings.gateway_url).hostname if fleet.settings.gateway_url else None
     info["proxy"] = urlsplit(proxy).netloc
     sb.info["egress"] = info
-    return proxy_env(proxy, sb.id, token(fleet.egress.key, sb.id), [gw] if gw else [])
+    return proxy_env(proxy, sb.id, token(fleet.egress.key, sb.id), _direct_hosts(fleet.settings))
+
+
+def _direct_hosts(settings: Settings) -> list[str]:
+    """hangar's own services a proxied sandbox reaches directly, not through the proxy: the git gateway and (review)
+    an in-cluster OTel collector the harness exports to, which the proxy would refuse as a private address. A
+    collector on the internet goes through the proxy like any host (put it in `allow`)."""
+    from hangar.observe import sandbox_endpoint
+
+    out = [h for h in [urlsplit(settings.gateway_url).hostname if settings.gateway_url else None] if h]
+    otel = sandbox_endpoint(settings)
+    if otel and (h := urlsplit(otel).hostname):
+        try:
+            internal = ipaddress.ip_address(h).is_private
+        except ValueError:
+            internal = h.endswith((".svc", ".svc.cluster.local", ".cluster.local", ".internal"))
+        if internal:
+            out.append(h)
+    return out
+
+
+def k8s_pod_dns(settings: Settings) -> dict[str, Any]:
+    """The DNS of a proxied environment's pods (review): none, and hangar's own Service names in /etc/hosts.
+
+    kube-dns answers any name by asking the internet, so a sandbox that may query it can send data out in the names
+    it looks up (`<secret>.attacker.example`), whatever the proxy allows. A proxied sandbox needs no resolver: its
+    tools hand the proxy a host name and the proxy resolves it. What it does look up itself is hangar's proxy, git
+    gateway and OTel collector, resolved here, in the control plane, to their Service addresses. The resolver is
+    loopback, where nothing answers, so any other lookup fails at once. Blocking: run it in a thread."""
+    import socket
+
+    names = [h for u in (settings.egress_url, *_direct_hosts(settings)) if u
+             for h in [urlsplit(u).hostname if "://" in u else u] if h and not _is_ip(h)]
+    by_ip: dict[str, list[str]] = {}
+    for h in dict.fromkeys(names):
+        try:
+            ip = next(i[4][0] for i in socket.getaddrinfo(h, None, socket.AF_INET, socket.SOCK_STREAM))
+        except (OSError, StopIteration) as e:
+            raise EgressError(f"can't resolve {h} for proxied sandboxes' /etc/hosts (they have no DNS): {e}") from e
+        by_ip.setdefault(ip, []).append(h)
+    return {"dnsPolicy": "None", "dnsConfig": {"nameservers": ["127.0.0.1"]},
+            "hostAliases": [{"ip": ip, "hostnames": hs} for ip, hs in sorted(by_ip.items())]}
 
 
 async def _proxy_url(fleet: Fleet, prov: Provider, sb: Sandbox) -> str:
@@ -429,15 +512,11 @@ _HANGAR_PODS = {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.na
 
 def k8s_template_policy() -> dict[str, Any]:
     """The `networkPolicy` of a proxied environment's SandboxTemplate (Agent Sandbox: the controller applies it as the
-    template's shared policy instead of its default, which allows the public internet). Egress: DNS, and hangar's
-    pods on the gateway and proxy ports; no ingress here (hangar's own policies, envd-network.yaml and e2b.yaml,
-    admit hangar's pods). The same as deploy/k8s/gateway.yaml's sandbox-egress-proxied."""
-    dns = {"to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}},
-                   "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}}},
-                  {"ipBlock": {"cidr": "169.254.20.10/32"}}],
-           "ports": [{"protocol": "UDP", "port": 53}, {"protocol": "TCP", "port": 53}]}
+    template's shared policy instead of its default, which allows the public internet). Egress: hangar's pods on the
+    gateway and proxy ports, and no DNS (k8s_pod_dns); no ingress here (hangar's own policies, envd-network.yaml and
+    e2b.yaml, admit hangar's pods). The same as deploy/k8s/gateway.yaml's sandbox-egress-proxied."""
     hangar = {"to": [_HANGAR_PODS], "ports": [{"protocol": "TCP", "port": 8788}, {"protocol": "TCP", "port": 3128}]}
-    return {"ingress": [], "egress": [dns, hangar]}
+    return {"ingress": [], "egress": [hangar]}
 
 
 def describe(fleet: Fleet, sb: Sandbox) -> dict[str, Any]:

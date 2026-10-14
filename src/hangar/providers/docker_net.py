@@ -60,6 +60,23 @@ def _egress_ok(attrs: dict[str, Any]) -> bool:
         (attrs.get("Options") or {}).get(BRIDGE_NAME) == EGRESS_BRIDGE
 
 
+def _check_internal_dns(api: Any) -> None:
+    """--- review(egress): refuse an engine whose internal networks forward DNS to the host's resolver
+    (CVE-2024-29018, fixed in Moby 26.0.0, 25.0.4 and 23.0.11): a sandbox there could send data out in the names it
+    looks up, whatever the proxy allows."""
+    v = ""
+    try:
+        v = str(api.version().get("Version") or "")
+        major, minor, patch = (int(x) for x in v.split("-")[0].split(".")[:3])
+    except Exception:  # noqa: BLE001 - unreadable: don't assume it is fixed
+        major = minor = patch = -1
+    if major >= 26 or (major, minor) == (25, 0) and patch >= 4 or (major, minor) == (23, 0) and patch >= 11:
+        return
+    raise ProviderError(f"Docker {v or '(unknown version)'} forwards DNS from internal networks to the internet "
+                        "(CVE-2024-29018), so egress allowlists can't be enforced on it; upgrade the engine to 26 or "
+                        "later (or 25.0.4, 23.0.11)")
+
+
 def gateway_ip(attrs: dict[str, Any]) -> str | None:
     """A network's gateway address (its IPv4 one when it has several), from `docker network inspect`."""
     cfgs = (attrs.get("IPAM") or {}).get("Config") or []
@@ -105,6 +122,7 @@ class Network:
     # --- egress
     def _ensure_egress(self) -> dict[str, Any]:
         api = self.client.api
+        _check_internal_dns(api)  # --- review(egress)
         try:
             attrs = api.inspect_network(EGRESS_NAME)
         except NotFound:

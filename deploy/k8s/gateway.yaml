@@ -37,10 +37,12 @@ spec:
       ports: [{protocol: TCP, port: 8788}]
 ---
 # --- egress: sandboxes of an `allowlist`/`none` environment carry dev.hangar/egress=proxied (hangar sets it on their
-# SandboxTemplate's pods). sandbox-network.yaml's internet baseline leaves them out, so all they may reach is DNS (this
-# policy), the git gateway (above) and the egress proxy on hangar's pods (this policy). Their SandboxTemplate also
-# carries the same rules as its managed `networkPolicy`, so Agent Sandbox's default policy, which allows the public
-# internet, isn't applied to them. The proxy checks every connection's host against the sandbox's allowlist.
+# SandboxTemplate's pods). sandbox-network.yaml's internet baseline leaves them out, so all they may reach is the git
+# gateway (above) and the egress proxy on hangar's pods (this policy). No DNS: kube-dns resolves any name by asking the
+# internet, so a sandbox that may query it can send data out in the names it looks up. Their pods have no resolver and
+# find hangar's Services in /etc/hosts (egress.k8s_pod_dns); the proxy resolves everything else. Their SandboxTemplate
+# also carries the same rules as its managed `networkPolicy`, so Agent Sandbox's default policy, which allows the
+# public internet, isn't applied to them. The proxy checks every connection's host against the sandbox's allowlist.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -51,13 +53,6 @@ spec:
     matchLabels: {dev.hangar/egress: proxied}
   policyTypes: [Egress]
   egress:
-    - to:
-        - namespaceSelector:
-            matchLabels: {kubernetes.io/metadata.name: kube-system}
-          podSelector:
-            matchLabels: {k8s-app: kube-dns}
-        - ipBlock: {cidr: 169.254.20.10/32}
-      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
     - to:
         - namespaceSelector:
             matchLabels: {kubernetes.io/metadata.name: hangar}
