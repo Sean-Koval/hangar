@@ -46,6 +46,8 @@ jobs:
       issues: write  # the failure issue
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false  # the push below uses the App's token, not a header for the workflow's
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
@@ -157,7 +159,7 @@ jobs:
             fi
           } > "$body"
           pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=open&head=${GITHUB_REPOSITORY_OWNER}:${BRANCH}" --jq '.[0].number // empty')
-          if [ -n "$pr" ] && git fetch -q origin "$BRANCH" && git diff --quiet "origin/$BRANCH" HEAD -- src/hangar/harnesses.lock.yaml tests/fixtures/protocol; then
+          if [ -n "$pr" ] && git fetch -q origin "$BRANCH" && git diff --quiet FETCH_HEAD HEAD -- src/hangar/harnesses.lock.yaml tests/fixtures/protocol; then
             echo "PR #$pr already proposes these versions; refreshing its packet"
           else
             # off before the push, and again after it: an approval landed in between must not ride along
@@ -168,8 +170,9 @@ jobs:
           if [ -n "$pr" ]; then
             gh api -X PATCH "repos/$GITHUB_REPOSITORY/pulls/$pr" -f title="harness lock: $summary" -F body=@"$body" >/dev/null
           else
+            base=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)  # a schedule's event names no repository
             pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls" -f title="harness lock: $summary" -f head="$BRANCH" \
-                   -f base="${{ github.event.repository.default_branch }}" -F body=@"$body" --jq .number)
+                   -f base="$base" -F body=@"$body" --jq .number)
           fi
           echo "Lock-bump PR: #$pr" >> "$GITHUB_STEP_SUMMARY"
       - name: Open or update the failure issue
