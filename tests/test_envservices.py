@@ -135,7 +135,7 @@ def test_kubernetes_sidecars_share_the_sandboxes_hardening():
     # in /etc/hosts
     dns = {"dnsPolicy": "None", "dnsConfig": {"nameservers": ["127.0.0.1"]},
            "hostAliases": [{"ip": "10.0.0.5", "hostnames": ["hangar-gateway.hangar.svc"]}]}
-    proxied = spec.model_copy(update={"egress": {"mode": "allowlist"}})
+    proxied = EnvSpec(**{**spec.model_dump(exclude={"source_dir", "packs"}), "egress": {"mode": "allowlist"}})
     pod = provider()._pod_template(proxied, "i", dns)["spec"]
     assert pod["dnsPolicy"] == "None" and pod["hostAliases"] == [
         {"ip": "127.0.0.1", "hostnames": ["postgres", "redis"]},
