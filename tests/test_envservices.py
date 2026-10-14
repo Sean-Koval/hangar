@@ -156,9 +156,14 @@ class FakeDocker:
 
         class N:
             def __init__(self, name, labels):
-                self.name, self.attrs = name, {"Labels": labels}
+                self.name, self.id, self.attrs = name, f"id-{name}", {"Labels": labels, "Containers": {}}
+
+            def reload(self):
+                pass
 
             def remove(self):
+                if self.attrs["Containers"]:
+                    raise RuntimeError("network has active endpoints")  # what Docker says
                 outer.calls.append(("netrm", self.name))
                 outer.networks_.pop(self.name, None)
 
@@ -173,6 +178,11 @@ class FakeDocker:
         class Api:
             def connect_container_to_network(self, cid, net):
                 outer.calls.append(("connect", cid, net))
+                outer.networks_[net].attrs["Containers"][cid] = {}
+
+            def disconnect_container_from_network(self, cid, net_id, force=False):
+                outer.calls.append(("disconnect", cid))
+                next(n for n in outer.networks_.values() if n.id == net_id).attrs["Containers"].pop(cid)
 
         self.containers, self.networks, self.api = Containers(), Networks(), Api()
 
@@ -192,8 +202,9 @@ async def test_docker_services_on_a_network_of_the_sandboxes_own():
     assert svc["labels"] == {envservices.LABEL: sb.id, "dev.hangar.svc": "postgres"}
     assert c.kw["extra_hosts"] == {"host.docker.internal": "host-gateway", "postgres": "10.9.0.2"}
     assert client.calls[-3:] == [("create", "hangar-sb-1"), ("connect", "sandbox", net), ("start", "sandbox")]
-    await envservices.docker_teardown(prov, sb)
-    assert ("remove", "2") in client.calls and ("netrm", net) in client.calls
+    await envservices.docker_teardown(prov, sb)  # the sandbox is still on the network: it's let go first
+    assert ("remove", "2") in client.calls and ("disconnect", "sandbox") in client.calls
+    assert ("netrm", net) in client.calls
 
 
 async def test_the_sweep_removes_services_whose_sandbox_is_gone(fleet):

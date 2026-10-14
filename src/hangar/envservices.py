@@ -223,6 +223,10 @@ def _remove_docker(client: Any, sid: str) -> None:
     for n in client.networks.list(names=[f"{NET_PREFIX}{sid}"]):
         if n.name == f"{NET_PREFIX}{sid}":
             with contextlib.suppress(Exception):
+                n.reload()  # the sandbox may still be attached (its container goes after its services)
+                for cid in (n.attrs.get("Containers") or {}):
+                    client.api.disconnect_container_from_network(cid, n.id, force=True)
+            with contextlib.suppress(Exception):
                 n.remove()
 
 
