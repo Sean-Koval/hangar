@@ -1,8 +1,8 @@
 # Changelog
 
-## The overnight stack (#48–#66)
+## The overnight stack (#48–#67)
 
-Nineteen PRs on top of `2e3e0a3` (main after #43). Upgrading a running hangar: [docs/upgrading.md](docs/upgrading.md), which lists every default that changes. Proving it on GKE: `bash scripts/acceptance/gke.sh`.
+Nineteen feature PRs (#48–#66) on top of `2e3e0a3` (main after #43), and the upgrade guide and acceptance script (#67). Upgrading a running hangar: [docs/upgrading.md](docs/upgrading.md), which lists every default that changes. Proving it on GKE: `bash scripts/acceptance/gke.sh`.
 
 ### Agents and sessions
 - **Live turns: steer, interrupt and tool approvals** for Claude Code and Codex. A small driver runs the turn inside the sandbox. Approvals (`auto`, `ask` or `deny-risky`) reach MCP clients as elicitations, and are also available over REST and the CLI. [docs/steering.md](docs/steering.md). #59
@@ -29,7 +29,7 @@ Nineteen PRs on top of `2e3e0a3` (main after #43). Upgrading a running hangar: [
 - **`hangar up`** (local or `--gke`, with a plan shown before anything is applied), **`hangar connect`** for MCP clients (with `mcp`-scoped tokens), the **`hangar setup github|slack`** wizards, **settings stored in hangar's database** (`hangar config`), and **`hangar doctor --fix`**. #51
 - **Database backups**: `hangar admin backup|backups|restore`, every 24 h into the session bucket by default. **Graceful shutdown**: long-polls answer, streams are cut after a grace period, and the pod's grace period is 45 s. #57
 - **Observability**: OpenTelemetry traces (off unless `OTEL_*` is set), Prometheus `/metrics` with a `metrics` token scope, a cost view (`/api/usage`, `hangar usage`), and optional manifests for Managed Prometheus, the Prometheus Operator and the OpenTelemetry Collector. [docs/observability.md](docs/observability.md). #55
-- **Upgrade guide and live acceptance script**: [docs/upgrading.md](docs/upgrading.md) and `scripts/acceptance/gke.sh`, tested against Docker. `envd`, `envd_dir` and `metrics_enabled` are now flagged as needing a restart when stored with `hangar config set`. (this PR)
+- **Upgrade guide and live acceptance script**: [docs/upgrading.md](docs/upgrading.md) and `scripts/acceptance/gke.sh`, tested against Docker. `envd`, `envd_dir` and `metrics_enabled` are now flagged as needing a restart when stored with `hangar config set`. #67
 
 ### MCP
 - **Tasks** (`io.modelcontextprotocol/tasks`) for long tools; **elicitation** for agents' questions and tool approvals; typed results; live resources with subscriptions; and prompts. Pre-2026 clients get stateful sessions (`HANGAR_MCP_STATELESS_HTTP` turns them off). [docs/mcp.md](docs/mcp.md). #52
