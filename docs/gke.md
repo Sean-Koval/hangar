@@ -232,6 +232,45 @@ To restore one, create a disk from the snapshot, then a PV and PVC for it (or sw
 
 Sandboxes, agent turns and sessions don't stop with the control plane. A new pod re-attaches to them. Shutdown takes no checkpoints. A checkpoint, destroy or backup cut off by it is redone after the restart (the idle check and the reaper run again), so the 300 s pre-destroy budget doesn't need to fit in the grace period.
 
+## 8. E2B SDK clients (optional)
+
+Hangar answers E2B's API, so the e2b SDKs and the tools built on them can use GKE sandboxes ([e2b.md](e2b.md)). They need two things from the cluster: hangar-envd reachable in each sandbox (`envd-network.yaml`, already applied) and a way to reach sandbox URLs. There are two ways.
+
+**No new DNS (the sslip.io install, or any single host).** Clients route every sandbox call by header through the URL you already have, its certificate and its Ingress:
+
+```bash
+hangar token create my-agents --scope sandboxes      # E2B_API_KEY
+export E2B_API_KEY=hgr_... E2B_API_URL=https://<ip>.sslip.io/e2b E2B_SANDBOX_URL=https://<ip>.sslip.io/e2b/sandbox
+```
+
+Everything the SDKs do works this way, including code-interpreter's port 49999. What doesn't is a browser opening `sandbox.get_host(port)`, which needs per-sandbox host names.
+
+**Your own domain, with `*.<domain>`.** Then `E2B_DOMAIN=<domain>` is all a client sets, and apps in sandboxes get URLs like `https://3000-sb-1a2b3c4d.e2b.example.com`. That needs a wildcard certificate, which takes a few extra resources:
+
+- **Google-managed certificates on GKE Ingress don't support wildcards**, and GKE Ingress doesn't take Certificate Manager certificates ("GKE Ingress does not support certificates managed by Certificate Manager. To use certificates managed by Certificate Manager, use the Gateway API").
+- **Certificate Manager with DNS authorization does.** One DNS authorization covers a domain and its wildcard, one level deep: `*.e2b.example.com` covers `49983-sb-1a2b3c4d.e2b.example.com`, which is all a sandbox host needs. Load-balancer authorization doesn't do wildcards.
+- **sslip.io can't get one**, since nobody can add the `_acme-challenge` record under it; use the header mode above there.
+
+With `E2B_DOMAIN=e2b.example.com`:
+
+```bash
+gcloud container clusters update hangar --location <zone> --gateway-api=standard   # once; up to 45 min
+gcloud compute addresses create hangar-e2b-ip --global
+gcloud certificate-manager dns-authorizations create hangar-e2b --domain=e2b.example.com
+gcloud certificate-manager dns-authorizations describe hangar-e2b   # add its dnsResourceRecord (a CNAME) to your DNS
+gcloud certificate-manager certificates create hangar-e2b \
+  --domains="e2b.example.com,*.e2b.example.com" --dns-authorizations=hangar-e2b
+gcloud certificate-manager maps create hangar-e2b
+gcloud certificate-manager maps entries create hangar-e2b-wild --map=hangar-e2b \
+  --hostname="*.e2b.example.com" --certificates=hangar-e2b
+sed 's/E2B_DOMAIN/e2b.example.com/' deploy/k8s/e2b.yaml | kubectl apply -f -
+hangar config set e2b_api_domain e2b.example.com     # then: kubectl -n hangar rollout restart deploy/hangar
+```
+
+Point `*.e2b.example.com` (an A record) at `gcloud compute addresses describe hangar-e2b-ip --global`. `deploy/k8s/e2b.yaml` holds the Gateway and route for `*.<domain>`, a one-hour backend timeout and the `/healthz` health check for it, and a NetworkPolicy that lets hangar's pods reach apps' ports in sandboxes; without that policy only envd is reachable. The dashboard, MCP and the REST API stay on the Ingress.
+
+Long streams (a command's output, a terminal) end after the backend timeout (one hour, on both the Ingress and the Gateway); the process keeps running, and `commands.connect(pid)` picks it up again.
+
 ## Notes
 
 - **Network.** The default SandboxTemplate network policy allows egress to the public internet only, and blocks RFC1918 ranges and the metadata server. Agents can reach GitHub and package registries but not your VPC. `deploy/k8s/sandbox-network.yaml` applies the same baseline as hangar's own NetworkPolicies (DNS, public internet minus private and link-local ranges, no ingress), so it still holds if the managed policy is turned off or you run the open-source controller.

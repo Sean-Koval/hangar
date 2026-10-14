@@ -156,6 +156,8 @@ You can enable several providers on one control plane and pick one per sandbox. 
 
 On Docker and Kubernetes, hangar starts a small daemon in each sandbox, [hangar-envd](docs/envd.md), and runs commands, file transfers and terminals through it instead of `docker exec` or the Kubernetes exec API: an `exec` takes about 7 ms instead of 70 on Docker. It speaks E2B's envd protocol. Build it with `envd/build.sh` (the control-plane image includes it); without it, or with `HANGAR_ENVD=off`, hangar uses exec as before.
 
+Because of that, hangar also answers E2B's API: the e2b SDKs, and the agent frameworks built on them, run in your hangar sandboxes after you change `E2B_API_KEY` and a URL. See [docs/e2b.md](docs/e2b.md).
+
 ## Configuration
 
 Everything is set through `HANGAR_*` settings (see `src/hangar/config.py`), which come from two places:

@@ -1,0 +1,76 @@
+{
+  "meta": {
+    "bench": "e2b-router",
+    "git": "31b6fd5",
+    "started": "2026-10-13T14:24:18",
+    "seconds": 6.6,
+    "host": "vm",
+    "cpus": 2,
+    "python": "3.12.3",
+    "provider": "docker",
+    "runs": 300
+  },
+  "metrics": {
+    "create": {
+      "n": 3,
+      "p50_ms": 413.61,
+      "p95_ms": 548.7,
+      "mean_ms": 448.35,
+      "min_ms": 382.75,
+      "max_ms": 548.7
+    },
+    "stat_direct": {
+      "n": 300,
+      "p50_ms": 1.2,
+      "p95_ms": 1.76,
+      "mean_ms": 1.26,
+      "min_ms": 0.89,
+      "max_ms": 2.81
+    },
+    "stat_router": {
+      "n": 300,
+      "p50_ms": 2.71,
+      "p95_ms": 3.64,
+      "mean_ms": 2.83,
+      "min_ms": 2.17,
+      "max_ms": 7.69
+    },
+    "run_true_direct": {
+      "n": 75,
+      "p50_ms": 6.32,
+      "p95_ms": 7.57,
+      "mean_ms": 6.39,
+      "min_ms": 5.04,
+      "max_ms": 11.91
+    },
+    "read_4k_direct": {
+      "n": 75,
+      "p50_ms": 1.75,
+      "p95_ms": 2.27,
+      "mean_ms": 1.8,
+      "min_ms": 1.29,
+      "max_ms": 3.22
+    },
+    "run_true_router": {
+      "n": 75,
+      "p50_ms": 7.63,
+      "p95_ms": 9.98,
+      "mean_ms": 7.71,
+      "min_ms": 5.92,
+      "max_ms": 11.18
+    },
+    "read_4k_router": {
+      "n": 75,
+      "p50_ms": 3.35,
+      "p95_ms": 5.09,
+      "mean_ms": 3.48,
+      "min_ms": 2.63,
+      "max_ms": 6.39
+    }
+  },
+  "notes": {
+    "stat_router_overhead_p50_ms": 1.51,
+    "run_true_router_overhead_p50_ms": 1.31,
+    "read_4k_router_overhead_p50_ms": 1.6
+  }
+}
