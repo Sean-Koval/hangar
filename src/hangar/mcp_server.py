@@ -32,6 +32,8 @@ from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 import hangar.identity as identity  # --- identity
 import hangar.people as people  # --- identity
 from hangar import exchange, mcp_steer, mcp_tasks, observe  # mcp_tasks: elicitation; mcp_steer: live turns; --- observe
+from hangar import mcp_deadline as contract  # --- deadlines: the client-deadline contract
+from hangar import mcp_fresh as fresh  # --- deadlines: server version, stale tool lists
 from hangar import mcp_live as live  # workstream mcp-modern: typed results, hints, resources, prompts
 from hangar.broker import CredentialError
 from hangar.fleet import Fleet, FleetError, _slug
@@ -143,7 +145,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
     bus = InMemorySubscriptionBus()
     feed = live.ChangeFeed(bus)
     tasks = mcp_tasks.Tasks(fleet.store, fleet, sessions, jobs, current_actor.get) if sessions is not None else None
-    mcp = live.HangarMCP("hangar", title="Hangar", instructions=INSTRUCTIONS, version="0.1.0", icons=[ICON],
+    mcp = live.HangarMCP("hangar", title="Hangar", instructions=INSTRUCTIONS, version="", icons=[ICON],
                          website_url="https://github.com/Sean-Koval/hangar", subscriptions=bus,
                          extensions=[mcp_tasks.TasksExtension(tasks)] if tasks else None,
                          # a question put to you in wait_for_turn may wait this long for your answer
@@ -163,10 +165,19 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             if inspect.iscoroutinefunction(fn):
                 @functools.wraps(fn)
                 async def wrapped(*a, **kw):
+                    # --- deadlines: waits lowered to the budget; a call that would outlive it is cut off (mcp_deadline)
+                    budget = fleet.settings.mcp_tool_wait_seconds
+                    kw = contract.clamp(kw, budget)
+                    bounded = fn.__name__ not in contract.DETACHED | contract.SELF_TIMED
                     try:
-                        return await fn(*a, **kw)
+                        async with asyncio.timeout(contract.limit(budget) if bounded else None) as cm:
+                            return await fn(*a, **kw)
                     except EXPECTED as e:
                         raise ToolError(str(e).strip("'\"")) from e
+                    except TimeoutError as e:
+                        if not cm.expired():
+                            raise
+                        raise ToolError(contract.cut_off_message(fn.__name__, budget)) from e
             else:
                 @functools.wraps(fn)
                 def wrapped(*a, **kw):
@@ -202,11 +213,12 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
 
     @tool()
     async def build_environment(name: str, provider: str | None = None, force: bool = False) -> dict[str, Any]:
-        """Build (or rebuild with force=True) an environment's image and warm pool. Can take minutes."""
+        """Build (or rebuild with force=True) an environment's image and warm pool. Can take minutes; calling again
+        while it runs returns that build."""
         job = await fleet.build(name, provider, force=force, actor=actor(), wait=False)
         # The build runs on its own task, so a client that gives up or disconnects doesn't cancel it.
         await _within(job.task, fleet.settings.mcp_tool_wait_seconds)
-        return job.summary()  # "running" if it is still going: call build_environment again to see where it is
+        return job.summary()  # "running" if it is still going; asking again returns this job (fleet.build, B17)
 
     @tool()
     def create_environment(spec: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
@@ -300,7 +312,10 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                 harness=harness, actor=actor(), person=identity.person())  # --- identity
 
         started = time.time()
-        task = _detach(asyncio.gather(*(one(i) for i in range(count)), return_exceptions=True), "create_sandboxes")
+        async def every() -> list[Any]:  # --- deadlines: create_task takes a coroutine, not gather's future
+            return await asyncio.gather(*(one(i) for i in range(count)), return_exceptions=True)
+
+        task = _detach(every(), "create_sandboxes")
         res = await _within(task, fleet.settings.mcp_tool_wait_seconds)
         if res is None:  # still starting: report what exists so far; they keep coming up in the background
             return [_sb(s) for s in people.mine(fleet.list()) if s.environment == environment  # --- identity
@@ -319,6 +334,19 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         return {**_sb(s), "runs": s.info.get("runs", [])[-10:], "created_at": s.created_at,
                 "last_activity": s.last_activity}
 
+    async def _destroy(refs: list[str], label: str | None) -> list[str]:
+        """--- deadlines: a destroy checkpoints sessions first and can outlast the client; it finishes regardless
+        (an error comes back if it fails within the wait)."""
+        # --- identity: named refs passed the guard; a member's label reaches only their own sandboxes
+        targets = [fleet.get(r) for r in refs] if refs else people.mine(fleet.list(label=label))
+        ids = [s.id for s in targets]
+        if not ids:  # a label that matches nothing (destroy_many(None) would mean every sandbox)
+            return []
+        work = fleet.destroy(ids[0], actor=actor()) if refs and len(ids) == 1 else \
+            fleet.destroy_many(ids, actor=actor())
+        await _within(_detach(work, "destroy_sandbox"), fleet.settings.mcp_tool_wait_seconds)
+        return ids
+
     @tool()
     async def destroy_sandbox(sandbox: str | None = None, sandboxes: list[str] | None = None,
                               label: str | None = None) -> list[str]:
@@ -329,13 +357,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             raise ValueError("pass sandbox, sandboxes or label (refusing to destroy the whole fleet implicitly)")
         if refs and label:
             raise ValueError("pass sandboxes or a label, not both")
-        if len(refs) == 1:
-            return [(await fleet.destroy(refs[0], actor=actor())).id]
-        if label and not identity.sees_all():  # --- identity: a member's label reaches only their own
-            refs, label = [s.id for s in people.mine(fleet.list(label=label))], None
-            if not refs:
-                return []
-        return await fleet.destroy_many(refs or None, label=label, actor=actor())
+        return await _destroy(refs, label)
 
     # --- review: the tools merged above, kept callable under their old names and signatures (not listed:
     # mcp_live.HIDDEN_TOOLS), so existing scripts and client workflows don't break.
@@ -355,37 +377,45 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         """Deprecated: destroy_sandbox(sandboxes=... | label=...)."""
         if not sandboxes and not label:
             raise ValueError("pass sandboxes or label (refusing to destroy the whole fleet implicitly)")
-        if label and not sandboxes and not identity.sees_all():  # --- identity
-            sandboxes, label = [s.id for s in people.mine(fleet.list(label=label))], None
-            if not sandboxes:
-                return []
-        return await fleet.destroy_many(sandboxes, label=label, actor=actor())
+        return await _destroy(sandboxes or [], None if sandboxes else label)  # --- deadlines
+
+    async def _lifecycle(work, sandbox: str, what: str) -> dict[str, Any]:
+        """--- deadlines: a pause, resume or expiry change on its own task (a cancel half-way leaves hangar's record
+        and the provider disagreeing); past the wait, the sandbox as it stands."""
+        sb = await _within(_detach(work, f"{what} {sandbox}"), fleet.settings.mcp_tool_wait_seconds)
+        if sb is not None:
+            return _sb(sb)
+        return {**_sb(fleet.get(sandbox)), "note": f"still {what}; get_sandbox shows when it is done"}
 
     @tool()
     async def pause_sandbox(sandbox: str) -> live.SandboxOut:
         """Freeze a sandbox's processes to free CPU (state is kept)."""
-        return _sb(await fleet.pause(sandbox, actor=actor()))
+        return await _lifecycle(fleet.pause(sandbox, actor=actor()), sandbox, "pausing")
 
     @tool()
     async def resume_sandbox(sandbox: str) -> live.SandboxOut:
         """Resume a paused sandbox."""
-        return _sb(await fleet.resume(sandbox, actor=actor()))
+        return await _lifecycle(fleet.resume(sandbox, actor=actor()), sandbox, "resuming")
 
     @tool()
     async def extend_sandbox(sandbox: str, minutes: int = 60) -> live.SandboxOut:
         """Push back a sandbox's expiry."""
-        return _sb(await fleet.extend(sandbox, minutes, actor=actor()))
+        return await _lifecycle(fleet.extend(sandbox, minutes, actor=actor()), sandbox, "extending")
 
     # ------------------------------------------------------------------ commands & files
     @tool()
     async def exec(sandbox: str, command: str, ctx: Context, cwd: str | None = None, timeout: int = 120,
                    stream: bool = False) -> live.ExecOut:
         """Run a shell command (bash -lc) in a sandbox and wait: exit_code, stdout, stderr (stream=true: also as
-        progress while it runs). Servers: process; interactive programs: terminal_open."""
+        progress while it runs). Max 150 s; longer work and servers: process; interactive: terminal_open."""
         if stream:  # --- stream
-            return await exec_stream(fleet, ctx, sandbox, command, cwd, timeout, current_actor.get(), actor())
-        r = await fleet.exec(sandbox, command, cwd=cwd, timeout=timeout, actor=actor())
-        return r.model_dump()
+            out = await exec_stream(fleet, ctx, sandbox, command, cwd, timeout, current_actor.get(), actor())
+        else:
+            out = (await fleet.exec(sandbox, command, cwd=cwd, timeout=timeout, actor=actor())).model_dump()
+        if out.get("exit_code") == 124 and timeout >= int(fleet.settings.mcp_tool_wait_seconds):  # --- deadlines
+            out["note"] = (f"exec waits at most {fleet.settings.mcp_tool_wait_seconds:g} s; run longer commands "
+                           "with process(action='start') and follow them with process(action='attach')")
+        return out
 
     @tool()
     async def read_file(sandbox: str, path: str, binary: bool = False) -> dict[str, Any]:
@@ -454,7 +484,15 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         Returns a run_id; its terminal session has the same name. Poll with
         agent_status (a client with the MCP tasks extension gets a task that ends with the run). For work you
         want verified and delivered as a PR, submit_job is simpler."""
-        return await fleet.run_agent(sandbox, prompt, harness, cwd, model=model, actor=actor())
+        # --- deadlines: started on its own task, so a cut-off can't leave an agent running that nobody recorded
+        rid = new_id("run")
+        task = _detach(fleet.run_agent(sandbox, prompt, harness, cwd, model=model, actor=actor(), run_id=rid),
+                       "run_agent")
+        run = await _within(task, fleet.settings.mcp_tool_wait_seconds)
+        if run is not None:
+            return run
+        return {"sandbox": fleet.get(sandbox).id, "run_id": rid, "terminal_session": rid, "state": "starting",
+                "note": "the sandbox is slow to start the agent; agent_status shows the run once it is up"}
 
     @tool()
     async def agent_status(sandbox: str, run_id: str, tail_lines: int = 60,
@@ -468,7 +506,14 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
     @tool()
     async def snapshot_sandbox(sandbox: str, label: str | None = None, kind: str = "auto") -> dict[str, Any]:
         """Snapshot a sandbox. kind: auto | full (provider-native) | workspace (portable tarball)."""
-        return (await fleet.snapshot(sandbox, label, kind, actor=actor())).model_dump(mode="json")
+        # --- deadlines: a workspace snapshot can tar for minutes; it lands in list_snapshots either way
+        task = _detach(fleet.snapshot(sandbox, label, kind, actor=actor()), "snapshot_sandbox")
+        snap = await _within(task, fleet.settings.mcp_tool_wait_seconds)
+        if snap is not None:
+            return snap.model_dump(mode="json")
+        sid = fleet.get(sandbox).id
+        return {"sandbox_id": sid, "state": "running",
+                "note": f"still taking the snapshot; list_snapshots(sandbox='{sid}') shows it when done"}
 
     @tool()
     def list_snapshots(sandbox: str | None = None) -> list[dict[str, Any]]:
@@ -569,16 +614,23 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             (<branch>-fork-<i>) and sandbox, and the agent's conversation forked so far (they diverge from here).
             With `message`, every fork starts on it at once; otherwise use send_to_session on each. Each fork is
             a sandbox while it runs."""
-            children = await _fork_session(sessions, session, n, requester=current_actor.get(), harness=harness,
-                                           names=names, message=message)
-            return {"parent": sessions.get(session).name, "forks": [sessions.view(c) for c in children]}
+            # --- deadlines: the parent's checkpoint and the copies run on their own task; a cancel half-way would
+            # leave forks without their checkpoint
+            task = _detach(_fork_session(sessions, session, n, requester=current_actor.get(), harness=harness,
+                                         names=names, message=message), "fork_session")
+            children = await _within(task, fleet.settings.mcp_tool_wait_seconds)
+            parent = sessions.get(session).name
+            if children is None:
+                return {"parent": parent, "forks": [],
+                        "note": f"still forking {parent}; list_sessions shows the forks as they appear"}
+            return {"parent": parent, "forks": [sessions.view(c) for c in children]}
 
     # ------------------------------------------------------------------ context exchange (workstream E, spec 0011)
     if sessions is not None:
         @tool()
         async def wait_for_turn(ref: str, ctx: Context,
-                                timeout_seconds: int = 300) -> live.TurnOut | InputRequiredResult:
-            """Wait (up to `timeout_seconds`, max 600) for a job's or session's current agent turn to end, with
+                                timeout_seconds: int = 150) -> live.TurnOut | InputRequiredResult:
+            """Wait (up to `timeout_seconds`, max 150) for a job's or session's current agent turn to end, with
             progress notifications while it runs. Returns the turn: `done`, `outcome`, `summary`, `result` (the
             structured result), `result_error`, `artifacts` (read with get_artifact) and `question` when the agent
             needs input. Hangar puts the question to you as an elicitation if your client supports it, sends your
@@ -597,6 +649,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             async def report(progress: float, total: float | None, message: str) -> None:
                 await ctx.report_progress(progress, total, message)
 
+            # --- deadlines: timeout_seconds arrives clamped to mcp_tool_wait_seconds (mcp_deadline)
             deadline = time.monotonic() + max(1, min(600, int(timeout_seconds)))
             modern = ctx.protocol_version in MODERN_PROTOCOL_VERSIONS
             note = approved = None
@@ -722,7 +775,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
 
     # ------------------------------------------------------------------ jobs (spec 0009)
     if jobs is None:
-        return mcp
+        return _identify(mcp, fleet)
 
     @tool()
     async def submit_job(instructions: str, repo: str | None = None, environment: str | None = None,
@@ -858,4 +911,12 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
     if triggers is not None:
         _trigger_tools()
 
+    return _identify(mcp, fleet)
+
+
+def _identify(mcp: live.HangarMCP, fleet: Fleet) -> live.HangarMCP:
+    """--- deadlines: once every tool is registered, serverInfo.version names the package and the tool surface
+    (`0.1.0+tools.<hash>`), and calls from clients on an older surface get told to refresh (mcp_fresh)."""
+    mcp.fresh = fresh.Freshness(fleet.store, mcp.listing(), fresh.RETIRED, current_actor.get)
+    mcp._lowlevel_server.version = mcp.fresh.version  # noqa: SLF001 - the SDK takes it only in the constructor
     return mcp

@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -393,7 +394,10 @@ def sb_create(
 
 @sb_app.command("exec")
 def sb_exec(sandbox: str, command: list[str], timeout: int = 120):
-    r = _call("POST", f"/api/sandboxes/{sandbox}/exec", json={"command": " ".join(command), "timeout": timeout})
+    """Run a command: one argument is a shell line (`"git status | head"`); several (after `--`) are one command's
+    arguments, quoted as given (`-- python3 -c "print('a b')"`)."""
+    line = command[0] if len(command) == 1 else shlex.join(command)  # --- deadlines (B3): " ".join lost the quoting
+    r = _call("POST", f"/api/sandboxes/{sandbox}/exec", json={"command": line, "timeout": timeout})
     sys.stdout.write(r["stdout"])
     sys.stderr.write(r["stderr"])
     raise typer.Exit(r["exit_code"])

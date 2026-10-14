@@ -91,3 +91,17 @@ def test_job_events_and_follow(monkeypatch):
     r = runner.invoke(cli.app, ["session", "events", "s", "--json"])
     assert json.loads(r.output)["text"] == "hi"
 
+
+def test_sb_exec_keeps_each_argument_whole(monkeypatch):
+    """--- deadlines (B3): `-- python3 -c "print('a b')"` reached bash as `python3 -c print('a b')`."""
+    sent = []
+
+    def call(*a, **kw):
+        sent.append(kw["json"]["command"])
+        return {"stdout": "", "stderr": "", "exit_code": 0}
+
+    monkeypatch.setattr(cli, "_call", call)
+    runner.invoke(cli.app, ["sb", "exec", "box", "--", "python3", "-c", "print('a b')"])
+    runner.invoke(cli.app, ["sb", "exec", "box", "git status | head -3"])  # one argument: a shell line, as before
+    assert sent == ["python3 -c 'print('\"'\"'a b'\"'\"')'", "git status | head -3"]
+

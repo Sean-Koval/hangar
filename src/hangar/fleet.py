@@ -106,6 +106,7 @@ class BuildJob:
         self.error: str | None = None
         self.started_at = now()
         self.finished_at: float | None = None
+        self.key: tuple[Any, ...] | None = None  # --- deadlines: what it builds; asking for it again gets this job
         self.lines: collections.deque[str] = collections.deque(maxlen=4000)
         self.total = 0  # monotonic count of emitted lines (the deque drops old ones)
         self._cond = asyncio.Condition()
@@ -411,7 +412,17 @@ class Fleet:
         if spec.image:
             raise FleetError(f"environment {env} uses the prebuilt image {spec.image}; there is nothing to build")
         tag, ctx = self._tag_for(spec, pname, self._bake_for(spec, pname, spec.pick_harness()))
+        # --- deadlines (B17): asking again while this very build runs (as MCP clients do to see where it is) gets
+        # that build back, not a second job queued behind it with an empty log, nor (force) a second Cloud Build. A
+        # create's build (one harness's pack) and a full one are different builds.
+        key = (env, pname, tag, for_create)
+        running = next((j for j in self.builds.values() if j.state == "running" and j.key == key), None)
+        if running is not None:
+            if wait and running.task:
+                await asyncio.shield(running.task)
+            return running
         job = BuildJob(env, pname)
+        job.key = key
         self.builds[job.id] = job
 
         async def _run() -> None:

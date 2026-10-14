@@ -224,7 +224,7 @@ def register_streams(mcp: MCPServer, tool: Callable[[], Any], fleet: Any, sessio
                       process_id: str | None = None, input: str | None = None, eof: bool = False,
                       since: int | None = None, wait_seconds: int = 0, cwd: str | None = None) -> dict[str, Any]:
         """Background commands (dev servers, watchers). action: start (command, cwd) -> process_id | attach
-        (process_id, since, wait_seconds<=600; output as progress; returns its tail and `next`) | input (input,
+        (process_id, since, wait_seconds<=150; output as progress; returns its tail and `next`) | input (input,
         eof) | kill | list. Yours only."""
         who = owner()
         if action == "list":

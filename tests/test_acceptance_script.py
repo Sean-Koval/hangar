@@ -24,6 +24,7 @@ import pytest
 
 from hangar.envd import find_binaries
 from tests.test_e2e_jobs_docker import _bridge_gateway, _free_port
+from tests.test_exchange import world  # noqa: F401 - fixture: the scripted xenv environment
 from tests.test_gateway_git import PAT, upstream  # noqa: F401 - fixture: acme/widgets behind git http-backend
 from tests.test_mcp_modern import AppThread
 
@@ -105,6 +106,7 @@ def test_acceptance_script_on_docker(tmp_path, upstream, monkeypatch):  # noqa: 
     _fake_gh(tmp_path / "bin", bare)
     try:
         args = ["bash", str(SCRIPT), "--no-kubectl", "--env", "minimal", "--session-env", "accsession",
+                "--mcp-env", "accsession",
                 "--gateway-repo", "acme/widgets", "--exec-calls", "5", "--internet-probe", f"{host}:{port}",
                 "--with-model", "--skip", "steer"]
         if not envd:
@@ -116,8 +118,8 @@ def test_acceptance_script_on_docker(tmp_path, upstream, monkeypatch):  # noqa: 
         summary = out[out.rindex("== summary"):]
         status = {name: st for st, name in re.findall(r"^(PASS|FAIL|SKIP|INFO)\s+(\w+)", summary, re.M)}
         assert r.returncode == 0, out
-        for check in ("doctor", "sandbox", "exec", "stream", "files", "isolation", "session", "model", "gateway", "e2b",
-                      "backup", "metrics"):
+        for check in ("doctor", "sandbox", "exec", "stream", "files", "mcp", "isolation", "session", "model", "gateway",
+                      "e2b", "backup", "metrics"):
             assert status.get(check) == "PASS", (check, summary)
         assert status.get("k8s") == "SKIP" and "steer" not in status, summary  # --no-kubectl; --skip steer
         assert status.get("power") == "INFO"
@@ -411,3 +413,56 @@ def test_steer_check_flow(tmp_path, monkeypatch, asks):
         with pytest.raises(ha.Fail, match="never waited for an approval"):
             ha.check_steer(api, state, opts)
     assert state.get("sessions") == ["accept-r1-steer"]  # cleanup will find it
+
+
+@pytest.mark.parametrize("wait,ok", [(0.5, True), (30, False)])
+def test_mcp_check_over_http(tmp_path, monkeypatch, world, wait, ok):  # noqa: F811
+    """--- deadlines: the `mcp` check against a real hangar over HTTP, on nodes that take a few seconds to start a
+    sandbox: it passes when create_sandbox answers within the client's deadline and a dropped client's create still
+    comes up, and fails, as claude.ai would, when the server holds the call past the deadline."""
+    import argparse
+
+    from hangar.app import create_app
+    from hangar.config import Settings
+    from hangar.models import Sandbox
+    from tests.conftest import ENVS, FakeProvider
+
+    sys.path.insert(0, str(ROOT / "scripts" / "acceptance"))
+    try:
+        import hangar_accept as ha
+    finally:
+        sys.path.pop(0)
+    s = Settings(data_dir=tmp_path / "data", env_dirs=[world["envs"], ENVS], reaper_interval_seconds=3600,
+                 admin_token=TOKEN, mcp_tool_wait_seconds=wait)
+    s.snapshot_dir.mkdir(parents=True, exist_ok=True)
+    app = create_app(s)
+    srv = AppThread(app)
+    h = app.state.hangar
+    fake = FakeProvider()
+    real = fake.create
+
+    async def cold_node(sandbox, image, spec=None):
+        import asyncio
+
+        await asyncio.sleep(2)
+        await real(sandbox, image, spec)
+
+    fake.create = cold_node
+    h.fleet.providers["docker"] = fake
+    h.fleet.provider_errors.pop("docker", None)
+    monkeypatch.setattr(ha, "CLIENT_DEADLINE", 1.5)  # claude.ai's 230 s, scaled to the 2 s node
+    monkeypatch.setattr(ha, "POLL_SECONDS", 0.2)
+    try:
+        api = ha.Api(f"http://127.0.0.1:{srv.port}", TOKEN)
+        state = ha.State(tmp_path / "state.json")
+        opts = argparse.Namespace(mcp_env="xenv", mcp_drop_after=0.5, boot_timeout=30)
+        if ok:
+            summary = ha.check_mcp(api, state, opts)
+            assert "a dropped client's create still came up; exec ok" in summary and "+tools." in summary
+            made = [h.store.get(Sandbox, i) for i in state.get("sandboxes")]
+            assert len(made) == 2 and all(m.state.value == "running" for m in made)
+        else:
+            with pytest.raises(ha.Fail, match="didn't answer within 2s, so claude.ai would have shown an error"):
+                ha.check_mcp(api, state, opts)
+    finally:
+        srv.stop()
