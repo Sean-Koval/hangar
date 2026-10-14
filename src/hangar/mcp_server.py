@@ -29,6 +29,7 @@ from mcp.shared.exceptions import NoBackChannelError
 from mcp_types import CallToolResult, ElicitResult, Icon, InputRequiredResult
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
+import hangar.identity as identity  # --- identity
 from hangar import exchange, mcp_steer, mcp_tasks, observe  # mcp_tasks: elicitation; mcp_steer: live turns; --- observe
 from hangar import mcp_live as live  # workstream mcp-modern: typed results, hints, resources, prompts
 from hangar.broker import CredentialError
@@ -43,6 +44,7 @@ from hangar.triggers import ScheduleSpec, Triggers
 
 # Failures an agent can act on (bad name, quota, build error...). Anything else is a crash and stays generic.
 EXPECTED = (FleetError, ProviderError, CredentialError, ValueError, KeyError, NotImplementedError)
+EXPECTED += (identity.Forbidden,)  # --- identity: a scope refusal is the client's to read
 
 current_actor: contextvars.ContextVar[str] = contextvars.ContextVar("hangar_actor", default="mcp")
 log = logging.getLogger("hangar.mcp")
@@ -146,11 +148,14 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                          # a question put to you in wait_for_turn may wait this long for your answer
                          request_state_security=RequestStateSecurity.ephemeral(ttl=ELICIT_WAIT_SECONDS))
 
-    def tool():
+    def tool(scope: str | None = None):
         """mcp.tool() that reports expected failures to the client instead of a generic error. The description is
-        the docstring without its indentation; hints come from mcp_live.TOOL_HINTS."""
+        the docstring without its indentation; hints come from mcp_live.TOOL_HINTS. `scope` (e.g. "admin"): only
+        tokens holding it may call the tool (--- identity)."""
 
         def deco(fn):
+            if scope:  # --- identity
+                fn = identity.scoped(fn, scope)
             if inspect.iscoroutinefunction(fn):
                 @functools.wraps(fn)
                 async def wrapped(*a, **kw):

@@ -20,12 +20,14 @@ import shlex
 import threading
 from typing import TYPE_CHECKING, Any
 
+import hangar.identity as identity  # --- identity
 from hangar.harnesses import HARNESSES, slot_for
 from hangar.models import Credential, CredentialKind, now
 from hangar.store import Store
 from hangar.vault import Vault
 
 if TYPE_CHECKING:
+    from hangar.config import Settings
     from hangar.models import Sandbox
     from hangar.providers.base import Provider
 
@@ -48,6 +50,7 @@ class Broker:
         self.user = user
         self._lock = threading.Lock()
         self._secret_cache: list[str] | None = None
+        self.settings: Settings | None = None  # --- identity: names the control plane's own credentials (Fleet sets it)
 
     # ------------------------------------------------------------------ redaction
     def _secrets(self) -> list[str]:
@@ -100,9 +103,12 @@ class Broker:
         description: str | None = None,
         env_var: str | None = None,
         file_path: str | None = None,
+        exposure: str | None = None,  # --- identity: "sandbox" | "control_plane"; unset keeps the stored choice
     ) -> Credential:
         if not NAME_RE.match(name):
             raise CredentialError(f"invalid credential name '{name}': letters, digits, '.', '_', '-'")
+        if exposure not in (None, "sandbox", "control_plane"):  # --- identity
+            raise CredentialError("exposure must be sandbox or control_plane")
         slot = slot_for(harness, kind)
         # --- workstream F: a GitHub App key is used by the git gateway only and never goes into a sandbox.
         if kind == CredentialKind.GITHUB_APP:
@@ -115,6 +121,8 @@ class Broker:
             except GatewayError as e:
                 raise CredentialError(str(e)) from None
         # `webhook` credentials are signing keys the control plane uses (job callbacks); never put in sandboxes.
+        elif harness == "webhook" and (env_var or file_path):  # --- identity
+            raise CredentialError("webhook credentials are control-plane only and can't be mapped into sandboxes")
         elif slot is None and not (env_var or file_path) and harness != "webhook":
             known = ", ".join(f"{s.kind.value}" for s in HARNESSES[harness].credentials) if harness in HARNESSES else ""
             raise CredentialError(
@@ -133,7 +141,9 @@ class Broker:
             file_path=file_path or (slot.file_path if slot else None),
             created_at=existing.created_at if existing else now(),
             leased_to=existing.leased_to if existing else None,
+            exposure=exposure or (existing.exposure if existing else None),  # --- identity
         )
+        self._check_exposure_choice(cred)  # --- identity
         self.vault.put(f"cred:{name}", value)
         self.store.put(cred)
         self._secret_cache = None
@@ -147,6 +157,34 @@ class Broker:
         if not cred:
             raise CredentialError(f"unknown credential '{name}'")
         return cred
+
+    # --- identity: credential exposure (identity.exposure)
+    def _check_exposure_choice(self, cred: Credential) -> None:
+        if cred.exposure not in (None, "sandbox", "control_plane"):
+            raise CredentialError("exposure must be sandbox or control_plane")
+        if cred.exposure == "sandbox" and identity.locked(cred, self.settings):
+            raise CredentialError(f"credential '{cred.name}' is a signing key, bot token or GitHub App key; it stays "
+                                  "control-plane only")
+
+    def set_exposure(self, name: str, exposure: str | None) -> Credential:
+        """Mark a credential `sandbox` or `control_plane`; None goes back to the default for its kind and name."""
+        cred = self.get(name)
+        cred.exposure = exposure  # type: ignore[assignment]
+        self._check_exposure_choice(cred)
+        self.store.put(cred)
+        return cred
+
+    def check_sandbox(self, cred: Credential | str) -> Credential:
+        """The credential, if it may go into a sandbox; CredentialError (saying why) if it is control-plane only."""
+        c = self.get(cred) if isinstance(cred, str) else cred
+        if identity.exposure(c, self.settings) == "control_plane":
+            raise CredentialError(identity.refusal(c, self.settings))
+        return c
+
+    def sandbox_secret(self, name: str) -> str:
+        """secret_text for a `secrets:` mapping into a sandbox: refused for control-plane credentials."""
+        self.check_sandbox(name)
+        return self.secret_text(name)
 
     def delete(self, name: str) -> None:
         self.store.delete(Credential, name)
@@ -223,6 +261,7 @@ class Broker:
         for c in creds:
             if c.kind == CredentialKind.GITHUB_APP:  # workstream F: gateway-only, never materialized
                 continue
+            self.check_sandbox(c)  # --- identity: control-plane credentials never reach a sandbox (B4)
             value = self.vault.get(f"cred:{c.name}")
             if value is None:
                 raise CredentialError(f"credential '{c.name}' has no stored secret")

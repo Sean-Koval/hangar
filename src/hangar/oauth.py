@@ -320,6 +320,17 @@ class HangarOAuthProvider:
             self.store.kv_delete(key)
 
     # ------------------------------------------------------------------ verification for /mcp
+    async def principal(self, token: str | None):
+        """--- identity: a grant acts as the hangar token that approved it, with that token's scopes, under the
+        grant's own name (what `verify` returns)."""
+        if not token:
+            return None
+        at = await self.load_access_token(token)
+        approver = self.auth.by_id((self._get("at", _h(token)) or {}).get("approver_id")) if at else None
+        if at is None or approver is None:
+            return None
+        return approver._replace(name=f"oauth:{at.client_id}({at.subject or '?'})")
+
     async def verify(self, token: str | None) -> str | None:
         if not token:
             return None

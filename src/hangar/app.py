@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+import hangar.identity as identity  # --- identity
 from hangar import exchange, observe  # --- observe
 from hangar.a2a import A2AServer
 from hangar.auth import SCOPES, TokenAuth, bearer_from_headers
@@ -81,9 +82,13 @@ class MCPAuthMiddleware:
             return await self.app(scope, receive, send)
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
         token = bearer_from_headers(headers)
-        actor = self.auth.verify(token, scope="mcp")  # --- workstream setup: `mcp` tokens (hangar connect)
-        if actor is None and self.oauth is not None:
-            actor = await self.oauth.verify(token)
+        # --- identity: the caller's principal (identity and scopes), not only its name; `mcp` tokens (hangar connect)
+        who = self.auth.principal(token)
+        if who is not None and not (who.admin or "mcp" in who.scopes):
+            who = None
+        if who is None and self.oauth is not None:
+            who = await self.oauth.principal(token)
+        actor = who.name if who else None
         if actor is None:
             challenge = 'Bearer realm="hangar"'
             if self.resource_metadata_url:  # MCP auth discovery (RFC 9728)
@@ -92,12 +97,14 @@ class MCPAuthMiddleware:
                                 status_code=401, headers={"WWW-Authenticate": challenge})
             return await resp(scope, receive, send)
         tok = current_actor.set(actor)
+        ptok = identity.current.set(who)  # --- identity
         # --- stream: streams this request opens re-check the token while they stay open (revocation closes them)
         cred = stream_credential.set(token_check(self.auth, self.oauth, token, ("mcp",)))
         try:
             await self.app(scope, receive, send)
         finally:
             stream_credential.reset(cred)
+            identity.current.reset(ptok)  # --- identity
             current_actor.reset(tok)
 
 
@@ -164,6 +171,7 @@ class CredentialBody(BaseModel):
     description: str | None = None
     env_var: str | None = None
     file_path: str | None = None
+    exposure: str | None = None  # --- identity: sandbox | control_plane (the broker checks it)
 
 
 class LoginBody(BaseModel):
@@ -352,6 +360,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.mount(e2b_path, build_api(app.state.e2b))
         app.add_middleware(SandboxRouter, svc=app.state.e2b)  # outermost: sandbox traffic skips the body caps
 
+    @app.exception_handler(identity.Forbidden)  # --- identity
+    async def _forbidden(_: Request, exc: identity.Forbidden):
+        return JSONResponse({"error": str(exc)}, status_code=403)
+
     @app.exception_handler(FleetError)
     @app.exception_handler(CredentialError)
     @app.exception_handler(ProviderError)
@@ -362,12 +374,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return JSONResponse({"error": str(exc).strip("'\"")}, status_code=status)
 
     async def actor(request: Request) -> str:  # perf: async = no thread hop
-        res = h.auth.verify_scopes(bearer_from_headers(request.headers))
-        if res is None:
+        p = h.auth.principal(bearer_from_headers(request.headers))
+        if p is None:
             raise HTTPException(401, "unauthorized", headers={"WWW-Authenticate": "Bearer"})
-        if "admin" not in res[1]:
-            raise HTTPException(403, f"token scopes {res[1]} do not allow this route")
-        return f"ui:{res[0]}"
+        if not p.admin:
+            raise HTTPException(403, f"token scopes {p.scopes} do not allow this route")
+        identity.current.set(p)  # --- identity: shared code (environment saves) sees the REST caller too
+        return f"ui:{p.name}"
 
     async def job_caller(request: Request) -> Caller:  # perf: async
         """Admin sees every job; a `jobs`-scoped token is restricted and sees only jobs it submitted."""
@@ -692,12 +705,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/credentials")
     async def creds(_: str = A):
-        return [c.model_dump(mode="json") for c in h.broker.list()]
+        return [{**c.model_dump(mode="json"), "exposure": identity.exposure(c, h.settings)}  # --- identity: in effect
+                for c in h.broker.list()]
 
     @app.post("/api/credentials")
     async def put_cred(body: CredentialBody, who: str = A):
         c = h.broker.put(body.name, body.harness, body.kind, body.value, body.description, body.env_var,
-                         body.file_path)
+                         body.file_path, exposure=body.exposure)  # --- identity
         fleet.audit(who, "credential.put", c.name, harness=c.harness, kind=c.kind.value)
         return c.model_dump(mode="json")
 
@@ -997,6 +1011,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import settings_store, setup_api
 
     settings_store.mount(app, h, A)
+    from hangar import identity_api  # --- identity: credential exposure
+
+    identity_api.mount(app, h, A)
     setup_api.mount(app, h, A)
     from hangar import backup  # --- overnight/sweep: database backups (hangar admin)
 

@@ -439,6 +439,7 @@ def gc(yes: bool = typer.Option(False, "--yes", help="Remove what was found (def
 def cred_ls():
     for c in _call("GET", "/api/credentials"):
         lease = f" leased_to={c['leased_to']}" if c.get("leased_to") else ""
+        lease += " control-plane" if c.get("exposure") == "control_plane" else ""  # --- identity
         typer.echo(f"{c['name']:24} {c['harness']:12} {c['kind']:12}{' exclusive' if c['exclusive'] else ''}{lease}")
 
 
@@ -453,6 +454,8 @@ def cred_add(
     env_var: str | None = typer.Option(None, "--env-var", help="Env var to inject as, overriding the harness "
                                        "default (e.g. OPENAI_API_KEY for a pi credential)."),
     description: str | None = None,
+    exposure: str | None = typer.Option(None, "--exposure", help="sandbox | control_plane (default: by its kind "
+                                        "and name; --- identity)"),
 ):
     """Store a credential. Examples:
 
@@ -471,7 +474,8 @@ def cred_add(
         m = re.findall(r"sk-ant-oat[0-9A-Za-z_\-]{20,}", secret)
         secret = m[-1] if m else secret.strip()
     c = _call("POST", "/api/credentials", json={"name": name, "harness": harness, "kind": kind, "value": secret,
-                                                "description": description, "env_var": env_var})
+                                                "description": description, "env_var": env_var,
+                                                **({"exposure": exposure} if exposure else {})})  # --- identity
     typer.secho(f"stored {c['name']} ({c['harness']}/{c['kind']}{', exclusive' if c['exclusive'] else ''})",
                 fg="green")
 
@@ -480,6 +484,16 @@ def cred_add(
 def cred_rm(name: str):
     _call("DELETE", f"/api/credentials/{name}")
     typer.echo(f"deleted {name}")
+
+
+# --- identity
+@cred_app.command("exposure")
+def cred_exposure(name: str, exposure: str = typer.Argument(..., help="sandbox | control_plane | default")):
+    """Say where a credential may go. Signing keys, bot tokens and GitHub App keys are always control_plane; the
+    GitHub tokens hangar's settings name are control_plane unless marked sandbox (to share one with sandboxes)."""
+    c = _call("PUT", f"/api/credentials/{name}/exposure",
+              json={"exposure": None if exposure == "default" else exposure})
+    typer.echo(f"{c['name']}: {c['exposure']}")
 
 
 # ---------------------------------------------------------------------------- jobs

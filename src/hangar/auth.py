@@ -116,6 +116,13 @@ class TokenAuth:
         return next((list(tok.scopes) for tok in self.store.list(ApiToken) if hmac.compare_digest(h, tok.token_hash)),
                     None)
 
+    def by_id(self, token_id: str | None) -> Principal | None:
+        """--- identity: the principal of a token by its id (an OAuth grant acts as the token that approved it)."""
+        if token_id == "admin":
+            return Principal("admin", "admin", ["admin"]) if self._admin_hash else None
+        tok = self.store.get(ApiToken, token_id) if token_id else None
+        return Principal(tok.name, tok.id, list(tok.scopes), tok.callback_secret, tok.max_budget) if tok else None
+
     def exists(self, token_id: str | None) -> bool:
         if token_id == "admin":
             return self._admin_hash is not None
