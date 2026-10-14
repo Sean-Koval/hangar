@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Long MCP tools no longer die with the client.** `create_sandbox`, `create_sandboxes`, `fork_sandbox` and `build_environment` answer within `HANGAR_MCP_TOOL_WAIT_SECONDS` (150 s). Past that they return the sandbox or build as it stands (`starting`, with a `stage` saying what it waits on) and keep going in the background. Before, an MCP client that gave up on the call (claude.ai stops after about 230 s) cancelled the create, and the sandbox ended in `error`.
+- **No create waits on another harness's pack, on any path.** #75 covered creates whose image already existed. Now the image build a create triggers (first use, or an environment change) also builds just that harness's pack, side by side with the image. Scheduled warm-pool syncs never wait on a build. At startup, packs whose harness changed in the upgrade are rebuilt in the background. A create that does wait on its own pack says so in `stage`, with the time so far.
 - **A create waits only on its own harness's pack.** Packs for the environment's other harnesses are mounted when they're already built. A stale one, after an upgrade changed that harness, is rebuilt in the background instead of holding up the sandbox. This is why the first `python` sandbox after the #69 upgrade took minutes: it rebuilt the Codex pack for a Claude Code sandbox.
 
 ## The overnight stack (#48–#69)

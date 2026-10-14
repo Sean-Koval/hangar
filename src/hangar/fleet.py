@@ -328,20 +328,21 @@ class Fleet:
         return image
 
     async def _resolve_packs(self, spec: EnvSpec, pname: str, actor: str, log_fn: Any = None,
-                             only: str | None = None, sandbox_create: bool = False) -> EnvSpec:
+                             only: str | None = None, lazy: bool = False) -> EnvSpec:
         """Attach the pack image for every agent harness the env allows (all are mounted, read-only, so a
         warm sandbox can be claimed for any of them; only the selected one is configured).
 
-        `sandbox_create`: a sandbox runs only the harness it was created for (`only`), so creating one waits on that
-        pack alone. The others are mounted when they are already built; a stale one (its harness changed in an
-        upgrade) is rebuilt in the background rather than holding up the sandbox."""
+        `lazy`: wait only on the pack of `only` (a sandbox runs just the harness it was created for; None waits on
+        none). The others are mounted when they are already built; a missing or stale one (its harness changed in
+        an upgrade) is built in the background rather than holding anyone up. Creates, the image build a create
+        triggers and scheduled warm-pool syncs are lazy; explicit builds and prebuild build every pack."""
         spec.packs = {}
         if not self._uses_packs(spec, pname):
             return spec
         for hname in spec.agent_harnesses:
             if not HARNESSES[hname].install:
                 continue
-            if sandbox_create and hname != only:
+            if lazy and hname != only:
                 tag = pack_tag(get_harness(hname), self.settings.image_prefix,
                                self.settings.registry if pname in ("kubernetes", "e2b") else None)
                 if self.store.kv_get(f"pack:{pname}:{hname}") == tag:
@@ -351,6 +352,23 @@ class Fleet:
                 continue
             spec.packs[hname] = await self.build_pack(hname, pname, actor=actor, log_fn=log_fn)
         return spec
+
+    def refresh_stale_packs(self) -> list[str]:
+        """At startup: rebuild, in the background, every pack this hangar used before whose harness changed in the
+        upgrade (its tag moved), so the first sandbox for that harness after a deploy doesn't wait on the build."""
+        started = []
+        for pname, prov in self.providers.items():
+            if not prov.capabilities.image_volumes:
+                continue
+            registry = self.settings.registry if pname in ("kubernetes", "e2b") else None
+            for hname, h in HARNESSES.items():
+                had = self.store.kv_get(f"pack:{pname}:{hname}")
+                if h.install and had and had != pack_tag(h, self.settings.image_prefix, registry):
+                    self._pack_in_background(hname, pname, "upgrade")
+                    started.append(f"{pname}:{hname}")
+        if started:
+            log.info("rebuilding packs whose harness changed: %s", ", ".join(started))
+        return started
 
     def _pack_in_background(self, harness: str, pname: str, actor: str) -> None:
         key = f"{pname}:{harness}"
@@ -366,7 +384,10 @@ class Fleet:
         self._pack_builds[key] = asyncio.create_task(run())
 
     async def build(self, env: str, provider: str | None = None, force: bool = False, actor: str = "system",
-                    wait: bool = True) -> BuildJob:
+                    wait: bool = True, for_create: tuple[str | None] | None = None) -> BuildJob:
+        """Build an environment's image and its harness packs. `for_create=(harness,)`: the build a sandbox create
+        waits on; it builds the image and that harness's pack side by side and leaves the other packs to the
+        background (see _resolve_packs), so a create never waits on a harness it won't run."""
         pname = provider or self.settings.default_provider
         prov = self.provider(pname)
         spec = self.catalog.get(env)
@@ -379,13 +400,19 @@ class Fleet:
         async def _run() -> None:
             async with self._build_locks[f"{pname}:{env}"]:
                 try:
-                    await self._resolve_packs(spec, pname, actor, log_fn=job.emit)
-                    if not force and await prov.image_exists(tag):
-                        await job.emit(f"image {tag} is up to date")
-                        job.image = prov.image_ref(tag)
-                    else:
-                        await job.emit(f"building {env} -> {tag}")
-                        job.image = await prov.build_template(spec, ctx, tag, log=job.emit)
+                    async def image() -> None:
+                        if not force and await prov.image_exists(tag):
+                            await job.emit(f"image {tag} is up to date")
+                            job.image = prov.image_ref(tag)
+                        else:
+                            await job.emit(f"building {env} -> {tag}")
+                            job.image = await prov.build_template(spec, ctx, tag, log=job.emit)
+
+                    packs = (self._resolve_packs(spec, pname, actor, log_fn=job.emit, only=for_create[0], lazy=True)
+                             if for_create else self._resolve_packs(spec, pname, actor, log_fn=job.emit))
+                    done = await asyncio.gather(packs, image(), return_exceptions=True)
+                    if errs := [d for d in done if isinstance(d, BaseException)]:
+                        raise errs[0]
                     self.store.kv_set(f"image:{pname}:{env}", job.image)
                     if spec.warm_pool:
                         live = self._warm(spec)
@@ -452,7 +479,7 @@ class Fleet:
         if bake and bake != self._bake_for(spec, pname, spec.pick_harness()):
             # A non-default harness on a provider without packs: build that variant directly.
             return await prov.build_template(spec, ctx, tag)
-        job = await self.build(spec.name, pname, actor=actor)
+        job = await self.build(spec.name, pname, actor=actor, for_create=(harness,))
         if job.state != "succeeded" or not job.image:
             raise FleetError(f"build of {spec.name} failed: {job.error}")
         return job.image
@@ -584,7 +611,16 @@ class Fleet:
             self.store.put(sb)
             image = _image or await self._ensure_image(spec, pname, actor, hname, stage=stage)
             sb.image = image
-            await self._resolve_packs(spec, pname, actor, only=hname, sandbox_create=True)
+            pack_started, last_stage = time.monotonic(), 0.0
+
+            async def pack_stage(msg: str) -> None:  # build_pack reports only when it really builds; at most 1/s
+                nonlocal last_stage
+                if (t := time.monotonic()) - last_stage >= 1:
+                    last_stage = t
+                    stage(f"building the {hname} harness pack, {int(t - pack_started)}s so far (first use, or the "
+                          f"harness changed in an upgrade; usually a few minutes): {msg[-160:]}")
+
+            await self._resolve_packs(spec, pname, actor, log_fn=pack_stage, only=hname, lazy=True)
             if spec.packs:
                 sb.info["packs"] = dict(spec.packs)
             stage("starting the sandbox")
@@ -725,7 +761,7 @@ class Fleet:
                 if not image or self._warm_applied.get(key) == want:
                     continue
                 try:
-                    await self._resolve_packs(spec, pname, "scheduler")
+                    await self._resolve_packs(spec, pname, "scheduler", lazy=True)  # the reaper never waits on a build
                     await prov.sync_warm_pool(spec.model_copy(update={"warm_pool": want}), image)
                     self._warm_applied[key] = want
                     log.info("warm pool %s on %s -> %d (schedule %s)", name, pname, want, spec.warm_pool_hours)
