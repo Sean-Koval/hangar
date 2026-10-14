@@ -396,6 +396,8 @@ async def attach(fleet: Fleet, prov: Provider, sb: Sandbox, spec: EnvSpec) -> di
 async def _proxy_url(fleet: Fleet, prov: Provider, sb: Sandbox) -> str:
     from hangar.fleet import FleetError
 
+    if not fleet.egress.port:
+        raise FleetError("egress allowlist/none needs hangar's egress proxy, and HANGAR_EGRESS_PORT is 0")
     if prov.name == "docker":
         net = getattr(prov, "network", None)
         ip = await net.egress_gateway() if net is not None else None
