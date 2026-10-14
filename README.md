@@ -1,8 +1,8 @@
-![Hangar — coding agents, ready for takeoff](docs/assets/banner.svg)
+![Hangar](docs/assets/banner.svg)
 
 # Hangar
 
-**Run coding agents in isolated workspaces. Prepare once, launch parallel attempts, and follow the work from your own client.**
+**A control plane for isolated, cloneable coding-agent sandboxes.**
 
 Hangar manages sandboxes for Claude Code, Codex, pi, and Antigravity. Each sandbox gets its own files, tools, repository checkout, and agent configuration. Connect an MCP client to ask for work in plain language, or use the CLI and browser dashboard.
 
