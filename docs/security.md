@@ -204,7 +204,7 @@ Line-wrapped output, such as `base64`'s 76 columns and `xxd -p`'s 60, is matched
 - secrets hangar never stored;
 - a secret sent out over the network instead of printed.
 
-An agent that can read a secret can always get it out in a form redaction doesn't know. Redaction keeps secrets out of logs, transcripts and results by accident. The protections that hold against a determined agent keep the secret out of the sandbox altogether: the [git gateway](#git-credential-gateway), [build secrets](#build-secrets), short-lived cloud credentials and control-plane-only credentials.
+An agent that can read a secret can always get it out in a form redaction doesn't know. Redaction keeps secrets out of logs, transcripts and results by accident. The protections that hold against a determined agent keep the secret out of the sandbox altogether: the [git gateway](#git-credential-gateway), [build secrets](#build-secrets), [short-lived cloud credentials](#short-lived-cloud-credentials) and control-plane-only credentials.
 
 ## Build secrets
 
@@ -227,6 +227,65 @@ How a build uses them (`hangar.buildsecrets`, used by repo environment builds):
 
 Mark a build-only credential control-plane only (`hangar cred exposure npm-ci-token control_plane`) so no environment can also map it into a running sandbox. Signing keys, bot tokens and GitHub App keys are refused as build secrets. **A build secret reaches the code the build runs, and that code can send it wherever the build's network allows.** Give builds tokens that can only read the registry they're for. The build sandbox follows the environment's [egress mode](#egress-allowlists).
 
+## Short-lived cloud credentials
+
+Don't store a GCP service-account key or an AWS access key as a credential: the agent can read it, and it lives as long as the key does. Give the environment `cloud:` instead (admin only):
+
+```yaml
+name: infra
+cloud:
+  gcp:
+    provider: projects/123456789/locations/global/workloadIdentityPools/hangar/providers/hangar
+    service_account: ci-agent@my-proj.iam.gserviceaccount.com   # optional: impersonate it
+  aws:
+    role_arn: arn:aws:iam::123456789012:role/hangar-agents
+    region: us-east-1                                            # optional
+  lifetime_minutes: 60                                           # 5 to 720
+```
+
+Hangar is an OIDC issuer (`cloudcreds.py`). Each sandbox of the environment gets an ID token, signed RS256 with a key kept in hangar's vault, with these claims:
+
+- `iss`: `HANGAR_OIDC_ISSUER`, or `HANGAR_PUBLIC_URL`;
+- `sub`: `hangar:env:<environment>`;
+- `aud`: the cloud's audience;
+- `exp`: `lifetime_minutes` from now;
+- for attribute conditions: `environment`, `repo`, `person`, `sandbox`, `session` and `job`.
+
+The token is written to `~/.hangar/cloud/` (0600). While the sandbox runs, hangar replaces it once less than half its life is left, checking every 5 minutes. It is never renewed after the sandbox stops, and each issuance is audited as `cloud.token`. Discovery is public at `/.well-known/openid-configuration`, and the public keys at `/oidc/jwks.json`. `POST /api/cloud/rotate` (admin) adds a new signing key; the last 4 stay published, so tokens already issued still verify.
+
+**GCP (Workload Identity Federation).** The sandbox gets the `external_account` credential configuration that `gcloud iam workload-identity-pools create-cred-config --credential-source-file=… --credential-source-type=text` produces. `GOOGLE_APPLICATION_CREDENTIALS` and `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE` point client libraries and gcloud at it. google-auth reads the token file again on every refresh, so a renewed token is picked up. Set up the pool once:
+
+```sh
+curl -s https://hangar.example.com/oidc/jwks.json > hangar-jwks.json   # or let Google fetch it, if it can reach hangar
+gcloud iam workload-identity-pools create hangar --location=global
+gcloud iam workload-identity-pools providers create-oidc hangar --location=global --workload-identity-pool=hangar \
+  --issuer-uri=https://hangar.example.com --jwk-json-path=hangar-jwks.json \
+  --attribute-mapping='google.subject=assertion.sub,attribute.environment=assertion.environment,attribute.repo=assertion.repo' \
+  --attribute-condition='assertion.environment in ["infra"]'
+gcloud iam service-accounts add-iam-policy-binding ci-agent@my-proj.iam.gserviceaccount.com \
+  --role=roles/iam.workloadIdentityUser \
+  --member='principal://iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/hangar/subject/hangar:env:infra'
+```
+
+- **The issuer can stay private.** Uploading the JWKS (`--jwk-json-path`, up to 8 keys) means Google never has to reach hangar, which suits a control plane behind IAP. Re-upload after `rotate`.
+- **The audience** is the provider's default, `https://iam.googleapis.com/projects/…/providers/…`. Set `gcp.audience` if the provider was created with `--allowed-audiences`.
+- **Tokens:** Google accepts RS256 tokens whose `exp` is at most 24 hours after `iat`.
+
+**AWS (`AssumeRoleWithWebIdentity`).** The sandbox gets `AWS_ROLE_ARN`, `AWS_WEB_IDENTITY_TOKEN_FILE` and `AWS_ROLE_SESSION_NAME` (`hangar-<sandbox id>`), which every AWS SDK and the CLI use to assume the role from the token file and re-read it. The token's `aud` is `aws.audience` (`sts.amazonaws.com`). Create an IAM OIDC identity provider for the issuer URL with that audience as its client id. The role's trust policy matches the condition key `<issuer without https://>:sub` against `hangar:env:<environment>`. **AWS fetches the discovery document and JWKS itself**, so the issuer URL must be publicly reachable over HTTPS. If hangar sits behind IAP, publish the two documents somewhere public (`/.well-known/openid-configuration` with `jwks_uri` pointing at the JWKS file) and set `HANGAR_OIDC_ISSUER` to that URL.
+
+**Egress.** In `allowlist` and `none` environments the token exchange is let through automatically: `sts.googleapis.com` and `iamcredentials.googleapis.com`, `sts.amazonaws.com` and `sts.<region>.amazonaws.com`.
+
+**What it does and doesn't cover.**
+
+- The agent can read the token and use it, which is the point, but only:
+  - for the audience it names;
+  - for what the cloud grants its subject, which you can narrow per environment and repo with attribute conditions;
+  - for at most `lifetime_minutes` after the sandbox stops.
+- An access token the cloud already issued from it lives its own lifetime (GCP's default is an hour).
+- Don't give a sandbox a role you wouldn't give the agent.
+- The token is not stored in the vault, so redaction doesn't mask it; it's short-lived instead.
+- Tested against google-auth's own `external_account` code with a fake STS. A live pool and an AWS account weren't available to this change.
+
 ## Threat model: a compromised sandbox
 
 The attacker controls everything inside one sandbox: the agent's process, its files, `~/.hangar/env` (so every command hangar runs there), its git binary and its network traffic. What it should not get:
@@ -245,6 +304,7 @@ The attacker controls everything inside one sandbox: the agent's process, its fi
 | Getting a secret into a pushed branch, a PR or a Slack thread (by accident, the common case) | Before hangar delivers a job, the change and its commit messages are scanned for stored values, their encodings, and high-signal token formats. A hit blocks the push and goes back to the agent with file and line, never the value. PR text, comments and artifacts are masked. | `test_secretscan.py` |
 | Reading a stored secret back through hangar (`exec` output, events, results) | Every stored value is masked verbatim and, from 12 characters, reversed, in hex, base64 at any alignment (wrapped too) and percent-encoded. The B4 repro (`\| rev`) now comes back `***`. This is not a wall: other encodings get through ([redaction](#redaction)). | `test_secretscan.py` |
 | A build secret in the running sandbox | Build secrets are named only in admin-set places, reach only the build step (BuildKit secret mounts, or one exec's environment in a build sandbox checked for leftovers before capture), and are never written to `~/.hangar/env`. | `test_secretscan.py` |
+| A cloud key it can keep (`cloud:` environments) | No cloud key is stored or injected: a per-sandbox OIDC token, scoped to one audience, valid at most `lifetime_minutes`, renewed only while the sandbox runs, is exchanged by the cloud for short-lived credentials. | `test_cloudcreds.py` |
 | Cloud credentials | GKE node pools use `GKE_METADATA` (Workload Identity), so pods never see the node's service account; sandbox pods mount no Kubernetes token. `sandbox-network.yaml` blocks the metadata server, which matters with Pod snapshots: their KSA can read every sandbox's snapshot. | manifests checked with a server-side dry run |
 | Other sandboxes and the API | GKE: no ingress to sandbox pods (except from hangar's pods to the [envd](envd.md) port), no egress to private ranges; only the gateway port of hangar pods is open. Docker: no traffic between sandboxes on hangar's network. | manifests checked with a server-side dry run and `test_k8s_network.py` (every policy file read together); `test_e2e_isolation_docker.py` |
 | A turn's driver and the approvals it relays | Docker sandboxes whose agent has no sudo run each turn split ([the uid split](steering.md#the-uid-split)): the driver, its key, its control files and the turn's script belong to a `hangar` user, the agent's harness runs as the sandbox user with no capabilities, so code a person allowed can't read the key, write a command or signal or trace the driver. The harness and what it starts run with `no_new_privs`; hangar reads a split run's status, log and approvals from its own files, never through the agent's links. In `ask` and `deny-risky` turns hangar also owns the harness's binary, environment and settings ([hangar-owned harness settings](steering.md#hangar-owned-harness-settings)). Elsewhere one user, with a warning on `ask` and `deny-risky` turns (`HANGAR_UID_SPLIT=required` refuses them). | `test_e2e_isolation_docker.py`, `test_e2e_harden_docker.py`, `test_isolation.py`, `test_harden.py`, `test_harden_real_clis.py` |

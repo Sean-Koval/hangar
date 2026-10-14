@@ -35,6 +35,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from hangar.cloudcreds import CloudSpec  # --- egress
 from hangar.egress import EgressSpec  # --- egress
 from hangar.harnesses import HARNESSES, McpServer, get_harness, pack_script, pack_stage
 from hangar.models import Resources
@@ -138,6 +139,9 @@ class EnvSpec(BaseModel):
     # --- egress: secrets for the image-build step only, never the running sandbox: {SECRET_ID: credential}
     # (buildsecrets.py). Needs an admin to set.
     build_secrets: dict[str, str] = Field(default_factory=dict)
+    # --- egress: short-lived cloud credentials instead of stored keys: {gcp: {provider, service_account},
+    # aws: {role_arn}, lifetime_minutes} (cloudcreds.py). Needs an admin to set.
+    cloud: CloudSpec | None = None
     source_dir: Path | None = Field(default=None, exclude=True)
     # Resolved by the fleet before a provider sees the spec: harness name -> pack image to mount read-only.
     packs: dict[str, str] = Field(default_factory=dict, exclude=True)
