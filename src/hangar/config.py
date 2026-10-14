@@ -294,6 +294,10 @@ class Settings(BaseSettings):
     # addresses (the metadata servers) are refused regardless.
     egress_private_hosts: list[str] = Field(default_factory=list)
     egress_max_connections_per_sandbox: int = 128  # one person's 10 sandboxes stay well under MAX_CONNECTIONS
+    # --- egress2: all of one person's sandboxes together, so 6 people at their caps fit MAX_CONNECTIONS (4096)
+    egress_max_connections_per_person: int = 640
+    # --- egress2: on shutdown the proxy takes no new connection, and open tunnels get this long to finish
+    egress_drain_seconds: int = Field(20, ge=0, le=300)
     # --- egress2: read-only package mirrors at /pkg/<pypi|npm|go>/ on the git gateway's port (pkgmirror.py). With
     # it on (and HANGAR_GATEWAY_URL set) the pypi, npm and go presets point proxied sandboxes there, and the public
     # registries' hosts, which take uploads too, stay closed. Upstreams default to the public registries; on GKE
@@ -308,6 +312,10 @@ class Settings(BaseSettings):
     # --- egress: the OIDC issuer URL in the tokens hangar mints for sandboxes' cloud credentials (cloudcreds.py);
     # default HANGAR_PUBLIC_URL. Must be https; AWS fetches <issuer>/.well-known/openid-configuration from it.
     oidc_issuer: str | None = None
+    # --- egress2: a new signing key every this many days (0: only `POST /api/cloud/rotate`). It is published a week
+    # (at most half the period) before it signs; where the JWKS is uploaded (GCP --jwk-json-path), upload it again
+    # after the `cloud.key.next` audit entry.
+    oidc_key_rotation_days: int = Field(0, ge=0, le=3650)
     # --- workstream G: a2a (spec 0011, docs/a2a.md) -------------------------
     a2a_enabled: bool = True  # agent card at /.well-known/agent-card.json, JSON-RPC at /a2a
     a2a_default_repo: str | None = None  # repo for A2A tasks that don't name one in their metadata

@@ -388,6 +388,55 @@ async def test_a_sandbox_has_a_bounded_number_of_tunnels(proxied):
     w.close()
 
 
+async def test_a_persons_sandboxes_share_a_cap_and_others_are_unaffected(proxied):
+    """--- egress2 (#97 review): one person's ten sandboxes can't hold the proxy's connections for the team."""
+    p = proxied
+    p.fleet.settings.egress_max_connections_per_person = 2
+    mine = [p.sb]
+    for i in range(2):
+        sb = Sandbox(id=f"sb-ann{i}x", name=f"a{i}", environment="locked", provider="docker",
+                     state=SandboxState.RUNNING, person="ann", info={"harness": "claude-code"})
+        p.store.put(sb)
+        mine.append(sb)
+    bob = Sandbox(id="sb-bob0x", name="b", environment="locked", provider="docker", state=SandboxState.RUNNING,
+                  person="bob", info={"harness": "claude-code"})
+    p.store.put(bob)
+    held = []
+    for sb in mine[:2]:
+        first, r, w = await ask(p.px, f"CONNECT upstream.test:{p.up} HTTP/1.1\r\n{auth(p.fleet, sb)}")
+        assert first.startswith(b"HTTP/1.1 200")
+        held.append(w)
+    third, r, _ = await ask(p.px, f"CONNECT upstream.test:{p.up} HTTP/1.1\r\n{auth(p.fleet, mine[2])}")
+    assert third.startswith(b"HTTP/1.1 429") and b"ann's sandboxes" in await r.read()
+    other, *_ = await ask(p.px, f"CONNECT upstream.test:{p.up} HTTP/1.1\r\n{auth(p.fleet, bob)}")
+    assert other.startswith(b"HTTP/1.1 200")
+    assert audits(p.store, "egress.deny")[0].detail["reason"] == "too_many_person"
+    for w in held:
+        w.close()
+
+
+async def test_a_shutdown_takes_no_new_tunnel_and_lets_open_ones_finish(proxied):
+    """--- egress2 (#97 review): a restart used to cut every tunnel, model streams mid-answer included."""
+    p = proxied
+    p.fleet.settings.egress_drain_seconds = 5
+    first, r, w = await ask(p.px, f"CONNECT upstream.test:{p.up} HTTP/1.1\r\n{auth(p.fleet, p.sb)}")
+    assert first.startswith(b"HTTP/1.1 200")
+    p.fleet.closing.set()  # the shutdown signal
+    await asyncio.sleep(0.05)
+    with pytest.raises(OSError):  # no new connection
+        await asyncio.open_connection("127.0.0.1", p.px)
+    stopping = asyncio.create_task(p.fleet.egress.stop())
+    await asyncio.sleep(0.3)
+    assert not stopping.done()  # waiting for the open tunnel
+    hello = client_hello("upstream.test")
+    w.write(hello)
+    await w.drain()
+    assert await asyncio.wait_for(r.read(65536), 5) == b"ECHO:" + hello  # it still works
+    w.close()  # and once it ends, the stop goes on without waiting out the drain
+    await asyncio.wait_for(stopping, 3)
+    p.fleet.closing.clear()
+
+
 async def test_garbage_gets_400_and_the_listener_survives(proxied):
     p = proxied
     for junk in (b"\x00\x01\x02\r\n\r\n", b"GET / HTTP/1.1\r\n\r\n", b"CONNECT a b c d\r\n\r\n"):

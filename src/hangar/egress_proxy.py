@@ -180,6 +180,9 @@ class EgressProxy:
         self._failures: Any = None
         self._flusher: asyncio.Task | None = None
         self.activity: Any = None  # SessionService.activity, set by the app: denials become session events
+        self._conns: set[asyncio.StreamWriter] = set()  # --- egress2: open client connections, for the drain
+        self._closing_at: float | None = None
+        self._watcher: asyncio.Task | None = None
 
     @property
     def key(self) -> bytes:
@@ -217,6 +220,10 @@ class EgressProxy:
         sandboxes reach only its gateway address) also relay the git gateway's port there."""
         if self._listen_lock is None:
             self._listen_lock = asyncio.Lock()
+        if self._closing_at is not None:  # --- egress2: shutting down
+            raise OSError("hangar is shutting down")
+        if self._watcher is None and (closing := getattr(self.fleet, "closing", None)) is not None:
+            self._watcher = asyncio.create_task(self._close_on(closing))
         async with self._listen_lock:
             if (host, self.port) not in self._servers:
                 self._servers[(host, self.port)] = await asyncio.start_server(
@@ -232,15 +239,40 @@ class EgressProxy:
                 self._flusher = asyncio.create_task(self._flush_loop())
 
     async def stop(self) -> None:
-        for s in self._servers.values():
-            s.close()
+        """--- egress2: drain. No new connection from the shutdown signal on (close_listeners); open tunnels (a
+        model's stream mid-answer) get until HANGAR_EGRESS_DRAIN_SECONDS after it to finish, and are cut then."""
+        closing = getattr(self.fleet, "closing", None)
+        shutdown = closing is not None and closing.is_set()  # a process shutdown, not a stop of the proxy alone
+        self.close_listeners()
+        loop = asyncio.get_running_loop()
+        deadline = (self._closing_at or loop.time()) + (self.settings.egress_drain_seconds if shutdown else 0)
+        while self._conns and loop.time() < deadline:
+            await asyncio.sleep(0.1)
+        for w in list(self._conns):
+            with contextlib.suppress(Exception):
+                w.close()
         for s in self._servers.values():
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(s.wait_closed(), 5)
         self._servers.clear()
         if self._flusher:
             self._flusher.cancel()
+        if self._watcher:
+            self._watcher.cancel()
+            self._watcher = None
+        self._closing_at = None  # a proxy stopped on its own (tests, a restart in process) may listen again
         self.flush()
+
+    async def _close_on(self, closing: asyncio.Event) -> None:
+        await closing.wait()
+        self.close_listeners()
+
+    def close_listeners(self) -> None:
+        """Stop accepting connections (the shutdown signal: Fleet.closing); those open carry on."""
+        if self._closing_at is None:
+            self._closing_at = asyncio.get_running_loop().time()
+        for s in self._servers.values():
+            s.close()
 
     def invalidate(self, sandbox_id: str | None = None) -> None:
         """Forget cached policies (all, or one sandbox's): an approval applies to the next connection."""
@@ -259,11 +291,13 @@ class EgressProxy:
             return
         self._total += 1
         self._peers[peer] += 1
+        self._conns.add(writer)
         try:
             await self._handle(reader, writer)
         except Exception:  # noqa: BLE001 - one connection must never take the listener down
             log.exception("egress proxy: connection failed")
         finally:
+            self._conns.discard(writer)
             self._total -= 1
             self._peers[peer] -= 1
             if self._peers[peer] <= 0:
@@ -309,9 +343,14 @@ class EgressProxy:
             if self._open[sb.id] >= self.settings.egress_max_connections_per_sandbox:
                 raise Denied(429, "too_many", f"this sandbox has {self._open[sb.id]} connections open through the "
                              "proxy already", "limit")
+            who = f"person:{sb.person or '-'}"  # --- egress2: one person's sandboxes share a cap, so 6 people fit
+            if self._open[who] >= self.settings.egress_max_connections_per_person:
+                raise Denied(429, "too_many_person", f"{sb.person or 'this'}'s sandboxes have {self._open[who]} "
+                             "connections open through the proxy already", "limit")
         except Denied as d:
             return await self._refuse(writer, sb, host, port, d, pol.mode if pol else None)
         self._open[sb.id] += 1  # taken before connecting, so a burst of CONNECTs can't all pass the check
+        self._open[who] += 1
         metrics.egress_open(1)
         n = [0, 0]  # bytes out (to the internet), in
         relayed = False
@@ -346,9 +385,10 @@ class EgressProxy:
                     return
             await self._splice(reader, writer, up_r, up_w, n)
         finally:
-            self._open[sb.id] -= 1
-            if self._open[sb.id] <= 0:
-                del self._open[sb.id]
+            for k in (sb.id, who):
+                self._open[k] -= 1
+                if self._open[k] <= 0:
+                    del self._open[k]
             metrics.egress_open(-1)
             metrics.egress_bytes(n[0], n[1])
             if relayed:  # the bytes go to the current summary, even if it was flushed while the tunnel was open
@@ -553,9 +593,11 @@ class EgressProxy:
         except (OSError, TimeoutError):
             writer.close()
             return
+        self._conns.add(writer)
         try:
             await self._splice(reader, writer, ur, uw, [0, 0])
         finally:
+            self._conns.discard(writer)
             uw.close()
             writer.close()
 
