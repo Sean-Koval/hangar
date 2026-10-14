@@ -164,20 +164,21 @@ class PreviewRouter(SandboxRouter):
         await send({"type": "http.response.body", "body": b""})
 
     def _authorize(self, scope, sid: str, port: int, raw_path: bytes) -> tuple[Sandbox, dict[str, Any], int, bool]:
-        """Deny by default: a running sandbox, a port it declared, and its owner's cookie or bearer token. The
-        credentials are then taken out of the request, so the app never sees them."""
+        """Deny by default: the sandbox's owner's cookie or bearer token first (so nobody else learns whether a sandbox
+        or a port exists), then a live sandbox and a port it declared. The credentials are then taken out of the
+        request, so the app never sees them."""
         sb = self.svc.store.get(Sandbox, sid)
-        if sb is None or sb.state not in ACTIVE:
+        person = self._person(scope, sid, port)
+        if sb is None or person is None or not self.previews.allowed(person, sb):
+            self._refused(scope, sid, "preview.denied")
+            raise Refused(401, {"message": "open this preview from hangar (`hangar sb preview`, or the dashboard): "
+                                           "previews are for the sandbox's owner"})
+        if sb.state not in ACTIVE:
             self._addr.pop(sid, None)
             raise _gone(sid, "no such preview")
         if not any(p["port"] == port for p in self.previews.ports(sb)):
             self._refused(scope, sid, "preview.port.denied")
             raise Refused(404, {"message": f"port {port} isn't one of this sandbox's preview ports"})
-        person = self._person(scope, sid, port)
-        if person is None or not self.previews.allowed(person, sb):
-            self._refused(scope, sid, "preview.denied")
-            raise Refused(401, {"message": "open this preview from hangar (`hangar sb preview`, or the dashboard): "
-                                           "previews are for the sandbox's owner"})
         if sb.state != SandboxState.RUNNING:
             raise _gone(sid, f"the sandbox is {sb.state.value}")
         scope["headers"] = self._strip(scope.get("headers", []))

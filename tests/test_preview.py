@@ -146,6 +146,10 @@ async def test_only_declared_ports_and_never_envd(world):
     for port in (w.port + 1, 49983):
         r = await w.client.get("/", headers={"host": host(w, port), "authorization": "Bearer tok-alice"})
         assert r.status_code == 404, port
+        r = await w.client.get("/", headers={"host": host(w, port)})
+        assert r.status_code == 401, port  # nobody else learns which ports (or sandboxes) exist
+    r = await w.client.get("/", headers={"host": f"{w.port}-sb-00000000.{DOMAIN}"})
+    assert r.status_code == 401
 
 
 async def test_an_admin_may_and_a_change_of_owner_ends_the_session(world):
