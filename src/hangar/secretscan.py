@@ -161,7 +161,8 @@ def scan_script(repo: str, base: str, out: str, cap: int = MAX_SCAN_BYTES) -> st
         f"printf '\\0HANGAR-SCAN commits\\n'; "
         f"git log --no-color --format='commit %H%n%B%x00' {q(base)}..HEAD -- 2>/dev/null; "
         f"printf '\\0HANGAR-SCAN diff\\n'; "
-        f"git -c core.quotepath=off diff --no-color --no-ext-diff --no-textconv --no-renames -U0 {q(base)} --; "
+        f"git -c core.quotepath=off diff --no-color --no-ext-diff --no-textconv --no-renames -U0 {q(base)} -- "
+        "|| exit $?; "  # a bad base fails the scan (141, the cap reached, is fine)
         "git -c core.quotepath=off ls-files -z --others --exclude-standard | "
         "while IFS= read -r -d '' f; do [ -f \"$f\" ] && [ ! -L \"$f\" ] || continue; "
         "grep -Iq . \"$f\" 2>/dev/null || continue; "

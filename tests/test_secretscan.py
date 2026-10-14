@@ -104,6 +104,13 @@ def test_hits_name_the_file_and_line_of_added_lines_only(repo):
 
 
 @pytest.mark.skipif(not shutil.which("git"), reason="needs git")
+def test_a_change_that_cant_be_read_fails_the_scan(repo):
+    """Hangar never pushes what it couldn't check: an unknown base must not look like an empty change."""
+    r = subprocess.run(["bash", "-c", secretscan.scan_script(str(repo), "no-such-base", str(repo.parent / "b"))])
+    assert r.returncode not in (0, 141)
+
+
+@pytest.mark.skipif(not shutil.which("git"), reason="needs git")
 def test_a_big_change_is_scanned_fast(repo):
     import time
 
