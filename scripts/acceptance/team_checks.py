@@ -515,7 +515,8 @@ def attempt(key, fn):
         out[key] = "%s: %s" % (type(e).__name__, str(e)[:200])
 def port(h):
     return h if ":" in h else h + ":443"
-if proxy:
+if proxy:  # with no resolver, hangar's own names come from /etc/hosts (hostAliases on GKE, #97)
+    attempt("proxy_resolves", lambda: sorted({a[4][0] for a in socket.getaddrinfo(out["proxy"], None)})[:3])
     attempt("allowed_connect", lambda: connect(port(allowed)))
     attempt("denied_connect", lambda: connect(port(denied)))
     attempt("allowed_https", lambda: https(allowed.split(":")[0]))
@@ -537,6 +538,9 @@ def egress_problems(view: dict[str, Any], out: dict[str, Any], opts: argparse.Na
                         "environment" + (f" ({view['warning']})" if view.get("warning") else ""))
     if not out.get("proxy"):
         problems.append("the sandbox has no HTTPS_PROXY: it isn't on the proxied network")
+    elif not isinstance(out.get("proxy_resolves"), list):
+        problems.append(f"the proxy's name {out['proxy']} doesn't resolve in the sandbox ({out.get('proxy_resolves')})"
+                        ": with no resolver it must be in /etc/hosts (the pod's hostAliases, #97)")
     else:
         if out.get("allowed_connect") != 200:
             problems.append(f"the proxy answered {out.get('allowed_connect')!r} for the allowed {opts.egress_allow}")

@@ -407,14 +407,15 @@ def test_screenshot_verdicts(tmp_path):
 
 
 # ---------------------------------------------------------------------------- egress, by its parts
-GOOD = {"proxy": "hangar-gateway.hangar.svc", "allowed_connect": 200, "allowed_https": 200, "denied_connect": 403,
-        "direct": "TimeoutError: timed out", "dns": "gaierror: [Errno -3] Temporary failure in name resolution",
-        "resolvers": ["127.0.0.1"]}
+GOOD = {"proxy": "hangar-gateway.hangar.svc", "proxy_resolves": ["10.8.0.12"], "allowed_connect": 200,
+        "allowed_https": 200, "denied_connect": 403, "direct": "TimeoutError: timed out",
+        "dns": "gaierror: [Errno -3] Temporary failure in name resolution", "resolvers": ["127.0.0.1"]}
 
 
 @pytest.mark.parametrize("change,why", [
     ({}, None),
     ({"proxy": None}, "no HTTPS_PROXY"),
+    ({"proxy_resolves": "gaierror: no"}, "hostAliases"),
     ({"allowed_connect": 403}, "answered 403 for the allowed"),
     ({"allowed_https": "URLError: x"}, "https://example.com/ through the proxy"),
     ({"denied_connect": 200}, "not 403"),
