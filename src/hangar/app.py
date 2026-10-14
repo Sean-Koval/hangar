@@ -342,6 +342,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def _rate_limited(_: Request, exc: RateLimited):
         return JSONResponse({"error": str(exc)}, status_code=429,
                             headers={"Retry-After": str(max(1, math.ceil(exc.retry_after)))})
+
+    from hangar.fairness import CapReached  # --- scale: a person at one of their caps
+
+    @app.exception_handler(CapReached)
+    async def _cap_reached(_: Request, exc: CapReached):
+        return JSONResponse({"error": str(exc)}, status_code=429)
     # --- workstream F: with HANGAR_GATEWAY_PORT=0 the git gateway shares the main port (grant tokens only).
     if h.settings.gateway_url and not h.settings.gateway_port:
         for i, r in enumerate(h.fleet.gateway.routes()):

@@ -6,6 +6,7 @@ kubernetes client and the e2b SDK all block), so thread-pool and event-loop pres
 from __future__ import annotations
 
 import asyncio
+import collections
 import subprocess
 import time
 
@@ -20,13 +21,15 @@ class ThreadedFake(FakeProvider):
         super().__init__()
         self.latency = latency_ms / 1000
         self.every_box: list = []
+        self.calls: collections.Counter[str] = collections.Counter()  # provider calls by kind (team_load.py)
 
-    def _wait(self) -> None:
+    def _wait(self, kind: str) -> None:
+        self.calls[kind] += 1
         if self.latency:
             time.sleep(self.latency)
 
     def _exec(self, sandbox, command: str, cwd: str | None) -> ExecResult:
-        self._wait()
+        self._wait("exec")
         box = self.boxes[sandbox.provider_ref]
         cmd = command.replace("/home/agent", f"{box}/home/agent").replace("/workspace", f"{box}/workspace") \
             .replace("/tmp/", f"{box}/tmp/")
@@ -44,7 +47,7 @@ class ThreadedFake(FakeProvider):
         parent = super().read_file
 
         def read():
-            self._wait()
+            self._wait("read_file")
             return asyncio.run(parent(sandbox, path, limit))  # the parent's body is synchronous
 
         return await asyncio.to_thread(read)
@@ -53,14 +56,14 @@ class ThreadedFake(FakeProvider):
         parent = super().write_file
 
         def write():
-            self._wait()
+            self._wait("write_file")
             asyncio.run(parent(sandbox, path, data, mode))  # the parent's body is synchronous
 
         await asyncio.to_thread(write)
 
     async def create(self, sandbox, image, spec=None):
         parent = super().create
-        await asyncio.to_thread(lambda: (self._wait(), asyncio.run(parent(sandbox, image, spec))))
+        await asyncio.to_thread(lambda: (self._wait("create"), asyncio.run(parent(sandbox, image, spec))))
         self.every_box.append(self.boxes[sandbox.provider_ref])
 
     def kill_all(self) -> None:

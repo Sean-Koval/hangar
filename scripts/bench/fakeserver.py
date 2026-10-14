@@ -155,6 +155,7 @@ def main() -> None:
     app = create_app(s)
     lag: list[float] = []
     cpu0 = os.times()
+    since = [time.monotonic()]
 
     beat = [time.perf_counter()]
     blocked: collections.Counter[str] = collections.Counter()
@@ -197,12 +198,16 @@ def main() -> None:
                                         if ln.startswith("VmRSS"))) / 1024, 1),
                "max_rss_mb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1),
                "cpu_s": round(t.user + t.system - cpu0.user - cpu0.system, 2), "sqlite": sql.report()}
+        span = max(1e-3, time.monotonic() - since[0])
+        out["provider_calls"] = {k: {"n": n, "per_s": round(n / span, 2)} for k, n in sorted(fake.calls.items())}
         if a.watchdog_ms:
             out["blocked_stacks"] = [{"samples": n, "stack": k.splitlines()} for k, n in blocked.most_common(8)]
         if reset:
             lag.clear()
             blocked.clear()
             sql.reset()
+            fake.calls.clear()
+            since[0] = time.monotonic()
         return out
 
     threading.Thread(target=watchdog, args=(threading.get_ident(),), daemon=True).start()

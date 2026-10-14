@@ -44,6 +44,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
 from hangar.auth import Principal, bearer_from_headers
+from hangar.fairness import CapReached  # --- scale
 from hangar.fleet import ACTIVE, FleetError
 from hangar.frontdoor import Buckets
 from hangar.models import Sandbox, SandboxState, now
@@ -447,6 +448,8 @@ class E2BService:
                 if "max_sandboxes" in str(e):
                     raise E2BError(429, f"hangar is at its sandbox limit: {e}") from e
                 raise E2BError(500, f"Failed to create sandbox: {e}") from e
+            except CapReached as e:  # --- scale: the person's own cap (HANGAR_PERSON_MAX_SANDBOXES)
+                raise E2BError(429, str(e)) from e
             try:
                 rec: dict[str, Any] = {"owner": p.id, "nonce": secrets.token_hex(16), "template": template}
                 if env_vars:

@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 from hangar import cache, exchange, verifyloop  # --- overnight/cache; verifyloop: --- overnight/autofix
+from hangar import fairness as fairness  # --- scale
 from hangar.events import total_usage
 from hangar.fleet import _clip_tail
 from hangar.harnesses import Harness
@@ -96,6 +97,7 @@ async def fork_session(svc: SessionService, ref: str, n: int, requester: str, ha
         raise SessionError(f"session {parent.name} is busy ({parent.state}); fork it when the turn has finished")
     if message is not None and not message.strip():
         raise SessionError("message is empty")
+    fairness.check_sessions(svc, parent.owner, adding=n)  # --- scale: every child starts a sandbox
     svc._busy.add(parent.id)  # no turn, suspend or open may start on the parent while we copy it
     try:
         children = await _fork(svc, parent, n, requester, harness=harness, names=names)

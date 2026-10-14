@@ -62,9 +62,10 @@ def check_sandboxes(settings: Settings, active: Iterable[Sandbox], actor: str) -
                          "first, or ask the operator to raise HANGAR_PERSON_MAX_SANDBOXES")
 
 
-def check_sessions(svc: SessionService, owner: str, starting: Session | None = None) -> None:
-    """Refuse a new or resumed session past HANGAR_PERSON_MAX_SESSIONS live ones (each holds a sandbox). Sessions
-    with a boot or turn already on its way count too, so two sends at once can't both slip under the cap."""
+def check_sessions(svc: SessionService, owner: str, starting: Session | None = None, adding: int = 1) -> None:
+    """Refuse `adding` new or resumed sessions (`starting`, when it is one) past HANGAR_PERSON_MAX_SESSIONS live ones:
+    each holds a sandbox. Sessions with a boot or turn already on its way count too, so two sends at once can't both
+    slip under the cap."""
     cap = svc.settings.person_max_sessions
     who = person_of(owner)
     if cap <= 0 or who is None:
@@ -72,7 +73,7 @@ def check_sessions(svc: SessionService, owner: str, starting: Session | None = N
     live = sum(1 for s in svc._sessions.values()
                if (s.state in SESSION_LIVE or s.id in svc._busy) and (starting is None or s.id != starting.id)
                and person_of(s.owner) == who)
-    if live >= cap:
+    if live + adding > cap:
         raise CapReached(f"{who} already has {live} sessions running (the limit per person is {cap}); suspend one "
                          "first (suspend_session), or ask the operator to raise HANGAR_PERSON_MAX_SESSIONS")
 
