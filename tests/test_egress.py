@@ -603,6 +603,23 @@ def test_the_manifests_give_proxied_pods_the_gateway_and_the_proxy_and_nothing_e
     assert {3128, 8788} <= ports and 53 not in ports
 
 
+# ============================================================================ review: the interface #94 uses
+def test_may_widen_judges_the_principal_it_is_given_as_the_agreed_interface_says():
+    """#94 (envrequests.decide) passes the caller's Principal (None in process); the agreed stub decides on that
+    argument (role or admin scope), not on whatever principal the context holds."""
+    from hangar import identity
+
+    spec_ = spec(mode="allowlist")
+    member, admin_role = SimpleNamespace(role="member", admin=False), SimpleNamespace(role="admin", admin=False)
+    tok = identity.current.set(None)  # the context says in-process: only the argument may decide
+    try:
+        assert not egressapi.may_widen(member, spec_)
+        assert egressapi.may_widen(admin_role, spec_) and egressapi.may_widen(None, spec_)
+        assert egressapi.may_widen(SimpleNamespace(role="member", admin=True), spec_)
+    finally:
+        identity.current.reset(tok)
+
+
 # ============================================================================ review: an agent trying to get out
 def test_ipv6_forms_that_carry_a_private_ipv4_address_are_not_public():
     """NAT64 (64:ff9b::/96), IPv4-compatible (::/96) and SIIT (::ffff:0:0:0/96) addresses reach the IPv4 address

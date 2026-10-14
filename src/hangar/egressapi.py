@@ -82,12 +82,11 @@ def check(spec: EnvSpec, host: str, port: int | None = None, *, sandbox: Sandbox
     return Verdict(allowed=rule is not None, mode=pol.mode, rule=rule.text if rule else None)
 
 
-def may_widen(actor: str, spec: EnvSpec) -> bool:
-    """Whether `actor` may approve a host for the whole environment rather than one session: an admin. (Environments
-    record no owner yet.)"""
-    import hangar.identity as identity
-
-    return identity.is_admin()
+def may_widen(actor: Any, spec: EnvSpec | None) -> bool:
+    """Whether `actor` (an auth Principal, or None for in-process callers, as the agreed interface says) may approve
+    a host for the whole environment rather than one session: an admin, by role or token. Decided on the argument,
+    not the context (review). Environments record no owner yet."""
+    return actor is None or getattr(actor, "role", None) == "admin" or bool(getattr(actor, "admin", False))
 
 
 def on_decided(req: EgressRequest, fleet: Fleet) -> str | None:
