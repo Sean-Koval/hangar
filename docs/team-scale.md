@@ -28,12 +28,13 @@ page covers what keeps that responsive and fair, how to size GKE for it, and wha
 | `HANGAR_K8S_CPU_REQUEST_FRACTION` | 0.5 | Share of an environment's `cpus` a sandbox pod requests; the limit stays `cpus`. 1 = Guaranteed QoS, as before |
 
 A cap reached answers 429 over REST and the E2B API, and an error naming the cap over MCP. Every cap is per
-**person**: a token's name, or for an OAuth connector (claude.ai, Cursor) the name of the admin token that approved
-it, so a token's MCP calls, REST calls and the connectors it approved count together (`fairness.person_of`, the one
-place to change when hangar gets a first-class person). Hangar's own actors (sessions' and jobs' sandboxes, the
-reaper, schedules) are not people. For the caps to be per engineer, **give each engineer their own token**
-(`hangar token create <name> --scope mcp`); everyone on one token, or approving connectors with one admin token, is
-one person.
+**person**, the person hangar records on each token and on the work it starts ([security.md](security.md#people)):
+all of a person's tokens, MCP and REST calls, and the OAuth connectors they approved count together, and the
+admin's existing tokens all count as `owner`. `fairness.person_of` is the one place that maps who acted to a person;
+records from before people fall back to the token's name. Hangar's own actors (sessions' and jobs' sandboxes, the
+reaper, schedules) are not people. For the caps to be per engineer, **add each engineer as a person**
+(`hangar person add <name>`, which prints their login token); jobs triggered from GitHub or Slack have no person
+yet and are capped per GitHub login or Slack user.
 
 The caps sit beside the per-caller limits that already exist: `HANGAR_JOB_MAX_ACTIVE_PER_OWNER` (unfinished jobs per
 caller, 10), the job rate limits, and `HANGAR_E2B_MAX_SANDBOXES_PER_OWNER`.
