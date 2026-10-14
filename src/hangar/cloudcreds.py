@@ -17,10 +17,12 @@ sandbox runs. The cloud exchanges it for its own short-lived credentials:
   `AWS_ROLE_ARN` / `AWS_WEB_IDENTITY_TOKEN_FILE` / `AWS_ROLE_SESSION_NAME` variables do the exchange and re-read the
   file.
 
-Claims: `sub` is `hangar:env:<environment>` (a stable subject to grant on), plus `environment`, `repo`, `person`,
-`sandbox`, `session` and `job` for attribute conditions. A token is readable by the agent: it is a credential, but
-one that dies within the hour, works only for the audience it names, only grants what its subject is granted, and
-stops being renewed when the sandbox stops.
+Claims: `sub` is `hangar:env:<environment>`, where the environment is the one whose own file sets `cloud:` (an
+admin's: subject_env), a stable subject to grant on; `environment` is the same name and `sandbox_environment` the
+sandbox's own. `person` comes from who started the sandbox. `repo`, `sandbox`, `session` and `job` describe the
+sandbox but are whatever its starter asked for, so they're for logs, not for grants. A token is readable by the
+agent: it is a credential, but one that dies within the hour, works only for the audience it names, only grants
+what its subject is granted, and stops being renewed when the sandbox stops.
 """
 
 from __future__ import annotations
@@ -49,6 +51,9 @@ log = logging.getLogger("hangar.cloud")
 
 VAULT_KEY = "oidc:signing-keys"
 MAX_KEYS = 4  # published at once (GCP takes up to 8 uploaded keys)
+# --- review: how long a retired key stays published: the longest a token it signed can live (lifetime_minutes is at
+# most 720, iat is 30 s back), so a superseded key stops verifying anything new once its tokens are gone.
+MAX_TOKEN_SECONDS = 720 * 60 + 60
 REFRESH_EVERY = 300.0  # seconds between passes of the refresh loop
 TOKEN_DIR = ".hangar/cloud"
 _POOL = re.compile(r"^(?://iam\.googleapis\.com/)?(projects/\d+/locations/global/workloadIdentityPools/[a-z0-9-]{4,32}"
@@ -137,6 +142,7 @@ class Issuer:
         self.settings = fleet.settings
         self._keys: list[dict[str, Any]] | None = None
         self._task: asyncio.Task | None = None
+        self._public: dict[str, dict[str, Any]] = {}  # kid -> its JWK (public numbers), computed once
 
     @property
     def url(self) -> str:
@@ -144,7 +150,7 @@ class Issuer:
 
     # ------------------------------------------------------------------ keys
     def keys(self) -> list[dict[str, Any]]:
-        """[{kid, pem, created}], newest first; one is made the first time it's needed."""
+        """[{kid, pem, created, retired?}], newest first; one is made the first time it's needed."""
         if self._keys is None:
             raw = self.fleet.broker.vault.get(VAULT_KEY)
             self._keys = json.loads(raw) if raw else []
@@ -153,10 +159,15 @@ class Issuer:
                 self._save()
         return self._keys
 
-    def rotate(self) -> str:
-        """A new signing key; the older ones stay published (up to MAX_KEYS) so tokens they signed still verify.
-        Returns the new kid. Re-upload the JWKS where the cloud doesn't fetch it (GCP with --jwk-json-path)."""
-        self._keys = [self._new_key(), *self.keys()][:MAX_KEYS]
+    def rotate(self, drop_old: bool = False) -> str:
+        """A new signing key. The older ones stay published (up to MAX_KEYS) for MAX_TOKEN_SECONDS after they're
+        superseded, so tokens they signed still verify, and then go (review: before, a key stayed published
+        through three more rotations, however it was retired). `drop_old` unpublishes them now: for a key that
+        leaked, at the price of the tokens it signed. Returns the new kid. Re-upload the JWKS where the cloud
+        doesn't fetch it (GCP with --jwk-json-path)."""
+        now_ = time.time()
+        old = [] if drop_old else [{**k, "retired": k.get("retired") or now_} for k in self.keys()]
+        self._keys = [self._new_key(), *old][:MAX_KEYS]
         self._save()
         return self._keys[0]["kid"]
 
@@ -174,27 +185,53 @@ class Issuer:
         self.fleet.broker.vault.put(VAULT_KEY, json.dumps(self._keys))
 
     def jwks(self) -> dict[str, Any]:
-        """The public keys (never a private part)."""
+        """The public keys (never a private part): the signing key and retired keys whose tokens may still be
+        valid. Each key's public part is computed once (review: the endpoint is anonymous, and parsing an RSA
+        private key costs milliseconds of the event loop)."""
         from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
+        now_ = time.time()
         out = []
-        for k in self.keys():
-            pub = load_pem_private_key(k["pem"].encode(), password=None).public_key().public_numbers()  # type: ignore[union-attr]
-            out.append({"kty": "RSA", "use": "sig", "alg": "RS256", "kid": k["kid"],
-                        "n": _b64url(pub.n.to_bytes((pub.n.bit_length() + 7) // 8, "big")),
-                        "e": _b64url(pub.e.to_bytes((pub.e.bit_length() + 7) // 8, "big"))})
+        for i, k in enumerate(self.keys()):
+            if i and k.get("retired") and now_ - k["retired"] > MAX_TOKEN_SECONDS:
+                continue
+            if (jwk := self._public.get(k["kid"])) is None:
+                pub = load_pem_private_key(k["pem"].encode(), password=None).public_key().public_numbers()  # type: ignore[union-attr]
+                jwk = self._public[k["kid"]] = {
+                    "kty": "RSA", "use": "sig", "alg": "RS256", "kid": k["kid"],
+                    "n": _b64url(pub.n.to_bytes((pub.n.bit_length() + 7) // 8, "big")),
+                    "e": _b64url(pub.e.to_bytes((pub.e.bit_length() + 7) // 8, "big"))}
+            out.append(jwk)
         return {"keys": out}
+
+    def subject_env(self, environment: str) -> str:
+        """The environment a sandbox's token speaks for: the nearest one in its `extends` chain whose own file sets
+        `cloud:` (review). `cloud:` needs an admin, but a member may create any unused environment name and extend
+        one that has it; naming the sandbox's own environment let a member's `deploy` take the grants meant for an
+        admin's `deploy`. Falls back to the environment itself for a spec that isn't in the catalog."""
+        cat = self.fleet.catalog
+        name: str | None = environment
+        seen: set[str] = set()
+        while name and name not in seen and name in cat.names():
+            seen.add(name)
+            data = cat.raw(name)
+            if isinstance(data.get("cloud"), dict) and data["cloud"]:
+                return name
+            name = data.get("extends")
+        return environment
 
     def discovery(self) -> dict[str, Any]:
         """/.well-known/openid-configuration: just what a relying party needs to verify hangar's ID tokens."""
         return {"issuer": self.url, "jwks_uri": f"{self.url}/oidc/jwks.json", "response_types_supported": ["id_token"],
                 "subject_types_supported": ["public"], "id_token_signing_alg_values_supported": ["RS256"],
-                "claims_supported": ["sub", "aud", "exp", "iat", "iss", "jti", "environment", "repo", "person",
-                                     "sandbox", "session", "job"]}
+                "claims_supported": ["sub", "aud", "exp", "iat", "iss", "jti", "environment", "sandbox_environment",
+                                     "repo", "person", "sandbox", "session", "job"]}
 
     # ------------------------------------------------------------------ tokens
-    def mint(self, sb: Sandbox, audience: str, lifetime_minutes: int, now_: float | None = None) -> tuple[str, float]:
-        """An RS256 ID token for a sandbox and one audience. Returns (token, expiry)."""
+    def mint(self, sb: Sandbox, audience: str, lifetime_minutes: int, now_: float | None = None,
+             env: str | None = None) -> tuple[str, float]:
+        """An RS256 ID token for a sandbox and one audience, speaking for `env` (subject_env; default the
+        sandbox's environment). Returns (token, expiry)."""
         from cryptography.hazmat.primitives import hashes
         from cryptography.hazmat.primitives.asymmetric import padding
         from cryptography.hazmat.primitives.serialization import load_pem_private_key
@@ -204,8 +241,10 @@ class Issuer:
         k = self.keys()[0]
         t = int(now_ if now_ is not None else time.time())
         exp = t + lifetime_minutes * 60
-        claims = {"iss": self.url, "sub": f"hangar:env:{sb.environment}", "aud": audience, "iat": t - 30,
-                  "nbf": t - 30, "exp": exp, "jti": secrets.token_hex(12), "environment": sb.environment,
+        env = env or sb.environment
+        claims = {"iss": self.url, "sub": f"hangar:env:{env}", "aud": audience, "iat": t - 30,
+                  "nbf": t - 30, "exp": exp, "jti": secrets.token_hex(12), "environment": env,
+                  "sandbox_environment": sb.environment,
                   "repo": repo_key(sb.repo) or "", "person": sb.person or "", "sandbox": sb.id,
                   "session": sb.labels.get("hangar.session", ""), "job": sb.labels.get("hangar.job", "")}
         head = _b64url(json.dumps({"alg": "RS256", "typ": "JWT", "kid": k["kid"]}, separators=(",", ":")).encode())
@@ -258,7 +297,7 @@ class Issuer:
                                 (cloud.aws, cloud.aws.audience if cloud.aws else "", aws_tok)):
             if want is None:
                 continue
-            tok, exp = self.mint(sb, aud, cloud.lifetime_minutes)
+            tok, exp = self.mint(sb, aud, cloud.lifetime_minutes, env=self.subject_env(sb.environment))
             # write then rename, so an SDK reading the file mid-refresh never sees half a token
             await prov.write_file(sb, f"{path}.new", tok.encode(), mode=0o600)
             res = await prov.exec(sb, f"mv -f {shlex.quote(path + '.new')} {shlex.quote(path)}", timeout=30)
@@ -347,7 +386,7 @@ def mount(app: Any, h: Any, admin: Any) -> None:
         return issuer.jwks()
 
     @app.post("/api/cloud/rotate")
-    async def oidc_rotate(who: str = admin):
-        kid = issuer.rotate()
-        h.fleet.audit(who, "cloud.rotate", kid)
+    async def oidc_rotate(drop_old: bool = False, who: str = admin):
+        kid = issuer.rotate(drop_old=drop_old)  # --- review: drop_old unpublishes the old keys now (a leak)
+        h.fleet.audit(who, "cloud.rotate", kid, drop_old=drop_old)
         return {"kid": kid, "jwks": issuer.jwks()}

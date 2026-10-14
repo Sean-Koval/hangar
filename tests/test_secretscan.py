@@ -360,5 +360,5 @@ def test_values_of_12_to_15_characters_get_every_encoding_the_docs_promise():
 def test_no_test_file_holds_a_whole_secret_shaped_token():
     """GitHub's push protection refuses them, and hangar's own scan would stop a job that edits the file."""
     here = Path(__file__).parent
-    for name in ("test_secretscan.py", "test_egress.py"):
+    for name in ("test_secretscan.py", "test_egress.py", "test_cloudcreds.py"):
         assert secretscan.find((here / name).read_text()) == [], name

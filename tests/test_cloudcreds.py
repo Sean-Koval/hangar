@@ -183,3 +183,55 @@ def test_discovery_and_jwks_are_public_and_rotation_is_admin_only(settings):
         assert c.post("/api/cloud/rotate").status_code in (401, 403)
         r = c.post("/api/cloud/rotate", headers={"Authorization": "Bearer t0ken"})
         assert r.status_code == 200 and len(c.get("/oidc/jwks.json").json()["keys"]) == 2
+        r = c.post("/api/cloud/rotate", params={"drop_old": "true"}, headers={"Authorization": "Bearer t0ken"})
+        assert r.status_code == 200 and len(c.get("/oidc/jwks.json").json()["keys"]) == 1
+
+
+# ============================================================================ review
+def test_a_members_environment_cant_take_the_subject_of_another(fleet, tmp_path):
+    """`cloud:` needs an admin, but a member may create any unused environment name and `extends` an environment
+    that has `cloud:`. With `sub` = the sandbox's environment name, a member's `deploy` (extending `ci`) got the
+    grants meant for an admin's `deploy` (set up before it, or after it was removed). The subject names the
+    environment that sets `cloud:` itself, which only an admin can write."""
+    fleet.catalog.save_dir = tmp_path
+    fleet.settings.public_url = "https://hangar.example.com"
+    fleet.catalog.add({"name": "ci", "harnesses": ["claude-code"], "cloud": {"gcp": {"provider": PROVIDER}}})
+    fleet.catalog.add({"name": "deploy", "extends": "ci", "cloud": {}})  # `{}` passes the admin check
+    fleet.catalog.add({"name": "own", "extends": "ci",
+                       "cloud": {"gcp": {"provider": PROVIDER}, "lifetime_minutes": 10}})
+    sb = Sandbox(name="s", environment="deploy", provider="docker", person="bob", state=SandboxState.RUNNING)
+    c = verify(fleet.cloud.mint(sb, "x", 5, env=fleet.cloud.subject_env("deploy"))[0], fleet.cloud.jwks())
+    assert c["sub"] == "hangar:env:ci" and c["environment"] == "ci" and c["sandbox_environment"] == "deploy"
+    assert fleet.cloud.subject_env("own") == "own"  # an environment that sets cloud: itself is its own subject
+
+
+def test_rotation_retires_old_keys_once_no_token_they_signed_can_be_valid(fleet):
+    """Old keys stay published only as long as a token they signed can live (lifetime_minutes is at most 720), and
+    `drop_old` (a leaked key) unpublishes them at once; before, a stolen key kept verifying through three more
+    rotations."""
+    iss = fleet.cloud
+    first = iss.keys()[0]["kid"]
+    second = iss.rotate()
+    assert {k["kid"] for k in iss.jwks()["keys"]} == {first, second}
+    for k in iss._keys:
+        if k["kid"] == first:
+            k["retired"] = time.time() - cloudcreds.MAX_TOKEN_SECONDS - 1
+    assert [k["kid"] for k in iss.jwks()["keys"]] == [second]
+    third = iss.rotate(drop_old=True)
+    assert [k["kid"] for k in iss.jwks()["keys"]] == [third]
+    fleet.cloud._keys = None
+    assert [k["kid"] for k in fleet.cloud.jwks()["keys"]] == [third]  # what the vault holds too
+
+
+def test_the_public_jwks_doesnt_parse_private_keys_on_every_request(fleet, monkeypatch):
+    """/oidc/jwks.json needs no token, and loading an RSA private key costs milliseconds of the event loop: an
+    anonymous loop on it must not do that per request."""
+    import cryptography.hazmat.primitives.serialization as ser
+
+    fleet.cloud.jwks()
+    calls = []
+    real = ser.load_pem_private_key
+    monkeypatch.setattr(ser, "load_pem_private_key", lambda *a, **k: calls.append(1) or real(*a, **k))
+    for _ in range(20):
+        fleet.cloud.jwks()
+    assert calls == []

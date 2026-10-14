@@ -246,12 +246,13 @@ cloud:
 Hangar is an OIDC issuer (`cloudcreds.py`). Each sandbox of the environment gets an ID token, signed RS256 with a key kept in hangar's vault, with these claims:
 
 - `iss`: `HANGAR_OIDC_ISSUER`, or `HANGAR_PUBLIC_URL`;
-- `sub`: `hangar:env:<environment>`;
+- `sub`: `hangar:env:<environment>`, where the environment is the one whose own file sets `cloud:`. Only an admin can write that, so a member's environment that `extends` it speaks for it, and can't take another's subject by taking its name (before an admin creates it, or after one is removed);
 - `aud`: the cloud's audience;
 - `exp`: `lifetime_minutes` from now;
-- for attribute conditions: `environment`, `repo`, `person`, `sandbox`, `session` and `job`.
+- `environment` (the same name) and `person` (who started the sandbox): hangar vouches for both, so grant on them;
+- `sandbox_environment`, `repo`, `sandbox`, `session` and `job`: they describe the sandbox, but whoever starts one picks its repo and environment, so **don't grant on them**. A condition on `repo` lets any member who can start a sandbox with `cloud:` name that repo.
 
-The token is written to `~/.hangar/cloud/` (0600). While the sandbox runs, hangar replaces it once less than half its life is left, checking every 5 minutes. It is never renewed after the sandbox stops, and each issuance is audited as `cloud.token`. Discovery is public at `/.well-known/openid-configuration`, and the public keys at `/oidc/jwks.json`. `POST /api/cloud/rotate` (admin) adds a new signing key; the last 4 stay published, so tokens already issued still verify.
+The token is written to `~/.hangar/cloud/` (0600). While the sandbox runs, hangar replaces it once less than half its life is left, checking every 5 minutes. It is never renewed after the sandbox stops, and each issuance is audited as `cloud.token`. Discovery is public at `/.well-known/openid-configuration`, and the public keys at `/oidc/jwks.json`. `POST /api/cloud/rotate` (admin) adds a new signing key and signs with it at once. The keys it replaces stay published for 12 hours (the longest a token can live), so tokens already issued still verify, and then drop out of the JWKS. For a key that leaked, `POST /api/cloud/rotate?drop_old=true` unpublishes the old keys now, and the tokens they signed stop working. Where the JWKS is uploaded (GCP's `--jwk-json-path`), upload it again right after rotating: tokens signed with the new key fail until Google has it. Rotation isn't scheduled; rotate on your own calendar.
 
 **GCP (Workload Identity Federation).** The sandbox gets the `external_account` credential configuration that `gcloud iam workload-identity-pools create-cred-config --credential-source-file=… --credential-source-type=text` produces. `GOOGLE_APPLICATION_CREDENTIALS` and `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE` point client libraries and gcloud at it. google-auth reads the token file again on every refresh, so a renewed token is picked up. Set up the pool once:
 
@@ -260,7 +261,7 @@ curl -s https://hangar.example.com/oidc/jwks.json > hangar-jwks.json   # or let 
 gcloud iam workload-identity-pools create hangar --location=global
 gcloud iam workload-identity-pools providers create-oidc hangar --location=global --workload-identity-pool=hangar \
   --issuer-uri=https://hangar.example.com --jwk-json-path=hangar-jwks.json \
-  --attribute-mapping='google.subject=assertion.sub,attribute.environment=assertion.environment,attribute.repo=assertion.repo' \
+  --attribute-mapping='google.subject=assertion.sub,attribute.environment=assertion.environment,attribute.person=assertion.person' \
   --attribute-condition='assertion.environment in ["infra"]'
 gcloud iam service-accounts add-iam-policy-binding ci-agent@my-proj.iam.gserviceaccount.com \
   --role=roles/iam.workloadIdentityUser \
@@ -271,7 +272,7 @@ gcloud iam service-accounts add-iam-policy-binding ci-agent@my-proj.iam.gservice
 - **The audience** is the provider's default, `https://iam.googleapis.com/projects/…/providers/…`. Set `gcp.audience` if the provider was created with `--allowed-audiences`.
 - **Tokens:** Google accepts RS256 tokens whose `exp` is at most 24 hours after `iat`.
 
-**AWS (`AssumeRoleWithWebIdentity`).** The sandbox gets `AWS_ROLE_ARN`, `AWS_WEB_IDENTITY_TOKEN_FILE` and `AWS_ROLE_SESSION_NAME` (`hangar-<sandbox id>`), which every AWS SDK and the CLI use to assume the role from the token file and re-read it. The token's `aud` is `aws.audience` (`sts.amazonaws.com`). Create an IAM OIDC identity provider for the issuer URL with that audience as its client id. The role's trust policy matches the condition key `<issuer without https://>:sub` against `hangar:env:<environment>`. **AWS fetches the discovery document and JWKS itself**, so the issuer URL must be publicly reachable over HTTPS. If hangar sits behind IAP, publish the two documents somewhere public (`/.well-known/openid-configuration` with `jwks_uri` pointing at the JWKS file) and set `HANGAR_OIDC_ISSUER` to that URL.
+**AWS (`AssumeRoleWithWebIdentity`).** The sandbox gets `AWS_ROLE_ARN`, `AWS_WEB_IDENTITY_TOKEN_FILE` and `AWS_ROLE_SESSION_NAME` (`hangar-<sandbox id>`), which every AWS SDK and the CLI use to assume the role from the token file and re-read it. The token's `aud` is `aws.audience` (`sts.amazonaws.com`). Create an IAM OIDC identity provider for the issuer URL with that audience as its client id. The role's trust policy **must** match the condition key `<issuer without https://>:sub` against `hangar:env:<environment>`, as well as `:aud`. Every environment's token has the same `aud`, and `AWS_ROLE_ARN` is just a variable the agent can change, so a trust policy that checks only `aud` lets any hangar sandbox with AWS credentials assume the role. For the same reason, on GCP grant to `principal://…/subject/hangar:env:<environment>` (or an attribute condition on `environment`), never to the whole pool (`principalSet://…/*`). **AWS fetches the discovery document and JWKS itself**, so the issuer URL must be publicly reachable over HTTPS. If hangar sits behind IAP, publish the two documents somewhere public (`/.well-known/openid-configuration` with `jwks_uri` pointing at the JWKS file) and set `HANGAR_OIDC_ISSUER` to that URL.
 
 **Egress.** In `allowlist` and `none` environments the token exchange is let through automatically: `sts.googleapis.com` and `iamcredentials.googleapis.com`, `sts.amazonaws.com` and `sts.<region>.amazonaws.com`.
 
@@ -279,7 +280,7 @@ gcloud iam service-accounts add-iam-policy-binding ci-agent@my-proj.iam.gservice
 
 - The agent can read the token and use it, which is the point, but only:
   - for the audience it names;
-  - for what the cloud grants its subject, which you can narrow per environment and repo with attribute conditions;
+  - for what the cloud grants its subject, which you can narrow per environment and person (not per repo: see the claims above);
   - for at most `lifetime_minutes` after the sandbox stops.
 - An access token the cloud already issued from it lives its own lifetime (GCP's default is an hour).
 - Don't give a sandbox a role you wouldn't give the agent.
