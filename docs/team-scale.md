@@ -60,23 +60,24 @@ uv run python scripts/bench/team_load.py --out bench/results/<date>-team-load.js
 uv run python scripts/bench/report.py <before.json> <after.json>
 ```
 
-Results on a shared 2-vCPU VM (`bench/results/2026-10-14-team-load-*.json`). The agents run on the same two vCPUs as
-the server, and other work shared the machine (load average in the files), so treat the after numbers as upper
-bounds: two after runs at host load ~2 and ~9 are both shown.
+Results on a shared 2-vCPU VM (`bench/results/2026-10-14-team-load-*.json`). The fake agents (and hangar's turn
+driver, which on a real provider runs in the sandbox) run on the same two vCPUs as the server, and other work shared
+the machine, so the after numbers are upper bounds; a second after run, under a host load of ~9, shows how they
+degrade. The request rates are the same in every column; the after runs finish the same work 7–9× sooner.
 
-| 6 × 10 sessions, 20k records of history | Before (main) | After (load ~2) | After (load ~9) |
+| 6 × 10 sessions, 20k records of history | Before (main, host load ~2) | After (host load ~1–4) | After (host load ~9) |
 | --- | --- | --- | --- |
-| Event-loop lag p50 / p95 / max | 1,296 / 5,221 / 8,326 ms | 1.4 / 85 / 527 ms | 4 / 263 / 765 ms |
-| `get_session` (MCP) p50 / p95 | 3,364 / 5,914 ms | 54 / 395 ms | 214 / 807 ms |
-| `list_sandboxes` (MCP) p50 / p95 | 13,363 / 17,034 ms | 65 / 485 ms | 434 / 1,755 ms |
-| `exec` by name (MCP) p50 / p95 | 9,249 / 15,395 ms | 25 / 647 ms | 577 / 1,693 ms |
-| `GET /api/sandboxes` p50 / p95 | 2,369 / 5,633 ms | 59 / 223 ms | 159 / 438 ms |
-| Create a sandbox (REST) p50 | 21,213 ms | — | 1,847 ms (n=2) |
-| An 8 s agent turn, send to done, p50 / p95 | 44.0 / 65.8 s | 8.8 / 11.0 s | 9.5 / 11.5 s |
-| Job queue wait p50 / p95 (12 jobs) | 83 / 261 s (4 slots) | 0.02 / 0.08 s (24 slots) | 0.02 / 0.11 s |
-| SQLite time on the event loop | 310 s of a 354 s run | 5.9 s of 39 s | 8.6 s of 49 s |
-| Server CPU / peak RSS | 330 CPU-s / 1,031 MB | 8 CPU-s / 261 MB | 8.3 CPU-s / 264 MB |
-| Wall time for the same work | 354 s | 39 s | 49 s |
+| Event-loop lag p50 / p95 / max | 1,296 / 5,221 / 8,326 ms | 1.0 / 70 / 258 ms | 4 / 263 / 765 ms |
+| `get_session` (MCP) p50 / p95 | 3,364 / 5,914 ms | 42 / 305 ms | 214 / 807 ms |
+| `list_sandboxes` (MCP) p50 / p95 | 13,363 / 17,034 ms | 60 / 553 ms | 434 / 1,755 ms |
+| `exec` by name (MCP) p50 / p95 | 9,249 / 15,395 ms | 63 / 526 ms | 577 / 1,693 ms |
+| `GET /api/sandboxes` p50 / p95 | 2,369 / 5,633 ms | 68 / 247 ms | 159 / 438 ms |
+| Create a sandbox (REST) p50 | 21,213 ms (n=23) | 32 ms (n=1) | 1,847 ms (n=2) |
+| An 8 s agent turn, send to done, p50 / p95 | 44.0 / 65.8 s | 8.6 / 10.8 s | 9.5 / 11.5 s |
+| Job queue wait p50 / p95 (12 jobs) | 83 / 261 s (4 slots) | 0.01 / 0.06 s (24 slots) | 0.02 / 0.11 s |
+| SQLite time on the event loop | 310 s of a 354 s run | 4.8 s of 38 s | 8.6 s of 49 s |
+| Server CPU / peak RSS | 330 CPU-s / 1,031 MB | 7.7 CPU-s / 258 MB | 8.3 CPU-s / 264 MB |
+| Wall time for the same work | 354 s | 38 s | 49 s |
 
 Before, the server spent 87% of the run parsing sandbox records on the event loop: `fleet.list()` behind every
 listing, `fleet.get(name)` behind every MCP call that names a sandbox, two scans per create. Every other request
@@ -86,7 +87,7 @@ What remains, by SQLite time on the loop: `get` of one sandbox by id (sessions c
 each, 5k calls a run), `put` of sessions (every state change writes the whole record), and the token lookup in
 `auth.principal`, which decodes every API token on every request (~1 ms; see follow-ups).
 
-**Provider calls.** At 60 sessions and 12 jobs the fake saw ~30–50 `exec`s a second, plus ~10 file reads and writes:
+**Provider calls.** At 60 sessions and 12–24 jobs the fake saw ~30–60 `exec`s a second, plus 5–15 file reads and as many writes:
 turn-status long-polls, the activity watch, checkpoints, setup. On GKE each of those is a pods/exec through the API
 server unless hangar-envd answers it, so **envd must be up at team scale** (`HANGAR_ENVD=auto`, the default).
 

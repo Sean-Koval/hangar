@@ -1,0 +1,392 @@
+{
+  "meta": {
+    "bench": "team-load",
+    "git": "b133d59",
+    "started": "2026-10-14T10:31:37",
+    "seconds": 43.0,
+    "host": "vm",
+    "cpus": 2,
+    "python": "3.12.3",
+    "provider": "fake",
+    "actors": 6,
+    "sessions": 10,
+    "turns": 2,
+    "jobs": 2,
+    "history": 20000,
+    "steps": 16,
+    "latency_ms": 0.0,
+    "settings": [
+      "max_sandboxes=120",
+      "job_concurrency=24"
+    ]
+  },
+  "metrics": {
+    "mcp_new_session": {
+      "n": 60,
+      "p50_ms": 12.02,
+      "p95_ms": 81.23,
+      "mean_ms": 25.24,
+      "min_ms": 6.0,
+      "max_ms": 236.05
+    },
+    "mcp_submit_job": {
+      "n": 12,
+      "p50_ms": 108.04,
+      "p95_ms": 313.84,
+      "mean_ms": 125.64,
+      "min_ms": 35.76,
+      "max_ms": 313.84
+    },
+    "mcp_get_session": {
+      "n": 229,
+      "p50_ms": 41.64,
+      "p95_ms": 305.45,
+      "mean_ms": 89.61,
+      "min_ms": 4.31,
+      "max_ms": 425.62
+    },
+    "session_turn_wall": {
+      "n": 120,
+      "p50_ms": 8620.88,
+      "p95_ms": 10812.13,
+      "mean_ms": 8886.74,
+      "min_ms": 8260.89,
+      "max_ms": 11834.02
+    },
+    "mcp_send_to_session": {
+      "n": 60,
+      "p50_ms": 110.63,
+      "p95_ms": 393.96,
+      "mean_ms": 159.52,
+      "min_ms": 5.85,
+      "max_ms": 407.03
+    },
+    "rest_sessions": {
+      "n": 24,
+      "p50_ms": 49.89,
+      "p95_ms": 316.0,
+      "mean_ms": 97.56,
+      "min_ms": 11.81,
+      "max_ms": 332.22
+    },
+    "rest_sandboxes": {
+      "n": 24,
+      "p50_ms": 67.83,
+      "p95_ms": 247.28,
+      "mean_ms": 86.08,
+      "min_ms": 5.63,
+      "max_ms": 289.84
+    },
+    "rest_jobs": {
+      "n": 24,
+      "p50_ms": 66.9,
+      "p95_ms": 332.79,
+      "mean_ms": 110.66,
+      "min_ms": 8.62,
+      "max_ms": 407.12
+    },
+    "mcp_list_sessions": {
+      "n": 12,
+      "p50_ms": 42.93,
+      "p95_ms": 445.74,
+      "mean_ms": 144.42,
+      "min_ms": 12.92,
+      "max_ms": 445.74
+    },
+    "mcp_list_sandboxes": {
+      "n": 12,
+      "p50_ms": 59.53,
+      "p95_ms": 552.52,
+      "mean_ms": 221.32,
+      "min_ms": 14.97,
+      "max_ms": 552.52
+    },
+    "mcp_list_jobs": {
+      "n": 18,
+      "p50_ms": 52.64,
+      "p95_ms": 452.79,
+      "mean_ms": 142.9,
+      "min_ms": 14.51,
+      "max_ms": 452.79
+    },
+    "mcp_exec": {
+      "n": 19,
+      "p50_ms": 62.86,
+      "p95_ms": 525.85,
+      "mean_ms": 129.32,
+      "min_ms": 7.93,
+      "max_ms": 525.85
+    },
+    "rest_create_sandbox": {
+      "n": 1,
+      "p50_ms": 31.74,
+      "p95_ms": 31.74,
+      "mean_ms": 31.74,
+      "min_ms": 31.74,
+      "max_ms": 31.74
+    },
+    "rest_destroy_sandbox": {
+      "n": 1,
+      "p50_ms": 4.76,
+      "p95_ms": 4.76,
+      "mean_ms": 4.76,
+      "min_ms": 4.76,
+      "max_ms": 4.76
+    },
+    "job_queue_wait": {
+      "n": 12,
+      "p50_ms": 12.38,
+      "p95_ms": 61.42,
+      "mean_ms": 24.26,
+      "min_ms": 1.49,
+      "max_ms": 61.42
+    }
+  },
+  "notes": {
+    "server_idle": {
+      "rss_mb": 246.7,
+      "threads": 2
+    },
+    "host_load_start": [
+      0.78,
+      5.67,
+      6.14
+    ],
+    "wall_s": 38.1,
+    "host_load_end": [
+      4.21,
+      5.95,
+      6.21
+    ],
+    "server": {
+      "loop_lag_p50_ms": 1.03,
+      "loop_lag_p95_ms": 70.1,
+      "loop_lag_max_ms": 258.28,
+      "samples": 619,
+      "threads": 67,
+      "rss_mb": 258.4,
+      "max_rss_mb": 258.1,
+      "cpu_s": 7.66,
+      "sqlite": {
+        "loop_total_s": 4.794,
+        "top": {
+          "loop:get:sandboxes": {
+            "calls": 5263,
+            "total_ms": 1960.6,
+            "max_ms": 91.87
+          },
+          "loop:put:sessions": {
+            "calls": 1968,
+            "total_ms": 1262.4,
+            "max_ms": 57.3
+          },
+          "loop:list_where:sandboxes": {
+            "calls": 116,
+            "total_ms": 380.2,
+            "max_ms": 57.9
+          },
+          "loop:put:sandboxes": {
+            "calls": 934,
+            "total_ms": 351.7,
+            "max_ms": 29.24
+          },
+          "loop:list:api_tokens": {
+            "calls": 509,
+            "total_ms": 341.3,
+            "max_ms": 31.95
+          },
+          "loop:put:jobs": {
+            "calls": 168,
+            "total_ms": 246.5,
+            "max_ms": 29.9
+          },
+          "loop:audit": {
+            "calls": 478,
+            "total_ms": 242.7,
+            "max_ms": 54.74
+          },
+          "thread:list_where:sandboxes": {
+            "calls": 12,
+            "total_ms": 92.4,
+            "max_ms": 38.87
+          },
+          "loop:kv_get": {
+            "calls": 145,
+            "total_ms": 7.9,
+            "max_ms": 5.43
+          },
+          "loop:put:api_tokens": {
+            "calls": 6,
+            "total_ms": 0.4,
+            "max_ms": 0.14
+          },
+          "loop:list:schedules": {
+            "calls": 3,
+            "total_ms": 0.2,
+            "max_ms": 0.07
+          },
+          "loop:kv_set": {
+            "calls": 1,
+            "total_ms": 0.1,
+            "max_ms": 0.09
+          },
+          "loop:list:sandbox_grants": {
+            "calls": 1,
+            "total_ms": 0.1,
+            "max_ms": 0.07
+          },
+          "loop:delete_secret": {
+            "calls": 1,
+            "total_ms": 0.0,
+            "max_ms": 0.05
+          },
+          "loop:list:credentials": {
+            "calls": 1,
+            "total_ms": 0.0,
+            "max_ms": 0.01
+          }
+        }
+      },
+      "provider_calls": {
+        "create": {
+          "n": 73,
+          "per_s": 1.91
+        },
+        "exec": {
+          "n": 2349,
+          "per_s": 61.57
+        },
+        "read_file": {
+          "n": 493,
+          "per_s": 12.92
+        },
+        "write_file": {
+          "n": 554,
+          "per_s": 14.52
+        }
+      },
+      "blocked_stacks": [
+        {
+          "samples": 1,
+          "stack": [
+            "/home/claude/hangar/.claude/worktrees/agent-af1ba692e5bfb82d0/scripts/bench/fakeserver.py:223 <module>",
+            "/home/claude/hangar/.claude/worktrees/agent-af1ba692e5bfb82d0/scripts/bench/fakeserver.py:216 main",
+            "uvicorn/main.py:632 run",
+            "uvicorn/server.py:86 run",
+            "/usr/lib/python3.12/asyncio/runners.py:194 run",
+            "/usr/lib/python3.12/asyncio/runners.py:118 run",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: pathlib.py:1313 mkdir < conftest.py:145 create < events.py:88 _run",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate"
+          ]
+        },
+        {
+          "samples": 1,
+          "stack": [
+            "mcp/server/extension.py:171 innermost",
+            "mcp/server/mcpserver/server.py:442 _handle_call_tool",
+            "mcp/server/mcpserver/server.py:548 call_tool",
+            "mcp/server/mcpserver/tools/tool_manager.py:87 call_tool",
+            "mcp/server/mcpserver/tools/base.py:179 run",
+            "mcp/server/mcpserver/utilities/func_metadata.py:163 call_fn",
+            "/home/claude/hangar/.claude/worktrees/agent-af1ba692e5bfb82d0/src/hangar/observe.py:564 wrapped",
+            "/home/claude/hangar/.claude/worktrees/agent-af1ba692e5bfb82d0/src/hangar/mcp_server.py:158 wrapped",
+            "/home/claude/hangar/.claude/worktrees/agent-af1ba692e5bfb82d0/src/hangar/mcp_server.py:505 list_sessions",
+            "/home/claude/hangar/.claude/worktrees/agent-af1ba692e5bfb82d0/src/hangar/sessions.py:372 view",
+            "pydantic/main.py:520 model_dump",
+            "/usr/lib/python3.12/enum.py:202 __get__",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:428 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: subprocess.py:1916 _execute_child < subprocess.py:1026 __init__ < subprocess.py:550 run",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: selectors.py:428 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: selectors.py:428 select < subprocess.py:2161 _communicate < subprocess.py:1230 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: subprocess.py:1898 _execute_child < subprocess.py:1026 __init__ < subprocess.py:548 run",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: selectors.py:415 select < subprocess.py:2115 _communicate < subprocess.py:1209 communicate",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: selectors.py:428 select < subprocess.py:2161 _communicate < subprocess.py:1230 communicate",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner"
+          ]
+        }
+      ]
+    },
+    "job_states": {
+      "succeeded": 12
+    },
+    "errors": []
+  }
+}
