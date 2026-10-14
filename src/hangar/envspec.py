@@ -128,6 +128,9 @@ class EnvSpec(BaseModel):
     # --- overnight/cache: prompt-cache TTL for this environment's sessions and jobs (auto | 5m | 1h | off; cache.py).
     # Unset: HANGAR_CACHE.
     cache: Literal["auto", "5m", "1h", "off"] | None = None
+    # --- frontdoor: the check jobs in this environment run when neither the job nor its repo's policy names one
+    # (repopolicy.py), e.g. "uv run pytest -q". Run in the repo checkout; "" means no check.
+    verify: str | None = Field(None, max_length=2000)
     source_dir: Path | None = Field(default=None, exclude=True)
     # Resolved by the fleet before a provider sees the spec: harness name -> pack image to mount read-only.
     packs: dict[str, str] = Field(default_factory=dict, exclude=True)

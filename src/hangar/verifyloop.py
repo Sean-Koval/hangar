@@ -24,6 +24,7 @@ import json
 import shlex
 from typing import TYPE_CHECKING
 
+from hangar import baseline  # --- frontdoor
 from hangar.events import total_usage
 from hangar.harnesses import HARNESSES
 from hangar.models import Budget, Job, Turn, now
@@ -133,6 +134,8 @@ def turn_env(settings: Settings, job: Job, harness: str | None, repo_path: str |
     h = HARNESSES.get(harness or "")
     if rounds <= 0 or not repo_path or h is None or not job.verify:
         return {}
+    if baseline.red(job):  # --- frontdoor: the gate can't tell the base's failures from new ones; hangar's check can
+        return {}
     until = deadline(settings, job, timeout_minutes, budget)
     timeout = settings.job_verify_timeout_seconds
     if h.name == "claude-code" or h.live == "claude":
@@ -159,8 +162,12 @@ async def read_rounds(jobs: JobService, job: Job, turn: Turn) -> int:
 
 def fix_message(job: Job, exit_code: int | None, tail: str | None, n: int, of: int) -> str:
     out = (tail or "").strip()[-TAIL:] or "(no output)"
+    new = ""  # --- frontdoor: on a red base, only what the change added came back
+    if job.result.new_failures:
+        new = ("It already failed on the base commit; these failures are new: "
+               + ", ".join(job.result.new_failures[:20]) + ". Fix those; leave the base's.\n\n")
     return (f"hangar ran the job's check after your turn and it failed (exit {exit_code}), round {n} of {of}:\n\n"
-            f"    {job.verify}\n\nIts output ends with:\n\n```\n{out}\n```\n\n"
+            f"    {job.verify}\n\n{new}Its output ends with:\n\n```\n{out}\n```\n\n"
             "Fix the cause and run the check again before you finish. Don't change the check or the tests it runs "
             "to make it pass; if the failure is outside this task, say so in RESULT.md.")
 

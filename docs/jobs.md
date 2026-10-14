@@ -71,8 +71,8 @@ EOF
 | --- | --- |
 | `instructions` | What to do (required, up to 64 KB). |
 | `repo`, `base_branch`, `branch` | The repo to work in; the base defaults to the repo's default branch, and the branch defaults to `hangar/<job>`. A custom branch must be under `hangar/` and must not exist yet: jobs never push to existing branches. |
-| `environment`, `harness`, `model`, `provider` | Where and with what to run. The environment can be left out for repos mapped in `HANGAR_GITHUB_REPOS`. |
-| `verify` | The repo's own check. It runs inside the agent's turn, where a failure goes back to the agent ([§7](#7-an-agent-loop-that-finishes-the-job)), and hangar runs it again after the turn. A failing check still delivers, as a draft PR. |
+| `environment`, `harness`, `model`, `provider` | Where and with what to run. Left out: the repo's [policy](repo-policy.md), then the first environment mapped in `HANGAR_GITHUB_REPOS`. |
+| `verify` | The repo's own check. It runs inside the agent's turn, where a failure goes back to the agent ([§7](#7-an-agent-loop-that-finishes-the-job)), and hangar runs it again after the turn. A failing check still delivers, as a draft PR. Left out: the repo's [policy](repo-policy.md), then the environment's `verify:`; `""` means no check. |
 | `verify_in_loop`, `max_verify_rounds` | Whether `verify` also runs inside the turn (default `true`), and how many failures go back to the agent per turn (default 3). See [§7](#7-an-agent-loop-that-finishes-the-job). |
 | `autofix` | What the job's PR reacts to by itself: `ci,reviews` (default), `ci`, `reviews` or `off`. See [§7](#7-an-agent-loop-that-finishes-the-job). |
 | `deliver` | `draft_pr` (default), `pr`, `branch` or `none`. |
@@ -149,6 +149,8 @@ Then:
 A `/hangar` comment or label from someone who isn't trusted (by default: not an owner, member or collaborator; or set `HANGAR_GITHUB_TRUSTED`) creates the job in `awaiting_approval`, and it runs only after a trusted `/hangar approve`. See [triggers.md](triggers.md). Only repos in `HANGAR_GITHUB_REPOS` are accepted, and GitHub's redelivery of the same event does not start a second job.
 
 Jobs can also start from other systems' webhooks and on a schedule: see [triggers.md](triggers.md).
+
+Jobs from every front door get the repo's defaults (`verify`, environment, harness, model) from its [policy](repo-policy.md), then from the environment: `hangar repo set acme/app --verify "pytest -q"`. A `/hangar env=…` option still picks one of the repo's allowed environments.
 
 ## 4a. Trigger from Slack
 
@@ -234,6 +236,10 @@ That check also runs in the sandbox, through the agent's `~/.hangar/env` (see th
 - **Edited tests are flagged.** The agent can change files the check reads. So when the gate is on, hangar runs [best-of-N's test check](#6-forks-and-best-of-n) on every job: a diff that changes, renames or deletes the check's own test files is listed in `result.touched_tests`. It is also called out in the PR body, and the PR is delivered as a draft. The check covers the test files only. When `verify` names paths, it covers those paths; otherwise, any test file and `conftest.py`. It doesn't cover runner configs such as `pyproject.toml`, `pytest.ini`, `package.json` or a `Makefile`.
 
 Turn the gate off per job with `"verify_in_loop": false` (`--no-verify-in-loop`), or for everything with `HANGAR_VERIFY_IN_LOOP=false`.
+
+**A red base.** A standing check (from the repo's policy or the environment) runs once on the base commit before the agent starts, shared by every job on that base. When the base already fails it, the gate is off, and only the failures the change adds count against the job. See [repo-policy.md](repo-policy.md#the-check-on-the-base-commit).
+
+**Scratch files.** Notes the agent leaves in the repo (`HANDOFF.md`, `RESULT.md`, `NOTES.md` at the root, `*.orig` and `*.rej`) are kept out of the PR unless the task names them. See [repo-policy.md](repo-policy.md#agent-scratch-files).
 
 ### PR auto-fix
 

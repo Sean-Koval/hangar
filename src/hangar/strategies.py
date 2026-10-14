@@ -25,7 +25,12 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
-from hangar import cache, exchange, verifyloop  # --- overnight/cache; verifyloop: --- overnight/autofix
+from hangar import (  # --- overnight/cache; verifyloop: --- overnight/autofix
+    baseline,  # --- frontdoor
+    cache,
+    exchange,
+    verifyloop,
+)
 from hangar import fairness as fairness  # --- scale
 from hangar.events import total_usage
 from hangar.fleet import _clip_tail
@@ -416,6 +421,7 @@ async def _inspect(jobs: JobService, job: Job, a: Attempt, s: Session) -> None:
         res = await fleet.exec(sb.id, job.verify, timeout=jobs.settings.job_verify_timeout_seconds, actor=actor)
         a.verify_exit_code = res.exit_code
         a.verify_tail = red(_clip_tail((res.stdout or "") + (res.stderr or ""))[-2000:])
+        a.new_failures = baseline.new_failures(job, (res.stdout or "") + (res.stderr or ""))  # --- frontdoor
     st = await fleet.exec(sb.id, "git status --porcelain", actor=actor)
     changed = [ln for ln in st.stdout.splitlines() if ln.strip()]
     if changed and job.deliver != "none" and len(changed) <= 2000:
@@ -471,7 +477,9 @@ def touched_tests(verify: str | None, name_status: list[str]) -> list[str]:
 
 
 def _passed(job: Job, a: Attempt) -> bool:
-    return a.verify_exit_code == 0 if job.verify else (a.outcome == "exited" and a.exit_code == 0)
+    if job.verify:  # --- frontdoor: on a red base, failing only where the base did is passing
+        return baseline.verdict(job, a.verify_exit_code, a.new_failures) == "pass"
+    return a.outcome == "exited" and a.exit_code == 0
 
 
 def _rank_key(job: Job, a: Attempt, judged: dict[int, int]) -> tuple:
@@ -578,9 +586,11 @@ async def _deliver_winner(jobs: JobService, job: Job, w: Attempt, ws: Session, s
     _take_over(jobs, job, w, ws)
     r = job.result
     r.verify_exit_code, r.verify_tail = w.verify_exit_code, w.verify_tail
+    r.new_failures = w.new_failures  # --- frontdoor
     jobs._save(job)
     clean = w.outcome == "exited" and w.exit_code == 0
-    verify_ok = not job.verify or w.verify_exit_code == 0
+    verdict = baseline.verdict(job, w.verify_exit_code, w.new_failures)  # --- frontdoor
+    verify_ok = verdict == "pass"
     state, reason = JobState.SUCCEEDED, None
     if jobs.fleet.get(ws.sandbox_id or "").info.get("repo_path"):
         jobs._event(job, f"delivering attempt {w.index}", JobState.DELIVERING)
@@ -599,10 +609,12 @@ async def _deliver_winner(jobs: JobService, job: Job, w: Attempt, ws: Session, s
         state, reason = JobState.FAILED, "over_budget"
     elif not clean and not job.result.commits:
         state, reason = JobState.FAILED, "agent_failed"
-    elif not verify_ok:
+    elif verdict == "fail":  # --- frontdoor
         state, reason = JobState.FAILED, "verify_failed"
     elif not job.result.commits:
         reason = "no_changes"
+    elif verdict == "unknown":  # --- frontdoor
+        reason = "base_red"
     note = f"; it changed the verify's tests ({', '.join(w.touched_tests[:3])})" if w.touched_tests else ""
     jobs._event(job, jobs._outcome_line(job, state, reason) + f"; attempt {w.index} of {job.n}{note}", state,
                 reason=reason)

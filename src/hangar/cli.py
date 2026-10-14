@@ -1193,6 +1193,11 @@ def schedule_rm(ref: str):
     typer.echo(f"deleted {_call('DELETE', f'/api/schedules/{ref}')['deleted']}")
 
 
+# ---------------------------------------------------------------------------- frontdoor: per-repo policy (repo_cli.py)
+from hangar.repo_cli import repo_app as _repo_app  # noqa: E402
+
+app.add_typer(_repo_app, name="repo")
+
 # ---------------------------------------------------------------------------- workstream steer (steer_cli.py)
 from hangar import steer_cli as _steer  # noqa: E402
 

@@ -268,6 +268,23 @@ class Turn(BaseModel):
     verify_rounds: int = 0
 
 
+class Baseline(BaseModel):
+    """--- frontdoor: the job's standing `verify` run once on its base commit, before the agent starts (baseline.py).
+    Shared by every job on the same repo, base commit and command."""
+
+    sha: str
+    exit_code: int | None = None
+    failures: list[str] = Field(default_factory=list)  # test ids it could read from the output
+    parsed: bool = False  # failing and the ids above are all of them; else nothing can be subtracted
+    tail: str | None = None
+    at: float = Field(default_factory=now)
+    job_id: str | None = None  # the job whose sandbox ran it
+
+    @property
+    def red(self) -> bool:
+        return self.exit_code not in (0, None)
+
+
 class JobResult(BaseModel):
     base_sha: str | None = None
     head_sha: str | None = None
@@ -286,6 +303,11 @@ class JobResult(BaseModel):
     artifacts: list[Artifact] = Field(default_factory=list)
     # --- overnight/autofix: existing files the verify command relies on that the agent changed (strategies.py)
     touched_tests: list[str] = Field(default_factory=list)
+    # --- frontdoor: the check on the base commit, and the failures the last check added to it (None: it passed,
+    # the base was green, or they couldn't be told apart)
+    baseline: Baseline | None = None
+    new_failures: list[str] | None = None
+    dropped_files: list[str] = Field(default_factory=list)  # agent scratch files kept out of the PR (scratch.py)
 
 
 # --- overnight/autofix: the PR auto-fix loop's memory, per job (autofix.py)
@@ -335,6 +357,7 @@ class Attempt(BaseModel):
     diff_lines: int | None = None  # lines added + deleted against the base
     files: list[str] = Field(default_factory=list)  # "M path" lines from git diff --name-status (capped)
     touched_tests: list[str] = Field(default_factory=list)  # existing test/verify files it changed or removed
+    new_failures: list[str] | None = None  # --- frontdoor: failures its check added to a red base (baseline.py)
     score: float | None = None
     rank: int | None = None  # 1 = delivered
     summary: str | None = None
@@ -360,6 +383,7 @@ class Job(BaseModel):
     model: str | None = None
     provider: str | None = None
     verify: str | None = None
+    verify_source: Literal["job", "repo", "environment"] | None = None  # --- frontdoor: where `verify` came from
     deliver: Literal["draft_pr", "pr", "branch", "none"] = "draft_pr"
     context: list[ContextItem] = Field(default_factory=list)
     callback_url: str | None = None
