@@ -14,6 +14,8 @@ services:
       HANGAR_SECRET_KEY: ${HANGAR_SECRET_KEY:-}
       HANGAR_DOCKER_RUNTIME: ${HANGAR_DOCKER_RUNTIME:-}   # runsc (gVisor) or kata on Linux hosts
       HANGAR_MAX_SANDBOXES: ${HANGAR_MAX_SANDBOXES:-20}
+      # --- isolation: sandboxes run on hangar's own network (hangar-sandboxes), where they can't reach each other or
+      # this container; hangar reaches them with docker exec (docs/security.md#sandbox-networking-on-docker)
       HANGAR_ENV_DIRS: '["/app/envs", "/envs"]'
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock   # sandboxes run as sibling containers

@@ -3,12 +3,17 @@
 set -euxo pipefail
 exec > >(tee -a /var/log/hangar-startup.log) 2>&1
 
-# Sandboxes run on Docker's default bridge (docker0). Without this rule any of them can ask the GCE metadata server
-# for a token for this VM's service account (cloud-platform scope). DOCKER-USER survives Docker restarts but not
+# Without these rules any sandbox can ask the GCE metadata server for a token for this VM's service account
+# (cloud-platform scope). Sandboxes run on hangar's own network, bridge hangar0 (sandboxes started by older versions:
+# Docker's default bridge, docker0); Docker has no option to keep them off link-local addresses. DNS (port 53) stays
+# open: Docker's resolver may forward to the metadata server's address. DOCKER-USER survives Docker restarts but not
 # reboots, so it's applied on every boot. The control plane runs on the compose network and keeps its access.
 block_metadata() {
   iptables -C DOCKER-USER -i docker0 -d 169.254.169.254/32 -j DROP 2>/dev/null \
     || iptables -I DOCKER-USER -i docker0 -d 169.254.169.254/32 -j DROP
+  # --- isolation: hangar's sandbox network (src/hangar/providers/docker_net.py)
+  iptables -C DOCKER-USER -i hangar0 -d 169.254.0.0/16 -p tcp ! --dport 53 -j DROP 2>/dev/null \
+    || iptables -I DOCKER-USER -i hangar0 -d 169.254.0.0/16 -p tcp ! --dport 53 -j DROP
 }
 
 if [ -f /opt/hangar/.installed ]; then

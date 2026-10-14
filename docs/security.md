@@ -6,7 +6,7 @@ Hangar exists to run untrusted, model-generated code. The design assumes any san
 | --- | --- |
 | Sandbox ↔ host | runc (laptop, trusted use), gVisor user-space kernel, or Kata/Firecracker microVM with its own guest kernel |
 | Sandbox ↔ sandbox | Separate containers/pods/VMs; no shared volumes; per-sandbox credentials |
-| Sandbox ↔ network | GKE: `deploy/k8s/sandbox-network.yaml` (and Agent Sandbox's managed policy) deny RFC1918, link-local (metadata server) and all ingress. Docker: use `HANGAR_DOCKER_NETWORK` with an egress-filtered network; the single-VM install drops docker0 → 169.254.169.254 |
+| Sandbox ↔ network | GKE: `deploy/k8s/sandbox-network.yaml` (and Agent Sandbox's managed policy) deny RFC1918, link-local (metadata server) and all ingress. Docker: hangar's own network, where sandboxes can't reach each other ([below](#sandbox-networking-on-docker)); the single-VM install also drops what they send to link-local addresses |
 | Client ↔ control plane | Bearer tokens (hashed at rest), single-use tickets for browser streams, TLS via ingress, optional IAP in front |
 | Secrets | Fernet-encrypted vault; never in images, API responses, MCP results, logs, or audit entries |
 
@@ -90,6 +90,23 @@ The push is made as the App; commits keep the agent's git identity. PRs for jobs
 - Force pushes to the sandbox's own branch are allowed (agents rebase); force pushes anywhere else are refused like any other update. Keep branch protection on `main` as a second wall.
 - Inside the cluster the gateway speaks plain HTTP, so the grant crosses the pod network unencrypted. It is worth little: it dies with the sandbox and reaches one branch of one repo.
 
+## Sandbox networking on Docker
+
+On Docker's default bridge every container reaches every port of every other: hangar-envd, dev servers, anything an agent listens on. Hangar creates its own network for sandboxes instead, `hangar-sandboxes` on the bridge `hangar0`, with inter-container connectivity off (`com.docker.network.bridge.enable_icc=false`), and starts every sandbox and warm-pool container on it. Checked on Docker 29.8 (`tests/test_e2e_isolation_docker.py`):
+
+- one sandbox can't connect to another's ports, envd's included;
+- the host still reaches each sandbox at its IP, and at envd's port published on `127.0.0.1` (only the host can use that address; a sandbox that dials the host's bridge address gets nothing);
+- sandboxes still reach the internet, and the host at `host.docker.internal`, where the [git gateway](#git-credential-gateway) listens;
+- a container attached to the network can't reach the sandboxes either, so a control plane that runs in a container (Docker Compose) reaches envd only through `docker exec`.
+
+`HANGAR_DOCKER_NETWORK` names another network to use as it is (`bridge` for Docker's default). `hangar doctor` warns when that network lets sandboxes reach each other, and lists sandboxes started before this change, which stay where they are until they are recreated.
+
+Docker has no setting that keeps containers off link-local addresses, so on a cloud VM a sandbox can ask the metadata server for the VM's credentials unless the host's firewall drops it. The bridge has a fixed name for that rule (the single-VM install adds it on every boot; DNS stays open because Docker's resolver may forward to the same address):
+
+```sh
+iptables -I DOCKER-USER -i hangar0 -d 169.254.0.0/16 -p tcp ! --dport 53 -j DROP
+```
+
 ## Threat model: a compromised sandbox
 
 The attacker controls everything inside one sandbox: the agent's process, its files, `~/.hangar/env` (so every command hangar runs there), its git binary and its network traffic. What it should not get:
@@ -104,12 +121,12 @@ The attacker controls everything inside one sandbox: the agent's process, its fi
 | The requester's machine (`session pull --checkout`) | The untracked-files archive is the sandbox's: only regular files, directories and in-tree symlinks are restored, never under `.git` (any spelling), never through a symlink (including one the session's patch created), never over an existing file, at most 20,000 entries and 1 GB (the archive is capped compressed; gzip expands ~1000x). The checkpoint's head must be a commit id. The patch goes through `git apply`, which refuses `.git` paths. | `test_sandbox_security.py` |
 | The dashboard's origin | Artifacts are served as attachments with `Content-Security-Policy: sandbox` and `nosniff`; active types are downgraded to `text/plain`. | `test_exchange.py` |
 | Cloud credentials | GKE node pools use `GKE_METADATA` (Workload Identity), so pods never see the node's service account; sandbox pods mount no Kubernetes token. `sandbox-network.yaml` blocks the metadata server, which matters with Pod snapshots: their KSA can read every sandbox's snapshot. | manifests checked with a server-side dry run |
-| Other sandboxes and the API | GKE: no ingress to sandbox pods (except from hangar's pods to the [envd](envd.md) port), no egress to private ranges; only the gateway port of hangar pods is open. | manifests |
+| Other sandboxes and the API | GKE: no ingress to sandbox pods (except from hangar's pods to the [envd](envd.md) port), no egress to private ranges; only the gateway port of hangar pods is open. Docker: no traffic between sandboxes on hangar's network. | manifests checked with a server-side dry run and `test_k8s_network.py` (every policy file read together); `test_e2e_isolation_docker.py` |
 | Another sandbox's [envd](envd.md) daemon | A daemon accepts only requests signed with its own sandbox's token: HMAC(vault key, sandbox id), never stored and never sent. Each request carries an HMAC over its time, a nonce, method, path and body hash, usable once and for five minutes, so a request that reaches the wrong address (a reused IP) gives whoever got it nothing; a peer without the token is refused before its body is read and can't spend nonces, and connections are capped per address and closed when idle. Answers must carry an HMAC proof of the token, so nothing else at a sandbox's address is taken for its daemon. What a daemon returns is capped (message size, output tail, read limit), never decompressed, and waited for only so long. | `test_envd.py`, `cargo test` in `envd/` |
 
 What is **not** covered:
 
-- **Docker on a laptop or VM is a trusted-use setup.** Sandboxes share the default bridge (they can reach each other's ports), can reach the host (and the API port if hangar listens beyond loopback), and get `sudo` unless the environment sets `sudo: false`. On a cloud VM, block the metadata server as the single-VM install does: `iptables -I DOCKER-USER -i docker0 -d 169.254.169.254/32 -j DROP`. For untrusted work use GKE (gVisor/Kata) or a filtered `HANGAR_DOCKER_NETWORK`.
+- **Docker on a laptop or VM is a trusted-use setup.** Sandboxes can't reach each other's ports ([networking](#sandbox-networking-on-docker)), but they can reach the host (and the API port if hangar listens beyond loopback), and get `sudo` unless the environment sets `sudo: false`. On a cloud VM, block the metadata server as the single-VM install does (the rule above). For untrusted work use GKE (gVisor/Kata).
 - **Inside the sandbox the agent is in charge.** Hangar's own reads and writes there (attachments in, results and artifacts out) follow whatever the agent left in place. On Docker with `sudo` that grants nothing new; with `sudo: false`, a symlink placed in `$HANGAR_IO` can make hangar write an attachment, or read a file, as root inside that container.
 - **Secrets the sandbox already holds.** The model credential is still injected. Redaction masks stored values in results, artifacts and logs, not encoded copies. A grant the agent copies out works from anywhere that reaches the gateway until its sandbox stops.
 - **What is in the pushed branch.** Review PRs, and keep secrets out of `push`-triggered workflows.
