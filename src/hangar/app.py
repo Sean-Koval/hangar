@@ -1135,6 +1135,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     flightrec.mount(app, h, A, U)
     credhealth.mount(app, h, A)
     credhealth.register_inbox()
+    from hangar import clouddoctor  # --- clouddoctor: the Cloud Doctor (docs/doctor.md)
+
+    clouddoctor.mount(app, h, A)
+    clouddoctor.register(h)
     # --- observe: GET /metrics (admin or `metrics` tokens) and GET /api/usage
     from hangar import metrics, usage
 

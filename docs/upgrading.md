@@ -64,6 +64,7 @@ Everything the owner sets up, in the order of the steps. **Required** means the 
 | `HANGAR_PR_MEDIA_LINKS=signed` | Optional (screenshots and demos are listed by name) | [10e](#10e-the-agents-computer) |
 | deploy.yml: the `production` environment (you as required reviewer; `main` and `v*` tags only), its secrets `GCP_DEPLOY_SERVICE_ACCOUNT`, `GKE_CLUSTER`, `GKE_LOCATION`, `HANGAR_URL`, `HANGAR_DEPLOY_TOKEN`, and the `hangar-deploy` service account and Role | Optional; **required** to deploy with deploy.yml | [11](#11-deploying-with-deployyml) |
 | claude.ai users re-add the hangar connector | **Required** for claude.ai | [12](#12-clients-and-proof) |
+| The Cloud Doctor: a team API key for its harness (Claude Code unless `HANGAR_DOCTOR_HARNESS`), `HANGAR_DOCTOR_MAX_USD`, and `HANGAR_DOCTOR_SPECS_REPO` for fixes to environment specs ([doctor.md](doctor.md)) | Optional: without a team key it only reports; `HANGAR_DOCTOR_SCHEDULE=off` turns it off | — |
 
 ### What changes as soon as it starts
 

@@ -20,6 +20,7 @@ from typing import Any, NamedTuple, TypeVar
 
 from pydantic import BaseModel
 
+from hangar.clouddoctor import DoctorFinding  # --- clouddoctor: what the Cloud Doctor found
 from hangar.envrequests import EnvRequest  # --- computer: requests agents file with their owners
 from hangar.flightrec import FlightRecord  # --- clouddoctor: failed and slow runs
 from hangar.models import (
@@ -54,6 +55,7 @@ _TABLES: dict[type[BaseModel], tuple[str, str]] = {
     Person: ("people", "id"),  # --- identity
     EnvRequest: ("env_requests", "id"),  # --- computer
     FlightRecord: ("flight_records", "id"),  # --- clouddoctor
+    DoctorFinding: ("doctor_findings", "id"),  # --- clouddoctor
 }
 # --- review(perf): access control must not roll back on a node crash (a revoked token coming back), so these
 # commits, and the secrets table's, sync the WAL like synchronous=FULL; everything else stays on NORMAL.
@@ -66,6 +68,7 @@ _INDEXED: dict[type[BaseModel], tuple[str, ...]] = {
     Session: ("state",),
     EnvRequest: ("state", "session_id"),  # --- computer
     FlightRecord: ("at", "job_id"),  # --- clouddoctor: `at` serves list_range
+    DoctorFinding: ("state", "signature"),  # --- clouddoctor
 }
 # The states in which a record holds, or is about to hold, resources (list_active). Sandbox: fleet.ACTIVE.
 _ACTIVE: dict[type[BaseModel], frozenset[str]] = {

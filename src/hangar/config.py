@@ -484,6 +484,23 @@ class Settings(BaseSettings):
     # in the power schedule's zone is before the sandbox pools power down at 01:00.
     doctor_schedule: str = "30 0 * * *"
     doctor_time_zone: str | None = None
+    # The Cloud Doctor's jobs (clouddoctor.py): harness and model (unset: Claude Code where the environment has it,
+    # with its `best` alias, the strongest model the account can use; else the environment's harness and its
+    # default), its budget per run (all its jobs together) and per job, how many root-cause jobs a run starts, how
+    # many separate runs make a failure worth fixing, how far back it counts, and how often a transient failure may
+    # recur before it is reported anyway.
+    doctor_harness: str | None = None
+    doctor_model: str | None = None
+    doctor_max_usd: float = Field(10.0, ge=0)
+    doctor_job_max_usd: float = Field(3.0, gt=0)
+    doctor_max_jobs: int = Field(3, ge=0, le=20)
+    doctor_min_runs: int = Field(2, ge=1)
+    doctor_lookback_days: int = Field(7, ge=1, le=14)
+    doctor_transient_alarm: int = Field(5, ge=1)
+    # Where environment specs live as files, for fixes to them: a repo hangar's jobs can open PRs on, and the spec
+    # files in it (fnmatch, `*` crosses directories). Unset: spec fixes are reported, not opened.
+    doctor_specs_repo: str | None = None
+    doctor_specs_paths: list[str] = Field(default_factory=lambda: ["envs/*.yaml", "envs/*.yml"])
 
     @property
     def backup_interval_hours(self) -> float:

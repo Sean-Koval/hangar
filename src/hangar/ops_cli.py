@@ -151,7 +151,65 @@ def cred_check(names: list[str] = typer.Argument(None, help="Credentials to chec
         typer.echo("nothing to check")
 
 
+doctor_app = typer.Typer(no_args_is_help=True, help="The Cloud Doctor: nightly root causes and fixes (docs/doctor.md).")
+
+
+@doctor_app.command("run")
+def doctor_run(wait: bool = typer.Option(False, "--wait", help="Wait for the run (not its jobs) to finish.")):
+    """Run the Cloud Doctor now over the records since its last run. Its root-cause jobs keep going after."""
+    cli = _cli()
+    r = cli._call("POST", "/api/admin/doctor/run")
+    typer.echo(f"run {r['id']}: {r.get('state', 'running')}")
+    while wait and r.get("state") == "running":
+        time.sleep(2)
+        r = next((x for x in cli._call("GET", "/api/admin/doctor")["runs"] if x["id"] == r["id"]), r)
+    if wait:
+        _run_line(r)
+
+
+def _run_line(r: dict) -> None:
+    typer.echo(f"{r['id']} {_ago(r.get('at'))} ago by {r.get('by')}: {r.get('state')}; {r.get('records', 0)} new "
+               f"record(s), {r.get('groups', 0)} kind(s), {r.get('transient', 0)} transient, root-cause jobs "
+               f"{', '.join(r.get('rca_jobs') or []) or 'none'}" + (f"; {r['error']}" if r.get("error") else ""))
+
+
+@doctor_app.command("ls")
+def doctor_ls(all_: bool = typer.Option(False, "--all", help="Closed findings too."),
+              as_json: bool = typer.Option(False, "--json")):
+    """Open findings (and the last runs)."""
+    cli = _cli()
+    v = cli._call("GET", "/api/admin/doctor", params={"all": str(all_).lower()})
+    if as_json:
+        return cli._print(v)
+    for r in v["runs"][:3]:
+        _run_line(r)
+    if not v["findings"]:
+        return typer.echo("No findings.")
+    for f in v["findings"]:
+        where = f.get("pr_url") or f.get("request_id") or ""
+        typer.echo(f"{f['id']:14} {f['state']:10} {f.get('confidence') or '-':6} {f['runs']:3} runs  {f['summary']}"
+                   + (f"  {where}" if where else ""))
+        if f.get("note"):
+            typer.echo(f"{'':15}{f['note']}")
+
+
+@doctor_app.command("show")
+def doctor_show(finding: str):
+    """One finding in full: its evidence, root cause, fix, and what was done about it."""
+    cli = _cli()
+    cli._print(cli._call("GET", f"/api/admin/doctor/findings/{finding}"))
+
+
+@doctor_app.command("dismiss")
+def doctor_dismiss(finding: str, note: str | None = typer.Option(None, help="Why (shown with the finding).")):
+    """Close a finding the doctor shouldn't act on; a new failure of its kind opens a new one."""
+    cli = _cli()
+    f = cli._call("POST", f"/api/admin/doctor/findings/{finding}/dismiss", json={"note": note})
+    typer.echo(f"{f['id']}: dismissed")
+
+
 def register(app: typer.Typer, admin_app: typer.Typer, cred_app: typer.Typer) -> None:
     app.command("status")(status)
     admin_app.add_typer(records_app, name="records")
+    admin_app.add_typer(doctor_app, name="doctor")
     cred_app.command("check")(cred_check)
