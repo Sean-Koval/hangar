@@ -19,9 +19,11 @@ How "strongest" is decided, per provider (docs/harnesses.md has the reasoning):
 * Anthropic: the model's `line` field (fable and mythos > opus > sonnet > haiku; the docs say not to infer it from
   the id), then the newest (the list is newest first). Active models only.
 * OpenAI: `gpt-<version>-<tier>`, tier first (astra > sol > terra > luna), then version.
-* Google: the newest version, then stable before preview, then the tier (pro > flash > flash-lite). Gemini's flash
-  line moves faster than pro: Gemini 3.8 Flash (stable, September 2026) leads Gemini 3.1 Pro Preview (February) on
-  Google's own positioning and on independent indexes, so the tier comes last.
+* Google: never a lite model while another is listed, then the newest version, then stable before preview, then
+  the tier (pro > flash > flash-lite). Gemini's flash line moves faster than pro, so the tier comes after the version.
+  That Gemini 3.8 Flash (stable) is stronger than Gemini 3.1 Pro Preview is not something Google's model pages say
+  (they call 3.8 Flash "our most intelligent Flash model"); it rests on third-party indexes. Pin a Gemini id where it
+  matters.
 """
 
 from __future__ import annotations
@@ -53,14 +55,24 @@ LISTS = {
     "openrouter": "https://openrouter.ai/api/v1/models",  # public: no key
 }
 # Used only when no list was ever fetched and nothing was resolved before (checked 2026-10-14 against each vendor's
-# model docs and OpenRouter's list). Codex's is the account-wide default model (Codex 0.161+): gpt-6-astra, the
-# strongest, needs OpenAI's trusted access, and an id the account can't use fails every turn.
+# model docs and OpenRouter's list). --- review #105: Codex's frontier is gpt-6-astra, OpenAI's "most capable model",
+# which its docs list for the API and the Codex CLI with no access gate (developers.openai.com/api/docs/models/
+# gpt-6-astra, /codex/models); gpt-6.1-sol is what Codex's docs recommend for everyday work, so it is `balanced`.
 SEED: dict[str, dict[str, str]] = {
     "claude-code": {"frontier": "claude-fable-5-1", "balanced": "claude-opus-5-5"},
-    "codex": {"frontier": "gpt-6.1-sol", "balanced": "gpt-6.1-sol"},
+    "codex": {"frontier": "gpt-6-astra", "balanced": "gpt-6.1-sol"},
     "pi": {"frontier": "openrouter/anthropic/claude-fable-5.1", "balanced": "openrouter/anthropic/claude-opus-5.5"},
     "antigravity": {"frontier": "gemini-3.8-flash-high", "balanced": "gemini-3.8-flash-high"},
     "gemini": {"frontier": "gemini-3.8-flash", "balanced": "gemini-3.8-flash"},
+}
+# --- review #105: pi with a vendor (`frontier@openai`) has one too. Without it the first turns ran on pi's own
+# default and the session switched model once the list arrived (an unset model is resolved again on each run).
+PI_SEED: dict[tuple[str, str], str] = {
+    ("frontier", "anthropic"): "openrouter/anthropic/claude-fable-5.1",
+    ("balanced", "anthropic"): "openrouter/anthropic/claude-opus-5.5",
+    ("frontier", "openai"): "openrouter/openai/gpt-6-astra", ("balanced", "openai"): "openrouter/openai/gpt-6.1-sol",
+    ("frontier", "google"): "openrouter/google/gemini-3.8-flash",
+    ("balanced", "google"): "openrouter/google/gemini-3.8-flash",
 }
 ANTHROPIC_LINES = {"fable": 4, "mythos": 4, "opus": 3, "sonnet": 2, "haiku": 1}
 OPENAI_TIERS = {"astra": 4, "sol": 3, "terra": 2, "luna": 1}
@@ -140,7 +152,9 @@ def rank_google(models: list[dict[str, Any]], policy: str, strip: str = "") -> s
         tier = GOOGLE_TIERS[g.group(2)]
         if policy == "balanced" and tier != BALANCED["google"]:
             continue
-        cands.append(((_version(g.group(1)), not g.group(3), tier, int(m.get("created") or 0)), mid))
+        # --- review #105: a lite model only when nothing stronger is listed (a newer flash-lite isn't frontier)
+        cands.append(((tier > GOOGLE_TIERS["flash-lite"], _version(g.group(1)), not g.group(3), tier,
+                       int(m.get("created") or 0)), mid))
     return _pick(cands)
 
 
@@ -369,7 +383,7 @@ class Resolver:
                                                                 f"{name}, {last['id']} ({day})")
         seed = SEED.get(harness, {}).get(policy)
         if vendor and harness == "pi":
-            seed = None  # the built-in one is Anthropic's
+            seed = PI_SEED.get((policy, vendor))  # --- review #105
         return Resolution(seed, name, "seed", f"{why}; using hangar's built-in {name} for {harness}"
                           + (f", {seed} (as of 2026-10-14)" if seed else ": none, so its own default"))
 
@@ -386,6 +400,29 @@ class Resolver:
 
     def concrete(self, harness: str | None, value: str | None) -> str | None:
         return self.resolve(harness, value).model
+
+    def view(self, harness: str | None, value: str | None) -> dict[str, Any]:
+        """--- review #105: what `value` resolves to now, for list_environments and `hangar env list`, with its
+        price (a listing only looks: nothing is recorded or refreshed)."""
+        from hangar.events import DEFAULT_PRICES
+
+        r = self.resolve(harness, value, record=False)
+        prices = {**DEFAULT_PRICES, **{k.lower(): v for k, v in (self.fleet.settings.model_prices or {}).items()}}
+        return {**r.to_dict(), "about": describe(r.model, r.policy, prices)}
+
+
+def describe(model: str | None, policy: str | None, prices: dict[str, dict[str, float]]) -> str:
+    """--- review #105: a model as the review packet and `hangar env list` show it: the id, the policy it came from,
+    and its list price, since `frontier` can cost several times `balanced` (Fable 5.1 is $10/$50 per MTok, Opus 5.5
+    $4/$20)."""
+    from hangar.events import price_for
+
+    if not model:
+        return "the harness default"
+    p = price_for(model, prices)
+    price = (f"list price ${p.get('input', 0):g}/${p.get('output', 0):g} per MTok in/out" if p else
+             "no known price, so budgets can't count its cost: HANGAR_MODEL_PRICES")
+    return f"`{model}` ({f'`{policy}`; ' if policy else ''}{price})"
 
 
 def of(fleet: Fleet) -> Resolver:

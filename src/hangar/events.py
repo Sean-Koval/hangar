@@ -97,16 +97,32 @@ FORMATS = {"claude-code": "claude", "codex": "codex", "pi": "pi", "antigravity":
 _SUFFIX = re.compile(r"^-(\d{8}|\d{4}-\d{2}-\d{2}|latest)$")
 
 
+_THINKING = re.compile(r"-(minimal|low|medium|high)$")  # --- review #105: agy's ids end in a thinking level
+
+
+def _price_names(m: str) -> list[str]:
+    """--- review #105: the ids model policies resolve to, as the table names them: OpenRouter's dotted Claude
+    versions (`claude-fable-5.1`), and agy's Gemini ids (`gemini-3.8-flash-high`, without `-preview`)."""
+    names = [m]
+    if m.startswith("claude-") and "." in m:
+        names.append(m.replace(".", "-"))
+    if m.startswith("gemini-") and (base := _THINKING.sub("", m)) != m:
+        names += [base, base + "-preview"]
+    return names
+
+
 def price_for(model: str | None, table: dict[str, dict[str, float]]) -> dict[str, float] | None:
     """The price entry for a model id: exact, or a known id followed by a date / `latest` suffix. Provider
     prefixes (`anthropic/`, `google-vertex/`) and context tags (`[1m]`) are ignored."""
     if not model:
         return None
-    m = model.lower().rsplit("/", 1)[-1].split("[", 1)[0].replace("@", "-").strip()
-    if m in table:
-        return table[m]
-    best = max((k for k in table if m.startswith(k) and _SUFFIX.match(m[len(k):])), key=len, default=None)
-    return table[best] if best else None
+    for m in _price_names(model.lower().rsplit("/", 1)[-1].split("[", 1)[0].replace("@", "-").strip()):
+        if m in table:
+            return table[m]
+        best = max((k for k in table if m.startswith(k) and _SUFFIX.match(m[len(k):])), key=len, default=None)
+        if best:
+            return table[best]
+    return None
 
 
 def _rates(price: dict[str, float]) -> tuple[float, float, float, float]:

@@ -67,16 +67,32 @@ Every night `harness-canary.yml`:
 
    A harness only moves forward. Claude Code's stable channel can trail the lock (2.1.292 against the locked 2.1.296
    on 2026-10-14); that is reported as `behind` and nothing changes.
-2. **Checks the checksums.** It downloads each Claude Code binary and Antigravity archive, for both architectures,
-   and compares them with the vendor's published sha256 and sha512. It also checks that the updater serves the URL the
-   install recipe would build from the version and the build id.
-3. **Installs the candidate CLIs and runs the contract tests against them.** The unchanged CLIs come from the
-   contract workflow's cache.
+2. **Checks the checksums, and where they come from.** A checksum from the server that serves the binary proves
+   little, so each source is checked against something that server alone can't forge:
+   - **Claude Code:** the version's `manifest.json` must carry a good signature (`manifest.json.sig`) by Anthropic's
+     Claude Code release key. The key is checked in (`src/hangar/keys/claude-code.asc`) with the fingerprint
+     code.claude.com/docs/en/setup publishes (`31DD DE24 DDFA B679 F42D 7BD2 BAA9 29FF 1A7E CACE`), and is never
+     fetched from the release server. Then each binary, for both architectures, must match the signed sha256.
+   - **Codex and pi (npm):** `npm audit signatures` checks the registry's signatures and the Sigstore provenance
+     attestations of everything the candidate installs (with `--ignore-scripts`, for linux-x64 and, for Codex,
+     linux-arm64). Each package the recipe installs must also carry SLSA provenance naming it, built from its own
+     repository (`github.com/openai/codex`, `github.com/earendil-works/pi`). Gemini publishes no provenance; it gets
+     the registry-signature check only.
+   - **Antigravity:** Google publishes no signature (no `.sig`, `.asc` or checksum file beside the archives, checked
+     2026-10-14). The sha512 comes from the updater's manifest, a separate service from the bucket that serves the
+     archives, and each archive must match it. That is the whole of it, and the packet says so.
+
+   It also checks that the updater serves the URL the install recipe would build from the version and the build id.
+3. **Installs the candidate CLIs and runs the contract tests against them**, in a job with a read-only token and no
+   secrets. A process in a job can read the job's token and every secret the job references, so nothing an upstream
+   release ships (npm install scripts, the new binaries, the tests that run them) runs in the job that pushes and
+   holds the App key. The unchanged CLIs come from the contract workflow's cache.
 4. **Diffs the protocols** against the recorded (locked) ones. A *breaking* change is one where something the driver
    sends or reads is gone: a method, a field, or a value such as an approval decision or a sandbox mode. Everything else
    is listed for the reviewer.
-5. **If everything passed, opens one lock-bump PR** from `canary/harness-lock` (or updates the open one). It changes
-   the lock (with one `# Canary <date>:` line in its header) and the protocol records. Its body is the review packet:
+5. **If everything passed, opens one lock-bump PR** from `canary/harness-lock` (or updates the open one). A separate
+   `publish` job does it, which runs none of the candidates' code: it checks what the first job handed it (`canary
+   check`: a valid lock, two JSON records) and commits exactly those three files. It changes the lock (with one `# Canary <date>:` line in its header) and the protocol records. Its body is the review packet:
    versions and sources, checksum checks, test results, and the protocol diff. A newer candidate on a later night
    turns off auto-merge on the old head before it pushes, and the same candidate only refreshes the packet.
 6. **If anything failed, opens one issue** labelled `harness-canary` (or comments on the open one). It has the
@@ -95,7 +111,12 @@ checks it from the default branch's code, not the PR's. These must all hold:
 - the approval is of the PR's current head, by an approver: the `CANARY_APPROVERS` repository variable
   (comma-separated logins), else the repository's owner;
 - the approver isn't the PR's author, and nobody's latest review requests changes;
-- the PR changes nothing but `src/hangar/harnesses.lock.yaml` and `tests/fixtures/protocol/` (hardening-r2).
+- **the head is the canary's own push**: GitHub's record of the branch's pushes (`GET /repos/…/activity`) says a bot
+  pushed it. The author is always a bot, so "not the author" alone would let an approver push a change onto the bump
+  and approve it themselves. A person's commit on the canary branch is landed by hand, by someone else;
+- the PR changes exactly `src/hangar/harnesses.lock.yaml`, `tests/fixtures/protocol/codex-app-server.json` and
+  `tests/fixtures/protocol/claude-stream-json.json`, and removes none of them (hardening-r2). Not the directory: pytest
+  collects `tests/` recursively, so a `conftest.py` or `test_*.py` among the fixtures would run in CI.
 
 When they hold, it arms auto-merge for exactly that commit (`expectedHeadOid`), or merges it at that commit when it is
 already mergeable. GitHub's branch protection still decides when it merges: required checks, stale approvals
@@ -107,11 +128,15 @@ dismissed on a push. Anything else, and nothing is armed; the run's summary says
   *Allow auto-merge*. Without required approvals, auto-merge would merge a bump without anyone's approval. The
   land workflow still never arms one without an approval.
 - **A GitHub App for the PR** (recommended): repository secrets `CANARY_APP_CLIENT_ID` and `CANARY_APP_PRIVATE_KEY`
-  for an App with Contents and Pull requests read and write on this repo (hangar's own App will do). The PR then comes
+  for a dedicated App with Contents and Pull requests read and write, installed on this repo only. Don't reuse
+  hangar's own App: its key would sit in this repository's secrets with that App's wider reach. Without Workflows
+  permission it can't change `.github/workflows/`, which is what you want. The PR then comes
   from the App, so `pr.yml` and `harness-contract.yml` run on it, and the merge's push runs `ci.yml` and
   `images.yml`, which builds the new packs. Without the App, the PR is opened with the workflow token. GitHub runs no
   workflow for it, so close and reopen the PR to run the checks, and run `images` by hand after the merge. The PR body
   says so.
+- **`contract` as a required check** on `main`, so a bump whose locked CLIs don't reproduce the recorded protocols
+  can't merge.
 - Optionally, the `CANARY_APPROVERS` repository variable.
 
 ### After a bump
@@ -144,7 +169,7 @@ to the policy's own harness. So do `submit_job(model=…)`, `send_to_session(mod
 | --- | --- | --- |
 | Claude Code | Anthropic `GET /v1/models` | the `line` field (fable and mythos, then opus, sonnet, haiku), then the newest. Active models only |
 | Codex | OpenAI `GET /v1/models` | `gpt-<version>-<tier>`: the tier (astra, sol, terra, luna), then the version |
-| Antigravity | Google's Gemini API `models.list` (Vertex serves the same ids) | the newest version, then stable before preview, then the tier (pro, flash, flash-lite). agy's id is the Gemini id without `-preview`, plus `-high` |
+| Antigravity | Google's Gemini API `models.list` (Vertex serves the same ids) | never a flash-lite model while another is listed; then the newest version, then stable before preview, then the tier (pro, flash, flash-lite). agy's id is the Gemini id without `-preview`, plus `-high` |
 | pi | OpenRouter `GET /api/v1/models` (public) | per vendor as above, on OpenRouter's ids (`openrouter/anthropic/claude-fable-5.1`); `:batch` ids and `~…-latest` aliases skipped |
 
 The Anthropic side was checked against the API reference on 2026-10-14 (platform.claude.com/docs/en/api/models/list,
@@ -153,14 +178,31 @@ which docs.claude.com redirects to). It says "More recently released models are 
 `opus`, `fable`, `mythos`, or null; "do not infer a line from the id"). Pages use `limit` (up to 1000), `after_id`
 and `has_more`. Mythos is Fable for verified organizations; it appears only in their lists.
 
-Why Google's tier comes last: Gemini's flash line moves faster than pro. Gemini 3.8 Flash (stable, September 2026)
-leads Gemini 3.1 Pro Preview (February) by Google's own positioning ("the most intelligent Flash model", built for
-long-horizon software engineering) and on independent indexes. That was also why `envs/bare.yaml` ran flash for pi
-and Antigravity. That was a hand-picked id; now it is resolved.
+Why Google's tier comes after the version: Gemini's flash line moves faster than pro. **Not verified against
+Google's own pages:** that Gemini 3.8 Flash (stable, September 2026) is stronger than Gemini 3.1 Pro Preview
+(February). Google's model list (ai.google.dev/gemini-api/docs/models, read 2026-10-14) calls 3.8 Flash "our most
+intelligent Flash model, engineered for long-horizon software engineering" and lists 3.1 Pro as a preview, but
+compares neither with the other; the ranking rests on third-party indexes. Where it matters, pin a Gemini id. A lite
+model is never `frontier` while anything else is listed, so Google's next flash-lite doesn't take over by being newest.
 
-Why `frontier` costs more: on Anthropic it picks Claude Fable 5.1 ($10/$50 per MTok, against Opus 5.5's $4/$20), and on
-OpenAI gpt-6-astra when the account has it. Use `balanced` where that matters, and job budgets
-([repo-policy.md](repo-policy.md#budgets)).
+Verified on 2026-10-14 against the vendors' pages: Anthropic's models overview and pricing (Fable 5.1 "for demanding
+reasoning and long-horizon agentic work", $10/$50 per MTok; Opus 5.5 the general starting point, $4/$20); OpenAI's
+models and pricing pages (gpt-6-astra "our most capable model", $10/$50, listed for the API and the Codex CLI;
+gpt-6.1-sol "near-Astra performance at a lower cost", $2/$10). OpenRouter's `-pro` variants (`gpt-6-astra-pro`) are
+not on OpenAI's pages and are never picked.
+
+**What `frontier` costs.** On Anthropic it picks Claude Fable 5.1 ($10/$50 per MTok, against Opus 5.5's $4/$20), and
+on OpenAI gpt-6-astra ($10/$50, against gpt-6.1-sol's $2/$10): roughly 2.5 to 5 times `balanced`. Jobs default to it,
+so:
+
+- every id a policy resolves to is in hangar's price table, including OpenRouter's dotted ids and agy's
+  thinking-level ids, so job budgets and the daily caps ([repo-policy.md](repo-policy.md#budgets)) count its cost;
+- **set a budget**: no job budget or daily cap is set by default. `HANGAR_JOB_BUDGET_MAX_COST_USD`, a repo policy's
+  `job_budget` and `max_usd_per_day`, and `HANGAR_PERSON_MAX_USD_PER_DAY` bound it;
+- the review packet on each agent PR names the model the job's session ran, the policy it came from and its list
+  price (`model `claude-fable-5-1` (`frontier`; list price $10/$50 per MTok in/out)`), and says when the job had no
+  budget; `hangar env list` shows the same for each environment's harnesses;
+- use `balanced` where the price matters more than the last bit of capability.
 
 ### Pinned, cached, and what happens when a list can't be had
 
@@ -173,8 +215,10 @@ OpenAI gpt-6-astra when the account has it. Use `balanced` where that matters, a
   refreshed.
 - **Fallback, said out loud.** With no list (no key, the provider unreachable, nothing qualifying), hangar uses the
   last id it resolved for that harness and policy. Failing that, it uses a built-in one, dated 2026-10-14:
-  `claude-fable-5-1`, Codex `gpt-6.1-sol` (Codex's default model; gpt-6-astra needs OpenAI's trusted access),
-  `openrouter/anthropic/claude-fable-5.1`, `gemini-3.8-flash-high`. The session's activity says which, and why.
+  `claude-fable-5-1`, Codex `gpt-6-astra` (`balanced`: `gpt-6.1-sol`), `openrouter/anthropic/claude-fable-5.1` (and
+  one per vendor for `frontier@openai` and the like), `gemini-3.8-flash-high`. Every built-in policy has one, so a
+  session never starts on the harness's own default and switches model when the list arrives. The session's activity
+  says which, and why.
   `list_environments` shows what each harness's `model` resolves to now (`models`, with `source`: `live`,
   `cached`, `last`, `seed` or `pinned`).
 - **Keys.** OpenRouter's list is public. The others need an API key in the vault, named in

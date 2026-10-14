@@ -257,7 +257,7 @@ class Fleet:
                                                        if (v := self.harness_version(p, h))}}
                                      for h in spec.agent_harnesses if HARNESSES[h].install},
                 # --- canary: what `model` resolves to now for each harness (a policy: from the provider's list)
-                "models": {h: modelpolicy.of(self).resolve(h, spec.model_for(h), record=False).to_dict()
+                "models": {h: modelpolicy.of(self).view(h, spec.model_for(h))  # --- review #105: and its price
                            for h in spec.agent_harnesses},
             })
         return out

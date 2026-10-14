@@ -242,9 +242,12 @@ async def test_a_sandbox_runs_the_id_resolved_at_create(fleet, creds, tmp_path):
     assert run["model"] == "claude-opus-6", "a policy named for one run is resolved for it"
     await fleet.terminal_kill(sb.id, run["run_id"])
     envs = {e["name"]: e for e in fleet.environments()}
-    assert envs["agents-frontier"]["models"]["claude-code"] == {"model": "claude-fable-6", "policy": "frontier",
-                                                                "source": "live"}
-    assert envs["agents"]["models"]["codex"] == {"model": "sonnet", "source": "pinned"}
+    assert envs["agents-frontier"]["models"]["claude-code"] == {
+        "model": "claude-fable-6", "policy": "frontier", "source": "live",
+        "about": "`claude-fable-6` (`frontier`; no known price, so budgets can't count its cost: HANGAR_MODEL_PRICES)"}
+    assert envs["agents"]["models"]["codex"] == {
+        "model": "sonnet", "source": "pinned",
+        "about": "`sonnet` (no known price, so budgets can't count its cost: HANGAR_MODEL_PRICES)"}
 
 
 @pytest.fixture
@@ -276,7 +279,7 @@ async def test_a_session_keeps_the_model_it_was_created_with(svc, world, fleet, 
 async def test_a_job_session_defaults_to_frontier_and_says_where_the_id_came_from(svc, world, fleet):  # noqa: F811
     s = svc.for_job(job_id="job-12345678", environment="agent", harness="codex", model=None, repo=None,
                     base_branch=None, branch="b", provider=None, labels={}, extra_dirs=[], idle_minutes=5)
-    assert (s.model, s.model_policy) == ("gpt-6.1-sol", "frontier"), "no list: the built-in frontier for codex"
+    assert (s.model, s.model_policy) == ("gpt-6-astra", "frontier"), "no list: the built-in frontier for codex"
     events = svc.activity.read(s.id, 0, 10, False)
     assert any(e.data.get("warning") == "model_resolution" and "built-in" in e.text for e in events)
 
@@ -323,3 +326,73 @@ def test_a_sandbox_that_doesnt_know_its_version_changes_nothing():
     sb = Sandbox(name="b", environment="e", provider="docker", info={"harness": "codex", "harness_lock": "0.163.0"})
     pins.before_turn(Svc(), old, sb, t)
     assert old.harness_version == "0.163.0" and old.harness_session == "th-2", "a session from before pins: adopts"
+
+
+# ====================================================================== review #105
+def test_a_newer_lite_model_is_never_frontier():
+    """Version first would make Google's next flash-lite (its cheapest tier) the `frontier` pick over a stronger
+    flash or pro; a lite model is frontier only when nothing else is listed."""
+    models = recorded("google") + [{"id": "gemini-3.9-flash-lite"}]
+    assert pick("gemini", models, "frontier") == "gemini-3.8-flash"
+    assert pick("antigravity", models, "frontier") == "gemini-3.8-flash-high"
+    assert pick("gemini", [{"id": "gemini-3.5-flash-lite"}, {"id": "gemini-3.1-pro-preview"}], "frontier") == \
+        "gemini-3.1-pro-preview"
+    assert pick("gemini", [{"id": "gemini-3.5-flash-lite"}], "frontier") == "gemini-3.5-flash-lite"
+    ors = recorded("openrouter") + [{"id": "google/gemini-3.9-flash-lite"}]
+    assert pick("pi", ors, "frontier", "google") == "openrouter/google/gemini-3.8-flash"
+
+
+def test_every_built_in_policy_has_a_seed(fleet):
+    """With no list yet, a policy must still name a model: a session that ran its first turns on the harness's own
+    default would switch model when the list arrives (pins resolve once; run_agent re-resolves an unset model).
+    Codex's frontier is gpt-6-astra: OpenAI's docs list it for the API and the Codex CLI with no access gate."""
+    r = Resolver(fleet)
+    assert r.resolve("codex", "frontier").model == "gpt-6-astra"
+    assert r.resolve("codex", "balanced").model == "gpt-6.1-sol"
+    for vendor in ("openai", "google", "anthropic"):
+        got = r.resolve("pi", f"frontier@{vendor}")
+        assert got.source == "seed", vendor
+        assert got.model == pick("pi", recorded("openrouter"), "frontier", vendor), "a seed is a listed id"
+        bal = r.resolve("pi", f"balanced@{vendor}")
+        assert bal.model == pick("pi", recorded("openrouter"), "balanced", vendor), vendor
+
+
+@pytest.mark.parametrize(("model", "priced_as"), [
+    ("gemini-3.8-flash-high", "gemini-3.8-flash"),  # agy: the Gemini id plus a thinking level
+    ("gemini-3.1-pro-low", "gemini-3.1-pro-preview"),
+    ("openrouter/anthropic/claude-fable-5.1", "claude-fable-5-1"),  # pi on OpenRouter: dotted versions
+    ("anthropic/claude-opus-5.5", "claude-opus-5-5"),
+    ("claude-fable-5-1", "claude-fable-5-1"),
+    ("openrouter/openai/gpt-6.1-sol", "gpt-6.1-sol"),
+])
+def test_what_the_policies_resolve_to_is_priced_so_budgets_can_stop_it(model, priced_as):
+    from hangar.events import DEFAULT_PRICES, price_for
+
+    assert price_for(model, DEFAULT_PRICES) == DEFAULT_PRICES[priced_as]
+
+
+def test_every_seed_is_priced():
+    from hangar.events import DEFAULT_PRICES, price_for
+
+    for harness, seeds in modelpolicy.SEED.items():
+        for policy, model in seeds.items():
+            assert price_for(model, DEFAULT_PRICES), (harness, policy, model)
+
+
+def test_a_model_is_described_with_its_policy_and_list_price():
+    from hangar.events import DEFAULT_PRICES
+
+    assert modelpolicy.describe("claude-fable-5-1", "frontier", DEFAULT_PRICES) == \
+        "`claude-fable-5-1` (`frontier`; list price $10/$50 per MTok in/out)"
+    assert modelpolicy.describe("claude-opus-5-5", None, DEFAULT_PRICES) == \
+        "`claude-opus-5-5` (list price $4/$20 per MTok in/out)"
+    assert modelpolicy.describe("my-model", None, DEFAULT_PRICES) == \
+        "`my-model` (no known price, so budgets can't count its cost: HANGAR_MODEL_PRICES)"
+    assert modelpolicy.describe(None, None, DEFAULT_PRICES) == "the harness default"
+
+
+def test_list_environments_says_what_each_model_costs(fleet):
+    v = Resolver(fleet).view("claude-code", "frontier")
+    assert (v["model"], v["policy"], v["source"]) == ("claude-fable-5-1", "frontier", "seed")
+    assert v["about"] == "`claude-fable-5-1` (`frontier`; list price $10/$50 per MTok in/out)"
+    assert fleet.store.kv_get("modelpick:claude-code:frontier") is None, "a listing only looks"
