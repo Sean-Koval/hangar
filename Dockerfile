@@ -1,5 +1,13 @@
 # Control-plane image (dashboard + REST + MCP). Sandboxes are NOT built from this.
 ARG BASE_IMAGE=python:3.12-slim
+
+# --- envd: hangar-envd, the in-sandbox daemon (envd/, docs/envd.md), static for both CPU types: hangar copies it
+# into sandboxes at start, and they needn't match the control plane's CPU.
+FROM rust:1.97-alpine AS envd
+WORKDIR /src
+COPY envd ./
+RUN CARGO_TARGET_DIR=/tmp/target ARCHES="x86_64 aarch64" sh build.sh
+
 FROM ${BASE_IMAGE}
 
 ARG INSTALL_GCLOUD=1
@@ -26,6 +34,7 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 RUN uv pip install --system ".[all]"
 COPY envs /app/envs
+COPY --from=envd /src/dist/ /usr/local/lib/hangar/
 
 ENV HANGAR_HOST=0.0.0.0 HANGAR_PORT=8787 HANGAR_DATA_DIR=/data HANGAR_ENV_DIRS='["/app/envs"]'
 VOLUME /data

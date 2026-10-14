@@ -1,0 +1,175 @@
+{
+  "meta": {
+    "bench": "sandbox-docker",
+    "git": "d4c374d",
+    "started": "2026-10-13T13:14:57",
+    "seconds": 50.1,
+    "host": "vm",
+    "cpus": 2,
+    "python": "3.12.3",
+    "provider": "docker",
+    "runs": 10,
+    "session_poll_seconds": 5.0
+  },
+  "metrics": {
+    "exec_provider": {
+      "n": 50,
+      "p50_ms": 73.62,
+      "p95_ms": 87.81,
+      "mean_ms": 72.94,
+      "min_ms": 57.7,
+      "max_ms": 89.19
+    },
+    "write_64k_provider": {
+      "n": 30,
+      "p50_ms": 4.44,
+      "p95_ms": 7.59,
+      "mean_ms": 6.79,
+      "min_ms": 3.84,
+      "max_ms": 71.84
+    },
+    "read_64k_provider": {
+      "n": 30,
+      "p50_ms": 5.1,
+      "p95_ms": 6.37,
+      "mean_ms": 5.08,
+      "min_ms": 4.25,
+      "max_ms": 6.62
+    },
+    "write_1m_provider": {
+      "n": 30,
+      "p50_ms": 6.04,
+      "p95_ms": 8.26,
+      "mean_ms": 6.09,
+      "min_ms": 4.67,
+      "max_ms": 8.41
+    },
+    "read_1m_provider": {
+      "n": 30,
+      "p50_ms": 7.64,
+      "p95_ms": 12.41,
+      "mean_ms": 7.88,
+      "min_ms": 5.47,
+      "max_ms": 15.94
+    },
+    "write_16m_provider": {
+      "n": 10,
+      "p50_ms": 22.2,
+      "p95_ms": 31.92,
+      "mean_ms": 23.01,
+      "min_ms": 19.32,
+      "max_ms": 31.92
+    },
+    "read_16m_provider": {
+      "n": 10,
+      "p50_ms": 43.92,
+      "p95_ms": 64.24,
+      "mean_ms": 46.69,
+      "min_ms": 35.34,
+      "max_ms": 64.24
+    },
+    "burst_1000_provider": {
+      "n": 1,
+      "p50_ms": 32729.86,
+      "p95_ms": 32729.86,
+      "mean_ms": 32729.86,
+      "min_ms": 32729.86,
+      "max_ms": 32729.86
+    },
+    "pty_echo_provider": {
+      "n": 30,
+      "p50_ms": 0.55,
+      "p95_ms": 1.74,
+      "mean_ms": 0.69,
+      "min_ms": 0.33,
+      "max_ms": 2.53
+    },
+    "exec_envd": {
+      "n": 50,
+      "p50_ms": 7.44,
+      "p95_ms": 8.25,
+      "mean_ms": 7.4,
+      "min_ms": 6.28,
+      "max_ms": 9.64
+    },
+    "write_64k_envd": {
+      "n": 30,
+      "p50_ms": 1.98,
+      "p95_ms": 5.3,
+      "mean_ms": 2.3,
+      "min_ms": 1.73,
+      "max_ms": 5.4
+    },
+    "read_64k_envd": {
+      "n": 30,
+      "p50_ms": 1.26,
+      "p95_ms": 1.73,
+      "mean_ms": 1.39,
+      "min_ms": 1.01,
+      "max_ms": 4.81
+    },
+    "write_1m_envd": {
+      "n": 30,
+      "p50_ms": 5.32,
+      "p95_ms": 6.24,
+      "mean_ms": 5.32,
+      "min_ms": 4.51,
+      "max_ms": 6.34
+    },
+    "read_1m_envd": {
+      "n": 30,
+      "p50_ms": 3.57,
+      "p95_ms": 5.05,
+      "mean_ms": 3.71,
+      "min_ms": 2.54,
+      "max_ms": 5.79
+    },
+    "write_16m_envd": {
+      "n": 10,
+      "p50_ms": 48.01,
+      "p95_ms": 53.79,
+      "mean_ms": 49.07,
+      "min_ms": 45.87,
+      "max_ms": 53.79
+    },
+    "read_16m_envd": {
+      "n": 10,
+      "p50_ms": 35.62,
+      "p95_ms": 47.38,
+      "mean_ms": 34.4,
+      "min_ms": 23.74,
+      "max_ms": 47.38
+    },
+    "burst_1000_envd": {
+      "n": 1,
+      "p50_ms": 5415.17,
+      "p95_ms": 5415.17,
+      "mean_ms": 5415.17,
+      "min_ms": 5415.17,
+      "max_ms": 5415.17
+    },
+    "pty_echo_envd": {
+      "n": 30,
+      "p50_ms": 1.64,
+      "p95_ms": 2.84,
+      "mean_ms": 1.76,
+      "min_ms": 1.54,
+      "max_ms": 3.63
+    }
+  },
+  "notes": {
+    "image": "hangar-env/sesenv:acaeadafcf849a58",
+    "envd": {
+      "url": "http://172.17.0.21:49983",
+      "version": "0.1.0"
+    },
+    "envd_memory_after": "VmHWM: 6164 kB VmRSS: 4468 kB",
+    "checkpoint_parts_bytes": {
+      "agent.tgz": 353069,
+      "repo.bundle": 835,
+      "wip.patch": 126,
+      "untracked.tgz": 3004134,
+      "session.patch": 3883343
+    }
+  }
+}

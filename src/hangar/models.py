@@ -79,6 +79,8 @@ class ExecResult(BaseModel):
     stderr: str = ""
     duration_ms: int = 0
     truncated: bool = False
+    # integrate (#60 x #55): "envd" when the in-sandbox daemon ran it (exec spans and metrics); never serialized
+    transport: str | None = Field(default=None, exclude=True)
 
 
 class CredentialKind(StrEnum):

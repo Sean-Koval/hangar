@@ -16,7 +16,7 @@ REG=$(tfo registry); SA=$(tfo service_account); IP=$(tfo static_ip)
 BUCKET=$(tfo session_bucket 2>/dev/null || true)  # null (enable_session_bucket=false) fails -raw: no bucket
 PROJECT=$(cut -d/ -f2 <<<"$REG"); REGION=${REG%%-docker.pkg.dev*}
 DOMAIN=${DOMAIN:-$IP.sslip.io}
-IMAGE="$REG/control-plane:$(git rev-parse --short HEAD)$(git diff --quiet HEAD -- src envs pyproject.toml Dockerfile || echo -dirty)"
+IMAGE="$REG/control-plane:$(git rev-parse --short HEAD)$(git diff --quiet HEAD -- src envs envd pyproject.toml Dockerfile || echo -dirty)"
 
 echo "== cluster credentials"; eval "$(tfo get_credentials)"
 

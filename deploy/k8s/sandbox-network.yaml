@@ -10,7 +10,8 @@
 #     can't mint a token for the node's or a KSA's Google identity (the pod-snapshot KSA can read every snapshot);
 #   - the git gateway on hangar pods (gateway.yaml).
 # Nothing may connect *to* a sandbox pod: hangar reaches sandboxes through the Kubernetes API (exec), not the pod
-# network, so sandboxes can't reach each other either.
+# network, so sandboxes can't reach each other either. The one exception is envd-network.yaml: hangar's own pods,
+# to the in-sandbox daemon's port.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
