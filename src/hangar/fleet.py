@@ -738,7 +738,8 @@ class Fleet:
         extra_env: dict[str, str] = {}
         if h:
             if h.install:
-                prelude.append(f'export PATH="{h.prefix}/bin:$PATH"')
+                extra = "".join(f":{h.prefix}/{d}" for d in h.path_extra)  # --- images: the pack carries no wrapper
+                prelude.append(f'export PATH="{h.prefix}/bin:$PATH{extra}"')
             extra_env.update(h.env)
             extra_env["HANGAR_HARNESS"] = h.name
         for var, cred in spec.secrets.items():

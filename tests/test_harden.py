@@ -113,14 +113,19 @@ def test_codex_gets_its_hooks_off_and_says_what_stays_open():
     assert p.warnings == [harden.CODEX_RULES] and set(p.files) == {"run-0000beef.agent-env"}
 
 
-def test_codexs_wrapper_runs_nothing_from_the_agents_path():
-    """The pinned `codex` is a wrapper script; looking up dirname or readlink on the agent's PATH (as it did) would let
-    a shim pick what runs. The setup refuses a wrapper that runs commands to find its way (an older pack)."""
+def test_codexs_pack_has_no_wrapper_and_pis_launcher_runs_nothing_from_the_agents_path():
+    """The pinned `codex` is the vendor's binary (bin/codex links to it), so nothing runs before it. A launcher that
+    looked up dirname or readlink on the agent's PATH (codex's from before, pi's) would let a shim pick what runs; the
+    setup refuses one (an older pack)."""
     script = pack_script(HARNESSES["codex"])
-    wrapper = script[script.index("<<SH\n") + 5:script.index("\nSH\n")]
-    # the heredoc isn't quoted: $PREFIX is written in when the pack is built; \$PATH and \$@ are the wrapper's own
-    assert wrapper == '#!/bin/sh\nPATH="\\$PATH:$PREFIX/libexec/codex-path" exec "$PREFIX/libexec/bin/codex" "\\$@"'
-    assert f"export PREFIX={HARNESSES['codex'].prefix} " in script and "$(" not in wrapper
+    assert 'ln -s ../libexec/bin/codex "$PREFIX/bin/codex"' in script and "<<SH" not in script
+    assert HARNESSES["codex"].path_extra == ["libexec/codex-path"]
+    pi = pack_script(HARNESSES["pi"])
+    launcher = pi[pi.index("<<SH\n") + 5:pi.index("\nSH\n")]
+    # the heredoc isn't quoted: $PREFIX, $PKG and $ENTRY are written in when the pack is built; \$@ is the launcher's
+    assert launcher == '#!/bin/sh\nexec "$PREFIX/node/bin/node" "$PKG/$ENTRY" "\\$@"' and "$(" not in launcher
+    gemini = HARNESSES["gemini"].install
+    assert "readlink" not in gemini and "dirname" not in gemini
     assert "grep -q '\\$(' \"$b\"" in isolation.SETUP
 
 
