@@ -77,11 +77,11 @@ $("#signout").addEventListener("click", () => { store.token = ""; showGate(); })
 /* ------------------------------------------------------------------ routing */
 function route() {
   const v = (location.hash || "#fleet").slice(1);
-  state.view = ["jobs", "sessions", "fleet", "environments", "credentials", "snapshots", "connect", "activity"].includes(v) ? v : "fleet";
+  state.view = ["jobs", "sessions", "fleet", "environments", "credentials", "snapshots", "connect", "activity", "usage"].includes(v) ? v : "fleet";
   $$(".view").forEach((s) => (s.hidden = s.id !== `view-${state.view}`));
   $$(".rail a[data-view]").forEach((a) => a.classList.toggle("active", a.dataset.view === state.view));
   ({ jobs: loadJobs, sessions: loadSessions, fleet: loadFleet, environments: loadEnvs, credentials: loadCreds, snapshots: loadSnaps, connect: loadConnect,
-     activity: loadAudit })[state.view]();
+     activity: loadAudit, usage: loadUsage })[state.view]();
 }
 window.addEventListener("hashchange", route);
 
@@ -1022,6 +1022,75 @@ async function loadAudit() {
     <td class="muted" title="${new Date(a.ts * 1000).toLocaleString()}">${ago(a.ts)}</td>
     <td>${esc(a.actor)}</td><td>${esc(a.action)}</td><td>${esc(a.target || "")}</td>
     <td class="muted">${esc(Object.entries(a.detail).map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`).join("  ").slice(0, 160))}</td></tr>`).join("");
+}
+
+/* ------------------------------------------------------------------ usage (--- observe) */
+const usd = (v) => (v >= 100 ? `$${Math.round(v).toLocaleString()}` : `$${v.toFixed(2)}`);
+const kTok = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+
+async function loadUsage() {
+  const since = $("#usage-range").value;
+  const q = (g, limit) => api("GET", `/api/usage?group_by=${g}&since=${since}&limit=${limit}`);
+  try {
+    const [days, repos, people] = await Promise.all([q("day", 200), q("repo", 10), q("requester", 10)]);
+    const t = days.total;
+    $("#usage-tiles").innerHTML = [
+      ["Spend", usd(t.cost_usd), t.unpriced_turns ? `+ ${t.unpriced_turns} turn(s) with no known price` : ""],
+      ["Tokens", kTok(t.tokens), t.cache_read_tokens ? `+ ${kTok(t.cache_read_tokens)} cache reads` : ""],
+      ["Agent turns", String(t.turns), ""],
+      ["Budget stops", String(t.budget_stops), t.budget_stops ? "turns stopped over their budget" : ""],
+    ].map(([label, value, note]) => `<div class="tile"><span class="tile-label">${esc(label)}</span>
+      <span class="tile-value">${esc(value)}</span><span class="hint">${esc(note)}</span></div>`).join("");
+    drawSpend(days.rows, days.since);
+    const rows = (sel, data) => {
+      $(`${sel} tbody`).innerHTML = data.rows.length ? data.rows.map((r) => `<tr><td>${esc(r.key)}</td>
+        <td>${r.turns}</td><td>${kTok(r.tokens)}</td>
+        <td title="${r.unpriced_turns ? `${r.unpriced_turns} turn(s) with no known price` : ""}">${usd(r.cost_usd)}${r.unpriced_turns ? " +" : ""}</td></tr>`).join("")
+        : `<tr><td colspan="4" class="muted">No agent turns in this range.</td></tr>`;
+    };
+    rows("#usage-repos", repos);
+    rows("#usage-requesters", people);
+    $("#usage-stops tbody").innerHTML = days.budget_stops.length ? days.budget_stops.map((b) => `<tr>
+      <td>${esc(b.job || b.session || "")}</td><td>${esc(b.repo)}</td><td>${esc(b.requester || "")}</td>
+      <td>${esc(b.reason || "")}</td>
+      <td class="muted" title="${new Date(b.ts * 1000).toLocaleString()}">${ago(b.ts)}</td></tr>`).join("")
+      : `<tr><td colspan="5" class="muted">No turn was stopped over its budget in this range.</td></tr>`;
+  } catch (e) { if (e.message !== "unauthorized") toast(e.message, true); }
+}
+$("#usage-range").addEventListener("change", () => loadUsage());
+
+function drawSpend(rows, since) {
+  // One bar per UTC day of the range, empty days included; hover or focus shows the day's numbers.
+  const byDay = new Map(rows.map((r) => [r.key, r]));
+  const days = [];
+  for (let d = Math.floor(since / 86400) * 86400000; d <= Date.now(); d += 86400000) {
+    const key = new Date(d).toISOString().slice(0, 10);
+    days.push(byDay.get(key) || { key, cost_usd: 0, tokens: 0, turns: 0, budget_stops: 0 });
+  }
+  const max = Math.max(0, ...days.map((d) => d.cost_usd));
+  const box = $("#usage-days");
+  if (!max) { box.innerHTML = `<p class="empty">No priced spend in this range.</p>`; return; }
+  const tipText = (d) => `${d.key}: ${usd(d.cost_usd)} · ${kTok(d.tokens)} tokens · ${d.turns} turn(s)`
+    + (d.budget_stops ? ` · ${d.budget_stops} budget stop(s)` : "");
+  box.innerHTML = `<div class="bars-axis"><span>${usd(max)}</span><span>$0</span></div><div class="bars-plot">${
+    days.map((d) => `<div class="bar-slot" tabindex="0" aria-label="${esc(tipText(d))}" data-tip="${esc(tipText(d))}">
+      <div class="bar" style="height:${(100 * d.cost_usd / max).toFixed(2)}%"></div></div>`).join("")}</div>
+    <div class="bars-x"><span>${esc(days[0].key)}</span><span>${esc(days[days.length - 1].key)}</span></div>
+    <div class="bar-tip" hidden></div>`;
+  const tip = $(".bar-tip", box);
+  const show = (el) => {
+    tip.textContent = el.dataset.tip;
+    tip.hidden = false;
+    const r = el.getBoundingClientRect(), b = box.getBoundingClientRect();
+    const left = r.left - b.left + r.width / 2 - tip.offsetWidth / 2;
+    tip.style.left = `${Math.min(Math.max(0, left), b.width - tip.offsetWidth)}px`;
+  };
+  $$(".bar-slot", box).forEach((el) => {
+    el.addEventListener("mouseenter", () => show(el));
+    el.addEventListener("focus", () => show(el));
+    el.addEventListener("mouseleave", () => (tip.hidden = true));
+    el.addEventListener("blur", () => (tip.hidden = true));
+  });
 }
 
 /* ------------------------------------------------------------------ start */

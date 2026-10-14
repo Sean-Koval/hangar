@@ -37,6 +37,7 @@ The same control plane runs on your laptop (Docker), on a single VM (Docker + gV
 - **Agents inside sandboxes.** `run_agent` starts Claude Code, Codex, pi or `agy` (Antigravity) headless on a task, with an optional `model`, so one orchestrator session can fan work out across the fleet.
 - **Bearer tokens or OAuth.** `hangar connect <client>` writes the client's config with a token scoped to MCP. ChatGPT connectors and other OAuth-only clients use hangar's built-in OAuth 2.1 server: discovery, dynamic registration, PKCE, and a consent page where you approve with a hangar token. See [docs/clients.md](docs/clients.md).
 - **A dashboard.** It covers the fleet, live terminals, the environment editor with streaming builds, credentials and sign-in, snapshots, MCP connect snippets with token management, and an audit log.
+- **Traces, metrics and cost.** OpenTelemetry traces from the control plane when `OTEL_*` is set; Claude Code's and Codex's own spans join them. Prometheus `/metrics` for a scrape-only token. A usage view of spend by day, repo and requester. See [docs/observability.md](docs/observability.md).
 
 ## Quickstart (laptop, 5 minutes)
 

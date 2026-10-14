@@ -1,0 +1,28 @@
+# Optional: traces to Google Cloud Trace through the Google-Built OpenTelemetry Collector, which takes OTLP in the
+# cluster and exports to telemetry.googleapis.com with its own Workload Identity. Install it first:
+#   kubectl kustomize https://github.com/GoogleCloudPlatform/otlp-k8s-ingest.git/k8s/base | envsubst | kubectl apply -f -
+# (Service opentelemetry-collector in namespace opentelemetry, OTLP on 4317 gRPC and 4318 HTTP.)
+# docs/observability.md has the whole setup and the IAM roles.
+#
+# 1) Point the control plane at it. Add these to the `hangar` ConfigMap (config.yaml) and restart hangar:
+#      OTEL_EXPORTER_OTLP_ENDPOINT: http://opentelemetry-collector.opentelemetry.svc.cluster.local:4318
+#      OTEL_SERVICE_NAME: hangar
+#      # Optional: also let Claude Code and Codex inside sandboxes send their own spans, under hangar's:
+#      HANGAR_OTEL_SANDBOX_ENDPOINT: http://opentelemetry-collector.opentelemetry.svc.cluster.local:4318
+#
+# 2) Only with HANGAR_OTEL_SANDBOX_ENDPOINT: sandboxes may not reach private addresses (sandbox-network.yaml), so
+#    allow exactly the collector's OTLP/HTTP port. A compromised agent can then send the collector junk telemetry,
+#    nothing more; leave this out if you don't want harness telemetry.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-otel-collector
+  namespace: hangar-sandboxes
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: opentelemetry}
+      ports: [{protocol: TCP, port: 4318}]

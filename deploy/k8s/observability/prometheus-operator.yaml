@@ -1,0 +1,33 @@
+# Optional: scrape hangar's /metrics with the Prometheus Operator (kube-prometheus-stack). Not in the base
+# kustomization. docs/observability.md has the whole setup.
+#
+# /metrics needs a token. Mint one that can read metrics and nothing else, and store it next to this:
+#   hangar token create prometheus --scope metrics
+#   kubectl -n hangar create secret generic hangar-metrics-token --from-literal=token=hgr_...
+# Plain `prometheus.io/scrape` annotations can't send a token, which is why this is a ServiceMonitor.
+apiVersion: v1
+kind: Service
+metadata:
+  name: hangar-metrics
+  namespace: hangar
+  labels: {app: hangar, hangar.dev/metrics: "true"}
+spec:
+  selector: {app: hangar}
+  ports: [{name: http, port: 8787, targetPort: http}]
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: hangar
+  namespace: hangar
+  # labels: {release: kube-prometheus-stack}  # whatever your Prometheus's serviceMonitorSelector matches
+spec:
+  selector:
+    matchLabels: {hangar.dev/metrics: "true"}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      authorization:
+        type: Bearer
+        credentials: {name: hangar-metrics-token, key: token}  # a Secret in this namespace

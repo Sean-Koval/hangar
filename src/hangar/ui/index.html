@@ -38,6 +38,7 @@
     <a href="#snapshots" data-view="snapshots">Snapshots</a>
     <a href="#connect" data-view="connect">Connect</a>
     <a href="#activity" data-view="activity">Activity</a>
+    <a href="#usage" data-view="usage">Usage</a>
     <div class="rail-foot">
       <div id="providers"></div>
       <button id="signout" class="link">Sign out</button>
@@ -244,6 +245,37 @@
         <thead><tr><th>When</th><th>Who</th><th>Action</th><th>Target</th><th>Detail</th></tr></thead>
         <tbody></tbody>
       </table>
+    </section>
+
+    <!-- USAGE (--- observe) -->
+    <section id="view-usage" class="view" hidden>
+      <header class="view-head">
+        <div><h2>Usage</h2>
+          <p class="sub">What agent turns spent, from every job and session. Cost is the harness's own figure, or
+            list prices for the model; turns on a model with no known price count their tokens only.</p></div>
+        <div class="actions">
+          <select id="usage-range" aria-label="Time range">
+            <option value="7d">Last 7 days</option><option value="30d" selected>Last 30 days</option>
+            <option value="90d">Last 90 days</option>
+          </select>
+        </div>
+      </header>
+      <div id="usage-tiles" class="tiles"></div>
+      <div class="panel usage-chart">
+        <h3>Spend per day (UTC)</h3>
+        <div id="usage-days" class="bars"></div>
+      </div>
+      <div class="split even usage-split">
+        <div><h3 class="section-title">Top repos</h3>
+          <table class="table compact" id="usage-repos"><thead><tr><th>Repo</th><th>Turns</th><th>Tokens</th>
+            <th>Spend</th></tr></thead><tbody></tbody></table></div>
+        <div><h3 class="section-title">Top requesters</h3>
+          <table class="table compact" id="usage-requesters"><thead><tr><th>Requester</th><th>Turns</th>
+            <th>Tokens</th><th>Spend</th></tr></thead><tbody></tbody></table></div>
+      </div>
+      <h3 class="section-title">Budget stops</h3>
+      <table class="table compact" id="usage-stops"><thead><tr><th>Job or session</th><th>Repo</th>
+        <th>Requester</th><th>Why</th><th>When</th></tr></thead><tbody></tbody></table>
     </section>
   </main>
 

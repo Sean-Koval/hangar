@@ -25,7 +25,7 @@ from typing import Any
 from cryptography.fernet import InvalidToken
 from pydantic import BaseModel, Field
 
-from hangar import ckpt, exchange
+from hangar import ckpt, exchange, observe  # --- observe
 from hangar.checkpoints import CheckpointStore, make_store
 from hangar.ckpt import CKPT_DIR, CKPT_REF, PACK_READ_LIMIT, PARTS, RESTORE_DIR  # noqa: F401 - re-exported (strategies, exchange)
 from hangar.events import Activity, resolve_budget, total_usage
@@ -394,6 +394,7 @@ class SessionService:
         finally:
             self._busy.discard(sid)
 
+    @observe.traced("session.boot")  # --- observe
     async def _boot(self, s: Session, progress: Callable[[str], None] | None = None) -> Sandbox:
         """Attach a running sandbox to the session, restoring its last checkpoint. Caller holds the lock."""
         if s.sandbox_id and self._alive(s.sandbox_id):
@@ -465,6 +466,7 @@ class SessionService:
                 log.warning("session %s: checkpoint %s did not restore: %s", s.id, ck.id, e)
         raise SessionError("no checkpoint could be restored: " + "; ".join(errors)[-600:])
 
+    @observe.traced("checkpoint.restore")  # --- observe
     async def _restore_checkpoint(self, s: Session, sb: Sandbox, repo: str, ck: Checkpoint) -> None:
         """Parts are fetched and decrypted in parallel, written as one archive and applied by one script (perf: two
         round trips, where it was one write per part and three execs). Packs are planned from the recorded sizes
@@ -506,6 +508,7 @@ class SessionService:
                 dirs += get_harness(t).session_dirs
         return sorted(set(dirs + s.extra_dirs))
 
+    @observe.traced("checkpoint.capture")  # --- observe
     async def _checkpoint(self, s: Session, reason: str, skip_unchanged: bool = False) -> Checkpoint | None:
         """Snapshot conversation + repo state into the control plane. Caller holds the lock.
 
@@ -769,6 +772,7 @@ class SessionService:
                           f"could not start: {e}")
                 raise
 
+    @observe.turn_begin  # --- observe: the turn's invoke_agent span
     async def begin_turn(self, s: Session, turn: SessionTurn, prompt: str | None = None,
                          extra_env: dict[str, str] | None = None, timeout_minutes: int | None = None,
                          handoff: bool = True) -> None:
@@ -811,6 +815,7 @@ class SessionService:
         s.last_active_at = now()
         self._set(s, SessionState.RUNNING, f"agent turn {len(s.turns)} running ({turn.mode})")
 
+    @observe.turn_end  # --- observe: closes it; turn duration, tokens, cost and budget stops in /metrics
     async def end_turn(self, s: Session, turn: SessionTurn, timeout_minutes: int | None = None,
                        should_cancel: Callable[[], bool] | None = None) -> tuple[str, str]:
         """Wait for the turn, then record its summary and conversation id and checkpoint.

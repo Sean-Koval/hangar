@@ -41,6 +41,7 @@ from starlette.requests import ClientDisconnect, Request
 from starlette.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 from starlette.routing import Route
 
+from hangar import observe  # --- observe
 from hangar.auth import hash_token
 from hangar.models import Credential, CredentialKind, Sandbox, SandboxGrant, SandboxState, Session, Snapshot, now
 
@@ -554,7 +555,8 @@ class Gateway:
 
     def asgi_app(self) -> Starlette:
         """The sandbox-facing app: /git only, no admin routes."""
-        return Starlette(routes=[Route("/healthz", self.healthz, methods=["GET"]), *self.routes()])
+        return Starlette(routes=[Route("/healthz", self.healthz, methods=["GET"]), *self.routes()],
+                         middleware=[Middleware(observe.HTTPMiddleware)])  # --- observe: spans, /metrics
 
     def routes(self) -> list[Route]:
         return [Route("/git/{rest:path}", self.handle, methods=["GET", "POST"],
@@ -760,6 +762,7 @@ class Gateway:
         return out
 
     def _deny(self, grant: SandboxGrant, repo: str, reason: str, refs: list[Command] | None = None) -> None:
+        observe.gateway_denied(reason)  # --- observe
         self.fleet.audit(f"sandbox:{grant.sandbox_id}", "gw.git.deny", grant.sandbox_id, repo=repo, reason=reason,
                          refs=[{"ref": c.ref, "old": c.old[:12], "new": c.new[:12]} for c in refs or []])
 
@@ -956,6 +959,8 @@ class Gateway:
         ok = status == 200 and bool(report) and report[0] == "unpack ok" and \
             all(not x.startswith("ng ") for x in report)
         self._record_created(grant, [x[3:] for x in report if status == 200 and x.startswith("ok ")])
+        observe.gateway_push("ok" if ok or (status == 200 and not cmds.commands) else "failed",  # --- observe
+                             **{"hangar.sandbox.id": grant.sandbox_id, "hangar.gateway.upstream_status": status})
         self.fleet.audit(f"sandbox:{grant.sandbox_id}", "gw.git.push", grant.sandbox_id, repo=repo,
                          result="ok" if ok or (status == 200 and not cmds.commands) else "failed", status=status,
                          refs=[{"ref": c.ref, "old": c.old[:12], "new": c.new[:12]} for c in cmds.commands],

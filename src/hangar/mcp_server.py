@@ -28,7 +28,7 @@ from mcp.shared.exceptions import NoBackChannelError
 from mcp_types import CallToolResult, ElicitResult, Icon, InputRequiredResult
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
-from hangar import exchange, mcp_tasks  # workstream mcp-modern: mcp_tasks has tasks and elicitation
+from hangar import exchange, mcp_tasks, observe  # mcp-modern: mcp_tasks has tasks and elicitation; --- observe
 from hangar import mcp_live as live  # workstream mcp-modern: typed results, hints, resources, prompts
 from hangar.broker import CredentialError
 from hangar.fleet import Fleet, FleetError
@@ -119,6 +119,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                         return fn(*a, **kw)
                     except EXPECTED as e:
                         raise ToolError(str(e).strip("'\"")) from e
+            wrapped = observe.mcp_tool(fn.__name__, wrapped)  # --- observe: a span and /metrics per call
             return mcp.tool(description=inspect.cleandoc(fn.__doc__ or ""),
                             annotations=live.TOOL_HINTS.get(fn.__name__))(wrapped)
 

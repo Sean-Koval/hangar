@@ -29,6 +29,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from hangar import observe  # integrate (#57 + #55): spans and /metrics
+
 if TYPE_CHECKING:
     from hangar.checkpoints import CheckpointStore
     from hangar.config import Settings
@@ -123,6 +125,7 @@ class Backups:
         self._lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ backup
+    @observe.traced("db.backup")
     async def run(self) -> dict[str, Any]:
         """Take a backup now, then delete all but the newest HANGAR_BACKUP_KEEP."""
         async with self._lock:  # a scheduled one and `hangar admin backup` at once would race on pruning
@@ -159,6 +162,7 @@ class Backups:
         return [b["name"] for b in old]
 
     # ------------------------------------------------------------------ restore
+    @observe.traced("db.restore_stage")
     async def stage(self, name: str) -> dict[str, Any]:
         """Fetch, decrypt and check a backup ("latest" for the newest), and stage it for the next start."""
         if name == "latest":

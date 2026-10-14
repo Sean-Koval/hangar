@@ -99,6 +99,17 @@ class Store:
             rows = self._db.execute(f"SELECT data FROM {table}").fetchall()
         return [cls.model_validate_json(r[0]) for r in rows]
 
+    # --- observe: /metrics gauges
+    def count_by(self, cls: type[BaseModel], *fields: str) -> dict[tuple, int]:
+        """Records per combination of top-level fields, counted by SQLite without decoding a model each."""
+        table, _ = _TABLES[cls]
+        if not fields or not all(f.isidentifier() for f in fields):
+            raise ValueError(f"bad fields {fields}")
+        cols = ", ".join(f"json_extract(data, '$.{f}')" for f in fields)
+        with self._lock:
+            rows = self._db.execute(f"SELECT {cols}, count(*) FROM {table} GROUP BY {cols}").fetchall()
+        return {tuple(r[:-1]): r[-1] for r in rows}
+
     def delete(self, cls: type[BaseModel], key: str) -> None:
         table, _ = _TABLES[cls]
         with self._lock, self._synced(cls in _DURABLE):
