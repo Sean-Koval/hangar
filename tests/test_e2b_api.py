@@ -618,7 +618,14 @@ async def test_answers_must_prove_the_daemon_and_cut_uploads_change_nothing(hang
         r = await c.post("/files", params={"path": str(path)}, content=b"x" * (3 << 20), headers=up)
         assert r.status_code == 413
         assert path.read_bytes() == b"k" * (600 << 10)
-        assert not [p for p in path.parent.iterdir() if p.name != "kept.txt"]  # no temporary file left behind
+        # No temporary file left behind. The daemon removes its one when it sees the connection cut, which can be
+        # just after the router has answered 413 (it was, under xdist on CI): wait for that, not for luck.
+        for _ in range(100):
+            left = [p for p in path.parent.iterdir() if p.name != "kept.txt"]
+            if not left:
+                break
+            await asyncio.sleep(0.05)
+        assert not left
 
         impostor_port = free_port()
         impostor = subprocess.Popen(["python3", "-m", "http.server", str(impostor_port), "--bind", "127.0.0.1"],
