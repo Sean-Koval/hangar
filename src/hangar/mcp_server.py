@@ -566,8 +566,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         @tool()
         async def list_sessions(include_archived: bool = False, limit: int = 30,
                                 cursor: str | None = None) -> list[live.SessionOut]:
-            """Sessions, most recently active first: name, state, repo, branch, last summary. Next page: `cursor` =
-            the last one's."""
+            """Sessions, last active first: name, state, repo, branch, last summary. More: cursor=the last one's."""
             keep = ("id", "name", "title", "state", "environment", "harness", "repo", "branch", "last_active_at",
                     "last_summary", "sandbox_id", "needs_input")
             # --- identity; --- durable: the caller's own, filtered in the store, a page at a time
@@ -862,8 +861,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
 
     @tool()
     async def list_jobs(state: str | None = None, limit: int = 20, cursor: str | None = None) -> list[live.JobOut]:
-        """Jobs, newest first (state: queued | running | needs_input | succeeded | failed | cancelled ...). Next
-        page: `cursor` = the last one's."""
+        """Jobs, newest first; state: queued|running|needs_input|succeeded|failed... More: cursor=the last one's."""
         page, _ = jobs.page(state=state, limit=limit, person=people.scope(), cursor=cursor)  # identity
         return [{**{k: v for k, v in jobs.view(j).items() if k not in ("events", "instructions", "turns")},
                  "cursor": c} for j, c in page]
