@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
+import copy  # --- review(identity)
 import json
 import logging
 import re
@@ -245,19 +246,16 @@ class Fleet:
         """Check a spec without saving it: resolves `extends`, validates, renders the Dockerfile."""
         name = str(data.get("name") or "")
         problems: list[str] = []
-        prev = self.catalog._raw.get(name)
+        # --- review(identity): on a copy of the catalog. Swapping the spec into the shared one (from a sync tool's
+        # worker thread) let sandboxes starting meanwhile, anyone's, use the caller's spec.
+        scratch = copy.copy(self.catalog)
+        scratch._raw = {**self.catalog._raw, name: (data, self.catalog.dirs[0] if self.catalog.dirs else None)}
         try:
-            self.catalog._raw[name] = (data, self.catalog.dirs[0] if self.catalog.dirs else None)
-            spec = self.catalog.get(name)
+            spec = scratch.get(name)
             dockerfile = None if spec.image else render(
                 spec, self.settings.sandbox_user, self.settings.workspace_dir, self._extra_ca()).dockerfile
         except Exception as e:  # noqa: BLE001 - reported to the caller
             return {"valid": False, "errors": [str(e)]}
-        finally:
-            if prev is None:
-                self.catalog._raw.pop(name, None)
-            else:
-                self.catalog._raw[name] = prev
         known = {c.name for c in self.broker.list()}
         for c in [*spec.credentials, *spec.secrets.values()]:
             if c not in known:
