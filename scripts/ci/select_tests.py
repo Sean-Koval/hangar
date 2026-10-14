@@ -64,7 +64,6 @@ PATHS: list[tuple[str, list[str] | str]] = [
 ]
 
 LARGE_DIFF = 12  # changed hangar modules past which selection isn't worth its risk
-E2E_MARK = re.compile(r"""environ\.get\(["']HANGAR_E2E["']\)""")
 READS = {
     "envs": re.compile(r"""(parents\[1\]|ROOT)\s*/\s*["']envs["']"""),  # the repo's environments
     "envd": re.compile(r"""BINARIES|envd_dir|HANGAR_ENVD_DIR"""),  # the hangar-envd binary
@@ -94,12 +93,12 @@ def module_name(path: str) -> str | None:
     return ".".join(parts)
 
 
-def imports(path: Path, name: str) -> set[str]:
+def imports(tree: ast.Module, name: str, package: bool) -> set[str]:
     """Every hangar or tests module the file imports, at module level or inside functions: `from a import b` counts
     as both a and a.b, since b may be a module."""
-    pkg = name if path.name == "__init__.py" else name.rpartition(".")[0]
+    pkg = name if package else name.rpartition(".")[0]
     out: set[str] = set()
-    for node in ast.walk(ast.parse(path.read_text(), str(path))):
+    for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             out.update(a.name for a in node.names)
         elif isinstance(node, ast.ImportFrom):
@@ -114,19 +113,37 @@ def imports(path: Path, name: str) -> set[str]:
     return {m for m in out if m.split(".")[0] in ("hangar", "tests")}
 
 
+def opt_ins(tree: ast.Module) -> dict[str, str]:
+    """Module-level markers that skip unless an env var opts in, e.g. `pytestmark = pytest.mark.skipif(
+    os.environ.get("HANGAR_E2E") != "1", ...)` -> {"pytestmark": "HANGAR_E2E"}."""
+    found = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) \
+                and ast.unparse(node.value.func).endswith("skipif"):
+            env = [c.value for c in ast.walk(node.value) if isinstance(c, ast.Constant)
+                   and isinstance(c.value, str) and c.value.startswith("HANGAR_")]
+            calls = {ast.unparse(c.func) for c in ast.walk(node.value) if isinstance(c, ast.Call)}
+            if env and calls & {"os.environ.get", "os.getenv"}:
+                found.update((t.id, env[0]) for t in node.targets if isinstance(t, ast.Name))
+    return found
+
+
 class Graph:
     def __init__(self, root: Path = ROOT) -> None:
         self.root = root
         self.files: dict[str, str] = {}  # module -> repo-relative path
         self.text: dict[str, str] = {}
         self.imports: dict[str, set[str]] = {}
+        self.opt_ins: dict[str, dict[str, str]] = {}
         for p in [*sorted((root / "src").rglob("*.py")), *sorted((root / "tests").rglob("*.py"))]:
             rel = p.relative_to(root).as_posix()
             name = module_name(rel)
             if name is None:
                 continue
             self.files[name], self.text[name] = rel, p.read_text()
-            self.imports[name] = imports(p, name)
+            tree = ast.parse(self.text[name], rel)
+            self.imports[name] = imports(tree, name, p.name == "__init__.py")
+            self.opt_ins[name] = opt_ins(tree)
         self.importers: dict[str, set[str]] = defaultdict(set)
         for name, deps in self.imports.items():
             for d in deps:
@@ -157,15 +174,14 @@ class Graph:
         return {f for n, f in self.tests.items() if READS[what].search(self.text[n])}
 
     def is_e2e(self, test_file: str) -> bool:
-        """A Docker e2e suite: its tests run only with HANGAR_E2E=1 (kata's own opt-in isn't one: it needs KVM)."""
-        name = module_name(test_file)
-        return name in self.text and bool(E2E_MARK.search(self.text[name]))
+        """A Docker e2e suite: it has tests that run only with HANGAR_E2E=1 (kata's HANGAR_E2E_KATA isn't one: it
+        needs a KVM host)."""
+        return "HANGAR_E2E" in self.opt_ins.get(module_name(test_file) or "", {}).values()
 
     def is_unit(self, test_file: str) -> bool:
-        """Has tests that run without HANGAR_E2E: not a module skipped as a whole by an opt-in marker."""
-        name = module_name(test_file)
-        return name in self.text and not re.search(r"^pytestmark = pytest\.mark\.skipif\(os\.environ\.get\(",
-                                                   self.text[name], re.M)
+        """Has tests that run without an opt-in: the module as a whole isn't skipped by one."""
+        name = module_name(test_file) or ""
+        return name in self.text and "pytestmark" not in self.opt_ins[name]
 
 
 def select(changed: list[str], graph: Graph) -> Selection:

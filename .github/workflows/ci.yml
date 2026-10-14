@@ -20,6 +20,8 @@ permissions:
 
 env:
   PYTEST_WORKERS: "8"
+  PYTEST_ADDOPTS: -p no:cacheprovider --durations=10
+  UV_COMPILE_BYTECODE: "1"
   PYTHONPATH: scripts/ci  # -p flake_report
   RERUN: --reruns 1 -p flake_report
 
@@ -100,7 +102,7 @@ jobs:
       - run: chmod +x envd/dist/*
       - run: uv sync --all-extras --locked
       - run: |
-          uv run pytest -q -p no:cacheprovider -n "$PYTEST_WORKERS" $RERUN \
+          uv run pytest -q -n "$PYTEST_WORKERS" $RERUN \
             --flake-report "flakes-$FLAKE_JOB.json" --junitxml "junit-$FLAKE_JOB.xml" \
             $(python3 scripts/ci/select_tests.py --all --shard ${{ matrix.shard }}/4)
       - if: always()
@@ -140,7 +142,7 @@ jobs:
       - run: |
           job=$(basename "$SUITE" .py)
           echo "FLAKE_JOB=$job" >> "$GITHUB_ENV"
-          FLAKE_JOB=$job uv run pytest -v -p no:cacheprovider $RERUN \
+          FLAKE_JOB=$job uv run pytest -v $RERUN \
             --flake-report "flakes-$job.json" --junitxml "junit-$job.xml" "$SUITE"
       - if: always()
         uses: actions/upload-artifact@v7

@@ -31,6 +31,15 @@ def _isolated_cli_config(tmp_path, monkeypatch):
     monkeypatch.setenv("HANGAR_CLI_CONFIG", str(tmp_path / "cli.json"))
 
 
+@pytest.fixture(autouse=True)
+def _no_host_docker(monkeypatch):
+    """Only the Docker e2e suites (HANGAR_E2E=1) reach the machine's Docker. A unit test that builds a real app
+    (whose default provider is docker) otherwise builds real images wherever Docker runs, as on CI: one such test
+    took 46 s there and 1 s on a laptop, and xdist workers (and other runs) share the daemon."""
+    if os.environ.get("HANGAR_E2E") != "1":
+        monkeypatch.setenv("DOCKER_HOST", "unix:///nonexistent/hangar-unit-tests-use-no-docker.sock")
+
+
 _run_root: Path | None = None
 
 
