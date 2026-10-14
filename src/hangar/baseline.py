@@ -6,9 +6,9 @@ attempt as failing, and each PR goes out as a draft that says the change broke s
 
 So before the agent starts, hangar runs the job's standing check once on the base commit:
 
-* once per (repo, base commit, command), shared: the result is kept in the store's kv table, and jobs that start on
-  the same base while it runs wait for that one run instead of starting their own (60 sessions on one `main` cost
-  one check per merge, not 60);
+* once per (repo, base commit, command, environment, owner), shared: the result is kept in the store's kv table,
+  and jobs that start on the same base while it runs wait for that one run instead of starting their own (60
+  sessions of 6 people on one `main` cost at most one check per person and environment per merge, not 60);
 * only for a standing check, the one from the repo's policy or the environment. A `verify` the job brought is its
   acceptance test, written for the change, and expected to fail before it;
 * a red base is reported in the job's events, its prompt and the PR body. The in-turn gate is off for the job (it
@@ -47,7 +47,8 @@ _NOT_CACHED = {124, 137, -1}  # timed out or killed: maybe slow, maybe flaky; th
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _DURATION = re.compile(r"\s+\(?\d+(?:\.\d+)?\s*m?s\)?$")
 _PATTERNS = [
-    re.compile(r"^(?:FAILED|ERROR) (\S+?)(?: - .*)?$"),  # pytest's short test summary (-rfE, its default)
+    # pytest's short test summary (-rfE, its default); a parametrized id may hold spaces ("test_x[a b]")
+    re.compile(r"^(?:FAILED|ERROR) (\S.*?)(?: - .*)?$"),
     re.compile(r"^\s*--- FAIL: (\S+)"),  # go test, subtests included
     re.compile(r"^test (\S+) \.\.\. FAILED$"),  # cargo test
     re.compile(r"^\s*FAIL\s+(\S.*?)\s*$"),  # jest (a file), vitest (file > suite > test)
@@ -55,8 +56,18 @@ _PATTERNS = [
 ]
 
 
+# A runner that stops at the first failures never runs the rest, so what it doesn't name may still fail: on a red
+# base the base's own failure would stop it before the change's. pytest says so in its output (also when -x comes
+# from addopts); cargo and nextest stop after the first failing test binary unless told not to; the others by flag.
+_STOPPED = re.compile(r"stopping after \d+ failures")
+_STOP_FLAGS = re.compile(r"(?:^|\s)(?:-x|--exitfirst|--maxfail(?:=\S+|\s+\S+)|--?failfast|--bail(?:=\S+)?"
+                         r"|--stepwise|--sw)(?=\s|$|[;&|)])")
+_CARGO = re.compile(r"\bcargo\s+(?:\+\S+\s+)?(?:test|nextest)\b")
+
+
 def failures(output: str) -> list[str] | None:
-    """The failing test ids in a check's output, or None when it names none it can read."""
+    """The failing test ids in a check's output, or None when it names none it can read. All of them: a capped
+    list could drop exactly the failure a change added."""
     ids: set[str] = set()
     for line in _ANSI.sub("", output).splitlines():
         for rx in _PATTERNS:
@@ -65,7 +76,26 @@ def failures(output: str) -> list[str] | None:
                 if ident:
                     ids.add(ident[:300])
                 break
-    return sorted(ids)[:MAX_IDS] if ids else None
+    return sorted(ids) if ids else None
+
+
+def stops_early(verify: str | None, output: str) -> bool:
+    """Might the check have stopped before running every test (so a failure it doesn't name may still be there)?"""
+    cmd = verify or ""
+    return bool(_STOPPED.search(output) or _STOP_FLAGS.search(cmd)
+                or (_CARGO.search(cmd) and "--no-fail-fast" not in cmd))
+
+
+def read_base(output: str, exit_code: int | None, verify: str | None, truncated: bool) -> tuple[list[str], bool]:
+    """The base's failing ids, and whether they are all of them (else nothing can be subtracted): not when the
+    output was cut short, the run stopped at its first failures, or there are more than hangar keeps."""
+    if exit_code == 0:
+        return [], True
+    ids = failures(output)
+    if ids is None:
+        return [], False
+    whole = not truncated and not stops_early(verify, output) and len(ids) <= MAX_IDS
+    return ids[:MAX_IDS], whole
 
 
 def applies(job: Job) -> bool:
@@ -97,10 +127,11 @@ def verdict(job: Job, exit_code: int | None, new: list[str] | None) -> Verdict:
     return "fail" if new else "pass"
 
 
-def new_failures(job: Job, output: str) -> list[str] | None:
-    """Failures in `output` that the base didn't have; None when the base was green or they can't be told apart."""
+def new_failures(job: Job, output: str, truncated: bool = False) -> list[str] | None:
+    """Failures in `output` that the base didn't have; None when the base was green or they can't be told apart
+    (the output was cut short, or the check stopped before running everything)."""
     b = current(job)
-    if b is None or not b.red or not b.parsed:
+    if b is None or not b.red or not b.parsed or truncated or stops_early(job.verify, output):
         return None
     after = failures(output)
     if after is None:
@@ -152,11 +183,6 @@ def pr_line(job: Job) -> str | None:
     return f"**Base was red:** `{job.verify}` already failed on `{b.sha[:12]}` (exit {b.exit_code}){ids}; {tail}"
 
 
-def key(job: Job) -> str:
-    raw = f"{repo_key(job.repo)}\0{job.result.base_sha}\0{job.verify}".encode()
-    return hashlib.sha256(raw).hexdigest()[:32]
-
-
 class Baselines:
     """The cache and the single flight per key. One control plane runs jobs (one replica), so an in-process map of
     running checks is enough to stop parallel jobs on one base from each running it."""
@@ -165,6 +191,24 @@ class Baselines:
         self.svc = svc
         self._flights: dict[str, asyncio.Task[Baseline | None]] = {}
         self._pruned = 0.0
+
+    def key(self, job: Job) -> str:
+        """The repo, base commit and command, and what else decides the result: the environment as it is now (its
+        image, setup, env and resources; a check that is red for a missing dependency in one is no excuse in
+        another) and whose sandbox ran it (one member's sandbox can't decide which failures another's jobs may
+        subtract)."""
+        try:
+            spec = self.svc.fleet.catalog.get(job.environment).model_dump(mode="json",
+                                                                          exclude={"verify", "description"})
+        except KeyError:
+            spec = None
+        try:
+            image = self.svc.fleet.get(job.sandbox_id or "").image
+        except KeyError:
+            image = None
+        raw = json.dumps([repo_key(job.repo), job.result.base_sha, job.verify, job.owner, job.environment, spec,
+                          image], sort_keys=True, default=str)
+        return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
     def cached(self, k: str) -> Baseline | None:
         raw = self.svc.store.kv_get(KV_PREFIX + k)
@@ -179,7 +223,7 @@ class Baselines:
         """Give the job its baseline: from the cache, from a run another job started, or by running it here."""
         if not applies(job):
             return
-        svc, k = self.svc, key(job)
+        svc, k = self.svc, self.key(job)
         b = self.cached(k)
         if b is None:
             task = self._flights.get(k)
@@ -225,10 +269,9 @@ class Baselines:
             log.warning("job %s: baseline check could not run: %s", job.id, e)
             return None
         out = (res.stdout or "") + (res.stderr or "")
-        ids = failures(out) if res.exit_code != 0 else []
-        b = Baseline(sha=job.result.base_sha or "", exit_code=res.exit_code, failures=ids or [],
-                     parsed=res.exit_code == 0 or ids is not None, job_id=job.id,
-                     tail=svc.broker.redact(_clip_tail(out)[-4000:]))
+        ids, whole = read_base(out, res.exit_code, job.verify, res.truncated)
+        b = Baseline(sha=job.result.base_sha or "", exit_code=res.exit_code, failures=ids, parsed=whole,
+                     job_id=job.id, tail=svc.broker.redact(_clip_tail(out)[-4000:]))
         if res.exit_code not in _NOT_CACHED:
             svc.store.kv_set(KV_PREFIX + k, json.dumps({"repo": repo_key(job.repo), "verify": job.verify,
                                                         "baseline": b.model_dump(mode="json")}))

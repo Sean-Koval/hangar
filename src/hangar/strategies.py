@@ -423,7 +423,8 @@ async def _inspect(jobs: JobService, job: Job, a: Attempt, s: Session) -> None:
         res = await fleet.exec(sb.id, job.verify, timeout=jobs.settings.job_verify_timeout_seconds, actor=actor)
         a.verify_exit_code = res.exit_code
         a.verify_tail = red(_clip_tail((res.stdout or "") + (res.stderr or ""))[-2000:])
-        a.new_failures = baseline.new_failures(job, (res.stdout or "") + (res.stderr or ""))  # --- frontdoor
+        a.new_failures = baseline.new_failures(job, (res.stdout or "") + (res.stderr or ""),  # --- frontdoor
+                                                 res.truncated)
     st = await fleet.exec(sb.id, "git status --porcelain", actor=actor)
     changed = [ln for ln in st.stdout.splitlines() if ln.strip()]
     if changed and job.deliver != "none" and len(changed) <= 2000:
@@ -670,7 +671,7 @@ async def _judge(jobs: JobService, job: Job, best: list[Attempt], sessions: dict
                                                      f"| head -c {MAX_JUDGE_DIFF}", actor=f"job:{job.id}", quiet=True)
                 diff = res.stdout.encode()
             material[f"attempt-{a.index}.diff"] = diff
-            verdict = ("passed" if a.verify_exit_code == 0 else "failed") if job.verify else "not run"
+            verdict = ("passed" if _passed(job, a) else "failed") if job.verify else "not run"  # --- frontdoor
             material[f"attempt-{a.index}.md"] = (f"# Attempt {a.index}\n\nVerification: {verdict}\n"
                                                  f"Lines changed: {a.diff_lines}\n\n{a.summary or '(no summary)'}\n"
                                                  ).encode()

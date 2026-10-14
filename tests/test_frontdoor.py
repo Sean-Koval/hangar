@@ -35,9 +35,11 @@ case "$mode" in
     else
       echo fixed > fix.txt && echo x > new.txt && git add -A && git commit -qm "fix, and break test_new"
     fi ;;
-  scratch)  # the notes old skills asked for, one committed and one not, and a NOTES.md the task asked for
-    echo fixed > fix.txt && echo "notes" > NOTES.md && echo "result" > RESULT.md && echo "x" > a.py.orig \
-      && git add -A && git commit -qm "work and notes"
+  scratch)  # the notes old skills asked for, one committed and one not, and a NOTES.md the task asked for; a
+    # patch leftover next to its file, and a golden file that only looks like one
+    echo fixed > fix.txt && echo "notes" > NOTES.md && echo "result" > RESULT.md && echo "x" > a.py \
+      && echo "x" > a.py.orig && mkdir -p golden && echo "y" > golden/old.orig && git add -A \
+      && git commit -qm "work and notes"
     echo "handoff" > HANDOFF.md ; echo left > left.txt ;;
 esac
 echo "done" > "$HANGAR_JOB_DIR/RESULT.md"
@@ -246,7 +248,8 @@ async def test_agent_scratch_files_stay_out_of_the_pr(jobs, repo):  # noqa: F811
     job = await _run(jobs, repo, environment="otherenv", instructions="Fix it and list open questions in NOTES.md")
     assert job.state == JobState.SUCCEEDED, _messages(job)
     files = _remote_files(repo, job.branch)
-    assert {"fix.txt", "NOTES.md", "left.txt"} <= files  # NOTES.md was asked for; left.txt is ordinary work
+    # NOTES.md was asked for; left.txt is ordinary work; golden/old.orig has no file it was patched from
+    assert {"fix.txt", "NOTES.md", "left.txt", "a.py", "golden/old.orig"} <= files
     assert not {"HANDOFF.md", "RESULT.md", "a.py.orig"} & files
     assert sorted(job.result.dropped_files) == ["HANDOFF.md", "RESULT.md", "a.py.orig"]
     assert job.result.commits[0].endswith("hangar: drop agent scratch files")
@@ -340,7 +343,7 @@ async def test_the_check_outlives_a_job_that_stops_waiting(jobs, repo):  # noqa:
     """The check runs as a task of its own: a job that stops waiting (cancelled, shut down) doesn't cancel it for
     the other jobs on that base."""
     job = await _run(jobs, repo, environment="redenv")
-    k = baseline.key(job)
+    k = jobs.baselines.key(job)
     jobs.store.kv_delete(baseline.KV_PREFIX + k)
     await jobs._sh(job, "git rm -q fix.txt")  # back to a tree where the check is slow and counts its runs
     waiting = asyncio.create_task(jobs.baselines.ensure(job))
@@ -351,3 +354,67 @@ async def test_the_check_outlives_a_job_that_stops_waiting(jobs, repo):  # noqa:
     b = await flight
     assert b is not None and b.red and jobs.baselines.cached(k) is not None and _runs(repo) == 2
     assert k not in jobs.baselines._flights
+
+
+# ====================================================================== review fixes
+async def test_the_base_check_is_kept_per_environment_and_per_owner(jobs, repo):  # noqa: F811
+    """A baseline from another environment (another image, setup or env) or another member's sandbox must not
+    decide which failures this job's check may subtract."""
+    (repo["envs"] / "redenv2.yaml").write_text("name: redenv2\nharnesses: [scripted]\nverify: bash check.sh\n")
+    await _run(jobs, repo, environment="redenv")
+    assert _runs(repo) == 1
+    await _run(jobs, repo, environment="redenv2")  # same repo, base and command; another environment
+    assert _runs(repo) == 2
+    (repo["envs"] / "redenv2.yaml").write_text("name: redenv2\nharnesses: [scripted]\nverify: bash check.sh\n"
+                                               "env: {LANG: C.UTF-8}\n")
+    await _run(jobs, repo, environment="redenv2")  # the environment changed since
+    assert _runs(repo) == 3
+    jobs.fleet.catalog.reload()
+    other = jobs.submit(SubmitJob(instructions="x", repo=repo["url"], environment="redenv"), Caller("bo", "bo"))
+    await _until(jobs, other.id, DONE, timeout=40)
+    assert _runs(repo) == 4
+    await _run(jobs, repo, environment="redenv")  # the first owner's own cache still serves it
+    assert _runs(repo) == 4
+
+
+def _red(verify: str = "pytest -q", failures: list[str] | None = None) -> Job:
+    job = Job(title="t", instructions="x", environment="e", branch="hangar/j", verify=verify, repo="o/r",
+              verify_source="repo")
+    job.result.base_sha = "abc"
+    job.result.baseline = Baseline(sha="abc", exit_code=1, failures=failures or ["t::old"], parsed=True)
+    return job
+
+
+def test_new_failures_are_never_hidden_by_how_the_output_reads():
+    # a parametrized id with a space in it, as pytest prints it
+    assert baseline.new_failures(_red(), "FAILED t::old - x\nFAILED t::p[a b] - assert 0") == ["t::p[a b]"]
+    # more failures than hangar keeps: the new one sorts last and must still count
+    old = [f"t::a{i:04d}" for i in range(baseline.MAX_IDS)]
+    out = "\n".join(f"FAILED {x} - e" for x in [*old, "t::zz_new"])
+    assert baseline.new_failures(_red(failures=old), out) == ["t::zz_new"]
+    # output cut short, or a runner that stops at the first failures: what didn't run can't be told apart
+    assert baseline.new_failures(_red(), "FAILED t::old - x", truncated=True) is None
+    assert baseline.new_failures(_red(), "FAILED t::old - x\n!!!! stopping after 1 failures !!!!") is None
+    for cmd in ("pytest -q -x", "uv run pytest --maxfail=2", "cargo test", "cargo nextest run",
+                "go test -failfast ./...", "npx jest --bail", "npx vitest run --bail=1"):
+        assert baseline.new_failures(_red(cmd), "FAILED t::old - x") is None, cmd
+    assert baseline.new_failures(_red("cargo test --no-fail-fast"), "test t::old ... FAILED") == []
+    # the base side: a list hangar can't keep whole, or a run that stopped early, subtracts nothing
+    assert baseline.read_base("\n".join(f"FAILED t::{i:04d}" for i in range(baseline.MAX_IDS + 1)), 1,
+                              "pytest", False)[1] is False
+    assert baseline.read_base("FAILED t::old - x", 1, "pytest", True)[1] is False
+    assert baseline.read_base("FAILED t::old - x", 1, "pytest -x", False)[1] is False
+    assert baseline.read_base("FAILED t::old - x", 1, "pytest", False) == (["t::old"], True)
+    assert baseline.read_base("", 0, "pytest -x", False) == ([], True)
+
+
+async def test_a_file_the_ticket_asks_for_is_delivered(jobs, repo):  # noqa: F811
+    """Issue and ticket intake put the request in context files, not the instructions: a file they name is wanted."""
+    from hangar.models import ContextItem
+
+    repo["mode"].write_text("scratch")
+    job = await _run(jobs, repo, environment="otherenv", instructions="Resolve the issue in issue-7.md",
+                     context=[ContextItem(name="issue-7.md", kind="issue", untrusted=True,
+                                          content="Fix it, and list the open questions in NOTES.md")])
+    assert job.state == JobState.SUCCEEDED, _messages(job)
+    assert "NOTES.md" in _remote_files(repo, job.branch) and "NOTES.md" not in job.result.dropped_files

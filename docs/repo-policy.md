@@ -79,23 +79,23 @@ For each field the order is the job, then the repo's policy, then the settings. 
 
 With a check on every front door, a red base branch would fail every job's check. The agent would spend its verify-fix rounds on failures it didn't cause, best-of-N would rank every attempt as failing, and every PR would go out as a draft. So hangar runs a job's **standing check**, the one from the repo's policy or the environment, once on the base commit before the agent starts:
 
-- **Once per base commit.** The result is kept per (repo, base commit, command). Jobs that start on the same base while it runs wait for that run, and later jobs read the result, so a team running 60 sessions on one `main` pays for one check per merge. A check that times out or is killed isn't kept; the next job tries again.
+- **Once per base commit.** The result is kept per repo, base commit and command, and also per environment (its image and its spec, so a changed environment checks again) and per person (one member's sandbox never decides which failures another member's jobs may subtract). Jobs that start on the same base while it runs wait for that run, and later jobs read the result, so a team of 6 running 60 sessions on one `main` pays for at most one check per person and environment per merge. A check that times out or is killed isn't kept; the next job tries again.
 - **Only for a standing check.** A `verify` the job brought itself is its acceptance test, written for the change, and expected to fail on the base.
 - **A green base** changes nothing.
 - **A red base** is reported in the job's events ("base was red: …"), the prompt (which failures already exist, with the output in `BASELINE.txt` next to the job's context) and the PR body (**Base was red**). The in-turn gate is off for the job, because it can't tell the base's failures from new ones. Hangar's check after the turn counts only the failures the change added:
   - it reads failing test ids from the output of pytest, `go test`, `cargo test`, jest and vitest, and subtracts the base's;
   - no new failures: the check counts as passed, and the PR isn't a draft for it;
   - new failures: they go back to the agent, named, as a verify-fix round;
-  - when it can't read the ids on both sides, it can't tell what's new: no verify-fix round, the PR is a draft, and the job ends `succeeded` with reason `base_red` for a person to judge.
+  - when it can't read the ids on both sides, it can't tell what's new: no verify-fix round, the PR is a draft, and the job ends `succeeded` with reason `base_red` for a person to judge. That includes output cut short (more than 256 KB), more than 500 failing ids on the base, and a runner that stops at its first failures, since the base's failure would stop it before the change's: pytest's `-x`/`--maxfail` (also from `addopts`), `go test -failfast`, jest's and vitest's `--bail`, and `cargo test` or `cargo nextest` without `--no-fail-fast` (cargo stops after the first failing test binary by default).
 
-It counts test ids, so a check that fails for another reason in the same run can hide behind a red base: with `ruff check; pytest`, a new lint error leaves the test ids unchanged. Chain the steps with `&&`, so a failing first step stops the run and nothing can be compared.
+It counts test ids, so a check that fails for another reason in the same run can hide behind a red base: with `ruff check; pytest`, a new lint error leaves the test ids unchanged. Chain the steps with `&&`, so a failing first step stops the run and nothing can be compared. A test the base already failed also hides a change that breaks it differently.
 
 ## Agent scratch files
 
 Delivery commits what the agent left, and agents leave notes. Hangar keeps these out of the PR, with a narrow rule so it never drops work someone asked for. A file is scratch when all of these hold:
 
 - it is new on the job's branch (a file the base commit has is never touched);
-- it is `HANDOFF.md`, `RESULT.md` or `NOTES.md` at the repo root (any case), or a `*.orig` or `*.rej` patch leftover anywhere;
-- the task doesn't name it: neither the instructions nor any follow-up mention the file name.
+- it is `HANDOFF.md`, `RESULT.md` or `NOTES.md` at the repo root (any case), or a `*.orig` or `*.rej` patch leftover anywhere: one next to the file it was made from (`a.py.orig` beside `a.py`), so a golden file that only shares the suffix is delivered;
+- the task doesn't name it: neither the instructions, any follow-up, nor the context attached to the job mention the file name. Issue and ticket intake put the request in context files, so a file the issue asks for is delivered.
 
 Scratch the agent left uncommitted isn't staged. Scratch it committed itself is removed in a separate commit, `hangar: drop agent scratch files`, so the change is visible and easy to revert. Either way the file stays in the sandbox, the job's events and `result.dropped_files` list it, and the PR body says what was left out.

@@ -889,7 +889,8 @@ class JobService:
                 observe.set_attrs(sp, {"hangar.verify.exit_code": res.exit_code})
             job.result.verify_exit_code = res.exit_code
             job.result.verify_tail = self.broker.redact(_clip_tail((res.stdout or "") + (res.stderr or ""))[-4000:])
-            job.result.new_failures = baseline.new_failures(job, (res.stdout or "") + (res.stderr or ""))
+            job.result.new_failures = baseline.new_failures(job, (res.stdout or "") + (res.stderr or ""),
+                                                             res.truncated)
         # --- frontdoor: on a red base only the failures this change added count ("unknown": can't tell them apart)
         verdict = baseline.verdict(job, job.result.verify_exit_code, job.result.new_failures)
         verify_ok = verdict == "pass"
