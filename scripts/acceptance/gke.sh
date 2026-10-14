@@ -28,7 +28,7 @@ VALUE_OPTS=" --env --session-env --repo --gateway-repo --model --exec-calls --in
  --doctor-baseline --test-env-prefix --egress-allow --egress-deny --egress-direct --dns-probe --service-image
  --service-wait --test-repo --fixture-repo --fixture-push-url --build-timeout --landing-timeout --jira-project
  --scale-sessions --scale-people --scale-env --scale-p95 --job-cap --power-down-cmd --power-up-cmd --power-timeout
- --prepull-envs --boot-timeout --turn-timeout "
+ --prepull-envs --boot-timeout --turn-timeout --max-usd "
 FLAG_OPTS=" --with-model --power-cycle --power-cycle-anyway "
 VALUE_OPTS=" ${VALUE_OPTS//[[:space:]]/ } "  # one space between names (and around them), so " $1 " matches any
 ONLY="" SKIPS="" KEEP=0 EXPECT_ENVD=1 GATE=all REPORT="hangar-accept-report.json" RECORD=""
@@ -50,6 +50,8 @@ usage: $0 [options]
                         Both branches are deleted afterwards with the gh CLI if you have it.
   --with-model          also run the checks that need real agent turns (they cost a few cents each): model, steer,
                         secrets, landing, egress's env request, scale-smoke's job queue
+  --max-usd N           what one of those jobs or turns may spend: its budget, where hangar stops it (default: 1);
+                        the run prints what they spent
   --model NAME          model for those turns (default: the environment's)
   --mcp-env NAME        multi-harness environment the mcp check creates sandboxes from over MCP (default: python)
   --warm-env NAME       environment with a warm pool the warmstart check times a warm and a cold create on
@@ -58,10 +60,12 @@ usage: $0 [options]
                         GitHub App installed (default: \$HANGAR_ACCEPT_TEST_REPO)
   --fixture-repo O/R    a repo whose default branch the envbuild check commits its .hangar/environment.yaml to, and
                         puts back afterwards (default: \$HANGAR_ACCEPT_FIXTURE_REPO)
-  --jira-project KEY    the HANGAR_JIRA project the intake check's synthetic issue is in (default: the first)
+  --jira-project KEY    the HANGAR_JIRA project the intake check's synthetic issue is in (default: the one mapped to
+                        --test-repo; without either it skips, since the issue's job may start on that repo)
   --scale-sessions N    sessions the scale-smoke check runs at once (default: 20), across --scale-people (3)
-  --power-cycle         let the power check power the sandbox pools down and up (it refuses while others work,
-                        unless --power-cycle-anyway); --power-down-cmd / --power-up-cmd override how
+  --power-cycle         let the power check power the sandbox pools down and up (it refuses while anyone else has
+                        a live session, an active job or a sandbox, unless --power-cycle-anyway); --power-down-cmd /
+                        --power-up-cmd override how
   --test-env-prefix P   the test environments are P-computer, P-egress, ... (default: accept)
   --record FILE         also append each check's result (and its numbers) to FILE as JSON lines
   --report FILE         the run's JSON report: every check, core or not, its status, time and timings
@@ -74,7 +78,8 @@ usage: $0 [options]
                         and not a sandbox with no network (default: github.com:443)
   --no-expect-envd      don't fail the exec and stream checks when calls don't go through hangar-envd
   --no-kubectl          skip what needs kubectl (manifest check, in-cluster exec baseline, control-plane probes)
-  --only a,b            run only these checks; --skip a,b skips these. Checks: ${CHECKS//[[:space:]]/, }
+  --only a,b            run only these checks; --skip a,b skips these. Checks: ${CHECKS//[[:space:]]/, }.
+                        "core" in either stands for the core checks
   --keep                leave what the run created (for debugging); clean up later with
                         python3 $HELPER cleanup --state <the state file it prints>
   More tuning (timeouts, the egress hosts, the services image, ...): python3 $HELPER --help
@@ -114,6 +119,9 @@ while [ $# -gt 0 ]; do
 done
 case "$GATE" in all|core) ;; *) echo "--gate is all or core" >&2; exit 2 ;; esac
 [ "$EXPECT_ENVD" = 1 ] && ARGS+=(--expect-envd)
+# `core` in --only or --skip is the core checks (deploy.yml: --only core, then --skip core in a step of its own)
+CORE_LIST=",${CORE// /,},"
+ONLY=${ONLY//,core,/$CORE_LIST} SKIPS=${SKIPS//,core,/$CORE_LIST}
 
 if [ -n "${HANGAR_ACCEPT_PYTHON:-}" ]; then
   read -r -a PY <<<"$HANGAR_ACCEPT_PYTHON"
@@ -194,7 +202,7 @@ finish() {  # also after a failure or Ctrl-C: clean up, then the report, so it s
   cleanup
   echo
   "${PY[@]}" "$HELPER" report --results "$RUN_RECORD" --out "$REPORT" --gate "$GATE" --core "$CORE" \
-    --target "$WHO" --cleanup "$CLEANUP_RESULT"
+    --target "$WHO" --cleanup "$CLEANUP_RESULT" --state "$STATE"
   rep=$?
   [ -z "$RECORD" ] || cat "$RUN_RECORD" >>"$RECORD" 2>/dev/null
   if [ "$KEEP" != 1 ] && [ "$CLEANUP_RESULT" != incomplete ]; then rm -rf "$WORK"; fi

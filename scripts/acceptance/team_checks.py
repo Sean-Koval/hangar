@@ -53,6 +53,7 @@ RESOLUTION = (1280, 800)
 TERMINAL_JOB = ("succeeded", "failed", "cancelled")
 REPO_RE = re.compile(r"[\w.-]+/[\w.-]+")
 POWER_POLL = 10.0  # seconds between looks at the power state while the pools go down or up
+POLICY_FIELDS = ("land", "approvers")  # what the landing check sets on the test repo's policy, and puts back
 GITHUB_TRANSPORT: httpx.BaseTransport | None = None  # tests put a stand-in GitHub here
 
 
@@ -74,16 +75,22 @@ def setting(api: Api, name: str) -> Any:
     return r.json().get("value") if r.status_code == 200 else None
 
 
+TEST_ENV_DESCRIPTION = "hangar acceptance checks (scripts/acceptance, docs/acceptance.md); kept between runs"
+
+
 def ensure_env(api: Api, opts: argparse.Namespace, suffix: str, spec: dict[str, Any]) -> str:
     """The dedicated test environment `<prefix>-<suffix>`, saved only when it doesn't hold `spec` already (saving the
-    same spec again would be harmless, but each save is an audit entry and may queue an image check)."""
+    same spec again would be harmless, but each save is an audit entry and may queue an image check). An environment
+    of that name that isn't the suite's (its description says whose it is) is never saved over."""
     name = f"{opts.test_env_prefix}-{suffix}"
-    want = {"description": "hangar acceptance checks (scripts/acceptance, docs/acceptance.md); kept between runs",
-            **spec}
+    want = {"description": TEST_ENV_DESCRIPTION, **spec}
     r = api.http.get(f"/api/environments/{name}")
     if r.status_code in (401, 403):
         raise Fail(f"GET /api/environments/{name}: HTTP {r.status_code}: the checks need an admin token")
     raw = (r.json().get("raw") or {}) if r.status_code == 200 else {}
+    if r.status_code == 200 and not str(raw.get("description") or "").startswith(TEST_ENV_DESCRIPTION[:24]):
+        raise Fail(f"an environment named {name} exists and isn't one of the suite's ({raw.get('description')!r}): "
+                   "pick another --test-env-prefix")
     if r.status_code == 200 and all(raw.get(k) == v for k, v in want.items()):
         return name
     api.call("PUT", f"/api/environments/{name}", json=want)
@@ -133,6 +140,11 @@ def wait_job(api: Api, job_id: str, timeout: float, done: Callable[[dict[str, An
             tail = "; ".join(e.get("message", "") for e in (j.get("events") or [])[-3:])
             raise Fail(f"job {job_id} still {j['state']} after {timeout:.0f}s: {tail[:300]}")
         time.sleep(ha.POLL_SECONDS)
+
+
+def paid(opts: argparse.Namespace) -> dict[str, Any]:
+    """A paid job's budget: one turn, and no more than --max-usd (hangar stops it there)."""
+    return {"max_turns": 1, "max_cost_usd": opts.max_usd}
 
 
 def events_text(job: dict[str, Any]) -> str:
@@ -202,9 +214,11 @@ class FixtureRepo:
             raise Fail(f"git {args[0]} {self.url}: {msg[-300:]}")
         return r.stdout
 
-    def commit(self, files: dict[str, str | None], message: str) -> tuple[str, dict[str, str | None]]:
+    def commit(self, files: dict[str, str | None], message: str, expect: dict[str, str | None] | None = None
+               ) -> tuple[str, dict[str, str | None]]:
         """Write (or, for None, delete) `files` on the default branch in one commit. Returns the new commit and what
-        the files held before (None: absent), which is what restoring them takes."""
+        the files held before (None: absent), which is what restoring them takes. With `expect`, a file is changed
+        only while it still holds what `expect` says (what this run wrote): someone else's change since stays."""
         with tempfile.TemporaryDirectory(prefix="hangar-accept-git-") as d:
             env, work = self._env(d), os.path.join(d, "r")
             self._git(env, "clone", "-q", "--depth", "1", self.url, work)
@@ -213,6 +227,9 @@ class FixtureRepo:
             for rel, content in files.items():
                 p = Path(work, rel)
                 old[rel] = p.read_text() if p.is_file() else None
+                if expect is not None and rel in expect and old[rel] != expect[rel]:
+                    say(f"{rel} changed since this run wrote it: left as it is")
+                    continue
                 if content is None:
                     p.unlink(missing_ok=True)
                 else:
@@ -698,7 +715,8 @@ def _restore_fixture(state: State) -> None:
     fx = state.get("fixture")
     if not fx or fx.get("restored"):
         return
-    FixtureRepo(fx["url"], github_token()).commit(fx["old"], "hangar acceptance: put the fixture back")
+    FixtureRepo(fx["url"], github_token()).commit(fx["old"], "hangar acceptance: put the fixture back",
+                                                  expect=fx.get("wrote"))
     state.set("fixture", {**fx, "restored": True})
 
 
@@ -751,7 +769,7 @@ def check_envbuild(api: Api, state: State, opts: argparse.Namespace) -> str:
     files = {FIXTURE_FILE: fixture_config(state.run), FIXTURE_IGNORE: ignore}
     state.set("fixture", {"url": url, "old": None, "restored": False})
     good_sha, old = fx.commit(files, f"hangar acceptance {state.run}: the fixture's environment")
-    state.set("fixture", {"url": url, "old": old, "restored": False})
+    state.set("fixture", {"url": url, "old": old, "wrote": files, "restored": False})
     say(f"{opts.fixture_repo}: committed the fixture config ({good_sha[:9]})")
     t = time.monotonic()
     good = _build(api, repo_url, env, opts.build_timeout)
@@ -759,8 +777,9 @@ def check_envbuild(api: Api, state: State, opts: argparse.Namespace) -> str:
     if good["state"] != "succeeded":
         raise Fail(f"the fixture's build {good['id']} {good['state']}: {good.get('error')}; log: "
                    f"{(good.get('log') or '')[-300:]}")
-    bad_sha, _ = fx.commit({FIXTURE_FILE: fixture_config(state.run, broken=True)},
-                           f"hangar acceptance {state.run}: a broken install")
+    broken = fixture_config(state.run, broken=True)
+    state.set("fixture", {**state.get("fixture"), "wrote": {**files, FIXTURE_FILE: broken}})
+    bad_sha, _ = fx.commit({FIXTURE_FILE: broken}, f"hangar acceptance {state.run}: a broken install")
     say(f"{opts.fixture_repo}: committed a broken install ({bad_sha[:9]})")
     t = time.monotonic()
     bad = _build(api, repo_url, env, opts.build_timeout)
@@ -835,7 +854,7 @@ def check_secrets(api: Api, state: State, opts: argparse.Namespace) -> str:
         "title": f"hangar acceptance {state.run}: secret scan", "repo": f"https://github.com/{opts.test_repo}.git",
         "instructions": NO_CHANGES,
         "verify": plant, "verify_in_loop": False, "deliver": "branch", "autofix": "off",
-        "job_budget": {"max_turns": 1}, "labels": {LABEL: state.run}, "timeout_minutes": 30})
+        "job_budget": paid(opts), "labels": {LABEL: state.run}, "timeout_minutes": 30})
     state.add("jobs", job["id"])
     state.add("branches", {"repo": opts.test_repo, "branch": job["branch"]})
     t = time.monotonic()
@@ -883,10 +902,10 @@ def check_landing(api: Api, state: State, opts: argparse.Namespace) -> str:
         finally:
             a.close()
         old = api.http.get("/api/repos/policy", params={"repo": opts.test_repo})
-        prev = {k: old.json().get(k) for k in ("land", "approvers")} if old.status_code == 200 else None
-        state.set("policy_restore", {"repo": opts.test_repo, "old": prev})
-        api.call("PUT", "/api/repos/policy", json={"repo": opts.test_repo, "land": "auto_after_approval",
-                                                   "approvers": [approver]})
+        prev = {k: old.json().get(k) for k in POLICY_FIELDS} if old.status_code == 200 else None
+        mine = {"land": "auto_after_approval", "approvers": [approver]}
+        state.set("policy_restore", {"repo": opts.test_repo, "old": prev, "set": mine, "restored": False})
+        api.call("PUT", "/api/repos/policy", json={"repo": opts.test_repo, **mine})
         say(f"{opts.test_repo}: land auto_after_approval, approver @{approver} (put back afterwards)")
     fname = f"accept-landing-{state.run}.txt"
     commit = (f"f={fname}; [ -f $f ] || {{ echo {state.run} > $f && git add $f && git -c user.name='hangar "
@@ -895,7 +914,7 @@ def check_landing(api: Api, state: State, opts: argparse.Namespace) -> str:
         "title": f"hangar acceptance {state.run}: landing", "repo": f"https://github.com/{opts.test_repo}.git",
         "instructions": NO_CHANGES,
         "verify": commit, "verify_in_loop": False, "deliver": "pr", "autofix": "off",
-        "job_budget": {"max_turns": 1}, "labels": {LABEL: state.run}, "timeout_minutes": 30})
+        "job_budget": paid(opts), "labels": {LABEL: state.run}, "timeout_minutes": 30})
     state.add("jobs", job["id"])
     state.add("branches", {"repo": opts.test_repo, "branch": job["branch"]})
     t = time.monotonic()
@@ -993,6 +1012,12 @@ def jira_payload(run: str, project: str, trigger: dict[str, Any], account: str) 
             "issue": {"key": f"{project}-{n}", "fields": fields}}
 
 
+def _repo_of(value: str) -> str:
+    """`owner/repo`, lower case, of owner/repo, a GitHub https URL or git@github.com:owner/repo(.git)."""
+    v = value.strip().lower().rstrip("/").removesuffix(".git")
+    return v.split("github.com/")[-1].split("github.com:")[-1]
+
+
 def jira_signature(secret: str, body: bytes) -> str:
     return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
@@ -1008,10 +1033,16 @@ def check_intake(api: Api, state: State, opts: argparse.Namespace) -> str:
         raise Skip("needs the Jira webhook's secret in HANGAR_ACCEPT_JIRA_WEBHOOK_SECRET to sign a delivery")
     mapped = cfg.get("projects") or {}
     projects = sorted(mapped)
-    # The job is cancelled at once, but it may start on its repo first: prefer a project mapped to the test repo.
-    on_test = [k for k in projects if opts.test_repo and str((mapped[k] or {}).get("repo", "")).lower().removesuffix(
-        ".git").endswith(opts.test_repo.lower())]
-    project = opts.jira_project or (on_test or projects or [None])[0]
+    # The job is cancelled at once, but it may start on its repo first (a sandbox, perhaps a turn): only a project
+    # mapped to the test repo, never one of the team's real repos, unless --jira-project names one.
+    repos = {k: str((mapped[k] or {}).get("repo") or "") for k in projects}
+    on_test = [k for k in projects if opts.test_repo and _repo_of(repos[k]) == opts.test_repo.lower()]
+    if not opts.jira_project and not on_test:
+        listed = ", ".join(f"{k}: {repos[k]}" for k in projects) or "none"
+        raise Skip(f"needs a Jira project mapped to the test repo ({opts.test_repo or 'no --test-repo'}) in "
+                   f"HANGAR_JIRA (mapped: {listed}), or --jira-project KEY: the synthetic issue's job may start on "
+                   "its repo before it's cancelled")
+    project = opts.jira_project or on_test[0]
     if project not in projects:
         raise Fail(f"Jira project {project} isn't mapped in HANGAR_JIRA (mapped: {', '.join(projects) or 'none'})")
     person, account = f"accept-{state.run}-jira", f"accept-{state.run}"
@@ -1097,6 +1128,13 @@ def check_scale_smoke(api: Api, state: State, opts: argparse.Namespace) -> str:
     n, k = opts.scale_sessions, opts.scale_people
     if k < 2 or n < k:
         raise Fail("--scale-people must be at least 2 and --scale-sessions at least that many")
+    # On a production install the team's own creates come first: start only with room to spare under the fleet's cap
+    limit = int(setting(api, "HANGAR_MAX_SANDBOXES") or 0)
+    if limit:
+        live, spare = len(api.call("GET", "/api/sandboxes")), max(10, limit // 10)
+        if live + n + 1 + spare > limit:
+            raise Skip(f"no room: {live} of HANGAR_MAX_SANDBOXES={limit} sandboxes are live, and {n + 1} more would "
+                       f"leave the team fewer than {spare}; run it in a quieter hour, or with fewer --scale-sessions")
     cap = int(setting(api, "HANGAR_PERSON_MAX_SESSIONS") or 0)
     plan = split_sessions(n, k, cap)
     env = opts.scale_env or opts.session_env
@@ -1230,7 +1268,7 @@ def _fair_jobs(api: Api, state: State, opts: argparse.Namespace, tokens: dict[st
     Nobody runs more than the cap at once, and the others' jobs don't wait for the whole batch."""
     cap = int(setting(api, "HANGAR_PERSON_MAX_RUNNING_JOBS") or 0) or opts.job_cap
     body = {"instructions": "This is an automated hangar acceptance check. Reply with exactly: DONE",
-            "environment": env, "deliver": "none", "job_budget": {"max_turns": 1}, "labels": {LABEL: state.run},
+            "environment": env, "deliver": "none", "job_budget": paid(opts), "labels": {LABEL: state.run},
             "timeout_minutes": 20}
     clients = {p: Api(api.url, tokens[p]) for p in people}
     ids = []
@@ -1254,14 +1292,43 @@ def _fair_jobs(api: Api, state: State, opts: argparse.Namespace, tokens: dict[st
 
 
 # ---------------------------------------------------------------------------- power, prepull
+LIVE_SESSION = ("starting", "idle", "running")  # an idle session holds a sandbox too: powering down ends it
+ACTIVE_JOB = ("provisioning", "running", "verifying", "delivering", "needs_input")
+
+
+def _every(api: Api, path: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every row of a listing, page by page (X-Next-Cursor), not just its first page."""
+    rows: list[dict[str, Any]] = []
+    cursor = None
+    for _ in range(200):
+        r = api.http.get(path, params={**params, "limit": 500, **({"cursor": cursor} if cursor else {})})
+        if r.status_code != 200:
+            raise Fail(f"GET {path}: HTTP {r.status_code}")
+        rows += r.json()
+        if not (cursor := r.headers.get("X-Next-Cursor")):
+            return rows
+    raise Fail(f"GET {path}: more than 200 pages")
+
+
 def _others_busy(api: Api, state: State) -> list[str]:
-    mine = f"accept-{state.run}"
-    sessions = [s["name"] for s in api.call("GET", "/api/sessions")
-                if not s["name"].startswith(mine) and (s.get("busy") or s.get("state") == "running")]
-    jobs = [j["id"] for j in api.call("GET", "/api/jobs", params={"limit": 200})
-            if j.get("active") and j["state"] not in ("awaiting_approval", "needs_input")
-            and (j.get("labels") or {}).get(LABEL) != state.run]
-    return [f"{len(sessions)} running session(s)"] * bool(sessions) + [f"{len(jobs)} active job(s)"] * bool(jobs)
+    """Other people's work the pools going down would interrupt: live sessions, active jobs and any other sandbox
+    (MCP, REST, E2B). This run's own (its label, its test people, what its state recorded) doesn't count."""
+    run = state.run
+    own_sbs, own_sessions = set(state.get("sandboxes", [])), set(state.get("sessions", []))
+
+    def ours(person: Any, labels: Any) -> bool:
+        return str(person or "").startswith(f"accept-{run}-") or (labels or {}).get(LABEL) == run
+
+    sessions = [s["name"] for s in _every(api, "/api/sessions", {})
+                if s.get("state") in LIVE_SESSION and s["name"] not in own_sessions
+                and not s["name"].startswith(f"accept-{run}") and not ours(s.get("person"), s.get("labels"))]
+    jobs = [j["id"] for st in ACTIVE_JOB for j in _every(api, "/api/jobs", {"state": st})
+            if not ours(j.get("person"), j.get("labels"))]
+    other = [sb["id"] for sb in api.call("GET", "/api/sandboxes")
+             if sb["id"] not in own_sbs and not ours(sb.get("person"), sb.get("labels"))
+             and not {"hangar.session", "hangar.job"} & set(sb.get("labels") or {})]  # counted above
+    return ([f"{len(sessions)} live session(s) ({', '.join(sessions[:3])})"] * bool(sessions)
+            + [f"{len(jobs)} active job(s)"] * bool(jobs) + [f"{len(other)} other sandbox(es)"] * bool(other))
 
 
 def _run(cmd: str, timeout: float) -> None:
@@ -1326,11 +1393,15 @@ def check_power(api: Api, state: State, opts: argparse.Namespace) -> str:
         return summary
     if state.get("data:power", {}).get("state") != "up":
         raise Fail(f"--power-cycle needs the pools on to start with: {summary}")
-    if (busy := _others_busy(api, state)) and not opts.power_cycle_anyway:
-        raise Skip(f"--power-cycle would interrupt {' and '.join(busy)}: run it in a quiet window, or add "
-                   "--power-cycle-anyway (power.sh checkpoints them first)")
+    def quiet() -> None:
+        if (busy := _others_busy(api, state)) and not opts.power_cycle_anyway:
+            raise Skip(f"--power-cycle would interrupt {', '.join(busy)}: run it in a quiet window, or add "
+                       "--power-cycle-anyway (power.sh checkpoints sessions first)")
+
+    quiet()
     before = _create_time(api, state, opts, opts.env, "power-before")
     say(f"before: a create on {opts.env} took {before['seconds']}s")
+    quiet()  # again: someone may have started work during that create
     t0 = time.time()
     state.set("power_cycle", {"down": t0, "up": False})
     _run(opts.power_down_cmd, opts.power_timeout)
@@ -1421,6 +1492,8 @@ def add_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--scale-people", type=int, default=3)
     p.add_argument("--scale-env", default=None, help="default: --session-env")
     p.add_argument("--scale-p95", type=float, default=300.0, help="the slowest p95 create the scale check passes")
+    p.add_argument("--max-usd", type=float, default=1.0,
+                   help="what one paid job or turn may spend (its budget; hangar stops it there)")
     p.add_argument("--job-cap", type=int, default=4, help="the per-person job cap when hangar's setting is auto")
     p.add_argument("--power-cycle", action="store_true")
     p.add_argument("--power-cycle-anyway", action="store_true")
@@ -1436,6 +1509,24 @@ def check_args(p: argparse.ArgumentParser, opts: argparse.Namespace) -> None:
         v = getattr(opts, flag)
         if v and not REPO_RE.fullmatch(v):
             p.error(f"--{flag.replace('_', '-')} is OWNER/REPO")
+
+
+def _spend(api: Api, state: State) -> None:
+    """What the run's agent turns cost, from its jobs' and sessions' usage, added up before cleanup removes the
+    sessions; the report prints it. A job or session that used tokens without a known price is counted apart."""
+    usd, unpriced, seen = 0.0, 0, {"jobs": 0, "sessions": 0}
+    for kind in seen:
+        for ref in state.get(kind, []):
+            r = api.http.get(f"/api/{kind}/{ref}")
+            if r.status_code != 200:
+                continue
+            seen[kind] += 1
+            u = r.json().get("usage") or {}
+            if u.get("cost_usd") is not None:
+                usd += float(u["cost_usd"])
+            elif u.get("input_tokens") or u.get("output_tokens"):
+                unpriced += 1
+    state.set("spend", {"usd": round(usd, 4), **seen, "unpriced": unpriced})
 
 
 def cleanup_first(api: Api, state: State, attempt: Callable[[str, Callable[[], Any]], None],
@@ -1455,6 +1546,10 @@ def cleanup_first(api: Api, state: State, attempt: Callable[[str, Callable[[], A
                     if api.call("GET", f"/api/jobs/{jid}")["state"] not in TERMINAL_JOB:
                         raise
         attempt(f"job {jid}", cancel)
+    try:
+        _spend(api, state)
+    except Exception as e:  # noqa: BLE001 - the report says it's unknown; cleanup goes on
+        say(f"could not add up the run's spend: {e}")
     if state.get("prs"):
         gh = GitHubApi(github_token() or os.environ.get("HANGAR_ACCEPT_APPROVER_TOKEN"))
         for pr in state.get("prs", []):
@@ -1471,6 +1566,27 @@ def cleanup_first(api: Api, state: State, attempt: Callable[[str, Callable[[], A
         attempt(f"request {rid}", deny)
 
 
+def _restore_policy(api: Api, state: State, pol: dict[str, Any]) -> None:
+    """Put back the test repo's landing fields, but only those that still hold what the landing check set: a change
+    someone (or another run) made since stays. With no policy before, those fields are cleared, not the policy."""
+    r = api.http.get("/api/repos/policy", params={"repo": pol["repo"]})
+    if r.status_code == 404:
+        fields: list[str] = []
+    else:
+        if r.status_code != 200:
+            raise Fail(f"GET /api/repos/policy: HTTP {r.status_code}")
+        now = r.json()
+        mine = pol.get("set") or {k: now.get(k) for k in POLICY_FIELDS}  # a state file from before "set"
+        fields = [k for k in POLICY_FIELDS if k in mine and now.get(k) == mine[k]]
+        if changed := [k for k in POLICY_FIELDS if k in mine and k not in fields]:
+            say(f"{pol['repo']}: {', '.join(changed)} changed since the landing check set them: left as they are")
+    if fields and pol["old"] is None:
+        api.call("DELETE", "/api/repos/policy", params={"repo": pol["repo"], "field": fields})
+    elif fields:
+        api.call("PUT", "/api/repos/policy", json={"repo": pol["repo"], **{k: pol["old"].get(k) for k in fields}})
+    state.set("policy_restore", {**pol, "restored": True})
+
+
 def cleanup_last(api: Api, state: State, attempt: Callable[[str, Callable[[], Any]], None],
                  opts: argparse.Namespace) -> None:
     """After sessions and sandboxes: the test people, the landing policy and the fixture repo's file."""
@@ -1482,13 +1598,7 @@ def cleanup_last(api: Api, state: State, attempt: Callable[[str, Callable[[], An
         attempt(f"person {person}", remove)
     pol = state.get("policy_restore")
     if pol and not pol.get("restored"):
-        def policy() -> None:
-            if pol["old"] is None:
-                api.http.delete("/api/repos/policy", params={"repo": pol["repo"]})
-            else:
-                api.call("PUT", "/api/repos/policy", json={"repo": pol["repo"], **pol["old"]})
-            state.set("policy_restore", {**pol, "restored": True})
-        attempt(f"landing policy on {pol['repo']} (put back)", policy)
+        attempt(f"landing policy on {pol['repo']} (put back)", lambda: _restore_policy(api, state, pol))
     fx = state.get("fixture")
     if fx and not fx.get("restored") and fx.get("old") is not None:
         attempt(f"fixture config in {fx['url']} (put back)", lambda: _restore_fixture(state))

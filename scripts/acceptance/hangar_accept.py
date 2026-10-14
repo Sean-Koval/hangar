@@ -618,7 +618,9 @@ def check_isolation(api: Api, state: State, opts: argparse.Namespace) -> str:
 def _new_session(api: Api, state: State, name: str, opts: argparse.Namespace, **extra: Any) -> dict[str, Any]:
     """A session with no first message: it boots a sandbox and waits. idle_minutes 0: it stays up until suspended."""
     body = {"name": name, "environment": opts.session_env, "repo": opts.repo, "idle_minutes": 0,
-            "labels": {LABEL: state.run}, "model": opts.model, **extra}
+            "labels": {LABEL: state.run}, "model": opts.model,
+            **({"budget": {"max_cost_usd": opts.max_usd}} if getattr(opts, "max_usd", None) else {}),  # --- acceptance
+            **extra}
     api.call("POST", "/api/sessions", json={k: v for k, v in body.items() if v is not None})
     state.add("sessions", name)
     return api.settle(name, opts.boot_timeout, want_sandbox=True)
@@ -1136,7 +1138,9 @@ def report(argv: list[str]) -> int:
     p.add_argument("--core", default="", help="the core checks, comma or space separated")
     p.add_argument("--target", default="")
     p.add_argument("--cleanup", default="", help="how the cleanup went: ok, incomplete or kept")
+    p.add_argument("--state", type=Path, default=None, help="the run's state file: what its agent turns cost")
     o = p.parse_args(argv)
+    spend = (State(o.state).get("spend") if o.state and o.state.is_file() else None) or None
     core = {c for c in re.split(r"[,\s]+", o.core) if c}
     rows: list[dict[str, Any]] = []
     with contextlib.suppress(OSError):
@@ -1160,7 +1164,7 @@ def report(argv: list[str]) -> int:
               f"{'core' if r['core'] else '    '}  {r['summary']}")
     doc = {"version": 1, "target": o.target, "finished_at": time.time(), "gate": o.gate, "core": sorted(core),
            "cleanup": o.cleanup or None, "checks": out, "failed": failed, "core_failed": core_failed,
-           "exit": 1 if gated else 0}
+           "spend": spend, "exit": 1 if gated else 0}
     if o.out:
         o.out.write_text(json.dumps(doc, indent=1) + "\n")
     print()
@@ -1170,6 +1174,13 @@ def report(argv: list[str]) -> int:
         print(f"{len(failed)} check(s) failed, none of them core: {', '.join(failed)}")
     else:
         print("no failures")
+    if spend and (spend.get("usd") or spend.get("unpriced") or spend.get("jobs")):  # --with-model's, each --max-usd
+
+        def n(k: int, what: str) -> str:
+            return f"{k} {what}{'' if k == 1 else 's'}"
+
+        print(f"model spend: ${spend['usd']:.2f} ({n(spend['jobs'], 'job')}, {n(spend['sessions'], 'session')}"
+              + (f"; {n(spend['unpriced'], 'turn')} without a price" if spend.get("unpriced") else "") + ")")
     if o.cleanup and o.cleanup != "ok":
         print(f"cleanup: {o.cleanup}")
     if o.out:

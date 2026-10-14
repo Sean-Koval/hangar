@@ -167,6 +167,19 @@ def test_gke_sh_reports_and_gates_against_a_real_hangar(tmp_path, hangar_with):
     assert not list(tmp_path.glob("hangar-accept.*"))
 
 
+def test_only_and_skip_take_core(tmp_path, hangar_with):
+    """`core` in --only or --skip stands for the core checks (deploy.yml runs them, then the rest, in two steps)."""
+    env = _script_env(tmp_path, hangar_with.url)
+    base = ["bash", str(SCRIPT), "--no-kubectl", "--env", "xenv", "--session-env", "xenv"]
+    others = "doctor,sandbox,exec,stream,files,mcp,isolation,session,e2b,backup,power"
+    for args, want in ((["--only", "metrics,computer", "--skip", "core"], ["computer"]),
+                       (["--only", "core", "--skip", others], ["metrics"])):
+        rep = tmp_path / "r.json"
+        r = subprocess.run([*base, *args, "--gate", "core", "--report", str(rep)], env=env, capture_output=True,
+                           text=True, timeout=300, cwd=tmp_path)
+        assert [c["check"] for c in json.loads(rep.read_text())["checks"]] == want, r.stdout + r.stderr
+
+
 # ---------------------------------------------------------------------------- scale smoke, on a real hangar
 @settings(person_max_sessions=3)
 def test_scale_smoke_caps_isolates_and_leaves_nothing(tmp_path, hangar_with):
@@ -227,6 +240,13 @@ def test_intake_makes_a_job_for_the_linked_person(tmp_path, hangar_with, monkeyp
     with pytest.raises(ha.Skip, match="HANGAR_ACCEPT_JIRA_WEBHOOK_SECRET"):
         tc.check_intake(api, state, opts)
     monkeypatch.setenv("HANGAR_ACCEPT_JIRA_WEBHOOK_SECRET", SECRET)
+    # Its job may start before it's cancelled: only on the test repo's project, unless one is named
+    with pytest.raises(ha.Skip, match="mapped to the test repo"):
+        tc.check_intake(api, state, opts)
+    with pytest.raises(ha.Skip, match="mapped to the test repo"):
+        tc.check_intake(api, state, _opts(test_repo="acme/other"))
+    assert not state.get("people")  # it made nothing
+    opts = _opts(test_repo="acme/widgets")
     summary = tc.check_intake(api, state, opts)
     assert summary.startswith("ACC: a job for accept-") and "replay dropped" in summary, summary
     (jid,) = state.get("jobs")
@@ -287,15 +307,103 @@ def test_cleanup_powers_the_pools_back_on(tmp_path, hangar_with, monkeypatch):
     assert tc._power(api)["state"] == "up"
 
 
-def test_power_cycle_waits_for_a_quiet_hangar(tmp_path, monkeypatch):
-    """Others' running work makes --power-cycle skip, unless --power-cycle-anyway."""
-    api = _FakeApi({("GET", "/api/admin/power"): {"power": {"state": "up"}},
-                    ("GET", "/api/sessions"): [{"name": "dana-work", "busy": True, "state": "running"}],
-                    ("GET", "/api/jobs"): []})
+def _busy_hangar(world_: dict[str, Any]) -> _FakeApi:
+    """A hangar whose sessions, jobs and sandboxes are `world_`'s; sessions come a page at a time (X-Next-Cursor)."""
+    def fn(method, path, body, req):
+        if path == "/api/admin/power":
+            return {"power": {"state": "up"}}
+        if path == "/api/sessions":
+            pages = world_.get("session_pages") or [world_.get("sessions", [])]
+            i = int(req.url.params.get("cursor") or 0)
+            nxt = {"X-Next-Cursor": str(i + 1)} if i + 1 < len(pages) else {}
+            return httpx.Response(200, json=pages[i], headers=nxt)
+        if path == "/api/jobs":
+            return [j for j in world_.get("jobs", []) if j["state"] == req.url.params.get("state")]
+        if path == "/api/sandboxes":
+            return world_.get("sandboxes", [])
+        return None
+    return _FakeApi(fn=fn)
+
+
+@pytest.mark.parametrize("case,why", [
+    ("idle_session", "1 live session"),  # between turns: no turn running, but the pools going down end its sandbox
+    ("needs_input_job", "1 active job"),
+    ("raw_sandbox", "1 other sandbox"),  # an MCP or E2B sandbox someone works in
+    ("paged_session", "1 live session"),  # past the first page of the listing
+])
+def test_power_cycle_refuses_while_others_are_live(tmp_path, monkeypatch, case, why):
+    """--power-cycle skips while anyone else has a live session, an active job or a sandbox (an idle session holds
+    a sandbox too), seen across every page of the listings; --power-cycle-anyway goes ahead."""
+    monkeypatch.setattr(ha, "check_power", lambda a, s, o: (s.set("data:power", {"state": "up"}), "sandboxes on")[1])
+    monkeypatch.setattr(tc, "_create_time", lambda *a: {"seconds": 1.0})
+    world_: dict[str, Any] = {
+        "idle_session": {"sessions": [{"name": "dana-work", "state": "idle", "busy": False, "sandbox_id": "sb-d"}],
+                         "sandboxes": [{"id": "sb-d", "labels": {"hangar.session": "ses-1"}, "person": "dana"}]},
+        "needs_input_job": {"jobs": [{"id": "job-9", "state": "needs_input", "labels": {}, "person": "erin"}]},
+        "raw_sandbox": {"sandboxes": [{"id": "sb-e", "labels": {}, "person": "erin"}]},
+        "paged_session": {"session_pages": [[], [{"name": "old-but-busy", "state": "running", "busy": True}]]},
+    }[case]
+    state = ha.State(tmp_path / "s.json")
+    with pytest.raises(ha.Skip, match=why):
+        tc.check_power(_busy_hangar(world_), state, _opts(power_cycle=True, power_down_cmd="false"))
+    with pytest.raises(ha.Fail, match="`false` exited 1"):  # past the guard: it went on to power down
+        tc.check_power(_busy_hangar(world_), state, _opts(power_cycle=True, power_cycle_anyway=True,
+                                                            power_down_cmd="false"))
+
+
+def test_power_cycle_ignores_its_own_run_and_looks_again_before_powering_down(tmp_path, monkeypatch):
+    """The run's own sandboxes, sessions and test people don't count; someone who starts work while the `before`
+    create runs does, so nothing is powered down under them."""
     monkeypatch.setattr(ha, "check_power", lambda a, s, o: (s.set("data:power", {"state": "up"}), "sandboxes on")[1])
     state = ha.State(tmp_path / "s.json")
-    with pytest.raises(ha.Skip, match="1 running session"):
-        tc.check_power(api, state, _opts(power_cycle=True))
+    run = state.run
+    state.add("sandboxes", "sb-mine")
+    world_: dict[str, Any] = {
+        "sessions": [{"name": f"accept-{run}", "state": "idle", "busy": False, "sandbox_id": "sb-ses"}],
+        "sandboxes": [{"id": "sb-mine", "labels": {}}, {"id": "sb-ses", "labels": {"acceptance": run}},
+                      {"id": "sb-p1", "labels": {}, "person": f"accept-{run}-p1"}]}
+    with pytest.raises(ha.Fail, match="`false` exited 1"):
+        monkeypatch.setattr(tc, "_create_time", lambda *a: {"seconds": 1.0})
+        tc.check_power(_busy_hangar(world_), state, _opts(power_cycle=True, power_down_cmd="false"))
+
+    def someone_starts(*a):
+        world_["sessions"].append({"name": "dana-new", "state": "starting", "busy": False})
+        return {"seconds": 1.0}
+
+    monkeypatch.setattr(tc, "_create_time", someone_starts)
+    with pytest.raises(ha.Skip, match="1 live session"):
+        tc.check_power(_busy_hangar(world_), state, _opts(power_cycle=True, power_down_cmd="false"))
+
+
+def test_test_environments_never_replace_someone_elses(tmp_path):
+    """A test environment's name already taken by an environment that isn't the suite's is refused, not saved over."""
+    path = "/api/environments/accept-computer"
+    api = _FakeApi({("GET", path): {"raw": {"description": "Dana's browser env", "extends": "minimal"}}})
+    with pytest.raises(ha.Fail, match="isn't one of the suite's"):
+        tc.ensure_env(api, _opts(), "computer", {"extends": "minimal"})
+    assert not [c for c in api.calls if c[0] == "PUT"]
+    api = _FakeApi({("GET", path): {"raw": {"description": tc.TEST_ENV_DESCRIPTION, "extends": "python"}},
+                    ("PUT", path): {}})
+    assert tc.ensure_env(api, _opts(), "computer", {"extends": "minimal"}) == "accept-computer"
+    assert ("PUT", path, {"description": tc.TEST_ENV_DESCRIPTION, "extends": "minimal"}) in api.calls
+
+
+def test_scale_smoke_leaves_room_for_the_team(tmp_path):
+    """The scale test doesn't start when its sessions would take the fleet near HANGAR_MAX_SANDBOXES: the team's
+    creates would be refused."""
+    def fn(method, path, body, req):
+        if path == "/api/settings/HANGAR_MAX_SANDBOXES":
+            return {"value": 120}
+        if path == "/api/settings/HANGAR_PERSON_MAX_SESSIONS":
+            return {"value": 15}
+        if path == "/api/sandboxes":
+            return [{"id": f"sb-{i}", "labels": {}} for i in range(95)]
+        return None
+
+    api = _FakeApi(fn=fn)
+    with pytest.raises(ha.Skip, match="room"):
+        tc.check_scale_smoke(api, ha.State(tmp_path / "s.json"), _opts())
+    assert not [c for c in api.calls if c[0] != "GET"]  # nobody added, nothing started
 
 
 # ---------------------------------------------------------------------------- the computer, by its parts
@@ -533,7 +641,8 @@ def test_secrets_check_flow(tmp_path, monkeypatch, outcome):
     else:
         with pytest.raises(ha.Fail, match="pushed hangar/job-1|don't name"):
             tc.check_secrets(api, state, opts)
-    assert sent["deliver"] == "branch" and sent["job_budget"] == {"max_turns": 1} and not sent["verify_in_loop"]
+    assert sent["deliver"] == "branch" and not sent["verify_in_loop"]
+    assert sent["job_budget"] == {"max_turns": 1, "max_cost_usd": 1.0}  # --max-usd: what one paid job may spend
     head, tail = re.search(r"printf '%s%s\\n' (\S+) (\S+) >", sent["verify"]).groups()
     assert head.strip("'") + tail.strip("'") not in json.dumps(sent)  # only the sandbox ever joins them
     assert state.get("jobs") == ["job-1"] and {"repo": "me/accept-target", "branch": "hangar/job-1"} in \
@@ -609,7 +718,8 @@ def test_landing_check_flow(tmp_path, monkeypatch, mode):
     if mode == "no_approver":
         assert "approval not simulated" in summary and state.get("policy_restore") is None
         return
-    assert state.get("policy_restore") == {"repo": "me/accept-target", "old": None}
+    assert state.get("policy_restore") == {"repo": "me/accept-target", "old": None, "restored": False,
+                                           "set": {"land": "auto_after_approval", "approvers": ["alice"]}}
     if mode == "armed":
         assert "armed auto-merge" in summary and "a push disarmed it" in summary, summary
         review = next(b for m, p, b in seen if p.endswith("/reviews"))
@@ -636,12 +746,15 @@ def test_cleanup_closes_prs_and_puts_policy_back(tmp_path, monkeypatch):
         ("DELETE", "/repos/me/r/git/refs/heads/hangar/job-1"): httpx.Response(204),
     }, seen))
     api = _FakeApi({("GET", "/api/jobs/job-1"): {"state": "succeeded"}, ("PUT", "/api/repos/policy"): {},
+                    ("GET", "/api/repos/policy"): {"repo": "me/r", "land": "auto_after_approval",
+                                                   "approvers": ["alice"], "environment": "python"},
                     ("DELETE", "/api/people/accept-r-p1"): {}})
     state = ha.State(tmp_path / "s.json")
     state.add("jobs", "job-1")
     state.add("prs", {"repo": "me/r", "number": 7, "branch": "hangar/job-1"})
     state.add("people", "accept-r-p1")
-    state.set("policy_restore", {"repo": "me/r", "old": {"land": "manual", "approvers": ["bob"]}})
+    state.set("policy_restore", {"repo": "me/r", "old": {"land": "manual", "approvers": ["bob"]},
+                                 "set": {"land": "auto_after_approval", "approvers": ["alice"]}})
     left: list[str] = []
 
     def attempt(what, fn):
@@ -659,6 +772,62 @@ def test_cleanup_closes_prs_and_puts_policy_back(tmp_path, monkeypatch):
     assert ("DELETE", "/api/people/accept-r-p1", None) in api.calls
     assert not [c for c in api.calls if c[1].endswith("/cancel")]  # the job had finished
     assert state.get("policy_restore")["restored"]
+
+
+@pytest.mark.parametrize("old,now,put,unset", [
+    # someone changed the approvers during the run: theirs stay, only `land` goes back
+    ({"land": "manual", "approvers": ["bob"]}, {"land": "auto_after_approval", "approvers": ["carol"]},
+     {"repo": "me/r", "land": "manual"}, None),
+    # both changed since: nothing is put back
+    ({"land": "manual", "approvers": ["bob"]}, {"land": "manual", "approvers": ["carol"]}, None, None),
+    # no policy before: only the run's two fields are cleared, not the policy someone added to meanwhile
+    (None, {"land": "auto_after_approval", "approvers": ["alice"], "environment": "python"}, None,
+     ["land", "approvers"]),
+    (None, None, None, None),  # the policy is gone already
+])
+def test_policy_restore_keeps_concurrent_changes(tmp_path, old, now, put, unset):
+    """Cleanup puts back only the policy fields that still hold what the landing check set."""
+    calls: list = []
+
+    def fn(method, path, body, req):
+        if path != "/api/repos/policy":
+            return None
+        calls.append((method, body, req.url.params.get_list("field")))
+        if method == "GET":
+            return now if now is not None else httpx.Response(404, json={"error": "no policy"})
+        return {}
+
+    state = ha.State(tmp_path / "s.json")
+    state.set("policy_restore", {"repo": "me/r", "old": old, "restored": False,
+                                 "set": {"land": "auto_after_approval", "approvers": ["alice"]}})
+    tc.cleanup_last(_FakeApi(fn=fn), state, lambda what, f: f(), _opts())
+    assert [b for m, b, _ in calls if m == "PUT"] == ([put] if put else [])
+    assert [f for m, _, f in calls if m == "DELETE"] == ([unset] if unset else [])
+    assert state.get("policy_restore")["restored"]
+
+
+def test_spend_is_capped_and_reported(tmp_path, capsys):
+    """Paid turns are summed at cleanup (jobs and sessions, before they're removed) and the report prints the
+    total; a turn without a price is counted as such."""
+    def fn(method, path, body, req):
+        return {"/api/jobs/job-1": {"state": "succeeded", "usage": {"cost_usd": 0.12, "output_tokens": 9}},
+                "/api/jobs/job-2": {"state": "cancelled", "usage": None},
+                "/api/jobs/job-3": {"state": "failed", "usage": {"cost_usd": None, "output_tokens": 40}},
+                "/api/sessions/accept-r-egress": {"name": "accept-r-egress", "usage": {"cost_usd": 0.05}},
+                }.get(path) if method == "GET" else None
+
+    state = ha.State(tmp_path / "s.json")
+    for j in ("job-1", "job-2", "job-3"):
+        state.add("jobs", j)
+    state.add("sessions", "accept-r-egress")
+    tc.cleanup_first(_FakeApi(fn=fn), state, lambda what, f: f(), _opts())
+    assert state.get("spend") == {"usd": 0.17, "jobs": 3, "sessions": 1, "unpriced": 1}
+    res = tmp_path / "r.jsonl"
+    res.write_text(json.dumps({"check": "secrets", "status": "pass", "seconds": 1, "summary": "ok"}) + "\n")
+    out = tmp_path / "report.json"
+    assert ha.report(["--results", str(res), "--out", str(out), "--state", str(tmp_path / "s.json")]) == 0
+    assert json.loads(out.read_text())["spend"]["usd"] == 0.17
+    assert "model spend: $0.17 (3 jobs, 1 session; 1 turn without a price)" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------- envbuild, by its parts
@@ -693,6 +862,29 @@ def test_fixture_repo_commits_and_restores(tmp_path):
     assert state.get("fixture")["restored"]
 
 
+def test_fixture_restore_keeps_someone_elses_change(tmp_path):
+    """Putting the fixture back touches only the files that still hold what this run wrote: a change someone pushed
+    meanwhile (or another run's fixture) stays."""
+    seed, bare = tmp_path / "seed", tmp_path / "fixture.git"
+    seed.mkdir()
+    _git("init", "-q", "-b", "trunk", cwd=seed)
+    (seed / ".gitignore").write_text("*.log\n")
+    _git("add", ".", cwd=seed)
+    _git("commit", "-qm", "init", cwd=seed)
+    _git("clone", "-q", "--bare", str(seed), str(bare))
+    url = f"file://{bare}"
+    files = {tc.FIXTURE_FILE: tc.fixture_config("r1"), tc.FIXTURE_IGNORE: ".accept/\n"}
+    _, old = tc.FixtureRepo(url, None).commit(files, "fixture")
+    tc.FixtureRepo(url, None).commit({tc.FIXTURE_IGNORE: ".accept/\nnode_modules/\n"}, "someone else's change")
+    state = ha.State(tmp_path / "s.json")
+    state.set("fixture", {"url": url, "old": old, "wrote": files, "restored": False})
+    tc._restore_fixture(state)
+    assert state.get("fixture")["restored"]
+    assert _git("--git-dir", str(bare), "show", f"trunk:{tc.FIXTURE_IGNORE}") == ".accept/\nnode_modules/\n"
+    with pytest.raises(subprocess.CalledProcessError):  # the run's own file is gone again
+        _git("--git-dir", str(bare), "show", f"trunk:{tc.FIXTURE_FILE}")
+
+
 @pytest.mark.parametrize("broken", [False, True])
 def test_fixture_config_is_a_valid_repo_environment(broken):
     """What the envbuild check commits passes hangar's strict parser for .hangar/environment.yaml."""
@@ -722,13 +914,25 @@ def test_image_repo(ref, repo):
 
 
 def test_deploy_rolls_back_only_for_core_checks():
-    """deploy.yml gates on the core checks and keeps the report; it never runs paid turns or a power cycle."""
+    """deploy.yml gates on the core checks in a step of their own; the team checks run after them in a step that
+    can't fail the job (continue-on-error, its own time limit inside the job's), so neither a failing nor a slow
+    team check rolls a deploy back. It never runs paid turns or a power cycle."""
     import yaml
 
     wf = yaml.safe_load((ROOT / ".github" / "workflows" / "deploy.yml").read_text())
-    steps = {s.get("name") or s.get("uses"): s for s in wf["jobs"]["deploy"]["steps"]}
-    run = steps["Acceptance"]["run"]
-    assert "--gate core" in run and "--report accept-report.json" in run and "--record accept.jsonl" in run
-    assert "--with-model" not in run and "--power-cycle" not in run
-    assert "secrets.HANGAR_ACCEPT_GITHUB_TOKEN" in json.dumps(steps["Acceptance"]["env"])
+    job = wf["jobs"]["deploy"]
+    steps = {s.get("name") or s.get("uses"): s for s in job["steps"]}
+    core = steps["Acceptance"]
+    run = core["run"]
+    assert "--only core" in run and "--gate core" in run and "--report accept-report.json" in run
+    assert "--record accept.jsonl" in run and "--with-model" not in run and "--power-cycle" not in run
+    team = next(s for s in job["steps"] if s.get("id") == "team")
+    assert team["continue-on-error"] is True and "steps.pre.outputs.only == ''" in team["if"]
+    trun = team["run"]
+    assert "--skip core," in trun and "--record accept.jsonl" in trun and "--report accept-team-report.json" in trun
+    assert "timeout --signal=INT" in trun  # cleanup runs before the step's own limit
+    assert "--with-model" not in trun and "--power-cycle" not in trun
+    assert "secrets.HANGAR_ACCEPT_GITHUB_TOKEN" in json.dumps(team["env"])
+    assert job["timeout-minutes"] >= core["timeout-minutes"] + team["timeout-minutes"] + 45  # rollout and rollback
+    assert "team" not in steps["Roll back"]["if"]
     assert "accept-report.json" in steps["Summary (version, tool-list diff, acceptance)"]["run"]
