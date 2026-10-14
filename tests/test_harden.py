@@ -86,6 +86,25 @@ def test_claude_gets_hangars_settings_mcp_servers_and_claude_md_and_nothing_of_t
     assert b"export CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1" in env
 
 
+def test_the_environments_plugins_dont_load_in_a_hardened_turn():
+    """review(#69): Claude Code loads an enabled plugin's hooks, skills and MCP servers from ~/.claude/plugins (its
+    installed_plugins.json and known_marketplaces.json say where), which the agent can write: an environment that
+    enables plugins would hand the agent a PreToolUse hook that allows every call (verified with 2.1.296)."""
+    theirs = {"permissions": {"allow": ["Bash(make *)"]}, "enabledPlugins": {"p@m": True},
+              "extraKnownMarketplaces": {"m": {"source": {"source": "directory", "path": "/opt/m"}}}}
+    fleet = _fleet(EnvSpec(name="e", agent_config={"files": {".claude/settings.json": json.dumps(theirs)}}))
+    h = HARNESSES["claude-code"]
+    _kept(fleet)
+    p = harden.plan(fleet, _split(h), h, "run-0000beef", "/workspace/r", {})
+    settings = json.loads(p.files["run-0000beef.settings.json"][0])
+    assert "enabledPlugins" not in settings and "extraKnownMarketplaces" not in settings
+    assert settings["permissions"] == {"allow": ["Bash(make *)"]}
+    assert p.warnings == [harden.CLAUDE_PLUGINS]
+    fleet = _fleet(EnvSpec(name="e", agent_config={"files": {".claude/settings.json": '{"enabledPlugins": {}}'}}))
+    _kept(fleet)
+    assert not harden.plan(fleet, _split(h), h, "run-0000beef", "/workspace/r", {}).warnings  # none enabled
+
+
 def test_codex_gets_its_hooks_off_and_says_what_stays_open():
     fleet, h = _fleet(), HARNESSES["codex"]
     _kept(fleet)

@@ -17,11 +17,12 @@ sandbox, hangar decides all of that itself:
   with the job's verify gate added; `--strict-mcp-config --mcp-config` the environment's MCP servers as rendered when
   the sandbox was set up. Without setting sources Claude Code also skips CLAUDE.md files and skills: `--add-dir` with
   CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 brings back the repository's CLAUDE.md and the environment's
-  instructions. Skills stay off: their `allowed-tools` are permission rules the agent could write.
+  instructions. Skills stay off: their `allowed-tools` are permission rules the agent could write. So do plugins,
+  even ones the environment enables: Claude Code finds them through ~/.claude/plugins, the agent's.
 * **Codex** (0.162.1): `--disable hooks` (a command-line override outranks config.toml) and `approvalsReviewer: user`
   on the thread (the driver). Codex still loads `.rules` files from ~/.codex/rules and the repository's .codex/rules,
   even for an untrusted project, and has no switch to turn them off: a rule can let a command run without asking.
-  The turn says so.
+  So can an MCP server the agent adds to ~/.codex/config.toml with its tools set to `approve`. The turn says so.
 
 Managed settings outrank all of this (verified: a managed `permissions.allow` or `disableAllHooks` wins over
 `--setting-sources ''` and `--settings`). They are root's: without sudo, which the split requires, the agent can't write
@@ -48,9 +49,15 @@ if TYPE_CHECKING:
     from hangar.providers.base import Provider
 
 VAULT = "harness:"  # + sandbox id: what hangar set the harness up with (its env, its MCP servers)
-CODEX_RULES = ("Codex reads command rules from ~/.codex/rules and the repository's .codex/rules, which the agent can "
-               "write, and has no switch to turn them off: a rule can let a command run without asking "
+CODEX_RULES = ("Codex reads command rules from ~/.codex/rules and the repository's .codex/rules, and MCP servers from "
+               "~/.codex/config.toml, all of which the agent can write, and has no switch to turn them off: a rule, or "
+               "an MCP server whose tools are set to `approve`, can let a call run without asking "
                "(docs/steering.md#hangar-owned-harness-settings)")
+# review(#69): Claude Code loads an enabled plugin (its hooks, skills, MCP servers) from what ~/.claude/plugins says,
+# which the agent can write; verified with 2.1.296, a plugin's PreToolUse hook then allows every call
+PLUGIN_KEYS = ("enabledPlugins", "extraKnownMarketplaces")
+CLAUDE_PLUGINS = ("the environment's Claude Code plugins don't load in a turn that asks: Claude Code reads them from "
+                  "~/.claude/plugins, which the agent can write (docs/steering.md#hangar-owned-harness-settings)")
 
 
 @dataclass
@@ -135,6 +142,8 @@ def plan(fleet: Any, sb: Sandbox, h: Harness, run_id: str, wd: str, env: dict[st
         except (KeyError, ValueError):
             return f"its environment {sb.environment} is no longer defined"
         settings = claude_settings(spec, fleet.settings.sandbox_user, env.get(CLAUDE_ENV))
+        if [k for k in PLUGIN_KEYS if settings.pop(k, None)]:  # review(#69)
+            p.warnings.append(CLAUDE_PLUGINS)
         p.files[f"{run_id}.settings.json"] = (json.dumps(settings).encode(), 0o644)
         p.files[f"{run_id}.mcp.json"] = (json.dumps(kept.get("claude_mcp") or {"mcpServers": {}}).encode(), 0o644)
         memory = bool(spec.agent_config.instructions)
