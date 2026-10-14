@@ -103,7 +103,7 @@ def open_job(svc: JobService, ref: str) -> Job | None:
 
 
 def latest_job(svc: JobService, ref: str) -> Job | None:
-    jobs = [j for j in svc._jobs.values() if j.source_ref == ref]
+    jobs = svc.where(source_ref=ref)  # --- durable: finished ones aren't all in memory
     return max(jobs, key=lambda j: j.created_at) if jobs else None
 
 

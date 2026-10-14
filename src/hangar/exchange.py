@@ -1066,7 +1066,8 @@ def answer_on_issue(svc: JobService, ref: str, sender: str, text: str,
     passes only a trusted person's comment: the answer steers the agent, and anyone can comment on a public issue."""
     from hangar.jobs import JobError
 
-    job = next((j for j in svc.list(limit=500) if j.source_ref == ref and j.state == JobState.NEEDS_INPUT), None)
+    job = next((j for j in svc._jobs.values()  # --- durable: unfinished jobs are in memory
+                if j.source_ref == ref and j.state == JobState.NEEDS_INPUT), None)
     if job is None:
         return None
     try:

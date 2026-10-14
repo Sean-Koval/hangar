@@ -31,6 +31,7 @@ from hangar import computer as computer  # --- computer
 from hangar import fairness as fairness  # --- scale
 from hangar import hot_resume as hot_resume  # --- providers-e2b
 from hangar import metrics as metrics  # --- reconciler
+from hangar import resident as resident  # --- durable: live and recent sessions in memory, the rest in the store
 from hangar import steer as steering  # workstream steer: live turns
 from hangar.checkpoints import CheckpointStore, make_store
 from hangar.ckpt import CKPT_DIR, CKPT_REF, PACK_READ_LIMIT, PARTS, RESTORE_DIR  # noqa: F401 - re-exported (strategies, exchange)
@@ -51,6 +52,7 @@ from hangar.models import (
     SessionTurn,
     now,
 )
+from hangar.store import Ge, Not  # --- durable
 from hangar.vault import Vault
 
 log = logging.getLogger("hangar.sessions")
@@ -129,7 +131,9 @@ class SessionService:
         self.vault = vault
         self.root = self.settings.data_dir / "sessions"
         self.blobs: CheckpointStore = make_store(self.settings.session_store, self.settings.data_dir)
-        self._sessions: dict[str, Session] = {}
+        # --- durable: live sessions and those used in the last HANGAR_RESIDENT_MINUTES; the store has the rest
+        self._sessions: resident.Resident[Session] = resident.Resident(
+            self.store, Session, self._pinned, lambda: self.settings.resident_minutes * 60)
         self._locks: dict[str, asyncio.Lock] = collections.defaultdict(asyncio.Lock)
         self._busy: set[str] = set()  # sessions with a turn, boot or suspend of their own in flight
         self._holds: collections.Counter[str] = collections.Counter()  # outside holders (jobs), refcounted
@@ -145,7 +149,7 @@ class SessionService:
     # ================================================================== lifecycle
     async def start(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
-        self._sessions = {s.id: s for s in self.store.list(Session)}
+        self._sessions.adopt(self._load())  # --- durable: not every session ever
         for s in self._sessions.values():
             if s.state in SESSION_LIVE or s.state == SessionState.SUSPENDING:
                 if s.sandbox_id and self._alive(s.sandbox_id):
@@ -201,20 +205,79 @@ class SessionService:
 
     # ================================================================== public API
     def get(self, ref: str) -> Session:
+        # --- durable: by id, then by name, in memory first, then in the store (archive included)
         s = self._sessions.get(ref) or next(
-            (x for x in self._sessions.values() if x.name == ref and x.state != SessionState.ARCHIVED), None)
+            (x for x in self._sessions.values() if x.name == ref and x.state != SessionState.ARCHIVED), None) \
+            or next(iter(self.where(name=ref, state=Not(SessionState.ARCHIVED))), None)
         if s is None:
             raise SessionNotFound(f"no session '{ref}'")
-        return s
+        return self._sessions.get(s.id)
 
-    def list(self, include_archived: bool = False, limit: int = 100) -> list[Session]:
-        out = [s for s in self._sessions.values() if include_archived or s.state != SessionState.ARCHIVED]
-        return sorted(out, key=lambda s: s.last_active_at, reverse=True)[: max(1, min(limit, 500))]
+    def list(self, include_archived: bool = False, limit: int = 100, person: str | None = None,
+             cursor: str | None = None) -> list[Session]:
+        return [s for s, _ in self.page(include_archived, limit, person, cursor)[0]]
+
+    def page(self, include_archived: bool = False, limit: int = 100, person: str | None = None,
+             cursor: str | None = None) -> tuple[list[tuple[Session, str]], str | None]:
+        """--- durable: sessions most recently active first, from the store's indexes, filtered there (a person's
+        are all of theirs). Each comes with its cursor, where it stood in the store (the copy in memory may have
+        moved on since), then the next page's cursor, None at the end. See JobService.page."""
+        limit = max(1, min(limit, 500))
+        fields: dict[str, Any] = {} if include_archived else {"state": Not(SessionState.ARCHIVED)}
+        if person is not None:
+            fields["person"] = person
+        rows = self.store.page(Session, limit + 1, resident.after(cursor), archived=True, **fields)
+        marks = [resident.cursor(r.last_active_at, r.id) for r in rows[:limit]]
+        return (list(zip(self._sessions.adopt(rows[:limit]), marks, strict=True)),
+                marks[-1] if len(rows) > limit else None)
+
+    # --- durable: lookups that see every session, not just those in memory
+    def where(self, **fields: Any) -> list[Session]:
+        """Sessions whose fields match (Resident.where): archived ones too, as the copies in memory."""
+        return self._sessions.where(**fields)
+
+    def of_job(self, job_id: str) -> list[Session]:
+        """Every session that carried the job: its own, best-of-N attempts and the judge. A session's job is saved
+        with it when it's made (for_job, the forks), so no pass over the sessions in memory: views call this."""
+        return self._sessions.where(memory=False, job_id=job_id)
+
+    def touched_since(self, t: float, **fields: Any) -> list[Session]:
+        """Sessions saved since `t` (and matching `fields`), to read only: the copy in memory where there is one,
+        else the store's, which stays out of memory."""
+        return self._sessions.read(updated_at=Ge(t), **fields)
+
+    def exists(self, sid: str) -> bool:
+        return self._sessions.peek(sid) is not None or self.store.get(Session, sid) is not None
+
+    def taken(self, name: str | None = None, branch: str | None = None) -> bool:
+        """Whether a session that isn't archived has this name (or branch)."""
+        fields = {k: v for k, v in (("name", name), ("branch", branch)) if v is not None}
+        return bool(self._sessions.read(state=Not(SessionState.ARCHIVED), **fields))
+
+    def _pinned(self, s: Session) -> bool:
+        """Kept in memory whatever its age: live, suspending, or something drives it (a turn, a job, a lock)."""
+        return (s.state in SESSION_LIVE or s.state == SessionState.SUSPENDING or self.busy(s.id)
+                or s.id in self._restart_holds or (s.id in self._locks and self._locks[s.id].locked()))
+
+    def _load(self) -> list[Session]:
+        """At start: live and suspending sessions, and those changed in the last HANGAR_RESIDENT_MINUTES."""
+        found = [*self.store.list_where(Session, state=(*SESSION_LIVE, SessionState.SUSPENDING)),
+                 *self.store.list_where(Session, updated_at=Ge(now() - self.settings.resident_minutes * 60))]
+        return list({s.id: s for s in found}.values())
+
+    def evict(self) -> int:
+        """Let go of the sessions nothing needs in memory any more (resident.py); returns how many."""
+        gone = self._sessions.evict()
+        for sid in gone:
+            if sid in self._locks and not self._locks[sid].locked():
+                del self._locks[sid]
+            self._last_checked.pop(sid, None)
+        return len(gone)
 
     def new(self, req: NewSession, owner: str, requester: str, person: str | None = None) -> Session:
         if not _NAME_RE.match(req.name):
             raise SessionError("name: lowercase letters, digits, '.', '_' and '-' (start with a letter or digit)")
-        if any(s.name == req.name and s.state != SessionState.ARCHIVED for s in self._sessions.values()):
+        if self.taken(name=req.name):  # --- durable: in the store too
             raise SessionError(f"a session named '{req.name}' already exists; open it, or archive it first")
         env = req.environment or self._env_for_repo(req.repo)
         if not env:
@@ -739,7 +802,7 @@ class SessionService:
                 extra_dirs: list[str], idle_minutes: int, person: str | None = None) -> Session:
         """The session that carries a job: same sandbox lifecycle, checkpoints and conversation resume, but turns
         are driven by the job service (which verifies and delivers them)."""
-        existing = next((x for x in self._sessions.values() if x.job_id == job_id and not x.parent_id), None)
+        existing = next((x for x in self.of_job(job_id) if not x.parent_id), None)  # --- durable: in the store too
         if existing:
             return existing
         s = Session(name=f"job-{job_id.removeprefix('job-')}", title=f"job {job_id}", owner="jobs",

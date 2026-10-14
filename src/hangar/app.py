@@ -79,7 +79,7 @@ class Hangar:
         self.backups = Backups(self.settings, self.vault, self.sessions.blobs)
         from hangar.retention import Retention  # --- scale: settled sandbox records move to the archive
 
-        self.retention = Retention(self.store, self.settings)
+        self.retention = Retention(self.store, self.settings, self.jobs, self.sessions)  # --- durable: + their memory
 
 
 # ---------------------------------------------------------------------------- MCP auth
@@ -831,8 +831,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return jobs.view(jobs.submit(body, caller, source="api"))
 
     @app.get("/api/jobs")
-    async def job_list(state: str | None = None, limit: int = 50, caller: Caller = J):
-        return FastJSON([jobs.view(j) for j in jobs.list(state=state, owner=owner_filter(caller), limit=limit)])
+    async def job_list(state: str | None = None, limit: int = 50, cursor: str | None = None, caller: Caller = J):
+        # --- durable: a page, each job with its `cursor`; X-Next-Cursor when there are more
+        page, nxt = jobs.page(state=state, owner=owner_filter(caller), limit=limit, person=people.scope(),
+                              cursor=cursor)
+        return FastJSON([{**jobs.view(j), "cursor": c} for j, c in page],
+                        headers={"X-Next-Cursor": nxt} if nxt else None)
 
     @app.get("/api/jobs/{job_id}")
     async def job_get(job_id: str, caller: Caller = J):
@@ -963,8 +967,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return sessions.view(sessions.new(body, owner=who, requester=who))
 
     @app.get("/api/sessions")
-    async def session_list(include_archived: bool = False, limit: int = 100, _: str = A):
-        return FastJSON([sessions.view(s) for s in sessions.list(include_archived=include_archived, limit=limit)])
+    async def session_list(include_archived: bool = False, limit: int = 100, cursor: str | None = None,
+                           _: str = A):
+        page, nxt = sessions.page(include_archived=include_archived, limit=limit, cursor=cursor)  # durable
+        return FastJSON([{**sessions.view(s), "cursor": c} for s, c in page],
+                        headers={"X-Next-Cursor": nxt} if nxt else None)
 
     @app.get("/api/sessions/{ref}")
     async def session_get(ref: str, _: str = A):

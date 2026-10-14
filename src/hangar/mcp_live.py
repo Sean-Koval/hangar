@@ -104,6 +104,7 @@ class JobOut(_Out):
     result: JobResultOut | None = None
     usage: dict[str, Any] | None = None
     turn: dict[str, Any] | None = None  # when it ran as a task: its last turn, as wait_for_turn returns it
+    cursor: str | None = None  # --- durable: in a listing, where the next page starts after this one
     pending_approvals: list[dict[str, Any]] = []  # workstream steer: answer with answer_approval
 
 
@@ -119,6 +120,7 @@ class SessionOut(_Out):
     last_summary: str | None = None
     sandbox_id: str | None = None
     turn: dict[str, Any] | None = None  # when it ran as a task: the turn, as wait_for_turn returns it
+    cursor: str | None = None  # --- durable: in a listing, where the next page starts after this one
     pending_approvals: list[dict[str, Any]] = []  # workstream steer: answer with answer_approval
 
 
@@ -292,15 +294,15 @@ class HangarMCP(MCPServer):
 
 def recent_resources(sessions: Any, jobs: Any, limit: int = 25) -> list[types.Resource]:
     """The sessions and jobs worth following now: the most recently active, newest first (the caller's own)."""
-    from hangar.people import mine  # --- identity
+    from hangar.people import scope  # --- identity; --- durable: filtered in the store, not after the team's newest
 
     out = [types.Resource(uri=session_uri(s.name), name=f"session {s.name}", mime_type="application/json",
                           description=f"{s.state.value}: {(s.title or s.repo or '')[:100]}")
-           for s in mine(sessions.list(limit=500))[:limit]]
+           for s in sessions.list(limit=limit, person=scope())]
     if jobs is not None:
         out += [types.Resource(uri=job_uri(j.id), name=f"job {j.id}", mime_type="application/json",
                                description=f"{j.state.value}: {j.title[:100]}")
-                for j in mine(jobs.list(limit=500))[:limit]]
+                for j in jobs.list(limit=limit, person=scope())]
     return out
 
 

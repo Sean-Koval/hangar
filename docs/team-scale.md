@@ -90,6 +90,45 @@ waited behind them.
 first soak, with retention moving 500 rows a transaction, had a loop lag p95 of 811 ms: one batch held the store's
 lock for up to 0.9 s. Hence 100.
 
+### Months of job and session history
+
+The job and session services used to load every job and session ever made at startup and keep them: ~30 KB for a
+finished job with its timeline, so 18,000 jobs (six months at 100 a day) cost over half a GB, and every listing sorted
+all of them. Now each holds what is live (unfinished jobs, jobs whose PR is still on its way to landed or with
+auto-fix triggers waiting, live, suspending or busy sessions) and whatever was saved or asked for in the last
+`HANGAR_RESIDENT_MINUTES` (60). Everything else is read back from the store when asked for, by id, by name, or
+through the store's indexes (`resident.py`): the GitHub, Jira and Projects lookups (by PR number, branch, head commit,
+ticket), idempotent retries, the inbox, the usage report and the daily caps. Every 5 minutes the retention loop lets
+go of what nothing needs any more. A record read back stays one object while it's in use, so two callers never hold
+copies that overwrite each other's changes.
+
+Listings (`list_jobs`, `list_sessions`, `GET /api/jobs`, `GET /api/sessions`, the recent-work resources) are pages
+from the store's indexes, newest first, filtered there by person: a member's listing is all of their own work, not
+what of it was left after the team's newest 500. Each item carries a `cursor`; pass the last one's back for the next
+page (REST also answers `X-Next-Cursor` when there is one). Finished jobs and settled sessions untouched for 30 days
+move to `jobs_archive` and `sessions_archive` (below), which listings and lookups read too.
+
+The team load test with that history seeded (6 people × 5 sessions, 12 jobs; 20,000 sandbox records, **18,000
+finished jobs and 3,000 sessions over six months**; `--job-history 18000 --session-history 3000`), two runs each on
+the shared 2-vCPU VM, `bench/results/2026-10-14-team-load-history-*.json`:
+
+| | Before (build/ops) | After |
+| --- | --- | --- |
+| RSS at idle, history loaded | 735 / 736 MB | 213 / 213 MB |
+| Peak RSS | 744 / 746 MB | 222 / 222 MB |
+| Server CPU for the same work | 25.6 / 25.7 CPU-s | 14.5 / 16.5 CPU-s |
+| Event-loop lag p95 / max | 69 / 881, 67 / 859 ms | 60 / 127, 61 / 132 ms |
+| `list_jobs` (MCP) p50 / p95 | 115 / 225, 115 / 265 ms | 87 / 191, 77 / 168 ms |
+| `list_sessions` (MCP) p50 / p95 | 139 / 245, 112 / 722 ms | 73 / 152, 63 / 134 ms |
+| `GET /api/jobs` p50 / p95 | 76 / 178, 65 / 223 ms | 65 / 133, 42 / 124 ms |
+| `GET /api/sessions` p50 / p95 | 74 / 126, 87 / 400 ms | 65 / 176, 65 / 134 ms |
+| SQLite time on the event loop | 1.2 s | 6.5 s |
+
+The loop now spends more time in SQLite (a page of jobs is read and decoded per listing, ~6 ms for 50) and less in
+Python over every job in memory. Reading the pages in a worker thread was tried: decoding holds the GIL, so it saved
+the loop nothing and raised the peak RSS by ~35 MB. The `hangar_jobs` and `hangar_sessions` gauges are counted by
+SQLite in a worker thread on a connection of their own, at most a minute old.
+
 What remains, by SQLite time on the loop: `get` of one sandbox by id (sessions check that theirs is alive, ~0.4 ms
 each, 5k calls a run), `put` of sessions (every state change writes the whole record), and the token lookup in
 `auth.principal`, which decodes every API token on every request (~1 ms; see follow-ups).
@@ -172,7 +211,7 @@ error name the quota when a scale-up is refused for one.
 ### The control plane
 
 Measured on the fake provider at 60 sessions and 12–24 jobs: ~0.13–0.2 of a core on average (the event loop is one
-thread), and 260–280 MB RSS with 5,000 jobs in memory. Forks and snapshots add up to `HANGAR_WORKSPACE_TRANSFER_MB`
+thread), and 260–280 MB RSS (220 MB with six months of history: finished jobs and sessions stay in the store). Forks and snapshots add up to `HANGAR_WORKSPACE_TRANSFER_MB`
 (1 GiB) of archives in flight, or one oversized archive at 2–3× its size. `deploy/k8s/deployment.yaml` now requests
 `500m` / `1Gi` with a `3Gi` memory limit (was `250m` / `512Mi` / `2Gi`), which fits the `e2-standard-2` system node
 (~6.1 GiB allocatable by the same formulas). Still one replica: state is one SQLite file.
@@ -259,6 +298,23 @@ db.execute('INSERT OR IGNORE INTO sandboxes(key, data) SELECT key, data FROM san
 
 The next upgrade archives them again. `HANGAR_SANDBOX_RETENTION_DAYS=0` turns archiving off.
 
+**Jobs and sessions** get the same treatment, and more indexes (person, owner, ticket, idempotency key, PR number,
+branch, head commit, landing state, name, job, parent, conversation; and per person by date for listings), in the main
+and the archive tables. The first start indexes the existing rows: ~2 s for 21,000 jobs and sessions on the 2-vCPU
+VM, before hangar answers. Finished jobs untouched for `HANGAR_JOB_RETENTION_DAYS` (30) and settled sessions for
+`HANGAR_SESSION_RETENTION_DAYS` (30) move to `jobs_archive` and `sessions_archive`, in batches of 100, and are never
+deleted. Not archived, whatever their age: a job whose PR is open or approved, or merged or closed with its session
+not yet ended, one with auto-fix triggers waiting, a schedule's last job (its next run updates that PR), a session
+with checkpoints (it can always be resumed), and a session a job in the main table points at (the job goes first).
+A record changed again (a follow-up on an archived job) moves back to the main table. Before rolling back to a version
+without the archive, hand them back as above:
+
+```
+kubectl -n hangar exec deploy/hangar -- python3 -c "import sqlite3; db = sqlite3.connect('/data/hangar.db'); \
+[db.execute(f'INSERT OR IGNORE INTO {t}(key, data) SELECT key, data FROM {t}_archive') for t in ('jobs', 'sessions')]; \
+db.commit()"
+```
+
 ## Limits and follow-ups
 
 - **Budgets before concurrency.** Auto job slots stop at 8 (`fairness.AUTO_JOB_SLOTS_MAX`), not 24. Job budgets
@@ -270,8 +326,9 @@ The next upgrade archives them again. `HANGAR_SANDBOX_RETENTION_DAYS=0` turns ar
   `HANGAR_JOB_CONCURRENCY=24` gives the measured 24.
 - **The reconciler** reads only live and unfinished sandboxes, from the state index (`reconciler.sandboxes_in`), once
   per pass on its own task. `hangar gc` still lists every record; it is an admin's occasional command.
-- **Jobs and sessions are held in memory**, all of them, since the start (`jobs.py`, `sessions.py`): ~30 KB for a
-  finished job with a 30-event timeline (the seeded history), so 18,000 jobs (6 months at 100 a day) is ~0.5 GB. They need the same archive, with usage rolled up first.
+- **Jobs and sessions in memory** are the live ones and the last hour's ([above](#months-of-job-and-session-history)).
+  The archive keeps finished ones forever: nothing deletes them yet. At 100 jobs a day that is ~1 GB of SQLite a year,
+  read only by id, by index and a page at a time.
 - **Token lookups** decode every API token on every request (`auth.principal`), ~1 ms at a handful of tokens. An index
   on the token hash, with the constant-time compare kept, removes it.
 - **Snapshots on the pods/exec fallback** still read the whole archive as base64 text. The budget bounds it; reading it

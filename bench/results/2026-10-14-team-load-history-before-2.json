@@ -1,0 +1,513 @@
+{
+  "meta": {
+    "bench": "team-load",
+    "git": "47f23e5",
+    "started": "2026-10-14T18:33:25",
+    "seconds": 48.0,
+    "host": "vm",
+    "cpus": 2,
+    "python": "3.12.3",
+    "provider": "fake",
+    "actors": 6,
+    "sessions": 5,
+    "turns": 1,
+    "jobs": 2,
+    "history": 20000,
+    "job_history": 18000,
+    "session_history": 3000,
+    "steps": 16,
+    "latency_ms": 0.0,
+    "settings": []
+  },
+  "metrics": {
+    "mcp_new_session": {
+      "n": 30,
+      "p50_ms": 13.11,
+      "p95_ms": 46.47,
+      "mean_ms": 17.19,
+      "min_ms": 7.68,
+      "max_ms": 49.78
+    },
+    "mcp_submit_job": {
+      "n": 12,
+      "p50_ms": 11.88,
+      "p95_ms": 25.35,
+      "mean_ms": 15.43,
+      "min_ms": 6.59,
+      "max_ms": 25.35
+    },
+    "mcp_get_session": {
+      "n": 60,
+      "p50_ms": 10.25,
+      "p95_ms": 43.55,
+      "mean_ms": 12.98,
+      "min_ms": 4.7,
+      "max_ms": 64.24
+    },
+    "rest_sessions": {
+      "n": 25,
+      "p50_ms": 86.55,
+      "p95_ms": 400.06,
+      "mean_ms": 133.86,
+      "min_ms": 14.94,
+      "max_ms": 1005.2
+    },
+    "rest_sandboxes": {
+      "n": 25,
+      "p50_ms": 88.23,
+      "p95_ms": 297.03,
+      "mean_ms": 133.09,
+      "min_ms": 3.39,
+      "max_ms": 1065.52
+    },
+    "rest_jobs": {
+      "n": 25,
+      "p50_ms": 64.91,
+      "p95_ms": 223.29,
+      "mean_ms": 91.88,
+      "min_ms": 21.59,
+      "max_ms": 237.83
+    },
+    "session_turn_wall": {
+      "n": 30,
+      "p50_ms": 8301.55,
+      "p95_ms": 8494.8,
+      "mean_ms": 8330.32,
+      "min_ms": 8191.71,
+      "max_ms": 8610.14
+    },
+    "mcp_list_sessions": {
+      "n": 11,
+      "p50_ms": 112.33,
+      "p95_ms": 721.54,
+      "mean_ms": 192.59,
+      "min_ms": 17.0,
+      "max_ms": 721.54
+    },
+    "mcp_list_sandboxes": {
+      "n": 11,
+      "p50_ms": 216.71,
+      "p95_ms": 479.87,
+      "mean_ms": 200.02,
+      "min_ms": 16.48,
+      "max_ms": 479.87
+    },
+    "mcp_list_jobs": {
+      "n": 597,
+      "p50_ms": 115.27,
+      "p95_ms": 265.34,
+      "mean_ms": 142.24,
+      "min_ms": 35.15,
+      "max_ms": 1069.98
+    },
+    "mcp_exec": {
+      "n": 19,
+      "p50_ms": 219.77,
+      "p95_ms": 1193.25,
+      "mean_ms": 372.97,
+      "min_ms": 151.81,
+      "max_ms": 1193.25
+    },
+    "rest_create_sandbox": {
+      "n": 2,
+      "p50_ms": 544.51,
+      "p95_ms": 544.51,
+      "mean_ms": 514.91,
+      "min_ms": 485.31,
+      "max_ms": 544.51
+    },
+    "rest_destroy_sandbox": {
+      "n": 2,
+      "p50_ms": 130.16,
+      "p95_ms": 130.16,
+      "mean_ms": 101.2,
+      "min_ms": 72.23,
+      "max_ms": 130.16
+    },
+    "job_queue_wait": {
+      "n": 12,
+      "p50_ms": 6746.88,
+      "p95_ms": 17709.18,
+      "mean_ms": 8132.88,
+      "min_ms": 1.95,
+      "max_ms": 17709.18
+    }
+  },
+  "notes": {
+    "server_idle": {
+      "rss_mb": 735.6,
+      "threads": 2
+    },
+    "host_load_start": [
+      2.17,
+      1.91,
+      1.81
+    ],
+    "wall_s": 38.6,
+    "host_load_end": [
+      2.1,
+      1.91,
+      1.81
+    ],
+    "server": {
+      "loop_lag_p50_ms": 1.46,
+      "loop_lag_p95_ms": 67.01,
+      "loop_lag_max_ms": 859.07,
+      "samples": 553,
+      "threads": 67,
+      "rss_mb": 746.4,
+      "max_rss_mb": 746.0,
+      "cpu_s": 25.68,
+      "sqlite": {
+        "loop_total_s": 1.215,
+        "top": {
+          "loop:list_where:env_requests": {
+            "calls": 9352,
+            "total_ms": 515.1,
+            "max_ms": 12.22
+          },
+          "loop:get:sandboxes": {
+            "calls": 2228,
+            "total_ms": 246.7,
+            "max_ms": 10.09
+          },
+          "loop:list:api_tokens": {
+            "calls": 833,
+            "total_ms": 114.0,
+            "max_ms": 4.97
+          },
+          "loop:put:sessions": {
+            "calls": 751,
+            "total_ms": 107.0,
+            "max_ms": 2.92
+          },
+          "loop:put:sandboxes": {
+            "calls": 683,
+            "total_ms": 80.9,
+            "max_ms": 3.81
+          },
+          "loop:list_where:sandboxes": {
+            "calls": 89,
+            "total_ms": 52.0,
+            "max_ms": 5.72
+          },
+          "loop:put:jobs": {
+            "calls": 168,
+            "total_ms": 31.0,
+            "max_ms": 4.95
+          },
+          "thread:list_where:sandboxes": {
+            "calls": 11,
+            "total_ms": 30.3,
+            "max_ms": 19.85
+          },
+          "loop:get:people": {
+            "calls": 833,
+            "total_ms": 26.6,
+            "max_ms": 4.1
+          },
+          "loop:kv_get": {
+            "calls": 1032,
+            "total_ms": 26.2,
+            "max_ms": 3.6
+          },
+          "loop:audit": {
+            "calls": 270,
+            "total_ms": 9.2,
+            "max_ms": 0.24
+          },
+          "loop:kv_set": {
+            "calls": 49,
+            "total_ms": 4.9,
+            "max_ms": 0.99
+          },
+          "loop:put:api_tokens": {
+            "calls": 6,
+            "total_ms": 0.5,
+            "max_ms": 0.16
+          },
+          "loop:list:credentials": {
+            "calls": 46,
+            "total_ms": 0.4,
+            "max_ms": 0.05
+          },
+          "loop:list:sandbox_grants": {
+            "calls": 2,
+            "total_ms": 0.1,
+            "max_ms": 0.11
+          }
+        }
+      },
+      "provider_calls": {
+        "create": {
+          "n": 44,
+          "per_s": 1.14
+        },
+        "exec": {
+          "n": 1065,
+          "per_s": 27.62
+        },
+        "read_file": {
+          "n": 194,
+          "per_s": 5.03
+        },
+        "write_file": {
+          "n": 486,
+          "per_s": 12.6
+        }
+      },
+      "blocked_stacks": [
+        {
+          "samples": 1,
+          "stack": [
+            "mcp/server/runner.py:217 _inner",
+            "mcp/server/extension.py:176 wrapped",
+            "mcp/server/extension.py:183 call",
+            "/dev/shm/durable-base/src/hangar/mcp_tasks.py:408 intercept_tool_call",
+            "mcp/server/extension.py:171 innermost",
+            "mcp/server/mcpserver/server.py:442 _handle_call_tool",
+            "/dev/shm/durable-base/src/hangar/mcp_live.py:280 call_tool",
+            "mcp/server/mcpserver/server.py:548 call_tool",
+            "mcp/server/mcpserver/tools/tool_manager.py:87 call_tool",
+            "mcp/server/mcpserver/tools/base.py:192 run",
+            "mcp/server/mcpserver/utilities/func_metadata.py:219 convert_result",
+            "pydantic/type_adapter.py:410 validate_python",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner"
+          ]
+        },
+        {
+          "samples": 1,
+          "stack": [
+            "starlette/middleware/errors.py:164 __call__",
+            "starlette/middleware/exceptions.py:63 __call__",
+            "starlette/_exception_handler.py:42 wrapped_app",
+            "starlette/routing.py:676 __call__",
+            "starlette/routing.py:697 app",
+            "starlette/routing.py:282 handle",
+            "mcp/server/streamable_http_manager.py:427 __call__",
+            "mcp/server/transport_security.py:183 __call__",
+            "mcp/server/streamable_http_manager.py:195 _handle_request",
+            "mcp/server/_streamable_http_modern.py:510 handle_modern_request",
+            "mcp/server/_streamable_http_modern.py:192 _write",
+            "pydantic/main.py:520 model_dump",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: selectors.py:428 select < subprocess.py:2161 _communicate < subprocess.py:1230 communicate",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: selectors.py:428 select < subprocess.py:2161 _communicate < subprocess.py:1230 communicate",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: selectors.py:428 select < subprocess.py:2161 _communicate < subprocess.py:1230 communicate",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: subprocess.py:2161 _communicate < subprocess.py:1230 communicate < subprocess.py:573 run",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner"
+          ]
+        },
+        {
+          "samples": 1,
+          "stack": [
+            "mcp/server/mcpserver/server.py:442 _handle_call_tool",
+            "/dev/shm/durable-base/src/hangar/mcp_live.py:280 call_tool",
+            "mcp/server/mcpserver/server.py:548 call_tool",
+            "mcp/server/mcpserver/tools/tool_manager.py:87 call_tool",
+            "mcp/server/mcpserver/tools/base.py:179 run",
+            "mcp/server/mcpserver/utilities/func_metadata.py:163 call_fn",
+            "/dev/shm/durable-base/src/hangar/observe.py:565 wrapped",
+            "/dev/shm/durable-base/src/hangar/mcp_server.py:177 wrapped",
+            "/dev/shm/durable-base/src/hangar/people.py:307 awrapped",
+            "/dev/shm/durable-base/src/hangar/mcp_server.py:865 list_jobs",
+            "/dev/shm/durable-base/src/hangar/jobs.py:494 view",
+            "/dev/shm/durable-base/src/hangar/jobs.py:505 usage",
+            "  other: threading.py:355 wait < queue.py:171 get < _asyncio.py:1089 run",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: selectors.py:428 select < subprocess.py:2161 _communicate < subprocess.py:1230 communicate",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: subprocess.py:2161 _communicate < subprocess.py:1230 communicate < subprocess.py:573 run",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner",
+            "  other: thread.py:89 _worker < threading.py:1010 run < threading.py:1073 _bootstrap_inner"
+          ]
+        }
+      ]
+    },
+    "job_states": {
+      "succeeded": 12
+    },
+    "errors": []
+  }
+}

@@ -1,0 +1,250 @@
+{
+  "meta": {
+    "bench": "team-load",
+    "git": "47f23e5",
+    "started": "2026-10-14T18:32:45",
+    "seconds": 39.2,
+    "host": "vm",
+    "cpus": 2,
+    "python": "3.12.3",
+    "provider": "fake",
+    "actors": 6,
+    "sessions": 5,
+    "turns": 1,
+    "jobs": 2,
+    "history": 20000,
+    "job_history": 18000,
+    "session_history": 3000,
+    "steps": 16,
+    "latency_ms": 0.0,
+    "settings": []
+  },
+  "metrics": {
+    "mcp_new_session": {
+      "n": 30,
+      "p50_ms": 10.41,
+      "p95_ms": 35.81,
+      "mean_ms": 17.37,
+      "min_ms": 5.59,
+      "max_ms": 140.2
+    },
+    "mcp_submit_job": {
+      "n": 12,
+      "p50_ms": 23.39,
+      "p95_ms": 81.98,
+      "mean_ms": 28.6,
+      "min_ms": 6.48,
+      "max_ms": 81.98
+    },
+    "mcp_get_session": {
+      "n": 60,
+      "p50_ms": 11.4,
+      "p95_ms": 45.65,
+      "mean_ms": 16.88,
+      "min_ms": 4.48,
+      "max_ms": 85.9
+    },
+    "session_turn_wall": {
+      "n": 30,
+      "p50_ms": 8323.34,
+      "p95_ms": 8449.49,
+      "mean_ms": 8326.23,
+      "min_ms": 8189.94,
+      "max_ms": 8456.34
+    },
+    "rest_sessions": {
+      "n": 23,
+      "p50_ms": 65.44,
+      "p95_ms": 176.24,
+      "mean_ms": 79.43,
+      "min_ms": 18.49,
+      "max_ms": 237.6
+    },
+    "rest_sandboxes": {
+      "n": 22,
+      "p50_ms": 72.82,
+      "p95_ms": 150.28,
+      "mean_ms": 69.77,
+      "min_ms": 3.96,
+      "max_ms": 172.95
+    },
+    "rest_jobs": {
+      "n": 22,
+      "p50_ms": 64.76,
+      "p95_ms": 132.71,
+      "mean_ms": 68.33,
+      "min_ms": 10.77,
+      "max_ms": 181.68
+    },
+    "mcp_list_sessions": {
+      "n": 9,
+      "p50_ms": 73.43,
+      "p95_ms": 151.68,
+      "mean_ms": 70.55,
+      "min_ms": 15.7,
+      "max_ms": 151.68
+    },
+    "mcp_list_sandboxes": {
+      "n": 9,
+      "p50_ms": 144.1,
+      "p95_ms": 314.06,
+      "mean_ms": 148.96,
+      "min_ms": 15.1,
+      "max_ms": 314.06
+    },
+    "mcp_list_jobs": {
+      "n": 644,
+      "p50_ms": 86.86,
+      "p95_ms": 191.44,
+      "mean_ms": 102.42,
+      "min_ms": 23.88,
+      "max_ms": 271.44
+    },
+    "mcp_exec": {
+      "n": 17,
+      "p50_ms": 142.96,
+      "p95_ms": 306.76,
+      "mean_ms": 142.19,
+      "min_ms": 9.53,
+      "max_ms": 306.76
+    },
+    "job_queue_wait": {
+      "n": 12,
+      "p50_ms": 7372.96,
+      "p95_ms": 17154.76,
+      "mean_ms": 8099.64,
+      "min_ms": 1.46,
+      "max_ms": 17154.76
+    }
+  },
+  "notes": {
+    "server_idle": {
+      "rss_mb": 213.1,
+      "threads": 2
+    },
+    "host_load_start": [
+      1.4,
+      1.73,
+      1.75
+    ],
+    "wall_s": 34.0,
+    "host_load_end": [
+      2.38,
+      1.94,
+      1.82
+    ],
+    "server": {
+      "loop_lag_p50_ms": 1.05,
+      "loop_lag_p95_ms": 60.04,
+      "loop_lag_max_ms": 127.38,
+      "samples": 562,
+      "threads": 67,
+      "rss_mb": 222.1,
+      "max_rss_mb": 221.9,
+      "cpu_s": 14.48,
+      "sqlite": {
+        "loop_total_s": 6.504,
+        "top": {
+          "loop:page:jobs": {
+            "calls": 666,
+            "total_ms": 4482.3,
+            "max_ms": 106.92
+          },
+          "loop:list_where:sessions": {
+            "calls": 33084,
+            "total_ms": 839.5,
+            "max_ms": 85.33
+          },
+          "loop:page:sessions": {
+            "calls": 32,
+            "total_ms": 235.0,
+            "max_ms": 84.6
+          },
+          "loop:get:sandboxes": {
+            "calls": 2230,
+            "total_ms": 198.9,
+            "max_ms": 4.92
+          },
+          "loop:list_where:env_requests": {
+            "calls": 9438,
+            "total_ms": 181.8,
+            "max_ms": 17.23
+          },
+          "loop:put:sessions": {
+            "calls": 751,
+            "total_ms": 181.6,
+            "max_ms": 7.22
+          },
+          "loop:list:api_tokens": {
+            "calls": 861,
+            "total_ms": 109.7,
+            "max_ms": 4.39
+          },
+          "loop:put:sandboxes": {
+            "calls": 665,
+            "total_ms": 103.9,
+            "max_ms": 6.41
+          },
+          "loop:list_where:sandboxes": {
+            "calls": 83,
+            "total_ms": 48.9,
+            "max_ms": 3.73
+          },
+          "loop:put:jobs": {
+            "calls": 168,
+            "total_ms": 47.1,
+            "max_ms": 3.21
+          },
+          "loop:get:people": {
+            "calls": 861,
+            "total_ms": 35.3,
+            "max_ms": 8.35
+          },
+          "thread:list_where:sandboxes": {
+            "calls": 9,
+            "total_ms": 31.9,
+            "max_ms": 8.56
+          },
+          "loop:kv_get": {
+            "calls": 1020,
+            "total_ms": 17.0,
+            "max_ms": 4.93
+          },
+          "loop:audit": {
+            "calls": 264,
+            "total_ms": 8.6,
+            "max_ms": 0.33
+          },
+          "loop:get:sessions": {
+            "calls": 60,
+            "total_ms": 7.0,
+            "max_ms": 3.62
+          }
+        }
+      },
+      "provider_calls": {
+        "create": {
+          "n": 42,
+          "per_s": 1.24
+        },
+        "exec": {
+          "n": 1067,
+          "per_s": 31.39
+        },
+        "read_file": {
+          "n": 192,
+          "per_s": 5.65
+        },
+        "write_file": {
+          "n": 474,
+          "per_s": 13.94
+        }
+      },
+      "blocked_stacks": []
+    },
+    "job_states": {
+      "succeeded": 12
+    },
+    "errors": []
+  }
+}

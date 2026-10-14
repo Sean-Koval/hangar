@@ -45,6 +45,7 @@ from hangar import envdoctor as envdoctor  # --- computer
 from hangar import fairness as fairness  # --- scale
 from hangar import intake as intake  # --- intake: trackers (Jira, GitHub Projects) follow their jobs
 from hangar import people as people  # --- teamcreds: GitHub senders linked to people
+from hangar import resident as resident  # --- durable: live and recent jobs in memory, the rest in the store
 from hangar import restarts as restarts  # --- reconciler: interrupted jobs resume after a restart
 from hangar import secretscan as secretscan  # --- egress: secrets are scanned for before a push
 from hangar import teamcreds as teamcreds  # --- review: only a job's person continues it from a front door
@@ -69,6 +70,7 @@ from hangar.models import (
     now,
 )
 from hangar.sessions import SessionService
+from hangar.store import NOT_NULL, Ge  # --- durable
 
 log = logging.getLogger("hangar.jobs")
 
@@ -180,7 +182,9 @@ class JobService:
         self.store = fleet.store
         self.broker = fleet.broker
         self.transport = transport  # tests inject a mock transport for GitHub and callbacks
-        self._jobs: dict[str, Job] = {}
+        # --- durable: live jobs and those used in the last HANGAR_RESIDENT_MINUTES; the store has the rest
+        self._jobs: resident.Resident[Job] = resident.Resident(self.store, Job, self._pinned,
+                                                               lambda: self.settings.resident_minutes * 60)
         # --- scale: fair between people (the fewest running first, each capped), not first come first served
         self._queue: Any = fairness.FairJobQueue(self._person, lambda: fairness.job_cap(self.settings))
         self._workers: list[asyncio.Task] = []
@@ -205,7 +209,7 @@ class JobService:
 
     # ================================================================== lifecycle
     async def start(self) -> None:
-        self._jobs = {j.id: j for j in self.store.list(Job)}
+        self._jobs.adopt(self._load())  # --- durable: not every job ever
         interrupted: list[Job] = []
         resumed: list[str] = []  # --- reconciler: interrupted jobs that go back to the queue, a few at a time
         for job in sorted(self._jobs.values(), key=lambda j: j.created_at):
@@ -245,12 +249,14 @@ class JobService:
             if job.state == JobState.FAILED:
                 interrupted.append(job)
         # Sessions held their job's sandbox through the restart; jobs that won't run again let go of it now
-        # (it then idles out after keep_minutes like any finished job).
-        for job in self._jobs.values():
-            s = self._session(job)
-            if s is not None and (job.state in JOB_TERMINAL or job.state == JobState.NEEDS_INPUT):
+        # (it then idles out after keep_minutes like any finished job). --- durable: from the sessions held, since
+        # a job that finished a while ago isn't in memory; a best-of-N job's attempts wait for the job to finish.
+        for sid in list(self.sessions._restart_holds) if self.sessions is not None else []:
+            s = self.sessions._sessions.get(sid)
+            job = self._jobs.get(s.job_id or "") if s is not None else None
+            if s is not None and (job is None or job.state in JOB_TERMINAL or (
+                    job.state == JobState.NEEDS_INPUT and s.id == job.session_id)):
                 self.sessions.release_restart_hold(s)
-            strategies.release_restart_holds(self, job)
         self.landing.restore()  # --- landing: end sessions of merged PRs, land what was approved
         n = fairness.job_slots(self.settings)  # --- scale: sized from capacity unless set
         self._workers = [asyncio.create_task(self._worker(i)) for i in range(n)]
@@ -287,6 +293,36 @@ class JobService:
             finally:
                 self._queue.task_done()
 
+    # --- durable
+    def _pinned(self, job: Job) -> bool:
+        """Kept in memory whatever its age: unfinished or running, its PR still on its way to landed, or auto-fix
+        triggers waiting. Their loops (landing, autofix, triggers, power) go through the jobs in memory."""
+        st = job.landing
+        return (job.state not in JOB_TERMINAL or job.id in self._active or st.pr_state in ("open", "approved")
+                or (st.pr_state in ("merged", "closed") and not st.ended) or bool(job.autofix_state.pending))
+
+    def _load(self) -> list[Job]:
+        """At start: the jobs _pinned keeps, and those changed in the last HANGAR_RESIDENT_MINUTES."""
+        q = self.store.list_where
+        found = [*self.store.list_active(Job), *q(Job, **{"landing.pr_state": ("open", "approved")}),
+                 *q(Job, **{"landing.pr_state": ("merged", "closed"), "landing.ended": False}),
+                 *q(Job, **{"autofix_state.due_at": NOT_NULL}),
+                 *q(Job, updated_at=Ge(now() - self.settings.resident_minutes * 60))]
+        return list({j.id: j for j in found}.values())
+
+    def where(self, **fields: Any) -> list[Job]:
+        """Jobs whose fields match (Resident.where): archived ones too, as the copies in memory."""
+        return self._jobs.where(**fields)
+
+    def touched_since(self, t: float, **fields: Any) -> list[Job]:
+        """Jobs saved since `t` (and matching `fields`), to read only: the copy in memory where there is one, else
+        the store's, which stays out of memory."""
+        return self._jobs.read(updated_at=Ge(t), **fields)
+
+    def evict(self) -> int:
+        """Let go of the jobs nothing needs in memory any more (resident.py); returns how many."""
+        return len(self._jobs.evict())
+
     def _person(self, job_id: str) -> str:
         """--- scale: whose share of the job slots a job takes (fairness.FairJobQueue): who submitted it."""
         job = self._jobs.get(job_id)
@@ -294,16 +330,25 @@ class JobService:
 
     # ================================================================== public API
     def get(self, job_id: str, owner: str | None = None) -> Job:
-        job = self._jobs.get(job_id) or self.store.get(Job, job_id)
+        job = self._jobs.get(job_id)  # --- durable: from the store when it isn't in memory
         if job is None or (owner is not None and job.owner != owner):
             raise JobNotFound(f"no job '{job_id}'")
-        self._jobs.setdefault(job.id, job)
         return job
 
-    def list(self, state: str | None = None, owner: str | None = None, limit: int = 50) -> list[Job]:
-        jobs = [j for j in self._jobs.values()
-                if (owner is None or j.owner == owner) and (state is None or j.state == state)]
-        return sorted(jobs, key=lambda j: j.created_at, reverse=True)[: max(1, min(limit, 500))]
+    def list(self, state: str | None = None, owner: str | None = None, limit: int = 50, person: str | None = None,
+             cursor: str | None = None) -> list[Job]:
+        return [j for j, _ in self.page(state, owner, limit, person, cursor)[0]]
+
+    def page(self, state: str | None = None, owner: str | None = None, limit: int = 50, person: str | None = None,
+             cursor: str | None = None) -> tuple[list[tuple[Job, str]], str | None]:
+        """--- durable: jobs newest first, from the store's indexes (archived ones too), filtered there: a person's
+        own or a token's (`owner`) are all of theirs, however many the team has. Each job comes with its cursor
+        (pass it back for the page after it); then the next page's cursor, None at the end."""
+        limit = max(1, min(limit, 500))
+        fields = {k: v for k, v in (("state", state), ("owner", owner), ("person", person)) if v is not None}
+        rows = self.store.page(Job, limit + 1, resident.after(cursor), archived=True, **fields)
+        marks = [resident.cursor(r.created_at, r.id) for r in rows[:limit]]
+        return list(zip(self._jobs.adopt(rows[:limit]), marks, strict=True)), (marks[-1] if len(rows) > limit else None)
 
     def repo_envs(self, repo: str | None) -> list[str]:
         """Environments allowed for a repo in HANGAR_GITHUB_REPOS (`{"owner/repo": "env[,env2]"}`)."""
@@ -324,10 +369,9 @@ class JobService:
     def _submit(self, req: SubmitJob, caller: Caller, source: str = "api", source_ref: str | None = None,
                 approval: JobApproval | None = None, untrusted_source: str | None = None) -> Job:
         requester = caller.requester
-        if req.idempotency_key:
-            for j in self._jobs.values():
-                if j.idempotency_key == req.idempotency_key and j.owner == caller.owner:
-                    return j
+        if req.idempotency_key:  # --- durable: the store's index, so a retry months later still finds its job
+            for j in self.where(idempotency_key=req.idempotency_key, owner=caller.owner):
+                return j
         allowed_envs = self.repo_envs(req.repo)
         if caller.restricted:
             # Service tokens run only against repos the operator mapped, in the environments mapped for them.
@@ -502,8 +546,8 @@ class JobService:
     def usage(self, job: Job) -> Usage | None:
         """What the job's agents used (--- interactions): every turn of every session that carried it, so
         best-of-N attempts, their repair runs and the judge count, each once, and a running turn counts live."""
-        live = self.sessions._sessions if self.sessions is not None else {}
-        turns = [t for s in live.values() if s.job_id == job.id for t in s.turns]
+        live = {s.id: s for s in self.sessions.of_job(job.id)} if self.sessions is not None else {}  # --- durable
+        turns = [t for s in live.values() for t in s.turns]
         # --- overnight/sweep: plus the sessions deleted since (a deleted attempt's spend was dropped before)
         gone = [Turn(usage=u) for sid, u in job.deleted_session_usage.items() if sid not in live]
         return total_usage(turns + gone) if turns or gone else total_usage(job.turns)
@@ -1303,8 +1347,8 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
             return {"ignored": f"{sender} is not trusted to continue jobs"}
         if is_pr:
             pr_repo = f"https://github.com/{repo}"
-            job = next((j for j in svc.list(limit=500)
-                        if j.result.pr_number == number and parse_repo(j.repo) == parse_repo(pr_repo)), None)
+            job = max((j for j in svc.where(**{"result.pr_number": number})  # --- durable: any age
+                       if parse_repo(j.repo) == parse_repo(pr_repo)), key=lambda j: j.created_at, default=None)
             if job is None:
                 return {"ignored": "PR was not opened by a hangar job"}
             try:
@@ -1327,8 +1371,8 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
                                                   sender_person=linked.id if linked else None)) is not None:
         return answered
 
-    def running() -> Job | None:
-        return next((j for j in svc.list(limit=500) if j.source_ref == ref and j.state not in JOB_TERMINAL), None)
+    def running() -> Job | None:  # --- durable: unfinished jobs are always in memory
+        return next((j for j in svc._jobs.values() if j.source_ref == ref and j.state not in JOB_TERMINAL), None)
 
     if (busy := running()) is not None:
         if busy.state == JobState.AWAITING_APPROVAL:

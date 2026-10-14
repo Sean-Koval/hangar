@@ -564,13 +564,16 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             return sessions.view(sessions.new(req, owner=who, requester=who, person=identity.person()))  # identity
 
         @tool()
-        async def list_sessions(include_archived: bool = False, limit: int = 30) -> list[live.SessionOut]:
-            """Streams of work, most recently active first: name, state (idle | running | suspended ...), repo,
-            branch and the agent's last summary."""
+        async def list_sessions(include_archived: bool = False, limit: int = 30,
+                                cursor: str | None = None) -> list[live.SessionOut]:
+            """Sessions, most recently active first: name, state, repo, branch, last summary. Next page: `cursor` =
+            the last one's."""
             keep = ("id", "name", "title", "state", "environment", "harness", "repo", "branch", "last_active_at",
                     "last_summary", "sandbox_id", "needs_input")
-            mine = people.mine(sessions.list(include_archived=include_archived, limit=500))  # --- identity
-            return [{k: v for k, v in sessions.view(s).items() if k in keep} for s in mine[:max(1, min(limit, 500))]]
+            # --- identity; --- durable: the caller's own, filtered in the store, a page at a time
+            page, _ = sessions.page(include_archived=include_archived, limit=limit, person=people.scope(),
+                                    cursor=cursor)
+            return [{**{k: v for k, v in sessions.view(s).items() if k in keep}, "cursor": c} for s, c in page]
 
         @tool()
         async def get_session(session: str) -> live.SessionOut:
@@ -858,12 +861,12 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         return jobs.view(jobs.get(job))
 
     @tool()
-    async def list_jobs(state: str | None = None, limit: int = 20) -> list[live.JobOut]:
-        """Recent jobs, newest first (state: queued | provisioning | running | verifying | delivering |
-        needs_input | succeeded | failed | cancelled)."""
-        mine = people.mine(jobs.list(state=state, limit=500))  # --- identity
-        return [{k: v for k, v in jobs.view(j).items() if k not in ("events", "instructions", "turns")}
-                for j in mine[:max(1, min(limit, 500))]]
+    async def list_jobs(state: str | None = None, limit: int = 20, cursor: str | None = None) -> list[live.JobOut]:
+        """Jobs, newest first (state: queued | running | needs_input | succeeded | failed | cancelled ...). Next
+        page: `cursor` = the last one's."""
+        page, _ = jobs.page(state=state, limit=limit, person=people.scope(), cursor=cursor)  # identity
+        return [{**{k: v for k, v in jobs.view(j).items() if k not in ("events", "instructions", "turns")},
+                 "cursor": c} for j, c in page]
 
     @tool()
     async def follow_up_job(job: str, message: str, context: list[dict[str, Any]] | None = None,

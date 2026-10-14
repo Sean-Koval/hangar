@@ -609,7 +609,7 @@ class Triggers:
             self.jobs.admission.refused(f"owner:{who}", who, "hook.replay", prev, delivery=delivery[:200])
             return InboundResult(status=202, body={"ok": True, "job": prev, "duplicate": True})
         key = f"inbound:{source}:{delivery}"
-        dup = next((j for j in self.jobs._jobs.values() if j.owner == who and j.idempotency_key == key), None)
+        dup = next(iter(self.jobs.where(owner=who, idempotency_key=key)), None)  # --- durable
         if dup is not None:
             return InboundResult(status=202, body={"ok": True, "job": dup.id, "duplicate": True})
         tpl = cfg.template
