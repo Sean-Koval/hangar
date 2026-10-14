@@ -221,7 +221,15 @@ def test_status_has_names_and_policy_never_values(settings, monkeypatch):
     sb = Sandbox(name="s", environment="web", provider="kubernetes",
                  info={"harness": "codex", "env_build": {"version": "b-7", "fallback": False},
                        "services": [{"name": "db", "port": 5432}], "warnings": ["MCP server 'x' skipped: needs Y"]})
+    from hangar.config import get_settings
+
+    get_settings.cache_clear()
     st = envdoctor.build_status(settings, sb, spec)
+    # integration: the egress policy comes from these settings, never from (and never fills) the process-wide cache,
+    # which a later test's `hangar admin restore --local` then read with the wrong data dir
+    assert get_settings.cache_info().currsize == 0
+    assert envdoctor.build_status(settings.model_copy(update={"egress_default": "none"}), sb, spec)["egress"][
+        "mode"] == "none"
     assert st["runtime"] == "gvisor" and st["build"]["version"] == "b-7" and st["services"][0]["name"] == "db"
     assert st["secrets"] == [{"name": "GH_TOKEN", "for": "secrets: (credential gh-cred)"},
                              {"name": "STRIPE_KEY", "for": "MCP server pay"}]

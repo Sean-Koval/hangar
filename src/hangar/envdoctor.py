@@ -66,7 +66,7 @@ def build_status(settings: Settings, sb: Sandbox, spec: EnvSpec, s: Session | No
                  fleet: Any = None) -> dict[str, Any]:
     info = sb.info or {}
     try:
-        egress = egressapi.policy(spec, sandbox=sb, fleet=fleet)
+        egress = egressapi.policy(spec, sandbox=sb, fleet=fleet, settings=settings)
     except Exception:  # noqa: BLE001 - the egress module's to get right; the doctor says "unknown" without it
         log.warning("egress policy for %s failed", sb.id, exc_info=True)
         egress = {"mode": "unknown", "allow": [], "proxy": None, "enforced": False}
