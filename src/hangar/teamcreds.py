@@ -150,8 +150,8 @@ def resolve(store: Store, names: list[str], person: str | None, harness: str | N
             settings: Settings | None = None) -> Resolved:
     """The credentials a sandbox owned by `person` (None: a job no person owns) gets.
 
-    `names` is what the caller named (`explicit`: used as named, minus nothing, but another person's own is refused)
-    or the environment's list for the selected harness. For the agent harness, and for git when the environment
+    `names` is what the caller named (`explicit`: used as named, except that another person's own is refused, or
+    left out of a sandbox no one owns) or the environment's list for the selected harness. For the agent harness, and for git when the environment
     lists a git credential, the person's own replace the team's (`mode`); with no own and no team one listed, every
     team credential for it is the pool."""
     creds = {c.name: c for c in store.list(Credential)}
