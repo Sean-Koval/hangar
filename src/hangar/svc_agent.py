@@ -556,6 +556,20 @@ def _alive():
         return False
 
 
+def _no_new_privs():
+    """no_new_privs on the daemon, inherited by all it starts. hangar starts it from an exec outside any turn, so the
+    flag the agent's harness runs under (docs/steering.md, the uid split) would otherwise not hold for the programs
+    the agent hands it (`svc add`): a setuid or file-capability program would gain privileges there. Linux only;
+    the daemon doesn't start without it."""
+    if not sys.platform.startswith("linux"):
+        return
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(38, 1, 0, 0, 0) != 0:  # PR_SET_NO_NEW_PRIVS
+        raise OSError(ctypes.get_errno(), "prctl(PR_SET_NO_NEW_PRIVS) failed")
+
+
 def ensure():
     """The daemon, started (detached, in its own session) if it isn't running. Two at once: the lock picks one."""
     if _alive():
@@ -583,6 +597,7 @@ def ensure():
             for fd_ in (null, log):
                 os.close(fd_)
             os.chdir(HOME)
+            _no_new_privs()
             Daemon().serve(fd)
         except Exception as e:  # noqa: BLE001 - the daemon's own log says why it stopped
             sys.stderr.write(f"supervisor failed: {e!r}\n")

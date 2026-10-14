@@ -256,3 +256,17 @@ def test_skill_has_frontmatter():
     head = supervisor.SKILL.split("---")[1]
     assert "name: hangar-environment" in head and "description:" in head
     assert "hangar-agent svc" in supervisor.SKILL
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="no_new_privs is Linux's")
+def test_what_the_supervisor_runs_cant_gain_privileges(home):
+    """Review: hangar starts the daemon from an exec outside any turn. Without no_new_privs on the daemon, the agent's
+    `svc add` would be a way out of the no_new_privs its harness runs under (the uid split's setuid guard)."""
+    manifest(home, terminals=[{"name": "nnp", "command": "grep NoNewPrivs /proc/self/status > nnp.txt; sleep 300"}])
+    assert svc(home, "up").returncode == 0
+    until(lambda: (home / "repo/nnp.txt").exists() and (home / "repo/nnp.txt").read_text().strip())
+    assert (home / "repo/nnp.txt").read_text().split() == ["NoNewPrivs:", "1"]
+    r = svc(home, "add", "mine", "--", "grep NoNewPrivs /proc/self/status > mine.txt; sleep 300")
+    assert r.returncode == 0, r.stderr
+    until(lambda: (home / "repo/mine.txt").exists() and (home / "repo/mine.txt").read_text().strip())
+    assert (home / "repo/mine.txt").read_text().split() == ["NoNewPrivs:", "1"]
