@@ -144,7 +144,8 @@ def check_build(st: dict) -> dict:
 
 
 def _supervised() -> dict[str, dict]:
-    """Live state from the service supervisor, when the sandbox has one (`hangar-svc status --json`)."""
+    """Live state from the service supervisor, when the sandbox has one (`hangar-svc status --json`): its
+    `programs` (terminals, the start step, added ones) and `services` (sidecars), by name; `ready` is health."""
     if not os.access(SVC, os.X_OK):
         return {}
     try:
@@ -152,8 +153,10 @@ def _supervised() -> dict[str, dict]:
         data = json.loads(out.stdout or "null")
     except (OSError, ValueError, subprocess.SubprocessError):
         return {}
-    items = data.get("services") if isinstance(data, dict) else data
-    return {str(s.get("name")): s for s in items or [] if isinstance(s, dict) and s.get("name")}
+    if not isinstance(data, dict):
+        return {}
+    items = [*(data.get("services") or []), *(data.get("programs") or [])]  # a program's entry (with its log) wins
+    return {str(s.get("name")): s for s in items if isinstance(s, dict) and s.get("name")}
 
 
 def check_services(st: dict) -> dict:
@@ -179,7 +182,9 @@ def check_services(st: dict) -> dict:
                 why = f"nothing answers on {host}:{port} ({err})"
         sup = live.get(name) or {}
         state = sup.get("state")
-        if why is None and state and str(state).lower() not in ("running", "healthy", "ready", "up"):
+        if why is None and sup.get("ready") is False:
+            why = f"the supervisor reports it not ready ({state or 'no state'})"
+        elif why is None and state in ("failed", "backoff", "exited", "stopped"):
             why = f"the supervisor reports it {state}"
         entry = {"name": name, "kind": s.get("kind") or "service", "port": port, "host": host}
         if state:

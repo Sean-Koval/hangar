@@ -101,11 +101,15 @@ def test_supervisor_state_counts(home, monkeypatch):
     up = listener()
     svc = home / ".hangar/bin/hangar-svc"
     svc.parent.mkdir(parents=True)
-    svc.write_text('#!/bin/sh\necho \'{"services": [{"name": "db", "state": "crashed", "log": "/x.log"}]}\'\n')
+    svc.write_text('#!/bin/sh\necho \'{"start": "running", "services": [{"name": "db", "ready": true}], '
+                   '"programs": [{"name": "web", "kind": "terminal", "state": "backoff", "ready": false, '
+                   '"log": "/x.log"}]}\'\n')
     svc.chmod(0o755)
-    write_status(home, services=[{"name": "db", "port": up.getsockname()[1]}])
+    write_status(home, services=[{"name": "db", "port": up.getsockname()[1]},
+                                 {"name": "web", "port": up.getsockname()[1], "kind": "terminal"}])
     [bad] = {c["name"]: c for c in se.doctor()["checks"]}["services"]["data"]["unhealthy"]
-    assert bad["state"] == "crashed" and bad["log"] == "/x.log"
+    assert bad["name"] == "web" and bad["state"] == "backoff" and bad["log"] == "/x.log"
+    assert "not ready (backoff)" in bad["problem"]
     up.close()
 
 
