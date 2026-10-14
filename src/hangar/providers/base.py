@@ -122,6 +122,17 @@ class Provider(abc.ABC):
         Return None if the provider cannot enumerate its sandboxes."""
         return None
 
+    async def find_ref(self, sandbox: Sandbox) -> str | None:
+        """--- reconciler: the provider_ref of a sandbox whose create stopped before it was stored, found by the label
+        the provider put on it; None when there is nothing to find (or the provider can't look)."""
+        return None
+
+    async def replaced(self, sandboxes: list[Sandbox]) -> dict[str, str]:
+        """--- reconciler: of these running sandboxes, the ones whose backing machine is no longer the one hangar set
+        up (sandbox id -> why), such as a pod Kubernetes recreated blank under the same claim. A sandbox from before
+        the provider recorded what to compare may get that recorded in its `info` instead."""
+        return {}
+
     async def set_expiry(self, sandbox: Sandbox, expires_at: float) -> None:
         """Propagate a TTL change to the backend's own timeout, if it has one."""
 

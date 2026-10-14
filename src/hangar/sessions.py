@@ -29,6 +29,7 @@ from hangar import cache as caching  # --- overnight/cache: prompt-cache TTL, on
 from hangar import ckpt, exchange, isolation, observe  # --- observe, isolation
 from hangar import fairness as fairness  # --- scale
 from hangar import hot_resume as hot_resume  # --- providers-e2b
+from hangar import metrics as metrics  # --- reconciler
 from hangar import steer as steering  # workstream steer: live turns
 from hangar.checkpoints import CheckpointStore, make_store
 from hangar.ckpt import CKPT_DIR, CKPT_REF, PACK_READ_LIMIT, PARTS, RESTORE_DIR  # noqa: F401 - re-exported (strategies, exchange)
@@ -577,6 +578,11 @@ class SessionService:
         if cap.unchanged or (skip and cap.fingerprint == skip):
             self._last_checked[s.id] = now()  # nothing changed; don't re-run the whole thing every minute
             return None
+        if cap.norepo and last and "agent.tgz" in last.parts and "agent.tgz" not in cap.parts:
+            # --- reconciler: no checkout and no conversation where the last checkpoint had both is a blank
+            # sandbox (a pod recreated under its claim), not work to save: keep the last checkpoint the latest
+            raise SessionError(f"sandbox {sb.id} has neither the repo nor the agent's conversation any more (its pod "
+                               "was probably replaced); not checkpointing it over the last good checkpoint")
         ck = Checkpoint(reason=reason, head=cap.head, base=s.base_sha, branch=s.branch, fingerprint=cap.fingerprint)
         key = f"{s.id}/{ck.id}"
         data: dict[str, bytes] = {}  # parts to encrypt and upload
@@ -1106,10 +1112,12 @@ class SessionService:
             try:
                 await asyncio.sleep(60)
                 await self.tick()
+                metrics.loop_tick("sessions")  # --- reconciler: heartbeat
             except asyncio.CancelledError:
                 return
             except Exception:  # noqa: BLE001
                 log.exception("session idle loop failed")
+                metrics.loop_failed("sessions")  # --- reconciler
 
     async def tick(self) -> None:
         """One pass: suspend idle sessions, checkpoint changed ones, keep active sandboxes from expiring. Sessions

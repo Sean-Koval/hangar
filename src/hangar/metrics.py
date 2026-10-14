@@ -110,6 +110,12 @@ class Metrics:
         self.stream_bytes = Counter("hangar_stream_bytes", "Bytes streams sent", ["kind"], registry=r)
         self.stream_first = Histogram("hangar_stream_first_output_seconds", "From a stream's start to its first "
                                       "output", ["kind"], buckets=_SECONDS, registry=r)
+        # --- reconciler: background loops (reaper, reconciler, sessions, schedules, backups), so an alert can fire on
+        # one that stopped ticking or fails every pass (a pass that raises only logs)
+        self.loop_tick = Gauge("hangar_loop_last_tick_timestamp", "When each background loop last finished a pass "
+                               "(Unix time)", ["loop"], registry=r)
+        self.loop_failures = Counter("hangar_loop_failures", "Background loop passes that raised", ["loop"],
+                                     registry=r)
         self._lag_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------ scrape-time gauges
@@ -251,6 +257,16 @@ def db_backup(ok: bool, seconds: float) -> None:  # integrate (#57)
     if ok:
         M.backup_seconds.observe(seconds)
         M.backup_last.set_to_current_time()
+
+
+def loop_tick(loop: str) -> None:  # --- reconciler
+    if M is not None:
+        M.loop_tick.labels(loop).set_to_current_time()
+
+
+def loop_failed(loop: str) -> None:  # --- reconciler
+    if M is not None:
+        M.loop_failures.labels(loop).inc()
 
 
 def gateway_push(result: str) -> None:

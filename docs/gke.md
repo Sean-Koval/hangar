@@ -142,12 +142,12 @@ curl -s -m 5 -H 'Metadata-Flavor: Google' \
 `deploy/gke/power.sh` scales every node pool to zero and back. Nothing is deleted: the control plane's disk, images, session checkpoints and the IP stay, so the same hangar comes back at the same URL.
 
 ```bash
-bash deploy/gke/power.sh down     # suspend sessions (each checkpoints), stop hangar, 0 nodes
+bash deploy/gke/power.sh down     # drain, suspend sessions (each checkpoints), stop hangar, 0 nodes
 bash deploy/gke/power.sh up       # node pools back to their autoscaling ranges, start hangar (~3-5 min)
 bash deploy/gke/power.sh status
 ```
 
-`down` waits up to 10 minutes for running agent turns to finish; anything still running resumes from its last checkpoint. Each pool's autoscaling range is saved as a label on the cluster, and `up` restores it.
+`down` first asks hangar to drain (`POST /api/admin/drain`): queued jobs wait instead of starting, and `GET /api/admin/drain` lists what is still in flight. It suspends idle sessions and waits up to 10 minutes for running agent turns to finish. Turns still running then get a fresh checkpoint, and it waits up to 3 more minutes for sandbox creates, destroys and suspends already under way, so stopping hangar cuts nothing off half way. After `up`, what was still running resumes on its own: jobs go back to the queue a few at a time and continue from their last checkpoint, sandboxes a stop caught half created or half destroyed are finished by the reconciler, and GitHub deliveries that failed while the cluster was down are redelivered. Each pool's autoscaling range is saved as a label on the cluster, and `up` restores it.
 
 To run it on a schedule, set these in `terraform.tfvars` and run `terraform apply`:
 

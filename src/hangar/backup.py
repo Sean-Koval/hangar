@@ -29,6 +29,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from hangar import metrics as metrics  # --- reconciler: loop heartbeat
 from hangar import observe  # integrate (#57 + #55): spans and /metrics
 
 if TYPE_CHECKING:
@@ -223,8 +224,10 @@ class Backups:
             try:
                 await self.run()
                 wait = hours * 3600
+                metrics.loop_tick("backups")  # --- reconciler: heartbeat
             except Exception as e:  # noqa: BLE001 - the next attempt may work; doctor reports the age
                 log.error("scheduled database backup failed: %s", e)
+                metrics.loop_failed("backups")  # --- reconciler
                 wait = min(hours * 3600, _RETRY)
 
 

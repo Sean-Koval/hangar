@@ -2,7 +2,7 @@
 # Turn the hangar cluster's nodes off and on. Nothing is deleted: the control plane's disk, images, session
 # checkpoints and the ingress IP stay, so `up` brings back the same hangar at the same URL.
 #
-#   bash deploy/gke/power.sh down     # checkpoint and suspend sessions, stop hangar, every node pool to 0 nodes
+#   bash deploy/gke/power.sh down     # drain, checkpoint and suspend sessions, stop hangar, every node pool to 0 nodes
 #   bash deploy/gke/power.sh up       # node pools back to their autoscaling ranges, start hangar
 #   bash deploy/gke/power.sh status
 #
@@ -40,23 +40,41 @@ have_kubectl() {
 }
 
 suspend_sessions() {
-  # Inside the hangar pod: suspend every session with a sandbox (each checkpoints first), waiting up to
-  # 10 minutes for running turns to finish. Turns still running after that resume from their last checkpoint.
+  # Inside the hangar pod: drain (queued jobs wait instead of starting), suspend every session with a sandbox (each
+  # checkpoints first), and wait up to 10 minutes for running turns to finish. Turns still running then get a fresh
+  # checkpoint, and their jobs resume from it after `up`. Last, wait (up to 3 more minutes) for sandbox creates,
+  # destroys and suspends already under way to finish, so SIGTERM cuts nothing off half way.
   kubectl -n "$NS" exec -i deploy/hangar -- python3 - <<'PY' || echo "could not reach hangar; continuing"
-import json, os, time, urllib.request
+import json, os, time, urllib.error, urllib.request
 token = os.environ.get("HANGAR_ADMIN_TOKEN") or open(
     os.path.join(os.environ.get("HANGAR_DATA_DIR", "/data"), "bootstrap-token")).read().strip()
 
-def call(method, path):
-    req = urllib.request.Request("http://127.0.0.1:8787" + path, method=method, data=b"" if method == "POST" else None,
-                                 headers={"Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(req, timeout=60) as r:
+def call(method, path, body=None, timeout=60):
+    data = json.dumps(body).encode() if body is not None else (b"" if method == "POST" else None)
+    req = urllib.request.Request("http://127.0.0.1:8787" + path, method=method, data=data,
+                                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r)
+
+def drain_status():
+    try:
+        return call("GET", "/api/admin/drain")
+    except urllib.error.HTTPError as e:  # a hangar from before the drain: nothing to wait for
+        return {"settled": True} if e.code == 404 else None
+    except Exception:
+        return None
+
+try:
+    call("POST", "/api/admin/drain", {"minutes": 60})
+    print("draining: queued jobs wait until hangar is back")
+except Exception as e:
+    print("no drain (older hangar?):", e)
 
 deadline, asked = time.time() + 600, set()
 while True:
     live = [s for s in call("GET", "/api/sessions?limit=500") if s.get("sandbox_id")]
-    if not live:
+    st = drain_status() or {}
+    if not live and st.get("settled", True):
         print("no sessions running")
         break
     for s in live:
@@ -68,9 +86,25 @@ while True:
             except Exception as e:  # busy now, or already suspending
                 print("not yet:", s["name"], e)
     if time.time() > deadline:
+        stop = time.time() + 480  # the scheduled power job has 40 minutes in all
+        for s in live:
+            if s["state"] == "running" and time.time() < stop:
+                try:
+                    call("POST", f"/api/sessions/{s['id']}/checkpoint", timeout=max(10, stop - time.time()))
+                    print("checkpointed", s["name"], "(still running; resumes from here)")
+                except Exception as e:
+                    print("could not checkpoint", s["name"], e)
         print("still running, resumes from its last checkpoint:", ", ".join(f"{s['name']} ({s['state']})" for s in live))
         break
     time.sleep(10)
+
+settle = time.time() + 180
+while (st := drain_status()) is not None and not st.get("settled", True) and time.time() < settle:
+    print("waiting for:", json.dumps({k: st.get(k) for k in ("creating", "destroying")} | {
+        k: (st.get("sessions") or {}).get(k) for k in ("starting", "suspending")}))
+    time.sleep(5)
+if st is not None and not st.get("settled", True):
+    print("not settled; the next start finishes it (sandboxes are reconciled, jobs resume)")
 PY
 }
 

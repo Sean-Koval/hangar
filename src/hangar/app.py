@@ -18,7 +18,9 @@ from pydantic import BaseModel, Field
 
 import hangar.identity as identity  # --- identity
 import hangar.identity_api as identity_api  # --- identity
+from hangar import drain as drain  # --- reconciler
 from hangar import exchange, observe  # --- observe
+from hangar import redeliver as redeliver  # --- reconciler
 from hangar.a2a import A2AServer
 from hangar.auth import SCOPES, TokenAuth, bearer_from_headers
 from hangar.broker import Broker, CredentialError
@@ -317,10 +319,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         restore_signals = shutdown.on_signal(asyncio.get_running_loop(), h.fleet.closing.set)
         h.backups.start()
         h.retention.start()  # --- scale
+        missed = redeliver.start(h)  # --- reconciler: GitHub deliveries that failed while hangar was down
         async with mcp.session_manager.run():
             yield
         h.fleet.closing.set()
         restore_signals()
+        missed.cancel()  # --- reconciler
         await h.backups.stop()
         await h.retention.stop()  # --- scale
         if prebuild:
@@ -848,21 +852,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Only the events that can start or steer work are remembered; replaying anything else does nothing.
         event = request.headers.get("x-github-event", "")
         replays, digest = jobs.admission.replays, jobs.admission.replays.digest(body)
-        if event in ("issues", "issue_comment"):
-            if replays.get("github", digest) is not None:
-                delivery = (request.headers.get("x-github-delivery") or "")[:100]
-                jobs.admission.refused("github:replay", "github", "hook.replay", delivery or None)
-                return JSONResponse({"ignored": "duplicate delivery"}, status_code=200)
-            replays.put("github", digest, "", h.settings.webhook_replay_hours * 3600)
+        ttl = h.settings.webhook_replay_hours * 3600
+        # --- reconciler: marked pending while handled and done after, so a pod that dies in between doesn't make
+        # GitHub's redelivery look like a replay (redeliver.py)
+        if event in ("issues", "issue_comment") and not redeliver.claim(replays, digest, ttl):
+            delivery = (request.headers.get("x-github-delivery") or "")[:100]
+            jobs.admission.refused("github:replay", "github", "hook.replay", delivery or None)
+            return JSONResponse({"ignored": "duplicate delivery"}, status_code=200)
         try:
             res = await handle_github(jobs, event, request.headers.get("x-github-delivery"), payload)
-        except Exception:
+        except BaseException:  # --- reconciler: a shutdown mid-handler too
             replays.forget("github", digest)  # nothing happened: let GitHub's redelivery try again
             raise
         if res.get("error") or res.get("rate_limited"):
             replays.forget("github", digest)  # a redelivery after the fix (or the wait) should run
             if res.get("rate_limited"):
                 return JSONResponse(res, status_code=429)
+        elif event in ("issues", "issue_comment"):
+            redeliver.done(replays, digest, ttl)  # --- reconciler: handled; from now on a replay
         return JSONResponse(res, status_code=202 if res.get("ok") else 200)
 
     # ------------------------------------------------------------------ triggers (workstream A)
@@ -1048,6 +1055,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import backup  # --- overnight/sweep: database backups (hangar admin)
 
     backup.mount(app, h, A)
+    drain.mount(app, h, A)  # --- reconciler: POST/GET/DELETE /api/admin/drain (power.sh down)
     # --- observe: GET /metrics (admin or `metrics` tokens) and GET /api/usage
     from hangar import metrics, usage
 

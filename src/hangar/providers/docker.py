@@ -345,6 +345,15 @@ class DockerProvider(Provider):
         cs = await asyncio.to_thread(self.client.containers.list, all=True, filters={"name": "hangar-sb-"})
         return {c.id: _STATE.get(c.status, SandboxState.ERROR) for c in cs}
 
+    async def find_ref(self, sandbox: Sandbox) -> str | None:  # --- reconciler
+        """Its own container carries the sandbox label; a claimed warm one only its name."""
+        for filters in ({"label": f"{LABEL}={sandbox.id}"}, {"name": f"hangar-{sandbox.id}"}):
+            cs = await asyncio.to_thread(self.client.containers.list, all=True, filters=filters)
+            for c in cs:
+                if c.labels.get(LABEL) == sandbox.id or c.name == f"hangar-{sandbox.id}":
+                    return c.id
+        return None
+
     # ------------------------------------------------------------------ I/O
     async def exec(self, sandbox, command, timeout=120, cwd=None, user=None) -> ExecResult:
         if (res := await self.envd.exec(sandbox, command, timeout, cwd, user)) is not None:  # --- envd

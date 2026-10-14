@@ -91,6 +91,23 @@ class GitHub:
             raise GitHubError(f"GitHub GET team membership {org}/{team}: {r.status_code}")
         return r.json()
 
+    async def hook_deliveries(self, repo: str, hook_id: int, cursor: str | None = None,
+                              per_page: int = 100) -> tuple[list[dict[str, Any]], str | None]:
+        """--- reconciler: one page of a repo webhook's recent deliveries, newest first, and the cursor of the next
+        page (GitHub pages these by a cursor in the Link header, not by page number)."""
+        params: dict[str, Any] = {"per_page": per_page}
+        if cursor:
+            params["cursor"] = cursor
+        path = f"/repos/{repo}/hooks/{int(hook_id)}/deliveries"
+        r = await self._client.get(path, params=params)
+        if r.status_code >= 400:
+            raise GitHubError(f"GitHub GET {path}: {r.status_code}"[:500])
+        nxt = (r.links.get("next") or {}).get("url")
+        return r.json() or [], (httpx.URL(nxt).params.get("cursor") if nxt else None)
+
+    async def redeliver(self, repo: str, hook_id: int, delivery_id: int) -> None:  # --- reconciler
+        await self._req("POST", f"/repos/{repo}/hooks/{int(hook_id)}/deliveries/{int(delivery_id)}/attempts")
+
     async def issue_comments(self, repo: str, number: int, limit: int = 20) -> list[dict[str, Any]]:
         out = await self._req("GET", f"/repos/{repo}/issues/{number}/comments", params={"per_page": 100})
         return [c for c in out if MARKER not in (c.get("body") or "")][-limit:]
