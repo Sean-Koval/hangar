@@ -225,7 +225,8 @@ def test_status_has_names_and_policy_never_values(settings, monkeypatch):
     assert st["runtime"] == "gvisor" and st["build"]["version"] == "b-7" and st["services"][0]["name"] == "db"
     assert st["secrets"] == [{"name": "GH_TOKEN", "for": "secrets: (credential gh-cred)"},
                              {"name": "STRIPE_KEY", "for": "MCP server pay"}]
-    assert st["egress"] == {"mode": "open", "allow": [], "proxy": None, "enforced": False}
+    # integration: #97's real egressapi.policy adds `notes`, and an open network is what it says (enforced)
+    assert st["egress"] == {"mode": "open", "allow": [], "proxy": None, "enforced": True, "notes": []}
     assert st["computer"]["display"] == ":99" and st["computer"]["record_max_mb"] == 24
     # a broken egress module degrades to "unknown" rather than failing the claim
     monkeypatch.setattr(egressapi, "policy", lambda *a, **k: 1 / 0)
