@@ -3,7 +3,7 @@
 - Trust: a GitHub trigger starts a job only when a trusted person made it (HANGAR_GITHUB_TRUSTED, or by default
   the repo's owners, members and collaborators). Anyone else's trigger creates a job in `awaiting_approval`,
   which a trusted `/hangar approve` (or REST/MCP/CLI approve) queues.
-- Inbound webhooks: systems that can only send webhooks (Sentry, Linear, PagerDuty, internal services) start jobs
+- Inbound webhooks: systems that can only send webhooks (Sentry, Jira, PagerDuty, internal services) start jobs
   at /api/hooks/inbound/<source>. Each source has its own HMAC secret, a template that maps payload fields into
   the job, and a delivery id for idempotency. Their text is untrusted input to the agent.
 - Schedules: a job template submitted on a cron schedule, at most once per slot, across restarts.
@@ -227,9 +227,9 @@ class SignatureSpec(BaseModel):
 
     scheme: Literal["hmac-sha256"] = "hmac-sha256"
     header: str = "X-Signature"
-    prefix: str = ""  # "sha256=" (GitHub style), "v1=" (PagerDuty); "" for a bare digest (Sentry, Linear)
+    prefix: str = ""  # "sha256=" (GitHub, Jira), "v1=" (PagerDuty); "" for a bare digest (Sentry)
     encoding: Literal["hex", "base64"] = "hex"
-    timestamp_header: str | None = None  # e.g. Sentry-Hook-Timestamp, Linear-Timestamp (seconds or ms)
+    timestamp_header: str | None = None  # e.g. Sentry-Hook-Timestamp (seconds or ms)
     max_skew_seconds: int = Field(300, ge=1, le=86400)
     signed_payload: str = "{body}"  # what is signed; "{timestamp}.{body}" for schemes that sign the timestamp
 
@@ -276,7 +276,7 @@ class InboundSource(BaseModel):
     environment: str | None = None
     template: JobTemplate
     filter: PayloadFilter | list[PayloadFilter] | None = None
-    delivery_header: str | None = None  # e.g. X-GitHub-Delivery, Request-ID, Linear-Delivery
+    delivery_header: str | None = None  # e.g. X-GitHub-Delivery, Request-ID, X-Atlassian-Webhook-Identifier
     harness: str | None = None
     model: str | None = None
     verify: str | None = None
@@ -322,7 +322,7 @@ def _timestamp(raw: str | None) -> float | None:
         ts = float((raw or "").strip())
     except ValueError:
         return None
-    return ts / 1000 if ts > 1e11 else ts  # milliseconds (Linear) or seconds
+    return ts / 1000 if ts > 1e11 else ts  # milliseconds or seconds
 
 
 def verify_inbound(sig: SignatureSpec, secret: str, headers: Any, body: bytes, t: float) -> str | None:

@@ -264,6 +264,6 @@ Suggested order: M0–M2 now (performance), then M3–M4 and M6, then M7 (the fi
 1. Does Docker's MCP gateway run as a non-root sidecar under gVisor and accept per-sandbox tokens and tool filters? If not, how big is a minimal hangar gateway?
 2. Can the GKE Agent Sandbox `SandboxTemplate` express a sidecar container? If not: use the OSS controller, or a gateway pod per sandbox reached over a NetworkPolicy-pinned service.
 3. Does the add-on's admission policy accept CPU requests below limits?
-4. ~~Which ticket system first?~~ **GitHub Issues** (owner, 2026-10-12). Linear is not planned.
+4. ~~Which ticket system first?~~ **Jira and GitHub Projects**, the trackers the owner's teams use (owner, 2026-10-14), through one source-agnostic intake keyed by repo (repo-policy.md). GitHub Issues already work through the GitHub trigger.
 5. Who curates the gold label set, and how much human labeling time per taxonomy version is acceptable?
 6. Human-session capture: is anyone besides the owner in scope for v1?

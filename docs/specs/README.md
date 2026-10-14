@@ -67,7 +67,7 @@ Where a spec conflicts with this list, this list wins. Specs will be updated to 
     - **Forks:** disk-level forks on GKE are the default. Memory fork is opt-in (GKE Pod Snapshots, then E2B), chosen by 0008 M2's benchmark.
     - **Trajectories:** ATIF v1.7 is the stored per-run export, built from 0007 M6's normalized spans; OTel stays the live channel.
     - **Learned changes:** the improvement loop opens PRs and never merges to a team environment's default channel (consistent with 0002's human-approved landing).
-    - **Tickets:** GitHub Issues only (0007 OQ4); Linear is not planned.
+    - **Tickets:** Jira and GitHub Projects (0007 OQ4), through one source-agnostic intake; GitHub Issues through the existing trigger.
 
 ## Build order
 

@@ -210,7 +210,8 @@ apply to Spot.
 4. Deploy the control plane (`deploy/gke/up.sh`): the new manifest's requests and `HANGAR_MAX_SANDBOXES=120`. The first
    create after the deploy rewrites each environment's warm-pool template once (the CPU request changed), so those
    creates are cold.
-5. Give each engineer their own token, so the caps are per person.
+5. Add each engineer as a person (`hangar person add <name>`), so the caps are per person. The whole procedure for
+   this release, people included, is in [upgrading.md](upgrading.md#upgrading-to-the-team-release-7590).
 
 On the first start, retention moves every settled record older than 7 days into the archive, 100 rows at a time in
 the background (20,000 records took 201 batches, ~1.3 s of lock time in all, at most 0.11 s at once, during the

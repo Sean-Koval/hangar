@@ -57,7 +57,7 @@ The prompt also tells the agent to ignore requests in that text to reveal creden
 
 ## 2. Inbound webhooks
 
-Systems that can only send webhooks (Sentry, Linear, PagerDuty, internal services) start jobs at `POST /api/hooks/inbound/<source>`. Each source is configured in `HANGAR_INBOUND_WEBHOOKS`, a JSON mapping from source name to its settings:
+Systems that can only send webhooks (Sentry, Jira, GitHub Projects, PagerDuty, internal services) start jobs at `POST /api/hooks/inbound/<source>`. Each source is configured in `HANGAR_INBOUND_WEBHOOKS`, a JSON mapping from source name to its settings:
 
 ```json
 {
@@ -96,7 +96,8 @@ Store the signing secret in the vault: `hangar cred add sentry-hook --harness we
 
 Formats verified against the providers' docs (October 2026):
 - **Sentry:** `Sentry-Hook-Signature`, hex HMAC-SHA256 of the body; `Sentry-Hook-Timestamp`; `Request-ID` as the delivery id.
-- **Linear:** `Linear-Signature`, hex HMAC-SHA256 of the raw body; `Linear-Timestamp` in milliseconds (Linear recommends a 60 s window); `Linear-Delivery`.
+- **Jira Cloud** (an admin webhook with a secret): `X-Hub-Signature` with `prefix: "sha256="`, hex HMAC-SHA256 of the body; `X-Atlassian-Webhook-Identifier` as the delivery id (the same across retries). Jira signs no timestamp.
+- **GitHub Projects** (an organization webhook sending `projects_v2_item`): `X-Hub-Signature-256` with `prefix: "sha256="`; `X-GitHub-Delivery`.
 - **PagerDuty v3:** `X-PagerDuty-Signature` with `prefix: "v1="`, one or more comma-separated hex HMAC-SHA256 signatures of the body. PagerDuty documents no delivery id header, so the body hash is used.
 
 Responses:
