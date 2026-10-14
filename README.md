@@ -12,9 +12,15 @@ Start on a laptop with Docker. The same control plane also supports Kubernetes a
 
 ## How it works
 
-![Hangar architecture: MCP clients, the dashboard and CLI connect to the control plane, which manages Docker, Kubernetes or E2B providers and isolated agent workspaces.](docs/assets/architecture.svg)
+Choose an environment, give an agent a task, and review its changes and test results.
 
-The control plane manages environments, credentials, jobs, and sessions. A provider runs the isolated workspaces; the dashboard streams their live terminals and agent events.
+```mermaid
+flowchart LR
+    C["MCP client · CLI · dashboard"] --> H["Hangar<br/>Prepares and manages workspaces"]
+    H --> S["Isolated sandboxes<br/>Coding agent + repo + tools"]
+```
+
+Hangar handles workspace setup, credentials, and the sandbox lifecycle. Agents work inside separate sandboxes; you can follow and steer their work from the dashboard.
 
 An **environment** is a reusable recipe for a workspace. A **sandbox** is a running copy of it. A **harness** is the agent CLI running inside that sandbox.
 
