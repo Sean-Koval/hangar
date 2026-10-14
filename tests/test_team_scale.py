@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import itertools
 import shutil
 import sqlite3
 import sys
@@ -26,11 +27,15 @@ needs_tools = pytest.mark.skipif(not shutil.which("tmux") or not shutil.which("g
 DAY = 86400
 
 
+_SEQ = itertools.count()  # seeded ids: 20k random 8-hex ids collide about one run in twenty
+
+
 def _seed(store: Store, n: int, state: SandboxState = SandboxState.STOPPED, age_days: float = 30) -> None:
     """`n` settled sandbox records, written in one transaction (the way months of history pile up)."""
     t = time.time() - age_days * DAY
     rows = [(sb.id, sb.model_dump_json()) for sb in (
-        Sandbox(name=f"old-{i}", environment="plain", provider="docker", state=state, created_at=t, last_activity=t,
+        Sandbox(id=f"sb-old{next(_SEQ):07d}", name=f"old-{i}", environment="plain", provider="docker", state=state,
+                created_at=t, last_activity=t,
                 info={"runs": [{"run_id": f"run-{k}", "exit_code": 0} for k in range(8)]}) for i in range(n))]
     con = sqlite3.connect(store.path)
     with con:
