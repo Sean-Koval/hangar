@@ -12,18 +12,9 @@ Start on a laptop with Docker. The same control plane also supports Kubernetes a
 
 ## How it works
 
-```mermaid
-flowchart LR
-    C["Your MCP client"] --> H["Hangar"]
-    D["Browser dashboard"] <--> H
-    E["Environment template<br/>Tools · dependencies · repo"] --> H
-    H --> A["Sandbox A<br/>Agent + work branch"]
-    H --> B["Sandbox B<br/>Agent + work branch"]
-    H --> N["Sandbox C<br/>Agent + work branch"]
-    A --> R["Review changes and test results"]
-    B --> R
-    N --> R
-```
+![Hangar architecture: MCP clients, the dashboard and CLI connect to the control plane, which manages Docker, Kubernetes or E2B providers and isolated agent workspaces.](docs/assets/architecture.svg)
+
+The control plane manages environments, credentials, jobs, and sessions. A provider runs the isolated workspaces; the dashboard streams their live terminals and agent events.
 
 An **environment** is a reusable recipe for a workspace. A **sandbox** is a running copy of it. A **harness** is the agent CLI running inside that sandbox.
 
