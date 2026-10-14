@@ -40,11 +40,12 @@ class ThreadedFake(FakeProvider):
     async def exec(self, sandbox, command, timeout=120, cwd=None, user=None):
         return await asyncio.to_thread(self._exec, sandbox, command, cwd)
 
-    async def read_file(self, sandbox, path):
+    async def read_file(self, sandbox, path, limit=None):
+        parent = super().read_file
+
         def read():
             self._wait()
-            p = self._map(sandbox, path)
-            return p.read_bytes() if p.is_file() else None
+            return asyncio.run(parent(sandbox, path, limit))  # the parent's body is synchronous
 
         return await asyncio.to_thread(read)
 
