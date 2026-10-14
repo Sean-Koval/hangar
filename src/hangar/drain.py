@@ -97,7 +97,8 @@ class Drain:
                 "running": [s.name for s in sessions if s.state == SessionState.RUNNING],
                 "with_sandbox": [s.name for s in sessions if s.sandbox_id],
             },
-            "settled": not (flight["create"] or flight["destroy"] or starting or suspending),
+            "pausing": flight.get("pause", []) + flight.get("resume", []),
+            "settled": not (any(flight.values()) or starting or suspending),
         }
 
 

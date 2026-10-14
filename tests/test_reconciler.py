@@ -187,6 +187,60 @@ async def test_a_replaced_pod_counts_as_gone_and_its_claim_goes(fleet, broker, s
     assert a.provider_ref not in prov.boxes
 
 
+class SlowPause(Replacing):
+    """GKE pause: the pod goes away (snapshot, then Suspended) long before fleet.pause writes `paused`."""
+
+    def __init__(self):
+        super().__init__()
+        self.pausing = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def pause(self, sandbox):
+        self.blank.add(sandbox.id)  # its pod is gone now, as `replaced` sees it
+        self.pausing.set()
+        await self.release.wait()
+        self.blank.discard(sandbox.id)
+
+
+async def test_a_pass_during_a_pause_leaves_the_sandbox_alone(fleet, broker, store):
+    prov = SlowPause()
+    fleet.providers["docker"] = prov
+    broker.put("codex", "codex", CredentialKind.AUTH_FILE, "{}")
+    sb = await fleet.create("plain", credentials=["codex"])
+    pausing = asyncio.create_task(fleet.pause(sb.id))
+    await prov.pausing.wait()
+    await fleet.reconcile()  # the row still says running and the pod is gone: not a replaced pod, a pause
+    await asyncio.sleep(0.05)
+    prov.release.set()
+    await pausing
+    row = store.get(Sandbox, sb.id)
+    # on the PR head: marked gone mid-pause, its lease released and its claim (with the snapshot) destroyed
+    assert row.state == S.PAUSED and "cause" not in row.info
+    assert broker.get("codex").leased_to == sb.id and sb.provider_ref in prov.boxes
+
+
+async def test_a_pod_judged_replaced_is_left_alone_if_the_row_moved_to_a_new_pod_meanwhile(fleet, store):
+    prov = Replacing()
+    fleet.providers["docker"] = prov
+    sb = await fleet.create("plain")
+    row = store.get(Sandbox, sb.id)
+    row.info["pod_uid"] = "uid-a"
+    store.put(row)
+    real = prov.replaced
+
+    async def replaced(sandboxes):
+        out = await real(sandboxes)
+        moved = store.get(Sandbox, sb.id)  # paused and resumed onto a new pod while the list was answering
+        moved.info["pod_uid"] = "uid-b"
+        store.put(moved)
+        return out
+
+    prov.replaced = replaced
+    prov.blank.add(sb.id)
+    await fleet.reconcile()
+    assert store.get(Sandbox, sb.id).state == S.RUNNING and sb.provider_ref in prov.boxes
+
+
 async def test_the_reconciler_runs_on_its_own_task(fleet, store, settings):
     """A reaper stuck in a warm-pool sync (a Cloud Build) no longer holds up reconcile."""
     prov = Replacing()

@@ -929,7 +929,12 @@ class Fleet:
 
     async def pause(self, ref: str, actor: str = "system") -> Sandbox:
         sb = self.get(ref)
-        await self.provider(sb.provider).pause(sb)
+        # --- reconciler: on GKE the pod goes away long before the row says paused; no pass may judge it gone
+        self.reconciler.own(sb.id, "pause")
+        try:
+            await self.provider(sb.provider).pause(sb)
+        finally:
+            self.reconciler.disown(sb.id)
         sb.state = SandboxState.PAUSED
         self.store.put(sb)
         self.audit(actor, "sandbox.pause", sb.id)
@@ -937,7 +942,11 @@ class Fleet:
 
     async def resume(self, ref: str, actor: str = "system") -> Sandbox:
         sb = self.get(ref)
-        await self.provider(sb.provider).resume(sb)
+        self.reconciler.own(sb.id, "resume")  # --- reconciler: a new pod comes up under the claim
+        try:
+            await self.provider(sb.provider).resume(sb)
+        finally:
+            self.reconciler.disown(sb.id)
         sb.state = SandboxState.RUNNING
         self._touch(sb)
         self.audit(actor, "sandbox.resume", sb.id)

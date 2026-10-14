@@ -102,14 +102,16 @@ def release_leases(store: Store, sandbox_id: str) -> list[str]:
 class Reconciler:
     def __init__(self, fleet: Fleet):
         self.fleet = fleet
-        self._owners: dict[str, tuple[str, asyncio.Task]] = {}  # sandbox id -> (create|destroy, the task doing it)
+        # sandbox id -> (create|destroy|pause|resume, the task doing it)
+        self._owners: dict[str, tuple[str, asyncio.Task]] = {}
         self._task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------ ownership
     def own(self, sandbox_id: str, kind: str) -> None:
-        """The current task is creating or destroying this sandbox: no pass touches it meanwhile."""
+        """The current task is creating, destroying, pausing or resuming this sandbox: no pass touches it meanwhile.
+        A live owner keeps it (a pause asked for mid-destroy must not hide the destroy from the next one)."""
         task = asyncio.current_task()
-        if task is not None:
+        if task is not None and not self.owned(sandbox_id):
             self._owners[sandbox_id] = (kind, task)
 
     def disown(self, sandbox_id: str) -> None:
@@ -129,11 +131,11 @@ class Reconciler:
         return cur[1] if cur is not None and cur[0] == "destroy" and not cur[1].done() else None
 
     def in_flight(self) -> dict[str, list[str]]:
-        """Sandbox ids being created or destroyed right now (the power-down drain waits for them)."""
+        """Sandbox ids being created, destroyed, paused or resumed right now (the power-down drain waits for them)."""
         out: dict[str, list[str]] = {"create": [], "destroy": []}
         for sid in list(self._owners):
             if self.owned(sid):
-                out[self._owners[sid][0]].append(sid)
+                out.setdefault(self._owners[sid][0], []).append(sid)
         return out
 
     def detach(self, sandbox_id: str, coro: Awaitable[Any]) -> asyncio.Task:
@@ -232,14 +234,17 @@ class Reconciler:
                         self.fleet.store.put(cur)
             for sid, why in replaced.items():
                 gone[sid] = (POD_REPLACED, why)
+        uids = {sb.id: sb.info.get("pod_uid") for sb in settled}
         for sid, (cause, why) in gone.items():
-            self._gone(prov, sid, cause, why)
+            self._gone(prov, sid, cause, why, uids.get(sid))
 
-    def _gone(self, prov: Provider, sid: str, cause: str, why: str) -> None:
+    def _gone(self, prov: Provider, sid: str, cause: str, why: str, uid: str | None = None) -> None:
         f = self.fleet
         sb = f.store.get(Sandbox, sid)  # re-read: other tasks may have written it while the provider answered
         if sb is None or sb.state not in SETTLED or self.owned(sid):
             return
+        if cause == POD_REPLACED and sb.info.get("pod_uid") != uid:
+            return  # paused and resumed onto a new pod meanwhile: judged on the old one
         record(sb, cause)
         log.info("reconcile: %s %s (%s)", sid, why, cause)
         f._mark_gone(sb, why)  # stopped, grant revoked, leases released (the auth file went with it)
