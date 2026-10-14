@@ -260,6 +260,20 @@ class Settings(BaseSettings):
     # first one to answer, so they read the prompt prefix it cached instead of each writing it (0 = no wait).
     cache: Literal["auto", "5m", "1h", "off"] = "auto"
     cache_stagger_seconds: float = Field(15.0, ge=0, le=120)
+    # --- overnight/autofix: an agent loop that finishes the job (docs/jobs.md §7) ---------------------------
+    # A job's `verify` runs inside the agent's turn too (a Claude Code Stop hook; the driver for Codex; a follow-up
+    # turn for the others), and a failure goes back to the agent, up to this many times per turn. Jobs can say
+    # otherwise (`verify_in_loop`, `max_verify_rounds`); hangar's own check after the turn still decides delivery.
+    verify_in_loop: bool = True
+    max_verify_rounds: int = Field(3, ge=0, le=10)
+    # The PR auto-fix loop: a failing CI check on the job's own head, or a trusted reviewer's changes requested or
+    # inline comments, start a follow-up turn on the job's session. Per repo: {"owner/repo": "ci"} ("ci,reviews",
+    # "ci", "reviews" or "off"); a job's own `autofix` can only narrow it. Default "ci,reviews".
+    github_autofix: dict[str, str] = Field(default_factory=dict)
+    autofix_max_rounds: int = Field(3, ge=0, le=20)  # per PR
+    autofix_cooldown_seconds: float = 120  # at least this long between two rounds on one PR
+    autofix_coalesce_seconds: float = 60  # failures and comments within this window become one turn
+    autofix_log_bytes: int = Field(16_000, ge=1000, le=200_000)  # of each failing check's log, its end
     # --- perf: control-plane responsiveness -----------------------------------
     # Worker threads for blocking provider calls (docker-py, the kubernetes client, e2b) and file I/O. Python's
     # default is min(32, CPUs + 4): 6 on a 2-vCPU control plane, so a few long execs (a clone, a verify, a turn

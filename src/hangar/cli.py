@@ -530,6 +530,11 @@ def job_submit(
     schema: Path | None = typer.Option(None, "--schema", help="JSON Schema file for a structured result."),
     best_of: int | None = typer.Option(None, "--best-of", help="Run N attempts in parallel and deliver the best."),
     judge: bool = typer.Option(False, "--judge", help="With --best-of: an agent compares the passing attempts."),
+    # --- overnight/autofix
+    verify_in_loop: bool | None = typer.Option(None, "--verify-in-loop/--no-verify-in-loop",
+                                               help="Also run --verify inside the agent's turn (default: on)."),
+    autofix: str | None = typer.Option(None, "--autofix", help="React to the PR's CI and reviews: ci,reviews "
+                                       "(default) | ci | reviews | off."),
 ):
     """Submit a job. Example:
 
@@ -557,7 +562,9 @@ def job_submit(
         "base_branch": base, "verify": verify, "deliver": deliver, "context": items + local, "timeout_minutes": timeout,
         "budget": _budget(max_minutes, max_tokens, max_cost),
         **({"output_schema": _schema(schema)} if schema else {}),
-        **({"strategy": "best_of_n", "n": best_of, "judge": judge} if best_of else {})})
+        **({"strategy": "best_of_n", "n": best_of, "judge": judge} if best_of else {}),
+        **({"verify_in_loop": verify_in_loop} if verify_in_loop is not None else {}),
+        **({"autofix": autofix} if autofix else {})})
     typer.secho(f"{j['id']} queued: {j['title']}", fg="green")
     if wait:
         j = _wait_job(j["id"])

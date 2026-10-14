@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
-from hangar import cache, exchange  # --- overnight/cache
+from hangar import cache, exchange, verifyloop  # --- overnight/cache; verifyloop: --- overnight/autofix
 from hangar.events import total_usage
 from hangar.fleet import _clip_tail
 from hangar.harnesses import Harness
@@ -365,7 +365,11 @@ async def _attempt_steps(jobs: JobService, job: Job, a: Attempt) -> None:
                         f"checked out on branch `{s.branch}`: commit there.\n")
             await svc.begin_turn(s, st, prompt=prompt, timeout_minutes=job.timeout_minutes, handoff=False,
                                  extra_env={"HANGAR_JOB_ID": job.id, "HANGAR_JOB_DIR": jobs._ctxdir(job),
-                                            "HANGAR_ATTEMPT": str(a.index)})
+                                            "HANGAR_ATTEMPT": str(a.index),
+                                            # --- overnight/autofix: each attempt gets the in-turn verify gate
+                                            **verifyloop.turn_env(jobs.settings, job, s.harness,
+                                                                  sb.info.get("repo_path"), job.timeout_minutes,
+                                                                  job.budget)})
             a.run_id, a.started_at = st.run_id, st.started_at
             if all(x.run_id for x in job.attempts):  # every attempt has its copy of the local work now
                 job.context = exchange.strip_code(job.context)

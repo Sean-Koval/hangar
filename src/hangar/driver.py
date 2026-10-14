@@ -931,6 +931,86 @@ class Codex(Harness):
         return code
 
 
+# ====================================================================== the verify gate (--- overnight/autofix)
+class Gate:
+    """The job's check, run when the agent settles; a failure goes back into the same conversation as a message,
+    up to `rounds` times and only before `deadline` (verifyloop.py writes $HANGAR_VERIFY_GATE). Each check is
+    recorded in ~/.hangar/runs/<run>.verify ("fail <exit>" or "pass") and as a hangar.verify event."""
+
+    TAIL = 6000
+
+    def __init__(self, spec: dict, out: Out, args: argparse.Namespace | None = None):
+        self.command, self.cwd = spec["command"], spec["cwd"]
+        self.rounds, self.deadline, self.timeout = spec["rounds"], spec["deadline"], spec["timeout"]
+        self.out, self.failed = out, 0
+        # integrate(#65 x #66): under the uid split the check is the agent's code (the repo's tests), so it runs as
+        # the agent, in the harness's environment, never as hangar's user, whose capabilities could make it root.
+        # The rounds file is the agent's too, where hangar and the Stop hook read and write it.
+        self.agent: tuple[str, str, str] | None = None
+        home = "~"
+        if args is not None and (user := getattr(args, "as_user", None)):
+            home = pwd.getpwnam(user).pw_dir
+            self.agent = (user, home, args.run_env)
+        self.state = os.path.expanduser(f"{home}/.hangar/runs/{os.environ.get('HANGAR_RUN_ID') or 'run'}.verify")
+
+    def _argv(self, argv: list) -> list:
+        if self.agent is None:
+            return argv
+        user, home, run_env = self.agent
+        return as_agent(user, home, run_env, self.cwd, argv)
+
+    def _record(self, line: str) -> None:
+        try:
+            if self.agent:
+                subprocess.run(self._argv(["sh", "-c", 'printf "%s\\n" "$1" >> "$0"', self.state, line]),
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=30)
+            else:
+                with open(self.state, "a") as f:
+                    f.write(line + "\n")
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    @classmethod
+    def load(cls, out: Out, args: argparse.Namespace | None = None) -> Gate | None:
+        try:
+            spec = json.loads(os.environ.get("HANGAR_VERIFY_GATE") or "null")
+        except ValueError:
+            return None
+        if not (isinstance(spec, dict) and isinstance(spec.get("command"), str) and spec["command"].strip()
+                and isinstance(spec.get("cwd"), str) and all(isinstance(spec.get(k), int) and spec[k] >= 0
+                                                             for k in ("rounds", "deadline", "timeout"))):
+            return None
+        return cls(spec, out, args)
+
+    def due(self) -> bool:
+        return self.failed < self.rounds and time.time() < self.deadline
+
+    def check(self) -> str | None:
+        """Run the check; None when it passes (or can't run: hangar's own check after the turn decides), else
+        the message that sends the agent back to work."""
+        try:
+            p = subprocess.run(self._argv(["bash", "-c", self.command]), cwd=None if self.agent else self.cwd,
+                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               timeout=max(1, self.timeout))
+            code, output = p.returncode, p.stdout or b""
+        except subprocess.TimeoutExpired as e:
+            code, output = 124, (e.stdout or b"") + f"\n(timed out after {self.timeout} s)".encode()
+        except OSError:
+            return None
+        self._record("pass" if code == 0 else f"fail {code}")
+        if code == 0:
+            self.out.event("verify", round=self.failed, exit_code=0, passed=True)
+            return None
+        self.failed += 1
+        self.out.event("verify", round=self.failed, of=self.rounds, exit_code=code, passed=False)
+        tail = output.decode("utf-8", errors="replace").strip()[-self.TAIL:] or "(no output)"
+        return (f"hangar: the job's check `{self.command}` failed (exit {code}), round {self.failed} of "
+                f"{self.rounds}. Fix the cause and run the check again before you finish. Don't change the check "
+                "or the tests it runs to make it pass; if the failure is outside this task, say so in RESULT.md. "
+                f"The check's output ends with:\n\n{tail}")
+
+
 # ====================================================================== main
 def main(argv: list | None = None) -> int:
     ap = argparse.ArgumentParser(description="Run one agent turn for hangar (see the module docstring).")
@@ -973,6 +1053,7 @@ def main(argv: list | None = None) -> int:
 
     for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         signal.signal(sig, stop)
+    gate = Gate.load(out, args)  # --- overnight/autofix
     h.start(prompt)
     alive = True
     while alive:
@@ -983,6 +1064,12 @@ def main(argv: list | None = None) -> int:
             drv.handle(cmd)
         drv.expire()
         if alive and h.settled():
+            # --- overnight/autofix: a failing check continues the conversation (never after a bare interrupt)
+            if gate is not None and not h.stop_after_interrupt and gate.due():
+                fix = gate.check()  # commands that come meanwhile wait in the inbox for the next pass
+                if fix is not None:
+                    h.steer(fix, lambda err=None: None)
+                    continue
             late = ctl.close()
             if not late:
                 break

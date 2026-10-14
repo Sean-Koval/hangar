@@ -493,6 +493,13 @@ async def test_a_one_shot_job_interrupted_with_a_message_carries_on_with_it(svc,
                                   harness="one-shot"), Caller("svc", "svc"))
     s = await job_turn(jobsvc, svc, job.id)
     assert not s.turns[-1].live
+    # --- overnight/autofix: interrupt only once the script is under way (it marks `held`); stopped before that, the
+    # second turn found no mark and held for 30 s too, which failed this test whenever tmux started slowly
+    held = svc.fleet.providers["docker"].boxes[s.sandbox_id] / "home/agent/.hangar/runs/held"
+    for _ in range(400):
+        if held.exists():
+            break
+        await asyncio.sleep(0.05)
     st = await steering.interrupt(svc, s, "ana", "do this instead")
     assert st.status == "queued"
     job = await job_until(jobsvc, job.id, {JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED,

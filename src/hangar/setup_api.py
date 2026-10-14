@@ -30,8 +30,10 @@ from hangar.github import GitHub, GitHubError, parse_repo
 from hangar.models import Credential, CredentialKind
 
 # Events the webhook sends: labels and /hangar comments on issues and PRs (what jobs.handle_github acts on), and
-# review comments, so /hangar in a PR review thread reaches hangar (handle_github ignores them until it handles them).
-HOOK_EVENTS = ("issues", "issue_comment", "pull_request_review_comment")
+# --- overnight/autofix: CI results and reviews on hangar's PRs, which start auto-fix rounds (autofix.py).
+# `ensure_hook` adds any that an existing hook lacks, and `hook_problem` (doctor) names the missing ones.
+HOOK_EVENTS = ("issues", "issue_comment", "pull_request_review_comment", "pull_request_review", "check_run",
+               "check_suite", "status")
 HOOK_PATH = "/api/hooks/github"
 _WEBHOOK_URL_KEY = "setup:github:webhook_url"  # the URL the wizard registered (when it isn't HANGAR_PUBLIC_URL's)
 _REPO_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
@@ -40,8 +42,9 @@ _CHANNEL_RE = re.compile(r"^[CG][A-Z0-9]{2,}$")
 TOKEN_HELP = (
     "Create a fine-grained token at https://github.com/settings/personal-access-tokens/new for the repos you're "
     "connecting, with repository permissions Issues: Read and write, Pull requests: Read and write and Webhooks: "
-    "Read and write (Metadata: Read is added automatically). A classic token needs the `repo` scope. Hangar's "
-    "control plane uses it to comment and open PRs; it never goes into a sandbox."
+    "Read and write (Metadata: Read is added automatically), and Actions: Read so auto-fix can read failing CI "
+    "logs. A classic token needs the `repo` scope. Hangar's control plane uses it to comment and open PRs; it never "
+    "goes into a sandbox."
 )
 
 

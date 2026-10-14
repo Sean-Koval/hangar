@@ -653,6 +653,13 @@ def _driver_event(e: dict[str, Any]) -> list[RunEvent]:
         what = "steered" if t == "steer" else "interrupted"
         return [RunEvent(kind="progress", text=_clip(f"{what}: {text}" if text else what),
                          data=_small({"source": "hangar", "action": t, "command": aid}))]
+    if t == "verify":  # --- overnight/autofix: the driver's verify gate ran the job's check
+        ok = e.get("passed") is True
+        text = "the job's check passed" if ok else (f"the job's check failed (exit {e.get('exit_code')}); sent back "
+                                                    f"to the agent ({e.get('round')} of {e.get('of')})")
+        return [RunEvent(kind="progress", text=_clip(text),
+                         data=_small({"source": "hangar", "action": "verify", "passed": ok,
+                                      "exit_code": e.get("exit_code"), "round": e.get("round")}))]
     return []
 
 

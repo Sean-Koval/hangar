@@ -23,7 +23,7 @@ hangar doctor --fix                                                         # ap
 - recent failed sandbox starts (quota);
 - the GitHub token's access to each mapped repo;
 - the webhook secret;
-- that each mapped repo has an active JSON webhook to hangar with the issues, issue_comment and pull_request_review_comment events;
+- that each mapped repo has an active JSON webhook to hangar with the events hangar handles (issues, issue_comment, pull_request_review_comment, pull_request_review, check_run, check_suite and status);
 - that each mapped environment exists, has credentials, and is built;
 - Slack, when configured: its credentials, the bot token, and that each mapped channel's repo is allowed;
 - that checkpoint storage is writable.
@@ -72,7 +72,9 @@ EOF
 | `instructions` | What to do (required, up to 64 KB). |
 | `repo`, `base_branch`, `branch` | The repo to work in; the base defaults to the repo's default branch, and the branch defaults to `hangar/<job>`. A custom branch must be under `hangar/` and must not exist yet: jobs never push to existing branches. |
 | `environment`, `harness`, `model`, `provider` | Where and with what to run. The environment can be left out for repos mapped in `HANGAR_GITHUB_REPOS`. |
-| `verify` | The repo's own check, run by hangar after each turn. A failing check still delivers, as a draft PR. |
+| `verify` | The repo's own check. It runs inside the agent's turn, where a failure goes back to the agent ([§7](#7-an-agent-loop-that-finishes-the-job)), and hangar runs it again after the turn. A failing check still delivers, as a draft PR. |
+| `verify_in_loop`, `max_verify_rounds` | Whether `verify` also runs inside the turn (default `true`), and how many failures go back to the agent per turn (default 3). See [§7](#7-an-agent-loop-that-finishes-the-job). |
+| `autofix` | What the job's PR reacts to by itself: `ci,reviews` (default), `ci`, `reviews` or `off`. See [§7](#7-an-agent-loop-that-finishes-the-job). |
 | `deliver` | `draft_pr` (default), `pr`, `branch` or `none`. |
 | `context` | Files the agent is given in `~/.hangar/jobs/<job>/` (outside the repo, mode 0600), plus links listed in the prompt. Up to 50 items and 2 MB. |
 | `callback_url`, `callback_secret` | Where to POST `job.started` and `job.finished`. `jobs` tokens always sign with their bound key; admins may name any `webhook` credential. |
@@ -127,14 +129,14 @@ hangar setup github --repo acme/app=python --token-file ~/.hangar/gh-token --non
 
 The wizard:
 1. **Checks the token** before storing anything. It must be able to read each repo and write to it, and to manage its webhooks. The token is read from a hidden prompt, `--token-file`, `--token-stdin` or `--token-from-gh` (the `gh` CLI's login), and it is never echoed or printed.
-   - **Which token:** a [fine-grained token](https://github.com/settings/personal-access-tokens/new) for the repos, with repository permissions *Issues* and *Pull requests*: Read and write, and *Webhooks*: Read and write. *Metadata*: Read is added automatically. A classic token needs the `repo` scope.
+   - **Which token:** a [fine-grained token](https://github.com/settings/personal-access-tokens/new) for the repos, with repository permissions *Issues* and *Pull requests*: Read and write, *Webhooks*: Read and write, and *Actions*: Read (auto-fix reads failing CI logs with it). *Metadata*: Read is added automatically. A classic token needs the `repo` scope. GitHub doesn't open the check-runs API to fine-grained tokens, so with one, auto-fix describes a failing check from its webhook (title, summary, text) and its Actions log, without the check's annotations; a classic token gets those too.
    - **What it's for:** the control plane uses it to comment and open PRs; it never goes into a sandbox.
 2. **Stores** the token as `gh-control` and a generated webhook secret as `gh-webhook` in the vault. Running the wizard again keeps the secret. `--rotate-secret` makes a new one and stores it only once every repo's webhook has it: if GitHub refuses one (a token with *Webhooks*: Read only), the hooks already changed are set back and the old secret stays, so deliveries keep verifying.
 3. **Saves** `HANGAR_GITHUB_TOKEN_CREDENTIAL`, `HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL` and `HANGAR_GITHUB_REPOS` in hangar's database. They apply at once and survive redeploys, with no config map to edit. If the server's environment (on GKE, `hangar-site`) also sets one of them, the environment wins, and the wizard tells you.
-4. **Registers the webhook** on each repo, or updates the existing one: `https://<hangar>/api/hooks/github`, JSON, the stored secret, and the **issues**, **issue_comment** and **pull_request_review_comment** events. A hook that only sent `push` gets the missing events added.
+4. **Registers the webhook** on each repo, or updates the existing one: `https://<hangar>/api/hooks/github`, JSON, the stored secret, and the **issues**, **issue_comment**, **pull_request_review_comment**, **pull_request_review**, **check_run**, **check_suite** and **status** events (the last four drive [auto-fix](#7-an-agent-loop-that-finishes-the-job)). A hook that lacks any of them, such as one set up before auto-fix that sent only the first three, gets the missing events added; `hangar doctor` names them and `hangar doctor --fix` adds them.
 5. **Tests it twice.** First with a signed delivery through hangar's own route, then with a ping from GitHub, whose result it reads back from the hook's recent deliveries.
 
-GitHub can't deliver to `localhost`. On a laptop the wizard still stores everything and skips the webhook; pass `--webhook-url https://<tunnel>` to register one through a tunnel. `--no-webhook` skips it if you'd rather add it by hand. A generated secret is never shown, so bring your own: `openssl rand -hex 32 > ~/.hangar/gh-webhook-secret`, then pass `--webhook-secret-file ~/.hangar/gh-webhook-secret`, and on GitHub use the URL, content type `application/json`, that secret, and the three events above. Updating an existing hook keeps its other events and its SSL verification setting.
+GitHub can't deliver to `localhost`. On a laptop the wizard still stores everything and skips the webhook; pass `--webhook-url https://<tunnel>` to register one through a tunnel. `--no-webhook` skips it if you'd rather add it by hand. A generated secret is never shown, so bring your own: `openssl rand -hex 32 > ~/.hangar/gh-webhook-secret`, then pass `--webhook-secret-file ~/.hangar/gh-webhook-secret`, and on GitHub use the URL, content type `application/json`, that secret, and the seven events above. Updating an existing hook keeps its other events and its SSL verification setting.
 
 To set the same things by hand, use `hangar cred add gh-control --harness git --kind git_token`, `hangar cred add gh-webhook --harness webhook --kind generic`, and `hangar config set HANGAR_GITHUB_REPOS '{"acme/app": "python"}'`, together with the two `*_CREDENTIAL` settings.
 
@@ -199,6 +201,71 @@ If no attempt finished but one asked a question (`hangar-agent ask`), the first 
 
 **Cost:** N attempts are N sandboxes running at the same time and N agent runs (the judge adds one more short run in a sandbox of its own). The preparation runs once. A job holds one worker slot (`HANGAR_JOB_CONCURRENCY`) however many attempts it runs, so the sandbox count, not the job count, is what to watch: `HANGAR_BEST_OF_N_MAX` caps N, and `HANGAR_MAX_SANDBOXES` caps the fleet.
 
+## 7. An agent loop that finishes the job
+
+Two loops keep the agent working until the job's own checks agree it is done, without someone pasting failures back to it. Both are on by default. The design is items 5 and 6 of [spec 0012](specs/0012-cutting-edge.md).
+
+### The verify gate inside the turn
+
+With `verify` set, the agent sees a failing check *before* its turn ends, and fixes it in the same conversation:
+
+- **Claude Code:** hangar passes a [Stop hook](https://code.claude.com/docs/en/hooks#stop) with `--settings '<json>'`. When Claude finishes, the hook runs the check in the repo. If the check fails, the hook exits 2 with the check's output on stderr, which sends Claude back to work with that output. The check has to pass, or the rounds have to run out, before the turn can end.
+- **Codex** (in a [live turn](steering.md)): hangar's driver runs the check when the turn completes. A failure goes back into the same conversation as the next message.
+- **Other harnesses** (pi, Antigravity, or Codex without python3 in the image): hangar starts a follow-up turn with the failure. It does this when the agent finished cleanly and hangar's own check then failed.
+
+Rounds and limits:
+
+- **Per turn:** each failure sent back is a round. A turn and any follow-up turns it needs share `max_verify_rounds` (default 3, or `HANGAR_MAX_VERIFY_ROUNDS`).
+- **Time:** the in-turn gate stops sending failures back when the turn's time limit is close. It leaves room for one more check and a fix.
+- **Budget:** the rounds share the turn's [budget](activity.md). Follow-up turns get what is left of it, not a fresh one.
+- **Job view:** each turn shows `verify_rounds`, and hangar's follow-up turns show `trigger: "verify"`.
+
+**Hangar's own check after the turn still decides delivery.** The gate is advisory: it helps an agent that wants to pass the check, and it is not a control against one that doesn't. It runs inside the sandbox, as the agent's user, so the agent can get past it:
+
+- **Settings files don't switch the hook off.** It lives on the command line, not in a file, and its `disableAllHooks: false` outranks the user, project and local settings files. This was verified with Claude Code 2.1.296: `disableAllHooks: true` in all three files leaves the hook running.
+- **Other ways around it remain.** Managed settings (`/etc/claude-code/managed-settings.json`) outrank the command line, and the agent can write them when the image gives it `sudo`, which is the default. The agent can also use up the rounds by writing to the rounds file, or put its own `claude`, `pytest` or other command first on `PATH` for this turn or, through `~/.hangar/env`, for later ones.
+
+What decides is hangar's check after the turn. The hook's result never feeds delivery: hangar runs the job's `verify` itself, and only that exit code decides between a PR and a draft.
+
+That check also runs in the sandbox, through the agent's `~/.hangar/env` (see the [threat model](security.md)). So it tells you whether the work passes, and it can't prove that the agent didn't game it. Review the PR as you would any contributor's. Two things help:
+
+- **The check stays the job's own.** The command is the job's `verify`, stored by hangar, and the agent can't change it.
+- **Edited tests are flagged.** The agent can change files the check reads. So when the gate is on, hangar runs [best-of-N's test check](#6-forks-and-best-of-n) on every job: a diff that changes, renames or deletes the check's own test files is listed in `result.touched_tests`. It is also called out in the PR body, and the PR is delivered as a draft. The check covers the test files only. When `verify` names paths, it covers those paths; otherwise, any test file and `conftest.py`. It doesn't cover runner configs such as `pyproject.toml`, `pytest.ini`, `package.json` or a `Makefile`.
+
+Turn the gate off per job with `"verify_in_loop": false` (`--no-verify-in-loop`), or for everything with `HANGAR_VERIFY_IN_LOOP=false`.
+
+### PR auto-fix
+
+After hangar opens a job's PR, it reacts to the PR's CI results and reviews. It does this by starting a follow-up turn on the job's session, as a `/hangar` comment would:
+
+- **CI:** a `check_run` or `check_suite` that completes as `failure`, `timed_out` or `startup_failure`, or a commit `status` of `failure` or `error`. It counts only on the commit hangar last pushed to the PR (the job's `result.head_sha`).
+  - The agent gets `ci-failures.md` with each failing check's output and annotations, and, for GitHub Actions, the end of the job's log (`HANGAR_AUTOFIX_LOG_BYTES`, plus the `##[error]` lines before it).
+  - Logs are read with the control plane's token. The download link GitHub redirects to is fetched without the token, and only from GitHub's log storage (`*.actions.githubusercontent.com`, `*.blob.core.windows.net`) or the API's own host. For other hosts the agent gets the check's output without the log.
+  - Only checks tied to the job's own PR count: by its number or the job's branch, and the job's head commit. A fork's PR can reuse the branch name and the commit, but its checks arrive without either.
+  - Anyone who can post a check or a status on that commit can start a round: people with write access, and apps with the *Checks* or *Commit statuses* permission. What they post is fenced as untrusted text in the agent's prompt, and the round limit applies.
+- **Reviews:** a review that requests changes, or that comments with inline comments, and inline review comments.
+  - They count only from [trusted](triggers.md) people (by default the repo's owners, members and collaborators, or `HANGAR_GITHUB_TRUSTED`), never from hangar's own GitHub account or comments.
+  - The agent gets `review-comments.md` with each comment's file, line and diff hunk. It is told to ask (`hangar-agent ask`, so the job goes to `needs_input`) when a comment is ambiguous, instead of guessing.
+
+Loop control:
+
+- **Coalescing:** everything that arrives within `HANGAR_AUTOFIX_COALESCE_SECONDS` (60) becomes one turn. Ten checks failing on one push make one round.
+- **One CI round per push:** if the agent pushed nothing new, the same commit failing again doesn't start another round. Neither do hangar's own comments.
+- **Round limit:** at most `HANGAR_AUTOFIX_MAX_ROUNDS` (3) rounds per PR, at least `HANGAR_AUTOFIX_COOLDOWN_SECONDS` (120) apart. After the last round, hangar says once on the PR that auto-fix stopped.
+- **Someone else's push:** if the PR's head isn't the commit hangar pushed, hangar won't push over it. It says so once on the PR and pauses until it pushes again.
+- **On the PR:** hangar comments at the start of each round with what failed. The turn's result is reported as usual.
+- **Job state:** a round waits while a turn is running. Rounds don't start for a job that is cancelled or waiting for an answer.
+- **Restarts:** triggers still waiting for their window survive a control-plane restart.
+
+Settings:
+
+- **Per repo:** `HANGAR_GITHUB_AUTOFIX='{"acme/app": "ci"}'`, with the values `ci,reviews`, `ci`, `reviews` or `off`.
+- **Per job:** `"autofix"` in the request (`--autofix` on the CLI, `autofix` in MCP `submit_job`). A job's setting can only narrow its repo's.
+- **Default:** `ci,reviews` for every PR hangar opens. PRs that hangar didn't open are never touched.
+- **The job view:** `autofix_state` shows the rounds, the pending triggers and why the loop stopped.
+
+The webhook needs the `pull_request_review`, `check_run`, `check_suite` and `status` events ([§4](#4-trigger-from-github)): run `hangar setup github` again, or `hangar doctor --fix`.
+
 ## Settings
 
 | Variable | Default | |
@@ -213,6 +280,8 @@ If no attempt finished but one asked a question (`hangar-agent ask`), the first 
 | `HANGAR_BEST_OF_N_MAX` | 8 | Most attempts per best-of-N job |
 | `HANGAR_BEST_OF_N_PUSH_ATTEMPTS` | false | Also push attempts that weren't delivered |
 | `HANGAR_BEST_OF_N_JUDGE_TIMEOUT_MINUTES` | 15 | The judge turn's limit |
+| `HANGAR_VERIFY_IN_LOOP`, `HANGAR_MAX_VERIFY_ROUNDS` | true, 3 | The verify gate inside the turn; see [§7](#7-an-agent-loop-that-finishes-the-job) |
+| `HANGAR_GITHUB_AUTOFIX`, `HANGAR_AUTOFIX_MAX_ROUNDS`, `HANGAR_AUTOFIX_COOLDOWN_SECONDS`, `HANGAR_AUTOFIX_COALESCE_SECONDS`, `HANGAR_AUTOFIX_LOG_BYTES` | `{}`, 3, 120, 60, 16000 | PR auto-fix; see [§7](#7-an-agent-loop-that-finishes-the-job) |
 | `HANGAR_GITHUB_TOKEN_CREDENTIAL`, `HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL`, `HANGAR_GITHUB_REPOS`, `HANGAR_GITHUB_TRIGGER_LABEL` | | See §4 |
 | `HANGAR_GITHUB_TRUSTED`, `HANGAR_JOB_APPROVAL_TTL_HOURS`, `HANGAR_INBOUND_WEBHOOKS`, `HANGAR_SCHEDULE_POLL_SECONDS` | | See [triggers.md](triggers.md) |
 | `HANGAR_SLACK_SIGNING_SECRET_CREDENTIAL`, `HANGAR_SLACK_BOT_TOKEN_CREDENTIAL`, `HANGAR_SLACK_CHANNELS`, `HANGAR_SLACK_USERS` | | See [slack.md](slack.md) |
@@ -226,6 +295,7 @@ Issue text, comments and service context are untrusted input to the agent. Today
 - `jobs`-only service tokens that can't reach MCP or OAuth;
 - secret redaction of everything the agent writes that leaves hangar (summaries, verification output, PR bodies, comments, callbacks);
 - pushes only to new `hangar/` branches, never forced;
-- a prompt that marks context as data.
+- a prompt that marks context as data;
+- CI output and logs handed to auto-fix turns are untrusted attachments, fenced in the prompt like an outsider's issue text, and only trusted reviewers' comments start a turn.
 
 Known gap: the callback check resolves the host before sending but doesn't pin the address, so DNS rebinding is not fully blocked. Without the [git gateway](security.md#git-credential-gateway) the agent's sandbox holds a git credential, so restrict `HANGAR_GITHUB_REPOS` to repos where a mistaken push to a `hangar/*` branch is acceptable, and keep PR merges human-approved. With `HANGAR_GATEWAY_URL` set, jobs push through the gateway: the sandbox has no GitHub token and can push only its own branch and `hangar/**`.
