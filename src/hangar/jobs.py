@@ -39,6 +39,7 @@ from hangar import (  # strategies: workstream D; --- observe; steer: live turns
     verifyloop,
 )
 from hangar import fairness as fairness  # --- scale
+from hangar import people as people  # --- teamcreds: GitHub senders linked to people
 from hangar import restarts as restarts  # --- reconciler: interrupted jobs resume after a restart
 from hangar.events import resolve_budget, total_usage, usage_line
 from hangar.fleet import Fleet, FleetError, _clip_tail
@@ -1302,8 +1303,9 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
     from hangar.frontdoor import RateLimited, TooManyActive
 
     try:
-        job = svc.submit(req, Caller(f"github:{sender}", f"github:{sender}"), source="github", source_ref=ref,
-                         approval=approval, untrusted_source=untrusted_source)
+        linked = people.resolve_external(svc.store, "github", sender)  # --- teamcreds: theirs if linked
+        job = svc.submit(req, Caller(f"github:{sender}", f"github:{sender}", person=linked.id if linked else None),
+                         source="github", source_ref=ref, approval=approval, untrusted_source=untrusted_source)
     except RateLimited as e:  # --- front-door-auth: tell trusted people; an outsider's flood gets no comments
         if trusted:
             svc._spawn(svc._comment(None, ref, f"hangar couldn't start a job for this issue yet: {e}"))

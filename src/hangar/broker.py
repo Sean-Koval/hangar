@@ -105,6 +105,7 @@ class Broker:
         file_path: str | None = None,
         exposure: str | None = None,  # --- identity: "sandbox" | "control_plane"; unset keeps the stored choice
         person: str | None = None,  # --- identity: whose own credential it is; unset keeps the stored owner
+        team: bool = False,  # --- teamcreds: a team credential (no person), whoever owned it before
     ) -> Credential:
         if not NAME_RE.match(name):
             raise CredentialError(f"invalid credential name '{name}': letters, digits, '.', '_', '-'")
@@ -143,7 +144,7 @@ class Broker:
             created_at=existing.created_at if existing else now(),
             leased_to=existing.leased_to if existing else None,
             exposure=exposure or (existing.exposure if existing else None),  # --- identity
-            person=person or (existing.person if existing else None),  # --- identity
+            person=None if team else person or (existing.person if existing else None),  # --- identity, teamcreds
         )
         self._check_exposure_choice(cred)  # --- identity
         self.vault.put(f"cred:{name}", value)

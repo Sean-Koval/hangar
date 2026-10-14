@@ -24,6 +24,7 @@ import httpx
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from hangar import people  # --- teamcreds: Slack users linked to people
 from hangar.exchange import open_question
 from hangar.github import parse_repo
 from hangar.jobs import NOTIFIERS, Caller, JobError, JobNotFound, JobService, SubmitJob
@@ -595,8 +596,9 @@ class SlackFrontDoor:
                             harness=plan.harness, model=plan.model, context=context, idempotency_key=key,
                             labels={"slack.channel": channel, "slack.thread": thread_ts, "slack.user": user})
             # Restricted like a `jobs` token: mapped repos and environments only, no provider choice.
-            job = self.jobs.submit(req, Caller(requester, requester, restricted=True), source="slack",
-                                   source_ref=ref)
+            linked = people.resolve_external(self.store, "slack", user)  # --- teamcreds: theirs if linked
+            job = self.jobs.submit(req, Caller(requester, requester, restricted=True,
+                                               person=linked.id if linked else None), source="slack", source_ref=ref)
         except ValueError as e:  # JobError and pydantic's ValidationError
             await self._say(api, channel, thread_ts, f"hangar couldn't start a job: {escape(str(e)[:500])}")
             return

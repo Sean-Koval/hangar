@@ -7,8 +7,11 @@ person id in `person`; that is also the key per-person quotas use (`identity.per
 * **Migration.** Tokens minted before people existed have no person: they belong to `OWNER`, an admin, as do the
   server's own admin token and the bootstrap token. Records made before have no person, so only admins see them.
 * **Credentials.** A credential with a `person` is that person's own (their Claude or Codex login) and only ever
-  goes into their sandboxes; one without is shared by the team. A sandbox for a person who has their own
-  credential for its harness uses that one instead of the environment's shared ones.
+  goes into their sandboxes; one without is a team credential. Those stored before people became the owner's
+  (teamcreds.migrate). A sandbox for a person who has their own credential for its harness uses that one instead
+  of the team's (teamcreds.resolve).
+* **Linked identities.** A person's GitHub login, Slack user id and Jira account id or email: work those senders
+  start runs for the person (`resolve_external`), counts against their caps and is visible to them.
 * **Visibility.** Enforced at the front doors (MCP tools and resources, REST routes), not inside the services:
   the job and session machinery runs work for everyone and must see all of it.
 """
@@ -109,6 +112,80 @@ def check_token_scopes(person: Person, scopes: list[str]) -> None:
     if person.role != "admin" and (bad := [s for s in scopes if s not in MEMBER_SCOPES]):
         raise PeopleError(f"{person.id} is a member; their tokens may hold {', '.join(MEMBER_SCOPES)}, not "
                           f"{', '.join(bad)}")
+
+
+# ---------------------------------------------------------------------------- linked identities (--- teamcreds)
+SOURCES = ("github", "slack", "jira", "email")
+# What intake may call a source: a GitHub Projects item's actor is a GitHub login
+_SOURCE_ALIASES = {"github_projects": "github", "github-projects": "github"}
+_EXTERNAL_RE = {
+    "github": re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,38})$"),  # GitHub logins: case-insensitive
+    "slack": re.compile(r"^[UW][A-Z0-9]{1,30}$"),  # a Slack user id (W… on Enterprise Grid)
+    "jira": re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$"),  # an Atlassian account id
+    "email": re.compile(r"^[^@\s]{1,64}@[^@\s]{1,253}\.[^@\s]{2,63}$"),
+}
+_EXTERNAL_HINT = {"github": "a GitHub login", "slack": "a Slack user id (like U012AB3CD)",
+                  "jira": "a Jira (Atlassian) account id", "email": "an email address"}
+
+
+def external_key(source: str, external_id: str) -> str:
+    """`source:id`, normalized the way each source compares ids (GitHub logins and emails ignore case)."""
+    src = (source or "").strip().lower()
+    src = _SOURCE_ALIASES.get(src, src)
+    if src not in SOURCES:
+        raise PeopleError(f"source must be one of {', '.join(SOURCES)}")
+    v = (external_id or "").strip()
+    v = v.removeprefix("@").lower() if src == "github" else v.lower() if src == "email" else \
+        v.upper() if src == "slack" else v
+    if not _EXTERNAL_RE[src].match(v):
+        raise PeopleError(f"'{external_id}' isn't {_EXTERNAL_HINT[src]}")
+    return f"{src}:{v}"
+
+
+def _linked_to(store: Store, key: str) -> Person | None:
+    return next((p for p in list_people(store) if key in p.links), None)
+
+
+def link(store: Store, person_id: str, source: str, external_id: str) -> Person:
+    """Link an account elsewhere to a person (admins). One account links to one person."""
+    key = external_key(source, external_id)
+    p = get(store, person_id)
+    if p is None:
+        raise KeyError(f"no person '{person_id}'")
+    other = _linked_to(store, key)
+    if other is not None and other.id != p.id:
+        raise PeopleError(f"{key} is linked to {other.id}; unlink it there first (hangar person unlink {other.id} "
+                          f"{key.replace(':', ' ', 1)})")
+    if key not in p.links:
+        p.links.append(key)
+        store.put(p)
+    return p
+
+
+def unlink(store: Store, person_id: str, source: str, external_id: str) -> Person:
+    key = external_key(source, external_id)
+    p = get(store, person_id)
+    if p is None or key not in p.links:
+        raise KeyError(f"{key} isn't linked to '{person_id}'")
+    p.links.remove(key)
+    store.put(p)
+    return p
+
+
+def resolve_external(store: Store, source: str, external_id: str | None) -> Person | None:
+    """The person a GitHub login, Slack user id, or Jira account id or email is linked to, for intake to attribute a
+    job (`Caller(..., person=p.id)`). None for anyone linked to nobody, and for an id that isn't one: their work runs
+    for the team, and the front door's own trust rules decide what it may do. A Jira id with an `@` is looked up as
+    an email."""
+    if not external_id:
+        return None
+    if (source or "").strip().lower() == "jira" and "@" in external_id:
+        source = "email"
+    try:
+        key = external_key(source, external_id)
+    except PeopleError:
+        return None
+    return _linked_to(store, key)
 
 
 # ---------------------------------------------------------------------------- visibility
@@ -247,29 +324,16 @@ def claim_environment(store: Store, catalog: Any, data: dict[str, Any]) -> None:
 
 # ---------------------------------------------------------------------------- credentials
 def credentials_for(store: Store, names: list[str], person: str | None, harness: str | None, explicit: bool,
-                    is_agent: Any) -> list[str]:
-    """The credentials a sandbox owned by `person` gets.
+                    is_agent: Any, mode: str = "person_then_team") -> list[str]:
+    """The credentials a sandbox owned by `person` gets (--- teamcreds: teamcreds.resolve, which fleet.create
+    calls through teamcreds.for_sandbox so it can wait for a leased login).
 
     `names` is what the caller passed (`explicit`) or the environment's list for the selected harness. Another
     person's credential is refused when named, and dropped from an environment's list. When the person has their
-    own credentials for the sandbox's agent harness, those replace the environment's shared ones for it."""
-    from hangar.broker import CredentialError
+    own credentials for the sandbox's agent harness, those replace the team's for it."""
+    from hangar.teamcreds import resolve
 
-    creds = {c.name: c for c in store.list(Credential)}
-    out: list[str] = []
-    for n in names:
-        c = creds.get(n)
-        if c is not None and c.person is not None and c.person != person:
-            if explicit and person is not None:
-                raise CredentialError(f"credential '{n}' is {c.person}'s own; attach your own or a shared one")
-            continue
-        out.append(n)
-    if explicit or person is None or not harness or not is_agent(harness):
-        return out
-    own = sorted(c.name for c in creds.values() if c.person == person and c.harness == harness)
-    if not own:
-        return out
-    return [n for n in out if creds.get(n) is None or creds[n].harness != harness] + own
+    return resolve(store, names, person, harness, explicit, is_agent, mode).names
 
 
 def check_secrets(store: Store, secrets: dict[str, str], person: str | None) -> None:

@@ -485,7 +485,7 @@ def cred_ls():
     for c in _call("GET", "/api/credentials"):
         lease = f" leased_to={c['leased_to']}" if c.get("leased_to") else ""
         lease += " control-plane" if c.get("exposure") == "control_plane" else ""  # --- identity
-        lease += f" person={c['person']}" if c.get("person") else ""
+        lease += f" owner={c.get('owner') or c.get('person') or 'team'}"  # --- teamcreds
         typer.echo(f"{c['name']:24} {c['harness']:12} {c['kind']:12}{' exclusive' if c['exclusive'] else ''}{lease}")
 
 
@@ -502,8 +502,10 @@ def cred_add(
     description: str | None = None,
     exposure: str | None = typer.Option(None, "--exposure", help="sandbox | control_plane (default: by its kind "
                                         "and name; --- identity)"),
-    person: str | None = typer.Option(None, "--person", help="Admins: whose own credential it is (default: shared; "
-                                      "a member's are always their own)."),
+    person: str | None = typer.Option(None, "--person", help="Admins: whose own credential it is (default: your "
+                                      "own; a member's are always their own)."),
+    team: bool = typer.Option(False, "--team", help="Admins: a team credential, for jobs no person owns and people "
+                              "without their own login. Prefer an API key (docs/team.md)."),  # --- teamcreds
 ):
     """Store a credential. Examples:
 
@@ -514,6 +516,8 @@ def cred_add(
       hangar cred add openrouter --harness pi --kind api_key --file ~/.hangar/openrouter-key
 
       hangar cred add gcp-vertex --harness antigravity --kind generic --file sa-key.json
+
+      hangar cred add claude-team --team --harness claude-code --kind api_key --file team-key.txt
     """
     secret = value if value is not None else (file.expanduser().read_text() if file else sys.stdin.read())
     if kind == "oauth_token" and harness == "claude-code":
@@ -524,9 +528,12 @@ def cred_add(
     c = _call("POST", "/api/credentials", json={"name": name, "harness": harness, "kind": kind, "value": secret,
                                                 "description": description, "env_var": env_var,
                                                 **({"exposure": exposure} if exposure else {}),  # --- identity
-                                                **({"person": person} if person else {})})
-    typer.secho(f"stored {c['name']} ({c['harness']}/{c['kind']}{', exclusive' if c['exclusive'] else ''})",
-                fg="green")
+                                                **({"person": person} if person else {}),
+                                                **({"team": True} if team else {})})  # --- teamcreds
+    typer.secho(f"stored {c['name']} ({c['harness']}/{c['kind']}{', exclusive' if c['exclusive'] else ''}, "
+                f"{c.get('owner') or c.get('person') or 'team'})", fg="green")
+    if c.get("warning"):  # --- teamcreds
+        typer.secho(c["warning"], fg="yellow")
 
 
 @cred_app.command("rm")
@@ -546,11 +553,29 @@ def cred_exposure(name: str, exposure: str = typer.Argument(..., help="sandbox |
 
 
 @cred_app.command("owner")
-def cred_owner(name: str, person: str = typer.Argument(..., help="A person id, or 'shared' for the whole team.")):
-    """Make a credential someone's own (it then goes only into their sandboxes, in place of the environment's
-    shared one for its harness) or shared by the team."""
-    c = _call("PUT", f"/api/credentials/{name}/owner", json={"person": None if person == "shared" else person})
-    typer.echo(f"{c['name']}: {c['person'] or 'shared'}")
+def cred_owner(name: str, person: str = typer.Argument(..., help="A person id, or 'team' for a team credential.")):
+    """Make a credential someone's own (it then goes only into their sandboxes, in place of the team's for its
+    harness) or a team credential (jobs no person owns, and people without their own, use it). A person's own
+    subscription login can't become the team's."""
+    c = _call("PUT", f"/api/credentials/{name}/owner",
+              json={"person": None if person in ("team", "shared") else person})  # --- teamcreds: 'shared' too
+    typer.echo(f"{c['name']}: {c.get('owner') or c['person'] or 'team'}")
+    if c.get("warning"):
+        typer.secho(c["warning"], fg="yellow")
+
+
+# --- teamcreds
+@cred_app.command("migration")
+def cred_migration():
+    """What the one-time migration did: credentials stored before people became the owner's own (control-plane
+    ones stayed the control plane's). Make one a team credential with hangar cred owner NAME team."""
+    import time
+
+    r = _call("GET", "/api/credentials/migration")
+    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(r.get("finished_at") or r.get("started_at") or 0))
+    typer.echo(f"{r.get('state')} {when}: made {r.get('to')}'s own: {', '.join(r.get('moved') or []) or 'none'}")
+    if r.get("control_plane"):
+        typer.echo(f"left to the control plane: {', '.join(r['control_plane'])}")
 
 
 # ---------------------------------------------------------------------------- jobs

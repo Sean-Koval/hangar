@@ -28,11 +28,10 @@ def person_add(person_id: str = typer.Argument(..., help="A short lowercase id, 
     admins on everyone's, and manage people and the vault."""
     p = _cli()._call("POST", "/api/people", json={"id": person_id, "name": name, "role": role, "token": not no_token})
     typer.secho(f"added {p['id']} ({p['role']})", fg="green")
-    if shared := p.get("shared_credentials"):  # --- review: e.g. your own Claude login, stored before people
-        typer.secho(f"{p['id']}'s sandboxes get the team's shared credentials when an environment lists them, and "
-                    f"{p['id']} can read them there: {', '.join(shared)}. To keep one of yours to yourself: "
-                    "hangar cred owner NAME owner (jobs from GitHub and Slack, which run for no one yet, then go "
-                    f"without it). {p['id']} adds their own with hangar cred add.", fg="yellow")
+    if shared := p.get("shared_credentials"):  # --- review; --- teamcreds: the team credentials
+        typer.secho(f"{p['id']}'s sandboxes get these team credentials where they have no login of their own, and "
+                    f"{p['id']} can read them there: {', '.join(shared)}. To make one someone's own: hangar cred "
+                    f"owner NAME PERSON. {p['id']} adds their own with hangar cred add.", fg="yellow")
     if p.get("login"):
         _login_hint(p["login"])
 
@@ -40,7 +39,8 @@ def person_add(person_id: str = typer.Argument(..., help="A short lowercase id, 
 @person_app.command("ls")
 def person_ls():
     for p in _cli()._call("GET", "/api/people"):
-        typer.echo(f"{p['id']:20} {p['role']:7} tokens={p['tokens']:<3} {p['name']}")
+        links = f"  [{', '.join(p['links'])}]" if p.get("links") else ""  # --- teamcreds
+        typer.echo(f"{p['id']:20} {p['role']:7} tokens={p['tokens']:<3} {p['name']}{links}")
 
 
 @person_app.command("role")
@@ -53,6 +53,28 @@ def person_role(person_id: str, role: str = typer.Argument(..., help="member | a
 def person_token(person_id: str, name: str = typer.Option("login", help="Label, e.g. the machine.")):
     """Mint another login token for someone (a new laptop)."""
     _login_hint(_cli()._call("POST", f"/api/people/{person_id}/tokens", json={"name": name}))
+
+
+# --- teamcreds
+@person_app.command("link")
+def person_link(person_id: str,
+                source: str = typer.Argument(..., help="github | slack | jira | email"),
+                external_id: str = typer.Argument(..., help="GitHub login, Slack user id (U…), Jira account id, or "
+                                                            "email.")):
+    """Link someone's account elsewhere to them: the jobs it starts from GitHub, Slack, Jira or GitHub Projects run
+    for them, with their own login, count against their caps and budget, and show up in their lists. Trust (who may
+    start work without approval) stays as the front door decides it.
+
+    Example:  hangar person link alice github alice-gh;  hangar person link alice slack U012AB3CD"""
+    p = _cli()._call("POST", f"/api/people/{person_id}/links", json={"source": source, "id": external_id})
+    typer.echo(f"{p['id']}: {', '.join(p['links'])}")
+
+
+@person_app.command("unlink")
+def person_unlink(person_id: str, source: str, external_id: str):
+    """Unlink an account: its jobs run for the team again."""
+    p = _cli()._call("DELETE", f"/api/people/{person_id}/links", params={"source": source, "id": external_id})
+    typer.echo(f"{p['id']}: {', '.join(p['links']) or 'no linked accounts'}")
 
 
 @person_app.command("rm")

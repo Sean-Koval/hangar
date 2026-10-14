@@ -18,7 +18,7 @@ uv run hangar images build --registry "$REG"          # 3. prebuild the new imag
 #                                                       4. in the power-down window: terraform apply (the node pool)
 bash deploy/gke/power.sh up && bash deploy/gke/up.sh  # 5. bring the cluster up, roll out
 hangar doctor                                         # 6. check
-hangar cred owner <your-claude-login> owner           # 7. people: keep your own logins yours, then add the team
+hangar cred migration                                 # 7. people: your logins became yours; add team credentials
 hangar person add alice
 hangar config set HANGAR_BUDGET_DAY_TIMEZONE America/New_York   # 8. budgets, then job concurrency
 bash scripts/acceptance/gke.sh                        # 9. prove it
@@ -34,7 +34,7 @@ To opt out, use `hangar config set NAME VALUE` (kept in hangar's database) or `h
 | **Fleet size and caps** (#89, #90) | `HANGAR_MAX_SANDBOXES` 50 → **120**. Per person: 15 live sessions, 20 sandboxes started directly, half the job slots (at least 4) running jobs; a cap reached is a 429 or an MCP error. Caps count the person hangar records on the work, so all of a person's tokens share them ([team-scale.md](team-scale.md#settings)). | `HANGAR_PERSON_MAX_SESSIONS`, `_MAX_SANDBOXES`, `_MAX_RUNNING_JOBS` (0 = off) |
 | **Job concurrency** (#89, #90) | 4 → `HANGAR_JOB_CONCURRENCY=0` (auto): 4 on Docker, **8 on GKE**. A free slot goes to whoever has the fewest jobs running. Step 8 raises it to 24 once budgets are set. | set a number (*restart*) |
 | **Sandbox CPU** (#89) | each sandbox pod requested its whole CPU limit → half of it (`HANGAR_K8S_CPU_REQUEST_FRACTION=0.5`); the limit and all memory stay reserved. Each environment's warm-pool template is rewritten once, so the first create of each after the rollout is cold. The control plane requests `500m`/`1Gi` (limit `3Gi`). | `HANGAR_K8S_CPU_REQUEST_FRACTION=1` (*restart*) |
-| **People** (#88) | every token was root over everyone's work → every token belongs to a person. Existing tokens, the admin token and the bootstrap token belong to **`owner`**, an admin, so nothing changes until you add someone (step 7). Credentials stored before this release have no person: they are **shared** with everyone you add. | — |
+| **People** (#88) | every token was root over everyone's work → every token belongs to a person. Existing tokens, the admin token and the bootstrap token belong to **`owner`**, an admin, so nothing changes until you add someone (step 7). Credentials stored before this release become **the owner's own** on the first start (control-plane ones excepted): jobs no person owns need a team credential (step 7). | `hangar cred owner NAME team` |
 | **Control-plane credentials** (#81) | an `mcp` token could map the webhook secret or bot token into a sandbox → signing keys, GitHub App keys, Slack secrets and the GitHub tokens the settings name never reach a sandbox. A direct-mode environment that attaches the same GitHub token as `HANGAR_GITHUB_TOKEN_CREDENTIAL` or `HANGAR_GATEWAY_CREDENTIAL` now fails to start; `hangar doctor` names it (step 6). Saving an environment that sets `secrets`, `image`, `base`, `runtime_class` or `credential_mode: direct` needs an admin. | `hangar cred exposure <name> sandbox` |
 | **Front-door defaults** (#82) | jobs from GitHub issues, Slack, A2A and webhooks had no `verify` → they take the repo's [policy](repo-policy.md) (`hangar repo set`), then the environment's new `verify:` field. **`envs/hangar.yaml` (and `hangar-jobs`) now sets `verify: bash scripts/ci/verify.sh`**. A standing check also runs once per base commit before the agent starts; on a red base only new failures count. | `hangar repo set owner/repo --verify ""`, or `verify: ""` in the environment |
 | **Agent scratch files** (#82) | delivery committed everything the agent left, including the `HANDOFF.md` the `repo-conventions` skill asked for → the skill no longer asks for it, and new root `HANDOFF.md`, `RESULT.md` and `NOTES.md` files and `*.orig`/`*.rej` leftovers beside their source stay out of PRs unless the task names them. Images with the skill rebuild once, since its layer changed. | name the file in the task |
@@ -102,23 +102,25 @@ hangar doctor
 
 It names environments that attach the control plane's own GitHub token in direct mode (fix with `hangar cred exposure <name> sandbox`, or switch them to the gateway), mapped repos whose jobs would run with no check (`hangar repo set <repo> --verify "…"`), the webhook's events and quota errors.
 
-### 7. People: keep your own logins yours, then add the team
+### 7. People: your logins stay yours; add team credentials, then the team
 
-Every existing token now belongs to `owner` (you, an admin), and records from before have no person, so only admins see them. **Every credential stored before this release is shared**: once you add a member, it goes into their sandboxes, where `cat ~/.hangar/env` reads it. That includes your own Claude Max or ChatGPT login (review on #88). Before adding anyone:
+Every existing token now belongs to `owner` (you, an admin), and records from before have no person, so only admins see them. **Every credential stored before this release became yours on the first start**, once, so your Claude Max or ChatGPT login never goes into a member's sandbox. Control-plane credentials (signing keys, bot tokens, hangar's own GitHub token) stayed the control plane's. That also means jobs no person owns (GitHub and Slack senders you haven't linked, webhooks, schedules) no longer get your login: give them a team credential, and link yourself so your own issues run as you:
 
 ```bash
-hangar cred ls                                    # which of these are your own logins?
-hangar cred owner claude-sean owner               # yours from now on: only your sandboxes get it
-hangar cred owner codex-sean owner
-hangar cred add claude-team --harness claude-code --kind api_key --file team-key.txt   # a team key (an example)
+hangar cred migration                             # what became yours
+hangar cred add claude-team --team --harness claude-code --kind api_key --file team-key.txt   # an API key
+hangar cred owner gh-jobs team                    # an API key or git token of yours the team may use
+hangar person link owner github <your-login>      # your GitHub issues and comments run as you, with your login
+hangar doctor                                     # "team credentials for jobs" names what still has none
 ```
 
-A credential that is yours replaces an environment's shared one for its harness in your sandboxes, so put a shared team credential (an API key) in the environments: teammates without a login of their own, and jobs triggered from GitHub or Slack (which run for no one yet), use it. Without one, those jobs start with no login for that harness. A shared Codex ChatGPT login is also leased to one sandbox at a time across the whole team, so ten parallel Codex sessions need API keys or several logins.
+The full guide, including what the vendors allow and Codex logins, is [team.md](team.md).
 
 Then add each engineer:
 
 ```bash
-hangar person add alice --name "Alice"            # prints her login token once, and lists the shared credentials she will get
+hangar person add alice --name "Alice"            # prints her login token once, and lists the team credentials she will get
+hangar person link alice github alice-gh          # her GitHub issues and comments run as her (also: slack, jira, email)
 ```
 
 She runs `hangar login <url>` with it, `hangar connect` for her MCP clients, and `hangar cred add` for her own Claude or Codex login, which then goes only into her sandboxes. Members see and act on their own sandboxes, sessions and jobs; admins on everyone's ([security.md](security.md#people)). The per-person caps count her as one person across all her tokens.

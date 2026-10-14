@@ -50,6 +50,8 @@ def _line(p: dict) -> str:
         bits.append(f"model: {model}")
     if jb := p.get("job_budget"):
         bits.append("job budget: " + ", ".join(f"{k.removeprefix('max_')}={v}" for k, v in jb.items() if v))
+    if p.get("credentials"):  # --- teamcreds
+        bits.append(f"credentials: {p['credentials']}")
     if p.get("max_usd_per_day"):
         bits.append(f"daily cap: ${p['max_usd_per_day']:g} (${p.get('spent_today_usd') or 0:.2f} today)")
     return f"{p['repo']:40} " + "  ".join(bits)
@@ -72,6 +74,8 @@ def repo_set(
     job_max_turns: int | None = typer.Option(None, "--job-max-turns", help="Job budget: agent turns in all."),
     max_usd_per_day: float | None = typer.Option(None, "--max-usd-per-day", help="Daily cap on the repo's spend "
                                                  "(UTC days); new jobs over it wait for approval."),
+    credentials: str | None = typer.Option(None, "--credentials", help="Whose login jobs use: person (the person "
+                                           "the job runs for), team, or person_then_team (the default)."),
     as_json: bool = typer.Option(False, "--json"),
 ):
     """Set the repo's defaults; what you don't pass is kept. Jobs that set a field themselves still win.
@@ -79,7 +83,7 @@ def repo_set(
     Example:  hangar repo set acme/app --verify "uv run pytest -q" --env python --model claude-code=opus"""
     body: dict = {"repo": repo}
     for k, v in (("verify", verify), ("environment", env), ("harness", harness), ("model", _models(model)),
-                 ("max_usd_per_day", max_usd_per_day),
+                 ("max_usd_per_day", max_usd_per_day), ("credentials", credentials),  # --- teamcreds
                  ("budget", _fields(max_cost_usd=max_cost, max_tokens=max_tokens, max_minutes=max_minutes)),
                  ("job_budget", _fields(max_cost_usd=job_max_cost, max_tokens=job_max_tokens,
                                         max_turns=job_max_turns))):
@@ -96,7 +100,8 @@ def repo_set(
 @repo_app.command("unset")
 def repo_unset(repo: str = typer.Argument(...),
                fields: list[str] = typer.Argument(None, help="Fields to clear (verify, environment, harness, "
-                                                             "model, budget, job_budget, max_usd_per_day). None: "
+                                                             "model, budget, job_budget, max_usd_per_day, "
+                                                             "credentials). None: "
                                                              "remove the repo's policy.")):
     """Clear fields of the repo's policy, or remove it."""
     r = _cli()._call("DELETE", "/api/repos/policy", params={"repo": repo, "field": fields or []})

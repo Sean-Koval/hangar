@@ -21,6 +21,7 @@ hangar repo set acme/app --job-max-cost 5 --job-max-turns 12 --max-usd-per-day 6
 | `budget` | The default per-turn budget (`max_minutes`, `max_tokens`, `max_cost_usd`), field by field under the job's own. |
 | `job_budget` | The default [job budget](#budgets) (`max_cost_usd`, `max_tokens`, `max_turns`). |
 | `max_usd_per_day` | The repo's [daily spend cap](#budgets). |
+| `credentials` | Whose login the repo's jobs run with: `person` (the person the job runs for; a job for no one fails), `team`, or `person_then_team` (the default: theirs when they have one, else the team's). See [team.md](team.md#whose-login-a-job-uses). |
 
 The repo is `owner/repo` for GitHub (any URL form, any case), or the git URL for another host.
 

@@ -24,6 +24,7 @@ from hangar import exchange, harden, images, isolation, observe  # --- observe, 
 from hangar import fairness as fairness  # --- scale
 from hangar import metrics as metrics  # --- reconciler
 from hangar import reconciler as reconciler  # --- reconciler
+from hangar import teamcreds as teamcreds  # --- teamcreds
 from hangar.broker import AUTH_FILE_LIMIT, Broker, CredentialError
 from hangar.config import Settings
 from hangar.envspec import BuildContext, EnvCatalog, EnvSpec, render, repo_dirname, warm_pool_now
@@ -661,8 +662,10 @@ class Fleet:
             cred_names = [c for c in dict.fromkeys(spec.credentials)
                           if self._cred_harness(c) in (hname, None) or not self._is_agent(self._cred_harness(c))]
         # --- identity: never another person's credential; the person's own one for this harness when they have it
-        cred_names = people.credentials_for(self.store, cred_names, person, hname, credentials is not None,
-                                            self._is_agent)
+        # --- teamcreds: else the team's (the repo policy's `credentials`), waiting while every login is leased.
+        # Nothing awaits from here to broker.acquire, so the free login it picks is still free there.
+        cred_names = await teamcreds.for_sandbox(self, cred_names, person, hname, credentials is not None,
+                                                 repo or (spec.repo.url if spec.repo else None), progress)
         for c in [*cred_names, *spec.secrets.values()]:
             self.broker.get(c)  # fail fast on typos
         for c in spec.secrets.values():  # --- identity: and on control-plane credentials mapped in (B4)
@@ -1465,7 +1468,7 @@ class Fleet:
         self.audit(actor, "credential.login_start", credential_name, harness=harness, sandbox=sb.id)
         return {**self.logins[login_id], "instructions": flow.notes or "Complete the login in the terminal."}
 
-    async def complete_login(self, login_id: str, actor: str = "system") -> Credential:
+    async def complete_login(self, login_id: str, actor: str = "system", person: str | None = None) -> Credential:
         lg = self.logins.get(login_id)
         if not lg:
             raise FleetError(f"no login session {login_id}")
@@ -1486,7 +1489,8 @@ class Fleet:
             raise FleetError("login not finished yet: no token/credential file found. Finish the flow in the "
                              "terminal, then complete again.")
         cred = self.broker.put(lg["credential"], lg["harness"], kind, value,
-                               description=f"{h.title} login captured {time.strftime('%Y-%m-%d')}")
+                               description=f"{h.title} login captured {time.strftime('%Y-%m-%d')}",
+                               person=person)  # --- teamcreds: the login is its person's own, not the team's
         await self.destroy(lg["sandbox"], actor=actor)
         self.logins.pop(login_id, None)
         self.audit(actor, "credential.login_complete", cred.name, harness=lg["harness"])
