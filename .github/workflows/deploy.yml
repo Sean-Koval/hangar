@@ -208,10 +208,19 @@ jobs:
         timeout-minutes: 75  # a step timeout fails the step (and rolls back); the job's would cancel it
         env:
           ONLY: ${{ steps.pre.outputs.only }}
+          # --- acceptance: what the team checks test against; each check without its own skips and says so
+          # (docs/acceptance.md). Repos are variables, tokens secrets, of the production environment.
+          HANGAR_ACCEPT_TEST_REPO: ${{ vars.HANGAR_ACCEPT_TEST_REPO }}
+          HANGAR_ACCEPT_FIXTURE_REPO: ${{ vars.HANGAR_ACCEPT_FIXTURE_REPO }}
+          HANGAR_ACCEPT_GITHUB_TOKEN: ${{ secrets.HANGAR_ACCEPT_GITHUB_TOKEN }}
+          HANGAR_ACCEPT_JIRA_WEBHOOK_SECRET: ${{ secrets.HANGAR_ACCEPT_JIRA_WEBHOOK_SECRET }}
+          GH_TOKEN: ${{ secrets.HANGAR_ACCEPT_GITHUB_TOKEN }}  # cleanup deletes test branches with gh
         run: |
+          # --gate core: only the core checks (CORE in gke.sh) decide this step, and so the rollback; the others are
+          # in the report and the run summary. No model turns here (they cost money): those run by hand.
           # shellcheck disable=SC2086 # ONLY is empty or "--only a,b,c"
           bash scripts/acceptance/gke.sh --no-kubectl --skip model,steer,gateway --record accept.jsonl \
-            --doctor-baseline doctor-before.json $ONLY
+            --report accept-report.json --gate core --doctor-baseline doctor-before.json $ONLY
       - name: Summary (version, tool-list diff, acceptance)
         if: always() && steps.rollout.outputs.changed == 'true'
         run: |
@@ -236,13 +245,15 @@ jobs:
                   print(f"- removed `{t}`")
               if added or removed:
                   print("\nclaude.ai keeps its tool list until the connector is removed and added again.")
-          print("\n| check | result | time | summary |\n|---|---|---|---|")
           try:
               rows = [json.loads(line) for line in open("accept.jsonl")]
           except OSError:
               rows = []
+          core = set(load("accept-report.json").get("core") or [])  # --- acceptance: what the rollback counts
+          print("\n| check | result | core | time | summary |\n|---|---|---|---|---|")
           for r in rows:
-              print(f"| {r['check']} | {r['status']} | {r['seconds']} s | {r['summary'].replace('|', '/')[:300]} |")
+              print(f"| {r['check']} | {r['status']} | {'yes' if r['check'] in core else ''} | {r['seconds']} s | "
+                    f"{r['summary'].replace('|', '/')[:300]} |")
           for r in rows:
               if r["check"] == "warmstart" and r.get("data"):
                   runs = ", ".join(f"{c['path']} {c['seconds']} s" for c in r["data"]["creates"])

@@ -108,7 +108,9 @@ def test_acceptance_script_on_docker(tmp_path, upstream, monkeypatch):  # noqa: 
         args = ["bash", str(SCRIPT), "--no-kubectl", "--env", "minimal", "--session-env", "accsession",
                 "--mcp-env", "accsession",
                 "--gateway-repo", "acme/widgets", "--exec-calls", "5", "--internet-probe", f"{host}:{port}",
-                "--with-model", "--skip", "steer", "--warm-env", "minimal"]
+                "--with-model", "--warm-env", "minimal",
+                # the team checks that run on Docker have a suite of their own (test_e2e_acceptance_docker.py)
+                "--skip", "steer,computer,egress,services,scale-smoke"]
         if not envd:
             args.append("--no-expect-envd")
         r = subprocess.run(args, env=_env(tmp_path, srv.port, PATH=f"{tmp_path / 'bin'}:{os.environ['PATH']}"),
@@ -116,12 +118,22 @@ def test_acceptance_script_on_docker(tmp_path, upstream, monkeypatch):  # noqa: 
         out = r.stdout + r.stderr
         print(out)
         summary = out[out.rindex("== summary"):]
-        status = {name: st for st, name in re.findall(r"^(PASS|FAIL|SKIP|INFO)\s+(\w+)", summary, re.M)}
+        status = {name: st for st, name in re.findall(r"^(PASS|FAIL|SKIP|INFO)\s+([\w-]+)", summary, re.M)}
         assert r.returncode == 0, out
         for check in ("doctor", "sandbox", "exec", "stream", "files", "mcp", "isolation", "session", "model", "gateway",
                       "e2b", "backup", "metrics", "power", "warmstart"):
             assert status.get(check) == "PASS", (check, summary)
         assert status.get("k8s") == "SKIP" and "steer" not in status, summary  # --no-kubectl; --skip steer
+        # --- acceptance: what isn't configured here skips cleanly, saying what it needs
+        for check, why in (("envbuild", "--fixture-repo"), ("secrets", "--test-repo"), ("landing", "--test-repo"),
+                           ("intake", "HANGAR_JIRA"), ("prepull", "kubernetes")):
+            assert re.search(rf"^SKIP\s+{check} .*{re.escape(why)}", summary, re.M), (check, summary)
+        import json
+
+        doc = json.loads((tmp_path / "hangar-accept-report.json").read_text())
+        assert doc["exit"] == 0 and doc["cleanup"] == "ok" and not doc["failed"], doc
+        rows = {c["check"]: c for c in doc["checks"]}
+        assert rows["exec"]["core"] and not rows["warmstart"]["core"] and rows["warmstart"]["data"]["creates"]
         if envd:  # every timed exec went through the in-sandbox daemon, and B's daemon was out of A's reach
             assert re.search(r"PASS\s+exec .*envd \(\d+ calls", summary), summary
             assert re.search(r"PASS\s+stream\s.*first output after \d+ ms of", summary), summary
@@ -403,7 +415,11 @@ def test_steer_check_flow(tmp_path, monkeypatch, asks):
     state = ha.State(tmp_path / "state.json")
     state.set("run", "r1")
     opts = argparse.Namespace(session_env="claude-python", repo="https://github.com/o/r.git", model=None,
-                              boot_timeout=60, turn_timeout=60)
+                              boot_timeout=60, turn_timeout=60, with_model=False)
+    with pytest.raises(ha.Skip, match="--with-model"):  # --- acceptance: paid checks need the flag, and make nothing
+        ha.check_steer(api, state, opts)
+    assert not fake.calls
+    opts.with_model = True
     if asks:
         assert ha.check_steer(api, state, opts) == "approval held and allowed, steer delivered, command ran"
         order = [p.rsplit("/", 1)[-1] for m, p, _ in fake.calls if m == "POST"]

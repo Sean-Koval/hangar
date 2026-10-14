@@ -26,7 +26,7 @@ hangar config set HANGAR_BUDGET_DAY_TIMEZONE America/New_York   # 8. budgets, th
 hangar doctor --fix                                   # 9. front doors: the pull_request event; then the App, Jira, Projects
 hangar config set HANGAR_EGRESS_URL http://hangar-gateway.hangar.svc:3128   # 10. sandboxes: egress, cloud, previews
 #                                                       11. deploy.yml: the production environment and its secrets
-bash scripts/acceptance/gke.sh                        # 12. clients and proof
+bash scripts/acceptance/gke.sh --no-kubectl           # 12. clients and proof: docs/acceptance.md, in its order
 ```
 
 ### What you configure
@@ -326,6 +326,7 @@ Nothing to set: an environment opts in with `computer: true` (its image gets a l
 
 - **claude.ai users remove the hangar connector and add it again** (Settings → Connectors): the apps never refetch the tool list ([clients.md](clients.md)). CLIs refetch it when a session starts. Wave 2 adds no MCP tools (the inbox is a resource, and requests ride on `pending_approvals` and `answer_approval`).
 - `bash scripts/acceptance/gke.sh` runs the checks from the overnight guide's [§5](#5-prove-it-on-your-cluster) plus `mcp` (`create_sandbox` over MCP on a multi-harness environment within claude.ai's 230 s, a second create whose client gives up after 5 s still comes up, then `exec`), `power` (a create refused while the pools are off) and `warmstart` (a warm and a cold create, timed). It prints the server's version with its tool-list hash.
+- **The first live run follows [acceptance.md](acceptance.md)**, in its order: the core checks, then the team release's own (`computer`, `egress`, `services`, `envbuild`, `secrets`, `landing`, `intake`, `scale-smoke`, `power --power-cycle`, `prepull`), with the fixtures each needs and what each failure most likely means.
 - `uv run hangar images plan --registry "$REG"` exits 0, and `hangar pack list` shows each pack's locked and installed version.
 - The first 09:50 power-up should report `prepull.ready: true` in `hangar power`.
 
@@ -408,7 +409,7 @@ From the #99 review: what changes as soon as it starts, with nothing to configur
 2. **Approval.** The deploy job uses the `production` environment, so it waits for a required reviewer (the owner) to approve it ([deployments and environments][envs]).
 3. **Preflight.** It reads hangar's power state and **refuses while the sandbox pools are powered down** (the checks need sandboxes) unless the run's `force` input is set; a forced deploy runs only the checks that need no sandbox (`doctor`, `power`, `metrics`). It lists the server's MCP tools and records the running image and the doctor checks already failing.
 4. **Drain**, then `kubectl set image deploy/hangar hangar=<image>`, `kubectl rollout status`, and `/healthz` through the public URL.
-5. **Acceptance:** `scripts/acceptance/gke.sh --no-kubectl --skip model,steer,gateway`, so every check talks to hangar's REST, MCP and E2B endpoints, including #86's MCP deadline check; none uses kubectl.
+5. **Acceptance:** `scripts/acceptance/gke.sh --no-kubectl --skip model,steer,gateway --gate core`, so every check talks to hangar's REST, MCP and E2B endpoints, including #86's MCP deadline check; none uses kubectl. Only the [core checks](acceptance.md#core-checks-what-a-deploy-rolls-back-for) decide the rollback; the team checks are reported. They use the `production` environment's optional `HANGAR_ACCEPT_TEST_REPO` and `HANGAR_ACCEPT_FIXTURE_REPO` variables and `HANGAR_ACCEPT_GITHUB_TOKEN` and `HANGAR_ACCEPT_JIRA_WEBHOOK_SECRET` secrets, and skip without them.
 6. **Run summary:** the server version before → after (`<version>+tools.<hash>`), the MCP tools added and removed, each check's result, and the warm and cold create times.
 7. **On any failure after the image changed**, a cancelled or timed-out run included: `kubectl set image` back to the image it replaced (recorded in step 3; not `rollout undo`, which would go one revision further back when the run redeployed the running image), wait for it, and fail the run. A `doctor` check that already failed before the deploy (step 3 records them) is reported in the summary and doesn't roll back: a rollback can't fix it, and would block every deploy, the fix included. Either way it records the result in hangar (`POST /api/admin/deploys`), which `hangar doctor` and `hangar power` show.
 
@@ -661,7 +662,7 @@ Each check prints PASS, FAIL or SKIP with its time:
 | `power` | hangar's power state answers. With the sandbox pools on: what the last power-up pulled and the warm pools. With them off: a create is refused at once (HTTP 503) with when they're back |
 | `warmstart` | two creates back to back on `--warm-env` (default `claude-python`, which keeps a warm pool): the first claims the warm pod, the second starts cold; both times are printed, and `--record FILE` keeps them as JSON lines |
 
-The script never runs `power.sh`. To check power down and up: `bash deploy/gke/power.sh down`, run the script (`power` then checks the refusal), then `power.sh up` and run it again. Everything the script creates is named `accept-<run>` and is removed at the end, also after a failure or Ctrl-C (`--keep` leaves it). `tests/test_acceptance_script.py` runs the script against a hangar on Docker, with GitHub replaced by a local git server behind the gateway. Every check but `k8s` and `steer` runs there for real, `model` with a scripted agent in place of Claude. `k8s`, `steer` and the in-cluster exec measurement run against stand-ins: a fake kubectl, a fake API, and the Docker provider in place of the Kubernetes one.
+The script runs `power.sh` only with `--power-cycle`, which powers the pools down (checking the refusal) and up again, timed, and refuses while others are working ([acceptance.md](acceptance.md)). Everything the script creates is named `accept-<run>` and is removed at the end, also after a failure or Ctrl-C (`--keep` leaves it). `tests/test_acceptance_script.py` runs the script against a hangar on Docker, with GitHub replaced by a local git server behind the gateway. Every check but `k8s` and `steer` runs there for real, `model` with a scripted agent in place of Claude. `k8s`, `steer` and the in-cluster exec measurement run against stand-ins: a fake kubectl, a fake API, and the Docker provider in place of the Kubernetes one.
 
 ### 6. Rolling back
 

@@ -109,8 +109,10 @@ class Api:
                 raise Fail(f"session {name} still {s['state']} after {timeout:.0f}s: {s.get('reason')}")
             time.sleep(2)
 
-    def scopes_token(self, state: State, suffix: str, scopes: list[str]) -> tuple[str, str]:
-        r = self.call("POST", "/api/tokens", json={"name": f"accept-{state.run}-{suffix}", "scopes": scopes})
+    def scopes_token(self, state: State, suffix: str, scopes: list[str], person: str | None = None
+                     ) -> tuple[str, str]:
+        body = {"name": f"accept-{state.run}-{suffix}", "scopes": scopes, **({"person": person} if person else {})}
+        r = self.call("POST", "/api/tokens", json=body)
         state.add("tokens", r["id"])
         return r["token"], r["id"]
 
@@ -698,6 +700,8 @@ def _turn(api: Api, name: str, message: str, timeout: float, on_wait: Callable[[
 
 def check_model(api: Api, state: State, opts: argparse.Namespace) -> str:
     """A real, short agent turn in the session (it costs a few cents)."""
+    if not opts.with_model:  # --- acceptance: decided here, so every check's result is in the report
+        raise Skip("costs money: run with --with-model")
     name = state.get("session")
     if not name:
         raise Skip("needs the session check")
@@ -722,6 +726,8 @@ def check_model(api: Api, state: State, opts: argparse.Namespace) -> str:
 def check_steer(api: Api, state: State, opts: argparse.Namespace) -> str:
     """A live turn with approvals=ask: the agent asks to run a command, hangar holds it until it is allowed, and a
     steer message reaches the turn while it waits (it costs a few cents)."""
+    if not opts.with_model:  # --- acceptance
+        raise Skip("costs money: run with --with-model")
     name = f"accept-{state.run}-steer"
     s = _new_session(api, state, name, opts, approvals="ask")
     if s["state"] != "idle":
@@ -986,6 +992,7 @@ def cleanup(api: Api, state: State, opts: argparse.Namespace) -> str:
             left.append(what)
             say(f"could not remove {what}: {e}")
 
+    team_checks.cleanup_first(api, state, attempt, opts)  # --- acceptance: pools on, jobs, PRs, requests
     for name in reversed(state.get("sessions", [])):
         def drop(name: str = name) -> None:
             r = api.http.get(f"/api/sessions/{name}")
@@ -1020,6 +1027,7 @@ def cleanup(api: Api, state: State, opts: argparse.Namespace) -> str:
             if r.returncode != 0 and "Reference does not exist" not in r.stdout + r.stderr:
                 raise Fail((r.stderr or r.stdout).strip()[-200:])
         attempt(f"branch {b['repo']}:{b['branch']}", branch)
+    team_checks.cleanup_last(api, state, attempt, opts)  # --- acceptance: people, policy, the fixture's file
     if left:
         raise Fail("left behind: " + "; ".join(left))
     return "nothing left behind"
@@ -1054,6 +1062,8 @@ def main(argv: list[str]) -> int:
         return tools()
     if argv[:1] == ["doctor-failing"]:  # --- ops
         return doctor_failing()
+    if argv[:1] == ["report"]:  # --- acceptance
+        return report(argv[1:])
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("check", choices=sorted(CHECKS))
     p.add_argument("--state", type=Path, required=True)
@@ -1079,9 +1089,12 @@ def main(argv: list[str]) -> int:
     p.add_argument("--record", type=Path, default=None, help="append each check's result to this JSON-lines file")
     p.add_argument("--doctor-baseline", type=Path, default=None,
                    help="JSON list of doctor checks already failing before a deploy: reported, not failed on")
+    p.add_argument("--with-model", action="store_true", help="run the checks that need real agent turns")
+    team_checks.add_args(p)  # --- acceptance
     opts = p.parse_args(argv)
     if opts.gateway_repo and not re.fullmatch(r"[\w.-]+/[\w.-]+", opts.gateway_repo):
         p.error("--gateway-repo is OWNER/REPO")
+    team_checks.check_args(p, opts)
     opts.repo = opts.repo or (f"https://github.com/{opts.gateway_repo}.git" if opts.gateway_repo
                               else "https://github.com/octocat/Hello-World.git")
     state = State(opts.state)
@@ -1110,6 +1123,66 @@ def main(argv: list[str]) -> int:
                                 "data": state.get(f"data:{opts.check}")}) + "\n")
     return code
 
+
+# ---------------------------------------------------------------------------- --- acceptance: the run's report
+def report(argv: list[str]) -> int:
+    """The summary table and the JSON report of a run, from the checks' result lines (--results). Exit status: 1 when
+    a check the gate counts failed (--gate core: only the --core checks, the ones deploy.yml rolls back for; all:
+    any), else 0."""
+    p = argparse.ArgumentParser(prog="hangar_accept.py report")
+    p.add_argument("--results", type=Path, required=True, help="the JSON lines --record wrote")
+    p.add_argument("--out", type=Path, default=None, help="where to write the JSON report")
+    p.add_argument("--gate", choices=["all", "core"], default="all")
+    p.add_argument("--core", default="", help="the core checks, comma or space separated")
+    p.add_argument("--target", default="")
+    p.add_argument("--cleanup", default="", help="how the cleanup went: ok, incomplete or kept")
+    o = p.parse_args(argv)
+    core = {c for c in re.split(r"[,\s]+", o.core) if c}
+    rows: list[dict[str, Any]] = []
+    with contextlib.suppress(OSError):
+        for line in o.results.read_text().splitlines():
+            with contextlib.suppress(ValueError):
+                r = json.loads(line)
+                if isinstance(r, dict) and r.get("check"):
+                    rows.append(r)
+    out = []
+    for r in rows:
+        data = r.get("data") if isinstance(r.get("data"), dict) else {}
+        out.append({"check": r["check"], "status": r.get("status"), "core": r["check"] in core,
+                    "seconds": r.get("seconds"), "summary": r.get("summary", ""), "timings": data.get("timings") or {},
+                    "data": data or None})
+    failed = [r["check"] for r in out if r["status"] == "fail"]
+    core_failed = [c for c in failed if c in core]
+    gated = core_failed if o.gate == "core" else failed
+    print("== summary" + (" (the exit status counts the core checks only)" if o.gate == "core" else ""))
+    for r in out:
+        print(f"{str(r['status']).upper():<4}  {r['check']:<11} {float(r['seconds'] or 0):7.1f}s  "
+              f"{'core' if r['core'] else '    '}  {r['summary']}")
+    doc = {"version": 1, "target": o.target, "finished_at": time.time(), "gate": o.gate, "core": sorted(core),
+           "cleanup": o.cleanup or None, "checks": out, "failed": failed, "core_failed": core_failed,
+           "exit": 1 if gated else 0}
+    if o.out:
+        o.out.write_text(json.dumps(doc, indent=1) + "\n")
+    print()
+    if gated:
+        print(f"{len(gated)} {'core ' if o.gate == 'core' else ''}check(s) failed: {', '.join(gated)}")
+    elif failed:
+        print(f"{len(failed)} check(s) failed, none of them core: {', '.join(failed)}")
+    else:
+        print("no failures")
+    if o.cleanup and o.cleanup != "ok":
+        print(f"cleanup: {o.cleanup}")
+    if o.out:
+        print(f"report: {o.out}")
+    return doc["exit"]
+
+
+# --- acceptance: the team release's checks (team_checks.py) build on this module. Run as a script this module is
+# __main__: registering it under its own name first means team_checks shares its classes (Fail, Skip, Api, State).
+sys.modules.setdefault("hangar_accept", sys.modules[__name__])
+import team_checks  # noqa: E402
+
+CHECKS.update(team_checks.CHECKS)
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
