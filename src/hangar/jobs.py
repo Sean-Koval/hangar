@@ -39,6 +39,7 @@ from hangar import (  # strategies: workstream D; --- observe; steer: live turns
     verifyloop,
 )
 from hangar import computer as computer  # --- computer
+from hangar import envbuilds as envbuilds  # --- envbuilds
 from hangar import envdoctor as envdoctor  # --- computer
 from hangar import fairness as fairness  # --- scale
 from hangar import intake as intake  # --- intake: trackers (Jira, GitHub Projects) follow their jobs
@@ -333,7 +334,9 @@ class JobService:
             if req.callback_secret and req.callback_secret != caller.callback_secret:
                 raise JobError("callbacks are signed with the key bound to this token; omit callback_secret")
         policy = self.policies.get(req.repo)  # --- frontdoor: job, then the repo's policy, then the environment
-        env = req.environment or repopolicy.environment(policy, allowed_envs) or \
+        # --- envbuilds: the repo's own .hangar/environment.yaml comes before its policy (`extends`, `verify`)
+        repo_cfg, repo_env = envbuilds.job_defaults(self.fleet, req.repo, allowed_envs)
+        env = req.environment or repo_env or repopolicy.environment(policy, allowed_envs) or \
             (allowed_envs[0] if allowed_envs else None)
         if not env:
             raise JobError("environment is required (or a repo listed in HANGAR_GITHUB_REPOS)")
@@ -344,6 +347,11 @@ class JobService:
         if policy is None and not req.repo and spec.repo:  # --- frontdoor: the environment names the repo
             policy = self.policies.get(spec.repo.url)
         defaults = repopolicy.resolve(req, policy, spec)
+        if req.verify is None and repo_cfg is not None and repo_cfg.verify is not None:  # --- envbuilds
+            v = repo_cfg.verify.strip()
+            defaults = defaults._replace(verify=v or None, verify_source="repo" if v else None, notes=[
+                *(n for n in defaults.notes if not n.startswith(("verify `", "no verify"))),
+                f"verify `{v}` (its {envbuilds.repoenv.PATH})" if v else f"no verify (its {envbuilds.repoenv.PATH})"])
         try:
             spec.pick_harness(defaults.harness)
         except ValueError as e:

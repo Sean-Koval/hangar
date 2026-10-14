@@ -28,9 +28,12 @@ The repo is `owner/repo` for GitHub (any URL form, any case), or the git URL for
 
 ## Precedence
 
-For each field: **the job, then the repo's policy, then the environment, then hangar's settings.**
+For each field: **the job, then the repo's own `.hangar/environment.yaml`, then the repo's policy, then the
+environment, then hangar's settings.**
 
 - A job's own `verify`, `environment`, `harness` or `model` always wins.
+- A repo's `.hangar/environment.yaml` can set its `verify` and, with `extends`, its environment (within the allowlist).
+  Hangar uses the file as the default branch had it at the last clone. See [environments.md](environments.md).
 - An environment can carry a `verify:` too, the fallback for every repo that runs in it:
 
   ```yaml

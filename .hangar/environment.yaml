@@ -1,0 +1,17 @@
+# hangar's own environment config: what an agent working on this repo gets (docs/environments.md).
+# The environment (hangar-jobs for jobs, through HANGAR_GITHUB_REPOS) brings Python, uv and Node; this file adds the
+# repo's steps. A change here applies from the repo's next build, which starts by itself in the background.
+
+# Runs in a build sandbox on every build, never when a sandbox starts: agents find .venv ready.
+install: uv sync --frozen
+
+# The check every job on this repo runs unless the job names another (ruff, and the tests the change can break).
+verify: bash scripts/ci/verify.sh
+
+terminals:
+  # The control plane on a scratch data directory, for trying the API, MCP or the dashboard by hand. Not started by
+  # default: `hangar-agent svc start server`, then `hangar-agent svc wait server`.
+  - name: server
+    command: HANGAR_DATA_DIR=/tmp/hangar-dev uv run hangar serve --host 0.0.0.0 --port 8787
+    port: 8787
+    autostart: false

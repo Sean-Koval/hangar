@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from hangar import computer as _computer  # --- computer
 from hangar.cloudcreds import CloudSpec  # --- egress
@@ -73,6 +73,132 @@ class Skill(BaseModel):
 class AgentConfig(BaseModel):
     instructions: str | None = None  # written to each harness's global instructions file
     files: dict[str, str] = Field(default_factory=dict)  # extra config files, path relative to $HOME
+
+
+# --- envbuilds: what runs in a sandbox once it starts (docs/environments.md). The same models are used by an
+# environment spec and by a repo's own .hangar/environment.yaml (repoenv.py), which may set only these.
+_PROGRAM = r"^[a-z][a-z0-9-]{0,30}$"
+ENVD_PORT_RESERVED = 49983  # hangar-envd's port (envd.PORT): never a terminal's, service's or preview's
+
+
+def _port(v: int | None) -> int | None:
+    if v is not None and (not 0 < v < 65536 or v == ENVD_PORT_RESERVED):
+        raise ValueError(f"port {v} is not available (1-65535, not {ENVD_PORT_RESERVED})")
+    return v
+
+
+def _env(v: dict[str, str]) -> dict[str, str]:
+    for k, val in v.items():
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", k) or len(val) > 4000 or "\0" in val:
+            raise ValueError(f"invalid env entry '{k[:40]}'")
+    return v
+
+
+class Terminal(BaseModel):
+    """A long-running process the supervisor keeps up: a dev server, a watcher (`hangar-agent svc`)."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(pattern=_PROGRAM)
+    command: str = Field(min_length=1, max_length=4000)
+    cwd: str | None = Field(None, max_length=500)  # relative to the repo checkout
+    env: dict[str, str] = Field(default_factory=dict, max_length=64)  # not secrets: they live in hangar, by name
+    port: int | None = None  # ready when something listens here
+    ready: str | None = Field(None, max_length=2000)  # or when this command exits 0
+    autostart: bool = True
+    restart: Literal["always", "on-failure", "never"] = "always"
+
+    @field_validator("port")
+    @classmethod
+    def _check_port(cls, v: int | None) -> int | None:
+        return _port(v)
+
+    @field_validator("env")
+    @classmethod
+    def _check_env(cls, v: dict[str, str]) -> dict[str, str]:
+        return _env(v)
+
+    @field_validator("cwd")
+    @classmethod
+    def _relative(cls, v: str | None) -> str | None:
+        if v is not None and (v.startswith("/") or ".." in Path(v).parts or "\0" in v):
+            raise ValueError("cwd is relative to the repo checkout, without '..'")
+        return v
+
+
+class Service(BaseModel):
+    """A service image (Postgres, Redis...) run beside the sandbox: a pod sidecar on Kubernetes, a container on a
+    network of the sandbox's own on Docker. Reachable from the sandbox at its name (and on Kubernetes at
+    127.0.0.1), gone with the sandbox. Runs as uid 1000 without capabilities, like the sandbox."""
+
+    model_config = ConfigDict(extra="forbid")
+    image: str = Field(min_length=1, max_length=300, pattern=r"^[A-Za-z0-9][A-Za-z0-9._/:@+-]*$")
+    port: int  # what it listens on; the readiness check and `hangar-agent svc status` use it
+    env: dict[str, str] = Field(default_factory=dict, max_length=64)
+    command: list[str] | None = Field(None, max_length=64)
+    args: list[str] | None = Field(None, max_length=64)
+    volumes: list[str] = Field(default_factory=list, max_length=4)  # empty, writable dirs (e.g. a database's data)
+    ready: str | None = Field(None, max_length=2000)  # a command run in the sandbox; default: the port answers
+    cpus: float = Field(0.5, gt=0, le=4)
+    memory_gb: float = Field(0.5, gt=0, le=8)
+
+    @field_validator("port")
+    @classmethod
+    def _check_port(cls, v: int) -> int:
+        return _port(v)  # type: ignore[return-value]
+
+    @field_validator("env")
+    @classmethod
+    def _check_env(cls, v: dict[str, str]) -> dict[str, str]:
+        return _env(v)
+
+    @field_validator("volumes")
+    @classmethod
+    def _abs(cls, v: list[str]) -> list[str]:
+        for p in v:
+            if not p.startswith("/") or ".." in Path(p).parts or len(p) > 300 or p.rstrip("/") in ("", "/proc",
+                                                                                                  "/sys", "/dev"):
+                raise ValueError(f"volume '{p[:60]}' must be an absolute path inside the service's image")
+        return v
+
+    @field_validator("command", "args")
+    @classmethod
+    def _argv(cls, v: list[str] | None) -> list[str] | None:
+        if v is not None and any(len(a) > 4000 or "\0" in a for a in v):
+            raise ValueError("arguments must be under 4000 characters, without NULs")
+        return v
+
+
+class PreviewPort(BaseModel):
+    """A port the sandbox's owner may open through hangar's authenticated preview proxy (never public)."""
+
+    model_config = ConfigDict(extra="forbid")
+    port: int
+    name: str | None = Field(None, pattern=_PROGRAM)
+
+    @field_validator("port")
+    @classmethod
+    def _check_port(cls, v: int) -> int:
+        return _port(v)  # type: ignore[return-value]
+
+
+SERVICE_NAME = re.compile(r"^[a-z][a-z0-9-]{0,30}$")
+
+
+def check_services(v: dict[str, Service]) -> dict[str, Service]:
+    if len(v) > 8:
+        raise ValueError("at most 8 services")
+    for name in v:
+        if not SERVICE_NAME.match(name) or name in ("localhost", "hangar", "sandbox"):
+            raise ValueError(f"invalid service name '{name[:40]}': lowercase letters, digits and '-'")
+    return v
+
+
+def check_programs(terminals: list[Terminal], services: dict[str, Service]) -> None:
+    names = [t.name for t in terminals]
+    if len(names) > 16:
+        raise ValueError("at most 16 terminals")
+    if dup := sorted({n for n in names if names.count(n) > 1} | (set(names) & set(services))):
+        raise ValueError(f"names must be unique across terminals and services: {', '.join(dup)}")
 
 
 class RepoSpec(BaseModel):
@@ -147,6 +273,14 @@ class EnvSpec(BaseModel):
     # --- computer: a display, Chromium (Playwright), VNC and screen recording for the agent (docs/computer-use.md).
     # `true` or {resolution, autostart, browser_mcp, record_max_seconds}.
     computer: ComputerSpec | None = None
+    # --- envbuilds: the repo's own steps (docs/environments.md). `install` runs in a build sandbox after the clone, on
+    # every build, never on a claim: it must be idempotent. `start` runs once each time a sandbox starts, then the
+    # supervisor (`hangar-agent svc`) keeps `terminals` up. A repo's .hangar/environment.yaml may set each of these.
+    install: str | None = Field(None, max_length=4000)
+    start: str | None = Field(None, max_length=4000)
+    terminals: list[Terminal] = Field(default_factory=list)
+    services: dict[str, Service] = Field(default_factory=dict)
+    ports: list[PreviewPort] = Field(default_factory=list, max_length=16)
     source_dir: Path | None = Field(default=None, exclude=True)
     # Resolved by the fleet before a provider sees the spec: harness name -> pack image to mount read-only.
     packs: dict[str, str] = Field(default_factory=dict, exclude=True)
@@ -184,6 +318,16 @@ class EnvSpec(BaseModel):
             if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", var):
                 raise ValueError(f"invalid env var name in secrets: '{var}'")
         return v
+
+    @field_validator("services")
+    @classmethod
+    def _check_services(cls, v: dict[str, Service]) -> dict[str, Service]:  # --- envbuilds
+        return check_services(v)
+
+    @model_validator(mode="after")
+    def _unique_programs(self) -> EnvSpec:  # --- envbuilds
+        check_programs(self.terminals, self.services)
+        return self
 
     @model_validator(mode="after")
     def _default_harness_allowed(self) -> EnvSpec:
@@ -248,8 +392,10 @@ def _deep_merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
     for k, v in over.items():
         if isinstance(v, dict) and isinstance(out.get(k), dict):
             out[k] = _deep_merge(out[k], v)
-        # `harnesses` and `credentials` replace the parent's: a child narrows which agents it allows.
-        elif isinstance(v, list) and isinstance(out.get(k), list) and k not in ("credentials", "harnesses"):
+        # `harnesses` and `credentials` replace the parent's: a child narrows which agents it allows. --- envbuilds:
+        # so do `terminals` and `ports` (a child redefining a terminal replaces the list, rather than repeating it).
+        elif isinstance(v, list) and isinstance(out.get(k), list) and k not in ("credentials", "harnesses",
+                                                                                  "terminals", "ports"):
             out[k] = list(dict.fromkeys([*out[k], *v])) if all(isinstance(x, str) for x in v) else [*out[k], *v]
         else:
             out[k] = v

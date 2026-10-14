@@ -48,6 +48,8 @@ class SandboxOut(_Out):
     expires_at: float | None = None
     error: str | None = None
     stage: str | None = None  # while starting: what it is waiting on (building the image, a node, cloning...)
+    # --- envbuilds: {version, fallback, reason, stale, commit, ...}: the repo's environment build the sandbox runs
+    env_build: dict[str, Any] | None = None
 
 
 class ArtifactOut(_Out):

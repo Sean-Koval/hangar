@@ -1265,6 +1265,11 @@ from hangar.repo_cli import repo_app as _repo_app  # noqa: E402
 
 app.add_typer(_repo_app, name="repo")
 
+# ---------------------------------------------------------------------------- envbuilds: repo builds (envbuilds_cli.py)
+from hangar import envbuilds_cli as _envbuilds  # noqa: E402
+
+_envbuilds.register(env_app)
+
 # ---------------------------------------------------------------------------- workstream steer (steer_cli.py)
 from hangar import steer_cli as _steer  # noqa: E402
 
