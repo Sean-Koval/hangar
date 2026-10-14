@@ -1,0 +1,38 @@
+{
+  "branch": {
+    "name": "main",
+    "commit": {"sha": "e5bd3914e2e596debea16f433f57875b5b90bcd6"},
+    "protected": true,
+    "protection": {
+      "enabled": true,
+      "required_status_checks": {"enforcement_level": "non_admins", "contexts": ["test"],
+                                 "checks": [{"context": "test", "app_id": 15368}]}
+    },
+    "protection_url": "https://api.github.com/repos/o/r/branches/main/protection"
+  },
+  "protection": {
+    "url": "https://api.github.com/repos/o/r/branches/main/protection",
+    "required_status_checks": {"strict": false, "contexts": ["test"], "checks": [{"context": "test", "app_id": 15368}]},
+    "required_pull_request_reviews": {
+      "url": "https://api.github.com/repos/o/r/branches/main/protection/required_pull_request_reviews",
+      "dismiss_stale_reviews": true,
+      "require_code_owner_reviews": false,
+      "required_approving_review_count": 1,
+      "require_last_push_approval": true
+    },
+    "enforce_admins": {"enabled": false},
+    "allow_force_pushes": {"enabled": false},
+    "allow_deletions": {"enabled": false}
+  },
+  "rules": [
+    {"type": "deletion", "ruleset_source_type": "Repository", "ruleset_source": "o/r", "ruleset_id": 2091237},
+    {"type": "pull_request", "ruleset_source_type": "Repository", "ruleset_source": "o/r", "ruleset_id": 2091237,
+     "parameters": {"required_approving_review_count": 1, "dismiss_stale_reviews_on_push": true,
+                    "require_code_owner_review": false, "require_last_push_approval": true,
+                    "required_review_thread_resolution": false, "allowed_merge_methods": ["merge", "squash", "rebase"]}},
+    {"type": "required_status_checks", "ruleset_source_type": "Repository", "ruleset_source": "o/r",
+     "ruleset_id": 2091237,
+     "parameters": {"strict_required_status_checks_policy": false, "do_not_enforce_on_create": false,
+                    "required_status_checks": [{"context": "lint", "integration_id": 15368}]}}
+  ]
+}

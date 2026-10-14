@@ -340,6 +340,34 @@ class AutofixState(BaseModel):
     stopped: str | None = None  # why the loop stopped (the round limit, someone else pushed)
 
 
+# --- landing: where a job's PR is on its way to merged (landing.py)
+class LandingState(BaseModel):
+    pr_state: Literal["open", "approved", "merged", "closed"] | None = None
+    draft: bool = False
+    node_id: str | None = None  # the PR's GraphQL id: auto-merge is armed and disarmed through it
+    head_sha: str | None = None  # the PR's head, as GitHub or hangar's last push reported it
+    checks_sha: str | None = None  # the commit `checks` are about
+    checks: dict[str, str] = Field(default_factory=dict)  # check run, suite or status -> conclusion, or "pending"
+    ci_green_at: float | None = None  # when the required checks first all passed on `ci_green_sha`
+    ci_green_sha: str | None = None
+    approved_by: str | None = None  # the GitHub login whose approval counts (repo policy approvers, or CODEOWNERS)
+    approved_sha: str | None = None  # the commit that approval was given on; it covers nothing pushed later
+    approved_at: float | None = None
+    review_id: int | None = None
+    armed_sha: str | None = None  # auto-merge armed by hangar, for exactly this commit
+    armed_at: float | None = None
+    merged_at: float | None = None
+    merged_by: str | None = None
+    closed_at: float | None = None
+    green_to_merge_seconds: float | None = None  # from the required checks passing on the merged head to the merge
+    packet_comment_id: int | None = None  # the review packet: one comment, edited as the PR changes
+    files: list[str] = Field(default_factory=list)  # paths the PR touches (capped)
+    risk: str | None = None  # high | normal | low
+    push_mode: str | None = None  # gateway | direct: whether the sandbox held a GitHub token
+    note: str | None = None  # why it isn't landing yet
+    ended: bool = False  # merged or closed: the session took its final checkpoint and let the sandbox go
+
+
 class JobApproval(BaseModel):
     """Why a job waits for a trusted person, and who decided (workstream A)."""
 
@@ -437,6 +465,7 @@ class Job(BaseModel):
     person: str | None = None  # --- identity: the person it runs for (None: GitHub, Slack, webhooks, older jobs)
     # --- reconciler: times the job resumed on its own after a control-plane restart interrupted it (restarts.py)
     restarts: int = 0
+    landing: LandingState = Field(default_factory=LandingState)  # --- landing
 
 
 # ---------------------------------------------------------------------------- scheduled jobs (workstream A)

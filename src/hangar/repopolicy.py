@@ -39,7 +39,9 @@ KV_PREFIX = "repo-policy:"
 _GITHUB_SHORT = re.compile(r"^[\w.-]+/[\w.-]+$")
 FIELDS = ("verify", "environment", "harness", "model", "budget", "job_budget", "max_usd_per_day",
           "credentials",  # --- teamcreds
-          "egress", "build_secrets")  # --- egress
+          "egress", "build_secrets",  # --- egress
+          "land", "approvers", "merge_method", "risk_paths")  # --- landing: the last four (landing.py)
+_LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")  # a GitHub login
 
 
 class PolicyError(ValueError):
@@ -67,8 +69,25 @@ class RepoPolicy(BaseModel):
     egress: EgressSpec | None = None
     # --- egress: build secrets for this repo's environment builds (buildsecrets.py): {SECRET_ID: credential}
     build_secrets: dict[str, str] | None = None
+    # --- landing (landing.py): `auto_after_approval` arms auto-merge once someone in `approvers` (GitHub logins) or
+    # a code owner approves the PR's head and the required checks pass; None is manual. `risk_paths` are globs that
+    # make a PR high risk in its review packet.
+    land: Literal["manual", "auto_after_approval"] | None = None
+    approvers: list[str] | None = Field(None, max_length=100)
+    merge_method: Literal["squash", "merge", "rebase"] | None = None
+    risk_paths: list[str] | None = Field(None, max_length=100)
     updated_at: float = Field(default_factory=now)
     updated_by: str | None = None
+
+    @field_validator("approvers")
+    @classmethod
+    def _logins(cls, v: list[str] | None) -> list[str] | None:  # --- landing
+        if v is None:
+            return None
+        out = [x.strip().removeprefix("@") for x in v if x.strip()]
+        if bad := [x for x in out if not _LOGIN.match(x)]:
+            raise ValueError(f"not GitHub logins: {', '.join(bad[:5])}")
+        return out
 
     @field_validator("model")
     @classmethod
@@ -228,6 +247,10 @@ class PolicyUpdate(BaseModel):
     credentials: Literal["person", "team", "person_then_team"] | None = None  # --- teamcreds
     egress: EgressSpec | None = None  # --- egress
     build_secrets: dict[str, str] | None = None  # --- egress
+    land: Literal["manual", "auto_after_approval"] | None = None  # --- landing
+    approvers: list[str] | None = None
+    merge_method: Literal["squash", "merge", "rebase"] | None = None
+    risk_paths: list[str] | None = None
 
 
 def update(svc: JobService, body: PolicyUpdate, actor: str) -> RepoPolicy:

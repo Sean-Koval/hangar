@@ -188,6 +188,10 @@ class Settings(BaseSettings):
     github_api_url: str = "https://api.github.com"
     # Vault credential holding a GitHub token the *control plane* uses to open PRs and comment.
     github_token_credential: str | None = None
+    # --- landing: a `github_app` credential. Set, agent PRs are opened, commented on and landed as the App (tokens
+    # minted per repo with contents and pull_requests write only), and it pushes for gateway sandboxes that have no
+    # git credential of their own. The token above still comments on issues (docs/landing.md).
+    github_app_credential: str | None = None
     # Vault credential holding the webhook secret; the webhook route is off until this is set.
     github_webhook_secret_credential: str | None = None
     # Repos that may trigger jobs, mapped to the environment to run them in: {"owner/repo": "env"}.

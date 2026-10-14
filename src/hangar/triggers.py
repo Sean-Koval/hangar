@@ -744,6 +744,13 @@ class Triggers:
         return prev if prev.state not in JOB_TERMINAL else None
 
     def _submit(self, s: ScheduledJob, key: str) -> Job:
+        from hangar import landing
+
+        # --- landing: a run whose last PR is still open updates that PR instead of opening another
+        at = key.rsplit(":", 1)[-1]
+        if (job := landing.update_open_pr(self.jobs, s, _iso(float(at), s.timezone) if at.isdigit() else at)) \
+                is not None:
+            return job
         req = SubmitJob.model_validate({**s.template, "idempotency_key": key})
         return self.jobs.submit(req, Caller(f"schedule:{s.name}", s.owner, person=s.person),  # --- identity
                                 source="schedule",

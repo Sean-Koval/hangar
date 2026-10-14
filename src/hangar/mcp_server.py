@@ -799,6 +799,9 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
 
         # --- workstream mcp-modern: jobs and sessions as resources clients can follow, and workflow prompts
         live.register_resources(mcp, sessions, jobs, guard)  # --- identity: guard
+        from hangar import inbox  # --- landing: hangar://inbox, what needs the caller (a resource, not a tool)
+
+        inbox.register(mcp, jobs)
         mcp.recent = lambda: live.recent_resources(sessions, jobs)
         live.register_prompts(mcp, sessions)
         fleet.store.on_put.append(feed.on_put)

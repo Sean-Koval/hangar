@@ -372,7 +372,8 @@ async def test_installation_token_and_cache(rsa_key):
     tokens = AppTokens("https://api.github.test", lambda: client)
     assert await tokens.token(value, "acme/widgets") == "ghs_minted2"  # lookup, then mint
     body = json.loads(gh.calls[1].content)
-    assert body == {"permissions": {"contents": "write", "pull_requests": "write"}, "repositories": ["widgets"]}
+    # --- landing: a push needs contents only; the App's PR identity asks for pull_requests on its own token
+    assert body == {"permissions": {"contents": "write"}, "repositories": ["widgets"]}
     assert await tokens.token(value, "acme/widgets") == "ghs_minted2"  # cached
     assert len(gh.calls) == 2
     gh.ttl = 60  # a token close to expiry is replaced on next use
