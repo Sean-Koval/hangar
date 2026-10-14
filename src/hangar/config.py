@@ -322,6 +322,21 @@ class Settings(BaseSettings):
     # http://otel-collector.observability.svc:4318). Set: Claude Code and Codex send their own traces, metrics and
     # logs there, under hangar's trace. Unset: sandboxes only get TRACEPARENT. No headers or secrets are passed.
     otel_sandbox_endpoint: str | None = None
+    # --- stream: output, events and file changes streamed to MCP and REST clients (docs/streaming.md). Caps are per
+    # token: open streams (exec, attach, event and watch streams), background processes and file watches; and per
+    # stream: bytes per second (a faster command waits, like a slow terminal) and bytes in all (then output is only
+    # kept for the result's tail).
+    stream_max_per_token: int = Field(16, ge=1, le=1000)
+    stream_max_total: int = Field(512, ge=1, le=100_000)
+    stream_bytes_per_second: int = Field(1 << 20, ge=1024)
+    stream_max_bytes: int = Field(64 << 20, ge=1 << 16)
+    stream_max_hours: float = Field(12.0, gt=0)  # an event or watch stream left open longer is closed
+    stream_recheck_seconds: float = Field(5.0, gt=0)  # how often open streams check their token is still valid
+    background_max_per_token: int = Field(16, ge=0, le=1000)
+    watch_max_per_token: int = Field(8, ge=0, le=64)
+    # Follow a running turn's log through hangar-envd (`tail -F`), so its events arrive as the agent writes them
+    # instead of on the next poll (session_poll_seconds). Off, or without hangar-envd: polling, as before.
+    stream_turn_logs: bool = True
 
     @property
     def backup_interval_hours(self) -> float:

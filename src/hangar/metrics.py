@@ -104,6 +104,12 @@ class Metrics:
                               registry=r)
         self.io_threads = Gauge("hangar_io_pool_threads", "I/O worker threads started", registry=r)
         self.io_max = Gauge("hangar_io_pool_max_threads", "I/O worker thread limit (HANGAR_IO_THREADS)", registry=r)
+        # --- stream: streams to MCP and REST clients, and the turn logs and background processes hangar follows
+        self.streams_open = Gauge("hangar_streams_open", "Open streams by kind", ["kind"], registry=r)
+        self.streams = Counter("hangar_streams", "Streams closed, by kind and why", ["kind", "reason"], registry=r)
+        self.stream_bytes = Counter("hangar_stream_bytes", "Bytes streams sent", ["kind"], registry=r)
+        self.stream_first = Histogram("hangar_stream_first_output_seconds", "From a stream's start to its first "
+                                      "output", ["kind"], buckets=_SECONDS, registry=r)
         self._lag_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------ scrape-time gauges
@@ -273,3 +279,23 @@ def mcp_call(tool: str, status: str, seconds: float) -> None:
 def http_request(method: str, route: str, status: int, seconds: float) -> None:
     if M is not None:
         M.http.labels(method, M.label("route", route), str(status)).observe(seconds)
+
+
+# --- stream
+def stream_opened(kind: str) -> None:
+    if M is not None:
+        M.streams_open.labels(kind).inc()
+
+
+def stream_closed(kind: str, reason: str) -> None:
+    if M is not None:
+        M.streams_open.labels(kind).dec()
+        M.streams.labels(kind, reason).inc()
+
+
+def stream_sent(kind: str, n: int, first_after: float | None = None) -> None:
+    if M is None:
+        return
+    M.stream_bytes.labels(kind).inc(n)
+    if first_after is not None:
+        M.stream_first.labels(kind).observe(first_after)

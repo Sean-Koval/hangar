@@ -204,6 +204,7 @@ TOOL_HINTS: dict[str, ToolAnnotations] = {
     # --- workstream steer
     "steer_turn": _hint(open_world=True),
     "answer_approval": _hint(open_world=True),
+    "process": _hint(destructive=True, open_world=True),  # --- stream: starts, feeds and kills commands
 }
 
 
@@ -425,9 +426,13 @@ def register_resources(mcp: MCPServer, sessions: Any, jobs: Any) -> None:
     async def session_resource(name: str) -> str:
         return _json(sessions.view(sessions.get(name)))
 
-    @mcp.resource(SESSION_URI + "/events", name="session-events", mime_type="application/json",
-                  description="The last 200 activity events of a session (messages, tool calls, commands...).")
-    async def session_events(name: str) -> str:
+    # --- stream: `?since=<seq>` reads only the events after one already seen (a subscriber's next read)
+    @mcp.resource(SESSION_URI + "/events{?since}", name="session-events", mime_type="application/json",
+                  description="The last 200 activity events of a session (messages, tool calls, commands...); "
+                              "with ?since=<seq>, the ones after it.")
+    async def session_events(name: str, since: str = "") -> str:
+        if since.isdigit():
+            return _json({"events": sessions.events(name, since=int(since), limit=500)})
         return _json({"events": sessions.events(name, tail=200)})
 
     @mcp.resource(SESSION_URI + "/patch", name="session-patch", mime_type="text/x-diff",
@@ -444,9 +449,11 @@ def register_resources(mcp: MCPServer, sessions: Any, jobs: Any) -> None:
     async def job_resource(job_id: str) -> str:
         return _json(jobs.view(jobs.get(job_id)))
 
-    @mcp.resource(JOB_URI + "/events", name="job-events", mime_type="application/json",
-                  description="The last 200 activity events of a job's agent.")
-    async def job_events(job_id: str) -> str:
+    @mcp.resource(JOB_URI + "/events{?since}", name="job-events", mime_type="application/json",
+                  description="The last 200 activity events of a job's agent; with ?since=<seq>, the ones after it.")
+    async def job_events(job_id: str, since: str = "") -> str:
+        if since.isdigit():  # --- stream
+            return _json({"events": jobs.events(job_id, since=int(since), limit=500)})
         return _json({"events": jobs.events(job_id, tail=200)})
 
 

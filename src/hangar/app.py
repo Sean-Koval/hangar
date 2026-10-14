@@ -34,6 +34,8 @@ from hangar.sessions import NewSession, SessionService
 from hangar.slack import SlackFrontDoor  # workstream B
 from hangar.store import Store
 from hangar.strategies import SessionForkBody, fork_session  # workstream D: forks/best-of-N
+from hangar.streams import credential as stream_credential  # --- stream
+from hangar.streams import token_check
 from hangar.triggers import ScheduleSpec, ScheduleUpdate, Triggers
 from hangar.vault import Vault, load_or_create_key
 
@@ -90,9 +92,12 @@ class MCPAuthMiddleware:
                                 status_code=401, headers={"WWW-Authenticate": challenge})
             return await resp(scope, receive, send)
         tok = current_actor.set(actor)
+        # --- stream: streams this request opens re-check the token while they stay open (revocation closes them)
+        cred = stream_credential.set(token_check(self.auth, self.oauth, token, ("mcp",)))
         try:
             await self.app(scope, receive, send)
         finally:
+            stream_credential.reset(cred)
             current_actor.reset(tok)
 
 
@@ -979,6 +984,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import steer_api
 
     steer_api.mount(app, h, A, J, _job_session)
+    # --- stream: exec output, background processes, file watches and events as Server-Sent Events
+    from hangar import stream_api
+
+    stream_api.mount(app, h, A, J, owner_filter)
 
     # --- workstream setup: database-stored settings (hangar config) and the setup wizards (hangar setup)
     from hangar import settings_store, setup_api

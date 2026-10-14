@@ -131,7 +131,9 @@ async def test_tool_listing_has_hints_slim_schemas_and_typed_results(fleet, svc,
     assert "\n        " not in raw  # docstring indentation stripped from descriptions
     model_view = json.dumps([{"name": t.name, "description": t.description, "inputSchema": t.input_schema}
                              for t in tools], separators=(",", ":"))
-    assert len(model_view) < 24_000, len(model_view)  # was 31,157 bytes before this workstream
+    # was 31,157 bytes before this workstream; --- stream: +0.65 KB for exec(stream) and the process tool (review
+    # #68: their descriptions trimmed, and the cap kept just over what they need)
+    assert len(model_view) < 24_700, len(model_view)
     # optional arguments are plain types (nullable still accepted by the tool)
     assert by["submit_job"].input_schema["properties"]["repo"] == {"type": "string"}
 
@@ -358,8 +360,8 @@ async def test_run_agent_and_fork_session_as_tasks(fleet, svc, jobs):
 async def test_resources_and_modern_subscriptions(fleet, svc, jobs, world):
     async with Client(build_mcp(fleet, jobs, svc)) as c:
         templates = {t.uri_template for t in (await c.list_resource_templates()).resource_templates}
-        assert {"hangar://sessions/{name}", "hangar://sessions/{name}/events", "hangar://sessions/{name}/patch",
-                "hangar://jobs/{job_id}", "hangar://jobs/{job_id}/events"} <= templates
+        assert {"hangar://sessions/{name}", "hangar://sessions/{name}/events{?since}", "hangar://sessions/{name}/patch",
+                "hangar://jobs/{job_id}", "hangar://jobs/{job_id}/events{?since}"} <= templates  # --- stream: ?since
         async with c.listen(resources_list_changed=True) as sub:  # a new session is a new resource
             sc(await c.call_tool("new_session", {"name": "watch", "environment": "xenv", "message": "TASK-USE-B"}))
             ev = await asyncio.wait_for(anext(aiter(sub)), 10)

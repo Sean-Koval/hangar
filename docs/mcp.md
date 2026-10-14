@@ -88,6 +88,11 @@ A task belongs to the token that created it: any other caller gets "unknown task
 | `hangar://sessions/<name>/artifacts/<turn>/<path>` | a file the agent handed back |
 | `hangar://jobs/<id>` | the job (JSON): state, timeline, result, attempts |
 | `hangar://jobs/<id>/events` | its agent's last 200 events |
+| `.../events?since=<seq>` | only the events after `seq` (what a subscriber reads after a notification) |
+| `hangar://sandboxes/<sandbox>/watch?path=<dir>` | file changes under a directory, watched while you subscribe ([streaming](streaming.md#file-watches)) |
+
+`exec(stream=true)` sends a command's output as progress notifications while it runs, and `process` runs
+background commands you attach to later; see [streaming.md](streaming.md).
 
 Subscribe to follow work without polling: a 2026-07-28 client opens `subscriptions/listen` with `resourceSubscriptions: ["hangar://jobs/job-1a2b"]`; a 2025-era client sends `resources/subscribe`. Hangar sends `notifications/resources/updated` whenever the job or session changes (state, a turn starting or ending, new events), at most every 250 ms per URI. A notification only says "read it again".
 
