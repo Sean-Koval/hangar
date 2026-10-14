@@ -10,17 +10,18 @@ Work reaches hangar where the team already tracks it. Moving a Jira issue to a s
 | Delivered | the outcome with the PR, which is also added as a remote link; the `delivered` transition | the outcome on the issue (the PR says `Closes #N`); the `delivered` column |
 | Failed or cancelled | what went wrong; the `failed` transition | the `failed` column |
 
-GitHub issues ([jobs.md §4](jobs.md#4-trigger-from-github)) and Slack ([slack.md](slack.md)) work as before: their jobs go to the linked person too, and they keep their own trust rules.
+GitHub issues ([jobs.md §4](jobs.md#4-trigger-from-github)) and Slack ([slack.md](slack.md)) follow the same rule: their jobs go to the linked person too.
 
-## Who a job belongs to
+## Who a job belongs to, and who is trusted
 
-An account in Jira or GitHub counts as a hangar person only when an admin has linked it to one (`hangar person link dana jira <account id>`, `hangar person link dana github <login>`). Hangar asks `people.resolve_external` for every sender.
+Every front door uses one rule ([team.md](team.md#who-is-trusted) has it in full). An account in Jira or GitHub is a hangar person only when an admin has linked it to one (`hangar person link dana jira <account id>`, `hangar person link dana github <login>`, which is stored as the account's numeric GitHub id). Hangar asks `people.resolve_external` for every sender, by an id that doesn't change hands: the Atlassian account id (Data Center: the user key) and the GitHub user id (`sender.id`), never a GitHub login.
 
-- **A linked sender is trusted.** The job is theirs: it counts against their caps and budget, runs with their own credentials where they have them, and they see it in their own job list.
-- **Anyone else is untrusted.** Their job waits in `awaiting_approval` until a trusted teammate approves it: `/hangar approve` (or `/hangar reject`) in a comment on the issue, or `hangar job approve`. Its text reaches the agent fenced as untrusted, and it runs on the team's shared credentials, never on someone's own login.
-- In Jira, only a linked teammate's comment answers a question, approves a job or continues one. Other people's comments are ignored.
+- **A linked sender acts as their person, so they are trusted.** The job is theirs: it counts against their caps and budget, runs with their own credentials where they have them, and they see it in their own job list.
+- **Only the job's person continues it.** A person's job runs with their own login, so in Jira only that person's comment answers its question or continues it with `/hangar <message>`. Anyone else's, a linked teammate's included, is refused with a comment saying whose job it is (an admin uses `hangar job follow-up`). The same holds on GitHub issues, PRs and Slack threads.
+- **Anyone else is untrusted.** Their job waits in `awaiting_approval` until a trusted teammate approves it: `/hangar approve` (or `/hangar reject`) in a comment on the issue, or `hangar job approve`. Its text reaches the agent fenced as untrusted, and it runs on the team's credentials, never on someone's own login. In Jira, a sender who isn't linked is never trusted (Jira payloads carry no equivalent of GitHub's collaborator association, and anyone who can move an issue would otherwise start work); only a linked teammate's comment approves a job, answers a team job's question or continues one. Other people's comments are ignored.
 - On a GitHub Projects board, someone who isn't linked is trusted only if `HANGAR_GITHUB_TRUSTED` lists them. Project item payloads carry no repository association, so the owner, member and collaborator rule for issues can't apply.
-- Issue text written by someone who isn't linked (the Jira reporter, the GitHub issue's author) reaches the agent fenced as untrusted even when a trusted person started the job. So do an issue's earlier GitHub comments.
+- **Ticket text is data.** A Jira issue's summary and description always reach the agent fenced as untrusted, whoever reported it, since anyone with permission to edit the issue can rewrite them; the job's instructions only point at that file. A GitHub issue's body is fenced unless a trusted account wrote it, and its earlier comments always are. Only a trusted sender's own `/hangar <instructions>` are instructions. The issue's title is still the job's title, which the prompt shows.
+- **Who acted is what Jira or GitHub says.** A signed webhook's `user` (Jira) or `sender` (GitHub) is used as sent. An Automation request isn't signed, so its body's `user` is ignored: hangar reads who moved the issue into the trigger status (or gave it the trigger label) from the issue's own history, or its creator when it was created that way.
 
 The repo must be in `HANGAR_GITHUB_REPOS`, as for every front door, and the repo's [policy](repo-policy.md) sets the job's verify, environment, harness and model.
 
@@ -83,16 +84,16 @@ If you'd rather decide in a rule (for example, only for bugs with a priority), u
    - **Web request body:** Custom data:
      ```json
      {"webhookEvent": "hangar:automation", "timestamp": "{{now}}",
-      "issue": {"key": "{{issue.key}}"}, "user": {"accountId": "{{initiator.accountId}}"}}
+      "issue": {"key": "{{issue.key}}"}}
      ```
 
-Automation doesn't sign requests, so the hidden token stands in for the signature. Hangar reads the issue through the API, and the job belongs to whoever triggered the rule (`initiator`).
+Automation doesn't sign requests, so the hidden token stands in for the signature. It only proves the request came through a rule that holds it: it isn't tied to the body, and anyone who can edit the rule can change its body, or its URL and with it where the header goes. So hangar trusts nothing in the body but the issue key and the timestamp. It reads the issue through the API, and the job belongs to whoever the issue's history says moved it into the trigger status or gave it the trigger label (a `user` in the body is ignored). Prefer the webhook with a secret, which signs the whole body, and rotate the token (`hangar cred add jira-automation …` again, then the rule's header) when someone who could edit the rule leaves. Project admins can edit project-scoped rules, so keep the rule global.
 
 ### Talking to the job from the issue
 
-- **Answer a question:** any comment from a linked teammate while the job waits on one.
+- **Answer a question:** any comment from the job's person while it waits on one (for a team job, from any linked teammate).
 - **Approve or reject:** `/hangar approve`, `/hangar reject`.
-- **Continue after it's done:** `/hangar <what to do next>`. It resumes the same session and branch.
+- **Continue after it's done:** `/hangar <what to do next>`, from the job's person. It resumes the same session and branch.
 - **Start one by hand:** `/hangar <instructions>` on an issue with no job.
 
 Hangar's own comments start with `[hangar]` and are never read as replies.
@@ -102,7 +103,7 @@ Hangar's own comments start with `[hangar]` and are never read as replies.
 The same, with three differences:
 - `"deployment": "server"` and no `email`. `token_credential` holds a [personal access token](https://confluence.atlassian.com/enterprise/using-personal-access-tokens-1026032365.html), sent as `Authorization: Bearer`.
 - Hangar calls REST v2 and writes comments as wiki markup.
-- Use a version whose webhook form has a **Secret** field: it sends the same `X-Hub-Signature: sha256=…`. Accounts are linked by user key, not accountId.
+- Use a version whose webhook form has a **Secret** field: it sends the same `X-Hub-Signature: sha256=…`. Accounts are linked by user key, not accountId (`hangar person link dana jira JIRAUSER10100`); hangar reads who moved an issue from `?expand=changelog`.
 
 ## GitHub Projects
 

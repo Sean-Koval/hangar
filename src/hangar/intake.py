@@ -47,10 +47,12 @@ TRACKERS: dict[str, Callable[[JobService, Job, str, str], Awaitable[None]]] = {}
 
 
 # ====================================================================== who
-def person_for(store: Store, source: str, external_id: str | None) -> str | None:
-    """The id of the hangar person linked to an outside account ("github": a login; "slack": a user id; "jira": an
-    Atlassian account id), or None: unlinked, or the lookup failed (fail closed)."""
-    if not external_id or not str(external_id).strip():
+def person_for(store: Store, source: str, external_id: str | int | None) -> str | None:
+    """The id of the hangar person linked to an outside account, or None: unlinked, or the lookup failed (fail
+    closed). The ids are the ones that don't change hands (docs/team.md#who-is-trusted): "github", the user's numeric
+    id (`sender.id`, never the login); "slack", `TEAM/USER`; "jira", the Atlassian account id (Data Center: the user
+    key)."""
+    if external_id is None or isinstance(external_id, bool) or not str(external_id).strip():
         return None
     try:
         p = people.resolve_external(store, source, str(external_id).strip())

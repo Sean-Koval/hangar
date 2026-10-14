@@ -356,9 +356,9 @@ def check_secrets(store: Store, secrets: dict[str, str], person: str | None) -> 
 
 
 # ---------------------------------------------------------------------------- outside accounts (--- intake)
-def resolve_external(store: Store, source: str, external_id: str | None) -> Person | None:
-    """The person an outside account is linked to ("github": a login; "slack": a user id; "jira": an Atlassian
-    account id), or None.
+def resolve_external(store: Store, source: str, external_id: str | int | None) -> Person | None:
+    """The person an outside account is linked to ("github": the user's numeric id, never the login; "slack":
+    `TEAM/USER`; "jira": an Atlassian account id, or a Data Center user key; an `@` means an email), or None.
 
     Stub with the signature the teamcreds work implements (people links); that replaces it. Until then nobody is
     linked, so every outside sender is untrusted and runs on the team's credentials (intake.person_for)."""

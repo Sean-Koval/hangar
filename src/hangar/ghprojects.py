@@ -118,7 +118,7 @@ query($item: ID!) {
           url
           state
           repository { nameWithOwner }
-          author { login }
+          author { login ... on User { databaseId } }
           labels(first: 20) { nodes { name } }
           comments(last: 20) { nodes { author { login } body createdAt } }
         }
@@ -285,6 +285,7 @@ async def handle(svc: JobService, delivery: str | None, payload: dict[str, Any])
     if not _NODE.match(node):
         return {"ignored": "no item id"}
     login = str((payload.get("sender") or {}).get("login") or "")
+    sender_id = (payload.get("sender") or {}).get("id")  # --- review: people are linked by GitHub user id
     gql = client_for(svc)
     if gql is None:
         return {"error": "can't read the project item: HANGAR_GITHUB_TOKEN_CREDENTIAL is not set or not stored"}
@@ -316,18 +317,19 @@ async def handle(svc: JobService, delivery: str | None, payload: dict[str, Any])
     envs = svc.repo_envs(f"https://github.com/{repo}")
     if not envs:
         return {"ignored": f"repo '{repo}' is not in HANGAR_GITHUB_REPOS"}
-    return await _submit(svc, delivery, board, key, project, data, issue, repo, number, login)
+    return await _submit(svc, delivery, board, key, project, data, issue, repo, number, login, sender_id)
 
 
 async def _submit(svc: JobService, delivery: str | None, board: Board, key: str, project: dict[str, Any],
-                  item: dict[str, Any], issue: dict[str, Any], repo: str, number: int, login: str) -> dict[str, Any]:
-    person = intake.person_for(svc.store, "github", login)
+                  item: dict[str, Any], issue: dict[str, Any], repo: str, number: int, login: str,
+                  sender_id: Any = None) -> dict[str, Any]:
+    person = intake.person_for(svc.store, "github", sender_id)  # --- review: the id; a login can change hands
     # Moving an item needs write access to the project, not to the repo: a linked person, or someone on
     # HANGAR_GITHUB_TRUSTED, is trusted; anyone else's move waits for `/hangar approve` on the issue.
     trusted = person is not None or (svc.trust.configured and await svc.trust.trusted(login))
     author = str(((issue.get("author") or {}).get("login")) or "?")
     author_trusted = (author.lower() == login.lower() and trusted) or \
-        intake.person_for(svc.store, "github", author) is not None or \
+        intake.person_for(svc.store, "github", (issue.get("author") or {}).get("databaseId")) is not None or \
         (svc.trust.configured and await svc.trust.trusted(author))
     ref = f"github:{repo}#{number}"
     title = " ".join(str(issue.get("title") or "").split())[:300] or f"issue {number}"

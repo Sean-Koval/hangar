@@ -49,6 +49,10 @@ class FakeAPIs:
         self.statuses = ["In Progress", "Blocked", "In Review", "Done"]
         self.item = fixture("gh_graphql_item.json")
         self.field = fixture("gh_graphql_field.json")
+        # --- review: the issue's history (Cloud's changelog, oldest first): who moved it where
+        self.history = [{"id": "1", "created": "2026-10-14T09:00:00.000+0000",
+                         "author": {"accountId": DANA, "displayName": "Dana Lee"},
+                         "items": [{"field": "status", "fromString": "To Do", "toString": "Ready for agent"}]}]
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(request)
@@ -77,6 +81,10 @@ class FakeAPIs:
             return httpx.Response(201, json={"id": "1"})
         if p.endswith("/remotelink"):
             return httpx.Response(201, json={"id": 1})
+        if p.endswith("/changelog"):  # --- review
+            start, n = int(r.url.params.get("startAt", 0)), int(r.url.params.get("maxResults", 100))
+            return httpx.Response(200, json={"startAt": start, "maxResults": n, "total": len(self.history),
+                                             "values": self.history[start:start + n]})
         if p.endswith("/myself"):
             return httpx.Response(200, json={"accountId": "hangar-bot", "displayName": "Hangar"})
         if p.startswith("/rest/api/3/issue/"):
@@ -314,7 +322,7 @@ async def door(fleet, settings, monkeypatch):
     ghprojects._fields.clear()
     svc = JobService(fleet, None, transport=httpx.MockTransport(fake))
     configure(svc, "https://github.com/acme/api.git", "base")
-    link(monkeypatch, {("jira", DANA): "dana", ("github", "dana"): "dana"})
+    link(monkeypatch, {("jira", DANA): "dana", ("github", "4242"): "dana"})  # --- review: GitHub user ids
     ts = fixture("jira_issue_updated.json")["timestamp"] / 1000
     app = FastAPI()
     front = jira.JiraFrontDoor(svc, clock=lambda: ts + 60)
@@ -342,7 +350,10 @@ async def test_jira_status_change_queues_a_job_for_the_linked_person(door):
     assert job.labels[intake.TRACKER] == "jira:ABC-12" and job.idempotency_key == "jira-delivery:wh-1"
     assert job.title == "ABC-12: Retry uploads that time out" and job.repo == "https://github.com/acme/api.git"
     [ctx] = job.context
-    assert ctx.name == "jira-ABC-12.md" and not ctx.untrusted and "never retried" in ctx.content
+    # --- review: anyone who can edit the issue can rewrite its text, so it is data even from a linked reporter,
+    # and the summary isn't part of the instructions
+    assert ctx.name == "jira-ABC-12.md" and ctx.untrusted and "never retried" in ctx.content
+    assert "Retry uploads" not in job.instructions and "`jira-ABC-12.md`" in job.instructions
     assert "https://acme.atlassian.net/browse/ABC-12" in ctx.content
     await until(lambda: fake.jira_comments(), what="queued comment")
     assert fake.jira_comments()[0].startswith(f"[hangar] Queued as hangar job {job.id}")
@@ -451,6 +462,61 @@ async def test_jira_automation_web_request(door):
     assert r.status_code == 200 and r.json().get("ok"), r.json()
     job = svc.get(r.json()["job"])
     assert job.person == "dana" and "From the API, in ADF." in job.context[0].content
+    assert [c.url.path for c in door["fake"].calls if c.url.path.endswith("/changelog")] == [
+        "/rest/api/3/issue/ABC-12/changelog"] * 2  # the total, then the last page
+
+
+async def test_jira_automation_body_cant_say_who_acted(door):
+    """Review: the Automation token isn't a signature, and anyone who can edit the rule writes its body (and can
+    point it, hidden header and all, at a server of their own). A body naming Dana doesn't make the job Dana's
+    (her trust, budget and own Claude login): who moved the issue comes from Jira's history."""
+    svc, fake = door["svc"], door["fake"]
+    ts = fixture("jira_issue_updated.json")["timestamp"] / 1000
+    from datetime import UTC, datetime
+
+    fake.history = [*fake.history, {"id": "2", "created": "2026-10-14T10:00:00.000+0000",
+                                     "author": {"accountId": "557058:mallory", "displayName": "Mallory"},
+                                     "items": [{"field": "status", "fromString": "In Progress",
+                                                "toString": "Ready for agent"}]}]
+    now = datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%dT%H:%M:%S.0+0000")
+    body = json.dumps({"webhookEvent": "hangar:automation", "timestamp": now, "issue": {"key": "ABC-12"},
+                       "user": {"accountId": DANA, "displayName": "Dana Lee"}}).encode()
+    r = await post(door["client"], {}, raw=body, headers={"X-Hangar-Token": AUTO_TOKEN,
+                                                          "Content-Type": "application/json"})
+    job = svc.get(r.json()["job"])
+    assert job.person is None and job.state == JobState.AWAITING_APPROVAL
+    assert job.requester == "jira:557058:mallory" and job.untrusted_source == "jira:557058:mallory"
+    # nobody in the history, and not created that way: nobody acted, so nobody is trusted
+    assert jira.mover([], {"status": {"name": "To Do"}}, jira.JiraTrigger(status="Ready for agent")) is None
+    creator = {"accountId": DANA}
+    assert jira.mover([], {"status": {"name": "Ready for agent"}, "creator": creator, "reporter": {"accountId": "x"}},
+                      jira.JiraTrigger(status="Ready for agent")) == creator
+    labeled = [{"created": "1", "author": {"accountId": "a"}, "items": [{"field": "labels", "fromString": "",
+                                                                        "toString": "hangar"}]},
+               {"created": "2", "author": {"accountId": "b"}, "items": [{"field": "labels", "fromString": "hangar",
+                                                                        "toString": "hangar x"}]}]
+    assert jira.mover(labeled, {}, jira.JiraTrigger(label="hangar")) == {"accountId": "a"}
+
+
+async def test_only_the_jobs_person_continues_it_from_jira(door, monkeypatch):
+    """Review: a linked teammate's comment must not answer or continue someone else's job: it runs with that
+    person's own login and budget."""
+    svc, fake, client = door["svc"], door["fake"], door["client"]
+    link(monkeypatch, {("jira", DANA): "dana", ("jira", "557058:eve"): "eve"})
+    payload = fixture("jira_issue_updated.json")
+    job = svc.get((await post(client, payload)).json()["job"])
+    assert job.person == "dana"
+    job.state = JobState.NEEDS_INPUT
+    comment = fixture("jira_comment_created.json")
+    comment["comment"]["author"] = comment["comment"]["updateAuthor"] = {"accountId": "557058:eve",
+                                                                         "displayName": "Eve"}
+    res = (await post(client, comment)).json()
+    assert "dana's job" in res["ignored"] and len(job.turns) == 1
+    await until(lambda: any("Can't continue" in c and "dana's job" in c for c in fake.jira_comments()),
+                what="refusal on the issue")
+    job.state = JobState.SUCCEEDED  # `/hangar <more>` after it's done: likewise
+    comment["comment"]["body"], comment["timestamp"] = "/hangar now do more", comment["timestamp"] + 1
+    assert "dana's job" in (await post(client, comment)).json()["ignored"]
 
 
 async def test_jira_write_back_failures_land_on_the_job(door):
@@ -487,7 +553,7 @@ async def test_projects_item_moved_to_the_trigger_column_queues_the_issue(door):
     assert job.labels[intake.TRACKER] == "ghproject:PVT_kwDOBUjMRs4AqZ1T:PVTI_lADOBUjMRs4AqZ1Tzgz_RAs"
     assert job.labels["github.kind"] == "issue" and job.idempotency_key == "ghproject-delivery:d-1"
     issue, comments = job.context
-    assert "never retried" in issue.content and not issue.untrusted
+    assert "never retried" in issue.content and not issue.untrusted  # dana (user id 4242) wrote it
     assert comments.untrusted and "IGNORE PREVIOUS" in comments.content and "Queued as" not in comments.content
     await until(lambda: fake.gh_comments(), what="queued comment")
     assert "Queued as hangar job" in fake.gh_comments()[0]
@@ -549,9 +615,12 @@ async def test_projects_ignores_what_isnt_a_move_into_the_trigger_column(door):
 
 
 async def test_projects_untrusted_mover_waits_for_approval_on_the_issue(door, monkeypatch):
+    """Review: someone who registered "dana" after Dana renamed her account is not Dana: links are by user id."""
     svc, fake = door["svc"], door["fake"]
-    link(monkeypatch, {})
-    res = await handle_github(svc, "projects_v2_item", "d-9", fixture("gh_projects_v2_item_edited.json"))
+    payload = fixture("gh_projects_v2_item_edited.json")
+    payload["sender"]["id"] = 9999
+    fake.item["data"]["node"]["content"]["author"]["databaseId"] = 9999
+    res = await handle_github(svc, "projects_v2_item", "d-9", payload)
     job = svc.get(res["job"])
     assert res["awaiting_approval"] and job.state == JobState.AWAITING_APPROVAL and job.person is None
     assert job.context[0].untrusted

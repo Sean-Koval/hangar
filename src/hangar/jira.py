@@ -10,7 +10,7 @@ Two ways in, both at POST /api/hooks/jira:
   `timestamp` is `{{now}}`.
 
 Hangar answers on the issue through Jira's REST API with the control plane's own Jira credential (never in a
-sandbox): a comment when the agent starts, the agent's question (a comment by a linked teammate answers it), and
+sandbox): a comment when the agent starts, the agent's question (a comment by the job's person answers it), and
 the outcome with the PR, which is also added as a remote link. A configured status transition goes with each stage.
 """
 
@@ -278,7 +278,21 @@ class JiraAPI:
 
     async def issue(self, key: str) -> dict[str, Any]:
         return await self._req("GET", f"{self.api}/issue/{key}", params={
-            "fields": "summary,description,labels,components,project,status,reporter,issuetype,priority"})
+            "fields": "summary,description,labels,components,project,status,reporter,creator,issuetype,priority"})
+
+    async def history(self, key: str) -> list[dict[str, Any]]:
+        """--- review: the issue's latest changes (oldest first), each with its `author` and `items`. Cloud pages
+        its changelog oldest first, so read the total, then the last page; Data Center expands it on the issue."""
+        if not self.cloud:
+            res = await self._req("GET", f"{self.api}/issue/{key}", params={"expand": "changelog",
+                                                                            "fields": "status"})
+            return list(((res or {}).get("changelog") or {}).get("histories") or [])
+        path = f"{self.api}/issue/{key}/changelog"
+        first = await self._req("GET", path, params={"startAt": 0, "maxResults": 1}) or {}
+        total = first.get("total")
+        start = max(0, total - 100) if isinstance(total, int) and not isinstance(total, bool) else 0
+        res = await self._req("GET", path, params={"startAt": start, "maxResults": 100}) or {}
+        return list(res.get("values") or [])
 
     async def comment(self, key: str, text: str) -> None:
         text = _clip(text)
@@ -434,6 +448,28 @@ def _account(user: Any, cloud: bool) -> str | None:
     return v if _ACCOUNT.match(v) else None
 
 
+def mover(histories: list[dict[str, Any]], fields: dict[str, Any], trigger: JiraTrigger) -> dict[str, Any] | None:
+    """--- review: who last moved the issue into the trigger status, or gave it the trigger label, by the issue's
+    own history; for an issue created that way with no such change, its creator. None when nobody did (fail closed:
+    the job then waits for approval)."""
+    status = (trigger.status or "").casefold()
+    for h in sorted((h for h in histories if isinstance(h, dict)), key=lambda h: str(h.get("created") or ""),
+                    reverse=True):
+        for item in h.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            field = str(item.get("field") or "").casefold()
+            if (field == "status" and status and str(item.get("toString") or "").casefold() == status) or (
+                    field == "labels" and trigger.label and trigger.label in str(item.get("toString") or "").split()
+                    and trigger.label not in str(item.get("fromString") or "").split()):
+                return h.get("author") if isinstance(h.get("author"), dict) else None
+    now = str(((fields.get("status") or {}).get("name")) or "").casefold()
+    if (status and now == status) or (trigger.label and trigger.label in (fields.get("labels") or [])):
+        creator = fields.get("creator")  # not the reporter, which whoever creates an issue may set
+        return creator if isinstance(creator, dict) else None
+    return None
+
+
 def _who(user: Any, account: str | None) -> str:
     name = str((user or {}).get("displayName") or "") if isinstance(user, dict) else ""
     return " ".join(name.split())[:80] or account or "someone"
@@ -535,11 +571,15 @@ class JiraFrontDoor:
                 return {"error": f"Jira token credential '{cfg.token_credential}' is not stored"}
             try:
                 issue = await api.issue(key)
+                # --- review: the token proves the request came through hangar's rule, not who acted: anyone who
+                # can edit the rule writes its body (and can send the hidden header elsewhere by changing the
+                # URL). Who moved the issue is read from Jira's own history; the body's `user` is ignored.
+                actor = mover(await api.history(key), (issue.get("fields") or {}), cfg.trigger)
             except (JiraError, httpx.HTTPError) as e:
                 return {"error": f"could not read {key}: {e}"}
             finally:
                 await api.close()
-            return await self.start(cfg, issue, payload.get("user"), delivery)
+            return await self.start(cfg, issue, actor, delivery)
         if event not in ("jira:issue_updated", "jira:issue_created"):
             return {"ignored": f"event '{event[:60]}'"}
         issue = payload.get("issue") if isinstance(payload.get("issue"), dict) else {}
@@ -597,7 +637,6 @@ class JiraFrontDoor:
         who = _who(actor, account)
         person = intake.person_for(svc.store, "jira", account)
         reporter = fields.get("reporter")
-        reporter_linked = intake.person_for(svc.store, "jira", _account(reporter, cloud)) is not None
         summary = " ".join(str(fields.get("summary") or "").split())[:300] or key
         labels = ", ".join(str(x) for x in fields.get("labels") or [])
         comps = ", ".join(str(c.get("name")) for c in fields.get("components") or [] if isinstance(c, dict))
@@ -605,9 +644,11 @@ class JiraFrontDoor:
                 *([f"type {(fields.get('issuetype') or {}).get('name')}"] if fields.get("issuetype") else []),
                 *([f"labels: {labels}"] if labels else []), *([f"components: {comps}"] if comps else [])]
         description = adf_text(fields.get("description")).strip() or "(no description)"
-        context = [ContextItem(name=f"jira-{key}.md", kind="issue", untrusted=not reporter_linked, content=(
+        # --- review: always untrusted: anyone with Edit Issues can rewrite the summary and description, whoever
+        # reported it; and the summary stays out of the instructions
+        context = [ContextItem(name=f"jira-{key}.md", kind="issue", untrusted=True, content=(
             f"# {key}: {summary}\n\n{description[:50_000]}\n\n---\n{cfg.url}/browse/{key}\n" + "; ".join(meta)))]
-        instructions = (f"Resolve Jira issue {key}: {summary}\n\nThe issue text is in the context file "
+        instructions = (f"Resolve Jira issue {key}. Its summary, description and details are in the context file "
                         f"`jira-{key}.md`.")
         if extra and person:
             instructions += f"\n\nAdditional instructions from {who}:\n{extra}"
@@ -637,8 +678,9 @@ class JiraFrontDoor:
 
     # ------------------------------------------------------------------ comments
     async def on_comment(self, cfg: JiraConfig, payload: dict[str, Any]) -> dict[str, Any]:
-        """A linked teammate's comment answers the job's question, `/hangar approve|reject` decides an approval,
-        and `/hangar <message>` continues the last job (or starts one). Nobody else's comment steers anything."""
+        """The job's person's comment answers its question (a team job's: any linked teammate's), a linked
+        teammate's `/hangar approve|reject` decides an approval, and the job's person's `/hangar <message>` continues
+        the last job (anyone linked: starts one). Nobody else's comment steers anything."""
         svc = self.jobs
         comment = payload.get("comment") if isinstance(payload.get("comment"), dict) else {}
         issue = payload.get("issue") if isinstance(payload.get("issue"), dict) else {}
@@ -666,7 +708,7 @@ class JiraFrontDoor:
         if command and word in ("approve", "reject"):
             return self._decide(job, ref, word, person)
         if job is not None and job.state == JobState.NEEDS_INPUT:
-            return self._follow_up(job, rest or "Continue with the task.", requester, ref)
+            return self._follow_up(job, rest or "Continue with the task.", requester, ref, person)
         if not command:
             return {"ignored": "not a /hangar comment"}
         if job is not None:
@@ -675,7 +717,7 @@ class JiraFrontDoor:
             return {"ignored": f"job {job.id} is already {job.state} for {ref}"}
         last = intake.latest_job(svc, ref)
         if last is not None and last.state in JOB_TERMINAL:
-            return self._follow_up(last, rest or "Continue with the task.", requester, ref)
+            return self._follow_up(last, rest or "Continue with the task.", requester, ref, person)
         issue_now = issue
         if not (issue.get("fields") or {}).get("project"):
             api = client_for(svc, cfg)
@@ -703,8 +745,14 @@ class JiraFrontDoor:
         self.jobs._spawn(notify(self.jobs, job, ref, msg, "note"))
         return {"ok": True, {"approve": "approved", "reject": "rejected"}[word]: job.id}
 
-    def _follow_up(self, job: Job, text: str, requester: str, ref: str) -> dict[str, Any]:
+    def _follow_up(self, job: Job, text: str, requester: str, ref: str, person: str) -> dict[str, Any]:
         svc = self.jobs
+        if job.person is not None and job.person != person:  # --- review: it runs with their own login
+            why = (f"this is {job.person}'s job, and it runs with their own login: only {job.person} continues it "
+                   "here (an admin can with hangar job follow-up)")
+            svc.admission.refused(f"owner:{requester}", requester, "jira.refused", ref, why=why, job=job.id)
+            svc._spawn(notify(svc, job, ref, f"Can't continue `{job.id}`: {why}.", "note"))
+            return {"ignored": why}
         try:
             svc.follow_up(job.id, text, requester=requester, reply_to=ref)
         except JobError as e:
