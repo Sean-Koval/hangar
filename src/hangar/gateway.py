@@ -42,6 +42,7 @@ from starlette.responses import JSONResponse, PlainTextResponse, Response, Strea
 from starlette.routing import Route
 
 from hangar import observe  # --- observe
+from hangar import pushscan as pushscan  # --- egress2
 from hangar.auth import hash_token
 from hangar.models import Credential, CredentialKind, Sandbox, SandboxGrant, SandboxState, Session, Snapshot, now
 
@@ -289,8 +290,9 @@ def check_push(grant: SandboxGrant, cmds: Commands, allow_tags: bool, owned_else
     return bad
 
 
-def rejection(cmds: Commands, bad: dict[str, str]) -> bytes:
-    """A receive-pack result that makes git print `! [remote rejected] <ref> (hangar: …)` for each ref.
+def rejection(cmds: Commands, bad: dict[str, str], notes: list[str] | None = None) -> bytes:
+    """A receive-pack result that makes git print `! [remote rejected] <ref> (hangar: …)` for each ref, and with
+    side-band, `notes` (default: the first reason) as `remote:` lines.
 
     Nothing is forwarded, so every command fails: the allowed ones are reported as not pushed."""
     report = pkt(b"unpack ok\n")
@@ -303,7 +305,8 @@ def rejection(cmds: Commands, bad: dict[str, str]) -> bytes:
         return report
     size = 65515 if has_cap(caps, "side-band-64k") else 995
     first = next(iter(bad.values()), "hangar: push rejected")
-    out = pkt(b"\x02" + f"{first}\n".encode())  # band 2: shown as "remote: hangar: …"
+    # band 2: shown as "remote: hangar: …"; --- egress2: one pkt per note
+    out = b"".join(pkt(b"\x02" + f"{line}\n".encode()[:size - 1]) for line in notes or [first])
     for i in range(0, len(report), size):
         out += pkt(b"\x01" + report[i:i + size])
     return out + FLUSH
@@ -541,6 +544,7 @@ class Gateway:
         self._server: _Server | None = None
         self._failures = _AuthFailures(AUTH_FAILURES, AUTH_WINDOW)  # overnight/sandbox-security
         self._inflight: dict[str, int] = {}  # token hash -> requests in flight (_InflightLimit)
+        self.scanner = pushscan.Scanner(self)  # --- egress2: secret scanning of pushes, before they go upstream
 
     # ------------------------------------------------------------------ plumbing
     @property
@@ -715,7 +719,8 @@ class Gateway:
         await prov.write_file(sb, f"{home}/.git-credentials", body.encode(), mode=0o600)
 
     # ------------------------------------------------------------------ upstream
-    async def upstream_auth(self, grant: SandboxGrant, repo: str) -> str:
+    async def upstream_token(self, grant: SandboxGrant, repo: str) -> str:
+        """The token the gateway uses upstream for this grant's repo: the PAT, or an installation token."""
         cred = self.broker.get(grant.credential)
         value = self.broker.secret_text(cred.name)
         if cred.kind == CredentialKind.GITHUB_APP:
@@ -723,6 +728,10 @@ class Gateway:
             value = await self.app_tokens.token(value, repo)
         elif cred.kind != CredentialKind.GIT_TOKEN:
             raise GatewayError(f"credential '{cred.name}' can't be used upstream")
+        return value
+
+    async def upstream_auth(self, grant: SandboxGrant, repo: str) -> str:
+        value = await self.upstream_token(grant, repo)
         return "Basic " + base64.b64encode(f"x-access-token:{value}".encode()).decode()
 
     # ------------------------------------------------------------------ smart HTTP
@@ -817,8 +826,12 @@ class Gateway:
             if h in request.headers:
                 headers[h] = request.headers[h][:1000]
         if svc == "info/refs":
+            transform = None
+            if service == "git-receive-pack" and pushscan.enabled(self):  # --- egress2: self-contained packs only
+                headers["accept-encoding"] = "identity"
+                transform = pushscan.advertise_no_thin
             return await self._forward(request, "GET", url, headers, params={"service": service}, grant=grant,
-                                       repo=repo)
+                                       repo=repo, transform=transform)
         if svc == "git-upload-pack":
             for h in ("content-encoding", "accept-encoding", "content-length"):
                 if h in request.headers:
@@ -900,10 +913,23 @@ class Gateway:
             return Response(rejection(cmds, bad), media_type="application/x-git-receive-pack-result",
                             headers={"Cache-Control": "no-cache"})
         cap = self._cap()
+        held: pushscan.Spool | None = None
+        if pushscan.enabled(self):  # --- egress2: the whole push is scanned for secrets before any of it goes up
+            res = await self._scan_push(it, buf, end, cmds, grant, repo)
+            if isinstance(res, Response):
+                return res
+            held = res
 
         async def body() -> AsyncIterator[bytes]:
-            total = len(buf)
-            yield buf
+            if held is not None:
+                total = held.size
+                async for chunk in held.chunks():
+                    yield chunk
+                if held.whole:
+                    return
+            else:
+                total = len(buf)
+                yield buf
             async for chunk in it:
                 total += len(chunk)
                 if total > cap:
@@ -912,8 +938,73 @@ class Gateway:
 
         headers["accept-encoding"] = "identity"  # so the report can be read for the audit log
         sideband = has_cap(cmds.capabilities, "side-band-64k") or has_cap(cmds.capabilities, "side-band")
-        return await self._forward(request, "POST", url, headers, body=body(), grant=grant, repo=repo,
-                                   push=(cmds, sideband))
+        try:
+            return await self._forward(request, "POST", url, headers, body=body(), grant=grant, repo=repo,
+                                       push=(cmds, sideband))
+        finally:
+            if held is not None:  # sent by now (or failed): the request body goes before the response
+                held.close()
+
+    # --- egress2: secret scanning of the push (pushscan.py)
+    async def _scan_push(self, it: AsyncIterator[bytes], buf: bytes, end: int, cmds: Commands, grant: SandboxGrant,
+                         repo: str) -> Response | pushscan.Spool:
+        """Read the whole push and scan it: a refusal to send back, or the held body to forward."""
+        s = self.settings
+        scan_cap = s.gateway_scan_max_mb * 1024 * 1024
+        try:
+            held = await pushscan.read_body(it, buf, min(scan_cap, self._cap()), s.gateway_timeout_seconds,
+                                            s.data_dir)
+        except (TimeoutError, ClientDisconnect):
+            return PlainTextResponse("hangar: timed out reading the push\n", status_code=408)
+        if not held.whole and self._cap() <= scan_cap:
+            return await self._refuse(it, held, cmds, grant, repo, "push too large",
+                                      f"hangar: push is larger than the gateway's limit ({s.gateway_max_push_mb} MB)")
+        if not held.whole:
+            return await self._unscanned(it, held, cmds, grant, repo, f"the push is over {s.gateway_scan_max_mb} MB, "
+                                         "more than the gateway scans for secrets (HANGAR_GATEWAY_SCAN_MAX_MB)")
+        data = held.view()
+        try:
+            found, note = await self.scanner.check(grant, repo, cmds, data[end:]) if len(data) > end else ([], "")
+        except pushscan.PackError as e:
+            return await self._unscanned(it, held, cmds, grant, repo, "the gateway couldn't read the pack to scan it "
+                                         f"for secrets: {e}")
+        finally:
+            del data
+        if not found:
+            return held
+        sb = self.store.get(Sandbox, grant.sandbox_id)
+        mode, hits = s.secret_scan, [f"{f.where}: {f.kind}" for f in found]
+        self.fleet.audit(f"sandbox:{grant.sandbox_id}", "secret.found", grant.sandbox_id, source="gateway", repo=repo,
+                         hits=hits, mode=mode, note=note or None, person=sb.person if sb else None,
+                         session=sb.labels.get("hangar.session") if sb else None)
+        reason, lines = pushscan.message(found, note)
+        if sb is not None:  # people watching the session see it too; the agent sees git's own output
+            self.fleet.egress._event(sb, f"push {'refused' if mode == 'block' else 'let through'}: "
+                                     f"{reason.removeprefix('hangar: ')}", {"secret_scan": mode, "hits": hits[:30]})
+        if mode != "block":
+            return held
+        return await self._refuse(it, held, cmds, grant, repo, "possible secret in the push", reason, lines)
+
+    async def _unscanned(self, it: AsyncIterator[bytes], held: pushscan.Spool, cmds: Commands, grant: SandboxGrant,
+                         repo: str, why: str) -> Response | pushscan.Spool:
+        """A push the scan couldn't read: refused in block mode (hangar doesn't forward what it couldn't check), let
+        through with an audit entry in warn mode."""
+        self.fleet.audit(f"sandbox:{grant.sandbox_id}", "secret.unscanned", grant.sandbox_id, source="gateway",
+                         repo=repo, reason=why, mode=self.settings.secret_scan)
+        if self.settings.secret_scan != "block":
+            return held
+        return await self._refuse(it, held, cmds, grant, repo, why, f"hangar: {why}"[:900])
+
+    async def _refuse(self, it: AsyncIterator[bytes], held: pushscan.Spool, cmds: Commands, grant: SandboxGrant,
+                      repo: str, audit: str, reason: str, notes: list[str] | None = None) -> Response:
+        """Refuse a held push: every ref gets `reason`, and nothing goes upstream."""
+        held.close()
+        self._deny(grant, repo, audit, cmds.commands)
+        if not held.whole:
+            with contextlib.suppress(Exception):  # drain the rest so git reads our report, not a broken pipe
+                await asyncio.wait_for(self._drain(it, held.size), timeout=self.settings.gateway_timeout_seconds)
+        return Response(rejection(cmds, {c.ref: reason for c in cmds.commands}, notes),
+                        media_type="application/x-git-receive-pack-result", headers={"Cache-Control": "no-cache"})
 
     @staticmethod
     async def _drain(it, seen: int) -> None:
@@ -926,7 +1017,7 @@ class Gateway:
     async def _forward(self, request: Request, method: str, url: str, headers: dict[str, str], *,
                        grant: SandboxGrant, repo: str, params: dict[str, str] | None = None,
                        body: AsyncIterator[bytes] | None = None,
-                       push: tuple[Commands, bool] | None = None) -> Response:
+                       push: tuple[Commands, bool] | None = None, transform: Any = None) -> Response:
         client = self._http()
         req = client.build_request(method, url, headers=headers, params=params, content=body)
         try:
@@ -947,8 +1038,12 @@ class Gateway:
 
         async def relay() -> AsyncIterator[bytes]:
             seen, size = bytearray(), 0
+            src = resp.aiter_raw()
+            if transform is not None and resp.status_code == 200 and \
+                    resp.headers.get("content-encoding", "identity") == "identity":
+                src = transform(src)  # --- egress2
             try:
-                async for chunk in resp.aiter_raw():
+                async for chunk in src:
                     size += len(chunk)
                     if push and len(seen) < MAX_COMMAND_BYTES:
                         seen += chunk[:MAX_COMMAND_BYTES - len(seen)]
