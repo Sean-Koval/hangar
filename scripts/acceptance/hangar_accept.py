@@ -655,8 +655,12 @@ def check_steer(api: Api, state: State, opts: argparse.Namespace) -> str:
 
 
 def check_gateway(api: Api, state: State, opts: argparse.Namespace) -> str:
-    """Through the git gateway from the session's sandbox: a push to hangar/accept-<run> goes through, a push to main
-    is refused, and no GitHub token is in the sandbox."""
+    """Through the git gateway from the session's sandbox: a push to hangar/accept-<run> goes through, a push to a
+    branch outside the sandbox's grant is refused, and no GitHub token is in the sandbox.
+
+    The refused push goes to accept-<run>-outside, not main: the gateway refuses both the same way (the grant's push
+    refs), and if it let the push through (HANGAR_GATEWAY_PUSH_REFS widened, or a bug), the owner's main is
+    untouched and cleanup deletes the branch."""
     if not opts.gateway_repo:
         raise Skip("needs --gateway-repo OWNER/REPO (a repo the gateway's credential can push to)")
     name = state.get("session")
@@ -688,14 +692,18 @@ def check_gateway(api: Api, state: State, opts: argparse.Namespace) -> str:
     if ok["exit_code"] != 0:
         raise Fail(f"push to {branch} failed: {ok['stdout'][-400:]}")
     say(f"pushed {branch} in {push_secs:.1f}s")
-    no = api.exec(sb["id"], "git push origin HEAD:refs/heads/main 2>&1", cwd=repo, timeout=180)
-    why = [ln.strip() for ln in no["stdout"].splitlines() if "hangar" in ln] or no["stdout"].strip().splitlines()[-1:]
-    say(f"push to main: exit {no['exit_code']}: {why[0] if why else ''}")
+    outside = f"accept-{state.run}-outside"
+    state.add("branches", {"repo": opts.gateway_repo, "branch": outside})
+    no = api.exec(sb["id"], f"git push origin HEAD:refs/heads/{outside} 2>&1", cwd=repo, timeout=180)
+    why = [ln.strip() for ln in no["stdout"].splitlines() if "(hangar: " in ln] or \
+        no["stdout"].strip().splitlines()[-1:]
+    say(f"push to {outside} (outside the grant): exit {no['exit_code']}: {why[0] if why else ''}")
     if no["exit_code"] == 0:
-        raise Fail("the gateway let the sandbox push to main")
-    if "hangar" not in no["stdout"]:
-        raise Fail(f"the push to main failed, but not with the gateway's refusal: {no['stdout'][-300:]}")
-    return f"push to {branch} ok ({push_secs:.1f}s), push to main refused, no GitHub token in the sandbox"
+        raise Fail(f"the gateway let the sandbox push to {outside}, outside its grant (HANGAR_GATEWAY_PUSH_REFS?)")
+    if "(hangar: " not in no["stdout"]:
+        raise Fail(f"the push to {outside} failed, but not with the gateway's refusal: {no['stdout'][-300:]}")
+    return (f"push to {branch} ok ({push_secs:.1f}s), push outside the grant refused, no GitHub token in the "
+            "sandbox")
 
 
 def check_e2b(api: Api, state: State, opts: argparse.Namespace) -> str:

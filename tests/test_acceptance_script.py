@@ -59,6 +59,8 @@ def _fake_gh(bindir: Path, bare: Path) -> None:
     gh.write_text("#!/bin/sh\n"
                   '[ "$1 $2 $3" = "api -X DELETE" ] || exit 2\n'
                   'ref="refs/heads/${4#repos/acme/widgets/git/refs/heads/}"\n'
+                  f'git --git-dir "{bare}" rev-parse -q --verify "$ref" >/dev/null || '
+                  '{ echo "gh: Reference does not exist (HTTP 422)" >&2; exit 1; }\n'  # as GitHub answers
                   f'exec git --git-dir "{bare}" update-ref -d "$ref"\n')
     gh.chmod(0o755)
 
@@ -315,6 +317,70 @@ class _SteerHangar:
     def exec(self, sb, command, cwd=None, timeout=120):
         assert sb == "sb-1" and cwd == "/workspace/r" and command.startswith("cat ")
         return {"exit_code": 0, "stdout": "ok\n" if self.allowed else "", "stderr": ""}
+
+
+class _GatewayHangar:
+    """Just enough of hangar's REST API for the `gateway` check: a session whose sandbox pushes through a gateway
+    that lets `allowed` refs through and answers the others with `refusal`."""
+
+    def __init__(self, refusal: str, allowed: tuple[str, ...] = ("refs/heads/hangar/",)):
+        self.refusal, self.allowed, self.state = refusal, allowed, None
+        self.pushed: list[tuple[str, list]] = []  # (ref, the state's branches when the push was made)
+
+    def call(self, method, path, ok=(200,), **kw):
+        if (method, path) == ("GET", "/api/sessions/accept-r1"):
+            return {"repo": "https://github.com/me/scratch.git", "sandbox_id": "sb-1", "state": "idle", "busy": False}
+        if (method, path) == ("GET", "/api/sandboxes/sb-1"):
+            return {"id": "sb-1", "info": {"repo_path": "/workspace/scratch", "git": {"mode": "gateway"}}}
+        raise AssertionError(f"unexpected {method} {path}")
+
+    def exec(self, sb, command, cwd=None, timeout=120):
+        if m := re.search(r"git push .*HEAD:(\S+)", command):
+            ref = m.group(1)
+            self.pushed.append((ref, list(self.state.get("branches", []))))
+            if ref.startswith(self.allowed):
+                return {"exit_code": 0, "stdout": "", "stderr": ""}
+            out = (f"To http://hangar-gateway.hangar.svc:8788/git/github.com/me/scratch.git\n"
+                   f" ! [remote rejected] HEAD -> {ref.removeprefix('refs/heads/')} ({self.refusal})\n"
+                   "error: failed to push some refs\n") if self.refusal else ""
+            return {"exit_code": 1 if self.refusal else 0, "stdout": out, "stderr": ""}
+        return {"exit_code": 0, "stdout": "0\n" if "grep -c" in command else "", "stderr": ""}
+
+
+@pytest.mark.parametrize("refusal,result", [
+    ("hangar: this sandbox may push only to refs/heads/hangar/**", "pass"),
+    ("", "let the sandbox push"),  # the gateway's push refs allow everything (HANGAR_GATEWAY_PUSH_REFS)
+    ("fetch first", "not with the gateway's refusal"),  # refused by GitHub, not hangar: only the URL says hangar
+])
+def test_gateway_check_never_pushes_to_main(tmp_path, monkeypatch, refusal, result):
+    """The `gateway` check pushes only to branches named for its run, recorded for cleanup before the push. Its
+    refused push stands in for main with a branch of its own, so a gateway that lets it through (a wide
+    HANGAR_GATEWAY_PUSH_REFS, or a bug) leaves nothing on the owner's main, and the refusal must be hangar's own."""
+    import argparse
+
+    sys.path.insert(0, str(ROOT / "scripts" / "acceptance"))
+    try:
+        import hangar_accept as ha
+    finally:
+        sys.path.pop(0)
+    fake = _GatewayHangar(refusal)
+    monkeypatch.setattr(ha.Api, "call", lambda self, *a, **kw: fake.call(*a, **kw))
+    monkeypatch.setattr(ha.Api, "exec", lambda self, *a, **kw: fake.exec(*a, **kw))
+    api = ha.Api("http://hangar.invalid", "t")
+    state = fake.state = ha.State(tmp_path / "state.json")
+    state.set("run", "r1")
+    state.set("session", "accept-r1")
+    opts = argparse.Namespace(gateway_repo="me/scratch", boot_timeout=60)
+    if result == "pass":
+        assert "refused" in ha.check_gateway(api, state, opts)
+    else:
+        with pytest.raises(ha.Fail, match=result):
+            ha.check_gateway(api, state, opts)
+    assert len(fake.pushed) == 2
+    for ref, recorded in fake.pushed:
+        assert "main" not in ref and "accept-r1" in ref, ref
+        assert {"repo": "me/scratch", "branch": ref.removeprefix("refs/heads/")} in recorded  # cleanup deletes it
+    assert len(state.get("branches")) == 2
 
 
 @pytest.mark.parametrize("asks", [True, False])

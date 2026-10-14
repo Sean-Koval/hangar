@@ -3,7 +3,7 @@
 # `bash deploy/gke/up.sh`, logged in with `hangar login`, with kubectl pointed at the cluster.
 #
 #   bash scripts/acceptance/gke.sh                                   # the free checks
-#   bash scripts/acceptance/gke.sh --gateway-repo you/scratch-repo   # + git gateway push / refused push to main
+#   bash scripts/acceptance/gke.sh --gateway-repo you/scratch-repo   # + git gateway push / refused push outside the grant
 #   bash scripts/acceptance/gke.sh --with-model --session-env my-env # + a real Claude turn, and steering/approvals
 #   bash scripts/acceptance/gke.sh --only exec,isolation             # just those
 #
@@ -28,8 +28,9 @@ usage: $0 [options]
   --repo URL            repo the sessions check out (default: --gateway-repo's, else
                         https://github.com/octocat/Hello-World.git)
   --gateway-repo O/R    run the git gateway check on github.com/O/R (sessions then use it as their repo): a
-                        push to hangar/accept-<run> must go through and a push to main must be refused.
-                        The branch is deleted afterwards with the gh CLI if you have it.
+                        push to hangar/accept-<run> must go through and a push to accept-<run>-outside (like main,
+                        outside the grant) must be refused. It never pushes to main.
+                        Both branches are deleted afterwards with the gh CLI if you have it.
   --with-model          also run a real short agent turn and a steered turn with an approval (costs money)
   --model NAME          model for those turns (default: the environment's)
   --exec-calls N        exec round trips to time (default: 20)
@@ -153,7 +154,7 @@ check isolation "a sandbox can't reach another sandbox's envd, the metadata serv
 check session   "session: checkpoint, suspend, resume in a new sandbox with the work restored (no model)"
 check model     "a real short agent turn"
 check steer     "a live turn: an approval held until allowed, a steer message delivered"
-check gateway   "git gateway: push to hangar/accept-<run> works, push to main is refused"
+check gateway   "git gateway: push to hangar/accept-<run> works, a push outside the grant is refused"
 check e2b       "the e2b SDK with a sandboxes token: create, run, files, list, kill"
 check backup    "back up the database now and list the backups"
 check metrics   "/metrics, and a metrics-scoped token that reaches nothing else"
