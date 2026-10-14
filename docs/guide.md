@@ -106,6 +106,22 @@ hangar connect claude-code                # and any other MCP client
 
 Settings you change with `hangar setup` or `hangar config set` are stored in hangar's database, on its volume. They survive redeploys and need no `kubectl`. The full walkthrough is in [docs/gke.md](gke.md).
 
+## A team on one hangar
+
+An admin adds people; each gets a login token, connects their own clients and stores their own agent login:
+
+```sh
+hangar person add alice                       # a member; prints her login token once
+hangar person add bob --role admin
+hangar person ls                              # owner is the admin your existing tokens belong to
+# alice, on her laptop:
+hangar login https://hangar.example           # paste the token
+hangar connect claude-code                    # an mcp token of her own
+claude setup-token | hangar cred add claude-alice --harness claude-code --kind oauth_token
+```
+
+Members see and act on their own sandboxes, sessions and jobs; admins on everyone's. Alice's sessions use her Claude login; teammates without one of their own use the environment's shared credential. `hangar cred owner NAME PERSON|shared` hands a credential to someone or back to the team, and `hangar person rm` revokes someone's tokens. See [security.md](security.md#people).
+
 ## MCP tools
 
 | Area | Tools |

@@ -54,6 +54,7 @@ class Sandbox(BaseModel):
     error: str | None = None
     created_by: str | None = None
     info: dict[str, Any] = Field(default_factory=dict)
+    person: str | None = None  # --- identity: the owning person (people.py); None: made before people, admins only
 
 
 class SnapshotKind(StrEnum):
@@ -71,6 +72,7 @@ class Snapshot(BaseModel):
     ref: str  # image tag / tarball path / provider snapshot id
     created_at: float = Field(default_factory=now)
     size_bytes: int | None = None
+    person: str | None = None  # --- identity: its sandbox's person
 
 
 class ExecResult(BaseModel):
@@ -112,6 +114,9 @@ class Credential(BaseModel):
     # keys and the GitHub tokens hangar's settings name; sandbox for the rest). `sandbox` shares a control-plane
     # GitHub token with sandboxes; signing keys and App keys stay control-plane whatever this says.
     exposure: Literal["sandbox", "control_plane"] | None = None
+    # --- identity: a person's own credential (their Claude or Codex login), used only in their sandboxes; None:
+    # shared by the team
+    person: str | None = None
 
 
 # ---------------------------------------------------------------------------- workstream C: events/usage/budgets
@@ -163,6 +168,17 @@ class ApiToken(BaseModel):
     max_budget: Budget | None = None  # jobs-scoped tokens: caps the budget callers may ask for (workstream C)
     created_at: float = Field(default_factory=now)
     last_used: float | None = None
+    person: str | None = None  # --- identity: who it belongs to; None: people.OWNER (tokens minted before people)
+
+
+# ---------------------------------------------------------------------------- --- identity: people (people.py)
+class Person(BaseModel):
+    """Someone on the team. Admins see and act on everything; members on their own work."""
+
+    id: str  # lowercase slug: the stable key records, quotas and tokens use
+    name: str = ""
+    role: Literal["admin", "member"] = "member"
+    created_at: float = Field(default_factory=now)
 
 
 class AuditEvent(BaseModel):
@@ -379,6 +395,7 @@ class Job(BaseModel):
     max_verify_rounds: int | None = None
     autofix: str | None = None  # "ci,reviews" | "ci" | "reviews" | "off"
     autofix_state: AutofixState = Field(default_factory=AutofixState)
+    person: str | None = None  # --- identity: the person it runs for (None: GitHub, Slack, webhooks, older jobs)
 
 
 # ---------------------------------------------------------------------------- scheduled jobs (workstream A)
@@ -399,6 +416,7 @@ class ScheduledJob(BaseModel):
     last_error: str | None = None
     created_at: float = Field(default_factory=now)
     updated_at: float = Field(default_factory=now)
+    person: str | None = None  # --- identity: its jobs run for this person
 
 
 # ---------------------------------------------------------------------------- sessions (spec 0010)
@@ -534,6 +552,7 @@ class Session(BaseModel):
     fork_conversation: str | None = None  # the parent's conversation id; the next turn forks it, then clears it
     approvals: ApprovalPolicy | None = None  # --- workstream steer: unset = the environment's, else HANGAR_APPROVALS
     cache: CachePolicy | None = None  # --- overnight/cache: unset = the environment's, else HANGAR_CACHE
+    person: str | None = None  # --- identity: the owning person; a job's session has its job's
 
 
 # ---------------------------------------------------------------------------- workstream F: git gateway (spec 0003)

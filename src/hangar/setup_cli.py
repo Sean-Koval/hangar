@@ -91,6 +91,8 @@ CURSOR_REDIRECT = "cursor://anysphere.cursor-mcp"  # --- overnight/sweep: in the
 
 def _check_cursor_redirect(cli) -> None:
     """Say how to allow Cursor's app-scheme sign-in when this hangar's redirect list was changed to leave it out."""
+    if cli._call("GET", "/api/me").get("role") == "member":  # --- identity: settings are an admin's to read
+        return
     d = cli._call("GET", "/api/settings/oauth_redirect_hosts")
     hosts = [str(h).lower().rstrip("/") for h in d["value"]]
     if "*" in hosts or CURSOR_REDIRECT in hosts:
@@ -164,7 +166,8 @@ def connect_client(client: str, auth: str = "token", name: str = "hangar", confi
     typer.secho(f"{how} '{name}' in {shown} ({c.title}) -> {url}" + (f" with token {tok_id} (scope mcp)"
                                                                     if tok_id else " (OAuth)"), fg="green")
     if auth == "oauth":
-        typer.echo("Sign in: " + c.login.format(name=name) + ", then approve on hangar's page with an admin token.")
+        typer.echo("Sign in: " + c.login.format(name=name) + ", then approve on hangar's page with your hangar login "
+                   "token (the one `hangar login` took).")  # --- identity
     typer.echo(c.restart.format(name=name, bridge=mcp_clients.MCP_REMOTE))
 
 

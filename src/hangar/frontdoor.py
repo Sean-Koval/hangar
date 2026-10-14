@@ -329,7 +329,9 @@ class FrontDoorMiddleware:
         if "admin" in scopes:
             return True
         if path.startswith("/mcp"):
-            return "mcp" in scopes
+            return "mcp" in scopes or "user" in scopes  # --- identity
+        if "user" in scopes and path.startswith(("/api/me", "/api/connect", "/api/tokens", "/api/credentials")):
+            return True  # --- identity: a person's own tokens and credentials
         return "jobs" in scopes and (path in ("/a2a", "/api/jobs") or path.startswith("/api/jobs/"))
 
     def _audit(self, scope, status: int) -> None:

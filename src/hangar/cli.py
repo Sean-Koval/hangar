@@ -155,7 +155,9 @@ def token_create(name: str = typer.Argument(..., help="Label, e.g. 'codex-laptop
                  max_tokens: int | None = typer.Option(None, "--max-tokens",
                                                        help="jobs tokens: cap on tokens per turn."),
                  max_minutes: int | None = typer.Option(None, "--max-minutes",
-                                                        help="jobs tokens: cap on minutes per turn.")):
+                                                        help="jobs tokens: cap on minutes per turn."),
+                 person: str | None = typer.Option(None, "--person", help="Whose token (admins; default: "
+                                                   "yours). --- identity")):
     """Mint an API token (shown once).
 
     Uses the server's REST API when HANGAR_URL is set, otherwise the local state store.
@@ -163,6 +165,7 @@ def token_create(name: str = typer.Argument(..., help="Label, e.g. 'codex-laptop
     cap = _budget(max_minutes, max_tokens, max_cost)
     if _remote_url():
         res = _call("POST", "/api/tokens", json={"name": name, "scopes": scope,
+                                                **({"person": person} if person else {}),  # --- identity
                                                 **({"callback_secret": callback_secret} if callback_secret else {}),
                                                 **({"max_budget": cap} if cap else {})})
         typer.secho(f"token {res['id']} ({res['name']}):", fg="green")
@@ -178,6 +181,7 @@ def token_create(name: str = typer.Argument(..., help="Label, e.g. 'codex-laptop
         from hangar.models import Budget
 
         raw, tok = Hangar().auth.create(name, scope, callback_secret=callback_secret,
+                                        **({"person": person} if person else {}),  # --- identity
                                         **({"max_budget": Budget(**cap)} if cap else {}))
     except ValueError as e:
         typer.secho(str(e), fg="red", err=True)
@@ -191,7 +195,7 @@ def token_list():
     """List API tokens (server REST API when HANGAR_URL is set, otherwise the local state store)."""
     if _remote_url():
         for t in _call("GET", "/api/tokens"):
-            typer.echo(f"{t['id']}  {t['name']:24}  last_used={t['last_used']}")
+            typer.echo(f"{t['id']}  {t['name']:24}  person={t.get('person') or 'owner':12} last_used={t['last_used']}")
         return
     from hangar.app import Hangar
 
@@ -440,6 +444,7 @@ def cred_ls():
     for c in _call("GET", "/api/credentials"):
         lease = f" leased_to={c['leased_to']}" if c.get("leased_to") else ""
         lease += " control-plane" if c.get("exposure") == "control_plane" else ""  # --- identity
+        lease += f" person={c['person']}" if c.get("person") else ""
         typer.echo(f"{c['name']:24} {c['harness']:12} {c['kind']:12}{' exclusive' if c['exclusive'] else ''}{lease}")
 
 
@@ -456,6 +461,8 @@ def cred_add(
     description: str | None = None,
     exposure: str | None = typer.Option(None, "--exposure", help="sandbox | control_plane (default: by its kind "
                                         "and name; --- identity)"),
+    person: str | None = typer.Option(None, "--person", help="Admins: whose own credential it is (default: shared; "
+                                      "a member's are always their own)."),
 ):
     """Store a credential. Examples:
 
@@ -475,7 +482,8 @@ def cred_add(
         secret = m[-1] if m else secret.strip()
     c = _call("POST", "/api/credentials", json={"name": name, "harness": harness, "kind": kind, "value": secret,
                                                 "description": description, "env_var": env_var,
-                                                **({"exposure": exposure} if exposure else {})})  # --- identity
+                                                **({"exposure": exposure} if exposure else {}),  # --- identity
+                                                **({"person": person} if person else {})})
     typer.secho(f"stored {c['name']} ({c['harness']}/{c['kind']}{', exclusive' if c['exclusive'] else ''})",
                 fg="green")
 
@@ -494,6 +502,14 @@ def cred_exposure(name: str, exposure: str = typer.Argument(..., help="sandbox |
     c = _call("PUT", f"/api/credentials/{name}/exposure",
               json={"exposure": None if exposure == "default" else exposure})
     typer.echo(f"{c['name']}: {c['exposure']}")
+
+
+@cred_app.command("owner")
+def cred_owner(name: str, person: str = typer.Argument(..., help="A person id, or 'shared' for the whole team.")):
+    """Make a credential someone's own (it then goes only into their sandboxes, in place of the environment's
+    shared one for its harness) or shared by the team."""
+    c = _call("PUT", f"/api/credentials/{name}/owner", json={"person": None if person == "shared" else person})
+    typer.echo(f"{c['name']}: {c['person'] or 'shared'}")
 
 
 # ---------------------------------------------------------------------------- jobs
@@ -1190,6 +1206,11 @@ app.command("down")(_setup.down)
 app.command("connect")(_setup.connect)
 app.add_typer(_setup.setup_app, name="setup")
 app.add_typer(_setup.config_app, name="config")
+
+# ---------------------------------------------------------------------------- --- identity: people (people_cli.py)
+from hangar.people_cli import person_app as _person_app  # noqa: E402
+
+app.add_typer(_person_app, name="person")
 
 
 # ---------------------------------------------------------------------------- overnight/sweep: database backups

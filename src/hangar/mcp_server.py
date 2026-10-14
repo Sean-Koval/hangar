@@ -30,6 +30,7 @@ from mcp_types import CallToolResult, ElicitResult, Icon, InputRequiredResult
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
 import hangar.identity as identity  # --- identity
+import hangar.people as people  # --- identity
 from hangar import exchange, mcp_steer, mcp_tasks, observe  # mcp_tasks: elicitation; mcp_steer: live turns; --- observe
 from hangar import mcp_live as live  # workstream mcp-modern: typed results, hints, resources, prompts
 from hangar.broker import CredentialError
@@ -148,6 +149,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                          # a question put to you in wait_for_turn may wait this long for your answer
                          request_state_security=RequestStateSecurity.ephemeral(ttl=ELICIT_WAIT_SECONDS))
 
+    guard = people.Guard(fleet, sessions, jobs, triggers)  # --- identity: members act on their own work only
+
     def tool(scope: str | None = None):
         """mcp.tool() that reports expected failures to the client instead of a generic error. The description is
         the docstring without its indentation; hints come from mcp_live.TOOL_HINTS. `scope` (e.g. "admin"): only
@@ -156,6 +159,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         def deco(fn):
             if scope:  # --- identity
                 fn = identity.scoped(fn, scope)
+            fn = people.guarded(fn, guard)  # --- identity
             if inspect.iscoroutinefunction(fn):
                 @functools.wraps(fn)
                 async def wrapped(*a, **kw):
@@ -225,8 +229,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
     @tool()
     def list_credentials() -> list[dict[str, Any]]:
         """Credentials available to attach to sandboxes (names and metadata only, never secrets)."""
-        return [c.model_dump(include={"name", "harness", "kind", "exclusive", "leased_to", "description"})
-                for c in fleet.broker.list()]
+        return [c.model_dump(include={"name", "harness", "kind", "exclusive", "leased_to", "description", "person"})
+                for c in people.usable(fleet.broker.list())]  # --- identity: shared and the caller's own
 
     # ------------------------------------------------------------------ lifecycle
     @tool()
@@ -251,14 +255,15 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         name = name or f"{environment}-{new_id('x')[2:]}"
         task = _detach(fleet.create(environment, name=name, repo=repo, branch=branch, work_branch=work_branch,
                                     credentials=credentials, provider=provider, ttl_minutes=ttl_minutes,
-                                    labels=labels, harness=harness, actor=actor()), "create_sandbox")
+                                    labels=labels, harness=harness, actor=actor(),
+                                    person=identity.person()), "create_sandbox")  # --- identity
         sb = await _within(task, fleet.settings.mcp_tool_wait_seconds)
         if sb is not None:
             return _sb(sb)
         # Still starting (a cold node, an image build): hand back the sandbox as it stands; get_sandbox shows when
         # it is running, and `stage` what it is waiting on.
         want = _slug(name)
-        mine = max((s for s in fleet.list(include_stopped=True) if s.environment == environment
+        mine = max((s for s in people.mine(fleet.list(include_stopped=True)) if s.environment == environment
                     and s.created_at >= started - 1 and (s.name == want or s.name.startswith(want + "-"))),
                    key=lambda s: s.created_at, default=None)
         if mine is None:
@@ -292,20 +297,20 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                 environment, name=f"{prefix}-{i + 1}", repo=repo, branch=branch,
                 work_branch=f"{work_branch_prefix}-{i + 1}" if work_branch_prefix else None,
                 credentials=credentials, provider=provider, ttl_minutes=ttl_minutes, labels=labels,
-                harness=harness, actor=actor())
+                harness=harness, actor=actor(), person=identity.person())  # --- identity
 
         started = time.time()
         task = _detach(asyncio.gather(*(one(i) for i in range(count)), return_exceptions=True), "create_sandboxes")
         res = await _within(task, fleet.settings.mcp_tool_wait_seconds)
         if res is None:  # still starting: report what exists so far; they keep coming up in the background
-            return [_sb(s) for s in fleet.list() if s.environment == environment and s.created_at >= started
-                    and s.name.startswith(_slug(prefix))]
+            return [_sb(s) for s in people.mine(fleet.list()) if s.environment == environment  # --- identity
+                    and s.created_at >= started and s.name.startswith(_slug(prefix))]
         return [_sb(r) if isinstance(r, Sandbox) else {"error": str(r)} for r in res]
 
     @tool()
     def list_sandboxes(include_stopped: bool = False, label: str | None = None) -> list[live.SandboxOut]:
         """List sandboxes. `label` filters by key or key=value."""
-        return [_sb(s) for s in fleet.list(include_stopped=include_stopped, label=label)]
+        return [_sb(s) for s in people.mine(fleet.list(include_stopped=include_stopped, label=label))]  # identity
 
     @tool()
     def get_sandbox(sandbox: str) -> live.SandboxOut:
@@ -326,6 +331,10 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             raise ValueError("pass sandboxes or a label, not both")
         if len(refs) == 1:
             return [(await fleet.destroy(refs[0], actor=actor())).id]
+        if label and not identity.sees_all():  # --- identity: a member's label reaches only their own
+            refs, label = [s.id for s in people.mine(fleet.list(label=label))], None
+            if not refs:
+                return []
         return await fleet.destroy_many(refs or None, label=label, actor=actor())
 
     # --- review: the tools merged above, kept callable under their old names and signatures (not listed:
@@ -346,6 +355,10 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         """Deprecated: destroy_sandbox(sandboxes=... | label=...)."""
         if not sandboxes and not label:
             raise ValueError("pass sandboxes or label (refusing to destroy the whole fleet implicitly)")
+        if label and not sandboxes and not identity.sees_all():  # --- identity
+            sandboxes, label = [s.id for s in people.mine(fleet.list(label=label))], None
+            if not sandboxes:
+                return []
         return await fleet.destroy_many(sandboxes, label=label, actor=actor())
 
     @tool()
@@ -460,7 +473,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
     @tool()
     def list_snapshots(sandbox: str | None = None) -> list[dict[str, Any]]:
         """List snapshots, optionally for one sandbox."""
-        return [s.model_dump(mode="json") for s in fleet.snapshots(sandbox)]
+        return [s.model_dump(mode="json") for s in people.mine(fleet.snapshots(sandbox))]  # --- identity
 
     @tool()
     async def fork_sandbox(source: str, count: int = 1, name_prefix: str | None = None,
@@ -473,7 +486,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                                   ttl_minutes, actor=actor()), "fork_sandbox")
         sbs = await _within(task, fleet.settings.mcp_tool_wait_seconds)
         if sbs is None:
-            return [_sb(s) for s in fleet.list(include_stopped=True) if s.created_at >= started and s.parent]
+            return [_sb(s) for s in people.mine(fleet.list(include_stopped=True))  # --- identity
+                    if s.created_at >= started and s.parent]
         return [_sb(s) for s in sbs]
 
     # ------------------------------------------------------------------ sessions (spec 0010)
@@ -499,7 +513,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                              budget=Budget.model_validate(budget) if budget else None,
                              context=[ContextItem.model_validate(c) for c in context or []],
                              output_schema=output_schema, approvals=approvals, cache=cache)
-            return sessions.view(sessions.new(req, owner=who, requester=who))
+            return sessions.view(sessions.new(req, owner=who, requester=who, person=identity.person()))  # identity
 
         @tool()
         async def list_sessions(include_archived: bool = False, limit: int = 30) -> list[live.SessionOut]:
@@ -507,8 +521,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             branch and the agent's last summary."""
             keep = ("id", "name", "title", "state", "environment", "harness", "repo", "branch", "last_active_at",
                     "last_summary", "sandbox_id", "needs_input")
-            return [{k: v for k, v in sessions.view(s).items() if k in keep}
-                    for s in sessions.list(include_archived=include_archived, limit=limit)]
+            mine = people.mine(sessions.list(include_archived=include_archived, limit=500))  # --- identity
+            return [{k: v for k, v in sessions.view(s).items() if k in keep} for s in mine[:max(1, min(limit, 500))]]
 
         @tool()
         async def get_session(session: str) -> live.SessionOut:
@@ -686,6 +700,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         async def artifact_resource(name: str, turn: str, path: str) -> str | bytes:
             if not turn.isdigit():
                 raise ValueError("turn must be a number")
+            guard.check("session", name)  # --- identity
             a, data = await exchange.read_artifact(sessions, sessions.get(name), int(turn), path)
             try:
                 return data.decode("utf-8")
@@ -695,7 +710,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         mcp_steer.register(mcp, tool, sessions, jobs, current_actor.get)  # workstream steer: steer_turn, approvals
 
         # --- workstream mcp-modern: jobs and sessions as resources clients can follow, and workflow prompts
-        live.register_resources(mcp, sessions, jobs)
+        live.register_resources(mcp, sessions, jobs, guard)  # --- identity: guard
         mcp.recent = lambda: live.recent_resources(sessions, jobs)
         live.register_prompts(mcp, sessions)
         fleet.store.on_put.append(feed.on_put)
@@ -743,7 +758,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                         budget=Budget.model_validate(budget) if budget else None, strategy=strategy, n=n,
                         judge=judge, verify_in_loop=verify_in_loop, autofix=autofix)  # --- overnight/autofix
         who = current_actor.get()
-        return jobs.view(jobs.submit(req, Caller(who, who), source="mcp"))
+        return jobs.view(jobs.submit(req, Caller(who, who, person=identity.person()), source="mcp"))  # identity
 
     @tool()
     async def get_job(job: str) -> live.JobOut:
@@ -755,8 +770,9 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
     async def list_jobs(state: str | None = None, limit: int = 20) -> list[live.JobOut]:
         """Recent jobs, newest first (state: queued | provisioning | running | verifying | delivering |
         needs_input | succeeded | failed | cancelled)."""
+        mine = people.mine(jobs.list(state=state, limit=500))  # --- identity
         return [{k: v for k, v in jobs.view(j).items() if k not in ("events", "instructions", "turns")}
-                for j in jobs.list(state=state, limit=limit)]
+                for j in mine[:max(1, min(limit, 500))]]
 
     @tool()
     async def follow_up_job(job: str, message: str, context: list[dict[str, Any]] | None = None,
@@ -821,12 +837,13 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             who = current_actor.get()
             spec = ScheduleSpec(name=name, cron=cron, timezone=timezone, job=job, allow_overlap=allow_overlap,
                                 enabled=enabled)
-            return triggers.view_schedule(triggers.create_schedule(spec, owner=who, requester=who))
+            return triggers.view_schedule(triggers.create_schedule(spec, owner=who, requester=who,
+                                                                   person=identity.person()))  # --- identity
 
         @tool()
         async def list_schedules() -> list[dict[str, Any]]:
             """Scheduled jobs with their next and last run, and the last job each one started."""
-            return [triggers.view_schedule(s) for s in triggers.list_schedules()]
+            return [triggers.view_schedule(s) for s in people.mine(triggers.list_schedules())]  # --- identity
 
         @tool()
         async def delete_schedule(schedule: str) -> dict[str, Any]:

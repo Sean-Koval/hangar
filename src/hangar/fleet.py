@@ -19,6 +19,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 import hangar.identity as identity  # --- identity
+import hangar.people as people  # --- identity
 from hangar import exchange, harden, isolation, observe  # --- observe, isolation, harden
 from hangar import fairness as fairness  # --- scale
 from hangar.broker import AUTH_FILE_LIMIT, Broker, CredentialError
@@ -238,6 +239,7 @@ class Fleet:
 
     def save_environment(self, data: dict[str, Any], actor: str = "system") -> EnvSpec:
         identity.check_environment(data, self.store, self.settings)  # --- identity: admin fields, control-plane secrets
+        people.claim_environment(self.store, self.catalog, data)  # --- identity: members change only their own
         spec = self.catalog.add(data)
         self.audit(actor, "environment.save", spec.name)
         return spec
@@ -553,6 +555,7 @@ class Fleet:
         progress: Callable[[str], None] | None = None,
         push_branch: str | None = None,
         tier: str | None = None,
+        person: str | None = None,  # --- identity: the owning person (people.py); picks their own credentials
     ) -> Sandbox:
         """`progress` gets short plain-language updates while the sandbox starts (image build, waiting for a
         node, cloning...), so callers can show where the time goes. `push_branch` (default: `work_branch`) is
@@ -587,6 +590,9 @@ class Fleet:
             # Only the selected harness's credentials (plus non-agent ones such as git) go into the sandbox.
             cred_names = [c for c in dict.fromkeys(spec.credentials)
                           if self._cred_harness(c) in (hname, None) or not self._is_agent(self._cred_harness(c))]
+        # --- identity: never another person's credential; the person's own one for this harness when they have it
+        cred_names = people.credentials_for(self.store, cred_names, person, hname, credentials is not None,
+                                            self._is_agent)
         for c in [*cred_names, *spec.secrets.values()]:
             self.broker.get(c)  # fail fast on typos
         for c in spec.secrets.values():  # --- identity: and on control-plane credentials mapped in (B4)
@@ -607,6 +613,7 @@ class Fleet:
             parent=_parent,
             expires_at=now() + ttl * 60 if ttl else None,
             created_by=actor,
+            person=person,  # --- identity
         )
         if hname:
             sb.info["harness"] = hname
@@ -1216,6 +1223,7 @@ class Fleet:
                 use_full = False
         if not use_full:
             snap = await self._workspace_snapshot(prov, sb, snap_id, label)
+        snap.person = sb.person  # --- identity
         self.store.put(snap)
         self.audit(actor, "sandbox.snapshot", sb.id, snapshot=snap.id, kind=snap.kind.value)
         return snap
@@ -1315,6 +1323,7 @@ class Fleet:
                 _restore_workspace=snap.ref if snap.kind == SnapshotKind.WORKSPACE else None,
                 _skip_repo=same_provider or snap.kind == SnapshotKind.WORKSPACE,
                 push_branch=f"{work_branch_prefix}-{i + 1}" if work_branch_prefix else None,  # workstream F
+                person=parent.person if parent else snap.person,  # --- identity: a fork is its source's person's
             )
             if parent and parent.info.get("repo_path"):
                 sb.info["repo_path"] = parent.info["repo_path"]

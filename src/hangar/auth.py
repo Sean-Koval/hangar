@@ -19,6 +19,7 @@ PREFIX = "hgr_"
 # admin: everything; jobs: only /api/jobs* (service callers); mcp: only /mcp; metrics: only GET /metrics (--- observe)
 SCOPES = ("admin", "jobs", "mcp", "metrics")
 SCOPES += ("sandboxes",)  # --- e2b-api: only the E2B-compatible API (/e2b) for the sandboxes it creates
+SCOPES += ("user",)  # --- identity: a person's own login: /mcp, and their own tokens and credentials over REST
 _RESERVED_NAMES = {"admin", "system"}
 
 
@@ -28,6 +29,8 @@ class Principal(NamedTuple):
     scopes: list[str]
     callback_secret: str | None = None
     max_budget: Budget | None = None  # jobs tokens: caps the budget their jobs may ask for (workstream C)
+    person: str | None = None  # --- identity: the person the token belongs to (the stable key for quotas)
+    role: str | None = None  # --- identity: that person's role, admin | member
 
     @property
     def admin(self) -> bool:
@@ -65,11 +68,12 @@ class TokenAuth:
         return actor if actor and exp > time.time() else None
 
     def create(self, name: str, scopes: list[str] | None = None,
-               callback_secret: str | None = None, max_budget: Budget | None = None) -> tuple[str, ApiToken]:
+               callback_secret: str | None = None, max_budget: Budget | None = None,
+               person: str | None = None) -> tuple[str, ApiToken]:
         check_token_name(name)
         raw = PREFIX + secrets.token_urlsafe(32)
         tok = ApiToken(name=name, token_hash=hash_token(raw), scopes=scopes or ["admin"],
-                       callback_secret=callback_secret, max_budget=max_budget)
+                       callback_secret=callback_secret, max_budget=max_budget, person=person)  # --- identity
         self.store.put(tok)
         return raw, tok
 
@@ -80,25 +84,40 @@ class TokenAuth:
         self.store.delete(ApiToken, token_id)
 
     def identify(self, raw: str | None) -> tuple[str, str] | None:
-        """(actor name, token id) for a valid *admin* token. The admin token's id is 'admin'.
+        """(actor name, token id) for a valid admin or `user` token. The admin token's id is 'admin'.
 
-        Used for OAuth consent: an MCP grant carries full tool access, so narrower tokens are refused."""
+        Used for OAuth consent: the grant acts as this token (--- identity: a member's grant sees their own work),
+        so service tokens (`mcp`, `jobs`...) are refused."""
         p = self.principal(raw)
-        return (p.name, p.id) if p and p.admin else None
+        return (p.name, p.id) if p and (p.admin or "user" in p.scopes) else None
 
     def principal(self, raw: str | None) -> Principal | None:
         if not raw:
             return None
         h = hash_token(raw)
         if self._admin_hash and hmac.compare_digest(h, self._admin_hash):
-            return Principal("admin", "admin", ["admin"])
+            return self._of(None)
         for tok in self.store.list(ApiToken):
             if hmac.compare_digest(h, tok.token_hash):
                 if now() - (tok.last_used or 0) >= 60:  # perf: not a database write on every request
                     tok.last_used = now()
                     self.store.put(tok)
-                return Principal(tok.name, tok.id, list(tok.scopes), tok.callback_secret, tok.max_budget)
+                return self._of(tok)
         return None
+
+    def _of(self, tok: ApiToken | None) -> Principal | None:
+        """--- identity: a token's principal, with its person. None (the server's admin token) and tokens minted
+        before people belong to people.OWNER. A removed person's tokens stop working; a member's never hold
+        more than people.MEMBER_SCOPES, whatever they were minted with."""
+        from hangar import people
+
+        person = people.get(self.store, people.token_person(tok.person if tok else None))
+        if person is None:
+            return None
+        if tok is None:
+            return Principal("admin", "admin", ["admin"], person=person.id, role=person.role)
+        scopes = list(tok.scopes) if person.role == "admin" else [s for s in tok.scopes if s in people.MEMBER_SCOPES]
+        return Principal(tok.name, tok.id, scopes, tok.callback_secret, tok.max_budget, person.id, person.role)
 
     # --- front-door-auth
     def valid(self, raw: str | None) -> bool:
@@ -113,15 +132,16 @@ class TokenAuth:
         h = hash_token(raw)
         if self._admin_hash and hmac.compare_digest(h, self._admin_hash):
             return ["admin"]
-        return next((list(tok.scopes) for tok in self.store.list(ApiToken) if hmac.compare_digest(h, tok.token_hash)),
-                    None)
+        tok = next((t for t in self.store.list(ApiToken) if hmac.compare_digest(h, t.token_hash)), None)
+        p = self._of(tok) if tok else None  # --- identity: as the routes will see it
+        return p.scopes if p else None
 
     def by_id(self, token_id: str | None) -> Principal | None:
         """--- identity: the principal of a token by its id (an OAuth grant acts as the token that approved it)."""
         if token_id == "admin":
-            return Principal("admin", "admin", ["admin"]) if self._admin_hash else None
+            return self._of(None) if self._admin_hash else None
         tok = self.store.get(ApiToken, token_id) if token_id else None
-        return Principal(tok.name, tok.id, list(tok.scopes), tok.callback_secret, tok.max_budget) if tok else None
+        return self._of(tok) if tok else None
 
     def exists(self, token_id: str | None) -> bool:
         if token_id == "admin":

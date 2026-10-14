@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import hangar.identity as identity  # --- identity
+import hangar.identity_api as identity_api  # --- identity
 from hangar import exchange, observe  # --- observe
 from hangar.a2a import A2AServer
 from hangar.auth import SCOPES, TokenAuth, bearer_from_headers
@@ -87,11 +88,11 @@ class MCPAuthMiddleware:
         token = bearer_from_headers(headers)
         # --- identity: the caller's principal (identity and scopes), not only its name; `mcp` tokens (hangar connect)
         who = self.auth.principal(token)
-        if who is not None and not (who.admin or "mcp" in who.scopes):
+        if who is not None and not (who.admin or "mcp" in who.scopes or "user" in who.scopes):
             who = None
         if who is None and self.oauth is not None:
             who = await self.oauth.principal(token)
-        actor = who.name if who else None
+        actor = identity.actor_name(who) if who else None
         if actor is None:
             challenge = 'Bearer realm="hangar"'
             if self.resource_metadata_url:  # MCP auth discovery (RFC 9728)
@@ -102,7 +103,7 @@ class MCPAuthMiddleware:
         tok = current_actor.set(actor)
         ptok = identity.current.set(who)  # --- identity
         # --- stream: streams this request opens re-check the token while they stay open (revocation closes them)
-        cred = stream_credential.set(token_check(self.auth, self.oauth, token, ("mcp",)))
+        cred = stream_credential.set(token_check(self.auth, self.oauth, token, ("mcp", "user")))  # --- identity
         try:
             await self.app(scope, receive, send)
         finally:
@@ -175,6 +176,7 @@ class CredentialBody(BaseModel):
     env_var: str | None = None
     file_path: str | None = None
     exposure: str | None = None  # --- identity: sandbox | control_plane (the broker checks it)
+    person: str | None = None  # --- identity: whose own credential this is (admins; a member's is always theirs)
 
 
 class LoginBody(BaseModel):
@@ -220,6 +222,7 @@ class TokenBody(BaseModel):
     scopes: list[str] = Field(default_factory=lambda: ["admin"])
     callback_secret: str | None = None  # jobs tokens: vault `webhook` credential that signs their callbacks
     max_budget: Budget | None = None  # jobs tokens: the most a job's per-turn budget may allow (workstream C)
+    person: str | None = None  # --- identity: whose token (admins may name anyone; default: the caller)
 
 
 def _setup_oauth(app: FastAPI, h: Hangar):
@@ -393,22 +396,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         identity.current.set(p)  # --- identity: shared code (environment saves) sees the REST caller too
         return f"ui:{p.name}"
 
+    async def person_actor(request: Request) -> str:  # --- identity: an admin, or a person with their `user` token
+        p = h.auth.principal(bearer_from_headers(request.headers))
+        if p is None:
+            raise HTTPException(401, "unauthorized", headers={"WWW-Authenticate": "Bearer"})
+        if not (p.admin or "user" in p.scopes):
+            raise HTTPException(403, f"token scopes {p.scopes} do not allow this route")
+        identity.current.set(p)
+        return f"ui:{p.name}"
+
     async def job_caller(request: Request) -> Caller:  # perf: async
         """Admin sees every job; a `jobs`-scoped token is restricted and sees only jobs it submitted."""
         p = h.auth.principal(bearer_from_headers(request.headers))
         if p is None:
             raise HTTPException(401, "unauthorized", headers={"WWW-Authenticate": "Bearer"})
         if p.admin:
-            return Caller(p.name, p.id)
+            return Caller(p.name, p.id, person=p.person)  # --- identity: person
         if "jobs" in p.scopes:
             return Caller(p.name, p.id, restricted=True, callback_secret=p.callback_secret,
-                          max_budget=p.max_budget)
+                          max_budget=p.max_budget, person=p.person)
         raise HTTPException(403, f"token scopes {p.scopes} do not allow jobs")
 
     def owner_filter(c: Caller) -> str | None:
         return c.owner if c.restricted else None
 
     A = Depends(actor)
+    U = Depends(person_actor)  # --- identity: routes a member's own `user` token reaches too
     J = Depends(job_caller)
     fleet = h.fleet
 
@@ -421,8 +434,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"ok": True}
 
     @app.get("/api/me")
-    async def me(who: str = A):
-        return {"actor": who}
+    async def me(who: str = U):
+        p = identity.principal()  # --- identity
+        return {"actor": who, "person": p.person if p else None, "role": p.role if p else None}
 
     @app.get("/api/doctor")
     async def doctor_route(_: str = A):
@@ -435,7 +449,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return fleet.overview()
 
     @app.get("/api/connect")
-    async def connect(_: str = A):
+    async def connect(_: str = U):
         url = h.settings.public_url.rstrip("/") + "/mcp"
         return {
             "mcp_url": url,
@@ -715,19 +729,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ]
 
     @app.get("/api/credentials")
-    async def creds(_: str = A):
+    async def creds(_: str = U):
         return [{**c.model_dump(mode="json"), "exposure": identity.exposure(c, h.settings)}  # --- identity: in effect
-                for c in h.broker.list()]
+                for c in identity_api.credentials(h)]
 
     @app.post("/api/credentials")
-    async def put_cred(body: CredentialBody, who: str = A):
+    async def put_cred(body: CredentialBody, who: str = U):
+        person = identity_api.credential_person(h, body.name, body.harness, body.kind, body.person, body.exposure)
         c = h.broker.put(body.name, body.harness, body.kind, body.value, body.description, body.env_var,
-                         body.file_path, exposure=body.exposure)  # --- identity
+                         body.file_path, exposure=body.exposure, person=person)  # --- identity
         fleet.audit(who, "credential.put", c.name, harness=c.harness, kind=c.kind.value)
         return c.model_dump(mode="json")
 
     @app.delete("/api/credentials/{name}")
-    async def del_cred(name: str, who: str = A):
+    async def del_cred(name: str, who: str = U):
+        identity_api.check_credential_delete(h, name)  # --- identity: a member deletes only their own
         h.broker.delete(name)
         fleet.audit(who, "credential.delete", name)
         return {"deleted": name}
@@ -747,28 +763,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # ------------------------------------------------------------------ tokens / audit
     @app.get("/api/tokens")
-    async def tokens(_: str = A):
-        return [t.model_dump(mode="json", exclude={"token_hash"}) for t in h.auth.list()]
+    async def tokens(_: str = U):
+        return [t.model_dump(mode="json", exclude={"token_hash"}) for t in identity_api.tokens(h)]  # --- identity
 
     @app.post("/api/tokens")
-    async def new_token(body: TokenBody, who: str = A):
+    async def new_token(body: TokenBody, who: str = U):
         bad = [x for x in body.scopes if x not in SCOPES]
         if bad or not body.scopes:
             raise HTTPException(400, f"unknown scopes {bad}; choose from {list(SCOPES)}")
+        person = identity_api.token_person(h, body.person, body.scopes)  # --- identity
         if body.callback_secret:
             cred = h.store.get(Credential, body.callback_secret)
             if cred is None or cred.harness != "webhook":
                 raise HTTPException(400, f"callback_secret '{body.callback_secret}' must name a 'webhook' credential")
         try:
             raw, tok = h.auth.create(body.name, body.scopes, callback_secret=body.callback_secret,
-                                     max_budget=body.max_budget)
+                                     max_budget=body.max_budget, person=person)  # --- identity
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         fleet.audit(who, "token.create", tok.id, name=body.name, scopes=body.scopes)
         return {"token": raw, **tok.model_dump(mode="json", exclude={"token_hash"})}
 
     @app.delete("/api/tokens/{token_id}")
-    async def del_token(token_id: str, who: str = A):
+    async def del_token(token_id: str, who: str = U):
+        identity_api.check_token_revoke(h, token_id)  # --- identity: a member revokes only their own
         h.auth.revoke(token_id)
         fleet.audit(who, "token.revoke", token_id)
         return {"revoked": token_id}
@@ -1022,9 +1040,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import settings_store, setup_api
 
     settings_store.mount(app, h, A)
-    from hangar import identity_api  # --- identity: credential exposure
-
-    identity_api.mount(app, h, A)
+    identity_api.mount(app, h, A)  # --- identity: people, credential exposure and owners
     setup_api.mount(app, h, A)
     from hangar import backup  # --- overnight/sweep: database backups (hangar admin)
 

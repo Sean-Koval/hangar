@@ -1,22 +1,172 @@
-"""REST routes for identity: where a credential may go (`hangar cred exposure`). Admin tokens only."""
+"""REST for identity: people and their login tokens (admins), where a credential may go and whose it is, and the
+self-service checks for the routes a member's `user` token reaches (their own tokens and credentials)."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from fastapi import FastAPI
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 
-from hangar import identity
+import hangar.identity as identity
+from hangar import people
+from hangar.models import ApiToken, Credential, CredentialKind
 
 
 class ExposureBody(BaseModel):
     exposure: str | None = None  # sandbox | control_plane; null: the default for its kind and name
 
 
+class OwnerBody(BaseModel):
+    person: str | None = None  # null: shared by the team
+
+
+class PersonBody(BaseModel):
+    id: str
+    name: str = ""
+    role: str = "member"
+    token: bool = True  # mint their first login token (shown once)
+
+
+class RoleBody(BaseModel):
+    role: str
+
+
+class LoginTokenBody(BaseModel):
+    name: str = Field("login", max_length=100)
+
+
+def _caller() -> Any:
+    p = identity.current.get()
+    if p is None:  # every route here sets it through its dependency
+        raise HTTPException(401, "unauthorized")
+    return p
+
+
+def manages() -> bool:
+    """Whether the REST caller manages everyone's tokens and credentials (an admin token), or only their own."""
+    return _caller().admin
+
+
+def _login_scopes(person: Any) -> list[str]:
+    return ["admin"] if person.role == "admin" else ["user"]
+
+
+def _mint_login(h: Any, person: Any, name: str, who: str) -> dict[str, Any]:
+    raw, tok = h.auth.create(f"{name}-{person.id}"[:100], _login_scopes(person), person=person.id)
+    h.fleet.audit(who, "token.create", tok.id, name=tok.name, scopes=tok.scopes, person=person.id)
+    return {"token": raw, **tok.model_dump(mode="json", exclude={"token_hash"})}
+
+
+# ---------------------------------------------------------------------------- self-service (app.py routes)
+def tokens(h: Any) -> list[ApiToken]:
+    """Every token for an admin; a member's own otherwise."""
+    p = _caller()
+    return [t for t in h.auth.list() if p.admin or people.token_person(t.person) == p.person]
+
+
+def token_person(h: Any, wanted: str | None, scopes: list[str]) -> str:
+    """The person a new token belongs to: the one an admin names, else the caller. A member mints only their own,
+    within people.MEMBER_SCOPES."""
+    p = _caller()
+    target = wanted or p.person
+    if not p.admin and target != p.person:
+        raise identity.Forbidden("you can mint tokens only for yourself")
+    person = people.get(h.store, target)
+    if person is None:
+        raise KeyError(f"no person '{target}'")
+    people.check_token_scopes(person, scopes)
+    return person.id
+
+
+def check_token_revoke(h: Any, token_id: str) -> None:
+    if not any(t.id == token_id for t in tokens(h)):
+        raise KeyError(f"no token '{token_id}'")
+
+
+def credentials(h: Any) -> list[Credential]:
+    """Every credential for an admin; the team's shared ones and the member's own otherwise."""
+    p = _caller()
+    return [c for c in h.broker.list() if p.admin or c.person in (None, p.person)]
+
+
+def credential_person(h: Any, name: str, harness: str, kind: CredentialKind, wanted: str | None,
+                      exposure: str | None) -> str | None:
+    """Whose a credential being stored is. An admin may name anyone (or keep its current owner); a member stores
+    only their own, never over someone else's or the team's, and never a control-plane kind."""
+    p = _caller()
+    existing = h.store.get(Credential, name)
+    if p.admin:
+        if wanted is not None and people.get(h.store, wanted) is None:
+            raise KeyError(f"no person '{wanted}'")
+        return wanted if wanted is not None else (existing.person if existing else None)
+    if wanted not in (None, p.person):
+        raise identity.Forbidden("you can store credentials only for yourself")
+    if existing is not None and existing.person != p.person:
+        raise identity.Forbidden(f"credential '{name}' isn't yours; pick another name")
+    if harness == "webhook" or kind == CredentialKind.GITHUB_APP or exposure:
+        raise identity.Forbidden("control-plane credentials and exposure are set by an admin")
+    return p.person
+
+
+def check_credential_delete(h: Any, name: str) -> None:
+    p = _caller()
+    c = h.broker.get(name)
+    if not p.admin and c.person != p.person:
+        raise identity.Forbidden(f"credential '{name}' isn't yours")
+
+
+# ---------------------------------------------------------------------------- admin routes
 def mount(app: FastAPI, h: Any, A: Any) -> None:
     @app.put("/api/credentials/{name}/exposure")
     async def set_exposure(name: str, body: ExposureBody, who: str = A):
         c = h.broker.set_exposure(name, body.exposure)
         h.fleet.audit(who, "credential.exposure", name, exposure=body.exposure)
         return {**c.model_dump(mode="json"), "exposure": identity.exposure(c, h.settings)}
+
+    @app.put("/api/credentials/{name}/owner")
+    async def set_owner(name: str, body: OwnerBody, who: str = A):
+        c = h.broker.get(name)
+        if body.person is not None and people.get(h.store, body.person) is None:
+            raise KeyError(f"no person '{body.person}'")
+        c.person = body.person
+        h.store.put(c)
+        h.fleet.audit(who, "credential.owner", name, person=body.person)
+        return c.model_dump(mode="json")
+
+    @app.get("/api/people")
+    async def list_people(_: str = A):
+        counts: dict[str, int] = {}
+        for t in h.auth.list():
+            counts[people.token_person(t.person)] = counts.get(people.token_person(t.person), 0) + 1
+        return [{**p.model_dump(mode="json"), "tokens": counts.get(p.id, 0)} for p in people.list_people(h.store)]
+
+    @app.post("/api/people")
+    async def add_person(body: PersonBody, who: str = A):
+        p = people.add(h.store, body.id, body.name, body.role)
+        h.fleet.audit(who, "person.add", p.id, role=p.role)
+        out: dict[str, Any] = p.model_dump(mode="json")
+        if body.token:
+            out["login"] = _mint_login(h, p, "login", who)
+        return out
+
+    @app.patch("/api/people/{person_id}")
+    async def set_role(person_id: str, body: RoleBody, who: str = A):
+        p = people.set_role(h.store, person_id, body.role)
+        h.fleet.audit(who, "person.role", person_id, role=p.role)
+        return p.model_dump(mode="json")
+
+    @app.delete("/api/people/{person_id}")
+    async def remove_person(person_id: str, who: str = A):
+        if person_id == identity.person():
+            raise HTTPException(400, "you can't remove yourself")
+        revoked = people.remove(h.store, person_id)
+        h.fleet.audit(who, "person.remove", person_id, revoked=revoked)
+        return {"removed": person_id, "revoked_tokens": revoked}
+
+    @app.post("/api/people/{person_id}/tokens")
+    async def login_token(person_id: str, body: LoginTokenBody, who: str = A):
+        p = people.get(h.store, person_id)
+        if p is None:
+            raise KeyError(f"no person '{person_id}'")
+        return _mint_login(h, p, body.name, who)

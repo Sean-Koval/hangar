@@ -28,6 +28,7 @@ from hangar.models import (
     Credential,
     Job,
     JobState,
+    Person,
     Sandbox,
     SandboxGrant,
     SandboxState,
@@ -48,10 +49,11 @@ _TABLES: dict[type[BaseModel], tuple[str, str]] = {
     Session: ("sessions", "id"),
     ScheduledJob: ("schedules", "id"),  # workstream A
     SandboxGrant: ("sandbox_grants", "id"),  # workstream F: git gateway
+    Person: ("people", "id"),  # --- identity
 }
 # --- review(perf): access control must not roll back on a node crash (a revoked token coming back), so these
 # commits, and the secrets table's, sync the WAL like synchronous=FULL; everything else stays on NORMAL.
-_DURABLE: frozenset[type[BaseModel]] = frozenset({ApiToken, Credential, SandboxGrant})
+_DURABLE: frozenset[type[BaseModel]] = frozenset({ApiToken, Credential, SandboxGrant, Person})  # --- identity: Person
 # --- scale: top-level fields records are looked up by, each with an index on its JSON value (an expression index:
 # no new column, no rewrite of existing rows). list_where/count_where on these never scan the table.
 _INDEXED: dict[type[BaseModel], tuple[str, ...]] = {

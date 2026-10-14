@@ -183,6 +183,7 @@ async def _fork(svc: SessionService, parent: Session, n: int, requester: str, *,
                 labels={**labels, **({"hangar.job": job_id, "hangar.attempt": str(i)} if job_id else {})},
                 job_id=job_id, parent_id=parent.id, forked_from_checkpoint=ck.id,
                 approvals=parent.approvals,  # --- workstream steer: a fork never runs with fewer checks
+                person=parent.person,  # --- identity
                 # --- overnight/cache: the parent's cache policy; on another harness, that harness's model (model
                 # ids are per harness, as in SessionService.open)
                 cache=parent.cache,

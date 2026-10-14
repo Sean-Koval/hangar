@@ -43,6 +43,24 @@ def principal() -> Principal | None:
     return current.get()
 
 
+def person() -> str | None:
+    """The calling person's id: the stable key for ownership and per-person quotas (None: in-process)."""
+    p = current.get()
+    return p.person if p else None
+
+
+def sees_all() -> bool:
+    """True for admins (by role, whatever the token's scopes) and in-process callers: they see everyone's work."""
+    p = current.get()
+    return p is None or p.role == "admin"
+
+
+def actor_name(p: Principal) -> str:
+    """The MCP actor: what audit entries, task handles and stream caps are keyed by. Token names aren't unique, so
+    a teammate's are prefixed with their person (`:` can't occur in a token name); the owner's stay as they were."""
+    return p.name if p.person in (None, "owner") else f"{p.person}:{p.name}"
+
+
 def is_admin() -> bool:
     """True for admin tokens and for in-process callers (no principal set)."""
     p = current.get()

@@ -683,7 +683,8 @@ class Triggers:
     def _cron(self, s: ScheduledJob) -> Cron:
         return Cron(s.cron, s.timezone)
 
-    def create_schedule(self, spec: ScheduleSpec, owner: str, requester: str) -> ScheduledJob:
+    def create_schedule(self, spec: ScheduleSpec, owner: str, requester: str,
+                        person: str | None = None) -> ScheduledJob:
         if not _NAME_RE.match(spec.name):
             raise TriggerError(f"schedule name '{spec.name}' must be lowercase letters, digits, '.', '_' or '-'")
         if any(x.name == spec.name for x in self.store.list(ScheduledJob)):
@@ -694,7 +695,8 @@ class Triggers:
             raise TriggerError(f"'{spec.cron}' never runs")
         s = ScheduledJob(name=spec.name, cron=cron.expr, timezone=spec.timezone,
                          template=self._check_template(spec.job), enabled=spec.enabled,
-                         allow_overlap=spec.allow_overlap, owner=owner, next_run_at=nxt)
+                         allow_overlap=spec.allow_overlap, owner=owner, next_run_at=nxt,
+                         person=person)  # --- identity
         self._save(s)
         self.jobs.fleet.audit(requester, "schedule.create", s.id, name=s.name, cron=s.cron, timezone=s.timezone)
         return s
@@ -740,7 +742,8 @@ class Triggers:
 
     def _submit(self, s: ScheduledJob, key: str) -> Job:
         req = SubmitJob.model_validate({**s.template, "idempotency_key": key})
-        return self.jobs.submit(req, Caller(f"schedule:{s.name}", s.owner), source="schedule",
+        return self.jobs.submit(req, Caller(f"schedule:{s.name}", s.owner, person=s.person),  # --- identity
+                                source="schedule",
                                 source_ref=f"schedule:{s.id}")
 
     def run_now(self, ref: str, requester: str) -> Job:

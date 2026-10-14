@@ -67,7 +67,7 @@ Hangar includes an OAuth 2.1 authorization server that follows the MCP authoriza
 
 1. Make sure `HANGAR_PUBLIC_URL` is the https URL clients reach hangar at, for example `https://hangar.example.com`. OAuth turns itself off for plain-http hosts other than localhost.
 2. In ChatGPT, go to **Settings → Connectors → Create** (developer mode). Set the MCP server URL to `https://hangar.example.com/mcp` and choose **OAuth** for authentication.
-3. ChatGPT discovers hangar's metadata, registers itself, and opens hangar's approval page. Paste a hangar admin token there and approve.
+3. ChatGPT discovers hangar's metadata, registers itself, and opens hangar's approval page. Paste your hangar login token there (an admin's, or a teammate's own from `hangar person add`) and approve; the connector then acts as you.
 
 Only apps whose redirect URL is on `HANGAR_OAUTH_REDIRECT_HOSTS` can register. The default list covers ChatGPT, claude.ai and localhost, which stops look-alike apps from phishing approvals.
 

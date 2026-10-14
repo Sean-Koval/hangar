@@ -137,15 +137,33 @@ What is **not** covered:
 - **E2B command output.** The E2B SDK buffers a command's whole output before hangar sees it, so on E2B a sandbox can still make one of hangar's commands return a very large output.
 - **Idle connections.** The gateway listener has no connection cap (uvicorn's counts idle sockets and would let one sandbox lock out the rest), so many idle connections from one sandbox are bounded only by the process's file limit.
 
+## People
+
+One hangar serves a team: run one per team rather than splitting one between teams. Every token belongs to a person, and a person is an **admin** or a **member**.
+
+| | Admin | Member |
+| --- | --- | --- |
+| Sandboxes, sessions, jobs, snapshots, schedules | everyone's | their own; anyone else's answers "not found", by id or by name |
+| Environments | create and change any | create new ones and change their own; `secrets`, `image`, `base`, `runtime_class` and `credential_mode: direct` need an admin |
+| Credentials | all; assign one to a person (`hangar cred owner`) | the team's shared ones and their own (`hangar cred add` stores it as theirs) |
+| Tokens | mint for anyone, within that person's role | their own: `user` (their login), `mcp` (what `hangar connect` mints), `jobs` |
+| REST | everything | `/api/me`, `/api/connect`, their tokens and credentials; jobs through a `jobs` token |
+
+- **A person's own credential** (their Claude or Codex login) goes only into their sandboxes. A sandbox for someone who has their own credential for its harness uses it in place of the environment's shared one; anyone else gets the shared one. Naming another person's credential is refused.
+- **Ownership is recorded** as `person` on sandboxes, snapshots, sessions, jobs and schedules. A job's session and sandbox, a fork and a best-of-N attempt are their source's person's. Work started from GitHub, Slack and inbound webhooks has no person yet, so only admins see it.
+- **Existing installs keep working.** Tokens minted before people, the server's admin token and the bootstrap token belong to `owner`, an admin. Records made before have no person, so they are the admins'.
+- **Removing someone** revokes their tokens (OAuth grants they approved stop with them). Their work stays, visible to admins; their own credentials go into nobody's sandbox until an admin reassigns them. Demoting an admin drops the `admin` scope from their tokens at once.
+- **Visibility is enforced at the front doors** (MCP tools and resources, REST), by the record each tool call names, so a new MCP tool with a `sandbox`, `session`, `job`, `ref`, `source` or `schedule` argument is covered without a change.
+
 ## OAuth connectors
 
 - **Scope:** OAuth access tokens reach `/mcp` only, never the REST API or the dashboard.
 - **Lifetime:** every approval is tied to the hangar token that approved it and stops working when that token is revoked or the app is disconnected. Approvals last at most 90 days.
 - **Registration:** limited to allowlisted redirect hosts (`HANGAR_OAUTH_REDIRECT_HOSTS`; an empty list allows none, `"*"` any) and capped in number. Redirect URIs must be `https`, `http` to `localhost`, `127.0.0.1` or `[::1]`, or a native app's own scheme (RFC 8252). A host entry (`claude.ai`) covers `https` and its subdomains; a native app's scheme needs an exact `scheme://host` entry, so listing `claude.ai` doesn't let an app register `evil://claude.ai`. RFC 8252 §7.1's reverse-domain form, which has no host (`com.example.app:/oauth2redirect`), needs an exact `scheme:` entry (`com.example.app:`). The consent page names the scheme of a non-web redirect (`cursor://anysphere.cursor-mcp`). Schemes a browser handles itself (`javascript:`, `data:`, `file:` and the like) are never allowed. A client that asks for several redirect URIs is registered with the allowed ones (RFC 7591 §3.2.1); it is refused only when none is allowed.
-- **Cursor:** `cursor://anysphere.cursor-mcp` is in the default list. Any app on the user's machine can claim a custom scheme, just as any app there can listen on the loopback ports native clients use (also allowed by default), so the scheme adds no new exposure: the code goes to an app on the machine of the person who approved, PKCE (`S256`) binds it to the client that started the flow, and approving needs an admin token. Cursor also asks for `https://www.cursor.com/agents/mcp/oauth/callback`; that sends the code to Cursor's servers, so it is left out unless you list `www.cursor.com`.
+- **Cursor:** `cursor://anysphere.cursor-mcp` is in the default list. Any app on the user's machine can claim a custom scheme, just as any app there can listen on the loopback ports native clients use (also allowed by default), so the scheme adds no new exposure: the code goes to an app on the machine of the person who approved, PKCE (`S256`) binds it to the client that started the flow, and approving needs a hangar login token. Cursor also asks for `https://www.cursor.com/agents/mcp/oauth/callback`; that sends the code to Cursor's servers, so it is left out unless you list `www.cursor.com`.
 - **Audience:** a client may ask for a token only for hangar's own MCP endpoint (`resource` = `HANGAR_PUBLIC_URL` or `…/mcp`, RFC 8707); any other resource is refused at `/authorize`.
 - **PKCE:** `S256` is required, and the code is bound to its redirect URI (the MCP SDK's token endpoint checks both).
-- **Consent page:** needs an admin token, can't be framed, and isn't cached.
+- **Consent page:** needs an admin token or a person's login (`user`) token, can't be framed, and isn't cached. The grant acts as that token: a member's connector sees their own work.
 
 ## Front doors
 
@@ -154,7 +172,7 @@ Work enters hangar through REST, MCP, A2A, GitHub webhooks, Slack, signed inboun
 | Front door | Who can start or steer work | Fence |
 | --- | --- | --- |
 | REST, A2A | An admin token: anything. A `jobs` token: its own jobs only (another token's job id or A2A `contextId`/`taskId` is "not found") | `jobs` tokens: repos in `HANGAR_GITHUB_REPOS` and their environments, no provider choice, their `max_budget` |
-| MCP | Admin tokens and `mcp` tokens; an OAuth grant acts as the token that approved it | `mcp` tokens can't set `secrets`, `image`, `base`, `runtime_class` or `credential_mode: direct` on an environment, or call admin-only tools |
+| MCP | Admin tokens, and people's `user` and `mcp` tokens; an OAuth grant acts as the token that approved it | A member's tokens reach only their own work ([People](#people)); `mcp` tokens can't set `secrets`, `image`, `base`, `runtime_class` or `credential_mode: direct` on an environment, or call admin-only tools |
 | GitHub | Trusted people ([triggers.md](triggers.md#1-who-can-start-work-from-github)); anyone else's trigger waits for approval, and their comments can't continue a job or answer its question | mapped repos, their environments |
 | Slack | Members of your workspace in a mapped channel (or `HANGAR_SLACK_USERS`); Slack Connect guests from other organizations only when listed | like a `jobs` token |
 | Inbound webhooks | Whoever holds the source's HMAC key | the source's configured repo and environment |
