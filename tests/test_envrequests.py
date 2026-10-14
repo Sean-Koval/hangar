@@ -141,7 +141,7 @@ async def test_requests_are_picked_up_while_the_turn_runs(svc, fleet, renv, reqs
     svc.new(NewSession(name="busy", environment=renv, message="TASK-NEEDS SLOW"), owner="admin", requester="admin")
     for _ in range(200):
         s = svc.get("busy")
-        if reqs.pending_for(s):
+        if len(reqs.pending_for(s)) >= 2:  # the agent writes two files; a poll can land between them
             break
         await asyncio.sleep(0.05)
     assert len(reqs.pending_for(s)) == 2 and s.turns[-1].finished_at is None, "picked up while the turn runs"
