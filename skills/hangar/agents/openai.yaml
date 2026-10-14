@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hangar"
+  short_description: "Delegate tickets to cloud coding agents"
+  default_prompt: "Use $hangar to hand off this coding task, follow its progress, and return the changes and verification results."
