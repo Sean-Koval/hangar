@@ -154,7 +154,7 @@ async def test_only_the_owner_or_an_admin_decides(svc, fleet, reqs):
         with pytest.raises(RequestError, match="only egress"):
             await reqs.decide(secret.id, True, "ops", scope="environment")
         assert (await reqs.decide(rows[1].id, True, "ops", scope="environment")).scope == "environment"
-        with pytest.raises(identity.Forbidden):  # widening is for approvals
+        with pytest.raises(RequestError, match="approvals"):  # widening is for approvals
             await reqs.decide(rows[2].id, False, "ops", scope="environment")
 
 

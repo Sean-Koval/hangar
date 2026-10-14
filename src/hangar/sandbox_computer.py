@@ -357,8 +357,9 @@ def screenshot(url: str | None, name: str | None, full_page: bool, wait_for: str
 
 # ====================================================================== the VNC bridge
 def bridge(port: int) -> int:
-    """stdin/stdout <-> 127.0.0.1:port, base64 lines ("D:<data>"), for hangar's VNC proxy. Text lines survive any
-    terminal transport (a Kubernetes exec stream decodes output as UTF-8). Only loopback ports are reachable."""
+    """stdin/stdout <-> 127.0.0.1:port, as base64 lines ("U:<data>" in, "D:<data>" out), for hangar's VNC proxy.
+    Text lines survive any terminal transport (a Kubernetes exec stream decodes output as UTF-8), and the two
+    prefixes keep an echoing terminal from looping input back. Only loopback ports are reachable."""
     try:
         sock = socket.create_connection(("127.0.0.1", port), timeout=5)
     except OSError as e:
@@ -378,7 +379,7 @@ def bridge(port: int) -> int:
                 buf += chunk.replace(b"\r", b"")
                 *lines, buf = buf.split(b"\n")
                 for ln in lines:
-                    if ln.startswith(b"D:"):
+                    if ln.startswith(b"U:"):
                         sock.sendall(base64.b64decode(ln[2:], validate=True))
                     elif ln == b"X":
                         return

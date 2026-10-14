@@ -154,8 +154,9 @@ async def install(prov: Any, sb: Sandbox, spec: EnvSpec, h: Harness | None, home
         await prov.write_file(sb, f"{home}/{h.skills_dir}/{SKILL_NAME}/SKILL.md", SKILL.read_bytes(), mode=0o644)
 
 
-START = ("nohup sh -c '\"$HOME\"/.hangar/bin/hangar-computer computer start --quiet' "
-         ">/dev/null 2>&1 </dev/null &")
+def start_cmd(home: str) -> str:
+    """Start the display in the background: the exec returns at once, the processes outlive it."""
+    return f"nohup {home}/.hangar/bin/hangar-computer computer start --quiet >/dev/null 2>&1 </dev/null &"
 
 
 # ====================================================================== media out: events and the PR body
@@ -269,9 +270,15 @@ class Screens:
         return t if t is not None and t.expires >= time.time() else None
 
 
-BRIDGE_CMD = ["sh", "-c", "stty raw -echo 2>/dev/null; \"$HOME\"/.hangar/bin/hangar-computer computer start --quiet "
-              f">/dev/null 2>&1; exec \"$HOME\"/.hangar/bin/hangar-computer bridge {VNC_PORT}"]
+def bridge_cmd(home: str) -> list[str]:
+    """Raw mode first, so nothing hangar writes is echoed or cooked; the display is started if it isn't up."""
+    tool = f"{home}/.hangar/bin/hangar-computer"
+    return ["sh", "-c", f"stty raw -echo 2>/dev/null; {tool} computer start --quiet >/dev/null 2>&1; "
+                        f"exec {tool} bridge {VNC_PORT}"]
+
+
 READY = b"HANGAR-BRIDGE READY"
+UP_CHUNK = 3000  # bytes per line to the sandbox: 4 KB of base64, under a terminal's canonical line limit
 
 
 class RfbFilter:
@@ -370,7 +377,8 @@ class RfbFilter:
 
 
 class Bridge:
-    """The provider's terminal stream carrying base64 lines to and from `hangar-computer bridge`."""
+    """The provider's terminal stream carrying base64 lines to and from `hangar-computer bridge`: "D:" lines from
+    the sandbox, "U:" lines to it, so a terminal that echoes (no `stty`) can't feed the viewer its own input."""
 
     def __init__(self, term: Any):
         self.term = term
@@ -413,5 +421,5 @@ class Bridge:
         return self._frames()
 
     async def write(self, data: bytes) -> None:
-        for i in range(0, len(data), 32768):
-            await self.term.write(b"D:" + base64.b64encode(data[i:i + 32768]) + b"\n")
+        for i in range(0, len(data), UP_CHUNK):
+            await self.term.write(b"U:" + base64.b64encode(data[i:i + UP_CHUNK]) + b"\n")

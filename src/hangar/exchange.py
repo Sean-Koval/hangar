@@ -96,8 +96,10 @@ QUESTION and SUMMARY are read from stdin when omitted or "-".
 EOF
 }
 case "${1:-}" in  # --- computer: these work outside turns too (docs/computer-use.md)
-  env) shift; exec python3 "$(dirname "$0")/hangar-env" "$@";;
-  screenshot|record|browse|computer) exec python3 "$(dirname "$0")/hangar-computer" "$@";;
+  env|screenshot|record|browse|computer)
+    command -v python3 >/dev/null 2>&1 || die "$1 needs python3, and this sandbox has none"
+    if [ "$1" = env ]; then shift; exec python3 "$(dirname "$0")/hangar-env" "$@"; fi
+    exec python3 "$(dirname "$0")/hangar-computer" "$@";;
 esac
 [ -n "${HANGAR_IO:-}" ] || die "HANGAR_IO is not set: this works inside a hangar job or session turn"
 out="$HANGAR_IO/out"

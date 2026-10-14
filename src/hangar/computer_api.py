@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 from hangar import computer, exchange
 from hangar.envrequests import MAX_NOTE, EnvRequest, EnvRequests, RequestError
+from hangar.fleet import FleetError
 
 log = logging.getLogger("hangar.computer")
 
@@ -98,7 +99,7 @@ async def proxy(ws: Any, fleet: Any, sessions: Any, t: computer.ScreenTicket) ->
     term = None
     try:
         sb, prov = fleet._running(sid)
-        term = await prov.open_terminal(sb, computer.BRIDGE_CMD, 80, 24)
+        term = await prov.open_terminal(sb, computer.bridge_cmd(f"/home/{fleet.settings.sandbox_user}"), 80, 24)
         bridge = computer.Bridge(term)
         first = await bridge.ready()
         verb = "took control of" if t.control else "is watching"
@@ -144,7 +145,7 @@ async def proxy(ws: Any, fleet: Any, sessions: Any, t: computer.ScreenTicket) ->
                     await ws.close(code=1008, reason=str(e)[:120])
             elif e is not None:
                 log.info("screen %s ended: %s", sid, e)
-    except (TimeoutError, ConnectionError, KeyError, NotImplementedError, OSError) as e:
+    except (TimeoutError, ConnectionError, KeyError, NotImplementedError, OSError, FleetError) as e:
         with contextlib.suppress(Exception):
             await ws.close(code=1011, reason=str(e)[:120] or "the screen is not available")
     except Exception as e:  # noqa: BLE001 - a viewer must never take anything else down

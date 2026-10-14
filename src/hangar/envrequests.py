@@ -271,12 +271,14 @@ class EnvRequests:
         if scope == "environment":
             if r.kind != "egress":
                 raise RequestError("only egress requests can be widened to the environment")
+            if not approve:
+                raise RequestError("scope applies to approvals; deny without it")
             spec = None
             try:
                 spec = self.fleet.catalog.get(r.environment)
             except (KeyError, ValueError):
                 pass
-            if not approve or not egressapi.may_widen(identity.current.get(), spec):
+            if not egressapi.may_widen(identity.current.get(), spec):
                 raise identity.Forbidden("approving for the whole environment needs an admin or the environment's "
                                          "owner")
         r.state, r.scope = ("approved" if approve else "denied"), scope
@@ -325,7 +327,14 @@ def mount(app: Any, h: Any, U: Any) -> None:
     @app.get("/api/env-requests")
     async def list_requests(state: str | None = "pending", session: str | None = None, limit: int = 100,
                             _: str = U):
-        sid = h.sessions.get(session).id if session else None
+        sid = None
+        if session:
+            from hangar import people
+
+            s = h.sessions.get(session)
+            if not people.visible(s.person):
+                raise KeyError(f"no session '{session}'")
+            sid = s.id
         return [reqs.view(r) for r in reqs.list(state or None, sid, limit)]
 
     @app.get("/api/env-requests/{rid}")

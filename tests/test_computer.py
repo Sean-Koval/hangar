@@ -133,7 +133,7 @@ class FakeTerm:
 
 async def test_bridge_framing_ignores_noise_and_round_trips():
     payload = os.urandom(70_000)
-    enc = b"D:" + base64.b64encode(payload) + b"\r\n"
+    enc = b"D:" + base64.b64encode(payload) + b"\r\n" + b"U:echoed-input-is-ignored\n"
     term = FakeTerm([b"stty: noise\r\nHANGAR-BRIDGE ", b"READY\r\n" + enc[:1000], enc[1000:], b""])
     b = Bridge(term)
     got = await b.ready()
@@ -142,7 +142,8 @@ async def test_bridge_framing_ignores_noise_and_round_trips():
     assert got == payload
     await b.write(payload)
     lines = term.written.split(b"\n")[:-1]
-    assert len(lines) == 3 and b"".join(base64.b64decode(ln[2:]) for ln in lines) == payload
+    assert all(ln.startswith(b"U:") and len(ln) < 4095 for ln in lines)
+    assert b"".join(base64.b64decode(ln[2:]) for ln in lines) == payload
     with pytest.raises(ConnectionError, match="Xvfb is not installed"):
         await Bridge(FakeTerm([b"hangar-computer: Xvfb is not installed: this environment has no computer\n"])).ready()
 
@@ -170,7 +171,7 @@ def test_the_sandbox_side_of_the_bridge_is_binary_safe():
         assert p.stdout.readline() == b"HANGAR-BRIDGE READY\n"
         assert base64.b64decode(p.stdout.readline()[2:]) == b"RFB 003.008\n"
         blob = bytes(range(256)) * 4
-        p.stdin.write(b"noise\nD:" + base64.b64encode(blob) + b"\n")
+        p.stdin.write(b"noise\nD:ignored\nU:" + base64.b64encode(blob) + b"\n")
         p.stdin.flush()
         back = b""
         while len(back) < len(blob):
@@ -325,7 +326,8 @@ def test_watching_and_taking_over_a_screen_through_hangar(app):
             assert ws.receive_bytes() == b"RFB 003.008\n"
             ws.send_bytes(sent)
             _until(lambda: b"".join(got) == sent)  # control: everything reaches the screen
-        assert "bridge" in " ".join(VncProvider.commands[-1]) and "stty raw -echo" in VncProvider.commands[-1][-1]
+        assert "/home/agent/.hangar/bin/hangar-computer bridge 5900" in VncProvider.commands[-1][-1]
+        assert VncProvider.commands[-1][-1].startswith("stty raw -echo")
         actions = [e["action"] for e in c.get("/api/audit").json()]
         assert {"screen.ticket", "screen.view", "screen.control"} <= set(actions)
     finally:

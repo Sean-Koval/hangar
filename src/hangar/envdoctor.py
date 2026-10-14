@@ -14,7 +14,9 @@ nothing is recorded, the doctor says "unknown" rather than guessing.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import re
@@ -34,6 +36,9 @@ log = logging.getLogger("hangar.envdoctor")
 
 SCRIPT = Path(__file__).with_name("sandbox_env.py")
 VERSION = 1
+# What is installed into a sandbox: a sandbox from an older hangar gets the new scripts at its next turn.
+INSTALLED = hashlib.sha256(SCRIPT.read_bytes() + computer.SCRIPT.read_bytes() + computer.SKILL.read_bytes()
+                           ).hexdigest()[:12]
 STATUS_REL = ".hangar/envstatus.json"
 MCP_NAME = "hangar-env"
 _REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -97,14 +102,15 @@ async def install(fleet: Any, prov: Any, sb: Sandbox, spec: EnvSpec, h: Harness 
                   extra_env: dict[str, str]) -> None:
     """At claim: the doctor and computer scripts, the status file, the display's env, and the display itself."""
     home = f"/home/{fleet.settings.sandbox_user}"
-    await prov.write_file(sb, f"{home}/.hangar/bin/hangar-env", SCRIPT.read_bytes(), mode=0o755)
-    await computer.install(prov, sb, spec, h, home)
     extra_env.update(computer.session_env(spec))
-    await write_status(prov, sb, home, build_status(fleet.settings, sb, spec, fleet=fleet))
-    sb.info["envdoctor"] = VERSION
+    await asyncio.gather(  # one round trip each on most providers: side by side, not one after another
+        prov.write_file(sb, f"{home}/.hangar/bin/hangar-env", SCRIPT.read_bytes(), mode=0o755),
+        computer.install(prov, sb, spec, h, home),
+        write_status(prov, sb, home, build_status(fleet.settings, sb, spec, fleet=fleet)))
+    sb.info["envdoctor"] = INSTALLED
     if spec.computer is not None and spec.computer.autostart:
         with contextlib.suppress(Exception):
-            await prov.exec(sb, computer.START, timeout=30)
+            await prov.exec(sb, computer.start_cmd(home), timeout=30)
 
 
 async def write_status(prov: Any, sb: Sandbox, home: str, status: dict[str, Any]) -> None:
@@ -119,7 +125,7 @@ async def refresh(svc: Any, s: Session, sb: Sandbox, io: str | None = None) -> N
         spec = fleet.catalog.get(sb.environment)
         _, prov = fleet._running(sb.id)
         home = f"/home/{svc.settings.sandbox_user}"
-        if sb.info.get("envdoctor") != VERSION:
+        if sb.info.get("envdoctor") != INSTALLED:
             await prov.write_file(sb, f"{home}/.hangar/bin/hangar-env", SCRIPT.read_bytes(), mode=0o755)
             h = None
             with contextlib.suppress(KeyError):
@@ -127,7 +133,7 @@ async def refresh(svc: Any, s: Session, sb: Sandbox, io: str | None = None) -> N
 
                 h = get_harness(s.harness) if s.harness else None
             await computer.install(prov, sb, spec, h, home)
-            sb.info["envdoctor"] = VERSION
+            sb.info["envdoctor"] = INSTALLED
         reqs = svc.env_requests.for_sandbox(s) if getattr(svc, "env_requests", None) is not None else []
         if io is None:
             from hangar.exchange import io_dir
@@ -135,7 +141,7 @@ async def refresh(svc: Any, s: Session, sb: Sandbox, io: str | None = None) -> N
             io = io_dir(svc.settings, s)
         await write_status(prov, sb, home, build_status(svc.settings, sb, spec, s, reqs, io, fleet))
         if spec.computer is not None and spec.computer.autostart:
-            await prov.exec(sb, computer.START, timeout=30)
+            await prov.exec(sb, computer.start_cmd(home), timeout=30)
     except Exception:  # noqa: BLE001 - diagnosis must never be why a turn fails
         log.warning("session %s: could not refresh the environment status", s.id, exc_info=True)
 
