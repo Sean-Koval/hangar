@@ -40,6 +40,7 @@ from hangar.models import (
     JobEvent,
     JobState,
     SandboxState,
+    Session,
     Turn,
     Usage,
     new_id,
@@ -164,6 +165,8 @@ class JobService:
         from hangar.frontdoor import Admission
 
         self.admission = Admission(self)
+        if sessions is not None:  # --- overnight/sweep: a deleted session's usage stays on its job
+            sessions.on_delete.append(self._session_deleted)
 
     # ================================================================== lifecycle
     async def start(self) -> None:
@@ -401,9 +404,18 @@ class JobService:
     def usage(self, job: Job) -> Usage | None:
         """What the job's agents used (--- interactions): every turn of every session that carried it, so
         best-of-N attempts, their repair runs and the judge count, each once, and a running turn counts live."""
-        carried = list(self.sessions._sessions.values()) if self.sessions is not None else []
-        turns = [t for s in carried if s.job_id == job.id for t in s.turns]
-        return total_usage(turns) if turns else total_usage(job.turns)
+        live = self.sessions._sessions if self.sessions is not None else {}
+        turns = [t for s in live.values() if s.job_id == job.id for t in s.turns]
+        # --- overnight/sweep: plus the sessions deleted since (a deleted attempt's spend was dropped before)
+        gone = [Turn(usage=u) for sid, u in job.deleted_session_usage.items() if sid not in live]
+        return total_usage(turns + gone) if turns or gone else total_usage(job.turns)
+
+    def _session_deleted(self, s: Session) -> None:
+        """Keep what a session that carried a job used, since usage() reads it from the session's turns."""
+        job = self._jobs.get(s.job_id or "")
+        if job is not None and (u := total_usage(s.turns)) is not None:
+            job.deleted_session_usage[s.id] = u
+            self._save(job)
 
     def events(self, job_id: str, owner: str | None = None, since: int = 0, limit: int = 200,
                tail: int | None = None) -> list[dict[str, Any]]:

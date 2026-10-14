@@ -137,7 +137,7 @@ def serve(
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     s = get_settings()
     uvicorn.run("hangar.app:create_app", factory=True, host=host or s.host, port=port or s.port, reload=reload,
-                log_level="info")
+                log_level="info", timeout_graceful_shutdown=s.shutdown_grace_seconds)  # --- overnight/sweep
 
 
 # ---------------------------------------------------------------------------- tokens
@@ -1117,3 +1117,69 @@ app.command("down")(_setup.down)
 app.command("connect")(_setup.connect)
 app.add_typer(_setup.setup_app, name="setup")
 app.add_typer(_setup.config_app, name="config")
+
+
+# ---------------------------------------------------------------------------- overnight/sweep: database backups
+admin_app = typer.Typer(no_args_is_help=True, help="Database backups and restores (docs/gke.md).")
+app.add_typer(admin_app, name="admin")
+
+
+@admin_app.command("backup")
+def admin_backup():
+    """Back up hangar's database now (encrypted with the vault key, into the session store)."""
+    r = _call("POST", "/api/admin/backup")
+    typer.secho(f"backed up {r['db_bytes']} bytes as {r['name']} in {r['where']}", fg="green")
+    for name in r["pruned"]:
+        typer.echo(f"deleted the older {name}")
+
+
+@admin_app.command("backups")
+def admin_backups(as_json: bool = typer.Option(False, "--json")):
+    """List the backups, newest first."""
+    r = _call("GET", "/api/admin/backups")
+    if as_json:
+        return _print(r)
+    every = f"every {r['every_hours']:g} h" if r["every_hours"] else "not scheduled (HANGAR_BACKUP_HOURS)"
+    typer.echo(f"{r['where']}: {every}, newest {r['keep']} kept")
+    for b in r["backups"]:
+        typer.echo(f"  {b['name']}")
+
+
+@admin_app.command("restore")
+def admin_restore(name: str = typer.Argument(..., help="A backup name from `hangar admin backups`, or latest."),
+                  local: bool = typer.Option(False, "--local", help="Stage it from this machine's HANGAR_* "
+                                             "environment and data dir, for a hangar that isn't running.")):
+    """Stage a backup; the next start of hangar swaps it in and keeps the current database aside."""
+    if local:
+        import asyncio
+
+        from hangar.backup import BackupError, Backups
+        from hangar.checkpoints import make_store
+        from hangar.config import get_settings
+        from hangar.store import Store
+        from hangar.vault import Vault
+
+        s = get_settings()
+        key_file = s.data_dir / "secret.key"
+        if not s.secret_key and not key_file.exists():
+            typer.secho("no vault key: set HANGAR_SECRET_KEY to the key the backup was made with", fg="red", err=True)
+            raise typer.Exit(1)
+        vault = Vault(Store(":memory:"), s.secret_key.encode() if s.secret_key else key_file.read_bytes().strip())
+
+        async def stage() -> dict:
+            blobs = make_store(s.session_store, s.data_dir)
+            try:
+                return await Backups(s, vault, blobs).stage(name)
+            finally:
+                if close := getattr(blobs, "close", None):
+                    await close()
+
+        try:
+            r = asyncio.run(stage())
+        except BackupError as e:
+            typer.secho(str(e), fg="red", err=True)
+            raise typer.Exit(1) from e
+    else:
+        r = _call("POST", "/api/admin/restore", json={"name": name})
+    typer.secho(f"staged {r['name']} ({r['db_bytes']} bytes). Restart hangar to swap it in "
+                "(on GKE: kubectl -n hangar rollout restart deploy/hangar).", fg="green")

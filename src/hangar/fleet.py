@@ -11,6 +11,7 @@ import contextlib
 import json
 import logging
 import re
+import secrets
 import shlex
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -149,6 +150,8 @@ class Fleet:
         # --- review(perf): an agent_status long-poll holds an I/O worker thread for its whole wait; at most half
         # the pool waits at once (sessions and MCP clients alike), so waiters can never starve other provider calls.
         self._waiters: asyncio.Semaphore | None = None  # sized from settings.io_pool on first use
+        # --- overnight/sweep: set on a shutdown signal (shutdown.py); long-polls stop waiting and answer
+        self.closing = asyncio.Event()
         # --- workstream F: git gateway. Grants for sandboxes in credential_mode: gateway (spec 0003).
         self.gateway = Gateway(self)
 
@@ -1005,22 +1008,27 @@ class Fleet:
         if not re.fullmatch(r"run-[0-9a-f]{8}", run_id):
             raise FleetError(f"invalid run id '{run_id}'")
         rdir = f"/home/{self.settings.sandbox_user}/.hangar/runs"
-        wait_seconds = max(0.0, min(60.0, float(wait_seconds)))
+        wait_seconds = 0.0 if self.closing.is_set() else max(0.0, min(60.0, float(wait_seconds)))
         if self._waiters is None:
             self._waiters = asyncio.Semaphore(max(1, self.settings.io_pool // 2))
         if wait_seconds and self._waiters.locked():
-            await asyncio.sleep(wait_seconds)
+            with contextlib.suppress(TimeoutError):  # --- overnight/sweep: a shutdown ends the sleep
+                await asyncio.wait_for(self.closing.wait(), wait_seconds)
             wait_seconds = 0.0
         wait = ""
+        wake = f"{rdir}/.wake-{run_id}-{secrets.token_hex(4)}"
         if wait_seconds:
             grew = (f" || [ \"$(stat -c %s {rdir}/{run_id}.log 2>/dev/null || echo 0)\" -gt {int(grow_from)} ]"
                     if grow_from is not None else "")
-            wait = (f"for i in $(seq {max(1, round(wait_seconds * 5))}); do {{ [ -s {rdir}/{run_id}.exit ]{grew}; }} "
-                    "&& break; sleep 0.2; done; ")
+            wait = (f"for i in $(seq {max(1, round(wait_seconds * 5))}); do {{ [ -s {rdir}/{run_id}.exit ]{grew} "
+                    f"|| [ -e {wake} ]; }} && break; sleep 0.2; done; rm -f {wake}; ")
+        cmd = (f"{wait}cat {rdir}/{run_id}.exit 2>/dev/null || echo RUNNING; echo '---'; "
+               f"tail -n {int(tail_lines)} {rdir}/{run_id}.log 2>/dev/null")
         async with self._waiters if wait_seconds else contextlib.nullcontext():
-            res = await prov.exec(
-                sb, f"{wait}cat {rdir}/{run_id}.exit 2>/dev/null || echo RUNNING; echo '---'; "
-                    f"tail -n {int(tail_lines)} {rdir}/{run_id}.log 2>/dev/null", timeout=20 + int(wait_seconds))
+            if wait_seconds:
+                res = await self._wakeable(prov, sb, cmd, 20 + int(wait_seconds), wake)
+            else:
+                res = await prov.exec(sb, cmd, timeout=20)
         head, sep, tail = res.stdout.partition("---\n")
         if not sep:  # review(perf): cut off (the sandbox went away mid-call): not a run that finished with -1
             raise FleetError(f"could not read the status of {run_id} (exit {res.exit_code}): "
@@ -1031,6 +1039,21 @@ class Fleet:
             return {"run_id": run_id, "state": "running", "exit_code": None, "output_tail": tail}
         return {"run_id": run_id, "state": "finished",
                 "exit_code": int(status) if re.fullmatch(r"-?\d+", status) else -1, "output_tail": tail}
+
+    async def _wakeable(self, prov: Provider, sb: Sandbox, cmd: str, timeout: int, wake: str) -> ExecResult:
+        """A status command that waits in the sandbox. On shutdown, `wake` is created so the wait ends and the
+        status comes back now (--- overnight/sweep: a 25 s MCP long-poll held pod shutdown that long)."""
+        call = asyncio.ensure_future(prov.exec(sb, cmd, timeout=timeout))
+        closing = asyncio.ensure_future(self.closing.wait())
+        try:
+            await asyncio.wait({call, closing}, return_when=asyncio.FIRST_COMPLETED)
+            if not call.done():
+                with contextlib.suppress(Exception):
+                    await prov.exec(sb, f"touch {wake}", timeout=10)
+            return await call
+        finally:
+            closing.cancel()
+            call.cancel()  # only does something when this was cancelled itself
 
     # ================================================================== snapshots / forks
     async def snapshot(self, ref: str, label: str | None = None, kind: str = "auto",

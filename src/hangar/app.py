@@ -59,6 +59,9 @@ class Hangar:
         self.sessions = SessionService(self.fleet, self.vault)
         self.jobs = JobService(self.fleet, self.sessions)
         self.triggers = Triggers(self.jobs)  # workstream A: approvals, inbound webhooks, schedules
+        from hangar.backup import Backups  # --- overnight/sweep: database backups into the session store
+
+        self.backups = Backups(self.settings, self.vault, self.sessions.blobs)
 
 
 # ---------------------------------------------------------------------------- MCP auth
@@ -250,6 +253,10 @@ def _setup_oauth(app: FastAPI, h: Hangar):
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
+    from hangar.backup import apply_pending  # --- overnight/sweep: a staged restore, before the database opens
+
+    settings = settings or get_settings()
+    apply_pending(settings)
     h = Hangar(settings)
     # --- workstream mcp-modern: legacy MCP clients keep a session unless HANGAR_MCP_STATELESS_HTTP (docs/mcp.md)
     stateless = h.settings.mcp_stateless_http
@@ -279,8 +286,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if pre is None:
             pre = [e.strip() for v in h.settings.github_repos.values() for e in v.split(",") if e.strip()]
         prebuild = asyncio.create_task(h.fleet.prebuild(pre)) if pre else None
+        # --- overnight/sweep: long-polls answer on SIGTERM, before uvicorn drains them (shutdown.py); backups
+        from hangar import shutdown
+
+        restore_signals = shutdown.on_signal(asyncio.get_running_loop(), h.fleet.closing.set)
+        h.backups.start()
         async with mcp.session_manager.run():
             yield
+        h.fleet.closing.set()
+        restore_signals()
+        await h.backups.stop()
         if prebuild:
             prebuild.cancel()
         await h.triggers.stop()
@@ -951,6 +966,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     settings_store.mount(app, h, A)
     setup_api.mount(app, h, A)
+    from hangar import backup  # --- overnight/sweep: database backups (hangar admin)
+
+    backup.mount(app, h, A)
 
     @app.get("/api/audit")
     async def audit(limit: int = 200, _: str = A):

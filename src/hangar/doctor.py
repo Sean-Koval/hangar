@@ -165,6 +165,12 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
         out.append(_check("durable checkpoints", None, "checkpoints are on the control plane's disk",
                           "hangar config set HANGAR_SESSION_STORE gs://<bucket>  (terraform output session_bucket), "
                           "then restart hangar"))
+    # --- overnight/sweep: the newest database backup is recent enough for its schedule
+    if (backups := getattr(h, "backups", None)) is not None:
+        from hangar.backup import doctor_check
+
+        if (c := await doctor_check(backups, s, "kubernetes" in fleet.providers)) is not None:
+            out.append(c)
     # git gateway (workstream F): reachable, and every GitHub App credential can mint a token
     out += await fleet.gateway.doctor(transport)
     await asyncio.sleep(0)

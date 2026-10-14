@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -46,10 +47,12 @@ class FakeProvider(Provider):
     """Each sandbox is a temp dir; exec runs bash locally with HOME/workspace remapped into it."""
 
     name = "fake"
+    made: list[FakeProvider] = []  # this test's providers, cleaned up after it (_fake_sandboxes_cleaned_up)
 
     def __init__(self):
         base = scratch_root()
         self.root = Path(tempfile.mkdtemp(prefix="fake-", dir=base))
+        FakeProvider.made.append(self)
         self.boxes: dict[str, Path] = {}
         self.images: set[str] = set()
         self.snaps: dict[str, Path] = {}
@@ -152,6 +155,23 @@ class FakeProvider(Provider):
         ref = f"fake-snap:{snapshot_id}"
         self.snaps[ref] = dest
         return ref
+
+    def cleanup(self) -> None:
+        """Kill the tmux servers agent runs started (one per box, its socket under the box's tmp/, destroyed boxes
+        and snapshot copies included), then remove the boxes. Left running, they outlived the test run, one per
+        session, and once filled a shared machine's memory."""
+        for tmp in self.root.glob("*/tmp"):
+            subprocess.run(["tmux", "kill-server"], capture_output=True, timeout=10,
+                           env={"TMUX_TMPDIR": str(tmp), "PATH": "/usr/bin:/bin:/usr/local/bin"})
+        shutil.rmtree(self.root, ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
+def _fake_sandboxes_cleaned_up():
+    """Every FakeProvider a test made, the `fleet` fixture's and those tests build themselves, once it ends."""
+    yield
+    while FakeProvider.made:
+        FakeProvider.made.pop().cleanup()
 
 
 @pytest.fixture

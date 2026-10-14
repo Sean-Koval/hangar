@@ -164,13 +164,8 @@ async def _fork(svc: SessionService, parent: Session, n: int, requester: str, *,
     ck = ck or (parent.checkpoints[-1] if parent.checkpoints else None)
     if ck is None:
         raise SessionError(f"session {parent.name} has nothing to fork yet (no checkpoint and no sandbox)")
-    blobs: dict[str, bytes] = {}
-    for part in (*PARTS, *exchange.CHECKPOINT_EXTRA):  # --- interactions: session.patch too (get_session_patch)
-        if part in ck.parts:
-            blob = await svc.blobs.get(f"{parent.id}/{ck.id}/{part}.enc")
-            if blob is None:
-                raise SessionError(f"checkpoint {ck.id} of {parent.name} is missing {part}")
-            blobs[part] = blob
+    # --- interactions: session.patch too (get_session_patch)
+    parts = [p for p in (*PARTS, *exchange.CHECKPOINT_EXTRA) if p in ck.parts]
     labels = {k: v for k, v in parent.labels.items() if k not in ("hangar.job", "hangar.attempt", "hangar.session")}
     children: list[Session] = []
     try:
@@ -190,14 +185,18 @@ async def _fork(svc: SessionService, parent: Session, n: int, requester: str, *,
                 turns=[t.model_copy(update={"run_id": None, "event_cursor": None, "usage": None,
                                             "repair_usage": None}, deep=True) for t in parent.turns],
                 needs_input=parent.needs_input, checkpoints=[ck.model_copy(deep=True)])
-            for part, blob in blobs.items():
-                await svc.blobs.put(f"{c.id}/{ck.id}/{part}.enc", blob)
-            children.append(c)
-        # --- interactions: the inherited turns' artifacts, so each child can still serve them (one at a time)
+            children.append(c)  # before its copies, so a failure part-way drops them too
+            # --- overnight/sweep: copied inside the store (a hard link, or a GCS rewrite), never through memory:
+            # a checkpoint's parts can be hundreds of MB, times N children
+            for part in parts:
+                if not await svc.blobs.copy(f"{parent.id}/{ck.id}/{part}.enc", f"{c.id}/{ck.id}/{part}.enc"):
+                    raise SessionError(f"checkpoint {ck.id} of {parent.name} is missing {part}")
+        # --- interactions: the inherited turns' artifacts, so each child can still serve them
         for a in (a for t in parent.turns for a in t.artifacts):
-            if (blob := await svc.blobs.get(exchange.artifact_key(parent, a.turn, a.path))) is not None:
-                for c in children:
-                    await svc.blobs.put(exchange.artifact_key(c, a.turn, a.path), blob)
+            for c in children:
+                if not await svc.blobs.copy(exchange.artifact_key(parent, a.turn, a.path),
+                                            exchange.artifact_key(c, a.turn, a.path)):
+                    break  # the parent's copy is gone: nothing to give any child
     except BaseException:
         for c in children:
             svc._spawn(svc._drop(f"{c.id}/"))

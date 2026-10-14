@@ -37,7 +37,8 @@ RESTORE_DIR = "/tmp/hangar-restore"
 PACK = "pack.tar"
 PACK_LIMIT = 64 * 1024 * 1024
 PACK_READ_LIMIT = PACK_LIMIT + 1024 * 1024  # integrate (#48): a pack read is capped; tar headers fit in 1 MB
-_LINE = re.compile(r"^HANGAR-(FP|HEAD|PART|PACK|UNCHANGED)(?: (.*))?$")
+_LINE = re.compile(r"^HANGAR-(FP|HEAD|PART|PACK|UNCHANGED|NOREPO)(?: (.*))?$")
+REPO_PARTS = ("repo.bundle", "wip.patch", "untracked.tgz", *exchange.CHECKPOINT_EXTRA)  # built from the checkout
 _SHA = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -48,6 +49,7 @@ class Capture:
     unchanged: bool = False
     parts: dict[str, tuple[int, str]] = field(default_factory=dict)  # name -> (bytes, sha256)
     packed: set[str] = field(default_factory=set)  # parts inside CKPT_DIR/PACK
+    norepo: bool = False  # --- overnight/sweep: the repo directory was gone; only the conversation was captured
 
 
 def capture_script(*, repo: str | None, home: str, dirs: list[str], base: str, max_untracked: int, max_part: int,
@@ -61,13 +63,16 @@ def capture_script(*, repo: str | None, home: str, dirs: list[str], base: str, m
     s = [f"export GIT_OPTIONAL_LOCKS=0; rm -rf {c} && mkdir -p {c} && chmod 700 {c} || exit 1"]
     if repo:
         # Read HEAD once and pin it, so a commit landing mid-checkpoint can't make head and bundle disagree.
+        # --- overnight/sweep: a repo directory that is gone (the agent removed it) skips the repo parts only; the
+        # conversation and $HANGAR_IO (agent.tgz) are still captured.
         s += [
-            f"cd {q(repo)} || exit 1",
+            f"if cd {q(repo)} 2>/dev/null; then",
             f"H=$(git rev-parse --verify -q HEAD) && git update-ref {CKPT_REF} $H && echo $H > {c}/head",
             f"if [ -n \"$H\" ]; then git diff --binary $H > {c}/wip.patch; fi",
             f"git ls-files -z --others --exclude-standard > {c}/untracked.list",
             f"if [ -s {c}/untracked.list ]; then "
             f"xargs -0 stat -c '%n %s %Y' -- < {c}/untracked.list > {c}/untracked.stat 2>/dev/null; fi",
+            "else H=; echo HANGAR-NOREPO; fi",
         ]
     # fingerprint: HEAD + tree diff + untracked names, sizes and times + conversation file listing
     s.append(f"FP=$({{ cat {c}/head 2>/dev/null; sha1sum {c}/wip.patch 2>/dev/null | cut -c1-40; "
@@ -78,7 +83,7 @@ def capture_script(*, repo: str | None, home: str, dirs: list[str], base: str, m
         s.append(f"if [ \"$FP\" = {q(skip_if)} ]; then echo HANGAR-UNCHANGED; rm -rf {c}; exit 0; fi")
     if repo:
         s += [
-            f"cd {q(repo)} || exit 1",
+            f"if cd {q(repo)} 2>/dev/null; then :",
             f"if [ -n \"$H\" ]; then git bundle create -q {c}/repo.bundle {CKPT_REF} --not --remotes "
             f"2>/dev/null || git bundle create -q {c}/repo.bundle {CKPT_REF} --not {q(base)} 2>/dev/null "
             f"|| rm -f {c}/repo.bundle; fi",
@@ -86,6 +91,7 @@ def capture_script(*, repo: str | None, home: str, dirs: list[str], base: str, m
             f"| gzip -1n > {c}/untracked.tgz; fi",
             # workstream E: the whole diff against base, so get_session_patch works while the session is suspended
             f"if [ -n \"$H\" ]; then {exchange.patch_script(q(base), f'{c}/session.patch', max_untracked)}; fi",
+            "fi",
         ]
     if d:
         s.append(f"cd {q(home)} && D=$(ls -d {d} 2>/dev/null); if [ -n \"$D\" ]; then "
@@ -116,6 +122,8 @@ def parse_capture(stdout: str) -> Capture:
             out.head = rest if re.fullmatch(r"[0-9a-f]{40,64}", rest) else None
         elif kind == "UNCHANGED":
             out.unchanged = True
+        elif kind == "NOREPO":
+            out.norepo = True
         elif kind == "PACK":
             out.packed = {p for p in rest.split() if p in ALL_PARTS}
         else:

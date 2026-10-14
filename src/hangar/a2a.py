@@ -661,10 +661,12 @@ class A2AServer:
     async def _wait(self, job: Job, request: Request | None, timeout: float) -> None:
         loop = asyncio.get_running_loop()
         end = loop.time() + timeout
-        while task_state(job.state) not in TERMINAL | PAUSED and loop.time() < end:
+        closing = self.jobs.fleet.closing  # --- overnight/sweep: a shutdown returns the task as it stands
+        while task_state(job.state) not in TERMINAL | PAUSED and loop.time() < end and not closing.is_set():
             if request is not None and await request.is_disconnected():
                 return
-            await asyncio.sleep(self.settings.a2a_poll_seconds)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(closing.wait(), self.settings.a2a_poll_seconds)
 
     # ------------------------------------------------------------------ messages: new jobs and follow-ups
     def _accept(self, caller: Caller, params: dict, ver: str) -> tuple[Job, _Config]:

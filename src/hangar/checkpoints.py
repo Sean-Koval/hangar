@@ -31,6 +31,13 @@ class CheckpointStore(Protocol):
         """Copy a blob inside the store (an unchanged checkpoint part). False when `src` does not exist."""
         ...
 
+    # --- overnight/sweep: database backups (backup.py) list theirs to keep the newest and age the last one
+    async def list(self, prefix: str) -> list[str]:
+        """Keys under `prefix` (a directory, ending in "/")."""
+        ...
+
+    async def delete(self, key: str) -> None: ...
+
 
 class LocalStore:
     def __init__(self, root: Path):
@@ -80,6 +87,19 @@ class LocalStore:
             return True
 
         return await asyncio.to_thread(link)
+
+    async def list(self, prefix: str) -> list[str]:  # --- overnight/sweep
+        d = self._path(prefix.rstrip("/") + "/x").parent
+        root = self.root.resolve()
+
+        def walk() -> list[str]:
+            return sorted(str(p.relative_to(root)) for p in d.rglob("*") if p.is_file() and p.suffix != ".part")
+
+        return await asyncio.to_thread(walk) if d.is_dir() else []
+
+    async def delete(self, key: str) -> None:
+        p = self._path(key)
+        await asyncio.to_thread(p.unlink, True)
 
 
 class GCSStore:
@@ -184,6 +204,24 @@ class GCSStore:
                 return True
             params = {"fields": "done,rewriteToken", "rewriteToken": j["rewriteToken"]}
         raise RuntimeError(f"copy of {src} did not finish")
+
+    async def list(self, prefix: str) -> list[str]:  # --- overnight/sweep
+        out: list[str] = []
+        params = {"prefix": self._name(prefix.rstrip("/") + "/"), "fields": "items(name),nextPageToken"}
+        while True:
+            r = await self._request(self._client(), "GET", f"{self.API}/storage/v1/b/{self.bucket}/o", params=params)
+            r.raise_for_status()
+            j = r.json()
+            out += [it["name"][len(self.prefix) + 1:] if self.prefix else it["name"] for it in j.get("items", [])]
+            if not j.get("nextPageToken"):
+                return sorted(out)
+            params = {**params, "pageToken": j["nextPageToken"]}
+
+    async def delete(self, key: str) -> None:
+        r = await self._request(self._client(), "DELETE",
+                                f"{self.API}/storage/v1/b/{self.bucket}/o/{quote(self._name(key), safe='')}")
+        if r.status_code not in (200, 204, 404):
+            r.raise_for_status()
 
     async def delete_prefix(self, prefix: str) -> None:
         async with httpx.AsyncClient(transport=self._transport, timeout=60) as c:
