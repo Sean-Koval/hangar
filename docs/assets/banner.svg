@@ -1,28 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-labelledby="title desc">
-  <title id="title">Hangar — coding agents, ready for takeoff</title>
-  <desc id="desc">A dark navy banner with three amber workspace bays connected to a central control plane.</desc>
-  <defs>
-    <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#0c1728"/><stop offset="1" stop-color="#172a3d"/></linearGradient>
-    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#8aa4ba" stroke-opacity=".07"/></pattern>
-  </defs>
-  <rect width="1280" height="360" rx="20" fill="url(#bg)"/>
-  <rect width="1280" height="360" rx="20" fill="url(#grid)"/>
-  <rect x="72" y="74" width="38" height="5" rx="2.5" fill="#f7bb5f"/>
-  <text x="72" y="169" fill="#f3f6fa" font-family="Arial,Helvetica,sans-serif" font-size="76" font-weight="700" letter-spacing="-3">Hangar</text>
-  <text x="76" y="218" fill="#c1cfdb" font-family="Arial,Helvetica,sans-serif" font-size="24">Coding agents, ready for takeoff.</text>
-  <text x="76" y="288" fill="#8fa7bb" font-family="Arial,Helvetica,sans-serif" font-size="14" letter-spacing="2">PREPARE · LAUNCH · REVIEW</text>
-  <g fill="none" stroke="#f7bb5f" stroke-width="2">
-    <path d="M916 133V173M786 173H1106M786 173V210M946 173V210M1106 173V210" stroke-opacity=".6"/>
-    <rect x="856" y="73" width="120" height="60" rx="12" fill="#1e354b"/>
-    <rect x="726" y="210" width="120" height="82" rx="12" fill="#1e354b"/>
-    <rect x="886" y="210" width="120" height="82" rx="12" fill="#1e354b"/>
-    <rect x="1046" y="210" width="120" height="82" rx="12" fill="#1e354b"/>
-    <path d="m750 235 9 8-9 8m17 0h16m127-16 9 8-9 8m17 0h16m127-16 9 8-9 8m17 0h16"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="320" viewBox="0 0 1280 320" role="img" aria-labelledby="title desc">
+  <title id="title">Hangar</title>
+  <desc id="desc">A custom H emblem formed by four separate workspace enclosures joined through a vermilion bridge, beside the Hangar wordmark on a warm off-white background.</desc>
+  <rect width="1280" height="320" fill="#eeeae2"/>
+  <g transform="translate(86 56)">
+    <!-- Four enclosed bays stay distinct; the central bridge connects them into an H. -->
+    <path d="M0 0H70V88H48V22H22V88H0Z" fill="#262923"/>
+    <path d="M0 120H22V186H48V120H70V208H0Z" fill="#262923"/>
+    <path d="M150 0H220V88H198V22H172V88H150Z" fill="#262923"/>
+    <path d="M150 120H172V186H198V120H220V208H150Z" fill="#262923"/>
+    <path d="M0 94H96V74H124V94H220V114H124V134H96V114H0Z" fill="#c4492d"/>
   </g>
-  <g font-family="Arial,Helvetica,sans-serif" text-anchor="middle">
-    <text x="916" y="109" fill="#f3f6fa" font-size="16">Control plane</text>
-    <text x="786" y="276" fill="#c1cfdb" font-size="14">Workspace A</text>
-    <text x="946" y="276" fill="#c1cfdb" font-size="14">Workspace B</text>
-    <text x="1106" y="276" fill="#c1cfdb" font-size="14">Workspace C</text>
-  </g>
+  <text x="388" y="207" fill="#262923" font-family="Helvetica Neue,Helvetica,Arial,sans-serif" font-size="116" font-weight="700" letter-spacing="-5">Hangar</text>
 </svg>
