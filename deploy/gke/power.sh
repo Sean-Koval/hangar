@@ -108,12 +108,24 @@ up)
     range=$(python3 -c 'import json,sys;print((json.load(sys.stdin).get("resourceLabels") or {}).get(sys.argv[1],""))' \
       "$(label_key "$p")" <<<"$saved")
     min=${range%-*}; max=${range#*-}
-    if [ -z "$range" ]; then  # never powered down by this script: system pools keep a node, others start at 0
-      case "$p" in system*) min=1; max=2 ;; *) min=0; max=4 ;; esac
+    read -r on cur_min cur_max < <(gcloud container node-pools describe "$p" --cluster "$CLUSTER" "${G[@]}" \
+      --format='value(autoscaling.enabled,autoscaling.minNodeCount,autoscaling.maxNodeCount)') || true
+    if [ "$on" = "True" ]; then
+      # `down` turned autoscaling off, so it is on again only if its range was set while the cluster was down (a
+      # terraform apply in the power-down window, docs/team-scale.md): that range wins over the one saved at `down`.
+      min=${cur_min:-0}
+      log "$p: autoscaling ${min}-${cur_max:-?} (set while down; kept)"
+      if [ -n "$range" ]; then
+        gcloud container clusters update "$CLUSTER" "${G[@]}" --quiet --remove-labels="$(label_key "$p")" >/dev/null
+      fi
+    else
+      if [ -z "$range" ]; then  # never powered down by this script: system pools keep a node, others start at 0
+        case "$p" in system*) min=1; max=2 ;; *) min=0; max=4 ;; esac
+      fi
+      log "$p: autoscaling ${min}-${max}"
+      gcloud container clusters update "$CLUSTER" "${G[@]}" --node-pool "$p" --enable-autoscaling \
+        --min-nodes "$min" --max-nodes "$max" --quiet >/dev/null
     fi
-    log "$p: autoscaling ${min}-${max}"
-    gcloud container clusters update "$CLUSTER" "${G[@]}" --node-pool "$p" --enable-autoscaling \
-      --min-nodes "$min" --max-nodes "$max" --quiet >/dev/null
     if [ "$min" -gt 0 ]; then
       gcloud container clusters resize "$CLUSTER" "${G[@]}" --node-pool "$p" --num-nodes "$min" --quiet >/dev/null
     fi
