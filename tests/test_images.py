@@ -551,3 +551,18 @@ def test_rest_registers_a_pack_by_digest_and_lists_locked_and_installed_versions
         assert r["image"].startswith("hangar-env/harness-codex@sha256:")
         codex = next(h for h in c.get("/api/harnesses").json() if h["name"] == "codex")
         assert codex["version"] == "0.162.1" and codex["installed"] == {"docker": "codex-cli 0.162.1"}
+
+
+# ------------------------------------------------------------------------------------------------ harness P2
+async def test_launch_glue_ships_with_hangar_not_in_the_pack(fleet, creds):
+    """Codex's pack is the vendor's files; the bundled rg reaches PATH (last, so the project's own wins) from the
+    claim-time environment. So how hangar starts a harness can change without a new pack digest."""
+    codex = HARNESSES["codex"]
+    sb = await fleet.create("agents", harness="codex")
+    env = (await fleet.read_file(sb.id, "/home/agent/.hangar/env")).decode()
+    assert f'export PATH="{codex.prefix}/bin:$PATH:{codex.prefix}/libexec/codex-path"' in env
+    before = pack_tag(codex, "p", REG)
+    codex_moved = codex.model_copy(update={"path_extra": ["libexec/somewhere-else"]})
+    assert pack_tag(codex_moved, "p", REG) == before, "a launch change is not a pack change"
+    for name in AGENTS:
+        assert "readlink" not in HARNESSES[name].install and "dirname" not in HARNESSES[name].install, name

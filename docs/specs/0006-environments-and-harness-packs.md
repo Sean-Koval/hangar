@@ -45,8 +45,8 @@ A harness profile (`src/hangar/harnesses.py`) has an `install` script. It runs a
 | Harness | Version | What the pack holds | Size |
 | --- | --- | --- | --- |
 | claude-code | latest (installer) | the native `claude` binary | ~200 MB |
-| codex | 0.162.1 | the static musl `codex` binary, its helper binaries and bundled `rg`; a wrapper puts `rg` on `PATH` | 432 MB |
-| pi | 1.1.0 (`@earendil-works/pi-coding-agent`) | the npm package plus its own node 22; the wrapper calls that node directly, so pi never uses or changes the project's node | 284 MB |
+| codex | 0.162.1 | the static musl `codex` binary (`bin/codex` links to it), its helper binaries and bundled `rg`, which hangar appends to `PATH` at claim time (`path_extra`), so the pack holds no hangar code | 432 MB |
+| pi | 1.1.0 (`@earendil-works/pi-coding-agent`) | the npm package plus its own node 22; a one-line launcher that names its prefix calls that node directly, so pi never uses or changes the project's node | 284 MB |
 | antigravity | latest (installer) | the `agy` binary (glibc) | ~205 MB |
 
 Codex and pi sizes were measured by running their install scripts. Claude Code and `agy` sizes are from the binaries inspected on 2026-10-11.

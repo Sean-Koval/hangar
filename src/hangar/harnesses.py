@@ -103,6 +103,9 @@ class Harness(BaseModel):
     # --- overnight/cache: env that asks the CLI for each prompt-cache TTL it supports ("5m", "1h", "off"; cache.py).
     # A TTL missing here is one the CLI can't be asked for; the provider's own caching applies.
     cache_env: dict[str, dict[str, str]] = Field(default_factory=dict)
+    # --- images (harness P2): directories in the prefix appended to PATH for the selected harness (lowest priority),
+    # set at claim time with the rest of its environment rather than by a wrapper in the pack.
+    path_extra: list[str] = Field(default_factory=list)
 
     @property
     def prefix(self) -> str:
@@ -124,23 +127,21 @@ rm -f /tmp/claude
 """
 
 # The npm package is a node launcher around a static musl binary; ship the binary, its helper binaries and
-# resources, and a wrapper that adds the bundled ripgrep the launcher would have put on PATH. --- harden: the wrapper
-# names its prefix (packs and bakes both put it there) instead of finding it with dirname and readlink, which a
-# hardened turn would otherwise look up on the agent's PATH before codex starts.
+# resources. --- images (harness P2): the pack holds the vendor's files only. bin/codex links to the binary, and the
+# bundled ripgrep the launcher would have put on PATH comes from `path_extra`, which hangar applies at claim time: a
+# change to how hangar starts codex ships with hangar, not as a new pack.
 _CODEX_INSTALL = r"""
 npm install -g --prefix /tmp/codex-npm "@openai/codex@$VERSION"
-V=$(find /tmp/codex-npm -type d -path '*/vendor/x86_64-unknown-linux-musl' | head -1)
+V=$(find /tmp/codex-npm -type d -path "*/vendor/$(uname -m)-unknown-linux-musl" | head -1)
 test -x "$V/bin/codex"
 mkdir -p "$PREFIX/bin" "$PREFIX/libexec"
 cp -a "$V/." "$PREFIX/libexec/"
-cat > "$PREFIX/bin/codex" <<SH
-#!/bin/sh
-PATH="\$PATH:$PREFIX/libexec/codex-path" exec "$PREFIX/libexec/bin/codex" "\$@"
-SH
-chmod 755 "$PREFIX/bin/codex"
+ln -s ../libexec/bin/codex "$PREFIX/bin/codex"
 """
 
 # pi needs node >= 22.19. Bundle the builder's node so pi never depends on (or changes) the project's node.
+# --- images (harness P2): the launcher names its prefix rather than finding it with dirname and readlink, which a
+# hardened turn would look up on the agent's PATH (harness B5): one fixed line, nothing to change in it later.
 _PI_INSTALL = r"""
 mkdir -p "$PREFIX/bin" "$PREFIX/node/bin"
 install -m 755 "$(command -v node)" "$PREFIX/node/bin/node"
@@ -149,8 +150,7 @@ PKG="$PREFIX/lib/lib/node_modules/@earendil-works/pi-coding-agent"
 ENTRY=$(node -p "require('$PKG/package.json').bin.pi")
 cat > "$PREFIX/bin/pi" <<SH
 #!/bin/sh
-D=\$(dirname "\$(dirname "\$(readlink -f "\$0")")")
-exec "\$D/node/bin/node" "\$D/lib/lib/node_modules/@earendil-works/pi-coding-agent/$ENTRY" "\$@"
+exec "$PREFIX/node/bin/node" "$PKG/$ENTRY" "\$@"
 SH
 chmod 755 "$PREFIX/bin/pi"
 """
@@ -275,6 +275,7 @@ HARNESSES: dict[str, Harness] = {
         # --- overnight/cache: no cache_env. Verified with 0.162.1: requests carry prompt_cache_key = the thread id
         # and no prompt_cache_retention / prompt_cache_options, and there is no flag or config key for them. OpenAI
         # caches automatically (GPT-5.6+: at least 30 min).
+        path_extra=["libexec/codex-path"],  # the bundled rg (--- images)
         session_dirs=[".codex/sessions"],
         resume="capture",
         # Verified with 0.162.1: `codex exec fork <id>` starts a new thread (its thread_id is in thread.started)
@@ -375,8 +376,8 @@ HARNESSES: dict[str, Harness] = {
         install=(
             'mkdir -p "$PREFIX/bin" "$PREFIX/node/bin" && install -m 755 "$(command -v node)" "$PREFIX/node/bin/node"\n'
             'npm install -g --prefix "$PREFIX/lib" "@google/gemini-cli@$VERSION"\n'
-            "printf '#!/bin/sh\\nD=$(dirname \"$(dirname \"$(readlink -f \"$0\")\")\")\\n"
-            "exec \"$D/node/bin/node\" \"$D/lib/bin/gemini\" \"$@\"\\n' > \"$PREFIX/bin/gemini\"\n"
+            "printf '#!/bin/sh\\nexec \"%s/node/bin/node\" \"%s/lib/bin/gemini\" \"$@\"\\n' \"$PREFIX\" \"$PREFIX\" "
+            "> \"$PREFIX/bin/gemini\"\n"
             'chmod 755 "$PREFIX/bin/gemini"'
         ),
         env={"NO_BROWSER": "true"},
