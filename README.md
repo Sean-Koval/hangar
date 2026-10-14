@@ -39,6 +39,21 @@ The same control plane runs on your laptop (Docker), on a single VM (Docker + gV
 - **A dashboard.** It covers the fleet, live terminals, the environment editor with streaming builds, credentials and sign-in, snapshots, MCP connect snippets with token management, and an audit log.
 - **Traces, metrics and cost.** OpenTelemetry traces from the control plane when `OTEL_*` is set; Claude Code's and Codex's own spans join them. Prometheus `/metrics` for a scrape-only token. A usage view of spend by day, repo and requester. See [docs/observability.md](docs/observability.md).
 
+## What's new
+
+PRs #48–#69 (details in [CHANGELOG.md](CHANGELOG.md)). **Upgrading a running hangar:** read [docs/upgrading.md](docs/upgrading.md) first, then prove the result on your cluster with `bash scripts/acceptance/gke.sh`.
+
+- **Steer running agents.** Claude Code and Codex turns accept messages, interrupts and tool approvals mid-turn ([docs/steering.md](docs/steering.md)).
+- **Streaming.** Command output, background processes, turn events and file changes stream to MCP and REST clients as they happen ([docs/streaming.md](docs/streaming.md)).
+- **Agents that finish the job.** The job's `verify` runs inside the turn, and failing CI or review comments on hangar's PRs start fix-up turns ([docs/jobs.md §7](docs/jobs.md)).
+- **hangar-envd.** A small Rust daemon in each sandbox runs commands and moves files without a `docker exec` or Kubernetes exec per call ([docs/envd.md](docs/envd.md)).
+- **E2B-compatible API.** The `e2b` SDKs, and tools built on them, run on hangar's sandboxes ([docs/e2b.md](docs/e2b.md)). E2B, self-hosted E2B and CubeSandbox can serve as a fast microVM tier ([docs/microvm.md](docs/microvm.md)).
+- **Isolation.** Sandboxes can't reach each other on Docker or GKE, and agent code runs as a separate user from hangar's driver on Docker. There, turns that ask for approval use settings hangar owns, so the agent can't switch the prompts off for a later turn ([docs/security.md](docs/security.md)).
+- **Cheaper sessions.** A prompt-cache TTL policy, one model per session, and cache sharing between best-of-N attempts, with savings reported ([docs/sessions.md](docs/sessions.md)).
+- **Setup and operations.** `hangar up`, `hangar connect`, setup wizards, settings stored in hangar's database, `hangar doctor --fix`, database backups, graceful shutdown, traces and `/metrics`.
+- **Hardening.** Rate limits and caps on every front door, replay protection, a stricter git gateway and OAuth, and capped reads of everything a sandbox writes.
+- **MCP.** Tasks, elicitation, typed results, live resources and prompts ([docs/mcp.md](docs/mcp.md)).
+
 ## Quickstart (laptop, 5 minutes)
 
 Requires Docker (Docker Desktop, OrbStack or Colima on macOS) and [uv](https://docs.astral.sh/uv/).

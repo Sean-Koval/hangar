@@ -49,7 +49,10 @@ _RESTART = ("public_url", "oauth_", "env_dirs", "image_prefix", "registry", "ext
             "enabled_providers", "docker_", "k8s_", "e2b_", "gateway_", "a2a_", "job_concurrency", "session_store",
             "prebuild_environments", "github_api_url", "sandbox_user", "events_max_mb",
             "mcp_stateless_http",  # integrate: #52's MCP transport mode is chosen when the app is built
-            "io_threads")  # integrate: #53's I/O pool and the Docker connection pool are sized at startup
+            "io_threads",  # integrate: #53's I/O pool and the Docker connection pool are sized at startup
+            # --- overnight/acceptance: providers find hangar-envd's binaries when they start, and /metrics is set
+            # up once (docs/upgrading.md tells people to turn these off with `hangar config set`)
+            "envd", "envd_dir", "metrics_enabled")
 
 
 class SettingError(ValueError):
