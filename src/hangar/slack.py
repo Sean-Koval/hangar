@@ -1,4 +1,4 @@
-"""Slack front door (spec 0011 workstream B, spec 0009 M6).
+"""Probe (CI selection measurement, not for merge). Slack front door (spec 0011 workstream B, spec 0009 M6).
 
 `/hangar <instructions>` or `@hangar <instructions>` in a mapped channel starts a job on that channel's repo.
 Hangar answers in a thread: when the agent starts, when it needs input, and when it finishes (outcome, summary,
