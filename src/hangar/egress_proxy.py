@@ -51,7 +51,7 @@ IDLE_SECONDS = 900.0  # no byte either way for this long ends a tunnel (model st
 CLOSE_GRACE_SECONDS = 15.0  # after the far side closes, how long the client side may still send
 # What one tunnel may hold per direction: a stream reader pauses its socket at 2 * BUF, a socket read takes at most
 # BUF (asyncio's default is 256 KB), and a write waits for the 64 KB high-water mark. A client that stops reading
-# then pins about 4 * BUF, so even MAX_CONNECTIONS stalled tunnels fit the control plane's memory.
+# then pins at most about 5 * BUF (320 KB), so even MAX_CONNECTIONS stalled tunnels fit the control plane's memory.
 BUF = 64 * 1024
 TLS_RECORD_MAX = 16384 + 2048  # a TLSPlaintext fragment is at most 2^14 bytes; leave room for what clients send
 MAX_CONNECTIONS = 4096  # the process's file limit is the real bound; leave room for everything else

@@ -652,7 +652,7 @@ async def test_a_client_that_stops_reading_holds_little_of_the_proxys_memory(pro
     await asyncio.sleep(1.5)
     [(cw, ur)] = held
     buffered = len(ur._buffer) + cw.transport.get_write_buffer_size()
-    assert buffered <= 256 * 1024, buffered
+    assert buffered <= 5 * egress_proxy.BUF + 16 * 1024, buffered  # it was 700 KB with 256 KB reads
     w.close()
     server.close()
 
