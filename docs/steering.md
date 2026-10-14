@@ -90,13 +90,61 @@ The turn still runs in tmux, so `hangar sb attach` and the run log work as befor
 
 **Commands.** Hangar writes each command to `~/.hangar/runs/<run>.ctl/`, moves it into `in/` and reads the driver's answer from `acks`. Each command, and each answer, is signed (HMAC-SHA256) with a key made for that run. Hangar keeps the key encrypted in its database. The driver reads its copy and deletes it before the agent starts. Unsigned, replayed and malformed commands are refused, and hangar ignores answers the driver didn't sign. The driver runs with `python3 -I` (nothing the agent can write, such as a module beside the driver or `PYTHONPATH`, is loaded into it), and makes itself non-dumpable before it reads the key: the agent runs as the same user, and without that it could read the key out of `/proc/<driver>/mem` (it could, in this repo's Docker sandboxes, which have no Yama ptrace restriction).
 
-**What approvals protect against.** The agent's own tool calls: a command or an edit runs only if you (or the deny-risky rules) allow it, and the agent can't answer for you through the control channel. They are not a boundary against code you allow to run. The agent and the driver share a user, so a command you allow can do anything that user can, now and in later turns: for example, edit `~/.hangar/env`, which each turn's script reads, or leave a process behind that watches for the next turn's key file. Treat "allow" on a command that runs code the agent wrote (a test suite, a build script) as trusting that code. A boundary against that needs the driver under its own user; it is a follow-up.
+**What approvals protect against.** The agent's own tool calls: a command or an edit runs only if you (or the deny-risky rules) allow it, and the agent can't answer for you through the control channel. Where the sandbox allows it, the driver also runs as a user of its own ([the uid split](#the-uid-split)), so code you allow to run can't reach it either. Without the split, the agent and the driver share a user, and a command you allow can do anything that user can, now and in later turns: for example, edit `~/.hangar/env`, which each turn's script reads, or leave a process behind that watches for the next turn's key file. There, treat "allow" on a command that runs code the agent wrote (a test suite, a build script) as trusting that code.
 
 **Ending the turn.** When the turn is over, the driver renames `in/` away first. A command that comes too late then fails to land, and hangar knows at once; a command that landed just before is still carried out. A late steer continues the turn. If the agent's process exits on its own, the driver takes no more commands, and answers the ones it had not passed on with "the turn has ended": hangar then starts the next turn with the message, so it is never lost.
 
 **Status and restarts.** The driver's exit status is the turn's: 130 after an interrupt that brought no new message. The driver runs inside the sandbox, so a control-plane restart doesn't affect it. The restarted control plane re-attaches to the turn (from its saved event cursor), and pending approvals can still be answered.
 
 `HANGAR_LIVE_TURNS=false` turns all of this off: every turn runs one-shot, as before.
+
+## The uid split
+
+The driver holds the run's key and answers for whoever approves. In a single user, code the agent runs (a test suite you allowed, say) can reach it, so where the sandbox allows it hangar runs each turn as two users (`src/hangar/isolation.py`):
+
+- **`hangar`, a system user, runs the turn.** It runs the turn's script, the driver and their tmux session. It owns `/var/lib/hangar`:
+  - the driver itself;
+  - `runs/` (0755): each run's script, exports, prompt, log and exit status;
+  - each run's `<run>.ctl/` (0700): the key, `in/` and `acks`.
+- **The agent runs the harness, as the sandbox user, with every capability dropped.** The driver starts the harness through `setpriv`. Its environment is built as the agent, in the same order as a single-user run: `~/.hangar/env`, then the run's exports. The harness starts in the turn's directory.
+- **Readers work as before.** The agent's `~/.hangar/runs/<run>.log`, `.exit`, `.pid` and `.sh` are links into `runs/`. So anything that reads a run (status, events, the log, `grep … ~/.hangar/runs/*.log`) reads it as it did.
+- **The dashboard's "Watch the agent" is a read-only view** of the run's tmux session.
+
+What the agent can't do then (`tests/test_e2e_isolation_docker.py` checks each from inside a real sandbox while a turn waits on an approval):
+- read a run's key or list its control directory;
+- write a command, the driver, the turn's script or its exports;
+- signal the driver, trace it (`ptrace`), or read its environment or memory;
+- get back to the driver's uid (`setuid`);
+- have a program it planted on its `PATH` run as root or as `hangar`.
+
+**How it starts.**
+- Root starts the turn's tmux through `setpriv` as `hangar`, with `CAP_SETUID`, `CAP_SETGID` and `CAP_KILL` in its ambient set. The driver needs the first two to start the harness as the agent, and the third to stop it.
+- Commands hangar runs as root or as `hangar` find programs through a fixed system `PATH`. The image's `PATH` starts with directories the agent owns (`~/.local/bin`), and Docker resolves an exec's command through it: a `timeout` planted there ran as root. This applied to the Docker provider's own root `mkdir` before this change too.
+- The harness's `setpriv` clears every capability. A uid change between two non-root users keeps capabilities unless they are dropped: without that step the agent would keep `CAP_SETUID` and could become `hangar`.
+- The mechanism was checked under runc (Docker 29.8) and under gVisor (`runsc` release-20260928, `runsc do`), with the same results. Kata runs a regular Linux guest kernel, so the semantics are runc's (not run here: no `/dev/kvm`).
+
+**Where it applies.** The split needs Docker (runc, gVisor or Kata runtimes), whose exec picks the uid, and an agent that can't become root. Hangar sets it up when a sandbox's first turn starts:
+- it adds the user with `useradd --system`;
+- it checks for `setpriv` (util-linux), `tmux` and `bash`;
+- it checks that the agent can't `sudo`, asking again under a terminal (`script`) when sudo wants one (`Defaults requiretty`: the agent can get a terminal whenever it likes);
+- it checks, as the agent, that it can't write any directory on that fixed system `PATH` or the commands root and `hangar` run from it (`setpriv`, `tmux`, `bash`, `python3`, `tar`, `timeout`, `env`, `tee`). `hangar` holds `CAP_SETUID`, so whatever runs as it can become root.
+
+Nothing is built into images, so existing environments get the split without a rebuild. Everywhere else turns run single-user, as before, and `sb.info.isolation.why` says why:
+- **environments with `sudo: true` (the default).** The agent is root whenever it likes, so a second user would protect nothing. Set `sudo: false` for the split.
+- **Kubernetes.** GKE Sandbox's policy runs each pod as one non-root user with no capabilities and no privilege escalation. No process in the pod can switch users, and a second container wouldn't share the agent's filesystem.
+- **E2B.** Its envd can run commands as another user, but this isn't wired up.
+- **`HANGAR_UID_SPLIT=off`.**
+
+An `ask` turn in a single-user sandbox carries a warning on the turn. With `HANGAR_UID_SPLIT=required` it fails instead, saying why. `auto` turns have no approvals to protect and run either way.
+
+**What the split doesn't cover.**
+- **The harness is still the agent's.** Its binaries on the agent's `PATH`, its settings (`~/.claude/settings.json` and the repository's `.claude/`, `~/.codex/config.toml`) and `~/.hangar/env` are the agent's to change. Code you allow can, for example, add a Claude Code permission rule that pre-approves later tool calls, and the driver never sees a prompt for them. The split keeps the driver, its key and your answers out of reach; whether the harness asks is up to its configuration. Hangar-owned harness settings (Claude Code's `--setting-sources`/`--settings`, Codex's equivalents) are a follow-up.
+- **`~/.hangar/env` stays writable by the agent, on purpose.** Hangar's user never reads or runs it: only the harness's environment, as the agent, comes from it. A hangar-owned copy would not protect the harness while its settings stay writable.
+- **What hangar reads about a run goes through the agent's links.** The log, exit status and pid are read through `~/.hangar/runs`, which the agent owns, and the harness's output reaches the log. So the agent can still fake what the log says (hide an approval request, so it times out and is denied), as without the split. Answers and acks are signed, so it can't fake those.
+- **Setuid programs other than `sudo`.** The agent keeps the full bounding set, so a setuid-root program in the image that grants root without a password would undo the split. Images ship none by default (root's password is locked).
+- **deny-risky resolves paths as `hangar`.** It can't follow symlinks inside directories only the agent can enter, such as a repository under the agent's home (0750). It is a guard rail, as before.
+
+`hangar-envd` stays the agent's. It runs as the sandbox user and serves everything hangar does as that user; what runs as `hangar` (starting and stopping a turn, its commands, the view of its terminal) goes through `docker exec`. A daemon able to switch users would be the most exposed process in the sandbox and the most privileged one, and Kubernetes couldn't run it anyway.
 
 ## Verified
 

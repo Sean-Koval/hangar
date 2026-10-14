@@ -844,7 +844,7 @@ class TurnWatcher:
         for _ in range(READS_PER_POLL * (4 if final else 1)):
             try:
                 res = await self.fleet.exec(
-                    self.s.sandbox_id, f"stat -c %s {q} 2>/dev/null || echo 0; "
+                    self.s.sandbox_id, f"stat -L -c %s {q} 2>/dev/null || echo 0; "  # --- isolation: -L, a link
                                        f"tail -c +{p.next + 1} {q} 2>/dev/null | head -c {CHUNK} | base64 -w0",
                     timeout=30, actor=f"session:{self.s.id}", quiet=True)
                 size_s, _, b64 = res.stdout.partition("\n")

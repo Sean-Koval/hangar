@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any
 
 import jsonschema
 
+from hangar import isolation  # --- isolation
 from hangar.events import add_usage, over_budget
 from hangar.models import Artifact, ContextItem, JobState, Session, SessionTurn, now
 
@@ -613,7 +614,8 @@ async def _wait_repair(svc: SessionService, s: Session, turn: SessionTurn, sb: S
                 else f"the repair turn was stopped over budget: {over}" if over else None)
         if stop:
             with contextlib.suppress(Exception):
-                await svc._sh(sb, f"tmux kill-session -t {shlex.quote(run.run_id or '')}")
+                _, kprov = svc.fleet._running(sb.id)
+                await isolation.kill(kprov, sb, svc.settings, run.run_id or "")  # --- isolation: where it runs
             turn.warnings.append(stop)
             if over:  # --- review: the turn as a whole went over its budget, so that is its outcome
                 turn.outcome, turn.outcome_reason = "over_budget", over
