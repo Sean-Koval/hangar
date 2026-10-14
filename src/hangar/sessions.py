@@ -847,7 +847,8 @@ class SessionService:
         try:
             if waited := await caching.STAGGER.wait(s.id, self.settings.cache_stagger_seconds):
                 turn.cache_wait_seconds = round(waited, 1)
-            run_id, command = await steering.prepare(self, s, turn, sb, h)  # workstream steer: live or one-shot
+            run_id, command = await steering.prepare(self, s, turn, sb, h,  # workstream steer: live or one-shot
+                                                     env={**(extra_env or {}), **env})  # --- harden: the gate
         except BaseException:
             caching.STAGGER.responded(s.id)
             raise
@@ -1064,6 +1065,20 @@ class SessionService:
                                  f"{{ p=$(cat {rdir}/$r.pid 2>/dev/null); [ -n \"$p\" ] && [ -d /proc/$p ]; }}; }}; "
                                  "then n=$((n+1)); fi; done; "
                                  "echo $(( n + $(tmux list-clients 2>/dev/null | wc -l) ))", timeout=20)
+        if res.stdout.strip() not in ("", "0"):
+            return True
+        if not isolation.split(sb):
+            return False
+        # --- harden: split runs, from hangar's user's own files (their links above are the agent's to remove)
+        _, prov = self.fleet._running(sb.id)
+        r = isolation.RUNS
+        res = await isolation.sh(prov, sb, f"n=0; for f in {r}/run-*.sh; do [ -e \"$f\" ] || continue; "
+                                           "x=$(basename \"$f\" .sh); "
+                                           f"if [ ! -e {r}/$x.exit ] && {{ {isolation.TMUX} has-session -t \"$x\" "
+                                           f"2>/dev/null || {{ p=$(cat {r}/$x.pid 2>/dev/null); [ -n \"$p\" ] && "
+                                           "[ -d /proc/$p ]; }; }; then n=$((n+1)); fi; done; "
+                                           f"echo $(( n + $({isolation.TMUX} list-clients 2>/dev/null | wc -l) ))",
+                                 timeout=20)
         return res.stdout.strip() not in ("", "0")
 
     def set_idle(self, ref: str, idle_minutes: int, requester: str) -> Session:

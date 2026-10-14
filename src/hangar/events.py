@@ -27,6 +27,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from hangar import isolation  # --- harden
 from hangar.models import Budget, Session, SessionTurn, Usage, now
 
 log = logging.getLogger("hangar.events")
@@ -841,12 +842,21 @@ class TurnWatcher:
         self.floor = activity.log.max_off(s.id, turn.run_id or "") if turn.run_id else -1
         self.number = next((i for i, t in enumerate(s.turns, 1) if t is turn), len(s.turns))
         self.log_path = f"/home/{fleet.settings.sandbox_user}/.hangar/runs/{turn.run_id}.log"
+        # --- harden: a split run's log is read where hangar's user writes it, as that user (the agent's link to it is
+        # the agent's to point anywhere), and its approvals from the driver's own file, not from the log
+        self.split, self.approvals_read = False, 0
+        with contextlib.suppress(Exception):
+            self.split = bool(turn.run_id) and isolation.run_split(fleet.get(s.sandbox_id), turn.run_id)
+            if self.split:
+                self.log_path = f"{isolation.RUNS}/{turn.run_id}.log"
 
     def note(self, kind: str, text: str, **data: Any) -> None:
         """An event hangar itself adds to the turn (e.g. why it was stopped)."""
         self._record([RunEvent(kind=kind, text=_clip(text), data=_small(data))])
 
-    def _record(self, evs: list[RunEvent]) -> None:
+    def _record(self, evs: list[RunEvent], from_log: bool = True) -> None:
+        if self.split and from_log:  # --- harden: anything in the log may be the agent's; see _approvals
+            evs = [ev for ev in evs if ev.kind != "approval_request"]
         keep = []
         for ev in evs:
             if ev.off is not None and ev.off <= self.floor:
@@ -878,6 +888,7 @@ class TurnWatcher:
         if self.turn.run_id and self.s.sandbox_id:
             try:
                 await self._read(final=False)
+                await self._approvals()  # --- harden
             except Exception:  # noqa: BLE001 - activity is best effort; it must never break the turn
                 log.exception("session %s: collecting events failed", self.s.id)
         return over_budget(self.s.budget, self.turn.usage, self.turn.started_at)
@@ -887,6 +898,7 @@ class TurnWatcher:
         if alive and self.turn.run_id and self.s.sandbox_id:
             try:
                 await self._read(final=True)
+                await self._approvals()  # --- harden
             except Exception:  # noqa: BLE001
                 log.exception("session %s: collecting events failed", self.s.id)
         p = self.parser
@@ -902,10 +914,8 @@ class TurnWatcher:
         q = shlex.quote(self.log_path)
         for _ in range(READS_PER_POLL * (4 if final else 1)):
             try:
-                res = await self.fleet.exec(
-                    self.s.sandbox_id, f"stat -L -c %s {q} 2>/dev/null || echo 0; "  # --- isolation: -L, a link
-                                       f"tail -c +{p.next + 1} {q} 2>/dev/null | head -c {CHUNK} | base64 -w0",
-                    timeout=30, actor=f"session:{self.s.id}", quiet=True)
+                res = await self._sh(f"stat -L -c %s {q} 2>/dev/null || echo 0; "  # --- isolation: -L, a link
+                                     f"tail -c +{p.next + 1} {q} 2>/dev/null | head -c {CHUNK} | base64 -w0")
                 size_s, _, b64 = res.stdout.partition("\n")
                 data = base64.b64decode(b64.strip() or b"")
                 size = int(size_s.strip() or 0)
@@ -929,3 +939,43 @@ class TurnWatcher:
             self.turn.usage = p.view() if (p.usage.tokens + p.usage.cache_read_tokens or p.final) else None
             self.turn.event_cursor = p.state()
             self.save()
+
+    async def _sh(self, command: str) -> Any:
+        if self.split:  # --- harden: as hangar's user
+            sb, prov = self.fleet._running(self.s.sandbox_id)
+            return await isolation.sh(prov, sb, command, timeout=30)
+        return await self.fleet.exec(self.s.sandbox_id, command, timeout=30, actor=f"session:{self.s.id}", quiet=True)
+
+    async def _approvals(self) -> None:
+        """--- harden: a split turn's approval requests and answers, from the driver's own copy in its control
+        directory (driver.Control.record), which only hangar's user can write. Read whole each time the watcher
+        starts (after a restart too): only what changes the turn's approvals is recorded."""
+        if not (self.split and self.turn.live and self.turn.run_id):
+            return
+        from hangar.steer import track  # import cycle
+
+        path = shlex.quote(f"{isolation.ctl_dir(self.fleet.settings, self.turn.run_id, True)}/approvals")
+        for _ in range(READS_PER_POLL):
+            try:
+                res = await self._sh(f"tail -c +{self.approvals_read + 1} {path} 2>/dev/null | head -c {CHUNK} "
+                                     "| base64 -w0")
+                data = base64.b64decode(res.stdout.strip() or b"")
+            except Exception:  # noqa: BLE001 - sandbox busy or gone: the next poll reads on from here
+                return
+            end = data.rfind(b"\n") + 1  # whole lines only (one is at most a few KB)
+            if not end:
+                return
+            self.approvals_read += end
+            fresh = []
+            for line in data[:end].splitlines():
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(e, dict) and str(e.get("type") or "").startswith("hangar.approval_"):
+                    fresh += [ev for ev in _driver_event(e) if track(self.turn, [ev])]
+            if fresh:
+                self._record(fresh, from_log=False)
+                self.save()
+            if len(data) < CHUNK:
+                return

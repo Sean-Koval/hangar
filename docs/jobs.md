@@ -224,6 +224,7 @@ Rounds and limits:
 
 - **Settings files don't switch the hook off.** It lives on the command line, not in a file, and its `disableAllHooks: false` outranks the user, project and local settings files. This was verified with Claude Code 2.1.296: `disableAllHooks: true` in all three files leaves the hook running.
 - **Other ways around it remain.** Managed settings (`/etc/claude-code/managed-settings.json`) outrank the command line, and the agent can write them when the image gives it `sudo`, which is the default. The agent can also use up the rounds by writing to the rounds file, or put its own `claude`, `pytest` or other command first on `PATH` for this turn or, through `~/.hangar/env`, for later ones.
+- **In a split sandbox with `approvals: ask` or `deny-risky`**, hangar starts Claude Code itself: by its path, with its own environment and settings ([hangar-owned harness settings](steering.md#hangar-owned-harness-settings)). There the agent can't switch the Stop hook off for a later turn. It can still use up the rounds, and the check it runs is the repository's own code.
 
 What decides is hangar's check after the turn. The hook's result never feeds delivery: hangar runs the job's `verify` itself, and only that exit code decides between a PR and a draft.
 

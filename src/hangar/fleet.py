@@ -17,7 +17,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
-from hangar import exchange, isolation, observe  # --- observe, isolation
+from hangar import exchange, harden, isolation, observe  # --- observe, isolation, harden
 from hangar.broker import AUTH_FILE_LIMIT, Broker, CredentialError
 from hangar.config import Settings
 from hangar.envspec import BuildContext, EnvCatalog, EnvSpec, image_tag, render, repo_dirname, warm_pool_now
@@ -588,6 +588,7 @@ class Fleet:
             async def _cleanup() -> None:
                 try:
                     self.gateway.revoke(sb.id)  # workstream F
+                    harden.forget(self, sb.id)  # --- harden
                     await self.broker.release(sb, prov, write_back=False)
                     await prov.destroy(sb)
                 except Exception:  # noqa: BLE001
@@ -651,6 +652,7 @@ class Fleet:
                 await self._merge_json(prov, sb, f"{home}/{rel}", content)
             sb.info["mcp"] = sorted(resolved)
         await observe.configure_harness(prov, sb, h.name, home, self.settings)  # --- observe: Codex's [otel]
+        harden.keep(self, prov, sb, h, resolved, env, prelude)  # --- harden: hangar's own copy
 
     async def _read_config(self, prov: Provider, sb: Sandbox, path: str) -> bytes | None:
         """A config file to merge into (b"" when missing), or None, with a warning, when it is over
@@ -808,6 +810,7 @@ class Fleet:
                 log.warning("destroy %s: %s", sb.id, e)
         sb.state = SandboxState.STOPPED
         self.store.put(sb)
+        harden.forget(self, sb.id)  # --- harden
         self.audit(actor, "sandbox.destroy", sb.id, name=sb.name)
         return sb
 
@@ -1056,7 +1059,10 @@ class Fleet:
             self.touch(sb.id)  # a client following an agent counts as use; hangar's own polling doesn't
         if not re.fullmatch(r"run-[0-9a-f]{8}", run_id):
             raise FleetError(f"invalid run id '{run_id}'")
-        rdir = f"/home/{self.settings.sandbox_user}/.hangar/runs"
+        # --- harden: a split run's status and log are read where hangar's user wrote them, as that user: the agent's
+        # ~/.hangar/runs links (and the commands on its PATH) are the agent's to point anywhere
+        split = isolation.run_split(sb, run_id)
+        rdir = isolation.runs_dir(self.settings, split)
         wait_seconds = 0.0 if self.closing.is_set() else max(0.0, min(60.0, float(wait_seconds)))
         if self._waiters is None:
             self._waiters = asyncio.Semaphore(max(1, self.settings.io_pool // 2))
@@ -1076,7 +1082,9 @@ class Fleet:
                f"tail -n {int(tail_lines)} {rdir}/{run_id}.log 2>/dev/null")
         async with self._waiters if wait_seconds else contextlib.nullcontext():
             if wait_seconds:
-                res = await self._wakeable(prov, sb, cmd, 20 + int(wait_seconds), wake)
+                res = await self._wakeable(prov, sb, cmd, 20 + int(wait_seconds), wake, split)
+            elif split:
+                res = await isolation.sh(prov, sb, cmd, timeout=20)
             else:
                 res = await prov.exec(sb, cmd, timeout=20)
         head, sep, tail = res.stdout.partition("---\n")
@@ -1090,16 +1098,21 @@ class Fleet:
         return {"run_id": run_id, "state": "finished",
                 "exit_code": int(status) if re.fullmatch(r"-?\d+", status) else -1, "output_tail": tail}
 
-    async def _wakeable(self, prov: Provider, sb: Sandbox, cmd: str, timeout: int, wake: str) -> ExecResult:
+    async def _wakeable(self, prov: Provider, sb: Sandbox, cmd: str, timeout: int, wake: str,
+                        split: bool = False) -> ExecResult:
         """A status command that waits in the sandbox. On shutdown, `wake` is created so the wait ends and the
-        status comes back now (--- overnight/sweep: a 25 s MCP long-poll held pod shutdown that long)."""
-        call = asyncio.ensure_future(prov.exec(sb, cmd, timeout=timeout))
+        status comes back now (--- overnight/sweep: a 25 s MCP long-poll held pod shutdown that long). `split`: as
+        hangar's user (--- harden)."""
+        def run(c: str, t: int) -> Any:
+            return isolation.sh(prov, sb, c, timeout=t) if split else prov.exec(sb, c, timeout=t)
+
+        call = asyncio.ensure_future(run(cmd, timeout))
         closing = asyncio.ensure_future(self.closing.wait())
         try:
             await asyncio.wait({call, closing}, return_when=asyncio.FIRST_COMPLETED)
             if not call.done():
                 with contextlib.suppress(Exception):
-                    await prov.exec(sb, f"touch {wake}", timeout=10)
+                    await run(f"touch {wake}", 10)
             return await call
         finally:
             closing.cancel()
@@ -1306,6 +1319,7 @@ class Fleet:
         sb.error = reason
         self.store.put(sb)
         self.gateway.revoke(sb.id)  # workstream F
+        harden.forget(self, sb.id)  # --- harden
         for c in self.store.list(Credential):
             if c.leased_to == sb.id:  # the auth file is gone with the sandbox; keep the vault copy
                 c.leased_to = None

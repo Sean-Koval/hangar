@@ -17,7 +17,7 @@ from hangar.harnesses import HARNESSES
 from hangar.models import ExecResult, Sandbox, SessionTurn
 from tests.test_steer import live, new, settle, svc  # noqa: F401 - fixtures
 
-DROP = ["--inh-caps=-all", "--ambient-caps=-all"]
+DROP = ["--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs"]
 
 
 class Prov:
@@ -40,7 +40,8 @@ def fleet(settings: Settings):
 async def test_a_docker_sandbox_is_set_up_once_as_root_and_remembered():
     f, p, sb = fleet(Settings()), Prov(), Sandbox(name="s", environment="e", provider="docker")
     assert await isolation.ensure(f, p, sb) is True
-    assert sb.info["isolation"] == {"mode": "split", "uid": 999, "gid": 998} and f.puts == [sb.id]
+    assert sb.info["isolation"] == {"mode": "split", "uid": 999, "gid": 998, "v": isolation.VERSION,
+                                    "harness_why": "not checked"} and f.puts == [sb.id]
     (script, user), = p.calls
     assert user == "root" and "useradd --system" in script and "sudo -n -l" in script
     assert await isolation.ensure(f, p, sb) is True and len(p.calls) == 1  # remembered
@@ -70,12 +71,12 @@ async def test_off_applies_at_once():
 
 def test_the_harness_starts_as_the_agent_with_no_capabilities():
     argv = driver.as_agent("agent", "/home/agent", "/var/lib/hangar/runs/r.env", "/workspace/x", ["claude", "-p"])
-    assert argv[:7] == ["setpriv", "--reuid=agent", "--regid=agent", "--init-groups", *DROP, "--"]
-    assert argv[7:11] == ["env", "HOME=/home/agent", "USER=agent", "LOGNAME=agent"]
+    assert argv[:8] == ["setpriv", "--reuid=agent", "--regid=agent", "--init-groups", *DROP, "--"]
+    assert argv[8:12] == ["env", "HOME=/home/agent", "USER=agent", "LOGNAME=agent"]
     assert argv[-4:] == ["/var/lib/hangar/runs/r.env", "/workspace/x", "claude", "-p"]
     # The one-shot command in the turn's script is the same, as shell.
     parts = shlex.split(isolation.agent_command(Settings(), "run-0000beef", "/workspace/x", "pi -p hi"))
-    assert parts[:7] == argv[:7]
+    assert parts[:8] == argv[:8]
     assert parts[-5:] == ["/var/lib/hangar/runs/run-0000beef.env", "/workspace/x", "bash", "-c", "pi -p hi"]
     assert isolation.driver_args(Settings(), "run-0000beef", "/w") == \
         "--as agent --run-env /var/lib/hangar/runs/run-0000beef.env --cwd /w"
@@ -129,7 +130,8 @@ async def test_ask_in_a_single_user_sandbox_warns_or_refuses(svc, live, monkeypa
     new(svc, live, "sh", "hello", approvals="ask")
     s = await settle(svc, "sh")
     sb = svc.fleet.get(s.sandbox_id)
-    assert sb.info["isolation"] == {"mode": "shared", "why": "the fake provider doesn't support it yet"}
+    assert sb.info["isolation"] == {"mode": "shared", "why": "the fake provider doesn't support it yet",
+                                    "v": isolation.VERSION}
     assert "can tamper with later turns" in s.turns[0].warnings[0]
     settings.uid_split = "required"
     with pytest.raises(steering.SteerError, match="HANGAR_UID_SPLIT=required"):

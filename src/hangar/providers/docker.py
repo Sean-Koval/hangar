@@ -358,7 +358,10 @@ class DockerProvider(Provider):
             # the sandbox decides how much that is). Same calls exec_run makes.
             api = self.client.api
             other = user and user != self.settings.sandbox_user  # --- isolation: root, hangar's user
-            eid = api.exec_create(c.id, argv, user=user or self.settings.sandbox_user,
+            # --- harden: Docker starts an exec with umask 0000 (verified, Docker 29.8): what root or hangar's user
+            # created without an explicit mode would be the agent's to change
+            run = [*argv[:-1], "umask 022; " + command] if other else argv
+            eid = api.exec_create(c.id, run, user=user or self.settings.sandbox_user,
                                   workdir=cwd or self.settings.workspace_dir,
                                   environment={"PATH": SYSTEM_PATH} if other else None)["Id"]
             out, err = OutputTail(4 * MAX_OUTPUT, b""), OutputTail(4 * MAX_OUTPUT, b"")
@@ -418,8 +421,8 @@ class DockerProvider(Provider):
                 ok = await asyncio.to_thread(c.put_archive, parent, buf.getvalue())
             except NotFound:
                 root = {} if owned else {"environment": {"PATH": SYSTEM_PATH}}  # --- isolation
-                mk = await asyncio.to_thread(c.exec_run, ["mkdir", "-p", parent], user=user if owned else "root",
-                                             **root)
+                mkdir = ["mkdir", "-p", parent] if owned else ["sh", "-c", 'umask 022 && exec mkdir -p "$0"', parent]
+                mk = await asyncio.to_thread(c.exec_run, mkdir, user=user if owned else "root", **root)  # harden
                 if mk.exit_code != 0:
                     raise ProviderError(f"cannot create {parent}: {mk.output.decode(errors='replace')}") from None
                 ok = await asyncio.to_thread(c.put_archive, parent, buf.getvalue())
