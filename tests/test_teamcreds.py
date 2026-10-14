@@ -305,7 +305,7 @@ def test_linking_and_resolving(store):
     assert r(store, "jira", "5b10ac8d82e05b22cc7d4ef5").id == "alice"
     assert r(store, "jira", "bob@example.com").id == "bob"  # a Jira user known by email
     assert r(store, "github", "9919").id == "owner"
-    for source, ext in (("github", "stranger"), ("github", "dependabot[bot]"), ("github", ""), ("linear", "x"),
+    for source, ext in (("github", "stranger"), ("github", "dependabot[bot]"), ("github", ""), ("trello", "x"),
                         ("slack", "not an id"), ("github", None), ("github", True), ("slack", "U012AB3CD"),
                         ("slack", "T9/U012AB3CD")):
         assert r(store, source, ext) is None
@@ -331,7 +331,7 @@ def test_linking_over_rest_is_for_admins(app_client):
     assert r.json()["links"] == ["github:583231"]
     assert c.post("/api/people/alice/links", json={"source": "github", "id": "9919"},
                   headers=alice).status_code == 403  # else a member could claim someone else's jobs
-    assert c.post("/api/people/alice/links", json={"source": "linear", "id": "x"}, headers=ADMIN_H).status_code == 400
+    assert c.post("/api/people/alice/links", json={"source": "trello", "id": "x"}, headers=ADMIN_H).status_code == 400
     # a login needs a lookup, and this hangar has no GitHub token: it says how to link by id instead
     r = c.post("/api/people/alice/links", json={"source": "github", "id": "alice-gh"}, headers=ADMIN_H)
     assert r.status_code == 400 and "api.github.com/users/alice-gh" in r.text

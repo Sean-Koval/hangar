@@ -24,6 +24,7 @@ hangar repo set acme/app --land auto_after_approval --approver alice --risk-path
 | `max_usd_per_day` | The repo's [daily spend cap](#budgets). |
 | `credentials` | Whose login the repo's jobs run with: `person` (the person the job runs for; a job for no one fails), `team`, or `person_then_team` (the default: theirs when they have one, else the team's). See [team.md](team.md#whose-login-a-job-uses). |
 | `egress` | `{mode, presets, allow}` for the repo's sandboxes: adds presets and hosts to the environment's allowlist, and can tighten its mode but never widen it (`hangar repo set acme/app --egress-mode none --egress-allow docs.example.com`). See [egress allowlists](security.md#egress-allowlists). |
+| `build_secrets` | `{SECRET_ID: credential}` for the repo's [environment builds](environments.md#build-secrets), winning over the environment's (admins; `PUT /api/repos/policy`). See [build secrets](security.md#build-secrets). |
 | `land` | `auto_after_approval`: an approval of the PR's head by an approver or code owner, with green required checks, lands it ([landing.md](landing.md)). `manual` or unset: a person merges. |
 | `approvers` | GitHub logins whose approval lands the repo's agent PRs (`--approver`, repeated). |
 | `merge_method` | `squash` (default), `merge` or `rebase`, for PRs hangar lands. |
