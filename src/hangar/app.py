@@ -293,6 +293,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if pre is None:
             pre = [e.strip() for v in h.settings.github_repos.values() for e in v.split(",") if e.strip()]
         prebuild = asyncio.create_task(h.fleet.prebuild(pre)) if pre else None
+        try:
+            h.fleet.refresh_stale_packs()  # background builds; cancelled by fleet.stop()
+        except Exception:  # noqa: BLE001 - never block startup on this
+            log.warning("could not check for stale harness packs", exc_info=True)
         # --- overnight/sweep: long-polls answer on SIGTERM, before uvicorn drains them (shutdown.py); backups
         from hangar import shutdown
 

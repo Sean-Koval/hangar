@@ -91,6 +91,9 @@ async def test_run_agent_model_and_harness(fleet, creds):
 async def test_packs_are_mounted_not_baked(fleet, creds):
     fake = fleet.providers["docker"]
     fake.image_volumes = True
+    first = await fleet.create("agents")
+    assert "claude-code" in first.info["packs"]
+    await asyncio.gather(*fleet._pack_builds.values())  # the others may still be building in the background
     a = await fleet.create("agents")
     b = await fleet.create("agents", harness="codex")
     assert set(a.info["packs"]) == {"claude-code", "codex", "pi"}, "every allowed harness is mounted read-only"
@@ -185,3 +188,69 @@ async def test_model_map_per_harness(fleet, creds, tmp_path):
     assert run["model"] is None, "no entry for codex: the harness's own default"
     await fleet.terminal_kill(other.id, run["run_id"])
 
+
+
+def gate_pack(fleet, harness: str, gate: asyncio.Event) -> None:
+    fake = fleet.providers["docker"]
+    real = fake.build_template
+
+    async def build(spec, ctx, tag, log=None):
+        if f"/harness-{harness}" in tag:
+            await gate.wait()
+        return await real(spec, ctx, tag, log)
+
+    fake.build_template = build
+
+
+async def test_first_use_builds_the_image_without_waiting_on_other_harnesses_packs(fleet, creds):
+    """The half of tonight's incident #75 missed: an environment whose image needs building (first use, an edit,
+    an upgrade that changes the render) used to build every harness's pack, one by one, before the image."""
+    fleet.providers["docker"].image_volumes = True
+    gate = asyncio.Event()
+    gate_pack(fleet, "codex", gate)
+    sb = await asyncio.wait_for(fleet.create("agents"), 10)
+    assert sb.state.value == "running" and "codex" not in sb.info["packs"]
+    gate.set()
+    await asyncio.gather(*fleet._pack_builds.values())
+    assert "codex" in (await fleet.create("agents")).info["packs"]
+
+
+async def test_lazy_pack_resolution_never_waits(fleet, creds):
+    """Scheduled warm-pool syncs (run by the reaper) resolve packs lazily: a stale pack must not stall TTL expiry."""
+    fleet.providers["docker"].image_volumes = True
+    gate = asyncio.Event()
+    gate_pack(fleet, "codex", gate)
+    spec = fleet.catalog.get("agents")
+    await asyncio.wait_for(fleet._resolve_packs(spec, "docker", "scheduler", lazy=True), 5)
+    gate.set()
+    await asyncio.gather(*fleet._pack_builds.values())
+
+
+async def test_a_create_waiting_on_its_own_pack_says_so(fleet, creds):
+    fleet.providers["docker"].image_volumes = True
+    await fleet.create("agents")
+    gate = asyncio.Event()
+    stale_codex_pack(fleet, gate)
+    pending = asyncio.create_task(fleet.create("agents", harness="codex"))
+    for _ in range(100):
+        starting = [s for s in fleet.list(include_stopped=True) if s.info.get("harness") == "codex"]
+        if starting and "harness pack" in (starting[0].info.get("stage") or ""):
+            break
+        await asyncio.sleep(0.05)
+    assert "building the codex harness pack" in starting[0].info["stage"]
+    gate.set()
+    sb = await asyncio.wait_for(pending, 10)
+    assert "codex" in sb.info["packs"]
+
+
+async def test_startup_rebuilds_packs_whose_harness_changed(fleet, creds):
+    fleet.providers["docker"].image_volumes = True
+    await fleet.create("agents")
+    await asyncio.gather(*fleet._pack_builds.values())
+    assert fleet.refresh_stale_packs() == [], "nothing changed"
+    gate = asyncio.Event()
+    stale_codex_pack(fleet, gate)
+    assert fleet.refresh_stale_packs() == ["docker:codex"]
+    gate.set()
+    await asyncio.gather(*fleet._pack_builds.values())
+    assert fleet.store.kv_get("pack:docker:codex") != "an-older-codex-pack"
