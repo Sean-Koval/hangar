@@ -4,12 +4,15 @@ git client end to end is in test_gateway_git.py."""
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import shutil
 import subprocess
 import time
+import tracemalloc
 import zlib
+from types import SimpleNamespace
 
 import pytest
 
@@ -290,3 +293,113 @@ async def test_a_big_push_waits_on_disk_and_comes_back_whole(tmp_path):
     assert await _collect(held.chunks()) == body
     part = await pushscan.read_body(_gen(body[100:200], body[200:]), body[:100], 150, 5, tmp_path)
     assert not part.whole and part.size == 200
+
+
+# ============================================================================ --- review (#107): hostile packs
+def test_a_delta_cant_build_past_the_budget_it_was_given():
+    """One copy instruction (0x80) copies 64 KB: a few KB of delta would build gigabytes on the control plane before
+    the budget was checked. The size it declares is checked first."""
+    base = b"\0" * 0x10000
+    delta = _size(len(base)) + _size(1 << 40) + b"\x80" * 10
+    with pytest.raises(pushscan.PackError, match="past what the gateway scans"):
+        pushscan.apply_delta(base, delta, limit=1_000_000)
+    bomb = make_pack([(BLOB, base), ("ofs", 0, _size(len(base)) + _size(2000 * 0x10000) + b"\x80" * 2000)])
+    tracemalloc.start()
+    try:
+        with pytest.raises(pushscan.PackError, match="past what the gateway scans"):
+            pushscan.parse_pack(bomb, budget=8_000_000)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 32_000_000, peak  # not the 128 MB the delta asks for
+
+
+def test_a_reversed_chain_of_ref_deltas_resolves_in_linear_time():
+    """Each pass over the deltas resolved one link of a chain stored backwards: quadratic, in a scan slot that every
+    sandbox's pushes wait for."""
+    n = 12_000
+    contents = [b"%08d\n" % i for i in range(n + 1)]
+    entries: list[tuple] = [(BLOB, contents[0])]
+    entries += [("ref", oid("blob", contents[i - 1]), make_delta(contents[i - 1], contents[i]))
+                for i in range(n, 0, -1)]
+    pack = make_pack(entries)
+    t = time.perf_counter()
+    objs = pushscan.parse_pack(pack)
+    took = time.perf_counter() - t
+    assert len(objs) == n + 1 and objs[oid("blob", contents[n])] == ("blob", contents[n])
+    assert took < 3.0, took
+
+
+def test_a_pack_of_many_tiny_objects_counts_against_the_budget():
+    """Each object costs the scan memory beyond its bytes (its entries in the maps): millions of empty objects in a
+    small pack must not fit just because their contents are empty."""
+    pack = make_pack([(BLOB, b"%d" % i) for i in range(20_000)])
+    with pytest.raises(pushscan.PackError, match="past what the gateway scans"):
+        pushscan.parse_pack(pack, budget=1_000_000)
+
+
+class _Gw:
+    def __init__(self, files: dict[str, bytes] | None = None):
+        self.broker = NoBroker()
+        self.settings = SimpleNamespace(gateway_scan_max_mb=64)
+        self.files = files or {}
+
+
+def _scanner(gw: _Gw) -> pushscan.Scanner:
+    s = pushscan.Scanner(gw)  # type: ignore[arg-type]
+
+    async def _file(grant, repo, path, ref):
+        return gw.files.get(path, b"")
+
+    s._file = _file  # type: ignore[method-assign]
+    return s
+
+
+def _spool(tmp_path, data: bytes) -> pushscan.Spool:
+    held = pushscan.Spool(tmp_path)
+    held.write(data)
+    held.whole = True
+    return held
+
+
+async def test_old_hits_dont_crowd_out_a_new_one(tmp_path):
+    """A file that already held many token-shaped strings (a scanner's own fixtures) filled the hit limit; once they
+    were dropped as old, a new secret further on went up unseen."""
+    fakes = "".join(f"t{i} = 'ghp_{i:04d}Ab3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF'\n" for i in range(60)).encode()
+    pack, c = _push({"a_fixtures.py": fakes + b"# edited\n", "z.py": b"K = '" + TOKEN.encode() + b"'\n"},
+                    parents=("ab" * 20,))
+    s = _scanner(_Gw({"a_fixtures.py": fakes}))
+    found, _ = await s.check(None, "o/r", cmds(c, "ab" * 20), _spool(tmp_path, pack), 0)  # type: ignore[arg-type]
+    assert [f.where for f in found] == ["z.py:1"]
+
+
+async def test_text_past_the_scan_cap_cant_be_checked(tmp_path, monkeypatch):
+    """Text past secretscan.MAX_SCAN_BYTES isn't scanned: block mode refuses what it couldn't check, as it does a
+    pack over HANGAR_GATEWAY_SCAN_MAX_MB, rather than forwarding a secret that sits after a big file."""
+    monkeypatch.setattr(pushscan.secretscan, "MAX_SCAN_BYTES", 1000)
+    pack, c = _push({"a.txt": b"x" * 860 + b"\n", "z.py": b"K = '" + TOKEN.encode() + b"'\n"})
+    with pytest.raises(pushscan.PackError, match="first"):
+        await _scanner(_Gw()).check(None, "o/r", cmds(c), _spool(tmp_path, pack), 0)  # type: ignore[arg-type]
+
+
+async def test_the_push_is_read_into_memory_only_inside_a_scan_slot(tmp_path, monkeypatch):
+    """Pushes waiting for a slot stay in their spool (on disk past 8 MB): eight 64 MB pushes per grant, from every
+    sandbox at once, must not all sit in memory while two are scanned."""
+    pack, c = _push({"ok.py": b"x = 1\n"})
+    s = _scanner(_Gw())
+    reads: list[int] = []
+    real = pushscan.Spool.view
+
+    def view(self):
+        reads.append(s.slots._value)
+        return real(self)
+
+    monkeypatch.setattr(pushscan.Spool, "view", view)
+    for _ in range(pushscan.SCANS):
+        await s.slots.acquire()
+    task = asyncio.create_task(s.check(None, "o/r", cmds(c), _spool(tmp_path, pack), 0))  # type: ignore[arg-type]
+    await asyncio.sleep(0.05)
+    assert reads == []  # waiting for a slot: not read yet
+    for _ in range(pushscan.SCANS):
+        s.slots.release()
+    assert (await task)[0] == [] and reads == [pushscan.SCANS - 1]

@@ -53,6 +53,10 @@ SPOOL_BYTES = 8 * 1024 * 1024  # a push bigger than this waits on disk, not in m
 CHUNK = 64 * 1024
 BINARY_PROBE = 8000  # git's buffer_is_binary: a NUL in the first 8000 bytes
 LOOKUPS = 20  # GitHub file reads to tell an old secret from a new one, per push
+# --- review (#107): what an object costs the scan beyond its bytes (its entries in the maps), charged to the budget so
+# a small pack of millions of empty objects can't hold gigabytes; and the hits collected before old ones are dropped.
+OBJECT_COST = 256
+HITS = 1000
 _TYPES = {1: "commit", 2: "tree", 3: "blob", 4: "tag"}
 OFS_DELTA, REF_DELTA = 6, 7
 
@@ -78,13 +82,16 @@ def _varint_size(data: memoryview, p: int) -> tuple[int, int]:
             raise PackError("bad delta header")
 
 
-def apply_delta(base: bytes, delta: bytes) -> bytes:
-    """Rebuild an object from its base and a git delta (copy and insert instructions)."""
+def apply_delta(base: bytes, delta: bytes, limit: int | None = None) -> bytes:
+    """Rebuild an object from its base and a git delta (copy and insert instructions), refusing one that says it
+    builds more than `limit` bytes before building any of it: a one-byte copy instruction copies 64 KB."""
     d = memoryview(delta)
     src, p = _varint_size(d, 0)
     dst, p = _varint_size(d, p)
     if src != len(base):
         raise PackError("a delta doesn't fit its base")
+    if limit is not None and dst > limit:  # --- review (#107)
+        raise PackError("the push inflates past what the gateway scans")
     out = bytearray()
     while p < len(d):
         op = d[p]
@@ -200,7 +207,7 @@ def parse_pack(pack: bytes | memoryview, hexlen: int = 40, budget: int | None = 
             pos += raw
         elif kind not in _TYPES:
             raise PackError("an object of an unknown type")
-        used += size
+        used += size + OBJECT_COST
         if used > budget:
             raise PackError("the push inflates past what the gateway scans")
         content, pos = _inflate(data, pos, size)
@@ -212,24 +219,31 @@ def parse_pack(pack: bytes | memoryview, hexlen: int = 40, budget: int | None = 
             deltas.append((at, base, content))
     if pos != end:
         raise PackError("the pack has bytes after its last object")
-    ids = {oid(k, c, hexlen): at for at, (k, c) in full.items()}
-    while deltas:  # bases first: OFS bases come earlier in the pack, REF bases may come anywhere in it
-        left = []
-        for at, base, delta in deltas:
-            b_at = ids.get(base) if isinstance(base, str) else base
-            if b_at is None or b_at not in full:
-                left.append((at, base, delta))
-                continue
+    ids: dict[str, int] = {}
+    ready: list[tuple[int, str]] = []
+    for at, (k, c) in full.items():
+        ids[i := oid(k, c, hexlen)] = at
+        ready.append((at, i))
+    # --- review (#107): each delta waits on its base (an offset, or an id that may come anywhere in the pack) and is
+    # built once that base is, so a chain stored backwards costs one pass, not one pass per link.
+    waiting: dict[int | str, list[tuple[int, bytes]]] = {}
+    for at, base, delta in deltas:
+        waiting.setdefault(base, []).append((at, delta))
+    del deltas
+    while ready and waiting:
+        b_at, b_id = ready.pop()
+        for at, delta in waiting.pop(b_at, []) + waiting.pop(b_id, []):
             kind, b = full[b_at]
-            content = apply_delta(b, delta)
+            content = apply_delta(b, delta, budget - used)
             used += len(content)
             if used > budget:
                 raise PackError("the push inflates past what the gateway scans")
             full[at] = (kind, content)
-            ids[oid(kind, content, hexlen)] = at
-        if len(left) == len(deltas):
-            raise PackError("the pack refers to objects outside itself (a thin pack)")
-        deltas = left
+            i = oid(kind, content, hexlen)
+            ids[i] = at
+            ready.append((at, i))
+    if waiting:
+        raise PackError("the pack refers to objects outside itself (a thin pack)")
     return {i: full[at] for i, at in ids.items()}
 
 
@@ -286,8 +300,10 @@ def paths(objects: dict[str, tuple[str, bytes]], hexlen: int) -> dict[str, str]:
     return out
 
 
-def scan(objects: dict[str, tuple[str, bytes]], hexlen: int, broker: Any, limit: int = 50) -> tuple[list[Found], bool]:
-    """The secrets in a push's new objects, and whether the text was cut at secretscan.MAX_SCAN_BYTES."""
+def scan(objects: dict[str, tuple[str, bytes]], hexlen: int, broker: Any,
+         limit: int = HITS) -> tuple[list[Found], bool]:
+    """The secrets in a push's new objects, and whether the text was cut at secretscan.MAX_SCAN_BYTES (or the hits
+    at `limit`: the rest weren't looked at)."""
     where = paths(objects, hexlen)
     parts: list[str] = []
     marks: list[tuple[int, str, str]] = []  # (start, what, label): "commit"/"blob"/"names"
@@ -333,6 +349,7 @@ def scan(objects: dict[str, tuple[str, bytes]], hexlen: int, broker: Any, limit:
         seen.add((loc, kind))
         out.append(Found(kind, loc, path, text[start:end]))
         if len(out) >= limit:
+            cut = True  # --- review (#107): hits past it are unknown, so dropping old ones can't clear the push
             break
     return out, cut
 
@@ -433,23 +450,32 @@ class Scanner:
             self._slots = asyncio.Semaphore(SCANS)
         return self._slots
 
-    async def check(self, grant: SandboxGrant, repo: str, cmds: Commands,
-                    pack: bytes | memoryview) -> tuple[list[Found], str]:
-        """The new secrets in a push ([] when clean), and a note (the text was cut, or why it couldn't be read).
-        Raises PackError when the pack can't be read."""
+    async def check(self, grant: SandboxGrant, repo: str, cmds: Commands, held: Spool,
+                    end: int) -> tuple[list[Found], str]:
+        """The new secrets in a push ([] when clean), and a note (the text was cut). `held` is the whole request
+        body, the pack from `end` on. Raises PackError when the pack can't be read, or when only part of it could
+        be scanned and that part is clean."""
         hexlen = len(cmds.commands[0].new) if cmds.commands else 40
         broker = self.gw.broker
         broker._secrets()  # fill its cache here, not in the thread
         async with self.slots:
-            budget = self.gw.settings.gateway_scan_max_mb * 1024 * 1024 * INFLATE_FACTOR
-            objects = await asyncio.to_thread(parse_pack, pack, hexlen, budget)
+            # --- review (#107): read into memory only here, so pushes waiting for a slot stay in their spools
+            data = memoryview(await asyncio.to_thread(held.view))  # the pack is read in place, not copied again
+            try:
+                budget = self.gw.settings.gateway_scan_max_mb * 1024 * 1024 * INFLATE_FACTOR
+                objects = await asyncio.to_thread(parse_pack, data[end:], hexlen, budget)
+            finally:
+                del data
             found, cut = await asyncio.to_thread(scan, objects, hexlen, broker)
         bases = boundary(objects, cmds) if found else []
         del objects  # not held while GitHub is asked
         if found:
             found = await self._new_only(grant, repo, found, bases)
-        return found, f"only the first {secretscan.MAX_SCAN_BYTES >> 20} MB of the push's text was scanned" if cut \
-            else ""
+        note = f"only the first {secretscan.MAX_SCAN_BYTES >> 20} MB of the push's text, or its first {HITS} " \
+               "possible secrets, were scanned" if cut else ""
+        if cut and not found:  # --- review (#107): what wasn't scanned can't count as clean
+            raise PackError(note)
+        return found[:50], note
 
     async def _new_only(self, grant: SandboxGrant, repo: str, found: list[Found], bases: list[str]) -> list[Found]:
         """Drop hits in a file that held the same text in a commit the push builds on: pushing it again sends

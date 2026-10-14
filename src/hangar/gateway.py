@@ -972,14 +972,11 @@ class Gateway:
         if not held.whole:
             return await self._unscanned(it, held, cmds, grant, repo, f"the push is over {s.gateway_scan_max_mb} MB, "
                                          "more than the gateway scans for secrets (HANGAR_GATEWAY_SCAN_MAX_MB)")
-        data = memoryview(held.view())  # the pack is read in place, not copied again
-        try:
-            found, note = await self.scanner.check(grant, repo, cmds, data[end:]) if len(data) > end else ([], "")
+        try:  # --- review (#107): the scanner reads the spool once it has a slot
+            found, note = await self.scanner.check(grant, repo, cmds, held, end) if held.size > end else ([], "")
         except pushscan.PackError as e:
             return await self._unscanned(it, held, cmds, grant, repo, "the gateway couldn't read the pack to scan it "
                                          f"for secrets: {e}")
-        finally:
-            del data
         if not found:
             return held
         sb = self.store.get(Sandbox, grant.sandbox_id)
