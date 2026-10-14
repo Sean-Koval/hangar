@@ -1304,6 +1304,10 @@ from hangar import computer_cli as _computer  # noqa: E402
 
 app.add_typer(_computer.requests_app, name="requests")
 app.command("screen")(_computer.screen)
+# ---------------------------------------------------------------------------- --- ops: power (power_cli.py)
+from hangar.power_cli import power_app as _power_app  # noqa: E402
+
+app.add_typer(_power_app, name="power")
 
 
 # ---------------------------------------------------------------------------- overnight/sweep: database backups

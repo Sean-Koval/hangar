@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
+import time  # --- ops
 from typing import Any
 
 # A requester, model or environment beyond this many distinct values is reported as "other".
@@ -266,12 +267,18 @@ def db_backup(ok: bool, seconds: float) -> None:  # integrate (#57)
         M.backup_last.set_to_current_time()
 
 
+TICKS: dict[str, float] = {}  # --- ops: also kept with metrics off, for doctor and the overview (power.loops)
+FAILS: collections.Counter[str] = collections.Counter()
+
+
 def loop_tick(loop: str) -> None:  # --- reconciler
+    TICKS[loop] = time.time()  # --- ops
     if M is not None:
         M.loop_tick.labels(loop).set_to_current_time()
 
 
 def loop_failed(loop: str) -> None:  # --- reconciler
+    FAILS[loop] += 1  # --- ops
     if M is not None:
         M.loop_failures.labels(loop).inc()
 

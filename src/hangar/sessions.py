@@ -234,6 +234,7 @@ class SessionService:
         if (context or schema) and not req.message:
             raise SessionError("context and output_schema go with a message for the agent")
         fairness.check_sessions(self, owner, person=person)  # --- scale: live sessions per person
+        self.fleet.power.check(None)  # --- ops: no session that can't start until morning
         s = Session(name=req.name, title=(req.title or (req.message or req.name).strip().splitlines()[0])[:200],
                     owner=owner, environment=env, harness=harness, model=req.model,
                     repo=req.repo or (spec.repo.url if spec.repo else None), base_branch=req.base_branch,
@@ -275,6 +276,7 @@ class SessionService:
         if self.busy(s.id) or (live and s.state in SESSION_LIVE):
             return s
         fairness.check_sessions(self, s.owner, s)  # --- scale: resuming takes a sandbox
+        self.fleet.power.check(s.provider)  # --- ops
         self._busy.add(s.id)
         self._set(s, SessionState.STARTING, f"opened by {requester}")
         self.fleet.audit(requester, "session.open", s.id)
@@ -310,6 +312,7 @@ class SessionService:
             raise SessionError(f"session {s.name} is busy ({s.state}); wait for it to finish, or interrupt it")
         if not (s.sandbox_id and self._alive(s.sandbox_id)):
             fairness.check_sessions(self, s.owner, s)  # --- scale: resuming takes a sandbox
+            self.fleet.power.check(s.provider)  # --- ops: the message stays unsent, not a failed turn
         warning = caching.switch_model(self, s, model, requester)  # --- overnight/cache
         self.start_turn(s, message, requester, context, output_schema)
         if warning:

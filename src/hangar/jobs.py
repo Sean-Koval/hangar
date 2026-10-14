@@ -49,7 +49,7 @@ from hangar import restarts as restarts  # --- reconciler: interrupted jobs resu
 from hangar import secretscan as secretscan  # --- egress: secrets are scanned for before a push
 from hangar import teamcreds as teamcreds  # --- review: only a job's person continues it from a front door
 from hangar.events import resolve_budget, total_usage, usage_line
-from hangar.fleet import Fleet, FleetError, _clip_tail
+from hangar.fleet import Fleet, FleetError, PoweredDown, _clip_tail  # --- ops: PoweredDown
 from hangar.github import GitHub, GitHubError, parse_repo
 from hangar.models import (
     JOB_TERMINAL,
@@ -275,6 +275,8 @@ class JobService:
                 if job_id in self._active:
                     continue  # already being handled (duplicate enqueue)
                 if self.drain.hold(job_id):  # --- reconciler: draining for a power-down; queued again after
+                    continue
+                if self.fleet.power.hold(self, job_id):  # --- ops: the sandbox pools are off; queued again at power-up
                     continue
                 await self._process(job_id)
             except asyncio.CancelledError:
@@ -660,6 +662,8 @@ class JobService:
                 await self._finish_turn(job, turn, s)
         except asyncio.CancelledError:
             raise
+        except PoweredDown:  # --- ops: the pools went off between the worker's check and the create: wait for them
+            await self.fleet.power.requeue(self, job)
         except Exception as e:  # noqa: BLE001
             log.exception("job %s failed", job.id)
             self._event(job, f"error: {e}", JobState.FAILED, reason="error")
@@ -886,6 +890,11 @@ class JobService:
             turn.verify_rounds = rounds
             self._event(job, f"the check failed {rounds} time(s) during the turn; each went back to the agent")
         tail = _clip_tail(raw) if raw else ""
+        if outcome in ("gone", "error") and self.fleet.power.resume_cut_off(self, job):  # --- ops: resumes at power-up
+            if not self._sandbox_alive(job):
+                job.sandbox_id = None
+            self._save(job)
+            return
         if outcome in ("gone", "error"):
             more = "; follow up to continue from its last checkpoint" if self.sessions.resumable(s) else ""
             self._event(job, "the sandbox went away during the turn" + more, JobState.FAILED, reason="sandbox_gone")

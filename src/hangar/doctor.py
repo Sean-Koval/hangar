@@ -213,5 +213,8 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
             out.append(c)
     # git gateway (workstream F): reachable, and every GitHub App credential can mint a token
     out += await fleet.gateway.doctor(transport)
+    from hangar import power  # --- ops: the pools' power state, the last deploy, the background loops
+
+    out += power.doctor_checks(h)
     await asyncio.sleep(0)
     return out

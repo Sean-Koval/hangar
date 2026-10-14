@@ -1098,6 +1098,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import cloudcreds  # --- egress: OIDC discovery and JWKS for sandboxes' cloud tokens
 
     cloudcreds.mount(app, h, A)
+    from hangar import power  # --- ops: /api/admin/power (power.sh, `hangar power`) and /api/admin/deploys
+
+    power.mount(app, h, A)
     # --- observe: GET /metrics (admin or `metrics` tokens) and GET /api/usage
     from hangar import metrics, usage
 

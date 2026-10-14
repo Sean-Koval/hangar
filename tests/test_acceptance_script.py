@@ -108,7 +108,7 @@ def test_acceptance_script_on_docker(tmp_path, upstream, monkeypatch):  # noqa: 
         args = ["bash", str(SCRIPT), "--no-kubectl", "--env", "minimal", "--session-env", "accsession",
                 "--mcp-env", "accsession",
                 "--gateway-repo", "acme/widgets", "--exec-calls", "5", "--internet-probe", f"{host}:{port}",
-                "--with-model", "--skip", "steer"]
+                "--with-model", "--skip", "steer", "--warm-env", "minimal"]
         if not envd:
             args.append("--no-expect-envd")
         r = subprocess.run(args, env=_env(tmp_path, srv.port, PATH=f"{tmp_path / 'bin'}:{os.environ['PATH']}"),
@@ -119,10 +119,9 @@ def test_acceptance_script_on_docker(tmp_path, upstream, monkeypatch):  # noqa: 
         status = {name: st for st, name in re.findall(r"^(PASS|FAIL|SKIP|INFO)\s+(\w+)", summary, re.M)}
         assert r.returncode == 0, out
         for check in ("doctor", "sandbox", "exec", "stream", "files", "mcp", "isolation", "session", "model", "gateway",
-                      "e2b", "backup", "metrics"):
+                      "e2b", "backup", "metrics", "power", "warmstart"):
             assert status.get(check) == "PASS", (check, summary)
         assert status.get("k8s") == "SKIP" and "steer" not in status, summary  # --no-kubectl; --skip steer
-        assert status.get("power") == "INFO"
         if envd:  # every timed exec went through the in-sandbox daemon, and B's daemon was out of A's reach
             assert re.search(r"PASS\s+exec .*envd \(\d+ calls", summary), summary
             assert re.search(r"PASS\s+stream\s.*first output after \d+ ms of", summary), summary

@@ -28,6 +28,7 @@ from hangar import envservices as envservices  # --- envbuilds
 from hangar import exchange, harden, images, isolation, observe  # --- observe, isolation, harden, images
 from hangar import fairness as fairness  # --- scale
 from hangar import metrics as metrics  # --- reconciler
+from hangar import power as power  # --- ops: the sandbox pools' power schedule
 from hangar import reconciler as reconciler  # --- reconciler
 from hangar import supervisor as supervisor  # --- envbuilds
 from hangar import teamcreds as teamcreds  # --- teamcreds
@@ -83,6 +84,10 @@ ARCHIVE_WRITE_COST = 2
 
 class FleetError(RuntimeError):
     pass
+
+
+class PoweredDown(FleetError):  # --- ops
+    """The sandbox pools are powered down (power.py): the create is refused at once, saying when they're back."""
 
 
 def _slug(s: str) -> str:
@@ -184,6 +189,7 @@ class Fleet:
         # --- scale: B12. Workspace archives in the control plane's memory at once (snapshots, forks, restores).
         self.archive_memory = MemoryBudget(settings.workspace_transfer_mb * 1024 * 1024)
         self.reconciler = reconciler.Reconciler(self)  # --- reconciler: rows a restart left unfinished, replaced pods
+        self.power = power.Power(store, settings)  # --- ops: creates on powered-down pools answer at once
 
     # ================================================================== setup
     async def start(self) -> None:
@@ -662,6 +668,7 @@ class Fleet:
         spec = self.catalog.get(environment)
         pname = provider or self.settings.default_provider
         prov = self.provider(pname)
+        self.power.check(pname)  # --- ops: the pools are off for the night: say when, don't wait for a node
         try:
             hname = spec.pick_harness(harness)
         except ValueError as e:
@@ -764,7 +771,8 @@ class Fleet:
             sb.state = SandboxState.RUNNING
             sb.error = None
             self._touch(sb)
-            if spec.warm_pool and pname in self.providers and _image is None and not build:  # --- envbuilds
+            # --- ops: + the day's size; --- envbuilds: never from a repo build's image
+            if self._warm(spec).warm_pool and pname in self.providers and _image is None and not build:
                 asyncio.create_task(self._refill(self._warm(spec), pname, image))
             self.reconciler.disown(sb.id)  # --- reconciler
             return sb
@@ -874,7 +882,7 @@ class Fleet:
 
     def _warm(self, spec: EnvSpec) -> EnvSpec:
         """The spec with the warm pool size that applies now (warm_pool_hours schedules it to 0 off-hours)."""
-        n = warm_pool_now(spec)
+        n = max(warm_pool_now(spec), self.power.warm_for(spec.name))  # --- ops: sized for the day at power-up
         return spec if n == spec.warm_pool else spec.model_copy(update={"warm_pool": n})
 
     async def sync_scheduled_pools(self) -> None:
@@ -1602,7 +1610,7 @@ class Fleet:
             "credentials": len(self.broker.list()),
             "harnesses": {k: {"title": v.title, "agent": v.agent, "version": v.version or "latest",
                               "deprecated": v.deprecated} for k, v in HARNESSES.items()},
-        }
+        } | self.power.overview()  # --- ops: power, the last deploy, the background loops
 
 
 __all__ = ["Fleet", "FleetError", "CredentialError", "CredentialKind"]

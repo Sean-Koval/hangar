@@ -4,8 +4,11 @@ zone             = "us-central1-a"
 domain           = "hangar.example.com"
 enable_kata_pool = false
 
-# Nodes off 1 AM - 10 AM (deploy/gke/power.sh on Cloud Scheduler)
+# Sandbox nodes off 1 AM - 9:50 AM, ready with a warm node by 10 (deploy/gke/power.sh on Cloud Scheduler);
+# hangar and the system pool stay up
 # enable_power_schedule = true
-# power_up_cron         = "0 10 * * *"
+# power_up_cron         = "50 9 * * *"
+# power_warm_minutes    = 10
 # power_down_cron       = "0 1 * * *"
 # power_time_zone       = "America/New_York"
+# sandbox_warm_nodes    = 1

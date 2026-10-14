@@ -3,6 +3,7 @@
 Two guides, newest first:
 
 - [**This release**](#upgrading-to-the-team-release-7590) (#75–#90): one hangar for a team of six at ~60 sessions, people and per-person credentials, front-door defaults and job budgets, the reconciler, the MCP deadline contract, and images built before anyone waits.
+- [**The always-on control plane and gated deploys**](#the-always-on-control-plane-and-gated-deploys), on top of it: only the sandbox pools power down, a warm start at 09:50, and [`deploy.yml`](#deploying-with-deployyml).
 - [**The overnight stack**](#upgrading-from-before-the-overnight-stack-4869) (#48–#69), for a hangar older than that. Do its backup and read its defaults first, then follow this release's procedure: its prebuild also covers the overnight guide's "republish the Codex pack" step.
 
 Both are written for the GKE install from [gke.md](gke.md): one zonal cluster, gVisor sandboxes, the control plane with SQLite on the `hangar-data` PVC, checkpoints in the session bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / `power.sh`. [CHANGELOG.md](../CHANGELOG.md) lists what each adds.
@@ -165,6 +166,76 @@ In this order:
    ```
 
 What stays: the node pool (the previous version runs on it unchanged), the database, every session and checkpoint, and the old pack tags in Artifact Registry, which the previous version mounts by tag as before. What the previous version ignores: repo policies, budgets, `person` on records, `packinfo` digests, the drain (the new `power.sh` treats its 404 as settled) and the stale-tool-list records. GitHub replay marks are compatible both ways. The next upgrade archives the records again.
+
+## The always-on control plane and gated deploys
+
+Stacked on the team release above. Hangar and the `system` pool stay up at night; only the sandbox pools power down, and come back warm at 09:50. Deploys go through `.github/workflows/deploy.yml`, with an approval, acceptance checks and an automatic rollback.
+
+### What changes
+
+| What | Before → now | Opt out |
+| --- | --- | --- |
+| **`power.sh down`** | every node pool to 0 and hangar to 0 replicas, so the URL answered 502 and GitHub, Slack and Jira events were lost (GitHub's redelivery covered GitHub only) → only the sandbox pools (`^sandboxes-`: gVisor, Kata, microVM). Hangar tells people when sandboxes are back: creates answer at once (REST `503` with `Retry-After`), jobs wait queued with `waiting: sandboxes power on at 10:00 EDT`. A job turn the pools take away resumes from its checkpoint after power-up. | `POWER_POOLS` (a regex) for the script |
+| **`power.sh up`** | pools back at their ranges at 10:00, a cold first create (2–4.5 min) → at 09:50 the gVisor pool comes back at a warm floor of 1 node, every image and pack is pulled onto it (the `hangar-prepull` DaemonSet), then queued jobs start and warm pools are sized from last week's 10:00 hour. The microVM pool comes back at its fixed size (it came back autoscaling 0–4 before). | `sandbox_warm_nodes = 0`; `HANGAR_POWER_WARM_POOLS=off` |
+| **Terraform** | `power_up_cron` `0 10 * * *` → `50 9 * * *`, with `power_warm_minutes = 10`; the gVisor pool's minimum is `sandbox_warm_nodes` (1 with the power schedule, else 0); hangar's service account gets `roles/run.invoker` on the power-up job; output `power_up_job`. | set the old cron and `sandbox_warm_nodes = 0` in tfvars |
+| **Cost** | the system node runs around the clock, and one Spot sandbox node all powered hours: about **+$22/month** and **up to +$163/month** ([team-scale.md](team-scale.md#cost)) | as above |
+| **Operator view** | → `hangar power` (on or off, when, jobs waiting, last power-up, last deploy, loop heartbeats) and `hangar power up` (an admin powers on early); `hangar doctor`, `GET /api/overview` and MCP `fleet_overview` show the same. No new MCP tools. | — |
+
+### Apply it
+
+```bash
+cd deploy/terraform/gke && terraform apply     # new cron, floor, job env, IAM; during the day, or run power.sh down after
+bash deploy/gke/up.sh                         # the new control plane; sets HANGAR_POWER_UP_JOB from terraform
+hangar power                                  # "sandboxes: on"
+```
+
+The first `power.sh down` after the upgrade leaves hangar and the system pool up. If an older `power.sh` already powered the whole cluster down, the new `up` brings the system pool and hangar back too. A `terraform apply` while the pools are down turns the gVisor pool's autoscaling back on at its floor, which starts a node: run `bash deploy/gke/power.sh down` again after (the range the apply set is kept for the morning).
+
+**Roll back:** set `power_up_cron = "0 10 * * *"` and `sandbox_warm_nodes = 0`, `terraform apply`, and roll back the image (below). The old `power.sh` is in the old checkout; the Cloud Run jobs embed whichever script the last apply read.
+
+## Deploying with deploy.yml
+
+`.github/workflows/deploy.yml` runs by hand (*Actions → deploy → Run workflow*) or on a `v*` tag:
+
+1. **Images.** It calls `images.yml`, which builds every environment image and harness pack tag the commit needs ([gke.md](gke.md#images-and-packs-built-in-ci)), and builds and pushes the control-plane image, `<registry>/control-plane:<sha>`, by digest.
+2. **Approval.** The deploy job uses the `production` environment, so it waits for a required reviewer (the owner) to approve it ([deployments and environments][envs]).
+3. **Preflight.** It reads hangar's power state and **refuses while the sandbox pools are powered down** (the checks need sandboxes) unless the run's `force` input is set; a forced deploy runs only the checks that need no sandbox (`doctor`, `power`, `metrics`). It lists the server's MCP tools and records the running image.
+4. **Drain**, then `kubectl set image deploy/hangar hangar=<image>`, `kubectl rollout status`, and `/healthz` through the public URL.
+5. **Acceptance:** `scripts/acceptance/gke.sh --no-kubectl --skip model,steer,gateway`, so every check talks to hangar's REST, MCP and E2B endpoints, including #86's MCP deadline check; none uses kubectl.
+6. **Run summary:** the server version before → after (`<version>+tools.<hash>`), the MCP tools added and removed, each check's result, and the warm and cold create times.
+7. **On any failure after the image changed:** `kubectl rollout undo deploy/hangar`, wait for it, and fail the run. Either way it records the result in hangar (`POST /api/admin/deploys`), which `hangar doctor` and `hangar power` show.
+
+Until its secrets exist (or on a fork) it skips with a notice and stays green. **Secrets** (repository secrets; the `production` environment holds none, it is only the gate):
+
+| Secret | Value |
+| --- | --- |
+| `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT`, `HANGAR_REGISTRY` | shared with `images.yml` ([gke.md](gke.md#images-and-packs-built-in-ci)); `GCP_SERVICE_ACCOUNT` pushes the control-plane image |
+| `GCP_DEPLOY_SERVICE_ACCOUNT` | `hangar-deploy@<project>.iam.gserviceaccount.com`: `roles/container.developer`, impersonable only from the `production` environment (below). Optional: without it `GCP_SERVICE_ACCOUNT` deploys, and needs that role |
+| `GKE_CLUSTER`, `GKE_LOCATION` | the cluster's name and zone (`hangar`, `us-central1-a`; `terraform output get_credentials`) |
+| `HANGAR_URL` | `https://<your hangar>` |
+| `HANGAR_DEPLOY_TOKEN` | an admin token for the acceptance checks and the deploy record: `hangar token create deploy --scope admin` |
+
+One-time setup, as a project owner, after the images setup in gke.md (same `PROJECT`, `NUM`, `REPO`):
+
+```bash
+gcloud iam service-accounts create hangar-deploy --project "$PROJECT"
+gcloud projects add-iam-policy-binding "$PROJECT" --role roles/container.developer \
+  --member "serviceAccount:hangar-deploy@$PROJECT.iam.gserviceaccount.com"
+# Only jobs in the production environment (subject repo:OWNER/REPO:environment:production) may act as it
+gcloud iam service-accounts add-iam-policy-binding "hangar-deploy@$PROJECT.iam.gserviceaccount.com" --project "$PROJECT" \
+  --role roles/iam.workloadIdentityUser \
+  --member "principal://iam.googleapis.com/projects/$NUM/locations/global/workloadIdentityPools/github/subject/repo:$REPO:environment:production"
+gh secret set GCP_DEPLOY_SERVICE_ACCOUNT --body "hangar-deploy@$PROJECT.iam.gserviceaccount.com"
+gh secret set GKE_CLUSTER --body hangar
+gh secret set GKE_LOCATION --body "$(terraform -chdir=deploy/terraform/gke output -raw get_credentials | sed -E 's/.*--zone ([^ ]+).*/\1/')"
+gh secret set HANGAR_URL --body "https://<your hangar>"
+hangar token create deploy --scope admin | tail -1 | gh secret set HANGAR_DEPLOY_TOKEN
+```
+
+Then in *Settings → Environments*, create `production`, add yourself under *Required reviewers*, and optionally limit it to the `main` branch and `v*` tags. Required reviewers need a public repository, or GitHub Enterprise for a private one ([deployments and environments][envs]). `roles/container.developer` covers `container.clusters.get` (for the credentials), updating and rolling back Deployments and reading ReplicaSets ([GKE roles][gkeroles]); the kubeconfig `get-gke-credentials` writes holds a token that lasts an hour, so the workflow fetches a fresh one before a rollback.
+
+[envs]: https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments
+[gkeroles]: https://docs.cloud.google.com/iam/docs/roles-permissions/container
 
 ## Upgrading from before the overnight stack (#48–#69)
 
@@ -357,8 +428,10 @@ Each check prints PASS, FAIL or SKIP with its time:
 | `e2b` | the stock `e2b` SDK (if installed: `uv sync --extra e2b`) with a `sandboxes` token: create, run, files, list, kill |
 | `backup` | `hangar admin backup` now and in the list, stored in `gs://` |
 | `metrics` | `/metrics` serves hangar's series, and a `metrics` token reads it and nothing else |
+| `power` | hangar's power state answers. With the sandbox pools on: what the last power-up pulled and the warm pools. With them off: a create is refused at once (HTTP 503) with when they're back |
+| `warmstart` | two creates back to back on `--warm-env` (default `claude-python`, which keeps a warm pool): the first claims the warm pod, the second starts cold; both times are printed, and `--record FILE` keeps them as JSON lines |
 
-The script never runs `power.sh`. To check power down and up: `bash deploy/gke/power.sh down`, then `power.sh up`, then run the script again. Everything the script creates is named `accept-<run>` and is removed at the end, also after a failure or Ctrl-C (`--keep` leaves it). `tests/test_acceptance_script.py` runs the script against a hangar on Docker, with GitHub replaced by a local git server behind the gateway. Every check but `k8s` and `steer` runs there for real, `model` with a scripted agent in place of Claude. `k8s`, `steer` and the in-cluster exec measurement run against stand-ins: a fake kubectl, a fake API, and the Docker provider in place of the Kubernetes one.
+The script never runs `power.sh`. To check power down and up: `bash deploy/gke/power.sh down`, run the script (`power` then checks the refusal), then `power.sh up` and run it again. Everything the script creates is named `accept-<run>` and is removed at the end, also after a failure or Ctrl-C (`--keep` leaves it). `tests/test_acceptance_script.py` runs the script against a hangar on Docker, with GitHub replaced by a local git server behind the gateway. Every check but `k8s` and `steer` runs there for real, `model` with a scripted agent in place of Claude. `k8s`, `steer` and the in-cluster exec measurement run against stand-ins: a fake kubectl, a fake API, and the Docker provider in place of the Kubernetes one.
 
 ### 6. Rolling back
 

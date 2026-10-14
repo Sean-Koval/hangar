@@ -72,14 +72,19 @@ resource "google_container_node_pool" "system" {
   }
 }
 
-# gVisor (GKE Sandbox) pool: default isolation for sandboxes. Scales to zero when idle.
+# gVisor (GKE Sandbox) pool: default isolation for sandboxes. With the power schedule it keeps a warm floor while on
+# (sandbox_warm_nodes) and goes to zero at night; without it, it scales to zero when idle.
+locals {
+  sandbox_floor = var.sandbox_warm_nodes != null ? var.sandbox_warm_nodes : (var.enable_power_schedule ? 1 : 0)
+}
+
 resource "google_container_node_pool" "sandboxes" {
   name     = "sandboxes-gvisor"
   cluster  = google_container_cluster.hangar.name
   location = var.zone
 
   autoscaling {
-    min_node_count = 0
+    min_node_count = local.sandbox_floor
     max_node_count = var.sandbox_max_nodes
   }
 

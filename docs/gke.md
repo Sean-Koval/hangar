@@ -107,7 +107,7 @@ See [specs/0006-environments-and-harness-packs.md](specs/0006-environments-and-h
 
 ### Images and packs, built in CI
 
-`.github/workflows/images.yml` runs on every push to `main` and on demand (`workflow_dispatch`). It signs in to Google Cloud with Workload Identity Federation (no service-account key), runs `hangar images build --provider kubernetes`, and pushes to Artifact Registry. Until the three secrets below exist, it skips with a notice and stays green. It never talks to the cluster, so it also works while the cluster is powered down.
+`.github/workflows/images.yml` runs on every push to `main` and on demand (`workflow_dispatch`). It signs in to Google Cloud with Workload Identity Federation (no service-account key), runs `hangar images build --provider kubernetes`, and pushes to Artifact Registry. Until the three secrets below exist, it skips with a notice and stays green. It never talks to the cluster, so it also works while the sandbox pools are powered down. `deploy.yml` calls it before every deploy ([upgrading.md](upgrading.md#deploying-with-deployyml)).
 
 | Secret | Value |
 |---|---|
@@ -189,34 +189,60 @@ curl -s -m 5 -H 'Metadata-Flavor: Google' \
   http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token
 ```
 
-## 6. Turning it off at night (optional)
+## 6. Sandbox nodes off at night (optional)
 
-`deploy/gke/power.sh` scales every node pool to zero and back. Nothing is deleted: the control plane's disk, images, session checkpoints and the IP stay, so the same hangar comes back at the same URL.
+`deploy/gke/power.sh` scales the sandbox node pools (gVisor, Kata and microVM: every pool whose name starts with `sandboxes-`) to zero at night and back in the morning. **Hangar and the `system` pool stay up**, so the URL keeps answering overnight. Nothing is deleted: disks, images, session checkpoints and the IP stay.
 
 ```bash
-bash deploy/gke/power.sh down     # drain, suspend sessions (each checkpoints), stop hangar, 0 nodes
-bash deploy/gke/power.sh up       # node pools back to their autoscaling ranges, start hangar (~3-5 min)
-bash deploy/gke/power.sh status
+bash deploy/gke/power.sh down     # drain, suspend sessions (each checkpoints), tell hangar, sandbox pools to 0 nodes
+bash deploy/gke/power.sh up       # pools back (gVisor at its warm floor), images pulled onto it, tell hangar (~5-10 min)
+bash deploy/gke/power.sh status   # pools, nodes, and what hangar thinks
+hangar power                      # the same from anywhere: on or off, when they're back, jobs waiting
+hangar power up                   # an admin powers the pools on early (runs the power-up job)
 ```
 
-`down` first asks hangar to drain (`POST /api/admin/drain`): queued jobs wait instead of starting, and `GET /api/admin/drain` lists what is still in flight. It suspends idle sessions and waits up to 10 minutes for running agent turns to finish. Turns still running then get a fresh checkpoint, and it waits up to 3 more minutes for sandbox creates, destroys and suspends already under way, so stopping hangar cuts nothing off half way. After `up`, what was still running resumes on its own: jobs go back to the queue a few at a time and continue from their last checkpoint, sandboxes a stop caught half created or half destroyed are finished by the reconciler, and GitHub deliveries that failed while the cluster was down are redelivered. Each pool's autoscaling range is saved as a label on the cluster, and `up` restores it.
+**While the pools are off**, hangar keeps working on everything that doesn't need a sandbox:
+- GitHub, Slack and Jira events (and GitHub Projects, schedules, A2A, MCP `submit_job`) are accepted and queued as usual. Queued jobs wait with the status `waiting: sandboxes power on at 10:00 EDT (in 8 h 12 min)`, and start a few at a time (`HANGAR_JOB_RESTART_STAGGER_SECONDS` apart) once the pools are up.
+- A create (`create_sandbox`, REST, the E2B API, `new_session`, a message to a suspended session) answers at once with a plain message and when sandboxes are back, instead of waiting for a node that won't come: REST answers `503` with `Retry-After`. Nothing is left half made.
+- Sessions and the dashboard are readable; suspended sessions resume when their next message arrives after power-up.
+
+`down` tells hangar first (`POST /api/admin/power/state`), so new creates are refused from that moment, then drains (`POST /api/admin/drain`): queued jobs wait instead of starting. It suspends idle sessions and waits up to 10 minutes for running agent turns to finish. Turns still running then get a fresh checkpoint, and it waits up to 3 more minutes for sandbox creates, destroys and suspends already under way. Only then do the pools go. A job turn the pools take away anyway resumes from its checkpoint after power-up (at most `HANGAR_JOB_RESTART_RESUMES` times), as after a restart. Each pool's autoscaling range (or a fixed pool's node count, for the microVM pool) is saved as a label on the cluster, and `up` restores it; a range a `terraform apply` set while the pools were down wins over the saved one.
+
+**Warm start.** `up` runs at 09:50 so that sandboxes are ready by 10:00:
+1. The gVisor pool comes back at its warm floor, `sandbox_warm_nodes` (default 1 with the power schedule: the pool's autoscaling minimum while it's on).
+2. Once the floor node is ready, `up` applies the `hangar-prepull` DaemonSet (namespace `hangar`), which hangar renders from `hangar images plan`: every environment image and harness pack the registry has, by digest, mounted as [image volumes][imagevol], so each sandbox node pulls them into its image store as it joins and keeps them from image garbage collection. Nothing in those images runs; its one container is `registry.k8s.io/pause`. It waits up to `PREPULL_TIMEOUT` (600 s) for the pull, and later nodes the autoscaler adds pull the same set as they join.
+3. It tells hangar the pools are up: the jobs that waited start, and each environment's warm pool is sized for the morning. `HANGAR_POWER_WARM_POOLS=auto` (the default) takes, for each environment, the most of its sandboxes created in the hour after the ready time on any of the last 7 days (forks excluded), at most `HANGAR_POWER_WARM_MAX` (3); an environment's own `warm_pool` is the minimum. `env=N,env2=M` sets them instead, `off` turns it off. The sizes hold until the next power-down.
+
+`scripts/acceptance/gke.sh`'s `warmstart` check measures what this buys: two creates back to back on an environment with a warm pool, the first claiming the warm pod and the second starting cold.
 
 To run it on a schedule, set these in `terraform.tfvars` and run `terraform apply`:
 
 ```hcl
 enable_power_schedule = true
-power_up_cron         = "0 10 * * *"   # 10 AM
+power_up_cron         = "50 9 * * *"   # 9:50: the floor node and the prepull
+power_warm_minutes    = 10             # hangar tells people sandboxes are ready at 10:00
 power_down_cron       = "0 1 * * *"    # 1 AM
 power_time_zone       = "America/New_York"
+# sandbox_warm_nodes  = 1              # gVisor nodes kept while on (default 1 with the schedule)
 ```
 
-This creates two Cloud Run jobs (`hangar-power-up`, `hangar-power-down`) that run the same script, Cloud Scheduler entries that start them, and a `hangar-power` service account with `roles/container.admin`. To run one by hand: `gcloud run jobs execute hangar-power-up --region <region> --wait`.
+This creates two Cloud Run jobs (`hangar-power-up`, `hangar-power-down`) that run the same script, Cloud Scheduler entries that start them, and a `hangar-power` service account with `roles/container.admin`. The jobs pass the cron, time zone and warm minutes to hangar, which tells people when sandboxes are back. To run one by hand: `gcloud run jobs execute hangar-power-up --region <region> --wait`.
 
-While it's down, you pay for disks, images, the bucket and the load balancer, not nodes. GKE's free tier covers the management fee of one zonal cluster per billing account. The URL returns 502 until `up` finishes.
+**Powering on early.** `hangar power up` (`POST /api/admin/power/up`, admins) runs the `hangar-power-up` job through the Cloud Run Admin API's [`jobs.run`][jobsrun], as hangar's own service account; terraform grants it `roles/run.invoker` on that job, which is what [executing a job][execute] needs (overrides would need more; hangar sends none). Set `HANGAR_POWER_UP_JOB` to `terraform output -raw power_up_job` (`deploy/gke/up.sh` does it). `--wait` waits until the pools report they're on. There is no MCP tool for it: the operator view stays REST and CLI, admin-scoped.
 
-Two things to know:
-- `terraform apply` while it's down turns autoscaling back on, so the system pool starts a node. Run `power.sh up` first, or `power.sh down` again after.
-- `deploy/gke/up.sh` while it's down sets hangar back to one replica, but it won't start until `power.sh up` brings the nodes back.
+**If power.sh can't reach hangar**, hangar's `down` or `starting` state ends on its own an hour after the time it said sandboxes would be ready, and `hangar doctor` says the power-up never reported. `hangar doctor` and `hangar power` also show the last power-up (images pulled, how long, warm pools), the last deploy and its acceptance result, and whether hangar's background loops (reaper, reconciler, sessions, schedules) are passing on time.
+
+While the pools are off you pay for the system node, disks, images, the bucket and the load balancer, not for sandbox nodes ([team-scale.md](team-scale.md#cost) has the numbers). GKE's free tier covers the management fee of one zonal cluster per billing account. GKE Sandbox also needs a node pool without it that keeps at least one node ([GKE Sandbox][gkesandbox]), which the always-on system pool is.
+
+Things to know:
+- `terraform apply` while the pools are off turns the gVisor pool's autoscaling back on at its floor, so a node starts. Run `power.sh down` again after (it keeps the range the apply set for the morning).
+- `up` also brings back a cluster an older `power.sh` powered down entirely (the system pool and a hangar scaled to 0).
+- Set `HANGAR_POWER_PROVIDERS` to the providers whose sandboxes run on the powered pools (default `["kubernetes"]`; add `e2b` when it runs on the microVM pool).
+
+[imagevol]: https://www.k8s.dev/resources/keps/4639/
+[jobsrun]: https://docs.cloud.google.com/run/docs/reference/rest
+[execute]: https://docs.cloud.google.com/run/docs/execute/jobs
+[gkesandbox]: https://docs.cloud.google.com/kubernetes-engine/docs/concepts/sandbox-pods
 
 ## 7. Backups and restore
 
@@ -280,7 +306,7 @@ To restore one, create a disk from the snapshot, then a PV and PVC for it (or sw
 
 ## Shutdown
 
-`kubectl rollout restart`, `power.sh down` and node upgrades stop hangar with SIGTERM. Requests that wait (MCP `agent_status` with `wait_seconds`, `wait_for_turn`, a blocking A2A send) answer at once with the state as it is, and their clients ask again. Event streams and terminals are cut after `HANGAR_SHUTDOWN_GRACE_SECONDS` (15). Then hangar stops its loops and closes its connections. The pod's `terminationGracePeriodSeconds` is 45 to cover that.
+`kubectl rollout restart`, a deploy (`set image`) and node upgrades stop hangar with SIGTERM (`power.sh down` no longer does: hangar stays up). Requests that wait (MCP `agent_status` with `wait_seconds`, `wait_for_turn`, a blocking A2A send) answer at once with the state as it is, and their clients ask again. Event streams and terminals are cut after `HANGAR_SHUTDOWN_GRACE_SECONDS` (15). Then hangar stops its loops and closes its connections. The pod's `terminationGracePeriodSeconds` is 45 to cover that.
 
 Sandboxes, agent turns and sessions don't stop with the control plane. A new pod re-attaches to them. Shutdown takes no checkpoints. A checkpoint, destroy or backup cut off by it is redone after the restart (the idle check and the reaper run again), so the 300 s pre-destroy budget doesn't need to fit in the grace period.
 

@@ -179,8 +179,9 @@ thread), and 260–280 MB RSS with 5,000 jobs in memory. Forks and snapshots add
 
 ### Cost
 
-us-central1, **Spot** sandbox nodes (`sandbox_spot = true`, the default). The power schedule keeps nodes up 10:00–01:00
-ET, about 456 h a month. All prices checked 2026-10-14; the usage scenarios are *estimates*.
+us-central1, **Spot** sandbox nodes (`sandbox_spot = true`, the default). The power schedule keeps the sandbox nodes up
+10:00–01:00 ET, about 456 h a month (461 h since the power-up moved to 09:50 for the warm start). All prices checked
+2026-10-14; the usage scenarios are *estimates*.
 
 | Item | Price | Source |
 | --- | --- | --- |
@@ -195,15 +196,34 @@ ET, about 456 h a month. All prices checked 2026-10-14; the usage scenarios are 
 | Peak all powered hours: 10 nodes × 456 h | 4,560 | ~$1,491 | ~$125 | ~$3,082 |
 | No power schedule, 10 nodes around the clock | 7,300 | ~$2,387 | ~$200 | ~$4,934 |
 
-Not included: the system pool (`e2-standard-2`, on demand, small), the load balancer, Artifact Registry, the session
-bucket, Cloud Build and egress. Spot prices can change daily ([Spot VM pricing][spot]); committed-use discounts don't
-apply to Spot.
+Not included: the load balancer, Artifact Registry, the session bucket, Cloud Build and egress. Spot prices can change
+daily ([Spot VM pricing][spot]); committed-use discounts don't apply to Spot.
+
+**The always-on control plane and the warm floor.** Only the sandbox pools power down now: hangar and the `system`
+pool run around the clock (730 h a month), so the URL answers and GitHub, Slack and Jira events are queued overnight
+([gke.md](gke.md#6-sandbox-nodes-off-at-night-optional)). And the gVisor pool keeps a warm floor of
+`sandbox_warm_nodes` (1) while it's on, so the first create of the day doesn't wait for a node.
+
+| Item (*estimate* from the prices above) | Hours / month | Per month |
+| --- | --- | --- |
+| e2-standard-2 system node, on demand: $0.067 / h ([gcloud-compute.com][e2], third party, Google's SKU prices updated 2026-10-11) | 730 | $48.91 |
+| its 100 GB pd-balanced boot disk | 730 | $10.00 |
+| **System pool, always on** | | **~$59** (a second node only under load) |
+| Of which new: the night hours it used to be off (01:00–10:00) | 274 | **+$22** |
+| Warm floor: one n2d-standard-16 Spot node and its 200 GB disk ($0.354 / h), all powered hours, at most | 461 | **+$163** |
+| … when the pool would hold a node anyway on workdays (the typical scenario), and weekends sit idle | ~132 | ~+$47 |
+
+The floor costs nothing extra in hours when sandboxes run anyway; it is the price of idle evenings and weekends with a
+node up. `sandbox_warm_nodes = 0` gives it back (and the first create of the day waits for a node again: 1–2 min, plus
+image pulls), as does a weekday-only `power_up_cron = "50 9 * * 1-5"` (then weekends stay off until someone runs
+`hangar power up`). The prepull pulls from Artifact Registry in the same region, which costs no egress.
 
 ### Applying it
 
 1. **Request the quotas above first**; a refused scale-up shows as sandboxes stuck "waiting for a node".
-2. **Apply while the cluster is powered down** (01:00–10:00 ET, after `power.sh down` has finished), or suspend live
-   sessions first (`hangar session suspend <name>`). The pool itself is not replaced: with the google provider ≥ 5.x
+2. **Apply while the sandbox pools are powered down** (01:00–09:50 ET, after `power.sh down` has finished; with the
+   power schedule the apply also brings back the gVisor pool's warm floor node, so run `power.sh down` again after),
+   or suspend live sessions first (`hangar session suspend <name>`). The pool itself is not replaced: with the google provider ≥ 5.x
    (`versions.tf` asks for ≥ 6.0) `machine_type` is an in-place node pool update, and `terraform plan` shows
    `~ update in-place` on `google_container_node_pool.sandboxes`. GKE carries it out by replacing every node, so
    every sandbox on the pool is killed. Powered down, the pool has no nodes and the update is quick. With nodes up,
@@ -267,3 +287,4 @@ The next upgrade archives them again. `HANGAR_SANDBOX_RETENTION_DAYS=0` turns ar
 [holori]: https://calculator.holori.com/gcp/vm/n2d-standard-16
 [overlay]: https://gvisor.dev/blog/2023/05/08/rootfs-overlay/
 [quotas]: https://docs.cloud.google.com/compute/quotas
+[e2]: https://gcloud-compute.com/e2-standard-2.html

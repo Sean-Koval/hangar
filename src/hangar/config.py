@@ -441,6 +441,15 @@ class Settings(BaseSettings):
     # through hangar. Needs wildcard DNS pointing at hangar; `localhost` on a laptop. Unset: previews are off.
     preview_domain: str | None = None
     preview_session_hours: float = Field(12, gt=0, le=168)  # how long an opened preview stays signed in
+    # --- ops: the sandbox node pools power down at night while hangar stays up (power.py, docs/gke.md). Providers
+    # whose sandboxes run on those pools (add e2b when it runs on the microVM pool): while they are off, creates on
+    # them answer at once with when they're back, and jobs wait queued.
+    power_providers: list[str] = Field(default_factory=lambda: ["kubernetes"])
+    power_up_job: str | None = None  # `hangar power up` runs this Cloud Run job (terraform output power_up_job)
+    # Warm pools for the day at power-up: `auto` (from last week's creates in that hour), `off`, or `env=N,env2=M`
+    power_warm_pools: str = "auto"
+    power_warm_max: int = Field(3, ge=0, le=50)
+    power_prepull_image: str = "registry.k8s.io/pause:3.10.1"  # the prepull DaemonSet's only container
 
     @property
     def backup_interval_hours(self) -> float:
