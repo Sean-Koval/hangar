@@ -1,0 +1,161 @@
+"""One control plane shared by a team (docs/team-scale.md): caps per person, and job slots sized from capacity.
+
+A person can hold only so much at once: live sessions, sandboxes started directly, and running jobs. The job queue
+gives a free slot to whoever has the fewest jobs running, so one person's batch can't hold everyone else's work
+behind it for an hour. `person_of` is the one place that maps the actor strings hangar passes around to a person;
+the identity work's `principal.person` replaces its body.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import collections
+import itertools
+from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING
+
+from hangar.models import SESSION_LIVE, Sandbox, Session
+
+if TYPE_CHECKING:
+    from hangar.config import Settings
+    from hangar.sessions import SessionService
+
+# Actors that are hangar itself acting (sessions' and jobs' own sandboxes, the reaper, schedules): not a person.
+# What they start is capped where a person asked for it (the session, the job).
+_INTERNAL = {"system", "reaper", "session", "jobs", "mcp"}
+_INTERNAL_PREFIXES = ("session:", "job:", "hangar:", "schedule:", "trigger:")
+
+
+class CapReached(ValueError):
+    """A person is at one of their caps. A ValueError, so every front door already answers it as a 4xx."""
+
+
+def person_of(actor: str | None) -> str | None:
+    """The person behind an actor string, or None for hangar's own actors. The same token reached over MCP
+    ("mcp:sean", "sean") or REST ("ui:sean") is one person, and so is an OAuth connector a person approved
+    ("oauth:<client>(sean)"): its grant carries the approver's name."""
+    if not actor:
+        return None
+    a = actor
+    for prefix in ("mcp:", "ui:", "e2b:"):
+        if a.startswith(prefix):
+            a = a[len(prefix):]
+            break
+    if a.startswith("oauth:") and a.endswith(")") and "(" in a:
+        subject = a[a.index("(") + 1:-1]
+        if subject and subject != "?":
+            a = subject
+    if not a or a in _INTERNAL or a.startswith(_INTERNAL_PREFIXES):
+        return None
+    return a
+
+
+def check_sandboxes(settings: Settings, active: Iterable[Sandbox], actor: str) -> None:
+    """Refuse a create past HANGAR_PERSON_MAX_SANDBOXES live sandboxes the same person started directly."""
+    cap = settings.person_max_sandboxes
+    who = person_of(actor)
+    if cap <= 0 or who is None:
+        return
+    held = sum(1 for s in active if person_of(s.created_by) == who)
+    if held >= cap:
+        raise CapReached(f"{who} already has {held} sandboxes running (the limit per person is {cap}); destroy one "
+                         "first, or ask the operator to raise HANGAR_PERSON_MAX_SANDBOXES")
+
+
+def check_sessions(svc: SessionService, owner: str, starting: Session | None = None) -> None:
+    """Refuse a new or resumed session past HANGAR_PERSON_MAX_SESSIONS live ones (each holds a sandbox). Sessions
+    with a boot or turn already on its way count too, so two sends at once can't both slip under the cap."""
+    cap = svc.settings.person_max_sessions
+    who = person_of(owner)
+    if cap <= 0 or who is None:
+        return
+    live = sum(1 for s in svc._sessions.values()
+               if (s.state in SESSION_LIVE or s.id in svc._busy) and (starting is None or s.id != starting.id)
+               and person_of(s.owner) == who)
+    if live >= cap:
+        raise CapReached(f"{who} already has {live} sessions running (the limit per person is {cap}); suspend one "
+                         "first (suspend_session), or ask the operator to raise HANGAR_PERSON_MAX_SESSIONS")
+
+
+def job_slots(settings: Settings) -> int:
+    """Jobs provisioning or running at once: HANGAR_JOB_CONCURRENCY, else sized from the fleet. On Docker (one
+    machine) 4; elsewhere a fifth of max_sandboxes between 4 and 24, which leaves the rest for sessions, forks and
+    best-of-N attempts."""
+    if settings.job_concurrency > 0:
+        return settings.job_concurrency
+    if settings.default_provider == "docker":
+        return 4
+    return max(4, min(24, settings.max_sandboxes // 5))
+
+
+def job_cap(settings: Settings) -> int:
+    """Jobs one person may run at once: HANGAR_PERSON_MAX_RUNNING_JOBS, else half the slots (at least 2)."""
+    if settings.person_max_running_jobs > 0:
+        return settings.person_max_running_jobs
+    return max(2, job_slots(settings) // 2)
+
+
+class FairJobQueue:
+    """The job queue, fair between people. A free worker takes the waiting job of whoever has the fewest jobs
+    running (the oldest job among equals), skipping people at their cap. A drop-in for the asyncio.Queue the job
+    workers used: put_nowait, get, task_done (which frees the slot of the job this worker task took), qsize, empty.
+
+    `person` maps a job id to its person ("" for jobs nobody in particular asked for)."""
+
+    def __init__(self, person: Callable[[str], str], cap: Callable[[], int]):
+        self._person = person
+        self._cap = cap
+        self._seq = itertools.count()
+        self._waiting: list[tuple[int, str]] = []
+        self._running: collections.Counter[str] = collections.Counter()
+        self._held: dict[asyncio.Task | None, str] = {}
+        self._changed = asyncio.Event()
+
+    def put_nowait(self, job_id: str) -> None:
+        self._waiting.append((next(self._seq), job_id))
+        self._changed.set()
+
+    def qsize(self) -> int:
+        return len(self._waiting)
+
+    def empty(self) -> bool:
+        return not self._waiting
+
+    def running(self) -> dict[str, int]:
+        return dict(self._running)
+
+    def _pick(self) -> tuple[str, str] | None:
+        """(job id, person) of the job to run next, taken off the queue; None while everyone waiting is capped."""
+        cap = self._cap()
+        best: tuple[int, int, int] | None = None  # (their running jobs, arrival, index)
+        people: dict[str, str] = {}
+        for i, (seq, job_id) in enumerate(self._waiting):
+            who = people[job_id] = self._person(job_id)
+            if cap > 0 and who and self._running[who] >= cap:
+                continue
+            key = (self._running[who] if who else 0, seq, i)
+            if best is None or key < best:
+                best = key
+        if best is None:
+            return None
+        _, job_id = self._waiting.pop(best[2])
+        return job_id, people[job_id]
+
+    async def get(self) -> str:
+        while True:
+            picked = self._pick()
+            if picked is not None:
+                job_id, who = picked
+                self._running[who] += 1
+                self._held[asyncio.current_task()] = who
+                return job_id
+            self._changed.clear()
+            await self._changed.wait()
+
+    def task_done(self) -> None:
+        who = self._held.pop(asyncio.current_task(), None)
+        if who is not None:
+            self._running[who] -= 1
+            if self._running[who] <= 0:
+                del self._running[who]
+        self._changed.set()

@@ -34,6 +34,7 @@ from hangar import (  # strategies: workstream D; --- observe; steer: live turns
     strategies,
     verifyloop,
 )
+from hangar import fairness as fairness  # --- scale
 from hangar.events import resolve_budget, total_usage, usage_line
 from hangar.fleet import Fleet, FleetError, _clip_tail
 from hangar.github import GitHub, GitHubError, parse_repo
@@ -164,7 +165,8 @@ class JobService:
         self.broker = fleet.broker
         self.transport = transport  # tests inject a mock transport for GitHub and callbacks
         self._jobs: dict[str, Job] = {}
-        self._queue: asyncio.Queue[str] = asyncio.Queue()
+        # --- scale: fair between people (the fewest running first, each capped), not first come first served
+        self._queue: Any = fairness.FairJobQueue(self._person, lambda: fairness.job_cap(self.settings))
         self._workers: list[asyncio.Task] = []
         self._active: set[str] = set()
         self._background: set[asyncio.Task] = set()
@@ -219,7 +221,7 @@ class JobService:
             if s is not None and (job.state in JOB_TERMINAL or job.state == JobState.NEEDS_INPUT):
                 self.sessions.release_restart_hold(s)
             strategies.release_restart_holds(self, job)
-        n = max(1, self.settings.job_concurrency)
+        n = fairness.job_slots(self.settings)  # --- scale: sized from capacity unless set
         self._workers = [asyncio.create_task(self._worker(i)) for i in range(n)]
         autofix.restore(self)  # --- overnight/autofix: PR triggers still waiting for their window
         for job in interrupted:
@@ -246,6 +248,11 @@ class JobService:
                 log.exception("job worker %d crashed on %s", i, job_id)
             finally:
                 self._queue.task_done()
+
+    def _person(self, job_id: str) -> str:
+        """--- scale: whose share of the job slots a job takes (fairness.FairJobQueue): who submitted it."""
+        job = self._jobs.get(job_id)
+        return (fairness.person_of(job.requester) or "") if job else ""
 
     # ================================================================== public API
     def get(self, job_id: str, owner: str | None = None) -> Job:

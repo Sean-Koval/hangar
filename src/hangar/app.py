@@ -64,6 +64,9 @@ class Hangar:
         from hangar.backup import Backups  # --- overnight/sweep: database backups into the session store
 
         self.backups = Backups(self.settings, self.vault, self.sessions.blobs)
+        from hangar.retention import Retention  # --- scale: settled sandbox records move to the archive
+
+        self.retention = Retention(self.store, self.settings)
 
 
 # ---------------------------------------------------------------------------- MCP auth
@@ -302,11 +305,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         restore_signals = shutdown.on_signal(asyncio.get_running_loop(), h.fleet.closing.set)
         h.backups.start()
+        h.retention.start()  # --- scale
         async with mcp.session_manager.run():
             yield
         h.fleet.closing.set()
         restore_signals()
         await h.backups.stop()
+        await h.retention.stop()  # --- scale
         if prebuild:
             prebuild.cancel()
         await h.triggers.stop()

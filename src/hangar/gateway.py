@@ -750,7 +750,8 @@ class Gateway:
         sessions = self.store.list(Session)
         own = {s.branch for s in sessions if s.id == own_id}
         owners = [(s.branch, s.repo, f"session {s.name}") for s in sessions if s.id != own_id] + \
-            [(j.branch, j.repo, f"job {j.id}") for j in self.store.list(Job) if j.state not in JOB_TERMINAL]
+            [(j.branch, j.repo, f"job {j.id}") for j in self.store.list_active(Job)  # --- scale: indexed
+             if j.state not in JOB_TERMINAL]
         out: dict[str, str] = {}
         for branch, repo, who in owners:
             if not branch or branch in own:

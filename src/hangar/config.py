@@ -127,13 +127,15 @@ class Settings(BaseSettings):
 
     # --- fleet defaults -----------------------------------------------------
     default_ttl_minutes: int = 240
-    max_sandboxes: int = 50
+    max_sandboxes: int = 120  # --- scale: 6 people × 10 sessions, plus job slots, forks and best-of-N attempts
     reaper_interval_seconds: int = 60
     sandbox_user: str = "agent"
     workspace_dir: str = "/workspace"
 
     # --- jobs (spec 0009) ---------------------------------------------------
-    job_concurrency: int = 4  # jobs provisioning/running at once; the rest wait in the queue
+    # Jobs provisioning/running at once; the rest wait in the queue. --- scale: 0 = sized from the fleet: 4 on Docker,
+    # else max_sandboxes / 5 between 4 and 24 (fairness.job_slots).
+    job_concurrency: int = 0
     job_poll_seconds: float = 5.0
     job_timeout_minutes: int = 60  # per agent turn
     job_keep_minutes: int = 120  # sandbox kept after a turn for follow-ups and take-over
@@ -319,6 +321,15 @@ class Settings(BaseSettings):
     # How long `hangar serve` waits for open requests (streams, terminals) on shutdown before cutting them.
     # Long-polls answer at once (shutdown.py). Keep it under the pod's terminationGracePeriodSeconds (45).
     shutdown_grace_seconds: int = 15
+    # --- scale: one control plane for a team (docs/team-scale.md). Caps per person, a person being a token's or an
+    # approved OAuth connector's name (fairness.person_of); hangar's own actors are exempt. 0 = off.
+    person_max_sessions: int = 15  # live sessions (each holds a sandbox); suspended ones don't count
+    person_max_sandboxes: int = 20  # sandboxes started directly (MCP, REST, the E2B API); sessions' are above
+    person_max_running_jobs: int = 0  # jobs running at once; 0 = half the job slots. Others' jobs go first
+    # Stopped and failed sandbox records older than this move to an archive table (retention.py): out of listings
+    # and of every scan, still found by id. Archived ones are deleted after sandbox_archive_days (0 = kept).
+    sandbox_retention_days: float = 7
+    sandbox_archive_days: float = 180
     # --- observe: traces, metrics and the cost view (docs/observability.md). Traces are configured with the
     # standard OTEL_* variables and are off unless they name an exporter.
     metrics_enabled: bool = True  # GET /metrics (admin or `metrics` tokens); off: no prometheus_client import

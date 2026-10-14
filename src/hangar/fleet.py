@@ -18,6 +18,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from hangar import exchange, harden, isolation, observe  # --- observe, isolation, harden
+from hangar import fairness as fairness  # --- scale
 from hangar.broker import AUTH_FILE_LIMIT, Broker, CredentialError
 from hangar.config import Settings
 from hangar.envspec import BuildContext, EnvCatalog, EnvSpec, image_tag, render, repo_dirname, warm_pool_now
@@ -488,7 +489,7 @@ class Fleet:
     def get(self, ref: str) -> Sandbox:
         sb = self.store.get(Sandbox, ref)
         if sb is None:
-            matches = [s for s in self.store.list(Sandbox) if s.name == ref and s.state in ACTIVE]
+            matches = self.store.list_where(Sandbox, name=ref, state=ACTIVE)  # --- scale: indexed, not a scan
             if len(matches) == 1:
                 sb = matches[0]
         if sb is None:
@@ -496,7 +497,8 @@ class Fleet:
         return sb
 
     def list(self, include_stopped: bool = False, label: str | None = None) -> list[Sandbox]:
-        sbs = [s for s in self.store.list(Sandbox) if include_stopped or s.state in ACTIVE]
+        # --- scale: live sandboxes from the state index; settled ones only when asked (retention.py bounds them)
+        sbs = self.store.list(Sandbox) if include_stopped else self.store.list_where(Sandbox, state=ACTIVE)
         if label:
             k, _, v = label.partition("=")
             sbs = [s for s in sbs if s.labels.get(k) == v or (not v and k in s.labels)]
@@ -554,14 +556,15 @@ class Fleet:
         if tier := tiers.route(self, environment, tier, provider):
             call = {k: v for k, v in locals().items() if k not in ("self", "tier", "tiers")}
             return await tiers.create(self, tier, call)
-        active = [s for s in self.store.list(Sandbox) if s.state in ACTIVE]
+        active = self.store.list_where(Sandbox, state=ACTIVE)  # --- scale: indexed, not a scan
         if len(active) >= self.settings.max_sandboxes:  # --- providers-e2b: paused for hot resume, they give way
             from hangar import hot_resume
 
             if await hot_resume.make_room(self):
-                active = [s for s in self.store.list(Sandbox) if s.state in ACTIVE]
+                active = self.store.list_where(Sandbox, state=ACTIVE)  # --- scale
         if len(active) >= self.settings.max_sandboxes:
             raise FleetError(f"fleet is at max_sandboxes={self.settings.max_sandboxes}; destroy some first")
+        fairness.check_sandboxes(self.settings, active, actor)  # --- scale: one person can't take the whole fleet
         spec = self.catalog.get(environment)
         pname = provider or self.settings.default_provider
         prov = self.provider(pname)

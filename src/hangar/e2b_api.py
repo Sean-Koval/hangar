@@ -255,7 +255,7 @@ class E2BService:
 
     def visible(self, p: Principal) -> list[tuple[Sandbox, dict[str, Any] | None]]:
         out = []
-        for sb in self.store.list(Sandbox):
+        for sb in self.store.list_where(Sandbox, state=ACTIVE):  # --- scale: indexed, not a scan
             if sb.state not in ACTIVE:
                 continue
             rec = self.record(sb.id)
