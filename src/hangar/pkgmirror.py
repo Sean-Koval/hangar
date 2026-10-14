@@ -67,6 +67,8 @@ DEFAULTS: dict[str, dict[str, str]] = {
 GO_NO_FETCH = {"Disable-Module-Fetch": "true"}  # pkgsite's proxy client: "prevents the proxy from fetching uncached
 # modules" (golang.org/x/pkgsite/internal/proxy)
 METADATA_MAX = 64 * 1024 * 1024  # an index page or packument held to rewrite its URLs
+# --- review (#107): all the metadata held at once, across sandboxes; past it a request gets 503 and Retry-After
+METADATA_HELD = 256 * 1024 * 1024
 INFLIGHT_PER_SANDBOX = 64  # npm opens ~15 connections per origin; pip and Go fewer
 _PATH = re.compile(r"^[A-Za-z0-9._~!$&'()*+,;=:@%/-]*$")
 _IMMUTABLE = {"pypi": re.compile(r"^files/packages/.+"), "npm": re.compile(r".+/-/[^/]+\.tgz$"),
@@ -137,6 +139,7 @@ class Mirror:
     def __init__(self, gw: Gateway):
         self.gw, self.fleet, self.settings = gw, gw.fleet, gw.settings
         self._inflight: Counter[str] = Counter()
+        self._held = 0  # --- review (#107): bytes of metadata held for rewriting, all requests together
         self._token: Any = None
         self._cache_size: int | None = None
         self._evicting = False
@@ -269,12 +272,17 @@ class Mirror:
             body = bytearray()
             try:
                 async for chunk in resp.aiter_bytes():
+                    if self._held + len(chunk) > METADATA_HELD:  # --- review (#107)
+                        return PlainTextResponse(f"hangar: the {eco} mirror is busy; retry\n", 503,
+                                                 headers={"Retry-After": "2"})
                     body += chunk
+                    self._held += len(chunk)
                     if len(body) > METADATA_MAX:
                         return PlainTextResponse(f"hangar: {eco} metadata over {METADATA_MAX >> 20} MB\n", 502)
+                data = _rewrite(bytes(body), mounts, public)
             finally:
+                self._held -= len(body)
                 await resp.aclose()
-            data = _rewrite(bytes(body), mounts, public)
             self.fleet.egress.record(sb, f"{eco}.mirror.hangar", 443, f"mirror:{eco}", mode, 0, len(data))
             return Response(data, media_type=ctype)
 

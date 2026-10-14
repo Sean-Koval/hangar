@@ -181,6 +181,26 @@ async def test_the_cache_keeps_to_its_size(world):
     assert left <= 0.9 * 1024 * 1024 and m._cache_size == left
 
 
+async def test_metadata_held_for_rewriting_is_bounded_across_sandboxes(world, monkeypatch):
+    """--- review (#107): an index page or packument is held whole to rewrite its URLs, up to 64 MB each, and a
+    sandbox may have 64 requests in flight: a few sandboxes asking for big packuments at once would hold gigabytes
+    on the control plane. Past the shared budget the mirror answers 503 with Retry-After, which pip and npm retry."""
+    from hangar import pkgmirror
+
+    w = world
+    monkeypatch.setattr(pkgmirror, "METADATA_HELD", 1000)
+    w.up.routes["https://registry.npmjs.org/big"] = httpx.Response(200, content=b'{"x": "' + b"y" * 2000 + b'"}',
+                                                                    headers={"content-type": "application/json"})
+    w.up.routes["https://registry.npmjs.org/small"] = httpx.Response(200, json={"name": "small"},
+                                                                      headers={"content-type": "application/json"})
+    _, auth = w.sandbox("locked", "sb-big1")
+    async with w.client() as c:
+        r = await c.get("/pkg/npm/big", headers=auth)
+        assert r.status_code == 503 and r.headers["retry-after"]
+        assert (await c.get("/pkg/npm/small", headers=auth)).status_code == 200  # what it held is given back
+    assert w.fleet.gateway.mirror._held == 0
+
+
 # ============================================================================ the read-only GitHub API
 @pytest.fixture
 def gh(world, broker):
