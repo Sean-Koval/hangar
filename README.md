@@ -112,7 +112,19 @@ uv run hangar sb agent first-task \
   "Explain the project structure and how to run its tests."
 ```
 
-Open the sandbox in the dashboard to follow the work in its live terminal. When you finish reviewing it, remove it:
+### Follow the agent in the dashboard
+
+1. Open the dashboard and select **Fleet**.
+2. Find `first-task`. Under **Agent runs**, click the agent run to attach to its live terminal.
+3. The terminal opens in the drawer at the bottom. You see the same session the agent is using and can type into it.
+
+The **Terminal** button opens a shell. To switch that shell to the agent's session, choose **Sessions…**, select the agent's session, and click **Attach**. **Hide** closes the drawer view; it does not destroy the sandbox.
+
+### Remove the sandbox after review
+
+Save or push any changes you want to keep. In **Fleet**, click **Destroy** on `first-task` and confirm. This deletes the sandbox's filesystem; take a **Snapshot** first if you need to preserve it.
+
+Or remove it from the CLI:
 
 ```bash
 uv run hangar sb rm first-task
