@@ -123,8 +123,8 @@ egress:
 | Mode | Network | What gets through |
 | --- | --- | --- |
 | `open` (the default, `HANGAR_EGRESS_DEFAULT`) | the public internet directly, as before | everything public |
-| `allowlist` | only DNS, the git gateway and hangar's egress proxy | the harness's own hosts (its model API and login refresh), the presets, `allow`, and hosts an owner approved |
-| `none` | the same | the harness's own hosts and approved hosts only |
+| `allowlist` | only DNS, the git gateway and hangar's egress proxy | the harness's own hosts (its model API and login refresh), the environment's remote MCP servers, the presets, `allow`, and hosts an owner approved |
+| `none` | the same | the harness's own hosts, the environment's MCP servers and approved hosts only |
 
 A rule is a host (`pypi.org`, ports 443 and 80), a host and port, or `*.domain` (any name below it, not the domain itself). There is no `*` rule: that is mode `open`.
 
@@ -132,7 +132,7 @@ A rule is a host (`pypi.org`, ports 443 and 80), a host and port, or `*.domain` 
 - **The harness's hosts** are always allowed in a proxied mode, since an agent can't work without its model: Claude Code's are `api.anthropic.com`, `claude.ai` and `platform.claude.com` ([Claude Code's network requirements](https://code.claude.com/docs/en/network-config#network-access-requirements)); Codex's `api.openai.com`, `chatgpt.com` and `auth.openai.com`; Gemini and Antigravity's `generativelanguage.googleapis.com`, `cloudcode-pa.googleapis.com` and `oauth2.googleapis.com`. A pi router not among them goes in `allow`.
 - **Per repo.** A repo policy's `egress` (`PUT /api/repos/policy`, admin) adds presets and hosts for that repo's sandboxes and can tighten the mode (`open` < `allowlist` < `none`). It can't widen it. A repo policy that asks for `allowlist` in an `open` environment isn't enforced, because the network decides that; the sandbox carries a warning saying so.
 - **Who sets it.** `egress` on an environment needs an admin, like `secrets:` and `image`.
-- **Asking for a host.** The agent runs `hangar-agent env request egress <host> --why '…'`, and the proxy's refusal says exactly that. The session's or job's owner, or an admin, approves or denies the request. An approval adds the host to that session's allowlist; an admin can widen it to the whole environment. It applies to the next connection, and is audited as `egress.approve`. Nothing is granted automatically.
+- **Asking for a host.** The agent runs `hangar-agent env request egress <host> --why '…'`, and the proxy's refusal says exactly that. The session's or job's owner, or an admin, approves or denies the request. An approval adds the host to that session's allowlist; an admin can widen it to the whole environment. It applies to the next connection, and is audited as `egress.approve`. Nothing is granted automatically. Admins list approvals with `GET /api/egress/approvals?environment=…` (or `session=…`) and revoke one with `DELETE` and `rule=` (audited as `egress.revoke`). `GET /api/egress/sandboxes/<id>` shows what a sandbox may reach and why.
 
 **How it is enforced.** An environment's mode decides the network its sandboxes start on:
 

@@ -74,6 +74,15 @@ def test_none_keeps_only_the_harness_and_approvals():
     assert pol.allows("pypi.org", 443) is None and pol.allows("example.com", 443).source == "approved:rq-1"
 
 
+def test_the_environments_own_remote_mcp_servers_are_reachable():
+    s = EnvSpec(name="api", harnesses=["claude-code"], egress={"mode": "none"},
+                mcp={"docs": {"url": "https://mcp.example.com/mcp"}, "local": {"command": "npx"},
+                     "alt": {"url": "http://tools.example.org:8080/x"}, "tmpl": {"url": "https://${HOST}/mcp"}})
+    pol = egress.resolve(Settings(), s, harness="claude-code")
+    assert pol.allows("mcp.example.com", 443).source == "mcp" and pol.allows("tools.example.org", 8080)
+    assert pol.allows("tools.example.org", 443) is None
+
+
 def test_a_repo_policy_tightens_and_adds_but_never_widens():
     env_allow = spec(mode="allowlist")
     pol = egress.resolve(Settings(), env_allow, egress.EgressSpec(mode="none"), "claude-code")
@@ -369,6 +378,33 @@ async def test_garbage_gets_400_and_the_listener_survives(proxied):
         assert out.startswith(b"HTTP/1.1 4"), junk
     first, *_ = await ask(p.px, f"CONNECT upstream.test:{p.up} HTTP/1.1\r\n{auth(p.fleet, p.sb)}")
     assert first.startswith(b"HTTP/1.1 200")
+
+
+def test_admins_see_and_revoke_approvals_over_rest(settings):
+    from fastapi.testclient import TestClient
+
+    from hangar.app import create_app
+
+    settings.admin_token = "t0ken"
+    app = create_app(settings)
+    with TestClient(app) as c:
+        h = app.state.hangar
+        h.fleet.providers["docker"] = FakeProvider()
+        c.headers["Authorization"] = "Bearer t0ken"
+        egress.approve(h.store, "environment", "plain", "docs.example.com", None, "ann", request="rq-1")
+        assert [a["rule"] for a in c.get("/api/egress/approvals", params={"environment": "plain"}).json()] == \
+            ["docs.example.com"]
+        assert c.get("/api/egress/approvals").status_code == 400
+        r = c.delete("/api/egress/approvals", params={"environment": "plain", "rule": "docs.example.com"})
+        assert r.status_code == 200 and egress.approvals(h.store, environment="plain") == []
+        assert c.delete("/api/egress/approvals", params={"environment": "plain", "rule": "x.example"}).status_code \
+            == 404
+        sb = Sandbox(name="s", environment="plain", provider="docker", info={"harness": "claude-code"})
+        h.store.put(sb)
+        assert c.get(f"/api/egress/sandboxes/{sb.id}").json()["mode"] == "open"
+        tok = c.post("/api/tokens", json={"name": "m", "scopes": ["mcp"]}).json()["token"]
+        assert c.get("/api/egress/approvals", params={"environment": "plain"},
+                     headers={"Authorization": f"Bearer {tok}"}).status_code in (401, 403)
 
 
 # ============================================================================ wiring a sandbox

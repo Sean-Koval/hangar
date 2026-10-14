@@ -251,6 +251,7 @@ def resolve(settings: Settings, spec: EnvSpec, repo: EgressSpec | None = None, h
     rules: list[Rule] = []
     if mode != "open":
         rules += [Rule(h, False, None, "harness") for h in HARNESS_HOSTS.get(harness or "", ())]
+        rules += _mcp_rules(spec)  # the environment's own remote MCP servers, which an admin configured
         if mode == "allowlist":  # none: the harness's hosts and approved requests only
             presets = _presets_for(env, mode)
             presets += [p for p in (repo.presets or [] if repo else []) if p not in presets]
@@ -269,6 +270,23 @@ def resolve(settings: Settings, spec: EnvSpec, repo: EgressSpec | None = None, h
             seen.add(k)
             out.append(r)
     return Policy(mode, tuple(out[:MAX_RULES * 4]), is_proxied, tuple(notes))
+
+
+def _mcp_rules(spec: EnvSpec) -> list[Rule]:
+    out = []
+    for srv in (getattr(spec, "mcp", None) or {}).values():
+        url = getattr(srv, "url", None)
+        if not url:
+            continue
+        try:
+            u = urlsplit(url)
+            if u.hostname and "$" not in u.netloc:
+                default = 443 if u.scheme == "https" else 80
+                out.append(Rule(normalize_host(u.hostname), False, None if (u.port or default) == default
+                                else u.port, "mcp"))
+        except (ValueError, EgressError):
+            continue
+    return out
 
 
 def repo_egress(store: Store, repo: str | None) -> EgressSpec | None:
@@ -430,6 +448,43 @@ def describe(fleet: Fleet, sb: Sandbox) -> dict[str, Any]:
     if (cur := sb.info.get("egress")) and cur.get("proxy"):
         out["proxy"] = cur["proxy"]
     return out
+
+
+def mount(app: Any, h: Any, admin: Any) -> None:
+    """Admin REST: what a sandbox may reach (GET /api/egress/sandboxes/{id}), the hosts owners approved
+    (GET /api/egress/approvals?environment=…|session=…), and revoking one (DELETE, same query plus rule=)."""
+    from fastapi import HTTPException, Query
+
+    fleet: Fleet = h.fleet
+
+    @app.get("/api/egress/sandboxes/{ref}")
+    async def egress_sandbox(ref: str, _: str = admin):
+        try:
+            sb = fleet.get(ref)
+        except Exception as e:  # noqa: BLE001 - FleetError: unknown sandbox
+            raise HTTPException(404, str(e)) from e
+        return describe(fleet, sb)
+
+    def _scope(environment: str | None, session: str | None) -> tuple[str, str]:
+        if bool(environment) == bool(session):
+            raise HTTPException(400, "give one of environment= or session=")
+        return ("environment", environment) if environment else ("session", session)  # type: ignore[return-value]
+
+    @app.get("/api/egress/approvals")
+    async def egress_approvals(environment: str | None = Query(None), session: str | None = Query(None),
+                               _: str = admin):
+        scope, key = _scope(environment, session)
+        return approvals(fleet.store, **{scope: key})
+
+    @app.delete("/api/egress/approvals")
+    async def egress_revoke(rule: str = Query(...), environment: str | None = Query(None),
+                            session: str | None = Query(None), who: str = admin):
+        scope, key = _scope(environment, session)
+        if not revoke(fleet.store, scope, key, rule):
+            raise HTTPException(404, f"no approved host '{rule}' for {scope} {key}")
+        fleet.audit(who, "egress.revoke", key, scope=scope, rule=rule)
+        fleet.egress.invalidate()
+        return {"revoked": rule, scope: key}
 
 
 def request_hint(host: str, port: int) -> str:

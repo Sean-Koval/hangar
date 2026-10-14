@@ -47,6 +47,7 @@ HEAD_MAX = 16 * 1024  # a request head: CONNECT lines are tiny; plain HTTP reque
 HEAD_SECONDS = 15.0  # to send the request head, and (CONNECT) the first TLS record or HTTP head
 CONNECT_SECONDS = 15.0
 IDLE_SECONDS = 900.0  # no byte either way for this long ends a tunnel (model streams send keep-alives)
+CLOSE_GRACE_SECONDS = 15.0  # after the far side closes, how long the client side may still send
 BUF = 256 * 1024
 TLS_RECORD_MAX = 16384 + 2048  # a TLSPlaintext fragment is at most 2^14 bytes; leave room for what clients send
 MAX_CONNECTIONS = 4096  # the process's file limit is the real bound; leave room for everything else
@@ -493,10 +494,14 @@ class EgressProxy:
                     if dst.can_write_eof():
                         dst.write_eof()
 
-        tasks = {asyncio.create_task(pipe(cr, uw, 0)), asyncio.create_task(pipe(ur, cw, 1))}
+        down = asyncio.create_task(pipe(ur, cw, 1))
+        tasks = {asyncio.create_task(pipe(cr, uw, 0)), down}
         try:
             while tasks:
                 done, tasks = await asyncio.wait(tasks, timeout=min(60.0, IDLE_SECONDS / 4))
+                if down in done and tasks:  # the far side is done: the client gets a moment, then the tunnel goes
+                    _, tasks = await asyncio.wait(tasks, timeout=CLOSE_GRACE_SECONDS)
+                    break
                 if tasks and loop.time() - last[0] > IDLE_SECONDS:
                     break
         finally:
