@@ -12,7 +12,6 @@ import shlex
 import shutil
 import signal
 import subprocess
-import sys
 import tarfile
 import tempfile
 import types
@@ -271,17 +270,44 @@ async def test_history_keeps_the_newest_and_the_active(fl, world, settings):
     assert len(head.ids) == 2 and head.active in head.ids and [b.version for b in hist] == ["v4", "v1"]
 
 
-async def test_build_secrets_need_the_broker_side(fl, world):
-    try:
-        import hangar.buildsecrets  # type: ignore[import-not-found]  # noqa: F401
-        pytest.skip("hangar.buildsecrets is here: its own tests cover build secrets")
-    except ImportError:
-        pass
-    push(world, ".hangar/environment.yaml", "install: echo $NPM_TOKEN\nbuild_secrets: [NPM_TOKEN]\n")
-    b = envbuilds.of(fl).schedule(world.url, "appenv", "docker")
+async def test_build_secrets_through_the_real_buildsecrets(fl, world, broker):
+    """Integration (#93 + #98): an admin's mapping on the repo policy, resolved from the vault by #98's
+    hangar.buildsecrets, reaches install only; its in-sandbox leak scan fails a build that leaves the value behind;
+    an unmapped id fails the build naming the id."""
+    from hangar.models import CredentialKind
+    from hangar.repopolicy import RepoPolicy
+
+    broker.put("npm-cred", "generic", CredentialKind.GENERIC, "s3cret-npm-value", env_var="NPM_TOKEN")
+    push(world, ".hangar/environment.yaml", "install: echo $OTHER\nbuild_secrets: [OTHER]\n")
+    eb = envbuilds.of(fl)
+    b = eb.schedule(world.url, "appenv", "docker")
     await drain(fl)
-    b = envbuilds.of(fl).get(b.id)
-    assert b.state == "failed" and "hangar.buildsecrets" in b.error
+    b = eb.get(b.id)
+    assert b.state == "failed" and "OTHER" in b.error and "aren't mapped" in b.error, b.error
+    RepoPolicies(fl.store).put(RepoPolicy(repo=repo_key(world.url), build_secrets={"NPM_TOKEN": "npm-cred"}))
+    push(world, ".hangar/environment.yaml",
+         "install: test ${#NPM_TOKEN} -eq 16 && echo token is $NPM_TOKEN\nbuild_secrets: [NPM_TOKEN]\n")
+    b = eb.schedule(world.url, "appenv", "docker")
+    await drain(fl)
+    b = eb.get(b.id)
+    assert b.state == "succeeded", b.error
+    assert "s3cret" not in b.log and "token is ***" in b.log
+    assert b"s3cret-npm-value" not in fl.providers["docker"].contexts[-1].files["workspace.tgz"]
+    push(world, ".hangar/environment.yaml", "install: echo \"$NPM_TOKEN\" > .npmrc\nbuild_secrets: [NPM_TOKEN]\n")
+    b = eb.schedule(world.url, "appenv", "docker")
+    await drain(fl)
+    b = eb.get(b.id)
+    assert b.state == "failed" and "left build secret(s) in the checkout" in b.error, b.error
+    assert ".npmrc" in b.error and "s3cret" not in b.error
+
+
+def _use(monkeypatch, fake: types.ModuleType) -> None:
+    """Stand the fake's functions in for hangar.buildsecrets' own (integration: the real module is here, and
+    `from hangar import buildsecrets` finds it on the package, not in sys.modules)."""
+    from hangar import buildsecrets
+
+    for name in ("mapping", "resolve", "leak_scan"):
+        monkeypatch.setattr(buildsecrets, name, getattr(fake, name))
 
 
 def _fake_buildsecrets(scans: list) -> types.ModuleType:
@@ -300,7 +326,7 @@ def _fake_buildsecrets(scans: list) -> types.ModuleType:
 
 async def test_build_secrets_reach_install_only_and_a_leak_fails_the_build(fl, world, monkeypatch):
     scans: list = []
-    monkeypatch.setitem(sys.modules, "hangar.buildsecrets", _fake_buildsecrets(scans))
+    _use(monkeypatch, _fake_buildsecrets(scans))
     push(world, ".hangar/environment.yaml",
          "install: test ${#NPM_TOKEN} -eq 16 && echo token is $NPM_TOKEN\nbuild_secrets: [NPM_TOKEN]\n")
     eb = envbuilds.of(fl)
@@ -330,7 +356,7 @@ async def test_a_build_secret_in_the_captured_checkout_fails_the_build_whatever_
     async def blind(prov, sb, values, paths=None, **_):
         return []
     m.leak_scan = blind
-    monkeypatch.setitem(sys.modules, "hangar.buildsecrets", m)
+    _use(monkeypatch, m)
     push(world, ".hangar/environment.yaml", "install: mkdir -p dist && printf 'k=%s' \"$NPM_TOKEN\" > dist/cfg.bin\n"
                                             "build_secrets: [NPM_TOKEN]\n")
     eb = envbuilds.of(fl)
@@ -388,6 +414,12 @@ async def test_terminals_start_under_the_supervisor(fl, world):
         raise AssertionError(state())
     md = await sh(fl, sb, "cat /home/agent/.claude/CLAUDE.md")
     assert "`web`: `sleep 300`" in md and "hangar-agent svc status" in md
+    # integration (#93 + #94): the sandbox's own doctor reads this build's record and the supervisor's live state
+    r = await fl.exec(sb.id, "hangar-agent env doctor --json")
+    by = {c["name"]: c for c in json.loads(r.stdout)["checks"]}
+    svc = by["services"]  # web runs under the supervisor; nothing listens on the declared port 3000
+    assert svc["status"] == "fail" and "unhealthy: port-3000" in svc["message"], svc
+    assert [x["name"] for x in svc["data"]["healthy"]] == ["web"], svc
 
 
 async def test_builds_off_change_nothing(fl, world, settings):

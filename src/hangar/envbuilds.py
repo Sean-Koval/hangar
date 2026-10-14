@@ -613,10 +613,7 @@ class EnvBuilds:
         ids = cfg.build_secrets if cfg else []
         if not ids:
             return {}
-        try:
-            from hangar import buildsecrets  # type: ignore[attr-defined]
-        except ImportError as e:
-            raise EnvBuildError("build_secrets need hangar.buildsecrets, which this hangar doesn't have yet") from e
+        from hangar import buildsecrets
         from hangar.repopolicy import RepoPolicies
 
         mapping = buildsecrets.mapping(spec, RepoPolicies(self.store).get(b.repo_url))
@@ -648,7 +645,7 @@ class EnvBuilds:
                                                                           else ""))
 
     async def _leak_scan(self, prov: Provider, sb: Sandbox, values: dict[str, bytes], path: str) -> None:
-        from hangar import buildsecrets  # type: ignore[attr-defined]
+        from hangar import buildsecrets
 
         hits = await buildsecrets.leak_scan(prov, sb, values, paths=[path])
         if hits:
@@ -929,14 +926,14 @@ def mount(app: Any, h: Any, admin: Any, member: Any) -> None:
         repo = body.get("repo")
         allowed = h.jobs.repo_envs(repo) if repo else []
         ids = None
-        try:
-            from hangar import buildsecrets  # type: ignore[attr-defined]
-            from hangar.repopolicy import RepoPolicies
+        from hangar import buildsecrets
+        from hangar.repopolicy import RepoPolicies
 
+        try:
             env = body.get("environment") or repoenv.parse(content).extends
             if env and env in fleet.catalog.names():
                 ids = set(buildsecrets.mapping(fleet.catalog.get(env), RepoPolicies(fleet.store).get(repo)))
-        except (ImportError, repoenv.RepoEnvError):
+        except repoenv.RepoEnvError:
             pass
         return repoenv.check(content, fleet.settings, fleet.catalog, repo=repo, allowed_envs=allowed,
                              environment=body.get("environment"), secret_ids=ids)

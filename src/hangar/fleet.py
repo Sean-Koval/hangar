@@ -753,6 +753,10 @@ class Fleet:
                 await self._setup_repo(prov, sb, spec, work_branch, stage=stage)
                 # --- envbuilds: the repo's config: the supervisor, the agent's instructions, a rebuild if behind
                 await envbuilds.of(self).after_setup(prov, sb, spec, hname, stage)
+                # integration (#93 + #94): the doctor's status file carries what the repo's config just added
+                # (services, programs, setup failures, the build), not only what the claim knew
+                await envdoctor.write_status(prov, sb, f"/home/{self.settings.sandbox_user}",
+                                             envdoctor.build_status(self.settings, sb, spec, fleet=self))
             sb.info.pop("stage", None)
             sb.state = SandboxState.RUNNING
             sb.error = None
