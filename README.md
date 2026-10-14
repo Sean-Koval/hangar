@@ -215,7 +215,8 @@ Everything is set through `HANGAR_*` settings (see `src/hangar/config.py`), whic
 
 ```bash
 uv sync --all-extras
-uv run pytest                                  # unit + API tests (fake provider)
+uv run pytest -n 8                             # unit + API tests (fake provider), in parallel
+scripts/ci/select_tests.py --base origin/main  # just the tests your branch can break (docs/ci.md)
 HANGAR_E2E=1 uv run pytest tests/test_e2e_docker.py   # real Docker, driven over MCP
 uv run ruff check src tests
 uv run hangar serve --reload

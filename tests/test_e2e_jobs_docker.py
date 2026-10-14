@@ -15,7 +15,6 @@ import hmac
 import json
 import os
 import shutil
-import socket
 import subprocess
 import tempfile
 import threading
@@ -24,6 +23,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
+
+from tests.conftest import free_port as _free_port
 
 pytestmark = pytest.mark.skipif(os.environ.get("HANGAR_E2E") != "1", reason="set HANGAR_E2E=1 to run")
 
@@ -38,12 +39,6 @@ else
   echo "Fixed the typo in greet.sh; check.sh passes." > "$HANGAR_JOB_DIR/RESULT.md"
 fi
 """
-
-
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("0.0.0.0", 0))
-        return s.getsockname()[1]
 
 
 def _bridge_gateway() -> str:

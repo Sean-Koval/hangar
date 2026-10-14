@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import os
 import shutil
+import socket
 import subprocess
 import tempfile
 from pathlib import Path
@@ -29,18 +31,72 @@ def _isolated_cli_config(tmp_path, monkeypatch):
     monkeypatch.setenv("HANGAR_CLI_CONFIG", str(tmp_path / "cli.json"))
 
 
+@pytest.fixture(autouse=True)
+def _no_host_docker(monkeypatch):
+    """Only the Docker e2e suites (HANGAR_E2E=1) reach the machine's Docker. A unit test that builds a real app
+    (whose default provider is docker) otherwise builds real images wherever Docker runs, as on CI: one such test
+    took 46 s there and 1 s on a laptop, and xdist workers (and other runs) share the daemon."""
+    if os.environ.get("HANGAR_E2E") != "1":
+        monkeypatch.setenv("DOCKER_HOST", "unix:///nonexistent/hangar-unit-tests-use-no-docker.sock")
+
+
+_run_root: Path | None = None
+
+
 def scratch_root() -> Path:
     """Where fake sandboxes and test git remotes live. The fake provider rewrites /home/agent, /workspace and
     /tmp/ inside commands, so this path must contain none of them. Inside a hangar sandbox $HOME *is*
-    /home/agent, so fall back to /dev/shm there (override with HANGAR_TEST_ROOT)."""
-    if os.environ.get("HANGAR_TEST_ROOT"):
-        base = Path(os.environ["HANGAR_TEST_ROOT"])
-    else:
-        base = Path.home() / ".cache" / "hangar-tests"
-        if any(x in str(base) for x in ("/home/agent", "/workspace", "/tmp/")):
-            base = Path("/dev/shm/hangar-tests")
-    base.mkdir(parents=True, exist_ok=True)
-    return base
+    /home/agent, so fall back to /dev/shm there (override with HANGAR_TEST_ROOT).
+
+    Each pytest process gets its own directory under that base: xdist workers, and other people's runs on the same
+    machine, share the base and once collided in it. Kept short: tmux sockets live a few levels below it, and a unix
+    socket path can't pass 107 bytes."""
+    global _run_root
+    if _run_root is None:
+        if os.environ.get("HANGAR_TEST_ROOT"):
+            base = Path(os.environ["HANGAR_TEST_ROOT"])
+        else:
+            base = Path.home() / ".cache" / "hangar-tests"
+            if any(x in str(base) for x in ("/home/agent", "/workspace", "/tmp/")):
+                base = Path("/dev/shm/hangar-tests")
+        base.mkdir(parents=True, exist_ok=True)
+        _run_root = Path(tempfile.mkdtemp(prefix=f"{os.environ.get('PYTEST_XDIST_WORKER', 'run')}-", dir=base))
+        _run_root.chmod(0o755)  # as the base is: tests that drop to another uid (test_driver) reach in
+    return _run_root
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _scratch_root_removed():
+    """This process's scratch directory goes when its session ends (each test removes what it made inside)."""
+    yield
+    if _run_root is not None:
+        shutil.rmtree(_run_root, ignore_errors=True)
+
+
+_ports = itertools.count()
+
+
+def free_port() -> int:
+    """A port for a test server that nothing else will take before the server binds it: below the kernel's ephemeral
+    range (where an outgoing connection, or another worker's bind to port 0, could grab it in the meantime), in a
+    block of its own per xdist worker, and checked free on this machine (another run may be using the block)."""
+    try:
+        low = int(Path("/proc/sys/net/ipv4/ip_local_port_range").read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        low = 32768
+    worker = int(os.environ.get("PYTEST_XDIST_WORKER", "gw0").removeprefix("gw") or 0)
+    size = 256
+    first = max(1024, low - size * (worker + 1))  # worker blocks stack down from just under the range
+    start = (os.getpid() * 7) % size  # two runs on one machine start at different places in the block
+    for _ in range(size):
+        port = first + (start + next(_ports)) % size
+        with socket.socket() as s:
+            try:
+                s.bind(("0.0.0.0", port))
+            except OSError:
+                continue
+            return port
+    raise RuntimeError(f"no free port in {first}-{first + size - 1}")
 
 
 class FakeProvider(Provider):

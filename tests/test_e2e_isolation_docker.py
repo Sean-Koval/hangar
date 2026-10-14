@@ -371,8 +371,9 @@ async def test_the_setup_stays_single_user_where_the_agent_could_get_back_in(tmp
             assert r.exit_code == 0, r
 
         await root("echo 'Defaults requiretty' > /etc/sudoers.d/zz-tty && chmod 0440 /etc/sudoers.d/zz-tty")
-        r = await fleet.exec(sb.id, "script -qec 'sudo -n id -u' /dev/null")
-        assert r.stdout.split()[-1:] == ["0"], r  # the agent is root whenever it likes
+        # A marker on the line: the terminal sometimes echoes script's end of input (`^@`) ahead of the output.
+        r = await fleet.exec(sb.id, "script -qec 'echo uid=$(sudo -n id -u)' /dev/null")
+        assert "uid=0\r" in r.stdout, r  # the agent is root whenever it likes
         assert await isolation.ensure(fleet, prov, sb) is False
         assert "sudo" in sb.info["isolation"]["why"], sb.info["isolation"]
 
