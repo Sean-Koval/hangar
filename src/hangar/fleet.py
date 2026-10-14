@@ -24,6 +24,7 @@ from hangar import cloudcreds as cloudcreds  # --- egress
 from hangar import egress as egress  # --- egress
 from hangar import envbuilds as envbuilds  # --- envbuilds
 from hangar import envdoctor as envdoctor  # --- computer
+from hangar import envservices as envservices  # --- envbuilds
 from hangar import exchange, harden, images, isolation, observe  # --- observe, isolation, harden, images
 from hangar import fairness as fairness  # --- scale
 from hangar import metrics as metrics  # --- reconciler
@@ -720,6 +721,8 @@ class Fleet:
             build = None if _image or _skip_repo else await envbuilds.of(self).pick(spec, pname, hname, sb, stage)
             image = _image or (build.image if build else None) or \
                 await self._ensure_image(spec, pname, actor, hname, stage=stage)
+            if not _image:  # --- envbuilds: the services it starts with (Kubernetes sidecars, Docker containers)
+                envservices.prepare(self, spec, sb, build.build.config if build and build.build else None)
             sb.image = image
             pack_started, last_stage = time.monotonic(), 0.0
 
@@ -1577,6 +1580,7 @@ class Fleet:
                 await asyncio.gather(*(self.destroy(sb.id, actor="reaper") for sb in expired),
                                      return_exceptions=True)
                 await self.sync_scheduled_pools()  # --- reconciler: reconcile runs on its own task now
+                await envservices.sweep(self)  # --- envbuilds: services whose sandbox is gone (Docker)
                 metrics.loop_tick("reaper")  # --- reconciler: heartbeat
             except asyncio.CancelledError:
                 return

@@ -77,8 +77,9 @@ async def start(prov: Provider, sb: Sandbox, settings: Settings, eff: EnvSpec, r
     return None
 
 
-def instructions(sb: Sandbox, eff: EnvSpec, repo_path: str) -> str:
-    """The "Your environment" section of the agent's instructions (between BLOCK_START and BLOCK_END)."""
+def instructions(sb: Sandbox, eff: EnvSpec, repo_path: str, previews: bool = False) -> str:
+    """The "Your environment" section of the agent's instructions (between BLOCK_START and BLOCK_END). `previews`:
+    the people the agent works for can open the declared ports (preview.py)."""
     info = sb.info.get("env_build") or {}
     q = shlex.quote
     lines = [BLOCK_START, "## Your environment (hangar)", ""]
@@ -119,6 +120,10 @@ def instructions(sb: Sandbox, eff: EnvSpec, repo_path: str) -> str:
         "`hangar-agent svc restart NAME` after changes it doesn't reload by itself; `hangar-agent svc add NAME -- "
         "CMD` supervises a process of your own. `hangar-agent svc --help` has the rest.",
     ]
+    if eff.ports and previews:
+        lines.append("The people you work for can open these ports in their browser through hangar: "
+                     + ", ".join(f"{p.port}" + (f" ({p.name})" if p.name else "") for p in eff.ports)
+                     + ". Bind servers on them to 0.0.0.0, not 127.0.0.1, so hangar's proxy reaches them.")
     if failures := sb.info.get("setup_failures"):
         lines += ["", "Setup problems hangar ran into:"]
         lines += [f"- {f['step']}: {f['message'][:400]}" for f in failures[-5:]]
@@ -182,7 +187,8 @@ async def tell_agent(prov: Provider, sb: Sandbox, settings: Settings, harness: s
         path = f"{home}/{h.instructions_file}"
         cur = await prov.read_file(sb, path, limit=INSTRUCTIONS_MAX)
         if cur is None or len(cur) <= INSTRUCTIONS_MAX:
-            text = splice((cur or b"").decode(errors="replace"), instructions(sb, eff, repo_path))
+            block = instructions(sb, eff, repo_path, previews=bool(settings.preview_domain))
+            text = splice((cur or b"").decode(errors="replace"), block)
             await prov.write_file(sb, path, text.encode(), mode=0o644)
     if h.skills_dir:
         await prov.write_file(sb, f"{home}/{h.skills_dir}/{SKILL_NAME}/SKILL.md", SKILL.encode(), mode=0o644)

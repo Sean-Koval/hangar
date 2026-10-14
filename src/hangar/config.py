@@ -429,6 +429,10 @@ class Settings(BaseSettings):
     # "us-docker.pkg.dev/acme/services/**".
     env_service_images: list[str] = Field(default_factory=lambda: [
         "*", "docker.io/library/*", "mirror.gcr.io/library/*"])
+    # Preview ports (preview.py): `<port>-<sandbox>.<this domain>` reaches a sandbox's declared port, for its owner,
+    # through hangar. Needs wildcard DNS pointing at hangar; `localhost` on a laptop. Unset: previews are off.
+    preview_domain: str | None = None
+    preview_session_hours: float = Field(12, gt=0, le=168)  # how long an opened preview stays signed in
 
     @property
     def backup_interval_hours(self) -> float:

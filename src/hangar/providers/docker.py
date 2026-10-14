@@ -17,6 +17,7 @@ import time
 import docker
 from docker.errors import APIError, ImageNotFound, NotFound
 
+from hangar import envservices  # --- envbuilds
 from hangar.config import Settings
 from hangar.envd import OFF, SKIP, DockerEnvd, Off  # --- envd
 from hangar.envd import PORT as ENVD_PORT  # --- envd
@@ -277,7 +278,9 @@ class DockerProvider(Provider):
     async def create(self, sandbox: Sandbox, image: str, spec: EnvSpec | None = None) -> None:
         name = f"hangar-{sandbox.id}"
         net = network_for(self.settings, spec)  # --- egress
-        warm = await self._claim_warm(image, net) if spec and spec.warm_pool else None
+        # --- envbuilds: a sandbox with services starts cold, attached to their network before it starts
+        warm = await self._claim_warm(image, net) if spec and spec.warm_pool and not envservices.specs(sandbox) \
+            else None
         if warm is not None:
             # Labels are immutable in Docker; pool membership is the name prefix + label, so a
             # rename takes the container out of the pool and the store becomes the source of truth.
@@ -299,7 +302,10 @@ class DockerProvider(Provider):
         kw = self._run_kwargs(name, image, sandbox.resources, labels, hostname=sandbox.name,
                               packs=spec.packs if spec else None, net=net, egress_ip=ip)
         try:
-            c = await asyncio.to_thread(self.client.containers.run, **kw)
+            if envservices.specs(sandbox):  # --- envbuilds
+                c = await envservices.docker_run(self, sandbox, kw)
+            else:
+                c = await asyncio.to_thread(self.client.containers.run, **kw)
         except ImageNotFound as e:
             raise ProviderError(f"image {image} not found; build the environment first") from e
         sandbox.provider_ref = c.id
@@ -322,6 +328,8 @@ class DockerProvider(Provider):
 
     async def destroy(self, sandbox: Sandbox) -> None:
         self.envd.forget(sandbox)  # --- envd
+        if sandbox.info.get("service_specs"):  # --- envbuilds: its services and their network go with it
+            await envservices.docker_teardown(self, sandbox)
         try:
             c = await self._container(sandbox)
         except ProviderError:

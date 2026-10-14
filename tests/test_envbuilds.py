@@ -562,6 +562,23 @@ async def test_rest_validate(fl, world, api):
     assert not r.json()["valid"] and "decided in hangar" in r.json()["errors"][0]
 
 
+async def test_services_from_the_repo_start_with_the_next_sandbox(fl, world):
+    push(world, ".hangar/environment.yaml",
+         "services: {redis: {image: 'redis:7', port: 6379}}\nterminals: [{name: web, command: sleep 300}]\n")
+    first = await fl.create("appenv", repo=world.url)  # nobody had seen the file before this clone
+    assert "service_specs" not in first.info
+    assert any("services start with the next sandbox" in f["message"] for f in first.info["setup_failures"])
+    second = await fl.create("appenv", repo=world.url)
+    assert set(second.info["service_specs"]) == {"redis"}
+    assert {"name": "redis", "kind": "service", "host": "redis", "port": 6379, "check": None,
+            "image": "redis:7"} in second.info["services"]
+    assert not second.info.get("setup_failures")
+    box = fl.providers["docker"].boxes[second.provider_ref]
+    manifest = json.loads((box / "home/agent/.hangar/svc/manifest.json").read_text())
+    assert manifest["services"] == [{"name": "redis", "host": "redis", "port": 6379, "ready": None}]
+    assert "`redis` at `redis:6379`" in await sh(fl, second, "cat /home/agent/.claude/CLAUDE.md")
+
+
 async def test_a_build_with_its_checkout_elsewhere_or_an_unreadable_head_falls_back(fl, world):
     eb = envbuilds.of(fl)
     await fl.create("appenv", repo=world.url)

@@ -389,6 +389,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.e2b = E2BService(h)
         app.mount(e2b_path, build_api(app.state.e2b))
         app.add_middleware(SandboxRouter, svc=app.state.e2b)  # outermost: sandbox traffic skips the body caps
+    if h.settings.preview_domain:  # --- envbuilds: preview ports, for each sandbox's owner (preview.py)
+        from hangar.preview import PreviewRouter
+
+        app.add_middleware(PreviewRouter, h=h)
 
     @app.exception_handler(identity.Forbidden)  # --- identity
     async def _forbidden(_: Request, exc: identity.Forbidden):
@@ -1078,6 +1082,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     repopolicy.mount(app, h, A)
     envbuilds.mount(app, h, A, U)  # --- envbuilds: repo builds (hangar env builds) and config checks
+    from hangar import preview  # --- envbuilds: links to a sandbox's preview ports
+
+    preview.mount(app, h, U)
     from hangar import backup  # --- overnight/sweep: database backups (hangar admin)
 
     backup.mount(app, h, A)

@@ -309,13 +309,14 @@ class EnvBuilds:
 
     @staticmethod
     def provider_spec(spec: EnvSpec, sb: Sandbox) -> EnvSpec:
-        """The spec the provider creates a build's sandbox from: on Kubernetes a template of its own per build (one
-        named after the environment would flip its warm pool between images), with no warm pool."""
+        """The spec the provider creates the sandbox from. A build's, or services other than the environment's, get
+        one of their own: on Kubernetes a SandboxTemplate per build (one named after the environment would flip its
+        warm pool between images) or per set of services (its sidecars), with no warm pool."""
+        from hangar import envservices
+
         info = sb.info.get("env_build") or {}
-        if info.get("fallback") or not info.get("image") or not info.get("id"):
-            return spec
-        return spec.model_copy(update={"name": f"{spec.name[:40]}-{info['id'].removeprefix('bld-')}",
-                                       "warm_pool": 0, "warm_pool_hours": None})
+        build = not info.get("fallback") and info.get("image") and info.get("id")
+        return envservices.provider_spec(spec, sb, info["id"].removeprefix("bld-") if build else None)
 
     @staticmethod
     def prebuilt(sb: Sandbox) -> bool:
@@ -394,9 +395,11 @@ class EnvBuilds:
             info["stale"] = False
         if info is not None:
             sb.info["env_build"] = info
-        if eff.services and not any(s.get("kind") == "service" for s in sb.info.get("services") or []):
-            self.failure(sb, "services", f"{', '.join(eff.services)}: this hangar doesn't run services yet; start "
-                         "them yourself if the task needs them")
+        running = {s["name"] for s in sb.info.get("services") or [] if s.get("kind") == "service"}
+        named = {f["step"].removeprefix("service:") for f in sb.info.get("setup_failures") or []}
+        if late := sorted(set(eff.services) - running - named):
+            self.failure(sb, "services", f"{', '.join(late)}: not in the repo's config when this sandbox started (new, "
+                         "or only on this branch); services start with the next sandbox")
         programs = bool(eff.start or eff.terminals or eff.services or eff.ports)
         if programs and (why := await supervisor.start(prov, sb, self.settings, eff, path)):
             self.failure(sb, "supervisor", why)

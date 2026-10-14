@@ -26,7 +26,10 @@ import time
 import uuid
 from pathlib import Path
 
-from hangar import egress  # --- egress
+from hangar import (
+    egress,  # --- egress
+    envservices,  # --- envbuilds
+)
 from hangar.config import Settings
 from hangar.envd import OFF, SKIP, KubernetesEnvd, Off  # --- envd
 from hangar.envspec import BuildContext, EnvSpec
@@ -273,10 +276,15 @@ class KubernetesProvider(Provider):
                 pod["nodeSelector"] = {"hangar.dev/runtime": "kata"}
                 pod["tolerations"] = [{"key": "hangar.dev/runtime", "operator": "Equal", "value": "kata",
                                        "effect": "NoSchedule"}]
+        envservices.add_sidecars(pod, spec, s.k8s_cpu_request_fraction)  # --- envbuilds: services as sidecars
+        services_hosts = list(pod.get("hostAliases") or [])
         labels = {**MANAGED, "dev.hangar/env": spec.name}
         if egress.proxied(s, spec):  # --- egress: left out of the internet baseline (deploy/k8s/gateway.yaml)
             labels[egress.K8S_LABEL] = "proxied"
             pod.update(dns or {})  # --- review(egress): no resolver, hangar's names in /etc/hosts (egress.k8s_pod_dns)
+            # integration (#97 + #99): the services' names (127.0.0.1) stay in /etc/hosts beside hangar's own
+            if hosts := [*services_hosts, *(dns or {}).get("hostAliases", [])]:
+                pod["hostAliases"] = hosts
         if s.k8s_pod_snapshots and rc == "gvisor":
             # Pod snapshots need gVisor, a KSA with access to the snapshot bucket, and the policy's label.
             labels.update(SNAPSHOT_LABEL)
@@ -338,7 +346,8 @@ class KubernetesProvider(Provider):
         if spec is None:
             raise ProviderError("kubernetes provider needs the environment spec to create a sandbox")
         key = (image, spec.warm_pool, tuple(sorted(spec.packs.items())),
-               egress.proxied(self.settings, spec))  # --- egress: a mode change re-applies the template
+               egress.proxied(self.settings, spec),  # --- egress: a mode change re-applies the template
+               envservices.digest(spec.services))  # --- envbuilds: a change of sidecars re-applies the template
         if self._synced.get(spec.name) != key:
             await self.sync_warm_pool(spec, image)  # idempotent; keeps template image and packs current
             self._synced[spec.name] = key
