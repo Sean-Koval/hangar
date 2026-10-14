@@ -1093,6 +1093,9 @@ class JobService:
             raise _DeliveryError(f"push failed: {(push.stderr or push.stdout)[-500:]}")
         job.result.pushed = True
         self._event(job, f"pushed {job.branch}")
+        if job.labels.get(clouddoctor.LABEL) == "fix" and job.deliver != "none":  # --- review(clouddoctor): and
+            if (why := await clouddoctor.after_push(self, job)) is not None:  # again from GitHub, grant revoked
+                raise _DeliveryError(why)
         if job.deliver in ("pr", "draft_pr"):
             await self._ensure_pr(job, draft=draft or job.deliver == "draft_pr")
             await self.landing.delivered(job)  # --- landing: a stale approval, the review packet

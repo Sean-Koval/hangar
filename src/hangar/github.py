@@ -6,10 +6,12 @@ sandboxes never see it.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import re
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -77,6 +79,28 @@ class GitHub:
 
     async def default_branch(self, repo: str) -> str:
         return (await self._req("GET", f"/repos/{repo}"))["default_branch"]
+
+    # --- review(clouddoctor): the Cloud Doctor judges its pushed fix from GitHub (clouddoctor.after_push)
+    async def branch_sha(self, repo: str, branch: str) -> str:
+        return (await self._req("GET", f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}"))["object"]["sha"]
+
+    async def compare(self, repo: str, base: str, head: str) -> dict[str, Any]:
+        return await self._req("GET", f"/repos/{repo}/compare/{quote(base, safe='')}...{quote(head, safe='')}")
+
+    async def file_at(self, repo: str, path: str, ref: str) -> str | None:
+        """A file's text at `ref`; None when it isn't there; `<symlink>` and the like for what isn't a file."""
+        r = await self._client.get(f"/repos/{repo}/contents/{quote(path)}", params={"ref": ref})
+        if r.status_code == 404:
+            return None
+        if r.status_code >= 400:
+            raise GitHubError(f"GitHub GET contents of {path}: {r.status_code}"[:500])
+        d = r.json()
+        if not isinstance(d, dict) or d.get("type") != "file" or d.get("encoding") != "base64":
+            return f"<{d.get('type') if isinstance(d, dict) else 'directory'}>"
+        return base64.b64decode(d.get("content") or "").decode("utf-8", "replace")
+
+    async def delete_branch(self, repo: str, branch: str) -> None:
+        await self._req("DELETE", f"/repos/{repo}/git/refs/heads/{quote(branch, safe='/')}")
 
     async def comment(self, repo: str, number: int, body: str) -> dict[str, Any] | None:
         return await self._req("POST", f"/repos/{repo}/issues/{number}/comments", json={"body": f"{MARKER}\n{body}"})

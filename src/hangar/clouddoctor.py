@@ -74,7 +74,15 @@ ALLOWED: dict[str, tuple[str, ...]] = {
 }
 # Environment-spec fields the doctor never changes: what reaches a sandbox's credentials, network or isolation
 PROTECTED = ("secrets", "credentials", "credential_mode", "egress", "build_secrets", "cloud", "image", "base",
-             "runtime_class", "mcp")
+             "runtime_class", "mcp", "extends")
+# --- review: the only fields an environment fix may change, in a spec and in the repo's file: what to install and
+# run. Everything else (extends, env, files, repo, sudo, tier, approvals, harnesses, model, name, ...) decides what an
+# environment holds or reaches as much as the PROTECTED ones do, so a list of what is allowed, not of what isn't.
+SPEC_FIELDS = frozenset({"description", "tools", "dependencies", "install", "start", "terminals", "services", "ports",
+                         "verify"})
+REPO_FIELDS = frozenset({"install", "start", "terminals", "services", "ports", "verify", "lockfiles"})
+REPO_FILE = ".hangar/environment.yaml"
+MAX_OPEN_FIXES = 3  # --- review: doctor PRs open (or being made) at once, across runs
 _HOST = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$")
 _VAR = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 
@@ -433,6 +441,10 @@ class Doctor:
         if not _paths_ok(f.fix_kind, f.paths, self.settings):
             return self._report(f, run, f"the fix names files a {f.fix_kind} fix may not change: "
                                         f"{', '.join(f.paths) or 'none'}")
+        busy = self.store.count_where(DoctorFinding, state=frozenset({"fixing", "pr_open"}))  # --- review
+        if busy >= MAX_OPEN_FIXES:
+            return self._report(f, run, f"{busy} doctor PRs are open or being made (at most {MAX_OPEN_FIXES}): "
+                                        "land or close them first")
         budget = self._budget(job.labels.get(f"{LABEL}.run", ""))
         if budget < MIN_JOB_USD:
             return self._report(f, run, "the run's budget is spent (HANGAR_DOCTOR_MAX_USD)")
@@ -447,7 +459,8 @@ class Doctor:
             job = self.svc.submit(SubmitJob(
                 title=f"doctor: {f.summary or f.cause}"[:200], instructions=_fix_prompt(f, self.settings),
                 repo=repo, environment=f.environment, harness=harness, model=model, deliver="pr",
-                timeout_minutes=30, job_budget=JobBudget(max_cost_usd=round(budget, 2), max_turns=4),
+                timeout_minutes=30, keep_minutes=0,  # --- review: its sandbox (and push grant) go when it ends
+                job_budget=JobBudget(max_cost_usd=round(budget, 2), max_turns=4),
                 labels={LABEL: "fix", f"{LABEL}.finding": f.id, f"{LABEL}.run": run_id}),
                 Caller("hangar:doctor", "hangar:doctor"), source="api")
         except Exception as e:  # noqa: BLE001
@@ -596,47 +609,133 @@ class Doctor:
                 f"- Failure: `{f.cause}`" + (f" ({f.detail})" if f.detail else "") + f" in {f.repo or f.environment}",
                 f"- Evidence: {ev.get('count', 0)} runs since {first}; jobs {jobs}",
                 f"- Flight records: {recs} (`hangar admin records show <id>`)",
-                f"- Root cause: {(f.root_cause or '').strip()[:1500]}", ""]
+                f"- Root cause: {(f.root_cause or '').strip()[:1500]}", ""] + (
+            # --- review: install and start run in builds, where the environment's build secrets are
+            ["**Review the commands as code:** install and start run in this environment's builds, which hold its "
+             "build secrets.", ""] if f.fix_kind in ("repo_environment", "environment_spec") else [])
+
+
+def _judge_paths(f: DoctorFinding, paths: list[str], settings: Any) -> str | None:
+    bad = [p for p in paths if not _paths_ok(f.fix_kind or "", [p], settings)]
+    return f"the doctor's {f.fix_kind} fix changed files it may not: {', '.join(bad[:5])}" if bad else None
+
+
+def _looked_at(f: DoctorFinding, p: str) -> bool:
+    return f.fix_kind == "environment_spec" or p == REPO_FILE or p.endswith((".yaml", ".yml"))
+
+
+def _judge_file(f: DoctorFinding, p: str, old: str | None, new: str | None) -> str | None:
+    """One changed file, before and after (None: absent). An environment file (a spec, or the repo's) may change only
+    SPEC_FIELDS / REPO_FIELDS, and a spec only the failing environment's own; any other YAML file no PROTECTED field.
+    YAML is compared as loaded, so anchors, aliases and merge keys count as what they expand to."""
+    import yaml
+
+    try:
+        a, b = yaml.safe_load(old or "") or {}, yaml.safe_load(new or "") or {}
+    except yaml.YAMLError as e:
+        return f"{p} is no longer valid YAML ({str(e)[:200]})"
+    if not isinstance(a, dict) or not isinstance(b, dict):
+        return f"{p} must stay a YAML mapping"
+    env_file = f.fix_kind == "environment_spec" or p == REPO_FILE
+    if env_file:
+        allowed = REPO_FIELDS if p == REPO_FILE else SPEC_FIELDS
+        touched = sorted(str(k) for k in set(a) | set(b) if k not in allowed and a.get(k) != b.get(k))
+    else:
+        touched = [k for k in PROTECTED if a.get(k) != b.get(k)]
+    if touched:
+        return (f"the doctor's fix changed {', '.join(touched[:8])} in {p}: it changes only what to install and run, "
+                "never credentials, secrets, egress, isolation or what an environment extends (it proposes hosts and "
+                "secrets as requests)")
+    if f.fix_kind == "environment_spec" and (a.get("name"), b.get("name")) != (f.environment, f.environment):
+        return f"{p} isn't the spec of {f.environment}, the environment whose agents failed"
+    if p == REPO_FILE:
+        from hangar import repoenv
+
+        try:
+            repoenv.parse(new or "")
+        except Exception as e:  # noqa: BLE001 - the repo file's own strict check
+            return f"{p} no longer passes hangar's check ({str(e)[:300]})"
+    return None
+
+
+def _finding(svc: JobService, job: Job) -> DoctorFinding | None:
+    f = svc.store.get(DoctorFinding, job.labels.get(f"{LABEL}.finding", ""))
+    return f if f is not None and f.fix_job == job.id and f.fix_kind in PR_KINDS else None
 
 
 async def check_fix(svc: JobService, job: Job, base: str) -> str | None:
     """Before a doctor fix is pushed: None when it changes only what its kind may, else why not. Runs in the job's
-    sandbox, so it judges the commits that would leave."""
-    f = svc.store.get(DoctorFinding, job.labels.get(f"{LABEL}.finding", ""))
-    if f is None or f.fix_job != job.id or f.fix_kind not in PR_KINDS:
+    sandbox, so it judges the commits that would leave (and after_push judges them again from GitHub)."""
+    if (f := _finding(svc, job)) is None:
         return "a Cloud Doctor fix job without its finding: not pushing it"
     q = shlex.quote
-    res = await svc._sh(job, f"git diff --name-only -z {q(base)}..HEAD")
+    # --- review: --no-renames, or a rename names only its new path and hides the file it removes
+    res = await svc._sh(job, f"git diff --name-only --no-renames -z {q(base)}..HEAD")
     changed = [p for p in res.stdout.split("\0") if p]
     if not changed:
         return None
-    bad = [p for p in changed if not _paths_ok(f.fix_kind, [p], svc.settings)]
-    if bad:
-        return (f"the doctor's {f.fix_kind} fix changed files it may not: {', '.join(bad[:5])}; nothing was pushed")
-    import yaml
-
+    if why := _judge_paths(f, changed, svc.settings):
+        return f"{why}; nothing was pushed"
     for p in changed:
-        if not p.endswith((".yaml", ".yml")):
+        if not _looked_at(f, p):
             continue
         old = await svc._sh(job, f"git show {q(base)}:{q(p)} 2>/dev/null || true")
         new = await svc._sh(job, f"git show HEAD:{q(p)} 2>/dev/null || true")
-        try:
-            a, b = yaml.safe_load(old.stdout or "") or {}, yaml.safe_load(new.stdout or "") or {}
-        except yaml.YAMLError as e:
-            return f"{p} is no longer valid YAML ({str(e)[:200]}); nothing was pushed"
-        if not isinstance(a, dict) or not isinstance(b, dict):
-            return f"{p} must stay a YAML mapping; nothing was pushed"
-        touched = [k for k in PROTECTED if a.get(k) != b.get(k)]
-        if touched:
-            return (f"the doctor's fix changed {', '.join(touched)} in {p}: it never changes credentials, secrets, "
-                    "egress or isolation (it proposes those as requests); nothing was pushed")
-        if p == ".hangar/environment.yaml":
-            from hangar import repoenv
+        if why := _judge_file(f, p, old.stdout, new.stdout):
+            return f"{why}; nothing was pushed"
+    return None
 
-            try:
-                repoenv.parse(new.stdout)
-            except Exception as e:  # noqa: BLE001 - the repo file's own strict check
-                return f"{p} no longer passes hangar's check ({str(e)[:300]}); nothing was pushed"
+
+async def after_push(svc: JobService, job: Job) -> str | None:
+    """--- review: once hangar pushed a doctor fix, judged again where its agent can't reach. check_fix runs in the
+    job's sandbox, whose agent (with sudo) can put its own `git` first on PATH, and could push to its branch through
+    the gateway afterwards. So the sandbox's push grant goes now, and the branch's head is judged from GitHub's
+    compare against the base, the files the PR would hold. None: open the PR; else why not (the branch is deleted)."""
+    import httpx
+
+    from hangar.github import GitHubError, parse_repo
+
+    with contextlib.suppress(Exception):
+        if job.sandbox_id:
+            svc.fleet.gateway.revoke(job.sandbox_id)
+    if (f := _finding(svc, job)) is None:
+        return "a Cloud Doctor fix job without its finding: not opening its PR"
+    repo = parse_repo(job.repo or "")
+    gh = await svc.landing.client(repo, job) if repo else None
+    if gh is None or repo is None:
+        return None  # no PR is opened either (_ensure_pr says why)
+    try:
+        why = await _judge_branch(svc, f, gh, repo, job)
+        if why is not None:
+            with contextlib.suppress(GitHubError, httpx.HTTPError):
+                await gh.delete_branch(repo, job.branch)
+            return f"{why}; its PR isn't opened and the branch was deleted"
+        return None
+    except (GitHubError, httpx.HTTPError, KeyError, TypeError) as e:
+        return f"couldn't check the pushed branch on GitHub ({str(e)[:200]}); its PR isn't opened"
+    finally:
+        await gh.close()
+
+
+async def _judge_branch(svc: JobService, f: DoctorFinding, gh: Any, repo: str, job: Job) -> str | None:
+    head = await gh.branch_sha(repo, job.branch)
+    base = job.result.base_sha or job.base_branch or await gh.default_branch(repo)
+    cmp = await gh.compare(repo, base, head)
+    files = cmp.get("files") or []
+    if len(files) >= 300:  # GitHub lists at most 300 files of a comparison
+        return "the pushed branch changes too many files to check"
+    merge_base = cmp["merge_base_commit"]["sha"]
+    paths = [x["filename"] for x in files] + [x["previous_filename"] for x in files if x.get("previous_filename")]
+    if why := _judge_paths(f, paths, svc.settings):
+        return why
+    for x in files:
+        p = x["filename"]
+        if not _looked_at(f, p):
+            continue
+        old = await gh.file_at(repo, x.get("previous_filename") or p, merge_base)
+        new = None if x.get("status") == "removed" else await gh.file_at(repo, p, head)
+        if why := _judge_file(f, p, old, new):
+            return why
     return None
 
 

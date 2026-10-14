@@ -38,7 +38,11 @@ A fix job is an ordinary hangar job (`deliver: pr`) on the repo, so it goes thro
 | `repo_environment` | `.hangar/environment.yaml`, which must still pass hangar's strict check |
 | `environment_spec` | `HANGAR_DOCTOR_SPECS_PATHS` (`envs/*.yaml`) in `HANGAR_DOCTOR_SPECS_REPO`; without a specs repo, spec fixes are reported |
 
-In any YAML file it changes, these fields must stay exactly as they were: `secrets`, `credentials`, `credential_mode`, `egress`, `build_secrets`, `cloud`, `image`, `base`, `runtime_class`, `mcp`. Those decide what reaches a sandbox's credentials, network and isolation, and the doctor proposes them as requests instead.
+An environment fix may change only the fields that say what to install and run: in a spec `description`, `tools`, `dependencies`, `install`, `start`, `terminals`, `services`, `ports` and `verify`, and only in the spec of the environment whose agents failed; in `.hangar/environment.yaml` `install`, `start`, `terminals`, `services`, `ports`, `verify` and `lockfiles`. Everything else (`extends`, `secrets`, `egress`, `cloud`, `runtime_class`, `env`, `files`, `sudo`, `tier`, `name`, ...) decides what an environment holds or reaches, and the doctor proposes hosts and secrets as requests instead. In any other YAML file it changes, `secrets`, `credentials`, `credential_mode`, `egress`, `build_secrets`, `cloud`, `image`, `base`, `runtime_class`, `mcp` and `extends` must stay as they were. YAML is compared as loaded, so anchors, aliases and merge keys count as what they expand to, and a rename counts as the file it removes too.
+
+The check runs twice. In the job's sandbox before the push, and then, because the agent shares that sandbox, from GitHub: once hangar has pushed, the sandbox loses its push grant, and the branch's head is compared with its base through GitHub's API. A branch that fails there is deleted and its PR isn't opened. The fix job's sandbox is removed when the job ends. A PR that changes install or start commands says so: they run in the environment's builds, which hold its build secrets.
+
+At most 3 doctor PRs are open (or being made) at once; past that, high-confidence findings go to the inbox until one lands or closes.
 
 ## Budget
 
