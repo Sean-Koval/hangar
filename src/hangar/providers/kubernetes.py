@@ -57,6 +57,11 @@ def _rfc3339(ts: float) -> str:
     return dt.datetime.fromtimestamp(ts, dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _b64_len(n: int) -> int:
+    """Length of the (padded) base64 of n bytes. --- scale"""
+    return 4 * ((n + 2) // 3)
+
+
 def _cond(obj: dict, kind: str) -> dict | None:
     return next((c for c in (obj.get("status") or {}).get("conditions") or [] if c.get("type") == kind), None)
 
@@ -223,7 +228,10 @@ class KubernetesProvider(Provider):
                 "workingDir": s.workspace_dir,
                 "env": [{"name": "TERM", "value": "xterm-256color"}],
                 "resources": {
-                    "requests": {"cpu": str(res.cpus), "memory": f"{int(res.memory_gb * 1024)}Mi"},
+                    # --- scale: agents idle on the model most of a turn, so a sandbox reserves part of its CPU
+                    # limit (HANGAR_K8S_CPU_REQUEST_FRACTION) and bursts to all of it; memory stays reserved in full.
+                    "requests": {"cpu": f"{max(100, round(res.cpus * s.k8s_cpu_request_fraction * 1000))}m",
+                                 "memory": f"{int(res.memory_gb * 1024)}Mi"},
                     "limits": {"cpu": str(res.cpus), "memory": f"{int(res.memory_gb * 1024)}Mi"},
                 },
             }],
@@ -468,27 +476,29 @@ class KubernetesProvider(Provider):
             return None
         return base64.b64decode(out)
 
-    def _upload_stream_blocking(self, pod: str, path: str, b64: str, mode: int, timeout: int,
+    def _upload_stream_blocking(self, pod: str, path: str, data: bytes, mode: int, timeout: int,
                                 size: int | None = None) -> tuple[int, str]:
         """One exec, data on stdin. The exec websocket can't signal EOF to the process, so the receiver reads an
-        exact byte count (`head -c N`) instead: no EOF needed, and ~1 round trip instead of one per 96 KB."""
+        exact byte count (`head -c N`) instead: no EOF needed, and ~1 round trip instead of one per 96 KB.
+        --- scale: base64 is made a frame at a time, so a large upload never holds a second, 4/3-size copy."""
         q, d = shlex.quote(path), shlex.quote(str(Path(path).parent))
         tmp = f"/tmp/.hangar-upload-{uuid.uuid4().hex[:10]}"
         # The size check guards against a short read (a dropped stream) ever replacing the file with a truncation.
         check = f' && [ "$(wc -c < {tmp})" -eq {int(size)} ]' if size is not None else ""
-        script = (f"mkdir -p {d} && head -c {len(b64)} | base64 -d > {tmp}{check} && chmod {mode:o} {tmp} "
+        script = (f"mkdir -p {d} && head -c {_b64_len(len(data))} | base64 -d > {tmp}{check} && chmod {mode:o} {tmp} "
                   f"&& mv {tmp} {q}; rc=$?; rm -f {tmp}; exit $rc")
         ws = k8s_stream(self.core.connect_get_namespaced_pod_exec, pod, self.ns, container=CONTAINER,
                         command=["sh", "-c", script], stderr=True, stdin=True, stdout=True, tty=False,
                         _preload_content=False)
         err: list[str] = []
         deadline = time.monotonic() + timeout
+        view = memoryview(data)
         try:
-            step = 256 * 1024
-            for i in range(0, len(b64), step):
+            step = 192 * 1024  # a multiple of 3: each frame's base64 continues the one before it (256 KB a frame)
+            for i in range(0, len(data), step):
                 if time.monotonic() > deadline or not ws.is_open():
-                    raise ProviderError(f"upload of {path} stalled after {i} of {len(b64)} bytes")
-                ws.write_stdin(b64[i:i + step])
+                    raise ProviderError(f"upload of {path} stalled after {i} of {len(data)} bytes")
+                ws.write_stdin(base64.b64encode(view[i:i + step]).decode())
                 ws.update(timeout=0)
                 if ws.peek_stderr():
                     err.append(ws.read_stderr())
@@ -507,11 +517,11 @@ class KubernetesProvider(Provider):
         pod = await self._pod(sandbox)
         q = shlex.quote(path)
         d = shlex.quote(str(Path(path).parent))
-        b64 = base64.b64encode(data).decode()
-        if self.settings.k8s_stream_uploads and len(b64) > 64 * 1024:
+        b64_len = _b64_len(len(data))  # --- scale: encoded a piece at a time below, never the whole file at once
+        if self.settings.k8s_stream_uploads and b64_len > 64 * 1024:
             try:
-                code, err = await asyncio.to_thread(self._upload_stream_blocking, pod, path, b64, mode,
-                                                    max(60, len(b64) // (512 * 1024)), len(data))
+                code, err = await asyncio.to_thread(self._upload_stream_blocking, pod, path, data, mode,
+                                                    max(60, b64_len // (512 * 1024)), len(data))
                 if code == 0:
                     return
                 log.warning("streamed upload of %s failed (exit %s: %s); falling back to chunks", path, code,
@@ -520,10 +530,11 @@ class KubernetesProvider(Provider):
                 log.warning("streamed upload of %s failed (%s); falling back to chunks", path, e)
         # Fallback: ship base64 inline in chunks via a temp file (one exec per 96 KB).
         tmp = f"/tmp/.hangar-upload-{uuid.uuid4().hex[:10]}"
-        chunk = 96 * 1024
+        chunk = 72 * 1024  # raw bytes, a multiple of 3: 96 KB of base64 per exec, continuing the chunk before
         await asyncio.to_thread(self._exec_blocking, pod, ["sh", "-c", f": > {tmp}"], 30)
-        for i in range(0, len(b64), chunk):
-            part = b64[i:i + chunk]
+        view = memoryview(data)
+        for i in range(0, len(data), chunk):
+            part = base64.b64encode(view[i:i + chunk]).decode()
             code, _, err = await asyncio.to_thread(
                 self._exec_blocking, pod, ["sh", "-c", f"printf %s {shlex.quote(part)} >> {tmp}"], 60)
             if code != 0:

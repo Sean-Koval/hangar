@@ -777,7 +777,7 @@ class KubernetesEnvd(Installer):
     async def upload(self, sb: Sandbox, path: str, data: bytes) -> None:
         pod = await self.p._pod(sb)  # type: ignore[attr-defined]
         upload = self.p._upload_stream_blocking  # type: ignore[attr-defined]
-        code, err = await asyncio.to_thread(upload, pod, path, base64.b64encode(data).decode(), 0o755, 120, len(data))
+        code, err = await asyncio.to_thread(upload, pod, path, data, 0o755, 120, len(data))  # --- scale: raw bytes
         if code != 0:
             raise EnvdError(f"could not copy hangar-envd into the pod: {err[-300:]}")
 

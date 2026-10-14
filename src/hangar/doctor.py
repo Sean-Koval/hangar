@@ -80,7 +80,8 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
                 out.append(_check("cloud build permissions", None, f"could not check: {e}"))
 
     # sandboxes that failed to start recently (quota, scheduling, image)
-    recent = [x for x in h.store.list(Sandbox) if x.state == SandboxState.ERROR and x.created_at > now() - 86400]
+    recent = [x for x in h.store.list_where(Sandbox, state=SandboxState.ERROR)  # --- scale: indexed
+              if x.created_at > now() - 86400]
     if recent:
         last = max(recent, key=lambda x: x.created_at)
         quota = any("quota" in (x.error or "").lower() for x in recent)

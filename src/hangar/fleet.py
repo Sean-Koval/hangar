@@ -19,6 +19,7 @@ from typing import Any
 
 import hangar.identity as identity  # --- identity
 from hangar import exchange, harden, isolation, observe  # --- observe, isolation, harden
+from hangar import fairness as fairness  # --- scale
 from hangar.broker import AUTH_FILE_LIMIT, Broker, CredentialError
 from hangar.config import Settings
 from hangar.envspec import BuildContext, EnvCatalog, EnvSpec, image_tag, render, repo_dirname, warm_pool_now
@@ -36,6 +37,7 @@ from hangar.harnesses import (
     pack_tag,
     resolve_refs,
 )
+from hangar.membudget import MemoryBudget  # --- scale
 from hangar.models import (
     AuditEvent,
     Credential,
@@ -59,6 +61,11 @@ _NAME_RE = re.compile(r"[^a-z0-9-]+")
 _ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]*")
 # --- overnight/sweep: what hangar reads back from files the sandbox can grow (it decides their size)
 CONFIG_READ_LIMIT = 8 * 1024 * 1024  # a harness config hangar merges into (~/.claude.json, ~/.codex/config.toml)
+# --- scale: B12. Bytes of memory per archive byte while hangar holds a workspace archive. Reading one back, a provider
+# can hold its base64 text and the decoded bytes at once (pods/exec without envd); writing one, the bytes and a copy
+# (Docker's tar stream, a frame being encoded).
+ARCHIVE_READ_COST = 3
+ARCHIVE_WRITE_COST = 2
 
 
 class FleetError(RuntimeError):
@@ -158,6 +165,8 @@ class Fleet:
         # --- workstream F: git gateway. Grants for sandboxes in credential_mode: gateway (spec 0003).
         self.gateway = Gateway(self)
         self.tier_down: dict[str, float] = {}  # --- providers-e2b: provider -> monotonic time it may be tried again
+        # --- scale: B12. Workspace archives in the control plane's memory at once (snapshots, forks, restores).
+        self.archive_memory = MemoryBudget(settings.workspace_transfer_mb * 1024 * 1024)
 
     # ================================================================== setup
     async def start(self) -> None:
@@ -491,7 +500,7 @@ class Fleet:
     def get(self, ref: str) -> Sandbox:
         sb = self.store.get(Sandbox, ref)
         if sb is None:
-            matches = [s for s in self.store.list(Sandbox) if s.name == ref and s.state in ACTIVE]
+            matches = self.store.list_where(Sandbox, name=ref, state=ACTIVE)  # --- scale: indexed, not a scan
             if len(matches) == 1:
                 sb = matches[0]
         if sb is None:
@@ -499,7 +508,8 @@ class Fleet:
         return sb
 
     def list(self, include_stopped: bool = False, label: str | None = None) -> list[Sandbox]:
-        sbs = [s for s in self.store.list(Sandbox) if include_stopped or s.state in ACTIVE]
+        # --- scale: live sandboxes from the state index; settled ones only when asked (retention.py bounds them)
+        sbs = self.store.list(Sandbox) if include_stopped else self.store.list_where(Sandbox, state=ACTIVE)
         if label:
             k, _, v = label.partition("=")
             sbs = [s for s in sbs if s.labels.get(k) == v or (not v and k in s.labels)]
@@ -557,14 +567,15 @@ class Fleet:
         if tier := tiers.route(self, environment, tier, provider):
             call = {k: v for k, v in locals().items() if k not in ("self", "tier", "tiers")}
             return await tiers.create(self, tier, call)
-        active = [s for s in self.store.list(Sandbox) if s.state in ACTIVE]
+        active = self.store.list_where(Sandbox, state=ACTIVE)  # --- scale: indexed, not a scan
         if len(active) >= self.settings.max_sandboxes:  # --- providers-e2b: paused for hot resume, they give way
             from hangar import hot_resume
 
             if await hot_resume.make_room(self):
-                active = [s for s in self.store.list(Sandbox) if s.state in ACTIVE]
+                active = self.store.list_where(Sandbox, state=ACTIVE)  # --- scale
         if len(active) >= self.settings.max_sandboxes:
             raise FleetError(f"fleet is at max_sandboxes={self.settings.max_sandboxes}; destroy some first")
+        fairness.check_sandboxes(self.settings, active, actor)  # --- scale: one person can't take the whole fleet
         spec = self.catalog.get(environment)
         pname = provider or self.settings.default_provider
         prov = self.provider(pname)
@@ -1213,29 +1224,41 @@ class Fleet:
 
     async def _workspace_snapshot(self, prov: Provider, sb: Sandbox, snap_id: str, label: str | None) -> Snapshot:
         tmp = f"/tmp/{snap_id}.tgz"
-        res = await prov.exec(sb, f"tar czf {tmp} -C {self.settings.workspace_dir} .", timeout=900)
+        # --- scale: tar prints the archive's size too, so an oversized one is refused before hangar reads any of it
+        res = await prov.exec(sb, f"tar czf {tmp} -C {self.settings.workspace_dir} .; rc=$?; "
+                                  f"echo; stat -c %s {tmp} 2>/dev/null; exit $rc", timeout=900)
         if res.exit_code not in (0, 1):  # 1 = files changed while reading, still usable
             raise FleetError(f"workspace snapshot failed: {res.stderr[-500:]}")
         cap = self.settings.snapshot_max_mb * 1024 * 1024  # --- overnight/sweep: the sandbox decides its size
-        data = await prov.read_file(sb, tmp, limit=cap)
-        await prov.exec(sb, f"rm -f {tmp}", timeout=30)
-        if data is None:
-            raise FleetError("workspace snapshot produced no archive")
-        if len(data) > cap:
+        size = int(last) if (last := (res.stdout.strip().splitlines() or ["0"])[-1]).isdigit() else cap
+        if size > cap:
+            await prov.exec(sb, f"rm -f {tmp}", timeout=30)
             raise FleetError(f"the workspace archive is over HANGAR_SNAPSHOT_MAX_MB ({self.settings.snapshot_max_mb} "
                              "MB); remove build outputs from the workspace, or use kind=full where the provider "
                              "has it")
-        path = self.settings.snapshot_dir / f"{snap_id}.tgz"
-        path.write_bytes(data)
+        async with self.archive_memory.hold(size * ARCHIVE_READ_COST):  # --- scale: B12, bounded memory
+            data = await prov.read_file(sb, tmp, limit=cap)
+            await prov.exec(sb, f"rm -f {tmp}", timeout=30)
+            if data is None:
+                raise FleetError("workspace snapshot produced no archive")
+            if len(data) > cap:
+                raise FleetError(f"the workspace archive is over HANGAR_SNAPSHOT_MAX_MB "
+                                 f"({self.settings.snapshot_max_mb} MB); remove build outputs from the workspace, or "
+                                 "use kind=full where the provider has it")
+            path = self.settings.snapshot_dir / f"{snap_id}.tgz"
+            await asyncio.to_thread(path.write_bytes, data)  # --- scale: not on the event loop
         return Snapshot(id=snap_id, sandbox_id=sb.id, environment=sb.environment, provider=sb.provider,
                         kind=SnapshotKind.WORKSPACE, label=label, ref=str(path), size_bytes=len(data))
 
     async def _restore_workspace(self, prov: Provider, sb: Sandbox, archive: str) -> None:
         from pathlib import Path
 
-        data = Path(archive).read_bytes()
-        tmp = f"/tmp/restore-{sb.id}.tgz"
-        await prov.write_file(sb, tmp, data)
+        # --- scale: B12. Each fork child holds the archive while it uploads; the budget bounds how many at once.
+        async with self.archive_memory.hold(Path(archive).stat().st_size * ARCHIVE_WRITE_COST):
+            data = await asyncio.to_thread(Path(archive).read_bytes)
+            tmp = f"/tmp/restore-{sb.id}.tgz"
+            await prov.write_file(sb, tmp, data)
+            del data
         res = await prov.exec(sb, f"tar xzf {tmp} -C {self.settings.workspace_dir} && rm -f {tmp}", timeout=900)
         if res.exit_code != 0:
             raise FleetError(f"workspace restore failed: {res.stderr[-500:]}")

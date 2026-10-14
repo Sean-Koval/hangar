@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     # Mount harness packs as OCI image volumes (Kubernetes >= 1.35, stable in 1.36). Off: bake into images.
     k8s_image_volumes: bool = True
     k8s_stream_uploads: bool = True  # one exec with stdin per file upload; falls back to 96 KB chunks
+    # --- scale: the share of an environment's `cpus` a sandbox pod requests; its limit stays `cpus`. 1 = Guaranteed
+    # (each sandbox reserves every core it may use); 0.5 packs twice as many mostly-idle agents per node.
+    k8s_cpu_request_fraction: float = Field(0.5, gt=0, le=1)
 
     # e2b
     e2b_api_key: str | None = None
@@ -127,13 +130,15 @@ class Settings(BaseSettings):
 
     # --- fleet defaults -----------------------------------------------------
     default_ttl_minutes: int = 240
-    max_sandboxes: int = 50
+    max_sandboxes: int = 120  # --- scale: 6 people × 10 sessions, plus job slots, forks and best-of-N attempts
     reaper_interval_seconds: int = 60
     sandbox_user: str = "agent"
     workspace_dir: str = "/workspace"
 
     # --- jobs (spec 0009) ---------------------------------------------------
-    job_concurrency: int = 4  # jobs provisioning/running at once; the rest wait in the queue
+    # Jobs provisioning/running at once; the rest wait in the queue. --- scale: 0 = sized from the fleet: 4 on Docker,
+    # else max_sandboxes / 5 between 4 and 24 (fairness.job_slots).
+    job_concurrency: int = 0
     job_poll_seconds: float = 5.0
     job_timeout_minutes: int = 60  # per agent turn
     job_keep_minutes: int = 120  # sandbox kept after a turn for follow-ups and take-over
@@ -312,6 +317,9 @@ class Settings(BaseSettings):
     io_threads: int = 0
     # --- overnight/sweep: a workspace snapshot archive is read whole into memory, so it is capped
     snapshot_max_mb: int = 512
+    # --- scale: B12. Workspace archives the control plane holds in memory at once, in MB (each counted at up to 3×
+    # its size while in flight): snapshots, forks and restores past it wait their turn instead of exhausting memory.
+    workspace_transfer_mb: int = Field(1024, ge=64)
     # --- overnight/sweep: database backups into the session store (backup.py, docs/gke.md). Unset = every 24 hours
     # when HANGAR_SESSION_STORE is a GCS bucket, else off; 0 = off. `hangar admin backup` works either way.
     backup_hours: float | None = None
@@ -319,6 +327,15 @@ class Settings(BaseSettings):
     # How long `hangar serve` waits for open requests (streams, terminals) on shutdown before cutting them.
     # Long-polls answer at once (shutdown.py). Keep it under the pod's terminationGracePeriodSeconds (45).
     shutdown_grace_seconds: int = 15
+    # --- scale: one control plane for a team (docs/team-scale.md). Caps per person, a person being a token's or an
+    # approved OAuth connector's name (fairness.person_of); hangar's own actors are exempt. 0 = off.
+    person_max_sessions: int = 15  # live sessions (each holds a sandbox); suspended ones don't count
+    person_max_sandboxes: int = 20  # sandboxes started directly (MCP, REST, the E2B API); sessions' are above
+    person_max_running_jobs: int = 0  # jobs running at once; 0 = half the job slots. Others' jobs go first
+    # Stopped and failed sandbox records older than this move to an archive table (retention.py): out of listings
+    # and of every scan, still found by id. Archived ones are deleted after sandbox_archive_days (0 = kept).
+    sandbox_retention_days: float = 7
+    sandbox_archive_days: float = 180
     # --- observe: traces, metrics and the cost view (docs/observability.md). Traces are configured with the
     # standard OTEL_* variables and are off unless they name an exporter.
     metrics_enabled: bool = True  # GET /metrics (admin or `metrics` tokens); off: no prometheus_client import

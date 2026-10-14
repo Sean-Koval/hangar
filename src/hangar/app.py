@@ -65,6 +65,9 @@ class Hangar:
         from hangar.backup import Backups  # --- overnight/sweep: database backups into the session store
 
         self.backups = Backups(self.settings, self.vault, self.sessions.blobs)
+        from hangar.retention import Retention  # --- scale: settled sandbox records move to the archive
+
+        self.retention = Retention(self.store, self.settings)
 
 
 # ---------------------------------------------------------------------------- MCP auth
@@ -310,11 +313,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         restore_signals = shutdown.on_signal(asyncio.get_running_loop(), h.fleet.closing.set)
         h.backups.start()
+        h.retention.start()  # --- scale
         async with mcp.session_manager.run():
             yield
         h.fleet.closing.set()
         restore_signals()
         await h.backups.stop()
+        await h.retention.stop()  # --- scale
         if prebuild:
             prebuild.cancel()
         await h.triggers.stop()
@@ -345,6 +350,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def _rate_limited(_: Request, exc: RateLimited):
         return JSONResponse({"error": str(exc)}, status_code=429,
                             headers={"Retry-After": str(max(1, math.ceil(exc.retry_after)))})
+
+    from hangar.fairness import CapReached  # --- scale: a person at one of their caps
+
+    @app.exception_handler(CapReached)
+    async def _cap_reached(_: Request, exc: CapReached):
+        return JSONResponse({"error": str(exc)}, status_code=429)
     # --- workstream F: with HANGAR_GATEWAY_PORT=0 the git gateway shares the main port (grant tokens only).
     if h.settings.gateway_url and not h.settings.gateway_port:
         for i, r in enumerate(h.fleet.gateway.routes()):

@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 from hangar import cache as caching  # --- overnight/cache: prompt-cache TTL, one model per session, siblings
 from hangar import ckpt, exchange, isolation, observe  # --- observe, isolation
+from hangar import fairness as fairness  # --- scale
 from hangar import hot_resume as hot_resume  # --- providers-e2b
 from hangar import steer as steering  # workstream steer: live turns
 from hangar.checkpoints import CheckpointStore, make_store
@@ -229,6 +230,7 @@ class SessionService:
         schema = exchange.check_schema(req.output_schema)
         if (context or schema) and not req.message:
             raise SessionError("context and output_schema go with a message for the agent")
+        fairness.check_sessions(self, owner)  # --- scale: live sessions per person
         s = Session(name=req.name, title=(req.title or (req.message or req.name).strip().splitlines()[0])[:200],
                     owner=owner, environment=env, harness=harness, model=req.model,
                     repo=req.repo or (spec.repo.url if spec.repo else None), base_branch=req.base_branch,
@@ -268,6 +270,7 @@ class SessionService:
             self._save(s)
         if self.busy(s.id) or (live and s.state in SESSION_LIVE):
             return s
+        fairness.check_sessions(self, s.owner, s)  # --- scale: resuming takes a sandbox
         self._busy.add(s.id)
         self._set(s, SessionState.STARTING, f"opened by {requester}")
         self.fleet.audit(requester, "session.open", s.id)
@@ -301,6 +304,8 @@ class SessionService:
                 caching.note_switch(self, s, model, requester)  # --- overnight/cache: from the next turn
                 return s
             raise SessionError(f"session {s.name} is busy ({s.state}); wait for it to finish, or interrupt it")
+        if not (s.sandbox_id and self._alive(s.sandbox_id)):
+            fairness.check_sessions(self, s.owner, s)  # --- scale: resuming takes a sandbox
         warning = caching.switch_model(self, s, model, requester)  # --- overnight/cache
         self.start_turn(s, message, requester, context, output_schema)
         if warning:

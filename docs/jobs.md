@@ -271,7 +271,8 @@ The webhook needs the `pull_request_review`, `check_run`, `check_suite` and `sta
 
 | Variable | Default | |
 | --- | --- | --- |
-| `HANGAR_JOB_CONCURRENCY` | 4 | Jobs provisioning or running at once |
+| `HANGAR_JOB_CONCURRENCY` | 0 (auto) | Jobs provisioning or running at once. Auto: 4 on Docker, else `HANGAR_MAX_SANDBOXES` / 5 between 4 and 24 ([team-scale.md](team-scale.md)) |
+| `HANGAR_PERSON_MAX_RUNNING_JOBS` | 0 (half the slots) | Jobs one person runs at once; the queue serves whoever has the fewest running first |
 | `HANGAR_JOB_TIMEOUT_MINUTES` | 60 | Per agent turn |
 | `HANGAR_JOB_KEEP_MINUTES` | 120 | Sandbox kept after a turn |
 | `HANGAR_JOB_VERIFY_TIMEOUT_SECONDS` | 1800 | |

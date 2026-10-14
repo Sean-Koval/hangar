@@ -61,6 +61,15 @@ def test_gvisor_pod_template():
     assert c["resources"]["limits"]["cpu"] and c["resources"]["limits"]["memory"]
 
 
+def test_sandbox_requests_part_of_its_cpu_and_all_its_memory():
+    """--- scale: Burstable, so mostly-idle agents pack onto fewer nodes; limits unchanged (docs/team-scale.md)."""
+    c = provider()._pod_template(spec(), "i")["spec"]["containers"][0]["resources"]
+    assert c["requests"] == {"cpu": "1000m", "memory": "4096Mi"}
+    assert c["limits"] == {"cpu": "2.0", "memory": "4096Mi"}
+    full = provider(k8s_cpu_request_fraction=1.0)._pod_template(spec(), "i")["spec"]["containers"][0]["resources"]
+    assert full["requests"]["cpu"] == "2000m"
+
+
 def test_kata_and_runc_templates():
     kata = provider(k8s_runtime_class="kata-qemu")._pod_template(spec(), "i")["spec"]
     assert kata["runtimeClassName"] == "kata-qemu" and kata["nodeSelector"] == {"hangar.dev/runtime": "kata"}
