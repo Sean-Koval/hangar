@@ -204,7 +204,7 @@ def select(changed: list[str], graph: Graph) -> Selection:
         name = module_name(path)
         if name and name.startswith("hangar"):
             if name in graph.core:
-                sel.everything(f"{path} is a core module (conftest's fixtures run through it)")
+                sel.everything(f"{path} is a core module (CORE, or imported by tests/conftest.py)")
             src_modules.append(name)
             continue
         if name and name.startswith("tests"):
@@ -304,11 +304,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     files = sorted(t for t in sel.tests if graph.is_unit(t))
     if args.shard:
-        index, count = (int(x) for x in args.shard.split("/"))
-        if not 1 <= index <= count:
-            ap.error(f"--shard {args.shard}: I must be between 1 and N")
+        index, _, count = args.shard.partition("/")
+        if not (index.isdigit() and count.isdigit() and 1 <= int(index) <= int(count)):
+            ap.error(f"--shard {args.shard}: want I/N with 1 <= I <= N")
         durations = json.loads(DURATIONS.read_text()) if DURATIONS.exists() else {}
-        files = shard(files, index, count, durations)
+        files = shard(files, int(index), int(count), durations)
     print(f"{len(files)} of {len(graph.tests)} test files selected", file=sys.stderr)
     print("\n".join(files))
     return 0

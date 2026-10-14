@@ -212,20 +212,34 @@ JUNIT = """<testsuites><testsuite>
 def test_failing_tests_from_junit(tmp_path):
     (tmp_path / "sub").mkdir()
     (tmp_path / "sub" / "junit-unit-1.xml").write_text(JUNIT)
-    assert ci_bisect.failing_tests(tmp_path) == [
-        "tests/test_a.py::test_bad[x-1]", "tests/test_b.py::TestK::test_err", "tests/test_c.py"]
+    (tmp_path / "junit-test_e2e_x_docker.xml").write_text(
+        '<testsuite><testcase classname="tests.test_e2e_x_docker" name="test_y"><failure/></testcase></testsuite>')
+    assert ci_bisect.failing_tests(tmp_path) == (
+        ["tests/test_a.py::test_bad[x-1]", "tests/test_b.py::TestK::test_err", "tests/test_c.py"],
+        ["tests/test_e2e_x_docker.py::test_y"])
 
 
-def test_bisect_instructions_quote_the_test_ids():
-    text = ci_bisect.instructions("o/r", "b" * 40, "a" * 40, ["tests/test_a.py::test_bad[x-1]"], ["unit (1/4)"],
+def test_the_check_repeats_what_failed():
+    check = ci_bisect.check_command(["tests/test_a.py::test_bad[x-1]"], ["tests/test_e2e_x.py::t"], ["rust"])
+    assert check.startswith("uv sync --all-extras --frozen -q && (cd envd && cargo clippy")
+    assert "uv run pytest -x -q -p no:cacheprovider 'tests/test_a.py::test_bad[x-1]'" in check
+    assert check.endswith("HANGAR_E2E=1 uv run pytest -x -q -p no:cacheprovider tests/test_e2e_x.py::t")
+    assert ci_bisect.check_command([], [], ["terraform"]).startswith("for d in deploy/terraform/gke")
+    assert ci_bisect.check_command([], [], ["unit (1/4)"]) is None  # a shard died without a junit file
+
+
+def test_bisect_instructions():
+    check = ci_bisect.check_command(["tests/test_a.py::test_bad[x-1]"], [], ["unit (1/4)"])
+    text = ci_bisect.instructions("b" * 40, "a" * 40, ["tests/test_a.py::test_bad[x-1]"], ["unit (1/4)"], check,
                                   "https://x/run")
-    assert f"git bisect start {'b' * 40} {'a' * 40}" in text
-    assert "'tests/test_a.py::test_bad[x-1]'" in text and "Failed jobs: unit (1/4)." in text
-    assert "no green run" in ci_bisect.instructions("o/r", "b" * 40, None, [], [], "https://x/run")
+    assert f"git bisect start {'b' * 40} {'a' * 40}" in text and "Failed jobs: unit (1/4)." in text
+    assert "git bisect run sh -c 'uv sync" in text and "test_bad[x-1]" in text
+    assert "no green run" in ci_bisect.instructions("b" * 40, None, [], [], check, "https://x/run")
+    assert "as the run's logs show" in ci_bisect.instructions("b" * 40, "a" * 40, [], ["unit (1/4)"], None, "u")
 
 
 def test_bisect_submits_a_hangar_job(tmp_path, monkeypatch, capsys):
-    (tmp_path / "junit.xml").write_text(JUNIT)
+    (tmp_path / "junit-unit-2.xml").write_text(JUNIT)
     monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
     monkeypatch.setenv("GITHUB_SHA", "b" * 40)
     monkeypatch.setenv("GITHUB_RUN_ID", "77")
@@ -236,8 +250,9 @@ def test_bisect_submits_a_hangar_job(tmp_path, monkeypatch, capsys):
         if path.endswith("/jobs?per_page=100"):
             return {"jobs": [{"name": "unit (2/4)", "conclusion": "failure"},
                              {"name": "lint", "conclusion": "success"}]}
-        if "status=success" in path:
-            return {"workflow_runs": [{"id": 77, "event": "push", "head_sha": "c" * 40},
+        if "status=success" in path:  # newest first: a later green run (78) and this run itself aren't the base
+            return {"workflow_runs": [{"id": 78, "event": "push", "head_sha": "d" * 40},
+                                      {"id": 77, "event": "push", "head_sha": "c" * 40},
                                       {"id": 70, "event": "push", "head_sha": "a" * 40}]}
         raise AssertionError(path)
 
@@ -261,8 +276,8 @@ def test_bisect_submits_a_hangar_job(tmp_path, monkeypatch, capsys):
     body = json.loads(req.data)
     assert req.full_url == "https://hangar.test/api/jobs" and req.get_header("Authorization") == "Bearer tok-secret"
     assert body["idempotency_key"] == "ci-bisect-77" and body["deliver"] == "pr" and body["base_branch"] == "main"
-    assert f"git bisect start {'b' * 40} {'a' * 40}" in body["instructions"]  # the run itself isn't the last green
-    assert "'tests/test_a.py::test_bad[x-1]'" in body["verify"]
+    assert f"git bisect start {'b' * 40} {'a' * 40}" in body["instructions"]
+    assert "'tests/test_a.py::test_bad[x-1]'" in body["verify"] and "HANGAR_E2E" not in body["verify"]
     out = capsys.readouterr().out
     assert "job-1" in out and "tok-secret" not in out
 
@@ -276,7 +291,7 @@ def test_bisect_falls_back_to_one_issue(tmp_path, monkeypatch):
     def gh_json(path, *args):
         calls.append((path, args))
         if path.endswith("/jobs?per_page=100"):
-            return {"jobs": []}
+            return {"jobs": [{"name": "terraform", "conclusion": "failure"}]}
         if "status=success" in path:
             return {"workflow_runs": []}
         if path.startswith("repos/o/r/issues?"):

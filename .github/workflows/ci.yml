@@ -11,9 +11,11 @@ on:
         type: boolean
         default: false
 
+# One full run at a time per branch, never cancelled. Pushes that land meanwhile wait, and only the newest of them
+# runs next: the bisect range from the last green run covers the commits in between.
 concurrency:
-  group: main-${{ github.ref }}
-  cancel-in-progress: false  # each commit keeps its own verdict: the bisect range is built from them
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -102,9 +104,9 @@ jobs:
       - run: chmod +x envd/dist/*
       - run: uv sync --all-extras --locked
       - run: |
+          files=$(python3 scripts/ci/select_tests.py --all --shard ${{ matrix.shard }}/4)
           uv run pytest -q -n "$PYTEST_WORKERS" $RERUN \
-            --flake-report "flakes-$FLAKE_JOB.json" --junitxml "junit-$FLAKE_JOB.xml" \
-            $(python3 scripts/ci/select_tests.py --all --shard ${{ matrix.shard }}/4)
+            --flake-report "flakes-$FLAKE_JOB.json" --junitxml "junit-$FLAKE_JOB.xml" $files
       - if: always()
         uses: actions/upload-artifact@v7
         with:
