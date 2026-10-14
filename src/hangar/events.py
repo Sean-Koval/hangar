@@ -13,6 +13,7 @@ read them with `Activity.read` / `SessionService.events`.
 
 from __future__ import annotations
 
+import asyncio  # --- stream
 import base64
 import collections
 import contextlib
@@ -808,6 +809,8 @@ class Activity:
         self.settings = settings
         self.redact = redact
         self.log = EventLog(settings.data_dir / "events", int(settings.events_max_mb) * 1024 * 1024)
+        # --- stream: called with (session or job id, events) after every append, for live streams; must not raise
+        self.listeners: list[Callable[[str, list[RunEvent]], None]] = []
 
     @property
     def prices(self) -> dict[str, dict[str, float]]:
@@ -818,7 +821,13 @@ class Activity:
         for ev in events:
             ev.text = self.redact(ev.text)
             ev.data = self.redact(ev.data)
-        return self.log.append(session_id, events)
+        out = self.log.append(session_id, events)
+        for fn in self.listeners:  # --- stream
+            try:
+                fn(session_id, out)
+            except Exception:  # noqa: BLE001 - a listener must never lose the events
+                log.exception("event listener failed")
+        return out
 
     def read(self, session_id: str, since: int = 0, limit: int = 200, tail: int | None = None) -> list[RunEvent]:
         return self.log.read(session_id, since=max(0, since), limit=max(1, min(limit, 1000)),
@@ -849,6 +858,9 @@ class TurnWatcher:
             self.split = bool(turn.run_id) and isolation.run_split(fleet.get(s.sandbox_id), turn.run_id)
             if self.split:
                 self.log_path = f"{isolation.RUNS}/{turn.run_id}.log"
+        self._follow: asyncio.Task[str] | None = None  # --- stream: the log followed live (sandbox_streams.follow)
+        self._follows = 0
+        self._fed = False
 
     def note(self, kind: str, text: str, **data: Any) -> None:
         """An event hangar itself adds to the turn (e.g. why it was stopped)."""
@@ -886,15 +898,66 @@ class TurnWatcher:
     async def poll(self) -> str | None:
         """Read what the log gained since the last poll. Returns why the turn is over budget, or None."""
         if self.turn.run_id and self.s.sandbox_id:
+            if self._follow is not None and not self._follow.done():  # --- stream: followed live; keep the cursor
+                self._save_fed()
+            else:
+                try:
+                    await self._read(final=False)
+                except Exception:  # noqa: BLE001 - activity is best effort; it must never break the turn
+                    log.exception("session %s: collecting events failed", self.s.id)
+                self._start_follow()
             try:
-                await self._read(final=False)
-                await self._approvals()  # --- harden
-            except Exception:  # noqa: BLE001 - activity is best effort; it must never break the turn
-                log.exception("session %s: collecting events failed", self.s.id)
+                await self._approvals()  # --- harden (integrate: every poll, also while the log is followed)
+            except Exception:  # noqa: BLE001
+                log.exception("session %s: collecting approvals failed", self.s.id)
         return over_budget(self.s.budget, self.turn.usage, self.turn.started_at)
+
+    # --- stream: between polls, the log is followed through hangar-envd (`tail -F`), so each event is recorded
+    # (and reaches live streams) as the agent writes it rather than up to a poll interval later. Polling takes over
+    # whenever following isn't possible or stops (no daemon, the log truncated, the sandbox gone).
+    # integrate (#69 x #68): a split run's follower tails hangar's own log in RUNS (0644, so envd, which runs as the
+    # agent, can read it), never the agent's link. Its bytes still pass through a process of the agent's uid, so what
+    # it feeds is informational, as the log's events and usage already are: approvals are dropped from it (_record)
+    # and read from the driver's file each poll, the exit file only tells it when to stop, and the turn's status,
+    # exit code and summary come from hangar's own reads (fleet.agent_status, sessions).
+    def _start_follow(self) -> None:
+        closing = getattr(self.fleet, "closing", None)
+        if not getattr(self.fleet.settings, "stream_turn_logs", False) or closing is None or closing.is_set():
+            return
+        if self._follow is not None:
+            why = self._follow.result() if not self._follow.cancelled() and not self._follow.exception() else "error"
+            if why in ("ended", "gone", "shutdown", "destroyed"):
+                self._follows = 3  # nothing to gain from trying again
+        if self._follows >= 3:
+            return
+        self._follows += 1
+        from hangar.sandbox_streams import follow  # import cycle
+
+        exit_path = self.log_path.removesuffix(".log") + ".exit"
+        self._follow = asyncio.create_task(follow(self.fleet, self.s.sandbox_id or "", self.log_path, exit_path,
+                                                  self.parser.next, self._feed))
+
+    def _feed(self, data: bytes) -> None:
+        self._record(self.parser.feed(data))
+        self._fed = True
+
+    def _save_fed(self) -> None:
+        if self._fed:
+            self._fed = False
+            p = self.parser
+            self.turn.usage = p.view() if (p.usage.tokens + p.usage.cache_read_tokens or p.final) else None
+            self.turn.event_cursor = p.state()
+            self.save()
+
+    async def _stop_follow(self) -> None:
+        if self._follow is not None:
+            self._follow.cancel()
+            await asyncio.gather(self._follow, return_exceptions=True)
+            self._save_fed()
 
     async def finish(self, alive: bool = True) -> None:
         """The turn is over: read the rest of the log (if the sandbox is still there) and close the cursor."""
+        await self._stop_follow()  # --- stream
         if alive and self.turn.run_id and self.s.sandbox_id:
             try:
                 await self._read(final=True)

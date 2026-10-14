@@ -1,0 +1,98 @@
+{
+  "meta": {
+    "bench": "streams",
+    "git": "ee00fd7",
+    "started": "2026-10-13T20:06:14",
+    "seconds": 134.2,
+    "host": "vm",
+    "cpus": 2,
+    "python": "3.12.3",
+    "provider": "docker"
+  },
+  "metrics": {
+    "first_output_exec_stream": {
+      "n": 5,
+      "p50_ms": 112.1,
+      "p95_ms": 116.6,
+      "mean_ms": 112.98,
+      "min_ms": 111.36,
+      "max_ms": 116.6
+    },
+    "line_latency_exec_stream": {
+      "n": 150,
+      "p50_ms": 0.75,
+      "p95_ms": 1.98,
+      "mean_ms": 0.96,
+      "min_ms": 0.52,
+      "max_ms": 6.47
+    },
+    "first_output_exec": {
+      "n": 5,
+      "p50_ms": 3123.59,
+      "p95_ms": 3131.58,
+      "mean_ms": 3123.93,
+      "min_ms": 3116.27,
+      "max_ms": 3131.58
+    },
+    "line_latency_exec": {
+      "n": 150,
+      "p50_ms": 1552.57,
+      "p95_ms": 2909.06,
+      "mean_ms": 1507.49,
+      "min_ms": 1.71,
+      "max_ms": 3018.16
+    },
+    "first_output_terminal_poll_1s": {
+      "n": 5,
+      "p50_ms": 1057.52,
+      "p95_ms": 1062.53,
+      "mean_ms": 1053.82,
+      "min_ms": 1041.72,
+      "max_ms": 1062.53
+    },
+    "line_latency_terminal_poll_1s": {
+      "n": 145,
+      "p50_ms": 503.2,
+      "p95_ms": 981.38,
+      "mean_ms": 519.5,
+      "min_ms": 41.54,
+      "max_ms": 1008.84
+    },
+    "first_output_process_attach": {
+      "n": 5,
+      "p50_ms": 111.33,
+      "p95_ms": 116.28,
+      "mean_ms": 112.13,
+      "min_ms": 110.54,
+      "max_ms": 116.28
+    },
+    "line_latency_process_attach": {
+      "n": 150,
+      "p50_ms": 0.92,
+      "p95_ms": 2.3,
+      "mean_ms": 1.1,
+      "min_ms": 0.72,
+      "max_ms": 4.01
+    },
+    "event_latency_follow": {
+      "n": 11,
+      "p50_ms": 14.78,
+      "p95_ms": 21.91,
+      "mean_ms": 14.46,
+      "min_ms": 6.35,
+      "max_ms": 21.91
+    },
+    "event_latency_poll": {
+      "n": 11,
+      "p50_ms": 4727.42,
+      "p95_ms": 4936.11,
+      "mean_ms": 4279.92,
+      "min_ms": 8.73,
+      "max_ms": 4936.11
+    }
+  },
+  "notes": {
+    "command": "for i in $(seq 30); do sleep 0.1; echo tick$i $(date +%s.%N); done",
+    "session_poll_seconds": 5.0
+  }
+}

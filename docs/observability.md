@@ -116,6 +116,7 @@ Claude Code sends that header on HTTP MCP requests when its tracing beta is on. 
 | `hangar_db_backups_total`, `hangar_db_backup_seconds`, `hangar_db_backup_last_success_timestamp_seconds` | counter, histogram, gauge | `result` (`ok`, `error`). Alert when `time() - hangar_db_backup_last_success_timestamp_seconds` passes two backup intervals; the gauge starts empty after a restart. |
 | `hangar_event_loop_lag_seconds`, `hangar_event_loop_lag_last_seconds` | histogram, gauge | How late a 0.5 s sleep on the event loop wakes up. Sustained lag means something blocks the loop. |
 | `hangar_io_pool_queue_depth`, `hangar_io_pool_threads`, `hangar_io_pool_max_threads` | gauge | Blocking provider calls waiting for a worker thread (`HANGAR_IO_THREADS`, see `runtime.py`) |
+| `hangar_streams_open`, `hangar_streams_total`, `hangar_stream_bytes_total`, `hangar_stream_first_output_seconds` | gauge, counter, counter, histogram | `kind` (`exec`, `process_attach`, `events`, `watch`, `process`, `turn_log`, ...); the counter also `reason` (`done`, `client`, `shutdown`, `destroyed`, `paused`, `revoked`, `lifetime`, `error`). Streams to clients and the logs and processes hangar follows ([streaming.md](streaming.md)). |
 
 Labels never carry a job, session, sandbox or run id.
 

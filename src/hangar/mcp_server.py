@@ -37,6 +37,7 @@ from hangar.models import Budget, ContextItem, Sandbox
 from hangar.providers.base import ProviderError
 from hangar.sessions import NewSession, SessionService
 from hangar.strategies import fork_session as _fork_session  # workstream D: forks/best-of-N
+from hangar.stream_api import exec_stream, register_streams  # --- stream: exec(stream=true), process, watches
 from hangar.triggers import ScheduleSpec, Triggers
 
 # Failures an agent can act on (bad name, quota, build error...). Anything else is a crash and stays generic.
@@ -309,9 +310,13 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
 
     # ------------------------------------------------------------------ commands & files
     @tool()
-    async def exec(sandbox: str, command: str, cwd: str | None = None, timeout: int = 120) -> live.ExecOut:
-        """Run a one-shot shell command (bash -lc) in a sandbox and wait for it: exit_code, stdout, stderr. For
-        servers, REPLs and anything long-running or interactive use terminal_open / terminal_send."""
+    async def exec(sandbox: str, command: str, ctx: Context, cwd: str | None = None, timeout: int = 120,
+                   stream: bool = False) -> live.ExecOut:
+        """Run a one-shot shell command (bash -lc) in a sandbox and wait for it: exit_code, stdout, stderr
+        (stream=true: also as progress notifications while it runs). For servers use process; for interactive
+        programs terminal_open / terminal_send."""
+        if stream:  # --- stream
+            return await exec_stream(fleet, ctx, sandbox, command, cwd, timeout, current_actor.get(), actor())
         r = await fleet.exec(sandbox, command, cwd=cwd, timeout=timeout, actor=actor())
         return r.model_dump()
 
@@ -638,6 +643,9 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         fleet.store.on_put.append(feed.on_put)
         if legacy_sessions:
             feed.install_legacy(mcp)
+
+    # --- stream: background processes, file watches, events to subscribers as they are recorded
+    register_streams(mcp, tool, fleet, sessions, jobs, feed, current_actor.get)
 
     # ------------------------------------------------------------------ jobs (spec 0009)
     if jobs is None:
