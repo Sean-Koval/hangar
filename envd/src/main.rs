@@ -1,3 +1,4 @@
+// Probe (CI path filters, not for merge).
 //! hangar-envd: the in-sandbox daemon hangar talks to instead of `docker exec` / `kubectl exec`.
 //!
 //! It speaks E2B envd's protocol (Connect RPC `process.Process` and `filesystem.Filesystem`, plus `/files` and
