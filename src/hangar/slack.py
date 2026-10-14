@@ -412,7 +412,7 @@ class SlackFrontDoor:
         if self.store.kv_get(k) is not None:
             return False
         t = now()
-        self.store.kv_set(k, str(t))
+        self.store.kv_set(k, str(t), durable=True)  # --- overnight/sweep: like the replay guard's entries
         if t - self._last_prune > 600:
             self._last_prune = t
             for old in self.store.kv_keys("slack:seen:"):

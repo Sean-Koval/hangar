@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import logging
 import secrets
 import time
 from typing import Any
@@ -44,8 +45,15 @@ CODE_TTL = 300
 REQUEST_TTL = 600
 SCOPE = "hangar"
 _LOOPBACK = {"localhost", "127.0.0.1", "::1"}
+log = logging.getLogger("hangar.oauth")
 # --- review of front-door-auth: never a redirect target, whatever host they name
 _BROWSER_SCHEMES = {"javascript", "data", "file", "vbscript", "blob", "about", "filesystem", "ftp", "ws", "wss"}
+
+
+def _private_use(scheme: str) -> bool:
+    """A reverse-domain private-use scheme (RFC 8252 §7.1: com.example.app), which names no host. Review of
+    overnight/sweep: a "scheme://host" entry can't express it, so such an app could not be allowed at all."""
+    return "." in scheme and scheme not in _BROWSER_SCHEMES
 
 
 def _h(token: str) -> str:
@@ -92,11 +100,32 @@ class HangarOAuthProvider:
         # (RFC 8252 §7.1: Cursor registers cursor://anysphere.cursor-mcp/...), which the OS hands to that app.
         # Schemes a browser acts on itself are never allowed.
         scheme = u.scheme.lower()
+        if not host and _private_use(scheme):
+            # review(sweep): RFC 8252 §7.1's own form, a reverse-domain scheme with no host
+            # (com.example.app:/oauth2redirect), allowed by an exact "scheme:" entry
+            return "*" in self.redirect_hosts or f"{scheme}:" in {e.lower() for e in self.redirect_hosts}
         if not host or scheme in _BROWSER_SCHEMES or (scheme == "http" and host not in _LOOPBACK):
             return False
         if "*" in self.redirect_hosts:
             return True
-        return any(host == h or host.endswith("." + h) for h in self.redirect_hosts)
+        # --- overnight/sweep: a bare host covers https (and loopback http) and its subdomains. Any local app can
+        # claim a custom scheme, so one is allowed only by an exact "scheme://host" entry: a bare "claude.ai" no
+        # longer lets an app register evil://claude.ai, whose host the consent page would show.
+        if f"{scheme}://{host}" in {e.lower().rstrip("/") for e in self.redirect_hosts if "://" in e}:
+            return True
+        return scheme in ("http", "https") and any(host == h or host.endswith("." + h)
+                                                   for h in self.redirect_hosts if "://" not in h)
+
+    @staticmethod
+    def _entry_for(uri: str) -> str | None:
+        """The HANGAR_OAUTH_REDIRECT_HOSTS entry that would allow `uri`, or None when nothing can."""
+        u = urlparse(uri)
+        host, scheme = (u.hostname or "").lower(), u.scheme.lower()
+        if not host and _private_use(scheme):
+            return f"{scheme}:"  # review(sweep): RFC 8252 §7.1 form
+        if not host or scheme in _BROWSER_SCHEMES or (scheme == "http" and host not in _LOOPBACK):
+            return None
+        return host if scheme in ("http", "https") else f"{scheme}://{host}"
 
     def _audience_ok(self, resource: str | None) -> bool:
         """RFC 8707: a client may only ask for a token for hangar's own MCP endpoint (or hangar itself)."""
@@ -120,10 +149,23 @@ class HangarOAuthProvider:
                 self.store.kv_delete(key)
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
-        bad = [str(u) for u in (client_info.redirect_uris or []) if not self._host_allowed(str(u))]
-        if bad:
-            raise RegistrationError(error="invalid_redirect_uri",
-                                    error_description=f"redirect host not allowed by HANGAR_OAUTH_REDIRECT_HOSTS: {bad[0]}")
+        uris = list(client_info.redirect_uris or [])
+        ok = [u for u in uris if self._host_allowed(str(u))]
+        if uris and not ok:
+            entry = self._entry_for(str(uris[0]))
+            log.warning("OAuth registration refused: redirect URI %s is not allowed%s", uris[0],
+                        f"; to allow it: hangar config set HANGAR_OAUTH_REDIRECT_HOSTS "
+                        f"'{json.dumps([*self.redirect_hosts, entry])}' and restart hangar" if entry else "")
+            raise RegistrationError(
+                error="invalid_redirect_uri",
+                error_description=f"redirect URI {uris[0]} is not allowed by this hangar: "
+                + (f"its admin can add \"{entry}\" to HANGAR_OAUTH_REDIRECT_HOSTS" if entry else
+                   "use https, http to localhost, or an app's own scheme"))
+        if len(ok) < len(uris):
+            # --- overnight/sweep: Cursor registers its app scheme, a cursor.com callback and a loopback port in one
+            # request. Register the allowed ones instead of refusing the client (RFC 7591 §3.2.1 lets the server
+            # replace requested metadata; the response says what was registered). /authorize checks the rest.
+            client_info.redirect_uris = ok
         self.sweep()
         if len(self.store.kv_keys("oauth:client:")) >= self.max_clients:
             raise RegistrationError(error="invalid_client_metadata", error_description="too many registered clients")
@@ -319,7 +361,10 @@ _HEADERS = {"X-Frame-Options": "DENY", "Content-Security-Policy": "frame-ancesto
 
 
 def _page(req: str, client: OAuthClientInformationFull, params: dict[str, Any], error: str = "") -> HTMLResponse:
-    host = urlparse(str(params.get("redirect_uri", ""))).netloc or "the app"
+    u = urlparse(str(params.get("redirect_uri", "")))
+    # review(sweep): an app's own scheme is shown with its host, so a custom scheme can't pass for that host's site
+    host = (u.netloc if u.scheme in ("http", "https") else f"{u.scheme}:{'//' + u.netloc if u.netloc else ''}") \
+        if u.scheme else "the app"
     body = _PAGE.format(name=html.escape(client.client_name or client.client_id), host=html.escape(host),
                         req=html.escape(req), error=f'<p class="e">{html.escape(error)}</p>' if error else "")
     return HTMLResponse(body, headers=_HEADERS)

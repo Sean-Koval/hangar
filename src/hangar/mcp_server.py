@@ -45,6 +45,7 @@ EXPECTED = (FleetError, ProviderError, CredentialError, ValueError, KeyError, No
 current_actor: contextvars.ContextVar[str] = contextvars.ContextVar("hangar_actor", default="mcp")
 log = logging.getLogger("hangar.mcp")
 ELICIT_WAIT_SECONDS = 900  # how long an agent's question put to you by wait_for_turn waits for your answer
+READ_FILE_LIMIT = 10 * 1024 * 1024  # --- overnight/sweep: read_file answers with at most this much of a file
 
 INSTRUCTIONS = """\
 Hangar runs coding agents (Claude Code, Codex, pi, Antigravity) in cloud sandboxes. Pick the level you need:
@@ -299,13 +300,16 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
 
     @tool()
     async def read_file(sandbox: str, path: str, binary: bool = False) -> dict[str, Any]:
-        """Read a file. Text by default; binary=True returns base64."""
-        data = await fleet.read_file(sandbox, path)
+        """Read a file (its first 10 MB). Text by default; binary=True returns base64."""
+        data = await fleet.read_file(sandbox, path, limit=READ_FILE_LIMIT)  # --- overnight/sweep: the sandbox's size
         if data is None:
             return {"path": path, "exists": False}
+        cut = {"truncated": True, "note": f"only the first {READ_FILE_LIMIT // 1024 // 1024} MB; read the rest with "
+               "exec (tail -c, split)"} if len(data) > READ_FILE_LIMIT else {}
+        data = data[:READ_FILE_LIMIT]
         if binary:
-            return {"path": path, "exists": True, "base64": base64.b64encode(data).decode()}
-        return {"path": path, "exists": True, "content": data.decode(errors="replace")}
+            return {"path": path, "exists": True, "base64": base64.b64encode(data).decode(), **cut}
+        return {"path": path, "exists": True, "content": data.decode(errors="replace"), **cut}
 
     @tool()
     async def write_file(sandbox: str, path: str, content: str, base64_encoded: bool = False) -> dict[str, Any]:

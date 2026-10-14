@@ -14,6 +14,7 @@ code path works for Docker, Agent Sandbox pods and E2B VMs.
 
 from __future__ import annotations
 
+import logging
 import re
 import shlex
 import threading
@@ -30,6 +31,10 @@ if TYPE_CHECKING:
 
 
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+# --- overnight/sweep: the sandbox decides how big these files are, so hangar reads no more than this of them
+AUTH_FILE_LIMIT = 1024 * 1024  # a harness login file (~/.codex/auth.json and the like are a few KB)
+ENV_FILE_LIMIT = 1024 * 1024  # ~/.hangar/env: hangar's exports and PATH lines
+log = logging.getLogger("hangar.broker")
 
 
 class CredentialError(RuntimeError):
@@ -172,8 +177,12 @@ class Broker:
             data = None
             if write_back and c.kind == CredentialKind.AUTH_FILE and c.file_path:
                 try:
-                    data = await provider.read_file(sandbox, self._abs(c.file_path))
+                    data = await provider.read_file(sandbox, self._abs(c.file_path), limit=AUTH_FILE_LIMIT)
                 except Exception:  # sandbox may already be gone; keep the vault copy
+                    data = None
+                if data is not None and len(data) > AUTH_FILE_LIMIT:  # --- overnight/sweep: not an auth file
+                    log.warning("not writing back credential %s: %s in sandbox %s is over %d bytes", c.name,
+                                c.file_path, sandbox.id, AUTH_FILE_LIMIT)
                     data = None
             with self._lock:
                 # Re-read after the await: the lease may have been force-released and re-issued meanwhile.
@@ -225,7 +234,10 @@ class Broker:
             if slot and slot.post_inject:
                 post.append(slot.post_inject)
         if env or prelude:
-            existing = await provider.read_file(sandbox, f"{self.home}/.hangar/env") or b""
+            existing = await provider.read_file(sandbox, f"{self.home}/.hangar/env", limit=ENV_FILE_LIMIT) or b""
+            if len(existing) > ENV_FILE_LIMIT:  # --- overnight/sweep: grown by the agent; start it over
+                log.warning("sandbox %s: ~/.hangar/env is over %d bytes; rewriting it", sandbox.id, ENV_FILE_LIMIT)
+                existing = b""
             kept = [ln for ln in existing.decode().splitlines()
                     if ln not in (prelude or []) and not any(ln.startswith(f"export {v}=") for v in env)]
             lines = [*(prelude or []), *kept, *(f"export {k}={shlex.quote(v)}" for k, v in env.items())]
