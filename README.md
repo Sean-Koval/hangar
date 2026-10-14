@@ -123,6 +123,25 @@ uv run hangar doctor
 
 If a check fails, follow the suggested fix. `uv run hangar doctor --fix` can apply supported repairs.
 
+## Use the Hangar skill
+
+The [Hangar skill](skills/hangar/SKILL.md) teaches your calling agent to turn a
+task or ticket into a cloud job or resumable session, follow progress, handle
+questions, and report changes with verification evidence.
+
+Copy the `skills/hangar/` folder into your client's configured skills directory
+(for clients using the shared convention, `~/.agents/skills/hangar/`), and reload
+its skills. Connect that client to your Hangar server using the steps above;
+installing the skill alone does not connect MCP.
+
+For example, invoke the skill with:
+
+> Use the Hangar skill to work on ticket APP-42 in my repo. Use our configured Python environment, run the project's tests, and return a draft PR with the results.
+
+This skill runs in the client that delegates work. The separate
+[repo-conventions skill](envs/skills/repo-conventions/SKILL.md) guides coding agents
+working inside sandboxes.
+
 ## Run your first task
 
 In your connected MCP client, ask:
@@ -229,6 +248,7 @@ For an existing deployment, read [the upgrade guide](docs/upgrading.md) before u
 
 | Topic | Guide |
 | --- | --- |
+| Delegating tasks and tickets from an agent | [Hangar skill](skills/hangar/SKILL.md) |
 | Client configuration and OAuth | [Connecting clients](docs/clients.md) |
 | MCP tools, prompts, and waiting for work | [Using MCP](docs/mcp.md) |
 | Jobs, verification, and draft PRs | [Jobs](docs/jobs.md) |
