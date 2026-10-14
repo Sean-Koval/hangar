@@ -66,7 +66,7 @@ variable "domain" {
 }
 
 variable "sandbox_disk_gb" {
-  description = "Boot disk per sandbox node. pd-balanced/pd-ssd count against SSD_TOTAL_GB (500 GB default quota): 100 leaves room to scale. Changing it recreates the sandbox nodes."
+  description = "Boot disk per sandbox node. pd-balanced/pd-ssd count against SSD_TOTAL_GB (500 GB default quota). Sandbox workspaces and images share it: 200 leaves ~104 GiB of ephemeral storage for 14 sandboxes a node, 100 only ~49 GiB (docs/team-scale.md). Changing it recreates the sandbox nodes."
   type        = number
   default     = 200
 }
