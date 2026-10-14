@@ -972,7 +972,7 @@ class Gateway:
         if not held.whole:
             return await self._unscanned(it, held, cmds, grant, repo, f"the push is over {s.gateway_scan_max_mb} MB, "
                                          "more than the gateway scans for secrets (HANGAR_GATEWAY_SCAN_MAX_MB)")
-        data = held.view()
+        data = memoryview(held.view())  # the pack is read in place, not copied again
         try:
             found, note = await self.scanner.check(grant, repo, cmds, data[end:]) if len(data) > end else ([], "")
         except pushscan.PackError as e:

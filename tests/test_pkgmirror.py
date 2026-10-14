@@ -204,7 +204,9 @@ async def test_the_github_api_is_readable_for_the_grants_repo_only(gh):
         assert w.up.calls[-1].headers["authorization"] == f"Bearer {PAT}"
         assert (await c.get("/gh/api/repos/acme/other/pulls", headers=w.gh_auth)).status_code == 404
         assert (await c.get("/gh/api/user", headers=w.gh_auth)).status_code == 404
-        assert (await c.get("/gh/api/repos/acme/widgets/../other/pulls", headers=w.gh_auth)).status_code == 404
+        for escaped in ("/gh/api/repos/acme/widgets/../other/pulls", "/gh/api/repos/acme/widgets/%2e%2e/other/pulls",
+                        "/gh/api/repos/acme/widgets/x%2f..%2f..%2fother/pulls", "/gh/api/repos/acme/widgets//x"):
+            assert (await c.get(escaped, headers=w.gh_auth)).status_code == 404, escaped
         r = await c.post("/gh/api/repos/acme/widgets/issues", headers=w.gh_auth, json={"title": "x"})
         assert r.status_code == 405
         assert (await c.get("/gh/api/repos/acme/widgets/pulls")).status_code == 401

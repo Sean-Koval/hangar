@@ -211,6 +211,16 @@ def test_commit_messages_file_names_are_scanned_and_binary_files_are_skipped():
     assert found == {f"commit {c[:12]} message", "a file name"}
 
 
+def test_a_blob_no_tree_names_is_scanned_too():
+    """GitHub keeps an unreferenced object a push carries, and serves it by id: it leaves all the same."""
+    pack, _ = _push({"ok.py": b"x = 1\n"})
+    objs = pushscan.parse_pack(pack)
+    stray = b"note\n" + TOKEN.encode() + b"\n"
+    objs[oid("blob", stray)] = ("blob", stray)
+    found = pushscan.scan(objs, 40, NoBroker())[0]
+    assert [(f.where, f.path) for f in found] == [(f"object {oid('blob', stray)[:12]}:2", None)]
+
+
 def test_placeholders_and_stored_values():
     class Broker:
         def _secrets(self) -> list[str]:

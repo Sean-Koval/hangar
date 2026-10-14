@@ -308,7 +308,10 @@ def scan(objects: dict[str, tuple[str, bytes]], hexlen: int, broker: Any, limit:
         if k in ("commit", "tag"):
             add(c.decode("utf-8", "replace"), k, i)
     add("\n".join(names), "names", "")
-    for i, path in sorted(where.items(), key=lambda x: x[1]):
+    # Blobs no new tree names go too (GitHub keeps them, and serves them by id), under their object id.
+    blobs = sorted(where.items(), key=lambda x: x[1]) + sorted(
+        (i, f"object {i[:12]}") for i, (k, _) in objects.items() if k == "blob" and i not in where)
+    for i, path in blobs:
         c = objects[i][1]
         if b"\0" not in c[:BINARY_PROBE]:
             add(c.decode("utf-8", "replace"), "blob", path)
@@ -319,7 +322,8 @@ def scan(objects: dict[str, tuple[str, bytes]], hexlen: int, broker: Any, limit:
     for start, end, kind in sorted(secretscan.find(text, broker)):
         s, what, label = marks[bisect.bisect_right(starts, start) - 1]
         if what == "blob":
-            loc, path = f"{label}:{text.count(chr(10), s, start) + 1}", label
+            loc = f"{label}:{text.count(chr(10), s, start) + 1}"
+            path = None if label.startswith("object ") else label
         elif what == "names":
             loc, path = "a file name", None
         else:
@@ -429,7 +433,8 @@ class Scanner:
             self._slots = asyncio.Semaphore(SCANS)
         return self._slots
 
-    async def check(self, grant: SandboxGrant, repo: str, cmds: Commands, pack: bytes) -> tuple[list[Found], str]:
+    async def check(self, grant: SandboxGrant, repo: str, cmds: Commands,
+                    pack: bytes | memoryview) -> tuple[list[Found], str]:
         """The new secrets in a push ([] when clean), and a note (the text was cut, or why it couldn't be read).
         Raises PackError when the pack can't be read."""
         hexlen = len(cmds.commands[0].new) if cmds.commands else 40
@@ -439,9 +444,12 @@ class Scanner:
             budget = self.gw.settings.gateway_scan_max_mb * 1024 * 1024 * INFLATE_FACTOR
             objects = await asyncio.to_thread(parse_pack, pack, hexlen, budget)
             found, cut = await asyncio.to_thread(scan, objects, hexlen, broker)
+        bases = boundary(objects, cmds) if found else []
+        del objects  # not held while GitHub is asked
         if found:
-            found = await self._new_only(grant, repo, found, boundary(objects, cmds))
-        return found, "only the first 64 MB of the push's text was scanned" if cut else ""
+            found = await self._new_only(grant, repo, found, bases)
+        return found, f"only the first {secretscan.MAX_SCAN_BYTES >> 20} MB of the push's text was scanned" if cut \
+            else ""
 
     async def _new_only(self, grant: SandboxGrant, repo: str, found: list[Found], bases: list[str]) -> list[Found]:
         """Drop hits in a file that held the same text in a commit the push builds on: pushing it again sends

@@ -204,7 +204,7 @@ class Mirror:
             self._deny(sb, host, "not_allowed", f"the {eco} mirror isn't in this sandbox's egress policy (preset "
                                                 f"'{eco}' or 'packages')")
             return PlainTextResponse(f"hangar: this sandbox's egress policy has no '{eco}' preset\n", 403)
-        if not _PATH.match(rest) or any(unquote(s) in ("..", ".") for s in rest.split("/")) or "//" in rest:
+        if not _PATH.match(rest) or "//" in rest or any(s in ("..", ".") for s in unquote(rest).split("/")):
             return PlainTextResponse("hangar: bad path\n", 400)
         if self._inflight[sb.id] >= INFLIGHT_PER_SANDBOX:
             return PlainTextResponse("hangar: too many package requests at once from this sandbox\n", 429,
@@ -240,11 +240,15 @@ class Mirror:
                                                                      "the module proxy hasn't cached")
                 return PlainTextResponse("hangar: not found in the module proxy's cache\n", 404)
         cache = self._cached(eco, rest)
-        if cache is not None and cache.exists():
-            with contextlib.suppress(OSError):
-                os.utime(cache)
-            self.fleet.egress.record(sb, f"{eco}.mirror.hangar", 443, f"mirror:{eco}", mode, 0, cache.stat().st_size)
-            return FileResponse(cache, media_type=_media(rest))
+        if cache is not None:
+            try:
+                os.utime(cache)  # a hit counts as a use: the least recently used files go first
+                size = cache.stat().st_size
+            except OSError:
+                pass  # not cached (or evicted just now)
+            else:
+                self.fleet.egress.record(sb, f"{eco}.mirror.hangar", 443, f"mirror:{eco}", mode, 0, size)
+                return FileResponse(cache, media_type=_media(rest))
         if _google(mounts[mount]):
             headers["Authorization"] = await self._google_auth(eco)
         client = self.gw._http()
@@ -306,7 +310,8 @@ class Mirror:
 
     async def _send(self, client: Any, method: str, url: str, headers: dict[str, str],
                     mounts: dict[str, str]) -> Any:
-        """The upstream's answer, following redirects only within the ecosystem's own upstream hosts."""
+        """The upstream's answer, following redirects only within the ecosystem's own upstream hosts, or to Google
+        Cloud Storage, where Google's registries may send a download."""
         hosts = {urlsplit(b).hostname for b in mounts.values()}
         for _ in range(4):
             resp = await client.send(client.build_request(method, url, headers=headers), stream=True)
@@ -314,7 +319,8 @@ class Mirror:
                 return resp
             await resp.aclose()
             nxt = str(resp.url.join(resp.headers.get("location", "")))
-            if urlsplit(nxt).hostname not in hosts or urlsplit(nxt).scheme != "https":
+            host = urlsplit(nxt).hostname or ""
+            if urlsplit(nxt).scheme != "https" or not (host in hosts or host == "storage.googleapis.com"):
                 raise PermissionError("redirect off the upstream")
             if urlsplit(nxt).hostname != urlsplit(url).hostname:
                 headers = {k: v for k, v in headers.items() if k != "Authorization"}

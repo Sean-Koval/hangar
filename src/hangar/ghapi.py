@@ -18,10 +18,11 @@ host; hangar opens and comments on PRs for jobs itself.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response, StreamingResponse
@@ -60,10 +61,17 @@ def netrc(current: str, host: str, token: str) -> str:
 
 class GitHubRead:
     def __init__(self, gw: Gateway):
+        self.gw = gw
+        self._tokens: tuple[Any, Any] | None = None  # (event loop, AppTokens): its locks belong to one loop
+
+    @property
+    def tokens(self) -> Any:
         from hangar.gateway import AppTokens
 
-        self.gw = gw
-        self.tokens = AppTokens(gw.settings.github_api_url, gw._http, permissions=READ)
+        loop = asyncio.get_running_loop()
+        if self._tokens is None or self._tokens[0] is not loop:
+            self._tokens = (loop, AppTokens(self.gw.settings.github_api_url, self.gw._http, permissions=READ))
+        return self._tokens[1]
 
     def routes(self) -> list[Route]:
         return [Route("/gh/api/{rest:path}", self.handle, methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"])]
@@ -90,7 +98,9 @@ class GitHubRead:
         rest = raw.split("/gh/api/", 1)[1] if "/gh/api/" in raw else ""
         m = _REPO_PATH.match(rest)
         repo = f"{m['owner']}/{m['repo']}".lower() if m else ""
-        if not m or repo not in grant.repos or not _SAFE.match(rest) or ".." in rest.split("/"):
+        decoded = unquote(rest).split("/")  # an escaped `..` or `/` the API would decode can't leave the repo
+        if not m or repo not in grant.repos or not _SAFE.match(rest) or any(s in ("", ".", "..") for s in decoded) \
+                or decoded[:3] != ["repos", m["owner"], m["repo"]]:
             gw._deny(grant, rest[:200], "github api: not this sandbox's repository")
             return PlainTextResponse("hangar: only /repos/<this sandbox's repository>/... is readable here\n", 404)
         if request.method not in ("GET", "HEAD"):
