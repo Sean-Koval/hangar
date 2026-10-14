@@ -926,7 +926,7 @@ class TurnWatcher:
             return
         if self._follow is not None:
             why = self._follow.result() if not self._follow.cancelled() and not self._follow.exception() else "error"
-            if why in ("ended", "gone", "shutdown", "destroyed"):
+            if why in ("ended", "gone", "shutdown", "destroyed", "capped"):  # capped: review #68
                 self._follows = 3  # nothing to gain from trying again
         if self._follows >= 3:
             return

@@ -312,9 +312,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
     @tool()
     async def exec(sandbox: str, command: str, ctx: Context, cwd: str | None = None, timeout: int = 120,
                    stream: bool = False) -> live.ExecOut:
-        """Run a one-shot shell command (bash -lc) in a sandbox and wait for it: exit_code, stdout, stderr
-        (stream=true: also as progress notifications while it runs). For servers use process; for interactive
-        programs terminal_open / terminal_send."""
+        """Run a shell command (bash -lc) in a sandbox and wait: exit_code, stdout, stderr (stream=true: also as
+        progress while it runs). Servers: process; interactive programs: terminal_open."""
         if stream:  # --- stream
             return await exec_stream(fleet, ctx, sandbox, command, cwd, timeout, current_actor.get(), actor())
         r = await fleet.exec(sandbox, command, cwd=cwd, timeout=timeout, actor=actor())

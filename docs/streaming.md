@@ -52,8 +52,9 @@ offset, so `Last-Event-ID` resumes; then `end`), `POST .../processes/{id}/input`
 `DELETE .../processes/{id}`.
 
 After a control-plane restart, processes keep running in their sandboxes. Hangar finds a token's processes again by
-their envd tag (`hangar:<id>:<hash of the owner>`) the next time that token lists or attaches; their earlier output
-is gone (`adopted: true`).
+their envd tag (`hangar:<id>:<MAC>`, a MAC of the owner, sandbox and id under the control plane's key, so the agent,
+which can start processes through its own daemon, can't make one up for a token) the next time that token lists or
+attaches; their earlier output is gone (`adopted: true`).
 
 Without a daemon a process runs detached (`setsid`), its output goes to `~/.hangar/bg/<id>.out` and hangar polls it
 (every 0.5 s while someone is attached, 5 s otherwise). `input` needs the daemon.
@@ -63,7 +64,8 @@ Without a daemon a process runs detached (`setsid`), its output goes to `~/.hang
 A session's turn watcher used to read the run log every `session_poll_seconds` (5 s). It now follows the log through
 the daemon (`tail -F`, started after the first poll), so each event is recorded, and reaches live readers, as the
 agent writes it. Polling takes over whenever following isn't possible: no daemon, the log truncated or replaced
-(`tail` says so on stderr), the stream breaking. The read position is saved with the turn as before, so a restart
+(`tail` says so on stderr), the stream breaking, or the log passing `HANGAR_STREAM_MAX_BYTES` (following is paced
+like any stream; past the cap polling's bounded reads carry on). The read position is saved with the turn as before, so a restart
 resumes without recording an event twice. `HANGAR_STREAM_TURN_LOGS=false` turns following off.
 
 Following them:
@@ -89,7 +91,7 @@ REST: `GET /api/sandboxes/{ref}/watch?path=...&recursive=true` (SSE).
 | --- | --- | --- |
 | `HANGAR_STREAM_MAX_PER_TOKEN` | 16 | Open streams per token: streamed execs, attaches, event and watch streams. One more is refused (MCP error, REST 429). |
 | `HANGAR_STREAM_MAX_TOTAL` | 512 | Open streams in all, hangar's own included |
-| `HANGAR_STREAM_BYTES_PER_SECOND` | 1 MiB | Per stream; a command printing faster is slowed down, as by a slow terminal (envd's queue is bounded) |
+| `HANGAR_STREAM_BYTES_PER_SECOND` | 1 MiB | Per stream; a command printing faster is slowed down, as by a slow terminal (envd's queue is bounded). Each message also counts 64 bytes, so output a byte at a time can't become a flood of notifications |
 | `HANGAR_STREAM_MAX_BYTES` | 64 MiB | Per stream; past it nothing more is sent (the result still has the end of the output) |
 | `HANGAR_STREAM_MAX_HOURS` | 12 | An event or watch stream open longer is closed |
 | `HANGAR_BACKGROUND_MAX_PER_TOKEN` | 16 | Running background processes per token |

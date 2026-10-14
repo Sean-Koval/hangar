@@ -100,7 +100,11 @@ async def test_streamed_exec_is_killed_when_the_caller_goes_away(envd_fleet, tmp
     await asyncio.gather(task, return_exceptions=True)
     await st_cm.__aexit__(None, None, None)
     ep = await fleet.providers["docker"].envd.ready(fleet.get(sb.id))
-    listed = await fleet.providers["docker"].envd.unary(ep, "process.Process/List", {})
+    for _ in range(40):  # review(#68): the daemon lists a killed process until it has reaped it
+        listed = await fleet.providers["docker"].envd.unary(ep, "process.Process/List", {})
+        if not [p for p in listed.get("processes", []) if "sleep 30" in json.dumps(p)]:
+            break
+        await asyncio.sleep(0.05)
     assert not [p for p in listed.get("processes", []) if "sleep 30" in json.dumps(p)]
 
 
@@ -524,6 +528,193 @@ async def test_http_mcp_client_and_rest_sse_stream(settings, tmp_path):
                         if len(datas) == 2:
                             break
             assert [d["text"] for d in datas] == ["one", "two"] and datas[1]["seq"] == 2
+    finally:
+        srv.stop()
+        kill_daemon(port)
+
+
+# ---------------------------------------------------------------------------- review(#68)
+@needs_binary
+async def test_turn_log_follower_stops_at_the_byte_cap(envd_fleet, tmp_path):
+    """Past HANGAR_STREAM_MAX_BYTES a stream is no longer paced, so the follower must stop there and leave the log
+    to polling's bounded reads, not feed the parser everything the sandbox writes as fast as it comes."""
+    fleet = envd_fleet
+    sb = await sandbox(fleet)
+    fleet.settings.stream_max_bytes = 1 << 16
+    log = tmp_path / "big.log"
+    log.write_bytes((b"x" * 99 + b"\n") * 20_000)  # 2 MB
+    (tmp_path / "big.exit").write_text("0\n")
+    fed: list[bytes] = []
+    why = await asyncio.wait_for(sandbox_streams.follow(fleet, sb.id, str(log), str(tmp_path / "big.exit"), 0,
+                                                        fed.append), 20)
+    assert why == "capped" and sum(map(len, fed)) <= 1 << 16, (why, sum(map(len, fed)))
+    assert not hub(fleet).streams
+
+    # and the turn watcher doesn't start another follower (with a fresh allowance) after one was capped
+    s, turn = _session(fleet, sb.id)
+    w = TurnWatcher(Activity(fleet.settings, lambda x: x), fleet, s, turn, lambda: None)
+    done = asyncio.get_running_loop().create_future()
+    done.set_result("capped")
+    w._follow = done
+    w._start_follow()
+    assert w._follow is done
+
+
+@needs_binary
+async def test_agent_cannot_plant_a_process_under_a_tokens_name(envd_fleet):
+    """The agent can reach its own daemon (it runs as the sandbox user), so it can start processes with any tag. A
+    tag made from a token's name alone lets it put processes in that token's list and use up its background cap."""
+    import hashlib
+
+    fleet = envd_fleet
+    sb = await sandbox(fleet)
+    env = fleet.providers["docker"].envd
+    ep = await env.ready(fleet.get(sb.id))
+    forged = f"hangar:bg-0123456789ab:{hashlib.sha256(b'alice').hexdigest()[:12]}"
+    events = env.stream(ep, "process.Process/Start", {"process": {"cmd": "sleep", "args": ["30"], "cwd": "/"},
+                                                     "tag": forged, "stdin": False}, None, keepalive=30)
+    await anext(events)
+    try:
+        procs = sandbox_streams.processes(fleet)
+        assert await procs.list("alice", sb.id) == []
+        assert not procs.procs
+    finally:
+        await sandbox_streams._signal(env, ep, {"tag": forged}, "SIGKILL")
+        await events.aclose()
+
+
+async def test_concurrent_starts_keep_to_the_background_cap(fleet):
+    sb = await fleet.create("plain", name="nod")
+    fleet.settings.background_max_per_token = 2
+    procs = sandbox_streams.processes(fleet)
+    res = await asyncio.gather(*(procs.start("alice", sb.id, "sleep 30") for _ in range(6)),
+                               return_exceptions=True)
+    started = [r for r in res if not isinstance(r, BaseException)]
+    try:
+        assert len(started) == 2, res
+        assert all(isinstance(r, StreamLimit) for r in res if isinstance(r, BaseException)), res
+    finally:
+        for p in started:
+            await procs.kill(p, grace=0.2)
+        await fleet.destroy(sb.id)
+
+
+async def test_a_start_refused_by_the_total_cap_leaves_nothing_running(fleet):
+    from types import SimpleNamespace
+
+    sb = await fleet.create("plain", name="nod")
+    fleet.settings.stream_max_total = 1
+    h = hub(fleet)
+    h.streams["other"] = SimpleNamespace(owner="bob", lifetime=True, kind="events", sandbox_id=None)
+    procs = sandbox_streams.processes(fleet)
+    try:
+        with pytest.raises(StreamLimit, match="HANGAR_STREAM_MAX_TOTAL"):
+            await procs.start("alice", sb.id, "sleep 30")
+        assert not [p for p in procs.procs.values() if p.state == "running"]
+    finally:
+        h.streams.pop("other")
+        await fleet.destroy(sb.id)
+
+
+def test_send_charges_each_message_for_pacing(fleet):
+    """A command that prints a byte at a time makes a message per byte; pacing by payload alone would let it send
+    a flood of notifications (each far bigger on the wire than its one byte)."""
+
+    async def go():
+        fleet.settings.stream_bytes_per_second = 64 << 10
+        async with hub(fleet).open("alice", "exec") as st:
+            t0 = time.monotonic()
+            for _ in range(2000):
+                await st.send(1)
+            return time.monotonic() - t0, st.bytes
+
+    took, sent = asyncio.run(go())
+    assert sent == 2000 and took >= 0.8, took
+
+
+async def test_a_stopped_watch_restarts_for_its_next_holder(fleet):
+    sb = await fleet.create("plain", name="nod")
+    ws = sandbox_streams.Watches(fleet, lambda uris: None)
+    w = ws.acquire("alice", sb.id, "/workspace", False, "u1")
+    await asyncio.wait_for(w.task, 5)
+    assert w.state == "stopped" and "needs hangar-envd" in w.error
+    first = w.task
+    again = ws.acquire("alice", sb.id, "/workspace", False, "u2")
+    assert again is w and w.task is not first  # tried again, rather than handing out a dead watch
+    await asyncio.wait_for(w.task, 5)
+    ws.release(w, "u1")
+    ws.release(w, "u2")
+    assert not ws.watches
+
+
+def _rest_app(settings, tmp_path):
+    """The whole app on uvicorn, its sandboxes the fake provider's with a real daemon (as the HTTP test above)."""
+    from hangar.app import create_app
+    from tests.conftest import FakeProvider
+
+    settings.admin_token = "t0ken"
+    settings.workspace_dir = str(tmp_path)
+    settings.envd_dir = next(iter(BINARIES.values())).parent
+    settings.stream_recheck_seconds = 0.05
+    app = create_app(settings)
+    h = app.state.hangar
+    srv = AppThread(app)  # started before the provider is swapped in, as above
+    port = free_port()
+    prov = FakeProvider()
+    prov.envd = SharedEnvd(h.settings, port)
+    h.fleet.providers["docker"] = prov
+    h.fleet.provider_errors.pop("docker", None)
+    return srv, h, port
+
+
+@needs_binary
+async def test_rest_watch_refused_by_the_total_cap_is_released(settings, tmp_path):
+    from types import SimpleNamespace
+
+    import httpx
+
+    srv, h, port = _rest_app(settings, tmp_path)
+    h.settings.watch_max_per_token = 1
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{srv.port}", timeout=30,
+                                     headers={"Authorization": "Bearer t0ken"}) as http:
+            sb = (await http.post("/api/sandboxes", json={"environment": "plain", "name": "w"})).json()[0]
+            h.settings.stream_max_total = 1
+            hub(h.fleet).streams["other"] = SimpleNamespace(owner="bob", lifetime=True, kind="events",
+                                                           sandbox_id=None)
+            r = await http.get(f"/api/sandboxes/{sb['id']}/watch", params={"path": str(tmp_path)})
+            assert "HANGAR_STREAM_MAX_TOTAL" in r.text
+            hub(h.fleet).streams.pop("other")
+            h.settings.stream_max_total = 512
+            (tmp_path / "other").mkdir()
+            async with http.stream("GET", f"/api/sandboxes/{sb['id']}/watch",
+                                   params={"path": str(tmp_path / "other")}) as r:
+                # not "already watches 1 directories": the refused stream left nothing held
+                assert r.status_code == 200, await r.aread()
+    finally:
+        srv.stop()
+        kill_daemon(port)
+
+
+@needs_binary
+async def test_rest_background_process_ends_when_its_token_is_revoked(settings, tmp_path):
+    import httpx
+
+    srv, h, port = _rest_app(settings, tmp_path)
+    bob, tok = h.auth.create("bob", scopes=["admin"])
+    base = f"http://127.0.0.1:{srv.port}"
+    try:
+        async with httpx.AsyncClient(base_url=base, timeout=30, headers={"Authorization": "Bearer t0ken"}) as http:
+            sb = (await http.post("/api/sandboxes", json={"environment": "plain", "name": "p"})).json()[0]
+            async with httpx.AsyncClient(base_url=base, timeout=30, headers={"Authorization": f"Bearer {bob}"}) as b:
+                p = (await b.post(f"/api/sandboxes/{sb['id']}/processes", json={"command": "sleep 60"})).json()
+            assert (await http.delete(f"/api/tokens/{tok.id}")).status_code == 200
+            proc = sandbox_streams.processes(h.fleet).procs[p["id"]]
+            for _ in range(100):
+                if proc.state != "running":
+                    break
+                await asyncio.sleep(0.05)
+            assert proc.state == "lost" and "revoked" in (proc.note or ""), proc.view()
     finally:
         srv.stop()
         kill_daemon(port)

@@ -42,6 +42,9 @@ REASONS = {
 }
 _GONE = {SandboxState.STOPPING: "destroyed", SandboxState.STOPPED: "destroyed", SandboxState.ERROR: "destroyed",
          SandboxState.PAUSED: "paused"}
+# What each message costs the rate beyond its payload (review #68): its framing (a progress notification's JSON, an
+# SSE event) is far bigger than a byte, so a command printing a byte at a time can't send a flood of messages.
+MESSAGE_COST = 64
 
 
 class StreamLimit(ValueError):
@@ -111,7 +114,7 @@ class Stream:
             return False
         rate = self.hub.settings.stream_bytes_per_second
         now = time.monotonic()
-        self._allowance = min(float(rate), self._allowance + (now - self._at) * rate) - n
+        self._allowance = min(float(rate), self._allowance + (now - self._at) * rate) - n - MESSAGE_COST
         self._at = now
         if self._allowance < 0:
             await self.race(asyncio.sleep(-self._allowance / rate))
@@ -139,6 +142,12 @@ class Hub:
     def count(self, owner: str, kind: str | None = None) -> int:
         return sum(1 for st in self.streams.values() if st.owner == owner and (kind is None or st.kind == kind))
 
+    def check_total(self) -> None:
+        """StreamLimit if another stream can't open now (also asked before starting what a stream will follow)."""
+        if len(self.streams) >= self.settings.stream_max_total:
+            raise StreamLimit(f"hangar already holds {len(self.streams)} open streams (HANGAR_STREAM_MAX_TOTAL); "
+                              "try again later")
+
     @contextlib.asynccontextmanager
     async def open(self, owner: str, kind: str, sandbox_id: str | None = None, *, capped: bool = True,
                    check: Callable[[], Awaitable[bool]] | None = None, system: bool = False,
@@ -154,9 +163,7 @@ class Hub:
             if mine >= self.settings.stream_max_per_token:
                 raise StreamLimit(f"{owner} already has {mine} open streams (HANGAR_STREAM_MAX_PER_TOKEN); close "
                                   "one first")
-        if len(self.streams) >= self.settings.stream_max_total:
-            raise StreamLimit(f"hangar already holds {len(self.streams)} open streams (HANGAR_STREAM_MAX_TOTAL); "
-                              "try again later")
+        self.check_total()
         st = Stream(self, owner, kind, sandbox_id, check if check is not None or system else credential.get(), capped)
         self.streams[st.id] = st
         self._loop = asyncio.get_running_loop()

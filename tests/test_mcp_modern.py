@@ -131,8 +131,9 @@ async def test_tool_listing_has_hints_slim_schemas_and_typed_results(fleet, svc,
     assert "\n        " not in raw  # docstring indentation stripped from descriptions
     model_view = json.dumps([{"name": t.name, "description": t.description, "inputSchema": t.input_schema}
                              for t in tools], separators=(",", ":"))
-    # was 31,157 bytes before this workstream; --- stream: +0.8 KB for exec(stream) and the process tool
-    assert len(model_view) < 25_000, len(model_view)
+    # was 31,157 bytes before this workstream; --- stream: +0.65 KB for exec(stream) and the process tool (review
+    # #68: their descriptions trimmed, and the cap kept just over what they need)
+    assert len(model_view) < 24_700, len(model_view)
     # optional arguments are plain types (nullable still accepted by the tool)
     assert by["submit_job"].input_schema["properties"]["repo"] == {"type": "string"}
 

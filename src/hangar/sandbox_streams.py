@@ -26,6 +26,7 @@ import codecs
 import collections
 import contextlib
 import hashlib
+import hmac
 import logging
 import re
 import secrets
@@ -42,10 +43,12 @@ from hangar.fleet import FleetError
 from hangar.models import Sandbox
 from hangar.providers.base import OutputTail, Provider, ProviderError
 from hangar.streams import Stream, StreamClosed, StreamLimit, hub
+from hangar.vault import load_or_create_key
 
 log = logging.getLogger("hangar.streams")
 
 READY_WAIT = 5.0  # a stream asked for explicitly waits this long for a sandbox's daemon to come up
+FEED = 128 * 1024  # a followed log reaches its reader in pieces this size, each paced (events.CHUNK, as a poll reads)
 BUFFER = 256 * 1024  # output a background process keeps for attaching clients
 RETAIN = 600.0  # seconds an exited background process stays listed (and attachable for its last output)
 ATTACH_TAIL = 64 * 1024  # output an attach call returns in its result (more streams as progress)
@@ -199,10 +202,6 @@ async def _run_envd(fleet: Any, sb: Sandbox, env: Envd, ep: Endpoint, command: s
 
 
 # ====================================================================== background processes
-def _owner_tag(owner: str) -> str:
-    return hashlib.sha256(owner.encode()).hexdigest()[:12]
-
-
 @dataclass
 class Proc:
     """A background process and the end of its output (stdout and stderr together, as a terminal shows them)."""
@@ -213,6 +212,7 @@ class Proc:
     command: str
     cwd: str
     transport: str  # envd | exec
+    tag: str = ""  # its envd tag (Processes.tag)
     started_at: float = field(default_factory=time.time)
     pid: int | None = None
     state: str = "running"  # running | exited | lost
@@ -226,10 +226,6 @@ class Proc:
     attached: int = 0
     tick: asyncio.Event = field(default_factory=asyncio.Event)
     task: asyncio.Task | None = None
-
-    @property
-    def tag(self) -> str:
-        return f"{_TAG}{self.id}:{_owner_tag(self.owner)}"
 
     @property
     def end(self) -> int:
@@ -268,7 +264,19 @@ class Processes:
         self.fleet = fleet
         self.hub = hub(fleet)
         self.procs: dict[str, Proc] = {}
+        self.starting: collections.Counter[str] = collections.Counter()  # starts under way, per owner (the cap)
         self.hub.on_close_sandbox.append(self._sandbox_gone)
+        self._key: bytes | None = None
+
+    def tag(self, owner: str, sandbox_id: str, proc_id: str) -> str:
+        """A process's envd tag: its id, and a MAC of its owner, sandbox and id under the control plane's key. The
+        agent can start processes through its own daemon with any tag, so the tag must not be one it can make up
+        for a token (review #68): a name's plain hash let it put processes in any token's list, using up its cap."""
+        if self._key is None:
+            s = self.fleet.settings
+            self._key = load_or_create_key(s.secret_key, s.data_dir)
+        mac = hmac.new(self._key, f"hangar-process\n{sandbox_id}\n{owner}\n{proc_id}".encode(), hashlib.sha256)
+        return f"{_TAG}{proc_id}:{mac.hexdigest()[:24]}"
 
     # ------------------------------------------------------------------ lookup
     def _sweep(self) -> None:
@@ -321,19 +329,19 @@ class Processes:
             listed = await env.unary(ep, "process.Process/List", {}, timeout=10)
         except EnvdError:
             return
-        mine = _owner_tag(owner)
         for info in (listed.get("processes") or [])[:1024]:
             tag = str((info or {}).get("tag") or "")
             parts = tag.split(":")
-            if len(parts) != 3 or parts[0] + ":" != _TAG or parts[2] != mine or not _ID.match(parts[1]):
+            if len(parts) != 3 or parts[0] + ":" != _TAG or not _ID.match(parts[1]) or parts[1] in self.procs:
                 continue
-            if parts[1] in self.procs:
+            if not hmac.compare_digest(tag, self.tag(owner, sb.id, parts[1])):
                 continue
             cfg = info.get("config") or {}
             args = cfg.get("args") or []
             p = Proc(id=parts[1], owner=owner, sandbox_id=sb.id, command=str(args[-1] if args else cfg.get("cmd", ""))
-                     [:2000], cwd=str(cfg.get("cwd") or ""), transport="envd", pid=int(info.get("pid") or 0) or None,
-                     adopted=True, note="followed again after a control-plane restart; earlier output is gone")
+                     [:2000], cwd=str(cfg.get("cwd") or ""), transport="envd", tag=tag,
+                     pid=int(info.get("pid") or 0) or None, adopted=True,
+                     note="followed again after a control-plane restart; earlier output is gone")
             try:
                 self._check_cap(owner)
             except StreamLimit:
@@ -343,6 +351,7 @@ class Processes:
 
     def _check_cap(self, owner: str) -> None:
         running = sum(1 for p in self.procs.values() if p.owner == owner and p.state == "running")
+        running += self.starting[owner]  # starts still waiting on the sandbox (review #68: concurrent starts)
         if running >= self.fleet.settings.background_max_per_token:
             raise StreamLimit(f"{owner} already has {running} background processes running "
                               "(HANGAR_BACKGROUND_MAX_PER_TOKEN); kill one first")
@@ -355,10 +364,24 @@ class Processes:
         self._check_cap(owner)
         if self.fleet.closing.is_set():
             raise StreamLimit("hangar is restarting; try again in a moment")
+        self.hub.check_total()  # its pump is a stream: refuse now, not once the command runs unfollowed
+        self.starting[owner] += 1  # held until it is in self.procs, so concurrent starts see it
+        try:
+            p, sb = await self._start(owner, ref, command, cwd)
+        finally:
+            self.starting[owner] -= 1
+            if self.starting[owner] <= 0:
+                del self.starting[owner]
+        self.fleet._touch(sb)
+        self.fleet.audit(actor, "sandbox.process.start", sb.id, process=p.id, command=command[:500])
+        return p
+
+    async def _start(self, owner: str, ref: str, command: str, cwd: str | None) -> tuple[Proc, Sandbox]:
         sb, prov, env, ep = await daemon(self.fleet, ref)
         cwd = cwd or sb.info.get("repo_path") or self.fleet.settings.workspace_dir
-        p = Proc(id=f"bg-{secrets.token_hex(6)}", owner=owner, sandbox_id=sb.id, command=command, cwd=cwd,
-                 transport="envd" if ep is not None else "exec")
+        pid_ = f"bg-{secrets.token_hex(6)}"
+        p = Proc(id=pid_, owner=owner, sandbox_id=sb.id, command=command, cwd=cwd,
+                 transport="envd" if ep is not None else "exec", tag=self.tag(owner, sb.id, pid_))
         if env is not None and ep is not None:
             body = {"process": {"cmd": "bash", "args": ["-lc", command], "cwd": cwd}, "tag": p.tag, "stdin": True}
             events = env.stream(ep, "process.Process/Start", body, None, keepalive=30)
@@ -377,9 +400,7 @@ class Processes:
             await self._start_exec(sb, prov, p)
             self.procs[p.id] = p
             p.task = asyncio.create_task(self._pump_exec(p, prov))
-        self.fleet._touch(sb)
-        self.fleet.audit(actor, "sandbox.process.start", sb.id, process=p.id, command=command[:500])
-        return p
+        return p, sb
 
     async def _start_exec(self, sb: Sandbox, prov: Provider, p: Proc) -> None:
         """Fallback: the command runs detached in its own session, its output and exit code go to files under
@@ -399,94 +420,118 @@ class Processes:
                          events: Any = None, connect: bool = False) -> None:
         """Read the process's output into its buffer until it ends. A broken stream is re-attached by tag (the
         process keeps running in the sandbox) a few times before the process is given up as lost."""
+        try:
+            async with self.hub.open(p.owner, "process", p.sandbox_id, capped=False) as st:
+                await self._follow_envd(p, env, ep, selector, st, events, connect)
+        except StreamLimit as e:  # (review #68) refused between start's check and here: don't leave it unfollowed
+            if events is not None:
+                with contextlib.suppress(Exception):
+                    await events.aclose()
+            if connect:  # found again after a restart: it is the user's, leave it to be found on the next list
+                if self.procs.get(p.id) is p:
+                    del self.procs[p.id]
+                p.finish("lost", note=str(e))
+            else:
+                await asyncio.shield(_signal(env, ep, {"tag": p.tag}, "SIGKILL"))
+                p.finish("lost", note=f"killed: {e}")
+
+    async def _follow_envd(self, p: Proc, env: Envd, ep: Endpoint, selector: dict[str, Any] | None, st: Stream,
+                           events: Any, connect: bool) -> None:
         tries = 0
-        async with self.hub.open(p.owner, "process", p.sandbox_id, capped=False) as st:
-            while True:
-                if events is None:
-                    events = env.stream(ep, "process.Process/Connect", selector or {"process": {"tag": p.tag}},
-                                        None, keepalive=30)
-                try:
-                    while True:
-                        msg = await st.race(anext(events, None))
-                        if msg is None:
-                            break
-                        ev = msg.get("event") or {}
-                        if (s := ev.get("start")) is not None and connect:
-                            p.pid = int((s or {}).get("pid") or 0) or p.pid
-                        elif (d := _data(ev)) is not None:
-                            p.add(d[1])
-                            tries = 0
-                        elif (e := ev.get("end")) is not None:
-                            e = e if isinstance(e, dict) else {}
-                            p.finish("exited", _exit(e), e.get("error") or None)
-                            return
-                except StreamClosed as e:
-                    if e.code in ("revoked", "lifetime") and p.state == "running":
-                        await asyncio.shield(_signal(env, ep, {"tag": p.tag}, "SIGKILL"))
-                        p.finish("lost", note=f"killed: {e}")
-                    elif e.code == "paused":  # it carries on after a resume: found again by its tag then
-                        if self.procs.get(p.id) is p:
-                            del self.procs[p.id]
-                        p.finish("lost", note=str(e))
-                    elif p.state == "running" and e.code != "shutdown":
-                        p.finish("lost", note=str(e))
-                    return
-                except EnvdError as e:
-                    if e.code == "not_found":  # exited while we were away; its end event is gone too
-                        p.finish("lost", note="the process ended while hangar wasn't following it")
+        while True:
+            if events is None:
+                events = env.stream(ep, "process.Process/Connect", selector or {"process": {"tag": p.tag}},
+                                    None, keepalive=30)
+            try:
+                while True:
+                    msg = await st.race(anext(events, None))
+                    if msg is None:
+                        break
+                    ev = msg.get("event") or {}
+                    if (s := ev.get("start")) is not None and connect:
+                        p.pid = int((s or {}).get("pid") or 0) or p.pid
+                    elif (d := _data(ev)) is not None:
+                        p.add(d[1])
+                        tries = 0
+                    elif (e := ev.get("end")) is not None:
+                        e = e if isinstance(e, dict) else {}
+                        p.finish("exited", _exit(e), e.get("error") or None)
                         return
-                    log.info("background process %s in %s: %s", p.id, p.sandbox_id, e)
-                finally:
-                    with contextlib.suppress(Exception):
-                        await asyncio.shield(events.aclose())
-                    events = None
-                tries += 1
-                connect = True
-                if tries > 3:
-                    p.finish("lost", note="lost the process's output stream; it may still be running")
+            except StreamClosed as e:
+                if e.code in ("revoked", "lifetime") and p.state == "running":
+                    await asyncio.shield(_signal(env, ep, {"tag": p.tag}, "SIGKILL"))
+                    p.finish("lost", note=f"killed: {e}")
+                elif e.code == "paused":  # it carries on after a resume: found again by its tag then
+                    if self.procs.get(p.id) is p:
+                        del self.procs[p.id]
+                    p.finish("lost", note=str(e))
+                elif p.state == "running" and e.code != "shutdown":
+                    p.finish("lost", note=str(e))
+                return
+            except EnvdError as e:
+                if e.code == "not_found":  # exited while we were away; its end event is gone too
+                    p.finish("lost", note="the process ended while hangar wasn't following it")
                     return
+                log.info("background process %s in %s: %s", p.id, p.sandbox_id, e)
+            finally:
+                with contextlib.suppress(Exception):
+                    await asyncio.shield(events.aclose())
+                events = None
+            tries += 1
+            connect = True
+            if tries > 3:
+                p.finish("lost", note="lost the process's output stream; it may still be running")
+                return
+            with contextlib.suppress(StreamClosed):  # closed meanwhile: the next race says so, and is handled above
                 await st.race(asyncio.sleep(0.5 * tries))
 
     async def _pump_exec(self, p: Proc, prov: Provider) -> None:
+        try:
+            async with self.hub.open(p.owner, "process", p.sandbox_id, capped=False) as st:
+                await self._follow_exec(p, prov, st)
+        except StreamLimit as e:  # (review #68) refused between start's check and here
+            await self._kill_exec(p, prov, "KILL")
+            p.finish("lost", note=f"killed: {e}")
+
+    async def _follow_exec(self, p: Proc, prov: Provider, st: Stream) -> None:
         d = '"$HOME/.hangar/bg"'
-        async with self.hub.open(p.owner, "process", p.sandbox_id, capped=False) as st:
-            errors = 0
-            while p.state == "running":
-                try:
-                    await st.race(asyncio.wait_for(p.tick.wait(), POLL_ATTACHED if p.attached else POLL_IDLE))
-                except TimeoutError:
-                    pass
-                except StreamClosed as e:
-                    if e.code in ("revoked", "lifetime"):
-                        await self._kill_exec(p, prov, "KILL")
-                        p.finish("lost", note=f"killed: {e}")
-                    elif e.code != "shutdown":
-                        p.finish("lost", note=str(e))
-                    return
-                if p.state != "running":
-                    return
-                cmd = (f"printf '%s---\\n' \"$(cat {d}/{p.id}.exit 2>/dev/null)\"; "
-                       f"tail -c +{p.end + 1} {d}/{p.id}.out 2>/dev/null | head -c {BUFFER} | base64 -w0")
-                try:
-                    sb = self.fleet.get(p.sandbox_id)
-                    r = await st.race(prov.exec(sb, cmd, timeout=30))
-                    head, sep, b64 = r.stdout.partition("---\n")
-                    if not sep:
-                        raise ProviderError(f"unexpected answer ({r.exit_code})")
-                    data = base64.b64decode(b64.strip() or b"")
-                    errors = 0
-                except StreamClosed:
-                    continue  # handled at the top
-                except Exception as e:  # noqa: BLE001 - the sandbox is busy or going away: try again, then give up
-                    errors += 1
-                    if errors >= 10:
-                        p.finish("lost", note=f"could not read the process's output: {e}")
-                    continue
-                if data:
-                    p.add(data)
-                status = head.strip()
-                if status and not data:  # exited and everything read
-                    p.finish("exited", int(status) if re.fullmatch(r"-?\d+", status) else -1)
+        errors = 0
+        while p.state == "running":
+            try:
+                await st.race(asyncio.wait_for(p.tick.wait(), POLL_ATTACHED if p.attached else POLL_IDLE))
+            except TimeoutError:
+                pass
+            except StreamClosed as e:
+                if e.code in ("revoked", "lifetime"):
+                    await self._kill_exec(p, prov, "KILL")
+                    p.finish("lost", note=f"killed: {e}")
+                elif e.code != "shutdown":
+                    p.finish("lost", note=str(e))
+                return
+            if p.state != "running":
+                return
+            cmd = (f"printf '%s---\\n' \"$(cat {d}/{p.id}.exit 2>/dev/null)\"; "
+                   f"tail -c +{p.end + 1} {d}/{p.id}.out 2>/dev/null | head -c {BUFFER} | base64 -w0")
+            try:
+                sb = self.fleet.get(p.sandbox_id)
+                r = await st.race(prov.exec(sb, cmd, timeout=30))
+                head, sep, b64 = r.stdout.partition("---\n")
+                if not sep:
+                    raise ProviderError(f"unexpected answer ({r.exit_code})")
+                data = base64.b64decode(b64.strip() or b"")
+                errors = 0
+            except StreamClosed:
+                continue  # handled at the top
+            except Exception as e:  # noqa: BLE001 - the sandbox is busy or going away: try again, then give up
+                errors += 1
+                if errors >= 10:
+                    p.finish("lost", note=f"could not read the process's output: {e}")
+                continue
+            if data:
+                p.add(data)
+            status = head.strip()
+            if status and not data:  # exited and everything read
+                p.finish("exited", int(status) if re.fullmatch(r"-?\d{1,9}", status) else -1)  # agent-written
 
     # ------------------------------------------------------------------ attach / input / kill
     async def attach(self, p: Proc, since: int | None, wait: float | None, st: Stream,
@@ -632,8 +677,15 @@ async def _tail(st: Stream, env: Envd, ep: Endpoint, body: dict[str, Any], on_da
                 if d[0] == "stderr":
                     why = "changed"
                     break
-                await st.send(len(d[1]))
-                on_data(d[1])
+                # (review #68) a piece at a time, each paced; past HANGAR_STREAM_MAX_BYTES a stream is no longer
+                # paced, so stop there: polling's bounded reads go on from what was fed (and no follower restarts)
+                for i in range(0, len(d[1]), FEED):
+                    if not await st.send(len(piece := d[1][i:i + FEED])):
+                        why = "capped"
+                        break
+                    on_data(piece)
+                if why == "capped":
+                    break
             elif (e := ev.get("end")) is not None:
                 why = "ended" if _exit(e if isinstance(e, dict) else {}) == 0 else "missing"
                 pid = 0
@@ -689,7 +741,9 @@ class Watches:
         sb = self.fleet.get(ref)
         return self.watches.get((owner, sb.id, self.fleet._abs(sb, path), recursive))
 
-    def acquire(self, owner: str, ref: str, path: str, recursive: bool, uri: str) -> Watch:
+    def check(self, owner: str, ref: str, path: str,
+              recursive: bool) -> tuple[tuple[str, str, str, bool], Watch | None]:
+        """The watch's key and the watch if it is held already; ValueError or StreamLimit if it can't be."""
         sb = self.fleet.get(ref)
         if "\0" in path or len(path) > 4096:
             raise ValueError("invalid path")
@@ -699,7 +753,16 @@ class Watches:
             mine = sum(1 for k in self.watches if k[0] == owner)
             if mine >= self.fleet.settings.watch_max_per_token:
                 raise StreamLimit(f"{owner} already watches {mine} directories (HANGAR_WATCH_MAX_PER_TOKEN)")
-            w = self.watches[key] = Watch(owner, sb.id, key[2], recursive)
+        return key, w
+
+    def acquire(self, owner: str, ref: str, path: str, recursive: bool, uri: str) -> Watch:
+        key, w = self.check(owner, ref, path, recursive)
+        if w is None:
+            w = self.watches[key] = Watch(owner, key[1], key[2], recursive)
+            w.task = asyncio.create_task(self._pump(key, w))
+        elif w.state == "stopped" and w.task is not None and w.task.done():
+            # (review #68) it stopped (a pause, a daemon restart, an error) while held: a new holder tries again
+            w.state, w.error = "starting", None
             w.task = asyncio.create_task(self._pump(key, w))
         w.uris[uri] += 1
         return w

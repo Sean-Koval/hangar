@@ -45,7 +45,7 @@ from hangar import sandbox_streams as ss
 from hangar.auth import bearer_from_headers
 from hangar.events import RunEvent
 from hangar.fleet import FleetError
-from hangar.streams import Stream, StreamClosed, StreamLimit, hub, token_check
+from hangar.streams import Stream, StreamClosed, StreamLimit, credential, hub, token_check
 
 log = logging.getLogger("hangar.streams")
 
@@ -223,10 +223,9 @@ def register_streams(mcp: MCPServer, tool: Callable[[], Any], fleet: Any, sessio
     async def process(sandbox: str, ctx: Context, action: str = "list", command: str | None = None,
                       process_id: str | None = None, input: str | None = None, eof: bool = False,
                       since: int | None = None, wait_seconds: int = 0, cwd: str | None = None) -> dict[str, Any]:
-        """Background processes (dev servers, watchers, builds). action: start (command, cwd) returns a
-        process_id at once | attach (process_id, since, wait_seconds<=600: output as progress notifications;
-        returns its tail and `next`) | input (input, eof) | kill | list. The last 256 KB of output is kept.
-        Only the token that started one sees it."""
+        """Background commands (dev servers, watchers). action: start (command, cwd) -> process_id | attach
+        (process_id, since, wait_seconds<=600; output as progress; returns its tail and `next`) | input (input,
+        eof) | kill | list. Yours only."""
         who = owner()
         if action == "list":
             return {"processes": await procs.list(who, sandbox)}
@@ -452,22 +451,36 @@ def mount(app: FastAPI, h: Any, admin: Any, job_caller: Any, owner_filter: Calla
         return respond(opened(owner, "exec", sb.id, chk, run))
 
     # ------------------------------------------------------------------ background processes
-    @app.post("/api/sandboxes/{ref}/processes")
-    async def process_start(ref: str, body: ProcessBody, actor: str = admin):
+    @contextlib.contextmanager
+    def as_caller(request: Request):
+        """(review #68) A process this request starts, or finds again after a restart, is followed under its token,
+        so revoking the token ends it, as for one started over MCP."""
+        tok = credential.set(check(request, "admin"))
         try:
-            p = await procs.start(who(actor), ref, body.command, body.cwd, actor=actor)
+            yield
+        finally:
+            credential.reset(tok)
+
+    @app.post("/api/sandboxes/{ref}/processes")
+    async def process_start(ref: str, body: ProcessBody, request: Request, actor: str = admin):
+        try:
+            with as_caller(request):
+                p = await procs.start(who(actor), ref, body.command, body.cwd, actor=actor)
         except StreamLimit as e:
             raise HTTPException(429, str(e)) from e
         return p.view()
 
     @app.get("/api/sandboxes/{ref}/processes")
-    async def process_list(ref: str, actor: str = admin):
-        return await procs.list(who(actor), ref)
+    async def process_list(ref: str, request: Request, actor: str = admin):
+        with as_caller(request):
+            return await procs.list(who(actor), ref)
 
     @app.get("/api/sandboxes/{ref}/processes/{process_id}")
-    async def process_get(ref: str, process_id: str, since: int | None = None, actor: str = admin):
+    async def process_get(ref: str, process_id: str, request: Request, since: int | None = None,
+                          actor: str = admin):
         """The process and its buffered output from `since` (poll with the returned `next`)."""
-        p = await procs.get(who(actor), ref, process_id)
+        with as_caller(request):
+            p = await procs.get(who(actor), ref, process_id)
         async with the_hub.open(who(actor), "process_attach", p.sandbox_id, capped=False) as st:
             return await procs.attach(p, since, 0, st, None)
 
@@ -478,7 +491,8 @@ def mount(app: FastAPI, h: Any, admin: Any, job_caller: Any, owner_filter: Calla
         on, then an `end` event with the process when it exits. Detaching (closing the connection) leaves it
         running."""
         owner = who(actor)
-        p = await procs.get(owner, ref, process_id)
+        with as_caller(request):
+            p = await procs.get(owner, ref, process_id)
         last = request.headers.get("last-event-id", "")
         since = int(last) if last.isdigit() else since
         admit(owner)
@@ -509,8 +523,9 @@ def mount(app: FastAPI, h: Any, admin: Any, job_caller: Any, owner_filter: Calla
         return respond(opened(owner, "process_attach", p.sandbox_id, check(request, "admin"), attach))
 
     @app.post("/api/sandboxes/{ref}/processes/{process_id}/input")
-    async def process_input(ref: str, process_id: str, body: InputBody, actor: str = admin):
-        p = await procs.get(who(actor), ref, process_id)
+    async def process_input(ref: str, process_id: str, body: InputBody, request: Request, actor: str = admin):
+        with as_caller(request):
+            p = await procs.get(who(actor), ref, process_id)
         try:
             data = base64.b64decode(body.input, validate=True) if body.base64 else body.input.encode()
         except (binascii.Error, ValueError) as e:
@@ -519,8 +534,10 @@ def mount(app: FastAPI, h: Any, admin: Any, job_caller: Any, owner_filter: Calla
         return p.view()
 
     @app.delete("/api/sandboxes/{ref}/processes/{process_id}")
-    async def process_kill(ref: str, process_id: str, actor: str = admin):
-        return await procs.kill(await procs.get(who(actor), ref, process_id))
+    async def process_kill(ref: str, process_id: str, request: Request, actor: str = admin):
+        with as_caller(request):
+            p = await procs.get(who(actor), ref, process_id)
+        return await procs.kill(p)
 
     # ------------------------------------------------------------------ file watches
     @app.get("/api/sandboxes/{ref}/watch")
@@ -531,11 +548,18 @@ def mount(app: FastAPI, h: Any, admin: Any, job_caller: Any, owner_filter: Calla
         admit(owner)
         uri = f"sse:{id(request)}"
         try:
-            w = watches.acquire(owner, sb.id, path, recursive, uri)
+            watches.check(owner, sb.id, path, recursive)
         except StreamLimit as e:
             raise HTTPException(429, str(e)) from e
 
         async def follow(st: Stream) -> AsyncIterator[bytes]:
+            # (review #68) held only once the stream is open, and released by it: a stream refused by the hub, or
+            # never started (the client went first), would otherwise hold the watch, and its quota, for good
+            try:
+                w = watches.acquire(owner, sb.id, path, recursive, uri)
+            except StreamLimit as e:
+                yield _sse({"reason": str(e), "code": "limit"}, "close")
+                return
             last = 0
             try:
                 while True:
