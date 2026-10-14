@@ -92,9 +92,10 @@ def check_sessions(svc: SessionService, owner: str, starting: Session | None = N
                          "first (suspend_session), or ask the operator to raise HANGAR_PERSON_MAX_SESSIONS")
 
 
-# --- review: the most job slots auto-sizing gives. Nothing bounds what a job spends across its turns, or a repo in a
-# day, until job budgets (#85) land; and a slot is a job, not a sandbox, so 24 best-of-N jobs could hold every one
-# of 120 sandboxes and refuse every session. Set HANGAR_JOB_CONCURRENCY to go higher.
+# --- review: the most job slots auto-sizing gives. Job budgets and daily spend caps (jobbudget.py) are opt-in, so by
+# default nothing bounds what a job spends across its turns, or a repo or person in a day; and a slot is a job, not a
+# sandbox, so 24 best-of-N jobs could hold every one of 120 sandboxes and refuse every session. Set
+# HANGAR_JOB_CONCURRENCY (24 on GKE) once budgets are set.
 AUTO_JOB_SLOTS_MAX = 8
 
 

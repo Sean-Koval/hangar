@@ -137,7 +137,7 @@ class Settings(BaseSettings):
 
     # --- jobs (spec 0009) ---------------------------------------------------
     # Jobs provisioning/running at once; the rest wait in the queue. --- scale: 0 = sized from the fleet: 4 on Docker,
-    # else max_sandboxes / 5 between 4 and 8 (fairness.job_slots; --- review: 8 until job budgets, #85).
+    # else max_sandboxes / 5 between 4 and 8 (fairness.job_slots; --- review: 8, since job budgets are opt-in).
     job_concurrency: int = 0
     job_poll_seconds: float = 5.0
     job_timeout_minutes: int = 60  # per agent turn
