@@ -188,6 +188,36 @@ async def test_a_failed_build_never_replaces_the_active_one_and_isnt_retried(fl,
     assert len(eb.history("docker", "appenv", rkey)) == 2
 
 
+async def test_a_build_that_failed_before_reading_the_config_isnt_retried_by_every_sandbox(fl, world, monkeypatch):
+    """Review: a build that fails before it reads the repo's config (no room in the fleet, a clone that fails) has no
+    config digest to remember. Without a pause, each new sandbox of the repo started another doomed build: at 60
+    sessions, a stream of build sandboxes and clones."""
+    from hangar.fleet import FleetError
+
+    eb = envbuilds.of(fl)
+    rkey = repo_key(world.url)
+    real = fl.create
+
+    async def full(env, **kw):
+        if LABEL in (kw.get("labels") or {}):
+            raise FleetError("fleet is at max_sandboxes=60; destroy some first")
+        return await real(env, **kw)
+    monkeypatch.setattr(fl, "create", full)
+    await fl.create("appenv", repo=world.url)
+    await drain(fl)
+    first = eb.history("docker", "appenv", rkey)[0]
+    assert first.state == "failed" and first.key is None and "max_sandboxes" in first.error
+    for _ in range(3):
+        await fl.create("appenv", repo=world.url)
+        assert not envbuilds.wait_for_tasks(fl)
+    assert len(eb.history("docker", "appenv", rkey)) == 1
+    eb._put(first.model_copy(update={"finished_at": first.finished_at - envbuilds.RETRY_AFTER - 1}))
+    monkeypatch.setattr(fl, "create", real)
+    await fl.create("appenv", repo=world.url)  # later, it tries again
+    await drain(fl)
+    assert eb.active("docker", "appenv", rkey).version == "v2"
+
+
 async def test_no_build_yet_and_a_failed_first_build_fall_back_with_the_reason(fl, world):
     push(world, ".hangar/environment.yaml", "install: exit 3\n")
     await fl.create("appenv", repo=world.url)

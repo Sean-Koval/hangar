@@ -59,6 +59,7 @@ LABEL = "hangar.build"  # on a build's own sandbox: it never uses (or schedules)
 PROVIDERS = ("docker", "kubernetes")  # where a build can be captured as an image
 LOG_TAIL = 16_000
 FAILURES_MAX = 20
+RETRY_AFTER = 1800  # seconds before a build that failed before reading the repo's config is tried again by itself
 
 
 class EnvBuildError(RuntimeError):
@@ -448,6 +449,10 @@ class EnvBuilds:
         if self.running(pname, env, repo) or self.head(pname, env, repo).pinned:
             return False
         latest = self.history(pname, env, repo)[:1]
+        if latest and latest[0].state == "failed" and latest[0].key is None:
+            # --- review: it failed before reading the config (no room, a clone that failed): nothing says what
+            # changed since, so not on every sandbox; RETRY_AFTER later, or `hangar env build-repo`.
+            return now() - (latest[0].finished_at or 0) >= RETRY_AFTER
         return not (latest and latest[0].state == "failed" and latest[0].key == digest and latest[0].base == base)
 
     def running(self, pname: str, env: str, repo: str) -> bool:
