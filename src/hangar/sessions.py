@@ -932,9 +932,11 @@ class SessionService:
         try:
             sb = self.fleet.get(s.sandbox_id)
             _, prov = self.fleet._running(sb.id)
-            rlog = f"/home/{self.settings.sandbox_user}/.hangar/runs/{turn.run_id}.log"
+            split = isolation.run_split(sb, turn.run_id)  # --- harden: a split run's own log, not the agent's link
+            rlog = f"{isolation.runs_dir(self.settings, split)}/{turn.run_id}.log"
             # The log's end, never all of it: the agent decides how big it gets.
-            await self._sh(sb, f"tail -c 2000000 {shlex.quote(rlog)} > {shlex.quote(rlog)}.tail")
+            tail = f"tail -c 2000000 {shlex.quote(rlog)} > {shlex.quote(rlog)}.tail"
+            await (isolation.sh(prov, sb, tail) if split else self._sh(sb, tail))
             raw = (await prov.read_file(sb, f"{rlog}.tail", limit=2_000_000) or b"")[-2_000_000:].decode(
                 errors="replace")
             turn.summary = self.fleet.broker.redact(extract_summary(turn.harness, raw) or "") or None
