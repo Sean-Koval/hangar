@@ -125,6 +125,35 @@ async def test_retention_archives_settled_records_and_get_still_finds_them(fleet
     assert fleet.store.get(Sandbox, gone.id) is None and fleet.store.count_archived(Sandbox) == 0
 
 
+async def test_retention_keeps_records_something_still_points_at(fleet, settings):
+    """--- review: a snapshot's parent is what a fork of it inherits from (credentials, harness, labels, the git
+    gateway's mode), and an exclusive credential's lease names its sandbox. Retention left those to the archive and
+    then deleted them after HANGAR_SANDBOX_ARCHIVE_DAYS, and a rolled-back control plane, which never reads the
+    archive, lost them at once: such records stay where every version finds them, and are never deleted."""
+    from hangar.models import Credential, Snapshot, SnapshotKind
+
+    settings.sandbox_retention_days = 7
+    settings.sandbox_archive_days = 1
+    old = time.time() - 30 * DAY
+    parent, leased, plain = (Sandbox(name=n, environment="plain", provider="docker", state=SandboxState.STOPPED,
+                                     last_activity=old, credentials=["gh"]) for n in ("parent", "leased", "plain"))
+    for sb in (parent, leased, plain):
+        fleet.store.put(sb)
+    fleet.store.put(Snapshot(sandbox_id=parent.id, environment="plain", provider="docker",
+                             kind=SnapshotKind.WORKSPACE, ref="/nowhere.tgz"))
+    fleet.store.put(Credential(name="codex-auth", harness="codex", kind="auth_file", exclusive=True,
+                               leased_to=leased.id))
+    fleet.store.put(Credential(name="plain-key", harness="claude-code", kind="api_key"))  # no lease: NULL
+    assert (await Retention(fleet.store, settings).sweep())["archived"] == 1
+    assert {s.id for s in fleet.store.list(Sandbox)} == {parent.id, leased.id}  # what the old code still sees
+    # A snapshot taken of a record that is already archived: kept in the archive, never deleted from it.
+    fleet.store.put(Snapshot(sandbox_id=plain.id, environment="plain", provider="docker",
+                             kind=SnapshotKind.WORKSPACE, ref="/nowhere2.tgz"))
+    fleet.store._db.execute("UPDATE sandboxes_archive SET archived_at = archived_at - 2 * 86400")
+    assert (await Retention(fleet.store, settings).sweep())["purged"] == 0
+    assert fleet.store.get(Sandbox, plain.id).credentials == ["gh"]
+
+
 async def test_retention_off(fleet, settings):
     settings.sandbox_retention_days = 0
     settings.sandbox_archive_days = 0
