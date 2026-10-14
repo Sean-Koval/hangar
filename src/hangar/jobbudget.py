@@ -11,8 +11,9 @@ could spend $16 before anyone followed up. So:
   parallel, so each gets an equal share, the judge included, and together they can't cross it.
 * **A daily cap per repo** (`max_usd_per_day` in the repo's policy) is checked when work is admitted: a new job
   over it waits in `awaiting_approval` (a trusted person can let it run anyway), and a follow-up or auto-fix round
-  is refused. Turns already running, and a job's own verify-fix turns, finish under the job budget. Days are UTC,
-  as in `/api/usage`.
+  is refused. Turns already running, and a job's own verify-fix turns, finish under the job budget. A day starts
+  at midnight in HANGAR_BUDGET_DAY_TIMEZONE (UTC unless set; UTC midnight is mid-afternoon or evening in the
+  Americas, so a team there sets its own zone and a cap can't be spent twice in one working day).
 
 Precedence for each field: the job, then the repo's policy, then HANGAR_JOB_BUDGET_*. Costs are what the harness
 reports, or priced from the token counts (events.py); a turn with neither counts its tokens only, and on a
@@ -21,8 +22,10 @@ subscription login the dollars are an estimate.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import logging
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, NamedTuple
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from hangar.events import total_usage
 from hangar.models import Budget, Job, JobBudget, Session, SessionTurn, now
@@ -31,6 +34,7 @@ from hangar.repopolicy import RepoPolicy, repo_key
 if TYPE_CHECKING:
     from hangar.jobs import Caller, JobService
 
+log = logging.getLogger("hangar.jobbudget")
 
 def merge(*layers: Any, cls: type = JobBudget) -> Any:
     """Per field, the first layer that sets it (job, repo, then settings)."""
@@ -138,15 +142,29 @@ class Cap(NamedTuple):
     spent_usd: float
 
 
-def day_start(t: float | None = None) -> float:
-    d = datetime.fromtimestamp(now() if t is None else t, UTC)
-    return datetime(d.year, d.month, d.day, tzinfo=UTC).timestamp()
+def zone(settings: Any) -> str:
+    """The zone daily caps count days in: HANGAR_BUDGET_DAY_TIMEZONE, or UTC when it isn't a zone (a typo must
+    not lift the cap)."""
+    name = getattr(settings, "budget_day_timezone", None) or "UTC"
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        log.warning("HANGAR_BUDGET_DAY_TIMEZONE=%r is not an IANA time zone; counting days in UTC", name)
+        return "UTC"
+    return name
+
+
+def day_start(t: float | None = None, tz: str = "UTC") -> float:
+    """Midnight of the day `t` falls in, in `tz`. Local midnight, so days are 23 or 25 hours when DST changes."""
+    z = ZoneInfo(tz)
+    d = datetime.fromtimestamp(now() if t is None else t, z)
+    return datetime(d.year, d.month, d.day, tzinfo=z).timestamp()
 
 
 def repo_spent_today(svc: JobService, key: str) -> float:
-    """What the repo's agent turns cost since midnight UTC: every session on the repo (jobs, attempts, judges and
-    interactive sessions), plus the sessions deleted since, on the day their job was created."""
-    since, total = day_start(), 0.0
+    """What the repo's agent turns cost since midnight (zone()): every session on the repo (jobs, attempts, judges
+    and interactive sessions), plus the sessions deleted since, on the day their job was created."""
+    since, total = day_start(tz=zone(svc.settings)), 0.0
     live = svc.sessions._sessions if svc.sessions is not None else {}
     for s in list(live.values()):
         if repo_key(s.repo) != key:
@@ -168,7 +186,8 @@ def caps(svc: JobService, repo: str | None, caller: Caller | None = None) -> lis
     if policy is not None and policy.max_usd_per_day:
         out.append(Cap(f"{policy.repo}'s daily cap", policy.max_usd_per_day, repo_spent_today(svc, policy.repo)))
     # identity: the per-person daily cap plugs in here. Once a job and its turns carry the person behind them,
-    # add Cap(f"{person}'s daily cap", <their limit>, <their turns' cost since day_start()>) for `caller`'s person.
+    # add Cap(f"{person}'s daily cap", <their limit>, <their turns' cost since day_start(tz=zone(...))>) for
+    # `caller`'s person.
     # Submissions, follow-ups and auto-fix rounds already check every cap this returns.
     return out
 
@@ -180,7 +199,7 @@ def _usd(v: float) -> str:
 def over_daily(svc: JobService, repo: str | None, caller: Caller | None = None) -> str | None:
     for c in caps(svc, repo, caller):
         if c.spent_usd >= c.limit_usd:
-            return f"{c.name} is spent: {_usd(c.spent_usd)} of {_usd(c.limit_usd)} today (UTC)"
+            return f"{c.name} is spent: {_usd(c.spent_usd)} of {_usd(c.limit_usd)} today ({zone(svc.settings)})"
     return None
 
 

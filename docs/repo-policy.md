@@ -63,9 +63,9 @@ A `budget` caps one agent turn, and every turn used to get a fresh one. So `max_
 
 - **The turn that crosses it is stopped.** Each turn's budget is cut to what the job has left, and the turn stops like any turn over budget: `over_budget`, with its work delivered as a draft.
 - **A spent job starts no more turns.** Follow-ups and auto-fix rounds are refused with the reason, and verify-fix rounds aren't started.
-- **Best-of-N splits it evenly.** The attempts run at once, so each gets an equal share, with one share kept for the judge; together they can't cross the job budget. A `max_turns` lower than the attempts plus the judge is refused when the job is submitted.
+- **Best-of-N splits it evenly.** The attempts run at once, so each gets an equal share, with one share kept for the judge; together they can't cross the job budget. An attempt can overshoot its share by what it spends between two polls, so when the attempts have used the whole job budget there is no judge: the event says so, and the smallest diff wins. A `max_turns` lower than the attempts plus the judge is refused when the job is submitted.
 
-**A daily cap per repo** (`max_usd_per_day`) is checked when work is admitted, on the repo's spend since midnight UTC (the same days as `/api/usage`):
+**A daily cap per repo** (`max_usd_per_day`) is checked when work is admitted, on the repo's spend since midnight in `HANGAR_BUDGET_DAY_TIMEZONE` (an IANA zone; UTC unless set). UTC midnight is 20:00 in New York (19:00 in winter), in the middle of a working day there, so a team in the Americas should set its zone (`America/New_York`); otherwise a cap can be spent twice in one working day. Days follow the zone's daylight-saving changes. `/api/usage` still groups by UTC day. Over the cap:
 
 - a new job over the cap waits in `awaiting_approval`, and the GitHub issue or Slack thread says why. A trusted person can let it run anyway (`/hangar approve`, `hangar job approve`), or it is dropped when the approval expires (`HANGAR_JOB_APPROVAL_TTL_HOURS`);
 - a follow-up or auto-fix round is refused;

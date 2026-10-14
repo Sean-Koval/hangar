@@ -201,6 +201,9 @@ class Settings(BaseSettings):
     job_budget_max_cost_usd: float | None = None
     job_budget_max_tokens: int | None = None
     job_budget_max_turns: int | None = None
+    # --- frontdoor: where a day starts for daily spend caps (an IANA zone, e.g. America/New_York). UTC midnight is
+    # 20:00 in New York, mid working day, so a team elsewhere sets its own.
+    budget_day_timezone: str = "UTC"
     events_max_mb: int = 20  # per-session event log size before it rotates (one rotated file is kept)
     # --- workstream A: triggers ----------------------------------------------
     # GitHub logins and "@org/team" entries whose /hangar comments and labels start jobs right away. Unset: the

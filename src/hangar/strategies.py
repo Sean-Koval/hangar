@@ -659,6 +659,10 @@ async def _judge(jobs: JobService, job: Job, best: list[Attempt], sessions: dict
     base = jobs._session(job)
     if base is None:
         return None
+    if spent := jobbudget.exhausted(jobs, job):  # --- frontdoor: attempts that overshot their shares left nothing;
+        # a judge clipped to nothing would still spend until the first poll stops it
+        jobs._event(job, f"no judge: {spent}; ranking by diff size")
+        return None
     jobs._event(job, f"judging attempts {', '.join(str(a.index) for a in best)}")
     jdir = f"{jobs._ctxdir(job)}/judge"
     try:

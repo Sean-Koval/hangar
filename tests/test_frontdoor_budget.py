@@ -173,3 +173,51 @@ async def test_a_github_issue_over_the_daily_cap_says_why_on_the_issue(jobs, wor
     said = [c for c in jobs.hooks.comments() if "waiting for approval" in c]
     assert said and "o/r's daily cap is spent: $1.25 of $1.00 today (UTC)" in said[0] and "Queued" not in said[0]
     del jobs.sessions._sessions[s.id]
+
+
+# ====================================================================== review fixes
+def test_the_day_starts_at_midnight_where_the_team_is(jobs, monkeypatch):  # noqa: F811
+    """A UTC day turns over at 20:00 in New York (19:00 in winter), in the middle of the team's working hours, so
+    a 'daily' cap could be spent twice in one working day. HANGAR_BUDGET_DAY_TIMEZONE puts midnight where the
+    team is, through daylight-saving changes."""
+    from datetime import UTC, datetime
+    from zoneinfo import ZoneInfo
+
+    from hangar.models import Session, SessionTurn
+
+    ny = ZoneInfo("America/New_York")
+    late = datetime(2026, 11, 1, 23, 30, tzinfo=ny).timestamp()  # the day DST ends: 25 hours long
+    assert jobbudget.day_start(late, "America/New_York") == datetime(2026, 11, 1, 4, tzinfo=UTC).timestamp()
+    assert jobbudget.day_start(late) == datetime(2026, 11, 2, tzinfo=UTC).timestamp()  # the default stays UTC
+    spring = datetime(2026, 3, 8, 12, 0, tzinfo=ny).timestamp()  # the day DST starts: 23 hours long
+    assert jobbudget.day_start(spring, "America/New_York") == datetime(2026, 3, 8, 5, tzinfo=UTC).timestamp()
+
+    t = datetime(2026, 10, 14, 21, 0, tzinfo=ny).timestamp()  # 01:00 UTC on the 15th
+    monkeypatch.setattr(jobbudget, "now", lambda: t)
+    s = Session(name="s", environment="seamenv", repo="https://github.com/acme/app.git")
+    s.turns = [SessionTurn(message="x", run_id="r1", started_at=t - 5400, usage=Usage(cost_usd=2.0)),  # 19:30 ET
+               SessionTurn(message="x", run_id="r2", started_at=t - 7200, usage=Usage(cost_usd=3.0))]  # 19:00 ET
+    jobs.sessions._sessions[s.id] = s
+    try:
+        assert jobbudget.repo_spent_today(jobs, "acme/app") == pytest.approx(0.0)  # UTC: a new day began at 20:00
+        monkeypatch.setattr(jobs.settings, "budget_day_timezone", "America/New_York")
+        assert jobbudget.repo_spent_today(jobs, "acme/app") == pytest.approx(5.0)
+        jobs.policies.put(RepoPolicy(repo="acme/app", max_usd_per_day=4))
+        assert jobbudget.over_daily(jobs, "acme/app").endswith("$5.00 of $4.00 today (America/New_York)")
+        monkeypatch.setattr(jobs.settings, "budget_day_timezone", "Mars/Olympus")  # a typo: still a cap, in UTC
+        assert jobbudget.over_daily(jobs, "acme/app") is None
+    finally:
+        del jobs.sessions._sessions[s.id]
+
+
+async def test_a_spent_job_budget_starts_no_judge(jobs, world):  # noqa: F811
+    """The judge got 'what the attempts left', clipped to almost nothing when they overshot their shares, but it
+    still started and spent until the first poll stopped it. A spent job runs no judge."""
+    world["mode"].write_text("burnall")  # every attempt passes, spends 900,000 tokens and is stopped over its share
+    job = jobs.submit(bon(world, judge=True, job_budget=JobBudget(max_tokens=2_000_000)), Caller("svc", "svc"))
+    job = await until(jobs, job.id, SETTLED)
+    events = "\n".join(e.message for e in job.events)
+    assert all(a.outcome == "over_budget" for a in job.attempts), events
+    turns = [t for s in jobs.sessions._sessions.values() if s.job_id == job.id for t in s.turns]
+    assert not any((t.message or "").startswith("judge") for t in turns), events
+    assert "no judge: " in events and "ranking: " in events
