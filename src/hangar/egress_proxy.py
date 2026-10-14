@@ -36,7 +36,7 @@ import time
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
-from hangar import egress, metrics
+from hangar import egress, egress_tls, metrics
 from hangar.models import Sandbox, SandboxState
 
 if TYPE_CHECKING:
@@ -53,7 +53,6 @@ CLOSE_GRACE_SECONDS = 15.0  # after the far side closes, how long the client sid
 # BUF (asyncio's default is 256 KB), and a write waits for the 64 KB high-water mark. A client that stops reading
 # then pins at most about 5 * BUF (320 KB), so even MAX_CONNECTIONS stalled tunnels fit the control plane's memory.
 BUF = 64 * 1024
-TLS_RECORD_MAX = 16384 + 2048  # a TLSPlaintext fragment is at most 2^14 bytes; leave room for what clients send
 MAX_CONNECTIONS = 4096  # the process's file limit is the real bound; leave room for everything else
 POLICY_SECONDS = 5.0  # an approval or a policy change applies within this long (approve() also invalidates)
 FLUSH_SECONDS = 60.0
@@ -112,38 +111,7 @@ def split_hostport(target: str, default: int | None) -> tuple[str, int]:
     return egress.normalize_host(host), port
 
 
-def sni(record: bytes) -> str | None:
-    """The server name in a TLS ClientHello record (RFC 8446 4.1.2, RFC 6066 3), or None when the record isn't a
-    ClientHello or has no host_name. Never raises on garbage."""
-    try:
-        if len(record) < 5 or record[0] != 0x16:
-            return None
-        body = record[5:5 + int.from_bytes(record[3:5], "big")]
-        if not body or body[0] != 0x01:
-            return None
-        p = 4 + 2 + 32  # handshake header, legacy_version, random
-        p += 1 + body[p]  # legacy_session_id
-        p += 2 + int.from_bytes(body[p:p + 2], "big")  # cipher_suites
-        p += 1 + body[p]  # legacy_compression_methods
-        end = p + 2 + int.from_bytes(body[p:p + 2], "big")
-        p += 2
-        while p + 4 <= min(end, len(body)):
-            etype, elen = int.from_bytes(body[p:p + 2], "big"), int.from_bytes(body[p + 2:p + 4], "big")
-            data = body[p + 4:p + 4 + elen]
-            p += 4 + elen
-            if etype != 0:
-                continue
-            q = 2  # server_name_list length
-            while q + 3 <= len(data):
-                ntype, nlen = data[q], int.from_bytes(data[q + 1:q + 3], "big")
-                name = data[q + 3:q + 3 + nlen]
-                q += 3 + nlen
-                if ntype == 0:
-                    return name.decode("ascii")
-            return None
-    except (IndexError, UnicodeDecodeError):
-        return None
-    return None
+sni = egress_tls.sni  # --- egress2: the ClientHello checks live in egress_tls.py
 
 
 # IPv6 ranges that carry an IPv4 address in their last 32 bits and reach it wherever a translator exists: NAT64's
@@ -353,11 +321,12 @@ class EgressProxy:
                 up_r, up_w = await self._connect(host, port)
             except Denied as d:
                 return await self._refuse(writer, sb, host, port, d, pol.mode)
+            tls = False
             if origin is None:
                 writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
                 await writer.drain()
                 try:
-                    first = await asyncio.wait_for(self._first(reader, host), HEAD_SECONDS)
+                    first, tls = await asyncio.wait_for(self._first(reader, host), HEAD_SECONDS)
                 except Denied as d:
                     self._denied(sb, host, port, d, pol.mode)  # the 200 is sent: close without an answer
                     return
@@ -369,6 +338,12 @@ class EgressProxy:
             relayed = True
             up_w.write(first)
             n[0] += len(first)
+            if tls:  # --- egress2: a HelloRetryRequest brings a second ClientHello in clear; it is checked too
+                try:
+                    await self._retry_hello(reader, writer, up_r, up_w, host, n)
+                except Denied as d:
+                    self._denied(sb, host, port, d, pol.mode)
+                    return
             await self._splice(reader, writer, up_r, up_w, n)
         finally:
             self._open[sb.id] -= 1
@@ -456,34 +431,63 @@ class EgressProxy:
                 last = e
         raise Denied(502, "connect", f"could not connect to {host}:{port} ({type(last).__name__})", "upstream")
 
-    async def _first(self, reader: asyncio.StreamReader, host: str) -> bytes:
-        """The client's first bytes in a tunnel, checked to name `host`: TLS SNI, or the Host of an HTTP request."""
+    async def _first(self, reader: asyncio.StreamReader, host: str) -> tuple[bytes, bool]:
+        """The client's first bytes in a tunnel, checked to name `host`, and whether they are TLS: a whole ClientHello
+        (egress_tls: one SNI, the CONNECT host, no ECH), or an HTTP request whose Host is `host`."""
         head = await reader.readexactly(5)
-        if head[0] == 0x16:
-            n = int.from_bytes(head[3:5], "big")
-            if n > TLS_RECORD_MAX:
-                raise Denied(403, "bad_tls", "malformed TLS record", "protocol")
-            rec = head + await reader.readexactly(n)
-            name = sni(rec)
-            if name is None:
-                if egress._is_ip(host):
-                    return rec  # clients send no SNI for an IP address
-                raise Denied(403, "no_sni", f"the TLS ClientHello names no server; {host} must be in SNI", "sni")
+        if head[0] == egress_tls.HANDSHAKE:
             try:
-                if egress.normalize_host(name) == host:
-                    return rec
-            except egress.EgressError:
-                pass
-            raise Denied(403, "sni_mismatch", f"the TLS ClientHello names {name[:100]}, not {host}", "sni")
+                raw, msg = await egress_tls.read_hello(reader, head)
+                egress_tls.check(msg, host)
+            except egress_tls.Refused as e:
+                raise Denied(403, e.reason, str(e), "sni") from None
+            return raw, True
+        if head[0] & 0x80 and head[2] == egress_tls.CLIENT_HELLO:  # an SSL 2.0-style hello: no extensions, no SNI
+            raise Denied(403, "old_tls", "an SSL 2.0-style ClientHello carries no server name; use TLS 1.2 or 1.3",
+                         "sni")
         rest = await reader.readuntil(b"\r\n\r\n")
         try:
             _, _, _, headers = parse_head(head + rest)
             h = header(headers, "host")
             if h is not None and split_hostport(h, 80)[0] == host:
-                return head + rest
+                return head + rest, False
         except ValueError:
             raise Denied(403, "not_tls_or_http", "only TLS or HTTP goes through this proxy", "protocol") from None
         raise Denied(403, "host_mismatch", f"the HTTP request's Host isn't {host}", "sni")
+
+    async def _retry_hello(self, cr: asyncio.StreamReader, cw: asyncio.StreamWriter, ur: asyncio.StreamReader,
+                           uw: asyncio.StreamWriter, host: str, n: list[int]) -> None:
+        """--- egress2: pass the server's first record to the client; when it is a HelloRetryRequest, the client's
+        second ClientHello must pass the same checks as the first before it goes upstream. Raises Denied."""
+        try:
+            rec = await asyncio.wait_for(ur.readexactly(5), HEAD_SECONDS)
+        except asyncio.IncompleteReadError as e:
+            rec = e.partial  # the server closed: pass on what it sent, the splice ends the tunnel
+        except TimeoutError:
+            raise Denied(504, "no_server_hello", f"{host} didn't answer the ClientHello", "upstream") from None
+        size = int.from_bytes(rec[3:5], "big") if len(rec) == 5 else 0
+        if rec[:1] == bytes([egress_tls.HANDSHAKE]) and 0 < size <= egress_tls.RECORD_MAX:
+            try:
+                rec += await asyncio.wait_for(ur.readexactly(size), HEAD_SECONDS)
+            except asyncio.IncompleteReadError as e:
+                rec += e.partial
+            except TimeoutError:
+                raise Denied(504, "no_server_hello", f"{host} didn't finish its ServerHello", "upstream") from None
+        cw.write(rec)
+        n[1] += len(rec)
+        await cw.drain()
+        if not egress_tls.is_hello_retry(rec):
+            return
+        try:
+            raw, msg = await asyncio.wait_for(egress_tls.read_second_hello(cr), HEAD_SECONDS)
+            egress_tls.check(msg, host)
+        except egress_tls.Refused as e:
+            raise Denied(403, e.reason, f"second ClientHello: {e}", "sni") from None
+        except (TimeoutError, asyncio.IncompleteReadError, ConnectionError):
+            raise Denied(400, "no_hello", "the client sent no second ClientHello after a HelloRetryRequest",
+                         "protocol") from None
+        uw.write(raw)
+        n[0] += len(raw)
 
     @staticmethod
     def _rewrite(method: str, origin: str, version: str, headers: list[tuple[str, str]], host: str,
