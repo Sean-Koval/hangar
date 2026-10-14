@@ -497,6 +497,49 @@ def test_checkout_script_quotes_and_defaults_to_the_remote_head():
     assert s.count("git -c core.hooksPath=/dev/null -c core.fsmonitor=false") == s.count("git ") == 5
 
 
+def _scrubbed(tmp_path: Path, setup: list[list[str]]) -> tuple[dict[str, str], dict[str, str]]:
+    """A repo configured by `setup` (git config arguments), scrubbed; its config and config.worktree after."""
+    env = {**os.environ, "HOME": str(tmp_path), "GIT_CONFIG_NOSYSTEM": "1"}
+    repo = tmp_path / "r"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, env=env)
+    for args in setup:
+        subprocess.run(["git", "-C", str(repo), "config", *args], check=True, env=env)
+    subprocess.run(["bash", "-c", envbuilds.GIT_SCRUB.format(path=shlex.quote(str(repo)))], check=True, env=env)
+
+    def read(name: str) -> dict[str, str]:
+        f = repo / ".git" / name
+        if not f.exists():
+            return {}
+        out = subprocess.run(["git", "config", "--file", str(f), "--list"], capture_output=True, text=True, env=env)
+        return dict(line.split("=", 1) for line in out.stdout.splitlines())
+
+    return read("config"), read("config.worktree")
+
+
+def test_the_git_scrub_keeps_lfs_and_sparse_checkout(tmp_path):
+    """--- review: `git lfs install --local` (in `install`) puts LFS's filters in the repo's config, and sparse
+    checkouts keep theirs in config.worktree. Scrubbed, every LFS file showed as modified and `git add` staged the
+    real file instead of its pointer, so an agent's commit pushed the binaries past LFS."""
+    cfg, wt = _scrubbed(tmp_path, [
+        ["filter.lfs.clean", "git-lfs clean -- %f"], ["filter.lfs.smudge", "git-lfs smudge -- %f"],
+        ["filter.lfs.process", "git-lfs filter-process"], ["filter.lfs.required", "true"],
+        ["lfs.repositoryformatversion", "0"], ["extensions.worktreeConfig", "true"],
+        ["--worktree", "core.sparseCheckout", "true"], ["--worktree", "core.sparseCheckoutCone", "true"]])
+    assert cfg["filter.lfs.process"] == "git-lfs filter-process" and cfg["filter.lfs.clean"] == "git-lfs clean -- %f"
+    assert cfg["filter.lfs.smudge"] == "git-lfs smudge -- %f" and cfg["filter.lfs.required"] == "true"
+    assert wt == {"core.sparsecheckout": "true", "core.sparsecheckoutcone": "true"}
+
+
+def test_the_git_scrub_covers_config_worktree_and_lfs_filters_that_run_something_else(tmp_path):
+    """--- review: `extensions.worktreeConfig` (kept) makes git read .git/config.worktree, which the scrub didn't
+    touch: a hooksPath `install` put there ran in every sandbox. An LFS filter is kept only as git-lfs's own."""
+    cfg, wt = _scrubbed(tmp_path, [
+        ["extensions.worktreeConfig", "true"], ["--worktree", "core.hooksPath", ".githooks"],
+        ["--worktree", "core.fsmonitor", "touch /tmp/x"], ["filter.lfs.process", "sh -c 'touch /tmp/x'"],
+        ["filter.lfs.smudge", "git-lfs smudge -- %f"], ["--add", "filter.lfs.smudge", "touch /tmp/x"]])
+    assert wt == {} and "filter.lfs.process" not in cfg and "filter.lfs.smudge" not in cfg, (cfg, wt)
+
+
 # ---------------------------------------------------------------------- jobs, MCP, REST
 def _seen(fl, env: str, url: str, text: str, at: float) -> None:
     fl.store.kv_set(f"{KV_SEEN}{env}:{repo_key(url)}", Seen(

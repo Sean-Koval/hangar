@@ -57,14 +57,31 @@ log = logging.getLogger("hangar.envbuilds")
 GIT_KEEP = ("core.repositoryformatversion|core.filemode|core.bare|core.logallrefupdates|core.ignorecase|"
             "core.precomposeunicode|core.symlinks|extensions.*|remote.*.url|remote.*.pushurl|remote.*.fetch|"
             "remote.*.promisor|remote.*.partialclonefilter|branch.*.remote|branch.*.merge|submodule.*.url|"
-            "submodule.*.active|user.name|user.email")
+            "submodule.*.active|user.name|user.email|"
+            # --- review: sparse checkouts (in config.worktree), and LFS's format version (its filters: GIT_LFS)
+            "core.sparsecheckout|core.sparsecheckoutcone|index.sparse|lfs.repositoryformatversion")
+# --- review: `git lfs install --local` puts LFS's filters in the repo's config; without them every LFS file reads as
+# changed and `git add` stages the file instead of its pointer. Kept only as git-lfs's own commands, one value each.
+GIT_LFS = ("'filter.lfs.clean=git-lfs clean -- %f'|'filter.lfs.smudge=git-lfs smudge -- %f'|"
+           "'filter.lfs.smudge=git-lfs smudge --skip -- %f'|'filter.lfs.process=git-lfs filter-process'|"
+           "'filter.lfs.process=git-lfs filter-process --skip'|'filter.lfs.required=true'")
+# --- review: config.worktree too (git reads it when extensions.worktreeConfig is set), the superproject's and each
+# submodule's git dir.
 GIT_SCRUB = ("cd {path} || exit 1\n"
              "gd=$(git rev-parse --absolute-git-dir 2>/dev/null) || exit 0\n"
-             "for f in \"$gd/config\" $(find \"$gd/modules\" -name config -type f ! -path '*/refs/*' "
-             "! -path '*/logs/*' 2>/dev/null); do\n"
-             "  find \"${{f%/config}}/hooks\" -mindepth 1 ! -name '*.sample' ! -type d -exec rm -f {{}} + 2>/dev/null\n"
-             "  git config --file \"$f\" --no-includes --name-only --list | sort -u | while IFS= read -r k; do\n"
-             f"    case \"$k\" in {GIT_KEEP}) ;; *) git config --file \"$f\" --unset-all \"$k\" ;; esac\n"
+             "for d in \"$gd\" $(find \"$gd/modules\" -name config -type f ! -path '*/refs/*' ! -path '*/logs/*' "
+             "-exec dirname {{}} \\; 2>/dev/null); do\n"
+             "  find \"$d/hooks\" -mindepth 1 ! -name '*.sample' ! -type d -exec rm -f {{}} + 2>/dev/null\n"
+             "  for f in \"$d/config\" \"$d/config.worktree\"; do\n"
+             "    [ -f \"$f\" ] || continue\n"
+             "    git config --file \"$f\" --no-includes --name-only --list | sort -u | while IFS= read -r k; do\n"
+             "      case \"$k\" in\n"
+             f"        {GIT_KEEP}) ;;\n"
+             "        filter.lfs.*) v=$(git config --file \"$f\" --no-includes --get-all \"$k\")\n"
+             f"          case \"$k=$v\" in {GIT_LFS}) ;; *) git config --file \"$f\" --unset-all \"$k\" ;; esac ;;\n"
+             "        *) git config --file \"$f\" --unset-all \"$k\" ;;\n"
+             "      esac\n"
+             "    done\n"
              "  done\n"
              "done\n")
 KV_BUILD = "envbuild:"
