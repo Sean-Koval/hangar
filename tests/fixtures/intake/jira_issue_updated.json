@@ -1,0 +1,36 @@
+{
+  "timestamp": 1760440000000,
+  "webhookEvent": "jira:issue_updated",
+  "issue_event_type_name": "issue_generic",
+  "user": {
+    "self": "https://acme.atlassian.net/rest/api/2/user?accountId=5b10ac8d82e05b22cc7d4ef5",
+    "accountId": "5b10ac8d82e05b22cc7d4ef5",
+    "displayName": "Dana Lee",
+    "accountType": "atlassian",
+    "active": true,
+    "timeZone": "America/New_York"
+  },
+  "issue": {
+    "id": "10042",
+    "self": "https://acme.atlassian.net/rest/api/2/10042",
+    "key": "ABC-12",
+    "fields": {
+      "summary": "Retry uploads that time out",
+      "description": "Uploads over 50 MB time out after 30 s and are never retried.\n\nSteps: upload a 60 MB file.",
+      "labels": ["backend"],
+      "components": [],
+      "issuetype": {"id": "10001", "name": "Bug"},
+      "project": {"id": "10000", "key": "ABC", "name": "Acme Backend"},
+      "priority": {"name": "Medium"},
+      "status": {"id": "10101", "name": "Ready for agent"},
+      "reporter": {"accountId": "5b10ac8d82e05b22cc7d4ef5", "displayName": "Dana Lee", "accountType": "atlassian"}
+    }
+  },
+  "changelog": {
+    "id": "10140",
+    "items": [
+      {"field": "status", "fieldtype": "jira", "fieldId": "status", "from": "10000", "fromString": "To Do",
+       "to": "10101", "toString": "Ready for agent"}
+    ]
+  }
+}

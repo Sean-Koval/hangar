@@ -1,0 +1,651 @@
+"""Tracker intake (docs/intake.md): Jira and GitHub Projects, and what they share with GitHub issues and Slack.
+
+Jira's REST API and GitHub's REST and GraphQL APIs are faked with httpx.MockTransport. The inbound payloads are
+recorded shapes (tests/fixtures/intake), following Atlassian's webhook docs and GitHub's webhook and GraphQL schemas;
+every delivery is signed for real."""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import copy
+import hashlib
+import hmac
+import json
+import shutil
+from pathlib import Path
+
+import httpx
+import pytest
+from fastapi import FastAPI
+
+from hangar import ghprojects, identity, intake, jira, people, redeliver
+from hangar.frontdoor import ReplayGuard
+from hangar.github import verify_signature
+from hangar.jobs import Caller, JobService, SubmitJob, handle_github
+from hangar.models import Credential, CredentialKind, Job, JobState, Person
+
+FIX = Path(__file__).parent / "fixtures" / "intake"
+SECRET = "jira-webhook-secret-0123456789"
+API_TOKEN = "ATATT3xFfGF0-jira-api-token"
+AUTO_TOKEN = "automation-shared-token-xyz"
+GH_TOKEN = "ghp_controlplanetoken"
+DANA = "5b10ac8d82e05b22cc7d4ef5"
+needs_tools = pytest.mark.skipif(not shutil.which("tmux") or not shutil.which("git"), reason="needs tmux and git")
+
+
+def fixture(name: str) -> dict:
+    return json.loads((FIX / name).read_text())
+
+
+# ============================================================================ fakes
+class FakeAPIs:
+    """Jira Cloud's REST v3 (acme.atlassian.net) and GitHub's REST and GraphQL APIs (api.github.com)."""
+
+    def __init__(self):
+        self.calls: list[httpx.Request] = []
+        self.jira_fail: int | None = None
+        self.ratelimit = 0
+        self.statuses = ["In Progress", "Blocked", "In Review", "Done"]
+        self.item = fixture("gh_graphql_item.json")
+        self.field = fixture("gh_graphql_field.json")
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.calls.append(request)
+        if request.url.host == "acme.atlassian.net":
+            return self.jira(request)
+        if request.url.host == "api.github.com":
+            return self.github(request)
+        return httpx.Response(404)
+
+    def jira(self, r: httpx.Request) -> httpx.Response:
+        want = "Basic " + base64.b64encode(f"hangar@acme.com:{API_TOKEN}".encode()).decode()
+        if r.headers.get("authorization") != want:
+            return httpx.Response(401, json={"errorMessages": ["Client must be authenticated"]})
+        if self.ratelimit:
+            self.ratelimit -= 1
+            return httpx.Response(429, headers={"Retry-After": "1"})
+        if self.jira_fail:
+            return httpx.Response(self.jira_fail, json={"errorMessages": ["Issue does not exist"]})
+        p = r.url.path
+        if p.endswith("/transitions") and r.method == "GET":
+            return httpx.Response(200, json={"transitions": [
+                {"id": str(i + 11), "name": f"Move to {s}", "to": {"name": s}} for i, s in enumerate(self.statuses)]})
+        if p.endswith("/transitions") and r.method == "POST":
+            return httpx.Response(204)
+        if p.endswith("/comment") and r.method == "POST":
+            return httpx.Response(201, json={"id": "1"})
+        if p.endswith("/remotelink"):
+            return httpx.Response(201, json={"id": 1})
+        if p.endswith("/myself"):
+            return httpx.Response(200, json={"accountId": "hangar-bot", "displayName": "Hangar"})
+        if p.startswith("/rest/api/3/issue/"):
+            issue = fixture("jira_issue_updated.json")["issue"]
+            issue["fields"]["description"] = {"type": "doc", "version": 1, "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "From the API, in ADF."}]}]}
+            return httpx.Response(200, json=issue)
+        return httpx.Response(404, json={"errorMessages": ["nope"]})
+
+    def github(self, r: httpx.Request) -> httpx.Response:
+        if r.headers.get("authorization") != f"Bearer {GH_TOKEN}":
+            return httpx.Response(401, json={"message": "Bad credentials"})
+        if r.url.path == "/graphql":
+            q = json.loads(r.content)["query"]
+            if "updateProjectV2ItemFieldValue" in q:
+                return httpx.Response(200, json={"data": {"updateProjectV2ItemFieldValue": {
+                    "projectV2Item": {"id": json.loads(r.content)["variables"]["item"]}}}})
+            return httpx.Response(200, json=self.field if "field(name:" in q else self.item)
+        if r.url.path.endswith("/comments") and r.method == "POST":
+            return httpx.Response(201, json={"id": 1})
+        if r.url.path.endswith("/comments"):
+            return httpx.Response(200, json=[])
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    # what hangar did
+    def jira_comments(self) -> list[str]:
+        return [jira.adf_text(json.loads(c.content)["body"]).strip() for c in self.calls
+                if c.url.host == "acme.atlassian.net" and c.method == "POST" and c.url.path.endswith("/comment")]
+
+    def transitions(self) -> list[str]:
+        return [json.loads(c.content)["transition"]["id"] for c in self.calls
+                if c.url.host == "acme.atlassian.net" and c.method == "POST" and c.url.path.endswith("/transitions")]
+
+    def mutations(self) -> list[dict]:
+        return [json.loads(c.content)["variables"] for c in self.calls if c.url.path == "/graphql"
+                and "updateProjectV2ItemFieldValue" in json.loads(c.content)["query"]]
+
+    def gh_comments(self) -> list[str]:
+        return [json.loads(c.content)["body"] for c in self.calls
+                if c.url.host == "api.github.com" and c.method == "POST" and c.url.path.endswith("/comments")]
+
+
+def link(monkeypatch, links: dict[tuple[str, str], str]) -> None:
+    """Stand in for the people links (teamcreds): (source, external id) -> person."""
+    def resolve(store, source, ext):
+        who = links.get((source, ext))
+        return Person(id=who, name=who) if who else None
+
+    monkeypatch.setattr(people, "resolve_external", resolve)
+
+
+def sign(body: bytes, secret: str = SECRET) -> dict[str, str]:
+    return {"X-Hub-Signature": "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest(),
+            "Content-Type": "application/json"}
+
+
+JIRA = {"url": "https://acme.atlassian.net", "email": "hangar@acme.com", "token_credential": "jira-api",
+        "webhook_secret_credential": "jira-hook", "automation_token_credential": "jira-auto",
+        "projects": {"ABC": {"repo": "REPO", "components": {"Web": "acme/web"}}},
+        "trigger": {"status": "Ready for agent", "label": "hangar"},
+        "statuses": {"started": "In Progress", "needs_input": "Blocked", "delivered": "In Review"}}
+
+
+def configure(svc: JobService, repo: str, env: str) -> None:
+    s, b = svc.settings, svc.broker
+    b.put("jira-api", "webhook", CredentialKind.GENERIC, API_TOKEN)
+    b.put("jira-hook", "webhook", CredentialKind.GENERIC, SECRET)
+    b.put("jira-auto", "webhook", CredentialKind.GENERIC, AUTO_TOKEN)
+    b.put("gh", "git", CredentialKind.GIT_TOKEN, GH_TOKEN)
+    s.github_token_credential = "gh"
+    cfg = copy.deepcopy(JIRA)
+    cfg["projects"]["ABC"]["repo"] = repo
+    s.jira = cfg
+    s.github_repos = {repo: env, "acme/api": env}
+    s.github_projects = {"acme/7": {"trigger": "Ready for agent", "repos": ["acme/api"], "statuses": {
+        "started": "In progress", "needs_input": "Blocked", "delivered": "In review", "failed": "Todo"}}}
+
+
+async def until(pred, timeout: float = 20.0, what: str = "") -> None:
+    for _ in range(int(timeout / 0.05)):
+        if pred():
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"timed out: {what}")
+
+
+async def idle(svc: JobService, job_id: str) -> Job:
+    while job_id in svc._active:
+        await asyncio.sleep(0.05)
+    for _ in range(20):  # background write-backs
+        await asyncio.sleep(0.02)
+    return svc.get(job_id)
+
+
+# ============================================================================ unit
+def test_atlassian_signature_test_vector():
+    """Atlassian's documented example: the same `sha256=<hex HMAC>` over the body that GitHub uses."""
+    body = b"Hello World!"
+    sig = "sha256=a4771c39fbe90f317c7824e83ddef3caae9cb3d976c214ace1f2937e133263c9"
+    assert verify_signature("It's a Secret to Everybody", body, sig)
+    assert not verify_signature("It's a Secret to Everybody", body + b" ", sig)
+
+
+def test_adf_round_trip_and_wiki():
+    doc = jira.to_adf("[hangar] Done: job `job-1`\nPR: https://github.com/o/r/pull/7.\n\n> Use A\n> or B?\n\nBye")
+    assert doc["type"] == "doc" and doc["version"] == 1
+    p1, quote, p3 = doc["content"]
+    texts = [n for n in p1["content"] if n["type"] == "text"]
+    assert {"type": "text", "text": "job-1", "marks": [{"type": "code"}]} in texts
+    assert {"type": "text", "text": "https://github.com/o/r/pull/7",
+            "marks": [{"type": "link", "attrs": {"href": "https://github.com/o/r/pull/7"}}]} in texts
+    assert {"type": "text", "text": "."} in texts and {"type": "hardBreak"} in p1["content"]
+    assert quote["type"] == "blockquote" and "Use A" in jira.adf_text(quote)
+    assert all(n.get("text") != "" for n in json.loads(json.dumps(doc)) if isinstance(n, dict))
+    assert jira.adf_text(doc).startswith("[hangar] Done: job job-1\nPR:")
+    assert jira.adf_text("plain") == "plain" and jira.adf_text(None) == ""
+    assert jira.to_wiki("run `make test`\n> quoted") == "run {{make test}}\nbq. quoted"
+
+
+def test_config_validation(settings):
+    ok = copy.deepcopy(JIRA)
+    assert jira.JiraConfig.model_validate(ok).url == "https://acme.atlassian.net"
+    for change, msg in [
+        ({"statuses": {"failed": "ready for AGENT"}}, "trigger status"),
+        ({"email": None}, "needs email"),
+        ({"url": "http://jira.local"}, "https"),
+        ({"trigger": {}}, "trigger.status"),
+        ({"webhook_secret_credential": None, "automation_token_credential": None}, "webhook_secret_credential"),
+        ({"projects": {"abc": {"repo": "o/r"}}}, "upper case"),
+    ]:
+        with pytest.raises(ValueError, match=msg):
+            jira.JiraConfig.model_validate({**ok, **change})
+    assert jira.JiraConfig.model_validate({**ok, "deployment": "server", "email": None}).deployment == "server"
+    settings.jira = {**ok, "email": None}
+    with pytest.raises(jira.JiraConfigError):
+        jira.load(settings)
+    settings.github_projects = {"acme/7": {"trigger": "Ready", "statuses": {"failed": "ready"}}}
+    with pytest.raises(ghprojects.ProjectsConfigError):
+        ghprojects.boards(settings)
+    settings.github_projects = {"acme": {"trigger": "Ready"}}
+    with pytest.raises(ghprojects.ProjectsConfigError):
+        ghprojects.boards(settings)
+
+
+def test_jira_credentials_never_reach_a_sandbox(settings):
+    """#81's exposure class: the Jira API token, webhook secret and Automation token are control-plane only."""
+    settings.jira = copy.deepcopy(JIRA)
+    for name in ("jira-api", "jira-hook", "jira-auto"):
+        cred = Credential(name=name, harness="git", kind=CredentialKind.GENERIC, exposure="sandbox")
+        assert identity.locked(cred, settings) and identity.exposure(cred, settings) == "control_plane"
+    other = Credential(name="claude", harness="claude-code", kind=CredentialKind.GENERIC)
+    assert identity.exposure(other, settings) == "sandbox"
+
+
+def test_claims_are_scoped(store):
+    g = ReplayGuard(store)
+    assert redeliver.claim(g, "d1", 60, scope="jira") and not redeliver.claim(g, "d1", 60, scope="jira")
+    assert redeliver.claim(g, "d1", 60)  # GitHub's scope is separate
+    redeliver.done(g, "d1", 60, scope="jira")
+    assert g.get("jira", "d1") == redeliver.DONE
+
+
+def test_stages():
+    job = Job(id="j", title="t", instructions="x", requester="r", owner="r", branch="b", environment="e")
+    for state, kind, want in [(JobState.RUNNING, "note", "started"), (JobState.NEEDS_INPUT, "note", "needs_input"),
+                              (JobState.SUCCEEDED, "final", "delivered"), (JobState.FAILED, "final", "failed"),
+                              (JobState.CANCELLED, "final", "failed"), (JobState.QUEUED, "note", None)]:
+        job.state = state
+        assert intake.stage(job, kind) == want
+
+
+def test_person_for_fails_closed(monkeypatch, store):
+    assert intake.person_for(store, "jira", "") is None and intake.person_for(store, "jira", None) is None
+    assert intake.person_for(store, "jira", "x") is None  # the stub: nobody is linked yet
+
+    def boom(*a):
+        raise RuntimeError("db is gone")
+
+    monkeypatch.setattr(people, "resolve_external", boom)
+    assert intake.person_for(store, "github", "dana") is None
+
+
+async def test_jira_api_retries_and_never_leaks_the_token():
+    fake = FakeAPIs()
+    cfg = jira.JiraConfig.model_validate(JIRA)
+    api = jira.JiraAPI(cfg, API_TOKEN, transport=httpx.MockTransport(fake))
+    fake.ratelimit = 2
+    await api.comment("ABC-12", "hello `x`")
+    assert len(fake.calls) == 3
+    body = json.loads(fake.calls[-1].content)["body"]
+    assert body["type"] == "doc" and fake.calls[-1].url.path == "/rest/api/3/issue/ABC-12/comment"
+    fake.jira_fail = 404
+    with pytest.raises(jira.JiraError) as e:
+        await api.transition("ABC-12", "Done")
+    assert "Issue does not exist" in str(e.value) and API_TOKEN not in str(e.value)
+    await api.close()
+    server = jira.JiraConfig.model_validate({**JIRA, "deployment": "server", "url": "https://jira.acme.internal"})
+    seen = []
+    api = jira.JiraAPI(server, "pat-123", transport=httpx.MockTransport(
+        lambda r: seen.append(r) or httpx.Response(201, json={})))
+    await api.comment("ABC-12", "run `make`")
+    assert seen[0].url.path == "/rest/api/2/issue/ABC-12/comment" and seen[0].headers["authorization"] == \
+        "Bearer pat-123" and json.loads(seen[0].content) == {"body": "run {{make}}"}
+    await api.close()
+
+
+async def test_graphql_client():
+    assert ghprojects.graphql_url("https://api.github.com") == "https://api.github.com/graphql"
+    assert ghprojects.graphql_url("https://ghe.acme.com/api/v3/") == "https://ghe.acme.com/api/graphql"
+    seen: list[httpx.Request] = []
+    answers = [httpx.Response(502), httpx.Response(200, json={"data": {"node": {"id": "x"}}}),
+               httpx.Response(200, json={"errors": [{"message": "Resource not accessible by integration"}]}),
+               httpx.Response(401, json={"message": "Bad credentials"})]
+
+    def reply(r: httpx.Request) -> httpx.Response:
+        seen.append(r)
+        return answers.pop(0)
+
+    gql = ghprojects.GraphQL(GH_TOKEN, "https://api.github.com", transport=httpx.MockTransport(reply))
+    assert await gql("query($item: ID!) { node(id: $item) { id } }", item="x") == {"node": {"id": "x"}}
+    assert len(seen) == 2 and json.loads(seen[1].content)["variables"] == {"item": "x"}
+    with pytest.raises(Exception, match="not accessible"):
+        await gql("query { viewer { login } }")
+    with pytest.raises(Exception, match="HTTP 401") as e:
+        await gql("query { viewer { login } }")
+    assert GH_TOKEN not in str(e.value)
+    await gql.close()
+
+
+# ============================================================================ Jira (no agent runs)
+@pytest.fixture
+async def door(fleet, settings, monkeypatch):
+    """A JobService that queues but doesn't run jobs, with Jira configured, and the Jira route mounted."""
+    fake = FakeAPIs()
+    ghprojects._fields.clear()
+    svc = JobService(fleet, None, transport=httpx.MockTransport(fake))
+    configure(svc, "https://github.com/acme/api.git", "base")
+    link(monkeypatch, {("jira", DANA): "dana", ("github", "dana"): "dana"})
+    ts = fixture("jira_issue_updated.json")["timestamp"] / 1000
+    app = FastAPI()
+    front = jira.JiraFrontDoor(svc, clock=lambda: ts + 60)
+    front.mount(app)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://hangar") as client:
+        yield {"svc": svc, "fake": fake, "client": client, "front": front}
+    for t in list(svc._background):
+        t.cancel()
+
+
+async def post(client, payload: dict, headers: dict | None = None, raw: bytes | None = None) -> httpx.Response:
+    body = raw if raw is not None else json.dumps(payload).encode()
+    return await client.post("/api/hooks/jira", content=body, headers=headers if headers is not None else sign(body))
+
+
+async def test_jira_status_change_queues_a_job_for_the_linked_person(door):
+    svc, fake, client = door["svc"], door["fake"], door["client"]
+    payload = fixture("jira_issue_updated.json")
+    r = await post(client, payload, {**sign(json.dumps(payload).encode()),
+                                     "X-Atlassian-Webhook-Identifier": "wh-1"})
+    assert r.status_code == 200 and r.json().get("ok"), r.json()
+    job = svc.get(r.json()["job"])
+    assert job.state == JobState.QUEUED and job.person == "dana" and job.source == "jira"
+    assert job.source_ref == "jira:ABC-12" and job.requester == f"jira:{DANA}" and job.untrusted_source is None
+    assert job.labels[intake.TRACKER] == "jira:ABC-12" and job.idempotency_key == "jira-delivery:wh-1"
+    assert job.title == "ABC-12: Retry uploads that time out" and job.repo == "https://github.com/acme/api.git"
+    [ctx] = job.context
+    assert ctx.name == "jira-ABC-12.md" and not ctx.untrusted and "never retried" in ctx.content
+    assert "https://acme.atlassian.net/browse/ABC-12" in ctx.content
+    await until(lambda: fake.jira_comments(), what="queued comment")
+    assert fake.jira_comments()[0].startswith(f"[hangar] Queued as hangar job {job.id}")
+
+    # Jira's retry of the same delivery, and a replay of it, do nothing
+    again = await post(client, payload)
+    assert again.status_code == 200 and again.json() == {"ignored": "duplicate delivery"}
+    # a new delivery for the same issue while its job is open doesn't start a second
+    later = {**payload, "timestamp": payload["timestamp"] + 1000}
+    r2 = await post(client, later)
+    assert r2.status_code == 200 and "already" in r2.json()["ignored"] and len(svc._jobs) == 1
+
+
+async def test_jira_refuses_bad_signatures_stale_and_untriggered(door):
+    svc, client = door["svc"], door["client"]
+    payload = fixture("jira_issue_updated.json")
+    body = json.dumps(payload).encode()
+    assert (await post(client, payload, sign(body, "wrong"))).status_code == 401
+    assert (await post(client, payload, {"Content-Type": "application/json"})).status_code == 401
+    assert (await post(client, payload, {"X-Hangar-Token": "nope"})).status_code == 401
+    stale = {**payload, "timestamp": payload["timestamp"] - 3 * 3600 * 1000}
+    assert (await post(client, stale)).json() == {"ignored": "missing or stale timestamp"}
+    assert (await post(client, {k: v for k, v in payload.items() if k != "timestamp"})).json()["ignored"] \
+        == "missing or stale timestamp"
+    other = copy.deepcopy(payload)
+    other["changelog"]["items"][0]["toString"] = "In Progress"
+    assert (await post(client, other)).json() == {"ignored": "not the trigger status or label"}
+    unmapped = copy.deepcopy(payload)
+    unmapped["issue"]["key"], unmapped["issue"]["fields"]["project"]["key"] = "ZZZ-1", "ZZZ"
+    assert "not mapped" in (await post(client, unmapped)).json()["ignored"]
+    assert (await post(client, {}, raw=b"[1]", headers=sign(b"[1]"))).status_code == 400
+    assert (await post(client, {}, raw=b"x" * 1_100_000, headers=sign(b"x"))).status_code == 413
+    assert not svc._jobs
+
+
+async def test_jira_label_and_component_routing(door):
+    svc, client = door["svc"], door["client"]
+    svc.settings.github_repos["https://github.com/acme/web.git"] = svc.settings.github_repos["acme/api"]
+    payload = fixture("jira_issue_updated.json")
+    payload["changelog"]["items"] = [{"field": "labels", "fromString": "backend", "toString": "backend hangar"}]
+    payload["issue"]["fields"]["components"] = [{"name": "Web"}]
+    r = await post(client, payload)
+    assert r.json().get("ok"), r.json()
+    assert svc.get(r.json()["job"]).repo == "https://github.com/acme/web.git"
+    # a label that was already there isn't a new trigger
+    payload["timestamp"] += 1
+    payload["issue"]["key"] = "ABC-13"
+    payload["changelog"]["items"] = [{"field": "labels", "fromString": "hangar", "toString": "hangar x"}]
+    assert (await post(client, payload)).json() == {"ignored": "not the trigger status or label"}
+
+
+async def test_jira_unlinked_sender_waits_for_a_linked_approval(door, monkeypatch):
+    svc, fake, client = door["svc"], door["fake"], door["client"]
+    payload = fixture("jira_issue_updated.json")
+    payload["user"] = {"accountId": "557058:outsider", "displayName": "Outside Contractor"}
+    payload["issue"]["fields"]["reporter"] = payload["user"]
+    r = await post(client, payload)
+    job = svc.get(r.json()["job"])
+    assert r.json()["awaiting_approval"] and job.state == JobState.AWAITING_APPROVAL
+    assert job.person is None and job.untrusted_source == "jira:557058:outsider" and job.context[0].untrusted
+    await until(lambda: any("/hangar approve" in c for c in fake.jira_comments()), what="approval note")
+
+    comment = fixture("jira_comment_created.json")
+    comment["comment"]["body"] = "/hangar approve"
+    comment["comment"]["author"] = payload["user"]  # the outsider can't approve their own job
+    res = await post(client, comment)
+    assert "not linked" in res.json()["ignored"] and job.state == JobState.AWAITING_APPROVAL
+    comment["comment"]["author"] = {"accountId": DANA, "displayName": "Dana Lee"}
+    comment["timestamp"] += 1
+    res = await post(client, comment)
+    assert res.json() == {"ok": True, "approved": job.id} and job.state == JobState.QUEUED
+    assert job.approval.decided_by == "jira:dana"
+    await until(lambda: any("Approved by dana" in c for c in fake.jira_comments()), what="approved note")
+
+
+async def test_jira_comment_rules(door):
+    svc, fake, client = door["svc"], door["fake"], door["client"]
+    comment = fixture("jira_comment_created.json")
+    # hangar's own comments, and comments that aren't /hangar with no question open, do nothing
+    comment["comment"]["body"] = "[hangar] Queued as hangar job"
+    assert "own" in (await post(client, comment)).json()["ignored"]
+    comment["comment"]["body"], comment["timestamp"] = "looks good", comment["timestamp"] + 1
+    assert (await post(client, comment)).json() == {"ignored": "not a /hangar comment"}
+    # `/hangar <more>` from a linked person on an issue with no job starts one, with their instructions
+    comment["comment"]["body"] = {"type": "doc", "version": 1, "content": [{"type": "paragraph", "content": [
+        {"type": "text", "text": "/hangar also cover resumable uploads"}]}]}
+    comment["timestamp"] += 1
+    del comment["issue"]["fields"]  # a slim comment payload: the issue is read through the API
+    res = await post(client, comment)
+    assert res.json().get("ok"), res.json()
+    job = svc.get(res.json()["job"])
+    assert "Additional instructions from Dana Lee:\nalso cover resumable uploads" in job.instructions
+    assert any(c.url.path == "/rest/api/3/issue/ABC-12" for c in fake.calls)  # read the issue as it is now
+
+
+async def test_jira_automation_web_request(door):
+    svc = door["svc"]
+    ts = fixture("jira_issue_updated.json")["timestamp"] / 1000
+    from datetime import UTC, datetime
+
+    now = datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%dT%H:%M:%S.0+0000")  # what {{now}} renders
+    body = json.dumps({"webhookEvent": "hangar:automation", "timestamp": now, "issue": {"key": "ABC-12"},
+                       "user": {"accountId": DANA, "displayName": "Dana Lee"}}).encode()
+    r = await post(door["client"], {}, raw=body, headers={"X-Hangar-Token": AUTO_TOKEN,
+                                                          "Content-Type": "application/json"})
+    assert r.status_code == 200 and r.json().get("ok"), r.json()
+    job = svc.get(r.json()["job"])
+    assert job.person == "dana" and "From the API, in ADF." in job.context[0].content
+
+
+async def test_jira_write_back_failures_land_on_the_job(door):
+    svc, fake = door["svc"], door["fake"]
+    job = svc.submit(SubmitJob(instructions="x", repo="https://github.com/acme/api.git",
+                               labels={intake.TRACKER: "jira:ABC-12"}),
+                     Caller("jira:x", "jira:x"), source="jira", source_ref="jira:ABC-12")
+    fake.jira_fail = 404
+    job.state = JobState.RUNNING
+    await svc._comment(job, "jira:ABC-12", "Agent started on hangar job", "note")
+    await until(lambda: any("could not update jira:ABC-12 (started)" in e.message for e in job.events),
+                what="tracker failure on the job")
+    assert any("could not comment on Jira issue ABC-12" in e.message for e in job.events)
+    assert job.labels[intake.STAGE] == "started"
+    fake.jira_fail = None
+    fake.statuses = ["Done"]  # the workflow offers no way into "In Review" from here
+    job.state, job.result.pr_url, job.result.pr_number = JobState.SUCCEEDED, "https://github.com/acme/api/pull/9", 9
+    await svc._comment(job, "jira:ABC-12", "done", "final")
+    await until(lambda: any("no transition to 'In Review'" in e.message for e in job.events), what="no transition")
+    link_ = next(c for c in fake.calls if c.url.path.endswith("/remotelink"))
+    assert json.loads(link_.content)["object"]["url"] == "https://github.com/acme/api/pull/9"
+    final = fake.jira_comments()[-1]
+    assert final.startswith(f"[hangar] Done: hangar job {job.id}") and "PR: https://github.com/acme/api/pull/9" in final
+
+
+# ============================================================================ GitHub Projects (no agent runs)
+async def test_projects_item_moved_to_the_trigger_column_queues_the_issue(door):
+    svc, fake = door["svc"], door["fake"]
+    payload = fixture("gh_projects_v2_item_edited.json")
+    res = await handle_github(svc, "projects_v2_item", "d-1", payload)
+    assert res.get("ok"), res
+    job = svc.get(res["job"])
+    assert job.source == "github-projects" and job.source_ref == "github:acme/api#12" and job.person == "dana"
+    assert job.labels[intake.TRACKER] == "ghproject:PVT_kwDOBUjMRs4AqZ1T:PVTI_lADOBUjMRs4AqZ1Tzgz_RAs"
+    assert job.labels["github.kind"] == "issue" and job.idempotency_key == "ghproject-delivery:d-1"
+    issue, comments = job.context
+    assert "never retried" in issue.content and not issue.untrusted
+    assert comments.untrusted and "IGNORE PREVIOUS" in comments.content and "Queued as" not in comments.content
+    await until(lambda: fake.gh_comments(), what="queued comment")
+    assert "Queued as hangar job" in fake.gh_comments()[0]
+    # a second move while the job is open doesn't start another
+    assert "already" in (await handle_github(svc, "projects_v2_item", "d-2", payload))["ignored"]
+
+    # the board follows the job: once per stage, by the column's option id
+    job.state = JobState.RUNNING
+    await svc._comment(job, job.source_ref, "Agent started on hangar job")
+    await svc._comment(job, job.source_ref, "still going")
+    job.state = JobState.NEEDS_INPUT
+    await svc._comment(job, job.source_ref, "**Question** — which?")
+    job.state = JobState.SUCCEEDED
+    await svc._comment(job, "github:acme/api#99", "done", kind="final")  # answered on the PR: the board still moves
+    await until(lambda: len(fake.mutations()) == 3, what="three column moves")
+    assert [m["option"] for m in fake.mutations()] == ["98236657", "0c1b4d5e", "4d2c9a11"]  # in order
+    m = fake.mutations()[0]
+    assert m["project"] == "PVT_kwDOBUjMRs4AqZ1T" and m["item"] == "PVTI_lADOBUjMRs4AqZ1Tzgz_RAs"
+    assert m["field"] == "PVTSSF_lADOBUjMRs4AqZ1Tzgh1yvc"
+    assert sum("field(name:" in json.loads(c.content)["query"] for c in fake.calls if c.url.path == "/graphql") == 1
+
+
+async def test_projects_ignores_what_isnt_a_move_into_the_trigger_column(door):
+    svc, fake = door["svc"], door["fake"]
+    base = fixture("gh_projects_v2_item_edited.json")
+
+    def variant(**changes) -> dict:
+        p = copy.deepcopy(base)
+        for path, value in changes.items():
+            cur = p
+            *head, last = path.split("__")
+            for k in head:
+                cur = cur[k]
+            cur[last] = value
+        return p
+
+    cheap = [
+        (variant(action="created"), "projects_v2_item created"),
+        (variant(projects_v2_item__content_type="DraftIssue"), "not an issue"),
+        (variant(changes__field_value__field_name="Priority"), "not the status field"),
+        (variant(changes__field_value__to={"id": "x", "name": "Done"}), "not the trigger column"),
+        (variant(changes__field_value__project_number=99), "not configured"),
+        (variant(changes__field_value__field_type="date"), "not a status change"),
+    ]
+    for p, why in cheap:
+        assert why in (await handle_github(svc, "projects_v2_item", None, p))["ignored"]
+    assert not fake.calls  # decided from the payload alone
+    fake.item["data"]["node"]["fieldValues"]["nodes"][1]["name"] = "In progress"  # moved on since
+    assert "not 'Ready for agent'" in (await handle_github(svc, "projects_v2_item", None, base))["ignored"]
+    fake.item = fixture("gh_graphql_item.json")
+    fake.item["data"]["node"]["content"]["repository"]["nameWithOwner"] = "acme/other"
+    assert "not one of this board's repos" in (await handle_github(svc, "projects_v2_item", None, base))["ignored"]
+    fake.item = fixture("gh_graphql_item.json")
+    fake.item["data"]["node"]["content"]["state"] = "CLOSED"
+    assert "closed" in (await handle_github(svc, "projects_v2_item", None, base))["ignored"]
+    svc.settings.github_projects = {}
+    assert "no GitHub Projects board" in (await handle_github(svc, "projects_v2_item", None, base))["ignored"]
+    assert not svc._jobs
+
+
+async def test_projects_untrusted_mover_waits_for_approval_on_the_issue(door, monkeypatch):
+    svc, fake = door["svc"], door["fake"]
+    link(monkeypatch, {})
+    res = await handle_github(svc, "projects_v2_item", "d-9", fixture("gh_projects_v2_item_edited.json"))
+    job = svc.get(res["job"])
+    assert res["awaiting_approval"] and job.state == JobState.AWAITING_APPROVAL and job.person is None
+    assert job.context[0].untrusted
+    await until(lambda: any("/hangar approve" in c for c in fake.gh_comments()), what="approval comment")
+    # the issue's own /hangar approve path decides it, as for any issue job
+    res = await handle_github(svc, "issue_comment", "d-10", {
+        "action": "created", "repository": {"full_name": "acme/api"}, "issue": {"number": 12, "title": "t"},
+        "comment": {"body": "/hangar approve", "author_association": "MEMBER", "user": {"login": "sean", "id": 1}}})
+    assert res == {"ok": True, "approved": job.id} and job.state == JobState.QUEUED
+
+
+# ============================================================================ Jira end to end (a scripted agent runs)
+@needs_tools
+async def test_jira_question_answered_by_a_comment_then_delivered(fleet, xsessions, world, monkeypatch):  # noqa: F811
+    """Status change -> job; the agent's question goes to the issue and the issue moves to Blocked; a linked
+    teammate's comment answers it; the job finishes and the issue moves to In Review."""
+    fake = FakeAPIs()
+    jobs = JobService(fleet, xsessions, transport=httpx.MockTransport(fake))
+    configure(jobs, world["url"], "xenv")
+    link(monkeypatch, {("jira", DANA): "dana"})
+    await jobs.start()
+    try:
+        ts = fixture("jira_issue_updated.json")["timestamp"] / 1000
+        front = jira.JiraFrontDoor(jobs, clock=lambda: ts + 60)
+        payload = fixture("jira_issue_updated.json")
+        payload["issue"]["fields"]["summary"] = "TASK-ASK pick one"
+        res = await front.handle(jira.load(jobs.settings), payload)
+        job = jobs.get(res["job"])
+        await until(lambda: jobs.get(job.id).state in (JobState.NEEDS_INPUT, JobState.FAILED), what="question")
+        job = await idle(jobs, job.id)
+        assert job.state == JobState.NEEDS_INPUT, [e.message for e in job.events]
+        await until(lambda: any("Question" in c for c in fake.jira_comments()), what="question comment")
+        comments = fake.jira_comments()
+        started = next(c for c in comments if c.startswith("[hangar] Agent started"))
+        assert "Follow it in hangar: http://localhost:8787/#jobs" in started
+        q = next(c for c in comments if "Question" in c)
+        assert "Use A or B?" in q and "Answer in a comment on this issue" in q
+        await until(lambda: fake.transitions() == ["11", "12"], what="In Progress, then Blocked")
+
+        answer = fixture("jira_comment_created.json")
+        res = await front.handle(jira.load(jobs.settings), answer)
+        assert res == {"ok": True, "follow_up": job.id}
+        await until(lambda: jobs.get(job.id).state in (JobState.SUCCEEDED, JobState.FAILED), what="done")
+        job = await idle(jobs, job.id)
+        assert job.state == JobState.SUCCEEDED and job.turns[1].requester == f"jira:{DANA}"
+        assert job.turns[1].reply_to == "jira:ABC-12" and job.turns[1].summary == "Went with B"
+        await until(lambda: any(c.startswith("[hangar] Done") for c in fake.jira_comments()), what="final")
+        await until(lambda: fake.transitions() == ["11", "12", "13"], what="... and In Review")
+        done = next(c for c in fake.jira_comments() if c.startswith("[hangar] Done"))
+        assert f"Branch: {job.branch}" in done and "/hangar <message>" in done
+    finally:
+        await jobs.stop()
+
+
+def test_routes_doctor_and_project_items_through_the_github_route(settings, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from hangar.app import create_app
+
+    settings.admin_token = "t0ken"
+    app = create_app(settings)
+    fake = FakeAPIs()
+    with TestClient(app) as c:
+        h = app.state.hangar
+        body = json.dumps(fixture("jira_issue_updated.json")).encode()
+        assert c.post("/api/hooks/jira", content=body, headers=sign(body)).status_code == 404  # off until set
+        h.jobs.transport = httpx.MockTransport(fake)
+        configure(h.jobs, "acme/api", "base")
+        link(monkeypatch, {("github", "dana"): "dana"})
+        r = c.post("/api/hooks/jira", content=body, headers=sign(body))  # recorded a while ago: too old now
+        assert r.status_code == 200 and r.json() == {"ignored": "missing or stale timestamp"}
+        assert c.post("/api/hooks/jira", content=body, headers=sign(body, "x")).status_code == 401
+        big = fixture("jira_issue_updated.json")
+        big["issue"]["fields"]["description"] = "x" * 200_000  # past the 64 KB anonymous cap
+        big = json.dumps(big).encode()
+        assert c.post("/api/hooks/jira", content=big, headers=sign(big)).json() == {
+            "ignored": "missing or stale timestamp"}
+        checks = {x["name"]: x for x in c.get("/api/doctor", headers={"Authorization": "Bearer t0ken"}).json()}
+        assert checks["jira api"]["status"] == "ok" and "Hangar" in checks["jira api"]["detail"]
+        assert checks["jira project ABC"]["status"] == "ok" and checks["jira credential jira-hook"]["status"] == "ok"
+
+        h.broker.put("gh-hook", "webhook", CredentialKind.GENERIC, "gh-secret")
+        settings.github_webhook_secret_credential = "gh-hook"
+        body = json.dumps(fixture("gh_projects_v2_item_edited.json")).encode()
+        headers = {"X-Hub-Signature-256": "sha256=" + hmac.new(b"gh-secret", body, hashlib.sha256).hexdigest(),
+                   "X-GitHub-Event": "projects_v2_item", "X-GitHub-Delivery": "g-1",
+                   "Content-Type": "application/json"}
+        r = c.post("/api/hooks/github", content=body, headers=headers)
+        assert r.status_code == 202 and r.json()["ok"], r.json()
+        assert h.jobs.get(r.json()["job"]).source == "github-projects"
+        again = c.post("/api/hooks/github", content=body, headers={**headers, "X-GitHub-Delivery": "g-2"})
+        assert again.status_code == 200 and again.json() == {"ignored": "duplicate delivery"}
+
+
+# test_exchange's scripted agent asks "Use A or B?" for TASK-ASK and answers TASK-USE-B
+from tests.test_exchange import svc as xsessions  # noqa: E402, F401 - a fixture, registered under this name
+from tests.test_exchange import world  # noqa: E402, F401

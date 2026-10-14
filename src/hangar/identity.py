@@ -102,6 +102,10 @@ def _signing_names(settings: Settings) -> set[str]:
     for cfg in (settings.inbound_webhooks or {}).values():
         if isinstance(cfg, dict) and isinstance(cfg.get("secret"), str):
             names.add(cfg["secret"])
+    jira = getattr(settings, "jira", None) or {}  # --- intake: Jira's API token, webhook secret, Automation token
+    for key in ("token_credential", "webhook_secret_credential", "automation_token_credential"):
+        if isinstance(jira, dict) and isinstance(jira.get(key), str):
+            names.add(jira[key])
     return {n for n in names if n}
 
 

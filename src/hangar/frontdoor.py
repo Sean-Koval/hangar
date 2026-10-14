@@ -195,7 +195,7 @@ class Admission:
     def admit_follow_up(self, requester: str, owner: str | None) -> None:
         """Follow-ups start agent turns too: the same per-caller bucket, for everyone but admin tokens. `owner` is
         set when a jobs token asks (its token id); GitHub and Slack people are told apart by their requester."""
-        if owner is None and not requester.startswith(("github:", "slack:", "webhook:")):
+        if owner is None and not requester.startswith(("github:", "slack:", "webhook:", "jira:")):  # --- intake
             return
         key = f"owner:{owner or requester}"
         try:
@@ -302,6 +302,10 @@ class FrontDoorMiddleware:
             return MAX_BODY
         if path.startswith("/api/hooks/inbound/"):
             return s.inbound_max_body_bytes
+        if path == "/api/hooks/jira":  # --- intake: an issue with a long description is well past 64 KB
+            from hangar.jira import MAX_BODY as JIRA_MAX_BODY
+
+            return JIRA_MAX_BODY
         if path.startswith(("/api/", "/mcp")) or path == "/a2a":
             return -1  # depends on the caller
         return ANON_MAX_BODY  # the OAuth endpoints, and anything else

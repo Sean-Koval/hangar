@@ -20,6 +20,7 @@ import hangar.identity as identity  # --- identity
 import hangar.identity_api as identity_api  # --- identity
 from hangar import drain as drain  # --- reconciler
 from hangar import exchange, observe  # --- observe
+from hangar import ghprojects as ghprojects  # --- intake: registers the GitHub Projects write-back
 from hangar import people as people  # --- teamcreds
 from hangar import redeliver as redeliver  # --- reconciler
 from hangar import teamcreds as teamcreds  # --- teamcreds
@@ -31,6 +32,7 @@ from hangar.envspec import EnvCatalog
 from hangar.fleet import Fleet, FleetError
 from hangar.github import verify_signature
 from hangar.harnesses import HARNESSES, PACK_ROOT
+from hangar.jira import JiraFrontDoor  # --- intake
 from hangar.jobs import Caller, JobService, SubmitJob, handle_github
 from hangar.mcp_server import build_mcp, current_actor
 from hangar.models import Budget, ContextItem, Credential, CredentialKind, Resources, Sandbox
@@ -867,7 +869,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ttl = h.settings.webhook_replay_hours * 3600
         # --- reconciler: marked pending while handled and done after, so a pod that dies in between doesn't make
         # GitHub's redelivery look like a replay (redeliver.py)
-        if event in ("issues", "issue_comment") and not redeliver.claim(replays, digest, ttl):
+        if event in ("issues", "issue_comment", "projects_v2_item") and \
+                not redeliver.claim(replays, digest, ttl):  # --- intake: + project items
             delivery = (request.headers.get("x-github-delivery") or "")[:100]
             jobs.admission.refused("github:replay", "github", "hook.replay", delivery or None)
             return JSONResponse({"ignored": "duplicate delivery"}, status_code=200)
@@ -880,7 +883,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             replays.forget("github", digest)  # a redelivery after the fix (or the wait) should run
             if res.get("rate_limited"):
                 return JSONResponse(res, status_code=429)
-        elif event in ("issues", "issue_comment"):
+        elif event in ("issues", "issue_comment", "projects_v2_item"):  # --- intake
             redeliver.done(replays, digest, ttl)  # --- reconciler: handled; from now on a replay
         return JSONResponse(res, status_code=202 if res.get("ok") else 200)
 
@@ -940,6 +943,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return jobs.view(triggers.run_now(ref, requester=who))
     # --- workstream B: slack (/api/hooks/slack/commands and /api/hooks/slack/events; docs/slack.md)
     SlackFrontDoor(jobs).mount(app)
+    JiraFrontDoor(jobs).mount(app)  # --- intake: /api/hooks/jira (docs/intake.md)
 
     # ------------------------------------------------------------------ sessions (spec 0010)
     sessions = h.sessions

@@ -181,6 +181,9 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
     from hangar.slack import doctor_checks as slack_checks
 
     out += await slack_checks(h, transport)
+    from hangar.jira import doctor_checks as jira_checks  # --- intake
+
+    out += await jira_checks(h, transport)
 
     # checkpoint storage is writable
     key = f"_doctor/{now():.0f}"

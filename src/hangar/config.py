@@ -384,6 +384,13 @@ class Settings(BaseSettings):
     # Follow a running turn's log through hangar-envd (`tail -F`), so its events arrive as the agent writes them
     # instead of on the next poll (session_poll_seconds). Off, or without hangar-envd: polling, as before.
     stream_turn_logs: bool = True
+    # --- intake: tracker intake (docs/intake.md). Jira: {"url": "https://acme.atlassian.net", "email": ...,
+    # "token_credential": ..., "webhook_secret_credential": ..., "projects": {"ABC": {"repo": "owner/repo"}},
+    # "trigger": {"status": "Ready for agent"}, "statuses": {"started": "In Progress", ...}} (jira.JiraConfig).
+    jira: dict[str, Any] = Field(default_factory=dict)
+    # GitHub Projects boards, by "org/number": {"acme/7": {"trigger": "Ready for agent", "repos": ["acme/api"],
+    # "statuses": {"started": "In progress", "delivered": "In review"}}} (ghprojects.Board).
+    github_projects: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
     @property
     def backup_interval_hours(self) -> float:
