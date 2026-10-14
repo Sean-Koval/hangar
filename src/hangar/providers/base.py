@@ -47,6 +47,9 @@ class Capabilities(BaseModel):
     microvm: bool = False  # hardware-virtualized isolation available (Kata/Firecracker)
     local_build: bool = True  # can build env images itself
     image_volumes: bool = False  # can mount harness packs (read-only OCI images) into sandboxes
+    # --- providers-e2b: `resume` restores a paused sandbox's memory in milliseconds (a microVM snapshot), so a
+    # suspended session can be paused rather than destroyed (sessions.py, hot_resume.py)
+    hot_resume: bool = False
 
 
 class TerminalStream(abc.ABC):
@@ -68,6 +71,11 @@ class TerminalStream(abc.ABC):
 
 class ProviderError(RuntimeError):
     pass
+
+
+# --- providers-e2b
+class Unavailable(ProviderError):
+    """The backend is full or can't be reached; nothing was created. A tier may try its next provider."""
 
 
 class Provider(abc.ABC):

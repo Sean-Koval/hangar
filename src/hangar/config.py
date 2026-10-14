@@ -83,6 +83,27 @@ class Settings(BaseSettings):
     e2b_aws_region: str | None = None
     e2b_registry_username: str | None = None  # any other registry (basic auth)
     e2b_registry_password: str | None = None
+    # --- providers-e2b: one provider, three backends (docs/microvm.md). cloud: E2B's cloud or BYOC; selfhosted:
+    # E2B's own stack (Embed) on your machines; cube: Tencent CubeSandbox's E2B-compatible CubeAPI.
+    e2b_flavor: Literal["cloud", "selfhosted", "cube"] = "cloud"
+    e2b_api_url: str | None = None  # the control API; default https://api.<domain>. Cube: http://<cubeapi>:3000
+    # Where sandboxes' envd answers. Unset: the SDK's rule (https://sandbox.<domain> on E2B's own domains, else
+    # https://49983-<id>.<domain>). A URL with {sandbox_id} (and {port}) is filled in per sandbox; without, every
+    # sandbox is reached there and routed by the E2b-Sandbox-Id header (one host, or hangar's own /e2b/sandbox).
+    e2b_sandbox_url: str | None = None
+    # CubeSandbox returns no envd access token: its envd answers anyone who reaches it. Off: such sandboxes are
+    # refused (and killed). On: use them, on a private network only (docs/microvm.md, "Security").
+    e2b_allow_unauthenticated_envd: bool = False
+    # hangar environment -> an E2B or Cube template built out of band (Cube's template pipeline, `e2b template
+    # build`): the provider uses it instead of building the environment's image.
+    e2b_environment_templates: dict[str, str] = Field(default_factory=dict)
+    e2b_request_timeout_seconds: float = 60.0  # one control API call (create/connect restore in ~100 ms)
+    e2b_template_build_timeout_seconds: int = 1800  # Cube template builds: boot, probe, snapshot
+    # --- providers-e2b: sandboxes by tier. An environment's `tier:` (or a create's) picks the first of its
+    # providers that is up; `fast` then falls back to HANGAR_DEFAULT_PROVIDER, `isolated` never falls back to
+    # anything not listed (it is a security choice, not a speed one).
+    tiers: dict[str, list[str]] = Field(default_factory=lambda: {"fast": ["e2b"], "isolated": ["kubernetes"]})
+    tier_cooldown_seconds: int = 60  # a provider that was full or down is skipped for this long
 
     # --- envd: in-sandbox daemon for exec, files and terminals (docs/envd.md) ---
     envd: Literal["auto", "off"] = "auto"  # auto: Docker and Kubernetes sandboxes use it when it can be reached
@@ -134,6 +155,10 @@ class Settings(BaseSettings):
     session_store: str | None = None
     session_poll_seconds: float = 5.0
     session_turn_timeout_minutes: int = 120
+    # --- providers-e2b: on a provider with memory snapshots (hot_resume: E2B, CubeSandbox), a suspended session's
+    # sandbox is paused, not destroyed, for this long, and resumes from its memory; 0 = always restore checkpoints.
+    session_hot_resume_minutes: int = 1440
+    session_hot_resume_max: int = 20  # sandboxes kept paused for hot resume at once; the longest-parked go first
     pre_destroy_timeout_seconds: float = 300.0
     # Waiting for a sandbox to start covers node scale-up (2-4 min on GKE) plus a first image pull (1-3 min).
     sandbox_start_timeout_seconds: int = 900

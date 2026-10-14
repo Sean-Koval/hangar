@@ -438,7 +438,11 @@ class E2BService:
                 # once it runs.
                 sb = await self.fleet.create(env, name=f"e2b-{env}", labels=metadata, actor=self.actor(p),
                                              ttl_minutes=max(60, math.ceil(timeout / 60)),
-                                             credentials=None if trusted else [])
+                                             credentials=None if trusted else [],
+                                             # --- providers-e2b: the provider checked above, never one picked by
+                                             # the env's tier: a fast tier is the e2b provider, which may be this
+                                             # very API (hangar as its own E2B backend) and would loop.
+                                             provider=self.settings.default_provider)
             except FleetError as e:
                 if "max_sandboxes" in str(e):
                     raise E2BError(429, f"hangar is at its sandbox limit: {e}") from e

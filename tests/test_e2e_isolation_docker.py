@@ -150,6 +150,35 @@ async def test_sandboxes_cant_reach_each_other_on_docker(tmp_path):
         await fleet.stop()
 
 
+async def test_a_fast_sandbox_that_falls_back_to_docker_is_on_hangars_network(tmp_path):
+    """integrate(#64 x #62): when the fast tier's microVM provider is full, the sandbox lands on Docker, and there on
+    hangar's isolating network like any other."""
+    from hangar.app import Hangar
+    from hangar.config import Settings
+    from hangar.providers.base import Unavailable
+    from hangar.providers.docker_net import NAME
+    from tests.conftest import FakeProvider
+
+    class Full(FakeProvider):
+        async def create(self, sandbox, image, spec=None):
+            raise Unavailable("e2b (cloud) POST /v2/sandboxes: 429 concurrency limit")
+
+    s = Settings(data_dir=tmp_path, env_dirs=[ROOT / "envs"], reaper_interval_seconds=3600,
+                 extra_ca_bundle=os.environ.get("HANGAR_EXTRA_CA_BUNDLE") or None)
+    s.snapshot_dir.mkdir(parents=True, exist_ok=True)
+    fleet = Hangar(s).fleet
+    await fleet.start()
+    fleet.providers["e2b"] = Full()
+    try:
+        sb = await fleet.create("minimal", tier="fast", name="e2e-iso-fast", labels={"e2e-iso": "1"}, actor="test")
+        assert sb.provider == "docker"
+        attrs = fleet.provider("docker").client.api.inspect_container(fleet.get(sb.id).provider_ref)
+        assert list(attrs["NetworkSettings"]["Networks"]) == [NAME]
+    finally:
+        await fleet.destroy_many(label="e2e-iso")
+        await fleet.stop()
+
+
 async def _until(pred, what: str, timeout: float = 60.0):
     for _ in range(int(timeout / 0.1)):
         if got := await pred():

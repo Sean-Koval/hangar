@@ -144,4 +144,4 @@ Sandbox URLs on GKE need either nothing new (`E2B_SANDBOX_URL` through the exist
 | `HANGAR_E2B_CREATE_PER_MINUTE` / `_BURST` | `30` / `10` | Sandbox creations per `sandboxes` token. |
 | `HANGAR_E2B_MAX_STREAMS_PER_SANDBOX` | `256` | Requests in flight through the router, per sandbox. |
 
-`HANGAR_E2B_API_KEY` and `HANGAR_E2B_DOMAIN` are different settings: they configure hangar's own `e2b` *provider*, which runs sandboxes on E2B's cloud.
+`HANGAR_E2B_API_KEY` and `HANGAR_E2B_DOMAIN` are different settings: they configure hangar's own `e2b` *provider*, which runs sandboxes on E2B's cloud, a self-hosted E2B or CubeSandbox ([microvm.md](microvm.md)).

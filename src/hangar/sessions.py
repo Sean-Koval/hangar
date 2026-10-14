@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 from hangar import cache as caching  # --- overnight/cache: prompt-cache TTL, one model per session, siblings
 from hangar import ckpt, exchange, isolation, observe  # --- observe, isolation
+from hangar import hot_resume as hot_resume  # --- providers-e2b
 from hangar import steer as steering  # workstream steer: live turns
 from hangar.checkpoints import CheckpointStore, make_store
 from hangar.ckpt import CKPT_DIR, CKPT_REF, PACK_READ_LIMIT, PARTS, RESTORE_DIR  # noqa: F401 - re-exported (strategies, exchange)
@@ -161,8 +162,9 @@ class SessionService:
         steering.recover(self)  # workstream steer: messages that were on their way into a turn
         if self._hook not in self.fleet.pre_destroy:
             self.fleet.pre_destroy.append(self._hook)
-        orphans = [sb.id for sb in self.fleet.list(label="hangar.session")
-                   if (o := self._sessions.get(sb.labels.get("hangar.session", ""))) is None or o.sandbox_id != sb.id]
+        parked = hot_resume.parked_ids(self)  # --- providers-e2b: paused for their sessions, not orphaned
+        orphans = [sb.id for sb in self.fleet.list(label="hangar.session") if sb.id not in parked and
+                   ((o := self._sessions.get(sb.labels.get("hangar.session", ""))) is None or o.sandbox_id != sb.id)]
         if orphans:
             self._spawn(self._destroy_orphans(orphans))
         self._loop = asyncio.create_task(self._idle_loop())
@@ -339,6 +341,7 @@ class SessionService:
         if s.sandbox_id or self.busy(s.id):
             raise SessionError(f"suspend session {s.name} before archiving it")
         self._spawn(self._drop(f"{s.id}/"))
+        self._spawn(hot_resume.discard(self, s.id))  # --- providers-e2b
         s.checkpoints = []
         self._set(s, SessionState.ARCHIVED, f"archived by {requester}")
         self.fleet.audit(requester, "session.archive", s.id)
@@ -439,6 +442,8 @@ class SessionService:
             if progress:
                 progress(msg)
 
+        if (hot := await hot_resume.wake(self, s, stage)) is not None:  # --- providers-e2b: its memory, if parked
+            return hot
         sb = await self.fleet.create(
             s.environment, name=f"ses-{s.name[:30]}-{uuid.uuid4().hex[:4]}", repo=s.repo, branch=s.base_branch,
             harness=s.harness, ttl_minutes=ttl, labels={**s.labels, "hangar.session": s.id}, provider=s.provider,
@@ -1012,6 +1017,8 @@ class SessionService:
         sid = s.sandbox_id
         s.sandbox_id = None
         self._set(s, SessionState.SUSPENDED, why)
+        if await hot_resume.park(self, s, sid):  # --- providers-e2b: paused, not destroyed, after the checkpoint
+            return
         with contextlib.suppress(Exception):
             await self.fleet.destroy(sid, actor=f"session:{s.id}")
 

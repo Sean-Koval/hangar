@@ -154,6 +154,7 @@ class Fleet:
         self.closing = asyncio.Event()
         # --- workstream F: git gateway. Grants for sandboxes in credential_mode: gateway (spec 0003).
         self.gateway = Gateway(self)
+        self.tier_down: dict[str, float] = {}  # --- providers-e2b: provider -> monotonic time it may be tried again
 
     # ================================================================== setup
     async def start(self) -> None:
@@ -483,11 +484,25 @@ class Fleet:
         _skip_repo: bool = False,
         progress: Callable[[str], None] | None = None,
         push_branch: str | None = None,
+        tier: str | None = None,
     ) -> Sandbox:
         """`progress` gets short plain-language updates while the sandbox starts (image build, waiting for a
         node, cloning...), so callers can show where the time goes. `push_branch` (default: `work_branch`) is
-        the branch a gateway-mode sandbox may push."""
+        the branch a gateway-mode sandbox may push. `tier` (or the environment's) picks the provider when none
+        is named (tiers.py)."""
+        # --- providers-e2b: no provider named: the tier's first one with room (an isolated one is never given up).
+        # Must stay the first statement, so locals() is exactly the arguments.
+        from hangar import tiers
+
+        if tier := tiers.route(self, environment, tier, provider):
+            call = {k: v for k, v in locals().items() if k not in ("self", "tier", "tiers")}
+            return await tiers.create(self, tier, call)
         active = [s for s in self.store.list(Sandbox) if s.state in ACTIVE]
+        if len(active) >= self.settings.max_sandboxes:  # --- providers-e2b: paused for hot resume, they give way
+            from hangar import hot_resume
+
+            if await hot_resume.make_room(self):
+                active = [s for s in self.store.list(Sandbox) if s.state in ACTIVE]
         if len(active) >= self.settings.max_sandboxes:
             raise FleetError(f"fleet is at max_sandboxes={self.settings.max_sandboxes}; destroy some first")
         spec = self.catalog.get(environment)
