@@ -334,7 +334,73 @@ def test_rotate_key_over_rest(settings):
             if st["rotation"]["phase"] == "retired":
                 break
             time.sleep(0.02)
-        assert st["rotation"]["phase"] == "retired" and len(st["keys"]) == 1
+        assert st["rotation"]["phase"] == "retired" and [k["retired"] for k in st["keys"]] == [False, True]
         assert h.vault.get_text("cred:x") == "value"
         assert c.post("/api/admin/rotate-key", headers={"Authorization": "Bearer nope"}).status_code == 401
     keys._RINGS.clear()
+
+
+# ====================================================================== review
+async def test_a_backup_from_before_the_rotation_can_still_be_restored_after_it(settings, store, tmp_path):
+    """--- review: the pass re-encrypts a backup's outer layer, but the database inside still holds the vault sealed
+    with the old key. Retiring dropped that key from the key file, so restoring any backup made before the
+    rotation brought back a vault nothing could decrypt."""
+    (settings.data_dir / keys.FILE).write_bytes(OLD)
+    ring = keys.load(settings, store)
+    Vault(store, ring).put("cred:gh", "ghp_secret")
+    from hangar.backup import snapshot
+
+    snapshot(settings.db_path, tmp_path / "before-rotation.db")  # what a backup holds, inside its encryption
+    rot = _rotation(settings, store, ring, LocalStore(tmp_path / "ses"))
+    await rot.start("sean")
+    await _until(rot, "retired")
+    await rot.stop()
+    new = ring.primary
+    assert (settings.data_dir / keys.FILE).read_bytes().split() == [new]  # the previous image reads one key
+
+    keys._RINGS.clear()  # the backup restored, and hangar started on it
+    restored = Store(tmp_path / "before-rotation.db")
+    ring2 = keys.load(settings, restored)
+    assert Vault(restored, ring2).get_text("cred:gh") == "ghp_secret"
+    assert ring2.primary == new and ring2.rotation["phase"] == "pending"  # and it moves to the new key again
+    keys._RINGS.clear()
+    assert keys.load(settings, store).active == [new]  # the live database: retired stays retired
+
+
+async def test_the_pass_waits_while_the_old_key_is_missing(settings, store, tmp_path):
+    """--- review: with the old key gone from HANGAR_SECRET_KEY midway (removed too early, a typo), the pass
+    counted what it sealed as unreadable, finished, and retired the key: putting it back no longer helped."""
+    settings.secret_key = OLD.decode()
+    keys.load(settings, store)
+    blobs = LocalStore(tmp_path / "ses")
+    await blobs.put("ses-1/c/repo.bundle.enc", Fernet(OLD).encrypt(b"work"))
+    settings.secret_key = f"{NEW.decode()},{OLD.decode()}"
+    keys._RINGS.clear()
+    rot = _rotation(settings, store, keys.load(settings, store), blobs)
+    rot.resume = lambda: None  # stopped right after the re-seal: the pass starts after the next restart
+    await rot.start("sean")
+    settings.secret_key = NEW.decode()  # restarted without the old key
+    keys._RINGS.clear()
+    rot = _rotation(settings, store, keys.load(settings, store), blobs)
+    rot.resume()
+    await asyncio.sleep(0.3)
+    r = rot.ring.rotation
+    assert r["phase"] in ("sealed", "passing") and keys.key_id(OLD) in r["error"]
+    await rot.stop()
+    settings.secret_key = f"{NEW.decode()},{OLD.decode()}"  # put back
+    keys._RINGS.clear()
+    rot = _rotation(settings, store, keys.load(settings, store), blobs)
+    rot.resume()
+    await _until(rot, "retired")
+    assert Fernet(NEW).decrypt(await blobs.get("ses-1/c/repo.bundle.enc")) == b"work"
+    await rot.stop()
+
+
+def test_the_first_start_with_two_keys_finds_the_one_that_sealed_the_vault(settings, store):
+    """--- review: upgrading with a new key already first recorded the new key as the one that sealed what is
+    stored: no rotation was pending, and the old key looked unneeded."""
+    Vault(store, OLD).put("cred:gh", "ghp_secret")  # the release before: one key
+    settings.secret_key = f"{NEW.decode()},{OLD.decode()}"
+    ring = keys.load(settings, store)
+    assert store.kv_get_json(keys.KV)["current"] == keys.key_id(OLD)
+    assert ring.rotation["phase"] == "pending" and ring.rotation["old"] == keys.key_id(OLD)

@@ -382,7 +382,7 @@ One key encrypted the vault, every checkpoint and every backup, with no way to r
 | **`hangar admin rotate-key`** | → re-seals the vault at once, re-encrypts the session store in the background (progress kept across restarts), then retires the old key when nothing holds it (`--status`, `--retire [--force]`; `GET`/`POST /api/admin/rotate-key`, admin). |
 | **`HANGAR_BACKUP_STORE`** | → optional: backups in a bucket of their own, ideally one hangar may only write to. `hangar doctor` warns (`backup isolation`) while backups share the checkpoints' bucket and service account. |
 
-**Rolling back** to a build without it: before rolling back, put a single key back in `HANGAR_SECRET_KEY`, the one `hangar admin rotate-key --status` lists as encrypting (finish or don't start a rotation first). The previous version reads one key; anything sealed with another is unreadable to it.
+**Rolling back** to a build without it: before rolling back, put a single key back in `HANGAR_SECRET_KEY`, the one `hangar admin rotate-key --status` lists as encrypting (finish or don't start a rotation first). The previous version reads one key, and doesn't start with two; anything sealed with another is unreadable to it. With a key file, `secret.key` holds one key again once the rotation is retired (the retired one moves to `secret.key.retired`, which the previous version ignores); during a rotation it holds two, so finish the rotation first.
 
 ## Deploying with deploy.yml
 

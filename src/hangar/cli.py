@@ -1356,7 +1356,9 @@ def admin_restore(name: str = typer.Argument(..., help="A backup name from `hang
         if not s.secret_key and not key_file.exists():
             typer.secho("no vault key: set HANGAR_SECRET_KEY to the key the backup was made with", fg="red", err=True)
             raise typer.Exit(1)
-        vault = Vault(Store(":memory:"), s.secret_key.encode() if s.secret_key else key_file.read_bytes().strip())
+        from hangar import keys  # --- review: every key, the key file's retired ones too (older backups)
+
+        vault = Vault(Store(":memory:"), keys.KeyRing(keys.load_keys(s.secret_key, s.data_dir)))
 
         async def stage() -> dict:
             blobs = backup_store(s, make_store(s.session_store, s.data_dir))  # --- durable: HANGAR_BACKUP_STORE

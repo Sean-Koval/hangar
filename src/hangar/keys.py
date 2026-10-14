@@ -19,7 +19,8 @@ A rotation, `hangar admin rotate-key`:
    was. Meanwhile a checkpoint part that is copied into a new checkpoint is re-encrypted as it is copied
    (`Resealing`), instead of carrying the old key forward.
 4. **The old key is retired** once the pass is done and no sandbox started before the rotation is running: hangar
-   stops reading with it (and drops it from the key file). The operator then removes it from HANGAR_SECRET_KEY.
+   stops reading with it (and moves it from the key file to RETIRED_FILE). The operator then removes it from
+   HANGAR_SECRET_KEY, keeping it (disabled, in Secret Manager) while backups made before the rotation are kept.
 
 The state is one durable kv record, KV, with key ids only (`key_id`), never keys.
 """
@@ -48,6 +49,10 @@ log = logging.getLogger("hangar.keys")
 
 KV = "vault-keys"
 FILE = "secret.key"
+# --- review: key file mode keeps retired keys here, not in FILE (so a release that reads one key still starts).
+# Hangar never reads with them (KV lists them as retired), but a backup made before their rotation holds a database
+# whose vault they sealed: restored, its state doesn't say they are retired, and they read it.
+RETIRED_FILE = "secret.key.retired"
 PASS_SAVE_EVERY = 25  # objects between two progress records
 RETIRE_CHECK = 60.0  # seconds between two looks at what still holds the old key
 ACTIVE_ROTATION = ("pending", "sealed", "passing", "passed")
@@ -86,12 +91,15 @@ def _file(settings_or_dir: Any) -> Path:
 
 
 def load_keys(explicit: str | None, data_dir: Path) -> list[bytes]:
-    """HANGAR_SECRET_KEY's keys, else the key file's, made with one new key the first time."""
+    """HANGAR_SECRET_KEY's keys, else the key file's, made with one new key the first time. --- review: then the
+    retired keys of key file mode (RETIRED_FILE), last."""
     if explicit:
         return parse(explicit)
     f = _file(data_dir)
     if f.exists():
-        return parse(f.read_bytes())
+        keys = parse(f.read_bytes())
+        retired = f.with_name(RETIRED_FILE)
+        return keys + [k for k in (parse(retired.read_bytes()) if retired.exists() else []) if k not in keys]
     key = Fernet.generate_key()
     fd = os.open(f, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "wb") as fh:
@@ -99,16 +107,21 @@ def load_keys(explicit: str | None, data_dir: Path) -> list[bytes]:
     return [key]
 
 
-def _write_file(data_dir: Path, keys: list[bytes]) -> None:
+def _write_file(data_dir: Path, keys: list[bytes], name: str = FILE) -> None:
     """Replace the key file in one step (0600), newest key first."""
-    f = _file(data_dir)
-    tmp = f.with_name(f".{FILE}.{os.getpid()}.tmp")
+    f = _file(data_dir).with_name(name)
+    tmp = f.with_name(f".{name}.{os.getpid()}.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "wb") as fh:
         fh.write(b"\n".join(keys) + b"\n")
         fh.flush()
         os.fsync(fh.fileno())
     tmp.replace(f)
+    dfd = os.open(f.parent, os.O_RDONLY)  # --- review: the rename too, before anything is sealed with a new key
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
 
 
 class KeyRing:
@@ -203,9 +216,10 @@ def load(settings: Settings, store: Store) -> KeyRing:
     r = KeyRing(load_keys(settings.secret_key, settings.data_dir), state.get("retired"), state.get("rotation"))
     new = key_id(r.primary)
     current = state.get("current")
-    if current is None:
-        state["current"] = new  # the first start with a key ring: everything is sealed with this key
-    elif current != new and not r.rotating and r.by_id(current) is not None:
+    if current is None:  # the first start with a key ring: everything is sealed with one key
+        # --- review: which one, when a new key was put first before this start (the upgrade and a rotation at once)
+        current = state["current"] = _sealer(store, r) if len(r.keys) > 1 else new
+    if current != new and not r.rotating and r.by_id(current) is not None:
         r.rotation = state["rotation"] = {"old": current, "new": new, "started_at": time.time(), "phase": "pending"}
         log.warning("a new vault key (%s) is first; key %s sealed what is stored: run `hangar admin rotate-key`",
                     new, current)
@@ -218,6 +232,17 @@ def load(settings: Settings, store: Store) -> KeyRing:
     store.kv_set(KV, json.dumps(state), durable=True)
     _RINGS[(settings.secret_key, str(settings.data_dir))] = r
     return r
+
+
+def _sealer(store: Store, r: KeyRing) -> str:
+    """--- review: the id of the key that sealed the vault; with an empty vault, the oldest configured key (a
+    rotation to the newest then only re-encrypts what there is)."""
+    for blob in store.secret_blobs(5):
+        for k in r.keys:
+            with contextlib.suppress(InvalidToken):
+                Fernet(k).decrypt(blob)
+                return key_id(k)
+    return key_id(r.keys[-1])
 
 
 # ====================================================================== copies re-encrypt during a rotation
@@ -331,6 +356,7 @@ class Rotation:
         r = self.ring.rotation or {}
         if self.ring.by_id(r.get("new")) is None or key_id(self.ring.primary) != r.get("new"):
             raise RotationError(f"key {r.get('new')} must be first in HANGAR_SECRET_KEY to rotate to it")
+        self._need_old(r)
         n, bad = await asyncio.to_thread(self._reseal)
         self._save(phase="sealed", sealed_rows=n, unreadable_rows=bad, sealed_at=time.time(), passes={}, error=None)
         self.audit(who, "vault.rotate_key", r.get("new"), old=r.get("old"), sealed_rows=n, unreadable_rows=bad)
@@ -339,14 +365,20 @@ class Rotation:
         self.resume()
         return self.status()
 
+    def _need_old(self, r: dict[str, Any]) -> None:
+        """--- review: re-sealing or passing without the old key would count what it sealed as unreadable, and the
+        pass would then finish and retire it: putting the key back would no longer help."""
+        if self.ring.by_id(r.get("old")) is None:
+            raise RotationError(f"key {r.get('old')} isn't configured, and it sealed what the rotation re-encrypts: "
+                                "put it back in HANGAR_SECRET_KEY (after the new key) and restart hangar")
+
     def _new_file_key(self) -> None:
         """Key file mode: a new key goes first in the file, and the rotation is recorded."""
         new = Fernet.generate_key()
-        keys = [new, *self.ring.keys]
-        _write_file(self.settings.data_dir, keys)
-        self.ring.set_keys(keys)
+        _write_file(self.settings.data_dir, [new, *self.ring.active])  # --- review: retired ones stay in theirs
+        self.ring.set_keys([new, *self.ring.keys])
         st = self._state()
-        old = st.get("current") or key_id(keys[1])
+        old = st.get("current") or key_id(self.ring.keys[1])
         st["rotation"] = {"old": old, "new": key_id(new), "started_at": time.time(), "phase": "pending"}
         self.ring.rotation = st["rotation"]
         self.store.kv_set(KV, json.dumps(st), durable=True)
@@ -388,6 +420,7 @@ class Rotation:
             try:
                 r = self.ring.rotation or {}
                 if r.get("phase") in ("sealed", "passing"):
+                    self._need_old(r)  # --- review
                     await self._pass()
                     self._save(phase="passed", passed_at=time.time(), error=None)
                 if (self.ring.rotation or {}).get("phase") == "passed" and not self.blockers():
@@ -463,6 +496,12 @@ class Rotation:
             raise RotationError(f"{len(left)} sandbox(es) started before the rotation still run with tokens of the old "
                             f"key: {', '.join(left[:10])}. Wait for them, or --force")
         old = r.get("old")
+        old_key = next((k for k in self.ring.keys if key_id(k) == old), None)
+        if not self.settings.secret_key and old_key is not None:
+            # --- review: the key file: the old key leaves it for RETIRED_FILE, written first (a crash between the two
+            # leaves it in both). Backups made before the rotation hold a vault it sealed.
+            retired = [k for k in self.ring.keys if key_id(k) in self.ring.retired]
+            _write_file(self.settings.data_dir, [*retired, old_key], RETIRED_FILE)
         st = self._state()
         st["retired"] = sorted({*st.get("retired", []), old})
         st["current"] = r.get("new")
@@ -470,9 +509,8 @@ class Rotation:
         self.store.kv_set(KV, json.dumps(st), durable=True)
         self.ring.rotation = st["rotation"]
         self.ring.retire(old)
-        if not self.settings.secret_key:  # the key file: the old key leaves it
+        if not self.settings.secret_key:  # the key file: only the keys hangar reads with
             _write_file(self.settings.data_dir, self.ring.active)
-            self.ring.set_keys(self.ring.active)
         self.audit(who, "vault.retire_key", old, new=r.get("new"), forced=bool(left))
         log.warning("vault key %s retired; %s seals everything now", old, r.get("new"))
         return self.status()

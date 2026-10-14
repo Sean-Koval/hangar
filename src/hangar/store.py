@@ -341,6 +341,11 @@ class Store:
         with self._lock, self._synced(True):
             self._db.execute("DELETE FROM secrets WHERE name=?", (name,))
 
+    def secret_blobs(self, limit: int) -> list[bytes]:
+        """--- review: a few vault rows, sealed as they are (keys.load: which key sealed the vault)."""
+        with self._lock:
+            return [r[0] for r in self._db.execute("SELECT blob FROM secrets LIMIT ?", (limit,)).fetchall()]
+
     def reseal_secrets(self, reseal: Callable[[bytes], bytes]) -> int:
         """--- durable: every vault row through `reseal` (a key rotation), in one transaction: all or none."""
         with self._lock, self._synced(True), self._atomic(True):
