@@ -159,13 +159,14 @@ Why there and not a separate proxy: the decision needs the sandbox, its person, 
 
 Before hangar pushes a job's branch it scans what would leave:
 
-- the change since the job's base: committed, uncommitted and untracked-but-not-ignored files (what hangar would commit), added lines only;
+- each new commit's own patch, since `git push` sends every commit: a token one commit adds and a later one deletes still leaves, so the net diff since the base isn't enough. Commits the remote already has don't count;
+- the uncommitted change and untracked-but-not-ignored files (what hangar would commit). Added lines only;
 - the new commits' messages.
 
 What counts as a secret:
 
 - any stored credential's value, as is or encoded ([redaction](#redaction));
-- a match for a high-signal token format: GitHub (`ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`, `github_pat_`), Slack (`xox?-`, `xapp-`, webhook URLs), AWS access key ids (`AKIA`, `ASIA`) and `aws_secret_access_key = …`, Google API keys (`AIza`), OAuth client secrets (`GOCSPX-`) and service-account key ids, Anthropic (`sk-ant-…`), OpenAI (`sk-proj-`, `sk-svcacct-`, `sk-admin-`, legacy keys), PEM and OpenSSH private keys, and hangar's own `hgr_`/`hgs_` tokens.
+- a match for a high-signal token format: GitHub (`ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`, `github_pat_`), Slack (`xox?-`, `xapp-`, webhook URLs), AWS access key ids (`AKIA`, `ASIA`) and `aws_secret_access_key = …`, Google API keys (`AIza`), OAuth client secrets (`GOCSPX-`) and service-account key ids, Anthropic (`sk-ant-…`), OpenAI (`sk-proj-`, `sk-svcacct-`, `sk-admin-`, legacy keys), PEM and OpenSSH private keys (the header and the start of a body: code that checks for the header isn't a key), npm (`npm_`), PyPI (`pypi-`), GitLab (`glpat-`), Stripe live keys, Hugging Face (`hf_`), and hangar's own `hgr_`/`hgs_` tokens. Slack tokens need Slack's numbered shape, so `xoxb-test-token` fixtures pass.
 
 Documentation placeholders such as `AKIAIOSFODNN7EXAMPLE` are ignored.
 
@@ -175,7 +176,7 @@ Documentation placeholders such as `AKIAIOSFODNN7EXAMPLE` are ignored.
 
 **Artifacts** handed back by the agent are masked the same way when they are text. A binary artifact that contains a stored credential's value is withheld, with a warning on the turn.
 
-**Large diffs are fast to scan.** Hangar reads at most 64 MB of a change. Each pattern makes one pass over the text; each starts with a literal, which CPython's regex engine finds with a fast scan. File and line are worked out only for hits. A 60 MB change scans in about half a second.
+**Large diffs are fast to scan.** Hangar reads at most 64 MB of a change. Each pattern makes one pass over the text; each starts with a literal, which CPython's regex engine finds with a fast scan, or runs only when a substring it needs is there. File and line are worked out only for hits. A 60 MB change scans in about half a second.
 
 **Not covered:**
 
@@ -191,9 +192,9 @@ The sandbox's own git produces the diff, so a compromised sandbox can hide thing
 Tool results, events, turn summaries, artifacts and audit entries are passed through `broker.redact`. It masks every stored credential value (8 characters or more) as `***`. For values of 12 characters or more it also masks cheap, common encodings:
 
 - the value reversed (`rev`, hardening B4);
-- hex, in lower and upper case (`xxd -p`, `od`);
+- hex, in lower and upper case (`xxd -p`);
 - base64, standard and URL-safe, at each of the three alignments a value can have inside a longer string, so `echo "X=$SECRET" | base64` is caught as well as `printf %s "$SECRET" | base64`;
-- percent-encoding.
+- percent-encoding, with or without `/` escaped, in upper- or lower-case escapes.
 
 Line-wrapped output, such as `base64`'s 76 columns and `xxd -p`'s 60, is matched across the line breaks. Below 12 characters an encoded form would match too much ordinary text.
 

@@ -22,6 +22,7 @@ the sandbox (the git gateway, short-lived cloud credentials, build secrets) is.
 from __future__ import annotations
 
 import base64
+import re
 from urllib.parse import quote
 
 MIN_ENCODED = 12  # shorter values aren't worth the false positives their encodings would bring
@@ -29,7 +30,8 @@ MASK = "***"
 
 
 def variants(secret: str) -> list[str]:
-    """Encoded forms of `secret` that are long enough to be specific (at least 16 characters)."""
+    """Encoded forms of `secret` that are long enough to be specific (at least MIN_ENCODED characters: review, a
+    16-character floor dropped the reversed form of 12-15 character values and two base64 alignments of 12-13)."""
     b = secret.encode()
     out = [secret[::-1], b.hex(), b.hex().upper()]
     for k in range(3):  # the value starting k bytes into a 3-byte base64 group
@@ -37,9 +39,9 @@ def variants(secret: str) -> list[str]:
             e = enc(b"\0" * k + b).decode()
             first, last = -(-k // 3), (k + len(b)) // 3  # whole groups made of the value's bytes only
             out.append(e[4 * first:4 * last])
-    if (pct := quote(secret, safe="")) != secret:
-        out.append(pct)
-    return [v for v in dict.fromkeys(out) if len(v) >= 16 and v != secret]
+    for pct in (quote(secret, safe=""), quote(secret)):  # encodeURIComponent and quote()'s default (keeps "/")
+        out += [pct, re.sub(r"%[0-9A-F]{2}", lambda m: m.group(0).lower(), pct)]  # and lower-case escapes
+    return [v for v in dict.fromkeys(out) if len(v) >= MIN_ENCODED and v != secret]
 
 
 class Redactor:

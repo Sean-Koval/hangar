@@ -32,7 +32,7 @@ SAMPLES = {
     "Google API key": "AIza" + "Sy" + "B1c2D3e4F5g6H7i8J9k0L1m2N3o4P5q6R",
     "Anthropic key": "sk-ant-api03-" + "Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8Qr9St0Uv1Wx2Yz3Ab4Cd5Ef6Gh7Ij8Kl9Mn0Op1Qr2",
     "OpenAI key": "sk-proj-" + "Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8Qr9St0",
-    "private key": "-----BEGIN OPENSSH PRIVATE KEY-----",
+    "private key": "-----BEGIN OPENSSH PRIV" + "ATE KEY-----\n" + "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ" * 3,
     "hangar token": "hgr_" + "Zx9" * 15,
 }
 
@@ -299,3 +299,66 @@ async def test_leak_scan_names_the_file_and_id_never_the_value(fleet):
     assert len(found) == 1 and found[0].endswith("/workspace/app/.npmrc: NPM_TOKEN")
     assert "npm_tok_123456" not in found[0]
     assert not any(n.startswith("hangar-bs-scan") for n in os.listdir(box / "tmp"))
+
+
+# ============================================================================ review
+@pytest.mark.skipif(not shutil.which("git"), reason="needs git")
+def test_a_secret_committed_and_deleted_later_still_leaves_and_is_found(repo):
+    """`git push` sends every commit, so a token added in one commit and removed in the next is on GitHub for good;
+    the net diff since the base doesn't show it. The commonest accident: commit .env, then delete it."""
+    git(repo, "checkout", "-qb", "work")
+    (repo / ".env").write_text(f"A=1\nTOKEN={GH}\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "wip")
+    (repo / ".env").unlink()
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "drop .env")
+    assert [h.line() for h in secretscan.scan_bundle(bundle(repo))] == [".env:2: GitHub token"]
+
+
+def test_code_that_handles_pem_isnt_a_private_key():
+    """A PEM header alone is what key-handling code checks for (gateway.py has one); a key has a body."""
+    header = "-----BEGIN RSA PRIV" + "ATE KEY-----"
+    for code in (f'if pem.startswith("{header}"):', f'"private_key": "{header}..."',
+                 f"raise ValueError('expected {header}')"):
+        assert secretscan.find(code) == [], code
+    body = "MIIEowIBAAKCAQEA1x2y3z4" * 4
+    for key in (f"{header}\n{body}\n", f'"private_key": "{header}\\n{body}\\n"'):
+        assert [k for _, _, k in secretscan.find(key)] == ["private key"], key
+
+
+def test_slack_shaped_test_values_arent_tokens():
+    for fake in ("xo" + "xb-test-token", "xo" + "xb-1111-2222-slacktoken", "xo" + "xb-0123456789abcdef"):
+        assert secretscan.find(f"token = '{fake}'") == [], fake
+
+
+def test_more_common_token_formats_are_found():
+    samples = {
+        "npm token": "npm_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8",
+        "PyPI token": "pypi-" + "AgEIcHlwaS5vcmc" + "CJGQ0ZjE4YzM1LTk4ZDQtNGQ5Yy1iYzg1LWI2YzQ4NGE5ZjAwZQACKlsz",
+        "GitLab token": "glpat-" + "a1B2c3D4e5F6g7H8i9J0",
+        "Stripe key": "sk_" + "live_" + "51H8a1B2c3D4e5F6g7H8i9J0k1",
+        "Hugging Face token": "hf_" + "aBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgH",
+    }
+    for kind, sample in samples.items():
+        assert [k for _, _, k in secretscan.find(f"x = '{sample}'\n")] == [kind], kind
+
+
+def test_values_of_12_to_15_characters_get_every_encoding_the_docs_promise():
+    from urllib.parse import quote
+
+    for n in (12, 13, 14, 15):
+        value = "Q7xLm2Rv9/pW8sKd"[:n]
+        red = Redactor([value])
+        b = value.encode()
+        for shown in (value[::-1], base64.b64encode(b).decode(), base64.b64encode(b"x" + b).decode(),
+                      base64.b64encode(b"xy" + b).decode(), b.hex(), quote(value, safe=""), quote(value),
+                      quote(value, safe="").replace("%2F", "%2f")):
+            assert red.text(f"out: {shown}\n") != f"out: {shown}\n", (n, shown)
+
+
+def test_no_test_file_holds_a_whole_secret_shaped_token():
+    """GitHub's push protection refuses them, and hangar's own scan would stop a job that edits the file."""
+    here = Path(__file__).parent
+    for name in ("test_secretscan.py", "test_egress.py"):
+        assert secretscan.find((here / name).read_text()) == [], name

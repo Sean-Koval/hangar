@@ -7,10 +7,10 @@ own tokens. Only these: a pattern that fires on ordinary code would stop deliver
 
 Where it runs:
 
-* **A job's delivery.** Before hangar pushes the job's branch, the change since the base (committed, uncommitted and
-  untracked files hangar would commit) and the new commits' messages are scanned. A hit blocks the push. While
-  rounds are left the agent gets a follow-up turn naming each file and line and the kind of secret (never the
-  value), to remove it, rewrite the commits that carry it, and finish; then hangar scans again.
+* **A job's delivery.** Before hangar pushes the job's branch, every new commit's patch (a push sends them all), the
+  uncommitted change, untracked files hangar would commit and the new commits' messages are scanned. A hit blocks
+  the push. While rounds are left the agent gets a follow-up turn naming each file and line and the kind of secret
+  (never the value), to remove it, rewrite the commits that carry it, and finish; then hangar scans again.
 * **PR titles and bodies** hangar writes: hits are masked before GitHub sees them.
 * **Artifacts** handed back: text is masked; a binary file holding a stored credential's value is withheld.
 
@@ -44,7 +44,8 @@ MASK = "[hangar: secret removed]"
 _RAW: tuple[tuple[str, str], ...] = (
     ("GitHub token", r"\bgh[pousr]_[A-Za-z0-9]{36,255}\b"),
     ("GitHub fine-grained token", r"\bgithub_pat_[A-Za-z0-9_]{82}\b"),
-    ("Slack token", r"\bxox[abposre]-[A-Za-z0-9-]{10,250}"),
+    # A numbered segment, then a long random tail: what Slack issues; `xoxb-test-token` fixtures are not that.
+    ("Slack token", r"\bxox[abposre]-(?:\d+-)+[A-Za-z0-9]{20,250}"),
     ("Slack app token", r"\bxapp-\d-[A-Z0-9]+-\d+-[a-z0-9]{32,}"),
     ("Slack webhook URL", r"https://hooks\.slack\.com/(?:services|workflows|triggers)/[A-Za-z0-9_/-]{20,}"),
     ("AWS access key id", r"\bA(?:KIA|SIA|BIA|CCA)[A-Z0-9]{16}\b"),
@@ -55,15 +56,25 @@ _RAW: tuple[tuple[str, str], ...] = (
     ("Anthropic key", r"\bsk-ant-[a-z]{2,8}\d{2}-[A-Za-z0-9_-]{40,}"),
     ("OpenAI key", r"\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}"),
     ("OpenAI key", r"\bsk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}\b"),
-    ("private key", r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----"),
+    # The header and the start of a body (raw, or JSON-escaped as in a service-account file): code that checks
+    # for the header (gateway.py does) is not a key.
+    ("private key", r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----"
+                    r"(?:\s|\\[rn])+(?:[\w-]+: [^\r\n\\]*(?:\s|\\[rn])+)*[A-Za-z0-9+/=]{40}"),
     ("hangar token", r"\bhg[rs]_[A-Za-z0-9_-]{40,}"),
+    # --- review: registry and platform tokens agents meet in .npmrc, .pypirc and CI files (each issuer's docs:
+    # npm `npm_` + 36, PyPI macaroons for pypi.org, GitLab `glpat-`, Stripe live keys, Hugging Face `hf_` + 34).
+    ("npm token", r"\bnpm_[A-Za-z0-9]{36}\b"),
+    ("PyPI token", r"\bpypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,}"),
+    ("GitLab token", r"\bglpat-[A-Za-z0-9_-]{20,}"),
+    ("Stripe key", r"\b[rs]k_live_[A-Za-z0-9]{24,}"),
+    ("Hugging Face token", r"\bhf_(?=[A-Za-z]*[A-Z])(?=[A-Za-z]*[a-z])[A-Za-z]{34}\b"),
 )
 # A leading \b would stop CPython's regex engine from scanning for the pattern's literal prefix (a 0.6 s pass over
 # 60 MB instead of 0.03 s), so it is checked on the few matches instead. Patterns without a literal prefix get a
 # cheap guard: the regex runs only when a substring it needs is present.
 PATTERNS: tuple[tuple[str, re.Pattern[str], bool], ...] = tuple(
     (k, re.compile(p.removeprefix(r"\b")), p.startswith(r"\b")) for k, p in _RAW)
-_GUARDS = {"AWS secret access key": ("ecret", "ECRET")}
+_GUARDS = {"AWS secret access key": ("ecret", "ECRET"), "Stripe key": ("k_live_",)}
 # Documentation placeholders the formats above also match (AWS's AKIAIOSFODNN7EXAMPLE and friends).
 _PLACEHOLDER = re.compile(r"(?i)example|x{8,}|0{16,}|1234567890abcdef|your[_-]?(?:key|token)")
 
@@ -153,16 +164,21 @@ _SECTION_DIFF = "\0HANGAR-SCAN diff\n"
 
 def scan_script(repo: str, base: str, out: str, cap: int = MAX_SCAN_BYTES) -> str:
     """A shell script, run in the sandbox, that writes what would leave to `out`: the new commits' messages, then
-    the change since `base` as a zero-context diff (committed and uncommitted), then untracked files that aren't
-    ignored, as added lines. Binary files are skipped (git prints "Binary files differ"). At most `cap` bytes."""
+    each new commit's own patch (review: a push sends every commit, so a secret one commit adds and a later one
+    deletes leaves too; the net diff since `base` doesn't show it), then the uncommitted change, then untracked files
+    that aren't ignored, as added lines. Commits the remote already has don't count. Zero-context diffs; binary
+    files are skipped (git prints "Binary files differ"). At most `cap` bytes."""
     q = shlex.quote
+    new = f"{q(base)}..HEAD --not --remotes"
+    diff = "--no-color --no-ext-diff --no-textconv --no-renames -U0"
     return (
         f"set -o pipefail; cd {q(repo)} || exit 3; {{ "
         f"printf '\\0HANGAR-SCAN commits\\n'; "
-        f"git log --no-color --format='commit %H%n%B%x00' {q(base)}..HEAD -- 2>/dev/null; "
+        f"git log --no-color --format='commit %H%n%B%x00' {new} -- 2>/dev/null; "
         f"printf '\\0HANGAR-SCAN diff\\n'; "
-        f"git -c core.quotepath=off diff --no-color --no-ext-diff --no-textconv --no-renames -U0 {q(base)} -- "
+        f"git -c core.quotepath=off log -p {diff} --format='commit %H' {new} -- "
         "|| exit $?; "  # a bad base fails the scan (141, the cap reached, is fine)
+        f"git -c core.quotepath=off diff {diff} HEAD -- || exit $?; "
         "git -c core.quotepath=off ls-files -z --others --exclude-standard | "
         "while IFS= read -r -d '' f; do [ -f \"$f\" ] && [ ! -L \"$f\" ] || continue; "
         "grep -Iq . \"$f\" 2>/dev/null || continue; "
