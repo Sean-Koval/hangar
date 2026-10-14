@@ -19,6 +19,7 @@ It never talks to a hangar control plane, so it works while the cluster is power
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import copy
 import datetime
@@ -26,6 +27,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -65,6 +67,19 @@ NPM_PACKAGES = {"codex": "@openai/codex", "pi": "@earendil-works/pi-coding-agent
 CLAUDE_PLATFORMS = {"x86_64": "linux-x64", "aarch64": "linux-arm64"}  # the lock's arch -> the manifest's platform
 AGY_PLATFORMS = {"x86_64": ("linux_amd64", "linux-x64/cli_linux_x64"), "aarch64": ("linux_arm64",
                                                                                "linux-arm/cli_linux_arm64")}
+# A checksum is only as good as where it comes from, so each source is checked against something the release server
+# alone can't forge (--- review #105):
+# - Claude Code: each release's manifest.json is signed with Anthropic's release key (code.claude.com/docs/en/setup,
+#   "Binary integrity and code signing", 2.1.89 and later). The key is pinned here, with the fingerprint those docs
+#   publish; it is never fetched from the release server.
+# - npm (Codex, pi): `npm audit signatures` checks the registry's signatures and the Sigstore provenance attestations
+#   of what it would install, and each package the recipe installs must carry SLSA provenance from its own repository.
+# - Antigravity publishes no signature (checked 2026-10-14: no .sig, .asc or checksum file beside the archives). Its
+#   sha512 comes from the updater's manifest, a separate service from the bucket the archives are in; that is all.
+CLAUDE_KEY = Path(__file__).parent / "keys" / "claude-code.asc"
+CLAUDE_KEY_FINGERPRINT = "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"
+NPM_REPOS = {"codex": "https://github.com/openai/codex", "pi": "https://github.com/earendil-works/pi"}
+NPM_CPUS = {"codex": ("x64", "arm64"), "pi": ("x64",), "gemini": ("x64",)}  # codex ships a package per platform
 
 
 # ====================================================================== the lock
@@ -208,11 +223,40 @@ def _json(client: httpx.Client, url: str) -> Any:
     return _get(client, url).json()
 
 
+def _dearmor(text: str) -> bytes:
+    """An ASCII-armored OpenPGP block's bytes (gpgv reads only binary keyrings)."""
+    body = text.split("-----BEGIN PGP PUBLIC KEY BLOCK-----", 1)[1].split("-----END", 1)[0]
+    lines = [x.strip() for x in body.strip("\n").splitlines()]
+    if "" in lines:  # armor headers end at the first blank line
+        lines = lines[lines.index("") + 1:]
+    return base64.b64decode("".join(x for x in lines if x and not x.startswith("=")))
+
+
+def verify_signed(data: bytes, sig: bytes) -> None:
+    """Raise ValueError unless `sig` is a good signature of `data` by the pinned Claude Code release key."""
+    gpgv = shutil.which("gpgv")
+    if not gpgv:
+        raise ValueError("gpgv isn't installed, so the release manifest's signature can't be checked")
+    with tempfile.TemporaryDirectory() as d:
+        keyring, data_f, sig_f = Path(d, "key.gpg"), Path(d, "manifest.json"), Path(d, "manifest.json.sig")
+        keyring.write_bytes(_dearmor(CLAUDE_KEY.read_text()))
+        data_f.write_bytes(data)
+        sig_f.write_bytes(sig)
+        res = subprocess.run([gpgv, "--homedir", d, "--status-fd", "1", "--keyring", str(keyring), str(sig_f),
+                              str(data_f)], capture_output=True, text=True, timeout=60)
+    valid = [line.split() for line in res.stdout.splitlines() if line.startswith("[GNUPG:] VALIDSIG ")]
+    if res.returncode != 0 or not any(v[-1].upper() == CLAUDE_KEY_FINGERPRINT for v in valid):
+        raise ValueError("the release manifest's signature doesn't verify with Anthropic's release key "
+                         f"({CLAUDE_KEY_FINGERPRINT})")
+
+
 def _claude(client: httpx.Client, download: bool) -> tuple[dict[str, Any], dict[str, Any]]:
     version = _get(client, f"{CLAUDE_RELEASES}/stable").text.strip()
     if not re.fullmatch(r"[0-9]+(\.[0-9]+)+", version):
         raise ValueError(f"the stable channel answered {version[:80]!r}, not a version")
-    manifest = _json(client, f"{CLAUDE_RELEASES}/{version}/manifest.json")
+    raw = _get(client, f"{CLAUDE_RELEASES}/{version}/manifest.json").content
+    verify_signed(raw, _get(client, f"{CLAUDE_RELEASES}/{version}/manifest.json.sig").content)
+    manifest = json.loads(raw)
     if manifest.get("version") != version:
         raise ValueError(f"{version}/manifest.json names version {manifest.get('version')!r}")
     sums: dict[str, str] = {}
@@ -224,8 +268,9 @@ def _claude(client: httpx.Client, download: bool) -> tuple[dict[str, Any], dict[
             raise ValueError(f"{version}/{platform}/claude has sha256 {got}, but the manifest says {want}")
         sums[arch] = want
     return ({"version": version, "sha256": sums},
-            {"source": f"{CLAUDE_RELEASES}/stable", "checksums": "sha256 from the release manifest"
-             + (", checked against each download" if download else " (downloads not checked)")})
+            {"source": f"{CLAUDE_RELEASES}/stable", "checksums": "sha256 from the release manifest, signed by "
+             "Anthropic's release key" + (", checked against each download" if download else
+                                          " (downloads not checked)")})
 
 
 def _agy(client: httpx.Client, download: bool) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -250,11 +295,45 @@ def _agy(client: httpx.Client, download: bool) -> tuple[dict[str, Any], dict[str
         sums[arch] = want
     return ({"version": version, "build": build, "sha512": sums},
             {"source": f"{AGY_UPDATER}/manifests (and /releases for the build id)",
-             "checksums": "sha512 from the updater's manifests"
+             "checksums": "sha512 from the updater's manifests (Google publishes no signature)"
              + (", checked against each archive" if download else " (archives not checked)")})
 
 
-def _npm(client: httpx.Client, name: str) -> tuple[dict[str, Any], dict[str, Any]]:
+def npm_audit(pkg: str, version: str, cpu: str) -> None:
+    """npm's own check of what installing pkg@version on linux/<cpu> fetches: every package's registry signature,
+    and the Sigstore provenance attestations of those that have them. --ignore-scripts: nothing in them runs."""
+    npm = shutil.which("npm")
+    if not npm:
+        raise ValueError("npm isn't installed, so its signatures can't be checked")
+    with tempfile.TemporaryDirectory() as d:
+        Path(d, "package.json").write_text('{"name": "hangar-canary-check", "private": true}\n')
+        for args in (["install", "--ignore-scripts", "--no-audit", "--no-fund", "--os=linux", f"--cpu={cpu}",
+                      f"{pkg}@{version}"], ["audit", "signatures"]):
+            res = subprocess.run([npm, *args], cwd=d, capture_output=True, text=True, timeout=600)
+            if res.returncode != 0:
+                tail = (res.stdout + res.stderr).strip()[-400:]
+                raise ValueError(f"npm {args[0]} for {pkg}@{version} (linux-{cpu}) failed: {tail}")
+
+
+def _provenance(client: httpx.Client, pkg: str, version: str, repo: str) -> None:
+    """pkg@version must carry SLSA provenance naming it, built from `repo` (npm audit has checked its signature)."""
+    try:
+        doc = _json(client, f"{NPM}/-/npm/v1/attestations/{pkg.replace('/', '%2f')}@{version}")
+    except httpx.HTTPStatusError as e:
+        raise ValueError(f"npm {pkg}@{version} has no provenance (HTTP {e.response.status_code})") from e
+    subject = f"pkg:npm/{pkg.replace('@', '%40', 1)}@{version}"
+    for a in doc.get("attestations") or []:
+        if not str(a.get("predicateType") or "").startswith("https://slsa.dev/provenance/"):
+            continue
+        with contextlib.suppress(ValueError, KeyError, TypeError, AttributeError):
+            st = json.loads(base64.b64decode(a["bundle"]["dsseEnvelope"]["payload"]))
+            src = st["predicate"]["buildDefinition"]["externalParameters"]["workflow"]["repository"]
+            if subject in [x.get("name") for x in st.get("subject") or []] and src == repo:
+                return
+    raise ValueError(f"npm {pkg}@{version} has no provenance from {repo}")
+
+
+def _npm(client: httpx.Client, name: str, verify: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
     pkg = NPM_PACKAGES[name]
     doc = _json(client, f"{NPM}/{pkg.replace('/', '%2f')}")
     version = (doc.get("dist-tags") or {}).get("latest") or ""
@@ -268,6 +347,16 @@ def _npm(client: httpx.Client, name: str) -> tuple[dict[str, Any], dict[str, Any
         missing = [p for p in ("linux-x64", "linux-arm64") if f"{version}-{p}" not in (doc.get("versions") or {})]
         if missing:
             raise ValueError(f"npm {pkg} {version} has no {', '.join(missing)} build yet")
+    if verify:
+        if repo := NPM_REPOS.get(name):
+            for v in [version] + ([f"{version}-linux-x64", f"{version}-linux-arm64"] if name == "codex" else []):
+                _provenance(client, pkg, v, repo)
+        for cpu in NPM_CPUS.get(name, ("x64",)):
+            npm_audit(pkg, version, cpu)
+        detail["checksums"] = ("npm's registry signatures" + (" and Sigstore provenance" if repo else "")
+                               + " (npm audit signatures)" + (f"; provenance from {repo} for every package the "
+                                                              "recipe installs" if repo else
+                                                              "; it publishes no provenance"))
     return {"version": version}, detail
 
 
@@ -296,6 +385,8 @@ def resolve(lock: dict[str, Any], client: httpx.Client | None = None, download: 
                         entry, detail = _agy(client, download=True)
                 elif name in NPM_PACKAGES:
                     entry, detail = _npm(client, name)
+                    if download and newer(entry["version"], locked):
+                        entry, detail = _npm(client, name, verify=True)
                 else:
                     raise ValueError("no release source known")
             except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
@@ -694,7 +785,10 @@ def failed(resolved: dict[str, Any], diff: dict[str, Any], tests: dict[str, Any]
 # control plane because it must work while the cluster is down; the rule is the same. Only a diff limited to the
 # lock and the recorded protocols lands this way (hardening-r2): anything else needs a person to merge it.
 CANARY_BRANCH = "canary/harness-lock"
-LANDABLE = ("src/hangar/harnesses.lock.yaml", "tests/fixtures/protocol/")
+# Exactly these files (--- review #105): a prefix would let a conftest.py or test_*.py in among the fixtures, and
+# pytest collects tests/ recursively.
+LANDABLE = ("src/hangar/harnesses.lock.yaml", "tests/fixtures/protocol/codex-app-server.json",
+            "tests/fixtures/protocol/claude-stream-json.json")
 _ARM = ("mutation($id: ID!, $sha: GitObjectID!, $method: PullRequestMergeMethod!) {"
         " enablePullRequestAutoMerge(input: {pullRequestId: $id, expectedHeadOid: $sha, mergeMethod: $method})"
         " { pullRequest { number } } }")
@@ -761,8 +855,21 @@ def land(gh: httpx.Client, repo: str, number: int, approvers: list[str], merge_m
                           f"({', '.join(sorted(allowed)) or 'none configured'})")
     files = _pages(gh, f"/repos/{repo}/pulls/{number}/files")
     names = [str(f.get(k) or "") for f in files for k in ("filename", "previous_filename")]
-    if other := sorted(n for n in names if n and n != LANDABLE[0] and not n.startswith(LANDABLE[1])):
+    if other := sorted(n for n in names if n and n not in LANDABLE):
         raise LandRefused(f"the PR changes more than the lock and the recorded protocols: {', '.join(other[:5])}")
+    if gone := sorted(str(f.get("filename")) for f in files if f.get("status") == "removed"):
+        raise LandRefused(f"the PR removes {', '.join(gone)}")
+    # The approver isn't the author (a bot), but could have pushed the head: then they would approve their own
+    # change. GitHub's record of the branch's pushes says who pushed it; only the canary's own push lands this way.
+    pushes = _ok(gh.get(f"/repos/{repo}/activity", params={"ref": f"refs/heads/{CANARY_BRANCH}",
+                                                           "per_page": 100})) or []
+    push = next((p for p in pushes if isinstance(p, dict) and p.get("after") == sha), None)
+    if push is None:
+        raise LandRefused(f"no record of who pushed {sha[:12]} to {CANARY_BRANCH}")
+    actor = push.get("actor") or {}
+    if actor.get("type") != "Bot":
+        raise LandRefused(f"{sha[:12]} was pushed by @{actor.get('login')}, not by the canary: a person's change "
+                          "to the bump is landed by hand, by someone else")
     try:
         _graphql(gh, _ARM, {"id": pr.get("node_id"), "sha": sha, "method": merge_method.upper()})
     except LandRefused as e:
@@ -808,6 +915,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--report", type=Path, required=True)
     p = sub.add_parser("junit", help="the contract tests' results; fails on a failure, a skip, or nothing run")
     p.add_argument("files", type=Path, nargs="+")
+    p = sub.add_parser("check", help="a candidate lock and protocol records, before they are committed")
+    p.add_argument("--lock", type=Path, required=True)
+    p.add_argument("--protocol", type=Path, required=True)
     p = sub.add_parser("packet", help="the review packet (markdown) and whether the canary passed")
     p.add_argument("--resolve", type=Path, required=True)
     p.add_argument("--diff", type=Path, required=True)
@@ -846,6 +956,16 @@ def main(argv: list[str] | None = None) -> int:
         a.report.write_text(json.dumps(report, indent=2))
         errors = {k: r["detail"] for k, r in report["harnesses"].items() if r["status"] == "error"}
         print(json.dumps({"changes": report["changes"], "errors": errors}))
+        return 0
+    if a.cmd == "check":  # --- review #105: what `publish` commits was written where the candidates ran
+        try:
+            harnesses_for(yaml.safe_load(a.lock.read_text()) or {})
+            for name in LANDABLE[1:]:
+                if not isinstance(json.loads((a.protocol / Path(name).name).read_text()), dict):
+                    raise ValueError(f"{Path(name).name} isn't a protocol record")
+        except (OSError, ValueError, yaml.YAMLError) as e:
+            print(f"refusing the candidate: {e}", file=sys.stderr)
+            return 1
         return 0
     if a.cmd == "diff":
         a.report.write_text(json.dumps(diff_dirs(a.locked, a.candidate), indent=2))

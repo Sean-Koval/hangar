@@ -3,16 +3,19 @@
 # checksums against the artifacts, runs the contract tests against those versions and diffs the Codex app-server
 # schema and Claude Code's stream-json protocol against the recorded (locked) ones.
 #
+# Two jobs, split at the trust boundary: `canary` installs and runs the upstream releases with a read-only token
+# and no secrets; `publish` runs none of them and holds the write token and the App key.
+#
 # - Everything passed: it opens (or updates) one lock-bump PR from `canary/harness-lock`, whose body is the review
 #   packet. One person's approval lands it (harness-canary-land.yml); nothing merges without that approval.
 # - Something failed: it opens (or comments on) one issue labelled `harness-canary`, with the failing tests and diff.
 #
 # It runs on GitHub's runners and never talks to the cluster, so it works while the cluster is powered down.
 #
-# Identity: with the CANARY_APP_CLIENT_ID and CANARY_APP_PRIVATE_KEY secrets (a GitHub App with Contents and Pull
-# requests read and write on this repo, e.g. hangar's own App), the PR comes from the App, so pr.yml and the contract
-# checks run on it and the merge triggers ci.yml and images.yml on main. Without them it uses the workflow token, and
-# GitHub runs no workflow for that PR or its merge (docs/harnesses.md says what to do then).
+# Identity: with the CANARY_APP_CLIENT_ID and CANARY_APP_PRIVATE_KEY secrets (a dedicated GitHub App with Contents
+# and Pull requests read and write on this repo only, not one with wider reach), the PR comes from the App, so pr.yml
+# and the contract checks run on it and the merge triggers ci.yml and images.yml on main. Without them it uses the
+# workflow token, and GitHub runs no workflow for that PR or its merge (docs/harnesses.md says what to do then).
 name: harness-canary
 on:
   schedule:
@@ -37,22 +40,27 @@ env:
   BRANCH: canary/harness-lock
 
 jobs:
+  # Everything that installs or runs an upstream release happens here: npm installs, new binaries, the contract tests
+  # against them. A process in a job can read the job's token and every secret the job references from the runner, so
+  # this job has a read-only token and no secrets; what it produces is handed to `publish` as an artifact.
   canary:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
-      contents: write  # the canary branch (the workflow token; an App token when configured)
-      pull-requests: write
-      issues: write  # the failure issue
+      contents: read
+    outputs:
+      run: ${{ steps.resolve.outputs.run }}
+      changes: ${{ steps.resolve.outputs.changes }}
+      ok: ${{ steps.packet.outputs.ok }}
     steps:
       - uses: actions/checkout@v7
         with:
-          persist-credentials: false  # the push below uses the App's token, not a header for the workflow's
+          persist-credentials: false
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7  # the recipes' npm installs, and `npm audit signatures` in resolve
         with:
           node-version: "22"
       - run: uv sync --all-extras --locked
@@ -117,9 +125,36 @@ jobs:
           name: harness-canary
           path: canary/
           retention-days: 30
+
+  # Pushes the bump and opens the PR, or files the issue. It runs no upstream code: hangar's own (from this commit)
+  # and git. The artifact was written where the candidates ran, so it is data: `canary check` validates the lock and
+  # the two protocol records, and only those three files are copied into the commit.
+  publish:
+    needs: canary
+    if: always() && needs.canary.outputs.run == 'true' && !inputs.dry_run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write  # the canary branch (the workflow token; an App token when configured)
+      pull-requests: write
+      issues: write  # the failure issue
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false  # the push below uses the App's token, not a header for the workflow's
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --locked
+      - uses: actions/download-artifact@v8
+        continue-on-error: true  # a run that failed before its upload still files the issue
+        with:
+          name: harness-canary
+          path: canary
       - name: App token
         id: app
-        if: steps.packet.outputs.ok == 'true' && !inputs.dry_run
+        if: needs.canary.outputs.ok == 'true'
         env:
           CLIENT_ID: ${{ secrets.CANARY_APP_CLIENT_ID }}
         run: echo "ready=$([ -n "$CLIENT_ID" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
@@ -132,21 +167,23 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
       - name: Open or update the lock-bump PR
-        if: steps.packet.outputs.ok == 'true' && !inputs.dry_run && steps.resolve.outputs.changes != '{}'
+        if: needs.canary.outputs.ok == 'true' && needs.canary.outputs.changes != '{}'
         env:
           GH_TOKEN: ${{ steps.token.outputs.token || github.token }}
           APP: ${{ steps.app.outputs.ready }}
-          CHANGES: ${{ steps.resolve.outputs.changes }}
+          CHANGES: ${{ needs.canary.outputs.changes }}
         run: |
           set -euo pipefail
+          uv run --locked python -m hangar.canary check --lock canary/harnesses.lock.yaml --protocol canary/protocol
           summary=$(jq -r 'to_entries | map("\(.key) \(.value[0]) -> \(.value[1])") | join(", ")' <<< "$CHANGES")
           cp canary/harnesses.lock.yaml src/hangar/harnesses.lock.yaml
-          cp canary/protocol/*.json tests/fixtures/protocol/
+          cp canary/protocol/codex-app-server.json canary/protocol/claude-stream-json.json tests/fixtures/protocol/
           git config user.name "hangar canary"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git switch -c "$BRANCH"
-          git add src/hangar/harnesses.lock.yaml tests/fixtures/protocol
+          git add src/hangar/harnesses.lock.yaml tests/fixtures/protocol/codex-app-server.json \
+            tests/fixtures/protocol/claude-stream-json.json
           git commit -q -m "harness lock: $summary" -m "The nightly canary: contract tests and the protocol diff passed against these versions. $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           body=canary/pr.md
           { cat canary/packet.md
@@ -176,11 +213,12 @@ jobs:
           fi
           echo "Lock-bump PR: #$pr" >> "$GITHUB_STEP_SUMMARY"
       - name: Open or update the failure issue
-        if: always() && steps.packet.outputs.ok == 'false' && !inputs.dry_run
+        if: always() && needs.canary.outputs.ok != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          [ -f canary/packet.md ] || echo "The canary run failed before it wrote a packet: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > canary/packet.md
           issue=$(gh api "repos/$GITHUB_REPOSITORY/issues?state=open&labels=harness-canary" --jq '[.[] | select(.pull_request == null)][0].number // empty')
           if [ -n "$issue" ]; then
             gh api "repos/$GITHUB_REPOSITORY/issues/$issue/comments" -F body=@canary/packet.md >/dev/null

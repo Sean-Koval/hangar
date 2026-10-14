@@ -4,9 +4,11 @@ review packet, and landing the bump PR on one approval. Offline: every upstream 
 
 from __future__ import annotations
 
+import base64
 import copy
 import hashlib
 import json
+import shutil
 import xml.sax.saxutils
 from pathlib import Path
 
@@ -18,6 +20,30 @@ from hangar import canary
 from hangar.harnesses import HARNESSES, LOCK_FILE, Harness, pack_digest, pack_script
 
 PROTOCOL = Path(__file__).parent / "fixtures" / "protocol"
+MANIFESTS = Path(__file__).parent / "fixtures" / "claude-manifest"
+WORKFLOWS = Path(__file__).parent.parent / ".github" / "workflows"
+REAL_VERIFY = canary.verify_signed
+BAD_AUDIT: set[str] = set()
+
+
+@pytest.fixture(autouse=True)
+def fake_vendor_checks(monkeypatch):
+    """Signatures the mocked upstream makes (`sig:` + the manifest's sha256), and npm's own audit, recorded."""
+    audits: list[tuple[str, str, str]] = []
+
+    def verify(data: bytes, sig: bytes) -> None:
+        if sig != b"sig:" + hashlib.sha256(data).hexdigest().encode():
+            raise ValueError("the manifest's signature doesn't verify")
+
+    def audit(pkg: str, version: str, cpu: str) -> None:
+        audits.append((pkg, version, cpu))
+        if pkg in BAD_AUDIT:
+            raise ValueError(f"npm audit signatures failed for {pkg}")
+
+    monkeypatch.setattr(canary, "verify_signed", verify)
+    monkeypatch.setattr(canary, "npm_audit", audit)
+    BAD_AUDIT.clear()
+    return audits
 
 
 # ====================================================================== the lock
@@ -57,18 +83,22 @@ AGY = {"x86_64": b"agy-x64-1.3.5", "aarch64": b"agy-arm-1.3.5"}
 def upstream(**over):
     """The vendors' release sources, as of a day when everything moved one release on."""
     state = {"claude_stable": "2.1.300", "claude_sum": None, "agy_arm_version": "1.3.5", "agy_sum": None,
-             "codex_platforms": ("linux-x64", "linux-arm64"), **over}
+             "codex_platforms": ("linux-x64", "linux-arm64"), "claude_sig": None, "provenance": {}, **over}
 
     def handler(req: httpx.Request) -> httpx.Response:
         u = str(req.url)
         if u == f"{canary.CLAUDE_RELEASES}/stable":
             return httpx.Response(200, text=state["claude_stable"] + "\n")
-        if u.endswith("/manifest.json"):
+        if u.endswith("/manifest.json") or u.endswith("/manifest.json.sig"):
             v = u.split("/")[-2]
             sums = {p: state["claude_sum"] or hashlib.sha256(CLAUDE_BIN[a]).hexdigest()
                     for a, p in canary.CLAUDE_PLATFORMS.items()}
-            return httpx.Response(200, json={"version": v, "platforms": {p: {"checksum": s, "binary": "claude"}
-                                                                         for p, s in sums.items()}})
+            body = json.dumps({"version": v, "platforms": {p: {"checksum": s, "binary": "claude"}
+                                                           for p, s in sums.items()}}).encode()
+            if u.endswith(".sig"):
+                return httpx.Response(200, content=state["claude_sig"]
+                                      or b"sig:" + hashlib.sha256(body).hexdigest().encode())
+            return httpx.Response(200, content=body)
         if u.startswith(canary.CLAUDE_RELEASES):
             arch = next(a for a, p in canary.CLAUDE_PLATFORMS.items() if f"/{p}/" in u)
             return httpx.Response(200, content=CLAUDE_BIN[arch])
@@ -84,6 +114,19 @@ def upstream(**over):
                                              "sha512": state["agy_sum"] or hashlib.sha512(AGY[arch]).hexdigest()})
         if u.startswith(canary.AGY_ARCHIVES):
             return httpx.Response(200, content=AGY["x86_64" if "x64" in u else "aarch64"])
+        if u.startswith(f"{canary.NPM}/-/npm/v1/attestations/"):
+            spec = req.url.path.split("/attestations/", 1)[1].replace("%2f", "/").replace("%2F", "/")
+            spec = spec.replace("%40", "@")
+            pkg, _, version = spec.rpartition("@")
+            repo = state["provenance"].get(spec, canary.NPM_REPOS.get(
+                "codex" if pkg == "@openai/codex" else "pi" if "pi-coding" in pkg else "", ""))
+            if repo is None:
+                return httpx.Response(404)
+            stmt = {"subject": [{"name": f"pkg:npm/{pkg.replace('@', '%40', 1)}@{version}"}],
+                    "predicate": {"buildDefinition": {"externalParameters": {"workflow": {"repository": repo}}}}}
+            return httpx.Response(200, json={"attestations": [{
+                "predicateType": "https://slsa.dev/provenance/v1",
+                "bundle": {"dsseEnvelope": {"payload": base64.b64encode(json.dumps(stmt).encode()).decode()}}}]})
         if u.startswith(canary.NPM):
             pkg = req.url.path.lstrip("/").replace("%2f", "/").replace("%2F", "/")
             latest = {"@openai/codex": "0.163.0", "@earendil-works/pi-coding-agent": "1.2.0",
@@ -125,6 +168,49 @@ def test_resolve_never_moves_back_and_refuses_what_doesnt_check_out():
     assert "serves 1.3.5 on one platform" in report["harnesses"]["antigravity"]["detail"]
     cand, report = canary.resolve(lock, upstream(codex_platforms=("linux-x64",)))
     assert cand["codex"] == lock["codex"] and "no linux-arm64 build" in report["harnesses"]["codex"]["detail"]
+
+
+def test_a_claude_release_needs_anthropics_signature_on_its_manifest():
+    """The checksums are only as good as the manifest: it must carry a signature by Anthropic's release key, which
+    hangar pins (it never takes the key from the release server)."""
+    lock = yaml.safe_load(LOCK_FILE.read_text())
+    cand, report = canary.resolve(lock, upstream(claude_sig=b"forged"))
+    assert cand["claude-code"] == lock["claude-code"] and report["harnesses"]["claude-code"]["status"] == "error"
+    assert "signature" in report["harnesses"]["claude-code"]["detail"]
+    _, report = canary.resolve(lock, upstream())
+    assert "signed by Anthropic's release key" in report["harnesses"]["claude-code"]["checksums"]
+
+
+@pytest.mark.skipif(shutil.which("gpgv") is None, reason="gpgv is not installed")
+def test_the_pinned_key_verifies_a_real_release_manifest_and_nothing_else(monkeypatch):
+    data = (MANIFESTS / "2.1.296-manifest.json").read_bytes()
+    sig = (MANIFESTS / "2.1.296-manifest.json.sig").read_bytes()
+    REAL_VERIFY(data, sig)
+    assert json.loads(data)["platforms"]["linux-x64"]["checksum"] == \
+        yaml.safe_load(LOCK_FILE.read_text())["claude-code"]["sha256"]["x86_64"]
+    with pytest.raises(ValueError, match="signature"):
+        REAL_VERIFY(data.replace(b"24972e3b", b"24972e3c"), sig)
+    monkeypatch.setattr(canary, "CLAUDE_KEY_FINGERPRINT", "0" * 40)
+    with pytest.raises(ValueError, match="signature"):
+        REAL_VERIFY(data, sig)
+
+
+def test_an_npm_candidate_needs_npms_audit_and_provenance_from_its_own_repository(fake_vendor_checks):
+    lock = yaml.safe_load(LOCK_FILE.read_text())
+    cand, report = canary.resolve(lock, upstream())
+    assert cand["codex"]["version"] == "0.163.0" and cand["pi"]["version"] == "1.2.0"
+    assert {("@openai/codex", "0.163.0", "x64"), ("@openai/codex", "0.163.0", "arm64"),
+            ("@earendil-works/pi-coding-agent", "1.2.0", "x64")} <= set(fake_vendor_checks)
+    assert "provenance from https://github.com/openai/codex" in report["harnesses"]["codex"]["checksums"]
+    _, report = canary.resolve(lock, upstream(
+        provenance={"@openai/codex@0.163.0-linux-arm64": "https://github.com/x/y"}))
+    assert report["harnesses"]["codex"]["status"] == "error"
+    assert "provenance" in report["harnesses"]["codex"]["detail"]
+    _, report = canary.resolve(lock, upstream(provenance={"@earendil-works/pi-coding-agent@1.2.0": None}))
+    assert report["harnesses"]["pi"]["status"] == "error"
+    BAD_AUDIT.add("@openai/codex")
+    _, report = canary.resolve(lock, upstream())
+    assert report["harnesses"]["codex"]["status"] == "error" and "audit" in report["harnesses"]["codex"]["detail"]
 
 
 # ====================================================================== install
@@ -282,7 +368,9 @@ def github(**over):
              "reviews": [{"user": {"login": "Sean-Koval"}, "state": "APPROVED", "commit_id": HEAD}],
              "files": [{"filename": "src/hangar/harnesses.lock.yaml"},
                        {"filename": "tests/fixtures/protocol/codex-app-server.json"}],
-             "arm": None, "auto_merge": None, "pushed_while_arming": False, **over}
+             "arm": None, "auto_merge": None, "pushed_while_arming": False,
+             "pushes": [{"activity_type": "force_push", "after": HEAD, "ref": f"refs/heads/{canary.CANARY_BRANCH}",
+                         "actor": {"login": "hangar-agents[bot]", "type": "Bot"}}], **over}
     calls: list[tuple[str, str, object]] = []
 
     def handler(req: httpx.Request) -> httpx.Response:
@@ -300,6 +388,9 @@ def github(**over):
             return httpx.Response(200, json=state["reviews"])
         if p.endswith("/files"):
             return httpx.Response(200, json=state["files"])
+        if p == f"/repos/{REPO}/activity":
+            assert req.url.params["ref"] == f"refs/heads/{canary.CANARY_BRANCH}"
+            return httpx.Response(200, json=state["pushes"])
         if p == "/graphql":
             if state["arm"]:
                 return httpx.Response(200, json={"errors": [{"message": state["arm"]}]})
@@ -348,6 +439,14 @@ def test_an_already_mergeable_pr_is_merged_at_the_approved_head():
      "more than the lock"),
     ({"files": [{"filename": "src/hangar/x.py", "previous_filename": "src/hangar/harnesses.lock.yaml"}]},
      "more than the lock"),
+    # pytest collects tests/ recursively: a conftest.py or test file among the fixtures would run in CI
+    ({"files": [{"filename": "tests/fixtures/protocol/conftest.py"}]}, "more than the lock"),
+    ({"files": [{"filename": "tests/fixtures/protocol/test_x.py"}]}, "more than the lock"),
+    ({"files": [{"filename": "src/hangar/harnesses.lock.yaml", "status": "removed"}]}, "removes"),
+    # the head must be the canary's own push: an approver who pushed it would be approving their own change
+    ({"pushes": [{"activity_type": "push", "after": HEAD, "ref": f"refs/heads/{canary.CANARY_BRANCH}",
+                  "actor": {"login": "Sean-Koval", "type": "User"}}]}, "pushed by @Sean-Koval"),
+    ({"pushes": []}, "no record of who pushed"),
 ])
 def test_nothing_is_armed_unless_every_condition_holds(over, why):
     gh, calls = github(**over)
@@ -376,3 +475,49 @@ def test_the_contract_installs_cover_every_tested_cli():
     assert read <= set(canary.TEST_ENV.values()), read - set(canary.TEST_ENV.values())
     assert all(HARNESSES[h].install for h in canary.CONTRACT)
     assert pack_digest(HARNESSES["codex"])  # the stamp names it
+
+
+# ====================================================================== the workflows' trust boundaries
+def _jobs(name: str) -> dict:
+    return yaml.safe_load((WORKFLOWS / name).read_text())["jobs"]
+
+
+def _writes(job: dict) -> bool:
+    return any(v == "write" for v in (job.get("permissions") or {}).values())
+
+
+def test_the_candidate_clis_never_run_where_a_write_token_or_a_secret_is():
+    """The canary installs and runs unreviewed upstream releases (npm, new binaries). Any process in a job can read
+    the job's token and every secret the job references from the runner, so those steps run in a job with a
+    read-only token and no secrets, and the job that pushes and opens the PR runs none of them."""
+    for name in ("harness-canary.yml", "harness-contract.yml"):
+        for jname, job in _jobs(name).items():
+            text = yaml.safe_dump(job)
+            if "canary install" in text or "pytest" in text:
+                assert not _writes(job), f"{name}:{jname} runs the CLIs with a write token"
+                assert "secrets." not in text, f"{name}:{jname} runs the CLIs where a secret is"
+    publish = [j for j in _jobs("harness-canary.yml").values() if _writes(j)]
+    assert publish, "the canary still publishes"
+    for job in publish:
+        text = yaml.safe_dump(job)
+        assert "canary install" not in text and "pytest" not in text and "setup-node" not in text
+        assert "harnesses.lock.yaml" in text
+
+
+def test_publish_checks_what_the_candidates_job_handed_it(tmp_path, capsys):
+    """`publish` copies files written where the candidates ran: the lock must be a valid lock and the records JSON."""
+    proto = tmp_path / "protocol"
+    proto.mkdir()
+    for f in ("codex-app-server.json", "claude-stream-json.json"):
+        (proto / f).write_text((PROTOCOL / f).read_text())
+    lock = tmp_path / "lock.yaml"
+    lock.write_text(LOCK_FILE.read_text())
+    assert canary.main(["check", "--lock", str(lock), "--protocol", str(proto)]) == 0
+    lock.write_text(LOCK_FILE.read_text() + "evil:\n  version: 1.0.0\n")
+    assert canary.main(["check", "--lock", str(lock), "--protocol", str(proto)]) == 1
+    lock.write_text(LOCK_FILE.read_text())
+    (proto / "claude-stream-json.json").write_text("[1, 2")
+    assert canary.main(["check", "--lock", str(lock), "--protocol", str(proto)]) == 1
+    (proto / "claude-stream-json.json").unlink()
+    assert canary.main(["check", "--lock", str(lock), "--protocol", str(proto)]) == 1
+    assert "claude-stream-json.json" in capsys.readouterr().err
