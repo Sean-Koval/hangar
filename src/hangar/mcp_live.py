@@ -46,6 +46,7 @@ class SandboxOut(_Out):
     harness: str | None = None
     expires_at: float | None = None
     error: str | None = None
+    stage: str | None = None  # while starting: what it is waiting on (building the image, a node, cloning...)
 
 
 class ArtifactOut(_Out):

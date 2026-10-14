@@ -11,6 +11,7 @@ Tool design notes
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextvars
 import functools
@@ -31,9 +32,9 @@ from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 from hangar import exchange, mcp_steer, mcp_tasks, observe  # mcp_tasks: elicitation; mcp_steer: live turns; --- observe
 from hangar import mcp_live as live  # workstream mcp-modern: typed results, hints, resources, prompts
 from hangar.broker import CredentialError
-from hangar.fleet import Fleet, FleetError
+from hangar.fleet import Fleet, FleetError, _slug
 from hangar.jobs import Caller, JobService, SubmitJob
-from hangar.models import Budget, ContextItem, Sandbox
+from hangar.models import Budget, ContextItem, Sandbox, new_id
 from hangar.providers.base import ProviderError
 from hangar.sessions import NewSession, SessionService
 from hangar.strategies import fork_session as _fork_session  # workstream D: forks/best-of-N
@@ -93,7 +94,35 @@ def _sb(s: Sandbox) -> dict[str, Any]:
         "repo": s.repo, "branch": s.info.get("work_branch") or s.branch, "repo_path": s.info.get("repo_path"),
         "harness": s.info.get("harness"), "credentials": s.credentials, "labels": s.labels, "parent": s.parent,
         "expires_at": s.expires_at, "error": s.error,
+        "stage": s.info.get("stage") if s.state.value in ("starting", "pending") else None,
     }
+
+
+_BACKGROUND: set[asyncio.Task] = set()
+
+
+def _detach(coro, what: str) -> asyncio.Task:
+    """Run long work outside the MCP request. A client that times out or disconnects cancels its request, and
+    the work must not die with it (a half-created sandbox, a build that never finishes and restarts on every try)."""
+    task = asyncio.create_task(coro)
+    _BACKGROUND.add(task)
+
+    def done(t: asyncio.Task) -> None:
+        _BACKGROUND.discard(t)
+        if not t.cancelled() and t.exception() is not None:
+            log.warning("%s failed in the background: %s", what, t.exception())
+
+    task.add_done_callback(done)
+    return task
+
+
+async def _within(task: asyncio.Task, seconds: float):
+    """The task's result if it finishes within `seconds`, else None (it keeps running). Cancelling the caller
+    leaves the task alone."""
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), seconds)
+    except TimeoutError:
+        return None
 
 
 ICON = Icon(src="data:image/svg+xml;base64," + base64.b64encode(
@@ -165,8 +194,10 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
     @tool()
     async def build_environment(name: str, provider: str | None = None, force: bool = False) -> dict[str, Any]:
         """Build (or rebuild with force=True) an environment's image and warm pool. Can take minutes."""
-        job = await fleet.build(name, provider, force=force, actor=actor())
-        return job.summary()
+        job = await fleet.build(name, provider, force=force, actor=actor(), wait=False)
+        # The build runs on its own task, so a client that gives up or disconnects doesn't cancel it.
+        await _within(job.task, fleet.settings.mcp_tool_wait_seconds)
+        return job.summary()  # "running" if it is still going: call build_environment again to see where it is
 
     @tool()
     def create_environment(spec: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
@@ -210,10 +241,24 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         new `work_branch`. `harness` picks which of the environment's agents this sandbox is for (default:
         the environment's default); only that agent's credentials, config and MCP servers are applied.
         `credentials` overrides the environment's default credential list."""
-        sb = await fleet.create(environment, name=name, repo=repo, branch=branch, work_branch=work_branch,
-                                credentials=credentials, provider=provider, ttl_minutes=ttl_minutes,
-                                labels=labels, harness=harness, actor=actor())
-        return _sb(sb)
+        started = time.time()
+        # A name of our own, so a create still running past the wait can be found again (and no one else's is).
+        name = name or f"{environment}-{new_id('x')[2:]}"
+        task = _detach(fleet.create(environment, name=name, repo=repo, branch=branch, work_branch=work_branch,
+                                    credentials=credentials, provider=provider, ttl_minutes=ttl_minutes,
+                                    labels=labels, harness=harness, actor=actor()), "create_sandbox")
+        sb = await _within(task, fleet.settings.mcp_tool_wait_seconds)
+        if sb is not None:
+            return _sb(sb)
+        # Still starting (a cold node, an image build): hand back the sandbox as it stands; get_sandbox shows when
+        # it is running, and `stage` what it is waiting on.
+        want = _slug(name)
+        mine = max((s for s in fleet.list(include_stopped=True) if s.environment == environment
+                    and s.created_at >= started - 1 and (s.name == want or s.name.startswith(want + "-"))),
+                   key=lambda s: s.created_at, default=None)
+        if mine is None:
+            raise FleetError("the sandbox is still being set up; check list_sandboxes in a minute")
+        return _sb(mine)
 
     @tool()
     async def create_sandboxes(
@@ -244,7 +289,12 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                 credentials=credentials, provider=provider, ttl_minutes=ttl_minutes, labels=labels,
                 harness=harness, actor=actor())
 
-        res = await asyncio.gather(*(one(i) for i in range(count)), return_exceptions=True)
+        started = time.time()
+        task = _detach(asyncio.gather(*(one(i) for i in range(count)), return_exceptions=True), "create_sandboxes")
+        res = await _within(task, fleet.settings.mcp_tool_wait_seconds)
+        if res is None:  # still starting: report what exists so far; they keep coming up in the background
+            return [_sb(s) for s in fleet.list() if s.environment == environment and s.created_at >= started
+                    and s.name.startswith(_slug(prefix))]
         return [_sb(r) if isinstance(r, Sandbox) else {"error": str(r)} for r in res]
 
     @tool()
@@ -413,8 +463,12 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                            provider: str | None = None, ttl_minutes: int | None = None) -> list[live.SandboxOut]:
         """Clone a live sandbox (snapshotted first) or a snapshot id into `count` new sandboxes that
         start with the same files, installed deps and repo state. Exclusive credentials are not copied."""
-        sbs = await fleet.fork(source, count, name_prefix, credentials, work_branch_prefix, provider,
-                               ttl_minutes, actor=actor())
+        started = time.time()
+        task = _detach(fleet.fork(source, count, name_prefix, credentials, work_branch_prefix, provider,
+                                  ttl_minutes, actor=actor()), "fork_sandbox")
+        sbs = await _within(task, fleet.settings.mcp_tool_wait_seconds)
+        if sbs is None:
+            return [_sb(s) for s in fleet.list(include_stopped=True) if s.created_at >= started and s.parent]
         return [_sb(s) for s in sbs]
 
     # ------------------------------------------------------------------ sessions (spec 0010)

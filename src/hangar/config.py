@@ -266,6 +266,10 @@ class Settings(BaseSettings):
     # it costs those clients elicitation (hangar asking you an agent's question) and resource notifications.
     # 2026-07-28 clients are sessionless either way.
     mcp_stateless_http: bool = False
+    # Long MCP tools (create/fork a sandbox, build an environment) answer within this many seconds. Past it they
+    # return the sandbox or build as it stands ("starting"/"running") and keep going in the background: MCP clients
+    # give up on a call after a few minutes, and a client that disconnects must not cancel the work.
+    mcp_tool_wait_seconds: float = 150
     # --- workstream steer: live turns (docs/steering.md) ----------------------
     # Run Claude Code and Codex turns under hangar's driver, so they can be steered, interrupted and asked for tool
     # approvals. Off (or a sandbox without python3): one-shot turns, as before.

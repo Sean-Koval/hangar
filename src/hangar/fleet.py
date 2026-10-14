@@ -139,6 +139,7 @@ class Fleet:
         self.provider_errors: dict[str, str] = {}
         self.builds: dict[str, BuildJob] = {}
         self._build_locks: dict[str, asyncio.Lock] = collections.defaultdict(asyncio.Lock)
+        self._pack_builds: dict[str, asyncio.Task] = {}  # packs rebuilt in the background (see _resolve_packs)
         self._reaper: asyncio.Task | None = None
         self.logins: dict[str, dict[str, Any]] = {}
         # Called with a running sandbox just before it is destroyed (any reason: user, reaper, job). Sessions
@@ -170,6 +171,8 @@ class Fleet:
     async def stop(self) -> None:
         if self._reaper:
             self._reaper.cancel()
+        for t in self._pack_builds.values():
+            t.cancel()
         for p in self.providers.values():
             await p.close()
 
@@ -324,16 +327,43 @@ class Fleet:
         self.audit(actor, "harness.pack_register", harness, provider=pname, image=image)
         return image
 
-    async def _resolve_packs(self, spec: EnvSpec, pname: str, actor: str, log_fn: Any = None) -> EnvSpec:
+    async def _resolve_packs(self, spec: EnvSpec, pname: str, actor: str, log_fn: Any = None,
+                             only: str | None = None, sandbox_create: bool = False) -> EnvSpec:
         """Attach the pack image for every agent harness the env allows (all are mounted, read-only, so a
-        warm sandbox can be claimed for any of them; only the selected one is configured)."""
+        warm sandbox can be claimed for any of them; only the selected one is configured).
+
+        `sandbox_create`: a sandbox runs only the harness it was created for (`only`), so creating one waits on that
+        pack alone. The others are mounted when they are already built; a stale one (its harness changed in an
+        upgrade) is rebuilt in the background rather than holding up the sandbox."""
         spec.packs = {}
         if not self._uses_packs(spec, pname):
             return spec
         for hname in spec.agent_harnesses:
-            if HARNESSES[hname].install:
-                spec.packs[hname] = await self.build_pack(hname, pname, actor=actor, log_fn=log_fn)
+            if not HARNESSES[hname].install:
+                continue
+            if sandbox_create and hname != only:
+                tag = pack_tag(get_harness(hname), self.settings.image_prefix,
+                               self.settings.registry if pname in ("kubernetes", "e2b") else None)
+                if self.store.kv_get(f"pack:{pname}:{hname}") == tag:
+                    spec.packs[hname] = tag
+                else:
+                    self._pack_in_background(hname, pname, actor)
+                continue
+            spec.packs[hname] = await self.build_pack(hname, pname, actor=actor, log_fn=log_fn)
         return spec
+
+    def _pack_in_background(self, harness: str, pname: str, actor: str) -> None:
+        key = f"{pname}:{harness}"
+        if (t := self._pack_builds.get(key)) and not t.done():
+            return
+
+        async def run() -> None:
+            try:
+                await self.build_pack(harness, pname, actor=actor)
+            except Exception:  # noqa: BLE001 - a later create retries; this one did not need the pack
+                log.warning("background build of the %s pack on %s failed", harness, pname, exc_info=True)
+
+        self._pack_builds[key] = asyncio.create_task(run())
 
     async def build(self, env: str, provider: str | None = None, force: bool = False, actor: str = "system",
                     wait: bool = True) -> BuildJob:
@@ -554,7 +584,7 @@ class Fleet:
             self.store.put(sb)
             image = _image or await self._ensure_image(spec, pname, actor, hname, stage=stage)
             sb.image = image
-            await self._resolve_packs(spec, pname, actor)
+            await self._resolve_packs(spec, pname, actor, only=hname, sandbox_create=True)
             if spec.packs:
                 sb.info["packs"] = dict(spec.packs)
             stage("starting the sandbox")
