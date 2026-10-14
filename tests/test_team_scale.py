@@ -185,6 +185,26 @@ async def test_sandbox_cap_per_person(fleet, settings):
     await fleet.create("plain", actor="mcp:sean")
 
 
+async def test_a_cap_reached_over_mcp_is_a_plain_tool_error(fleet, settings):
+    """--- review: what an MCP client sees at a cap: the cap's own message, not an internal error."""
+    from mcp import Client
+
+    from hangar import mcp_server
+    from hangar.jobs import JobService
+
+    settings.person_max_sandboxes = 1
+    jobs = JobService(fleet, None)  # type: ignore[arg-type] - create_sandbox needs no sessions
+    token = mcp_server.current_actor.set("sean")
+    try:
+        async with Client(mcp_server.build_mcp(fleet, jobs, None)) as c:
+            assert not (await c.call_tool("create_sandbox", {"environment": "plain"})).is_error
+            res = await c.call_tool("create_sandbox", {"environment": "plain"})
+    finally:
+        mcp_server.current_actor.reset(token)
+    assert res.is_error
+    assert "sean already has 1 sandboxes running (the limit per person is 1)" in res.content[0].text
+
+
 @needs_tools
 async def test_session_cap_per_person_counts_new_resumed_and_forked(svc, world, settings):  # noqa: F811
     settings.person_max_sessions = 2
