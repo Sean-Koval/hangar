@@ -471,8 +471,10 @@ async def after_turn(svc: SessionService, s: Session, turn: SessionTurn, outcome
         if s.sandbox_id and svc._alive(s.sandbox_id):
             sb = svc.fleet.get(s.sandbox_id)
             await _read_out(svc, s, turn, sb)
+            # --- workstream steer: the repair run is one-shot with permission checks off, so not under a turn
+            # whose tool calls need approving (ask, deny-risky)
             if (turn.output_schema and turn.result_error and outcome == "exited" and turn.exit_code == 0
-                    and not turn.question and not turn.repair_run_id):
+                    and not turn.question and not turn.repair_run_id and turn.approval_policy in (None, "auto")):
                 await _repair(svc, s, turn, sb)
             if turn.repair_run_id:  # --- interactions: also re-attaches to a repair a restart interrupted
                 await _wait_repair(svc, s, turn, sb)
@@ -873,6 +875,9 @@ def turn_view(s: Session | None, job: Job | None = None) -> dict[str, Any]:
                                                     "question", "progress", "warnings", "started_at",
                                                     "finished_at"}))
         d["artifacts"] = [{**a.model_dump(mode="json"), "uri": artifact_uri(s, a)} for a in t.artifacts]
+        from hangar.steer import pending  # workstream steer: tool approvals the agent waits on
+
+        d["pending_approvals"] = [a.model_dump(mode="json") for a in pending(s)]
     if job is not None:
         d.update(job=job.id, state=job.state.value, reason=job.reason, branch=job.branch, pr_url=job.result.pr_url,
                  summary=job.result.summary or d.get("summary"))
@@ -939,8 +944,10 @@ async def poll_progress(sessions: SessionService, s: Session, cursor: dict[str, 
 
 
 async def wait_for_turn(sessions: SessionService, jobs: JobService | None, ref: str, timeout_seconds: int,
-                        report: Callable[[float, float | None, str], Awaitable[None]]) -> dict[str, Any]:
-    """Block until the job's or session's current turn ends (or the timeout passes), reporting progress."""
+                        report: Callable[[float, float | None, str], Awaitable[None]],
+                        until: Callable[[], bool] | None = None) -> dict[str, Any]:
+    """Block until the job's or session's current turn ends (or the timeout passes, or `until()` holds: workstream
+    steer returns early for a tool approval to put to the client), reporting progress."""
     timeout = max(1, min(600, int(timeout_seconds)))
     deadline = time.monotonic() + timeout
     interval = max(0.05, min(2.0, sessions.settings.session_poll_seconds))
@@ -968,7 +975,7 @@ async def wait_for_turn(sessions: SessionService, jobs: JobService | None, ref: 
             with contextlib.suppress(Exception):
                 await report(float(n), None, msg[:500])
         closing = sessions.fleet.closing  # --- overnight/sweep: a shutdown answers now, as a timeout would
-        if done or time.monotonic() >= deadline or closing.is_set():
+        if done or time.monotonic() >= deadline or closing.is_set() or (until is not None and until()):
             return {"done": done, **turn_view(s, job)}
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(closing.wait(), interval)

@@ -69,6 +69,9 @@ hangar session keep onboarding --idle 0     # stay up until I suspend it
 | `hangar session patch NAME` | `get_session_patch` | The session's work as one patch against its base |
 | `hangar session pull NAME [--checkout]` | | Its commits onto local branch `hangar/NAME`, plus (with `--checkout`) its uncommitted changes |
 | `hangar session fork NAME [MESSAGE] -n N` | `fork_session` | Branch it into N sessions (below) |
+| `hangar session steer NAME MESSAGE` (or `send`) | `steer_turn` | Tell the running agent something; it reads it at its next step ([steering](steering.md)) |
+| `hangar session interrupt NAME [MESSAGE]` | `steer_turn(interrupt=true)` | Stop the running turn, or stop and carry on with a new message |
+| `hangar session approvals NAME [--allow ID \| --deny ID]` | `answer_approval` | Tool calls the agent waits on under `--approvals ask` |
 
 `hangar session new` takes a per-turn budget (`--max-cost`, `--max-tokens`, `--max-minutes`; `budget` in the API). A turn that crosses it is stopped with outcome `over_budget`. `get` shows each turn's `usage` and the session's total.
 

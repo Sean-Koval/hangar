@@ -31,8 +31,10 @@ from hangar.models import Budget, Session, SessionTurn, Usage, now
 
 log = logging.getLogger("hangar.events")
 
-Kind = Literal["message", "tool_call", "tool_result", "command", "file_change", "error", "usage", "progress"]
-KINDS: tuple[str, ...] = ("message", "tool_call", "tool_result", "command", "file_change", "error", "usage", "progress")
+Kind = Literal["message", "tool_call", "tool_result", "command", "file_change", "error", "usage", "progress",
+               "approval_request"]
+KINDS: tuple[str, ...] = ("message", "tool_call", "tool_result", "command", "file_change", "error", "usage", "progress",
+                          "approval_request")  # workstream steer: a tool approval asked for, or how it was answered
 
 MAX_LINE = 1024 * 1024  # longer log lines (huge tool outputs) are skipped, and counted
 CHUNK = 128 * 1024  # raw bytes per read: base64 of it stays under the providers' 256 KiB exec output cap
@@ -320,6 +322,11 @@ class Parser:
             return []
         if not isinstance(e, dict):
             return []
+        if str(e.get("type") or "").startswith("hangar."):  # workstream steer: the turn driver's own events
+            evs = _driver_event(e)
+            for ev in evs:
+                ev.off = off
+            return evs
         if self.fmt is None:
             self.fmt = _detect(e)
         handler = {"claude": self._claude, "codex": self._codex, "pi": self._pi, "agy": self._agy}.get(self.fmt or "")
@@ -585,6 +592,32 @@ class Parser:
         return out
 
 
+_DECIDED = {"allow": "allowed", "allow_always": "allowed_always", "deny": "denied", "cancelled": "cancelled"}
+
+
+def _driver_event(e: dict[str, Any]) -> list[RunEvent]:
+    """workstream steer: hangar.* lines the turn driver (driver.py) writes into the run log."""
+    t, aid = e["type"].removeprefix("hangar."), e.get("id")
+    if t == "approval_request" and isinstance(aid, str):
+        detail = e.get("detail") if isinstance(e.get("detail"), str) else ""
+        data = _small({"id": aid, "tool": e.get("tool"), "status": "pending", "policy": e.get("policy"),
+                       "expires_at": e.get("expires_at")})
+        data["detail"] = detail[:2200]  # whole (driver.shown): the person approving must see all of it
+        return [RunEvent(kind="approval_request", text=_clip(f"{e.get('tool') or '?'}: {detail}"), data=data)]
+    if t == "approval_resolved" and isinstance(aid, str) and e.get("decision") in _DECIDED:
+        status = _DECIDED[e["decision"]]
+        by = e.get("by") or "hangar"
+        return [RunEvent(kind="approval_request", text=_clip(f"{status} by {by}"
+                                                             + (f": {e['message']}" if e.get("message") else "")),
+                         data=_small({"id": aid, "status": status, "by": by, "message": e.get("message")}))]
+    if t in ("steer", "interrupt"):
+        text = e.get("text") if isinstance(e.get("text"), str) else ""
+        what = "steered" if t == "steer" else "interrupted"
+        return [RunEvent(kind="progress", text=_clip(f"{what}: {text}" if text else what),
+                         data=_small({"source": "hangar", "action": t, "command": aid}))]
+    return []
+
+
 def _detect(e: dict[str, Any]) -> str | None:
     if "event" in e and isinstance(e.get("event"), str):
         return "agy"
@@ -779,6 +812,10 @@ class TurnWatcher:
                                                   for ev in keep])
             except OSError as e:  # e.g. a full disk: lose the events, not the turn
                 log.warning("session %s: could not record events: %s", self.s.id, e)
+            from hangar.steer import track  # workstream steer: approvals asked and answered (import cycle)
+
+            if track(self.turn, keep):
+                self.save()
 
     async def poll(self) -> str | None:
         """Read what the log gained since the last poll. Returns why the turn is over budget, or None."""

@@ -26,7 +26,7 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel, Field
 
-from hangar import exchange, observe, strategies  # strategies: workstream D (forks/best-of-N); --- observe
+from hangar import exchange, observe, steer, strategies  # strategies: workstream D; --- observe; steer: live turns
 from hangar.events import resolve_budget, total_usage, usage_line
 from hangar.fleet import Fleet, FleetError, _clip_tail
 from hangar.github import GitHub, GitHubError, parse_repo
@@ -399,6 +399,7 @@ class JobService:
         d["active"] = job.state not in JOB_TERMINAL and job.state != JobState.NEEDS_INPUT
         # workstream C: the session's turns are the job's turns, and carry live usage while one runs
         d["usage"] = u.model_dump(mode="json") if (u := self.usage(job)) else None
+        d["pending_approvals"] = [a.model_dump(mode="json") for a in steer.pending(s)]  # workstream steer
         return exchange.scrub_turns(d)  # workstream E: attachment contents never leave in a view
 
     def usage(self, job: Job) -> Usage | None:
@@ -788,6 +789,20 @@ class JobService:
             self._event(job, "cancelled; the agent was stopped", JobState.CANCELLED, reason="cancelled")
             await self._keep(job, s)
             await self._report(job)
+            return
+        if outcome == "interrupted":  # --- workstream steer: a person took over; nothing is verified or delivered
+            stop = next((x for x in reversed(st.steers) if x.kind == "interrupt"), None)
+            who = (stop.requester if stop else None) or "someone"
+            if stop is not None and stop.status == "queued" and stop.text:  # with what to do instead: carry on
+                self._event(job, f"interrupted by {who}; carrying on with their message")
+                nxt = Turn(kind="follow_up", message=stop.text, requester=who, reply_to=turn.reply_to)
+                job.turns.append(nxt)
+                await self._start_turn(job, nxt, s)
+                await self._finish_turn(job, nxt, s)
+                return
+            job.result.question = (f"Interrupted by {who}. Follow up with what the agent should do instead "
+                                   "(it continues the same conversation), or cancel the job.")
+            await exchange.job_needs_input(self, job, turn, s)
             return
         clean = outcome == "exited" and turn.exit_code == 0
         self._event(job, f"agent turn finished: {outcome}"

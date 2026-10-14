@@ -964,6 +964,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def job_patch(job_id: str, max_bytes: int | None = None, caller: Caller = J):
         return await exchange.session_patch(sessions, _job_session(job_id, caller), max_bytes)
 
+    # --- workstream steer: steer, interrupt and tool approvals for running turns (docs/steering.md)
+    from hangar import steer_api
+
+    steer_api.mount(app, h, A, J, _job_session)
+
     # --- workstream setup: database-stored settings (hangar config) and the setup wizards (hangar setup)
     from hangar import settings_store, setup_api
 

@@ -366,6 +366,37 @@ class SessionState(StrEnum):
 
 SESSION_LIVE = {SessionState.STARTING, SessionState.IDLE, SessionState.RUNNING}
 
+# --- workstream steer: live turns. How tool permission prompts are answered: auto = no prompts (the harness runs
+# with its permission checks off, as before), ask = a person answers (denied after HANGAR_APPROVAL_TIMEOUT_SECONDS),
+# deny-risky = hangar answers at once, refusing what its rules call risky (driver.risky).
+ApprovalPolicy = Literal["auto", "ask", "deny-risky"]
+
+
+class Approval(BaseModel):
+    """A harness asking to use a tool during a live turn, and what became of it."""
+
+    id: str
+    tool: str = ""
+    detail: str = ""  # the command, or the tool's input (clipped)
+    requested_at: float = Field(default_factory=now)
+    expires_at: float | None = None
+    status: Literal["pending", "allowed", "allowed_always", "denied", "cancelled"] = "pending"
+    by: str | None = None  # who answered: a hangar caller, "policy", "timeout" or "harness" (withdrawn)
+    message: str | None = None
+    decided_at: float | None = None
+
+
+class Steer(BaseModel):
+    """A message sent into a running turn."""
+
+    id: str = Field(default_factory=lambda: new_id("str"))
+    text: str
+    requester: str | None = None
+    ts: float = Field(default_factory=now)
+    kind: Literal["steer", "interrupt"] = "steer"
+    status: Literal["sending", "delivered", "queued", "failed"] = "sending"  # queued: it starts the next turn
+    error: str | None = None
+
 
 class SessionTurn(BaseModel):
     message: str
@@ -393,6 +424,11 @@ class SessionTurn(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     repair_run_id: str | None = None  # the one extra run that asked for a missing or invalid result
     repair_usage: Usage | None = None  # --- interactions: what that run used (part of the turn's total)
+    # --- workstream steer: a live turn runs under hangar's driver (steer, interrupt, approvals)
+    live: bool = False
+    approval_policy: ApprovalPolicy | None = None
+    approvals: list[Approval] = Field(default_factory=list)
+    steers: list[Steer] = Field(default_factory=list)
 
 
 class Checkpoint(BaseModel):
@@ -443,6 +479,7 @@ class Session(BaseModel):
     parent_id: str | None = None  # the session this one was forked from
     forked_from_checkpoint: str | None = None
     fork_conversation: str | None = None  # the parent's conversation id; the next turn forks it, then clears it
+    approvals: ApprovalPolicy | None = None  # --- workstream steer: unset = the environment's, else HANGAR_APPROVALS
 
 
 # ---------------------------------------------------------------------------- workstream F: git gateway (spec 0003)

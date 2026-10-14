@@ -459,7 +459,8 @@ def _turn_result(sp: Any, s: Any, turn: Any, outcome: str, err: BaseException | 
     set_attrs(sp, attrs)
     if err is not None:
         _fail(sp, err)
-    elif outcome not in ("exited", "needs_input") or (turn.exit_code or 0) != 0:
+    elif outcome != "interrupted" and (outcome not in ("exited", "needs_input") or (turn.exit_code or 0) != 0):
+        # integrate (#59): an interrupt is a person stopping the turn (exit 130), not a failure
         from opentelemetry.trace import Status, StatusCode
 
         sp.set_attribute("error.type", outcome if outcome != "exited" else "agent_exit_code")

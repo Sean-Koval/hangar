@@ -26,6 +26,7 @@ from cryptography.fernet import InvalidToken
 from pydantic import BaseModel, Field
 
 from hangar import ckpt, exchange, observe  # --- observe
+from hangar import steer as steering  # workstream steer: live turns
 from hangar.checkpoints import CheckpointStore, make_store
 from hangar.ckpt import CKPT_DIR, CKPT_REF, PACK_READ_LIMIT, PARTS, RESTORE_DIR  # noqa: F401 - re-exported (strategies, exchange)
 from hangar.events import Activity, resolve_budget, total_usage
@@ -33,6 +34,7 @@ from hangar.fleet import Fleet, FleetError, _clip_tail
 from hangar.harnesses import get_harness
 from hangar.models import (
     SESSION_LIVE,
+    ApprovalPolicy,
     Budget,
     Checkpoint,
     ContextItem,
@@ -76,6 +78,7 @@ class NewSession(BaseModel):
     # workstream E: attachments and local work for the first turn, and the structured result it must produce
     context: list[ContextItem] = Field(default_factory=list)
     output_schema: dict[str, Any] | None = None
+    approvals: ApprovalPolicy | None = None  # workstream steer: auto | ask | deny-risky (default: the environment's)
 
 
 def extract_summary(harness: str | None, log_text: str) -> str | None:
@@ -145,12 +148,14 @@ class SessionService:
                         s.last_active_at = now()
                         self._set(s, SessionState.IDLE, "control plane restarted")
                     elif s.state == SessionState.RUNNING and s.turns and s.turns[-1].run_id:
+                        self._busy.add(s.id)  # steer: busy from now, not from when the task first runs
                         self._spawn(self._resume_wait(s.id))  # re-attach to the running turn
                     else:
                         self._set(s, SessionState.IDLE, "control plane restarted")
                 else:
                     s.sandbox_id = None
                     self._set(s, SessionState.SUSPENDED, "control plane restarted; resuming from the last checkpoint")
+        steering.recover(self)  # workstream steer: messages that were on their way into a turn
         if self._hook not in self.fleet.pre_destroy:
             self.fleet.pre_destroy.append(self._hook)
         orphans = [sb.id for sb in self.fleet.list(label="hangar.session")
@@ -222,7 +227,7 @@ class SessionService:
         s = Session(name=req.name, title=(req.title or (req.message or req.name).strip().splitlines()[0])[:200],
                     owner=owner, environment=env, harness=harness, model=req.model,
                     repo=req.repo or (spec.repo.url if spec.repo else None), base_branch=req.base_branch,
-                    branch=branch, labels=req.labels,
+                    branch=branch, labels=req.labels, approvals=req.approvals,
                     idle_minutes=(req.idle_minutes if req.idle_minutes is not None
                                   else self.settings.session_idle_minutes))
         s.budget = resolve_budget(req.budget, self.settings)
@@ -277,8 +282,18 @@ class SessionService:
             raise SessionError(f"session {s.name} carries job {s.job_id}; follow up on the job instead "
                                "(its turns are verified and delivered)")
         if self.busy(s.id) or s.state in (SessionState.RUNNING, SessionState.SUSPENDING):
-            raise SessionError(f"session {s.name} is busy ({s.state}); wait for it to finish")
-        s.turns.append(SessionTurn(message=message, requester=requester, context=context,
+            # --- workstream steer: a live turn takes the message as it runs
+            if not context and not output_schema and steering.can_steer(self, s):
+                steering.steer_later(self, s, message, requester)
+                return s
+            raise SessionError(f"session {s.name} is busy ({s.state}); wait for it to finish, or interrupt it")
+        self.start_turn(s, message, requester, context, output_schema)
+        return s
+
+    def start_turn(self, s: Session, message: str, requester: str, context: list[ContextItem] | None = None,
+                   output_schema: dict[str, Any] | None = None) -> None:
+        """Begin a turn now; the caller has checked that the session can take one."""
+        s.turns.append(SessionTurn(message=message, requester=requester, context=context or [],
                                    output_schema=output_schema))
         s.needs_input = None  # this message answers the agent's question, if it had one
         s.last_active_at = now()
@@ -287,7 +302,6 @@ class SessionService:
                   f"message from {requester}")
         self.fleet.audit(requester, "session.send", s.id, message=message[:300])
         self._spawn(self._turn(s.id))
-        return s
 
     def suspend(self, ref: str, requester: str) -> Session:
         s = self.get(ref)
@@ -346,6 +360,7 @@ class SessionService:
         for t in d["turns"]:  # workstream C: the collector's read position is internal
             t.pop("event_cursor", None)
         d["usage"] = u.model_dump(mode="json") if (u := total_usage(s.turns)) else None
+        d["pending_approvals"] = [a.model_dump(mode="json") for a in steering.pending(s)]  # workstream steer
         return exchange.scrub_turns(d)  # workstream E: attachment contents never leave in a view
 
     @staticmethod
@@ -805,10 +820,16 @@ class SessionService:
         self._save(s)
         if prompt is not None and turn.mode == "handoff" and handoff:
             prompt = self._handoff(s) + "\n\n# Now\n\n" + prompt
-        io_env = await exchange.prepare_turn(self, s, turn, sb)  # workstream E: HANGAR_IO, attachments, local work
-        res = await self.fleet.run_agent(sb.id, prompt if prompt is not None else self._prompt(s, turn, turn.mode),
-                                         harness=s.harness, model=s.model, env={**(extra_env or {}), **io_env, **env},
-                                         actor=f"session:{s.id}")
+        run_id, command = await steering.prepare(self, s, turn, sb, h)  # workstream steer: live (driver) or one-shot
+        try:
+            io_env = await exchange.prepare_turn(self, s, turn, sb)  # workstream E: HANGAR_IO, attachments, local work
+            res = await self.fleet.run_agent(sb.id, prompt if prompt is not None else self._prompt(s, turn, turn.mode),
+                                             harness=s.harness, model=s.model,
+                                             env={**(extra_env or {}), **io_env, **env}, actor=f"session:{s.id}",
+                                             run_id=run_id, command=command)
+        except BaseException:
+            steering.forget(self, run_id)  # workstream steer: the run never started
+            raise
         turn.run_id, turn.started_at = res["run_id"], now()
         turn.context = exchange.strip(turn.context)
         s.model = s.model or res.get("model")
@@ -856,6 +877,9 @@ class SessionService:
                 outcome = "over_budget"
                 break
         turn.finished_at = now()
+        if outcome == "exited" and turn.exit_code == 130:  # --- workstream steer: stopped by an interrupt
+            outcome = "interrupted"
+        steering.forget(self, turn.run_id if turn.live else None)
         turn.outcome, turn.outcome_reason = outcome, over  # workstream C
         if over:
             watch.note("error", f"stopped: over budget ({over})", reason="over_budget")

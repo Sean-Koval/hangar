@@ -30,7 +30,7 @@ from mcp.shared.exceptions import MCPError
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 from pydantic import BaseModel, Field, ValidationError
 
-from hangar import exchange
+from hangar import exchange, mcp_steer
 from hangar.fleet import FleetError
 from hangar.jobs import JobError
 from hangar.mcp_live import job_uri, links, session_uri
@@ -134,6 +134,7 @@ class TaskRecord(BaseModel):
     asked: dict[str, int] = Field(default_factory=dict)  # input request key -> turn (keys are never reused)
     cancelled: bool = False
     final: dict[str, Any] | None = None  # the terminal task state, once reached (it never changes after)
+    declined_approvals: list[str] = Field(default_factory=list)  # workstream steer: not asked about again
 
 
 class TaskIdParams(types.RequestParams):
@@ -231,6 +232,17 @@ class Tasks:
         if job is not None and job.state == JobState.CANCELLED and rec.cancelled:
             return self._finish(rec, {**self._task(rec, "cancelled", job.reason), "status": "cancelled"})
         if not exchange._settled(self.sessions, self.jobs, s, job):  # noqa: SLF001
+            # --- workstream steer: the agent waits on a tool approval; ask the client
+            ap = mcp_steer.first_pending(self.sessions, self.jobs, ref, rec.declined_approvals) \
+                if supports_form_elicitation(caps) else None
+            if ap is not None:
+                label, a = ap
+                key = f"approve-{a.id}"
+                if key not in rec.asked:
+                    rec.asked[key] = len(s.turns) if s is not None else 0
+                    self._save(rec)
+                req = mcp_steer.approval_request(label, a).model_dump(by_alias=True, mode="json", exclude_none=True)
+                return {**self._task(rec, "input_required", mcp_steer.message(label, a)), "inputRequests": {key: req}}
             return self._task(rec, "working", self._activity(s, job))
         q = open_question(self.sessions, self.jobs, ref)
         if q is not None and q[0] not in rec.declined and supports_form_elicitation(caps):
@@ -301,26 +313,44 @@ class Tasks:
         return rec.final
 
     # --- answer and cancel
-    def update(self, task_id: str, responses: dict[str, Any]) -> None:
+    async def update(self, task_id: str, responses: dict[str, Any]) -> None:
         rec = self._load(task_id)
         if rec.final is not None or rec.kind not in ("job", "session"):
             return
         if len(responses) > MAX_RESPONSES:
             raise MCPError(INVALID_PARAMS, f"at most {MAX_RESPONSES} inputResponses per update")
-        for key, raw in responses.items():
-            turn_no = rec.asked.get(key)
-            if turn_no is None:
-                continue  # never issued (or for another task): ignored, as the extension asks
-            try:
-                resp = types.ElicitResult.model_validate(raw)
-            except ValidationError as e:
-                raise MCPError(INVALID_PARAMS, f"inputResponses[{key!r}] is not an elicitation result") from e
-            outcome = answer(self.sessions, self.jobs, rec.refs[0], turn_no, resp, self.actor())
-            if outcome in ("declined", "cancelled") and turn_no not in rec.declined:
-                rec.declined.append(turn_no)
-            elif outcome == "invalid":
-                raise MCPError(INVALID_PARAMS, "the answer must be a non-empty string")
-        self._save(rec)
+        declined: list[int] = []
+        declined_approvals: list[str] = []
+        try:
+            for key, raw in responses.items():
+                turn_no = rec.asked.get(key)
+                if turn_no is None:
+                    continue  # never issued (or for another task): ignored, as the extension asks
+                try:
+                    resp = types.ElicitResult.model_validate(raw)
+                except ValidationError as e:
+                    raise MCPError(INVALID_PARAMS, f"inputResponses[{key!r}] is not an elicitation result") from e
+                if key.startswith("approve-"):  # --- workstream steer: a tool approval
+                    aid = key.removeprefix("approve-")
+                    outcome = await mcp_steer.answer_elicited(self.sessions, self.jobs, rec.refs[0], aid, resp,
+                                                              self.actor())
+                    if outcome in ("declined", "cancelled", "stale"):
+                        declined_approvals.append(aid)
+                    elif outcome == "invalid":
+                        raise MCPError(INVALID_PARAMS, "the answer needs a decision: allow, deny or allow_always")
+                    continue
+                outcome = answer(self.sessions, self.jobs, rec.refs[0], turn_no, resp, self.actor())
+                if outcome in ("declined", "cancelled"):
+                    declined.append(turn_no)
+                elif outcome == "invalid":
+                    raise MCPError(INVALID_PARAMS, "the answer must be a non-empty string")
+        finally:
+            # --- workstream steer: answering an approval awaits the driver, and a tasks/get or tasks/cancel may
+            # have saved the record meanwhile: merge into what is stored now, never over it
+            rec = self._load(task_id)
+            rec.declined += [t for t in declined if t not in rec.declined]
+            rec.declined_approvals += [a for a in declined_approvals if a not in rec.declined_approvals]
+            self._save(rec)
 
     async def cancel(self, task_id: str) -> None:
         """Cancel the work where hangar can: a job is cancelled, an agent run is stopped. A session turn keeps
@@ -361,7 +391,7 @@ class TasksExtension(Extension):
 
         async def update(ctx: ServerRequestContext[Any], params: TaskUpdateParams) -> dict[str, Any]:
             require_client_extension(ctx, TASKS_EXT)
-            self.tasks.update(params.task_id, params.input_responses)
+            await self.tasks.update(params.task_id, params.input_responses)
             return {}
 
         async def cancel(ctx: ServerRequestContext[Any], params: TaskIdParams) -> dict[str, Any]:
