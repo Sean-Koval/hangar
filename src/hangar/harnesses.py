@@ -494,8 +494,10 @@ def pack_script(h: Harness) -> str:
         f"{h.install.strip()}\n"
         f'OUT=$(PATH="$PREFIX/bin:$PATH" {h.verify} 2>&1)\n'
         "{ set +x; } 2>/dev/null\n"
-        # the line naming the version (a runtime may warn first), else the first line, for the error
-        'INSTALLED=$(printf \'%s\\n\' "$OUT" | grep -F -m1 -- "$VERSION" || true)\n'
+        # the line naming the version (a runtime may warn first), else the first line, for the error. The whole version:
+        # 1.2 must not pass for 1.2.3, nor 2.1.29 for 2.1.296 (review)
+        'INSTALLED=$(printf \'%s\\n\' "$OUT" | grep -E -m1 -- "(^|[^0-9A-Za-z.])v?${VERSION//./[.]}([^0-9A-Za-z.]|$)" '
+        "|| true)\n"
         "if [ -z \"$INSTALLED\" ]; then echo \"installed '${OUT%%$'\\n'*}', but the lock pins $VERSION\" >&2; "
         "exit 1; fi\n"
         f"printf '%s\\n' \"$INSTALLED\" > /{VERSION_FILE}\n"

@@ -102,6 +102,9 @@ def test_the_pack_build_records_the_installed_version_and_fails_on_another(tmp_p
     assert (tmp_path / VERSION_FILE).read_text() == "fakecli 1.2.3 (vendor)\n"
     bad = run("1.2.4")
     assert bad.returncode != 0 and "installed 'warning: old runtime', but the lock pins 1.2.4" in bad.stderr
+    # the lock's version must be the whole version the CLI names, not part of another one
+    for part in ("1.2", "2.3", ".2.3"):
+        assert run(part).returncode != 0, part
 
 
 def test_the_version_is_the_packs_own_last_layer():
@@ -566,3 +569,26 @@ async def test_launch_glue_ships_with_hangar_not_in_the_pack(fleet, creds):
     assert pack_tag(codex_moved, "p", REG) == before, "a launch change is not a pack change"
     for name in AGENTS:
         assert "readlink" not in HARNESSES[name].install and "dirname" not in HARNESSES[name].install, name
+
+
+async def test_a_registry_answering_garbage_is_unknown_not_a_crash(monkeypatch):
+    """A proxy's HTML page where the token or a manifest should be: 'unknown' (the cluster then asks the CLIs), not
+    an exception out of image_exists or `images plan`."""
+    monkeypatch.setenv("HANGAR_REGISTRY_TOKEN", "goog-tok")
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/v2/token":
+            return httpx.Response(200, content=b"<html>sign in to the proxy</html>")
+        return httpx.Response(401, headers={"www-authenticate": f'Bearer realm="https://{req.url.host}/v2/token"'})
+
+    r = Registry(transport=httpx.MockTransport(handler))
+    assert isinstance((await r.check([f"{REG}/x:y"]))[f"{REG}/x:y"], RegistryError)
+    await r.close()
+
+    def manifests(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"<html>not a manifest</html>")
+
+    r = Registry(transport=httpx.MockTransport(manifests))
+    with pytest.raises(RegistryError):
+        await r.harness_version(f"{REG}/harness-codex:t")
+    await r.close()

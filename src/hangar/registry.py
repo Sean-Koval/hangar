@@ -74,6 +74,18 @@ def parse(ref: str) -> ImageRef:
     return ImageRef(host, repo, tag, digest or None)
 
 
+def _json(r: httpx.Response, what: str) -> dict[str, Any]:
+    """A JSON object from the registry, else RegistryError (a proxy's sign-in page is "unknown", not a crash). The
+    body is never quoted: it may be a token response."""
+    try:
+        body = r.json()
+    except ValueError as e:
+        raise RegistryError(f"{what} answered something other than JSON") from e
+    if not isinstance(body, dict):
+        raise RegistryError(f"{what} answered JSON that isn't an object")
+    return body
+
+
 def is_registry_ref(ref: str) -> bool:
     try:
         parse(ref)
@@ -166,7 +178,7 @@ class Registry:
         r = await self._http.get(realm, params=params, auth=auth)
         if r.status_code != 200:
             raise no_creds or RegistryError(f"{ref.host} refused a pull token for {ref.repo} (HTTP {r.status_code})")
-        body = r.json()
+        body = _json(r, f"{ref.host}'s token endpoint")
         token = body.get("token") or body.get("access_token")
         if not token:
             raise RegistryError(f"{ref.host} returned no token")
@@ -240,7 +252,7 @@ class Registry:
             raise RegistryError(f"no manifest {reference} in {ref.repo} (HTTP {r.status_code})")
         if reference.startswith("sha256:") and hashlib.sha256(r.content).hexdigest() != reference[7:]:
             raise RegistryError(f"manifest {reference} in {ref.repo} doesn't match its digest")
-        m = r.json()
+        m = _json(r, f"manifest {reference} in {ref.repo}")
         if m.get("mediaType") in INDEX_TYPES or "manifests" in m:
             # An index (buildx adds attestations): the linux/amd64 image, else the first real image.
             imgs = [x for x in m.get("manifests") or []

@@ -119,7 +119,7 @@ Each of these is on, or different, as soon as the new version starts. To opt out
 | **MCP waits** | `wait_for_turn` waited up to 300 s by default (600 at most), `exec` as long as its `timeout`, `process` `attach` up to 600 s, `terminal_send` up to its `wait_ms` → each at most `HANGAR_MCP_TOOL_WAIT_SECONDS` (150 s), so claude.ai (which gives up after about 230 s) gets an answer: `wait_for_turn` says `done: false`, an `exec` that runs into the cap is stopped and its answer points at `process`. Destroy, pause, resume, extend, snapshot, `fork_session` and `run_agent` answer within it too and finish in the background. Any other tool still waiting just past it (165 s) gets an error. | Raise `HANGAR_MCP_TOOL_WAIT_SECONDS` only if all your clients wait longer than claude.ai |
 | **I/O threads** (#53) | Python's default (CPUs + 4) → 32 per CPU, between 64 and 128, for blocking provider calls. | `HANGAR_IO_THREADS` (*restart*) |
 
-Not changed for GKE: the default provider, the runtime class, warm pools, and approvals (`auto`). Harness packs are the same except Codex's, whose tag changes (§4). Tiers and hot resume (#64) apply only to environments that ask for `tier: fast` and to the `e2b` provider, which isn't enabled on the GKE install.
+Not changed for GKE: the default provider, the runtime class, warm pools, and approvals (`auto`). **Every harness pack's tag changes once** (#83, #87), and so does every image that bakes a harness in: build them before the rollout (§4). Tiers and hot resume (#64) apply only to environments that ask for `tier: fast` and to the `e2b` provider, which isn't enabled on the GKE install.
 
 ## 4. Upgrade
 
@@ -129,9 +129,21 @@ uv sync                       # the laptop CLI: hangar admin, config, setup, con
 bash deploy/gke/up.sh
 ```
 
+**Before the rollout: build the new harness packs** (#83, #87). Every pack's tag changes once with this release: the harness lock pins Claude Code 2.1.296 and Antigravity 1.3.3 (they followed "latest" before), every pack gains a layer recording its CLI version, and the Codex, pi and Gemini recipes changed. Images that bake a harness in change with them. `up.sh` builds whatever the registry lacks before it touches the cluster (the `== environment images and harness packs` step), and stops the deploy if a build fails. To build them ahead of time instead, for example during the power-down window, since it only talks to Artifact Registry, not the cluster:
+
+```bash
+REG=$(terraform -chdir=deploy/terraform/gke output -raw registry)
+uv run hangar images plan --registry "$REG"    # lists each tag; exit 3 = something to build
+uv run hangar images build --registry "$REG"   # Docker here (linux/amd64), else Cloud Build
+uv run hangar images plan --registry "$REG"    # exit 0: nothing missing; up.sh then only looks the tags up
+```
+
+With the images workflow set up ([gke.md](gke.md#images-and-packs-built-in-ci)), the push to `main` builds them, and the run's summary lists each tag. If the cluster sets `HANGAR_IMAGE_PREFIX`, `HANGAR_SANDBOX_USER`, `HANGAR_WORKSPACE_DIR`, `HANGAR_EXTRA_CA_BUNDLE` or `HANGAR_K8S_IMAGE_VOLUMES` in `hangar-site` or its database, export the same values first: they change the tags. If you skip this (`PREBUILD=0`), nothing breaks: running sandboxes keep the pack they mounted, the new control plane rebuilds the packs it used before in the background when it starts (Cloud Build from the pod, several minutes each), and the first sandbox for a harness whose pack isn't built yet waits for it.
+
 **What `up.sh` does now:**
 
 - It builds `control-plane:<short sha>` with Cloud Build, including the Rust stage.
+- It builds the environment images and harness packs the commit needs and the registry lacks (above); `PREBUILD=0` skips this.
 - It applies `deploy/k8s` with two files the kustomization now lists:
   - `sandbox-network.yaml`: the sandboxes' egress baseline (DNS, plus the internet minus private, CGNAT, reserved and link-local ranges), and a deny-all-ingress policy for sandbox pods (#48, #62);
   - `envd-network.yaml`: hangar's pods may connect to sandbox pods on port 49983 and nothing else (#60).
@@ -158,7 +170,7 @@ The Deployment uses `Recreate`, so the URL answers 502 from the moment the old p
    - `sandboxes`: the E2B API only, for the sandboxes the token creates.
 
    Mint them with `hangar token create <name> --scope <scope>`.
-4. **Republish the Codex pack** (#69). #69 changed the wrapper script in Codex's harness pack, so the pack's tag changes. Run `uv run hangar pack publish codex` from a machine with Docker, as in [gke.md §3](gke.md#harness-packs). Otherwise the first Codex sandbox after the upgrade builds the pack itself, with Cloud Build from the control-plane pod, and waits several minutes for it. Running sandboxes keep the pack they mounted. Environments that bake Codex into their image rebuild on their next use.
+4. **Check the harness packs** (#69, #83, #87). They were built before the rollout (above), which also covers #69's Codex change. `uv run hangar images plan --registry "$REG"` should exit 0, and `hangar pack list` shows each pack's locked and installed version. `hangar pack publish <harness>` now registers a tag that already exists instead of overwriting it; `--force` rebuilds it.
 5. **Move repository settings that `ask` turns rely on into the environment** (#69, Docker only). On GKE nothing changes. On a Docker hangar, an `ask` or `deny-risky` turn ignores the repository's `.claude/settings*.json`, `.mcp.json` and skills: put allowed tools, rules and hooks in the environment's `agent_config.files: {.claude/settings.json: ...}`, MCP servers in `mcp:` and instructions in `agent_config.instructions` ([steering.md](steering.md#hangar-owned-harness-settings)). A turn's warnings say what was left out.
 6. **Optional manifests**, none of them in the kustomization:
    - `deploy/k8s/observability/` (#55) holds the Managed Prometheus or Prometheus Operator scrape config, which needs a `metrics` token in a Secret, and the OpenTelemetry Collector policy. Cloud Trace needs Google's collector and its own IAM roles ([observability.md](observability.md)).
