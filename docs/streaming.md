@@ -59,6 +59,11 @@ attaches; their earlier output is gone (`adopted: true`).
 Without a daemon a process runs detached (`setsid`), its output goes to `~/.hangar/bg/<id>.out` and hangar polls it
 (every 0.5 s while someone is attached, 5 s otherwise). `input` needs the daemon.
 
+Background processes and streamed commands run as the sandbox user, like `exec`. On Docker they don't get
+`no_new_privs`, unlike a turn's harness: they are commands hangar runs as the agent outside a turn
+([what the split doesn't cover](steering.md#the-uid-split)). On GKE the pod's `allowPrivilegeEscalation: false`
+covers them.
+
 ## Turn events, live
 
 A session's turn watcher used to read the run log every `session_poll_seconds` (5 s). It now follows the log through
@@ -67,6 +72,11 @@ agent writes it. Polling takes over whenever following isn't possible: no daemon
 (`tail` says so on stderr), the stream breaking, or the log passing `HANGAR_STREAM_MAX_BYTES` (following is paced
 like any stream; past the cap polling's bounded reads carry on). The read position is saved with the turn as before, so a restart
 resumes without recording an event twice. `HANGAR_STREAM_TURN_LOGS=false` turns following off.
+
+In a split sandbox ([the uid split](steering.md#the-uid-split)) the follower tails hangar's own copy of the run log,
+never the agent's link to it. The daemon runs as the agent, so what it passes on is informational, like the rest of
+the log: approvals still come from the driver's own file, and the turn's status, exit code and summary from hangar's
+own reads.
 
 Following them:
 - **SSE**: `GET /api/sessions/{ref}/events/stream?since=<seq>` and `GET /api/jobs/{id}/events/stream?since=<seq>`

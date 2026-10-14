@@ -409,6 +409,46 @@ async def test_a_split_turns_approvals_come_from_the_drivers_own_file(split_box,
     assert set(split_box.users) == {"hangar"}
 
 
+async def test_a_split_turns_live_follower_tails_hangars_log_and_approvals_stay_the_drivers(split_box, tmp_path,
+                                                                                            monkeypatch):
+    """integrate (#69 x #68): the follower (sandbox_streams.follow) runs through the daemon, as the agent. It tails
+    hangar's own log, not the agent's link; an approval line it passes on is dropped, and the driver's file is still
+    read on every poll while it follows."""
+    from hangar import sandbox_streams
+
+    calls, release = [], asyncio.Event()
+    forged = {"kind": "approval_request", "id": "ap-cccccccccccc", "tool": "Bash", "detail": "forged"}
+
+    async def follow(fleet, sandbox_id, path, done_path, offset, on_data):
+        calls.append((path, done_path))
+        on_data(_approval_lines(dict(forged)).encode())
+        await release.wait()
+        return "ended"
+
+    monkeypatch.setattr(sandbox_streams, "follow", follow)
+    split_box.fleet.closing = asyncio.Event()
+    s = Session(name="x", environment="e", sandbox_id="sb-1", owner="o")
+    turn = SessionTurn(message="m", run_id="run-0000beef", live=True)
+    s.turns.append(turn)
+    activity = Activity(SimpleNamespace(data_dir=tmp_path, events_max_mb=1, model_prices={}), lambda x: x)
+    (split_box.runs / "run-0000beef.log").write_text("")
+    real = {"kind": "approval_request", "id": "ap-aaaaaaaaaaaa", "tool": "Bash", "detail": "ls", "policy": "ask"}
+    (split_box.runs / "run-0000beef.ctl/approvals").write_text(_approval_lines(dict(real)))
+    w = TurnWatcher(activity, split_box.fleet, s, turn, lambda: None)
+    await w.poll()
+    await asyncio.sleep(0.05)
+    assert calls == [(f"{split_box.runs}/run-0000beef.log", f"{split_box.runs}/run-0000beef.exit")]
+    assert w._follow is not None and not w._follow.done()
+    with (split_box.runs / "run-0000beef.ctl/approvals").open("a") as f:
+        f.write(_approval_lines({"kind": "approval_resolved", "id": "ap-aaaaaaaaaaaa", "decision": "allow"}))
+    await w.poll()  # following: the log isn't polled, the driver's file is
+    assert [(a.id, a.status) for a in turn.approvals] == [("ap-aaaaaaaaaaaa", "allowed")]
+    release.set()
+    await w.finish()
+    assert [e.data.get("id") for e in activity.read(s.id) if e.kind == "approval_request"] == ["ap-aaaaaaaaaaaa"] * 2
+    assert set(split_box.users) == {"hangar"}
+
+
 async def test_a_split_runs_exit_status_is_hangars_own(split_box, tmp_path, settings, store, broker):
     """The agent's ~/.hangar/runs/<run>.exit is a link it can point at a file saying 0."""
     from hangar.fleet import Fleet
