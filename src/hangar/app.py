@@ -752,8 +752,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         c = h.broker.put(body.name, body.harness, body.kind, body.value, body.description, body.env_var,
                          body.file_path, exposure=body.exposure, person=person, team=body.team)  # --- identity
         fleet.audit(who, "credential.put", c.name, harness=c.harness, kind=c.kind.value, person=c.person)
-        return {**c.model_dump(mode="json"), "owner": teamcreds.owner(c, h.settings),  # --- teamcreds
-                "warning": teamcreds.sharing_warning(c)}
+        return {**c.model_dump(mode="json"), "owner": teamcreds.owner(c, h.settings)}  # --- teamcreds
 
     @app.delete("/api/credentials/{name}")
     async def del_cred(name: str, who: str = U):

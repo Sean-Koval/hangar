@@ -505,7 +505,7 @@ def cred_add(
     person: str | None = typer.Option(None, "--person", help="Admins: whose own credential it is (default: your "
                                       "own; a member's are always their own)."),
     team: bool = typer.Option(False, "--team", help="Admins: a team credential, for jobs no person owns and people "
-                              "without their own login. Prefer an API key (docs/team.md)."),  # --- teamcreds
+                              "without their own login: an API key, never a subscription login (docs/team.md)."),
 ):
     """Store a credential. Examples:
 
@@ -532,8 +532,6 @@ def cred_add(
                                                 **({"team": True} if team else {})})  # --- teamcreds
     typer.secho(f"stored {c['name']} ({c['harness']}/{c['kind']}{', exclusive' if c['exclusive'] else ''}, "
                 f"{c.get('owner') or c.get('person') or 'team'})", fg="green")
-    if c.get("warning"):  # --- teamcreds
-        typer.secho(c["warning"], fg="yellow")
 
 
 @cred_app.command("rm")
@@ -555,13 +553,11 @@ def cred_exposure(name: str, exposure: str = typer.Argument(..., help="sandbox |
 @cred_app.command("owner")
 def cred_owner(name: str, person: str = typer.Argument(..., help="A person id, or 'team' for a team credential.")):
     """Make a credential someone's own (it then goes only into their sandboxes, in place of the team's for its
-    harness) or a team credential (jobs no person owns, and people without their own, use it). A person's own
-    subscription login can't become the team's."""
+    harness) or a team credential (jobs no person owns, and people without their own, use it). A subscription
+    login can't be the team's: team credentials are API keys (docs/team.md#what-the-vendors-allow)."""
     c = _call("PUT", f"/api/credentials/{name}/owner",
               json={"person": None if person in ("team", "shared") else person})  # --- teamcreds: 'shared' too
     typer.echo(f"{c['name']}: {c.get('owner') or c['person'] or 'team'}")
-    if c.get("warning"):
-        typer.secho(c["warning"], fg="yellow")
 
 
 # --- teamcreds

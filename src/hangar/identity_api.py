@@ -111,9 +111,8 @@ def credential_person(h: Any, name: str, harness: str, kind: CredentialKind, wan
     if p.admin:
         if wanted is not None and people.get(h.store, wanted) is None:
             raise KeyError(f"no person '{wanted}'")
-        if team:  # --- teamcreds
-            if existing is not None:
-                teamcreds.check_team(existing)
+        if team:  # --- teamcreds: never a subscription login (the owner's decision)
+            teamcreds.check_team(name, harness, kind)
             return None
         if wanted is not None or existing is not None:
             return wanted if wanted is not None else existing.person  # type: ignore[union-attr]
@@ -153,13 +152,12 @@ def mount(app: FastAPI, h: Any, A: Any) -> None:
         c = h.broker.get(name)
         if body.person is not None and people.get(h.store, body.person) is None:
             raise KeyError(f"no person '{body.person}'")
-        if body.person is None:  # --- teamcreds: never someone's own subscription login
-            teamcreds.check_team(c)
+        if body.person is None:  # --- teamcreds: never a subscription login
+            teamcreds.check_team(c.name, c.harness, c.kind)
         c.person = body.person
         h.store.put(c)
         h.fleet.audit(who, "credential.owner", name, person=body.person)
-        return {**c.model_dump(mode="json"), "owner": teamcreds.owner(c, h.settings),  # --- teamcreds
-                "warning": teamcreds.sharing_warning(c)}
+        return {**c.model_dump(mode="json"), "owner": teamcreds.owner(c, h.settings)}  # --- teamcreds
 
     # --- teamcreds: what the migration made the owner's, and when
     @app.get("/api/credentials/migration")

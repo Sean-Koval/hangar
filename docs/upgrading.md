@@ -114,7 +114,7 @@ hangar person link owner github <your-login>      # your GitHub issues and comme
 hangar doctor                                     # "team credentials for jobs" names what still has none
 ```
 
-The full guide, including what the vendors allow and Codex logins, is [team.md](team.md).
+A team credential is an API key (or another credential the vendor's terms allow for automation): hangar refuses a Claude Pro or Max login or a ChatGPT login as the team's, since the vendors' terms make a login one person's. The full guide, including what the vendors allow and Codex logins, is [team.md](team.md).
 
 Then add each engineer:
 

@@ -179,31 +179,33 @@ def test_the_repo_policy_says_whose_login_jobs_use(store):
 
 
 async def test_a_pool_of_codex_logins_and_a_queue_when_all_are_in_use(fleet, broker, settings, monkeypatch):
-    """A ChatGPT login is leased to one sandbox. Two team logins serve two sandboxes at once; a third job waits,
-    saying which are busy, and starts when one is released. A direct create fails at once with the same words."""
+    """A ChatGPT login is leased to one sandbox. Two of a person's logins serve two of their sandboxes at once; a
+    third job waits, saying which are busy, and starts when one is released. A direct create fails at once with the
+    same words. (A pool is someone's own: a subscription login is never a team credential.)"""
     monkeypatch.setattr(teamcreds, "POLL_SECONDS", 0.05)
     fleet.catalog._raw["cx"] = ({"name": "cx", "extends": "plain", "harnesses": ["codex"]}, ENVS)
-    broker.put("codex-1", "codex", CredentialKind.AUTH_FILE, '{"tokens": {"refresh_token": "rt-1-0123456789"}}')
-    broker.put("codex-2", "codex", CredentialKind.AUTH_FILE, '{"tokens": {"refresh_token": "rt-2-0123456789"}}')
-    a = await fleet.create("cx", harness="codex")
-    b = await fleet.create("cx", harness="codex")
+    for n in (1, 2):
+        broker.put(f"codex-{n}", "codex", CredentialKind.AUTH_FILE,
+                   f'{{"tokens": {{"refresh_token": "rt-{n}-0123456789"}}}}', person="alice")
+    a = await fleet.create("cx", harness="codex", person="alice")
+    b = await fleet.create("cx", harness="codex", person="alice")
     assert sorted([*a.credentials, *b.credentials]) == ["codex-1", "codex-2"]
-    with pytest.raises(CredentialError, match=r"the team's codex logins codex-1, codex-2 \(all in use\)"):
-        await fleet.create("cx", harness="codex")
+    with pytest.raises(CredentialError, match=r"alice's codex logins codex-1, codex-2 \(all in use\)"):
+        await fleet.create("cx", harness="codex", person="alice")
     said: list[str] = []
-    waiting = asyncio.create_task(fleet.create("cx", harness="codex", progress=said.append))
+    waiting = asyncio.create_task(fleet.create("cx", harness="codex", person="alice", progress=said.append))
     for _ in range(200):
         if said:
             break
         await asyncio.sleep(0.02)
-    assert said and said[0].startswith("waiting for a free login (queued): the team's codex logins")
+    assert said and said[0].startswith("waiting for a free login (queued): alice's codex logins")
     assert not waiting.done()
     await fleet.destroy(a.id)
     c = await asyncio.wait_for(waiting, 10)
     assert c.credentials == a.credentials and broker.get(a.credentials[0]).leased_to == c.id
     settings.login_wait_seconds = 0  # past the wait: it fails, saying why
     with pytest.raises(CredentialError, match="add another login to the pool, or use an API key"):
-        await fleet.create("cx", harness="codex", progress=said.append)
+        await fleet.create("cx", harness="codex", person="alice", progress=said.append)
 
 
 # ====================================================================== storing credentials (REST)
@@ -222,11 +224,22 @@ def test_an_admins_credential_is_their_own_unless_they_say_team(app_client):
     key = {"harness": "claude-code", "kind": "api_key", "value": "sk-ant-api03-0123456789"}
     assert c.post("/api/credentials", json={"name": "mine", **key}, headers=ADMIN_H).json()["owner"] == "owner"
     r = c.post("/api/credentials", json={"name": "ours", **key, "team": True}, headers=ADMIN_H).json()
-    assert r["owner"] == "team" and r["warning"] is None
-    # a team subscription login is allowed, with the terms said plainly
-    r = c.post("/api/credentials", json={"name": "ours-max", "harness": "claude-code", "kind": "oauth_token",
-                                         "value": "sk-ant-oat01-0123456789", "team": True}, headers=ADMIN_H).json()
-    assert r["owner"] == "team" and "consumer terms forbid sharing" in r["warning"]
+    assert r["owner"] == "team"
+    # a subscription login is never a team credential (the owner's decision): not new, and not moved
+    for login in ({"harness": "claude-code", "kind": "oauth_token", "value": "sk-ant-oat01-0123456789"},
+                  {"harness": "codex", "kind": "auth_file", "value": '{"tokens": {"refresh_token": "rt-0123456789"}}'}):
+        r = c.post("/api/credentials", json={"name": "ours-login", **login, "team": True}, headers=ADMIN_H)
+        assert r.status_code == 403 and "can't be a team credential" in r.json()["error"], r.text
+        assert "--kind api_key" in r.json()["error"]
+        assert c.post("/api/credentials", json={"name": "ours-login", **login}, headers=ADMIN_H).json()["owner"] \
+            == "owner"
+        r = c.put("/api/credentials/ours-login/owner", json={"person": None}, headers=ADMIN_H)
+        assert r.status_code == 403 and "can't be a team credential" in r.json()["error"]
+        r = c.post("/api/credentials", json={"name": "ours-login", **login, "team": True}, headers=ADMIN_H)
+        assert r.status_code == 403  # nor by storing over it with `team`
+        assert {x["name"]: x["owner"] for x in c.get("/api/credentials", headers=ADMIN_H).json()}["ours-login"] \
+            == "owner"
+        c.delete("/api/credentials/ours-login", headers=ADMIN_H)
     assert c.post("/api/credentials", json={"name": "x", **key, "team": True, "person": "owner"},
                   headers=ADMIN_H).status_code == 400
     # control-plane kinds stay the control plane's
@@ -253,8 +266,7 @@ def test_cli(monkeypatch):
     def fake(method, path, **kw):
         calls.append((method, path, kw.get("json"), kw.get("params")))
         if path == "/api/credentials":
-            return {"name": "t", "harness": "claude-code", "kind": "oauth_token", "exclusive": False, "owner": "team",
-                    "warning": "'t' is a subscription login shared as a team credential."}
+            return {"name": "t", "harness": "claude-code", "kind": "api_key", "exclusive": False, "owner": "team"}
         if path == "/api/credentials/migration":
             return {"state": "done", "finished_at": 1, "to": "owner", "moved": ["claude-sean"],
                     "control_plane": ["gh-hook"]}
@@ -262,9 +274,9 @@ def test_cli(monkeypatch):
 
     monkeypatch.setattr(cli, "_call", fake)
     run = CliRunner().invoke
-    res = run(cli.app, ["cred", "add", "t", "--harness", "claude-code", "--kind", "oauth_token", "--value",
-                        "sk-ant-oat01-0123456789abcdefghij", "--team"])
-    assert res.exit_code == 0 and "team" in res.output and "subscription login" in res.output, res.output
+    res = run(cli.app, ["cred", "add", "t", "--harness", "claude-code", "--kind", "api_key", "--value",
+                        "sk-ant-api03-0123456789abcdefghij", "--team"])
+    assert res.exit_code == 0 and "claude-code/api_key, team" in res.output, res.output
     assert calls[-1][2]["team"] is True
     res = run(cli.app, ["cred", "migration"])
     assert "claude-sean" in res.output and "gh-hook" in res.output, res.output
@@ -484,8 +496,9 @@ async def test_doctor(intake, settings, broker):  # noqa: F811
     broker.put("claude-max", "claude-code", CredentialKind.OAUTH_TOKEN, "sk-ant-oat01-max-0123456789")
     checks = {c["name"]: c for c in teamcreds.doctor_checks(h)}
     assert checks["team credentials for jobs"]["status"] == "ok"
-    shared = checks["personal credentials shared"]
-    assert shared["status"] == "warn" and "claude-max" in shared["detail"] and "forbid sharing" in shared["fix"]
+    shared = checks["personal credentials shared"]  # one stored around the API's refusal fails the doctor
+    assert shared["status"] == "fail" and "claude-max" in shared["detail"]
+    assert "can't be a team credential" in shared["fix"]
     # repos whose policy says `person` warn about unlinked senders instead
     from hangar.repopolicy import RepoPolicy
 

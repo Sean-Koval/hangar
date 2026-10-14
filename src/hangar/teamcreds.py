@@ -51,9 +51,13 @@ FREQUENT_SENDER_JOBS = 3  # unlinked GitHub or Slack senders with this many jobs
 UNLINKED_DAYS = 14
 
 
+def _subscription(harness: str, kind: CredentialKind) -> bool:
+    h = HARNESSES.get(harness)
+    return kind in SUBSCRIPTION_KINDS and h is not None and h.agent
+
+
 def is_subscription(c: Credential) -> bool:
-    h = HARNESSES.get(c.harness)
-    return c.kind in SUBSCRIPTION_KINDS and h is not None and h.agent
+    return _subscription(c.harness, c.kind)
 
 
 def owner(c: Credential, settings: Settings | None) -> str:
@@ -63,23 +67,17 @@ def owner(c: Credential, settings: Settings | None) -> str:
     return c.person or "team"
 
 
-def sharing_warning(c: Credential) -> str | None:
-    """Said when a subscription login becomes a team credential (allowed: the owner may have a team account)."""
-    if c.person is not None or not is_subscription(c):
-        return None
-    return (f"'{c.name}' is a subscription login shared as a team credential. Anthropic's and OpenAI's consumer "
-            "terms forbid sharing a login; a team credential should be an API key (docs/team.md#what-the-vendors-"
-            "allow).")
-
-
-def check_team(c: Credential) -> None:
-    """Refuse turning someone's own subscription login into a team credential: it would reach every member's
-    sandbox, and the vendors' terms forbid sharing it. Add a team credential of its own instead."""
-    if c.person is not None and is_subscription(c):
+def check_team(name: str, harness: str, kind: CredentialKind) -> None:
+    """Refuse a subscription login (a Claude Pro or Max sign-in, a ChatGPT `auth.json`, a Google sign-in) as a team
+    credential, new or moved (the owner's decision): the vendors' terms make a login one person's, and Claude Code's
+    forbid routing requests through a Pro or Max login on behalf of others. Team credentials are API keys, or
+    credentials the vendor's terms allow for automation."""
+    if _subscription(harness, kind):
         raise identity.Forbidden(
-            f"'{c.name}' is {c.person}'s own {c.harness} login; a person's subscription login isn't shared with the "
-            "team (and the vendors' terms forbid sharing it). Add a team credential instead, preferably an API key: "
-            f"hangar cred add NAME --team --harness {c.harness} --kind api_key --file key.txt")
+            f"'{name}' is a subscription login, and a subscription login can't be a team credential: the vendors' "
+            "terms make it one person's (docs/team.md#what-the-vendors-allow). Keep it someone's own (hangar cred "
+            f"owner {name} PERSON), and add an API key for the team: hangar cred add NAME --team --harness {harness} "
+            "--kind api_key --file key.txt")
 
 
 # ---------------------------------------------------------------------------- the migration
@@ -306,12 +304,13 @@ def doctor_checks(h: Any) -> list[dict[str, Any]]:
     moved = f"the migration made {len(rec.get('moved') or [])} earlier credential(s) the owner's" if rec else \
         "the credential migration hasn't run (it runs when hangar starts)"
     if shared:
-        out.append(_check("personal credentials shared", "warn",
-                          f"team credentials that are subscription logins, so they reach every member's sandbox: "
-                          f"{', '.join(shared)}; {moved}",
-                          "Anthropic's and OpenAI's consumer terms forbid sharing a login: give each person their own "
-                          "(hangar cred owner NAME PERSON) and add team API keys (hangar cred add NAME --team "
-                          "--harness claude-code --kind api_key --file key.txt); docs/team.md"))
+        out.append(_check("personal credentials shared", "fail",
+                          f"subscription logins stored as team credentials, so they reach every member's sandbox and "
+                          f"jobs no person owns: {', '.join(shared)}; {moved}",
+                          "a subscription login can't be a team credential (the vendors' terms make it one person's): "
+                          "make each someone's own (hangar cred owner NAME PERSON) or remove it, and add team API keys "
+                          "(hangar cred add NAME --team --harness claude-code --kind api_key --file key.txt); "
+                          "docs/team.md#what-the-vendors-allow"))
     else:
         out.append(_check("personal credentials shared", "ok" if rec else "warn",
                           f"no subscription login is a team credential; {moved}", "restart hangar"))

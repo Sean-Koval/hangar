@@ -274,7 +274,7 @@ def test_members_store_only_their_own_credentials(app_client):
     # --- teamcreds: but never someone's own subscription login
     c.post("/api/credentials", json=mine, headers=alice)
     r = c.put("/api/credentials/claude-alice/owner", json={"person": None}, headers=ADMIN_H)
-    assert r.status_code == 403 and "alice's own" in r.json()["error"]
+    assert r.status_code == 403 and "can't be a team credential" in r.json()["error"]
 
 
 def test_a_members_mcp_token_is_scoped_over_http(app_client):

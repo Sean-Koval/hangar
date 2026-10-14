@@ -77,11 +77,11 @@ hangar cred owner gh-jobs team                     # or make an existing API key
 hangar cred ls                                     # owner=team | owner=<person> | owner=control-plane
 ```
 
-Without `--team`, a credential an admin adds is **their own**, so an admin's personal login never becomes the team's by accident. Control-plane credentials (webhook signing keys, bot tokens, GitHub App keys, hangar's own GitHub token) belong to neither: they never reach a sandbox. Members can't add team credentials, and a person's own subscription login can't be made the team's (`hangar cred owner` refuses it): add a team credential of its own.
+Without `--team`, a credential an admin adds is **their own**, so an admin's personal login never becomes the team's by accident. Control-plane credentials (webhook signing keys, bot tokens, GitHub App keys, hangar's own GitHub token) belong to neither: they never reach a sandbox. Members can't add team credentials.
+
+**A team credential is an API key, or another credential the vendor's terms allow for automation. A subscription login never is.** A Claude Pro or Max login (`--kind oauth_token`), a ChatGPT `auth.json`, a Google sign-in and the other sign-in files are refused as team credentials, whether added with `--team`, stored over with `team: true`, or moved with `hangar cred owner NAME team` ([what the vendors allow](#what-the-vendors-allow)). The refusal names the `hangar cred add … --kind api_key` command to use instead. API keys also have no lease, so any number of sandboxes use one at once.
 
 Environments may list team credentials by name as before; a sandbox that runs for no one, or for someone without a login of their own, gets the ones its environment lists for its harness, or every team credential for the harness when it lists no team one. A git token is swapped the same way when the environment lists one.
-
-**Use API keys for team credentials** ([what the vendors allow](#what-the-vendors-allow)). API keys also have no lease, so any number of sandboxes use one at once.
 
 ## 4. Per-person logins
 
@@ -117,7 +117,7 @@ A job on a `team` repo still runs for its person: their caps, budget and lists. 
 
 A Codex ChatGPT login (`~/.codex/auth.json`) rotates its refresh token as it's used, so hangar leases it to one sandbox at a time and writes the new token back when the sandbox ends. The same holds for the other sign-in files (pi, Gemini). One such login serves one sandbox at once, across everyone who uses it.
 
-When several logins of a kind are available to a sandbox (a person's own, or the team's when an environment lists several or none), they form a pool and a sandbox takes a free one. When all are in use, a job or session **waits** and says so in its events: `waiting for a free login (queued): the team's codex logins codex-1, codex-2 (all in use)`. It doesn't name the sandboxes holding them, which may be other people's. It starts when one is released, or fails after `HANGAR_LOGIN_WAIT_SECONDS` (600) with the same words. A sandbox made directly (`create_sandbox`) fails at once instead. A job's sandbox keeps its login while it is kept for follow-ups (`keep_minutes`, 120 by default), so a login stays busy for up to that long after each job; `keep_minutes: 0` releases it when the turn ends (follow-ups still resume from the checkpoint). To run many Codex jobs in parallel, use an OpenAI API key, which has no lease.
+A sign-in file is always someone's own, so this is about one person's sandboxes. When a person has several logins of a kind, they form a pool and a sandbox takes a free one. When all are in use, a job or session **waits** and says so in its events: `waiting for a free login (queued): alice's codex logins codex-1, codex-2 (all in use)`. It doesn't name the sandboxes holding them, which may be other people's. It starts when one is released, or fails after `HANGAR_LOGIN_WAIT_SECONDS` (600) with the same words. A sandbox made directly (`create_sandbox`) fails at once instead. A job's sandbox keeps its login while it is kept for follow-ups (`keep_minutes`, 120 by default), so a login stays busy for up to that long after each job; `keep_minutes: 0` releases it when the turn ends (follow-ups still resume from the checkpoint). To run many Codex jobs in parallel, use an OpenAI API key, which has no lease.
 
 ## What the vendors allow
 
@@ -126,7 +126,7 @@ Checked on 2026-10-14 against the vendors' own pages. This is a summary, not leg
 - **Anthropic.** Free, Pro and Max logins are under the [Consumer Terms](https://www.anthropic.com/legal/consumer-terms): "You may not share your Account login information, Anthropic API key, or Account credentials with anyone else" and "You also may not make your Account available to anyone else." Claude Code's [legal and compliance page](https://code.claude.com/docs/en/legal-and-compliance) adds that Pro and Max usage limits "assume ordinary, individual usage", and that configuring an API key "for use by the customer's own authorized users" is fine when the usage is billed to the key's owner. The same page says Anthropic doesn't permit developers "to route requests through Free, Pro, or Max plan credentials on behalf of their users", and that where Claude Code runs "in hosted sandboxes or other agent infrastructure", "each end user must authenticate with their own Anthropic API key, Claude subscription plan credentials, or 3P inference provider credential". A team subscription login used for everyone's jobs is exactly that kind of routing.
 - **OpenAI.** The [Terms of Use](https://openai.com/policies/terms-of-use/) say: "You may not share your account credentials or make your account available to anyone else". The [Codex authentication docs](https://developers.openai.com/codex/auth) say to "Use API key authentication for programmatic Codex CLI workflows, such as CI/CD jobs" and to treat `~/.codex/auth.json` like a password. In a ChatGPT Enterprise workspace, an admin can also let members create Codex access tokens "for trusted scripts, schedulers, and private CI runners". A member creates one, so store it as theirs, like a login.
 
-So in hangar: **a subscription login (a Claude OAuth token, a ChatGPT `auth.json`, a Google sign-in) is one person's own**, used only in their sandboxes. **Team credentials should be API keys**: an Anthropic Console key and an OpenAI project key, billed to your organization. Hangar lets an admin add a team subscription login on purpose (a dedicated account), but says the terms each time, and `hangar doctor` warns about every one.
+So in hangar: **a subscription login (a Claude OAuth token, a ChatGPT `auth.json`, a Google sign-in) is one person's own**, used only in their sandboxes. **Team credentials are API keys**, such as an Anthropic Console key and an OpenAI project key billed to your organization, or other credentials the vendor's terms allow for automation. Hangar refuses a subscription login as a team credential outright, even one for a dedicated account, since everyone's jobs would route through it. If one is stored as the team's anyway (by an older version, or around the API), `hangar doctor` fails until it is someone's own or removed.
 
 ## Credentials stored before people
 
@@ -142,7 +142,7 @@ Your logins then never reach a member's sandbox, nor a job no person owns. Make 
 
 ## Check it: `hangar doctor`
 
-- **personal credentials shared**: subscription logins that are team credentials, and what the migration did.
+- **personal credentials shared**: fails for any subscription login stored as a team credential, and says what the migration did.
 - **team credentials for jobs**: mapped repos (GitHub and Slack), inbound webhooks and schedules without a person whose environment's harness would get no login, and repos whose `credentials: person` policy makes unlinked senders' jobs fail.
 - **unlinked senders**: GitHub and Slack accounts linked to nobody that started 3 or more jobs in the last 14 days, with the `hangar person link` command for each.
 
@@ -150,8 +150,8 @@ Your logins then never reach a member's sandbox, nor a job no person owns. Make 
 
 | Route | |
 | --- | --- |
-| `POST /api/credentials` | `team: true` makes a team credential (admins); `person` an admin names makes it that person's; otherwise an admin's is their own and a member's is theirs. The answer has `owner` and, for a shared subscription login, a `warning`. |
-| `PUT /api/credentials/{name}/owner` | `{"person": "alice"}`, or `{"person": null}` for the team (refused for a person's own subscription login). |
+| `POST /api/credentials` | `team: true` makes a team credential (admins); `person` an admin names makes it that person's; otherwise an admin's is their own and a member's is theirs. `team: true` with a subscription login is refused (403). The answer has `owner`. |
+| `PUT /api/credentials/{name}/owner` | `{"person": "alice"}`, or `{"person": null}` for the team (refused for a subscription login). |
 | `GET /api/credentials/migration` | The migration's record (admins). |
 | `POST /api/people/{id}/links` | `{"source": "github", "id": "alice-gh"}` (admins). A GitHub login is looked up and stored as its user id (`looked_up` in the answer); `"id": "583231"` skips the lookup. Slack ids are `T…/U…`. |
 | `DELETE /api/people/{id}/links?source=github&id=alice-gh` | Unlinks it (admins). |
