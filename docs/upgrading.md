@@ -2,6 +2,12 @@
 
 This guide takes a hangar that runs the version before the overnight stack (main at `2e3e0a3`, "Merge pull request #43") to the top of the stack, PRs #48–#69. It is written for the GKE install from [gke.md](gke.md): one zonal cluster, gVisor sandboxes, the control plane with SQLite on the `hangar-data` PVC, checkpoints in the session bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / `power.sh`. [CHANGELOG.md](../CHANGELOG.md) lists what the stack adds.
 
+Checkpoints are in the bucket only if `hangar-site` names it, as terraform's comment on the bucket says to. Check before you start; a few things below differ when it prints nothing:
+
+```bash
+kubectl -n hangar get configmap hangar-site -o jsonpath='{.data.HANGAR_SESSION_STORE}'; echo   # gs://<project>-hangar-sessions
+```
+
 The short version:
 
 ```bash
@@ -75,16 +81,17 @@ No startup step converts anything. Records gain the new fields the next time han
 
 - *Upgrade:* checkpoints written before it restore with the new code (`tests/test_ckpt_compat.py`, which writes them with `2e3e0a3`'s capture, frozen in the test).
 - *Rollback:* checkpoints written after it, including parts copied inside the bucket instead of being uploaded again, restore with `2e3e0a3`'s restore (`tests/test_ckpt_rollback.py`). The part names, encryption and formats are unchanged.
+- *End to end, on Docker:* a `2e3e0a3` hangar with a suspended session, a session whose sandbox kept running, a finished job, a `jobs` token and a vault credential was stopped and started as the stack top on the same data directory, then rolled back the same way. Both times every session went on with its commit, uncommitted change, untracked file and conversation; the running sandbox was re-attached; the job took a follow-up through its token and signed its callback with the credential. After the rollback, the `mcp` token the new version minted got 401 and 403.
 
 **Other changes to stored data:**
 
 - *Durability.* SQLite now commits with `synchronous=NORMAL` in WAL mode (#53). Tokens, credentials, gateway grants, stored settings and replay guards still sync on every commit. A crash of hangar loses nothing. A node crash or power loss can roll back the last commits of anything else, such as a session's latest state.
 - *Job events* are also appended to a log per job (#49), so job sessions' events take twice the space on the volume.
-- *Backups* go to `gs://<bucket>/_backups/` (§3). If you set `session_retention_days` in terraform, the bucket's lifecycle rule deletes backups older than that too.
+- *Backups* go to `gs://<bucket>/_backups/` (§3), or to `/data/sessions/_backups/` on the PVC without a bucket. If you set `session_retention_days` in terraform, the bucket's lifecycle rule deletes backups older than that too.
 
 ## 3. Defaults that change behaviour
 
-Each of these is on, or different, as soon as the new version starts. To opt out, use `hangar config set NAME VALUE`, which keeps the value in hangar's database across redeploys, or the `hangar-site` config map, which wins over the database. Settings marked *restart* apply after `kubectl -n hangar rollout restart deploy/hangar`; `hangar config set` says so.
+Each of these is on, or different, as soon as the new version starts. To opt out, use `hangar config set NAME VALUE`, which keeps the value in hangar's database across redeploys, or the `hangar-site` config map, which wins over the database. Settings marked *restart* apply after `kubectl -n hangar rollout restart deploy/hangar`; `hangar config set` says so. A change to `hangar-site` always needs that restart: the pod reads it as environment variables when it starts.
 
 | What | Before → now | Opt out |
 | --- | --- | --- |
@@ -98,14 +105,14 @@ Each of these is on, or different, as soon as the new version starts. To opt out
 | **PR auto-fix** (#65) | n/a → on for every repo (`ci,reviews`). A failing check on a job's own PR, or a trusted reviewer's "changes requested" or inline comments, starts a follow-up turn on that job's session (which costs money). There are at most `HANGAR_AUTOFIX_MAX_ROUNDS` (3) rounds per PR, 120 s apart. **It only fires once the webhook sends the new events (§4).** | `hangar config set HANGAR_GITHUB_AUTOFIX '{"owner/repo": "off"}'` per repo, or `"autofix": "off"` per job. `HANGAR_AUTOFIX_MAX_ROUNDS=0` also stops it, but posts an "Auto-fix stopped" comment the first time. |
 | **`/metrics`** (#55) | none → `GET /metrics` on the public URL, for admin tokens and new `metrics`-scoped tokens only. Traces stay off unless `OTEL_*` variables name an exporter. | `HANGAR_METRICS_ENABLED=false` (*restart*) |
 | **The E2B-compatible API** (#61) | none → mounted at `/e2b` on the public URL, with the sandbox router in front of the app. It is for admin tokens and new `sandboxes`-scoped tokens, rate-limited per `sandboxes` token. | `HANGAR_E2B_API_PATH=""` (*restart*) |
-| **Database backups** (#57) | none → with `HANGAR_SESSION_STORE` on a `gs://` bucket, which yours is: one ~5 minutes after each start when none is recent, then every 24 h, into `gs://<bucket>/_backups/`, keeping the newest 14. They are gzipped and encrypted with the vault key. Until the first one exists, `hangar doctor` warns "none yet". | `HANGAR_BACKUP_HOURS=0`; `HANGAR_BACKUP_KEEP` sets the count |
+| **Database backups** (#57) | none → with `HANGAR_SESSION_STORE` on a `gs://` bucket: one ~5 minutes after each start when none is recent, then every 24 h, into `gs://<bucket>/_backups/`, keeping the newest 14. They are gzipped and encrypted with the vault key. Until the first one exists, `hangar doctor` warns "none yet". Without a bucket nothing is scheduled, and `hangar doctor` warns "no scheduled backups of hangar's database": `hangar config set HANGAR_BACKUP_HOURS 24` writes them to the PVC, which a PD snapshot then covers too. | `HANGAR_BACKUP_HOURS=0`; `HANGAR_BACKUP_KEEP` sets the count |
 | **Rate limits and caps on the front doors** (#50, #56) | none → per caller (a `jobs` or `mcp` token, a GitHub or Slack user, a webhook source): 30 job submissions or follow-ups a minute (bursts of 10) and 10 unfinished jobs. Each front door (github, slack, webhook, a2a, api, mcp) gets 120 a minute (bursts of 60). Request bodies are capped at 100 MB for a valid token and 64 KB without one. Admin tokens and schedules are exempt. A refused request gets a 429 and is audited. | `0` turns one off: `HANGAR_JOB_RATE_PER_MINUTE`, `HANGAR_JOB_SOURCE_RATE_PER_MINUTE`, `HANGAR_JOB_MAX_ACTIVE_PER_OWNER`; size with `HANGAR_MAX_REQUEST_MB` |
 | **Replays** (#50) | a webhook redelivered with a new delivery id ran again → a signed body seen in the last `HANGAR_WEBHOOK_REPLAY_HOURS` (168) is a duplicate and does nothing; so is a GitHub redelivery of an `issues` or `issue_comment` event that was already handled. | `HANGAR_WEBHOOK_REPLAY_HOURS` |
 | **OAuth for MCP clients** (#50, #56) | any https redirect on the allowed hosts → when a client *registers*, its redirect must be https, or http to loopback only (`localhost`, `127.0.0.1`, `::1`). A custom scheme needs an exact `scheme://host` entry; `cursor://anysphere.cursor-mcp` is now allowed by default, so Cursor signs in. An empty `HANGAR_OAUTH_REDIRECT_HOSTS` now allows no hosts (it used to allow any). `/authorize` refuses a `resource` other than `HANGAR_PUBLIC_URL` or `<HANGAR_PUBLIC_URL>/mcp` (RFC 8707), so **clients must use the same URL as `HANGAR_PUBLIC_URL`**. `up.sh` sets both from the same domain. Clients registered before the upgrade keep their registration. | add entries to `HANGAR_OAUTH_REDIRECT_HOSTS` (*restart*) |
 | **MCP sessions** (#52) | stateless → pre-2026 clients get an `Mcp-Session-Id`, so hangar can ask them questions and send them notifications. Sessions live in the pod's memory: after this upgrade's restart, and after every one since, a client's old session id gets a 404, and the MCP spec has the client start a new session. | `HANGAR_MCP_STATELESS_HTTP=true` (*restart*) |
 | **Slack Connect** (#50) | anyone in a shared channel → a member of another organization counts only when listed in `HANGAR_SLACK_USERS` (as `<team>/<user>` or by user id); Enterprise Grid workspaces go in `HANGAR_SLACK_TEAMS`. | list them |
 | **The git gateway** (#48) | still off unless `HANGAR_GATEWAY_URL` is set. When it's on: branches under `hangar/session/` are reserved for their sessions, a grant gets at most 8 requests at once, and a source address with 30 failed grant checks in a minute gets 429s. | — |
-| **The Docker network** (#62) | *laptop and single VM only, not GKE:* sandboxes go on hangar's own `hangar-sandboxes` network (bridge `hangar0`), where they can't reach each other. Running sandboxes stay on their network until they're recreated. | `HANGAR_DOCKER_NETWORK=bridge` |
+| **The Docker network** (#62) | *laptop and single VM only, not GKE:* sandboxes go on hangar's own `hangar-sandboxes` network (bridge `hangar0`), where they can't reach each other. Running sandboxes stay on their network until they're recreated. | `HANGAR_DOCKER_NETWORK=bridge` (*restart*) |
 | **Shutdown** (#57) | SIGTERM ended everything at once → long-polls answer straight away, streams and terminals get `HANGAR_SHUTDOWN_GRACE_SECONDS` (15), then hangar shuts down. The Deployment's `terminationGracePeriodSeconds` is now 45 (§4). | — |
 | **I/O threads** (#53) | Python's default (CPUs + 4) → 32 per CPU, between 64 and 128, for blocking provider calls. | `HANGAR_IO_THREADS` (*restart*) |
 
@@ -128,7 +135,7 @@ bash deploy/gke/up.sh
 
   Both are additive to GKE Agent Sandbox's managed policy, and Dataplane V2 enforces them. Sandboxes keep their internet access; other sandboxes can no longer open connections to them. Hangar's own path in, exec through the API server, doesn't use the pod network.
 - It sets the Deployment's `terminationGracePeriodSeconds: 45`.
-- It leaves `HANGAR_SESSION_STORE` alone: yours is in `hangar-site`. On an existing install, it only fills in the bucket when the `hangar` config map already names one.
+- It leaves `HANGAR_SESSION_STORE` alone on an existing install: it fills in the bucket only when the `hangar` config map already names one, and a value in `hangar-site` wins anyway. Without either it prints a note: moving a running hangar to the bucket would strand the checkpoints of suspended sessions on the PVC.
 
 The Deployment uses `Recreate`, so the URL answers 502 from the moment the old pod stops until the new one is ready. Sandboxes and running agent turns outlive the pod, as before, and the new pod re-attaches to them. A turn that started under the old version finishes as a one-shot turn: it can't be steered.
 
@@ -178,7 +185,7 @@ Each check prints PASS, FAIL or SKIP with its time:
 | `session` | a session with no model turn: a commit, a change and an untracked file, then checkpoint, suspend (its sandbox goes) and open (a new sandbox restores all three), each timed |
 | `model` | `--with-model`: a short real turn whose answer contains a requested word, with its cost |
 | `steer` | `--with-model`: a live turn with `approvals=ask`. The agent's command waits for an approval, a steer message is delivered while it waits, the command runs once allowed |
-| `gateway` | `--gateway-repo`: the session's sandbox is in gateway mode with no GitHub token in it; a push to `hangar/accept-<run>` goes through and a push to `main` is refused by the gateway. The branch is deleted afterwards with `gh`, if you have it. |
+| `gateway` | `--gateway-repo`: the session's sandbox is in gateway mode with no GitHub token in it; a push to `hangar/accept-<run>` goes through and a push to `accept-<run>-outside`, outside the sandbox's grant like `main`, is refused by the gateway. It never pushes to `main`: if the gateway let a push through, the run's own branch takes it. Both branches are deleted afterwards with `gh`, if you have it. |
 | `e2b` | the stock `e2b` SDK (if installed: `uv sync --extra e2b`) with a `sandboxes` token: create, run, files, list, kill |
 | `backup` | `hangar admin backup` now and in the list, stored in `gs://` |
 | `metrics` | `/metrics` serves hangar's series, and a `metrics` token reads it and nothing else |
