@@ -216,7 +216,9 @@ def test_job_slots_from_capacity(settings):
     settings.job_concurrency = 0
     assert job_slots(settings) == 4  # Docker: one machine
     settings.default_provider = "kubernetes"
-    assert settings.max_sandboxes == 120 and job_slots(settings) == 24
+    # --- review: at most 8 until job budgets and a daily spend cap (#85) bound what concurrent jobs can spend;
+    # 24 slots of best-of-N jobs could also take every one of the 120 sandboxes from sessions
+    assert settings.max_sandboxes == 120 and job_slots(settings) == 8
     settings.max_sandboxes = 30
     assert job_slots(settings) == 6
     settings.max_sandboxes = 5
@@ -224,7 +226,9 @@ def test_job_slots_from_capacity(settings):
     settings.job_concurrency = 7
     assert job_slots(settings) == 7
     settings.person_max_running_jobs = 0
-    assert job_cap(settings) == 3
+    assert job_cap(settings) == 4  # --- review: half the slots, but never under 4 (main ran 4 at once for anyone)
+    settings.job_concurrency = 24
+    assert job_cap(settings) == 12
     settings.person_max_running_jobs = 5
     assert job_cap(settings) == 5
 
@@ -271,7 +275,8 @@ def test_job_service_uses_the_fair_queue_and_derived_slots(fleet, settings):
               state=JobState.QUEUED)
     jobs._jobs[job.id] = job
     assert jobs._person(job.id) == "sean" and jobs._person("job-missing") == ""
-    assert fairness.job_cap(settings) == 2
+    # --- review: on Docker (4 slots) the one person of a solo install still runs 4 jobs at once, as on main
+    assert fairness.job_slots(settings) == 4 and fairness.job_cap(settings) == 4
 
 
 # ---------------------------------------------------------------------------- the load test itself, small

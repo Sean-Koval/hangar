@@ -10,7 +10,7 @@ page covers what keeps that responsive and fair, how to size GKE for it, and wha
 | Every create, lookup by name and listing parsed **every sandbox record ever made**, on the event loop (250–935 ms at 20k records; records were never deleted) | Indexed lookups: an expression index on `state` and `name` (and on jobs' and sessions' `state`), `Store.list_where` / `count_where` / `list_active` | `store.py` |
 | History grows forever | Stopped and failed sandbox records idle for 7 days move to `sandboxes_archive`, in small batches off the event loop; still found by id; deleted after 180 days | `retention.py` |
 | One person's batch could take the whole fleet | Caps per person on live sessions, sandboxes and running jobs | `fairness.py` |
-| Jobs ran first come, first served, 4 at a time | Job slots sized from capacity (24 on GKE at `max_sandboxes=120`); a free slot goes to whoever has the fewest jobs running | `fairness.py` (`FairJobQueue`, `job_slots`) |
+| Jobs ran first come, first served, 4 at a time | Job slots sized from capacity (8 on GKE at `max_sandboxes=120`, until job budgets land; see the follow-ups); a free slot goes to whoever has the fewest jobs running | `fairness.py` (`FairJobQueue`, `job_slots`) |
 | A fork could exhaust the control plane's 2 GiB (B12: ~5 children of a 400 MB workspace, 3 on the pods/exec fallback) | Workspace archives in flight share a memory budget (1 GiB, each counted at 2–3× its size); an oversized archive is refused before it is read; Kubernetes uploads encode base64 a frame at a time; archive disk I/O runs in a thread | `membudget.py`, `fleet.py`, `providers/kubernetes.py` |
 | Each sandbox reserved its whole CPU limit | Sandbox pods request half their CPU and all their memory (Burstable) | `providers/kubernetes.py` |
 
@@ -18,11 +18,11 @@ page covers what keeps that responsive and fair, how to size GKE for it, and wha
 
 | Variable | Default | |
 | --- | --- | --- |
-| `HANGAR_MAX_SANDBOXES` | 120 (was 50) | The whole fleet: 60 sessions, 24 job slots, best-of-N attempts, forks, logins |
-| `HANGAR_JOB_CONCURRENCY` | 0 = auto (was 4) | 4 on Docker; elsewhere `max_sandboxes / 5`, between 4 and 24 |
+| `HANGAR_MAX_SANDBOXES` | 120 (was 50) | The whole fleet: 60 sessions, job slots (8, or up to 24 set by hand), best-of-N attempts, forks, logins |
+| `HANGAR_JOB_CONCURRENCY` | 0 = auto (was 4) | 4 on Docker; elsewhere `max_sandboxes / 5`, between 4 and 8. Set 24 by hand once job budgets and a daily spend cap (#85) are in |
 | `HANGAR_PERSON_MAX_SESSIONS` | 15 | Live sessions per person (each holds a sandbox); new, resumed (`send`/`open`) and forked ones count. Suspended ones don't |
 | `HANGAR_PERSON_MAX_SANDBOXES` | 20 | Sandboxes a person starts directly (MCP, REST, the E2B API). Sessions' and jobs' own sandboxes are capped by the two caps around this one |
-| `HANGAR_PERSON_MAX_RUNNING_JOBS` | 0 = half the job slots | Jobs one person runs at once. Queued jobs past it wait while others' run |
+| `HANGAR_PERSON_MAX_RUNNING_JOBS` | 0 = half the job slots, at least 4 | Jobs one person runs at once. Queued jobs past it wait while others' run |
 | `HANGAR_SANDBOX_RETENTION_DAYS` / `HANGAR_SANDBOX_ARCHIVE_DAYS` | 7 / 180 | When settled records move to the archive, and when archived ones are deleted (0 = never) |
 | `HANGAR_WORKSPACE_TRANSFER_MB` | 1024 | Workspace archives in the control plane's memory at once (read at startup) |
 | `HANGAR_K8S_CPU_REQUEST_FRACTION` | 0.5 | Share of an environment's `cpus` a sandbox pod requests; the limit stays `cpus`. 1 = Guaranteed QoS, as before |
@@ -74,7 +74,7 @@ degrade. The request rates are the same in every column; the after runs finish t
 | `GET /api/sandboxes` p50 / p95 | 2,369 / 5,633 ms | 68 / 247 ms | 159 / 438 ms |
 | Create a sandbox (REST) p50 | 21,213 ms (n=23) | 32 ms (n=1) | 1,847 ms (n=2) |
 | An 8 s agent turn, send to done, p50 / p95 | 44.0 / 65.8 s | 8.6 / 10.8 s | 9.5 / 11.5 s |
-| Job queue wait p50 / p95 (12 jobs) | 83 / 261 s (4 slots) | 0.01 / 0.06 s (24 slots) | 0.02 / 0.11 s |
+| Job queue wait p50 / p95 (12 jobs) | 83 / 261 s (4 slots) | 0.01 / 0.06 s (24 slots, set with `--set job_concurrency=24`; the default is now 8) | 0.02 / 0.11 s |
 | SQLite time on the event loop | 310 s of a 354 s run | 4.8 s of 38 s | 8.6 s of 49 s |
 | Server CPU / peak RSS | 330 CPU-s / 1,031 MB | 7.7 CPU-s / 258 MB | 8.3 CPU-s / 264 MB |
 | Wall time for the same work | 354 s | 38 s | 49 s |
@@ -142,7 +142,7 @@ the whole 4 GiB for themselves should get a larger `resources.memory_gb`.
 | Load | Sandboxes | Nodes at 14 a node |
 | --- | --- | --- |
 | Typical day: ~60 live sessions (idle ones suspend after 30 min), ~12 jobs, warm pools | ~75 | 6 |
-| Peak: `HANGAR_MAX_SANDBOXES` (sessions, 24 job slots, best-of-N attempts) | 120 | 9 |
+| Peak: `HANGAR_MAX_SANDBOXES` (sessions, job slots raised to 24, best-of-N attempts) | 120 | 9 |
 | `sandbox_max_nodes` default (peak, plus a preempted Spot node's worth) | ~140 | **10** (was 4) |
 
 **Quotas** to request before applying (check *IAM & Admin → Quotas* for your region): `N2D_CPUS` ≥ 160 for the
@@ -200,9 +200,11 @@ soak run below).
 
 ## Limits and follow-ups
 
-- **Budgets before concurrency.** Auto job slots go from 4 to 24 on GKE. The per-person cap bounds one person, but
-  not a GitHub label storm across many people; daily spend budgets per repo and token (being built in
-  `frontdoor.py`) should land with this. Until then, `HANGAR_JOB_CONCURRENCY=4` keeps the old behaviour.
+- **Budgets before concurrency.** Auto job slots stop at 8 (`fairness.AUTO_JOB_SLOTS_MAX`), not 24. Until job
+  budgets and a daily spend cap per repo (#85) land, nothing bounds what a job spends across its follow-ups,
+  verify-fix and auto-fix turns, and the per-person cap bounds one person, not a GitHub label storm across many. A
+  slot is also a job, not a sandbox: 24 best-of-4 jobs could hold all 120 sandboxes, and every new session would be
+  refused at `max_sandboxes`. Once #85 is in, `HANGAR_JOB_CONCURRENCY=24` gives the measured 24.
 - **The reconciler** still scans every sandbox once per provider per reaper pass (`Fleet.reconcile`). Retention bounds
   it to a week of records; the reconciler work switches it to `store.list_where(Sandbox, provider=…, state=[…])`.
 - **Jobs and sessions are held in memory**, all of them, since the start (`jobs.py`, `sessions.py`): ~30 KB for a

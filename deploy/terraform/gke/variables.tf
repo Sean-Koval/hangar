@@ -31,7 +31,7 @@ variable "sandbox_machine_type" {
 }
 
 variable "sandbox_max_nodes" {
-  description = "Most sandbox nodes the autoscaler adds. 10 × n2d-standard-16 holds ~140 sandboxes of 2 vCPU / 4 GiB: a team of 6 with 10 sessions each, 24 job slots, warm pools and a preempted Spot node's worth of headroom (docs/team-scale.md). Needs N2D_CPUS and SSD_TOTAL_GB quota to match."
+  description = "Most sandbox nodes the autoscaler adds. 10 × n2d-standard-16 holds ~140 sandboxes of 2 vCPU / 4 GiB: a team of 6 with 10 sessions each, job slots, warm pools and a preempted Spot node's worth of headroom (docs/team-scale.md). Needs N2D_CPUS and SSD_TOTAL_GB quota to match."
   type        = number
   default     = 10
 }

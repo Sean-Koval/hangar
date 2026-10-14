@@ -78,22 +78,29 @@ def check_sessions(svc: SessionService, owner: str, starting: Session | None = N
                          "first (suspend_session), or ask the operator to raise HANGAR_PERSON_MAX_SESSIONS")
 
 
+# --- review: the most job slots auto-sizing gives. Nothing bounds what a job spends across its turns, or a repo in a
+# day, until job budgets (#85) land; and a slot is a job, not a sandbox, so 24 best-of-N jobs could hold every one
+# of 120 sandboxes and refuse every session. Set HANGAR_JOB_CONCURRENCY to go higher.
+AUTO_JOB_SLOTS_MAX = 8
+
+
 def job_slots(settings: Settings) -> int:
     """Jobs provisioning or running at once: HANGAR_JOB_CONCURRENCY, else sized from the fleet. On Docker (one
-    machine) 4; elsewhere a fifth of max_sandboxes between 4 and 24, which leaves the rest for sessions, forks and
-    best-of-N attempts."""
+    machine) 4; elsewhere a fifth of max_sandboxes between 4 and AUTO_JOB_SLOTS_MAX, which leaves the rest for
+    sessions, forks and best-of-N attempts."""
     if settings.job_concurrency > 0:
         return settings.job_concurrency
     if settings.default_provider == "docker":
         return 4
-    return max(4, min(24, settings.max_sandboxes // 5))
+    return max(4, min(AUTO_JOB_SLOTS_MAX, settings.max_sandboxes // 5))
 
 
 def job_cap(settings: Settings) -> int:
-    """Jobs one person may run at once: HANGAR_PERSON_MAX_RUNNING_JOBS, else half the slots (at least 2)."""
+    """Jobs one person may run at once: HANGAR_PERSON_MAX_RUNNING_JOBS, else half the slots, and at least 4 (what
+    anyone could run before the cap; a solo install on Docker keeps all four of its slots)."""
     if settings.person_max_running_jobs > 0:
         return settings.person_max_running_jobs
-    return max(2, job_slots(settings) // 2)
+    return max(4, job_slots(settings) // 2)
 
 
 class FairJobQueue:
