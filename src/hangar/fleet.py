@@ -829,16 +829,24 @@ class Fleet:
         h: Harness | None = HARNESSES.get(hname) if hname else None
         prelude: list[str] = []
         extra_env: dict[str, str] = {}
+        # --- review #102: agent-led setup's validation sandbox runs an unmerged, agent-written install. It gets the
+        # git credential its clone needs and nothing else: no other credential, no `secrets:`, no cloud tokens.
+        validating = envbuilds.VALIDATE_LABEL in sb.labels
+        if validating:
+            from hangar.gateway import GIT_KINDS
+
+            creds = [c for c in creds if c.kind in GIT_KINDS]
         if h:
             if h.install:
                 extra = "".join(f":{h.prefix}/{d}" for d in h.path_extra)  # --- images: the pack carries no wrapper
                 prelude.append(f'export PATH="{h.prefix}/bin:$PATH{extra}"')
             extra_env.update(h.env)
             extra_env["HANGAR_HARNESS"] = h.name
-        for var, cred in spec.secrets.items():
+        for var, cred in ({} if validating else spec.secrets).items():  # --- review #102
             extra_env[var] = self.broker.sandbox_secret(cred)  # --- identity: refuses control-plane credentials
         extra_env.update(await egress.attach(self, prov, sb, spec))  # --- egress: HTTPS_PROXY in a proxied env
-        extra_env.update(await self.cloud.attach(prov, sb, spec))  # --- egress: cloud OIDC tokens, no stored keys
+        if not validating:  # --- review #102
+            extra_env.update(await self.cloud.attach(prov, sb, spec))  # --- egress: cloud OIDC tokens, no stored keys
         extra_env.update(ghapi.sandbox_env(self.settings, sb))  # --- egress2: the read-only GitHub API (gateway)
         # workstream E: the `hangar-agent` helper (context exchange), installed per sandbox: no image rebuild
         await exchange.install_helper(prov, sb, f"/home/{self.settings.sandbox_user}")

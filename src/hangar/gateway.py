@@ -643,6 +643,9 @@ class Gateway:
             return "gateway"
         if self.settings.gateway_url and self.settings.gateway_for_jobs and "hangar.session" in sb.labels:
             return "gateway"  # sessions label their sandboxes; jobs run in sessions
+        # --- review #102: agent-led setup's validation sandbox runs a job's agent-written branch: the same grant
+        if self.settings.gateway_url and self.settings.gateway_for_jobs and "hangar.env-validate" in sb.labels:
+            return "gateway"
         return "direct"
 
     async def attach(self, prov: Provider, sb: Sandbox, spec: EnvSpec, creds: list[Credential],

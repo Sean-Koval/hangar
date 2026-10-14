@@ -362,10 +362,19 @@ ranked by list price (`HANGAR_MODEL_PRICES` and the built-in table; a release no
 price). A job's own `model` wins, and `HANGAR_ENV_SETUP_MODELS` pins one per harness. When no list can be read,
 the harness's own default applies, and the job's events say so. The job budget is the job's, else the repo
 policy's, else `HANGAR_ENV_SETUP_MAX_COST_USD` and `HANGAR_ENV_SETUP_MAX_TURNS`. The goal job gets a quarter of it
-(the proposal and the judging), and the setup job gets the rest (every attempt), so together they can't exceed it.
+(the proposal and the judging; at least one turn), and the setup job gets the rest (every attempt), so together
+they can't exceed it. A budget of fewer than 2 turns is refused. When the goal job's turns run out, later outputs are
+judged by their exit codes, and the job's events say so. Antigravity gets the picked Gemini id in agy's own form
+(`gemini-3.1-pro-high`: no `-preview`, a thinking level).
 
 **Safety.** The validation sandbox runs code an agent wrote on an unmerged branch, so it gets less than a build:
-no agent or person credentials, and no build secrets. A repo whose install needs a private registry token fails
+only the environment's git credential, which its clone needs (with the git gateway on for jobs,
+`HANGAR_GATEWAY_FOR_JOBS`, not even that: a scoped grant, like a job's sandbox), and nothing else: no agent or person
+credentials, no other credential of the environment, none of its `secrets:`, no cloud tokens, no build secrets. Its
+egress is the environment's and the repo policy's, as for any sandbox. The file it validates can't name what an
+admin decides (refused like any `.hangar/environment.yaml`), its services must be on `HANGAR_ENV_SERVICE_IMAGES`, and
+`mocks` are documentation only, shown as inline code in the PR and its packet. The PR lands through the landing
+path like any agent PR: a person approves it. A repo whose install needs a private registry token fails
 validation and names the token, and an admin maps it as a build secret for the merged file. The env-setup job
 holds no job slot while it waits: a background task drives its stages and keeps its state in the job's
 `result.data`, so a restart resumes it. A follow-up to it answers whichever of its agents asked a question.

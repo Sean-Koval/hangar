@@ -234,4 +234,8 @@ async def pick(fleet: Fleet, harness: str | None, transport: httpx.AsyncBaseTran
         return Pick(None, f"{harness}'s own default ({provider}'s model list couldn't be read: {type(e).__name__})")
     if not best:
         return Pick(None, f"{harness}'s own default (no general model in {provider}'s list)")
+    if harness == "antigravity" and best.startswith("gemini-"):
+        # --- review #102: agy names a model by its Gemini id without "-preview", plus a thinking level, as
+        # `agy models` lists them ("gemini-3.8-flash-high"); the API's id fails every turn
+        best = best.removesuffix("-preview") + "-high"
     return Pick(best, src)

@@ -228,7 +228,7 @@ async def test_goal_setup_validate_retry_and_pr(jobs, world, fleet):
     assert "## Environment setup" in pr["body"] and "`make install`" in pr["body"] and "payments API" in pr["body"]
     assert "the validated test command" in pr["body"]
     packet = next(c for c in jobs.hooks.comments() if "Review packet" in c)
-    assert "**Environment setup:**" in packet and "mocked: payments API" in packet
+    assert "**Environment setup:**" in packet and "mocked: `payments API`" in packet
     cfg = repoenv.parse(_remote_file(world["remote"], setup_job.branch, repoenv.PATH))
     assert cfg.verify == f"make test PYTHON={PY}" and cfg.mocks[0].what == "payments API"
     assert "Development environment" in _remote_file(world["remote"], setup_job.branch, "AGENTS.md")
@@ -519,8 +519,79 @@ async def test_packet_lines_only_for_the_setup_job(jobs, world):
     parent.result.data = st.model_dump(mode="json")
     jobs._jobs[parent.id] = parent
     lines = "\n".join(autoinstall.packet_lines(jobs, child))
-    assert "1 of 1 check(s) passed" in lines and "mocked: S3 (MinIO)" in lines and "`API_TOKEN`" in lines
+    assert "1 of 1 check(s) passed" in lines and "mocked: `S3` (`MinIO`)" in lines and "`API_TOKEN`" in lines
     assert autoinstall.packet_lines(jobs, parent) == []
     # labels are anyone's to write: a job that only claims to be the setup job gets nothing of the env setup's
     other = Job(title="mine", instructions="x", environment="autoenv", repo=world["url"], labels=dict(labels))
     assert autoinstall.packet_lines(jobs, other) == []
+
+
+
+# ---------------------------------------------------------------------- review #102
+async def test_the_validation_sandbox_holds_no_secrets_only_what_the_clone_needs(fleet, world):
+    """The validation sandbox runs an unmerged, agent-written install: it gets the git credential the clone needs
+    and nothing else the environment carries (its other credentials, its `secrets:` mappings, cloud tokens)."""
+    fleet.broker.put("gh", "git", CredentialKind.GIT_TOKEN, "ghp_clone")
+    fleet.broker.put("npm", "custom", CredentialKind.GENERIC, "npm_SECRET", env_var="NPM_TOKEN")
+    fleet.broker.put("db", "custom", CredentialKind.GENERIC, "db_SECRET", env_var="UNUSED")
+    (world["envs"] / "credenv.yaml").write_text(
+        "name: credenv\nharnesses: [scripted]\ncredentials: [gh, npm]\nsecrets: {DB_PASSWORD: db}\n")
+    fleet.catalog.dirs.insert(0, world["envs"])
+    fleet.catalog.reload()
+    spec = fleet.catalog.get("credenv")
+    assert autoinstall.validation_credentials(fleet, spec) == ["gh"]
+    prov = fleet.providers["docker"]
+    sb = await fleet.create("credenv", credentials=["gh", "npm"], labels={envbuilds.VALIDATE_LABEL: "ab" * 16})
+    env = (await prov.read_file(sb, "/home/agent/.hangar/env") or b"").decode()
+    assert "npm_SECRET" not in env and "db_SECRET" not in env, env
+    plain = await fleet.create("credenv", credentials=["gh", "npm"])  # the label is what takes them away
+    env = (await prov.read_file(plain, "/home/agent/.hangar/env") or b"").decode()
+    assert "npm_SECRET" in env and "db_SECRET" in env
+
+
+def test_the_validation_sandbox_goes_through_the_gateway_like_a_jobs(fleet):
+    """With the git gateway on for jobs, the validation sandbox gets a scoped grant, not the git token."""
+    from hangar.models import Sandbox
+
+    fleet.settings.gateway_url, fleet.settings.gateway_for_jobs = "https://gw.example", True
+    spec = fleet.catalog.get(fleet.catalog.names()[0]).model_copy(update={"credential_mode": None})
+    sb = Sandbox(name="v", environment=spec.name, provider="docker", labels={envbuilds.VALIDATE_LABEL: "ab" * 16})
+    assert fleet.gateway.mode_for(spec, sb, None) == "gateway"
+    assert fleet.gateway.mode_for(spec, Sandbox(name="p", environment=spec.name, provider="docker"), None) == \
+        "direct"
+
+
+@pytest.mark.parametrize("field", ["image: evil:latest", "credentials: [gh]", "secrets: {X: gh}",
+                                   "egress: {allow: ['*']}", "cloud: {gcp: {}}", "harnesses: [codex]",
+                                   "resources: {cpus: 64}", "mcp: {x: {url: 'https://e'}}"])
+def test_a_setup_cant_write_what_an_admin_decides(field):
+    with pytest.raises(repoenv.RepoEnvError):
+        repoenv.parse(f"install: make install\n{field}\n")
+
+
+def test_mocks_cant_forge_markdown_in_the_packet():
+    st = autoinstall.State(config={"mocks": [{"what": "S3](https://evil.example) `x", "how": "@org/team <!-- a -->"}]})
+    line = autoinstall._mock_text(st.config["mocks"][0])
+    assert line == "`S3](https://evil.example) 'x` (`@org/team <!-- a -->`)"
+
+
+def test_the_budget_split_never_crosses_the_job_budget():
+    from hangar.models import Job, JobBudget
+
+    for turns in range(2, 40):
+        job = Job(title="t", instructions="x", environment="e", job_budget=JobBudget(max_turns=turns,
+                                                                                   max_cost_usd=30.0))
+        goal, setup = autoinstall._shares(job)
+        assert goal.max_turns >= 1 and setup.max_turns >= 1 and goal.max_turns + setup.max_turns <= turns, turns
+        assert goal.max_cost_usd + setup.max_cost_usd <= 30.0
+
+
+async def test_antigravity_gets_its_own_model_id(fleet):
+    """agy names Gemini models without `-preview`, plus a thinking level (`gemini-3.1-pro-high`)."""
+    modelpick._cache.clear()
+    fleet.broker.put("team-google", "antigravity", CredentialKind.API_KEY, "g-key")
+    t = httpx.MockTransport(lambda r: httpx.Response(200, json={"models": [
+        {"name": "models/gemini-3.1-pro-preview", "supportedGenerationMethods": ["generateContent"]}]}))
+    p = await modelpick.pick(fleet, "antigravity", t)
+    assert p.model == "gemini-3.1-pro-high", p
+    modelpick._cache.clear()

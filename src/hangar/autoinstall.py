@@ -50,7 +50,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from hangar import envbuilds, repoenv, supervisor
-from hangar.models import JOB_TERMINAL, ContextItem, Job, JobBudget, JobState, Sandbox, now
+from hangar.models import JOB_TERMINAL, ContextItem, Credential, Job, JobBudget, JobState, Sandbox, now
 from hangar.repopolicy import repo_key
 
 if TYPE_CHECKING:
@@ -415,6 +415,9 @@ async def _begin(jobs: JobService, job: Job, st: State) -> None:
     if job.job_budget is None:  # #85: always bounded; the job's or the repo policy's own budget wins
         job.job_budget = JobBudget(max_cost_usd=jobs.settings.env_setup_max_cost_usd,
                                    max_turns=jobs.settings.env_setup_max_turns)
+    if job.job_budget.max_turns is not None and job.job_budget.max_turns < 2:  # --- review #102
+        raise _Stop("budget", f"its job budget allows {job.job_budget.max_turns} agent turn(s); an env setup needs "
+                              "at least 2 (the goal agent's and the setup agent's)")
     jobs._event(job, f"setting up the environment of {repo_key(job.repo)} ({job.environment}): a goal agent proposes "
                      "the commands, a setup agent makes them work, hangar validates them", JobState.RUNNING,
                 reason=None)
@@ -456,7 +459,8 @@ def _shares(job: Job) -> tuple[JobBudget | None, JobBudget | None]:
     b = job.job_budget
     if b is None:
         return None, None
-    gt = max(2, b.max_turns // 4) if b.max_turns else None
+    # --- review #102: max(2, ...) gave the two jobs 3 turns of a 2-turn budget; _begin refuses fewer than 2
+    gt = max(1, b.max_turns // 4) if b.max_turns else None
     goal = JobBudget(max_cost_usd=b.max_cost_usd * 0.25 if b.max_cost_usd else None,
                      max_tokens=max(1, b.max_tokens // 4) if b.max_tokens else None, max_turns=gt)
     setup = JobBudget(max_cost_usd=b.max_cost_usd * 0.75 if b.max_cost_usd else None,
@@ -803,7 +807,7 @@ async def _run_checks(jobs: JobService, job: Job, st: State, s: Job, att: Attemp
         nonce = pysecrets.token_hex(16)
         fleet.store.kv_set(KV_VALIDATE + nonce, (guess or repoenv.RepoEnvironment()).model_dump_json())
         spec = fleet.catalog.get(env)
-        creds = [c for c in spec.credentials if not fleet._is_agent(fleet._cred_harness(c))]
+        creds = validation_credentials(fleet, spec)  # --- review #102: the clone's, nothing else
         while True:
             try:
                 sb = await fleet.create(env, name=f"envcheck-{job.id.removeprefix('job-')}", repo=s.repo,
@@ -891,6 +895,17 @@ async def _run_checks(jobs: JobService, job: Job, st: State, s: Job, att: Attemp
     for c in _to_run(st, cfg):
         _check_cancel(job)
         att.checks.append(await _check(jobs, prov, sb, path, st, c, eff))
+
+
+def validation_credentials(fleet: Fleet, spec: Any) -> list[str]:
+    """--- review #102: what a validation sandbox may hold: the environment's git credentials, which its clone
+    needs (in gateway mode not even those: a grant). The install it runs is unmerged and agent-written, so nothing
+    else the environment carries (a registry token, a tool's API key) goes near it; fleet drops `secrets:` and
+    cloud tokens for it too."""
+    from hangar.gateway import GIT_KINDS
+
+    return [c for c in spec.credentials if (cred := fleet.store.get(Credential, c)) is not None
+            and cred.kind in GIT_KINDS]
 
 
 async def _peek_config(jobs: JobService, s: Job) -> repoenv.RepoEnvironment | None:
@@ -1132,6 +1147,17 @@ async def _deliver(jobs: JobService, job: Job, st: State) -> None:
     await jobs._report(job)
 
 
+def _span(s: Any) -> str:
+    """Agent-written text as inline code: a backtick can't end the span, so it can't add links, images, mentions
+    or HTML comments (the packet's own markers) to hangar's PR body and packet."""
+    return "`" + str(s or "").replace("`", "'").replace("\n", " ").strip()[:300] + "`"
+
+
+def _mock_text(m: dict[str, Any]) -> str:
+    """--- review #102: a mock as the PR, the packet and the report show it."""
+    return f"{_span(m.get('what'))} ({_span(m.get('how'))})" + (f": {_span(m.get('why'))}" if m.get("why") else "")
+
+
 def _check_lines(att: Attempt) -> list[str]:
     rows = []
     for c in [att.install, att.services, *att.checks]:
@@ -1155,7 +1181,7 @@ def pr_summary(jobs: JobService, job: Job, st: State, agent: str | None) -> str:
            "| Command | Kind | Result |", "| --- | --- | --- |", *_check_lines(att), ""]
     mocks = cfg.get("mocks") or []
     out.append("**Mocked** (stand-ins, not the real thing):" if mocks else "**Mocked:** nothing.")
-    out += [f"- {m.get('what')}: {m.get('how')}" + (f" ({m.get('why')})" if m.get("why") else "") for m in mocks]
+    out += [f"- {_mock_text(m)}" for m in mocks]  # --- review #102: the agent wrote them: no links, no mentions
     if st.secrets_needed:
         out += ["", "**Secrets still needed** (requested with `hangar-agent env request`, never invented):"]
         out += [f"- `{s.name}`" + (f": {s.why}" if s.why else "") for s in st.secrets_needed]
@@ -1193,7 +1219,7 @@ def report_text(st: State, s: Job | None = None) -> str:
         lines.append(f"Validated {len(passed)} command(s) in a clean sandbox: {', '.join(passed)}.")
         mocks = (st.config or {}).get("mocks") or []
         if mocks:
-            lines.append("Mocked: " + "; ".join(f"{m.get('what')} ({m.get('how')})" for m in mocks) + ".")
+            lines.append("Mocked: " + "; ".join(_mock_text(m) for m in mocks) + ".")
     if st.secrets_needed:
         lines.append("Secrets still needed: " + ", ".join(s.name for s in st.secrets_needed) + ".")
     if s is not None and s.result.pr_url:
@@ -1253,8 +1279,7 @@ def packet_lines(svc: JobService, job: Job) -> list[str]:
     out = [f"- **Environment setup:** {len(ok)} of {len(ran)} check(s) passed in a clean sandbox (attempt "
            f"{att.n}): " + ", ".join(f"`{c.name}` {c.verdict}" for c in ran[:12])]
     mocks = (st.config or {}).get("mocks") or []
-    out.append("  - mocked: " + ("; ".join(f"{m.get('what')} ({m.get('how')})" for m in mocks[:8]) if mocks
-                                 else "nothing"))
+    out.append("  - mocked: " + ("; ".join(_mock_text(m) for m in mocks[:8]) if mocks else "nothing"))
     if st.secrets_needed:
         out.append("  - secrets still needed: " + ", ".join(f"`{s.name}`" for s in st.secrets_needed[:10]))
     out.append(f"  - env-setup job `{parent.id}`; goal job `{st.goal_job}`; models: {st.models.get('setup', '-')}")
