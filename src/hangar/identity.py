@@ -33,7 +33,7 @@ current: contextvars.ContextVar[Principal | None] = contextvars.ContextVar("hang
 # arbitrary registry image (prebuilt or as the build's base), a runtime class (runc instead of gVisor), and the git
 # credential mode (direct puts the git token in the sandbox instead of the gateway).
 ADMIN_FIELDS = ("secrets", "image", "base", "runtime_class", "credential_mode",
-                "egress")  # --- egress: what the sandbox may reach on the internet
+                "egress", "build_secrets")  # --- egress: what sandboxes may reach; secrets the image build gets
 
 
 class Forbidden(PermissionError):

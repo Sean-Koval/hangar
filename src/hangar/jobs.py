@@ -42,6 +42,7 @@ from hangar import fairness as fairness  # --- scale
 from hangar import intake as intake  # --- intake: trackers (Jira, GitHub Projects) follow their jobs
 from hangar import people as people  # --- teamcreds: GitHub senders linked to people
 from hangar import restarts as restarts  # --- reconciler: interrupted jobs resume after a restart
+from hangar import secretscan as secretscan  # --- egress: secrets are scanned for before a push
 from hangar import teamcreds as teamcreds  # --- review: only a job's person continues it from a front door
 from hangar.events import resolve_budget, total_usage, usage_line
 from hangar.fleet import Fleet, FleetError, _clip_tail
@@ -938,6 +939,14 @@ class JobService:
             self._event(job, "delivering", JobState.DELIVERING)
             try:
                 await self._deliver(job, draft=not (clean and verify_ok) or bool(job.result.touched_tests))
+            except _SecretFound as e:  # --- egress: back to the agent to remove it while rounds are left
+                if (nxt := secretscan.fix_turn(self, job, turn, e.blocked)) is not None:
+                    job.turns.append(nxt)
+                    await self._start_turn(job, nxt, s)
+                    await self._finish_turn(job, nxt, s)
+                    return
+                self._event(job, str(e))
+                state, reason = JobState.FAILED, "secret_found"
             except _DeliveryError as e:
                 self._event(job, str(e))
                 state, reason = JobState.FAILED, "push_failed"
@@ -991,6 +1000,10 @@ class JobService:
         self._save(job)
         if job.deliver == "none" or not job.result.commits:
             return
+        try:  # --- egress: nothing that looks like a secret is pushed (secretscan.py)
+            await secretscan.before_push(self, job)
+        except secretscan.Blocked as e:
+            raise _SecretFound(e) from None
         push = await self._sh(job, f"git push -q origin HEAD:refs/heads/{q(job.branch)}", timeout=300)
         if push.exit_code != 0:
             raise _DeliveryError(f"push failed: {(push.stderr or push.stdout)[-500:]}")
@@ -1021,7 +1034,8 @@ class JobService:
             pr = await gh.find_pr(repo, job.branch)
             if pr is None:
                 pr = await gh.open_pr(repo, job.branch, job.base_branch or await gh.default_branch(repo),
-                                      job.title, self._pr_body(job), draft)
+                                      secretscan.clean(self, job, job.title, "the PR title"),  # --- egress
+                                      secretscan.clean(self, job, self._pr_body(job), "the PR body"), draft)
                 self._event(job, f"opened {'draft ' if pr.get('draft') else ''}PR #{pr['number']}")
             job.result.pr_url, job.result.pr_number = pr.get("html_url"), pr.get("number")
             self._save(job)
@@ -1089,7 +1103,8 @@ class JobService:
             if red := baseline.pr_line(job):  # --- frontdoor
                 lines.append(red)
         if job.state == JobState.FAILED and job.reason in ("error", "interrupted", "sandbox_gone", "bad_branch",
-                                                           "push_failed", "agent_failed", "timed_out"):
+                                                           "push_failed", "agent_failed", "timed_out",
+                                                           "secret_found"):  # --- egress
             # Say what went wrong: the last event that isn't the outcome line itself.
             cause = next((e.message for e in reversed(job.events)
                           if not e.message.startswith(("failed", "succeeded", "cancelled"))), None)
@@ -1112,6 +1127,7 @@ class JobService:
 
     async def _comment(self, job: Job | None, ref: str, body: str, kind: str = "note") -> None:
         await intake.track(self, job, kind)  # --- intake: the ticket's status, whichever thread this goes to
+        body = secretscan.clean(self, job, body, "a comment")  # --- egress: GitHub and Slack never get a secret
         if (notify := NOTIFIERS.get(ref.split(":", 1)[0])) is not None:
             await notify(self, job, ref, body, kind)
             return
@@ -1170,6 +1186,12 @@ class JobService:
 
 class _DeliveryError(RuntimeError):
     pass
+
+
+class _SecretFound(_DeliveryError):  # --- egress: the secret scan blocked the push (best-of-N reports it as is)
+    def __init__(self, blocked: secretscan.Blocked):
+        super().__init__(str(blocked))
+        self.blocked = blocked
 
 
 # ====================================================================== GitHub trigger

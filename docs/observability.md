@@ -110,6 +110,9 @@ Claude Code sends that header on HTTP MCP requests when its tracing beta is on. 
 | `hangar_checkpoint_bytes` | histogram | `reason` (`turn`, `interval`, `suspend`, `destroy`, `manual`) |
 | `hangar_gateway_pushes_total` | counter | `result` (`ok`, `failed`) |
 | `hangar_gateway_denials_total` | counter | `reason` (`repo_not_granted`, `ref_policy`, `too_large`, `protocol`) |
+| `hangar_egress_connections_total` | counter | `decision` (`allow`, `deny`), `reason` (for a denial: `not_allowed`, `sni_mismatch`, `private_address`, `too_many`…; for an allow, what matched: `harness`, `preset`, `environment`, `repo`, `approved`), `mode` |
+| `hangar_egress_bytes_total` | counter | `direction` (`out` to the internet, `in`) |
+| `hangar_egress_open_connections` | gauge | tunnels open through the egress proxy |
 | `hangar_sandbox_exec_seconds` | histogram | `transport`: `envd` (hangar-envd ran it), `exec` (the provider's own exec: `docker exec`, pods/exec, E2B), `error`. A falling `envd` share means daemons can't be reached or started. |
 | `hangar_mcp_calls_total`, `hangar_mcp_call_seconds` | counter, histogram | `tool`, `status` (`ok`, `tool_error`, `error`) |
 | `hangar_http_request_seconds` | histogram | `method` (a method outside HTTP's standard ones is `_OTHER`), `route` (the template), `status` |

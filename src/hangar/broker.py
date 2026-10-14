@@ -50,6 +50,7 @@ class Broker:
         self.user = user
         self._lock = threading.Lock()
         self._secret_cache: list[str] | None = None
+        self._redactor: Any = None  # --- egress: redaction.Redactor over _secret_cache, rebuilt when it changes
         self.settings: Settings | None = None  # --- identity: names the control plane's own credentials (Fleet sets it)
 
     # ------------------------------------------------------------------ redaction
@@ -79,10 +80,12 @@ class Broker:
         secrets_ = self._secrets()
         if not secrets_:
             return obj
-        if isinstance(obj, str):
-            for sec in secrets_:
-                obj = obj.replace(sec, "***")
-            return obj
+        if isinstance(obj, str):  # --- egress: verbatim, and common encodings of long values (redaction.py)
+            if self._redactor is None or self._redactor.src is not secrets_:
+                from hangar.redaction import Redactor
+
+                self._redactor = Redactor(secrets_)
+            return self._redactor.text(obj)
         if isinstance(obj, dict):
             return {k: self.redact(v) for k, v in obj.items()}
         if isinstance(obj, list):
