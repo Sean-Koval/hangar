@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     # Mount harness packs as OCI image volumes (Kubernetes >= 1.35, stable in 1.36). Off: bake into images.
     k8s_image_volumes: bool = True
     k8s_stream_uploads: bool = True  # one exec with stdin per file upload; falls back to 96 KB chunks
+    # --- scale: the share of an environment's `cpus` a sandbox pod requests; its limit stays `cpus`. 1 = Guaranteed
+    # (each sandbox reserves every core it may use); 0.5 packs twice as many mostly-idle agents per node.
+    k8s_cpu_request_fraction: float = Field(0.5, gt=0, le=1)
 
     # e2b
     e2b_api_key: str | None = None
@@ -314,6 +317,9 @@ class Settings(BaseSettings):
     io_threads: int = 0
     # --- overnight/sweep: a workspace snapshot archive is read whole into memory, so it is capped
     snapshot_max_mb: int = 512
+    # --- scale: B12. Workspace archives the control plane holds in memory at once, in MB (each counted at up to 3×
+    # its size while in flight): snapshots, forks and restores past it wait their turn instead of exhausting memory.
+    workspace_transfer_mb: int = Field(1024, ge=64)
     # --- overnight/sweep: database backups into the session store (backup.py, docs/gke.md). Unset = every 24 hours
     # when HANGAR_SESSION_STORE is a GCS bucket, else off; 0 = off. `hangar admin backup` works either way.
     backup_hours: float | None = None

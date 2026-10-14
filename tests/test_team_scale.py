@@ -15,7 +15,7 @@ import pytest
 
 from hangar import fairness
 from hangar.fairness import CapReached, FairJobQueue, job_cap, job_slots, person_of
-from hangar.fleet import ACTIVE
+from hangar.fleet import ACTIVE, FleetError
 from hangar.models import Job, JobState, Sandbox, SandboxState, SessionState
 from hangar.retention import Retention
 from hangar.sessions import NewSession
@@ -268,3 +268,70 @@ async def test_team_load_smoke():
         assert m[tool]["n"] > 0, tool
     scans = {k: v for k, v in notes["server"]["sqlite"]["top"].items() if k.startswith("loop:list:sandboxes")}
     assert not scans, f"full scans of the sandbox table on the event loop: {scans}"
+
+
+# ---------------------------------------------------------------------------- B12: forks within a memory budget
+async def test_memory_budget_bounds_what_is_held_and_runs_an_oversized_request_alone():
+    from hangar.membudget import MemoryBudget
+
+    b = MemoryBudget(100)
+    peak = [0]
+    order: list[str] = []
+
+    async def use(name: str, n: int):
+        async with b.hold(n):
+            order.append(name)
+            peak[0] = max(peak[0], b.used)
+            await asyncio.sleep(0.02)
+
+    await asyncio.gather(use("a", 60), use("b", 60), use("c", 30), use("huge", 500))
+    assert peak[0] == 500 and b.used == 0  # the oversized one ran, and alone
+    assert peak[0] != 60 + 60
+    waiter = asyncio.create_task(use("late", 80))
+    async with b.hold(50):
+        await asyncio.sleep(0.01)
+        assert b.waiting == 1
+        waiter.cancel()  # a request cancelled while it waits takes nothing with it
+        await asyncio.gather(waiter, return_exceptions=True)
+    assert b.used == 0 and b.waiting == 0
+
+
+async def test_fork_restores_within_the_archive_budget(fleet, settings):
+    """B12: fork(count=4) restored every child at once, each holding its own copy of the archive; on a 2 GiB control
+    plane, ~5 children of a 400 MB workspace (3 on pods/exec) were an OOM kill. Now the budget bounds them."""
+    sb = await fleet.create("plain")
+    await fleet.write_file(sb.id, "big.bin", bytes(range(256)) * 4096)  # ~1 MB, incompressible enough
+    snap = await fleet.snapshot(sb.id, kind="workspace")
+    fake = fleet.providers["docker"]
+    real_write, live, most = fake.write_file, [0], [0]
+
+    async def write_file(sandbox, path, data, mode=0o644):
+        if "/restore-" in path:
+            live[0] += 1
+            most[0] = max(most[0], live[0])
+            await asyncio.sleep(0.05)
+            live[0] -= 1
+        return await real_write(sandbox, path, data, mode)
+
+    fake.write_file = write_file
+    from hangar.fleet import ARCHIVE_WRITE_COST
+
+    fleet.archive_memory.limit = 2 * snap.size_bytes * ARCHIVE_WRITE_COST  # room for two at a time
+    kids = await fleet.fork(snap.id, count=4)
+    assert len(kids) == 4 and most[0] == 2 and fleet.archive_memory.used == 0
+    assert await fleet.read_file(kids[3].id, "big.bin") == bytes(range(256)) * 4096
+
+
+async def test_oversized_workspace_snapshot_is_refused_before_it_is_read(fleet, settings, monkeypatch):
+    settings.snapshot_max_mb = 1
+    sb = await fleet.create("plain")
+    await fleet.exec(sb.id, "head -c 3000000 /dev/urandom > /workspace/blob")
+    fake = fleet.providers["docker"]
+
+    async def no_read(*a, **kw):
+        raise AssertionError("read the archive")
+
+    monkeypatch.setattr(fake, "read_file", no_read)
+    with pytest.raises(FleetError, match="SNAPSHOT_MAX_MB"):
+        await fleet.snapshot(sb.id, kind="workspace")
+    assert fleet.archive_memory.used == 0
