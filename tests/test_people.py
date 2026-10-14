@@ -491,3 +491,21 @@ def test_a_members_tokens_share_their_caps():
     assert {fairness.person_of(f"mcp:{laptop}"), fairness.person_of(desktop), fairness.person_of(f"mcp:{oauth}")} \
         == {"alice"}
     assert fairness.person_of("mcp:laptop") == "laptop"  # the owner's, as before
+
+
+async def test_caps_count_identitys_person_not_the_token(fleet, settings):
+    """--- integration: the caps count the person identity records on the work (`owner` for the admin's tokens),
+    so the owner's laptop, CI and desktop tokens share one set of caps too; the actor string is only the fallback
+    for records from before people. Hangar's own actors stay exempt on a record that carries a person."""
+    from hangar import fairness
+
+    settings.person_max_sandboxes = 2
+    await fleet.create("plain", actor="mcp:laptop", person="owner")
+    await fleet.create("plain", actor="ui:ci", person="owner")
+    with pytest.raises(fairness.CapReached, match="owner already has 2 sandboxes"):
+        await fleet.create("plain", actor="desktop", person="owner")
+    await fleet.create("plain", actor="@alice:laptop", person="alice")
+    await fleet.create("plain", actor="session:ses-1", person="owner")  # the owner's session's sandbox
+    assert fairness.person_of("laptop", "owner") == "owner"
+    assert fairness.person_of("job:job-1", "alice") is None
+    assert fairness.person_of("github:octocat") == "github:octocat"  # triggered jobs: no person yet

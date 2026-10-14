@@ -576,7 +576,7 @@ class Fleet:
                 active = self.store.list_where(Sandbox, state=ACTIVE)  # --- scale
         if len(active) >= self.settings.max_sandboxes:
             raise FleetError(f"fleet is at max_sandboxes={self.settings.max_sandboxes}; destroy some first")
-        fairness.check_sandboxes(self.settings, active, actor)  # --- scale: one person can't take the whole fleet
+        fairness.check_sandboxes(self.settings, active, actor, person)  # --- scale: one person can't take the fleet
         spec = self.catalog.get(environment)
         pname = provider or self.settings.default_provider
         prov = self.provider(pname)

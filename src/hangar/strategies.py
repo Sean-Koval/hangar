@@ -97,7 +97,7 @@ async def fork_session(svc: SessionService, ref: str, n: int, requester: str, ha
         raise SessionError(f"session {parent.name} is busy ({parent.state}); fork it when the turn has finished")
     if message is not None and not message.strip():
         raise SessionError("message is empty")
-    fairness.check_sessions(svc, parent.owner, adding=n)  # --- scale: every child starts a sandbox
+    fairness.check_sessions(svc, parent.owner, adding=n, person=parent.person)  # --- scale: each child, a sandbox
     svc._busy.add(parent.id)  # no turn, suspend or open may start on the parent while we copy it
     try:
         children = await _fork(svc, parent, n, requester, harness=harness, names=names)

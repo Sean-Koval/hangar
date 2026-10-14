@@ -253,7 +253,7 @@ class JobService:
     def _person(self, job_id: str) -> str:
         """--- scale: whose share of the job slots a job takes (fairness.FairJobQueue): who submitted it."""
         job = self._jobs.get(job_id)
-        return (fairness.person_of(job.requester) or "") if job else ""
+        return (fairness.person_of(job.requester, job.person) or "") if job else ""  # --- integration: + person
 
     # ================================================================== public API
     def get(self, job_id: str, owner: str | None = None) -> Job:

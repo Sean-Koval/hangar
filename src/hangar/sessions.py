@@ -230,7 +230,7 @@ class SessionService:
         schema = exchange.check_schema(req.output_schema)
         if (context or schema) and not req.message:
             raise SessionError("context and output_schema go with a message for the agent")
-        fairness.check_sessions(self, owner)  # --- scale: live sessions per person
+        fairness.check_sessions(self, owner, person=person)  # --- scale: live sessions per person
         s = Session(name=req.name, title=(req.title or (req.message or req.name).strip().splitlines()[0])[:200],
                     owner=owner, environment=env, harness=harness, model=req.model,
                     repo=req.repo or (spec.repo.url if spec.repo else None), base_branch=req.base_branch,
