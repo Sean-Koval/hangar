@@ -30,6 +30,7 @@ VALUE_OPTS=" --env --session-env --repo --gateway-repo --model --exec-calls --in
  --scale-sessions --scale-people --scale-env --scale-p95 --job-cap --power-down-cmd --power-up-cmd --power-timeout
  --prepull-envs --boot-timeout --turn-timeout "
 FLAG_OPTS=" --with-model --power-cycle --power-cycle-anyway "
+VALUE_OPTS=" ${VALUE_OPTS//[[:space:]]/ } "  # one space between names (and around them), so " $1 " matches any
 ONLY="" SKIPS="" KEEP=0 EXPECT_ENVD=1 GATE=all REPORT="hangar-accept-report.json" RECORD=""
 ARGS=()
 

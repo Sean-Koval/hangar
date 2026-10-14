@@ -98,6 +98,26 @@ def test_core_checks_are_listed_and_run(tmp_path):
         assert re.search(rf"^check {re.escape(c)}\s", text, re.M), c
 
 
+def test_every_option_parses(tmp_path):
+    """Each option gke.sh passes on, and every one its --help names, gets past its parser (to the login check)."""
+    text = SCRIPT.read_text()
+    values = re.search(r'^VALUE_OPTS="([^"]+)"', text, re.M | re.S).group(1).split()
+    flags = re.search(r'^FLAG_OPTS="([^"]+)"', text, re.M).group(1).split()
+    helped = set(re.findall(r"^  (--[a-z-]+)", subprocess.run(["bash", str(SCRIPT), "--help"], capture_output=True,
+                                                              text=True).stdout, re.M))
+    assert helped <= {*values, *flags, "--record", "--report", "--gate", "--no-expect-envd", "--no-kubectl",
+                      "--only", "--keep"}, helped
+    env = {k: v for k, v in os.environ.items() if k not in ("HANGAR_URL", "HANGAR_TOKEN")}
+    env.update(HANGAR_CLI_CONFIG=str(tmp_path / "none.json"), HANGAR_ACCEPT_PYTHON=sys.executable,
+               TMPDIR=str(tmp_path))
+    for opt in [*values, *flags, "--gate"]:
+        args = [opt] if opt in flags else [opt, "core" if opt == "--gate" else "x"]
+        r = subprocess.run(["bash", str(SCRIPT), *args], capture_output=True, text=True, env=env, timeout=60)
+        assert "unknown option" not in r.stderr and "hangar login" in r.stderr, (opt, r.stderr)
+    r = subprocess.run(["bash", str(SCRIPT), "--gate", "some"], capture_output=True, text=True, env=env)
+    assert r.returncode == 2 and "--gate is all or core" in r.stderr
+
+
 def test_report_gates_on_core_checks(tmp_path, capsys):
     """--gate core: a failed non-core check is reported, not counted (deploy.yml rolls back only for core ones)."""
     res = tmp_path / "r.jsonl"
