@@ -321,6 +321,44 @@ async def test_build_secrets_reach_install_only_and_a_leak_fails_the_build(fl, w
     assert b.state == "failed" and "left build secret(s) in the checkout" in b.error and ".npmrc: NPM_TOKEN" in b.error
 
 
+async def test_a_build_secret_in_the_captured_checkout_fails_the_build_whatever_the_sandbox_says(fl, world,
+                                                                                                  monkeypatch):
+    """Review: the in-sandbox scan runs where install's code ran (a `grep` function in ~/.bashrc, a process install
+    left running that writes after the scan). Hangar also checks the archive it captured: what the image gets."""
+    m = _fake_buildsecrets([])
+
+    async def blind(prov, sb, values, paths=None, **_):
+        return []
+    m.leak_scan = blind
+    monkeypatch.setitem(sys.modules, "hangar.buildsecrets", m)
+    push(world, ".hangar/environment.yaml", "install: mkdir -p dist && printf 'k=%s' \"$NPM_TOKEN\" > dist/cfg.bin\n"
+                                            "build_secrets: [NPM_TOKEN]\n")
+    eb = envbuilds.of(fl)
+    b = eb.schedule(world.url, "appenv", "docker")
+    await drain(fl)
+    b = eb.get(b.id)
+    assert b.state == "failed" and "app/dist/cfg.bin: NPM_TOKEN" in b.error, b.error
+    assert "s3cret" not in b.error and "s3cret" not in b.log and b.image is None
+
+
+def test_archive_leaks_reads_across_chunks_and_links():
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        data = b"x" * ((1 << 20) - 5) + b"s3cret-npm-value" + b"y" * 10
+        info = tarfile.TarInfo("app/big.bin")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+        link = tarfile.TarInfo("app/link")
+        link.type, link.linkname = tarfile.SYMTYPE, "/tmp/s3cret-npm-value"
+        tf.addfile(link)
+        clean = tarfile.TarInfo("app/ok.txt")
+        clean.size = 2
+        tf.addfile(clean, io.BytesIO(b"ok"))
+        tf.addfile(tarfile.TarInfo("app/s3cret-npm-value.txt"), io.BytesIO(b""))
+    hits = envbuilds.archive_leaks(buf.getvalue(), {"NPM_TOKEN": b"s3cret-npm-value", "SHORT": b"abc"})
+    assert hits == ["app/big.bin: NPM_TOKEN", "app/link: NPM_TOKEN", "app/***.txt: NPM_TOKEN"]
+
+
 async def test_an_invalid_config_is_reported_not_fatal(fl, world):
     push(world, ".hangar/environment.yaml", "install: x\nimage: evil:latest\n")
     sb = await fl.create("appenv", repo=world.url)

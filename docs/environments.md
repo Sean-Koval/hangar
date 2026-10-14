@@ -142,9 +142,11 @@ A private package registry needs a token while `install` runs, and only then. Th
 (`build_secrets: [NPM_TOKEN]`). An admin maps each id to a hangar credential, in the environment's or the repo
 policy's `build_secrets` (in the same release, with hangar.buildsecrets). The values reach the install command's
 environment only, through a file that is read and removed before `install` starts, never a command line. The output
-is redacted. The checkout is scanned for the values before it is kept: a build whose install wrote a token into the
-repo (a repo-local `.npmrc`) fails and says where. An id nobody mapped fails the build with its name. The running
-sandbox never sees any of them.
+is redacted. The checkout is scanned for the values before it is kept, in the sandbox and again by hangar in the
+archive it captured (what the image gets, whatever install left running): a build whose install wrote a token into
+the repo (a repo-local `.npmrc`) fails and says where. An id nobody mapped fails the build with its name. The running
+sandbox never sees any of them. The scan catches a value written as it is, not one install encodes on purpose:
+`install` is the repo's code, so map a build secret only for a repo whose default branch you'd trust with it.
 
 ### Limits of this version
 

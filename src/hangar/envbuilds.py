@@ -598,6 +598,10 @@ class EnvBuilds:
             await self._leak_scan(prov, sb, values, path)
         self._stage(b, "capturing the checkout")
         data = await self._capture(prov, sb, path)
+        if values and (hits := await asyncio.to_thread(archive_leaks, data, values)):  # --- review: what's imaged
+            raise EnvBuildError("install left build secret(s) in the checkout, which every sandbox would get: "
+                                + "; ".join(hits) + ". Write them outside the repo, or remove them at the end of "
+                                "install")
         b.size_bytes = len(data)
         self._stage(b, "building the image")
         b.image = await self._image(b, spec, prov, path, data)
@@ -746,6 +750,47 @@ class EnvBuilds:
                 self.schedule(b.repo_url, env, pname, reason="base", actor="hangar:prebuild")
                 started.append(repo)
         return started
+
+
+def archive_leaks(data: bytes, values: dict[str, bytes], limit: int = 10) -> list[str]:
+    """Entries of a captured checkout (gzip tar) holding a build secret, as "<path>: <secret id>", never the value.
+
+    The sandbox's own scan (hangar.buildsecrets.leak_scan) runs where install's code ran: a shell function or a
+    process install left behind can hide a file from it, or write one after it. This reads the bytes the image gets.
+    Like that scan it looks for each value's longest line (8 bytes or more), so it catches a secret written as is
+    (an .npmrc, a config file), not one install encoded on purpose."""
+    import io
+    import tarfile
+
+    needles = {}
+    for sid, v in values.items():
+        n = max(v.strip().splitlines() or [b""], key=len).strip()
+        if len(n) >= 8:
+            needles[sid] = n
+    if not needles:
+        return []
+    keep = max(len(n) for n in needles.values()) - 1
+    out: list[str] = []
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r|gz") as tf:
+            for m in tf:
+                found = {sid for sid, n in needles.items()
+                         if n in m.name.encode(errors="replace") or n in m.linkname.encode(errors="replace")}
+                f = tf.extractfile(m) if m.isfile() else None
+                tail = b""
+                while f is not None and len(found) < len(needles) and (chunk := f.read(1 << 20)):
+                    buf = tail + chunk
+                    found |= {sid for sid, n in needles.items() if n in buf}
+                    tail = buf[-keep:]
+                shown = m.name[:300]
+                for n in needles.values():  # a name can hold the value too
+                    shown = shown.replace(n.decode(errors="replace"), "***")
+                out += [f"{shown}: {sid}" for sid in sorted(found)]
+                if len(out) >= limit:
+                    break
+    except (tarfile.TarError, OSError, EOFError) as e:
+        raise EnvBuildError(f"could not read the captured checkout to check it for build secrets: {e}") from e
+    return out[:limit]
 
 
 def checkout_path(settings: Any, spec: EnvSpec, sb: Sandbox) -> str:
