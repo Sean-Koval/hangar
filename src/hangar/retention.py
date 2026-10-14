@@ -19,7 +19,11 @@ from hangar.store import Store
 log = logging.getLogger("hangar.retention")
 
 SETTLED = (SandboxState.STOPPED, SandboxState.ERROR)
-BATCH = 500  # rows per transaction: requests wait on the store's lock for one batch at most (a few ms)
+# Rows per transaction, and a pause between two: requests wait on the store's lock for one batch at most. The first
+# pass over an install with months of history moves tens of thousands of rows; at 500 a batch, under load, a batch
+# held the lock for up to 0.9 s (scripts/bench/team_load.py), so it goes in small steps in the background instead.
+BATCH = 100
+PAUSE = 0.05
 INTERVAL = 3600.0
 
 
@@ -50,6 +54,7 @@ class Retention:
                 out["archived"] += n
                 if n < BATCH:
                     break
+                await asyncio.sleep(PAUSE)
         if s.sandbox_archive_days > 0:
             before = now() - s.sandbox_archive_days * 86400
             out["purged"] = await asyncio.to_thread(self.store.purge_archive, Sandbox, before)

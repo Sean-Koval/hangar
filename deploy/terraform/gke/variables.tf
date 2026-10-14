@@ -25,14 +25,15 @@ variable "release_channel" {
 }
 
 variable "sandbox_machine_type" {
-  description = "Nodes that run gVisor sandboxes. Each sandbox reserves its env's CPU/memory."
+  description = "Nodes that run gVisor sandboxes. AMD (N2D): GKE Sandbox turns Hyper-Threading off on Intel machine types, which leaves an n2-standard-8 with 4 usable vCPUs; AMD keeps SMT on. An n2d-standard-16 holds 14 sandboxes of 2 vCPU / 4 GiB (memory-bound; docs/team-scale.md). Changing it recreates the sandbox nodes: suspend sessions first."
   type        = string
-  default     = "n2-standard-8"
+  default     = "n2d-standard-16"
 }
 
 variable "sandbox_max_nodes" {
-  type    = number
-  default = 4
+  description = "Most sandbox nodes the autoscaler adds. 10 × n2d-standard-16 holds ~140 sandboxes of 2 vCPU / 4 GiB: a team of 6 with 10 sessions each, 24 job slots, warm pools and a preempted Spot node's worth of headroom (docs/team-scale.md). Needs N2D_CPUS and SSD_TOTAL_GB quota to match."
+  type        = number
+  default     = 10
 }
 
 variable "sandbox_spot" {

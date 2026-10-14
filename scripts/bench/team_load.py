@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import random
 import shutil
 import subprocess
@@ -37,7 +38,6 @@ from _common import Recorder, emit
 from control import free_port, make_remote
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
-from mcp.shared._httpx_utils import create_mcp_http_client
 
 from tests.conftest import scratch_root
 
@@ -85,12 +85,25 @@ class Actor:
         return r
 
     async def run(self, token: str) -> None:
+        try:
+            await self._run(token)
+        except BaseExceptionGroup:
+            if not self.done.is_set():
+                raise
+            # the work is done; the MCP client's stream closing under it on the way out is not a result
+
+    async def _run(self, token: str) -> None:
         a = self.a
-        http = create_mcp_http_client(headers={"Authorization": f"Bearer {token}"},
-                                      timeout=httpx2.Timeout(30, read=300))
-        async with http, Client(streamable_http_client(f"{self.base}/mcp", http_client=http)) as mcp, \
-                httpx.AsyncClient(base_url=self.base, headers={"Authorization": f"Bearer {token}"},
-                                  timeout=120) as c:
+        # No keep-alive: uvicorn closes an idle connection after 5 s, and a request sent on it just then fails with a
+        # ReadError the MCP client can't survive (a property of the test client, not of hangar). Localhost connects
+        # cost ~0.1 ms.
+        auth = {"Authorization": f"Bearer {token}"}
+        http = httpx2.AsyncClient(headers=auth, timeout=httpx2.Timeout(30, read=300),
+                                  limits=httpx2.Limits(max_keepalive_connections=0))
+        transport = streamable_http_client(f"{self.base}/mcp", http_client=http, terminate_on_close=False)
+        async with http, Client(transport) as mcp, \
+                httpx.AsyncClient(base_url=self.base, headers=auth, timeout=120,
+                                  limits=httpx.Limits(max_keepalive_connections=0)) as c:
             await asyncio.sleep(random.uniform(0, 2))
             for n in self.sessions:  # an engineer starts work over a few seconds, not in one burst
                 self.sent[(n, 1)] = time.time()
@@ -224,9 +237,11 @@ async def main(a: argparse.Namespace) -> dict:
             await asyncio.sleep(1)
             idle = (await c.get("/bench/stats", params={"reset": True})).json()
             rec.note("server_idle", {k: idle[k] for k in ("rss_mb", "threads")})
+            rec.note("host_load_start", [round(x, 2) for x in os.getloadavg()])  # the machine is shared
             t0 = time.perf_counter()
             await asyncio.gather(*(act.run(tok) for act, tok in zip(actors, tokens, strict=True)))
             rec.note("wall_s", round(time.perf_counter() - t0, 1))
+            rec.note("host_load_end", [round(x, 2) for x in os.getloadavg()])
             rec.note("server", (await c.get("/bench/stats")).json())
             jobs = (await c.get("/api/jobs", params={"limit": 500})).json()
             mine = {j for act in actors for j in act.jobs}

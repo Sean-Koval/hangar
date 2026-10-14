@@ -13,7 +13,7 @@ data:
   HANGAR_K8S_RUNTIME_CLASS: "gvisor"        # kata-qemu-runtime-rs for microVM pools, "" for runc
   HANGAR_REGISTRY: "REGION-docker.pkg.dev/PROJECT_ID/hangar"
   HANGAR_K8S_BUILD_SERVICE_ACCOUNT: "hangar@PROJECT_ID.iam.gserviceaccount.com"  # Cloud Build runs as this
-  HANGAR_MAX_SANDBOXES: "50"
+  HANGAR_MAX_SANDBOXES: "120"               # a team of 6 × 10 sessions plus jobs (docs/team-scale.md)
   HANGAR_K8S_POD_SNAPSHOTS: "false"         # true after applying pod-snapshots.yaml (full-state forks)
   # Durable session checkpoints (docs/sessions.md). deploy/gke/up.sh sets it from `terraform output session_bucket`.
   # HANGAR_SESSION_STORE: "gs://PROJECT_ID-hangar-sessions"

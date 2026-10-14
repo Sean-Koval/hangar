@@ -1,0 +1,214 @@
+# Team scale
+
+One control plane for a team: **6 engineers, each with up to ~10 sessions at once (~60 sandboxes), plus jobs.** This
+page covers what keeps that responsive and fair, how to size GKE for it, and what it costs.
+
+## What holds it up
+
+| Problem at 60 sessions | What hangar does now | Where |
+| --- | --- | --- |
+| Every create, lookup by name and listing parsed **every sandbox record ever made**, on the event loop (250–935 ms at 20k records; records were never deleted) | Indexed lookups: an expression index on `state` and `name` (and on jobs' and sessions' `state`), `Store.list_where` / `count_where` / `list_active` | `store.py` |
+| History grows forever | Stopped and failed sandbox records idle for 7 days move to `sandboxes_archive`, in small batches off the event loop; still found by id; deleted after 180 days | `retention.py` |
+| One person's batch could take the whole fleet | Caps per person on live sessions, sandboxes and running jobs | `fairness.py` |
+| Jobs ran first come, first served, 4 at a time | Job slots sized from capacity (24 on GKE at `max_sandboxes=120`); a free slot goes to whoever has the fewest jobs running | `fairness.py` (`FairJobQueue`, `job_slots`) |
+| A fork could exhaust the control plane's 2 GiB (B12: ~5 children of a 400 MB workspace, 3 on the pods/exec fallback) | Workspace archives in flight share a memory budget (1 GiB, each counted at 2–3× its size); an oversized archive is refused before it is read; Kubernetes uploads encode base64 a frame at a time; archive disk I/O runs in a thread | `membudget.py`, `fleet.py`, `providers/kubernetes.py` |
+| Each sandbox reserved its whole CPU limit | Sandbox pods request half their CPU and all their memory (Burstable) | `providers/kubernetes.py` |
+
+### Settings
+
+| Variable | Default | |
+| --- | --- | --- |
+| `HANGAR_MAX_SANDBOXES` | 120 (was 50) | The whole fleet: 60 sessions, 24 job slots, best-of-N attempts, forks, logins |
+| `HANGAR_JOB_CONCURRENCY` | 0 = auto (was 4) | 4 on Docker; elsewhere `max_sandboxes / 5`, between 4 and 24 |
+| `HANGAR_PERSON_MAX_SESSIONS` | 15 | Live sessions per person (each holds a sandbox); new, resumed (`send`/`open`) and forked ones count. Suspended ones don't |
+| `HANGAR_PERSON_MAX_SANDBOXES` | 20 | Sandboxes a person starts directly (MCP, REST, the E2B API). Sessions' and jobs' own sandboxes are capped by the two caps around this one |
+| `HANGAR_PERSON_MAX_RUNNING_JOBS` | 0 = half the job slots | Jobs one person runs at once. Queued jobs past it wait while others' run |
+| `HANGAR_SANDBOX_RETENTION_DAYS` / `HANGAR_SANDBOX_ARCHIVE_DAYS` | 7 / 180 | When settled records move to the archive, and when archived ones are deleted (0 = never) |
+| `HANGAR_WORKSPACE_TRANSFER_MB` | 1024 | Workspace archives in the control plane's memory at once (read at startup) |
+| `HANGAR_K8S_CPU_REQUEST_FRACTION` | 0.5 | Share of an environment's `cpus` a sandbox pod requests; the limit stays `cpus`. 1 = Guaranteed QoS, as before |
+
+A cap reached answers 429 over REST and the E2B API, and an error naming the cap over MCP. Every cap is per
+**person**: a token's name, or for an OAuth connector (claude.ai, Cursor) the name of the admin token that approved
+it, so a token's MCP calls, REST calls and the connectors it approved count together (`fairness.person_of`, the one
+place to change when hangar gets a first-class person). Hangar's own actors (sessions' and jobs' sandboxes, the
+reaper, schedules) are not people. For the caps to be per engineer, **give each engineer their own token**
+(`hangar token create <name> --scope mcp`); everyone on one token, or approving connectors with one admin token, is
+one person.
+
+The caps sit beside the per-caller limits that already exist: `HANGAR_JOB_MAX_ACTIVE_PER_OWNER` (unfinished jobs per
+caller, 10), the job rate limits, and `HANGAR_E2B_MAX_SANDBOXES_PER_OWNER`.
+
+## Measured: the team load test
+
+`scripts/bench/team_load.py` runs the real app on the fake provider (sandboxes are local directories; agents are
+scripts that print an event every 0.5 s) and plays 6 engineers against it. Each has its own token and, at the
+rates an MCP client and an open dashboard produce:
+
+- starts 10 sessions over MCP, a second apart, and submits 2 jobs;
+- polls each session with `get_session` every 5 s and sends the next message when a turn ends (2 turns each);
+- calls `list_sessions`, `list_sandboxes` and `list_jobs` every 10 s, and `exec` (by sandbox name) every 4 s;
+- refreshes `/api/sessions`, `/api/sandboxes` and `/api/jobs` every 5 s, and creates and destroys a sandbox over REST
+  every 20–60 s.
+
+Before it starts, the database gets 20,000 settled sandboxes and 5,000 finished jobs: about six months of a team's
+history. The server reports event-loop lag (how late a 50 ms timer fires), RSS, CPU time, and the time spent in
+SQLite per store method, on the event loop and in threads. `tests/test_team_scale.py::test_team_load_smoke` runs a
+small version on every CI run and fails if any request scans the sandbox table on the event loop.
+
+```
+uv run python scripts/bench/team_load.py --out bench/results/<date>-team-load.json
+uv run python scripts/bench/report.py <before.json> <after.json>
+```
+
+Results on a shared 2-vCPU VM (`bench/results/2026-10-14-team-load-*.json`). The agents run on the same two vCPUs as
+the server, and other work shared the machine (load average in the files), so treat the after numbers as upper
+bounds: two after runs at host load ~2 and ~9 are both shown.
+
+| 6 × 10 sessions, 20k records of history | Before (main) | After (load ~2) | After (load ~9) |
+| --- | --- | --- | --- |
+| Event-loop lag p50 / p95 / max | 1,296 / 5,221 / 8,326 ms | 1.4 / 85 / 527 ms | 4 / 263 / 765 ms |
+| `get_session` (MCP) p50 / p95 | 3,364 / 5,914 ms | 54 / 395 ms | 214 / 807 ms |
+| `list_sandboxes` (MCP) p50 / p95 | 13,363 / 17,034 ms | 65 / 485 ms | 434 / 1,755 ms |
+| `exec` by name (MCP) p50 / p95 | 9,249 / 15,395 ms | 25 / 647 ms | 577 / 1,693 ms |
+| `GET /api/sandboxes` p50 / p95 | 2,369 / 5,633 ms | 59 / 223 ms | 159 / 438 ms |
+| Create a sandbox (REST) p50 | 21,213 ms | — | 1,847 ms (n=2) |
+| An 8 s agent turn, send to done, p50 / p95 | 44.0 / 65.8 s | 8.8 / 11.0 s | 9.5 / 11.5 s |
+| Job queue wait p50 / p95 (12 jobs) | 83 / 261 s (4 slots) | 0.02 / 0.08 s (24 slots) | 0.02 / 0.11 s |
+| SQLite time on the event loop | 310 s of a 354 s run | 5.9 s of 39 s | 8.6 s of 49 s |
+| Server CPU / peak RSS | 330 CPU-s / 1,031 MB | 8 CPU-s / 261 MB | 8.3 CPU-s / 264 MB |
+| Wall time for the same work | 354 s | 39 s | 49 s |
+
+Before, the server spent 87% of the run parsing sandbox records on the event loop: `fleet.list()` behind every
+listing, `fleet.get(name)` behind every MCP call that names a sandbox, two scans per create. Every other request
+waited behind them.
+
+What remains, by SQLite time on the loop: `get` of one sandbox by id (sessions check that theirs is alive, ~0.4 ms
+each, 5k calls a run), `put` of sessions (every state change writes the whole record), and the token lookup in
+`auth.principal`, which decodes every API token on every request (~1 ms; see follow-ups).
+
+**Provider calls.** At 60 sessions and 12 jobs the fake saw ~30–50 `exec`s a second, plus ~10 file reads and writes:
+turn-status long-polls, the activity watch, checkpoints, setup. On GKE each of those is a pods/exec through the API
+server unless hangar-envd answers it, so **envd must be up at team scale** (`HANGAR_ENVD=auto`, the default).
+
+## GKE capacity for 60 sessions
+
+### Node type: why AMD
+
+GKE Sandbox (gVisor) uses Linux core scheduling against side channels, and **on Intel machine types it turns
+Hyper-Threading off by default** ([GKE Sandbox][sandbox]); with SMT off a VM shows half its vCPUs
+([Configure SMT][smt]), and it is still billed for all of them. AMD machine types keep SMT on. So the previous default,
+an `n2-standard-8`, gives gVisor pods **4 usable vCPUs**, not 8: with 2-vCPU sandboxes reserving their full limit,
+that is *one sandbox per node*, and `sandbox_max_nodes = 4` meant about 4 sandboxes in all. (This follows from the
+docs; nobody has measured it on this cluster. `kubectl get nodes -o jsonpath='{..allocatable.cpu}'` on a sandbox
+node shows it.)
+
+The new default is **`n2d-standard-16`** (AMD EPYC, 16 vCPU, 64 GiB, Spot). Kata still needs Intel
+(`kata_machine_type` is unchanged).
+
+### Packing
+
+Allocatable per node, from GKE's reservation formulas ([plan node sizes][nodes]; node pools created on GKE 1.36 or
+earlier, the conservative case) less an *estimate* of ~0.5 vCPU and ~1 GiB for the node's DaemonSets (Dataplane V2,
+metadata server, logging and metrics agents, CSI):
+
+| | n2-standard-8 (Intel, previous) | n2d-standard-16 (AMD, new) |
+| --- | --- | --- |
+| vCPUs gVisor pods see | 4 (SMT off) | 16 |
+| CPU reserved by GKE | 80 m | 110 m |
+| Memory reserved by GKE (+100 MiB eviction) | 3.66 GiB | 5.58 GiB |
+| Left for sandboxes (*estimate*) | ~3.4 vCPU, ~27 GiB | ~15.4 vCPU, ~57.4 GiB |
+| Sandboxes of 2 vCPU / 4 GiB, CPU requested in full (before) | **1** (CPU-bound) | 7 (CPU-bound) |
+| Same, CPU request 1 vCPU (`HANGAR_K8S_CPU_REQUEST_FRACTION=0.5`) | 3 | **14** (memory-bound) |
+
+Why request half the CPU: a coding agent spends most of a turn waiting on the model, then bursts (tests, builds).
+Each sandbox keeps its 2-vCPU limit and its full 4 GiB; only the CPU it is *guaranteed* under contention halves.
+Memory is never overcommitted, so nothing is OOM-killed for its neighbours. gVisor enforces both limits only when all
+containers set them (they do) ([GKE Sandbox][sandbox]).
+
+**gVisor overhead.** Google gives no number for gVisor ("dynamic overhead with low base memory for the userspace
+kernel") and declares no pod overhead for it ([GKE Sandbox][sandbox]); the sentry's memory is charged to the pod, so it
+comes out of the sandbox's own 4 GiB rather than the node's (*estimate*: tens of MB per sandbox). Agents that need
+the whole 4 GiB for themselves should get a larger `resources.memory_gb`.
+
+### How many nodes
+
+| Load | Sandboxes | Nodes at 14 a node |
+| --- | --- | --- |
+| Typical day: ~60 live sessions (idle ones suspend after 30 min), ~12 jobs, warm pools | ~75 | 6 |
+| Peak: `HANGAR_MAX_SANDBOXES` (sessions, 24 job slots, best-of-N attempts) | 120 | 9 |
+| `sandbox_max_nodes` default (peak, plus a preempted Spot node's worth) | ~140 | **10** (was 4) |
+
+**Quotas** to request before applying (check *IAM & Admin → Quotas* for your region): `N2D_CPUS` ≥ 160 for the
+sandbox pool at its maximum (Spot VMs use preemptible CPU quota where the project has it), `CPUS_ALL_REGIONS` to
+match, and `SSD_TOTAL_GB` ≥ 2,100 for 10 nodes with 200 GB pd-balanced boot disks plus the system pool (the
+default quota is 500 GB; `sandbox_disk_gb = 100` halves it). `hangar doctor` and the create error name the quota
+when a scale-up is refused for one.
+
+### The control plane
+
+Measured on the fake provider at 60 sessions and 12–24 jobs: ~0.13–0.2 of a core on average (the event loop is one
+thread), and 260–280 MB RSS with 5,000 jobs in memory. Forks and snapshots add up to `HANGAR_WORKSPACE_TRANSFER_MB`
+(1 GiB) of archives in flight, or one oversized archive at 2–3× its size. `deploy/k8s/deployment.yaml` now requests
+`500m` / `1Gi` with a `3Gi` memory limit (was `250m` / `512Mi` / `2Gi`), which fits the `e2-standard-2` system node
+(~6.1 GiB allocatable by the same formulas). Still one replica: state is one SQLite file.
+
+### Cost
+
+us-central1, **Spot** sandbox nodes (`sandbox_spot = true`, the default). The power schedule keeps nodes up 10:00–01:00
+ET, about 456 h a month. All prices checked 2026-10-14; the usage scenarios are *estimates*.
+
+| Item | Price | Source |
+| --- | --- | --- |
+| n2d-standard-16, Spot | $0.327008 / h | [Spot VM pricing][spot] (the page's rows are not labelled by region; Iowa is listed first) |
+| n2d-standard-16, on demand | $0.6759 / h | [Holori][holori] (third party, data from 2026-10-10; Google's general-purpose page did not render N2D rows) |
+| pd-balanced boot disk | $0.000136986 / GiB-h (~$0.10 / GiB-month) | [Disk pricing][disks] |
+| Cluster management fee | $0.10 / h, covered by the $74.40 monthly free-tier credit for one zonal cluster | [GKE pricing][gke] |
+
+| Scenario (*estimate*) | Node-hours / month | Sandbox nodes, Spot | Boot disks (200 GB) | On demand instead |
+| --- | --- | --- | --- | --- |
+| Typical: 6 nodes for 9 h on 22 workdays, 2 nodes the rest of the powered hours | ~1,700 | ~$557 | ~$47 | ~$1,150 |
+| Peak all powered hours: 10 nodes × 456 h | 4,560 | ~$1,491 | ~$125 | ~$3,082 |
+| No power schedule, 10 nodes around the clock | 7,300 | ~$2,387 | ~$200 | ~$4,934 |
+
+Not included: the system pool (`e2-standard-2`, on demand, small), the load balancer, Artifact Registry, the session
+bucket, Cloud Build and egress. Spot prices can change daily ([Spot VM pricing][spot]); committed-use discounts don't
+apply to Spot.
+
+### Applying it
+
+1. **Request the quotas above first**; a refused scale-up shows as sandboxes stuck "waiting for a node".
+2. **Apply while the cluster is powered down** (01:00–10:00 ET), or suspend live sessions first
+   (`hangar session suspend <name>`): changing `sandbox_machine_type` recreates the sandbox node pool, and every
+   sandbox on it. Suspended sessions resume from their checkpoints.
+3. `terraform apply` in `deploy/terraform/gke` (or set `sandbox_machine_type` / `sandbox_max_nodes` in your tfvars to
+   keep the old pool).
+4. Deploy the control plane (`deploy/gke/up.sh`): the new manifest's requests and `HANGAR_MAX_SANDBOXES=120`. The first
+   create after the deploy rewrites each environment's warm-pool template once (the CPU request changed), so those
+   creates are cold.
+5. Give each engineer their own token, so the caps are per person.
+
+On the first start, retention moves every settled record older than 7 days into the archive, 100 rows at a time in
+the background (about a minute per 20,000 records).
+
+## Limits and follow-ups
+
+- **Budgets before concurrency.** Auto job slots go from 4 to 24 on GKE. The per-person cap bounds one person, but
+  not a GitHub label storm across many people; daily spend budgets per repo and token (being built in
+  `frontdoor.py`) should land with this. Until then, `HANGAR_JOB_CONCURRENCY=4` keeps the old behaviour.
+- **The reconciler** still scans every sandbox once per provider per reaper pass (`Fleet.reconcile`). Retention bounds
+  it to a week of records; the reconciler work switches it to `store.list_where(Sandbox, provider=…, state=[…])`.
+- **Jobs and sessions are held in memory**, all of them, since the start (`jobs.py`, `sessions.py`): ~30 KB for a
+  finished job with a 30-event timeline (the seeded history), so 18,000 jobs (6 months at 100 a day) is ~0.5 GB. They need the same archive, with usage rolled up first.
+- **Token lookups** decode every API token on every request (`auth.principal`), ~1 ms at a handful of tokens. An index
+  on the token hash, with the constant-time compare kept, removes it.
+- **Snapshots on the pods/exec fallback** still read the whole archive as base64 text. The budget bounds it; reading it
+  in pieces (or through envd, which streams) removes it.
+- **One replica.** SQLite and in-memory queues; a second replica needs a lease (hardening's H5) first.
+
+[sandbox]: https://docs.cloud.google.com/kubernetes-engine/docs/concepts/sandbox-pods
+[smt]: https://docs.cloud.google.com/kubernetes-engine/docs/how-to/configure-smt
+[nodes]: https://docs.cloud.google.com/kubernetes-engine/docs/concepts/plan-node-sizes
+[spot]: https://cloud.google.com/spot-vms/pricing
+[disks]: https://cloud.google.com/compute/disks-image-pricing
+[gke]: https://cloud.google.com/kubernetes-engine/pricing
+[holori]: https://calculator.holori.com/gcp/vm/n2d-standard-16

@@ -50,9 +50,11 @@ spec:
           livenessProbe:
             httpGet: {path: /healthz, port: http}
             periodSeconds: 30
+          # A team of 6 × 10 sessions (docs/team-scale.md): ~0.2-0.5 of a core and ~300 MB measured on the fake
+          # provider, plus up to HANGAR_WORKSPACE_TRANSFER_MB (1 GiB) of fork and snapshot archives in flight.
           resources:
-            requests: {cpu: 250m, memory: 512Mi}
-            limits: {memory: 2Gi}
+            requests: {cpu: 500m, memory: 1Gi}
+            limits: {memory: 3Gi}
       volumes:
         - name: data
           persistentVolumeClaim: {claimName: hangar-data}

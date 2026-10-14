@@ -100,7 +100,7 @@ async def test_hot_paths_stay_fast_with_months_of_history(fleet):
 # ---------------------------------------------------------------------------- retention
 async def test_retention_archives_settled_records_and_get_still_finds_them(fleet, settings):
     settings.sandbox_retention_days = 7
-    _seed(fleet.store, 1_200)  # more than one batch
+    _seed(fleet.store, 1_200)  # many batches
     _seed(fleet.store, 3, age_days=1)  # settled, but recent: kept
     live = await fleet.create("plain", name="live")
     old = Sandbox(name="old-live", environment="plain", provider="docker", state=SandboxState.RUNNING,
