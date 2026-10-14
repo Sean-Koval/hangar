@@ -83,6 +83,12 @@ Before, the server spent 87% of the run parsing sandbox records on the event loo
 listing, `fleet.get(name)` behind every MCP call that names a sandbox, two scans per create. Every other request
 waited behind them.
 
+**Soak.** 6 × 10 sessions with 20 s turns (4 each, all 60 running at once) and 24 jobs, while retention moved the
+20,000 seeded records to the archive (`2026-10-14-team-load-soak.json`): event-loop lag p50 0.6 / p95 47 / max
+528 ms, `get_session` p50 14 / p95 545 ms, every turn and job finished, peak RSS 267 MB, 22.5 CPU-s in 117 s. The
+first soak, with retention moving 500 rows a transaction, had a loop lag p95 of 811 ms: one batch held the store's
+lock for up to 0.9 s. Hence 100.
+
 What remains, by SQLite time on the loop: `get` of one sandbox by id (sessions check that theirs is alive, ~0.4 ms
 each, 5k calls a run), `put` of sessions (every state change writes the whole record), and the token lookup in
 `auth.principal`, which decodes every API token on every request (~1 ms; see follow-ups).
@@ -189,7 +195,8 @@ apply to Spot.
 5. Give each engineer their own token, so the caps are per person.
 
 On the first start, retention moves every settled record older than 7 days into the archive, 100 rows at a time in
-the background (about a minute per 20,000 records).
+the background (20,000 records took 201 batches, ~1.3 s of lock time in all, at most 0.11 s at once, during the
+soak run below).
 
 ## Limits and follow-ups
 
