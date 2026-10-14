@@ -102,6 +102,31 @@ def test_other_modules_add_requests(svc, monkeypatch):
     assert inbox.items(svc, BOB) == []
 
 
+def test_agents_requests_for_secrets_and_hosts_are_in_the_inbox(svc):
+    """Integration (#94 + #96): a pending request waits on its owner (an admin, when it has none), until answered."""
+    from hangar.envrequests import EnvRequest
+
+    def req(kind: str, owner: str | None, **kw) -> EnvRequest:
+        r = EnvRequest(kind=kind, environment="e", why="to run the tests", requester="session:s-1",
+                       session_id="s-1", session="work", owner=owner, **kw)
+        svc.store.put(r)
+        return r
+
+    host = req("egress", "alice", host="pypi.org", port=443)
+    key = req("secret", None, name="STRIPE_KEY")
+    req("egress", "alice", host="old.example.com", state="denied")
+    mine = [x for x in inbox.items(svc, ALICE) if x.get("request")]
+    assert [(x["kind"], x["request"]) for x in mine] == [("approval", host.id)]
+    assert "network access to pypi.org:443: to run the tests" in mine[0]["reason"]
+    assert f"hangar requests approve {host.id}" in mine[0]["action"] and mine[0]["session"] == "work"
+    assert not [x for x in inbox.items(svc, BOB) if x.get("request")]
+    admin = [x for x in inbox.items(svc, OWNER) if x.get("request")]  # nobody's: the admins'
+    assert [x["request"] for x in admin] == [key.id] and "the secret STRIPE_KEY" in admin[0]["reason"]
+    host.state = "approved"
+    svc.store.put(host)
+    assert not [x for x in inbox.items(svc, ALICE) if x.get("request")]
+
+
 async def test_the_inbox_is_a_resource_not_a_tool(fleet, svc):
     from hangar.mcp_server import build_mcp
 

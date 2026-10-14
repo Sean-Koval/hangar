@@ -349,6 +349,10 @@ class ChangeFeed:
         elif isinstance(obj, Job):
             key, uris = obj.id, [job_uri(obj.id)]
         else:
+            from hangar.envrequests import EnvRequest
+
+            if isinstance(obj, EnvRequest):  # integration (#94 + #96): a request filed or answered is in the inbox
+                self.mark(["hangar://inbox"])
             return
         uris.append("hangar://inbox")  # --- landing: what needs people changes with their jobs and sessions
         self.mark(uris, new_key=key)

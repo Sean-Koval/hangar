@@ -31,11 +31,6 @@ URI = "hangar://inbox"
 FAILED_DAYS = 7
 MAX_ITEMS = 200
 
-# More kinds of request a person answers (egress, secrets): fn(svc, principal or None) -> items. A source decides
-# what the caller may see; an item is {"kind", "reason", "action", "since", ...}.
-SOURCES: list[Callable[[JobService, Principal | None], list[dict[str, Any]]]] = []
-
-
 def yours(person: str | None, p: Principal | None) -> bool:
     """A record owned by `person` needs the caller: it is theirs, or nobody's and they are an admin. In-process
     callers (None) get everything."""
@@ -47,6 +42,27 @@ def yours(person: str | None, p: Principal | None) -> bool:
 def _item(kind: str, reason: str, action: str, since: float, **ref: Any) -> dict[str, Any]:
     return {"kind": kind, "reason": reason, "action": action, "since": since,
             **{k: v for k, v in ref.items() if v is not None}}
+
+
+def env_requests(svc: JobService, p: Principal | None) -> list[dict[str, Any]]:
+    """--- integration (#94 + #96): a secret or a host an agent asked for (envrequests.py) waits on its owner, or on
+    an admin when it has none. Never granted by itself, so it sits here until someone answers it."""
+    from hangar.envrequests import EnvRequest
+
+    out = []
+    for r in svc.store.list_where(EnvRequest, state="pending"):
+        if not yours(r.owner, p):
+            continue
+        what = f"the secret {r.name}" if r.kind == "secret" else f"network access to {r.target}"
+        out.append(_item("approval", f"the agent asks for {what}: {r.why}"[:500],
+                         f"hangar requests approve {r.id} (or deny {r.id} --note '<why>')", r.created_at,
+                         request=r.id, session=r.session, job=r.job_id))
+    return out
+
+
+# More kinds of request a person answers: fn(svc, principal or None) -> items. A source decides what the caller may
+# see; an item is {"kind", "reason", "action", "since", ...}. Egress and secret requests are the first.
+SOURCES: list[Callable[[JobService, Principal | None], list[dict[str, Any]]]] = [env_requests]
 
 
 def items(svc: JobService, p: Principal | None = None) -> list[dict[str, Any]]:
