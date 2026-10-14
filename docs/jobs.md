@@ -81,6 +81,7 @@ EOF
 | `idempotency_key` | Resubmitting with the same key returns the existing job. |
 | `timeout_minutes`, `keep_minutes` | Limit per agent turn, and how long the sandbox stays after a turn for follow-ups. |
 | `budget` | `{"max_minutes", "max_tokens", "max_cost_usd"}` per agent turn. A turn that crosses it is stopped, and what it did is delivered as a draft (`reason: "over_budget"`). See [Activity, usage and budgets](activity.md). |
+| `job_budget` | `{"max_cost_usd", "max_tokens", "max_turns"}` for all the job's turns together: follow-ups, verify-fix and auto-fix turns, best-of-N attempts and the judge. Left out: the repo's policy, then `HANGAR_JOB_BUDGET_*`. See [repo-policy.md](repo-policy.md#budgets). |
 | `output_schema` | JSON Schema for a structured result; it comes back as `result.data`. See [context exchange](context-exchange.md). |
 
 `context` can also carry your local work in progress: `patch` (uncommitted changes) and `bundle` (unpushed commits) items, applied before the agent starts. `hangar job submit --from-local` builds them from the current checkout. See [context exchange](context-exchange.md).
@@ -285,6 +286,7 @@ The webhook needs the `pull_request_review`, `check_run`, `check_suite` and `sta
 | `HANGAR_JOB_MAX_CONTEXT_BYTES` / `_ITEMS` | 2 MB / 50 | |
 | `HANGAR_JOB_CALLBACK_HOSTS` | `[]` | Hosts allowed for http or internal callbacks |
 | `HANGAR_BUDGET_MAX_MINUTES` / `_MAX_TOKENS` / `_MAX_COST_USD`, `HANGAR_MODEL_PRICES` | unset | Default budget per turn and the price table; see [activity.md](activity.md) |
+| `HANGAR_JOB_BUDGET_MAX_COST_USD` / `_MAX_TOKENS` / `_MAX_TURNS` | unset | Default budget for a whole job; see [repo-policy.md](repo-policy.md#budgets) |
 | `HANGAR_BEST_OF_N_MAX` | 8 | Most attempts per best-of-N job |
 | `HANGAR_BEST_OF_N_PUSH_ATTEMPTS` | false | Also push attempts that weren't delivered |
 | `HANGAR_BEST_OF_N_JUDGE_TIMEOUT_MINUTES` | 15 | The judge turn's limit |

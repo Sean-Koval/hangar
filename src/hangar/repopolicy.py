@@ -6,8 +6,8 @@ GitHub issue or Slack never had a `verify`. A `RepoPolicy` is one record per rep
 to every submission, whichever door it came through, so a new intake only has to name the repo.
 
 Precedence, per field: what the job asked for, then the repo's policy, then the environment (its `verify:` and
-`model:`), then hangar's settings. An explicit empty `verify` ("") at any level means "no check" and stops the
-fallback.
+`model:`), then hangar's settings (HANGAR_BUDGET_*, HANGAR_JOB_BUDGET_*). An explicit empty `verify` ("") at any
+level means "no check" and stops the fallback.
 
 Policies live in the store's kv table (`repo-policy:<repo>`), written durably like stored settings, because they
 decide what runs. `HANGAR_GITHUB_REPOS` stays the allowlist of repos (and their environments) that untrusted and
@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from hangar.github import parse_repo
 from hangar.harnesses import get_harness
-from hangar.models import now
+from hangar.models import Budget, JobBudget, now
 
 if TYPE_CHECKING:
     from hangar.envspec import EnvSpec
@@ -36,7 +36,7 @@ log = logging.getLogger("hangar.repopolicy")
 
 KV_PREFIX = "repo-policy:"
 _GITHUB_SHORT = re.compile(r"^[\w.-]+/[\w.-]+$")
-FIELDS = ("verify", "environment", "harness", "model")
+FIELDS = ("verify", "environment", "harness", "model", "budget", "job_budget", "max_usd_per_day")
 
 
 class PolicyError(ValueError):
@@ -44,6 +44,8 @@ class PolicyError(ValueError):
 
 
 class RepoPolicy(BaseModel):
+    """A repo's defaults. The budgets are explained in jobbudget.py."""
+
     repo: str  # the key: "owner/repo" (lower-case) for GitHub, else the git URL without credentials or ".git"
     verify: str | None = Field(None, max_length=2000)  # "" = no check, even if the environment has one
     environment: str | None = None
@@ -52,6 +54,9 @@ class RepoPolicy(BaseModel):
     # plain string applies only to the policy's own harness (or, without one, when the job didn't pick a harness):
     # a model id means nothing to another harness.
     model: str | dict[str, str] | None = None
+    budget: Budget | None = None  # per agent turn, under the job's own (jobbudget.py)
+    job_budget: JobBudget | None = None  # all of a job's turns together
+    max_usd_per_day: float | None = Field(None, gt=0)  # the repo's agent turns, per UTC day
     updated_at: float = Field(default_factory=now)
     updated_by: str | None = None
 
@@ -200,6 +205,9 @@ class PolicyUpdate(BaseModel):
     environment: str | None = None
     harness: str | None = None
     model: str | dict[str, str] | None = None
+    budget: Budget | None = None
+    job_budget: JobBudget | None = None
+    max_usd_per_day: float | None = Field(None, gt=0)
 
 
 def update(svc: JobService, body: PolicyUpdate, actor: str) -> RepoPolicy:
@@ -289,6 +297,10 @@ def view(svc: JobService, p: RepoPolicy) -> dict[str, Any]:
         spec = None
     d["environment_verify"] = spec.verify if spec else None
     d["effective_verify"] = (p.verify if p.verify is not None else d["environment_verify"]) or None
+    if p.max_usd_per_day:
+        from hangar.jobbudget import repo_spent_today
+
+        d["spent_today_usd"] = round(repo_spent_today(svc, p.repo), 4)
     return d
 
 

@@ -196,6 +196,11 @@ class Settings(BaseSettings):
     budget_max_minutes: int | None = None
     budget_max_tokens: int | None = None
     budget_max_cost_usd: float | None = None
+    # --- frontdoor: default caps for a whole job, all its turns together (jobbudget.py), when neither the job nor
+    # its repo's policy sets one. Unset = no limit.
+    job_budget_max_cost_usd: float | None = None
+    job_budget_max_tokens: int | None = None
+    job_budget_max_turns: int | None = None
     events_max_mb: int = 20  # per-session event log size before it rotates (one rotated file is kept)
     # --- workstream A: triggers ----------------------------------------------
     # GitHub logins and "@org/team" entries whose /hangar comments and labels start jobs right away. Unset: the

@@ -9,6 +9,7 @@ hangar repo list
 hangar repo get acme/app            # the policy, and the environment it falls back to
 hangar repo unset acme/app model    # clear one field
 hangar repo unset acme/app          # remove the policy
+hangar repo set acme/app --job-max-cost 5 --job-max-turns 12 --max-usd-per-day 60
 ```
 
 | Field | What it sets |
@@ -17,6 +18,9 @@ hangar repo unset acme/app          # remove the policy
 | `environment` | The environment jobs run in when they don't name one. For a repo in `HANGAR_GITHUB_REPOS`, it must be one of the environments listed there. |
 | `harness` | The default harness. It must be enabled in the environment; when a job runs in an environment without it, the job uses the environment's default and its events say why. |
 | `model` | One model id, or one per harness (`{"claude-code": "opus", "codex": "gpt-5.5"}`), as in an environment's `model:`. A single id applies only to the policy's harness, or, without one, to jobs that didn't pick a harness: a model id means nothing to another harness. |
+| `budget` | The default per-turn budget (`max_minutes`, `max_tokens`, `max_cost_usd`), field by field under the job's own. |
+| `job_budget` | The default [job budget](#budgets) (`max_cost_usd`, `max_tokens`, `max_turns`). |
+| `max_usd_per_day` | The repo's [daily spend cap](#budgets). |
 
 The repo is `owner/repo` for GitHub (any URL form, any case), or the git URL for another host.
 
@@ -50,6 +54,26 @@ Admin tokens only. The repo is a query or body field, because git URLs carry sla
 | `DELETE /api/repos/policy?repo=acme/app[&field=verify]` | Clears the fields named, or removes the policy. |
 
 Policies are stored in hangar's database, written durably like `hangar config` settings, and apply to the next job without a restart. Every change is audited (`repo.policy.set`, `.unset`, `.delete`).
+
+## Budgets
+
+A `budget` caps one agent turn, and every turn used to get a fresh one. So `max_cost_usd: 2` with best of 4, a judge and 3 auto-fix rounds could spend $16 before anyone followed up. Two limits bound the spend:
+
+**A job budget** (`job_budget` on the job, the repo's policy, or `HANGAR_JOB_BUDGET_MAX_COST_USD` / `_MAX_TOKENS` / `_MAX_TURNS`) caps all of a job's agent turns together. That covers the first turn, follow-ups, verify-fix and PR auto-fix turns, every best-of-N attempt and the judge.
+
+- **The turn that crosses it is stopped.** Each turn's budget is cut to what the job has left, and the turn stops like any turn over budget: `over_budget`, with its work delivered as a draft.
+- **A spent job starts no more turns.** Follow-ups and auto-fix rounds are refused with the reason, and verify-fix rounds aren't started.
+- **Best-of-N splits it evenly.** The attempts run at once, so each gets an equal share, with one share kept for the judge; together they can't cross the job budget. A `max_turns` lower than the attempts plus the judge is refused when the job is submitted.
+
+**A daily cap per repo** (`max_usd_per_day`) is checked when work is admitted, on the repo's spend since midnight UTC (the same days as `/api/usage`):
+
+- a new job over the cap waits in `awaiting_approval`, and the GitHub issue or Slack thread says why. A trusted person can let it run anyway (`/hangar approve`, `hangar job approve`), or it is dropped when the approval expires (`HANGAR_JOB_APPROVAL_TTL_HOURS`);
+- a follow-up or auto-fix round is refused;
+- turns already running, and a job's own verify-fix turns, finish under the job budget.
+
+Costs are what the harness reports, or the token counts priced with the price table ([activity.md](activity.md)). On a subscription login the dollars are an estimate; `max_tokens` and `max_turns` don't depend on prices.
+
+For each field the order is the job, then the repo's policy, then the settings. A per-person daily cap will use the same admission check once jobs carry who is behind them.
 
 ## The check on the base commit
 
