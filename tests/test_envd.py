@@ -11,7 +11,6 @@ import hmac
 import json
 import os
 import shutil
-import socket
 import stat
 import subprocess
 from pathlib import Path
@@ -23,16 +22,11 @@ from hangar.config import Settings
 from hangar.envd import MAX_OUTPUT, SKIP, Envd, EnvdError, find_binaries
 from hangar.models import Sandbox
 from hangar.providers.base import ProviderError
+from tests.conftest import free_port
 
 ARCH = os.uname().machine
 BINARIES = find_binaries(Settings(envd_dir=os.environ.get("HANGAR_ENVD_DIR") or None))
 needs_binary = pytest.mark.skipif(ARCH not in BINARIES, reason="no hangar-envd binary (run envd/build.sh)")
-
-
-def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
 
 
 class LocalEnvd(Envd):

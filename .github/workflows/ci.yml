@@ -1,26 +1,173 @@
+# Post-merge: everything, sharded, on every commit to main; then flake tracking, and bisect-and-repair when red
+# (docs/ci.md). workflow_dispatch runs the same on any branch, with the bisect hook in dry-run mode.
 name: ci
 on:
   push:
     branches: [main]
-  pull_request:
+  workflow_dispatch:
+    inputs:
+      bisect_dry_run:
+        description: Run the bisect hook in dry-run mode even if everything passes
+        type: boolean
+        default: false
+
+concurrency:
+  group: main-${{ github.ref }}
+  cancel-in-progress: false  # each commit keeps its own verdict: the bisect range is built from them
+
+permissions:
+  contents: read
+
+env:
+  PYTEST_WORKERS: "8"
+  PYTHONPATH: scripts/ci  # -p flake_report
+  RERUN: --reruns 1 -p flake_report
+
 jobs:
-  test:
+  lint:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
-      - run: uv sync --all-extras
-      - run: uv run ruff check src tests
-      - run: uv run pytest -q
-  e2e-docker:
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv run --locked --only-dev ruff check src tests scripts/ci
+
+  envd:  # built once, for the unit shards and every e2e suite; cached by the hash of envd/
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      suites: ${{ steps.suites.outputs.suites }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: suites
+        run: echo "suites=$(python3 scripts/ci/select_tests.py --all --e2e)" >> "$GITHUB_OUTPUT"
+      - id: cache
+        uses: actions/cache@v6
+        with:
+          path: envd/dist
+          key: envd-x86_64-${{ hashFiles('envd/**') }}
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: envd
+      - if: steps.cache.outputs.cache-hit != 'true'
+        run: ARCHES=x86_64 envd/build.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: envd
+          path: envd/dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  rust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: envd
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: envd
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+
+  unit:
+    name: unit (${{ matrix.shard }}/4)
+    needs: envd
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      FLAKE_JOB: unit-${{ matrix.shard }}
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
-      - run: uv sync --all-extras
-      - run: HANGAR_E2E=1 uv run pytest tests/test_e2e_docker.py -v
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - uses: actions/download-artifact@v8
+        with:
+          name: envd
+          path: envd/dist
+      - run: chmod +x envd/dist/*
+      - run: uv sync --all-extras --locked
+      - run: |
+          uv run pytest -q -p no:cacheprovider -n "$PYTEST_WORKERS" $RERUN \
+            --flake-report "flakes-$FLAKE_JOB.json" --junitxml "junit-$FLAKE_JOB.xml" \
+            $(python3 scripts/ci/select_tests.py --all --shard ${{ matrix.shard }}/4)
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: results-${{ env.FLAKE_JOB }}
+          path: |
+            flakes-*.json
+            junit-*.xml
+          if-no-files-found: ignore
+          retention-days: 30
+
+  e2e:
+    name: e2e (${{ matrix.suite }})
+    needs: envd
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJSON(needs.envd.outputs.suites) }}
+    env:
+      HANGAR_E2E: "1"
+      SUITE: ${{ matrix.suite }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - uses: actions/download-artifact@v8
+        with:
+          name: envd
+          path: envd/dist
+      - run: chmod +x envd/dist/*
+      - run: uv sync --all-extras --locked
+      - run: |
+          job=$(basename "$SUITE" .py)
+          echo "FLAKE_JOB=$job" >> "$GITHUB_ENV"
+          FLAKE_JOB=$job uv run pytest -v -p no:cacheprovider $RERUN \
+            --flake-report "flakes-$job.json" --junitxml "junit-$job.xml" "$SUITE"
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: results-${{ env.FLAKE_JOB }}
+          path: |
+            flakes-*.json
+            junit-*.xml
+          if-no-files-found: ignore
+          retention-days: 30
+
+  image:  # validates the build; nothing is pushed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   terraform:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: hashicorp/setup-terraform@v4
@@ -29,3 +176,52 @@ jobs:
             terraform -chdir=$d init -backend=false && terraform -chdir=$d validate
           done
           terraform fmt -check -recursive deploy/terraform
+
+  report:  # flakes and durations from every shard and suite; on red, bisect and repair (or an issue)
+    if: always()
+    needs: [lint, envd, rust, unit, e2e, image, terraform]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read  # the last green run, and which jobs failed
+      issues: write  # the fallback when hangar isn't configured
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        continue-on-error: true  # nothing to merge if every job was skipped or cancelled
+        with:
+          pattern: results-*
+          path: results
+          merge-multiple: true
+      - name: Merge reports
+        run: |
+          shopt -s nullglob
+          mkdir -p flakes results
+          cp results/flakes-*.json flakes/ 2>/dev/null || true
+          python3 scripts/ci/flakes.py --files flakes/*.json
+          junit=(results/junit-unit-*.xml)
+          if [ ${#junit[@]} -gt 0 ]; then
+            python3 scripts/ci/select_tests.py --record-durations "${junit[@]}" > durations.json
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: flakes
+          path: flakes/
+          if-no-files-found: ignore
+          retention-days: 90
+      - uses: actions/upload-artifact@v7
+        with:
+          name: durations  # copy over scripts/ci/durations.json now and then to keep the shards balanced
+          path: durations.json
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Bisect and repair
+        if: contains(needs.*.result, 'failure') || inputs.bisect_dry_run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HANGAR_URL: ${{ secrets.HANGAR_URL }}
+          HANGAR_TOKEN: ${{ secrets.HANGAR_TOKEN }}
+        run: |
+          python3 scripts/ci/bisect_hook.py --junit results \
+            ${{ (github.event_name != 'push' || inputs.bisect_dry_run) && '--dry-run' || '' }}

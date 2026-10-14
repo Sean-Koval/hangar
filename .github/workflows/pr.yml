@@ -1,0 +1,143 @@
+# Pre-merge: a fast check of what the change can break (docs/ci.md). Main runs everything after the merge (ci.yml).
+# `test`, `e2e-docker` and `terraform` are the branch's required checks; a job skipped by its path filter passes.
+name: pr
+on:
+  pull_request:
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTEST_WORKERS: "8"  # per 4-vCPU runner: the suite waits on git, tmux and subprocesses more than it computes
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv run --locked --only-dev ruff check src tests scripts/ci
+
+  unit:
+    name: unit (${{ matrix.shard }}/4)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2  # the merge commit and its parents: HEAD^1 is the base it merges into
+      - name: Select tests
+        id: select
+        run: |
+          python3 scripts/ci/select_tests.py --base HEAD^1 --shard ${{ matrix.shard }}/4 > selected.txt
+          echo "count=$(grep -c . selected.txt || true)" >> "$GITHUB_OUTPUT"
+          cat selected.txt
+      - if: steps.select.outputs.count != '0'
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: hangar-envd from main's build, if envd/ is unchanged (its tests skip without it)
+        if: steps.select.outputs.count != '0'
+        uses: actions/cache/restore@v6
+        with:
+          path: envd/dist
+          key: envd-x86_64-${{ hashFiles('envd/**') }}
+      - if: steps.select.outputs.count != '0'
+        run: uv sync --all-extras --locked
+      - if: steps.select.outputs.count != '0'
+        run: uv run pytest -q -p no:cacheprovider -n "$PYTEST_WORKERS" $(cat selected.txt)
+
+  test:  # the required check: lint and every shard passed
+    if: always()
+    needs: [lint, unit]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - run: |
+          echo "lint: ${{ needs.lint.result }}, unit: ${{ needs.unit.result }}"
+          [ "${{ needs.lint.result }}" = success ] && [ "${{ needs.unit.result }}" = success ]
+
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.paths.outputs.rust }}
+      terraform: ${{ steps.paths.outputs.terraform }}
+      e2e: ${{ steps.paths.outputs.e2e }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - id: paths
+        run: |
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          echo "rust=$(grep -q '^envd/' <<< "$changed" && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "terraform=$(grep -q '^deploy/terraform/' <<< "$changed" && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          suites=$(python3 scripts/ci/select_tests.py --base HEAD^1 --e2e)
+          echo "e2e=$([ "$suites" != '[]' ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "e2e suites the change reaches: $suites (main runs them all; this PR runs the smoke suite)"
+
+  e2e-docker:
+    needs: changes
+    if: needs.changes.outputs.e2e == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --all-extras --locked
+      - run: HANGAR_E2E=1 uv run pytest -v -p no:cacheprovider tests/test_e2e_docker.py
+
+  rust:  # envd/ changed: the crate's own checks, then the Python tests that drive the new binary
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: envd
+      - run: cargo clippy --locked --all-targets -- -D warnings
+        working-directory: envd
+      - run: cargo test --locked
+        working-directory: envd
+      - run: ARCHES=x86_64 envd/build.sh
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --all-extras --locked
+      - run: |
+          uv run pytest -q -p no:cacheprovider -n "$PYTEST_WORKERS" \
+            $(python3 scripts/ci/select_tests.py --files envd/Cargo.toml)
+
+  terraform:
+    needs: changes
+    if: needs.changes.outputs.terraform == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+      - run: |
+          for d in deploy/terraform/gke deploy/terraform/single-vm; do
+            terraform -chdir=$d init -backend=false && terraform -chdir=$d validate
+          done
+          terraform fmt -check -recursive deploy/terraform

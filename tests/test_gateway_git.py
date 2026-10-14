@@ -7,6 +7,7 @@ import base64
 import shutil
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -124,10 +125,10 @@ class GatewayThread:
 
 
 @pytest.fixture
-def upstream(tmp_path):
-    root = Path(scratch_root()) / f"upstream-{tmp_path.name}"
+def upstream():
+    root = Path(tempfile.mkdtemp(prefix="upstream-", dir=scratch_root()))
     work = root / "seed"
-    work.mkdir(parents=True)
+    work.mkdir()
     _git("init", "-q", "-b", "main", cwd=work)
     (work / "README").write_text("hi\n")
     _git("add", "README", cwd=work)

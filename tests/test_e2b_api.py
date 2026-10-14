@@ -746,8 +746,8 @@ async def test_other_ports_http_and_websocket(hangar, monkeypatch):
 async def test_code_interpreter_sdk_reaches_port_49999(hangar, monkeypatch):
     """e2b-code-interpreter talks to the Jupyter-backed server E2B's template runs on port 49999, through the same
     router (X-Access-Token, a streamed NDJSON answer). A stand-in for that server shows hangar's side works; the real
-    one needs an environment that runs E2B's code-interpreter server (docs/e2b.md)."""
-    import socket
+    one needs an environment that runs E2B's code-interpreter server (docs/e2b.md). The stand-in listens on a port
+    of this test's own, and the router's 49999 is pointed there: a fixed port collides with parallel runs."""
     import threading
 
     import uvicorn
@@ -755,12 +755,18 @@ async def test_code_interpreter_sdk_reaches_port_49999(hangar, monkeypatch):
     from starlette.responses import StreamingResponse
     from starlette.routing import Route
 
+    from hangar import sandbox_router
+
     ci = pytest.importorskip("e2b_code_interpreter")
-    with socket.socket() as s:
-        try:
-            s.bind(("127.0.0.1", 49999))
-        except OSError:
-            pytest.skip("port 49999 is taken on this machine")
+    port = free_port()
+    asked: list[int] = []
+    upstream = sandbox_router._upstream
+
+    def to_stand_in(scheme, host, p, raw_path, query):
+        asked.append(p)
+        return upstream(scheme, host, port if p == 49999 else p, raw_path, query)
+
+    monkeypatch.setattr(sandbox_router, "_upstream", to_stand_in)
 
     async def execute(request):
         body = await request.json()
@@ -775,7 +781,7 @@ async def test_code_interpreter_sdk_reaches_port_49999(hangar, monkeypatch):
         return StreamingResponse(lines(), media_type="application/x-ndjson")
 
     server = uvicorn.Server(uvicorn.Config(Starlette(routes=[Route("/execute", execute, methods=["POST"])]),
-                                           host="127.0.0.1", port=49999, log_level="warning", loop="asyncio"))
+                                           host="127.0.0.1", port=port, log_level="warning", loop="asyncio"))
     t = threading.Thread(target=server.run, daemon=True)
     t.start()
 
@@ -791,6 +797,7 @@ async def test_code_interpreter_sdk_reaches_port_49999(hangar, monkeypatch):
         sb = await ci.AsyncSandbox.create(template="plain", **hangar.opts(token(hangar, "ci")))
         ex = await sb.run_code("1 + 1")
         assert ex.logs.stdout == ["ran 1 + 1\n"] and ex.results[0].text == "2"
+        assert 49999 in asked  # the SDK asked for the code-interpreter port
         await sb.kill()
     finally:
         server.should_exit = True

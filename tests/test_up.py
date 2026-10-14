@@ -2,7 +2,6 @@
 
 import json
 import os
-import socket
 import tomllib
 
 import httpx
@@ -12,14 +11,9 @@ from typer.testing import CliRunner
 import hangar.cli as cli
 from hangar import setup_cli
 from tests.conftest import ENVS
+from tests.conftest import free_port as _free_port
 
 runner = CliRunner()
-
-
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
 
 
 @pytest.fixture
