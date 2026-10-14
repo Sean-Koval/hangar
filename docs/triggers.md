@@ -137,6 +137,7 @@ The same over REST (`/api/schedules`: `GET`, `POST`, `GET/PATCH/DELETE /{id or n
 - **Once per slot:** the slot is saved before the job is submitted, and each job's idempotency key is `schedule:<id>:<slot>`, so a slot never runs twice, even across restarts.
 - **No backlog:** after downtime, only the most recent missed slot runs.
 - **No overlap:** a slot is skipped (and `last_error` says why) while the schedule's previous job is still active, unless `allow_overlap` is set.
+- **Defaults:** fields the job leaves out come from the repo's [policy](repo-policy.md), then its environment, as for every front door. Inbound webhooks get them the same way.
 - The scheduler checks every `HANGAR_SCHEDULE_POLL_SECONDS` (10). A run that can't start (say, the environment was deleted) records why in `last_error`.
 
 ## Settings

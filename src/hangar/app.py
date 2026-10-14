@@ -998,6 +998,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     settings_store.mount(app, h, A)
     setup_api.mount(app, h, A)
+    from hangar import repopolicy  # --- frontdoor: per-repo policy (hangar repo)
+
+    repopolicy.mount(app, h, A)
     from hangar import backup  # --- overnight/sweep: database backups (hangar admin)
 
     backup.mount(app, h, A)

@@ -1,6 +1,6 @@
 ---
 name: repo-conventions
-description: Conventions for working in hangar sandboxes - branching, commits, tests and hand-off notes. Use at the start and end of any coding task.
+description: Conventions for working in hangar sandboxes - branching, commits, tests and the hand-off. Use at the start and end of any coding task.
 ---
 
 # Working in a hangar sandbox
@@ -10,5 +10,6 @@ description: Conventions for working in hangar sandboxes - branching, commits, t
    `main`, create `agent/<short-task-name>` first.
 3. **Test early**: find and run the test command before changing code so you know the baseline.
 4. **Commit small**: one logical change per commit, imperative subject line under 72 chars.
-5. **Hand off**: finish by writing `HANDOFF.md` in the repo root with what changed, how it was
-   verified, and anything left undone. The orchestrator reads this file.
+5. **Hand off**: end with a short summary in your final message: what changed, how it was
+   verified, and anything left undone. Don't add notes files (`HANDOFF.md`, `NOTES.md`) to the
+   repo: hangar keeps the summary, and files nobody asked for end up in the pull request.

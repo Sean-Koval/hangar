@@ -126,6 +126,20 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
     names = set(fleet.catalog.names())
     creds = {c.name for c in h.store.list(Credential)}
     for repo, envs in s.github_repos.items():
+        # --- frontdoor: GitHub, Slack and webhook jobs take their check from the repo's policy or its environment
+        policy = h.jobs.policies.get(repo)
+        first = policy.environment if policy and policy.environment else next(
+            (e.strip() for e in envs.split(",") if e.strip()), None)
+        try:
+            env_verify = fleet.catalog.get(first).verify if first in names else None
+        except ValueError:  # an invalid spec: the environment check below reports it
+            env_verify = None
+        has =policy.verify if policy is not None and policy.verify is not None else env_verify
+        out.append(_check(f"verify {repo}", True if has else None,
+                          f"jobs run `{has}`" if has else "no check: jobs from GitHub, Slack and webhooks deliver PRs "
+                          "nothing has verified",
+                          f"hangar repo set {repo} --verify '<the repo's test command>'  (or `verify:` in the "
+                          "environment)"))
         for env in [e.strip() for e in envs.split(",") if e.strip()]:
             if env not in names:
                 out.append(_check(f"environment {env}", False, f"mapped for {repo} but doesn't exist",

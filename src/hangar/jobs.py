@@ -28,8 +28,11 @@ from pydantic import BaseModel, Field
 
 from hangar import (  # strategies: workstream D; --- observe; steer: live turns; --- overnight/autofix
     autofix,
+    baseline,  # --- frontdoor
     exchange,
     observe,
+    repopolicy,  # --- frontdoor
+    scratch,  # --- frontdoor
     steer,
     strategies,
     verifyloop,
@@ -176,6 +179,8 @@ class JobService:
         from hangar.frontdoor import Admission
 
         self.admission = Admission(self)
+        self.policies = repopolicy.RepoPolicies(self.store)  # --- frontdoor: per-repo defaults for every front door
+        self.baselines = baseline.Baselines(self)  # --- frontdoor: the check on the base commit, once per base
         if sessions is not None:  # --- overnight/sweep: a deleted session's usage stays on its job
             sessions.on_delete.append(self._session_deleted)
 
@@ -295,15 +300,20 @@ class JobService:
                 raise JobError("this token cannot choose a provider")
             if req.callback_secret and req.callback_secret != caller.callback_secret:
                 raise JobError("callbacks are signed with the key bound to this token; omit callback_secret")
-        env = req.environment or (allowed_envs[0] if allowed_envs else None)
+        policy = self.policies.get(req.repo)  # --- frontdoor: job, then the repo's policy, then the environment
+        env = req.environment or repopolicy.environment(policy, allowed_envs) or \
+            (allowed_envs[0] if allowed_envs else None)
         if not env:
             raise JobError("environment is required (or a repo listed in HANGAR_GITHUB_REPOS)")
         try:
             spec = self.fleet.catalog.get(env)
         except KeyError as e:
             raise JobError(str(e).strip("'\"")) from e
+        if policy is None and not req.repo and spec.repo:  # --- frontdoor: the environment names the repo
+            policy = self.policies.get(spec.repo.url)
+        defaults = repopolicy.resolve(req, policy, spec)
         try:
-            spec.pick_harness(req.harness)
+            spec.pick_harness(defaults.harness)
         except ValueError as e:
             raise JobError(str(e)) from e
         attempts = strategies.check_submit(req, self.settings.best_of_n_max)
@@ -332,7 +342,8 @@ class JobService:
             id=job_id, title=title, instructions=req.instructions, source=source, source_ref=source_ref,
             requester=requester, owner=caller.owner, repo=repo, base_branch=req.base_branch, branch=branch,
             environment=env,
-            harness=req.harness, model=req.model, provider=req.provider, verify=req.verify, deliver=req.deliver,
+            harness=defaults.harness, model=defaults.model, provider=req.provider, verify=defaults.verify,
+            verify_source=defaults.verify_source, deliver=req.deliver,  # --- frontdoor
             context=context, callback_url=req.callback_url, callback_secret=callback_secret,
             idempotency_key=req.idempotency_key, labels=req.labels,
             timeout_minutes=req.timeout_minutes or self.settings.job_timeout_minutes,
@@ -353,6 +364,8 @@ class JobService:
                         JobState.AWAITING_APPROVAL)
         else:
             self._event(job, f"queued by {requester} via {source}{best}")
+        if defaults.notes:  # --- frontdoor
+            self._event(job, f"from the repo policy for {repopolicy.repo_key(repo)}: " + "; ".join(defaults.notes))
         self.fleet.audit(requester, "job.submit", job.id, environment=env, repo=repo, source=source)
         if approval is None:
             self._queue.put_nowait(job.id)
@@ -635,6 +648,13 @@ class JobService:
             if it.kind != "url" and it.kind not in exchange.CODE_KINDS:  # code items are applied with the turn
                 await prov.write_file(sbx, f"{ctx}/{it.name}", _decode(it), mode=0o600)
         await prov.write_file(sbx, f"{ctx}/.keep", b"", mode=0o600)
+        async with self.sessions.hold(s):  # --- frontdoor: the standing check on the base, before any change
+            await self.baselines.ensure(job)
+        if job.cancel_requested:
+            await self._discard_sandbox(job)
+            self._event(job, "cancelled while provisioning", JobState.CANCELLED, reason="cancelled")
+            await self._report(job)
+            return False
         self._event(job, f"sandbox {sb.name} ready on branch {job.branch}")
         return True
 
@@ -679,7 +699,7 @@ class JobService:
         links = [c for c in job.context if c.kind == "url"]
         finish = [
             "Keep the change focused on the task.",
-            *([f"Before finishing, run `{job.verify}` and make it pass."] if job.verify else []),
+            *([baseline.finish_line(job, ctx)] if job.verify else []),  # --- frontdoor: says if the base was red
             *([f"Commit your work on {branch} with clear messages. Do not push and do not open a "
                "pull request: hangar checks your work and delivers it."] if repo_path else []),
             f"Write a short summary for the people who asked to `{ctx}/RESULT.md`: what you changed, how you "
@@ -842,10 +862,15 @@ class JobService:
                 observe.set_attrs(sp, {"hangar.verify.exit_code": res.exit_code})
             job.result.verify_exit_code = res.exit_code
             job.result.verify_tail = self.broker.redact(_clip_tail((res.stdout or "") + (res.stderr or ""))[-4000:])
-        verify_ok = not job.verify or job.result.verify_exit_code == 0
+            job.result.new_failures = baseline.new_failures(job, (res.stdout or "") + (res.stderr or ""))
+        # --- frontdoor: on a red base only the failures this change added count ("unknown": can't tell them apart)
+        verdict = baseline.verdict(job, job.result.verify_exit_code, job.result.new_failures)
+        verify_ok = verdict == "pass"
+        if repo_path and baseline.red(job):
+            self._event(job, baseline.after_line(job))
         # --- overnight/autofix: a failing check goes back to the agent while rounds are left (verifyloop.py); and
         # with the gate on, a diff that edits the check's own tests is flagged and goes out as a draft
-        if not verify_ok and repo_path and (nxt := verifyloop.fix_turn(self, job, turn, outcome)) is not None:
+        if verdict == "fail" and repo_path and (nxt := verifyloop.fix_turn(self, job, turn, outcome)) is not None:
             job.turns.append(nxt)
             await self._start_turn(job, nxt, s)
             await self._finish_turn(job, nxt, s)
@@ -872,10 +897,12 @@ class JobService:
             state, reason = JobState.FAILED, "over_budget"
         elif not clean and not commits:
             state, reason = JobState.FAILED, "agent_failed"
-        elif not verify_ok:
+        elif verdict == "fail":  # --- frontdoor
             state, reason = JobState.FAILED, "verify_failed"
         elif not commits:
             reason = "no_changes"
+        elif verdict == "unknown":  # --- frontdoor: delivered as a draft; a person tells
+            reason = "base_red"
         self._event(job, self._outcome_line(job, state, reason), state, reason=reason)
         await self._keep(job, s)
         await self._report(job)
@@ -898,11 +925,10 @@ class JobService:
             if len(changed) > 2000:
                 self._event(job, f"{len(changed)} uncommitted files; not committing them automatically")
             else:
-                res = await self._sh(job, "git add -A && git commit -q -m "
-                                          + q(f"hangar: uncommitted changes from {job.id}"))
-                if res.exit_code == 0:
-                    self._event(job, f"committed {len(changed)} uncommitted file(s) the agent left")
+                await scratch.commit_leftovers(self, job, len(changed))  # --- frontdoor: minus agent scratch files
         base = job.result.base_sha or f"origin/{job.base_branch}"
+        if job.deliver != "none":
+            await scratch.drop_committed(self, job, base)  # --- frontdoor: and those it committed itself
         log_ = await self._sh(job, f"git log --oneline --no-decorate -n 50 {q(base)}..HEAD")
         job.result.commits = [ln for ln in log_.stdout.splitlines() if ln.strip()]
         head = await self._sh(job, "git rev-parse HEAD")
@@ -956,6 +982,11 @@ class JobService:
         if job.verify:
             ok = "passed" if job.result.verify_exit_code == 0 else f"failed (exit {job.result.verify_exit_code})"
             lines.append(f"Verification `{job.verify}`: **{ok}**")
+            if red := baseline.pr_line(job):  # --- frontdoor
+                lines.append(red)
+        if job.result.dropped_files:  # --- frontdoor
+            lines.append("Left out of this PR (agent scratch files, still in the sandbox): "
+                         + ", ".join(f"`{p}`" for p in job.result.dropped_files[:10]))
         if job.result.touched_tests:  # --- overnight/autofix
             lines.append("**The agent changed the check's own tests:** "
                          + ", ".join(f"`{p}`" for p in job.result.touched_tests[:10]) + ". Review them.")
@@ -1002,6 +1033,8 @@ class JobService:
             lines.append(f"Branch: `{job.branch}`")
         if job.verify and r.verify_exit_code is not None:
             lines.append(f"Verification `{job.verify}`: {'passed' if r.verify_exit_code == 0 else 'failed'}")
+            if red := baseline.pr_line(job):  # --- frontdoor
+                lines.append(red)
         if job.state == JobState.FAILED and job.reason in ("error", "interrupted", "sandbox_gone", "bad_branch",
                                                            "push_failed", "agent_failed", "timed_out"):
             # Say what went wrong: the last event that isn't the outcome line itself.
@@ -1179,8 +1212,8 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
                                   why="untrusted answer", job=busy.id)
             return {"ignored": f"{sender} is not trusted to answer job {busy.id}'s question"}
         return {"ignored": f"job {busy.id} is already working on {ref}"}
-    env = opts.get("env") or envs[0]
-    if env not in envs:
+    env = opts.get("env")  # --- frontdoor: none asked for: the repo's policy, then the first allowed (submit)
+    if env and env not in envs:
         return {"ignored": f"environment '{env}' is not allowed for {repo} (allowed: {', '.join(envs)})"}
     title = issue.get("title") or f"issue {number}"
     labels = ", ".join(lb.get("name", "") for lb in issue.get("labels") or [])
