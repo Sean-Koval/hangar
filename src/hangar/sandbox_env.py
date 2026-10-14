@@ -390,6 +390,10 @@ def file_request(kind: str, target: str, why: str) -> dict:
         if (isinstance(r, dict) and r.get("state") == "pending" and r.get("kind") == kind
                 and all(r.get(k) == v for k, v in rec.items() if k != "kind")):
             return {**r, "duplicate": True}
+    waiting = sum(1 for r in st.get("requests") or [] if isinstance(r, dict) and r.get("state") == "pending")
+    if waiting >= int(st.get("request_limit") or 5):  # hangar ignores more anyway; say so now
+        raise Usage(f"{waiting} requests already wait for the owner. Keep working on what they don't block; ask "
+                    "again once one is answered (`hangar-agent env requests`).")
     io = io_dir(st)
     if not io:
         raise Usage("requests reach the owner from a hangar job or session turn, and this isn't one "

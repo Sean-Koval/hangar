@@ -40,6 +40,23 @@ case "$msg" in
     printf 'not json' > "$HANGAR_IO/out/requests/1-deadbeef.json"
     case "$msg" in *SLOW*) sleep 4;; esac
     hangar-agent done "Did everything the secret doesn't block" ;;
+  *TASK-FLOOD*)  # past the sandbox side's own check, straight into the directory hangar reads
+    d="$HANGAR_IO/out/requests"; mkdir -p "$d"
+    run=$RANDOM
+    for i in $(seq 1 30); do
+      printf '{"kind":"egress","host":"h%d-%d.example.com","why":"flood"}' "$i" "$run" \
+        > "$d/$(printf '%d-%08x' "$i" "$((run * 100 + i))").json"
+    done
+    hangar-agent done "flooded" ;;
+  *TASK-AGAIN*)
+    d="$HANGAR_IO/out/requests"; mkdir -p "$d"
+    printf '{"kind":"egress","host":"pypi.org","port":443,"why":"once more"}' > "$d/1-00000001.json"
+    hangar-agent done "asked again" ;;
+  *TASK-FORGE*)
+    d="$HANGAR_IO/out/requests"; mkdir -p "$d"
+    printf '{"kind":"secret","name":"TOKEN","why":"x","state":"approved","decided_by":"owner",%s}' \
+      '"scope":"environment","owner":"bob","id":"rq-aaaaaaaaaaaa","session_id":"other"' > "$d/1-00000001.json"
+    hangar-agent done "forged" ;;
   *TASK-SHOT*)
     printf '\211PNG\r\n' > after.png && hangar-agent artifact after.png screenshots/after.png
     echo x > f.txt && git add f.txt && git commit -qm "ui change"
@@ -112,6 +129,7 @@ async def test_requests_reach_the_owner_and_wait_for_a_person(svc, fleet, renv, 
     with pytest.raises(RequestError, match="already approved"):
         await reqs.decide(egress.id, False, "ui:sean")
     await reqs.decide(secret.id, False, "ui:sean", note="use the Stripe test fixtures instead")
+    await reqs.settle()
     st = json.loads((box(fleet, s) / ".hangar/envstatus.json").read_text())
     assert {r["state"] for r in st["requests"]} == {"approved", "denied"}
     out = (await fleet.exec(s.sandbox_id, "hangar-agent env requests")).stdout
@@ -176,15 +194,21 @@ async def test_wait_for_turn_puts_a_request_to_the_person_following(svc, fleet, 
         if not any("STRIPE_KEY" in a for a in asked):  # picked up as the turn ended: ask on the next call
             t = sc(await c.call_tool("wait_for_turn", {"ref": f"follow-{mode}", "timeout_seconds": 10}))
         assert any("the agent asks for the secret STRIPE_KEY" in a and "never paste its value" in a for a in asked)
-        listed = sc(await c.call_tool("list_env_requests", {"ref": f"follow-{mode}", "state": "all"}))
-        by = {r["kind"]: r for r in listed}
-        assert by["secret"]["state"] == "denied" and by["secret"]["note"] == "use fixtures"
-        assert by["egress"]["state"] == "pending"  # declined to answer here: it waits for someone
-        r = sc(await c.call_tool("answer_env_request", {"request": by["egress"]["id"], "decision": "approve"}))
+        assert any('in its own words: "to run the payment tests"' in a for a in asked)  # the agent's text, quoted
+        s = svc.get(f"follow-{mode}")
+        by = {r.kind: r for r in svc.env_requests.list(None, s.id)}
+        assert by["secret"].state == "denied" and by["secret"].note == "use fixtures"
+        assert by["egress"].state == "pending"  # declined to answer here: it waits for someone
+        # no tool of their own: pending requests are pending approvals, answered with answer_approval
+        [pa] = sc(await c.call_tool("get_session", {"session": f"follow-{mode}"}))["pending_approvals"]
+        assert pa["id"] == by["egress"].id and pa["tool"] == "env_request:egress" and pa["target"] == "pypi.org:443"
+        r = sc(await c.call_tool("answer_approval", {"ref": f"follow-{mode}", "approval": pa["id"],
+                                                     "decision": "allow"}))
         assert r["state"] == "approved" and r["decided_by"].startswith("mcp:")
+        assert sc(await c.call_tool("get_session", {"session": f"follow-{mode}"}))["pending_approvals"] == []
 
 
-async def test_jobs_are_prompted_toward_autonomy_and_attach_their_media(fleet, svc, jobs, world, renv):
+async def test_jobs_are_prompted_toward_autonomy_and_attach_their_media(fleet, svc, jobs, world, renv, settings):
     job = jobs.submit(SubmitJob(instructions="TASK-SHOT change the page", repo=world["url"], environment=renv,
                                 deliver="branch"), Caller("t", "t"))
     done = await _until(jobs, job.id, {JobState.SUCCEEDED, JobState.FAILED})
@@ -192,8 +216,12 @@ async def test_jobs_are_prompted_toward_autonomy_and_attach_their_media(fleet, s
     s = jobs._session(done)
     prompt = next((box(fleet, s) / ".hangar/runs").glob("*.prompt")).read_text()
     assert "Work autonomously" in prompt and "hangar-agent env request secret" in prompt
+    body = jobs._pr_body(done)  # by default: names, fetched through hangar by people who may see the job
+    assert "Screenshots and demos" in body and "`screenshots/after.png`" in body and "/api/media/" not in body
+    assert f"/api/jobs/{done.id}/artifacts/" in body
+    settings.pr_media_links = "signed"  # opted in: embedded through expiring links
     body = jobs._pr_body(done)
-    assert "Screenshots and demos" in body and "![after.png](" in body and "/api/media/" in body
+    assert "![after.png](" in body and "/api/media/" in body
 
 
 def test_rest_lists_and_answers_requests(settings):
@@ -214,3 +242,128 @@ def test_rest_lists_and_answers_requests(settings):
         assert c.post(f"/api/env-requests/{r.id}", json={"decision": "approve"}, headers=auth).status_code == 409
         assert c.post("/api/env-requests/rq-nope", json={"decision": "approve"}, headers=auth).status_code == 404
         assert c.get("/api/env-requests?state=", headers=auth).json()[0]["state"] == "denied"
+
+
+# ====================================================================== review #94: floods, forgeries, the MCP surface
+def _counting_reads(fleet, monkeypatch) -> list[str]:
+    prov, reads = fleet.providers["docker"], []
+    real = prov.read_file
+
+    async def read_file(sb, path, *a, **kw):
+        if "/out/requests/" in path:
+            reads.append(path)
+        return await real(sb, path, *a, **kw)
+    monkeypatch.setattr(prov, "read_file", read_file)
+    return reads
+
+
+async def test_an_agent_cannot_flood_its_owner_with_requests(svc, fleet, renv, reqs, monkeypatch):
+    from hangar import envrequests
+
+    reads = _counting_reads(fleet, monkeypatch)
+    svc.new(NewSession(name="flood", environment=renv, message="TASK-FLOOD a"), owner="admin", requester="admin")
+    s = await xchg.settle(svc, "flood")
+    assert len(reqs.pending_for(s)) == envrequests.MAX_PER_TURN  # 5 of the 30 files
+    assert len(reads) == envrequests.MAX_PER_TURN, "files over the limit are not even read"
+    ws = [w for w in s.turns[-1].warnings if w.startswith("ignored environment requests")]
+    assert 1 <= len(ws) <= envrequests.MAX_WARNINGS and "more than 5 requests this turn" in " ".join(ws)
+    assert not list((box(fleet, s) / f".hangar/sessions/{s.name}/out/requests").glob("*"))  # gone all the same
+    # the next turn: five already wait, so nothing more is recorded until one is answered
+    svc.send("flood", "TASK-FLOOD b", requester="admin")
+    s = await xchg.settle(svc, "flood")
+    assert len(reqs.pending_for(s)) == envrequests.MAX_PENDING
+    assert any("5 requests already wait" in w for w in s.turns[-1].warnings)
+    events = [e for e in svc.activity.read(s.id, limit=500) if e.data.get("request")]
+    assert len(events) == envrequests.MAX_PENDING  # the owner heard about five, not sixty
+
+
+async def test_a_denied_request_is_not_asked_again_and_owners_have_an_hourly_budget(svc, fleet, renv, reqs,
+                                                                                    monkeypatch):
+    from hangar import envrequests
+
+    svc.new(NewSession(name="nag", environment=renv, message="TASK-NEEDS go"), owner="admin", requester="admin")
+    s = await xchg.settle(svc, "nag")
+    egress = next(r for r in reqs.pending_for(s) if r.kind == "egress")
+    await reqs.decide(egress.id, False, "ui:sean", note="no network for this one")
+    svc.send("nag", "TASK-AGAIN", requester="admin")
+    s = await xchg.settle(svc, "nag")
+    assert [r.state for r in reqs.list(None, s.id) if r.kind == "egress"] == ["denied"]
+    assert any("pypi.org:443 was already denied by ui:sean" in w for w in s.turns[-1].warnings)
+
+    monkeypatch.setattr(envrequests, "MAX_PER_OWNER_HOUR", 2)
+    svc.new(NewSession(name="other", environment=renv, message="TASK-FLOOD c"), owner="admin", requester="admin")
+    s2 = await xchg.settle(svc, "other")
+    # the owner's budget is across sessions: "nag" already spent two of them
+    assert reqs.pending_for(s2) == [] and any("an hour for this owner" in w for w in s2.turns[-1].warnings)
+
+
+async def test_what_the_sandbox_writes_never_decides_a_request(svc, fleet, renv, reqs, monkeypatch):
+    decided: list = []
+    monkeypatch.setattr(egressapi, "on_decided", lambda r, f: decided.append(r))
+    svc.new(NewSession(name="forge", environment=renv, message="TASK-FORGE"), owner="admin", requester="admin")
+    s = await xchg.settle(svc, "forge")
+    [r] = reqs.list(None, s.id)
+    assert (r.state, r.scope, r.decided_by, r.owner, r.session_id) == ("pending", "session", None, s.person, s.id)
+    assert r.id != "rq-aaaaaaaaaaaa" and not decided
+
+
+async def test_answering_a_request_does_not_wait_on_the_sandbox(svc, fleet, renv, reqs, jobs, settings):
+    from tests.test_mcp_contract import BUDGET, freeze
+
+    svc.new(NewSession(name="slowbox", environment=renv, message="TASK-NEEDS go"), owner="admin", requester="admin")
+    s = await xchg.settle(svc, "slowbox")
+    secret, egress = sorted(reqs.pending_for(s), key=lambda r: r.kind, reverse=True)
+    gate = freeze(fleet.providers["docker"])
+    settings.mcp_tool_wait_seconds = BUDGET
+    try:
+        r = await asyncio.wait_for(reqs.decide(secret.id, False, "ui:sean", note="no"), 2)  # REST's path
+        assert r.state == "denied"
+        async with Client(build_mcp(fleet, jobs, svc)) as c:
+            bad = await c.call_tool("answer_approval", {"ref": "slowbox", "approval": egress.id,
+                                                        "decision": "allow_always"})
+            assert bad.is_error and "allow or deny" in bad.content[0].text
+            got = await asyncio.wait_for(c.call_tool("answer_approval", {"ref": "slowbox", "approval": egress.id,
+                                                                         "decision": "allow"}), 2)
+            assert sc(got)["state"] == "approved"
+    finally:
+        gate.set()
+    await reqs.settle()  # the agent learns both answers once the sandbox answers again
+    st = json.loads((box(fleet, s) / ".hangar/envstatus.json").read_text())
+    assert {r["state"] for r in st["requests"]} == {"approved", "denied"}
+
+
+async def test_requests_are_answered_only_through_the_session_that_filed_them(svc, fleet, renv, reqs, jobs):
+    svc.new(NewSession(name="filer", environment=renv, message="TASK-NEEDS go"), owner="admin", requester="admin")
+    svc.new(NewSession(name="bystander", environment=renv, message="hi"), owner="admin", requester="admin")
+    s = await xchg.settle(svc, "filer")
+    await xchg.settle(svc, "bystander")
+    rid = reqs.pending_for(s)[0].id
+    async with Client(build_mcp(fleet, jobs, svc)) as c:
+        res = await c.call_tool("answer_approval", {"ref": "bystander", "approval": rid, "decision": "allow"})
+        assert res.is_error and "no request" in res.content[0].text
+    assert reqs.get(rid).state == "pending"
+
+
+async def test_the_mcp_surface_has_no_tools_of_its_own(fleet, svc, jobs):
+    async with Client(build_mcp(fleet, jobs, svc)) as c:
+        names = {t.name for t in (await c.list_tools()).tools}
+    assert not {"open_screen", "list_env_requests", "answer_env_request"} & names
+    assert "answer_approval" in names
+
+
+async def test_the_status_file_never_carries_a_stored_secret(svc, fleet, renv, reqs):
+    from hangar import envdoctor
+    from hangar.models import CredentialKind
+
+    value = "sk-live-0123456789abcdef"
+    fleet.broker.put("gh-hook", "webhook", CredentialKind.GENERIC, value)  # a control-plane secret
+    svc.new(NewSession(name="leaky", environment=renv, message="hi"), owner="admin", requester="admin")
+    s = await xchg.settle(svc, "leaky")
+    sb = fleet.get(s.sandbox_id)
+    sb.info["setup_failures"] = [{"step": "install", "message": f"curl -H 'Authorization: Bearer {value}' failed"}]
+    sb.info["env_build"] = {"version": "v2", "fallback": True, "reason": f"build arg STRIPE={value} rejected"}
+    await envdoctor.refresh(svc, s, sb)
+    text = (box(fleet, s) / ".hangar/envstatus.json").read_text()
+    assert value not in text and "Bearer ***" in text
+    out = (await fleet.exec(s.sandbox_id, "hangar-agent env doctor")).stdout
+    assert value not in out and "FALLBACK" in out

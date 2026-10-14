@@ -8,18 +8,27 @@ automatically: a request stays pending until a person who may see the work (its 
 through `decide`, the one decision path (REST, MCP and the elicitation all call it). The answer reaches the agent
 in its status file (`hangar-agent env requests`), and for egress, `egressapi.on_decided` applies it.
 
-What the sandbox wrote is untrusted: names and hosts are validated, the reason is redacted and capped, and at most
-`MAX_PER_TURN` requests per turn are recorded.
+What the sandbox wrote is untrusted: names and hosts are validated, the reason is redacted and capped, and only the
+kind, the name or host and the reason are taken from it (a file can't set its own state). An agent can't flood its
+owner: at most `MAX_PER_TURN` new requests a turn, `MAX_PENDING` waiting per session, `MAX_PER_OWNER_HOUR` per
+owner across their sessions and jobs, and a target the owner denied isn't asked for again in that session. Files
+over a limit aren't even read.
+
+MCP clients see pending requests in `pending_approvals` (get_session, get_job, wait_for_turn) and answer them with
+`answer_approval` (allow | deny) or through the elicitation `wait_for_turn` puts to them. They get no tool of their
+own: claude.ai caches tool lists, and the listing is at its cap.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 import secrets
 import shlex
 import time
+from collections import deque
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -40,7 +49,10 @@ LOCAL_RE = re.compile(r"^[0-9]{1,12}-[0-9a-f]{8}\.json$")
 MAX_WHY = 2000
 MAX_NOTE = 2000
 MAX_FILE = 8192
-MAX_PER_TURN = 20
+MAX_PER_TURN = 5  # new requests one turn may file
+MAX_PENDING = 5  # requests one session may have waiting for an answer
+MAX_PER_OWNER_HOUR = 30  # new requests across one person's sessions and jobs
+MAX_WARNINGS = 3  # notes on a turn about requests that were ignored
 State = Literal["pending", "approved", "denied"]
 
 
@@ -132,6 +144,8 @@ class EnvRequests:
         self.store = fleet.store
         self.settings = fleet.settings
         self._scanned: dict[str, float] = {}  # session id -> when its sandbox was last looked at
+        self._filed: dict[str | None, deque[float]] = {}  # owner -> when their recent requests were recorded
+        self._later: set[asyncio.Task] = set()  # status refreshes after a decision (not tied to the request)
         # Called with each new request (an inbox, a Slack DM, ...); must not raise.
         self.listeners: list[Callable[[EnvRequest], None]] = []
         sessions.env_requests = self
@@ -160,6 +174,12 @@ class EnvRequests:
 
     def pending_for(self, s: Session) -> list[EnvRequest]:
         return sorted(self.store.list_where(EnvRequest, session_id=s.id, state="pending"), key=lambda r: r.created_at)
+
+    def approvals_view(self, s: Session) -> list[dict[str, Any]]:
+        """Pending requests as `pending_approvals` entries (MCP), answered with answer_approval by their id."""
+        return [{"id": r.id, "tool": f"env_request:{r.kind}", "detail": f"{r.target}: {r.why}"[:500],
+                 "requested_at": r.created_at, "status": "pending", "target": r.target}
+                for r in self.pending_for(s)]
 
     def for_sandbox(self, s: Session) -> list[dict[str, Any]]:
         rows = sorted(self.store.list_where(EnvRequest, session_id=s.id), key=lambda r: r.created_at)[-30:]
@@ -194,32 +214,52 @@ class EnvRequests:
         if not names:
             return []
         _, prov = self.fleet._running(sb.id)
-        known = {r.local for r in self.store.list_where(EnvRequest, session_id=s.id)}
+        rows = self.store.list_where(EnvRequest, session_id=s.id)
+        known = {r.local for r in rows}
         n_turn = next((i for i, t in enumerate(s.turns, 1) if t is turn), len(s.turns))
-        this_turn = sum(1 for r in self.store.list_where(EnvRequest, session_id=s.id) if r.turn == n_turn)
+        this_turn = sum(1 for r in rows if r.turn == n_turn)
+        pending = [r for r in rows if r.state == "pending"]
+        denied = {(r.kind, r.target): r for r in rows if r.state == "denied"}
         new: list[EnvRequest] = []
+        ignored: list[str] = []
         for name in names:
             local = name.removesuffix(".json")
             if local in known:
+                continue
+            # The limits come first: a flood of files costs one listing, not a read each.
+            if this_turn >= MAX_PER_TURN:
+                ignored.append(f"{name}: more than {MAX_PER_TURN} requests this turn")
+                continue
+            if len(pending) >= MAX_PENDING:
+                ignored.append(f"{name}: {MAX_PENDING} requests already wait for an answer")
+                continue
+            if not self._allowed(s.person):
+                ignored.append(f"{name}: over {MAX_PER_OWNER_HOUR} requests an hour for this owner")
                 continue
             raw = await prov.read_file(sb, f"{d}/{name}", limit=MAX_FILE) or b""
             try:
                 fields = parse(raw, self.fleet.broker.redact)
             except RequestError as e:
-                turn.warnings.append(f"ignored an environment request the agent wrote ({name}): {e}")
+                ignored.append(f"{name}: {e}")
                 continue
             want = target(fields["kind"], fields.get("name"), fields.get("host"), fields.get("port"))
-            dup = next((r for r in self.pending_for(s) if r.kind == fields["kind"] and r.target == want), None)
-            if dup is not None or this_turn >= MAX_PER_TURN:
-                if dup is None:
-                    turn.warnings.append(f"more than {MAX_PER_TURN} environment requests this turn; ignored the rest")
+            if any(r.kind == fields["kind"] and r.target == want for r in pending):
+                continue  # asked again while it waits: the one request stands
+            if (no := denied.get((fields["kind"], want))) is not None:
+                ignored.append(f"{name}: {want} was already denied by {no.decided_by}")
                 continue
+            # Only what parse() took from the file: the state, scope and owner are hangar's, never the sandbox's.
             r = EnvRequest(environment=s.environment, requester=f"job:{s.job_id}" if s.job_id else f"session:{s.id}",
                            session_id=s.id, session=s.name, job_id=s.job_id, sandbox_id=sb.id, owner=s.person,
                            turn=n_turn, local=local, **fields)
             self.store.put(r)
+            self._filed.setdefault(s.person, deque()).append(time.time())
             this_turn += 1
+            pending.append(r)
             new.append(r)
+        if ignored and sum(w.startswith("ignored environment requests") for w in turn.warnings) < MAX_WARNINGS:
+            more = f" (and {len(ignored) - 3} more)" if len(ignored) > 3 else ""
+            turn.warnings.append(f"ignored environment requests the agent wrote: {'; '.join(ignored[:3])}{more}")
         # Picked up (or refused): the files go, so the next scan reads nothing twice. Rows remember them anyway.
         await self.sessions._sh(sb, f"cd {shlex.quote(d)} && rm -f -- " + " ".join(shlex.quote(n) for n in names),
                                 timeout=30)
@@ -234,6 +274,17 @@ class EnvRequests:
             await envdoctor.refresh(self.sessions, s, sb)
         return new
 
+    def _allowed(self, owner: str | None) -> bool:
+        """Whether `owner` is under MAX_PER_OWNER_HOUR. In memory: a restart forgets, which loosens a flood guard
+        and nothing else (a request still only ever waits for a person)."""
+        q = self._filed.get(owner)
+        if q is None:
+            return True
+        cutoff = time.time() - 3600
+        while q and q[0] < cutoff:
+            q.popleft()
+        return len(q) < MAX_PER_OWNER_HOUR
+
     def _announce(self, s: Session, r: EnvRequest) -> None:
         from hangar.events import RunEvent
 
@@ -245,8 +296,8 @@ class EnvRequests:
         if r.job_id and self.jobs is not None:
             try:
                 job = self.jobs.get(r.job_id)
-                self.jobs._event(job, f"request {r.id}: {text} (answer with answer_env_request or "
-                                      f"POST /api/env-requests/{r.id})")
+                self.jobs._event(job, f"request {r.id}: {text} (answer with `hangar requests`, MCP answer_approval "
+                                      f"or POST /api/env-requests/{r.id})")
             except Exception:  # noqa: BLE001 - the session event and the row are what count
                 log.debug("could not add a job event for %s", r.id, exc_info=True)
         for fn in self.listeners:
@@ -266,7 +317,7 @@ class EnvRequests:
         r = self.get(rid)  # KeyError for anything this caller may not see
         if r.state != "pending":
             raise RequestError(f"request {rid} was already {r.state} by {r.decided_by}")
-        note = (note or "").strip()[:MAX_NOTE] or None
+        note = self.fleet.broker.redact((note or "").strip()[:MAX_NOTE]) or None  # it's written into the sandbox
         scope = scope or "session"
         if scope == "environment":
             if r.kind != "egress":
@@ -299,8 +350,26 @@ class EnvRequests:
             if s.sandbox_id and self.sessions._alive(s.sandbox_id):
                 from hangar import envdoctor
 
-                await envdoctor.refresh(self.sessions, s, self.fleet.get(s.sandbox_id))
+                # The agent reads the answer in its status file. Writing that waits on the provider, so it runs on a
+                # task of its own: the decision is recorded either way, and REST and MCP answer at once (#75, #86).
+                task = asyncio.create_task(envdoctor.refresh(self.sessions, s, self.fleet.get(s.sandbox_id)))
+                self._later.add(task)
+                task.add_done_callback(self._later.discard)
         return r
+
+    async def answer(self, s: Session, rid: str, decision: str, actor: str, note: str | None = None
+                     ) -> dict[str, Any]:
+        """MCP answer_approval on a request from `s`'s agent: allow | deny."""
+        if decision not in ("allow", "deny"):
+            raise RequestError("answer an environment request with allow or deny")
+        if self.get(rid).session_id != s.id:
+            raise KeyError(f"no request '{rid}' for {s.name}")
+        return self.view(await self.decide(rid, decision == "allow", actor, note))
+
+    async def settle(self) -> None:
+        """Wait for the status refreshes that decisions started."""
+        while self._later:
+            await asyncio.gather(*list(self._later), return_exceptions=True)
 
     def _session(self, r: EnvRequest) -> Session | None:
         try:

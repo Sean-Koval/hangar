@@ -165,6 +165,18 @@ def test_requests_are_validated_deduplicated_and_never_need_a_value(home, monkey
         se.file_request("secret", "OTHER", "x")
 
 
+def test_the_agent_hears_at_once_when_too_many_requests_wait(home):
+    io = home / "io"
+    waiting = [{"id": f"rq-{i}", "kind": "egress", "host": f"h{i}.example.com", "state": "pending"} for i in range(5)]
+    write_status(home, io=str(io), request_limit=5, requests=waiting)
+    with pytest.raises(se.Usage, match="5 requests already wait for the owner"):
+        se.file_request("secret", "STRIPE_KEY", "tests")
+    assert not (io / "out/requests").exists()
+    assert se.file_request("egress", "h1.example.com", "x")["duplicate"]  # asking for one that waits still answers
+    write_status(home, io=str(io), request_limit=5, requests=[{**waiting[0], "state": "denied"}, *waiting[1:]])
+    assert se.file_request("secret", "STRIPE_KEY", "tests")["state"] == "pending"
+
+
 def test_the_cli_runs_in_a_bare_python(tmp_path):
     env = {"HOME": str(tmp_path), "PATH": "/usr/bin:/bin", "HANGAR_IO": str(tmp_path / "io")}
     r = subprocess.run([sys.executable, "-I", str(SCRIPT), "request", "egress", "registry.npmjs.org", "--why",

@@ -212,8 +212,10 @@ def read_media_token(settings: Settings, token: str) -> tuple[str, int, str]:
 
 
 def pr_lines(jobs: Any, job: Job) -> list[str]:
-    """Screenshots and demos the job's agent handed back, for the PR body: embedded images and linked videos
-    when signed links are on (HANGAR_PR_MEDIA_LINKS=signed), else just where to find them."""
+    """Screenshots and demos the job's agent handed back, for the PR body. By default, their names and how to fetch
+    them through hangar, signed in and owner-scoped: a PR on a private repo is read by more people than may see the
+    job, and a link that is its own credential would hand them its screens (code, data, an app's admin pages).
+    HANGAR_PR_MEDIA_LINKS=signed embeds them through expiring links instead."""
     settings = jobs.settings
     s = jobs._session(job)
     if s is None:
@@ -225,7 +227,8 @@ def pr_lines(jobs: Any, job: Job) -> list[str]:
     lines = ["", "**Screenshots and demos** (handed back by the agent)", ""]
     if settings.pr_media_links != "signed":
         lines += [f"- `{a.path}` (turn {n}, {a.size // 1024} KB)" for n, a in media]
-        lines.append(f"\nRead them with `hangar session artifacts {s.name}` or MCP `get_artifact`.")
+        lines.append(f"\nSigned in to hangar (the job's owner or an admin): `hangar session artifacts {s.name} --get "
+                     f"<path>`, MCP `get_artifact`, or `GET /api/jobs/{job.id}/artifacts/<turn>/<path>`.")
         return lines
     exp = time.time() + settings.pr_media_link_days * 86400
     base = settings.public_url.rstrip("/")

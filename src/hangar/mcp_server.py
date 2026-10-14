@@ -753,6 +753,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                 out = {**out, "approval": approved}
             if request:  # --- computer
                 out = {**out, "env_request": request}
+            if extra := computer_api.pending_view(sessions, jobs, ref):  # --- computer: answer_approval answers them
+                out = {**out, "pending_approvals": [*out.get("pending_approvals", []), *extra]}
             uri = live.job_uri(turn["job"]) if turn.get("job") else live.session_uri(turn.get("session") or ref)
             return mcp_tasks.tool_result(out, out, [uri])
 
@@ -793,7 +795,6 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         mcp_steer.register(mcp, tool, sessions, jobs, current_actor.get)  # workstream steer: steer_turn, approvals
         if sessions.env_requests is None:  # --- computer: a server built without the app (tests, the CLI)
             EnvRequests(fleet, sessions, jobs)
-        computer_api.register(tool, fleet, sessions, jobs, current_actor.get)  # --- computer: screen, requests
 
         # --- workstream mcp-modern: jobs and sessions as resources clients can follow, and workflow prompts
         live.register_resources(mcp, sessions, jobs, guard)  # --- identity: guard

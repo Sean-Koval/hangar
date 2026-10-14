@@ -5,10 +5,12 @@ REST:
   an admin. `control` lets the viewer type and click; without it hangar drops the viewer's input.
 * `WS /api/screen?ticket=`: RFB (VNC) over a websocket, as noVNC speaks it. The dashboard page `/ui/vnc.html`
   is a viewer.
-* `GET /api/media/{token}`: one artifact, behind a signed, expiring link (for PR bodies).
+* `GET /api/media/{token}`: one artifact, behind a signed, expiring link (for PR bodies), only while
+  `HANGAR_PR_MEDIA_LINKS=signed` (off by default: turning it off revokes every link already posted).
 
-MCP: `open_screen`, `list_env_requests`, `answer_env_request`; and the helpers `wait_for_turn` uses to put an
-agent's pending request to the person following the work (an elicitation).
+MCP adds no tools (claude.ai caches tool lists, and the listing is at its cap): screens are opened with
+`hangar screen` or REST, and requests are `pending_approvals` answered with `answer_approval`. Here are the
+helpers `wait_for_turn` uses to put an agent's pending request to the person following the work (an elicitation).
 """
 
 from __future__ import annotations
@@ -97,13 +99,17 @@ async def proxy(ws: Any, fleet: Any, sessions: Any, t: computer.ScreenTicket) ->
         return
     reg.viewers[sid] = reg.viewers.get(sid, 0) + 1
     term = None
+    # A ticket is a bearer for 60 s: where it was used from goes into the audit, so a shared one shows.
+    client = f"{ws.client.host}" if getattr(ws, "client", None) else None
+    began: float | None = None
     try:
         sb, prov = fleet._running(sid)
         term = await prov.open_terminal(sb, computer.bridge_cmd(f"/home/{fleet.settings.sandbox_user}"), 80, 24)
         bridge = computer.Bridge(term)
         first = await bridge.ready()
         verb = "took control of" if t.control else "is watching"
-        fleet.audit(t.actor, "screen.control" if t.control else "screen.view", sid, session=t.session)
+        fleet.audit(t.actor, "screen.control" if t.control else "screen.view", sid, session=t.session, client=client)
+        began = time.monotonic()
         if t.session:
             with contextlib.suppress(Exception):
                 s = sessions.get(t.session)
@@ -154,6 +160,10 @@ async def proxy(ws: Any, fleet: Any, sessions: Any, t: computer.ScreenTicket) ->
             await ws.close(code=1011, reason=f"the screen failed: {type(e).__name__}")
     finally:
         reg.viewers[sid] = max(0, reg.viewers.get(sid, 1) - 1)
+        if began is not None:
+            with contextlib.suppress(Exception):
+                fleet.audit(t.actor, "screen.end", sid, session=t.session, control=t.control,
+                            seconds=int(time.monotonic() - began))
         if term is not None:
             with contextlib.suppress(Exception):
                 await term.close()
@@ -185,7 +195,10 @@ def mount(app: Any, h: Any, U: Any) -> None:
 
     @app.get("/api/media/{token}")
     async def media(token: str):
-        """A screenshot or demo linked from a PR body: the link is the credential (signed, expiring, one file)."""
+        """A screenshot or demo linked from a PR body: the link is the credential (signed, expiring, one file).
+        Served only while signed links are on, so turning them off revokes the links already posted."""
+        if h.settings.pr_media_links != "signed":
+            return Response("no such link", status_code=404, media_type="text/plain")
         try:
             sid, turn, path = computer.read_media_token(h.settings, token)
             s = h.sessions.get(sid)
@@ -238,7 +251,7 @@ def first_pending(sessions: Any, jobs: Any, ref: str, skip: list[str] | tuple[st
 def message(label: str, r: EnvRequest) -> str:
     what = f"the secret {r.name} (set it in the environment yourself; never paste its value here)" \
         if r.kind == "secret" else f"network access to {r.target}"
-    return f"{label}: the agent asks for {what}. Why: {r.why}"
+    return f"{label}: the agent asks for {what}. Its reason, in its own words: \"{r.why}\""
 
 
 def elicit_request(label: str, r: EnvRequest) -> types.ElicitRequest:
@@ -261,32 +274,11 @@ async def answer_elicited(sessions: Any, rid: str, resp: types.ElicitResult, act
     return "answered"
 
 
-def register(tool: Any, fleet: Any, sessions: Any, jobs: Any, caller: Any) -> None:
-    """The tools; `tool` is build_mcp's decorator, `caller()` the current caller's name."""
-
-    @tool()
-    def list_env_requests(ref: str | None = None, state: str = "pending") -> list[dict[str, Any]]:
-        """Agents' requests for a secret (by name) or a blocked host. `ref`: job or session (default: all yours);
-        `state`: pending | approved | denied | all."""
-        reqs: EnvRequests = sessions.env_requests
-        sid = exchange.resolve(sessions, jobs, ref)[0].id if ref else None
-        return [reqs.view(r) for r in reqs.list(None if state == "all" else state, sid)]
-
-    @tool()
-    async def answer_env_request(request: str, decision: str, note: str | None = None,
-                                 scope: str = "session") -> dict[str, Any]:
-        """Answer an agent's request: approve | deny, a `note` for the agent (never a secret value). Egress `scope`:
-        session, or environment (admins)."""
-        if decision not in ("approve", "deny"):
-            raise ValueError("decision must be approve or deny")
-        if scope not in ("session", "environment"):
-            raise ValueError("scope must be session or environment")
-        reqs: EnvRequests = sessions.env_requests
-        r = await reqs.decide(request, decision == "approve", f"mcp:{caller()}", note,
-                              scope)  # type: ignore[arg-type]
-        return reqs.view(r)
-
-    @tool()
-    def open_screen(ref: str, control: bool = False) -> dict[str, Any]:
-        """A one-time link (60 s) to watch a job's or session's screen; `control` lets you type and click."""
-        return issue(fleet, sessions, jobs, ref, control, f"mcp:{caller()}")
+def pending_view(sessions: Any, jobs: Any, ref: str) -> list[dict[str, Any]]:
+    """The pending requests of a job's or session's agent, as `pending_approvals` entries ([] when none)."""
+    reqs: EnvRequests | None = getattr(sessions, "env_requests", None)
+    try:
+        s, _ = exchange._lookup(sessions, jobs, ref)  # noqa: SLF001 - shared with wait_for_turn
+    except (KeyError, LookupError):
+        return []
+    return reqs.approvals_view(s) if reqs is not None and s is not None else []

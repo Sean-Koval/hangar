@@ -388,6 +388,8 @@ class SessionService:
             t.pop("event_cursor", None)
         d["usage"] = u.model_dump(mode="json") if (u := total_usage(s.turns)) else None
         d["pending_approvals"] = [a.model_dump(mode="json") for a in steering.pending(s)]  # workstream steer
+        if self.env_requests is not None:  # --- computer: the agent's requests, answered like approvals
+            d["pending_approvals"] += self.env_requests.approvals_view(s)
         return exchange.scrub_turns(d)  # workstream E: attachment contents never leave in a view
 
     @staticmethod

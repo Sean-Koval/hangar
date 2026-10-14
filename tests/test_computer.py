@@ -67,6 +67,8 @@ def test_builtin_mcp_servers_and_session_env():
     # an environment's own server of that name wins; the doctor's server can be turned off
     mine = EnvSpec(name="x", mcp={"hangar-env": {"command": "mine"}})
     assert "hangar-env" not in builtin_mcp(mine, settings, "/home/agent")
+    off = EnvSpec(name="x", mcp={"hangar-env": {"command": "true", "harnesses": []}})  # off for one environment
+    assert "hangar-env" not in builtin_mcp(off, settings, "/home/agent") and off.mcp["hangar-env"].harnesses == []
     settings.env_doctor_mcp = False
     assert builtin_mcp(EnvSpec(name="x"), settings, "/home/agent") == {}
     assert computer.session_env(EnvSpec(name="x", computer=True)) == {"DISPLAY": ":99"}
@@ -227,12 +229,15 @@ def test_pr_body_lists_screenshots_and_demos(settings):
         id = "job-12345678"
 
     settings.public_url = "https://hangar.example"
+    # by default no link is its own credential: a private repo's PR readers aren't all allowed to see the job
+    assert settings.pr_media_links == "off"
+    lines = "\n".join(computer.pr_lines(Jobs(), Job()))
+    assert "/api/media/" not in lines and "`demos/flow.mp4`" in lines and "hangar session artifacts job-x" in lines
+    assert "/api/jobs/job-12345678/artifacts/" in lines and "report.md" not in lines
+    settings.pr_media_links = "signed"
     lines = "\n".join(computer.pr_lines(Jobs(), Job()))
     assert "![after.png](https://hangar.example/api/media/" in lines and "[demos/flow.mp4](" in lines
     assert "report.md" not in lines
-    settings.pr_media_links = "off"
-    lines = "\n".join(computer.pr_lines(Jobs(), Job()))
-    assert "/api/media/" not in lines and "`demos/flow.mp4`" in lines and "hangar session artifacts job-x" in lines
 
 
 # ====================================================================== the screen over hangar, end to end
@@ -330,6 +335,12 @@ def test_watching_and_taking_over_a_screen_through_hangar(app):
         assert VncProvider.commands[-1][-1].startswith("stty raw -echo")
         actions = [e["action"] for e in c.get("/api/audit").json()]
         assert {"screen.ticket", "screen.view", "screen.control"} <= set(actions)
+        # the trail says where a ticket was used from (it's a bearer for 60 s) and when each viewer left
+        _until(lambda: sum(e["action"] == "screen.end" for e in c.get("/api/audit").json()) == 2)
+        audit = c.get("/api/audit").json()
+        view = next(e for e in audit if e["action"] == "screen.view")
+        assert view["detail"]["client"] and view["target"] == sb["id"]
+        assert {e["detail"]["control"] for e in audit if e["action"] == "screen.end"} == {False, True}
     finally:
         srv.close()
 
@@ -353,6 +364,16 @@ def test_screens_are_owner_scoped_and_need_a_computer(app):
 def test_media_route_serves_only_what_a_valid_link_names(app):
     c = app
     assert c.get("/api/media/forged.0000", headers={"Authorization": ""}).status_code == 404
+
+
+def test_media_links_are_off_by_default_and_turning_them_off_revokes_them(app):
+    c, settings = app, app.app.state.hangar.settings
+    tok = computer.media_token(settings, "ses-gone", 1, "screenshots/a.png", time.time() + 600)
+    r = c.get(f"/api/media/{tok}", headers={"Authorization": ""})
+    assert r.status_code == 404 and r.text == "no such link"  # a valid link, but links are off: not even read
+    settings.pr_media_links = "signed"
+    r = c.get(f"/api/media/{tok}", headers={"Authorization": ""})
+    assert r.status_code == 404 and r.text != "no such link"  # read, and its session is gone
 
 
 # ====================================================================== the in-sandbox script, with real tools

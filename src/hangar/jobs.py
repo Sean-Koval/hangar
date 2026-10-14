@@ -478,6 +478,8 @@ class JobService:
         # workstream C: the session's turns are the job's turns, and carry live usage while one runs
         d["usage"] = u.model_dump(mode="json") if (u := self.usage(job)) else None
         d["pending_approvals"] = [a.model_dump(mode="json") for a in steer.pending(s)]  # workstream steer
+        if s is not None and self.sessions.env_requests is not None:  # --- computer: answered like approvals
+            d["pending_approvals"] += self.sessions.env_requests.approvals_view(s)
         d["autofix_state"] = autofix.view(job)  # --- overnight/autofix: what is waiting, not the logs it carries
         return exchange.scrub_turns(d)  # workstream E: attachment contents never leave in a view
 

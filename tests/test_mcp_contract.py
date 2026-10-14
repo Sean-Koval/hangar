@@ -85,9 +85,6 @@ ARGS: dict[str, dict[str, Any]] = {
     "steer_turn": {"ref": "busy", "message": "also add tests"},
     "answer_approval": {"ref": "busy", "approval": "apr-00000000", "decision": "allow"},
     "process": {"sandbox": "box", "action": "start", "command": "sleep 1000"},
-    "list_env_requests": {"ref": "busy"},  # --- computer
-    "answer_env_request": {"request": "rq-000000000000", "decision": "deny"},
-    "open_screen": {"ref": "busy"},
     "submit_job": {"instructions": "TASK-USE-B", "repo": "@url", "environment": "xenv", "deliver": "none"},
     "get_job": {"job": "job-00000000"},
     "list_jobs": {},

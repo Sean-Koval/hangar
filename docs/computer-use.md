@@ -6,7 +6,7 @@ counter that:
 
 - **Its own computer** (opt-in per environment): a virtual display, Chromium through Playwright, screenshots,
   recorded demos, and a screen people can watch or take over from hangar.
-- **Self-diagnosis** (every sandbox): `hangar-agent env doctor` and a read-only MCP server that say what in the
+- **Self-diagnosis** (every sandbox): `hangar-agent env doctor` and an MCP server in the sandbox that say what in the
   environment works and what doesn't, and `hangar-agent env request` to ask the owner for a secret or a host.
   Requests are never granted automatically, and the agent keeps working on everything they don't block.
 
@@ -54,11 +54,22 @@ and recording a short demo. Job prompts in such environments ask for exactly tha
 ### Where the media goes
 
 - **Session events:** a `progress` event per screenshot or recording, with its `hangar://` artifact URI.
-- **The job's PR body:** a "Screenshots and demos" section. Images are embedded and recordings linked with signed
-  links (`/api/media/<token>`) that name one artifact and expire after `HANGAR_PR_MEDIA_LINK_DAYS` (7). The link is
-  the credential, so anyone who can read the PR and reach hangar can open the file. For a public repository, or if
-  that's too much, set `HANGAR_PR_MEDIA_LINKS=off`: the PR then lists the files and how to fetch them
-  (`hangar session artifacts`, MCP `get_artifact`).
+- **The job's PR body:** a "Screenshots and demos" section. By default (`HANGAR_PR_MEDIA_LINKS=off`) it lists the
+  files and how to fetch them through hangar, signed in: `hangar session artifacts <session> --get <path>`, MCP
+  `get_artifact`, or `GET /api/jobs/<id>/artifacts/<turn>/<path>`. Those are owner-scoped like every record, so
+  only the job's owner and admins can open them.
+
+  `HANGAR_PR_MEDIA_LINKS=signed` embeds images and links recordings instead, through signed links
+  (`/api/media/<token>`) that name one artifact and expire after `HANGAR_PR_MEDIA_LINK_DAYS` (7). **The link is the
+  credential:** anyone who can read the PR (or its notification emails) and reach hangar can open the file, and
+  GitHub's image proxy fetches and caches embedded images. A screenshot of a private repo's app can show its code,
+  data or admin pages, so turn this on only where everyone who reads the PRs may see the work (a public
+  repository, say). Turning it back off revokes every link already posted: `/api/media/` answers only while it is
+  on.
+
+  Why not embedded and authenticated: GitHub renders PR images through its own proxy, which can't carry a hangar
+  login, and the dashboard signs in with a bearer token rather than a cookie, so an authenticated link can't be an
+  image in a PR or a plain click. Names plus the signed-in ways to fetch them are the safe default.
 
 ## Watching and taking over
 
@@ -67,9 +78,10 @@ hangar screen job-1a2b3c4d            # opens a view-only screen in your browser
 hangar screen my-session --control    # your keyboard and mouse reach the sandbox
 ```
 
-MCP: `open_screen(ref, control=false)`. REST: `POST /api/screen/tickets {"ref", "control"}`. Each returns a link to
-`/ui/vnc.html` with a one-time ticket in the URL fragment (browsers never send fragments to servers), valid for 60
-seconds. The page is a [noVNC](https://github.com/novnc/noVNC) 1.7.0 client.
+REST: `POST /api/screen/tickets {"ref", "control"}`. Each returns a link to `/ui/vnc.html` with a one-time ticket in
+the URL fragment (browsers never send fragments to servers), valid for 60 seconds. The page is a
+[noVNC](https://github.com/novnc/noVNC) 1.7.0 client. There is no MCP tool for it: claude.ai caches tool lists
+indefinitely and hangar's listing is at its size cap, and a person opens a screen in a browser anyway.
 
 How it stays private:
 
@@ -78,12 +90,21 @@ How it stays private:
   which relays the VNC connection as base64 lines. Lines survive every transport, including Kubernetes' exec
   stream, which decodes output as UTF-8.
 - **Owner-scoped.** A ticket is minted only for the session's, job's or sandbox's owner, or an admin (a teammate's
-  gets "not found", as everywhere else). Each ticket is single-use; only its hash is kept.
+  gets "not found", as everywhere else, #88). Each ticket is single-use (redeeming removes it) and only its hash is
+  kept, so it can't be replayed, and a ticket that reaches a log (the websocket URL carries it) is already spent.
+- **A ticket is a bearer for its 60 seconds.** Whoever opens the link first gets the screen, with the control the
+  ticket was minted with; the websocket can't carry a hangar login, so the ticket can't be bound to the person who
+  asked for it. Sharing one shares the screen once. The audit records where each was used from.
 - **View-only is enforced by hangar.** Without `control`, hangar parses the viewer's side of the protocol and drops
-  key, pointer, clipboard and resize messages. It ends the stream on anything it can't parse. The browser's
-  view-only flag is not trusted.
-- **Audited.** `screen.ticket`, `screen.view` and `screen.control` go to the audit log, and the session gets an
-  event ("ops is watching the screen", "... took control of the screen"). At most 4 viewers per sandbox.
+  key, pointer, clipboard, resize, xvp and QEMU key messages. It ends the stream on anything it can't parse. The
+  browser's view-only flag is not trusted.
+- **Audited.** `screen.ticket` (who asked, view or control), `screen.view` / `screen.control` (with the client
+  address) and `screen.end` (with how long) go to the audit log, and the session gets an event ("ops is watching
+  the screen", "... took control of the screen"). At most 4 viewers per sandbox.
+- **Inside the sandbox, VNC is open to everything.** `x11vnc` runs with `-nopw` on 127.0.0.1, and the X display has
+  no access control, so any process in the sandbox can watch and drive the screen: the agent, its tools, a test
+  server, and on Kubernetes the pod's sidecars too (they share its network namespace). That's accepted: they are
+  all the agent's own processes, which already own the display. Nothing outside the sandbox can reach it.
 
 ## Under gVisor
 
@@ -96,6 +117,20 @@ GKE runs sandboxes under gVisor. What that means for the computer, and what hang
 | No GPU | `--disable-gpu`; Chromium renders in software. |
 | Chromium is syscall-heavy, and gVisor intercepts every syscall | Expect pages and screenshots 1.5–2x slower than under runc; the skill tells agents to raise timeouts rather than retry blindly. |
 | MIT-SHM between X clients | `x11vnc -noshm` under gVisor. |
+
+**What running Chromium without its sandbox costs.** Chromium's sandbox keeps a compromised renderer (a malicious or
+hijacked page plus a Chromium bug) away from the rest of the machine. Hangar turns it off on every runtime, so a
+page that exploits Chromium runs code as the sandbox user, with everything the agent has: the workspace, the
+credentials injected into the sandbox (the model login, git and MCP tokens in `~/.hangar/env`), and whatever the
+egress policy lets out. What stops it there:
+
+- **Under gVisor (GKE), gVisor is the boundary.** The exploit is in a user-space kernel, not on the node, which is
+  the same boundary as for any code the agent runs (an `npm install` postinstall script has the same reach).
+- **Under runc or Docker (local, or GKE without gVisor), only the container is.** That shares the host's kernel.
+  Don't point agents at untrusted sites there.
+- **Either way, limit the reach:** an egress allowlist for the environment, credentials scoped to the work and
+  short-lived, and browsing only the app under test and what it needs. Playwright is pinned and should be bumped
+  with Chromium security releases.
 
 `hangar-agent env doctor` reports the runtime, the `/dev/shm` size and any missing tool, so an agent can tell "the
 environment can't" from "my test is wrong". An environment without `computer:` still has `hangar-computer`, which
@@ -118,7 +153,8 @@ There is no model-routing subagent: the agent in the sandbox drives the browser 
 ## Self-diagnosis
 
 `~/.hangar/envstatus.json` is written at claim and at the start of each turn. It holds names, versions and the
-egress policy, never a secret value:
+egress policy, never a secret value; build and setup messages, warnings and owners' notes pass through the
+broker's redaction first, so a build secret or a credential that ended up in a log line is masked:
 
 - the environment build (`sb.info["env_build"]`: version, whether it is a **fallback** image and why, whether a
   rebuild is running because the repo moved on);
@@ -141,9 +177,18 @@ supervisor for its state, looks for each expected name in the environment and `~
 `--host` for real. It goes through the egress proxy when there is one (the proxy's 403 means "blocked by policy")
 and connects directly otherwise. So "blocked by policy", "DNS failed" and "unreachable" are told apart.
 
-The same report is an MCP server named `hangar-env`, written into every harness's MCP config (turn it off with
-`HANGAR_ENV_DOCTOR_MCP=false`; an environment's own server of that name wins). It is stdio, standard library only,
-and speaks the handshake-era MCP versions (2024-11-05 to 2025-11-25):
+The same report is an MCP server named `hangar-env`, written into every harness's MCP config. It is stdio, standard
+library only (the image contract already requires `python3`), and speaks the handshake-era MCP versions
+(2024-11-05 to 2025-11-25). It shows the agent nothing it can't already read in its own home directory.
+
+- **Turning it off:** `HANGAR_ENV_DOCTOR_MCP=false` for every environment. For one environment, its own server of
+  that name wins, so `mcp: {hangar-env: {command: "true", harnesses: []}}` removes it there. `hangar-agent env`
+  works either way.
+- **If it can't start**, the run goes on without it. Hangar never marks it required: Codex stops only for servers
+  with `required = true` and waits about a second for optional ones (`mcp_optional_startup_grace_ms`, its MCP docs,
+  checked 2026-10-14). Claude Code and agy list a server that failed as failed and run without its tools. It runs
+  from hangar's own file and the `python3` every image has, so the likely failure is a broken image, which the
+  doctor itself can't help with.
 
 | | |
 |---|---|
@@ -166,17 +211,31 @@ hangar-agent env requests                   # what was filed and what the owner 
 
 The request is a file under `$HANGAR_IO/out/requests/`. While the turn runs, hangar looks for new ones every
 `HANGAR_ENV_REQUEST_POLL_SECONDS` (30; 0 means only when the turn ends) and again when it ends. Each one is
-validated (a variable name or a host, a reason, at most 20 per turn; the reason is redacted) and recorded in the
-`env_requests` table, and the owner is told:
+validated (a variable name or a host, and a reason, which is redacted) and recorded in the `env_requests` table.
+Only the kind, the name or host and the reason are taken from the file: its state, scope and owner are hangar's.
+
+An agent can't flood its owner. Per session, at most 5 new requests a turn and 5 waiting for an answer; per owner,
+30 an hour across all their sessions and jobs; and a host or secret the owner denied isn't asked for again in that
+session. Files over a limit are deleted without being read, and the turn gets a warning (at most 3). `hangar-agent
+env request` says so before filing when 5 already wait.
+
+The owner is told:
 
 - **an MCP elicitation**, when someone is following the work with `wait_for_turn`: "Job job-1a2b (fix checkout):
-  the agent asks for the secret STRIPE_KEY ... Why: ...", answered approve or deny with a note;
+  the agent asks for the secret STRIPE_KEY ... Its reason, in its own words: "..."", answered approve or deny with
+  a note;
 - **a session event and a job event**, and an audit entry (`env.request.secret`, `env.request.egress`);
-- `GET /api/env-requests`, `hangar requests ls`, MCP `list_env_requests`.
+- `GET /api/env-requests` and `hangar requests ls`; in MCP, `pending_approvals` on get_session, get_job and
+  wait_for_turn, next to the tool calls the agent waits on (the id starts with `rq-`).
 
 Answer with `hangar requests approve|deny <id> [--note ...]`, `POST /api/env-requests/<id>`, MCP
-`answer_env_request` or the elicitation. Only the work's owner or an admin can decide. A decision is recorded
-once, audited, written into the sandbox's status file for the agent, and added to the session's events.
+`answer_approval(ref, approval=<rq- id>, decision=allow|deny, message=<note>)` or the elicitation. Widening an
+egress approval to the whole environment is REST and CLI only (`--scope environment`, admins). Only the work's
+owner or an admin can decide. A decision is recorded once, audited, written into the sandbox's status file for the
+agent (on a task of its own, so the answer doesn't wait on the sandbox), and added to the session's events.
+
+**Nothing is ever granted automatically.** No path from what a sandbox writes leads to `decide`: it is called only
+by a person's REST or CLI call, their MCP call, or their answer to the elicitation.
 
 - **Secret:** approving means "handled". Store the credential and map it in the environment (`secrets:`) first. A
   request never carries a value, and the form says not to paste one.

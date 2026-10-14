@@ -70,7 +70,9 @@ def build_status(settings: Settings, sb: Sandbox, spec: EnvSpec, s: Session | No
     except Exception:  # noqa: BLE001 - the egress module's to get right; the doctor says "unknown" without it
         log.warning("egress policy for %s failed", sb.id, exc_info=True)
         egress = {"mode": "unknown", "allow": [], "proxy": None, "enforced": False}
-    return {
+    from hangar.envrequests import MAX_PENDING
+
+    status = {
         "v": VERSION, "generated_at": now(), "sandbox": sb.id, "environment": spec.name,
         "harness": info.get("harness"), "provider": sb.provider, "runtime": runtime(spec, sb, settings),
         "session": s.name if s else None, "job": s.job_id if s else None, "io": io,
@@ -82,8 +84,12 @@ def build_status(settings: Settings, sb: Sandbox, spec: EnvSpec, s: Session | No
         "egress": egress,
         "computer": computer.status(spec, settings),
         "requests": requests or [],
+        "request_limit": MAX_PENDING,  # pending at once; the sandbox side says so before filing more
         "artifact_max_mb": settings.exchange_max_artifact_mb,
     }
+    # Build and setup messages, warnings and owners' notes come from logs and people: a build secret or a
+    # credential pasted into one must not reach the agent through its own status file.
+    return fleet.broker.redact(status) if fleet is not None else status
 
 
 def builtin_mcp(spec: EnvSpec, settings: Settings, home: str) -> dict[str, Any]:
