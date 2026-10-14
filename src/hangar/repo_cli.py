@@ -7,7 +7,7 @@ import json
 import typer
 
 repo_app = typer.Typer(no_args_is_help=True, help="Per-repo defaults for jobs from every front door "
-                                                  "(verify, environment, harness, model).")
+                                                  "(verify, environment, harness, model, budgets).")
 
 
 def _cli():
@@ -31,6 +31,12 @@ def _models(values: list[str]) -> str | dict[str, str] | None:
     return out
 
 
+def _fields(**kw) -> dict | None:
+    """A budget from the options given; it replaces the policy's whole budget of that kind."""
+    out = {k: v for k, v in kw.items() if v is not None}
+    return out or None
+
+
 def _line(p: dict) -> str:
     verify = p.get("effective_verify")
     src = "" if p.get("verify") is not None or not verify else " (environment)"
@@ -42,6 +48,10 @@ def _line(p: dict) -> str:
         bits.append(f"harness: {p['harness']}")
     if model:
         bits.append(f"model: {model}")
+    if jb := p.get("job_budget"):
+        bits.append("job budget: " + ", ".join(f"{k.removeprefix('max_')}={v}" for k, v in jb.items() if v))
+    if p.get("max_usd_per_day"):
+        bits.append(f"daily cap: ${p['max_usd_per_day']:g} (${p.get('spent_today_usd') or 0:.2f} today)")
     return f"{p['repo']:40} " + "  ".join(bits)
 
 
@@ -54,17 +64,29 @@ def repo_set(
     harness: str | None = typer.Option(None, "--harness", help="Default harness (it must be enabled in the "
                                                                "environment)."),
     model: list[str] = typer.Option([], "--model", help="MODEL, or HARNESS=MODEL (repeat it, one per harness)."),
+    max_cost: float | None = typer.Option(None, "--max-cost", help="Budget per agent turn: USD."),
+    max_tokens: int | None = typer.Option(None, "--max-tokens", help="Budget per agent turn: tokens."),
+    max_minutes: int | None = typer.Option(None, "--max-minutes", help="Budget per agent turn: minutes."),
+    job_max_cost: float | None = typer.Option(None, "--job-max-cost", help="Job budget: USD for all its turns."),
+    job_max_tokens: int | None = typer.Option(None, "--job-max-tokens", help="Job budget: tokens for all its turns."),
+    job_max_turns: int | None = typer.Option(None, "--job-max-turns", help="Job budget: agent turns in all."),
+    max_usd_per_day: float | None = typer.Option(None, "--max-usd-per-day", help="Daily cap on the repo's spend "
+                                                 "(UTC days); new jobs over it wait for approval."),
     as_json: bool = typer.Option(False, "--json"),
 ):
     """Set the repo's defaults; what you don't pass is kept. Jobs that set a field themselves still win.
 
     Example:  hangar repo set acme/app --verify "uv run pytest -q" --env python --model claude-code=opus"""
     body: dict = {"repo": repo}
-    for k, v in (("verify", verify), ("environment", env), ("harness", harness), ("model", _models(model))):
+    for k, v in (("verify", verify), ("environment", env), ("harness", harness), ("model", _models(model)),
+                 ("max_usd_per_day", max_usd_per_day),
+                 ("budget", _fields(max_cost_usd=max_cost, max_tokens=max_tokens, max_minutes=max_minutes)),
+                 ("job_budget", _fields(max_cost_usd=job_max_cost, max_tokens=job_max_tokens,
+                                        max_turns=job_max_turns))):
         if v is not None:
             body[k] = v
     if len(body) == 1:
-        raise typer.BadParameter("pass at least one of --verify, --env, --harness, --model")
+        raise typer.BadParameter("pass at least one setting (see --help)")
     p = _cli()._call("PUT", "/api/repos/policy", json=body)
     if as_json:
         return _cli()._print(p)
@@ -74,7 +96,8 @@ def repo_set(
 @repo_app.command("unset")
 def repo_unset(repo: str = typer.Argument(...),
                fields: list[str] = typer.Argument(None, help="Fields to clear (verify, environment, harness, "
-                                                             "model). None: remove the repo's policy.")):
+                                                             "model, budget, job_budget, max_usd_per_day). None: "
+                                                             "remove the repo's policy.")):
     """Clear fields of the repo's policy, or remove it."""
     r = _cli()._call("DELETE", "/api/repos/policy", params={"repo": repo, "field": fields or []})
     typer.echo(f"removed the policy for {r['deleted']}" if "deleted" in r else _line(r))

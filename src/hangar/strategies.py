@@ -29,6 +29,7 @@ from hangar import (  # --- overnight/cache; verifyloop: --- overnight/autofix
     baseline,  # --- frontdoor
     cache,
     exchange,
+    jobbudget,  # --- frontdoor
     verifyloop,
 )
 from hangar.events import total_usage
@@ -345,7 +346,8 @@ async def _attempt_steps(jobs: JobService, job: Job, a: Attempt) -> None:
         a.outcome, a.error = "error", "its session is gone"
         return
     async with svc.hold(s):
-        s.budget = job.budget  # --- interactions: an attempt is an agent turn of the job; its budget applies
+        s.budget = jobbudget.attempt_share(job)  # --- interactions: an attempt is an agent turn of the job; its budget
+        # applies (--- frontdoor: and its share of the job budget)
         if a.run_id is None:
             if job.cancel_requested:
                 a.outcome = "cancelled"
@@ -685,7 +687,8 @@ async def _judge(jobs: JobService, job: Job, best: list[Attempt], sessions: dict
                       f"`{jdir}/RANKING`, then stop.")
             st = SessionTurn(message=f"judge attempts {nums}", requester=f"job:{job.id}")
             base.turns.append(st)
-            base.budget = job.budget  # --- interactions: the judge is an agent turn of the job too
+            base.budget = jobbudget.clip(jobs, job, job.budget)  # --- interactions: the judge is an agent turn of the
+            # job too (--- frontdoor: with what the attempts left of the job budget)
             await svc.begin_turn(base, st, prompt=prompt, handoff=False,
                                  timeout_minutes=jobs.settings.best_of_n_judge_timeout_minutes,
                                  extra_env={"HANGAR_JOB_ID": job.id, "HANGAR_JUDGE_DIR": jdir})

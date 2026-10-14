@@ -30,6 +30,7 @@ from hangar import (  # strategies: workstream D; --- observe; steer: live turns
     autofix,
     baseline,  # --- frontdoor
     exchange,
+    jobbudget,  # --- frontdoor
     observe,
     repopolicy,  # --- frontdoor
     scratch,  # --- frontdoor
@@ -47,6 +48,7 @@ from hangar.models import (
     Credential,
     Job,
     JobApproval,
+    JobBudget,
     JobEvent,
     JobState,
     SandboxState,
@@ -113,6 +115,7 @@ class SubmitJob(BaseModel):
     timeout_minutes: int | None = Field(None, ge=1, le=720)
     keep_minutes: int | None = Field(None, ge=0, le=1440)
     budget: Budget | None = None  # per agent turn; unset fields fall back to HANGAR_BUDGET_* (workstream C)
+    job_budget: JobBudget | None = None  # --- frontdoor: all the job's turns together (jobbudget.py)
     output_schema: dict[str, Any] | None = None  # workstream E: JSON Schema the agent's out/result.json must match
     # --- workstream D: forks/best-of-N
     strategy: Literal["single", "best_of_n"] = "single"
@@ -317,6 +320,9 @@ class JobService:
         except ValueError as e:
             raise JobError(str(e)) from e
         attempts = strategies.check_submit(req, self.settings.best_of_n_max)
+        job_budget = jobbudget.resolve(req.job_budget, policy, self.settings)  # --- frontdoor
+        if why := jobbudget.check_submit(job_budget, attempts, req.judge):
+            raise JobError(why)
         repo = req.repo or (spec.repo.url if spec.repo else None)
         if not repo and req.deliver != "none":
             raise JobError("a repo is required unless deliver='none' (none given and the environment has no repo)")
@@ -354,7 +360,13 @@ class JobService:
                         else None)],
             approval=approval, untrusted_source=untrusted_source,
         )
-        job.budget = resolve_budget(req.budget, self.settings, caller.max_budget if caller.restricted else None)
+        job.budget = resolve_budget(jobbudget.merge(req.budget, policy.budget if policy else None, cls=Budget),
+                                    self.settings, caller.max_budget if caller.restricted else None)  # --- frontdoor
+        job.job_budget = job_budget
+        if approval is None and (over := jobbudget.over_daily(self, repo, caller)):  # --- frontdoor: wait, don't drop
+            from hangar.triggers import new_approval
+
+            approval = job.approval = new_approval(self, requester, f"budget: {over}")
         job.strategy, job.n, job.judge = req.strategy, attempts, req.judge  # workstream D
         job.verify_in_loop, job.max_verify_rounds, job.autofix = req.verify_in_loop, req.max_verify_rounds, fix_mode
         self._jobs[job.id] = job
@@ -389,6 +401,9 @@ class JobService:
         if not self._sandbox_alive(job) and not (s and self.sessions.resumable(s)):
             raise JobError(f"job {job.id} has no sandbox or checkpoint to continue from; submit a new job "
                            f"(branch {job.branch} has the work)")
+        if why := jobbudget.exhausted(self, job) or jobbudget.over_daily(self, job.repo):  # --- frontdoor
+            raise JobError(f"job {job.id} can't run another turn: {why}. Submit a new job to continue (branch "
+                           f"{job.branch} has the work)")
         job.turns.append(Turn(kind="follow_up", message=message, requester=requester, reply_to=reply_to,
                               context=context, output_schema=output_schema))
         job.result.question = None
@@ -803,6 +818,7 @@ class JobService:
         if st is None:
             raise JobError(f"turn {turn.run_id} is not in session {s.name}")
         s.budget = turn.budget or job.budget  # workstream C; --- overnight/autofix: a verify-fix turn gets what's left
+        s.budget = jobbudget.clip(self, job, s.budget, current=st)  # --- frontdoor: and no more than the job has left
         outcome, raw = await self.sessions.end_turn(s, st, timeout_minutes=job.timeout_minutes,
                                                     should_cancel=lambda: job.cancel_requested)
         turn.finished_at = now()
@@ -1272,6 +1288,9 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
         return {"error": str(e)}
     if approval is not None:
         svc._spawn(svc._comment(job, ref, awaiting_comment(svc, job, sender)))
+        return {"ok": True, "job": job.id, "awaiting_approval": True}
+    if job.state == JobState.AWAITING_APPROVAL:  # --- frontdoor: held by a daily spend cap
+        svc._spawn(svc._comment(job, ref, jobbudget.held_message(job)))
         return {"ok": True, "job": job.id, "awaiting_approval": True}
     # Acknowledge right away: provisioning (and a first image build) can take minutes before the agent starts.
     svc._spawn(svc._comment(job, ref, f"Queued as hangar job `{job.id}` in `{job.environment}`. I'll comment here "

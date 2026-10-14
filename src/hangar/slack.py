@@ -601,6 +601,11 @@ class SlackFrontDoor:
             await self._say(api, channel, thread_ts, f"hangar couldn't start a job: {escape(str(e)[:500])}")
             return
         self.store.kv_set(_thread_key(channel, thread_ts), job.id)
+        if job.approval is not None:  # --- frontdoor: held by a daily spend cap (Slack is never otherwise approved)
+            from hangar.jobbudget import held_message
+
+            await self._say(api, channel, thread_ts, escape(held_message(job)))
+            return
         await self._say(api, channel, thread_ts,
                         f"Queued as hangar job `{job.id}` in `{escape(job.environment)}`. I'll reply in this thread "
                         "when the agent starts and when it's done.")

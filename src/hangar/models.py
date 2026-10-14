@@ -149,6 +149,15 @@ class Budget(BaseModel):
     max_cost_usd: float | None = Field(None, gt=0)
 
 
+class JobBudget(BaseModel):
+    """--- frontdoor: caps for a whole job: all its agent turns together (the first, follow-ups, verify-fix and
+    auto-fix turns, every best-of-N attempt and the judge). See jobbudget.py."""
+
+    max_cost_usd: float | None = Field(None, gt=0)
+    max_tokens: int | None = Field(None, ge=1)
+    max_turns: int | None = Field(None, ge=1, le=1000)
+
+
 class ApiToken(BaseModel):
     id: str = Field(default_factory=lambda: new_id("tok"))
     name: str
@@ -373,6 +382,7 @@ class Job(BaseModel):
     timeout_minutes: int = 60
     keep_minutes: int = 120
     budget: Budget | None = None  # per agent turn (workstream C)
+    job_budget: JobBudget | None = None  # --- frontdoor: all the job's turns together
     output_schema: dict[str, Any] | None = None  # workstream E: JSON Schema for the agent's out/result.json
     state: JobState = JobState.QUEUED
     reason: str | None = None

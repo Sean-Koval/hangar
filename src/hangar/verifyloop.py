@@ -24,7 +24,7 @@ import json
 import shlex
 from typing import TYPE_CHECKING
 
-from hangar import baseline  # --- frontdoor
+from hangar import baseline, jobbudget  # --- frontdoor
 from hangar.events import total_usage
 from hangar.harnesses import HARNESSES
 from hangar.models import Budget, Job, Turn, now
@@ -185,6 +185,7 @@ def fix_turn(jobs: JobService, job: Job, turn: Turn, outcome: str) -> Turn | Non
         jobs._event(job, f"the check still fails after {used} round(s) of fixes; delivering what there is")
         return None
     budget, spent = remaining_budget(job)
+    spent = spent or jobbudget.exhausted(jobs, job)  # --- frontdoor: the job's budget, across all its turns
     if spent:
         jobs._event(job, f"the check failed; no verify-fix turn: {spent}")
         return None
