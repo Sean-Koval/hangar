@@ -386,6 +386,7 @@ def test_doctor_and_the_overview_show_power_the_last_deploy_and_the_loops(settin
         assert client.post("/api/admin/deploys", json={"result": "passed", "run_url": "javascript:x"}).json().get(
             "run_url") is None
         assert [d["result"] for d in client.get("/api/admin/deploys").json()] == ["passed", "rolled_back"]
+        app.state.hangar.fleet.power.started = time.time() - 6 * 3600  # up for 6 hours
         metrics.TICKS["reaper"] = time.time() - 4 * 3600 - 300  # the test settings pass every hour
         checks = {c["name"]: c for c in client.get("/api/doctor").json()}
         assert checks["sandbox power"]["status"] == "ok"

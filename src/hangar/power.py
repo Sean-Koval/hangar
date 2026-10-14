@@ -329,10 +329,11 @@ class Power:
         import httpx
 
         job = (self.settings.power_up_job or "").strip()
-        if not self.off:
-            return {**self.state(), "message": "Sandboxes are already on."}
-        if self.state().get("state") == "starting":
-            return {**self.state(), "message": self.message()}
+        st = self.state()
+        if st.get("state") == "up":
+            return {**st, "message": "Sandboxes are already on."}
+        if st.get("state") == "starting" and not st.get("stale"):  # one execution at a time
+            return {**st, "message": self.message()}
         if not re.fullmatch(r"projects/[^/]+/locations/[^/]+/jobs/[^/]+", job):
             raise PowerError("no power-up job is configured: set HANGAR_POWER_UP_JOB to the job's name (terraform "
                              "output power_up_job, `projects/P/locations/R/jobs/hangar-power-up`), or run "
@@ -487,6 +488,8 @@ def loops(settings: Settings, started: float, t: float) -> dict[str, dict[str, A
     for name, every in LOOPS.items():
         interval = float(getattr(settings, every) if isinstance(every, str) else every)
         last = metrics.TICKS.get(name)
+        if last is not None and last < started:  # another app in this process (tests): not this one's loop
+            last = None
         limit = 3 * interval + 60
         age = t - (last if last is not None else started)
         out[name] = {"last": last, "every_seconds": interval, "ok": age <= limit,
@@ -584,7 +587,11 @@ def mount(app: Any, h: Any, admin: Any) -> None:
         out: dict[str, Any] = {"state": st, "message": p.message() if p.off else "sandboxes are on"}
         if state == "up":
             out["released_jobs"] = p.release(h.jobs)
-            out["warm_pools"] = await p.size_warm_pools(h.fleet)
+            try:
+                out["warm_pools"] = await p.size_warm_pools(h.fleet)
+            except Exception as e:  # noqa: BLE001 - the pools are up either way; the warm pools keep their size
+                log.exception("sizing the warm pools at power-up failed")
+                out["warm_pools"], out["warm_pools_error"] = {}, str(e)[:300]
         elif state == "down":
             await p.clear_warm_pools(h.fleet)
         return out
