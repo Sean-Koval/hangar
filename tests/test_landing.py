@@ -58,6 +58,9 @@ class GH:
         self.allow_auto_merge = True
         self.minted: list[dict] = []
         self.graphql: list[dict] = []
+        self.reviews: list[dict] = []  # GitHub's own record of the PR's reviews, oldest first
+        self.on_arm = None  # called while GitHub arms auto-merge: what happens on GitHub meanwhile
+        self.disarm_fails = 0  # how many disable calls GitHub refuses
 
     def __call__(self, r: httpx.Request) -> httpx.Response:
         self.calls.append(r)
@@ -78,7 +81,12 @@ class GH:
                 if v["sha"] != self.head():
                     return httpx.Response(200, json=g["enable_auto_merge_head_moved"])
                 self.armed = v["sha"]
+                if self.on_arm is not None:
+                    self.on_arm()
                 return httpx.Response(200, json=g["enable_auto_merge"])
+            if self.disarm_fails:
+                self.disarm_fails -= 1
+                return httpx.Response(502, json={"message": "Server Error"})
             self.armed = None
             return httpx.Response(200, json=g["disable_auto_merge"])
         if p == "/repos/o/r/pulls/7" and m == "GET":
@@ -95,7 +103,14 @@ class GH:
             return httpx.Response(200, json={"sha": "a1f3c9e", "merged": True,
                                              "message": "Pull Request successfully merged"})
         if p == "/repos/o/r/pulls/7/files":
-            return httpx.Response(200, json=[{"filename": f, "status": "modified"} for f in self.files])
+            per, page = int(r.url.params.get("per_page", 30)), int(r.url.params.get("page", 1))
+            return httpx.Response(200, json=[  # a (new, old) pair is a rename
+                {"filename": f, "status": "modified"} if isinstance(f, str) else
+                {"filename": f[0], "previous_filename": f[1], "status": "renamed"}
+                for f in self.files[(page - 1) * per:page * per]])
+        if p == "/repos/o/r/pulls/7/reviews":
+            per, page = int(r.url.params.get("per_page", 30)), int(r.url.params.get("page", 1))
+            return httpx.Response(200, json=self.reviews[(page - 1) * per:page * per])
         if p == "/repos/o/r/pulls":  # none open for the branch yet; opening one makes #7
             pr = {"number": 7, "html_url": "https://github.com/o/r/pull/7", "node_id": NODE, "state": "open",
                   "draft": body.get("draft", False)}
@@ -162,6 +177,7 @@ def pr_job(svc: JobService, person: str | None = None, **kw) -> Job:
               state=JobState.SUCCEEDED, person=person, harness="claude-code", model="claude-opus-4-7", **kw)
     job.result.pr_number, job.result.pr_url, job.result.head_sha = 7, "https://github.com/o/r/pull/7", HEAD
     job.landing.pr_state, job.landing.head_sha, job.landing.node_id = "open", HEAD, NODE
+    job.landing.push_mode = "gateway"  # its sandbox pushed through the git gateway, holding no GitHub token
     svc._jobs[job.id] = job
     svc.store.put(job)
     return job
@@ -179,10 +195,23 @@ async def green(svc: JobService, sha: str = HEAD) -> None:
     await settle(svc)
 
 
-def approval(sha: str = HEAD, login: str = "alice") -> dict:
+def approval(sha: str = HEAD, login: str = "alice", gh: GH | None = None, state: str = "approved") -> dict:
+    """A review's webhook; with `gh`, GitHub records the review too (hangar checks it there before arming)."""
     p = sub(fx("pull_request_review.submitted.approved"), HEAD, sha)
     p["review"]["user"]["login"] = p["sender"]["login"] = login
+    p["review"]["state"] = state
+    if gh is not None:
+        p["review"]["id"] += len(gh.reviews)
+        gh.reviews.append({"id": p["review"]["id"], "user": {"login": login}, "state": state.upper(),
+                           "commit_id": sha})
     return p
+
+
+def dismiss(gh: GH, login: str = "alice") -> None:
+    """GitHub dismisses the reviewer's reviews (a stale approval on a push, or someone dismissing it)."""
+    for r in gh.reviews:
+        if r["user"]["login"] == login:
+            r["state"] = "DISMISSED"
 
 
 # ====================================================================== identity
@@ -246,7 +275,7 @@ async def test_pr_state_checks_and_time_from_green_to_merged(svc, gh):
 async def test_an_approvers_approval_and_green_checks_arm_auto_merge_for_that_commit(svc, gh):
     lands(svc, approvers=["alice"], merge_method="squash")
     job = pr_job(svc)
-    res = await handle_github(svc, "pull_request_review", "d-1", approval())
+    res = await handle_github(svc, "pull_request_review", "d-1", approval(gh=gh))
     assert res["landing"]["approval"] == "alice" and "nothing to fix" in res["ignored"]  # what each reader did
     await settle(svc)
     assert not gh.enables() and "waiting for required checks: lint, test" in job.landing.note
@@ -274,7 +303,7 @@ async def test_who_may_approve(svc, gh):
     # a code owner of everything the PR touches does (CODEOWNERS is cached per base for a few minutes)
     gh.codeowners = "# owners\n*       @lead\nsrc/    @carol @o/maintainers\ndocs/*  @dave\n"
     svc.landing._cache.clear()
-    await handle_github(svc, "pull_request_review", "d-3", approval(login="Carol"))
+    await handle_github(svc, "pull_request_review", "d-3", approval(login="Carol", gh=gh))
     await settle(svc)
     assert gh.enables() == [HEAD] and job.landing.approved_by == "Carol", [e.message for e in job.events]
 
@@ -283,7 +312,7 @@ async def test_a_mergeable_pr_is_merged_with_the_approved_sha(svc, gh):
     lands(svc, approvers=["alice"], merge_method="rebase")
     job = pr_job(svc)
     gh.clean, gh.mergeable_state = True, "clean"  # no checks recorded, but GitHub says the required ones passed
-    await handle_github(svc, "pull_request_review", "d-1", approval())
+    await handle_github(svc, "pull_request_review", "d-1", approval(gh=gh))
     await settle(svc)
     merge = next(c for c in gh.calls if c.url.path == "/repos/o/r/pulls/7/merge")
     assert json.loads(merge.content) == {"sha": HEAD, "merge_method": "rebase"} and gh.merged_sha == HEAD
@@ -296,7 +325,7 @@ async def test_a_job_whose_sandbox_held_a_github_token_isnt_landed(svc, gh):
     job = pr_job(svc)
     job.landing.push_mode = "direct"  # the approval could be the agent's own, made with that token
     await green(svc)
-    await handle_github(svc, "pull_request_review", "d-1", approval())
+    await handle_github(svc, "pull_request_review", "d-1", approval(gh=gh))
     await settle(svc)
     assert not gh.enables() and "credential_mode: direct" in job.landing.note
 
@@ -315,7 +344,7 @@ async def test_a_push_after_approval_disarms_and_needs_a_new_review(svc, gh):
     lands(svc, approvers=["alice"])
     job = pr_job(svc)
     await green(svc)
-    await handle_github(svc, "pull_request_review", "d-1", approval())
+    await handle_github(svc, "pull_request_review", "d-1", approval(gh=gh))
     await settle(svc)
     assert gh.armed == HEAD
     gh.head = lambda: NEW
@@ -328,8 +357,9 @@ async def test_a_push_after_approval_disarms_and_needs_a_new_review(svc, gh):
     await green(svc, NEW)
     assert gh.enables() == [HEAD] and gh.merged_sha is None
     # GitHub dismissing the stale approval is fine too
+    dismiss(gh)
     assert (await handle_github(svc, "pull_request_review", "d-3", fx("pull_request_review.dismissed")))["landing"]
-    await handle_github(svc, "pull_request_review", "d-4", approval(NEW))
+    await handle_github(svc, "pull_request_review", "d-4", approval(NEW, gh=gh))
     await settle(svc)
     assert gh.enables() == [HEAD, NEW] and st.armed_sha == NEW
 
@@ -338,22 +368,134 @@ async def test_changes_requested_or_a_dismissal_hold_it(svc, gh):
     lands(svc, approvers=["alice"])
     job = pr_job(svc)
     await green(svc)
-    await handle_github(svc, "pull_request_review", "d-1", approval())
+    await handle_github(svc, "pull_request_review", "d-1", approval(gh=gh))
     await settle(svc)
     assert gh.armed == HEAD
     dismissed = fx("pull_request_review.dismissed")
     dismissed["pull_request"]["head"]["sha"] = HEAD
+    dismiss(gh)
     await handle_github(svc, "pull_request_review", "d-2", dismissed)
     await settle(svc)
     assert gh.armed is None and job.landing.pr_state == "open"
-    await handle_github(svc, "pull_request_review", "d-3", approval())
+    await handle_github(svc, "pull_request_review", "d-3", approval(gh=gh))
     await settle(svc)
     assert gh.armed == HEAD
-    nope = approval(login="bob")
-    nope["review"]["state"] = "changes_requested"
+    nope = approval(login="bob", gh=gh, state="changes_requested")
     await handle_github(svc, "pull_request_review", "d-4", nope)
     await settle(svc)
     assert gh.armed is None and job.landing.approved_sha is None
+
+
+async def test_a_replayed_or_late_approval_that_github_no_longer_has_doesnt_arm(svc, gh):
+    """Review webhooks can be replayed (only issue events are replay-guarded), redelivered out of order after a
+    restart (redeliver.py), or dismissed while hangar is still checking who approved: GitHub's record decides."""
+    lands(svc, approvers=["alice", "bob"])
+    job = pr_job(svc)
+    await green(svc)
+    approved = approval(gh=gh)
+    await handle_github(svc, "pull_request_review", "d-1", approved)
+    await settle(svc)
+    assert gh.enables() == [HEAD]
+    dismissed = fx("pull_request_review.dismissed")
+    dismissed["pull_request"]["head"]["sha"] = HEAD
+    dismiss(gh)
+    await handle_github(svc, "pull_request_review", "d-2", dismissed)
+    await settle(svc)
+    assert gh.armed is None
+    await handle_github(svc, "pull_request_review", "d-1-replayed", approved)  # the same signed body again
+    await settle(svc)
+    assert gh.enables() == [HEAD] and gh.armed is None and job.landing.pr_state == "open", \
+        [e.message for e in job.events]
+    assert any("no longer stands on GitHub" in e.message for e in job.events)
+    # alice approves again, but bob's changes-requested review (its webhook lost) still stands on GitHub
+    approval(login="bob", gh=gh, state="changes_requested")
+    await handle_github(svc, "pull_request_review", "d-3", approval(gh=gh))
+    await settle(svc)
+    assert gh.enables() == [HEAD] and gh.armed is None and "changes requested by @bob" in job.landing.note
+
+
+async def test_a_push_or_a_follow_up_while_arming_disarms(svc, gh):
+    """The synchronize webhook (or a follow-up) lands while GitHub is still arming: hangar's record of the arm comes
+    after `pushed` looked for one, so the arm itself must look again."""
+    lands(svc, approvers=["alice"])
+    job = pr_job(svc)
+    await green(svc)
+
+    def pushed_meanwhile():
+        gh.head = lambda: NEW
+        svc.landing.pushed(job, NEW, "a push to the branch")
+
+    gh.on_arm = pushed_meanwhile
+    await handle_github(svc, "pull_request_review", "d-1", approval(gh=gh))
+    await settle(svc)
+    assert gh.enables() == [HEAD] and gh.armed is None and job.landing.armed_sha is None, \
+        [e.message for e in job.events]
+    # a follow-up queued while arming: the agent will push, so it doesn't stay armed either
+    def queued_meanwhile():
+        job.state = JobState.QUEUED
+
+    gh.on_arm = queued_meanwhile
+    await green(svc, NEW)
+    await handle_github(svc, "pull_request_review", "d-2", approval(NEW, gh=gh))
+    await settle(svc)
+    assert gh.enables() == [HEAD, NEW] and gh.armed is None and job.landing.armed_sha is None, \
+        [e.message for e in job.events]
+
+
+async def test_a_failed_disarm_is_tried_again(svc, gh):
+    lands(svc, approvers=["alice"])
+    job = pr_job(svc)
+    await green(svc)
+    await handle_github(svc, "pull_request_review", "d-1", approval(gh=gh))
+    await settle(svc)
+    assert gh.armed == HEAD
+    gh.head, gh.disarm_fails = (lambda: NEW), 1
+    await handle_github(svc, "pull_request", "d-2", fx("pull_request.synchronize"))
+    await settle(svc)
+    assert gh.armed == HEAD and job.landing.armed_sha == HEAD  # GitHub refused: still armed
+    svc.landing.idle(job)  # after the next turn, or a restart (restore)
+    await settle(svc)
+    assert gh.armed is None and job.landing.armed_sha is None
+
+
+async def test_a_code_owner_approves_only_what_they_own(svc, gh):
+    lands(svc, approvers=["alice"])
+    job = pr_job(svc)
+    await green(svc)
+    gh.codeowners = "docs/*  @dave\nsrc/  @carol\ninfra/ @ops\n"
+    # dave owns the docs, not src/ (nor the unowned script): his approval doesn't land the rest
+    gh.files = ["docs/a.md", "src/app.py", "scripts/x.sh"]
+    await handle_github(svc, "pull_request_review", "d-1", approval(login="dave", gh=gh))
+    await settle(svc)
+    assert not gh.enables() and job.landing.pr_state == "open"
+    gh.files = ["docs/a.md", "scripts/x.sh"]  # an unowned file needs a policy approver too
+    svc.landing._cache.clear()
+    await handle_github(svc, "pull_request_review", "d-2", approval(login="dave", gh=gh))
+    await settle(svc)
+    assert not gh.enables()
+    # more files than hangar reads: the ones it didn't see may be someone else's
+    gh.files = [f"src/m{i}.py" for i in range(300)] + ["infra/prod.tf"]
+    await handle_github(svc, "pull_request_review", "d-3", approval(login="carol", gh=gh))
+    await settle(svc)
+    assert not gh.enables() and job.landing.pr_state == "open"
+    gh.files = [("docs/prod.tf", "infra/prod.tf")]  # moving ops' file into dave's docs touches infra/ too
+    await handle_github(svc, "pull_request_review", "d-3b", approval(login="dave", gh=gh))
+    await settle(svc)
+    assert not gh.enables()
+    gh.files = ["docs/a.md"]
+    await handle_github(svc, "pull_request_review", "d-4", approval(login="dave", gh=gh))
+    await settle(svc)
+    assert gh.enables() == [HEAD]
+
+
+async def test_landing_needs_to_know_the_sandbox_held_no_github_token(svc, gh):
+    lands(svc, approvers=["alice"])
+    job = pr_job(svc)
+    job.landing.push_mode = None  # its delivery couldn't tell (deny by default)
+    await green(svc)
+    await handle_github(svc, "pull_request_review", "d-1", approval(gh=gh))
+    await settle(svc)
+    assert not gh.enables() and "git gateway" in job.landing.note
 
 
 # ====================================================================== the agent can't push past an approval
@@ -375,12 +517,13 @@ async def _landed_job(jobs, world, gh) -> Job:  # noqa: F811
     assert job.state == JobState.SUCCEEDED and job.result.head_sha
     job.repo, job.result.pr_number, job.result.pr_url = "https://github.com/o/r.git", 7, "https://github.com/o/r/pull/7"
     job.landing.pr_state, job.landing.node_id = "open", NODE
+    job.landing.push_mode = "gateway"  # as a gateway sandbox's delivery records it
     gh.head = lambda: job.result.head_sha
     head = job.result.head_sha
     await green(jobs, head)
-    await handle_github(jobs, "pull_request_review", "d-a", approval(head))
+    await handle_github(jobs, "pull_request_review", "d-a", approval(head, gh=gh))
     await settle(jobs)
-    assert gh.armed == head and job.landing.armed_sha == head
+    assert gh.armed == head and job.landing.armed_sha == head, [e.message for e in job.events][-6:]
     # nothing the agent left running can push once it's armed: the sandbox went first, its work checkpointed
     s = jobs._session(job)
     assert job.sandbox_id is None and s.sandbox_id is None and s.checkpoints
@@ -454,14 +597,18 @@ async def test_the_review_packet(svc, gh, settings):
     job.result.diffstat = " 2 files changed, 3 insertions(+)"
     job.landing.files = [".github/workflows/ci.yml", "src/app.py"]
     job.turns = [Turn(kind="initial", run_id="r1", harness_version="2.1.90")]
-    job.result.artifacts = [Artifact(path="demo/checkout.mp4", turn=1, size=10, sha256="0", media_type="video/mp4")]
+    job.result.artifacts = [Artifact(path="demo/checkout.mp4", turn=1, size=10, sha256="0", media_type="video/mp4"),
+                            # the agent names its files: a name can't forge a link in the packet
+                            Artifact(path="demo/x](https://evil.example)", turn=1, size=1, sha256="0",
+                                     media_type="image/gif")]
     await svc.landing.post_packet(job)
     (cid, body), = gh.comments.items()
     assert job.landing.packet_comment_id == cid
     for want in ("`uv run pytest -q` passed", "**Risk:** high: touches `.github/workflows/ci.yml`",
                  "**Files:** 2 (2 files changed, 3 insertions(+))", "claude-code 2.1.90 · model claude-opus-4-7",
-                 "no usage recorded", f"[demo/checkout.mp4](https://hangar.example/api/jobs/{job.id}/artifacts/1/"
-                 "demo/checkout.mp4)", "an approval from @alice or a code owner"):
+                 "no usage recorded", f"[`demo/checkout.mp4`](https://hangar.example/api/jobs/{job.id}/artifacts/1/"
+                 "demo/checkout.mp4)", "an approval from @alice or a code owner",
+                 "[`demo/x](https://evil.example)`](https://hangar.example"):
         assert want in body, (want, body)
     await svc.landing.post_packet(job)
     assert list(gh.comments) == [cid]  # edited, not posted again

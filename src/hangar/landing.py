@@ -274,7 +274,8 @@ class Landing:
         st = job.landing
         with contextlib.suppress(Exception):  # the sandbox is the job's own; this is best effort
             sb = self.svc.fleet.get(job.sandbox_id)
-            st.push_mode = (sb.info.get("git") or {}).get("mode") or st.push_mode
+            if st.push_mode != "direct":  # once a sandbox held a token, its approvals stay suspect
+                st.push_mode = (sb.info.get("git") or {}).get("mode") or st.push_mode
             base = job.result.base_sha or f"origin/{job.base_branch}"
             res = await self.svc._sh(job, f"git diff --name-only {shlex.quote(base)}..HEAD | head -n {MAX_FILES}")
             if res.exit_code == 0:
@@ -288,9 +289,7 @@ class Landing:
         """Before any agent turn on the job: no auto-merge stays armed while an agent can push. Refuses the turn
         when it can't disarm (try again; the approval itself stands if nothing is pushed)."""
         st = job.landing
-        if not st.armed_sha:
-            return
-        async with self._locks[job.id]:
+        async with self._locks[job.id]:  # always: an arm in flight finishes first, then this sees it
             if st.armed_sha and not await self._disarm(job, "an agent turn is starting on this PR"):
                 from hangar.jobs import JobError
 
@@ -301,6 +300,8 @@ class Landing:
         st = job.landing
         if st.pr_state in ("merged", "closed") and not st.ended:
             self._bg(job, self.end(job))
+        elif st.armed_sha and (st.armed_sha != st.head_sha or st.approved_sha != st.armed_sha):
+            self._bg(job, self._disarm_locked(job, "the approval it was armed for no longer covers the PR's head"))
         elif st.pr_state == "approved" and not st.armed_sha:
             self._bg(job, self.evaluate(job))
 
@@ -507,6 +508,9 @@ class Landing:
         if st.push_mode == "direct":  # the agent held a GitHub token: the approval may be its own
             return self._note(job, "its sandbox held a GitHub token (credential_mode: direct), so hangar doesn't "
                                    "land it; merge it on GitHub, or use the git gateway")
+        if st.push_mode != "gateway":  # deny by default: unknown is not "held no token"
+            return self._note(job, "hangar couldn't tell whether its sandbox pushed through the git gateway (or held "
+                                   "a GitHub token), so it doesn't land it; merge it on GitHub")
         if st.armed_sha == st.approved_sha:
             return
         gh = await self.client(repo, job)
@@ -521,10 +525,15 @@ class Landing:
             if head != st.approved_sha:
                 self.pushed(job, head, "the PR moved")
                 return
+            st.head_sha = head  # GitHub's word; a push from here on changes it (and `_arm` looks)
             if pr.get("draft"):
                 return self._note(job, "the PR is a draft: mark it ready for review to land it")
             required = await self.required_checks(gh, repo, _str(_d(pr.get("base")).get("ref")) or "main")
             if why := blocking(st, head, required, _str(pr.get("mergeable_state"))):
+                return self._note(job, why)
+            if why := await self._review_gone(gh, repo, int(number), st):
+                self.svc._event(job, f"{why}: not landing")
+                self._unapprove(st)
                 return self._note(job, why)
             # Nothing the agent left running can push past the approval once armed: its sandbox (and with it the
             # gateway grant) goes first. A follow-up resumes from the checkpoint, and disarms before it starts.
@@ -539,6 +548,7 @@ class Landing:
 
     async def _arm(self, job: Job, gh: GitHub, repo: str, number: int, sha: str, policy: RepoPolicy) -> None:
         st, method = job.landing, (policy.merge_method or "squash")
+        approved_by = st.approved_by  # a push while GitHub answers clears it
         if not st.node_id:
             raise LandingError("the PR has no node id")
         try:
@@ -561,9 +571,39 @@ class Landing:
             self.svc._save(job)
             return
         st.armed_sha, st.armed_at, st.note = sha, now(), None
-        self.svc._event(job, f"auto-merge armed for {_short(sha)} ({method}) after @{st.approved_by}'s approval; "
+        self.svc._event(job, f"auto-merge armed for {_short(sha)} ({method}) after @{approved_by}'s approval; "
                              "GitHub merges it once its branch rules are met")
-        self.svc.fleet.audit("hangar", "landing.arm", job.id, pr=number, sha=sha, approved_by=st.approved_by)
+        self.svc.fleet.audit("hangar", "landing.arm", job.id, pr=number, sha=sha, approved_by=approved_by)
+        # A push, a dismissal or a follow-up handled while GitHub was arming found nothing armed to undo
+        # (`pushed` and the review handlers run off the lock): look again now that there is.
+        svc = self.svc
+        if st.head_sha != sha or st.approved_sha != sha or job.id in svc._active or \
+                (job.state not in JOB_TERMINAL and job.state != JobState.NEEDS_INPUT):
+            await self._disarm(job, "the PR moved, its approval went, or an agent turn was queued while arming")
+
+    async def _review_gone(self, gh: GitHub, repo: str, number: int, st: LandingState) -> str | None:
+        """Why the approval hangar holds no longer stands on GitHub, or None. Review webhooks can come late, out of
+        order (redeliver.py replays missed ones after a restart) or replayed, so before arming, GitHub's own record
+        decides: the approver's latest review is an approval of this commit, and nobody's latest requests
+        changes. The list is oldest first; a GitHub error raises, so nothing is armed."""
+        latest: dict[str, tuple[str, str | None]] = {}
+        for page in range(1, 11):
+            got = await gh._req("GET", f"/repos/{repo}/pulls/{number}/reviews",
+                                params={"per_page": 100, "page": page}) or []
+            for r in got:
+                login, state = _str(_d(_d(r).get("user")).get("login")), str(_d(r).get("state") or "").upper()
+                if login and state in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+                    latest[login.lower()] = (state, _str(r.get("commit_id")))
+            if len(got) < 100:
+                break
+        else:
+            return "the PR has more reviews than hangar reads"
+        mine = latest.get((st.approved_by or "").lower())
+        if mine != ("APPROVED", st.approved_sha):
+            return f"@{st.approved_by}'s approval of {_short(st.approved_sha)} no longer stands on GitHub"
+        if blockers := sorted(n for n, (s, _) in latest.items() if s == "CHANGES_REQUESTED"):
+            return "changes requested by " + ", ".join(f"@{n}" for n in blockers[:5])
+        return None
 
     async def _disarm_locked(self, job: Job, why: str) -> None:
         async with self._locks[job.id]:
@@ -724,16 +764,21 @@ class Landing:
             for page in (1, 2, 3):
                 got = await gh._req("GET", f"/repos/{repo}/pulls/{int(number)}/files",
                                     params={"per_page": 100, "page": page}) or []
-                files += [f["filename"] for f in got if isinstance(_d(f).get("filename"), str)]
+                for f in got:  # a rename changes its old path too: moving a file out of infra/ touches infra/
+                    files += [p for k in ("filename", "previous_filename") if isinstance(p := _d(f).get(k), str)]
                 if len(got) < 100:
                     break
+            else:
+                return None  # more than hangar reads: the files it didn't see may be someone else's
         except (GitHubError, httpx.HTTPError) as e:
             log.info("landing: CODEOWNERS for %s: %s", repo, e)
             return None
         finally:
             await gh.close()
-        owned = [o for f in files if (o := owners_of(text, f))]
-        if not owned:
+        # A code owner lands only what they own: every path the PR touches. An unowned one needs an approver from the
+        # policy, or a code owner of one docs file could land changes anywhere.
+        owned = [owners_of(text, f) for f in files]
+        if not owned or not all(owned):
             return None
         teams: dict[str, bool] = {}
         for owners in owned:
@@ -804,7 +849,7 @@ class Landing:
                  or "demo" in a.path.lower()]
         if demos:
             out.append("- **Recorded demos:** " + ", ".join(
-                f"[{a.path}]({base}/api/jobs/{job.id}/artifacts/{a.turn}/{quote(a.path)})" for a in demos[:10]))
+                f"[{_code(a.path)}]({base}/api/jobs/{job.id}/artifacts/{a.turn}/{quote(a.path)})" for a in demos[:10]))
         if policy and policy.land == "auto_after_approval":
             who = ", ".join(f"@{a}" for a in policy.approvers or []) or "a code owner"
             out.append(f"- **Landing:** an approval from {who}" + (" or a code owner" if policy.approvers else "")
