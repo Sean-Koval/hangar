@@ -231,3 +231,53 @@ def test_oauth_grants_act_as_the_token_that_approved_them(settings):
         p = asyncio.run(oauth.principal(tok["access_token"]))
         assert p is not None and p.admin and p.id == "admin" and p.name.startswith("oauth:")
         assert asyncio.run(oauth.principal("hoa_nope")) is None
+
+
+# ====================================================================== review (#81)
+async def test_a_dry_run_never_swaps_its_spec_into_the_catalog(fleet, monkeypatch):
+    """create_environment(dry_run=True) runs in a worker thread (a sync tool). It put the caller's spec into the
+    shared catalog under the name it was given while it rendered, so a sandbox starting from that environment
+    meanwhile got the caller's spec, admin-only fields included; two racing dry runs could leave it there."""
+    import hangar.fleet as fleet_mod
+
+    seen: list[str] = []
+    real = fleet_mod.render
+
+    def spy(spec, *a, **kw):
+        seen.append(fleet.catalog.get("plain").base)  # what any other caller of the catalog sees right now
+        return real(spec, *a, **kw)
+
+    monkeypatch.setattr(fleet_mod, "render", spy)
+    before = fleet.catalog.get("plain").base
+    tok = as_principal(MCP_ONLY)
+    try:
+        async with Client(build_mcp(fleet)) as c:
+            res = sc(await c.call_tool("create_environment", {"spec": {"name": "plain", "base": "evil.example/x:1"},
+                                                              "dry_run": True}))
+    finally:
+        reset(tok)
+    assert res["valid"] and "evil.example/x:1" in res["dockerfile"]
+    assert seen == [before] and fleet.catalog.get("plain").base == before
+
+
+def test_doctor_names_environments_that_attach_a_control_plane_credential(settings):
+    """The upgrade risk: a direct-mode environment that attaches the control plane's own GitHub token now fails
+    to start. `hangar doctor` says so, with the command that shares it, before the first job fails."""
+    from hangar.app import create_app
+
+    settings.admin_token = "t0ken"
+    with TestClient(create_app(settings), headers={"Authorization": "Bearer t0ken"}) as client:
+        h = client.app.state.hangar
+        h.broker.put("gh", "git", CredentialKind.GIT_TOKEN, "ghp_0123456789abcdef")
+        h.broker.put("claude", "claude-code", CredentialKind.OAUTH_TOKEN, "sk-ant-oat01-0123456789")
+        h.settings.github_token_credential = "gh"
+        h.catalog._raw["direct"] = ({"name": "direct", "extends": "plain", "credentials": ["claude", "gh"]}, None)
+        h.catalog._raw["gw"] = ({"name": "gw", "extends": "plain", "credentials": ["gh"],
+                                 "credential_mode": "gateway"}, None)
+        checks = {c["name"]: c for c in client.get("/api/doctor").json()}
+        c = checks["control-plane credentials"]
+        assert c["status"] == "fail" and "direct: gh" in c["detail"] and "gw:" not in c["detail"], c
+        assert "hangar cred exposure gh sandbox" in c["fix"]
+        client.put("/api/credentials/gh/exposure", json={"exposure": "sandbox"})
+        checks = {c["name"]: c for c in client.get("/api/doctor").json()}
+        assert checks["control-plane credentials"]["status"] == "ok"

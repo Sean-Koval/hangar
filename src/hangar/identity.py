@@ -135,3 +135,42 @@ def check_environment(data: dict[str, Any], store: Store, settings: Settings | N
         cred = store.get(Credential, str(name)) if isinstance(name, str) else None
         if cred is not None and exposure(cred, settings) == "control_plane":
             raise Forbidden(f"secrets: {var}: {refusal(cred, settings)}")
+
+
+# ---------------------------------------------------------------------------- doctor (review)
+def doctor_check(catalog: Any, store: Store, settings: Settings) -> dict[str, Any] | None:
+    """`hangar doctor`: environments whose sandboxes fail to start because they attach or map a control-plane
+    credential (an upgrade from before exposure: a direct-mode environment listing hangar's own GitHub token).
+    Gateway mode drops git credentials before they would be written, so those don't count there."""
+    from hangar.gateway import GIT_KINDS
+
+    creds = {c.name: c for c in store.list(Credential)}
+    gateway_jobs = bool(settings.gateway_url and settings.gateway_for_jobs)
+    fails: list[str] = []
+    warns: list[str] = []
+    names: set[str] = set()
+    for env in catalog.names():
+        try:
+            spec = catalog.get(env)
+        except Exception:  # noqa: BLE001 - a broken spec is reported where it is used
+            continue
+        for name in [*spec.credentials, *spec.secrets.values()]:
+            c = creds.get(name)
+            if c is None or exposure(c, settings) != "control_plane":
+                continue
+            mapped = name in spec.secrets.values()
+            if not mapped and c.kind in GIT_KINDS and spec.credential_mode == "gateway":
+                continue
+            names.add(name)
+            # with the gateway on for jobs, only sandboxes made directly (create_sandbox) from it fail
+            gw = not mapped and c.kind in GIT_KINDS and spec.credential_mode is None and gateway_jobs
+            (warns if gw else fails).append(f"{env}: {name}")
+    if not fails and not warns:
+        return {"name": "control-plane credentials", "status": "ok", "fix": None,
+                "detail": "no environment attaches a credential that stays out of sandboxes"}
+    shared = " or ".join(f"hangar cred exposure {n} sandbox" for n in sorted(names))
+    return {"name": "control-plane credentials", "status": "fail" if fails else "warn",
+            "detail": f"sandboxes from these environments fail to start, the credential is control-plane only: "
+                      f"{', '.join(fails + warns)}",
+            "fix": "list a git token of the sandboxes' own instead (hangar cred add NAME --harness git --kind "
+                   f"git_token), use credential_mode: gateway, or share it with sandboxes on purpose: {shared}"}

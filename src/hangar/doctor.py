@@ -147,6 +147,12 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
                                   "build mapped environments at startup)",
                                   action={"id": "build_environment", "env": env}))
 
+    # --- identity: environments that attach a control-plane credential fail to start (review of #81)
+    from hangar.identity import doctor_check as exposure_check
+
+    if (c := exposure_check(fleet.catalog, h.store, s)) is not None:
+        out.append(c)
+
     # --- workstream setup: each mapped repo's webhook exists, is active and sends the events hangar handles
     from hangar.setup_api import webhook_checks
 
