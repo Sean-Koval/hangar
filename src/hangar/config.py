@@ -395,6 +395,10 @@ class Settings(BaseSettings):
     # when HANGAR_SESSION_STORE is a GCS bucket, else off; 0 = off. `hangar admin backup` works either way.
     backup_hours: float | None = None
     backup_keep: int = 14  # newest backups kept; older ones are deleted after each backup
+    # --- durable: where backups go when not next to the checkpoints (gs://bucket[/prefix] or a path). Best a bucket
+    # where hangar's service account may only create objects, with a lifecycle rule doing the keeping
+    # (docs/security.md#backups-and-the-vault-key). Unset: the session store's `_backups/`.
+    backup_store: str | None = None
     # How long `hangar serve` waits for open requests (streams, terminals) on shutdown before cutting them.
     # Long-polls answer at once (shutdown.py). Keep it under the pod's terminationGracePeriodSeconds (45).
     shutdown_grace_seconds: int = 15

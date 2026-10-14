@@ -171,7 +171,6 @@ class Envd:
         self._down: dict[str, float] = {}
         self._starting: dict[str, asyncio.Task] = {}
         self._digests: dict[str, str] = {}
-        self._key: bytes | None = None
         self._http: httpx.AsyncClient | None = None
         self._closed = False
         if settings.envd != "off" and not self.binaries:
@@ -184,11 +183,10 @@ class Envd:
 
     # ------------------------------------------------------------------ plumbing
     def token(self, sb: Sandbox) -> str:
-        if self._key is None:
-            from hangar.vault import load_or_create_key
+        from hangar import keys  # --- durable: during a key rotation, a sandbox from before keeps its token
 
-            self._key = load_or_create_key(self.s.secret_key, self.s.data_dir)
-        return hmac.new(self._key, b"hangar-envd:" + sb.id.encode(), hashlib.sha256).hexdigest()
+        return hmac.new(keys.key_for(self.s, sb.created_at), b"hangar-envd:" + sb.id.encode(),
+                        hashlib.sha256).hexdigest()
 
     def digest(self, arch: str) -> str:
         if arch not in self._digests:

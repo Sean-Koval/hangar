@@ -37,13 +37,13 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from hangar import keys as keys  # --- durable
 from hangar import metrics
 from hangar.envd import EXEC_GRACE, MAX_OUTPUT, Endpoint, Envd, EnvdError, _b64, _text
 from hangar.fleet import FleetError
 from hangar.models import Sandbox
 from hangar.providers.base import OutputTail, Provider, ProviderError
 from hangar.streams import Stream, StreamClosed, StreamLimit, hub
-from hangar.vault import load_or_create_key
 
 log = logging.getLogger("hangar.streams")
 
@@ -266,17 +266,19 @@ class Processes:
         self.procs: dict[str, Proc] = {}
         self.starting: collections.Counter[str] = collections.Counter()  # starts under way, per owner (the cap)
         self.hub.on_close_sandbox.append(self._sandbox_gone)
-        self._key: bytes | None = None
 
-    def tag(self, owner: str, sandbox_id: str, proc_id: str) -> str:
+    def tag(self, owner: str, sandbox_id: str, proc_id: str, key: bytes | None = None) -> str:
         """A process's envd tag: its id, and a MAC of its owner, sandbox and id under the control plane's key. The
         agent can start processes through its own daemon with any tag, so the tag must not be one it can make up
-        for a token (review #68): a name's plain hash let it put processes in any token's list, using up its cap."""
-        if self._key is None:
-            s = self.fleet.settings
-            self._key = load_or_create_key(s.secret_key, s.data_dir)
-        mac = hmac.new(self._key, f"hangar-process\n{sandbox_id}\n{owner}\n{proc_id}".encode(), hashlib.sha256)
+        for a token (review #68): a name's plain hash let it put processes in any token's list, using up its cap.
+        --- durable: under the newest vault key; a tag made before a key rotation still counts (`tagged`)."""
+        key = key or keys.key_for(self.fleet.settings)
+        mac = hmac.new(key, f"hangar-process\n{sandbox_id}\n{owner}\n{proc_id}".encode(), hashlib.sha256)
         return f"{_TAG}{proc_id}:{mac.hexdigest()[:24]}"
+
+    def tagged(self, tag: str, owner: str, sandbox_id: str, proc_id: str) -> bool:
+        return any(hmac.compare_digest(tag, self.tag(owner, sandbox_id, proc_id, k))
+                   for k in keys.verify_keys(self.fleet.settings))
 
     # ------------------------------------------------------------------ lookup
     def _sweep(self) -> None:
@@ -334,7 +336,7 @@ class Processes:
             parts = tag.split(":")
             if len(parts) != 3 or parts[0] + ":" != _TAG or not _ID.match(parts[1]) or parts[1] in self.procs:
                 continue
-            if not hmac.compare_digest(tag, self.tag(owner, sb.id, parts[1])):
+            if not self.tagged(tag, owner, sb.id, parts[1]):
                 continue
             cfg = info.get("config") or {}
             args = cfg.get("args") or []

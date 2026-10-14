@@ -8,7 +8,7 @@ Hangar exists to run untrusted, model-generated code. The design assumes any san
 | Sandbox ↔ sandbox | Separate containers/pods/VMs; no shared volumes; per-sandbox credentials |
 | Sandbox ↔ network | GKE: `deploy/k8s/sandbox-network.yaml` (and Agent Sandbox's managed policy) deny RFC1918, link-local (metadata server) and all ingress. Docker: hangar's own network, where sandboxes can't reach each other ([below](#sandbox-networking-on-docker)); the single-VM install also drops what they send to link-local addresses. Environments in `allowlist` or `none` mode reach the internet only through hangar's [egress proxy](#egress-allowlists), by hostname |
 | Client ↔ control plane | Bearer tokens (hashed at rest), single-use tickets for browser streams, TLS via ingress, optional IAP in front |
-| Secrets | Fernet-encrypted vault; never in images, API responses, MCP results, logs, or audit entries |
+| Secrets | Fernet-encrypted vault, with a [rotatable key](#rotating-the-vault-key); never in images, API responses, MCP results, logs, or audit entries |
 
 ## Credential handling
 
@@ -410,6 +410,46 @@ What is **not** covered:
 - **What a sandbox learns about itself** (`~/.hangar/envstatus.json`, the `hangar-env` MCP server) is names,
   versions, health checks and the egress policy, never a secret value; messages in it are redacted like logs.
 
+## The vault key
+
+One key ring encrypts what hangar keeps secret at rest: the vault (stored credentials), every checkpoint and artifact in the session store, every database backup, and a few rows in the database (live turns' control keys, E2B sandboxes' envVars). Tokens hangar derives per sandbox or per link come from it too: envd's, the egress proxy's credential, preview tickets and sessions, E2B access tokens, signed media links and process tags. `HANGAR_SECRET_KEY` (or `<data dir>/secret.key` when it isn't set) holds the keys, **newest first**, separated by commas (lines, in the file). The newest encrypts and signs; every key hangar hasn't retired decrypts and checks ([`MultiFernet`](https://cryptography.io/en/latest/fernet/#cryptography.fernet.MultiFernet)).
+
+### Where the keys live
+
+- **Secret Manager is where the operator keeps them** (one secret, say `hangar-vault-key`, one version per change): versioned, access-logged, and outside the cluster, so it survives losing it. The `hangar` Kubernetes Secret holds a copy for the pod.
+- **Never in a file on a laptop.** The commands below pipe a key from one service to the other; nothing is written to disk. A backup can't be restored without the key it was made with, which is why the key must live outside the cluster, and why it belongs in Secret Manager rather than in someone's home directory.
+- If it is only in the Kubernetes Secret today (what `up.sh` does), copy it to Secret Manager once:
+  ```bash
+  kubectl -n hangar get secret hangar -o jsonpath='{.data.HANGAR_SECRET_KEY}' | base64 -d | \
+    gcloud secrets create hangar-vault-key --data-file=- --replication-policy=automatic
+  ```
+- Give the secret's `secretAccessor` role to the operators who rotate keys, and nobody else: whoever reads it reads every checkpoint and backup they can also fetch.
+
+### Rotating the vault key
+
+Rotate on a schedule, when an operator who could read the key leaves, and at once when the key may have leaked. A rotation:
+
+1. **Put a new key first.** In Secret Manager, as a new version holding `<new>,<old>`, then in the `hangar` Secret, then restart:
+   ```bash
+   NEW=$(openssl rand -base64 32 | tr '+/' '-_')       # a Fernet key: 32 random bytes, url-safe base64
+   { printf '%s,' "$NEW"; gcloud secrets versions access latest --secret=hangar-vault-key; } | \
+     gcloud secrets versions add hangar-vault-key --data-file=-
+   unset NEW
+   kubectl -n hangar patch secret hangar --type merge -p "{\"stringData\":{\"HANGAR_SECRET_KEY\":\"$(
+     gcloud secrets versions access latest --secret=hangar-vault-key)\"}}"
+   kubectl -n hangar rollout restart deploy/hangar
+   ```
+   From that start, hangar encrypts with the new key and records the rotation as pending. With a key file (no `HANGAR_SECRET_KEY`, a laptop or a single VM), skip this step: the next one writes the new key first in the file.
+2. **`hangar admin rotate-key`.** It re-seals the vault and the database's other sealed rows at once (one transaction), and starts a background pass over the session store: every `.enc` object (checkpoint parts, artifacts, backups) the old key sealed is re-encrypted, keeping Fernet's timestamp. Meanwhile, a checkpoint part copied into a new checkpoint is re-encrypted as it's copied rather than carried forward under the old key. The pass records where it is in the database, so after a restart (a deploy, a crash) it carries on from there. `hangar admin rotate-key --status` (or `GET /api/admin/rotate-key`) shows the progress, and `hangar doctor` the phase.
+3. **The old key is retired by itself** when the pass is done and no sandbox started before the rotation is still running. Those sandboxes hold tokens of the old key (envd's, the egress proxy's), and they keep working until then. A long-lived one holds retirement back; `hangar admin rotate-key --retire --force` retires anyway, after which such a sandbox's envd falls back to exec through the provider and a proxied one loses the egress proxy (restart its session). Retired, the old key reads nothing: hangar stops using it (and drops it from a key file) even while it is still configured.
+4. **Remove the old key from the configuration**: a new Secret Manager version with only the new key, the Secret patched as in step 1, a restart. `hangar doctor` warns until then. **Disable** the old versions (`gcloud secrets versions disable`), don't destroy them, until the backups made before the rotation have aged out: a backup in a bucket hangar may only write to (below) keeps the key it was made with.
+
+Hangar keeps only key fingerprints (`key_id`: a hash of the key) in its database and status output. Previews' 12-hour sessions, signed media links and E2B access tokens made with the old key stop working when it is retired; opening the preview link again, or `connect` for an E2B client, gets new ones.
+
+### Backups and the vault key
+
+Backups go into the session store (`_backups/` in the checkpoints' bucket) unless `HANGAR_BACKUP_STORE` names another place. Next to the checkpoints, under hangar's own service account, whoever can read that bucket with that account's token reads every checkpoint and every backup, and every backup holds the vault, all under one key. `hangar doctor` warns about that (`backup isolation`). What it wants instead: a bucket of its own where hangar's service account has only `roles/storage.objectCreator` (it can write backups, not read or delete them), a lifecycle rule that deletes them after the time you keep them, and restores done by an operator, with `hangar admin restore --local` and their own access. Hangar then skips pruning (the lifecycle rule keeps the count), its doctor says it can't see the newest backup's age, and a key rotation can't re-encrypt those backups: they keep the key they were made with until they age out, so keep that key's disabled version in Secret Manager until then.
+
 ## People
 
 One hangar serves a team: run one per team rather than splitting one between teams. Every token belongs to a person, and a person is an **admin** or a **member**.
@@ -500,4 +540,4 @@ Refusals are themselves limited to `HANGAR_AUDIT_REJECTIONS_PER_MINUTE` (30) per
 - Use a separate token per client so you can revoke one without affecting the rest. The audit log records which token did what. `hangar connect` does this for you: each client on each machine gets its own token with the `mcp` scope, which works at `/mcp` and nowhere else. A leaked client config can then drive sandboxes, but it can't call the REST API to read or change the vault, settings or tokens, or approve OAuth apps, and it can't map vault secrets into an environment. Sandboxes it starts can still use the stored credentials meant for sandboxes (never the control plane's own), so revoke a leaked token at once (`hangar token revoke`).
 - Give E2B SDK clients tokens with the `sandboxes` scope, which work only on the [E2B-compatible API](e2b.md) and its sandbox URLs, for the sandboxes the token created. Their sandboxes get no stored credentials unless the environment is in `HANGAR_E2B_TRUSTED_ENVIRONMENTS`.
 - Settings stored with `hangar config` can't hold secrets: hangar refuses the admin token, the vault key and provider keys there. Settings that point at secrets name a vault credential instead.
-- Set `HANGAR_SECRET_KEY` explicitly in clusters, from Secret Manager or a Kubernetes Secret, so the vault survives pod restarts.
+- Set `HANGAR_SECRET_KEY` explicitly in clusters, from Secret Manager or a Kubernetes Secret, so the vault survives pod restarts. Keep the key in Secret Manager, never in a file on a laptop, and [rotate it](#rotating-the-vault-key).

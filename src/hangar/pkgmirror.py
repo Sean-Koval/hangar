@@ -46,7 +46,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, PlainTextResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from hangar import egress
+from hangar import egress, keys
 from hangar.models import Sandbox, SandboxState
 
 if TYPE_CHECKING:
@@ -169,7 +169,8 @@ class Mirror:
                 user, _, password = base64.b64decode(value.strip(), validate=True).decode().partition(":")
         elif scheme.lower() == "bearer":
             password = value.strip()
-        if user and egress.check_token(self.fleet.egress.key, user, password):
+        # --- integ3: any vault key not yet retired, as the egress proxy checks (a sandbox from before a rotation)
+        if user and any(egress.check_token(k, user, password) for k in keys.verify_keys(self.settings)):
             sb = self.fleet.store.get(Sandbox, user)
             return sb if sb is not None and sb.state in (SandboxState.STARTING, SandboxState.RUNNING) else None
         if password.startswith("hgs_") and (grant := self.gw.verify(password)) is not None:

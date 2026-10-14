@@ -157,6 +157,21 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
     return run_id, command
 
 
+def reseal(store: Any, ring: Any) -> int:
+    """--- durable: a vault key rotation re-seals the live turns' control keys (keys.Rotation)."""
+    from cryptography.fernet import InvalidToken
+
+    n = 0
+    for key in store.kv_keys(KV):
+        raw = store.kv_get(key)
+        if not raw:
+            continue
+        with contextlib.suppress(InvalidToken):
+            store.kv_set(key, ring.fernet.rotate(raw.encode()).decode(), durable=True)
+            n += 1
+    return n
+
+
 def forget(svc: SessionService, run_id: str | None) -> None:
     """The run is over (or never started): its key is of no more use."""
     if run_id:

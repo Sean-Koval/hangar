@@ -191,11 +191,10 @@ def note_media(svc: Any, s: Session, turn: SessionTurn) -> None:
         log.warning("session %s: could not record media events", s.id, exc_info=True)
 
 
-def _media_key(settings: Settings) -> bytes:
-    from hangar.vault import load_or_create_key
+def _media_key(settings: Settings, key: bytes | None = None) -> bytes:
+    from hangar import keys  # --- durable: the newest vault key signs; any not yet retired checks (a rotation)
 
-    return hmac.new(load_or_create_key(settings.secret_key, settings.data_dir), b"hangar-media",
-                    hashlib.sha256).digest()
+    return hmac.new(key or keys.key_for(settings), b"hangar-media", hashlib.sha256).digest()
 
 
 def media_token(settings: Settings, session_id: str, turn: int, path: str, expires: float) -> str:
@@ -208,8 +207,11 @@ def media_token(settings: Settings, session_id: str, turn: int, path: str, expir
 def read_media_token(settings: Settings, token: str) -> tuple[str, int, str]:
     """(session id, turn, path) of a valid, unexpired link. Raises KeyError for anything else (one answer)."""
     body, _, mac = (token or "").partition(".")
-    want = hmac.new(_media_key(settings), body.encode(), hashlib.sha256).hexdigest()[:32]
-    if not body or not hmac.compare_digest(mac, want):
+    from hangar import keys
+
+    if not body or not any(hmac.compare_digest(mac, hmac.new(_media_key(settings, k), body.encode(),
+                                                             hashlib.sha256).hexdigest()[:32])
+                           for k in keys.verify_keys(settings)):
         raise KeyError("no such link")
     try:
         sid, turn, path, exp = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))

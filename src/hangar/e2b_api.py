@@ -39,10 +39,12 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qsl
 
 import httpx
+from cryptography.fernet import InvalidToken
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
+from hangar import keys as keys  # --- durable: tokens under any vault key not yet retired
 from hangar.auth import Principal, bearer_from_headers
 from hangar.fairness import CapReached  # --- scale
 from hangar.fleet import ACTIVE, FleetError
@@ -132,7 +134,6 @@ class E2BService:
     def __init__(self, h: Hangar):
         self.h, self.fleet, self.store, self.settings = h, h.fleet, h.store, h.settings
         self.buckets = Buckets()
-        self._key: bytes | None = None
         self._records: dict[str, dict[str, Any]] = {}
         self._envs: dict[str, dict[str, str]] = {}
         self._creating: collections.Counter[str] = collections.Counter()
@@ -155,13 +156,15 @@ class E2BService:
             self._ports_http = None
 
     # ------------------------------------------------------------------ records and tokens
-    def _mac(self, label: bytes, sandbox_id: str, nonce: str) -> str:
-        if self._key is None:
-            from hangar.vault import load_or_create_key
+    def _mac(self, label: bytes, sandbox_id: str, nonce: str, key: bytes | None = None) -> str:
+        """--- durable: under the newest vault key; `_check` accepts any key not yet retired (a rotation)."""
+        key = key or keys.key_for(self.settings)
+        return hmac.new(key, label + b"\0" + sandbox_id.encode() + b"\0" + nonce.encode(), hashlib.sha256).hexdigest()
 
-            self._key = load_or_create_key(self.settings.secret_key, self.settings.data_dir)
-        return hmac.new(self._key, label + b"\0" + sandbox_id.encode() + b"\0" + nonce.encode(),
-                        hashlib.sha256).hexdigest()
+    def _check(self, label: bytes, sandbox_id: str, rec: dict[str, Any], given: str | None) -> bool:
+        return bool(given) and any(hmac.compare_digest(given.encode(), self._mac(label, sandbox_id, rec["nonce"],
+                                                                                   k).encode())
+                                   for k in keys.verify_keys(self.settings))
 
     def envd_token(self, sandbox_id: str, rec: dict[str, Any]) -> str:
         """E2B's `envdAccessToken` (X-Access-Token), checked by the router; never the daemon's own token."""
@@ -209,10 +212,23 @@ class E2BService:
         return env
 
     def check_envd(self, sandbox_id: str, rec: dict[str, Any], given: str | None) -> bool:
-        return bool(given) and hmac.compare_digest(given.encode(), self.envd_token(sandbox_id, rec).encode())
+        return self._check(b"hangar-e2b-envd", sandbox_id, rec, given)
 
     def check_traffic(self, sandbox_id: str, rec: dict[str, Any], given: str | None) -> bool:
-        return bool(given) and hmac.compare_digest(given.encode(), self.traffic_token(sandbox_id, rec).encode())
+        return self._check(b"hangar-e2b-traffic", sandbox_id, rec, given)
+
+    def reseal(self, store: Any, ring: Any) -> int:
+        """--- durable: a key rotation re-seals the sandboxes' envVars with the new key (keys.Rotation)."""
+        n = 0
+        for key in store.kv_keys(RECORD):
+            rec = store.kv_get_json(key)
+            if not isinstance(rec, dict) or not rec.get("env"):
+                continue
+            with contextlib.suppress(InvalidToken):
+                rec["env"] = ring.fernet.rotate(rec["env"].encode()).decode()
+                self._save(key[len(RECORD):], rec)
+                n += 1
+        return n
 
     def owner_live(self, rec: dict[str, Any]) -> bool:
         """Whether the hangar token that made the sandbox (or an admin's adopted it) still exists: revoking a token

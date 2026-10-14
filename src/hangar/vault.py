@@ -3,35 +3,35 @@
 The key comes from HANGAR_SECRET_KEY (recommended in clusters: mount it from a Kubernetes
 Secret / Secret Manager) or is generated once into <data_dir>/secret.key with mode 0600.
 Secret values never appear in API responses, MCP tool results, logs or audit events.
+
+--- durable: either can hold several keys, newest first: the newest encrypts, any key not yet retired decrypts
+(keys.py), so the key can be rotated (`hangar admin rotate-key`).
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import InvalidToken, MultiFernet
 
+from hangar import keys
 from hangar.store import Store
 
 
 def load_or_create_key(explicit: str | None, data_dir: Path) -> bytes:
-    if explicit:
-        return explicit.encode()
-    key_file = data_dir / "secret.key"
-    if key_file.exists():
-        return key_file.read_bytes().strip()
-    key = Fernet.generate_key()
-    fd = os.open(key_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "wb") as f:
-        f.write(key)
-    return key
+    """The newest key (keys.load_keys): what new signatures and derived keys use. Code that checks a signature
+    should accept any of keys.verify_keys(settings), so a rotation doesn't break what was signed before it."""
+    return keys.load_keys(explicit, data_dir)[0]
 
 
 class Vault:
-    def __init__(self, store: Store, key: bytes):
+    def __init__(self, store: Store, key: bytes | keys.KeyRing):
         self._store = store
-        self._fernet = Fernet(key)
+        self.ring = key if isinstance(key, keys.KeyRing) else keys.KeyRing.of(key)
+
+    @property
+    def _fernet(self) -> MultiFernet:
+        return self.ring.fernet  # rebuilt when a key is added or retired
 
     def put(self, name: str, value: bytes | str) -> None:
         data = value.encode() if isinstance(value, str) else value

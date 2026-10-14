@@ -46,7 +46,7 @@ from hangar.strategies import SessionForkBody, fork_session  # workstream D: for
 from hangar.streams import credential as stream_credential  # --- stream
 from hangar.streams import token_check
 from hangar.triggers import ScheduleSpec, ScheduleUpdate, Triggers
-from hangar.vault import Vault, load_or_create_key
+from hangar.vault import Vault
 
 log = logging.getLogger("hangar")
 
@@ -62,7 +62,9 @@ class Hangar:
 
         self.config = SettingsStore(self.store, self.settings)
         self.config.apply()
-        self.vault = Vault(self.store, load_or_create_key(self.settings.secret_key, self.settings.data_dir))
+        from hangar import keys  # --- durable: a key ring (newest first), and its rotation
+
+        self.vault = Vault(self.store, keys.load(self.settings, self.store))
         self.broker = Broker(self.store, self.vault, self.settings.sandbox_user)
         self.catalog = EnvCatalog(self.settings.env_dirs, save_dir=self.settings.saved_env_dir)
         self.fleet = Fleet(self.settings, self.store, self.broker, self.catalog)
@@ -74,9 +76,17 @@ class Hangar:
 
         self.env_requests = EnvRequests(self.fleet, self.sessions, self.jobs)
         self.triggers = Triggers(self.jobs)  # workstream A: approvals, inbound webhooks, schedules
-        from hangar.backup import Backups  # --- overnight/sweep: database backups into the session store
+        from hangar.backup import Backups, backup_store  # --- overnight/sweep: database backups
 
-        self.backups = Backups(self.settings, self.vault, self.sessions.blobs)
+        self.backups = Backups(self.settings, self.vault, backup_store(self.settings, self.sessions.blobs))
+        # --- durable: rotating the vault key over the vault, the database's other sealed rows and the stores
+        from hangar import steer
+
+        stores = [(self.sessions.blobs, False)] + ([(self.backups.blobs, True)]
+                                                    if self.backups.blobs is not self.sessions.blobs else [])
+        self.rotation = keys.Rotation(self.settings, self.store, self.vault.ring, stores,
+                                      lambda: self.store.list_active(Sandbox), self.fleet.audit)
+        self.rotation.resealers.append(steer.reseal)
         from hangar.retention import Retention  # --- scale: settled sandbox records move to the archive
 
         self.retention = Retention(self.store, self.settings, self.jobs, self.sessions)  # --- durable: + their memory
@@ -330,6 +340,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         restore_signals = shutdown.on_signal(asyncio.get_running_loop(), h.fleet.closing.set)
         h.backups.start()
+        h.rotation.resume()  # --- durable: a key rotation a restart interrupted carries on
         h.retention.start()  # --- scale
         missed = redeliver.start(h)  # --- reconciler: GitHub deliveries that failed while hangar was down
         async with mcp.session_manager.run():
@@ -338,6 +349,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         restore_signals()
         missed.cancel()  # --- reconciler
         await h.backups.stop()
+        await h.rotation.stop()  # --- durable
         await h.retention.stop()  # --- scale
         if prebuild:
             prebuild.cancel()
@@ -387,6 +399,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         from hangar.sandbox_router import SandboxRouter
 
         app.state.e2b = E2BService(h)
+        h.rotation.resealers.append(app.state.e2b.reseal)  # --- durable: its sandboxes' envVars are sealed
         app.mount(e2b_path, build_api(app.state.e2b))
         app.add_middleware(SandboxRouter, svc=app.state.e2b)  # outermost: sandbox traffic skips the body caps
     if h.settings.preview_domain:  # --- envbuilds: preview ports, for each sandbox's owner (preview.py)
@@ -1098,6 +1111,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import backup  # --- overnight/sweep: database backups (hangar admin)
 
     backup.mount(app, h, A)
+    from hangar import keys  # --- durable: /api/admin/rotate-key
+
+    keys.mount(app, h, A)
     drain.mount(app, h, A)  # --- reconciler: POST/GET/DELETE /api/admin/drain (power.sh down)
     from hangar import egress  # --- egress: what a sandbox may reach; approved hosts, and revoking them
 
