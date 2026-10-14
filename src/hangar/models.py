@@ -387,7 +387,9 @@ class Attempt(BaseModel):
     session_id: str | None = None
     branch: str | None = None  # the attempt session's own branch (inside its sandbox)
     pushed_branch: str | None = None  # set when losers are pushed (HANGAR_BEST_OF_N_PUSH_ATTEMPTS)
-    state: Literal["pending", "running", "verifying", "done"] = "pending"
+    # --- trust: `waiting`: the power-down cut its turn off; it resumes from its checkpoint at power-up
+    state: Literal["pending", "running", "verifying", "waiting", "done"] = "pending"
+    restarts: int = 0  # --- trust: times it resumed from its checkpoint (restarts.resume_attempt)
     outcome: str | None = None  # exited | timed_out | cancelled | gone | error
     run_id: str | None = None
     exit_code: int | None = None

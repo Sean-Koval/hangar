@@ -24,11 +24,11 @@ import httpx
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from hangar import people  # --- teamcreds: Slack users linked to people
+from hangar import people, redeliver  # --- teamcreds: linked Slack users; --- trust: commit after handle
 from hangar.exchange import open_question
 from hangar.github import parse_repo
 from hangar.jobs import NOTIFIERS, Caller, JobError, JobNotFound, JobService, SubmitJob
-from hangar.models import ContextItem, Credential, Job, now
+from hangar.models import ContextItem, Credential, Job
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -303,7 +303,8 @@ class SlackFrontDoor:
         self.jobs = jobs
         self.settings = jobs.settings
         self.store = jobs.store
-        self._last_prune = 0.0
+        for k in self.store.kv_keys("slack:seen:"):  # --- trust: the old marks; the replay guard keeps them now
+            self.store.kv_delete(k)
 
     def mount(self, app: FastAPI) -> None:
         @app.post("/api/hooks/slack/commands")
@@ -413,25 +414,35 @@ class SlackFrontDoor:
         return "\n".join(lines)
 
     # ------------------------------------------------------------------ dedupe
-    def _first(self, key: str) -> bool:
-        """True the first time `key` is seen. Kept in the store so a retry after a restart is still a repeat."""
+    # --- trust: commit after handle, as #84 did for GitHub (redeliver.claim/done). An event is marked pending by
+    # this process while it is handled and done only after; a pending mark another process left means it died
+    # handling it, so Slack's retry runs it. Kept in the store, so a retry after a restart is still a repeat.
+    def _claim(self, key: str, claimed: list[str]) -> bool:
+        """False when `key` was handled already, or is being handled now."""
         if not _KEY.match(key):
             return True
-        k = f"slack:seen:{key}"
-        if self.store.kv_get(k) is not None:
+        replays = self.jobs.admission.replays
+        digest = replays.digest(key.encode())
+        if not redeliver.claim(replays, digest, SEEN_TTL, scope="slack"):
             return False
-        t = now()
-        self.store.kv_set(k, str(t), durable=True)  # --- overnight/sweep: like the replay guard's entries
-        if t - self._last_prune > 600:
-            self._last_prune = t
-            for old in self.store.kv_keys("slack:seen:"):
-                try:
-                    stale = float(self.store.kv_get(old) or 0) < t - SEEN_TTL
-                except ValueError:
-                    stale = True
-                if stale:
-                    self.store.kv_delete(old)
+        claimed.append(digest)
         return True
+
+    def _done(self, claimed: list[str]) -> None:
+        for digest in claimed:
+            redeliver.done(self.jobs.admission.replays, digest, SEEN_TTL, scope="slack")
+
+    def _forget(self, claimed: list[str]) -> None:
+        for digest in claimed:
+            self.jobs.admission.replays.forget("slack", digest)  # nothing happened: a retry runs it
+
+    async def _handled(self, coro, claimed: list[str]) -> None:
+        try:
+            await coro
+        except BaseException:  # a shutdown or failure mid-handler too
+            self._forget(claimed)
+            raise
+        self._done(claimed)
 
     # ------------------------------------------------------------------ slash command
     def command(self, form: dict[str, str]) -> dict[str, Any]:
@@ -491,14 +502,26 @@ class SlackFrontDoor:
 
     # ------------------------------------------------------------------ Events API
     def event(self, payload: dict[str, Any], retry_num: str | None = None) -> dict[str, Any]:
-        """Classify an event and acknowledge it; anything that talks to Slack or starts work runs in the background."""
+        """Classify an event and acknowledge it; anything that talks to Slack or starts work runs in the background,
+        and marks the event handled when it is done (--- trust)."""
+        claimed: list[str] = []
+        try:
+            res = self._event(payload, retry_num, claimed)
+        except BaseException:
+            self._forget(claimed)
+            raise
+        if not res.get("ok"):
+            self._done(claimed)  # ignored or refused: that is its handling
+        return res
+
+    def _event(self, payload: dict[str, Any], retry_num: str | None, claimed: list[str]) -> dict[str, Any]:
         if payload.get("type") != "event_callback":
             return {"ignored": f"callback type {str(payload.get('type'))[:40]}"}
         ev = payload.get("event")
         if not isinstance(ev, dict):
             return {"ignored": "no event"}
         event_id = str(payload.get("event_id") or "")
-        if event_id and not self._first(f"event:{event_id}"):
+        if event_id and not self._claim(f"event:{event_id}", claimed):
             return {"ignored": "duplicate delivery" + (f" (retry {retry_num[:4]})" if retry_num else "")}
         kind = ev.get("type")
         if kind not in ("app_mention", "message"):
@@ -524,11 +547,12 @@ class SlackFrontDoor:
             if self._refusal(team, channel, user, user_team):
                 return {"ignored": "channel or user not allowed"}
         # A mention in a thread also arrives as a message event: act on whichever comes first.
-        if not self._first(f"msg:{channel}:{ts}"):
+        if not self._claim(f"msg:{channel}:{ts}", claimed):
             return {"ignored": "message already handled"}
         text = plain(_LEAD_MENTION.sub("", raw, count=1))
-        self.jobs._spawn(self._guard(self._on_message(team, channel, user, ts, thread_ts, job_id, text,
-                                                      mention=kind == "app_mention", bots=bots, user_team=user_team)))
+        self.jobs._spawn(self._guard(self._handled(self._on_message(
+            team, channel, user, ts, thread_ts, job_id, text, mention=kind == "app_mention", bots=bots,
+            user_team=user_team), claimed)))
         return {"ok": True}
 
     async def _on_message(self, team: str, channel: str, user: str, ts: str, thread_ts: str | None,

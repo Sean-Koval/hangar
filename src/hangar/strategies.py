@@ -35,7 +35,7 @@ from hangar import (  # --- overnight/cache; verifyloop: --- overnight/autofix
 from hangar import fairness as fairness  # --- scale
 from hangar import secretscan as secretscan  # --- egress
 from hangar.events import total_usage
-from hangar.fleet import _clip_tail
+from hangar.fleet import PoweredDown, _clip_tail
 from hangar.harnesses import Harness
 from hangar.models import (
     JOB_TERMINAL,
@@ -304,6 +304,8 @@ async def run_best_of_n(jobs: JobService, job: Job) -> None:
         if turn.reply_to:
             await jobs._comment(job, turn.reply_to, f"Agents started on hangar job `{job.id}`: best of {job.n} "
                                                     f"({job.environment}, {base.harness}), branch `{job.branch}`.")
+    elif job.state == JobState.QUEUED:  # --- trust: attempts the power-down set aside, back after power-up
+        jobs._event(job, "resuming the attempts the power-down cut off", JobState.RUNNING, reason=None)
     sessions = _attempt_sessions(jobs, job)
     for s in sessions.values():
         svc.release_restart_hold(s)  # each attempt takes its own hold while it works
@@ -324,6 +326,9 @@ async def run_best_of_n(jobs: JobService, job: Job) -> None:
             await held.enter_async_context(svc.hold(s))
         if pending:
             await asyncio.gather(*(_run_attempt(jobs, job, a) for a in pending))
+        if any(a.state == "waiting" for a in job.attempts):  # --- trust: they resume at power-up; the rest wait
+            await jobs.fleet.power.requeue(jobs, job)
+            return
         await _finish(jobs, job)
 
 
@@ -332,13 +337,16 @@ async def _run_attempt(jobs: JobService, job: Job, a: Attempt) -> None:
     attempt failing (or its sandbox dying) must not take the others down."""
     try:
         await _attempt_steps(jobs, job, a)
+    except PoweredDown:  # --- trust: resuming before the pools are back: it waits with the job again
+        a.state = "waiting"
     except Exception as e:  # noqa: BLE001 - recorded on the attempt; the others carry on
         log.exception("job %s attempt %d failed", job.id, a.index)
         a.error = jobs.broker.redact(str(e))[:500]
         a.outcome = "error" if a.outcome in (None, "exited", "timed_out") else a.outcome
         jobs._event(job, f"attempt {a.index}: {a.error}")
     # Not in a `finally`: a shutdown (CancelledError) leaves the attempt as it was, to be re-attached on restart.
-    a.state = "done"
+    if a.state != "waiting":  # --- trust
+        a.state = "done"
     jobs._save(job)
 
 
@@ -356,6 +364,7 @@ async def _attempt_steps(jobs: JobService, job: Job, a: Attempt) -> None:
             if job.cancel_requested:
                 a.outcome = "cancelled"
                 return
+            resuming = a.restarts > 0  # --- trust: after the power-down, from its checkpoint (resume_attempt)
             a.state = "running"
             jobs._save(job)
             sb = await svc.ensure_sandbox(s)
@@ -367,11 +376,12 @@ async def _attempt_steps(jobs: JobService, job: Job, a: Attempt) -> None:
                 s.turns.append(st)
             # Same task and context; the branch named in the prompt is the attempt's own. --- interactions: and the
             # same exchange as a single job's first turn: local work applied, the output schema and the protocol.
-            exchange.job_turn_io(job, job.turns[0], st, first=True)
+            exchange.job_turn_io(job, job.turns[0], st, first=not resuming)
             # --- overnight/cache: identical across attempts up to the end, where each learns its own branch, so the
             # attempts after the first read the prompt prefix the first one cached
-            prompt = (jobs._prompt(job, job.turns[0], sb.info.get("repo_path"), branch_ref=ATTEMPT_BRANCH)
-                      + exchange.prompt_notes(jobs.settings, s, st, protocol=True)
+            task = st.message if resuming else jobs._prompt(job, job.turns[0], sb.info.get("repo_path"),
+                                                             branch_ref=ATTEMPT_BRANCH)  # --- trust: carry on
+            prompt = (task + exchange.prompt_notes(jobs.settings, s, st, protocol=not resuming)
                       + f"\n\n# Your branch\n\nYou are one of {job.n} independent attempts at this task. Yours is "
                         f"checked out on branch `{s.branch}`: commit there.\n")
             await svc.begin_turn(s, st, prompt=prompt, timeout_minutes=job.timeout_minutes, handoff=False,
@@ -398,6 +408,9 @@ async def _attempt_steps(jobs: JobService, job: Job, a: Attempt) -> None:
             jobs._save(job)
             jobs._event(job, f"attempt {a.index}: agent turn {outcome}"
                              + (f", exit {a.exit_code}" if a.exit_code is not None else ""))
+        if a.outcome in ("gone", "error") and not (s.sandbox_id and svc._alive(s.sandbox_id)) \
+                and jobs.fleet.power.cut_off_attempt(jobs, job, a, s):  # --- trust: resumes at power-up
+            return
         if a.outcome in ("gone", "error", "cancelled", "needs_input"):  # a question is not a result to verify
             return
         if not (s.sandbox_id and svc._alive(s.sandbox_id)):

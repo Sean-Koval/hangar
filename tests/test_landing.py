@@ -667,5 +667,6 @@ async def test_doctor_reads_the_branch_protection(svc, gh, settings):
     svc.transport = httpx.MockTransport(no_ruleset)
     gh.allow_auto_merge = False
     c = {c["name"]: c for c in await landing.doctor_checks(h)}["landing o/r"]
-    assert c["status"] == "warn" and "dismiss stale approvals" in c["detail"] and "most recent reviewable push" in \
+    # --- trust: arming refuses without stale-approval dismissal, so it fails rather than warns (test_trust_landing)
+    assert c["status"] == "fail" and "dismiss stale approvals" in c["detail"] and "most recent reviewable push" in \
         c["detail"] and "Allow auto-merge" in c["detail"] and "settings/branches" in c["fix"]

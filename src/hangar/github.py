@@ -107,21 +107,23 @@ class GitHub:
         return r.json()
 
     async def hook_deliveries(self, repo: str, hook_id: int, cursor: str | None = None,
-                              per_page: int = 100) -> tuple[list[dict[str, Any]], str | None]:
+                              per_page: int = 100, org: bool = False) -> tuple[list[dict[str, Any]], str | None]:
         """--- reconciler: one page of a repo webhook's recent deliveries, newest first, and the cursor of the next
-        page (GitHub pages these by a cursor in the Link header, not by page number)."""
+        page (GitHub pages these by a cursor in the Link header, not by page number). --- trust: `org`: `repo` is an
+        organization and the hook is its own (GET /orgs/{org}/hooks/{hook_id}/deliveries, the same paging)."""
         params: dict[str, Any] = {"per_page": per_page}
         if cursor:
             params["cursor"] = cursor
-        path = f"/repos/{repo}/hooks/{int(hook_id)}/deliveries"
+        path = f"/{'orgs' if org else 'repos'}/{repo}/hooks/{int(hook_id)}/deliveries"
         r = await self._client.get(path, params=params)
         if r.status_code >= 400:
             raise GitHubError(f"GitHub GET {path}: {r.status_code}"[:500])
         nxt = (r.links.get("next") or {}).get("url")
         return r.json() or [], (httpx.URL(nxt).params.get("cursor") if nxt else None)
 
-    async def redeliver(self, repo: str, hook_id: int, delivery_id: int) -> None:  # --- reconciler
-        await self._req("POST", f"/repos/{repo}/hooks/{int(hook_id)}/deliveries/{int(delivery_id)}/attempts")
+    async def redeliver(self, repo: str, hook_id: int, delivery_id: int, org: bool = False) -> None:  # --- reconciler
+        await self._req("POST", f"/{'orgs' if org else 'repos'}/{repo}/hooks/{int(hook_id)}/deliveries/"
+                                f"{int(delivery_id)}/attempts")
 
     async def issue_comments(self, repo: str, number: int, limit: int = 20) -> list[dict[str, Any]]:
         out = await self._req("GET", f"/repos/{repo}/issues/{number}/comments", params={"per_page": 100})

@@ -34,7 +34,7 @@ from hangar.store import Store
 if TYPE_CHECKING:
     from hangar.fleet import Fleet
     from hangar.jobs import JobService
-    from hangar.models import Job
+    from hangar.models import Attempt, Job, Session
 
 log = logging.getLogger(__name__)
 
@@ -254,6 +254,15 @@ class Power:
         svc._event(job, f"waiting: {self.status_line()}", reason=WAITING)
         self._hold(svc, job.id)
         return True
+
+    def cut_off_attempt(self, svc: JobService, job: Job, a: Attempt, s: Session) -> bool:
+        """--- trust: a best-of-N attempt's turn the power-down cut off resumes from its checkpoint after power-up,
+        like a job's turn (resume_cut_off), instead of failing on its own. The job then waits (`requeue`)."""
+        from hangar import restarts
+
+        if not self.off or not self.affects(job.provider):
+            return False
+        return restarts.resume_attempt(svc, job, a, s, why="the sandbox pools powered down", message=POWERED_DOWN)
 
     # ------------------------------------------------------------------ warm pools
     def warm_for(self, env: str) -> int:

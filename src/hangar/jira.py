@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import hmac
 import json
 import logging
@@ -25,7 +26,7 @@ import math
 import re
 import time
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 import httpx
 from fastapi import Request
@@ -44,6 +45,13 @@ if TYPE_CHECKING:
 log = logging.getLogger("hangar.jira")
 
 MAX_BODY = 1_000_000
+# --- trust: past MAX_BODY a delivery is read on (not kept) up to Jira's own limit ("Webhooks over 25 MB aren't
+# delivered", Atlassian's webhook docs), so it can be authenticated, audited and answered on its issue
+LARGE_MAX = 25 * 1024 * 1024
+LARGE_HEAD = 64 * 1024  # what is kept of it: the issue's key comes before its fields
+LARGE_NOTE_SECONDS = 86400  # at most one comment a day per issue about it
+_HEAD_KEY = re.compile(rb'"issue"\s*:\s*\{.*?"key"\s*:\s*"([A-Z][A-Z0-9_]{0,49}-[1-9][0-9]{0,9})"', re.S)
+_HEAD_TIME = re.compile(rb'"timestamp"\s*:\s*(?:"([^"\\]{1,40})"|(-?[0-9][0-9.eE+]{0,30}))')
 COMMENT_LIMIT = 30_000  # Jira caps a comment at 32,767 characters
 OWN = "[hangar]"  # every comment hangar writes starts with this, so its own comments never count as replies
 _KEY = re.compile(r"^[A-Z][A-Z0-9_]{0,49}-[1-9][0-9]{0,9}$")
@@ -475,6 +483,13 @@ def _who(user: Any, account: str | None) -> str:
     return " ".join(name.split())[:80] or account or "someone"
 
 
+def _number(raw: bytes) -> float | None:
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
 def _timestamp(value: Any) -> float | None:
     """Epoch seconds from a webhook's `timestamp` (milliseconds) or an Automation rule's `{{now}}` (ISO 8601)."""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -487,6 +502,15 @@ def _timestamp(value: Any) -> float | None:
         except ValueError:
             return None
     return None
+
+
+class _Large(NamedTuple):
+    """What hangar keeps of a body over MAX_BODY (--- trust)."""
+
+    head: bytes  # its first LARGE_HEAD bytes
+    size: int
+    digest: str  # sha256 of all of it, for the replay guard
+    signature: str | None  # "sha256=<hex>" of all of it with the webhook secret, when the request is signed
 
 
 class JiraFrontDoor:
@@ -527,9 +551,20 @@ class JiraFrontDoor:
             return 503, {"error": str(e)}
         if cfg is None:
             return 404, {"error": "Jira intake is not configured (HANGAR_JIRA)"}
-        body = await intake.read_body(request, MAX_BODY)
+        # --- trust: what may let a body over the cap be read on: the webhook secret, or a good Automation token
+        sig, token = request.headers.get("x-hub-signature"), request.headers.get("x-hangar-token")
+        try:
+            secret = self.jobs.broker.secret_text(cfg.webhook_secret_credential) \
+                if sig is not None and cfg.webhook_secret_credential else None
+            token_ok = sig is None and token is not None and self._authentic(cfg, request, b"")[0]
+        except Exception:  # noqa: BLE001 - say nothing about the vault to an anonymous caller
+            log.error("Jira webhook credentials are not usable")
+            return 503, {"error": "Jira intake is misconfigured"}
+        body = await self._read(request, secret, token_ok)  # --- trust: or what it keeps of one over the cap
         if body is None:
             return 413, {"error": "body too large"}
+        if isinstance(body, _Large):
+            return await self._too_large(cfg, request, body, token_ok)
         try:
             ok, why = self._authentic(cfg, request, body)
         except Exception:  # noqa: BLE001 - say nothing about the vault to an anonymous caller
@@ -557,6 +592,101 @@ class JiraFrontDoor:
             self.jobs.admission.refused("jira:replay", "jira", "hook.replay", delivery or None)
             return 200, {"ignored": "duplicate delivery"}
         return (429 if res.get("rate_limited") else 200), res
+
+    # ------------------------------------------------------------------ deliveries over the cap (--- trust)
+    @staticmethod
+    async def _read(request: Request, secret: str | None, token_ok: bool) -> bytes | _Large | None:
+        """The body. Past MAX_BODY, one that may be authentic (signed with a configured secret, or with the right
+        Automation token) is read on to Jira's own 25 MB limit without being kept, so it can be checked and answered
+        (#92: Jira doesn't retry a 413, so the trigger was lost without a word). None for anything else past the cap."""
+        length = request.headers.get("content-length")
+        if length is not None and (not length.isdigit() or int(length) > LARGE_MAX):
+            return None
+        body, head, size = b"", b"", 0
+        sha: Any = None
+        mac: Any = None
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > LARGE_MAX:
+                return None
+            if sha is not None:
+                sha.update(chunk)
+                if mac is not None:
+                    mac.update(chunk)
+                continue
+            body += chunk
+            if len(body) > MAX_BODY:
+                if secret is None and not token_ok:
+                    return None  # unsigned, and no good token: nothing to read on for
+                sha = hashlib.sha256(body)
+                mac = hmac.new(secret.encode(), body, hashlib.sha256) if secret is not None else None
+                head, body = body[:LARGE_HEAD], b""
+        if sha is None:
+            return body
+        return _Large(head, size, sha.hexdigest(), ("sha256=" + mac.hexdigest()) if mac is not None else None)
+
+    async def _too_large(self, cfg: JiraConfig, request: Request, big: _Large,
+                         token_ok: bool) -> tuple[int, dict[str, Any]]:
+        """A delivery over the cap: audited, and when it is authentic and its issue is waiting for an agent, a
+        comment on the issue says why no job started. Still a 413: hangar didn't take it."""
+        sig = request.headers.get("x-hub-signature")
+        if sig is not None:
+            ok = big.signature is not None and \
+                hmac.compare_digest(big.signature.encode(), sig.encode("utf-8", "replace"))
+        else:
+            ok = token_ok  # the Automation token: the body plays no part
+        res: dict[str, Any] = {"error": "body too large"}
+        if not ok:
+            log.warning("Jira webhook over %d bytes rejected: not authentic", MAX_BODY)
+            return 413, res
+        t = _HEAD_TIME.search(big.head)
+        raw: Any = None
+        if t is not None:
+            raw = t.group(1).decode("utf-8", "replace") if t.group(1) is not None else _number(t.group(2))
+        ts = _timestamp(raw)
+        if ts is None or abs(self.clock() - ts) > cfg.max_age_minutes * 60:
+            self.jobs.admission.refused("jira:stale", "jira", "hook.stale", None, timestamp=str(ts))
+            return 413, res
+        m = _HEAD_KEY.search(big.head)
+        key = m.group(1).decode() if m else None
+        delivery = (request.headers.get("x-atlassian-webhook-identifier") or "").strip()[:100]
+        res["issue"] = key
+        svc = self.jobs
+
+        async def handle() -> dict[str, Any]:
+            svc.admission.refused("jira:too-large", "jira", "jira.too_large", ref_of(key) if key else None,
+                                  bytes=big.size, delivery=delivery or None, limit=MAX_BODY)
+            if key and key.rsplit("-", 1)[0] in cfg.projects and intake.open_job(svc, ref_of(key)) is None:
+                svc._spawn(self._say_too_large(cfg, key))
+            return {"ok": True}
+
+        await intake.once(svc, "jira:too-large", big.digest, handle)  # Jira's retry of it: audited once
+        return 413, res
+
+    async def _say_too_large(self, cfg: JiraConfig, key: str) -> None:
+        """The comment, only when the issue is in the trigger status or has the trigger label now (a large edit of
+        an issue nobody asked an agent about says nothing), and at most once a day per issue."""
+        replays = self.jobs.admission.replays
+        if replays.get("jira:too-large-note", key) is not None:
+            return
+        api = client_for(self.jobs, cfg)
+        if api is None:
+            return
+        try:
+            fields = (await api.issue(key) or {}).get("fields") or {}
+            t, status = cfg.trigger, str((fields.get("status") or {}).get("name") or "").casefold()
+            if not ((t.status and status == t.status.casefold()) or (t.label and t.label in (fields.get("labels")
+                                                                                           or []))):
+                return
+            replays.put("jira:too-large-note", key, "", LARGE_NOTE_SECONDS)
+            await api.comment(key, f"{OWN} hangar couldn't start a job for this issue: Jira's webhook for it was "
+                                   f"larger than hangar takes ({MAX_BODY // 1_000_000} MB), most likely because the "
+                                   "description is too large. Shorten the description (attach long logs as files "
+                                   "instead), then move the issue here again.")
+        except (JiraError, httpx.HTTPError) as e:
+            log.warning("could not comment on Jira issue %s about its large delivery: %s", key, e)
+        finally:
+            await api.close()
 
     async def handle(self, cfg: JiraConfig, payload: dict[str, Any], delivery: str = "") -> dict[str, Any]:
         event = str(payload.get("webhookEvent") or "")
