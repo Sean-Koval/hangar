@@ -439,6 +439,11 @@ class EgressProxy:
         except Exception as e:  # noqa: BLE001 - its environment is gone or unreadable: deny
             raise Denied(403, "no_policy", f"no egress policy for this sandbox ({type(e).__name__})", "policy") from e
         rule = pol.allows(host, port)
+        # --- egress2: a registry the package mirror stands in for: say so, rather than suggest asking for the host
+        if rule is None and (eco := next((e for e in pol.mirrors if host in egress.PRESETS[e]), None)):
+            raise Denied(403, "mirrored", f"{host} isn't reachable from a sandbox: {eco} packages come through "
+                         "hangar's read-only mirror, which the sandbox's package tools are set up for (PIP_INDEX_URL, "
+                         "NPM_CONFIG_REGISTRY, GOPROXY in ~/.hangar/env)", "policy")
         if rule is None:
             raise Denied(403, "not_allowed",
                          f"{host}:{port} is not on this sandbox's egress allowlist (mode {pol.mode}, environment "

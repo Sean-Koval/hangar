@@ -388,6 +388,24 @@ async def test_a_sandbox_has_a_bounded_number_of_tunnels(proxied):
     w.close()
 
 
+async def test_a_registry_the_mirror_stands_in_for_is_refused_with_a_pointer_to_the_mirror(proxied, tmp_path):
+    """--- egress2: an agent that tries pypi.org itself learns its tools read through the mirror, instead of being
+    told to ask its owner for a host that takes uploads."""
+    p = proxied
+    p.fleet.settings.gateway_url = "http://hangar-gateway.hangar.svc:8788"
+    p.fleet.catalog.add({"name": "pkgs", "harnesses": ["claude-code"], "egress": {"mode": "allowlist"}},
+                        save_dir=tmp_path)
+    sb = Sandbox(id="sb-pkgs0x", name="p", environment="pkgs", provider="docker", state=SandboxState.RUNNING,
+                 person="ann", info={"harness": "claude-code"})
+    p.store.put(sb)
+    first, r, _ = await ask(p.px, f"CONNECT pypi.org:443 HTTP/1.1\r\n{auth(p.fleet, sb)}")
+    body = await r.read()
+    assert first.startswith(b"HTTP/1.1 403") and b"read-only mirror" in body and b"env request" not in body
+    assert audits(p.store, "egress.deny")[0].detail["reason"] == "mirrored"
+    assert egressapi.policy(p.fleet.catalog.get("pkgs"), sandbox=sb, fleet=p.fleet)["mirrors"] == ["pypi", "npm",
+                                                                                                   "go"]
+
+
 async def test_a_persons_sandboxes_share_a_cap_and_others_are_unaffected(proxied):
     """--- egress2 (#97 review): one person's ten sandboxes can't hold the proxy's connections for the team."""
     p = proxied
