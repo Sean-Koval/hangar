@@ -14,9 +14,12 @@ Now the reaper sweeps them: a template of that shape that no live sandbox was st
 from __future__ import annotations
 
 import asyncio
+import collections
+import contextlib
 import logging
 import re
 import time
+from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -32,6 +35,37 @@ GRACE = 600.0  # seconds a new template is left alone: its create may not have m
 EVERY = 600.0  # seconds between two sweeps (the reaper runs every minute)
 LABELS = "app.kubernetes.io/managed-by=hangar"
 _last: dict[int, float] = {}
+
+
+def _races(prov: Any) -> tuple[collections.Counter[str], set[str]]:
+    """--- review: (creates in flight per spec name, spec names whose template a sweep is deleting), per provider."""
+    return prov.__dict__.setdefault("_k8sgc_creating", collections.Counter()), \
+        prov.__dict__.setdefault("_k8sgc_deleting", set())
+
+
+@contextlib.asynccontextmanager
+async def creating(prov: Any, name: str) -> AsyncIterator[None]:
+    """--- review: a create applying or claiming from `hangar-<name>`. The sweep leaves the template alone meanwhile,
+    and a create that comes while the sweep deletes it waits, then applies it again (the delete clears the cache)."""
+    n, deleting = _races(prov)
+    while name in deleting:
+        await asyncio.sleep(0.05)
+    n[name] += 1
+    try:
+        yield
+    finally:
+        n[name] -= 1
+        if n[name] <= 0:
+            del n[name]
+
+
+def _in_use(fleet: Fleet, name: str, env: str) -> bool:
+    """--- review: a live sandbox runs on the template, or one of its environment's can't be told (read now)."""
+    for sb in fleet.store.list_active(Sandbox):
+        if sb.provider == "kubernetes" and ((t := template_of(fleet, sb)) == name or
+                                            (t is None and sb.environment[:40] == env)):
+            return True
+    return False
 
 
 def template_of(fleet: Fleet, sb: Sandbox) -> str | None:
@@ -97,11 +131,20 @@ async def sweep(fleet: Fleet, force: bool = False) -> list[str]:
         m = DERIVED.match(name)
         if not m or name in base or name in used or m["env"] in unsure or now - _created(tmpl) < GRACE:
             continue
+        # --- review: the sandboxes were read before the deletes before this one, each a wait on the cluster. A
+        # create in flight, or one saved since, keeps it; from here to the end of the delete, creates of it wait.
+        key = name.removeprefix("hangar-")
+        creates, deleting = _races(prov)
+        if creates.get(key) or _in_use(fleet, name, m["env"]):
+            continue
+        deleting.add(key)
         try:
             await delete(prov, name)
             gone.append(name)
         except Exception as e:  # noqa: BLE001 - the next sweep tries again
             log.warning("could not delete SandboxTemplate %s: %s", name, e)
+        finally:
+            deleting.discard(key)
     if gone:
         log.info("deleted %d SandboxTemplate(s) no sandbox uses: %s", len(gone), ", ".join(gone[:10]))
     return gone

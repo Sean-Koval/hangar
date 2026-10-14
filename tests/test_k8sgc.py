@@ -39,6 +39,7 @@ class ListingCRD(FakeCRD):
 def _template(p, name: str, created: str = OLD) -> None:
     for plural in ("sandboxtemplates", "sandboxwarmpools"):
         p.crd.objects[(plural, name)] = {"metadata": {"name": name, "creationTimestamp": created,
+                                                      "resourceVersion": "1",
                                                       "labels": {"app.kubernetes.io/managed-by": "hangar"}}}
     p._synced[name.removeprefix("hangar-")] = ("synced",)
 
@@ -110,3 +111,95 @@ async def test_trimming_a_build_leaves_its_template_to_the_sweep(fleet, k8s):
                         provider="kubernetes", image="reg/plain-repo:x-0a1b2c3d")
     await envbuilds.of(fleet)._forget(b)
     assert k8s.crd.deleted == [] and ("sandboxtemplates", "hangar-plain-0a1b2c3d") in k8s.crd.objects
+
+
+# ====================================================================== review: a sweep racing a create
+def _blocking(k8s, plural: str, method: str):
+    """The fake CRD's `method` on `plural` waits until released; returns (entered, release)."""
+    import threading
+
+    entered, release = threading.Event(), threading.Event()
+    real = getattr(k8s.crd, method)
+
+    def wrapped(*a, **kw):
+        if plural in a:
+            entered.set()
+            release.wait(5)
+        return real(*a, **kw)
+
+    setattr(k8s.crd, method, wrapped)
+    return entered, release
+
+
+async def _wait(ev) -> None:
+    import asyncio
+
+    for _ in range(250):
+        if ev.is_set():
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError("never got there")
+
+
+async def test_a_template_is_kept_while_a_create_claims_from_it(fleet, k8s):
+    """--- review: a create whose template was already applied (in the provider's cache) claims from it without
+    applying it again; a sweep that listed the live sandboxes just before deleted it under the claim."""
+    import asyncio
+
+    from tests.test_kubernetes import spec
+
+    _template(k8s, "hangar-plain-0a1b2c3d")  # applied an hour ago, unused since
+
+    async def up_to_date(*_a):  # the provider's cache: applied already, nothing to change
+        pass
+
+    k8s.sync_warm_pool = up_to_date
+    entered, release = _blocking(k8s, "sandboxclaims", "create_namespaced_custom_object")
+    sb = Sandbox(name="a", environment="plain", provider="kubernetes")
+    s = spec().model_copy(update={"name": "plain-0a1b2c3d", "warm_pool": 0})
+    create = asyncio.create_task(k8s.create(sb, "reg/plain:x", s))
+    await _wait(entered)
+    try:
+        assert await k8sgc.sweep(fleet, force=True) == []
+    finally:
+        release.set()
+    await create
+    assert ("sandboxwarmpools", "hangar-plain-0a1b2c3d") in k8s.crd.objects
+
+
+async def test_a_create_waits_for_a_delete_of_its_template_then_applies_it_again(fleet, k8s):
+    """--- review: a create that came while the sweep was deleting its template claimed from it, and the sweep then
+    deleted it under the claim."""
+    import asyncio
+
+    from tests.test_kubernetes import spec
+
+    _template(k8s, "hangar-plain-0a1b2c3d")
+    entered, release = _blocking(k8s, "sandboxwarmpools", "delete_namespaced_custom_object")
+    sweep = asyncio.create_task(k8sgc.sweep(fleet, force=True))
+    await _wait(entered)
+    sb = Sandbox(name="a", environment="plain", provider="kubernetes")
+    create = asyncio.create_task(k8s.create(sb, "reg/plain:x", spec().model_copy(
+        update={"name": "plain-0a1b2c3d", "warm_pool": 0})))
+    await asyncio.sleep(0.1)
+    release.set()
+    assert await sweep == ["hangar-plain-0a1b2c3d"]
+    await create
+    assert ("sandboxwarmpools", "hangar-plain-0a1b2c3d") in k8s.crd.objects
+    assert ("sandboxtemplates", "hangar-plain-0a1b2c3d") in k8s.crd.objects
+
+
+async def test_a_sandbox_saved_after_the_sweep_listed_them_keeps_its_template(fleet, k8s, monkeypatch):
+    """--- review: the live sandboxes were read once, before the deletes, each of which waits on the cluster."""
+    _template(k8s, "hangar-plain-0a1b2c3d")
+    real, calls = fleet.store.list_active, []
+
+    def list_active(cls):
+        out = real(cls)
+        if cls is Sandbox and not calls:  # a create saves its sandbox right after this
+            calls.append(1)
+            _live(fleet, info={"k8s_template": "hangar-plain-0a1b2c3d"})
+        return out
+
+    monkeypatch.setattr(fleet.store, "list_active", list_active)
+    assert await k8sgc.sweep(fleet, force=True) == []
