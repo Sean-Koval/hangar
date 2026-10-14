@@ -20,7 +20,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 import hangar.identity as identity
-from hangar.models import ApiToken, Credential, Person, Session, Snapshot
+from hangar.models import ApiToken, Credential, Person, ScheduledJob, Session, Snapshot
 
 if TYPE_CHECKING:
     from hangar.store import Store
@@ -91,6 +91,11 @@ def remove(store: Store, person_id: str) -> list[str]:
     revoked = [t.id for t in store.list(ApiToken) if t.person == person_id]
     for t in revoked:
         store.delete(ApiToken, t)
+    # --- review: their schedules would keep starting jobs as them, with their own credentials
+    for s in store.list(ScheduledJob):
+        if s.person == person_id and s.enabled:
+            s.enabled, s.last_error = False, f"paused: {person_id} was removed"
+            store.put(s)
     store.delete(Person, person_id)
     return revoked
 
@@ -265,3 +270,14 @@ def credentials_for(store: Store, names: list[str], person: str | None, harness:
     if not own:
         return out
     return [n for n in out if creds.get(n) is None or creds[n].harness != harness] + own
+
+
+def check_secrets(store: Store, secrets: dict[str, str], person: str | None) -> None:
+    """`secrets:` names credentials outside credentials_for: refuse another person's own one (--- review)."""
+    from hangar.broker import CredentialError
+
+    for var, name in secrets.items():
+        c = store.get(Credential, name)
+        if c is not None and c.person is not None and c.person != person:
+            raise CredentialError(f"secrets: {var}: credential '{name}' is {c.person}'s own and goes only into "
+                                  "their sandboxes")

@@ -359,3 +359,123 @@ def test_person_cli(monkeypatch):
     assert res.exit_code == 0, res.output
     assert calls == [("POST", "/api/people", {"id": "alice", "name": "Alice", "role": "member", "token": True})]
     assert "hgr_x" in res.output and "hangar connect" in res.output
+
+
+# ====================================================================== review (#88)
+async def test_secrets_never_map_another_persons_credential(fleet, broker):
+    """An environment's `secrets:` went around credential ownership: once an admin mapped their own key into an
+    environment, any member could start a sandbox from it and read the key there."""
+    broker.put("openai-alice", "pi", CredentialKind.API_KEY, "sk-alice-0123456789abcdef", person="alice")
+    fleet.catalog._raw["alices"] = ({"name": "alices", "extends": "plain", "secrets": {"K": "openai-alice"}}, None)
+    for person in ("bob", None):  # a teammate; a GitHub- or Slack-triggered job's sandbox
+        with pytest.raises(CredentialError, match="alice's own"):
+            await fleet.create("alices", person=person)
+    assert all(sb.environment != "alices" or sb.state.value == "error" for sb in fleet.list(include_stopped=True))
+    sb = await fleet.create("alices", person="alice")
+    assert "sk-alice-0123456789abcdef" in (await fleet.read_file(sb.id, "/home/agent/.hangar/env")).decode()
+
+
+def test_members_cannot_bind_a_signing_key_or_plant_a_control_plane_credential(app_client):
+    """Minting tokens and storing credentials became member self-service. A `jobs` token bound to a webhook key
+    signs its callbacks with it, to a URL the member picks; a credential stored under a name the settings
+    reserve but that isn't stored yet becomes the webhook secret, Slack secret or GitHub token hangar uses."""
+    from hangar.models import Credential
+
+    c = app_client
+    h = c.app.state.hangar
+    h.broker.put("gh-webhook", "webhook", CredentialKind.GENERIC, "whsec-0123456789abcdef")
+    login = c.post("/api/people", json={"id": "alice"}, headers=ADMIN_H).json()["login"]
+    alice = {"Authorization": f"Bearer {login['token']}"}
+    r = c.post("/api/tokens", json={"name": "ci", "scopes": ["jobs"], "callback_secret": "gh-webhook"}, headers=alice)
+    assert r.status_code == 403, r.text
+    assert c.post("/api/tokens", json={"name": "ci", "scopes": ["jobs"]}, headers=alice).status_code == 200
+    for setting in ("slack_signing_secret_credential", "github_webhook_secret_credential", "gateway_credential"):
+        setattr(h.settings, setting, "planted")
+        r = c.post("/api/credentials", json={"name": "planted", "harness": "git", "kind": "git_token",
+                                             "value": "attacker-chosen"}, headers=alice)
+        assert r.status_code == 403 and h.store.get(Credential, "planted") is None, (setting, r.text)
+        setattr(h.settings, setting, None)
+    # admins still may
+    assert c.post("/api/tokens", json={"name": "ci2", "scopes": ["jobs"], "callback_secret": "gh-webhook"},
+                  headers=ADMIN_H).status_code == 200
+
+
+def test_removing_someone_stops_their_schedules(store):
+    """Their tokens stop at once; their schedules kept starting jobs as them, with their own credentials."""
+    from hangar.models import ScheduledJob
+
+    people.add(store, "alice")
+    s = ScheduledJob(name="nightly", cron="0 3 * * *", template={"instructions": "x"}, owner="alice:laptop",
+                     person="alice")
+    other = ScheduledJob(name="team", cron="0 4 * * *", template={"instructions": "y"})
+    store.put(s)
+    store.put(other)
+    people.remove(store, "alice")
+    got = store.get(ScheduledJob, s.id)
+    assert not got.enabled and "alice" in (got.last_error or "")
+    assert store.get(ScheduledJob, other.id).enabled
+
+
+def test_adding_a_member_names_the_shared_credentials_they_will_get(app_client, monkeypatch):
+    """Credentials stored before people have no person, so they are the team's: the owner's own Claude or Codex
+    login goes into a new member's sandboxes, where they can read it. Adding someone says which."""
+    c = app_client
+    h = c.app.state.hangar
+    h.broker.put("claude-max", "claude-code", CredentialKind.OAUTH_TOKEN, "sk-ant-oat01-owner-0123456789")
+    h.broker.put("claude-carol", "claude-code", CredentialKind.OAUTH_TOKEN, "sk-ant-oat01-carol-0123456789",
+                 person="owner")
+    h.broker.put("gh-hook", "webhook", CredentialKind.GENERIC, "whsec-0123456789abcdef")
+    r = c.post("/api/people", json={"id": "alice"}, headers=ADMIN_H).json()
+    assert r["shared_credentials"] == ["claude-max"]
+    assert "shared_credentials" not in c.post("/api/people", json={"id": "bob", "role": "admin"},
+                                              headers=ADMIN_H).json()
+
+    from typer.testing import CliRunner
+
+    from hangar import cli
+
+    monkeypatch.setattr(cli, "_call", lambda *a, **kw: {**r, "login": None})
+    res = CliRunner().invoke(cli.app, ["person", "add", "alice"])
+    assert res.exit_code == 0 and "claude-max" in res.output and "hangar cred owner" in res.output, res.output
+
+
+async def test_the_rest_of_the_tool_surface_answers_not_found_to_a_teammate(fleet, svc, jobs, world):
+    """The tools the visibility tests above leave out: schedules, approvals, artifacts, idle, the prompt, the
+    artifact resource and sandbox watches."""
+    from hangar.triggers import Triggers
+
+    triggers = Triggers(jobs)
+    async with Client(build_mcp(fleet, jobs, svc, triggers)) as c:
+        with As(ALICE):
+            sc(await c.call_tool("new_session", {"name": "alice-work", "environment": "xenv", "repo": world["url"]}))
+            sch = sc(await c.call_tool("create_schedule", {"name": "alice-nightly", "cron": "0 3 * * *",
+                                                           "instructions": "x", "environment": "xenv",
+                                                           "repo": world["url"], "deliver": "none",
+                                                           "enabled": False}))
+            box = sc(await c.call_tool("create_sandbox", {"environment": "plain", "name": "alice-box"}))
+        j = jobs.submit(xchg.SubmitJob(instructions="x", environment="xenv", repo=world["url"], deliver="none"),
+                        xchg.Caller("a", "a", person="alice"))
+        with As(BOB):
+            assert sc(await c.call_tool("list_schedules", {})) == []
+            for tool in ("delete_schedule", "run_schedule_now"):
+                assert "no schedule" in err(await c.call_tool(tool, {"schedule": sch["id"]})), tool
+                assert "no schedule" in err(await c.call_tool(tool, {"schedule": "alice-nightly"})), tool
+            for tool in ("approve_job", "reject_job"):
+                assert "no job" in err(await c.call_tool(tool, {"job": j.id})), tool
+            for tool, args in (("keep_session", {"session": "alice-work", "idle_minutes": 600}),
+                               ("get_events", {"session": "alice-work"}),
+                               ("get_artifact", {"ref": "alice-work", "turn": 0, "path": "x"}),
+                               ("answer_approval", {"ref": "alice-work", "approval": "a1", "decision": "allow"}),
+                               ("open_session", {"session": "alice-work"})):
+                assert "no session" in err(await c.call_tool(tool, args)), tool
+            for tool, args in (("write_file", {"path": "/tmp/x", "content": "x"}), ("extend_sandbox", {"minutes": 5}),
+                               ("pause_sandbox", {}), ("run_agent", {"prompt": "x"}),
+                               ("agent_status", {"run_id": "r1"}), ("terminal_open", {"session": "t"}),
+                               ("list_snapshots", {})):
+                assert "no sandbox" in err(await c.call_tool(tool, {"sandbox": box["id"], **args})), tool
+            with pytest.raises(Exception, match="Internal server error"):  # as for a missing one: the SDK hides why
+                await c.get_prompt("pick_up_session", {"session": "alice-work"})
+            with pytest.raises(Exception, match="Error creating resource"):
+                await c.read_resource("hangar://sessions/alice-work/artifacts/0/x")
+            assert all("alice" not in str(r.uri) for r in (await c.list_resources()).resources)
+        assert triggers.get_schedule(sch["id"]).person == "alice" and fleet.get(box["id"]).state.value == "running"

@@ -65,13 +65,16 @@ def tokens(h: Any) -> list[ApiToken]:
     return [t for t in h.auth.list() if p.admin or people.token_person(t.person) == p.person]
 
 
-def token_person(h: Any, wanted: str | None, scopes: list[str]) -> str:
+def token_person(h: Any, wanted: str | None, scopes: list[str], callback_secret: str | None = None) -> str:
     """The person a new token belongs to: the one an admin names, else the caller. A member mints only their own,
-    within people.MEMBER_SCOPES."""
+    within people.MEMBER_SCOPES, and never bound to a signing key (its callbacks would be signed with a
+    control-plane key, to a URL the member picks)."""
     p = _caller()
     target = wanted or p.person
     if not p.admin and target != p.person:
         raise identity.Forbidden("you can mint tokens only for yourself")
+    if not p.admin and callback_secret:  # --- review
+        raise identity.Forbidden("binding a token to a signing key (callback_secret) needs an admin token")
     person = people.get(h.store, target)
     if person is None:
         raise KeyError(f"no person '{target}'")
@@ -106,6 +109,8 @@ def credential_person(h: Any, name: str, harness: str, kind: CredentialKind, wan
         raise identity.Forbidden(f"credential '{name}' isn't yours; pick another name")
     if harness == "webhook" or kind == CredentialKind.GITHUB_APP or exposure:
         raise identity.Forbidden("control-plane credentials and exposure are set by an admin")
+    if name in identity.reserved_names(h.settings):  # --- review: hangar would sign, verify or call GitHub with it
+        raise identity.Forbidden(f"'{name}' is a name hangar's settings reserve for its own credentials; pick another")
     return p.person
 
 
@@ -146,6 +151,9 @@ def mount(app: FastAPI, h: Any, A: Any) -> None:
         p = people.add(h.store, body.id, body.name, body.role)
         h.fleet.audit(who, "person.add", p.id, role=p.role)
         out: dict[str, Any] = p.model_dump(mode="json")
+        if p.role == "member":  # --- review: what goes into their sandboxes, readable there (the CLI warns)
+            out["shared_credentials"] = sorted(c.name for c in h.broker.list() if c.person is None
+                                               and identity.exposure(c, h.settings) == "sandbox")
         if body.token:
             out["login"] = _mint_login(h, p, "login", who)
         return out

@@ -597,6 +597,7 @@ class Fleet:
             self.broker.get(c)  # fail fast on typos
         for c in spec.secrets.values():  # --- identity: and on control-plane credentials mapped in (B4)
             self.broker.check_sandbox(c)
+        people.check_secrets(self.store, spec.secrets, person)  # --- identity review: and on another person's own
         ttl = ttl_minutes if ttl_minutes is not None else self.settings.default_ttl_minutes
         base_name = _slug(name or f"{environment}-{new_id('x')[2:]}")
         taken = {s.name for s in active}

@@ -771,7 +771,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         bad = [x for x in body.scopes if x not in SCOPES]
         if bad or not body.scopes:
             raise HTTPException(400, f"unknown scopes {bad}; choose from {list(SCOPES)}")
-        person = identity_api.token_person(h, body.person, body.scopes)  # --- identity
+        person = identity_api.token_person(h, body.person, body.scopes, body.callback_secret)  # --- identity
         if body.callback_secret:
             cred = h.store.get(Credential, body.callback_secret)
             if cred is None or cred.harness != "webhook":

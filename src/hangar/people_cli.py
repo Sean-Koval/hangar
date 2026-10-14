@@ -28,6 +28,11 @@ def person_add(person_id: str = typer.Argument(..., help="A short lowercase id, 
     admins on everyone's, and manage people and the vault."""
     p = _cli()._call("POST", "/api/people", json={"id": person_id, "name": name, "role": role, "token": not no_token})
     typer.secho(f"added {p['id']} ({p['role']})", fg="green")
+    if shared := p.get("shared_credentials"):  # --- review: e.g. your own Claude login, stored before people
+        typer.secho(f"{p['id']}'s sandboxes get the team's shared credentials when an environment lists them, and "
+                    f"{p['id']} can read them there: {', '.join(shared)}. To keep one of yours to yourself: "
+                    "hangar cred owner NAME owner (jobs from GitHub and Slack, which run for no one yet, then go "
+                    f"without it). {p['id']} adds their own with hangar cred add.", fg="yellow")
     if p.get("login"):
         _login_hint(p["login"])
 
