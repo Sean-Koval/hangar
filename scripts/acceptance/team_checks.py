@@ -395,8 +395,11 @@ def check_computer(api: Api, state: State, opts: argparse.Namespace) -> str:
     sid = sb["id"]
     note(state, "computer", timings={"create": boot})
     st = json.loads(api.must(sid, "cat ~/.hangar/envstatus.json"))
-    runtime = st.get("runtime")
-    say(f"{sid} on {sb['provider']}, runtime {runtime}, /dev/shm {st.get('shm_mb', '?')} MB; created in {boot:.0f}s")
+    runtime = st.get("runtime")  # what hangar configured; gVisor's own kernel log says what it runs under
+    kernel = api.exec(sid, "dmesg 2>/dev/null | head -n 3; uname -r")["stdout"]
+    if "gvisor" in kernel.lower():
+        runtime = "gvisor"
+    say(f"{sid} on {sb['provider']}, runtime {runtime} ({' '.join(kernel.split())[:80]}); created in {boot:.0f}s")
     if sb["provider"] == "kubernetes" and runtime != "gvisor":
         raise Fail(f"the sandbox runs under {runtime}, not gVisor: the computer must work under GKE Sandbox")
     problems: list[str] = []
@@ -440,9 +443,10 @@ def check_computer(api: Api, state: State, opts: argparse.Namespace) -> str:
         rfb.pointer(*target, buttons=1)
         rfb.pointer(*target)
         rfb.key(0x61)
-        rfb.alive()
+        rfb.alive()  # the server answers in order: anything sent before this reached it, or never will
     finally:
         ws.close()
+    time.sleep(0.5)
     after_view = _mouse(api, sid)
     say(f"view-only screen ({name!r}, {sw}x{sh}) opened in {opened:.1f}s; pointer sent to {target}: the sandbox's "
         f"pointer is at {after_view}")
@@ -454,6 +458,7 @@ def check_computer(api: Api, state: State, opts: argparse.Namespace) -> str:
         rfb.alive()
     finally:
         ws.close()
+    time.sleep(0.5)
     after_control = _mouse(api, sid)
     say(f"control screen: pointer sent to {target}, the sandbox's pointer is at {after_control}")
     if after_control != target:
@@ -1440,7 +1445,11 @@ def cleanup_first(api: Api, state: State, attempt: Callable[[str, Callable[[], A
         def cancel(jid: str = jid) -> None:
             r = api.http.get(f"/api/jobs/{jid}")
             if r.status_code == 200 and r.json()["state"] not in TERMINAL_JOB:
-                api.call("POST", f"/api/jobs/{jid}/cancel")
+                try:
+                    api.call("POST", f"/api/jobs/{jid}/cancel")
+                except Fail:  # it may have ended in between
+                    if api.call("GET", f"/api/jobs/{jid}")["state"] not in TERMINAL_JOB:
+                        raise
         attempt(f"job {jid}", cancel)
     if state.get("prs"):
         gh = GitHubApi(github_token() or os.environ.get("HANGAR_ACCEPT_APPROVER_TOKEN"))
