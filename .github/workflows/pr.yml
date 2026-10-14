@@ -63,15 +63,16 @@ jobs:
       - if: steps.select.outputs.count != '0'
         run: uv run pytest -q -n "$PYTEST_WORKERS" $(cat "$RUNNER_TEMP/selected.txt")
 
-  test:  # the required check: lint and every shard passed
+  test:  # the required check: lint and every shard passed, and the path filters worked (a skip there would pass)
     if: always()
-    needs: [lint, unit]
+    needs: [lint, unit, changes]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
       - run: |
-          echo "lint: ${{ needs.lint.result }}, unit: ${{ needs.unit.result }}"
-          [ "${{ needs.lint.result }}" = success ] && [ "${{ needs.unit.result }}" = success ]
+          echo "lint: ${{ needs.lint.result }}, unit: ${{ needs.unit.result }}, changes: ${{ needs.changes.result }}"
+          [ "${{ needs.lint.result }}" = success ] && [ "${{ needs.unit.result }}" = success ] \
+            && [ "${{ needs.changes.result }}" = success ]
 
   changes:
     runs-on: ubuntu-24.04
