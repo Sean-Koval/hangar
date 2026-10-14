@@ -68,7 +68,6 @@ READS = {
     "envs": re.compile(r"""(parents\[1\]|ROOT)\s*/\s*["']envs["']"""),  # the repo's environments
     "envd": re.compile(r"""BINARIES|envd_dir|HANGAR_ENVD_DIR"""),  # the hangar-envd binary
 }
-SCANS_SOURCES = re.compile(r"""["']src["']\s*/\s*["']hangar["']""")  # e.g. a test that walks every module's ast
 
 
 @dataclass
@@ -113,6 +112,14 @@ def imports(tree: ast.Module, name: str, package: bool) -> set[str]:
     return {m for m in out if m.split(".")[0] in ("hangar", "tests")}
 
 
+def scans_sources(tree: ast.Module) -> bool:
+    """Whether the file builds the path `... / "src" / "hangar"`: a test that reads every module's source (its ast)
+    depends on all of them."""
+    return any(isinstance(n, ast.BinOp) and isinstance(n.op, ast.Div) and isinstance(n.left, ast.BinOp)
+               and isinstance(n.right, ast.Constant) and n.right.value == "hangar"
+               and isinstance(n.left.right, ast.Constant) and n.left.right.value == "src" for n in ast.walk(tree))
+
+
 def opt_ins(tree: ast.Module) -> dict[str, str]:
     """Module-level markers that skip unless an env var opts in, e.g. `pytestmark = pytest.mark.skipif(
     os.environ.get("HANGAR_E2E") != "1", ...)` -> {"pytestmark": "HANGAR_E2E"}."""
@@ -135,6 +142,7 @@ class Graph:
         self.text: dict[str, str] = {}
         self.imports: dict[str, set[str]] = {}
         self.opt_ins: dict[str, dict[str, str]] = {}
+        self.scanners: set[str] = set()
         for p in [*sorted((root / "src").rglob("*.py")), *sorted((root / "tests").rglob("*.py"))]:
             rel = p.relative_to(root).as_posix()
             name = module_name(rel)
@@ -144,6 +152,8 @@ class Graph:
             tree = ast.parse(self.text[name], rel)
             self.imports[name] = imports(tree, name, p.name == "__init__.py")
             self.opt_ins[name] = opt_ins(tree)
+            if scans_sources(tree):
+                self.scanners.add(rel)
         self.importers: dict[str, set[str]] = defaultdict(set)
         for name, deps in self.imports.items():
             for d in deps:
@@ -219,7 +229,7 @@ def select(changed: list[str], graph: Graph) -> Selection:
         sel.tests |= hit
         sel.why.append(f"{graph.files.get(name, name)}: {len(hit)} test file(s) import it or a module that does")
     if src_modules:
-        scanners = {f for n, f in graph.tests.items() if SCANS_SOURCES.search(graph.text[n])}
+        scanners = graph.scanners & set(graph.tests.values())
         sel.tests |= scanners
         if scanners:
             sel.why.append(f"hangar source changed: {len(scanners)} test file(s) scan every module")

@@ -106,6 +106,8 @@ def test_the_real_e2e_suites():
     e2e = {t for t in graph.tests.values() if graph.is_e2e(t)}
     assert {str(p.relative_to(ROOT)) for p in (ROOT / "tests").glob("test_e2e_*_docker.py")} <= e2e
     assert "tests/test_e2e_kata.py" not in e2e and "tests/test_acceptance_script.py" in e2e
+    # this file's fixture repo spells out an opt-in marker and a source scan in strings: neither counts
+    assert "tests/test_ci.py" not in e2e | graph.scanners and graph.is_unit("tests/test_ci.py")
 
 
 def test_every_hangar_module_maps_to_tests_or_the_full_suite():

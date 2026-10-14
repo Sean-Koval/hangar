@@ -40,12 +40,13 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2  # the merge commit and its parents: HEAD^1 is the base it merges into
+      # The list goes outside the checkout: an untracked file there would be a change, and select everything.
       - name: Select tests
         id: select
         run: |
-          python3 scripts/ci/select_tests.py --base HEAD^1 --shard ${{ matrix.shard }}/4 > selected.txt
-          echo "count=$(grep -c . selected.txt || true)" >> "$GITHUB_OUTPUT"
-          cat selected.txt
+          python3 scripts/ci/select_tests.py --base HEAD^1 --shard ${{ matrix.shard }}/4 > "$RUNNER_TEMP/selected.txt"
+          echo "count=$(grep -c . "$RUNNER_TEMP/selected.txt" || true)" >> "$GITHUB_OUTPUT"
+          cat "$RUNNER_TEMP/selected.txt"
       - if: steps.select.outputs.count != '0'
         uses: astral-sh/setup-uv@v7
         with:
@@ -60,7 +61,7 @@ jobs:
       - if: steps.select.outputs.count != '0'
         run: uv sync --all-extras --locked
       - if: steps.select.outputs.count != '0'
-        run: uv run pytest -q -n "$PYTEST_WORKERS" $(cat selected.txt)
+        run: uv run pytest -q -n "$PYTEST_WORKERS" $(cat "$RUNNER_TEMP/selected.txt")
 
   test:  # the required check: lint and every shard passed
     if: always()
