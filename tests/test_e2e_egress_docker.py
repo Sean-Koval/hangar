@@ -70,3 +70,48 @@ async def test_a_proxied_sandbox_reaches_only_its_allowlist_on_docker(tmp_path):
         await fleet.destroy_many(label="e2e-egress")
         await fleet.stop()
         await fleet.gateway.stop()
+
+
+async def test_a_proxied_sandboxs_preview_port_is_reached_and_its_egress_stays_shut(tmp_path):
+    """--- egress2 (#97 x #99): the preview proxy reaches a port of a sandbox on the internal egress network, at the
+    address its hangar-envd proved, and nothing about that opens the sandbox's own way out."""
+    import httpx
+
+    from hangar.app import Hangar
+    from hangar.config import Settings
+    from hangar.preview import PreviewRouter
+
+    envs = tmp_path / "envs"
+    envs.mkdir()
+    (envs / "locked-web.yaml").write_text(yaml.safe_dump({
+        "name": "locked-web", "extends": "minimal", "ports": [{"port": 8000, "name": "web"}],
+        "egress": {"mode": "allowlist", "presets": [], "allow": ["example.com"]}}))
+    s = Settings(data_dir=tmp_path, env_dirs=[ROOT / "envs", envs], reaper_interval_seconds=3600,
+                 admin_token="e2e-preview-admin-token-0123456789", preview_domain="localhost",
+                 extra_ca_bundle=os.environ.get("HANGAR_EXTRA_CA_BUNDLE") or None)
+    s.snapshot_dir.mkdir(parents=True, exist_ok=True)
+    h = Hangar(s)
+    fleet = h.fleet
+    await fleet.start()
+    try:
+        sb = await fleet.create("locked-web", name="e2e-egress-web", labels={"e2e-egress": "1"}, actor="test")
+        r = await fleet.exec(sb.id, "mkdir -p /tmp/site && echo preview-ok > /tmp/site/index.html && "
+                                    "(cd /tmp/site && nohup python3 -m http.server 8000 >/dev/null 2>&1 &) && sleep 1")
+        assert r.exit_code == 0, r.stderr
+
+        async def app(scope, receive, send):  # what the router passes on: nothing, here
+            raise AssertionError(scope.get("path"))
+
+        router = PreviewRouter(app, h)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=router), timeout=60,
+                                     base_url=f"http://8000-{sb.id}.localhost",
+                                     headers={"Authorization": f"Bearer {s.admin_token}"}) as c:
+            resp = await c.get("/index.html")
+        assert resp.status_code == 200 and resp.text.strip() == "preview-ok", resp.text
+        # the sandbox's own way out is as shut as before
+        r = await fleet.exec(sb.id, "timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' && echo open || echo shut")
+        assert r.stdout.strip() == "shut", r.stdout + r.stderr
+    finally:
+        await fleet.destroy_many(label="e2e-egress")
+        await fleet.stop()
+        await fleet.gateway.stop()
