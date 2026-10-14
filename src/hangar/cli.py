@@ -648,6 +648,48 @@ def _usage_line(u: dict) -> str:
     return usage_line(Usage.model_validate(u))
 
 
+# --- overnight/cache: the cost report
+def _k(n: int) -> str:
+    return f"{n / 1e6:.1f}M" if n >= 1e6 else f"{n / 1e3:.1f}k" if n >= 1e3 else str(n)
+
+
+@app.command("usage")
+def usage_report(
+    by: str = typer.Option("day", "--by", help="day | model | environment | requester | repo | harness | session | "
+                                                 "job | cache_ttl"),
+    since: str = typer.Option("30d", help="7d, 12h, an ISO date, or epoch seconds."),
+    limit: int = typer.Option(50, help="Rows to show (the most expensive first, except by day)."),
+    cache: bool = typer.Option(False, "--cache", help="Prompt-cache columns: the share of prompt tokens read from the "
+                                                      "cache, 1-hour writes, and what caching saved."),
+    as_json: bool = typer.Option(False, "--json", help="The raw /api/usage answer."),
+):
+    """Tokens and cost of agent turns, grouped (admin token). `hangar usage --by session --cache` shows which
+    sessions get the most out of the prompt cache, and which pay for writes they never read back."""
+    r = _call("GET", "/api/usage", params={"group_by": by, "since": since, "limit": limit})
+    if as_json:
+        return _print(r)
+    head = f"{by.upper():32} {'TURNS':>6} {'TOKENS':>8} {'CACHED':>8} {'COST':>10}"
+    if cache:
+        head = (f"{by.upper():32} {'TURNS':>6} {'HIT':>6} {'READ':>8} {'WRITE':>8} {'1H':>8} {'COST':>10} "
+                f"{'SAVED':>10}")
+    typer.echo(head)
+    for row in [*r["rows"], r["total"]]:
+        cost = f"${row['cost_usd']:.2f}" + ("+" if row["unpriced_turns"] else "")
+        key = str(row["key"])[:32]
+        if cache:
+            hit = f"{row['cache_hit_ratio'] * 100:.0f}%" if row.get("cache_hit_ratio") is not None else "-"
+            v = row.get("saved_usd") or 0.0
+            saved = f"{'-' if v < 0 else ''}${abs(v):.2f}"
+            typer.echo(f"{key:32} {row['turns']:>6} {hit:>6} {_k(row['cache_read_tokens']):>8} "
+                       f"{_k(row['cache_write_tokens']):>8} {_k(row.get('cache_write_1h_tokens', 0)):>8} {cost:>10} "
+                       f"{saved:>10}")
+        else:
+            typer.echo(f"{key:32} {row['turns']:>6} {_k(row['tokens']):>8} {_k(row['cache_read_tokens']):>8} "
+                       f"{cost:>10}")
+    if any(row["unpriced_turns"] for row in r["rows"]):
+        typer.echo("+ some turns used a model with no known price (HANGAR_MODEL_PRICES); their cost is not counted")
+
+
 def _event_line(e: dict) -> str:
     import time
 

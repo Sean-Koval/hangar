@@ -103,6 +103,9 @@ Claude Code sends that header on HTTP MCP requests when its tracing beta is on. 
 | `hangar_cost_usd_total` | counter | `model`, `harness`, `environment`, `requester` |
 | `hangar_unpriced_turns_total` | counter | `model`, `harness`. Turns whose model has no price; their cost is unknown, not 0. |
 | `hangar_budget_stops_total` | counter | `harness`, `environment` |
+| `hangar_cost_uncached_usd_total` | counter | `model`, `harness`, `environment`. What priced turns would have cost with no prompt cache; minus `hangar_cost_usd_total`, what caching saved ([sessions.md](sessions.md#prompt-caching)). |
+| `hangar_cache_write_1h_tokens_total` | counter | `model`, `harness`. The part of `cache_write` tokens written with the 1-hour TTL (priced at 2x input). |
+| `hangar_cache_ttl_turns_total` | counter | `ttl` (`5m`, `1h`, `off`, `none`: the harness has no setting), `harness` |
 | `hangar_checkpoint_seconds` | histogram | `op` (`capture`, `restore`), `result` (`stored`, `unchanged`, `ok`, `error`) |
 | `hangar_checkpoint_bytes` | histogram | `reason` (`turn`, `interval`, `suspend`, `destroy`, `manual`) |
 | `hangar_gateway_pushes_total` | counter | `result` (`ok`, `failed`) |
@@ -130,13 +133,19 @@ sum(rate(hangar_warm_pool_claims_total{result="hit"}[1h])) / sum(rate(hangar_war
 increase(hangar_budget_stops_total[1d]) > 0
 histogram_quantile(0.99, rate(hangar_event_loop_lag_seconds_bucket[5m])) > 0.25   # the control plane is stalling
 hangar_io_pool_queue_depth > 0                                                     # provider calls are queueing
+# prompt-cache hit ratio per harness: the share of prompt tokens read from the cache
+sum by (harness) (rate(hangar_tokens_total{kind="cache_read"}[1d]))
+  / sum by (harness) (rate(hangar_tokens_total{kind=~"input|cache_read|cache_write"}[1d]))
+sum(increase(hangar_cost_uncached_usd_total[1d])) - sum(increase(hangar_cost_usd_total[1d]))   # saved by caching
 ```
 
 ## Cost and usage
 
 ```
-GET /api/usage?group_by=day|model|environment|requester|repo|harness&since=7d&limit=50     (admin)
+GET /api/usage?group_by=day|model|environment|requester|repo|harness|session|job|cache_ttl&since=7d&limit=50  (admin)
 ```
+
+`hangar usage --by session --cache` prints it as a table; `--cache` adds the cache columns ([activity.md](activity.md#prompt-cache)).
 
 `since` takes:
 
@@ -150,7 +159,8 @@ The default is 30 days ago. Days are UTC. `limit` caps the rows; for `day` it ke
 {"group_by": "repo", "since": 1789313019.0,
  "rows": [{"key": "acme/widgets", "turns": 32, "input_tokens": 1732139, "output_tokens": 347633,
            "cache_read_tokens": 6228892, "cache_write_tokens": 0, "tokens": 2079772, "cost_usd": 67.74,
-           "unpriced_turns": 0, "budget_stops": 4}],
+           "unpriced_turns": 0, "budget_stops": 4, "cache_write_1h_tokens": 0, "cache_hit_ratio": 0.7824,
+           "saved_usd": 22.43}],
  "total": {"key": "total", ...},
  "budget_stops": [{"ts": 1791866712.4, "session": "job-3fa91c20", "job": "job-3fa91c20", "repo": "acme/widgets",
                    "requester": "github:sean", "reason": "spent $5.12; the budget is $5.00", "cost_usd": 5.12}]}

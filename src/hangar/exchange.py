@@ -580,6 +580,10 @@ async def _repair(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
     resuming = svc.will_resume(s)
     if resuming:
         env["HANGAR_SESSION_RESUME"] = s.harness_session or ""
+    if turn.cache_ttl and s.harness:  # --- overnight/cache: the conversation keeps the TTL of the turn it repairs
+        from hangar.harnesses import get_harness
+
+        env.update(get_harness(s.harness).cache_env.get(turn.cache_ttl, {}))
     res = await svc.fleet.run_agent(sb.id, _repair_prompt(io_path, turn, resuming), harness=s.harness,
                                     model=s.model, env=env, actor=f"session:{s.id}")
     turn.repair_run_id = res["run_id"]

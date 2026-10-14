@@ -107,10 +107,33 @@ def price_for(model: str | None, table: dict[str, dict[str, float]]) -> dict[str
     return table[best] if best else None
 
 
+def _rates(price: dict[str, float]) -> tuple[float, float, float, float]:
+    """--- overnight/cache: (input, cache read, 5-minute write, 1-hour write) per MTok. A 1-hour write costs 2x
+    input on every Anthropic model (pricing page, 2026-10-13); only Anthropic reports 1-hour writes."""
+    i = price.get("input", 0.0)
+    return i, price.get("cache_read", i), price.get("cache_write", i), price.get("cache_write_1h", 2 * i)
+
+
 def cost_of(u: Usage, price: dict[str, float]) -> float:
-    return (u.input_tokens * price.get("input", 0.0) + u.output_tokens * price.get("output", 0.0)
-            + u.cache_read_tokens * price.get("cache_read", price.get("input", 0.0))
-            + u.cache_write_tokens * price.get("cache_write", price.get("input", 0.0))) / 1_000_000
+    i, read, w5, w1h = _rates(price)
+    long = min(u.cache_write_1h_tokens, u.cache_write_tokens)
+    return (u.input_tokens * i + u.output_tokens * price.get("output", 0.0) + u.cache_read_tokens * read
+            + (u.cache_write_tokens - long) * w5 + long * w1h) / 1_000_000
+
+
+def saved_of(u: Usage, price: dict[str, float]) -> float:
+    """--- overnight/cache: what caching saved on these tokens against sending them all as plain input: reads are
+    cheaper than input, writes dearer (negative when the writes were never read back)."""
+    i, read, w5, w1h = _rates(price)
+    long = min(u.cache_write_1h_tokens, u.cache_write_tokens)
+    return (u.cache_read_tokens * (i - read) + (u.cache_write_tokens - long) * (i - w5) + long * (i - w1h)) / 1e6
+
+
+def _sum_known(a: float | None, a_used: bool, b: float | None, b_used: bool) -> float | None:
+    """A sum of costs (or savings) that is unknown as soon as one side used tokens without a known value."""
+    if (a is None and a_used) or (b is None and b_used):
+        return None
+    return (a or 0.0) + (b or 0.0)
 
 
 def add_usage(a: Usage | None, b: Usage | None) -> Usage | None:
@@ -129,7 +152,11 @@ def add_usage(a: Usage | None, b: Usage | None) -> Usage | None:
                  cache_read_tokens=a.cache_read_tokens + b.cache_read_tokens,
                  cache_write_tokens=a.cache_write_tokens + b.cache_write_tokens, cost_usd=cost,
                  cost_source=(src.pop() if len(src) == 1 else "mixed") if src else None,
-                 model=a.model if a.model == b.model else None)
+                 model=a.model if a.model == b.model else None,
+                 # --- overnight/cache
+                 cache_write_1h_tokens=a.cache_write_1h_tokens + b.cache_write_1h_tokens,
+                 saved_usd=_sum_known(a.saved_usd, bool(a.cache_read_tokens + a.cache_write_tokens),
+                                      b.saved_usd, bool(b.cache_read_tokens + b.cache_write_tokens)))
 
 
 def total_usage(turns: list[Any]) -> Usage | None:
@@ -350,7 +377,8 @@ class Parser:
         """Add one model call's usage: its cost as the harness reported it, else from the price table."""
         model = model or self.model
         src = "harness" if cost is not None else None
-        if cost is None and (price := price_for(model, self.prices)) is not None:
+        price = price_for(model, self.prices)  # --- overnight/cache: savings are priced even when cost is reported
+        if cost is None and price is not None:
             cost, src = cost_of(delta, price), "prices"
         if cost is None and delta.tokens + delta.cache_read_tokens:
             self.unpriced = True  # the running cost is only a lower bound now; view() reports it as unknown
@@ -362,18 +390,23 @@ class Parser:
                            cache_write_tokens=u.cache_write_tokens + delta.cache_write_tokens,
                            cost_usd=(u.cost_usd or 0.0) + (cost or 0.0),
                            cost_source=(sources.pop() if len(sources) == 1 else "mixed") if sources else None,
-                           model=model or u.model)
+                           model=model or u.model,
+                           cache_write_1h_tokens=u.cache_write_1h_tokens + delta.cache_write_1h_tokens,
+                           saved_usd=_sum_known(u.saved_usd, bool(u.cache_read_tokens + u.cache_write_tokens),
+                                                saved_of(delta, price) if price else None,
+                                                bool(delta.cache_read_tokens + delta.cache_write_tokens)))
         return self._usage_event()
 
     def _total(self, total: Usage, cost: float | None) -> RunEvent:
         """The harness's own totals for the turn replace the running sum."""
+        price = price_for(total.model or self.model or self.usage.model, self.prices)
         if cost is not None:
             total.cost_usd, total.cost_source, self.unpriced = cost, "harness", False
         else:
-            price = price_for(total.model or self.model or self.usage.model, self.prices)
             total.cost_usd = cost_of(total, price) if price else None
             total.cost_source = "prices" if price else None
             self.unpriced = price is None and bool(total.tokens + total.cache_read_tokens)
+        total.saved_usd = saved_of(total, price) if price else None  # --- overnight/cache
         total.model = total.model or self.usage.model or self.model
         self.usage = total
         self.final = True
@@ -383,7 +416,10 @@ class Parser:
         u = self.view()
         return self._ev("usage", usage_line(u), input_tokens=u.input_tokens, output_tokens=u.output_tokens,
                         cache_read_tokens=u.cache_read_tokens, cache_write_tokens=u.cache_write_tokens,
-                        cost_usd=u.cost_usd, cost_source=u.cost_source, model=u.model, final=final)
+                        cost_usd=u.cost_usd, cost_source=u.cost_source, model=u.model, final=final,
+                        # --- overnight/cache
+                        cache_write_1h_tokens=u.cache_write_1h_tokens, cache_hit_ratio=u.cache_hit_ratio,
+                        saved_usd=u.saved_usd)
 
     def _tool_start(self, tid: str, name: str, args: Any) -> RunEvent:
         path = None
@@ -431,7 +467,8 @@ class Parser:
                 out.append(self._count(Usage(
                     input_tokens=u.get("input_tokens") or 0, output_tokens=u.get("output_tokens") or 0,
                     cache_read_tokens=u.get("cache_read_input_tokens") or 0,
-                    cache_write_tokens=u.get("cache_creation_input_tokens") or 0), model=model))
+                    cache_write_tokens=u.get("cache_creation_input_tokens") or 0,
+                    cache_write_1h_tokens=_claude_1h(u)), model=model))
         elif t == "user":
             m = e.get("message") or {}
             res = e.get("tool_use_result") if isinstance(e.get("tool_use_result"), dict) else {}
@@ -446,7 +483,7 @@ class Parser:
             out.append(self._total(Usage(
                 input_tokens=u.get("input_tokens") or 0, output_tokens=u.get("output_tokens") or 0,
                 cache_read_tokens=u.get("cache_read_input_tokens") or 0,
-                cache_write_tokens=u.get("cache_creation_input_tokens") or 0,
+                cache_write_tokens=u.get("cache_creation_input_tokens") or 0, cache_write_1h_tokens=_claude_1h(u),
                 model=next(iter(e.get("modelUsage") or {}), None)), float(cost) if cost is not None else None))
             if e.get("is_error") or (e.get("subtype") or "success") != "success":
                 out.append(self._ev("error", e.get("result") or e.get("subtype") or "the agent stopped with an error",
@@ -530,7 +567,8 @@ class Parser:
             if u:
                 cost = (u.get("cost") or {}).get("total") if isinstance(u.get("cost"), dict) else None
                 delta = Usage(input_tokens=u.get("input") or 0, output_tokens=u.get("output") or 0,
-                              cache_read_tokens=u.get("cacheRead") or 0, cache_write_tokens=u.get("cacheWrite") or 0)
+                              cache_read_tokens=u.get("cacheRead") or 0, cache_write_tokens=u.get("cacheWrite") or 0,
+                              cache_write_1h_tokens=u.get("cacheWrite1h") or 0)  # --- overnight/cache
                 # pi prices from its own catalog; a model it has no price for reports 0.
                 out.append(self._count(delta, cost if cost else None, model=m.get("model")))
             if m.get("stopReason") == "error":
@@ -616,6 +654,14 @@ def _driver_event(e: dict[str, Any]) -> list[RunEvent]:
         return [RunEvent(kind="progress", text=_clip(f"{what}: {text}" if text else what),
                          data=_small({"source": "hangar", "action": t, "command": aid}))]
     return []
+
+
+def _claude_1h(u: dict[str, Any]) -> int:
+    """--- overnight/cache: the 1-hour part of a Claude usage's cache writes (`cache_creation`, verified with Claude
+    Code 2.1.296 in both `assistant` and `result` lines)."""
+    cc = u.get("cache_creation")
+    n = cc.get("ephemeral_1h_input_tokens") if isinstance(cc, dict) else 0
+    return n if isinstance(n, int) and n > 0 else 0
 
 
 def _detect(e: dict[str, Any]) -> str | None:
@@ -816,6 +862,9 @@ class TurnWatcher:
 
             if track(self.turn, keep):
                 self.save()
+            from hangar import cache  # --- overnight/cache: a first response releases the turn's held siblings
+
+            cache.watched(self.s.id, keep)
 
     async def poll(self) -> str | None:
         """Read what the log gained since the last poll. Returns why the turn is over budget, or None."""
@@ -837,6 +886,9 @@ class TurnWatcher:
         self.turn.usage = p.view() if (p.usage.tokens + p.usage.cache_read_tokens or p.final) else self.turn.usage
         self.turn.event_cursor = None
         self.save()
+        from hangar import cache  # --- overnight/cache: siblings held for this turn go ahead whatever happened
+
+        cache.STAGGER.responded(self.s.id)
 
     async def _read(self, final: bool) -> None:
         p, changed = self.parser, False

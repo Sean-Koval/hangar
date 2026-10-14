@@ -9,6 +9,7 @@ from typing import Any, Literal
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
+from hangar import cache  # --- overnight/cache
 from hangar import steer as steering
 from hangar.driver import MAX_TEXT
 from hangar.models import Session, Steer
@@ -16,6 +17,7 @@ from hangar.models import Session, Steer
 
 class SteerBody(BaseModel):
     message: str = Field(min_length=1, max_length=MAX_TEXT)
+    model: str | None = Field(None, max_length=200)  # --- overnight/cache: from the next turn on, with a warning
 
 
 class InterruptBody(BaseModel):
@@ -37,7 +39,11 @@ def mount(app: FastAPI, h: Any, admin: Any, job_caller: Any, job_session: Callab
     sessions = h.sessions
 
     async def steer(s: Session, body: SteerBody, who: str) -> dict[str, Any]:
-        return _steer(s, await steering.steer(sessions, s, body.message, who))
+        model = cache.check_model(body.model)  # --- overnight/cache: a bad one fails before anything is sent
+        out = _steer(s, await steering.steer(sessions, s, body.message, who))
+        if warning := cache.note_switch(sessions, s, model, who):  # --- overnight/cache
+            out["warning"] = warning
+        return out
 
     async def interrupt(s: Session, body: InterruptBody | None, who: str) -> dict[str, Any]:
         return _steer(s, await steering.interrupt(sessions, s, who, body.message if body else None))

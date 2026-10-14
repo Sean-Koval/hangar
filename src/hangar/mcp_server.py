@@ -422,7 +422,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                               budget: dict[str, Any] | None = None,
                               context: list[dict[str, Any]] | None = None,
                               output_schema: dict[str, Any] | None = None,
-                              approvals: str | None = None) -> live.SessionOut:
+                              approvals: str | None = None, cache: str | None = None) -> live.SessionOut:
             """Start a resumable stream of work (like a cloud Claude session): a sandbox of `environment` on branch
             hangar/session/<name>. With `message`, the agent starts on it right away. The conversation and repo
             state are checkpointed after every turn and when the session idles, so it can be picked up days later
@@ -430,13 +430,14 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             work ({"kind": "patch"} uncommitted changes, {"kind": "bundle", "base_commit": ...} unpushed commits).
             `output_schema`: JSON Schema for a structured result. `budget` caps each agent turn:
             {"max_minutes": 30, "max_tokens": 2000000, "max_cost_usd": 5}. `approvals`: ask (you approve tool
-            calls) | deny-risky | auto. Then call wait_for_turn(name)."""
+            calls) | deny-risky | auto. `cache`: prompt-cache TTL auto | 5m | 1h | off. Then call
+            wait_for_turn(name)."""
             who = current_actor.get()
             req = NewSession(name=name, environment=environment, repo=repo, message=message, harness=harness,
                              model=model, base_branch=base_branch, idle_minutes=idle_minutes,
                              budget=Budget.model_validate(budget) if budget else None,
                              context=[ContextItem.model_validate(c) for c in context or []],
-                             output_schema=output_schema, approvals=approvals)
+                             output_schema=output_schema, approvals=approvals, cache=cache)
             return sessions.view(sessions.new(req, owner=who, requester=who))
 
         @tool()
@@ -463,14 +464,15 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
 
         @tool()
         async def send_to_session(session: str, message: str, context: list[dict[str, Any]] | None = None,
-                                  output_schema: dict[str, Any] | None = None) -> live.SessionOut:
+                                  output_schema: dict[str, Any] | None = None,
+                                  model: str | None = None) -> live.SessionOut:
             """Continue a session: the agent resumes its own conversation (full earlier context) in the session's
             sandbox, booting and restoring it first if the session is suspended. If the agent asked a question
-            (needs_input), the message answers it. `context` and `output_schema` as for new_session. Then call
-            wait_for_turn(session)."""
+            (needs_input), the message answers it. `context` and `output_schema` as for new_session. `model`:
+            switch model (costs one uncached turn). Then call wait_for_turn(session)."""
             return sessions.view(sessions.send(session, message, requester=current_actor.get(),
                                                context=[ContextItem.model_validate(c) for c in context or []],
-                                               output_schema=output_schema))
+                                               output_schema=output_schema, model=model))
 
         @tool()
         async def keep_session(session: str, idle_minutes: int) -> live.SessionOut:

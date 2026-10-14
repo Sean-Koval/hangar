@@ -16,7 +16,8 @@ from urllib.parse import urlsplit
 from hangar.events import total_usage
 from hangar.github import parse_repo
 
-GROUPS = ("day", "model", "environment", "requester", "repo", "harness")
+GROUPS = ("day", "model", "environment", "requester", "repo", "harness",
+          "session", "job", "cache_ttl")  # --- overnight/cache: per session and job, and by the TTL turns asked for
 DEFAULT_DAYS = 30
 MAX_ROWS = 200
 _REL = re.compile(r"^(\d{1,5})([dhm])$")
@@ -43,7 +44,10 @@ def parse_since(value: str | None, now: float | None = None) -> float:
 
 def _empty(key: str) -> dict[str, Any]:
     return {"key": key, "turns": 0, "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0,
-            "cache_write_tokens": 0, "tokens": 0, "cost_usd": 0.0, "unpriced_turns": 0, "budget_stops": 0}
+            "cache_write_tokens": 0, "tokens": 0, "cost_usd": 0.0, "unpriced_turns": 0, "budget_stops": 0,
+            # --- overnight/cache: 1-hour writes (part of cache_write_tokens), the share of prompt tokens read from
+            # the cache, and what caching saved against no cache (turns with an unknown price add nothing)
+            "cache_write_1h_tokens": 0, "cache_hit_ratio": None, "saved_usd": 0.0}
 
 
 def _add(row: dict[str, Any], u: Any, over_budget: bool, turns: int = 1) -> None:
@@ -51,8 +55,9 @@ def _add(row: dict[str, Any], u: Any, over_budget: bool, turns: int = 1) -> None
     row["budget_stops"] += int(over_budget)
     if u is None:
         return
-    for f in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"):
+    for f in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cache_write_1h_tokens"):
         row[f] += getattr(u, f)
+    row["saved_usd"] += u.saved_usd or 0.0  # --- overnight/cache
     row["tokens"] += u.tokens
     if u.cost_usd is not None:
         row["cost_usd"] += u.cost_usd
@@ -85,7 +90,7 @@ def _turns(sessions: Any, jobs: Any) -> list[dict[str, Any]]:
                         "outcome": t.outcome, "reason": t.outcome_reason, "model": s.model,
                         "harness": t.harness or s.harness, "environment": s.environment, "repo": s.repo,
                         "requester": t.requester or (job.requester if job else s.owner),
-                        "session": s.name, "job": s.job_id})
+                        "session": s.name, "job": s.job_id, "cache_ttl": t.cache_ttl})
     live = sessions._sessions
     for job in job_map.values():
         # integrate (#57): a session deleted since keeps its total on the job (Job.deleted_session_usage), not its
@@ -93,7 +98,8 @@ def _turns(sessions: Any, jobs: Any) -> list[dict[str, Any]]:
         gone = [u for sid, u in job.deleted_session_usage.items() if sid not in live]
         out += [{"ts": job.created_at, "usage": u, "outcome": None, "reason": None, "model": job.model,
                  "harness": job.harness, "environment": job.environment, "repo": job.repo,
-                 "requester": job.requester, "session": None, "job": job.id, "turns": 0} for u in gone]
+                 "requester": job.requester, "session": None, "job": job.id, "turns": 0, "cache_ttl": None}
+                for u in gone]
         if job.id in carried or gone:  # else: a job from before sessions carried it, with its own turn records
             continue
         for t in job.turns:
@@ -102,7 +108,8 @@ def _turns(sessions: Any, jobs: Any) -> list[dict[str, Any]]:
             out.append({"ts": t.started_at or t.finished_at or job.created_at, "usage": total_usage([t]),
                         "outcome": t.outcome, "reason": t.outcome_reason, "model": job.model, "harness": job.harness,
                         "environment": job.environment, "repo": job.repo,
-                        "requester": t.requester or job.requester, "session": None, "job": job.id})
+                        "requester": t.requester or job.requester, "session": None, "job": job.id,
+                        "cache_ttl": None})
     return out
 
 
@@ -114,6 +121,8 @@ def _key(rec: dict[str, Any], group_by: str) -> str:
         return (u.model if u is not None and u.model else None) or rec["model"] or "(unknown)"
     if group_by == "repo":
         return _repo(rec["repo"])
+    if group_by == "cache_ttl":  # --- overnight/cache: turns from before, or harnesses with no TTL setting
+        return rec["cache_ttl"] or "(not set)"
     return rec[group_by] or "(unknown)"
 
 
@@ -145,13 +154,17 @@ def aggregate(sessions: Any, jobs: Any, group_by: str = "day", since: float | No
     limit = max(1, min(limit, MAX_ROWS))
     for r in [*out, total]:
         r["cost_usd"] = round(r["cost_usd"], 6)
+        r["saved_usd"] = round(r["saved_usd"], 6)  # --- overnight/cache
+        prompt = r["input_tokens"] + r["cache_read_tokens"] + r["cache_write_tokens"]
+        r["cache_hit_ratio"] = round(r["cache_read_tokens"] / prompt, 4) if prompt else None
     stops.sort(key=lambda r: r["ts"], reverse=True)
     return {"group_by": group_by, "since": since, "rows": out[-limit:] if group_by == "day" else out[:limit],
             "total": total, "budget_stops": stops[:20]}
 
 
 def mount(app: Any, h: Any, admin: Any) -> None:
-    """GET /api/usage?group_by=day|model|environment|requester|repo|harness&since=7d&limit=50 (admin)."""
+    """GET /api/usage?group_by=day|model|environment|requester|repo|harness|session|job|cache_ttl&since=7d&limit=50
+    (admin)."""
     from fastapi import HTTPException
 
     @app.get("/api/usage")

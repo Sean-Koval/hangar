@@ -25,6 +25,7 @@ from typing import Any
 from cryptography.fernet import InvalidToken
 from pydantic import BaseModel, Field
 
+from hangar import cache as caching  # --- overnight/cache: prompt-cache TTL, one model per session, siblings
 from hangar import ckpt, exchange, isolation, observe  # --- observe, isolation
 from hangar import steer as steering  # workstream steer: live turns
 from hangar.checkpoints import CheckpointStore, make_store
@@ -36,6 +37,7 @@ from hangar.models import (
     SESSION_LIVE,
     ApprovalPolicy,
     Budget,
+    CachePolicy,
     Checkpoint,
     ContextItem,
     Sandbox,
@@ -79,6 +81,7 @@ class NewSession(BaseModel):
     context: list[ContextItem] = Field(default_factory=list)
     output_schema: dict[str, Any] | None = None
     approvals: ApprovalPolicy | None = None  # workstream steer: auto | ask | deny-risky (default: the environment's)
+    cache: CachePolicy | None = None  # --- overnight/cache: auto | 5m | 1h | off (default: the environment's)
 
 
 def extract_summary(harness: str | None, log_text: str) -> str | None:
@@ -227,10 +230,11 @@ class SessionService:
         s = Session(name=req.name, title=(req.title or (req.message or req.name).strip().splitlines()[0])[:200],
                     owner=owner, environment=env, harness=harness, model=req.model,
                     repo=req.repo or (spec.repo.url if spec.repo else None), base_branch=req.base_branch,
-                    branch=branch, labels=req.labels, approvals=req.approvals,
+                    branch=branch, labels=req.labels, approvals=req.approvals, cache=req.cache,
                     idle_minutes=(req.idle_minutes if req.idle_minutes is not None
                                   else self.settings.session_idle_minutes))
         s.budget = resolve_budget(req.budget, self.settings)
+        caching.pin_model(self, s)  # --- overnight/cache
         self._sessions[s.id] = s
         self._set(s, SessionState.STARTING, f"created by {requester}")
         self.fleet.audit(requester, "session.new", s.id, name=s.name, environment=env, repo=s.repo)
@@ -258,6 +262,7 @@ class SessionService:
                 s.harness = spec.pick_harness(harness)
             except ValueError as e:
                 raise SessionError(str(e)) from e
+            s.model = spec.model_for(s.harness)  # --- overnight/cache: model ids are per harness; a switch hands off
             self._save(s)
         if self.busy(s.id) or (live and s.state in SESSION_LIVE):
             return s
@@ -268,7 +273,9 @@ class SessionService:
         return s
 
     def send(self, ref: str, message: str, requester: str, context: list[ContextItem] | None = None,
-             output_schema: dict[str, Any] | None = None) -> Session:
+             output_schema: dict[str, Any] | None = None, model: str | None = None) -> Session:
+        """`model` (overnight/cache): another model from this turn on, with a warning on the turn (the switch costs
+        an uncached read of the whole conversation)."""
         s = self.get(ref)
         if not message.strip():
             raise SessionError("message is empty")
@@ -276,6 +283,10 @@ class SessionService:
             raise SessionError("message is too long")
         context = exchange.check_context(context or [], self.settings)  # workstream E
         output_schema = exchange.check_schema(output_schema)
+        try:
+            model = caching.check_model(model)  # --- overnight/cache
+        except ValueError as e:
+            raise SessionError(str(e)) from e
         if s.state == SessionState.ARCHIVED:
             raise SessionError(f"session {s.name} is archived")
         if s.job_id:
@@ -285,9 +296,13 @@ class SessionService:
             # --- workstream steer: a live turn takes the message as it runs
             if not context and not output_schema and steering.can_steer(self, s):
                 steering.steer_later(self, s, message, requester)
+                caching.note_switch(self, s, model, requester)  # --- overnight/cache: from the next turn
                 return s
             raise SessionError(f"session {s.name} is busy ({s.state}); wait for it to finish, or interrupt it")
+        warning = caching.switch_model(self, s, model, requester)  # --- overnight/cache
         self.start_turn(s, message, requester, context, output_schema)
+        if warning:
+            s.turns[-1].warnings.append(warning)
         return s
 
     def start_turn(self, s: Session, message: str, requester: str, context: list[ContextItem] | None = None,
@@ -820,7 +835,17 @@ class SessionService:
         self._save(s)
         if prompt is not None and turn.mode == "handoff" and handoff:
             prompt = self._handoff(s) + "\n\n# Now\n\n" + prompt
-        run_id, command = await steering.prepare(self, s, turn, sb, h)  # workstream steer: live (driver) or one-shot
+        # --- overnight/cache: the turn's prompt-cache TTL; a best-of-N or fork sibling waits for the first to answer
+        cache_env, turn.cache_ttl, why = caching.turn_env(self, s, h)
+        env.update(cache_env)
+        log.debug("session %s turn %d: prompt cache %s (%s)", s.id, len(s.turns), turn.cache_ttl, why)
+        try:
+            if waited := await caching.STAGGER.wait(s.id, self.settings.cache_stagger_seconds):
+                turn.cache_wait_seconds = round(waited, 1)
+            run_id, command = await steering.prepare(self, s, turn, sb, h)  # workstream steer: live or one-shot
+        except BaseException:
+            caching.STAGGER.responded(s.id)
+            raise
         try:
             io_env = await exchange.prepare_turn(self, s, turn, sb)  # workstream E: HANGAR_IO, attachments, local work
             res = await self.fleet.run_agent(sb.id, prompt if prompt is not None else self._prompt(s, turn, turn.mode),
@@ -829,6 +854,7 @@ class SessionService:
                                              run_id=run_id, command=command)
         except BaseException:
             steering.forget(self, run_id)  # workstream steer: the run never started
+            caching.STAGGER.responded(s.id)  # --- overnight/cache: nor will it answer; siblings go ahead
             raise
         turn.run_id, turn.started_at = res["run_id"], now()
         turn.context = exchange.strip(turn.context)

@@ -29,6 +29,11 @@ class Handler(BaseHTTPRequestHandler):
     delay = 0.0  # seconds before each answer, so a test can act while the model "thinks"
     call: tuple[str, dict[str, Any]] = ("Bash", {"command": "touch probe.txt"})  # Claude Code's one tool call
     shell = "touch probe.txt"  # Codex's one command
+    # --- overnight/cache: what each Messages request carried (its cache_control TTLs, anthropic-beta), and the
+    # usage the Anthropic side reports (give it a cache_creation split to price 1-hour writes)
+    seen: list[dict[str, Any]] = []
+    usage: dict[str, Any] = {"input_tokens": 50, "output_tokens": 1, "cache_read_input_tokens": 0,
+                             "cache_creation_input_tokens": 0}
 
     def log_message(self, *_: Any) -> None:
         pass
@@ -47,6 +52,11 @@ class Handler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers.get("content-length") or 0)) or b"{}")
         if "count_tokens" in self.path:
             return self._send(b'{"input_tokens": 10}')
+        if self.path.startswith("/v1/messages"):  # --- overnight/cache
+            ttls: list[str] = []
+            _ttls(body, ttls)
+            self.seen.append({"path": self.path, "model": body.get("model"), "ttls": ttls,
+                              "beta": self.headers.get("anthropic-beta") or "", "tools": len(body.get("tools") or [])})
         if self.delay:
             time.sleep(self.delay)
         if self.path.startswith("/v1/messages"):
@@ -63,8 +73,7 @@ class Handler(BaseHTTPRequestHandler):
         said = " | ".join(t[:80] for m in msgs[-2:] for t in _texts(m.get("content")) if t.strip())
         msg = {"id": f"msg_{time.time_ns()}", "type": "message", "role": "assistant", "model": body.get("model"),
                "content": [], "stop_reason": None, "stop_sequence": None,
-               "usage": {"input_tokens": 50, "output_tokens": 1, "cache_read_input_tokens": 0,
-                         "cache_creation_input_tokens": 0}}
+               "usage": dict(self.usage)}
         events: list[dict[str, Any]] = [{"type": "message_start", "message": msg}]
         last = " ".join(t for m in msgs[-2:] for t in _texts(m.get("content")))  # AGAIN: call it in a later turn
         if self.call[0] in tools and not answered and (ran == 0 or "AGAIN" in last) and "RUN" in json.dumps(msgs):
@@ -111,10 +120,24 @@ class Handler(BaseHTTPRequestHandler):
         self._send(_sse(events), "text/event-stream")
 
 
+def _ttls(o: Any, out: list[str]) -> None:
+    """Every cache_control in a request body, as its ttl ("5m" when it has none: the API's default)."""
+    if isinstance(o, dict):
+        if isinstance(o.get("cache_control"), dict):
+            out.append(o["cache_control"].get("ttl") or "5m")
+        for v in o.values():
+            _ttls(v, out)
+    elif isinstance(o, list):
+        for v in o:
+            _ttls(v, out)
+
+
 def serve(delay: float = 0.0, call: tuple[str, dict[str, Any]] | None = None,
-          shell: str | None = None) -> tuple[ThreadingHTTPServer, int]:
-    """`call` (Claude Code) and `shell` (Codex) replace the turn's one tool call, `touch probe.txt`."""
-    handler = type("H", (Handler,), {"delay": delay, "call": call or Handler.call, "shell": shell or Handler.shell})
+          shell: str | None = None, usage: dict[str, Any] | None = None) -> tuple[ThreadingHTTPServer, int]:
+    """`call` (Claude Code) and `shell` (Codex) replace the turn's one tool call, `touch probe.txt`. The requests
+    are recorded in `srv.RequestHandlerClass.seen`."""
+    handler = type("H", (Handler,), {"delay": delay, "call": call or Handler.call, "shell": shell or Handler.shell,
+                                     "seen": [], "usage": usage or Handler.usage})
     srv = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv, srv.server_address[1]

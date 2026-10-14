@@ -95,6 +95,9 @@ class Harness(BaseModel):
     # codex, opens or resumes the conversation itself). Without them, turns run `run` one-shot.
     live: Literal["claude", "codex"] | None = None
     live_run: str = ""
+    # --- overnight/cache: env that asks the CLI for each prompt-cache TTL it supports ("5m", "1h", "off"; cache.py).
+    # A TTL missing here is one the CLI can't be asked for; the provider's own caching applies.
+    cache_env: dict[str, dict[str, str]] = Field(default_factory=dict)
 
     @property
     def prefix(self) -> str:
@@ -193,6 +196,11 @@ HARNESSES: dict[str, Harness] = {
             '${HANGAR_SESSION_RESUME:+--resume "$HANGAR_SESSION_RESUME"} '
             '${HANGAR_SESSION_FORK:+--resume "$HANGAR_SESSION_FORK" --fork-session}'
         ),
+        # --- overnight/cache: verified with 2.1.296 against a scripted Messages API: by default an API key gets
+        # cache_control without a ttl (5 min); CLAUDE_CODE_PROMPT_CACHE_TTL=1h sends ttl "1h" on the main
+        # conversation (subagents keep 5 min) and DISABLE_PROMPT_CACHING=1 sends no cache_control at all.
+        cache_env={"5m": {"CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"}, "1h": {"CLAUDE_CODE_PROMPT_CACHE_TTL": "1h"},
+                   "off": {"DISABLE_PROMPT_CACHING": "1"}},
         session_dirs=[".claude/projects"],
         resume="preset",
         # Verified with 2.1.296: --session-id may be combined with --resume only together with --fork-session.
@@ -238,6 +246,9 @@ HARNESSES: dict[str, Harness] = {
         # Verified with 0.162.1: thread/start, thread/resume and thread/fork from $HANGAR_SESSION_*, see driver.Codex.
         live="codex",
         live_run="codex app-server",
+        # --- overnight/cache: no cache_env. Verified with 0.162.1: requests carry prompt_cache_key = the thread id
+        # and no prompt_cache_retention / prompt_cache_options, and there is no flag or config key for them. OpenAI
+        # caches automatically (GPT-5.6+: at least 30 min).
         session_dirs=[".codex/sessions"],
         resume="capture",
         # Verified with 0.162.1: `codex exec fork <id>` starts a new thread (its thread_id is in thread.started)
@@ -272,6 +283,10 @@ HARNESSES: dict[str, Harness] = {
             '${HANGAR_SESSION_FORK:+--fork "$HANGAR_SESSION_FORK"} '
             '"$(cat "$HANGAR_PROMPT_FILE")"'
         ),
+        # --- overnight/cache: verified with 1.2.0 (1.1.0 documents the same variable): PI_CACHE_RETENTION=long sends
+        # ttl "1h" to Anthropic models (24h retention or a 30m TTL on OpenAI models that have one). pi has no
+        # environment switch to turn caching off, so `off` leaves it at its default.
+        cache_env={"5m": {"PI_CACHE_RETENTION": "short"}, "1h": {"PI_CACHE_RETENTION": "long"}},
         session_dirs=[".pi/agent/sessions"],
         resume="preset",
         fork=True,  # verified with 1.1.0 and 1.2.0: --fork <id> --session-id <new id>
@@ -321,6 +336,8 @@ HARNESSES: dict[str, Harness] = {
         resume_hint="agy --conversation {id}",
         # No fork flag in agy 1.3.3 (only --conversation/--continue), so forked sessions get a summary handoff.
         fork=False,
+        # --- overnight/cache: no cache_env: agy 1.3.3 has no cache flag, setting or variable (Gemini caches
+        # implicitly).
         skills_dir=".gemini/skills",
         instructions_file=".gemini/GEMINI.md",
         mcp_format="antigravity",

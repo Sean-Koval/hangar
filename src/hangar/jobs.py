@@ -654,14 +654,18 @@ class JobService:
         job.sandbox_id = None
         self._save(job)
 
-    def _prompt(self, job: Job, turn: Turn, repo_path: str | None, resuming: bool = False) -> str:
+    def _prompt(self, job: Job, turn: Turn, repo_path: str | None, resuming: bool = False,
+                branch_ref: str | None = None) -> str:
+        """`branch_ref` (overnight/cache): how the prompt names the branch instead of `job.branch`, so best-of-N
+        attempts get one identical prompt and name their own branches after it."""
         ctx = self._ctxdir(job)
+        branch = branch_ref or f"branch `{job.branch}`"
         files = [c for c in job.context if c.kind != "url" and c.kind not in exchange.CODE_KINDS]
         links = [c for c in job.context if c.kind == "url"]
         finish = [
             "Keep the change focused on the task.",
             *([f"Before finishing, run `{job.verify}` and make it pass."] if job.verify else []),
-            *([f"Commit your work on branch `{job.branch}` with clear messages. Do not push and do not open a "
+            *([f"Commit your work on {branch} with clear messages. Do not push and do not open a "
                "pull request: hangar checks your work and delivers it."] if repo_path else []),
             f"Write a short summary for the people who asked to `{ctx}/RESULT.md`: what you changed, how you "
             "verified it, and anything left open.",
@@ -712,7 +716,7 @@ class JobService:
                 lines += [f"- {c.name}: {c.url}" for c in links]
             parts.append("\n".join(lines))
         if repo_path:
-            parts.append(f"# Repository\n\nWorking copy: `{repo_path}`, on branch `{job.branch}` "
+            parts.append(f"# Repository\n\nWorking copy: `{repo_path}`, on {branch} "
                          f"(from `{job.base_branch}`).")
         parts.append(f"# How to finish\n\n{finish_txt}")
         return "\n\n".join(parts) + "\n"

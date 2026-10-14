@@ -65,6 +65,16 @@ class Metrics:
                             ["model", "harness", "environment", "requester"], registry=r)
         self.unpriced = Counter("hangar_unpriced_turns", "Turns that used tokens of a model with no known price",
                                 ["model", "harness"], registry=r)
+        # --- overnight/cache: the cache hit ratio is hangar_tokens{kind="cache_read"} over the input, cache_read
+        # and cache_write kinds; savings are hangar_cost_uncached_usd - hangar_cost_usd (docs/observability.md)
+        self.cost_uncached = Counter("hangar_cost_uncached_usd", "What agent turns would have cost with no prompt "
+                                     "cache, in USD (priced turns only)", ["model", "harness", "environment"],
+                                     registry=r)
+        self.write_1h = Counter("hangar_cache_write_1h_tokens", "Cache-write tokens written with a 1-hour TTL (part "
+                                "of hangar_tokens{kind=\"cache_write\"}, priced at 2x input)", ["model", "harness"],
+                                registry=r)
+        self.cache_turns = Counter("hangar_cache_ttl_turns", "Agent turns by the prompt-cache TTL they asked for "
+                                   "(none: the harness has no setting)", ["ttl", "harness"], registry=r)
         self.budget_stops = Counter("hangar_budget_stops", "Agent turns stopped over their budget",
                                     ["harness", "environment"], registry=r)
         self.ckpt_seconds = Histogram("hangar_checkpoint_seconds", "Checkpoint capture and restore duration",
@@ -189,11 +199,12 @@ def sandbox_created(provider: str, environment: str, seconds: float, ok: bool, w
 
 
 def turn_finished(*, harness: str | None, environment: str | None, model: str | None, requester: str | None,
-                  outcome: str, seconds: float | None, usage: Any) -> None:
+                  outcome: str, seconds: float | None, usage: Any, cache_ttl: str | None = None) -> None:
     if M is None:
         return
     lb = M.label
     harness_l = lb("harness", harness)
+    M.cache_turns.labels(cache_ttl or "none", harness_l).inc()  # --- overnight/cache
     if seconds is not None:
         M.turn.labels(harness_l, lb("outcome", outcome)).observe(max(0.0, seconds))
     env_l = lb("environment", environment)
@@ -211,6 +222,12 @@ def turn_finished(*, harness: str | None, environment: str | None, model: str | 
         M.cost.labels(model_l, harness_l, env_l, req_l).inc(max(0.0, usage.cost_usd))
     elif usage.tokens or usage.cache_read_tokens:
         M.unpriced.labels(model_l, harness_l).inc()
+    # --- overnight/cache
+    if usage.cost_usd is not None and (usage.saved_usd is not None
+                                       or not usage.cache_read_tokens + usage.cache_write_tokens):
+        M.cost_uncached.labels(model_l, harness_l, env_l).inc(max(0.0, usage.cost_usd + (usage.saved_usd or 0.0)))
+    if usage.cache_write_1h_tokens:
+        M.write_1h.labels(model_l, harness_l).inc(usage.cache_write_1h_tokens)
 
 
 def checkpoint(op: str, result: str, seconds: float, reason: str | None = None, size: int | None = None) -> None:

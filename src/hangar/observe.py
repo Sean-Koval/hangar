@@ -444,7 +444,8 @@ def _end_turn(sp: Any, s: Any, turn: Any, outcome: str, err: BaseException | Non
     usage = total_usage([turn])
     secs = (turn.finished_at or time.time()) - turn.started_at if turn.started_at else None
     metrics.turn_finished(harness=turn.harness or s.harness, environment=s.environment, model=s.model,
-                          requester=turn.requester, outcome=outcome, seconds=secs, usage=usage)
+                          requester=turn.requester, outcome=outcome, seconds=secs, usage=usage,
+                          cache_ttl=turn.cache_ttl)  # --- overnight/cache
     if sp is None:
         return
     try:

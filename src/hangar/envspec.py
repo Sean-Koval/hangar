@@ -122,6 +122,9 @@ class EnvSpec(BaseModel):
     # --- workstream steer: how agents' tool permission prompts are answered in this environment's sessions and
     # jobs (auto | ask | deny-risky; docs/steering.md). Unset: HANGAR_APPROVALS.
     approvals: Literal["auto", "ask", "deny-risky"] | None = None
+    # --- overnight/cache: prompt-cache TTL for this environment's sessions and jobs (auto | 5m | 1h | off; cache.py).
+    # Unset: HANGAR_CACHE.
+    cache: Literal["auto", "5m", "1h", "off"] | None = None
     source_dir: Path | None = Field(default=None, exclude=True)
     # Resolved by the fleet before a provider sees the spec: harness name -> pack image to mount read-only.
     packs: dict[str, str] = Field(default_factory=dict, exclude=True)

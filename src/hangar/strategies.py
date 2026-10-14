@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
-from hangar import exchange
+from hangar import cache, exchange  # --- overnight/cache
 from hangar.events import total_usage
 from hangar.fleet import _clip_tail
 from hangar.harnesses import Harness
@@ -49,6 +49,7 @@ log = logging.getLogger("hangar.strategies")
 _TEST_PATH = re.compile(r"(^|/)(tests?|__tests__|specs?)/|(^|/)test_[^/]+\.py$|_(test|spec)\.[^/]+$"
                         r"|\.(test|spec)\.[^/]+$|(^|/)conftest\.py$")
 MAX_JUDGE_DIFF = 200_000
+ATTEMPT_BRANCH = "the branch named at the end of this message"  # --- overnight/cache
 
 
 class SessionForkBody(BaseModel):
@@ -100,6 +101,8 @@ async def fork_session(svc: SessionService, ref: str, n: int, requester: str, ha
         children = await _fork(svc, parent, n, requester, harness=harness, names=names)
     finally:
         svc._busy.discard(parent.id)
+    if message and cache.policy(svc, parent) != "off":  # --- overnight/cache: one writes the shared prefix
+        cache.STAGGER.group([c.id for c in children])
     for c in children:
         svc._busy.add(c.id)
         if message:
@@ -172,12 +175,16 @@ async def _fork(svc: SessionService, parent: Session, n: int, requester: str, *,
         for i, (name, branch) in enumerate(planned, 1):
             c = Session(
                 name=name, title=f"{parent.title} ({suffix} {i})"[:200], owner=parent.owner,
-                environment=parent.environment, harness=child_harness, model=parent.model, repo=parent.repo,
+                environment=parent.environment, harness=child_harness, repo=parent.repo,
                 base_branch=parent.base_branch, base_sha=parent.base_sha, branch=branch, provider=parent.provider,
                 extra_dirs=list(parent.extra_dirs), idle_minutes=parent.idle_minutes,
                 labels={**labels, **({"hangar.job": job_id, "hangar.attempt": str(i)} if job_id else {})},
                 job_id=job_id, parent_id=parent.id, forked_from_checkpoint=ck.id,
                 approvals=parent.approvals,  # --- workstream steer: a fork never runs with fewer checks
+                # --- overnight/cache: the parent's cache policy; on another harness, that harness's model (model
+                # ids are per harness, as in SessionService.open)
+                cache=parent.cache,
+                model=parent.model if child_harness == parent.harness else spec.model_for(child_harness),
                 # The conversation is forked on the child's first turn (each child gets its own id), never resumed.
                 harness_session=None, harness_session_for=parent.harness_session_for,
                 fork_conversation=parent.harness_session if parent.harness_session_for else None,
@@ -278,6 +285,8 @@ async def run_best_of_n(jobs: JobService, job: Job) -> None:
                 children = await _fork(svc, base, job.n, f"job:{job.id}", suffix="attempt", job_id=job.id)
             job.attempts = [Attempt(index=i, session_id=c.id, branch=c.branch) for i, c in enumerate(children, 1)]
             jobs._save(job)
+            if cache.policy(svc, base) != "off":  # --- overnight/cache: the first attempt to start writes the prefix
+                cache.STAGGER.group([c.id for c in children])
         jobs._event(job, f"running {job.n} attempts in parallel ({job.environment}, "
                          f"{base.harness or 'default harness'}); each is verified in its own sandbox")
         jobs._spawn(jobs._callback(job, "job.started"))
@@ -348,9 +357,12 @@ async def _attempt_steps(jobs: JobService, job: Job, a: Attempt) -> None:
             # Same task and context; the branch named in the prompt is the attempt's own. --- interactions: and the
             # same exchange as a single job's first turn: local work applied, the output schema and the protocol.
             exchange.job_turn_io(job, job.turns[0], st, first=True)
-            prompt = (jobs._prompt(job.model_copy(update={"branch": s.branch}), job.turns[0],
-                                   sb.info.get("repo_path"))
-                      + exchange.prompt_notes(jobs.settings, s, st, protocol=True))
+            # --- overnight/cache: identical across attempts up to the end, where each learns its own branch, so the
+            # attempts after the first read the prompt prefix the first one cached
+            prompt = (jobs._prompt(job, job.turns[0], sb.info.get("repo_path"), branch_ref=ATTEMPT_BRANCH)
+                      + exchange.prompt_notes(jobs.settings, s, st, protocol=True)
+                      + f"\n\n# Your branch\n\nYou are one of {job.n} independent attempts at this task. Yours is "
+                        f"checked out on branch `{s.branch}`: commit there.\n")
             await svc.begin_turn(s, st, prompt=prompt, timeout_minutes=job.timeout_minutes, handoff=False,
                                  extra_env={"HANGAR_JOB_ID": job.id, "HANGAR_JOB_DIR": jobs._ctxdir(job),
                                             "HANGAR_ATTEMPT": str(a.index)})

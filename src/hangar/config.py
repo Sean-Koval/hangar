@@ -254,6 +254,12 @@ class Settings(BaseSettings):
     # it (Docker, an agent without sudo), else one user, with a warning; off: always one user; required: like auto,
     # and `ask` turns fail where the agent would share the driver's user.
     uid_split: Literal["auto", "off", "required"] = "auto"
+    # --- overnight/cache: prompt caching (cache.py, docs/sessions.md#prompt-caching). The TTL turns ask for when
+    # neither the session nor its environment says: auto (1h when the session waits on people for more than
+    # 5 min, else 5m), 5m, 1h or off. And how long best-of-N attempts and forks started together hold back for the
+    # first one to answer, so they read the prompt prefix it cached instead of each writing it (0 = no wait).
+    cache: Literal["auto", "5m", "1h", "off"] = "auto"
+    cache_stagger_seconds: float = Field(15.0, ge=0, le=120)
     # --- perf: control-plane responsiveness -----------------------------------
     # Worker threads for blocking provider calls (docker-py, the kubernetes client, e2b) and file I/O. Python's
     # default is min(32, CPUs + 4): 6 on a 2-vCPU control plane, so a few long execs (a clone, a verify, a turn

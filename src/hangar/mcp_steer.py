@@ -13,7 +13,7 @@ from typing import Any, Literal
 import mcp_types as types
 from pydantic import BaseModel, Field
 
-from hangar import exchange
+from hangar import cache, exchange  # --- overnight/cache
 from hangar import steer as steering
 from hangar.models import Approval, Session
 
@@ -86,16 +86,21 @@ def register(mcp: Any, tool: Any, sessions: Any, jobs: Any, caller: Any) -> None
     """Add the tools; `tool` is build_mcp's decorator, `caller()` the current caller's name."""
 
     @tool()
-    async def steer_turn(ref: str, message: str | None = None, interrupt: bool = False) -> dict[str, Any]:
+    async def steer_turn(ref: str, message: str | None = None, interrupt: bool = False,
+                         model: str | None = None) -> dict[str, Any]:
         """Steer a running turn (`ref`: job id or session name). A `message` is folded into it; the agent reads it
         at its next step. `interrupt=true` stops the turn, or with a `message`, has the agent switch to that. pi
-        and agy turns take interrupts only."""
+        and agy turns take interrupts only. `model`: switch model from the next turn (costs one uncached turn)."""
         s, _ = exchange.resolve(sessions, jobs, ref)
+        model = cache.check_model(model)  # --- overnight/cache: a bad one fails before anything is sent
         if interrupt:
             st = await steering.interrupt(sessions, s, caller(), message)
         else:
             st = await steering.steer(sessions, s, message or "", caller())
-        return {"session": s.name, "turn": len(s.turns), "kind": st.kind, "status": st.status}
+        out = {"session": s.name, "turn": len(s.turns), "kind": st.kind, "status": st.status}
+        if warning := cache.note_switch(sessions, s, model, caller()):  # --- overnight/cache
+            out["warning"] = warning
+        return out
 
     @tool()
     async def answer_approval(ref: str, approval: str, decision: str, message: str | None = None) -> dict[str, Any]:
