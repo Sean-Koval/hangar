@@ -134,3 +134,6 @@ def test_settings_read_at_startup_say_so():
     assert needs_restart("mcp_stateless_http") and not needs_restart("job_rate_per_minute")
     assert needs_restart("io_threads")  # integrate (#53): the I/O pool is sized when hangar starts
     assert not needs_restart("job_keep_minutes") and not needs_restart("github_repos")
+    # --- overnight/acceptance: the envd router and /metrics are set up at startup; per-turn settings aren't
+    assert needs_restart("envd") and needs_restart("envd_dir") and needs_restart("metrics_enabled")
+    assert not needs_restart("live_turns") and not needs_restart("cache") and not needs_restart("uid_split")
