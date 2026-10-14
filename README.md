@@ -12,23 +12,58 @@ Start on a laptop with Docker. The same control plane also supports Kubernetes a
 
 ## How it works
 
-Choose an environment, give an agent a task, and review its changes and test results.
+**One shared MCP server. Multiple teammates. A fleet of isolated coding agents.**
+
+Each teammate connects their own client to Hangar. From that client, they can create a workspace, start an agent, or fork a prepared sandbox into parallel attempts.
 
 ```mermaid
 flowchart LR
-    C["MCP client · CLI · dashboard"] --> H["Hangar<br/>Prepares and manages workspaces"]
-    H --> S["Isolated sandboxes<br/>Coding agent + repo + tools"]
+    accTitle: A shared Hangar server connects a team to cloud coding-agent sandboxes
+    accDescr: Two teammates using Codex and Claude Code connect over MCP to one Hangar server. Hangar manages three isolated cloud sandboxes, each with an agent, repository checkout, and work branch. Task requests, output, and results pass through the shared server.
+
+    subgraph team["TEAM MEMBERS"]
+        direction TB
+        U1("Teammate A<br/><b>Codex client</b>")
+        U2("Teammate B<br/><b>Claude Code client</b>")
+    end
+
+    H("<b>Hangar MCP server</b><br/>Environments + credentials<br/>Create · clone · run")
+
+    subgraph cloud["CLOUD · ISOLATED SANDBOXES"]
+        direction TB
+        S1("<b>Sandbox A</b><br/>Claude Code<br/>Repo + work branch")
+        S2("<b>Sandbox B</b><br/>Codex<br/>Repo + work branch")
+        S3("<b>Sandbox C</b><br/>pi or Antigravity<br/>Repo + work branch")
+    end
+
+    U1 <-->|MCP / HTTPS| H
+    U2 <--> H
+    H <-->|Tasks / results| S1
+    H <--> S2
+    H <--> S3
+
+    classDef client fill:#26323f,stroke:#7c8894,color:#e8ecef,stroke-width:1px
+    classDef control fill:#26323f,stroke:#f2c230,color:#e8ecef,stroke-width:2px
+    classDef sandbox fill:#26323f,stroke:#4fb39a,color:#e8ecef,stroke-width:1px
+    class U1,U2 client
+    class H control
+    class S1,S2,S3 sandbox
+    style team fill:transparent,stroke:#7c8894,stroke-dasharray:4 4
+    style cloud fill:transparent,stroke:#7c8894,stroke-dasharray:4 4
 ```
 
-Hangar handles workspace setup, credentials, and the sandbox lifecycle. Agents work inside separate sandboxes; you can follow and steer their work from the dashboard.
+The client on a teammate's machine and the agent inside a sandbox are separate choices: a Codex client can ask Hangar to run Claude Code, for example. All clients connect to the same `/mcp` endpoint; Hangar manages the sandboxes behind it.
 
-An **environment** is a reusable recipe for a workspace. A **sandbox** is a running copy of it. A **harness** is the agent CLI running inside that sandbox.
+| Feature | What it gives your team |
+| --- | --- |
+| **Connect from your own tools** | Use Codex, Claude Code, Cursor, or another [MCP client](docs/clients.md) with a client token or supported OAuth sign-in. |
+| **Prepare once, run in parallel** | Define tools, dependencies, and repo setup in an [environment](#create-your-own-environment). Create separate sandboxes or fork a prepared workspace into multiple attempts. |
+| **Keep workspaces separate** | Each sandbox has its own files, agent configuration, and repo checkout. Give parallel attempts separate work branches and choose which stored credentials each receives. |
+| **Watch, steer, and review** | Follow live terminals in the dashboard, [steer supported agents](docs/steering.md), and review changes and test output. [Jobs](docs/jobs.md) support verification and draft PR delivery; [sessions](docs/sessions.md) preserve context across turns. |
 
-- **Repeatable setup:** build environments from YAML, with dependencies, skills, and repository setup.
-- **Parallel work:** create several sandboxes, or fork a prepared workspace into separate attempts.
-- **Shared visibility:** watch live terminals in the dashboard and steer supported agents during a turn.
-- **Managed credentials:** store API keys or subscription logins in an encrypted vault and select which credentials a sandbox receives.
-- **Jobs and sessions:** hand off a task with a verification command and draft PR delivery, or keep a conversation and repo state across turns.
+Run the cloud fleet on a Docker VM, Kubernetes, or E2B. The same control plane also runs locally with Docker. See [deployment options and limits](#deployment-and-limits).
+
+An **environment** is a reusable workspace recipe. A **sandbox** is a running copy. A **harness** is the agent CLI inside it.
 
 ## Quick start
 

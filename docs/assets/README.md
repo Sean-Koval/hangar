@@ -13,6 +13,7 @@ The font source is [The Barlow Project](https://github.com/jpt/barlow), distribu
 through [Google Fonts](https://github.com/google/fonts) under the
 [SIL Open Font License](OFL.txt).
 
-The README's product overview uses a small native Mermaid diagram. Keep the
-overview focused on how clients reach Hangar and where agents work; deployment
-details belong in [the reference](../guide.md).
+The README's product overview uses a native Mermaid diagram showing multiple
+teammates connecting through a shared Hangar MCP server to isolated cloud
+sandboxes. Annotations describe workspace setup, credentials, parallel attempts,
+and review. Keep deployment internals in [the reference](../guide.md).
