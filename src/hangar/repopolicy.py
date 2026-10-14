@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from hangar.egress import EgressSpec  # --- egress
 from hangar.github import parse_repo
 from hangar.harnesses import get_harness
 from hangar.models import Budget, JobBudget, now
@@ -37,7 +38,8 @@ log = logging.getLogger("hangar.repopolicy")
 KV_PREFIX = "repo-policy:"
 _GITHUB_SHORT = re.compile(r"^[\w.-]+/[\w.-]+$")
 FIELDS = ("verify", "environment", "harness", "model", "budget", "job_budget", "max_usd_per_day",
-          "credentials")  # --- teamcreds
+          "credentials",  # --- teamcreds
+          "egress")  # --- egress
 
 
 class PolicyError(ValueError):
@@ -61,6 +63,8 @@ class RepoPolicy(BaseModel):
     # --- teamcreds: whose login its jobs' agents run with: the person the job runs for (`person`; a job for no one
     # fails), the team's (`team`), or the person's when they have one, else the team's (unset: person_then_team)
     credentials: Literal["person", "team", "person_then_team"] | None = None
+    # --- egress: tightens the environment's egress mode and adds hosts for this repo's sandboxes (egress.py)
+    egress: EgressSpec | None = None
     updated_at: float = Field(default_factory=now)
     updated_by: str | None = None
 
@@ -213,6 +217,7 @@ class PolicyUpdate(BaseModel):
     job_budget: JobBudget | None = None
     max_usd_per_day: float | None = Field(None, gt=0)
     credentials: Literal["person", "team", "person_then_team"] | None = None  # --- teamcreds
+    egress: EgressSpec | None = None  # --- egress
 
 
 def update(svc: JobService, body: PolicyUpdate, actor: str) -> RepoPolicy:

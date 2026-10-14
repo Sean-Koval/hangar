@@ -22,6 +22,7 @@ hangar repo set acme/app --job-max-cost 5 --job-max-turns 12 --max-usd-per-day 6
 | `job_budget` | The default [job budget](#budgets) (`max_cost_usd`, `max_tokens`, `max_turns`). |
 | `max_usd_per_day` | The repo's [daily spend cap](#budgets). |
 | `credentials` | Whose login the repo's jobs run with: `person` (the person the job runs for; a job for no one fails), `team`, or `person_then_team` (the default: theirs when they have one, else the team's). See [team.md](team.md#whose-login-a-job-uses). |
+| `egress` | `{mode, presets, allow}` for the repo's sandboxes: adds presets and hosts to the environment's allowlist, and can tighten its mode but never widen it (`hangar repo set acme/app --egress-mode none --egress-allow docs.example.com`). See [egress allowlists](security.md#egress-allowlists). |
 
 The repo is `owner/repo` for GitHub (any URL form, any case), or the git URL for another host.
 

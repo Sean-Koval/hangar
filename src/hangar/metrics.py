@@ -83,6 +83,13 @@ class Metrics:
                                     ["reason"], buckets=_BYTES, registry=r)
         self.pushes = Counter("hangar_gateway_pushes", "Pushes the git gateway forwarded", ["result"], registry=r)
         self.denials = Counter("hangar_gateway_denials", "Requests the git gateway refused", ["reason"], registry=r)
+        # --- egress: connections through the egress proxy (egress_proxy.py), by decision and a bounded reason
+        self.egress = Counter("hangar_egress_connections", "Connections the egress proxy allowed or denied",
+                              ["decision", "reason", "mode"], registry=r)
+        self.egress_bytes = Counter("hangar_egress_bytes", "Bytes through the egress proxy (out: to the internet)",
+                                    ["direction"], registry=r)
+        self.egress_open = Gauge("hangar_egress_open_connections", "Tunnels open through the egress proxy",
+                                 registry=r)
         self.mcp_calls = Counter("hangar_mcp_calls", "MCP tool calls", ["tool", "status"], registry=r)
         # integrate (#60): how commands reach sandboxes: hangar-envd, the provider's exec, or neither (error)
         self.execs = Histogram("hangar_sandbox_exec_seconds", "Sandbox commands hangar ran, by how they ran (envd, "
@@ -277,6 +284,22 @@ def gateway_push(result: str) -> None:
 def gateway_denied(reason: str) -> None:
     if M is not None:
         M.denials.labels(reason).inc()
+
+
+def egress_connection(decision: str, reason: str, mode: str) -> None:  # --- egress
+    if M is not None:
+        M.egress.labels(decision, reason, mode).inc()
+
+
+def egress_bytes(out: int, in_: int) -> None:  # --- egress
+    if M is not None:
+        M.egress_bytes.labels("out").inc(out)
+        M.egress_bytes.labels("in").inc(in_)
+
+
+def egress_open(delta: int) -> None:  # --- egress
+    if M is not None:
+        M.egress_open.inc(delta)
 
 
 def sandbox_exec(transport: str, seconds: float) -> None:  # integrate (#60)

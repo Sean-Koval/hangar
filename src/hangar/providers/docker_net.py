@@ -33,12 +33,38 @@ ICC = "com.docker.network.bridge.enable_icc"
 BRIDGE_NAME = "com.docker.network.bridge.name"
 OPTIONS = {ICC: "false", BRIDGE_NAME: BRIDGE}
 LABEL = "dev.hangar.network"
+# --- egress: sandboxes of an `allowlist`/`none` environment. Internal (Docker sets up no route out of it; its docs:
+# "communication with the gateway IP address (and thus appropriately configured host services) is possible"), no
+# traffic between sandboxes, a bridge name of its own. Hangar's egress proxy, and a relay to the git gateway, listen
+# on its gateway address; DNS on an internal network answers container names only (Docker 26+, CVE-2024-29018).
+EGRESS_NAME = "hangar-egress"
+EGRESS_BRIDGE = "hangar1"
+EGRESS_OPTIONS = {ICC: "false", BRIDGE_NAME: EGRESS_BRIDGE}
 
 
 def network(settings: Settings) -> str:
     """Where sandboxes go: HANGAR_DOCKER_NETWORK as it is, else hangar's own isolated network (`bridge` is Docker's
     default bridge, with no isolation between sandboxes)."""
     return settings.docker_network or NAME
+
+
+def network_for(settings: Settings, spec: Any) -> str:
+    """--- egress: the network for an environment's sandboxes: the egress network when its mode is proxied."""
+    from hangar import egress
+
+    return EGRESS_NAME if spec is not None and egress.proxied(settings, spec) else network(settings)
+
+
+def _egress_ok(attrs: dict[str, Any]) -> bool:
+    return isolates(attrs) and bool(attrs.get("Internal")) and \
+        (attrs.get("Options") or {}).get(BRIDGE_NAME) == EGRESS_BRIDGE
+
+
+def gateway_ip(attrs: dict[str, Any]) -> str | None:
+    """A network's gateway address (its IPv4 one when it has several), from `docker network inspect`."""
+    cfgs = (attrs.get("IPAM") or {}).get("Config") or []
+    gws = [c.get("Gateway") for c in cfgs if c.get("Gateway")]
+    return next((g for g in gws if ":" not in g), None) or next(iter(gws), None)
 
 
 def isolates(attrs: dict[str, Any]) -> bool:
@@ -64,13 +90,57 @@ class Network:
         self.client, self.settings = client, settings
         self._lock = asyncio.Lock()
 
-    async def ensure(self) -> None:
+    async def ensure(self, name: str | None = None) -> None:
         """Checked before every container start, not once: `docker network prune` removes the network whenever no
         sandbox is on it, and a remembered answer would fail every start until hangar restarts."""
+        if name == EGRESS_NAME:  # --- egress
+            async with self._lock:
+                await asyncio.to_thread(self._ensure_egress)
+            return
         if network(self.settings) != NAME:
             return
         async with self._lock:
             await asyncio.to_thread(self._ensure)
+
+    # --- egress
+    def _ensure_egress(self) -> dict[str, Any]:
+        api = self.client.api
+        try:
+            attrs = api.inspect_network(EGRESS_NAME)
+        except NotFound:
+            try:
+                api.create_network(EGRESS_NAME, driver="bridge", internal=True, options=EGRESS_OPTIONS,
+                                   labels={LABEL: "egress"})
+                log.info("created Docker network %s (bridge %s, internal: sandboxes reach only hangar's egress proxy)",
+                         EGRESS_NAME, EGRESS_BRIDGE)
+            except APIError as e:
+                if e.status_code != 409:
+                    raise ProviderError(f"could not create the Docker network {EGRESS_NAME} for egress-restricted "
+                                        f"sandboxes: {e.explanation or e}. Free the bridge name {EGRESS_BRIDGE}") from e
+            attrs = api.inspect_network(EGRESS_NAME)
+        if not _egress_ok(attrs):
+            raise ProviderError(
+                f"the Docker network {EGRESS_NAME} wasn't made by hangar: it isn't internal, lets sandboxes reach each "
+                f"other or isn't on the bridge {EGRESS_BRIDGE}. Remove it (`docker network rm {EGRESS_NAME}` once no "
+                "container uses it) and hangar makes it again")
+        return attrs
+
+    async def egress_gateway(self, create: bool = True) -> str | None:
+        """The egress network's gateway address, where its sandboxes reach the proxy; None when it doesn't exist
+        (and `create` is off)."""
+
+        def get() -> dict[str, Any] | None:
+            if create:
+                return self._ensure_egress()
+            try:
+                attrs = self.client.api.inspect_network(EGRESS_NAME)
+            except NotFound:
+                return None
+            return attrs if _egress_ok(attrs) else None
+
+        async with self._lock:
+            attrs = await asyncio.to_thread(get)
+        return gateway_ip(attrs) if attrs else None
 
     def _ensure(self) -> None:
         api = self.client.api
@@ -122,7 +192,8 @@ def doctor_check(client: Any, settings: Settings) -> dict[str, Any]:
                       "refuses to start sandboxes on it", f"docker network rm {name} (hangar makes it again)")
     # Sandboxes, and warm-pool members (claimed ones keep only the pool's label: labels can't change).
     stray = {c.name for label in ("dev.hangar.sandbox", "dev.hangar.pool")
-             for c in client.containers.list(filters={"label": label}) if not joined(c.attrs, name)}
+             for c in client.containers.list(filters={"label": label})
+             if not joined(c.attrs, name) and not joined(c.attrs, EGRESS_NAME)}  # --- egress: that one is hangar's too
     if stray:
         return _check("docker sandbox network", None,
                       f"{len(stray)} running sandbox(es) started before are on another network, where sandboxes can "

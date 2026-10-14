@@ -54,6 +54,8 @@ def _line(p: dict) -> str:
         bits.append(f"credentials: {p['credentials']}")
     if p.get("max_usd_per_day"):
         bits.append(f"daily cap: ${p['max_usd_per_day']:g} (${p.get('spent_today_usd') or 0:.2f} today)")
+    if eg := p.get("egress"):  # --- egress
+        bits.append("egress: " + (eg.get("mode") or "env") + (f" +{','.join(eg['allow'])}" if eg.get("allow") else ""))
     return f"{p['repo']:40} " + "  ".join(bits)
 
 
@@ -76,6 +78,10 @@ def repo_set(
                                                  "(UTC days); new jobs over it wait for approval."),
     credentials: str | None = typer.Option(None, "--credentials", help="Whose login jobs use: person (the person "
                                            "the job runs for), team, or person_then_team (the default)."),
+    egress_mode: str | None = typer.Option(None, "--egress-mode", help="--- egress: allowlist or none; tightens "
+                                           "the environment's mode for this repo's sandboxes."),
+    egress_allow: list[str] = typer.Option([], "--egress-allow", help="A host the repo's sandboxes may reach "
+                                           "(host, host:port or *.domain; repeat it). Replaces the list."),
     as_json: bool = typer.Option(False, "--json"),
 ):
     """Set the repo's defaults; what you don't pass is kept. Jobs that set a field themselves still win.
@@ -89,6 +95,8 @@ def repo_set(
                                         max_turns=job_max_turns))):
         if v is not None:
             body[k] = v
+    if egress_mode is not None or egress_allow:  # --- egress
+        body["egress"] = {k: v for k, v in (("mode", egress_mode), ("allow", egress_allow)) if v}
     if len(body) == 1:
         raise typer.BadParameter("pass at least one setting (see --help)")
     p = _cli()._call("PUT", "/api/repos/policy", json=body)
@@ -101,7 +109,7 @@ def repo_set(
 def repo_unset(repo: str = typer.Argument(...),
                fields: list[str] = typer.Argument(None, help="Fields to clear (verify, environment, harness, "
                                                              "model, budget, job_budget, max_usd_per_day, "
-                                                             "credentials). None: "
+                                                             "credentials, egress). None: "
                                                              "remove the repo's policy.")):
     """Clear fields of the repo's policy, or remove it."""
     r = _cli()._call("DELETE", "/api/repos/policy", params={"repo": repo, "field": fields or []})

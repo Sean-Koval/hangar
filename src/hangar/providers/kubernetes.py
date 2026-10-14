@@ -26,6 +26,7 @@ import time
 import uuid
 from pathlib import Path
 
+from hangar import egress  # --- egress
 from hangar.config import Settings
 from hangar.envd import OFF, SKIP, KubernetesEnvd, Off  # --- envd
 from hangar.envspec import BuildContext, EnvSpec
@@ -273,6 +274,8 @@ class KubernetesProvider(Provider):
                 pod["tolerations"] = [{"key": "hangar.dev/runtime", "operator": "Equal", "value": "kata",
                                        "effect": "NoSchedule"}]
         labels = {**MANAGED, "dev.hangar/env": spec.name}
+        if egress.proxied(s, spec):  # --- egress: left out of the internet baseline (deploy/k8s/gateway.yaml)
+            labels[egress.K8S_LABEL] = "proxied"
         if s.k8s_pod_snapshots and rc == "gvisor":
             # Pod snapshots need gVisor, a KSA with access to the snapshot bucket, and the policy's label.
             labels.update(SNAPSHOT_LABEL)
@@ -310,9 +313,12 @@ class KubernetesProvider(Provider):
         name = f"hangar-{spec.name}"
         meta = {"name": name, "labels": {**MANAGED, "dev.hangar/env": spec.name},
                 "annotations": {"dev.hangar/image": image}}
+        tspec: dict = {"podTemplate": self._pod_template(spec, image)}
+        if egress.proxied(self.settings, spec):  # --- egress: not Agent Sandbox's default policy (public internet)
+            tspec["networkPolicy"] = egress.k8s_template_policy()
         await self._apply("sandboxtemplates", {
             "apiVersion": f"{EXT_GROUP}/{EXT_V}", "kind": "SandboxTemplate", "metadata": dict(meta),
-            "spec": {"podTemplate": self._pod_template(spec, image)},
+            "spec": tspec,
         })
         await self._apply("sandboxwarmpools", {
             "apiVersion": f"{EXT_GROUP}/{EXT_V}", "kind": "SandboxWarmPool", "metadata": dict(meta),
@@ -324,7 +330,8 @@ class KubernetesProvider(Provider):
     async def create(self, sandbox: Sandbox, image: str, spec: EnvSpec | None = None) -> None:
         if spec is None:
             raise ProviderError("kubernetes provider needs the environment spec to create a sandbox")
-        key = (image, spec.warm_pool, tuple(sorted(spec.packs.items())))
+        key = (image, spec.warm_pool, tuple(sorted(spec.packs.items())),
+               egress.proxied(self.settings, spec))  # --- egress: a mode change re-applies the template
         if self._synced.get(spec.name) != key:
             await self.sync_warm_pool(spec, image)  # idempotent; keeps template image and packs current
             self._synced[spec.name] = key

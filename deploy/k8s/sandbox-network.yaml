@@ -25,13 +25,18 @@
 # Not covered: a dual-stack cluster whose pods get global (non-ULA) IPv6 addresses. Sandboxes still can't reach each
 # other there (ingress), but the IPv6 rule below lets them reach other pods that have no ingress policy of their own,
 # hangar's API port among them. Keep pod IPv6 ranges internal (ULA, fc00::/7), as GKE's internal IPv6 access does.
+#
+# --- egress: sandboxes of an `allowlist`/`none` environment (label dev.hangar/egress=proxied) are left out of this
+# baseline, so they get no internet at all: gateway.yaml's sandbox-egress-proxied gives them DNS and the egress proxy.
+# allow-hangar-gateway (gateway.yaml) still selects every sandbox pod for Egress.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: sandbox-egress-baseline
   namespace: hangar-sandboxes
 spec:
-  podSelector: {}
+  podSelector:
+    matchExpressions: [{key: dev.hangar/egress, operator: NotIn, values: [proxied]}]
   policyTypes: [Egress]
   egress:
     - to:
