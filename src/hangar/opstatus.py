@@ -81,7 +81,14 @@ def install_ring() -> None:
 
 
 def recent_log(redact: Callable[[Any], Any], n: int = LOG_SHOWN) -> list[dict[str, Any]]:
-    return [redact(dict(x)) for x in list(RING_HANDLER.lines)[-n:]][::-1]
+    """Newest first: stored values out (`redact`), and token formats too (--- review: a token hangar never stored,
+    like the bootstrap admin token it logs on first boot or an App installation token in a clone error)."""
+    from hangar import secretscan
+
+    def mask(v: Any) -> Any:
+        return secretscan.mask(v)[0] if isinstance(v, str) else v
+
+    return [redact({k: mask(v) for k, v in x.items()}) for x in list(RING_HANDLER.lines)[-n:]][::-1]
 
 
 # ====================================================================== sections

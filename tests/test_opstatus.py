@@ -183,3 +183,15 @@ async def test_the_nightly_pass_runs_once_per_slot(settings, store, fleet, monke
     assert ran == ["test"] and rec["steps"]["fine"] == {"ok": True} and "step broke" in rec["steps"]["boom"]["error"]
     assert rec["steps"]["credentials"] == {"checked": 0}
     assert store.kv_get_json(opstatus.NIGHTLY_KEY)["by"] == "test"
+
+
+def test_the_ring_masks_token_formats_hangar_never_stored(broker):
+    """--- review: a token hangar minted or saw but never stored (the bootstrap admin token it logs on first boot, a
+    GitHub App installation token in a git error) isn't in broker.redact's list; its format still gives it away."""
+    opstatus.install_ring()
+    admin = "hgr_" + "A1b2C3d4" * 6
+    install = "ghs_" + "Z9y8X7w6" * 5
+    logging.getLogger("hangar").warning("    %s", admin)
+    logging.getLogger("hangar.gateway").warning("clone of https://x-access-token:%s@github.com/o/r failed", install)
+    text = json.dumps(opstatus.recent_log(broker.redact))
+    assert admin not in text and install not in text
