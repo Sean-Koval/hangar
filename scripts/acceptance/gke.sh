@@ -165,6 +165,7 @@ check() {  # name, description
 }
 
 CLEANED=0
+# shellcheck disable=SC2329 # run by finish, from the EXIT trap
 cleanup() {
   [ "$CLEANED" = 1 ] && return
   CLEANED=1
@@ -187,6 +188,7 @@ cleanup() {
     CLEANUP_RESULT=ok
   fi
 }
+# shellcheck disable=SC2329 # the EXIT trap
 finish() {  # also after a failure or Ctrl-C: clean up, then the report, so it says how far the run got
   local rc=$? rep
   cleanup
