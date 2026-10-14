@@ -43,7 +43,7 @@ def home():
 def svc(home: Path, *args: str, timeout: float = 30, **env: str) -> subprocess.CompletedProcess:
     e = {"HOME": str(home), "PATH": os.environ["PATH"], "HANGAR_SVC_SERVICE_WAIT": "5", **env}
     return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True, env=e,
-                          timeout=timeout)
+                          timeout=timeout, stdin=subprocess.DEVNULL)
 
 
 def manifest(home: Path, **m) -> None:
@@ -122,8 +122,8 @@ def test_services_gate_start_and_wait_reports_them(home):
     assert prog(st, "web")["state"] == "waiting"
     text = svc(home, "status").stdout
     assert "waiting for db to answer" in text
-    srv = subprocess.Popen([sys.executable, "-m", "http.server", str(port)], stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL)
+    srv = subprocess.Popen([sys.executable, "-m", "http.server", str(port)], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         r = svc(home, "wait", "--timeout", "20")
         assert r.returncode == 0, r.stdout
@@ -177,7 +177,8 @@ def test_a_second_up_reuses_the_daemon(home):
     manifest(home, terminals=[{"name": "web", "command": "sleep 300"}])
     svc(home, "up")
     first = json.loads((home / ".hangar/svc/state.json").read_text())["pid"]
-    procs = [subprocess.Popen([sys.executable, str(SCRIPT), "up"], env={"HOME": str(home), "PATH": os.environ["PATH"]})
+    procs = [subprocess.Popen([sys.executable, str(SCRIPT), "up"], env={"HOME": str(home), "PATH": os.environ["PATH"]},
+                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
              for _ in range(3)]
     for p in procs:
         assert p.wait(timeout=20) == 0

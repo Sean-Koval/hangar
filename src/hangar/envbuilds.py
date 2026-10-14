@@ -599,7 +599,7 @@ class EnvBuilds:
         b.image = await self._image(b, spec, prov, path, data)
         return sb
 
-    async def _secrets(self, b: Build, spec: EnvSpec, cfg: repoenv.RepoEnvironment | None) -> dict[str, str]:
+    async def _secrets(self, b: Build, spec: EnvSpec, cfg: repoenv.RepoEnvironment | None) -> dict[str, bytes]:
         """The build secret ids the repo names, resolved through hangar.buildsecrets (the environment's and the repo
         policy's mapping); values only for this build's install."""
         ids = cfg.build_secrets if cfg else []
@@ -615,22 +615,23 @@ class EnvBuilds:
         if missing := [i for i in ids if i not in mapping]:
             raise EnvBuildError(f"build secret(s) {', '.join(missing)} aren't mapped to a credential; an admin maps "
                                 "them (build_secrets) on the environment or the repo's policy")
-        values = buildsecrets.resolve(self.fleet.broker, {i: mapping[i] for i in ids})
-        return {k: v.decode() if isinstance(v, bytes) else str(v) for k, v in values.items()}
+        return buildsecrets.resolve(self.fleet.broker, mapping, ids=ids)
 
     async def _install(self, b: Build, prov: Provider, sb: Sandbox, path: str, install: str,
-                       values: dict[str, str]) -> None:
+                       values: dict[str, bytes]) -> None:
         q = shlex.quote
+        text_values = {k: v.decode(errors="replace") for k, v in values.items()}
         cmd = f"cd {q(path)} && {{ {install}\n}} 2>&1"
         if values:
             # The values go through a 0600 file read and removed before `install` starts: never a command line.
             f = f"/tmp/.hangar-build-{pysecrets.token_hex(8)}"
-            await prov.write_file(sb, f, "".join(f"export {k}={q(v)}\n" for k, v in values.items()).encode(), 0o600)
+            exports = "".join(f"export {k}={q(v)}\n" for k, v in text_values.items())
+            await prov.write_file(sb, f, exports.encode(), 0o600)
             cmd = f"set -a; . {f}; set +a; rm -f {f}; {cmd}"
         left = self.settings.env_build_timeout_minutes * 60 - (now() - (b.started_at or now()))
         res = await prov.exec(sb, cmd, cwd=path, timeout=max(60, int(left)))
         text = res.stdout + (("\n" + res.stderr) if res.stderr.strip() else "")
-        for v in values.values():
+        for v in text_values.values():
             if len(v) >= 4:
                 text = text.replace(v, "***")
         b.log = self.fleet.broker.redact(text)[-LOG_TAIL:]
@@ -638,7 +639,7 @@ class EnvBuilds:
             raise EnvBuildError(f"install exited with {res.exit_code}" + (": timed out" if res.exit_code == 124
                                                                           else ""))
 
-    async def _leak_scan(self, prov: Provider, sb: Sandbox, values: dict[str, str], path: str) -> None:
+    async def _leak_scan(self, prov: Provider, sb: Sandbox, values: dict[str, bytes], path: str) -> None:
         from hangar import buildsecrets  # type: ignore[attr-defined]
 
         hits = await buildsecrets.leak_scan(prov, sb, values, paths=[path])

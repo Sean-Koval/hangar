@@ -8,11 +8,14 @@ import asyncio
 import io
 import json
 import os
+import shlex
 import shutil
 import signal
 import subprocess
+import sys
 import tarfile
 import tempfile
+import types
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -249,6 +252,43 @@ async def test_build_secrets_need_the_broker_side(fl, world):
     await drain(fl)
     b = envbuilds.of(fl).get(b.id)
     assert b.state == "failed" and "hangar.buildsecrets" in b.error
+
+
+def _fake_buildsecrets(scans: list) -> types.ModuleType:
+    """hangar.buildsecrets' interface (the egress PR): mapping, resolve and leak_scan."""
+    m = types.ModuleType("hangar.buildsecrets")
+    m.mapping = lambda spec, policy: {"NPM_TOKEN": "npm-cred"}
+    m.resolve = lambda broker, mapping, ids=None: {i: b"s3cret-npm-value" for i in (ids or mapping)}
+
+    async def leak_scan(prov, sb, values, paths=None, **_):
+        scans.append((dict(values), list(paths or [])))
+        out = await prov.exec(sb, f"grep -rlF {shlex.quote(values['NPM_TOKEN'].decode())} {paths[0]} || true")
+        return [f"{p}: NPM_TOKEN" for p in out.stdout.split()]
+    m.leak_scan = leak_scan
+    return m
+
+
+async def test_build_secrets_reach_install_only_and_a_leak_fails_the_build(fl, world, monkeypatch):
+    scans: list = []
+    monkeypatch.setitem(sys.modules, "hangar.buildsecrets", _fake_buildsecrets(scans))
+    push(world, ".hangar/environment.yaml",
+         "install: test ${#NPM_TOKEN} -eq 16 && echo token is $NPM_TOKEN\nbuild_secrets: [NPM_TOKEN]\n")
+    eb = envbuilds.of(fl)
+    b = eb.schedule(world.url, "appenv", "docker")
+    await drain(fl)
+    b = eb.get(b.id)
+    assert b.state == "succeeded", b.error
+    assert "s3cret" not in b.log and "token is ***" in b.log  # redacted from the record
+    assert scans and scans[0][1] == ["/workspace/app"]
+    ctx = fl.providers["docker"].contexts[-1]
+    assert b"s3cret-npm-value" not in ctx.files["workspace.tgz"]  # nothing of it in the image
+    sb = await fl.create("appenv", repo=world.url)
+    assert "s3cret" not in (await sh(fl, sb, "env; cat /home/agent/.hangar/env; ls -a /tmp"))
+    push(world, ".hangar/environment.yaml", "install: echo \"$NPM_TOKEN\" > .npmrc\nbuild_secrets: [NPM_TOKEN]\n")
+    b = eb.schedule(world.url, "appenv", "docker")
+    await drain(fl)
+    b = eb.get(b.id)
+    assert b.state == "failed" and "left build secret(s) in the checkout" in b.error and ".npmrc: NPM_TOKEN" in b.error
 
 
 async def test_an_invalid_config_is_reported_not_fatal(fl, world):
