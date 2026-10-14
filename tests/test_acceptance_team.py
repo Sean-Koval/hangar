@@ -375,6 +375,26 @@ def test_rfb_client_against_hangars_view_only_filter(view_only):
         assert vnc.pointer == (653, 417) and vnc.keys == [0x61, 0x61]
 
 
+def test_hangar_agent_runs_playwright_from_the_computer_venv(tmp_path):
+    """Found by the computer check on Docker: `hangar-agent screenshot URL` and `browse` run under the system
+    python3 and switch to /opt/hangar/computer/venv for Playwright. That venv's python is a symlink to the system's,
+    so comparing the interpreters' real paths said "already in it" and every page screenshot failed with
+    "Playwright is not installed". A venv here, with a stand-in Playwright, shows the switch happens."""
+    root = tmp_path / "computer"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(root / "venv")], check=True, timeout=120)
+    site = next((root / "venv" / "lib").glob("python*/site-packages"))
+    (site / "playwright").mkdir()
+    (site / "playwright" / "__init__.py").write_text("")
+    (site / "playwright" / "sync_api.py").write_text(
+        "import sys\n\nclass Error(Exception):\n    pass\n\n\ndef sync_playwright():\n"
+        "    print('STAND-IN PLAYWRIGHT from ' + sys.prefix)\n    raise SystemExit(0)\n")
+    script = ROOT / "src" / "hangar" / "sandbox_computer.py"
+    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "HANGAR_COMPUTER_ROOT": str(root)}
+    r = subprocess.run([sys.executable, str(script), "browse", "about:blank"], capture_output=True, text=True,
+                       env=env, timeout=60)
+    assert r.returncode == 0 and f"STAND-IN PLAYWRIGHT from {root / 'venv'}" in r.stdout, r.stdout + r.stderr
+
+
 def _png(path: Path, w: int, h: int, pixel, truncate: bool = False) -> None:
     raw = b"".join(b"\x00" + b"".join(bytes(pixel(x, y)) for x in range(w)) for y in range(h))
 

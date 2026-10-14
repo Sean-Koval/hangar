@@ -254,7 +254,9 @@ def _need_playwright(argv: list[str]):
     try:
         import playwright.sync_api as api  # noqa: F401
     except ImportError:
-        if os.access(VENV_PY, os.X_OK) and os.path.realpath(sys.executable) != os.path.realpath(VENV_PY):
+        # --- acceptance: not already in the venv. Its python is a symlink to the system's, so comparing the
+        # interpreters' real paths said "already there" and never switched (the live check's first screenshot)
+        if os.access(VENV_PY, os.X_OK) and os.path.realpath(sys.prefix) != os.path.realpath(os.path.join(ROOT, "venv")):
             os.execv(VENV_PY, [VENV_PY, os.path.abspath(__file__), *argv])
         raise Fail("Playwright is not installed: this environment has no computer (set `computer: true` in the "
                    "environment spec), or install it in your project and drive Chromium from your own tests") from None
