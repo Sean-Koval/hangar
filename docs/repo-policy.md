@@ -73,7 +73,9 @@ A `budget` caps one agent turn, and every turn used to get a fresh one. So `max_
 
 Costs are what the harness reports, or the token counts priced with the price table ([activity.md](activity.md)). On a subscription login the dollars are an estimate; `max_tokens` and `max_turns` don't depend on prices.
 
-For each field the order is the job, then the repo's policy, then the settings. A per-person daily cap will use the same admission check once jobs carry who is behind them.
+For each field the order is the job, then the repo's policy, then the settings.
+
+**A daily cap per person** (`HANGAR_PERSON_MAX_USD_PER_DAY`, unset by default) works the same way for the jobs a person submits. It counts what all of that person's sessions and jobs spent that day, whichever of their tokens or connectors started them (the person hangar records on each; see [security.md](security.md#people)). Jobs nobody in particular asked for, such as GitHub- and Slack-triggered ones, have no person yet and count only against their repo's cap.
 
 ## The check on the base commit
 

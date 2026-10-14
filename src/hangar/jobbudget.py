@@ -14,6 +14,8 @@ could spend $16 before anyone followed up. So:
   is refused. Turns already running, and a job's own verify-fix turns, finish under the job budget. A day starts
   at midnight in HANGAR_BUDGET_DAY_TIMEZONE (UTC unless set; UTC midnight is mid-afternoon or evening in the
   Americas, so a team there sets its own zone and a cap can't be spent twice in one working day).
+* **A daily cap per person** (HANGAR_PERSON_MAX_USD_PER_DAY) works the same way for the jobs a person submits,
+  counting everything their sessions and jobs spent that day (identity's person on each record).
 
 Precedence for each field: the job, then the repo's policy, then HANGAR_JOB_BUDGET_*. Costs are what the harness
 reports, or priced from the token counts (events.py); a turn with neither counts its tokens only, and on a
@@ -23,6 +25,7 @@ subscription login the dollars are an estimate.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, NamedTuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -32,7 +35,7 @@ from hangar.models import Budget, Job, JobBudget, Session, SessionTurn, now
 from hangar.repopolicy import RepoPolicy, repo_key
 
 if TYPE_CHECKING:
-    from hangar.jobs import Caller, JobService
+    from hangar.jobs import JobService
 
 log = logging.getLogger("hangar.jobbudget")
 
@@ -161,34 +164,46 @@ def day_start(t: float | None = None, tz: str = "UTC") -> float:
     return datetime(d.year, d.month, d.day, tzinfo=z).timestamp()
 
 
-def repo_spent_today(svc: JobService, key: str) -> float:
-    """What the repo's agent turns cost since midnight (zone()): every session on the repo (jobs, attempts, judges
-    and interactive sessions), plus the sessions deleted since, on the day their job was created."""
+def _spent_today(svc: JobService, session: Callable[[Session], bool], job_of: Callable[[Job], bool]) -> float:
+    """What the matching sessions' agent turns cost since midnight (zone()), plus the sessions deleted since of the
+    matching jobs, on the day their job was created."""
     since, total = day_start(tz=zone(svc.settings)), 0.0
     live = svc.sessions._sessions if svc.sessions is not None else {}
     for s in list(live.values()):
-        if repo_key(s.repo) != key:
+        if not session(s):
             continue
         for t in s.turns:
             if (t.started_at or 0) >= since and (t.run_id or t.usage or t.repair_usage):
                 u = total_usage([t])
                 total += (u.cost_usd or 0.0) if u else 0.0
     for job in list(svc._jobs.values()):
-        if job.created_at >= since and job.deleted_session_usage and repo_key(job.repo) == key:
+        if job.created_at >= since and job.deleted_session_usage and job_of(job):
             total += sum(u.cost_usd or 0.0 for sid, u in job.deleted_session_usage.items() if sid not in live)
     return total
 
 
-def caps(svc: JobService, repo: str | None, caller: Caller | None = None) -> list[Cap]:
-    """Every daily cap a piece of work counts against."""
+def repo_spent_today(svc: JobService, key: str) -> float:
+    """What the repo's agent turns cost today: every session on the repo (jobs, attempts, judges and interactive
+    sessions), plus the sessions deleted since."""
+    return _spent_today(svc, lambda s: repo_key(s.repo) == key, lambda j: repo_key(j.repo) == key)
+
+
+def person_spent_today(svc: JobService, person: str) -> float:
+    """--- integration: what a person's agent turns cost today: their interactive sessions and every session of
+    their jobs (attempts and judges included), by the person identity records on each (people.py)."""
+    return _spent_today(svc, lambda s: s.person == person, lambda j: j.person == person)
+
+
+def caps(svc: JobService, repo: str | None, person: str | None = None) -> list[Cap]:
+    """Every daily cap a piece of work counts against: its repo's, and the person's it runs for (identity's
+    person: jobs nobody in particular asked for, such as GitHub- and Slack-triggered ones, have none yet).
+    Submissions, follow-ups and auto-fix rounds check every cap this returns."""
     out: list[Cap] = []
     policy = svc.policies.get(repo)
     if policy is not None and policy.max_usd_per_day:
         out.append(Cap(f"{policy.repo}'s daily cap", policy.max_usd_per_day, repo_spent_today(svc, policy.repo)))
-    # identity: the per-person daily cap plugs in here. Once a job and its turns carry the person behind them,
-    # add Cap(f"{person}'s daily cap", <their limit>, <their turns' cost since day_start(tz=zone(...))>) for
-    # `caller`'s person.
-    # Submissions, follow-ups and auto-fix rounds already check every cap this returns.
+    if person and (limit := svc.settings.person_max_usd_per_day):  # --- integration
+        out.append(Cap(f"{person}'s daily cap", limit, person_spent_today(svc, person)))
     return out
 
 
@@ -196,8 +211,8 @@ def _usd(v: float) -> str:
     return f"${v:,.2f}" if v >= 0.1 else f"${v:.4f}"
 
 
-def over_daily(svc: JobService, repo: str | None, caller: Caller | None = None) -> str | None:
-    for c in caps(svc, repo, caller):
+def over_daily(svc: JobService, repo: str | None, person: str | None = None) -> str | None:
+    for c in caps(svc, repo, person):
         if c.spent_usd >= c.limit_usd:
             return f"{c.name} is spent: {_usd(c.spent_usd)} of {_usd(c.limit_usd)} today ({zone(svc.settings)})"
     return None

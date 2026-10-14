@@ -372,7 +372,7 @@ class JobService:
         job.budget = resolve_budget(jobbudget.merge(req.budget, policy.budget if policy else None, cls=Budget),
                                     self.settings, caller.max_budget if caller.restricted else None)  # --- frontdoor
         job.job_budget = job_budget
-        if approval is None and (over := jobbudget.over_daily(self, repo, caller)):  # --- frontdoor: wait, don't drop
+        if approval is None and (over := jobbudget.over_daily(self, repo, caller.person)):  # --- frontdoor: hold
             from hangar.triggers import new_approval
 
             approval = job.approval = new_approval(self, requester, f"budget: {over}")
@@ -410,7 +410,7 @@ class JobService:
         if not self._sandbox_alive(job) and not (s and self.sessions.resumable(s)):
             raise JobError(f"job {job.id} has no sandbox or checkpoint to continue from; submit a new job "
                            f"(branch {job.branch} has the work)")
-        if why := jobbudget.exhausted(self, job) or jobbudget.over_daily(self, job.repo):  # --- frontdoor
+        if why := jobbudget.exhausted(self, job) or jobbudget.over_daily(self, job.repo, job.person):  # --- frontdoor
             raise JobError(f"job {job.id} can't run another turn: {why}. Submit a new job to continue (branch "
                            f"{job.branch} has the work)")
         job.turns.append(Turn(kind="follow_up", message=message, requester=requester, reply_to=reply_to,

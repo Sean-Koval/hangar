@@ -101,6 +101,31 @@ async def test_a_repo_over_its_daily_cap_holds_new_work(jobs, world):  # noqa: F
     assert held.state == JobState.SUCCEEDED
 
 
+async def test_a_person_over_their_daily_cap_holds_their_new_work(jobs, world):  # noqa: F811
+    """--- integration: the per-person daily cap (HANGAR_PERSON_MAX_USD_PER_DAY) counts what the person identity
+    records on the work spent, through all their tokens, and holds only their work."""
+    jobs.settings.person_max_usd_per_day = 0.002
+    first = await until(jobs, jobs.submit(SubmitJob(instructions="make fix.txt say good", repo=world["url"],
+                                                    environment="seamenv"),
+                                          Caller("@alice:laptop", "tok-a", person="alice")).id, DONE)
+    assert first.state == JobState.SUCCEEDED and first.person == "alice"
+    assert jobbudget.person_spent_today(jobs, "alice") == pytest.approx(0.003)
+    held = jobs.submit(SubmitJob(instructions="again", repo=world["url"], environment="seamenv"),
+                       Caller("@alice:desktop", "tok-a2", person="alice"))  # another of her tokens
+    assert held.state == JobState.AWAITING_APPROVAL
+    assert held.approval.reason.endswith("alice's daily cap is spent: $0.0030 of $0.0020 today (UTC)")
+    with pytest.raises(JobError, match="alice's daily cap is spent"):
+        jobs.follow_up(first.id, "more", requester="@alice:laptop")
+    bobs = jobs.submit(SubmitJob(instructions="his", repo=world["url"], environment="seamenv"),
+                       Caller("@bob:laptop", "tok-b", person="bob"))
+    assert bobs.state != JobState.AWAITING_APPROVAL  # someone else's cap
+    triggered = _submit(jobs, world)  # no person (GitHub, Slack, in-process): only its repo's cap
+    assert triggered.state != JobState.AWAITING_APPROVAL
+    jobs.settings.person_max_usd_per_day = None
+    for j in (held, bobs, triggered):
+        jobs.cancel(j.id, "t")
+
+
 def test_spend_counts_from_midnight_utc(jobs):  # noqa: F811
     from hangar.models import Session, SessionTurn
 
