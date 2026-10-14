@@ -14,7 +14,7 @@ set -uo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 HELPER="$ROOT/scripts/acceptance/hangar_accept.py"
-CHECKS="doctor k8s sandbox exec files isolation session model steer gateway e2b backup metrics power"
+CHECKS="doctor k8s sandbox exec stream files isolation session model steer gateway e2b backup metrics power"
 ONLY="" SKIPS="" KEEP=0 WITH_MODEL=0 NO_KUBECTL=0 EXPECT_ENVD=1
 ARGS=()
 
@@ -35,7 +35,7 @@ usage: $0 [options]
   --exec-calls N        exec round trips to time (default: 20)
   --internet-probe H:P  an address sandboxes must reach, so closed ports in the isolation check mean a policy
                         and not a sandbox with no network (default: github.com:443)
-  --no-expect-envd      don't fail the exec check when calls don't go through hangar-envd
+  --no-expect-envd      don't fail the exec and stream checks when calls don't go through hangar-envd
   --no-kubectl          skip what needs kubectl (manifest check, in-cluster exec baseline, control-plane probes)
   --only a,b            run only these checks; --skip a,b skips these. Checks: ${CHECKS// /, }
   --keep                leave what the run created (for debugging); clean up later with
@@ -147,6 +147,7 @@ check doctor    "hangar doctor reports no failures"
 check k8s       "the upgrade's manifests are applied (NetworkPolicies, grace period, pod ready)"
 check sandbox   "create a sandbox"
 check exec      "exec round trips, the transport they use (hangar-envd or pods/exec), in-cluster baseline"
+check stream    "a streamed exec over SSE: the first line arrives while the command runs"
 check files     "write and read a file through MCP"
 check isolation "a sandbox can't reach another sandbox's envd, the metadata server or hangar's API"
 check session   "session: checkpoint, suspend, resume in a new sandbox with the work restored (no model)"

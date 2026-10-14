@@ -114,13 +114,14 @@ def test_acceptance_script_on_docker(tmp_path, upstream, monkeypatch):  # noqa: 
         summary = out[out.rindex("== summary"):]
         status = {name: st for st, name in re.findall(r"^(PASS|FAIL|SKIP|INFO)\s+(\w+)", summary, re.M)}
         assert r.returncode == 0, out
-        for check in ("doctor", "sandbox", "exec", "files", "isolation", "session", "model", "gateway", "e2b",
+        for check in ("doctor", "sandbox", "exec", "stream", "files", "isolation", "session", "model", "gateway", "e2b",
                       "backup", "metrics"):
             assert status.get(check) == "PASS", (check, summary)
         assert status.get("k8s") == "SKIP" and "steer" not in status, summary  # --no-kubectl; --skip steer
         assert status.get("power") == "INFO"
         if envd:  # every timed exec went through the in-sandbox daemon, and B's daemon was out of A's reach
             assert re.search(r"PASS\s+exec .*envd \(\d+ calls", summary), summary
+            assert re.search(r"PASS\s+stream\s.*first output after \d+ ms of", summary), summary
             assert re.search(r"ok\s+sandbox B's hangar-envd \([\d.]+:49983\): (timeout|refused)", out), out
         # The gateway check pushed through hangar to the upstream, and the cleanup's `gh` deleted the branch again.
         assert any(m == "POST" and p.endswith("/git-receive-pack") for m, p in upstream.requests)

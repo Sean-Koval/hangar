@@ -371,6 +371,47 @@ def check_exec(api: Api, state: State, opts: argparse.Namespace) -> str:
     return summary
 
 
+def check_stream(api: Api, state: State, opts: argparse.Namespace) -> str:
+    """A streamed exec over REST Server-Sent Events (#68), through the ingress: the first line arrives while the
+    command still runs, so nothing between here and hangar-envd (the load balancer included) buffers the stream."""
+    sb = _need_sandbox(state)
+    command = "for i in 1 2 3 4 5; do echo tick$i; sleep 0.5; done"
+    t0 = time.perf_counter()
+    first, out, result, event = None, "", None, None
+    with api.http.stream("POST", f"/api/sandboxes/{sb}/exec/stream", json={"command": command, "timeout": 60}) as r:
+        if r.status_code != 200:
+            r.read()
+            raise Fail(f"POST /api/sandboxes/{{id}}/exec/stream: HTTP {r.status_code}: {r.text[:300]}")
+        for line in r.iter_lines():
+            if line.startswith("event: "):
+                event = line[7:]
+            elif line.startswith("data: "):
+                data = json.loads(line[6:])
+                if event == "stdout":
+                    first = time.perf_counter() - t0 if first is None else first
+                    out += data.get("data", "")
+                elif event == "result":
+                    result = data
+                elif event in ("error", "close"):
+                    raise Fail(f"the stream ended with `{event}`: {data}")
+            elif not line:
+                event = None
+    total = time.perf_counter() - t0
+    if result is None or result.get("exit_code") != 0:
+        raise Fail(f"no successful result event: {result}")
+    if out.split() != [f"tick{i}" for i in range(1, 6)]:
+        raise Fail(f"the streamed output was {out[:200]!r}")
+    if not result.get("streamed"):
+        if opts.expect_envd:
+            raise Fail("the command wasn't streamed (no hangar-envd in the sandbox): the output came in one piece")
+        return f"not streamed (no hangar-envd): the output came at the end, {total * 1000:.0f} ms"
+    say(f"first output after {first * 1000:.0f} ms; the command took {total * 1000:.0f} ms (it prints for 2 s)")
+    if first is None or first > total - 1.5:
+        raise Fail(f"the first line arrived after {first * 1000:.0f} ms of {total * 1000:.0f} ms: something between "
+                   "here and hangar buffers Server-Sent Events")
+    return f"first output after {first * 1000:.0f} ms of {total * 1000:.0f} ms"
+
+
 async def _mcp(url: str, token: str, calls: list[tuple[str, dict[str, Any]]]) -> list[Any]:
     from mcp import Client
     from mcp.client.streamable_http import streamable_http_client
@@ -778,7 +819,8 @@ def cleanup(api: Api, state: State, opts: argparse.Namespace) -> str:
 
 
 CHECKS: dict[str, Callable[[Api, State, argparse.Namespace], str]] = {
-    "doctor": check_doctor, "k8s": check_k8s, "sandbox": check_sandbox, "exec": check_exec, "files": check_files,
+    "doctor": check_doctor, "k8s": check_k8s, "sandbox": check_sandbox, "exec": check_exec, "stream": check_stream,
+    "files": check_files,
     "isolation": check_isolation, "session": check_session, "model": check_model, "steer": check_steer,
     "gateway": check_gateway, "e2b": check_e2b, "backup": check_backup, "metrics": check_metrics,
     "cleanup": cleanup,
