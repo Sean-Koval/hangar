@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import shutil
+import tempfile
+from pathlib import Path
 
 from hangar.envspec import BuildContext
 from hangar.providers.base import LogFn, ProviderError
@@ -97,4 +99,30 @@ async def docker_build(ctx: BuildContext, tag: str, log: LogFn | None = None, pl
     if push:
         await _emit(log, f"$ docker push {tag}")
         await run_cli(["docker", "push", tag], log=log)
+    return tag
+
+
+async def cloud_build(ctx: BuildContext, tag: str, log: LogFn | None = None, service_account: str | None = None,
+                      project: str | None = None) -> str:
+    """Build and push `tag` with Cloud Build (`gcloud builds submit`). --- images: shared by the Kubernetes provider
+    and `hangar images build`."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "Dockerfile").write_text(ctx.dockerfile)
+        for rel, data in ctx.files.items():
+            p = root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(data)
+        (root / "cloudbuild.yaml").write_text(
+            "steps:\n- name: gcr.io/cloud-builders/docker\n  env: ['DOCKER_BUILDKIT=1']\n"
+            f"  args: ['build', '-t', '{tag}', '.']\nimages: ['{tag}']\ntimeout: 3600s\n"
+            # A user-specified build SA can't write to the default logs bucket.
+            + ("options:\n  logging: CLOUD_LOGGING_ONLY\n" if service_account else "")
+        )
+        args = ["gcloud", "builds", "submit", "--config", str(root / "cloudbuild.yaml")]
+        if service_account:
+            args.append(f"--service-account=projects/-/serviceAccounts/{service_account}")
+        if project:
+            args.append(f"--project={project}")
+        await run_cli([*args, str(root)], log=log)
     return tag

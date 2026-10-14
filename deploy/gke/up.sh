@@ -4,6 +4,7 @@
 #   bash deploy/gke/up.sh            # build the image with Cloud Build, deploy, print the URL
 #   KATA=1 bash deploy/gke/up.sh     # also install Kata on the nested-virt pool (enable_kata_pool=true)
 #   DOMAIN=hangar.me.dev bash ...    # use your own DNS name (A record -> terraform output static_ip)
+#   PREBUILD=0 bash ...              # skip building environment images and harness packs before rollout
 #
 # Without DOMAIN it uses <static-ip>.sslip.io, a public wildcard DNS name that resolves to the IP, so the
 # Google-managed certificate can provision with no DNS setup. Certificates take ~15-60 min the first time.
@@ -25,6 +26,17 @@ if gcloud artifacts docker images describe "$IMAGE" --project "$PROJECT" >/dev/n
 else
   echo "== building $IMAGE with Cloud Build"
   gcloud builds submit --project "$PROJECT" --tag "$IMAGE" --timeout 1800s .
+fi
+
+# Every environment image and harness pack this commit needs, built and pushed before the new control plane rolls
+# out, so no create waits on a build. CI (.github/workflows/images.yml) usually built them already; then this is a
+# registry lookup per tag. Docker if it runs here, else Cloud Build.
+if [ "${PREBUILD:-1}" = 1 ]; then
+  echo "== environment images and harness packs"
+  HANGAR_REGISTRY="$REG" ${HANGAR_CLI:-uv run --quiet hangar} images build --provider kubernetes \
+      --builder "${BUILDER:-auto}" --jobs "${JOBS:-3}" ||
+    { echo "prebuild failed (above). Fix it, or deploy anyway with PREBUILD=0: creates then build what's missing." >&2
+      exit 1; }
 fi
 
 echo "== namespaces + secret"

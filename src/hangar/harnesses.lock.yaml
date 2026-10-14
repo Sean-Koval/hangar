@@ -1,0 +1,36 @@
+# Harness lock: the exact agent CLI every pack (and baked image) installs. hangar reads it at import, the version is
+# part of each pack's tag, and a pack build fails when the CLI it installed reports another version. So a fleet runs
+# one version per harness, and a version changes only through a reviewed change to this file.
+#
+# Bump a harness: change its entry (and its checksums), run `tests/test_*real_clis.py` against the new CLI with
+# HANGAR_TEST_<NAME> set, and say in the PR what you verified. `hangar images plan` then lists the new pack as missing
+# and CI builds it before rollout.
+#
+# Verified 2026-10-14 against the vendors' own release sources:
+# - claude-code: downloads.claude.ai/claude-code-releases/2.1.296/manifest.json (checksums below are its linux-x64 and
+#   linux-arm64 entries); also on npm as @anthropic-ai/claude-code@2.1.296. 2.1.296 is what the driver's stream-json
+#   control protocol, --fork-session and the cache variables were verified with. Channels that day: stable 2.1.287,
+#   latest 2.1.299.
+# - codex: npm @openai/codex@0.162.1 (dist-tag latest).
+# - pi: npm @earendil-works/pi-coding-agent@1.1.0 (latest is 1.2.0, which the cache and fork notes also cover).
+# - antigravity: the release list of agy's updater (antigravity-cli-auto-updater-....run.app/releases) names build
+#   5524738307653632 for 1.3.3, the version hangar was verified with on GKE; the sha512s are of those archives in
+#   gs://antigravity-public (the same method reproduces the updater's published sha512 for 1.3.5, the current one).
+# - gemini (deprecated): npm @google/gemini-cli@0.64.0 (dist-tag latest).
+claude-code:
+  version: 2.1.296
+  sha256:
+    x86_64: 24972e3bc859fab2b46ed4c1e51f7d6130f06d3bd550811a114640de3370d0de
+    aarch64: f1f6e96e0d8342b9dbf41d7e88255397a6a52ce3d8736ad6a4c6b59c9b62fefa
+codex:
+  version: 0.162.1
+pi:
+  version: 1.1.0
+antigravity:
+  version: 1.3.3
+  build: "5524738307653632"
+  sha512:
+    x86_64: abe3ddf5cf30d3adaa586acf505221aa19702f5ca71af3c8b1f9b1a5976bd8e5c151c41ea33b39c41675d25843462a3e8c382c054f580e9d7e1688919d3b5110
+    aarch64: 1bfd3503576219a102176c13579665a2f39e84ac86a904b117d3b33f3dd751f194a862496bad6ffe914ad46d2c877ba12b6c07e6db07128b706d238262fe430c
+gemini:
+  version: 0.64.0

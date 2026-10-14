@@ -97,6 +97,16 @@ class Provider(abc.ABC):
         """What `create` should receive for a built image tag (E2B maps tags to template names)."""
         return tag
 
+    # --- images: packs are mounted by digest where the provider can tell it (a registry), so a tag that moves can't
+    # put two versions of a harness on one fleet. None: mount by tag.
+    async def image_digest(self, tag: str) -> str | None:
+        """`repo@sha256:...` for a built image, or None when this provider can't tell."""
+        return None
+
+    async def pack_version(self, ref: str) -> str | None:
+        """The CLI version a harness pack recorded at build (harnesses.VERSION_FILE), when it can be read."""
+        return None
+
     async def sync_warm_pool(self, spec: EnvSpec, image: str) -> None:
         """Bring the warm pool for this environment to spec.warm_pool ready sandboxes."""
 

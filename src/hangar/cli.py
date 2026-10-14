@@ -303,7 +303,9 @@ def pack_list(as_json: bool = typer.Option(False, "--json", help="Print the raw 
     for h in harnesses:
         agent = " agent" if h.get("agent") else ""
         dep = " (deprecated)" if h.get("deprecated") else ""
-        typer.echo(f"{h['name']:16} {h.get('version') or 'latest':12}{agent}{dep}".rstrip())
+        # --- images: the locked version, then what each provider's pack reported at build
+        got = "  ".join(f"{p}: {v}" for p, v in (h.get("installed") or {}).items())
+        typer.echo(f"{h['name']:16} {h.get('version') or 'latest':12}{agent}{dep}{'  ' + got if got else ''}".rstrip())
 
 
 @pack_app.command("render")
@@ -327,8 +329,11 @@ def pack_publish(
     harness: list[str],
     provider: str | None = typer.Option(None, help="Provider the pack is for (default: server default)."),
     platform: str = typer.Option("linux/amd64", help="Target platform."),
+    force: bool = typer.Option(False, "--force", help="Rebuild and push even when the pack's tag already exists. "
+                               "The tag then moves; sandboxes keep mounting the digest they started with."),
 ):
-    """Build harness packs on THIS machine, push them, and register them with the server."""
+    """Build harness packs on THIS machine, push them, and register them with the server. A pack whose tag already
+    exists (CI or an earlier publish built it) is registered as it is, not rebuilt over, unless --force."""
     import shutil
 
     if not shutil.which("docker"):
@@ -341,9 +346,41 @@ def pack_publish(
                 typer.secho(f"error: {r.text}", fg="red")
                 raise typer.Exit(1)
             tag, tar = r.headers["X-Hangar-Image"], r.content
-        _build_and_push(tag, tar, platform)
+        if not force and _tag_exists(tag):  # --- images: a published tag is never overwritten by accident
+            typer.secho(f"{tag} already exists; registering it as it is (--force rebuilds it)", fg="yellow")
+        else:
+            _build_and_push(tag, tar, platform)
         res = _call("POST", f"/api/harnesses/{h}/images", json={"image": tag, "provider": provider})
         typer.secho(f"registered {res['image']}", fg="green")
+
+
+def _tag_exists(tag: str) -> bool:
+    """--- images: ask the registry (HTTP), else `docker manifest inspect`. When neither can tell, stop: publishing
+    blind could overwrite a tag sandboxes mount."""
+    import asyncio
+    import re
+    import subprocess
+
+    from hangar.registry import Registry, RegistryError, is_registry_ref
+
+    why = ""
+    if is_registry_ref(tag):
+        async def ask() -> bool:
+            async with Registry() as reg:
+                return await reg.exists(tag)
+
+        try:
+            return asyncio.run(ask())
+        except RegistryError as e:
+            why = str(e)
+    p = subprocess.run(["docker", "manifest", "inspect", tag], capture_output=True, text=True)
+    if p.returncode == 0:
+        return True
+    if re.search(r"no such manifest|manifest unknown|not found", p.stderr, re.I):
+        return False
+    typer.secho(f"can't tell whether {tag} exists ({why or p.stderr.strip()[-300:]}); fix registry access, or pass "
+                "--force to publish over it", fg="red", err=True)
+    raise typer.Exit(1)
 
 
 @env_app.command("push")
@@ -1167,6 +1204,11 @@ def schedule_rm(ref: str):
 from hangar import steer_cli as _steer  # noqa: E402
 
 _steer.register(session_app)
+
+# ---------------------------------------------------------------------------- images (images_cli.py)
+from hangar.images_cli import images_app as _images_app  # noqa: E402
+
+app.add_typer(_images_app, name="images")
 
 # ---------------------------------------------------------------------------- workstream setup (setup_cli.py)
 from hangar import setup_cli as _setup  # noqa: E402

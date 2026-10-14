@@ -765,6 +765,7 @@ class JobService:
             handoff=False)  # the job's own follow-up prompt carries the task, context and last summary
         turn.run_id = st.run_id
         turn.started_at = st.started_at
+        turn.harness_version = st.harness_version  # --- images
         turn.context = exchange.strip(turn.context)
         job.context = exchange.strip_code(job.context)  # applied now; don't carry a bundle in every save
         if job.result.base_sha and s.base_sha:
