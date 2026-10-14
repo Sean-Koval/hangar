@@ -4,7 +4,7 @@
 client, a deploy check or a person can tell which tools a server offers.
 
 The claude.ai apps cache `tools/list` for as long as a connector exists and ignore list-changed notifications
-(anthropics/claude-code#38324, closed as not planned), so hangar cannot refresh them. It can notice and say so: it
+(anthropics/claude-code#38324), so hangar cannot refresh them. It can notice and say so: it
 records the surface each caller last listed, and when a caller is clearly working from an older one (it lacks tools
 that exist now, the tool it calls has gained arguments, or it calls a retired name), the result carries one plain
 line asking to re-add the connector, at most once an hour per caller. A tool that doesn't exist at all gets the

@@ -28,7 +28,7 @@ Claude Desktop's config file only starts local (stdio) servers, so the entry run
 
 ### When hangar's tools change
 
-After an upgrade that adds or changes tools, a client has to fetch the tool list again to see them. Claude Code, Codex and the other CLIs do that when a session starts. The claude.ai web, desktop and mobile apps don't: they keep the list from when the connector was added ([claude-code#38324](https://github.com/anthropics/claude-code/issues/38324), closed as not planned). Remove the hangar connector and add it again (**Settings → Connectors**) to refresh it. Hangar notices calls from an older list and says so in the tool's answer, at most once an hour ([mcp.md](mcp.md#deployment-notes)); `serverInfo.version` (`<version>+tools.<hash>`) tells you which tool list a hangar serves.
+After an upgrade that adds or changes tools, a client has to fetch the tool list again to see them. Claude Code, Codex and the other CLIs do that when a session starts. The claude.ai web, desktop and mobile apps don't: they keep the list from when the connector was added ([claude-code#38324](https://github.com/anthropics/claude-code/issues/38324)). Remove the hangar connector and add it again (**Settings → Connectors**) to refresh it. Hangar notices calls from an older list and says so in the tool's answer, at most once an hour ([mcp.md](mcp.md#deployment-notes)); `serverInfo.version` (`<version>+tools.<hash>`) tells you which tool list a hangar serves.
 
 ### Where these formats come from
 
