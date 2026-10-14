@@ -747,16 +747,10 @@ class JiraFrontDoor:
 
     def _follow_up(self, job: Job, text: str, requester: str, ref: str, person: str) -> dict[str, Any]:
         svc = self.jobs
-        if job.person is not None and job.person != person:  # --- review: it runs with their own login
-            why = (f"this is {job.person}'s job, and it runs with their own login: only {job.person} continues it "
-                   "here (an admin can with hangar job follow-up)")
-            svc.admission.refused(f"owner:{requester}", requester, "jira.refused", ref, why=why, job=job.id)
-            svc._spawn(notify(svc, job, ref, f"Can't continue `{job.id}`: {why}.", "note"))
-            return {"ignored": why}
-        try:
-            svc.follow_up(job.id, text, requester=requester, reply_to=ref)
+        try:  # integration: the front door's check is #91's, in one place: only a job's person continues it here
+            svc.follow_up(job.id, text, requester=requester, reply_to=ref, front_door=True, sender_person=person)
         except JobError as e:
-            svc._spawn(notify(svc, job, ref, f"Can't continue yet: {e}", "note"))
+            svc._spawn(notify(svc, job, ref, f"Can't continue `{job.id}`: {e}", "note"))
             return {"ignored": str(e)}
         svc._spawn(notify(svc, job, ref, f"Continuing hangar job `{job.id}` with your comment. I'll comment here "
                                          "when it's done.", "note"))

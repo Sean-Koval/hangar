@@ -522,3 +522,12 @@ async def test_doctor(intake, settings, broker):  # noqa: F811
             "comment": {"body": "/hangar", "author_association": "NONE", "user": {"login": "rando", "id": 103}}})
     later = [j for j in intake.list() if j.labels.get("github.issue", "").startswith("5")]
     assert len(later) == 3 and {j.person for j in later} == {"randy"}
+    # integration (#92): Jira and GitHub Projects senders linked to nobody are named too
+    from hangar.jobs import Caller, SubmitJob
+
+    for n in range(3):
+        intake.submit(SubmitJob(instructions="x", repo="https://github.com/o/r"),
+                      Caller("jira:557058:eve", "jira:557058:eve"), source="jira", source_ref=f"jira:ABC-{n}")
+    unlinked = {c["name"]: c for c in teamcreds.doctor_checks(h)}["unlinked senders"]
+    assert "jira:557058:eve (3 jobs)" in unlinked["detail"]
+    assert "hangar person link PERSON jira 557058:eve" in unlinked["fix"]

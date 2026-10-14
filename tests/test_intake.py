@@ -31,6 +31,7 @@ API_TOKEN = "ATATT3xFfGF0-jira-api-token"
 AUTO_TOKEN = "automation-shared-token-xyz"
 GH_TOKEN = "ghp_controlplanetoken"
 DANA = "5b10ac8d82e05b22cc7d4ef5"
+REAL_RESOLVE = people.resolve_external  # integration: #91's, before any test stands in for it
 needs_tools = pytest.mark.skipif(not shutil.which("tmux") or not shutil.which("git"), reason="needs tmux and git")
 
 
@@ -517,6 +518,20 @@ async def test_only_the_jobs_person_continues_it_from_jira(door, monkeypatch):
     job.state = JobState.SUCCEEDED  # `/hangar <more>` after it's done: likewise
     comment["comment"]["body"], comment["timestamp"] = "/hangar now do more", comment["timestamp"] + 1
     assert "dana's job" in (await post(client, comment)).json()["ignored"]
+
+
+async def test_intake_uses_the_real_people_links(door, monkeypatch):
+    """Integration (#91 + #92): Jira and GitHub Projects senders resolve through #91's people links, not a stub
+    that would silently shadow them."""
+    monkeypatch.setattr(people, "resolve_external", REAL_RESOLVE)
+    svc, client = door["svc"], door["client"]
+    people.add(svc.store, "dana")
+    people.link(svc.store, "dana", "jira", DANA)
+    people.link(svc.store, "dana", "github", "4242")
+    job = svc.get((await post(client, fixture("jira_issue_updated.json"))).json()["job"])
+    assert job.person == "dana" and job.state == JobState.QUEUED
+    res = await handle_github(svc, "projects_v2_item", "d-int", fixture("gh_projects_v2_item_edited.json"))
+    assert svc.get(res["job"]).person == "dana"
 
 
 async def test_jira_write_back_failures_land_on_the_job(door):
