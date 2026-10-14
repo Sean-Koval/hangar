@@ -251,7 +251,10 @@ async def test_the_agent_cant_tamper_with_hangars_side_of_a_split_sandbox(tmp_pa
         await root("rm /etc/sudoers.d/zz-late")  # else the setup (rightly) leaves it single-user
         for change, why in ((f"chmod 666 {PREFIX}/lib/fake_claude.py", f"can change {PREFIX}/lib/fake_claude.py"),
                             (f"chmod 644 {PREFIX}/lib/fake_claude.py && mkdir -m 777 /etc/claude-code",
-                             "can change /etc/claude-code (managed settings)")):
+                             "can change /etc/claude-code (managed settings)"),
+                            # a wrapper like codex's from before: dirname would come from the agent's PATH
+                            ("rmdir /etc/claude-code && printf '#!/bin/sh\\nexec \"$(dirname \"$0\")/x\"\\n' > "
+                             f"{PREFIX}/bin/claude", "runs commands through the agent's PATH")):
             await root(change)
             sb = fleet.get(sid)
             del sb.info["isolation"]

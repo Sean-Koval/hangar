@@ -110,17 +110,18 @@ install -D -m 755 "$(readlink -f "$HOME/.local/bin/claude")" "$PREFIX/bin/claude
 """
 
 # The npm package is a node launcher around a static musl binary; ship the binary, its helper binaries and
-# resources, and a wrapper that adds the bundled ripgrep the launcher would have put on PATH.
+# resources, and a wrapper that adds the bundled ripgrep the launcher would have put on PATH. --- harden: the wrapper
+# names its prefix (packs and bakes both put it there) instead of finding it with dirname and readlink, which a
+# hardened turn would otherwise look up on the agent's PATH before codex starts.
 _CODEX_INSTALL = r"""
 npm install -g --prefix /tmp/codex-npm "@openai/codex@$VERSION"
 V=$(find /tmp/codex-npm -type d -path '*/vendor/x86_64-unknown-linux-musl' | head -1)
 test -x "$V/bin/codex"
 mkdir -p "$PREFIX/bin" "$PREFIX/libexec"
 cp -a "$V/." "$PREFIX/libexec/"
-cat > "$PREFIX/bin/codex" <<'SH'
+cat > "$PREFIX/bin/codex" <<SH
 #!/bin/sh
-D=$(dirname "$(dirname "$(readlink -f "$0")")")
-PATH="$PATH:$D/libexec/codex-path" exec "$D/libexec/bin/codex" "$@"
+PATH="\$PATH:$PREFIX/libexec/codex-path" exec "$PREFIX/libexec/bin/codex" "\$@"
 SH
 chmod 755 "$PREFIX/bin/codex"
 """

@@ -102,6 +102,8 @@ elif [ ! -x "$b" ]; then harness="$b is not there (the harness isn't in its pack
 elif changeable "$b" || changeable "$(readlink -f "$b")"; then harness="$u can change $b"
 elif w=$(as_agent sh -c 'find "$0" -writable -print -quit 2>/dev/null' "${{b%/bin/*}}") && [ -n "$w" ]; then
   harness="$u can change $w"
+elif [ "$(head -c 2 "$b")" = "#!" ] && grep -q '\$(' "$b"; then  # e.g. codex's wrapper from before
+  harness="$b runs commands through the agent's PATH to find its way (an older pack: a new sandbox has the fixed one)"
 else
   for p in /etc/claude-code /etc/claude-code/* /etc/claude-code/*/* /etc/codex /etc/codex/*; do
     ! changeable "$p" || {{ harness="$u can change $p (managed settings)"; break; }}

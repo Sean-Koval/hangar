@@ -21,7 +21,7 @@ from hangar import steer as steering
 from hangar.config import Settings
 from hangar.envspec import EnvSpec
 from hangar.events import Activity, TurnWatcher, parse_log
-from hangar.harnesses import HARNESSES, McpServer
+from hangar.harnesses import HARNESSES, McpServer, pack_script
 from hangar.models import ExecResult, Sandbox, Session, SessionTurn
 from hangar.verifyloop import CLAUDE_ENV, claude_settings
 from tests.test_steer import live, new, settle, svc  # noqa: F401 - fixtures
@@ -92,6 +92,17 @@ def test_codex_gets_its_hooks_off_and_says_what_stays_open():
     p = harden.plan(fleet, _split(h), h, "run-0000beef", "/workspace/r", {})
     assert p.live_run == f"{h.prefix}/bin/codex --disable hooks app-server"
     assert p.warnings == [harden.CODEX_RULES] and set(p.files) == {"run-0000beef.agent-env"}
+
+
+def test_codexs_wrapper_runs_nothing_from_the_agents_path():
+    """The pinned `codex` is a wrapper script; looking up dirname or readlink on the agent's PATH (as it did) would let
+    a shim pick what runs. The setup refuses a wrapper that runs commands to find its way (an older pack)."""
+    script = pack_script(HARNESSES["codex"])
+    wrapper = script[script.index("<<SH\n") + 5:script.index("\nSH\n")]
+    # the heredoc isn't quoted: $PREFIX is written in when the pack is built; \$PATH and \$@ are the wrapper's own
+    assert wrapper == '#!/bin/sh\nPATH="\\$PATH:$PREFIX/libexec/codex-path" exec "$PREFIX/libexec/bin/codex" "\\$@"'
+    assert f"export PREFIX={HARNESSES['codex'].prefix} " in script and "$(" not in wrapper
+    assert "grep -q '\\$(' \"$b\"" in isolation.SETUP
 
 
 def test_the_driver_pins_codexs_approvals_to_hangar():
