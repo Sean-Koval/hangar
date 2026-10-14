@@ -53,10 +53,9 @@ STOP_GRACE = 10.0  # at shutdown, how long destroys in flight get to finish
 
 
 def sandboxes_in(store: Store, states: Iterable[SandboxState]) -> list[Sandbox]:
-    """Sandboxes in any of `states`. The one place the reconciler reads rows, so it can move to the store's indexed
-    state query when that lands; until then one scan per pass (the scan the reaper's reconcile already made)."""
-    want = frozenset(states)
-    return [s for s in store.list(Sandbox) if s.state in want]
+    """Sandboxes in any of `states`: the one place the reconciler reads rows. Answered from the store's state index
+    (scale's `list_where`), so a pass decodes only live and unfinished rows, never months of settled ones."""
+    return store.list_where(Sandbox, state=frozenset(states))
 
 
 def note_stage(sb: Sandbox, msg: str) -> None:

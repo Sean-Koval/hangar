@@ -96,6 +96,42 @@ async def test_a_restart_mid_create_frees_the_lease_and_tears_the_sandbox_down(f
             await stuck
 
 
+async def test_a_pass_stays_inside_the_orphaned_sandbox_and_its_persons_lease(fleet, broker, store, settings,
+                                                                                monkeypatch):
+    """--- integration (identity, scale): a pass runs as hangar itself, with no caller, so it must not reach past the
+    rows it finishes. Alice's orphaned create frees only the login it leased (her own) and keeps her as its person;
+    Bob's running sandbox and his own login are untouched. The pass reads rows from the state index, never a scan."""
+    prov = Blocking()
+    fleet.providers["docker"] = prov
+    broker.put("codex-alice", "codex", CredentialKind.AUTH_FILE, "{}", person="alice")
+    broker.put("codex-bob", "codex", CredentialKind.AUTH_FILE, "{}", person="bob")
+    stuck = asyncio.create_task(fleet.create("plain", credentials=["codex-alice"], person="alice"))
+    try:
+        while not prov.boxes:
+            await asyncio.sleep(0.01)
+        bobs = await fleet.create("plain", credentials=["codex-bob"], person="bob")
+        alices = next(s for s in store.list(Sandbox) if s.person == "alice")
+        again = restarted(settings, store, broker, prov)
+        real = store.list
+
+        def no_scan(cls):
+            assert cls is not Sandbox, "the reconciler scanned every sandbox record"
+            return real(cls)
+
+        monkeypatch.setattr(store, "list", no_scan)
+        await finish(await again.reconciler.run(boot=True))
+        monkeypatch.setattr(store, "list", real)
+        row = store.get(Sandbox, alices.id)
+        assert row.state == S.ERROR and row.person == "alice" and broker.get("codex-alice").leased_to is None
+        bob_row = store.get(Sandbox, bobs.id)
+        assert bob_row.state == S.RUNNING and bob_row.person == "bob" and bob_row.provider_ref in prov.boxes
+        assert broker.get("codex-bob").leased_to == bobs.id
+    finally:
+        stuck.cancel()
+        with contextlib.suppress(BaseException):
+            await stuck
+
+
 async def test_a_create_that_never_stored_its_provider_ref_is_found_by_label(fleet, store, settings, broker):
     prov = Blocking()
     sb = Sandbox(name="x", environment="plain", provider="docker", state=S.STARTING)
