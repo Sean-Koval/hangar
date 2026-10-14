@@ -117,6 +117,12 @@ class Credential(BaseModel):
     # --- identity: a person's own credential (their Claude or Codex login), used only in their sandboxes; None:
     # a team credential (--- teamcreds: those stored before people became the owner's, teamcreds.migrate)
     person: str | None = None
+    # --- clouddoctor: credential health (credhealth.py), from a check that calls no model: when it stops working
+    # (None: no known end), when a check last passed, and the last check {status, detail, checked_at, method, by}.
+    # Storing a new value starts these over.
+    expires_at: float | None = None
+    last_ok: float | None = None
+    health: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------- workstream C: events/usage/budgets

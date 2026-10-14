@@ -43,6 +43,7 @@ from hangar import computer as computer  # --- computer
 from hangar import envbuilds as envbuilds  # --- envbuilds
 from hangar import envdoctor as envdoctor  # --- computer
 from hangar import fairness as fairness  # --- scale
+from hangar import flightrec as flightrec  # --- clouddoctor: a failed or slow job's flight record
 from hangar import intake as intake  # --- intake: trackers (Jira, GitHub Projects) follow their jobs
 from hangar import people as people  # --- teamcreds: GitHub senders linked to people
 from hangar import resident as resident  # --- durable: live and recent jobs in memory, the rest in the store
@@ -542,6 +543,8 @@ class JobService:
         if s is not None and self.sessions.env_requests is not None:  # --- computer: answered like approvals
             d["pending_approvals"] += self.sessions.env_requests.approvals_view(s)
         d["autofix_state"] = autofix.view(job)  # --- overnight/autofix: what is waiting, not the logs it carries
+        if job.state in JOB_TERMINAL:  # --- clouddoctor: the failed or slow job's record (hangar://jobs/<id>/record)
+            d["flight_record"] = r.id if (r := flightrec.of(self.fleet).for_job(job.id)) else None
         return exchange.scrub_turns(d)  # workstream E: attachment contents never leave in a view
 
     def usage(self, job: Job) -> Usage | None:
@@ -1164,6 +1167,7 @@ class JobService:
 
     # ================================================================== reporting
     async def _report(self, job: Job) -> None:
+        flightrec.of(self.fleet).job_done(self, job)  # --- clouddoctor: written on a task of its own
         self._spawn(self._callback(job, "job.finished"))
         turn = job.turns[-1] if job.turns else None
         if turn and turn.reply_to:

@@ -479,6 +479,11 @@ class Settings(BaseSettings):
     power_warm_pools: str = "auto"
     power_warm_max: int = Field(3, ge=0, le=50)
     power_prepull_image: str = "registry.k8s.io/pause:3.10.1"  # the prepull DaemonSet's only container
+    # --- clouddoctor: the nightly pass (opstatus.py): credential checks, then the Cloud Doctor (docs/doctor.md). A
+    # cron in doctor_time_zone (unset: the power schedule's zone, else UTC); "off" turns it off. Half past midnight
+    # in the power schedule's zone is before the sandbox pools power down at 01:00.
+    doctor_schedule: str = "30 0 * * *"
+    doctor_time_zone: str | None = None
 
     @property
     def backup_interval_hours(self) -> float:

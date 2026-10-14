@@ -29,10 +29,12 @@ from hangar import cache as caching  # --- overnight/cache: prompt-cache TTL, on
 from hangar import ckpt, exchange, isolation, observe  # --- observe, isolation
 from hangar import computer as computer  # --- computer
 from hangar import fairness as fairness  # --- scale
+from hangar import flightrec as flightrec  # --- clouddoctor: failed and slow turns leave a record
 from hangar import hot_resume as hot_resume  # --- providers-e2b
 from hangar import keys as keys  # --- durable
 from hangar import metrics as metrics  # --- reconciler
 from hangar import resident as resident  # --- durable: live and recent sessions in memory, the rest in the store
+from hangar import slo as slo  # --- clouddoctor: turn-start and resume times for `hangar status`
 from hangar import steer as steering  # workstream steer: live turns
 from hangar.checkpoints import CheckpointStore, make_store
 from hangar.ckpt import CKPT_DIR, CKPT_REF, PACK_READ_LIMIT, PARTS, RESTORE_DIR  # noqa: F401 - re-exported (strategies, exchange)
@@ -513,6 +515,7 @@ class SessionService:
         if s.sandbox_id and self._alive(s.sandbox_id):
             return self.fleet.get(s.sandbox_id)
         s.sandbox_id = None
+        t0 = now()  # --- clouddoctor
         self._set(s, SessionState.STARTING, "starting a sandbox" + (" and restoring the last checkpoint"
                                                                      if s.checkpoints else ""))
         ttl = max(s.idle_minutes * 3, 120) + self.settings.session_turn_timeout_minutes
@@ -523,6 +526,7 @@ class SessionService:
                 progress(msg)
 
         if (hot := await hot_resume.wake(self, s, stage)) is not None:  # --- providers-e2b: its memory, if parked
+            slo.record("resume", now() - t0, "hot")  # --- clouddoctor
             return hot
         sb = await self.fleet.create(
             s.environment, name=f"ses-{s.name[:30]}-{uuid.uuid4().hex[:4]}", repo=s.repo, branch=s.base_branch,
@@ -544,6 +548,8 @@ class SessionService:
         s.sandbox_id = sb.id
         s.harness = s.harness or sb.info.get("harness")
         s.last_active_at = now()
+        if s.checkpoints:  # --- clouddoctor
+            slo.record("resume", now() - t0, "cold")
         self._set(s, SessionState.IDLE, note or ("ready" + (" (restored)" if s.checkpoints else "")))
         return sb
 
@@ -901,6 +907,7 @@ class SessionService:
         it can. `prompt` overrides the session's prompt (jobs write their own); handoff=False when that prompt
         already carries the history."""
         sb = self.fleet.get(s.sandbox_id or "")
+        t0 = now()  # --- clouddoctor: turn start, for `hangar status`
         # The sandbox must outlive this turn (the idle loop skips busy sessions, so extend now).
         tmo = timeout_minutes if timeout_minutes is not None else self.settings.session_turn_timeout_minutes
         want = now() + (tmo + max(s.idle_minutes, 30) + 30) * 60
@@ -949,6 +956,7 @@ class SessionService:
             caching.STAGGER.responded(s.id)  # --- overnight/cache: nor will it answer; siblings go ahead
             raise
         turn.run_id, turn.started_at = res["run_id"], now()
+        slo.record("turn_start", turn.started_at - t0 - (turn.cache_wait_seconds or 0))  # --- clouddoctor
         turn.harness_version = res.get("harness_version")  # --- images
         turn.context = exchange.strip(turn.context)
         s.model = s.model or res.get("model")
@@ -1010,6 +1018,7 @@ class SessionService:
             self._set(s, SessionState.SUSPENDED if s.checkpoints else SessionState.FAILED,
                       "the sandbox went away during the turn")
             turn.outcome = outcome  # workstream E
+            flightrec.of(self.fleet).turn_ended(self, s, turn, outcome, "")  # --- clouddoctor
             return outcome, ""
         if outcome in ("cancelled", "timed_out", "error", "over_budget"):
             # Never leave an agent running that nobody is watching (it would keep working, and spending).
@@ -1049,6 +1058,8 @@ class SessionService:
         else:  # destroyed while we were finishing up (the pre-destroy hook checkpointed it)
             s.sandbox_id = None
             self._set(s, SessionState.SUSPENDED, f"turn {len(s.turns)} finished; sandbox released")
+        # --- clouddoctor: the session is idle: a failed or slow turn's record (its log is read and sealed off-turn)
+        flightrec.of(self.fleet).turn_ended(self, s, turn, outcome, raw)
         return outcome, raw
 
     async def _turn_status(self, s: Session, turn: SessionTurn, wait: float, watch: Any) -> dict[str, Any]:

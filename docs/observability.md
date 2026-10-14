@@ -5,6 +5,8 @@ Operators of a software factory need to see where time and money go, and to noti
 - **OpenTelemetry traces** from the control plane: one trace per job run, session turn, MCP call or REST request, down to each sandbox start, checkpoint and agent turn. Claude Code's and Codex's own spans join the same trace.
 - **Prometheus metrics** at `GET /metrics`: fleet, sessions and jobs by state, latencies, tokens and dollars, budget stops, gateway pushes, MCP calls and control-plane health.
 - **A cost and usage view**: `GET /api/usage` and the dashboard's **Usage** page.
+- **An operator console**: `hangar status`, `GET /api/status` and the MCP resource `hangar://status`, for admins: power, loops, versions, builds, the day's failures by cause, egress denies, waiting requests, SLOs, credential health and recent warnings ([below](#the-operator-console-hangar-status)).
+- **Flight records** of every failed, timed-out or slow job and turn, with the end of its run log, sealed ([below](#flight-records)). The [Cloud Doctor](doctor.md) reads them every night.
 
 This builds on the events, usage and budgets in [activity.md](activity.md), and covers the observability parts of [spec 0005](specs/0005-traces-and-decision-model.md) and [spec 0008 §5.7](specs/0008-swarm-improvement-loop-and-rl.md). It does not include 0005's in-process OTLP collector, `traces.db` or decision model.
 
@@ -187,6 +189,110 @@ The dashboard's **Usage** page (`#usage`) shows, for the last 7, 30 or 90 days:
 - the top repos and requesters;
 - the latest budget stops.
 
+## The operator console: `hangar status`
+
+One view of what you'd otherwise need kubectl for, admins only (`GET /api/status`, the MCP resource `hangar://status`, `hangar status`). It is a resource, not a tool: the MCP tool list is at its cap, and claude.ai caches tool lists. A member's token gets "needs a token with the 'admin' scope".
+
+```
+$ hangar status
+sandboxes: on
+last deploy: 3h ago, 0.1.0+tools.4f1c: passed
+loops: ops 21s, reaper 34s, reconciler 12s, schedules 3s, sessions 40s
+harnesses: antigravity 1.3.3, claude-code 2.1.296, codex 0.162.1 (pack behind on kubernetes), pi 1.1.0
+builds: pack codex, repo acme/api python v4 (installing)
+failures (24h): 7, 3 transient
+  missing_tool      4             last 2h ago (fr-9a1b…)  python
+  model_api         3  transient  last 20m ago (fr-77c2…)  python, node
+egress denies (24h): 12
+  registry.npmjs.org                           12  3 sandbox(es)  node
+requests waiting: 1, oldest 14m
+SLOs (24h):
+  create     warm  n=41   p50 1.2s p95 2.1s  (p50<=1.5s p95<=2.5s) ok
+  create     cold  n=9    p50 18.0s p95 41.0s  (p95<=30.0s) BREACHED
+  turn_start any   n=120  p50 2.4s p95 6.0s  (p50<=5.0s p95<=15.0s) ok
+  resume     cold  n=6    p50 22.0s p95 38.0s  (p95<=60.0s) ok
+credentials: 5 ok, 1 warn
+  ! claude-alice (alice): expires on 2026-10-27, in 13 day(s). Run `claude setup-token` and store the new token: …
+cloud doctor: 2 open finding(s); last run 9h ago (done)
+```
+
+| Section | What it holds | Source |
+| --- | --- | --- |
+| `power`, `last_deploy` | the sandbox pools' state and when they're back; the last deploy.yml result | [power.py](../src/hangar/power.py) |
+| `loops` | each background loop's last pass, interval and failures (`ops` is the console's own) | `hangar_loop_last_tick_timestamp` |
+| `harnesses` | each agent CLI's locked version and the version each provider's pack installed; `behind` names providers whose pack differs | `harnesses.lock.yaml`, pack builds |
+| `builds` | environment images, harness packs and repo builds running now, with how long | the fleet, [envbuilds](environments.md) |
+| `failures` | the last 24 hours' [flight records](#flight-records) by cause, transient or not, and the 10 newest | flight records |
+| `egress_denies` | the last 24 hours' denies by host: count (suppressed ones included), sandboxes, environments | the audit log |
+| `requests` | secret and egress requests agents filed that wait for an answer | [env requests](computer-use.md) |
+| `slo` | p50/p95 over 24 hours against the targets below | in memory, saved every minute |
+| `credentials` | [credential health](#credential-health): counts, what needs renewing, pools | [credhealth.py](../src/hangar/credhealth.py) |
+| `nightly`, `doctor` | the nightly pass and the [Cloud Doctor](doctor.md)'s last run and open findings | |
+| `log` | the last 50 warnings and errors hangar logged | in memory |
+
+`?section=slo,failures` (or `--section`) returns only those. `--check-credentials` checks every credential now; otherwise status rechecks only results older than an hour, spending at most 15 s.
+
+**The log section** keeps the last 200 records at WARNING and above from hangar's own loggers (`hangar.*`). Uvicorn's loggers never reach it: `uvicorn.access` lines carry request paths and query strings. Each line goes through `broker.redact` before it is shown, so a stored credential value in an exception message comes out masked.
+
+`fleet_overview` (MCP) and `GET /api/overview` carry two of these as fields: `failures_24h` (count by cause) and `credential_health` (counts, and how many need attention). `list_credentials` carries each credential's `health`, `last_ok` and `expires_at`. `get_job` carries `flight_record` on a finished job that has one.
+
+### SLOs
+
+| What | Path | Target |
+| --- | --- | --- |
+| create | `warm`: a pod claimed from the warm pool | p50 ≤ 1.5 s, p95 ≤ 2.5 s |
+| create | `cold`: a new pod, image cached | p95 ≤ 30 s |
+| create | `build`: an image or pack was built on the way | none (exceptional by design) |
+| turn start | from `begin_turn` to the agent running, the sandbox up (time spent waiting for a best-of-N sibling's cache excluded) | p50 ≤ 5 s, p95 ≤ 15 s |
+| resume | `hot`: a parked sandbox woken / `cold`: a new sandbox restored from a checkpoint | p95 ≤ 5 s / ≤ 60 s |
+
+These are the observability review's targets for GKE. Forks aren't creates here. Samples live in memory, are saved to the store every minute by the ops loop and reloaded at start, so a restart keeps the day. `hangar_sandbox_create_seconds` in `/metrics` carries the creates for people who scrape.
+
+## Flight records
+
+A record is written for each job that fails or times out, each session turn outside a job that fails or times out, and each job or turn that ran slow against its environment's norm: more than 3× the median of its environment's last 50 clean runs, and at least 2 minutes over it, once there are 8 to compare with. Cancelled jobs and jobs waiting for an answer get none.
+
+| Field | What |
+| --- | --- |
+| `cause`, `detail`, `transient` | decided without a model, most specific first: `power_down`, `pod_replaced`, `restart`, `model_api` (a 429/5xx/529 or "overloaded" from the model API), `provision` / `image_build`, `install` (setup failures, or a repo build that fell back to the base image), `missing_tool` (`command not found`, `No module named`, `Cannot find module`…; `detail` names it), `egress` (`detail`: the most denied host), `secret`, `blocked` (a request nobody answered), then the job's reason (`verify_failed`, `timed_out`, `over_budget`, `agent_failed`, `push_failed`…), `slow`. Transient: `model_api`, `power_down`, `restart`, `pod_replaced`, `sandbox_gone`, `network`. |
+| `signature` | cause, detail (numbers dropped) and repo, or environment: what the Cloud Doctor groups by |
+| `stages`, `failed_stage`, `sandbox_cause` | the sandbox create's stage history, and where and why it stopped |
+| `env_doctor` | what `hangar-agent env doctor` reports: build and fallback, setup failures, warnings, services, expected secret names, egress mode |
+| `egress_denies` | the sandbox's denies from the audit log (host, port, reason), at most 20 |
+| `requests` | the agent's secret and egress requests still pending or denied |
+| `versions`, `model`, `harness_version` | hangar, the harness CLI the turn ran, the model, the image and packs |
+| `cost_usd`, `tokens`, `seconds`, `norm` | what it used, how long it took, and the environment's median |
+| `verify`, `events`, `summary` | the check's command, exit code and tail; the job's last 20 events |
+| `log` | where the end of the run log is stored, its size and SHA-256 |
+
+**The run log** is the last 256 KB of the turn's log. It is read when the session goes idle (a job's waits in memory, at most 64 of them and an hour, until the job is reported), then on a task of its own it is masked (stored credential values and their encodings, and the token formats secret scanning knows), gzipped, encrypted with the vault key like a checkpoint part, and stored in the session store under `records/<id>/`. Every free-form field of the record goes through the same masking. Records and logs are deleted after 14 days, hourly. Nothing about a record is ever on the turn's or the job's path: a failure to write one is logged and nothing else.
+
+```bash
+hangar admin records ls --hours 48 [--cause missing_tool]
+hangar admin records show fr-9a1b2c3d --log
+```
+
+REST: `GET /api/records?hours=24&cause=…` (admins), `GET /api/records/{id}` and `GET /api/records/{id}/log` (admins, or the record's person), `GET /api/jobs/{id}/record`. MCP: the resource `hangar://jobs/<id>/record`, for whoever may see the job.
+
+## Credential health
+
+Each agent credential is checked without calling a model:
+
+| Credential | Check | Expiry |
+| --- | --- | --- |
+| Claude Code `oauth_token` (`claude setup-token`) | the token's age: the command makes "a one-year OAuth token" ([Claude Code authentication](https://code.claude.com/docs/en/authentication)) | a year after it was stored |
+| Claude Code and Codex `api_key` | the key's format (a gateway's own key is a warning, not a failure) | none |
+| Codex `auth_file` (ChatGPT login) | `codex login status`, which "exits with 0 when credentials are present" ([Codex CLI](https://learn.chatgpt.com/docs/developer-commands)), in the login's sandbox when it is captured; elsewhere the same question answered from the file: an API key, or ChatGPT tokens with a refresh token | none: Codex refreshes its tokens while it is used |
+| Google service-account keys (Vertex AI for pi and Antigravity) | in a gcloud config directory of its own: `gcloud auth activate-service-account --key-file`, then `gcloud auth print-access-token` (Google refuses a deleted or disabled key; the token is discarded), then `gcloud iam service-accounts keys list` where the key may list its own account's keys | the key's `validBeforeTime`, when it has one |
+
+Each check writes `health` (`ok`, `warn`, `fail` or `unknown`, with a detail and when), `last_ok` and `expires_at` onto the credential. Storing a new value clears them. Checks run when a login is captured, every night (the [nightly pass](#the-nightly-pass)), from `hangar status`, and with `hangar cred check [NAME…]` (`POST /api/credentials/check`).
+
+A credential that fails, or expires within 14 days, shows in `hangar doctor` (`credential health`), in `hangar status`, and in the [inbox](landing.md) of whoever renews it: its person for their own logins, admins for the team's. Pools (several logins one sandbox holds at a time, such as a person's Codex ChatGPT logins) are summed up; a pool with no working login fails the doctor even when each login alone would only warn.
+
+## The nightly pass
+
+The ops loop runs once a night at `HANGAR_DOCTOR_SCHEDULE` (cron, default `30 0 * * *`) in `HANGAR_DOCTOR_TIME_ZONE` (default: the power schedule's zone, else UTC): half an hour before the sandbox pools power down. It checks every credential, then runs the [Cloud Doctor](doctor.md). The first look after a start only remembers the latest slot, so a deploy never runs it on the spot; a slot missed while hangar was down runs once when it is back. `hangar status` shows the last pass under `nightly`.
+
 ## Deploying
 
 ### Prometheus
@@ -238,3 +344,5 @@ The endpoint, scopes, collector install and roles were checked against Google's 
 | `OTEL_EXPORTER_OTLP_ENDPOINT` / `_TRACES_ENDPOINT` / `OTEL_TRACES_EXPORTER` | unset | Turn tracing on (see above). Every other standard `OTEL_*` variable applies. |
 | `HANGAR_OTEL_SANDBOX_ENDPOINT` | unset | OTLP/HTTP base URL that sandboxes export Claude Code and Codex telemetry to. A plain `http(s)` URL without credentials. |
 | `HANGAR_METRICS_ENABLED` | `true` | `GET /metrics` |
+| `HANGAR_DOCTOR_SCHEDULE` | `30 0 * * *` | When the [nightly pass](#the-nightly-pass) runs (credential checks, the Cloud Doctor); `off` turns it off |
+| `HANGAR_DOCTOR_TIME_ZONE` | the power schedule's | The schedule's IANA time zone (UTC when there's no power schedule) |

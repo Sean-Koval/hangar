@@ -90,6 +90,9 @@ class Hangar:
         from hangar.retention import Retention  # --- scale: settled sandbox records move to the archive
 
         self.retention = Retention(self.store, self.settings, self.jobs, self.sessions)  # --- durable: + their memory
+        from hangar.opstatus import Ops  # --- clouddoctor: SLO samples, record pruning, the nightly pass
+
+        self.ops = Ops(self)
 
 
 # ---------------------------------------------------------------------------- MCP auth
@@ -342,6 +345,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         h.backups.start()
         h.rotation.resume()  # --- durable: a key rotation a restart interrupted carries on
         h.retention.start()  # --- scale
+        h.ops.start()  # --- clouddoctor
         missed = redeliver.start(h)  # --- reconciler: GitHub deliveries that failed while hangar was down
         async with mcp.session_manager.run():
             yield
@@ -351,6 +355,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await h.backups.stop()
         await h.rotation.stop()  # --- durable
         await h.retention.stop()  # --- scale
+        await h.ops.stop()  # --- clouddoctor
         if prebuild:
             prebuild.cancel()
         await h.triggers.stop()
@@ -1124,6 +1129,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import power  # --- ops: /api/admin/power (power.sh, `hangar power`) and /api/admin/deploys
 
     power.mount(app, h, A)
+    from hangar import credhealth, flightrec, opstatus  # --- clouddoctor: status, flight records, credential health
+
+    opstatus.mount(app, h, A)
+    flightrec.mount(app, h, A, U)
+    credhealth.mount(app, h, A)
+    credhealth.register_inbox()
     # --- observe: GET /metrics (admin or `metrics` tokens) and GET /api/usage
     from hangar import metrics, usage
 
