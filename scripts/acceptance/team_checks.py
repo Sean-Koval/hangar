@@ -713,6 +713,12 @@ with DockerContainer(sys.argv[1]).with_env("POSTGRES_PASSWORD", "acceptance").wi
 print("HANGAR-ACCEPT " + json.dumps(out))
 """
 TESTCONTAINERS = "testcontainers==4.15.0"  # PyPI, released 2026-07-24
+# review(#117): run in a container dockerd started inside the heavy sandbox's VM. Its traffic leaves through the pod,
+# so the pod's NetworkPolicy must keep it off the metadata servers (GCE's, and GKE's Workload Identity one) as it does
+# the sandbox itself. bash's /dev/tcp, so any Debian-based service image does.
+HEAVY_ISOLATION = r"""for t in 169.254.169.254/80 169.254.169.252/988; do
+  if timeout 3 bash -c "exec 3<>/dev/tcp/${t%/*}/${t#*/}" 2>/dev/null; then echo "OPEN $t"; else echo "closed $t"; fi
+done"""
 
 
 def check_heavy(api: Api, state: State, opts: argparse.Namespace) -> str:
@@ -737,6 +743,15 @@ def check_heavy(api: Api, state: State, opts: argparse.Namespace) -> str:
                 None) if doctor["exit_code"] in (0, 1) else None
     if not tier or tier.get("status") != "ok" or "heavy" not in tier.get("message", ""):
         raise Fail(f"`hangar-agent env doctor` doesn't show the heavy tier with Docker answering: {tier}")
+    if sb.get("provider") != "docker":  # privileged runc on a CI machine is root on it: nothing to prove there
+        iso = api.exec(sid, f"docker run --rm --entrypoint bash {shlex.quote(opts.service_image)} -c "
+                            f"{shlex.quote(HEAVY_ISOLATION)}", timeout=600)
+        if "OPEN" in iso["stdout"]:
+            raise Fail(f"a container inside heavy sandbox {sid} reached a metadata server: {iso['stdout'].strip()}")
+        if iso["exit_code"] != 0 or iso["stdout"].count("closed") != 2:
+            raise Fail(f"couldn't run the isolation probe in a container in {sid} (exit {iso['exit_code']}): "
+                       f"{(iso['stdout'] + iso['stderr'])[-400:]}")
+        say(f"{sid}: a container inside it can't reach the metadata servers")
     t0 = time.monotonic()
     compose = HEAVY_COMPOSE.format(image=opts.service_image, port=15432)
     api.must(sid, f"mkdir -p ~/accept-heavy && printf %s {shlex.quote(compose)} > ~/accept-heavy/compose.yml")
