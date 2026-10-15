@@ -370,6 +370,20 @@ Move them, don't copy them: the previous version changes only the main table's c
 
 The previous version loads every job and session again at startup, so give its pod the memory the history needs.
 
+## Rotating the vault key
+
+One key encrypted the vault, every checkpoint and every backup, with no way to replace it. `HANGAR_SECRET_KEY` can now hold several keys, newest first, and `hangar admin rotate-key` moves everything to the newest. The procedure, and where the keys live (Secret Manager, never a file on a laptop), are in [security.md](security.md#rotating-the-vault-key). Upgrading changes nothing by itself: a single key is a ring of one. What to know:
+
+| What | Before → now |
+| --- | --- |
+| **`HANGAR_SECRET_KEY`** | one key → one or more, comma-separated, newest first. The key file (`<data dir>/secret.key`) takes one per line. |
+| **The first start** | → records which key seals what is stored (its fingerprint, never the key) in the database. |
+| **A new key first** | → that start encrypts with it and records a pending rotation; sandboxes started before keep tokens of the old key. `hangar doctor` says to run `hangar admin rotate-key`. |
+| **`hangar admin rotate-key`** | → re-seals the vault at once, re-encrypts the session store in the background (progress kept across restarts), then retires the old key when nothing holds it (`--status`, `--retire [--force]`; `GET`/`POST /api/admin/rotate-key`, admin). |
+| **`HANGAR_BACKUP_STORE`** | → optional: backups in a bucket of their own, ideally one hangar may only write to. `hangar doctor` warns (`backup isolation`) while backups share the checkpoints' bucket and service account. |
+
+**Rolling back** to a build without it: before rolling back, put a single key back in `HANGAR_SECRET_KEY`, the one `hangar admin rotate-key --status` lists as encrypting (finish or don't start a rotation first). The previous version reads one key, and doesn't start with two; anything sealed with another is unreadable to it. With a key file, `secret.key` holds one key again once the rotation is retired (the retired one moves to `secret.key.retired`, which the previous version ignores); during a rotation it holds two, so finish the rotation first.
+
 ## Deploying with deploy.yml
 
 `.github/workflows/deploy.yml` runs by hand (*Actions → deploy → Run workflow*) or on a `v*` tag:
@@ -469,10 +483,11 @@ Every claim below was checked against the code, not the PR descriptions. A few t
 kubectl -n hangar get deploy hangar -o jsonpath='{.spec.template.spec.containers[0].image}' | tee ~/.hangar/pre-upgrade-image
 ```
 
-**Save the vault key** if it isn't already somewhere outside the cluster. Every credential, every checkpoint and every backup is encrypted with it:
+**Save the vault key** in Secret Manager if it isn't already somewhere outside the cluster. Every credential, every checkpoint and every backup is encrypted with it. Pipe it straight there; don't write it to a file on your machine ([security.md](security.md#where-the-keys-live)):
 
 ```bash
-( umask 077; kubectl -n hangar get secret hangar -o jsonpath='{.data.HANGAR_SECRET_KEY}' | base64 -d > ~/.hangar/vault-key )
+kubectl -n hangar get secret hangar -o jsonpath='{.data.HANGAR_SECRET_KEY}' | base64 -d | \
+  gcloud secrets create hangar-vault-key --data-file=- --replication-policy=automatic
 ```
 
 **A copy of the database.** Copying `hangar.db` and `hangar.db-wal` separately from a running hangar can tear: SQLite may checkpoint the WAL into the main file between the two copies. Use SQLite's online backup API inside the pod instead. It is what `hangar admin backup` uses: one read transaction, while hangar keeps working.

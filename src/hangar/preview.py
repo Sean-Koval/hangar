@@ -48,19 +48,17 @@ class Previews:
 
     def __init__(self, h: Hangar):
         self.h, self.settings, self.fleet, self.store = h, h.settings, h.fleet, h.store
-        self._key: bytes | None = None
         self._used: dict[str, float] = {}  # --- review: tickets already opened -> when they expire
 
     @property
     def domain(self) -> str | None:
         return (self.settings.preview_domain or "").strip(".").lower() or None
 
-    def _mac(self, data: str) -> str:
-        if self._key is None:
-            from hangar.vault import load_or_create_key
+    def _mac(self, data: str, key: bytes | None = None) -> str:
+        from hangar import keys  # --- durable: the newest vault key signs; any not yet retired checks (a rotation)
 
-            self._key = load_or_create_key(self.settings.secret_key, self.settings.data_dir)
-        return hmac.new(self._key, b"hangar-preview\0" + data.encode(), hashlib.sha256).hexdigest()
+        return hmac.new(key or keys.key_for(self.settings), b"hangar-preview\0" + data.encode(),
+                        hashlib.sha256).hexdigest()
 
     def token(self, kind: str, sid: str, port: int, person: str | None, seconds: float) -> str:
         nonce = secrets.token_urlsafe(9)  # --- review: no two tickets alike, so each one can be spent once
@@ -75,7 +73,10 @@ class Previews:
             data = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)).decode()
         except (ValueError, UnicodeDecodeError):
             return None
-        if not hmac.compare_digest(mac.encode(), self._mac(data).encode()):
+        from hangar import keys
+
+        if not any(hmac.compare_digest(mac.encode(), self._mac(data, k).encode())
+                   for k in keys.verify_keys(self.settings)):
             return None
         parts = data.split("|")
         if len(parts) != 6 or parts[0] != kind or parts[1] != sid or parts[2] != str(port):

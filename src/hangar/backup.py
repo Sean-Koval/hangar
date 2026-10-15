@@ -117,6 +117,23 @@ def apply_pending(settings: Settings) -> str | None:
     return str(aside)
 
 
+def backup_store(settings: Settings, session_store: CheckpointStore) -> CheckpointStore:
+    """--- durable: HANGAR_BACKUP_STORE, else the session store."""
+    from hangar.checkpoints import make_store
+
+    loc = (settings.backup_store or "").strip()
+    if not loc or loc.rstrip("/") == (settings.session_store or "").rstrip("/"):
+        return session_store
+    return make_store(loc, settings.data_dir)
+
+
+def _refused(e: Exception) -> bool:
+    """--- durable: the store said no (a bucket hangar may only write to), not that it failed."""
+    import httpx
+
+    return isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 403
+
+
 class Backups:
     def __init__(self, settings: Settings, vault: Vault, blobs: CheckpointStore):
         self.settings = settings
@@ -157,7 +174,16 @@ class Backups:
         return sorted(out, key=lambda b: b["at"], reverse=True)
 
     async def prune(self) -> list[str]:
-        old = (await self.list())[max(1, self.settings.backup_keep):]
+        try:
+            found = await self.list()
+        except Exception as e:
+            if not _refused(e):
+                raise
+            # --- durable: a bucket hangar may only write to keeps its backups by its own lifecycle rule
+            log.info("backups in %s can't be listed by hangar; the bucket's lifecycle rule keeps them",
+                     self.blobs.description)
+            return []
+        old = found[max(1, self.settings.backup_keep):]
         for b in old:
             await self.blobs.delete(PREFIX + b["name"])
         return [b["name"] for b in old]
@@ -256,6 +282,36 @@ def mount(app, h, admin) -> None:
         return res
 
 
+def _bucket(location: str | None) -> str | None:
+    return location[5:].split("/", 1)[0] if location and location.startswith("gs://") else None
+
+
+async def isolation_check(backups: Backups, settings: Settings) -> dict[str, Any] | None:
+    """--- durable (hardening review): backups beside the checkpoints, under the same service account. Whoever can
+    read the bucket with that account's token reads every checkpoint and every backup (and with it the vault), and
+    one key decrypts them all. OK: a bucket of their own that hangar may only write to."""
+    from hangar.doctor import _check
+
+    ses = _bucket(settings.session_store)
+    bak = _bucket(settings.backup_store) or (ses if not settings.backup_store else None)
+    if ses is None or (settings.backup_store and bak is None):
+        return None  # no bucket for the checkpoints, or backups on a disk: PD snapshots are the advice there
+    fix = ("set HANGAR_BACKUP_STORE to a bucket of its own where hangar's service account has only "
+           "roles/storage.objectCreator, with a lifecycle rule for how long backups are kept "
+           "(docs/security.md#backups-and-the-vault-key)")
+    if bak == ses:
+        return _check("backup isolation", None, f"backups share gs://{ses} and hangar's service account with the "
+                      "checkpoints: one token or one grant on the bucket reads both", fix)
+    try:
+        await backups.blobs.list(PREFIX)
+    except Exception as e:  # noqa: BLE001
+        if _refused(e):
+            return _check("backup isolation", True, f"backups go to gs://{bak}, which hangar may only write to")
+        return _check("backup isolation", None, f"can't tell whether hangar may read gs://{bak}: {e}", fix)
+    return _check("backup isolation", None, f"backups have a bucket of their own (gs://{bak}), but hangar's service "
+                  "account can read it, so its token still reads both", fix)
+
+
 async def doctor_check(backups: Backups, settings: Settings, on_kubernetes: bool) -> dict[str, Any] | None:
     """The age of the newest backup against the schedule (doctor.py's check shape)."""
     from hangar.doctor import _check
@@ -270,6 +326,10 @@ async def doctor_check(backups: Backups, settings: Settings, on_kubernetes: bool
     try:
         found = await backups.list()
     except Exception as e:  # noqa: BLE001
+        if _refused(e) and settings.backup_store:  # --- durable: write-only for hangar, as advised
+            return _check("database backups", None, f"{backups.blobs.description} is write-only for hangar, so it "
+                          "can't see how old the newest backup is", "gcloud storage ls the bucket; a failed "
+                          "backup shows in the control plane's log as 'scheduled database backup failed'")
         return _check("database backups", False, f"can't list backups in {backups.blobs.description}: {e}",
                       "check HANGAR_SESSION_STORE and the bucket's IAM")
     if not found:

@@ -30,6 +30,7 @@ from hangar import ckpt, exchange, isolation, observe  # --- observe, isolation
 from hangar import computer as computer  # --- computer
 from hangar import fairness as fairness  # --- scale
 from hangar import hot_resume as hot_resume  # --- providers-e2b
+from hangar import keys as keys  # --- durable
 from hangar import metrics as metrics  # --- reconciler
 from hangar import resident as resident  # --- durable: live and recent sessions in memory, the rest in the store
 from hangar import steer as steering  # workstream steer: live turns
@@ -130,7 +131,9 @@ class SessionService:
         self.store = fleet.store
         self.vault = vault
         self.root = self.settings.data_dir / "sessions"
-        self.blobs: CheckpointStore = make_store(self.settings.session_store, self.settings.data_dir)
+        # --- durable: copies re-encrypt what an old vault key sealed while a key rotation runs (keys.Resealing)
+        self.blobs: CheckpointStore = keys.Resealing(make_store(self.settings.session_store, self.settings.data_dir),
+                                                     vault.ring)
         # --- durable: live sessions and those used in the last HANGAR_RESIDENT_MINUTES; the store has the rest
         self._sessions: resident.Resident[Session] = resident.Resident(
             self.store, Session, self._pinned, lambda: self.settings.resident_minutes * 60)

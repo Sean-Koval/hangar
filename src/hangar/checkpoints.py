@@ -88,8 +88,8 @@ class LocalStore:
 
         return await asyncio.to_thread(link)
 
-    async def list(self, prefix: str) -> list[str]:  # --- overnight/sweep
-        d = self._path(prefix.rstrip("/") + "/x").parent
+    async def list(self, prefix: str) -> list[str]:  # --- overnight/sweep; --- durable: "" lists everything
+        d = self._path(prefix.rstrip("/") + "/x").parent if prefix.strip("/") else self.root
         root = self.root.resolve()
 
         def walk() -> list[str]:
@@ -205,9 +205,10 @@ class GCSStore:
             params = {"fields": "done,rewriteToken", "rewriteToken": j["rewriteToken"]}
         raise RuntimeError(f"copy of {src} did not finish")
 
-    async def list(self, prefix: str) -> list[str]:  # --- overnight/sweep
+    async def list(self, prefix: str) -> list[str]:  # --- overnight/sweep; --- durable: "" lists everything
         out: list[str] = []
-        params = {"prefix": self._name(prefix.rstrip("/") + "/"), "fields": "items(name),nextPageToken"}
+        params = {"prefix": self._name(prefix.rstrip("/") + "/") if prefix.strip("/") else
+                  (self.prefix + "/" if self.prefix else ""), "fields": "items(name),nextPageToken"}
         while True:
             r = await self._request(self._client(), "GET", f"{self.API}/storage/v1/b/{self.bucket}/o", params=params)
             r.raise_for_status()

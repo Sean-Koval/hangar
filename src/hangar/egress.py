@@ -458,7 +458,9 @@ async def attach(fleet: Fleet, prov: Provider, sb: Sandbox, spec: EnvSpec) -> di
         return {}
     proxy = await _proxy_url(fleet, prov, sb)
     info["proxy"] = urlsplit(proxy).netloc
-    password = token(fleet.egress.key, sb.id)
+    from hangar import keys  # --- durable: during a key rotation, a sandbox from before keeps its credential
+
+    password = token(keys.key_for(fleet.settings, sb.created_at), sb.id)
     env = proxy_env(proxy, sb.id, password, _direct_hosts(fleet.settings))
     if pol.mirrors:  # --- egress2: package managers read through hangar's mirror; the environment's own env wins
         from hangar import pkgmirror

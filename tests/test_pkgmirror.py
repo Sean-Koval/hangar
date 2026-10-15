@@ -117,6 +117,25 @@ async def test_only_sandboxes_whose_policy_has_the_preset(world):
         assert (await c.get("/pkg/npm/x", headers=bad)).status_code == 401
 
 
+async def test_a_sandbox_from_before_a_key_rotation_still_reads_the_mirror_until_the_key_is_retired(world):
+    """--- integ3 (#107 x #109): the mirror checks a sandbox's credential against every vault key not yet retired, as
+    the egress proxy does, so a proxied sandbox started before `rotate-key` keeps its package installs."""
+    from cryptography.fernet import Fernet
+
+    from hangar import keys
+
+    w = world
+    ring = keys.ring(w.settings)
+    old = ring.primary
+    _, auth = w.sandbox("npm-only", "sb-rot1")  # its credential is derived from the old key
+    ring.set_keys([Fernet.generate_key(), old])  # a new key put first: the old one still reads
+    w.up.routes["https://registry.npmjs.org/"] = httpx.Response(200, json={})
+    async with w.client() as c:
+        assert (await c.get("/pkg/npm/x", headers=auth)).status_code == 200
+        ring.retire(keys.key_id(old))
+        assert (await c.get("/pkg/npm/x", headers=auth)).status_code == 401
+
+
 async def test_npm_metadata_from_artifact_registry_is_rewritten_and_read_with_hangars_google_token(world, monkeypatch):
     w = world
     monkeypatch.setenv("HANGAR_REGISTRY_TOKEN", "ya29.test-access-token")

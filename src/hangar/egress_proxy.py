@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from hangar import egress, egress_tls, metrics
+from hangar import keys as keys  # --- durable
 from hangar.models import Sandbox, SandboxState
 
 if TYPE_CHECKING:
@@ -168,7 +169,6 @@ class EgressProxy:
         self.settings = fleet.settings
         self._servers: dict[tuple[str, int], asyncio.AbstractServer] = {}
         self._listen_lock: asyncio.Lock | None = None
-        self._key: bytes | None = None
         self._policies: dict[str, tuple[float, egress.Policy]] = {}
         self._open: collections.Counter[str] = collections.Counter()
         self._total = 0
@@ -186,11 +186,8 @@ class EgressProxy:
 
     @property
     def key(self) -> bytes:
-        if self._key is None:
-            from hangar.vault import load_or_create_key
-
-            self._key = load_or_create_key(self.settings.secret_key, self.settings.data_dir)
-        return self._key
+        """The key a new sandbox's proxy credential is made with: the newest vault key (keys.key_for)."""
+        return keys.key_for(self.settings)
 
     @property
     def port(self) -> int:
@@ -413,7 +410,8 @@ class EgressProxy:
                 user, _, password = base64.b64decode(cred.strip(), validate=True).decode().partition(":")
             except (ValueError, UnicodeDecodeError):
                 user = password = ""
-            if egress.check_token(self.key, user, password):
+            # --- durable: any vault key not yet retired (a sandbox from before a rotation keeps its credential)
+            if any(egress.check_token(k, user, password) for k in keys.verify_keys(self.settings)):
                 sb = self.fleet.store.get(Sandbox, user)
                 if sb is not None and sb.state not in (SandboxState.STARTING, SandboxState.RUNNING):
                     sb = None

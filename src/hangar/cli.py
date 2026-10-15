@@ -1311,7 +1311,8 @@ app.add_typer(_power_app, name="power")
 
 
 # ---------------------------------------------------------------------------- overnight/sweep: database backups
-admin_app = typer.Typer(no_args_is_help=True, help="Database backups and restores (docs/gke.md).")
+admin_app = typer.Typer(no_args_is_help=True, help="Database backups and restores (docs/gke.md), and rotating "
+                        "the vault key (docs/security.md).")
 app.add_typer(admin_app, name="admin")
 
 
@@ -1344,7 +1345,7 @@ def admin_restore(name: str = typer.Argument(..., help="A backup name from `hang
     if local:
         import asyncio
 
-        from hangar.backup import BackupError, Backups
+        from hangar.backup import BackupError, Backups, backup_store
         from hangar.checkpoints import make_store
         from hangar.config import get_settings
         from hangar.store import Store
@@ -1355,10 +1356,12 @@ def admin_restore(name: str = typer.Argument(..., help="A backup name from `hang
         if not s.secret_key and not key_file.exists():
             typer.secho("no vault key: set HANGAR_SECRET_KEY to the key the backup was made with", fg="red", err=True)
             raise typer.Exit(1)
-        vault = Vault(Store(":memory:"), s.secret_key.encode() if s.secret_key else key_file.read_bytes().strip())
+        from hangar import keys  # --- review: every key, the key file's retired ones too (older backups)
+
+        vault = Vault(Store(":memory:"), keys.KeyRing(keys.load_keys(s.secret_key, s.data_dir)))
 
         async def stage() -> dict:
-            blobs = make_store(s.session_store, s.data_dir)
+            blobs = backup_store(s, make_store(s.session_store, s.data_dir))  # --- durable: HANGAR_BACKUP_STORE
             try:
                 return await Backups(s, vault, blobs).stage(name)
             finally:
@@ -1374,3 +1377,40 @@ def admin_restore(name: str = typer.Argument(..., help="A backup name from `hang
         r = _call("POST", "/api/admin/restore", json={"name": name})
     typer.secho(f"staged {r['name']} ({r['db_bytes']} bytes). Restart hangar to swap it in "
                 "(on GKE: kubectl -n hangar rollout restart deploy/hangar).", fg="green")
+
+
+# --- durable: rotating the vault key (keys.py, docs/security.md#rotating-the-vault-key)
+@admin_app.command("rotate-key")
+def admin_rotate_key(status: bool = typer.Option(False, "--status", help="Only show where the rotation is."),
+                     retire: bool = typer.Option(False, "--retire", help="Retire the old key now that the pass is "
+                                                 "done (hangar does it on its own once nothing holds it)."),
+                     force: bool = typer.Option(False, "--force", help="With --retire: even with sandboxes from "
+                                                "before the rotation still running."),
+                     as_json: bool = typer.Option(False, "--json")):
+    """Rotate the vault key: re-seal the vault now, re-encrypt checkpoints and backups in the background, then retire
+    the old key. With HANGAR_SECRET_KEY, put the new key first there (in Secret Manager, then the hangar Secret) and
+    restart hangar before running this; with a key file, this writes the new key."""
+    if status:
+        r = _call("GET", "/api/admin/rotate-key")
+    elif retire:
+        r = _call("POST", "/api/admin/rotate-key/retire", params={"force": "true"} if force else None)
+    else:
+        r = _call("POST", "/api/admin/rotate-key")
+    if as_json:
+        return _print(r)
+    for k in r["keys"]:
+        flags = ", ".join(f for f, on in (("encrypts", k["first"]), ("retired", k["retired"])) if on)
+        typer.echo(f"key {k['id']}" + (f" ({flags})" if flags else ""))
+    rot = r.get("rotation") or {}
+    if rot:
+        typer.echo(f"rotation {rot.get('old')} -> {rot.get('new')}: {rot.get('phase')}"
+                   + (f", {rot['sealed_rows']} database rows re-sealed" if rot.get("sealed_rows") is not None else ""))
+        for name, p in (rot.get("passes") or {}).items():
+            typer.echo(f"  {name}: {p.get('checked', 0)}/{p.get('objects', '?')} checked, {p.get('rotated', 0)} "
+                       f"re-encrypted" + (", done" if p.get("finished") else "")
+                       + (f"; can't be read by hangar: {p['unreachable']}" if p.get("unreachable") else ""))
+        if rot.get("error"):
+            typer.secho(f"  last error: {rot['error']}", fg="yellow")
+    for b in r.get("blockers") or []:
+        typer.echo(f"  still running from before the rotation: {b}")
+    typer.secho(f"next: {r['next']}", fg="green")
