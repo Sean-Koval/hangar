@@ -738,9 +738,14 @@ async def _grade(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t:
 
 
 # ====================================================================== a trial's sandbox (fleet.create)
+def selected_packs(sb: Sandbox) -> bool:
+    """A trial's sandbox: one pack, never from (nor refilling) the environment's warm pool."""
+    return sb.labels.get(PACKS_LABEL) == "selected"
+
+
 def select_packs(spec: EnvSpec, sb: Sandbox, harness: str | None) -> None:
     """`hangar.packs: selected`: only the sandbox's own harness's pack is mounted."""
-    if sb.labels.get(PACKS_LABEL) == "selected":
+    if selected_packs(sb):
         spec.packs = {k: v for k, v in spec.packs.items() if k == harness}
 
 

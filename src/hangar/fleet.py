@@ -793,7 +793,9 @@ class Fleet:
             self._touch(sb)
             slo.created(sb, fork=_parent is not None or _image is not None)  # --- clouddoctor
             # --- ops: + the day's size; --- envbuilds: never from a repo build's image
-            if self._warm(spec).warm_pool and pname in self.providers and _image is None and not build:
+            # --- review(#114): nor from a trial's (it took nothing from the pool, and its spec mounts one pack)
+            if self._warm(spec).warm_pool and pname in self.providers and _image is None and not build \
+                    and not experiments.selected_packs(sb):
                 asyncio.create_task(self._refill(self._warm(spec), pname, image))
             self.reconciler.disown(sb.id)  # --- reconciler
             return sb

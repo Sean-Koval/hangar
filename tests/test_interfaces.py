@@ -649,6 +649,31 @@ async def test_the_graders_sandbox_holds_nothing_the_trials_code_could_take(flee
         assert _files_containing(box, value) == [], value
     assert sb.id not in clouds, "no cloud token"
     grader = Sandbox(name="g", environment="gradeenv", provider="docker", labels=labels)
+    assert delivery.builds_repo_code(grader)
     assert fleet.gateway.fetch_only(grader) and fleet.gateway.push_scope(grader, "main") == []
     fleet.settings.gateway_url = "https://gw.example"
     assert fleet.gateway.mode_for(spec, grader, None) == "gateway"
+
+
+async def test_a_trial_never_resizes_the_environments_warm_pool(fleet, tmp_path, monkeypatch):
+    """A trial's sandbox didn't come from the warm pool and mounts one pack: refilling the pool with its spec would
+    give every later sandbox of the environment only that harness's pack (Kubernetes recreates the template)."""
+    from hangar import envbuilds
+
+    fleet.catalog.add({"name": "warmenv", "harnesses": ["git"], "warm_pool": 1}, save_dir=tmp_path)
+    refills: list = []
+
+    async def refill(spec, pname, image):
+        refills.append(spec)
+
+    async def no_build(*a, **k):  # no repo build: the environment's own image, which its warm pool holds
+        return None  # (`pick` returns an empty Pick, which is truthy: today no create refills; see the review)
+
+    monkeypatch.setattr(fleet, "_refill", refill)
+    monkeypatch.setattr(envbuilds.EnvBuilds, "pick", no_build)
+    await fleet.create("warmenv", labels={experiments.PACKS_LABEL: "selected"})
+    await asyncio.sleep(0)
+    assert refills == []
+    await fleet.create("warmenv")  # everything else refills as before
+    await asyncio.sleep(0)
+    assert len(refills) == 1
