@@ -97,7 +97,7 @@ until the checks pass by hand: each check without its fixture skips.
 
 ## The first live run after deploying Waves 1–3
 
-Run these in order after [the upgrade](upgrading.md#upgrading-to-the-team-release-75110) (its step 14). Each step
+Run these in order after [the upgrade](upgrading.md#upgrading-to-the-team-release-75117) (its step 14). Each step
 assumes the ones before it passed; when one fails, the next section says where to look. All of them work with
 `--no-kubectl`.
 
