@@ -39,6 +39,7 @@ from hangar import (  # strategies: workstream D; --- observe; steer: live turns
     strategies,
     verifyloop,
 )
+from hangar import clouddoctor as clouddoctor  # --- clouddoctor: its own jobs report back; its fixes are fenced
 from hangar import computer as computer  # --- computer
 from hangar import envbuilds as envbuilds  # --- envbuilds
 from hangar import envdoctor as envdoctor  # --- computer
@@ -1071,6 +1072,9 @@ class JobService:
         base = job.result.base_sha or f"origin/{job.base_branch}"
         if job.deliver != "none":
             await scratch.drop_committed(self, job, base)  # --- frontdoor: and those it committed itself
+        if job.labels.get(clouddoctor.LABEL) == "fix" and job.deliver != "none":  # --- clouddoctor: only what
+            if (why := await clouddoctor.check_fix(self, job, base)) is not None:  # its kind of fix may change
+                raise _DeliveryError(why)
         log_ = await self._sh(job, f"git log --oneline --no-decorate -n 50 {q(base)}..HEAD")
         job.result.commits = [ln for ln in log_.stdout.splitlines() if ln.strip()]
         head = await self._sh(job, "git rev-parse HEAD")
@@ -1089,6 +1093,9 @@ class JobService:
             raise _DeliveryError(f"push failed: {(push.stderr or push.stdout)[-500:]}")
         job.result.pushed = True
         self._event(job, f"pushed {job.branch}")
+        if job.labels.get(clouddoctor.LABEL) == "fix" and job.deliver != "none":  # --- review(clouddoctor): and
+            if (why := await clouddoctor.after_push(self, job)) is not None:  # again from GitHub, grant revoked
+                raise _DeliveryError(why)
         if job.deliver in ("pr", "draft_pr"):
             await self._ensure_pr(job, draft=draft or job.deliver == "draft_pr")
             await self.landing.delivered(job)  # --- landing: a stale approval, the review packet
@@ -1142,6 +1149,7 @@ class JobService:
         if job.attempts:
             lines += ["", strategies.attempts_table(job), ""]
         lines += computer.pr_lines(self, job)  # --- computer: screenshots and recorded demos
+        lines += clouddoctor.pr_lines(self, job)  # --- clouddoctor: a doctor fix names its evidence
         lines.append(f"hangar job `{job.id}` · requested by {job.requester} via {job.source} · "
                      f"{job.environment} / {job.harness}" + (f" / {job.model}" if job.model else ""))
         if usage := self.usage(job):  # workstream C
@@ -1168,6 +1176,7 @@ class JobService:
     # ================================================================== reporting
     async def _report(self, job: Job) -> None:
         flightrec.of(self.fleet).job_done(self, job)  # --- clouddoctor: written on a task of its own
+        clouddoctor.job_done(self, job)  # --- clouddoctor: a root-cause or fix job of the Cloud Doctor's
         self._spawn(self._callback(job, "job.finished"))
         turn = job.turns[-1] if job.turns else None
         if turn and turn.reply_to:
