@@ -566,7 +566,7 @@ def _line(t: TestSummary) -> str:
     if t.new_failures is not None:
         out += f"; new against the base: {len(t.new_failures)}"
     if t.flaky:
-        out += f"; flaky: {', '.join(t.flaky[:3])}" + (" …" if len(t.flaky) > 3 else "")
+        out += "; flaky: " + ", ".join(_code(x) for x in t.flaky[:3]) + (" …" if len(t.flaky) > 3 else "")
     if t.coverage is not None:
         out += f"; coverage {t.coverage:.1f}%" + (f" ({t.coverage_delta:+.1f})" if t.coverage_delta is not None
                                                      else "")
@@ -728,6 +728,12 @@ async def in_turn(svc: JobService, job: Job, turn: Turn) -> None:
 
 
 # ====================================================================== what people read
+def _code(test_id: str) -> str:
+    """A test id as inline code in hangar's own comment: the repo's code names its tests, so a backtick can't end
+    the span early and forge a link (as landing._code does for paths)."""
+    return "`" + test_id.replace("`", "'").replace("\n", " ")[:200] + "`"
+
+
 def packet_lines(svc: JobService, job: Job) -> list[str]:
     """For the review packet (landing.py), under the verification line."""
     if not job.verify or job.result.verify_exit_code is None or mode(svc.settings) == "off":
@@ -740,13 +746,13 @@ def packet_lines(svc: JobService, job: Job) -> list[str]:
            + ("" if t.complete else " (not every report could be read)")]
     if t.new_failures is not None:
         out.append("    - new failures against the base: "
-                   + (", ".join(f"`{x}`" for x in t.new_failures[:10]) + (" …" if len(t.new_failures) > 10 else "")
+                   + (", ".join(_code(x) for x in t.new_failures[:10]) + (" …" if len(t.new_failures) > 10 else "")
                       if t.new_failures else "none"))
     elif t.failing:
-        out.append("    - failing: " + ", ".join(f"`{x}`" for x in t.failing[:10])
+        out.append("    - failing: " + ", ".join(_code(x) for x in t.failing[:10])
                    + (" …" if t.failed + t.errors > 10 else ""))
     if t.flaky:
-        out.append("    - flaky (on the repo's flaky list): " + ", ".join(f"`{x}`" for x in t.flaky[:10]))
+        out.append("    - flaky (on the repo's flaky list): " + ", ".join(_code(x) for x in t.flaky[:10]))
     if t.coverage is not None:
         out.append(f"    - line coverage {t.coverage:.1f}%" + (f", {t.coverage_delta:+.2f} points against the base"
                                                                 if t.coverage_delta is not None else ""))

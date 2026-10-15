@@ -587,6 +587,15 @@ def test_trace_events_follow_the_trace_taxonomy_and_the_test_semantic_convention
     assert [n for _, n, _ in x.events] == ["test.run", "test.case", "test.case"] and x.events[0][2] == r.id
 
 
+async def test_test_ids_cant_forge_markdown_in_the_packet():
+    job = Job(title="t", instructions="x", environment="e", branch="hangar/j", verify="pytest")
+    job.result.verify_exit_code = 1
+    job.result.tests = testresults.TestSummary(run="tr-1", kind="verify", failed=1, failing=["x` [ok](https://evil) `"],
+                                               flaky=["y`\n# heading"])
+    lines = testresults.packet_lines(SimpleNamespace(settings=SimpleNamespace(test_reports="inject")), job)
+    assert "`x' [ok](https://evil) '`" in lines[1] and "`y' # heading`" in lines[2]
+
+
 async def test_live_traces_carry_the_runs_events(settings, tmp_path):
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
