@@ -379,6 +379,10 @@ class Settings(BaseSettings):
     # otherwise (`verify_in_loop`, `max_verify_rounds`); hangar's own check after the turn still decides delivery.
     verify_in_loop: bool = True
     max_verify_rounds: int = Field(3, ge=0, le=10)
+    # --- testresults: structured results of every check (testresults.py, docs/jobs.md#test-results). inject: set the
+    # reporter variables (PYTEST_ADDOPTS --junitxml, GOTESTSUM_JUNITFILE, JEST_JUNIT_OUTPUT_DIR) and read the reports
+    # the check writes; collect: only read the reports (the repo's `verify_reports`, the usual paths); off: neither.
+    test_reports: Literal["inject", "collect", "off"] = "inject"
     # The PR auto-fix loop: a failing CI check on the job's own head, or a trusted reviewer's changes requested or
     # inline comments, start a follow-up turn on the job's session. Per repo: {"owner/repo": "ci"} ("ci,reviews",
     # "ci", "reviews" or "off"); a job's own `autofix` can only narrow it. Default "ci,reviews".

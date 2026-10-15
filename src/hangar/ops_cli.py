@@ -32,7 +32,7 @@ def _secs(x: float | None) -> str:
 def status(as_json: bool = typer.Option(False, "--json"),
            section: str | None = typer.Option(None, help="Only these sections, comma-separated: power, loops, "
                                               "harnesses, builds, failures, egress, requests, slo, credentials, "
-                                              "nightly, log, models (and doctor)."),
+                                              "nightly, log, models (and doctor, tests)."),
            check_credentials: bool = typer.Option(False, "--check-credentials",
                                                   help="Check every credential now, not only stale results.")):
     """What an operator needs at a glance: power, loops, versions, builds, failures, denies, requests, SLOs."""
@@ -110,6 +110,11 @@ def status(as_json: bool = typer.Option(False, "--json"),
         last = doc.get("last_run") or {}
         typer.echo(f"cloud doctor: {doc.get('open', 0)} open finding(s)" +
                    (f"; last run {_ago(last.get('at'))} ago ({last.get('state')})" if last else ""))
+    if (t := v.get("tests")) and t.get("repos"):  # --- testresults: the repos with the most flaky tests
+        typer.echo(f"flaky tests (seen in the last {t['days']} days):")
+        for r in t["repos"][:8]:
+            top = ", ".join(f"{x['test']} ({x['times']}x)" for x in r["top"][:3])
+            typer.echo(f"  {r['repo']:40} {r['flaky']:4}  {top[:140]}")
     if n := v.get("nightly"):
         typer.echo(f"nightly pass: {_ago(n['at'])} ago")
     for x in v.get("log") or []:

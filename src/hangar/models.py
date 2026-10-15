@@ -287,6 +287,30 @@ class Turn(BaseModel):
     verify_rounds: int = 0
 
 
+class TestSummary(BaseModel):
+    """--- testresults: one run of a check, as structured results (testresults.py): counts, what failed, what is new
+    on a red base, the flaky ones, coverage. The run itself (every case, keyed by test id) is a TestRun record."""
+
+    __test__ = False  # not a pytest class
+    run: str  # the TestRun's id: GET /api/jobs/{id}/tests
+    kind: str  # base | verify | rerun | attempt | in_turn | autoinstall
+    at: float = Field(default_factory=now)
+    exit_code: int | None = None
+    total: int = 0
+    passed: int = 0
+    failed: int = 0
+    errors: int = 0
+    skipped: int = 0
+    complete: bool = True  # every case of every report was read
+    failing: list[str] = Field(default_factory=list)  # the first few failing ids
+    new_failures: list[str] | None = None  # failing here, not on the base (None: no structured base to compare to)
+    flaky: list[str] = Field(default_factory=list)  # failing or retried here, and on the repo's flaky list
+    coverage: float | None = None  # line coverage, percent
+    coverage_delta: float | None = None  # against the base check's, in points
+    reports: int = 0
+    file: str | None = None  # where the agent reads the whole of it in its sandbox
+
+
 class Baseline(BaseModel):
     """--- frontdoor: the job's standing `verify` run once on its base commit, before the agent starts (baseline.py).
     Shared by every job on the same repo, base commit and command."""
@@ -298,6 +322,10 @@ class Baseline(BaseModel):
     tail: str | None = None
     at: float = Field(default_factory=now)
     job_id: str | None = None  # the job whose sandbox ran it
+    # --- testresults: its structured results (a TestRun), when the check wrote reports hangar could read all of;
+    # then a red base's failures are subtracted by test id from those, not from the output's text
+    tests: str | None = None
+    test_failures: int | None = None
 
     @property
     def red(self) -> bool:
@@ -330,6 +358,7 @@ class JobResult(BaseModel):
     baseline: Baseline | None = None
     new_failures: list[str] | None = None
     dropped_files: list[str] = Field(default_factory=list)  # agent scratch files kept out of the PR (scratch.py)
+    tests: TestSummary | None = None  # --- testresults: the last check's structured results
 
 
 # --- overnight/autofix: the PR auto-fix loop's memory, per job (autofix.py)
@@ -410,6 +439,7 @@ class Attempt(BaseModel):
     files: list[str] = Field(default_factory=list)  # "M path" lines from git diff --name-status (capped)
     touched_tests: list[str] = Field(default_factory=list)  # existing test/verify files it changed or removed
     new_failures: list[str] | None = None  # --- frontdoor: failures its check added to a red base (baseline.py)
+    tests: TestSummary | None = None  # --- testresults: its check's structured results
     score: float | None = None
     rank: int | None = None  # 1 = delivered
     summary: str | None = None

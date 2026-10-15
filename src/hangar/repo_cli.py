@@ -61,6 +61,10 @@ def _line(p: dict) -> str:
         bits.append(f"land: on approval by {who} ({p.get('merge_method') or 'squash'})")
         if p.get("require_stale_dismissal") is False:  # --- trust
             bits.append("(stale approvals need not be dismissed)")
+    if p.get("verify_reports"):  # --- testresults
+        bits.append("reports: " + ",".join(p["verify_reports"]))
+    if p.get("rerun_flaky"):
+        bits.append("reruns flaky failures")
     return f"{p['repo']:40} " + "  ".join(bits)
 
 
@@ -98,6 +102,12 @@ def repo_set(
         None, "--require-stale-dismissal/--no-require-stale-dismissal",
         help="Arm auto-merge only when the base branch dismisses stale approvals on a push (the default); --no- "
              "opts the repo out."),
+    verify_report: list[str] = typer.Option([], "--verify-report", help="A test or coverage report `verify` writes "
+                                            "(JUnit, Cobertura, LCOV), relative to the repo, e.g. "
+                                            "'build/**/TEST-*.xml' (repeat it). Replaces the list."),  # --- testresults
+    rerun_flaky: bool | None = typer.Option(None, "--rerun-flaky/--no-rerun-flaky",
+                                            help="Run the check once more when it failed only on tests on the "
+                                                 "repo's flaky list."),
     as_json: bool = typer.Option(False, "--json"),
 ):
     """Set the repo's defaults; what you don't pass is kept. Jobs that set a field themselves still win.
@@ -111,7 +121,8 @@ def repo_set(
                                         max_turns=job_max_turns)),
                 ("land", land), ("approvers", approver or None), ("merge_method", merge_method),  # --- landing
                 ("risk_paths", risk_path or None),
-                ("require_stale_dismissal", require_stale_dismissal)):  # --- trust
+                ("require_stale_dismissal", require_stale_dismissal),  # --- trust
+                ("verify_reports", verify_report or None), ("rerun_flaky", rerun_flaky)):  # --- testresults
         if v is not None:
             body[k] = v
     if egress_mode is not None or egress_allow:  # --- egress
@@ -130,7 +141,8 @@ def repo_unset(repo: str = typer.Argument(...),
                                                              "model, budget, job_budget, max_usd_per_day, "
                                                              "credentials, egress, build_secrets, land, approvers, "
                                                              "merge_method, risk_paths, "
-                                                             "require_stale_dismissal). None: "
+                                                             "require_stale_dismissal, verify_reports, "
+                                                             "rerun_flaky). None: "
                                                              "remove the repo's policy.")):
     """Clear fields of the repo's policy, or remove it."""
     r = _cli()._call("DELETE", "/api/repos/policy", params={"repo": repo, "field": fields or []})

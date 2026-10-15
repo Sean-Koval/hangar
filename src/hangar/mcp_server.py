@@ -814,6 +814,9 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
 
         manifest.register(mcp, sessions, jobs, guard)
         experiments.register(mcp, jobs, guard)
+        from hangar import testresults  # --- testresults: hangar://jobs/<id>/tests (a resource, not a tool)
+
+        testresults.register(mcp, jobs, guard)
         mcp.recent = lambda: live.recent_resources(sessions, jobs)
         live.register_prompts(mcp, sessions)
         fleet.store.on_put.append(feed.on_put)

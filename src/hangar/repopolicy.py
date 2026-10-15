@@ -42,7 +42,8 @@ FIELDS = ("verify", "environment", "harness", "model", "budget", "job_budget", "
           "credentials",  # --- teamcreds
           "egress", "build_secrets",  # --- egress
           "land", "approvers", "merge_method", "risk_paths",  # --- landing: the last four (landing.py)
-          "require_stale_dismissal")  # --- trust
+          "require_stale_dismissal",  # --- trust
+          "verify_reports", "rerun_flaky")  # --- testresults
 _LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")  # a GitHub login
 
 
@@ -81,6 +82,10 @@ class RepoPolicy(BaseModel):
     # --- trust: auto-merge is armed only on a base branch that dismisses stale approvals on a push (landing.py);
     # false opts the repo out of that check. None: required.
     require_stale_dismissal: bool | None = None
+    # --- testresults: the reports `verify` writes (a repo's .hangar/environment.yaml `verify_reports` comes first),
+    # and whether a check that failed only on tests on the repo's flaky list runs once more (testresults.py)
+    verify_reports: list[str] | None = Field(None, max_length=16)
+    rerun_flaky: bool | None = None
     updated_at: float = Field(default_factory=now)
     updated_by: str | None = None
 
@@ -93,6 +98,13 @@ class RepoPolicy(BaseModel):
         if bad := [x for x in out if not _LOGIN.match(x)]:
             raise ValueError(f"not GitHub logins: {', '.join(bad[:5])}")
         return out
+
+    @field_validator("verify_reports")
+    @classmethod
+    def _reports(cls, v: list[str] | None) -> list[str] | None:  # --- testresults
+        from hangar.testresults import check_globs
+
+        return check_globs(v)
 
     @field_validator("model")
     @classmethod
@@ -259,6 +271,8 @@ class PolicyUpdate(BaseModel):
     merge_method: Literal["squash", "merge", "rebase"] | None = None
     risk_paths: list[str] | None = None
     require_stale_dismissal: bool | None = None  # --- trust
+    verify_reports: list[str] | None = None  # --- testresults
+    rerun_flaky: bool | None = None
 
 
 def update(svc: JobService, body: PolicyUpdate, actor: str) -> RepoPolicy:

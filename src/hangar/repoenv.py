@@ -11,6 +11,7 @@ The file lives with the code, so the environment changes in the same commit as t
       postgres: {image: postgres:17, port: 5432, env: {POSTGRES_PASSWORD: dev}}
     ports: [{port: 3000, name: web}]   # previews through hangar's authenticated proxy
     verify: uv run pytest -q
+    verify_reports: [reports/*.xml, "**/coverage.xml"]   # test and coverage reports verify writes (testresults)
     build_secrets: [NPM_TOKEN]    # ids only: an admin maps them to credentials (environment or repo policy)
     lockfiles: [vendor/*.lock]    # more files whose change means a rebuild (the usual lockfiles are watched anyway)
     mocks:                        # stand-ins for real dependencies, recorded so nobody mistakes them (autoinstall)
@@ -97,6 +98,8 @@ class RepoEnvironment(BaseModel):
     build_secrets: list[str] = Field(default_factory=list, max_length=32)
     lockfiles: list[str] = Field(default_factory=list, max_length=32)
     mocks: list[Mock] = Field(default_factory=list, max_length=32)  # --- autoinstall: documentation, never applied
+    # --- testresults: JUnit, Cobertura or LCOV files `verify` writes, relative to the repo (`**/` for any depth)
+    verify_reports: list[str] | None = None
 
     @field_validator("extends")
     @classmethod
@@ -117,6 +120,13 @@ class RepoEnvironment(BaseModel):
             if not _SECRET_ID.match(s):
                 raise ValueError(f"'{s[:40]}' is not a secret id (letters, digits and '_', like NPM_TOKEN)")
         return list(dict.fromkeys(v))
+
+    @field_validator("verify_reports")
+    @classmethod
+    def _reports(cls, v: list[str] | None) -> list[str] | None:  # --- testresults
+        from hangar.testresults import check_globs
+
+        return check_globs(v)
 
     @field_validator("lockfiles")
     @classmethod

@@ -861,6 +861,9 @@ class Landing:
         if r.touched_tests:
             out.append("  - the agent changed the check's own tests: "
                        + ", ".join(_code(p) for p in r.touched_tests[:10]))
+        from hangar import testresults  # --- testresults: counts, new against the base, flaky, coverage
+
+        out += testresults.packet_lines(svc, job)
         tier, why = risk(st.files, policy.risk_paths if policy else None)
         out.append(f"- **Risk:** {tier}" + (": touches " + ", ".join(_code(p) for p in why[:8]) if why else ""))
         shown = ", ".join(_code(f) for f in st.files[:15]) + (f" and {len(st.files) - 15} more"
