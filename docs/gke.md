@@ -107,7 +107,7 @@ See [specs/0006-environments-and-harness-packs.md](specs/0006-environments-and-h
 
 ### Images and packs, built in CI
 
-`.github/workflows/images.yml` runs on every push to `main` and on demand (`workflow_dispatch`). It signs in to Google Cloud with Workload Identity Federation (no service-account key), runs `hangar images build --provider kubernetes`, and pushes to Artifact Registry. Until the three secrets below exist, it skips with a notice and stays green. It never talks to the cluster, so it also works while the sandbox pools are powered down. `deploy.yml` calls it before every deploy ([upgrading.md](upgrading.md#deploying-with-deployyml)).
+`.github/workflows/images.yml` runs on every push to `main` and on demand (`workflow_dispatch`). It signs in to Google Cloud with Workload Identity Federation (no service-account key), runs `hangar images build --provider kubernetes`, and pushes to Artifact Registry. Until the three secrets below exist, it skips with a notice and stays green; it also skips on refs other than `main` and `v*` tags, which Google Cloud doesn't trust. It never talks to the cluster, so it also works while the sandbox pools are powered down. `deploy.yml` calls it before every deploy ([upgrading.md](upgrading.md#deploying-with-deployyml)).
 
 | Secret | Value |
 |---|---|
@@ -115,16 +115,21 @@ See [specs/0006-environments-and-harness-packs.md](specs/0006-environments-and-h
 | `GCP_SERVICE_ACCOUNT` | `hangar-ci@<project>.iam.gserviceaccount.com`, with `roles/artifactregistry.writer` on the `hangar` repository |
 | `HANGAR_REGISTRY` | `terraform -chdir=deploy/terraform/gke output -raw registry`, e.g. `us-central1-docker.pkg.dev/<project>/hangar` |
 
-One-time setup, as a project owner (replace `OWNER/REPO` with the repository, e.g. `Sean-Koval/hangar`):
+One-time setup, as a project owner: `bash deploy/gke/setup-cicd.sh` does this, deploy.yml's setup too, and checks it
+([cicd.md](cicd.md)). By hand (replace `OWNER/REPO` with the repository, e.g. `Sean-Koval/hangar`), the same provider:
+only this repository, by name and by id, and only push or manual runs of `main` or a `v*` tag. Use a pool of its own:
+the accounts trust every provider in it. Then restrict who can create `v*` tags with a tag ruleset (the script does).
 
 ```bash
 PROJECT=<project>; REGION=<region>; REPO=OWNER/REPO
 NUM=$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')
+REPO_ID=$(gh api "repos/$REPO" --jq .id); OWNER_ID=$(gh api "repos/$REPO" --jq .owner.id)
+gcloud services enable sts.googleapis.com iamcredentials.googleapis.com --project "$PROJECT"
 gcloud iam workload-identity-pools create github --project "$PROJECT" --location global
 gcloud iam workload-identity-pools providers create-oidc hangar --project "$PROJECT" --location global \
   --workload-identity-pool github --issuer-uri https://token.actions.githubusercontent.com \
-  --attribute-mapping 'google.subject=assertion.sub,attribute.repository=assertion.repository' \
-  --attribute-condition "assertion.repository == '$REPO'"
+  --attribute-mapping 'google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.repository_id=assertion.repository_id,attribute.repository_owner_id=assertion.repository_owner_id,attribute.ref=assertion.ref' \
+  --attribute-condition "assertion.repository == '$REPO' && assertion.repository_id == '$REPO_ID' && assertion.repository_owner_id == '$OWNER_ID' && (assertion.ref == 'refs/heads/main' || assertion.ref.startsWith('refs/tags/v')) && (assertion.event_name == 'push' || assertion.event_name == 'workflow_dispatch')"
 gcloud iam service-accounts create hangar-ci --project "$PROJECT"
 gcloud artifacts repositories add-iam-policy-binding hangar --project "$PROJECT" --location "$REGION" \
   --member "serviceAccount:hangar-ci@$PROJECT.iam.gserviceaccount.com" --role roles/artifactregistry.writer

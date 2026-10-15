@@ -201,6 +201,24 @@ async def test_a_parked_sandbox_holds_no_grant_and_wakes_with_one_for_the_sessio
     assert fleet.get(sb.id).info["git"]["push_refs"][0] == "refs/heads/hangar/job-7"
 
 
+async def test_a_jobs_sandbox_wakes_with_a_fetch_only_grant(svc, world, fleet, hot, settings):  # noqa: F811
+    """--- least-privilege: a woken job's sandbox gets the same fetch-only grant a cold boot gives it; hangar
+    pushes the job's work itself."""
+    settings.gateway_url = "http://gw.test"
+    s = await start(svc, world, "jobgrant")
+    sb = fleet.get(s.sandbox_id)
+    sb.labels["hangar.job"] = "job-7"
+    fleet.gateway.mint(sb, "github.com", ["o/r"], [], "gh")
+    sb.info["git"] = {"mode": "gateway", "repo": "o/r", "push_refs": [], "credential": "gh"}
+    fleet.store.put(sb)
+    await suspend(svc, "jobgrant")
+    svc.send("jobgrant", "more work", requester="sean")
+    s = await settle(svc, "jobgrant")
+    assert s.state == SessionState.IDLE and s.sandbox_id == sb.id, s.reason
+    [g] = fleet.gateway.grants(sb.id)
+    assert g.push_refs == [] and fleet.get(sb.id).info["git"]["push_refs"] == []
+
+
 async def test_a_full_fleet_evicts_parked_sandboxes_before_refusing(svc, world, fleet, hot, settings):  # noqa: F811
     """review(#64): paused sandboxes count against HANGAR_MAX_SANDBOXES, so they must give way to sandboxes that
     would run, not block them until they expire."""

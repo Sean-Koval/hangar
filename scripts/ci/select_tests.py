@@ -57,7 +57,8 @@ PATHS: list[tuple[str, list[str] | str]] = [
     (".gitignore", []),
     ("deploy/terraform/*", []),  # the terraform job
     ("deploy/*", ["tests/test_k8s_network.py", "tests/test_sweep_durability.py", "tests/test_up_gke.py",
-                  "tests/test_egress.py"]),  # --- egress: reads the NetworkPolicies too
+                  "tests/test_egress.py",  # --- egress: reads the NetworkPolicies too
+                  "tests/test_setup_cicd.py"]),  # --- cicd: deploy/gke/setup-cicd.sh
     ("scripts/acceptance/*", ["tests/test_acceptance_script.py", "tests/test_acceptance_team.py",  # --- acceptance
                               "tests/test_e2e_acceptance_docker.py"]),
     ("src/hangar/ui/*", ["tests/test_app.py"]),

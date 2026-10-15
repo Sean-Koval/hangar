@@ -92,7 +92,12 @@ the environment's image  →  clone the default branch  →  run install  →  k
 
 - **Where it runs.** `install` is code from whoever can push, so it runs where agents run: in an ordinary sandbox of
   the environment (gVisor on GKE, hangar's isolated network on Docker), under the same network rules as its agents.
-  It runs without the agent's model credentials. It never runs on the control plane or on an image builder.
+  It never runs on the control plane or on an image builder.
+- **What the build sandbox holds:** a fetch-only grant of the [git gateway](security.md#git-credential-gateway) for
+  its clone, the [build secrets](security.md#build-secrets) an admin mapped (in `install`'s environment only), and
+  egress per the environment and repo policy. Nothing else: no credential of the environment (no model or person
+  login, no `git_token`, no tool key), none of its `secrets:`, no cloud tokens. Without the gateway
+  (`HANGAR_GATEWAY_URL`) it holds no git credential at all, so a private repo's build fails and says so.
 - **What is kept.** Only the repo's checkout (`node_modules`, `.venv`, generated code and the rest), archived and
   `ADD`ed onto the environment's image with no `RUN` step. Nothing in `$HOME` is kept: the sandbox's injected env and
   credentials can't end up in a build. Put what `install` produces inside the repo; system tools belong in the
@@ -355,7 +360,7 @@ build failed (after a lockfile or CI change). It doesn't run while an earlier en
 open. Otherwise it ends at once (`no_changes`), with no agent started. The agents get the failing build's output
 and update the existing file.
 
-**Models and budget.** Both agents run on the `frontier` model policy, the same one jobs default to
+**Models and budget.** Both agents run on the `balanced` model policy, the same one jobs default to
 ([harnesses.md](harnesses.md#models-the-latest-strong-model-per-provider)): it is resolved from the provider's
 model list (read with `HANGAR_MODEL_LIST_CREDENTIALS`, or OpenRouter's public list for pi) when each agent's
 session is created, and pinned there. A job's own `model` wins, and `HANGAR_ENV_SETUP_MODELS` pins a model or a
@@ -367,13 +372,13 @@ they can't exceed it. A budget of fewer than 2 turns is refused. When the goal j
 judged by their exit codes, and the job's events say so.
 
 **The PR holds what was validated.** The packet names the commit hangar validated. If the setup branch's head has
-moved since (the agent-written install runs with the branch's push scope, and could push), the PR isn't opened and
-the job fails `validation_stale`. `.hangar/**` is high risk in every PR's packet.
+moved since, the PR isn't opened and the job fails `validation_stale`. Neither agent's sandbox nor the validation
+sandbox can push (fetch-only grants), so that takes someone else with write access. `.hangar/**` is high risk in every
+PR's packet.
 
 **Safety.** The validation sandbox runs code an agent wrote on an unmerged branch, so it gets less than a build:
-only the environment's git credential, which its clone needs (with the git gateway on for jobs,
-`HANGAR_GATEWAY_FOR_JOBS`, not even that: a scoped grant, like a job's sandbox), and nothing else: no agent or person
-credentials, no other credential of the environment, none of its `secrets:`, no cloud tokens, no build secrets. Its
+a fetch-only grant of the git gateway for its clone (without the gateway, no git credential at all), and nothing
+else: no credential of the environment, none of its `secrets:`, no cloud tokens, no build secrets. Its
 egress is the environment's and the repo policy's, as for any sandbox. The file it validates can't name what an
 admin decides (refused like any `.hangar/environment.yaml`), its services must be on `HANGAR_ENV_SERVICE_IMAGES`, and
 `mocks` are documentation only, shown as inline code in the PR and its packet. The PR lands through the landing
@@ -398,7 +403,7 @@ Cancelling it cancels both agents and removes the validation sandbox.
 | `HANGAR_ENV_SETUP_RETRIES` | 5 | Setup turns after a failed validation, each with the failure's output |
 | `HANGAR_ENV_SETUP_MAX_COST_USD`, `HANGAR_ENV_SETUP_MAX_TURNS` | 30, 16 | An env setup's job budget when neither the job nor the repo's policy sets one |
 | `HANGAR_ENV_SETUP_VALIDATE_MINUTES` | 45 | One validation: the sandbox, install, the services and every command |
-| `HANGAR_ENV_SETUP_MODELS` | unset | `{"claude-code": "...", "codex": "balanced"}`: a model or a policy per harness instead of `frontier` |
+| `HANGAR_ENV_SETUP_MODELS` | unset | `{"claude-code": "frontier", "codex": "gpt-6-astra"}`: a model or a policy per harness instead of `balanced` |
 | `HANGAR_ENV_SETUP_LABEL` | `hangar-env-setup` | An issue (GitHub, Jira, GitHub Projects) with this label starts an env setup |
 
 ## REST

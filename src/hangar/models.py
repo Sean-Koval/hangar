@@ -649,7 +649,9 @@ class SandboxGrant(BaseModel):
     token_hash: str  # sha256 of "hgs_<random>"; the token itself is shown once, to the sandbox
     host: str = "github.com"
     repos: list[str] = Field(default_factory=list)  # "owner/name", lower-case
-    push_refs: list[str] = Field(default_factory=list)  # exact refs, or patterns ending in "/**"
+    push_refs: list[str] = Field(default_factory=list)  # exact refs, or patterns ending in "/**"; empty: fetch only
     credential: str  # vault credential (git_token or github_app) the gateway uses upstream
+    # --- least-privilege: a delivery grant (delivery.py) pushes exactly these commits: {ref: commit id}
+    pins: dict[str, str] = Field(default_factory=dict)
     created_at: float = Field(default_factory=now)
     expires_at: float | None = None

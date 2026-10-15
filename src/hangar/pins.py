@@ -2,7 +2,8 @@
 
 * **Its model**, as a concrete id: a policy (`frontier`, `balanced`) is resolved once, from the provider's model list
   (modelpolicy.py), so the conversation never changes model when the list does (spec 0012: each model has its own
-  prompt cache). Jobs default to `frontier` when nothing else names a model.
+  prompt cache). Jobs default to `balanced` when nothing else names a model (the owner's call: Opus on Claude Code;
+  `frontier` is chosen per environment, repo policy or job).
 * **Its harness's CLI version**, the one the lock pinned at creation. A new lock (the canary's bump) applies to
   sessions created after it. A follow-up that would resume an older session's conversation on a sandbox running a
   newer CLI is handled as a harness switch: the conversation is handed off (a summary in a new conversation), never
@@ -25,7 +26,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("hangar.pins")
 
-JOB_DEFAULT = "frontier"
+JOB_DEFAULT = "balanced"  # --- least-privilege: the owner's default, was `frontier`
 
 
 def _event(svc: SessionService, s: Session, text: str, warning: str, **data: str | None) -> None:

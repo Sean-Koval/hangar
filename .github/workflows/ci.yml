@@ -38,6 +38,10 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - run: uv run --locked --only-dev ruff check src tests scripts/ci
+      - name: shellcheck (deploy/gke/setup-cicd.sh)  # --- cicd
+        run: |
+          command -v shellcheck >/dev/null || { sudo apt-get update -q && sudo apt-get install -yq shellcheck; }
+          shellcheck deploy/gke/setup-cicd.sh
 
   envd:  # built once, for the unit shards and every e2e suite; cached by the hash of envd/
     runs-on: ubuntu-24.04
