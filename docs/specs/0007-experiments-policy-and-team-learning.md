@@ -4,6 +4,8 @@ Status: draft · Date: 2026-10-12 · Builds on: 0003 (gateway, egress), 0004 (pe
 
 > Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins.
 
+> **Update 2026-10-15 ([0014](0014-sister-tool-interfaces.md)):** interpreting runs moved to a sister tool in a separate repository. Hangar keeps what needs sandboxes, credentials or the control plane's trust boundary: policy and its enforcement (§5.2), the MCP gateway (§5.1), budgets, and experiments as a job kind that runs task × variant × trial isolated and pinned and records each trial (manifest, trace, verification, an optional external grader's output). The sister tool owns the paired analysis and report (§5.4 rules 4–5, `experiment_report`), labels and the labeler cascade (§5.5), process mining and routing on labels, and team learning's miners and proposals (§5.6). Milestones M7, M8 and M10 are split accordingly (§7).
+
 ## 1. Summary
 
 - **MCP servers in sandboxes, with credentials outside them.** Environments already declare MCP servers (`mcp:`, spec 0006), written into each harness's own config. Today the server's credential lands in a file the agent can read. A per-sandbox **MCP gateway** sidecar holds the credentials instead, enforces a tool allowlist, and turns every MCP call into a span. On E2B, hangar maps `mcp:` onto E2B's native Docker MCP gateway.
@@ -148,6 +150,8 @@ Rules, extending 0005 §5.8:
 
 `run_experiment` (MCP + REST) returns an id. `experiment_status` and `experiment_report` return the paired table, per-variant metrics, label distributions, saturated tasks, and links to every run's trace. Reports render in the dashboard and export as a doc.
 
+**As built ([0014 §4](0014-sister-tool-interfaces.md#4-experiment-jobs-hangarexperimentv1)):** `run_experiment` is a `kind: experiment` job (`POST /api/experiments`, `hangar experiment run`; on MCP a resource only, the tool list being at its cap). It implements rules 1–3 and 6 as runtime: only the overlay differs (each trial mounts only its harness's pack and exactly its variant's skills and instructions; egress is fixed per experiment; the manifests' `config_digest` flags drift), grading runs outside the agent's reach (an external grader command in a clean sandbox, on the trial's patch), trials are interleaved and concurrent, and budgets bound the spend. Its output is an index of trials, `hangar.experiment/v1`. Rules 4 and 5 (paired analysis, effect sizes, saturated tasks) and `experiment_report` are the sister tool's.
+
 ### 5.5 Traces, labels and lifecycle links
 
 **One span schema** across harnesses: 0005's `run_events` and `traces.db`, with OpenTelemetry GenAI-style attribute names (`gen_ai.request.model`, `gen_ai.usage.*`).
@@ -242,10 +246,10 @@ Sizes: S ≤ 1 day, M ≈ 2–3 days, L ≈ 4–6 days.
 | M4 | Harness permission rendering for four harnesses; model allowlist | M | M3 |
 | M5 | MCP gateway sidecar (Docker MCP gateway or own), credentials out of the sandbox, tool allowlists, `mcp.call` spans; E2B native mapping | L | M3, 0003 M2 |
 | M6 | Parsers for Codex, pi and Antigravity into `run_events` (from `evals/semver/spans.py`) | M | 0001 M3 |
-| M7 | `run_experiment`: variants and overlays, pinning, interleaving, grader injection, paired report; absorbs 0005 M10 | L | M1, M3, M6 |
-| M8 | Label taxonomy, rules and Decision-1 cascade, gold-set labeling UI, κ dashboard | L | 0005 M4–M5, M6 |
+| M7 | `run_experiment`: variants and overlays, pinning, interleaving, grader injection ~~, paired report~~; absorbs 0005 M10. **Built as the experiment job kind (0014); the paired report moved to the sister tool.** | L | M1, M3, M6 |
+| M8 | Label taxonomy, rules and Decision-1 cascade, gold-set labeling UI, κ dashboard. **Moved to the sister tool (0014), on hangar's trace export.** | L | 0005 M4–M5, M6 |
 | M9 | Lifecycle links: ticket and objective refs, outcome back-propagation (merge, review rounds, revert) | M | 0002 M2 |
-| M10 | Learning records, miners (review clusters, failure signatures, label patterns), proposal → experiment → PR | L | M7, M8, M9, 0006 M4 |
+| M10 | Learning records, miners (review clusters, failure signatures, label patterns), proposal → experiment → PR. **Moved to the sister tool (0014), which starts experiments and opens PRs through hangar's jobs.** | L | M7, M8, M9, 0006 M4 |
 
 Suggested order: M0–M2 now (performance), then M3–M4 and M6, then M7 (the first real experiment: skills on/off on hangar tickets), then M5, M8, M9, M10.
 
