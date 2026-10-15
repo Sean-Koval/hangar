@@ -851,7 +851,7 @@ async def test_a_trial_never_resizes_the_environments_warm_pool(fleet, tmp_path,
         refills.append(spec)
 
     async def no_build(*a, **k):  # no repo build: the environment's own image, which its warm pool holds
-        return None  # (`pick` returns an empty Pick, which is truthy: today no create refills; see the review)
+        return envbuilds.Pick()  # what `pick` answers then (truthy: the refill checks its image)
 
     monkeypatch.setattr(fleet, "_refill", refill)
     monkeypatch.setattr(envbuilds.EnvBuilds, "pick", no_build)
