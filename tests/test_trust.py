@@ -209,7 +209,7 @@ async def test_a_sandbox_lost_during_the_base_check_starts_over(jobs, repo, flee
     lost = []
 
     async def exec_(ref, command, *a, **kw):
-        if command == "bash check.sh" and not lost:
+        if command.endswith("\nbash check.sh") and not lost:  # --- testresults: after the reports' setup line
             lost.append(ref)
             sb = fleet.get(ref)
             await fleet.providers["docker"].destroy(sb)
