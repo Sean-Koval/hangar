@@ -226,5 +226,8 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
     from hangar import credhealth  # --- clouddoctor: logins that stopped working or expire soon
 
     out += credhealth.doctor_checks(h)
+    from hangar import modelpolicy  # --- integ3 (review #105): `frontier` jobs with no budget and no daily cap
+
+    out += modelpolicy.doctor_checks(h)
     await asyncio.sleep(0)
     return out

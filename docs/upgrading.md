@@ -208,6 +208,8 @@ kubectl -n hangar rollout restart deploy/hangar
 
 A slot is a job, not a sandbox: 24 best-of-4 jobs could hold all 120 sandboxes, so keep `HANGAR_PERSON_MAX_RUNNING_JOBS` (half the slots) and the budgets in place ([team-scale.md](team-scale.md#limits-and-follow-ups)).
 
+**Jobs now default to `frontier`** (Claude Fable 5.1 on Claude Code, $10/$50 per MTok; [harnesses.md](harnesses.md#models-the-latest-strong-model-per-provider)), and **hangar sets no spend cap of its own**: the amounts above are examples, and choosing them is yours. Until `HANGAR_JOB_BUDGET_MAX_COST_USD` or `HANGAR_PERSON_MAX_USD_PER_DAY` is set, `hangar doctor` warns (`model spend`) and `hangar status` shows `NO job budget or daily cap` on its `models:` line. A repo policy's `job_budget` or `--max-usd-per-day` caps only that repo. Where price matters more than the last bit of capability, use `model: balanced` in the environment or the repo policy.
+
 ### 9. Front doors
 
 #### 9a. The GitHub webhook

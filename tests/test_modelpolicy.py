@@ -396,3 +396,27 @@ def test_list_environments_says_what_each_model_costs(fleet):
     assert (v["model"], v["policy"], v["source"]) == ("claude-fable-5-1", "frontier", "seed")
     assert v["about"] == "`claude-fable-5-1` (`frontier`; list price $10/$50 per MTok in/out)"
     assert fleet.store.kv_get("modelpick:claude-code:frontier") is None, "a listing only looks"
+
+
+def test_frontier_jobs_with_no_budget_and_no_daily_cap_get_a_doctor_warning(fleet):
+    """--- integ3 (review #105): jobs default to `frontier` and nothing caps them unless the owner sets a budget.
+    Hangar sets no default cap (the owner's call); the doctor and `hangar status` say so instead."""
+    from types import SimpleNamespace
+
+    from hangar.repopolicy import RepoPolicies
+
+    h = SimpleNamespace(fleet=fleet)
+    g = modelpolicy.spend_guard(fleet)
+    assert g["uncapped"] and g["job_default"] == "frontier" and "claude-fable-5-1" in g["claude_code"]
+    [c] = modelpolicy.doctor_checks(h)
+    assert c["name"] == "model spend" and c["status"] == "warn"
+    assert "HANGAR_JOB_BUDGET_MAX_COST_USD" in c["detail"] and "hangar sets none" in c["fix"]
+    RepoPolicies(fleet.store).put(RepoPolicy(repo="acme/app", max_usd_per_day=20))
+    assert modelpolicy.spend_guard(fleet)["repos_capped"] == ["acme/app"]
+    assert modelpolicy.doctor_checks(h)[0]["status"] == "warn"  # one repo's cap doesn't bound the rest
+    fleet.settings.person_max_usd_per_day = 50
+    [c] = modelpolicy.doctor_checks(h)
+    assert c["status"] == "ok" and "$50 a person a day" in c["detail"]
+    fleet.settings.person_max_usd_per_day = None
+    fleet.settings.job_budget_max_cost_usd = 5
+    assert modelpolicy.doctor_checks(h)[0]["detail"].endswith("bounded at $5 a job")
