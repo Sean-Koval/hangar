@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 import hangar.identity as identity  # --- identity
 import hangar.identity_api as identity_api  # --- identity
 from hangar import drain as drain  # --- reconciler
+from hangar import envbuilds as envbuilds  # --- envbuilds
 from hangar import exchange, observe  # --- observe
 from hangar import ghprojects as ghprojects  # --- intake: registers the GitHub Projects write-back
 from hangar import people as people  # --- teamcreds
@@ -308,6 +309,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         install_io_executor(h.settings)  # perf: before anything starts blocking provider calls
         await observe.start(h.settings, redact=h.broker.redact)  # --- observe: OTEL_* traces, /metrics
         await h.fleet.start()
+        envbuilds.of(h.fleet).recover()  # --- envbuilds: builds a restart cut short
         await h.fleet.gateway.start()  # workstream F: the git gateway's own listener (HANGAR_GATEWAY_PORT)
         h.fleet.egress.activity = h.sessions.activity  # --- egress: denied connections show in the session
         await h.sessions.start()  # first: jobs look up their sessions
@@ -1075,6 +1077,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import repopolicy  # --- frontdoor: per-repo policy (hangar repo)
 
     repopolicy.mount(app, h, A)
+    envbuilds.mount(app, h, A, U)  # --- envbuilds: repo builds (hangar env builds) and config checks
     from hangar import backup  # --- overnight/sweep: database backups (hangar admin)
 
     backup.mount(app, h, A)

@@ -418,6 +418,17 @@ class Settings(BaseSettings):
     # GitHub Projects boards, by "org/number": {"acme/7": {"trigger": "Ready for agent", "repos": ["acme/api"],
     # "statuses": {"started": "In progress", "delivered": "In review"}}} (ghprojects.Board).
     github_projects: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # --- envbuilds: environments that live with the repo (docs/environments.md). Off: a repo's
+    # .hangar/environment.yaml is ignored and sandboxes start from the environment's image, as before.
+    env_builds: bool = True
+    env_builds_keep: int = Field(5, ge=1, le=50)  # builds kept per repo, environment and provider (the active one too)
+    env_build_timeout_minutes: int = Field(30, ge=1, le=240)  # clone, install and capture, each build
+    env_builds_concurrency: int = Field(2, ge=1, le=16)  # builds at once (each is a sandbox, then an image build)
+    # Images a service may run: patterns where `*` matches within one path segment and `**` across them. Default:
+    # Docker's official images (`postgres:17`, `redis`), directly or through mirror.gcr.io. Add your registry's, e.g.
+    # "us-docker.pkg.dev/acme/services/**".
+    env_service_images: list[str] = Field(default_factory=lambda: [
+        "*", "docker.io/library/*", "mirror.gcr.io/library/*"])
 
     @property
     def backup_interval_hours(self) -> float:

@@ -92,6 +92,8 @@ usage: hangar-agent progress [--pct N] MESSAGE   tell the requester how far alon
        hangar-agent env doctor [--host H[:P]]    what in this environment works and what doesn't (and why)
        hangar-agent env request secret NAME --why TEXT | egress HOST[:PORT] --why TEXT    ask the owner
        hangar-agent screenshot [URL] | record start|stop | browse URL | computer start|status    your computer
+       hangar-agent svc status|wait|logs|start|stop|restart|add ...
+                                                 your environment's services and dev servers (svc --help)
 QUESTION and SUMMARY are read from stdin when omitted or "-".
 EOF
 }
@@ -101,6 +103,8 @@ case "${1:-}" in  # --- computer: these work outside turns too (docs/computer-us
     if [ "$1" = env ]; then shift; exec python3 "$(dirname "$0")/hangar-env" "$@"; fi
     exec python3 "$(dirname "$0")/hangar-computer" "$@";;
 esac
+# --- envbuilds: the supervisor works anywhere in the sandbox, not only inside a turn
+if [ "${1:-}" = "svc" ]; then shift; exec python3 "$(dirname "$0")/hangar-svc" "$@"; fi
 [ -n "${HANGAR_IO:-}" ] || die "HANGAR_IO is not set: this works inside a hangar job or session turn"
 out="$HANGAR_IO/out"
 mkdir -p "$out/artifacts"

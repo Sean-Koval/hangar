@@ -22,11 +22,13 @@ import hangar.identity as identity  # --- identity
 import hangar.people as people  # --- identity
 from hangar import cloudcreds as cloudcreds  # --- egress
 from hangar import egress as egress  # --- egress
+from hangar import envbuilds as envbuilds  # --- envbuilds
 from hangar import envdoctor as envdoctor  # --- computer
 from hangar import exchange, harden, images, isolation, observe  # --- observe, isolation, harden, images
 from hangar import fairness as fairness  # --- scale
 from hangar import metrics as metrics  # --- reconciler
 from hangar import reconciler as reconciler  # --- reconciler
+from hangar import supervisor as supervisor  # --- envbuilds
 from hangar import teamcreds as teamcreds  # --- teamcreds
 from hangar.broker import AUTH_FILE_LIMIT, Broker, CredentialError
 from hangar.config import Settings
@@ -714,7 +716,10 @@ class Fleet:
             creds = self.broker.acquire(cred_names, sb.id)  # fail before starting anything
             sb.state = SandboxState.STARTING
             self.store.put(sb)
-            image = _image or await self._ensure_image(spec, pname, actor, hname, stage=stage)
+            # --- envbuilds: the repo's last good build of this environment, when it has one (envbuilds.py)
+            build = None if _image or _skip_repo else await envbuilds.of(self).pick(spec, pname, hname, sb, stage)
+            image = _image or (build.image if build else None) or \
+                await self._ensure_image(spec, pname, actor, hname, stage=stage)
             sb.image = image
             pack_started, last_stage = time.monotonic(), 0.0
 
@@ -732,7 +737,8 @@ class Fleet:
                     sb.info["harness_version"] = v
             stage("starting the sandbox")
             with observe.span("sandbox.start", {"hangar.sandbox.id": sb.id, "hangar.provider": pname}):  # --- observe
-                await prov.create(sb, image, self._warm(spec))  # image may be a snapshot ref (forks)
+                # image may be a snapshot ref (forks); --- envbuilds: a build's own template on Kubernetes
+                await prov.create(sb, image, envbuilds.EnvBuilds.provider_spec(self._warm(spec), sb))
             self.store.put(sb)
             await self._wait_running(prov, sb, stage=stage)
             if _parent:
@@ -745,11 +751,17 @@ class Fleet:
             elif sb.repo:
                 stage(f"cloning {repo_dirname(sb.repo)}")
                 await self._setup_repo(prov, sb, spec, work_branch, stage=stage)
+                # --- envbuilds: the repo's config: the supervisor, the agent's instructions, a rebuild if behind
+                await envbuilds.of(self).after_setup(prov, sb, spec, hname, stage)
+                # integration (#93 + #94): the doctor's status file carries what the repo's config just added
+                # (services, programs, setup failures, the build), not only what the claim knew
+                await envdoctor.write_status(prov, sb, f"/home/{self.settings.sandbox_user}",
+                                             envdoctor.build_status(self.settings, sb, spec, fleet=self))
             sb.info.pop("stage", None)
             sb.state = SandboxState.RUNNING
             sb.error = None
             self._touch(sb)
-            if spec.warm_pool and pname in self.providers and _image is None:
+            if spec.warm_pool and pname in self.providers and _image is None and not build:  # --- envbuilds
                 asyncio.create_task(self._refill(self._warm(spec), pname, image))
             self.reconciler.disown(sb.id)  # --- reconciler
             return sb
@@ -803,6 +815,7 @@ class Fleet:
         extra_env.update(await self.cloud.attach(prov, sb, spec))  # --- egress: cloud OIDC tokens, no stored keys
         # workstream E: the `hangar-agent` helper (context exchange), installed per sandbox: no image rebuild
         await exchange.install_helper(prov, sb, f"/home/{self.settings.sandbox_user}")
+        await supervisor.install(prov, sb, f"/home/{self.settings.sandbox_user}")  # --- envbuilds: `hangar-agent svc`
         prelude.append(exchange.PATH_LINE)
         await envdoctor.install(self, prov, sb, spec, h, extra_env)  # --- computer: hangar-env, the display, status
         env = await self.broker.inject(sb, prov, creds, extra_env=extra_env, prelude=prelude)
@@ -896,6 +909,8 @@ class Fleet:
                 await self._ensure_image(spec, pname, "prebuild")
                 await self._resolve_packs(spec, pname, "prebuild")
                 log.info("prebuild: %s ready on %s", name, pname)
+                if stale := envbuilds.of(self).refresh(name, pname):  # --- envbuilds: repo builds on its old image
+                    log.info("prebuild: rebuilding %s's repo builds on its new image: %s", name, ", ".join(stale))
             except Exception as e:  # noqa: BLE001
                 log.warning("prebuild of %s failed: %s", name, e)
 
@@ -948,8 +963,11 @@ class Fleet:
         dest = (spec.repo.path if spec.repo and spec.repo.path and spec.repo.url == sb.repo else None) or \
             f"{ws}/{repo_dirname(sb.repo)}"
         baked = bool(spec.repo and spec.repo.bake and spec.repo.url == sb.repo)
+        prebuilt = envbuilds.EnvBuilds.prebuilt(sb)  # --- envbuilds: the repo's build holds its checkout, installed
         q = shlex.quote
-        if baked:
+        if prebuilt:  # --- envbuilds
+            script = envbuilds.EnvBuilds.checkout_script(sb, dest)
+        elif baked:
             script = f"cd {q(dest)} && git fetch --all --prune -q"
             if sb.branch:
                 script += f" && git checkout -q {q(sb.branch)} && git pull -q --ff-only || true"
@@ -960,7 +978,7 @@ class Fleet:
         res = await prov.exec(sb, script, timeout=600)
         if res.exit_code != 0:
             raise FleetError(f"repo setup failed: {(res.stderr or res.stdout)[-800:]}")
-        setup = spec.repo.setup if spec.repo and spec.repo.url == sb.repo and not baked else None
+        setup = spec.repo.setup if spec.repo and spec.repo.url == sb.repo and not baked and not prebuilt else None
         if setup and stage:
             stage(f"running the repo's setup: {setup[:80]}")
         if setup:
