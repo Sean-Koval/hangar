@@ -246,12 +246,16 @@ def check_doctor(api: Api, state: State, opts: argparse.Namespace) -> str:
     # that, and would block every deploy, the fix for it included); those are reported
     before = _baseline(opts)
     old = [c["name"] for c in fails if c["name"] in before]
-    new = [c for c in fails if c["name"] not in before]
+    # --- integ3 (review #103): a check that says `deploy_gate: false` (credential health: a person's login expiring
+    # during the deploy window) is reported, never a rollback
+    off = [c["name"] for c in fails if c["name"] not in before and c.get("deploy_gate") is False]
+    new = [c for c in fails if c["name"] not in before and c.get("deploy_gate") is not False]
     also = f"; already failing before the deploy: {', '.join(old)}" if old else ""
+    also += f"; failing, but not a reason to roll back: {', '.join(off)}" if off else ""
     if new:
         raise Fail(f"{len(new)} {'new ' if before else ''}problem(s): {', '.join(c['name'] for c in new)}; `hangar "
                    f"doctor --fix` repairs what it can{also}")
-    return f"{len(checks)} checks, no {'new ' if old else ''}failures" + (
+    return f"{len(checks)} checks, no {'new ' if old or off else ''}failures" + (
         f", {len(warns)} warning(s)" if warns else "") + also
 
 

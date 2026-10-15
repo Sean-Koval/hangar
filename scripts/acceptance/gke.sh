@@ -20,7 +20,7 @@ set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 HELPER="$ROOT/scripts/acceptance/hangar_accept.py"
 CHECKS="doctor k8s sandbox exec stream files mcp isolation session model steer gateway e2b backup metrics computer
-egress services envbuild secrets landing intake scale-smoke power prepull warmstart"
+egress services envbuild secrets landing intake scale-smoke power prepull warmstart status clouddoctor"
 # The core checks: the control plane's own paths, quick and with nothing outside hangar to depend on. With --gate core
 # (deploy.yml) only these decide the exit status and so a rollback; the others are reported.
 CORE="doctor sandbox exec stream files mcp isolation session e2b backup metrics power"
@@ -242,6 +242,8 @@ check scale-smoke "sessions at once across test people: caps, isolation, p95 cre
 check power       "the power state; with --power-cycle, the pools down (creates refused) and up, timed"
 check prepull     "after power-up, the first create of each prepulled environment pulls no image"
 check warmstart   "create latency: a warm pool claim against a cold start, back to back"
+check status      "hangar status: the operator console's sections, and whether jobs' default model is capped"
+check clouddoctor "a Cloud Doctor dry run: what a run would do with the latest records, changing nothing"
 
 DONE=1
 exit 0  # finish (the EXIT trap) cleans up, writes the report and exits with its status

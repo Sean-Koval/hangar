@@ -355,6 +355,13 @@ def inbox_items(svc: Any, p: Principal | None) -> list[dict[str, Any]]:
 
 
 def doctor_checks(h: Any) -> list[dict[str, Any]]:
+    """--- integ3 (review #103): each result says `deploy_gate: false`. A login that expires, or a person's
+    credential that stops working, during a deploy's window is real and is reported, but a rollback can't fix it,
+    so the acceptance gate (deploy.yml) never rolls back for it."""
+    return [{**c, "deploy_gate": False} for c in _doctor_checks(h)]
+
+
+def _doctor_checks(h: Any) -> list[dict[str, Any]]:
     from hangar.doctor import _check
 
     s = summary(h.store)

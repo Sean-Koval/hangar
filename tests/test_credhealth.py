@@ -201,3 +201,14 @@ async def test_a_pool_with_no_working_login_fails_the_doctor(fleet, broker, stor
     [chk] = credhealth.doctor_checks(type("H", (), {"store": store})())
     assert chk["status"] == "fail" and "alice's codex pool has no working login" in chk["detail"]
     assert os.environ.get("CLOUDSDK_CONFIG") is None
+
+
+def test_credential_health_never_rolls_back_a_deploy(store):
+    """--- integ3 (review #103): `doctor` is a core acceptance check, and a person's login can expire during a deploy
+    window; credential health's results say `deploy_gate: false`, so the gate reports them instead of rolling back."""
+    from types import SimpleNamespace
+
+    from hangar import credhealth
+
+    out = credhealth.doctor_checks(SimpleNamespace(store=store))
+    assert out and all(c["name"] == "credential health" and c["deploy_gate"] is False for c in out)

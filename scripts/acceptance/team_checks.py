@@ -1587,6 +1587,58 @@ def _restore_policy(api: Api, state: State, pol: dict[str, Any]) -> None:
     state.set("policy_restore", {**pol, "restored": True})
 
 
+# ---------------------------------------------------------------------------- --- integ3: Wave 3's operator views
+STATUS_SECTIONS = ("power", "loops", "harnesses", "builds", "failures", "egress", "requests", "slo", "models")
+
+
+def check_status(api: Api, state: State, opts: argparse.Namespace) -> str:
+    """`hangar status` (#104) answers an admin with its sections, and its `models` line (#105) says what jobs run
+    on by default and whether a budget caps it. Credentials are left out: reading them may check logins."""
+    r = api.http.get("/api/status", params={"section": ",".join(STATUS_SECTIONS)})
+    if r.status_code == 404:
+        raise Skip("this hangar has no operator console (GET /api/status, #104)")
+    if r.status_code != 200:
+        raise Fail(f"GET /api/status: HTTP {r.status_code}: {r.text[:200]}")
+    v = r.json()
+    missing = [s for s in ("power", "loops", "harnesses", "builds", "failures", "egress_denies", "requests", "slo")
+               if s not in v]
+    if missing:
+        raise Fail(f"`hangar status` lacks {', '.join(missing)}")
+    late = sorted(n for n, x in (v.get("loops") or {}).items() if not x.get("ok"))
+    if late:
+        say(f"loops overdue: {', '.join(late)} (hangar power status)")
+    m = v.get("models") or {}
+    if m.get("uncapped"):
+        say(f"jobs default to {m.get('job_default')} with no job budget or daily cap (docs/upgrading.md step 8)")
+    state.set("data:status", {"loops_overdue": late, "failures_24h": (v.get("failures") or {}).get("total"),
+                              "models": m})
+    return (f"power {v['power'].get('state')}, {len(v['loops'])} loops ({len(late)} overdue), "
+            f"{(v.get('failures') or {}).get('total', 0)} failure(s) in 24h, {v['requests'].get('pending', 0)} "
+            "request(s) waiting" + (f", jobs on {m.get('job_default')} "
+                                    f"{'with NO budget or daily cap' if m.get('uncapped') else 'capped'}" if m else ""))
+
+
+def check_clouddoctor(api: Api, state: State, opts: argparse.Namespace) -> str:
+    """A Cloud Doctor dry run (#106): what a run would do with the records since the last one, by its own rules,
+    starting no job, filing no request and writing no finding. A GET, so a hangar without it changes nothing."""
+    r = api.http.get("/api/admin/doctor/plan")
+    if r.status_code in (404, 405):
+        raise Skip("this hangar has no Cloud Doctor dry run (GET /api/admin/doctor/plan, #106)")
+    if r.status_code != 200:
+        raise Fail(f"GET /api/admin/doctor/plan: HTTP {r.status_code}: {r.text[:200]}")
+    p = r.json()
+    if p.get("dry_run") is not True or not isinstance(p.get("items"), list):
+        raise Fail(f"the doctor's dry run answered something else: {str(p)[:200]}")
+    acts: dict[str, int] = {}
+    for i in p["items"]:
+        acts[i["action"]] = acts.get(i["action"], 0) + 1
+        if i.get("blocked"):
+            say(f"{i.get('cause')} in {i.get('repo') or i.get('environment')}: {i['blocked']}")
+    state.set("data:clouddoctor", {"records": p["records"], "groups": p["groups"], "actions": acts})
+    what = ", ".join(f"{n} {a}" for a, n in sorted(acts.items())) or "nothing to do"
+    return f"dry run: {p['records']} new record(s) in {p['groups']} kind(s): {what}; schedule {p.get('schedule')}"
+
+
 def cleanup_last(api: Api, state: State, attempt: Callable[[str, Callable[[], Any]], None],
                  opts: argparse.Namespace) -> None:
     """After sessions and sandboxes: the test people, the landing policy and the fixture repo's file."""
@@ -1608,4 +1660,5 @@ CHECKS: dict[str, Callable[[Api, State, argparse.Namespace], str]] = {
     "computer": check_computer, "egress": check_egress, "services": check_services, "envbuild": check_envbuild,
     "secrets": check_secrets, "landing": check_landing, "intake": check_intake, "scale-smoke": check_scale_smoke,
     "power": check_power, "prepull": check_prepull,
+    "status": check_status, "clouddoctor": check_clouddoctor,  # --- integ3
 }

@@ -58,7 +58,8 @@ def test_team_checks_on_docker(tmp_path, monkeypatch):
     try:
         r = subprocess.run(["bash", str(SCRIPT), "--no-kubectl", "--no-expect-envd", "--env", "minimal",
                             "--session-env", "accsession", "--warm-env", "minimal",
-                            "--only", "computer,egress,services,scale-smoke,power,prepull,envbuild,landing,intake",
+                            "--only", "computer,egress,services,scale-smoke,power,prepull,envbuild,landing,intake,"
+                            "status,clouddoctor",
                             "--scale-sessions", "4", "--scale-people", "2", "--report", str(tmp_path / "r.json")],
                            env=env, capture_output=True, text=True, timeout=1500, cwd=tmp_path)
         out = r.stdout + r.stderr
@@ -66,7 +67,7 @@ def test_team_checks_on_docker(tmp_path, monkeypatch):
         summary = out[out.rindex("== summary"):]
         status = {name: st for st, name in re.findall(r"^(PASS|FAIL|SKIP)\s+([\w-]+)", summary, re.M)}
         assert r.returncode == 0, out
-        for check in ("computer", "egress", "services", "scale-smoke", "power"):
+        for check in ("computer", "egress", "services", "scale-smoke", "power", "status", "clouddoctor"):
             assert status.get(check) == "PASS", (check, summary)
         for check in ("prepull", "envbuild", "landing", "intake"):
             assert status.get(check) == "SKIP", (check, summary)

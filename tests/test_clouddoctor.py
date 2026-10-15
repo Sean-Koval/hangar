@@ -480,3 +480,24 @@ async def test_open_doctor_prs_are_capped(jobs, store, settings):  # noqa: F811
                 SimpleNamespace(labels={f"{clouddoctor.LABEL}.run": "drun-x"}))  # type: ignore[arg-type]
     f = store.get(DoctorFinding, f.id)
     assert f.state == "reported" and f.fix_job is None and "open" in f.note
+
+
+async def test_a_dry_run_says_what_a_run_would_do_and_changes_nothing(jobs, world, store, settings):  # noqa: F811
+    """--- integ3: `hangar admin doctor run --dry-run` (GET /api/admin/doctor/plan), which the acceptance suite's
+    `clouddoctor` check calls: the same decisions as a run, with no finding, request, job, run or cursor written."""
+    doc = clouddoctor.of(jobs)
+    for i in range(3):
+        _rec(store, "model_api", "overloaded_error", None, "plain", job=f"job-t{i}", transient=True)
+    for j in ("job-a", "job-b"):
+        _rec(store, "install", "npm ci", "https://github.com/o/r.git", "jobenv", job=j)
+    _rec(store, "egress", "registry.example", "https://github.com/o/r.git", "plain", job="job-e1")
+    _rec(store, "egress", "registry.example", "https://github.com/o/r.git", "plain", job="job-e2")
+    _rec(store, "missing_tool", "pnpm", "https://github.com/o/r.git", "plain", job="job-once")
+    p = doc.plan()
+    acts = {i["cause"]: i["action"] for i in p["items"]}
+    assert p["dry_run"] and acts == {"model_api": "count", "install": "analyze", "egress": "propose",
+                                     "missing_tool": "watch"}, p
+    [rca] = [i for i in p["items"] if i["action"] == "analyze"]
+    assert rca["harness"] == "scripted" and rca["model"] == "frontier" and "no team credential" in rca["blocked"]
+    assert not store.list(DoctorFinding) and not store.list(EnvRequest) and not doc.runs()
+    assert store.kv_get_json(clouddoctor.CURSOR_KEY, None) is None

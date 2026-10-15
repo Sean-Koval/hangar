@@ -164,9 +164,22 @@ doctor_app = typer.Typer(no_args_is_help=True, help="The Cloud Doctor: nightly r
 
 
 @doctor_app.command("run")
-def doctor_run(wait: bool = typer.Option(False, "--wait", help="Wait for the run (not its jobs) to finish.")):
+def doctor_run(wait: bool = typer.Option(False, "--wait", help="Wait for the run (not its jobs) to finish."),
+               dry_run: bool = typer.Option(False, "--dry-run", help="Only say what a run would do; change nothing."),
+               as_json: bool = typer.Option(False, "--json")):
     """Run the Cloud Doctor now over the records since its last run. Its root-cause jobs keep going after."""
     cli = _cli()
+    if dry_run:  # --- integ3
+        p = cli._call("GET", "/api/admin/doctor/plan")
+        if as_json:
+            return cli._print(p)
+        typer.echo(f"dry run: {p['records']} new record(s) in {p['groups']} kind(s) since {_ago(p['since'])} ago; "
+                   f"{p['open_fix_prs']} doctor PR(s) open; budget ${p['budget_usd']:g} a run")
+        for i in p["items"]:
+            typer.echo(f"  {i['action']:8} {i.get('cause') or '-':14} {i.get('repo') or i.get('environment') or '-'}"
+                       f"  {i['why']}" + (f"  [blocked: {i['blocked']}]" if i.get("blocked") else "")
+                       + (f"  ({i['harness']}, {i['model']})" if i.get("harness") else ""))
+        return
     r = cli._call("POST", "/api/admin/doctor/run")
     typer.echo(f"run {r['id']}: {r.get('state', 'running')}")
     while wait and r.get("state") == "running":

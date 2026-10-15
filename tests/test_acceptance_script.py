@@ -513,3 +513,13 @@ def test_the_doctor_check_fails_only_on_what_a_deploy_broke(tmp_path, monkeypatc
     assert "store" in str(e.value)
     with pytest.raises(ha.Fail, match="2 problem"):
         ha.check_doctor(api, None, argparse.Namespace(doctor_baseline=None))
+    # --- integ3 (review #103): a login expiring during the deploy window fails credential health, which says
+    # `deploy_gate: false`: reported, not a rollback; the store breaking still is one
+    checks.append({"name": "credential health", "status": "fail", "detail": "alice-claude: expired",
+                   "deploy_gate": False})
+    with pytest.raises(ha.Fail, match="1 new problem") as e:
+        ha.check_doctor(api, None, argparse.Namespace(doctor_baseline=before))
+    assert "credential health" not in str(e.value).split(";")[0]
+    checks[1]["status"] = "ok"
+    out = ha.check_doctor(api, None, argparse.Namespace(doctor_baseline=before))
+    assert "not a reason to roll back: credential health" in out and out.startswith("3 checks, no new failures")

@@ -936,3 +936,18 @@ def test_deploy_rolls_back_only_for_core_checks():
     assert job["timeout-minutes"] >= core["timeout-minutes"] + team["timeout-minutes"] + 45  # rollout and rollback
     assert "team" not in steps["Roll back"]["if"]
     assert "accept-report.json" in steps["Summary (version, tool-list diff, acceptance)"]["run"]
+
+
+# ---------------------------------------------------------------------------- --- integ3: status and the doctor
+def test_status_and_a_doctor_dry_run_against_a_real_hangar(tmp_path, hangar_with):
+    """`hangar status` (#104) with its `models` line (#105), and a Cloud Doctor dry run (#106): cheap, no model,
+    and nothing changes."""
+    state = ha.State(tmp_path / "state.json")
+    summary = tc.check_status(hangar_with.api, state, _opts())
+    assert summary.startswith("power up, ") and "jobs on frontier with NO budget or daily cap" in summary, summary
+    assert state.get("data:status")["models"]["job_default"] == "frontier"
+    summary = tc.check_clouddoctor(hangar_with.api, state, _opts())
+    assert summary.startswith("dry run: 0 new record(s)") and "nothing to do" in summary, summary
+    from hangar.clouddoctor import DoctorFinding
+
+    assert not hangar_with.h.store.list(DoctorFinding)

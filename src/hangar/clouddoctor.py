@@ -218,6 +218,70 @@ class Doctor:
         self._save_run(run)
         return run
 
+    def plan(self) -> dict[str, Any]:
+        """--- integ3: a dry run. What a run would do with the records since the last one, by `_triage`'s rules,
+        writing nothing: no finding, request, job, run record or cursor. `hangar admin doctor run --dry-run`, and
+        the acceptance suite's `clouddoctor` check."""
+        from hangar import flightrec
+
+        t = now()
+        since = float(self.store.kv_get_json(CURSOR_KEY, None) or t - 86400)
+        look = t - self.settings.doctor_lookback_days * 86400
+        recs = [r for r in flightrec.of(self.fleet).list(look, limit=10_000) if LABEL not in r.labels]
+        groups: dict[str, list[FlightRecord]] = {}
+        for r in recs:
+            groups.setdefault(r.signature, []).append(r)
+        fresh = sorted({r.signature for r in recs if r.at > since}, key=lambda s: -len(groups[s]))
+        items = [self._would(groups[sig]) for sig in fresh]
+        repos = list(dict.fromkeys(i["repo"] or i["environment"] for i in items if i["action"] == "analyze"))
+        open_prs = len([f for f in self.findings() if f.state in ("fixing", "pr_open")])
+        for i in items:
+            if i["action"] != "analyze":
+                continue
+            try:
+                i["harness"], i["model"] = self._harness(i["environment"])
+            except Exception as e:  # noqa: BLE001 - as in a run: an environment deleted since
+                i["blocked"] = f"the environment {i['environment']} can't run a job: {e}"
+                continue
+            if repos.index(i["repo"] or i["environment"]) >= self.settings.doctor_max_jobs:
+                i["blocked"] = f"over a run's {self.settings.doctor_max_jobs} root-cause jobs (HANGAR_DOCTOR_MAX_JOBS)"
+            elif not self._team_login(i["harness"]):
+                i["blocked"] = f"no team credential for {i['harness']}, so it would only report"
+        return {"dry_run": True, "at": t, "since": since, "records": len([r for r in recs if r.at > since]),
+                "groups": len(fresh), "items": items, "open_fix_prs": open_prs,
+                "budget_usd": self.settings.doctor_max_usd, "job_budget_usd": self.settings.doctor_job_max_usd,
+                "schedule": self.settings.doctor_schedule}
+
+    def _would(self, recs: list[FlightRecord]) -> dict[str, Any]:
+        """--- integ3: `_triage`'s decision for a group of records, without acting on it."""
+        sig = recs[0].signature
+        f = self._open(sig)
+        if f is None:
+            closed = [x.updated_at for x in self.store.list_where(DoctorFinding, signature=sig)]
+            recs = [r for r in recs if r.at > max(closed)] if closed else recs
+        if not recs:
+            return {"signature": sig, "action": "none", "why": "nothing since its fix or dismissal",
+                    "cause": None, "repo": None, "environment": None, "runs": 0}
+        last = max(recs, key=lambda r: r.at)
+        ev = _evidence(recs)
+        item = {"signature": sig, "cause": last.cause, "detail": last.detail, "repo": last.repo,
+                "environment": last.environment, "transient": last.transient, "runs": ev["count"]}
+        s = self.settings
+        if f is not None:
+            return {**item, "action": "update", "finding": f.id, "why": f"finding {f.id} is {f.state}"}
+        if last.cause in IGNORED:
+            return {**item, "action": "none", "why": f"{last.cause} is what a person asked for"}
+        if last.transient:
+            if ev["count"] < s.doctor_transient_alarm:
+                return {**item, "action": "count", "why": f"transient, {ev['count']} of "
+                                                          f"{s.doctor_transient_alarm} runs before it's reported"}
+            return {**item, "action": "report", "why": "transient, but it keeps coming back"}
+        if ev["count"] < s.doctor_min_runs:
+            return {**item, "action": "watch", "why": f"seen in {ev['count']} of {s.doctor_min_runs} runs"}
+        if last.cause in ("egress", "secret") and last.detail:
+            return {**item, "action": "propose", "why": f"a request for the {last.cause} {last.detail}"}
+        return {**item, "action": "analyze", "why": "a root-cause job in its environment"}
+
     def _open(self, sig: str) -> DoctorFinding | None:
         rows = [f for f in self.store.list_where(DoctorFinding, signature=sig) if f.state in OPEN]
         return max(rows, key=lambda f: f.created_at) if rows else None
@@ -890,6 +954,10 @@ def mount(app: Any, h: Any, admin: Any) -> None:
         run = of(h.jobs).start(who)
         h.fleet.audit(who, "doctor.run", run.get("id"))
         return run
+
+    @app.get("/api/admin/doctor/plan")  # --- integ3: the dry run; a GET, so it changes nothing anywhere
+    async def doctor_plan(_: str = admin):
+        return await asyncio.to_thread(of(h.jobs).plan)
 
     @app.get("/api/admin/doctor")
     async def doctor_view(all: bool = False, _: str = admin):  # noqa: A002 - the query parameter's name
