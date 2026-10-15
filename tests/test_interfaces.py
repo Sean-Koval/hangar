@@ -38,19 +38,47 @@ GIT = ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "init.defaultBr
 
 # A scripted agent: Claude Code stream-json on stdout (tool calls of every kind, a subagent, a file edit), the
 # skills and instructions it sees written into the repo, and the seeded secret in a command, its output and a message.
+M = "claude-sonnet-5-5"
+
+
+def _use(tid: str, name: str, **inp) -> dict:
+    return {"type": "tool_use", "id": tid, "name": name, "input": inp}
+
+
+def _res(tid: str, content: str, err: bool = False) -> dict:
+    return {"type": "tool_result", "tool_use_id": tid, "content": content, "is_error": err}
+
+
+BEFORE = [
+    {"type": "system", "subtype": "init", "model": M, "session_id": "conv-1"},
+    {"type": "assistant", "message": {"id": "m1", "model": M, "content": [
+        {"type": "text", "text": f"Looking around; the token is {SECRET}"},
+        _use("t1", "Bash", command=f"echo {SECRET}")],
+        "usage": {"input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 50}}},
+    {"type": "user", "message": {"content": [_res("t1", SECRET)]}},
+    {"type": "assistant", "message": {"id": "m2", "model": M, "content": [
+        _use("t2", "Read", file_path="README.md"), _use("t3", "Grep", pattern="hello"),
+        _use("t4", "mcp__github__get_issue", number=1),
+        _use("t5", "Task", description="review the change", prompt="x", subagent_type="code-reviewer")],
+        "usage": {"input_tokens": 10, "output_tokens": 10}}},
+    {"type": "user", "message": {"content": [_res("t2", "hello"), _res("t3", "README.md:1:hello"),
+                                             _res("t4", "denied", err=True), _res("t5", "looks fine")]}},
+]
+AFTER = [
+    {"type": "assistant", "message": {"id": "m3", "model": M, "content": [
+        _use("t6", "Write", file_path="seen.txt", content="x")], "usage": {"input_tokens": 5, "output_tokens": 5}}},
+    {"type": "user", "message": {"content": [_res("t6", "ok")]},
+     "tool_use_result": {"type": "create", "filePath": "seen.txt"}},
+    {"type": "result", "subtype": "success", "is_error": False, "result": "done", "total_cost_usd": 0.0123,
+     "usage": {"input_tokens": 115, "output_tokens": 35, "cache_read_input_tokens": 50}, "modelUsage": {M: {}}},
+]
 AGENT = r"""#!/usr/bin/env bash
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-emit() { printf '%s\n' "$1"; }
-emit '{"type":"system","subtype":"init","model":"claude-sonnet-5-5","session_id":"conv-1"}'
-emit '{"type":"assistant","message":{"id":"m1","model":"claude-sonnet-5-5","content":[{"type":"text","text":"Looking around; the token is '"$SEEDED"'"},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"echo '"$SEEDED"'"}}],"usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":50}}}'
-emit '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"'"$SEEDED"'","is_error":false}]}}'
-emit '{"type":"assistant","message":{"id":"m2","model":"claude-sonnet-5-5","content":[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"README.md"}},{"type":"tool_use","id":"t3","name":"Grep","input":{"pattern":"hello"}},{"type":"tool_use","id":"t4","name":"mcp__github__get_issue","input":{"number":1}},{"type":"tool_use","id":"t5","name":"Task","input":{"description":"review the change","prompt":"x","subagent_type":"code-reviewer"}}],"usage":{"input_tokens":10,"output_tokens":10}}}'
-emit '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"hello"},{"type":"tool_result","tool_use_id":"t3","content":"README.md:1:hello"},{"type":"tool_result","tool_use_id":"t4","content":"denied","is_error":true},{"type":"tool_result","tool_use_id":"t5","content":"looks fine"}]}}'
-{ ls "$HOME/.tagent/skills" 2>/dev/null | sort | tr '\n' ' '; echo; cat "$HOME/.tagent/AGENTS.md" 2>/dev/null; } > seen.txt
+cat "$STREAM.before"
+S="$HOME/.tagent"
+{ ls "$S/skills" 2>/dev/null | sort | tr '\n' ' '; echo; cat "$S/AGENTS.md" 2>/dev/null; } > seen.txt
 git add seen.txt && git commit -qm "agent: what I saw"
-emit '{"type":"assistant","message":{"id":"m3","model":"claude-sonnet-5-5","content":[{"type":"tool_use","id":"t6","name":"Write","input":{"file_path":"seen.txt","content":"x"}}],"usage":{"input_tokens":5,"output_tokens":5}}}'
-emit '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t6","content":"ok"}]},"tool_use_result":{"type":"create","filePath":"seen.txt"}}'
-emit '{"type":"result","subtype":"success","is_error":false,"result":"done","total_cost_usd":0.0123,"usage":{"input_tokens":115,"output_tokens":35,"cache_read_input_tokens":50},"modelUsage":{"claude-sonnet-5-5":{}}}'
+cat "$STREAM.after"
 """
 
 
@@ -68,8 +96,10 @@ def world(monkeypatch):
     subprocess.run(["git", "--git-dir", str(remote), "symbolic-ref", "HEAD", "refs/heads/main"], check=True)
     agent = root / "agent.sh"
     agent.write_text(AGENT)
+    for part, lines in (("before", BEFORE), ("after", AFTER)):
+        (root / f"stream.{part}").write_text("".join(json.dumps(x) + "\n" for x in lines))
     monkeypatch.setitem(HARNESSES, "tagent", Harness(
-        name="tagent", title="Trace agent", run=f"SEEDED={SECRET} bash {agent}", skills_dir=".tagent/skills",
+        name="tagent", title="Trace agent", run=f"STREAM={root}/stream bash {agent}", skills_dir=".tagent/skills",
         instructions_file=".tagent/AGENTS.md"))
     envs = root / "envs"
     for name in ("alpha", "beta"):
