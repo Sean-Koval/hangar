@@ -274,6 +274,10 @@ async def test_a_jobs_manifest_and_trace(jobs, world, fleet, settings):
     v = next(e for e in jroot["events"] if e["name"] == "verify")
     assert _attrs(v)["hangar.verify.passed"] is True and _attrs(v)["hangar.verify.phase"] == "after_turn"
     assert _attrs(jroot)["hangar.job.state"] == "succeeded"
+    assert job.result.files == ["seen.txt"]  # review(#114): the change's files, repo-relative
+    assert _attrs(jroot)["hangar.diff.files"] == {"values": [{"stringValue": "seen.txt"}]}
+    change = next(e for sp in _spans(jx) for e in sp.get("events", []) if e["name"] == "file.change")
+    assert _attrs(change)["hangar.file.repo_path"] == "seen.txt" and _attrs(change)["hangar.file.in_repo"] is True
 
 
 def test_tool_kinds_are_the_same_for_every_harness():
@@ -284,7 +288,118 @@ def test_tool_kinds_are_the_same_for_every_harness():
     assert [k(x) for x in ("Grep", "Glob", "grep_search")] == ["search"] * 3
     assert [k(x) for x in ("WebFetch", "web_search", "search_web")] == ["web"] * 3
     assert [k(x) for x in ("mcp__github__get_issue", "github.get_issue")] == ["mcp"] * 2
-    assert [k(x) for x in ("Skill", "TodoWrite", "Mystery")] == ["skill", "todo", "other"]
+    assert [k(x) for x in ("Skill", "TodoWrite", "ExitPlanMode", "update_plan", "Mystery")] == [
+        "skill", "plan", "plan", "plan", "other"]
+
+
+def test_shell_ops_and_repo_paths():
+    ops = traces.shell_ops
+    assert ops("cd src && uv run pytest -q && git commit -qm 'fix; tests'") == ["test", "git.commit"]
+    assert ops("python3 -m pytest tests/ | tail -5") == ["test"]
+    for cmd in ("npm test", "pnpm run test:unit", "npx vitest run", "go test ./...", "cargo nextest run",
+                "timeout 600 make test", "FOO=1 ./gradlew check", "bundle exec rspec", "env CI=1 jest"):
+        assert ops(cmd) == ["test"], cmd
+    assert ops("git -C repo push origin HEAD") == ["git.push"] and ops("gh pr create --fill") == ["pr.open"]
+    assert ops("rm -rf build") == ops("git rm old.py") == ops("find . -name '*.pyc' -delete") == ["delete"]
+    assert ops("ls -la; cat README.md") == [] and ops("echo pytest") == [] and ops("npm install") == []
+    rp = traces.repo_path
+    assert rp("/workspace/app/src/a.py", "/workspace/app") == "src/a.py" and rp("src/../a.py", None) == "a.py"
+    assert rp("/workspace/app2/x", "/workspace/app") is None and rp("../x", "/workspace/app") is None
+    assert rp("/etc/hosts", "/workspace/app") is None and rp("/workspace/app/src/a.py", None) is None
+    assert traces.diff_files("M\0src/a.py\0D\0old.py\0A\0new") == (["src/a.py", "old.py"], ["old.py"])
+
+
+def _behavior(export: dict) -> dict:
+    """Behavior specs written against the export alone (what the sister tool does): each is a plain predicate."""
+    spans = _spans(export)
+    calls = [(_attrs(sp), sp) for sp in spans if _attrs(sp)["hangar.kind"] in ("tool.call", "approval")]
+    events = [_attrs(e) for sp in spans for e in sp.get("events", [])]
+
+    def seqs(pred) -> list[int]:
+        return sorted(int(a["hangar.seq"]) for a, _ in calls if "hangar.seq" in a and pred(a))
+
+    def ops(a) -> list[str]:
+        return [v["stringValue"] for v in a.get("hangar.shell.ops", {}).get("values", [])]
+
+    tool = [a for a, _ in calls if a["hangar.kind"] == "tool.call"]
+    first = {k: min(seqs(p), default=None) for k, p in {
+        "plan": lambda a: a.get("hangar.tool.kind") == "plan",
+        "edit": lambda a: a.get("hangar.tool.kind") == "edit",
+        "test": lambda a: a["hangar.kind"] == "tool.call" and "test" in ops(a),
+        "commit": lambda a: a["hangar.kind"] == "tool.call" and "git.commit" in ops(a),
+        "pr": lambda a: a["hangar.kind"] == "tool.call" and "pr.open" in ops(a)}.items()}
+    deletes = [a for a in tool if "delete" in ops(a)]
+    approvals = [a for a, _ in calls if a["hangar.kind"] == "approval" and a["hangar.approval.status"] == "allowed"]
+    order = [first[k] for k in ("plan", "edit", "test", "pr")]
+    return {
+        "tests_before_commit": first["test"] is not None and first["commit"] is not None
+        and first["test"] < first["commit"],
+        "no_edits_outside_src": all(e.get("hangar.file.repo_path", "").startswith("src/")
+                                    for e in events if e["hangar.kind"] == "file.change"),
+        "asked_before_deleting": all(any("delete" in ops(p) and int(p["hangar.seq"]) < int(d["hangar.seq"])
+                                         for p in approvals if "hangar.seq" in p) for d in deletes),
+        "plan_edit_test_pr": None not in order and order == sorted(order)}
+
+
+def test_behavior_specs_can_be_written_from_the_export_alone(settings, broker):
+    """review(#114): "tests run before commit", "no edits outside src/", "asked before deleting" and
+    "plan -> edit -> test -> PR", from the exported spans and events only. Every line below is read in one poll,
+    so they share a timestamp: the event log's order (`hangar.seq`) is what orders them."""
+    activity = Activity(settings, broker.redact)
+    svc = SimpleNamespace(activity=activity, fleet=SimpleNamespace(broker=broker))
+    t = SessionTurn(message="go", run_id="run-1", harness="claude-code", started_at=1000.0, finished_at=1100.0,
+                    outcome="exited", exit_code=0, live=True, approval_policy="ask",
+                    approvals=[Approval(id="ap-000000000001", tool="Bash", detail="rm -rf docs/old",
+                                        requested_at=1001.0, status="allowed", by="alice", decided_at=1001.0)])
+    s = Session(name="s1", environment="plain", harness="claude-code", turns=[t], repo="https://github.com/a/app.git")
+    root = "/workspace/app"
+
+    def call(i: str, tool: str, text: str, kind: str = "tool_call") -> list[RunEvent]:
+        return [RunEvent(turn=1, run_id="run-1", kind=kind, text=text, data={"id": i, "tool": tool}, ts=1001.0),
+                RunEvent(turn=1, run_id="run-1", kind="tool_result", text="ok", data={"id": i, "ok": True},
+                         ts=1001.0)]
+
+    def change(path: str) -> RunEvent:
+        return RunEvent(turn=1, run_id="run-1", kind="file_change", text=path, data={"path": path, "op": "write"},
+                        ts=1001.0)
+
+    activity.append(s.id, [
+        *call("p", "TodoWrite", "TodoWrite plan"),
+        *call("e", "Edit", f"Edit {root}/src/app.py"), change(f"{root}/src/app.py"),
+        *call("t", "Bash", "uv run pytest -q", kind="command"),
+        RunEvent(turn=1, run_id="run-1", kind="approval_request", text="Bash: rm -rf docs/old", ts=1001.0,
+                 data={"id": "ap-000000000001", "tool": "Bash", "status": "pending", "detail": "rm -rf docs/old"}),
+        *call("d", "Bash", "rm -rf docs/old", kind="command"),
+        *call("c", "Bash", "git add -A && git commit -qm fix", kind="command"),
+        *call("r", "Bash", "gh pr create --fill", kind="command")])
+    good = _behavior(traces.session_export(svc, s, turn=1))
+    assert good == {"tests_before_commit": True, "no_edits_outside_src": True, "asked_before_deleting": True,
+                    "plan_edit_test_pr": True}, good
+
+    # the same agent, badly behaved: commits before testing, deletes unasked, edits outside src/
+    t2 = SessionTurn(message="go", run_id="run-2", harness="claude-code", started_at=2000.0, finished_at=2100.0,
+                     outcome="exited", exit_code=0)
+    s2 = Session(name="s2", environment="plain", harness="claude-code", turns=[t2], repo="https://github.com/a/app.git")
+    evs = [*call("c", "Bash", "git commit -qm wip", kind="command"), *call("e", "Write", "Write /etc/hosts"),
+           change("/etc/hosts"), *call("d", "Bash", "rm -rf src/legacy", kind="command"),
+           *call("t", "Bash", "npm test", kind="command")]
+    for ev in evs:
+        ev.run_id, ev.ts = "run-2", 2001.0
+    activity.append(s2.id, evs)
+    bad = _behavior(traces.session_export(svc, s2, turn=1))
+    assert bad == {"tests_before_commit": False, "no_edits_outside_src": False, "asked_before_deleting": False,
+                   "plan_edit_test_pr": False}, bad
+    hosts = next(e for sp in _spans(traces.session_export(svc, s2, turn=1)) for e in sp.get("events", [])
+                 if e["name"] == "file.change")
+    assert _attrs(hosts)["hangar.file.in_repo"] is False and "hangar.file.repo_path" not in _attrs(hosts)
+
+
+def test_list_attributes_are_redacted_too(broker):
+    broker.put("seeded", "webhook", CredentialKind.GENERIC, SECRET)
+    x = traces.Export(traces.trace_id("j"), broker.redact)
+    sp = x.span("j", "job", 1.0, 2.0, {"hangar.kind": "job", "hangar.diff.files": [f"src/{SECRET}.py"]})
+    x.event(sp, "verify", 1.5, {"hangar.verify.new_failures": (f"test_x[{SECRET}]",)})
+    _no_secret(x.request({}))
 
 
 def test_approvals_steers_and_redaction_without_a_sandbox(settings, broker):

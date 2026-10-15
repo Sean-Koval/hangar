@@ -83,10 +83,28 @@ Spans have a duration; events are points in time. Kinds are stable within `hanga
 | `web` | `WebFetch`, `WebSearch` | `web_search` | | `read_url_content`, `search_web` |
 | `mcp` | `mcp__{server}__{tool}` | `{server}.{tool}` (mcp_tool_call) | | `mcp_*` |
 | `skill` | `Skill` | | | |
-| `todo` | `TodoWrite` | | | |
+| `plan` | `TodoWrite`, `ExitPlanMode` | `update_plan` | | `todo_write` |
 | `other` | anything else | | | |
 
 A `subagent` call is a `subagent` span, not a `tool.call`.
+
+**What a shell command does.** `shell` tool calls (and approvals) carry `hangar.shell.ops`, read from the command's
+words in each `&&`, `||`, `;` or `|` segment, in order, deduplicated:
+
+| Op | Commands |
+| --- | --- |
+| `test` | `pytest`, `python -m pytest`/`unittest`, `tox`, `nox`, `jest`, `vitest`, `mocha`, `rspec`, `phpunit`, `ctest`, `gotestsum`, `playwright`; `go test`, `cargo test`/`nextest`, `npm`/`pnpm`/`yarn`/`bun test` and `run test*`, `mvn test`/`verify`, `gradle`/`./gradlew test`/`check`, `make test`/`check`, `dotnet test`, `bazel test`, `deno test`, `mix test`, `swift test`; behind `uv run`, `poetry run`, `npx`, `bundle exec`, `timeout`, `env`, `sudo` and `VAR=value` |
+| `git.commit`, `git.push` | `git [-C dir] [-c k=v] commit` / `push` |
+| `pr.open` | `gh pr create` |
+| `delete` | `rm`, `rmdir`, `unlink`, `shred`, `git rm`, `find … -delete` |
+
+It is a hint read from the text (hangar runs nothing to decide it): a spec that needs more reads `hangar.tool.input`.
+
+**Order.** Tool calls and events are timestamped when hangar read them from the run log, so several can share a
+time. `hangar.seq` is each one's position in the session's event log: a total order within a session. On
+`tool.call` and `subagent` spans it is the call's position, and `hangar.seq.end` its result's; on an `approval`, its
+request's (when the log has it: not under hangar-owned settings, #69). Spans and events with the same time are
+exported in that order. Order across sessions (best-of-N attempts) is by time only.
 
 ### Events
 
@@ -95,12 +113,12 @@ A `subagent` call is a `subagent` span, not a `tool.call`.
 | `message` | `turn` | `hangar.text` (the assistant's text, clipped) |
 | `progress` | `turn` | `hangar.text`, `hangar.source` (`harness` or `hangar`) |
 | `error` | `turn` | `hangar.text`, `hangar.fatal` |
-| `file.change` | `turn` | `hangar.file.path`, `hangar.file.op` (`write`, `create`, `update`, `add`, `delete`...), `gen_ai.tool.name` |
+| `file.change` | `turn` | `hangar.file.path` (as the harness gave it: often absolute), `hangar.file.repo_path` (relative to the repo's checkout; absent when the file is outside it), `hangar.file.in_repo`, `hangar.file.op` (`write`, `create`, `update`, `add`, `delete`...), `gen_ai.tool.name`. One per file an edit tool changed; a shell command's writes are not here (see `hangar.diff.files` and `hangar.shell.ops`) |
 | `steer` | `turn` | `hangar.text`, `hangar.requester`, `hangar.steer.status` |
 | `interrupt` | `turn` | `hangar.text`, `hangar.requester`, `hangar.steer.status` |
 | `verify` | `turn` (the in-turn gate) or `job` (hangar's check after the turn) | `hangar.verify.phase` (`in_turn`, `after_turn`), `hangar.verify.passed`, `hangar.verify.exit_code`, `hangar.verify.round`, `hangar.verify.command` (job only), `hangar.verify.new_failures` (job only) |
 | `question` | `turn` | `hangar.text`: the agent asked a person (the job waits for an answer) |
-| `git.commit` | `job` | `vcs.ref.head.revision` (the commit), `hangar.git.subject` |
+| `git.commit` | `job` | `vcs.ref.head.revision` (the commit), `hangar.git.subject`. Each commit of the delivered branch, stamped when hangar delivered it (after its check): when the *agent* committed is its shell call with `hangar.shell.ops` `git.commit` |
 | `git.push` | `job` | `vcs.ref.head.name` (the branch), `vcs.ref.head.revision`, `hangar.git.pushed` |
 | `pr.open` | `job` | `hangar.pr.number`, `hangar.pr.url`, `hangar.pr.draft` |
 | `ci.check` | `job` | `hangar.ci.name`, `hangar.ci.conclusion`, `vcs.ref.head.revision` |
@@ -158,7 +176,9 @@ GenAI: `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name` (as the harness 
 
 Hangar: `hangar.tool.kind`, `hangar.tool.input` (a one-line summary: the command, the path, the pattern or the URL;
 clipped, redacted), `hangar.tool.output` (the start of the result; clipped, redacted), `hangar.tool.ok`,
-`hangar.file.path` (edit and read), `hangar.mcp.server` and `hangar.mcp.tool` (mcp), `hangar.tool.incomplete=true`
+`hangar.seq` and `hangar.seq.end`, `hangar.file.path` and `hangar.file.repo_path` (edit and read; a Codex
+`apply_patch` naming several files has only `hangar.file.path`: its `file.change` events have one each),
+`hangar.shell.ops` (shell), `hangar.mcp.server` and `hangar.mcp.tool` (mcp), `hangar.tool.incomplete=true`
 when the turn ended before the result (the span then ends with the turn). Status `ERROR` with
 `error.type=tool_error` when the tool failed.
 
@@ -171,14 +191,28 @@ when the turn ended before the result (the span then ends with the turn). Status
 
 `hangar.approval.id`, `hangar.approval.tool`, `hangar.approval.detail` (what it asked to run; clipped, redacted),
 `hangar.approval.status` (`allowed`, `allowed_always`, `denied`, `cancelled`, `pending`), `hangar.approval.by` (who
-answered: a person, `policy`, `timeout` or `harness`), `hangar.approval.message`.
+answered: a person, `policy`, `timeout` or `harness`), `hangar.approval.message`, `hangar.seq`, `hangar.shell.ops`
+(of the command it asked to run).
 
 ### `session` and `job`
 
 `gen_ai.operation.name=invoke_workflow`, `gen_ai.workflow.name` (`hangar.session` or `hangar.job`),
 `hangar.environment`, `hangar.harness`, `gen_ai.request.model`, totals over all turns (`gen_ai.usage.*`,
 `hangar.cost_usd`), and for jobs `hangar.job.state`, `hangar.job.reason`, `hangar.job.strategy`, `hangar.repo`,
-`hangar.diff.stat` (the delivered diff's stat), `hangar.pr.url`.
+`hangar.diff.stat` (the delivered diff's stat), `hangar.diff.files` and `hangar.diff.deleted` (its files,
+repo-relative, at most 1,000: what the change touched however it was made, shell commands included),
+`hangar.pr.url`.
+
+## Writing behavior specs
+
+Each of these reads the export alone (tests: `tests/test_interfaces.py::_behavior`):
+
+| Spec | From the export |
+| --- | --- |
+| Tests run before the commit | the least `hangar.seq` of a `tool.call` whose `hangar.shell.ops` has `test` is below the least with `git.commit` (in a job, hangar's own `verify` event always precedes its `git.commit` events) |
+| No edits outside `src/` | every `file.change` has a `hangar.file.repo_path` under `src/`, and every `hangar.diff.files` entry is |
+| Asked before deleting | every `tool.call` with `delete` in `hangar.shell.ops` (or a `file.change` with `hangar.file.op=delete`) has an `approval` with `delete` in its ops, `allowed`, and a lower `hangar.seq`; or, in a job, a `question` event ended an earlier turn |
+| Plan, edit, test, PR | the first `plan` tool call, `edit` tool call, `test` op and `pr.open` op (or the job's `pr.open` event) are in that `hangar.seq` order |
 
 ## Ids
 

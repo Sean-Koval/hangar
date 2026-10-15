@@ -51,10 +51,117 @@ _KINDS: dict[str, set[str]] = {
     "search": {"Grep", "Glob", "grep", "find", "grep_search", "find_by_name", "codebase_search"},
     "web": {"WebFetch", "WebSearch", "web_search", "read_url_content", "search_web", "browser_preview"},
     "skill": {"Skill"},
-    "todo": {"TodoWrite", "todo_write", "update_plan"},
+    # --- review(#114): `plan`, not `todo`: the agent writing down or presenting its plan, for every harness
+    "plan": {"TodoWrite", "ExitPlanMode", "todo_write", "update_plan"},
 }
 _BY_NAME = {n: k for k, names in _KINDS.items() for n in names}
 SUBAGENT_TOOLS = {"Task", "Agent"}  # Claude Code's subagent tool (named Agent in newer releases)
+
+# --- review(#114): what a shell command does, for behavior specs ("tests before the commit", "asked before
+# deleting"): read from the command's words, per `&&`/`;`/`|` segment, never run. A hint; the command is there too.
+_TEST_PROGRAMS = {"pytest", "py.test", "tox", "nox", "jest", "vitest", "mocha", "ava", "rspec", "phpunit", "ctest",
+                  "gotestsum", "playwright"}
+_TEST_SUBCOMMANDS = {"go": {"test"}, "cargo": {"test", "nextest"}, "npm": {"test", "t"}, "pnpm": {"test", "t"},
+                     "yarn": {"test"}, "bun": {"test"}, "mvn": {"test", "verify"}, "gradle": {"test", "check"},
+                     "./gradlew": {"test", "check"}, "make": {"test", "check"}, "dotnet": {"test"},
+                     "bazel": {"test"}, "deno": {"test"}, "mix": {"test"}, "swift": {"test"}}
+_WRAPPERS = {"uv": "run", "poetry": "run", "pipenv": "run", "hatch": "run", "pdm": "run", "bundle": "exec",
+             "pnpm": "exec", "npx": None, "bunx": None, "sudo": None, "time": None, "env": None, "nice": None,
+             "timeout": None, "xvfb-run": None}
+_SEGMENT = re.compile(r"&&|\|\||[;|\n]")
+
+
+def _words(segment: str) -> list[str]:
+    import shlex
+
+    try:
+        words = shlex.split(segment)
+    except ValueError:
+        words = segment.split()
+    while words and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0]):  # FOO=bar cmd
+        words = words[1:]
+    return words
+
+
+def _op(words: list[str]) -> str | None:
+    for _ in range(4):  # uv run pytest, sudo -E npx jest, timeout 60 make test
+        if not words:
+            return None
+        head = words[0].rsplit("/", 1)[-1] if words[0] != "./gradlew" else words[0]
+        if head in _WRAPPERS and len(words) > 1 and not (head == "pnpm" and words[1] in _TEST_SUBCOMMANDS["pnpm"]):
+            sub = _WRAPPERS[head]
+            rest = words[1:]
+            if sub is not None:
+                if rest[0] != sub:
+                    break
+                rest = rest[1:]
+            while rest and (rest[0].startswith("-") or re.fullmatch(r"\d+[smh]?|[A-Za-z_]\w*=.*", rest[0])):
+                rest = rest[1:]  # the wrapper's own flags, a timeout's duration, env's assignments
+            words = rest
+            continue
+        break
+    if not words:
+        return None
+    head = words[0].rsplit("/", 1)[-1] if words[0] != "./gradlew" else words[0]
+    args = [w for w in words[1:] if not w.startswith("-")]
+    if head == "git":
+        sub = next((w for i, w in enumerate(words[1:], 1) if not w.startswith("-")
+                    and words[i - 1] not in ("-c", "-C")), None)
+        return {"commit": "git.commit", "push": "git.push", "rm": "delete"}.get(sub or "")
+    if head == "gh" and args[:2] == ["pr", "create"]:
+        return "pr.open"
+    if head in ("rm", "rmdir", "unlink", "shred") or (head == "find" and "-delete" in words):
+        return "delete"
+    if head in _TEST_PROGRAMS or (head.startswith("python") and words[1:3] in (["-m", "pytest"], ["-m", "unittest"])):
+        return "test"
+    if head in _TEST_SUBCOMMANDS and args and (args[0] in _TEST_SUBCOMMANDS[head] or (
+            head in ("npm", "pnpm", "yarn", "bun") and args[0] == "run" and len(args) > 1
+            and args[1].split(":")[0] in ("test", "tests"))):
+        return "test"
+    return None
+
+
+def shell_ops(command: str | None) -> list[str]:
+    """What a shell command does, in order: `test`, `git.commit`, `git.push`, `pr.open`, `delete`."""
+    out: list[str] = []
+    for seg in _SEGMENT.split(command or ""):
+        if (op := _op(_words(seg.strip().lstrip("(").rstrip(")")))) and op not in out:
+            out.append(op)
+    return out
+
+
+def diff_files(name_status_z: str, limit: int = 1000) -> tuple[list[str], list[str]]:
+    """(changed files, deleted files) from `git diff --name-status --no-renames -z` (a cut-off last entry is
+    dropped)."""
+    parts = name_status_z.split("\0")
+    files: list[str] = []
+    deleted: list[str] = []
+    for i in range(0, len(parts) - 1, 2):
+        status, path = parts[i].strip(), parts[i + 1]
+        if not status or not path or i + 2 >= len(parts) and not name_status_z.endswith("\0"):
+            continue
+        if len(files) >= limit:
+            break
+        files.append(path)
+        if status.startswith("D"):
+            deleted.append(path)
+    return files, deleted
+
+
+def repo_path(path: str | None, root: str | None) -> str | None:
+    """`path` relative to the repo's checkout, or None when it is outside it (or hangar can't tell). A relative path
+    is the agent's, relative to its working directory: the checkout."""
+    import posixpath
+
+    if not path:
+        return None
+    if path.startswith("/"):
+        if not root:
+            return None
+        p, r = posixpath.normpath(path), posixpath.normpath(root)
+        return p[len(r) + 1:] if p.startswith(r + "/") else None
+    p = posixpath.normpath(path)
+    return None if p == ".." or p.startswith("../") else p
 
 
 def hangar_version() -> str:
@@ -125,8 +232,9 @@ class Export:
         self.truncated = False
 
     def _clean(self, attrs: dict[str, Any]) -> dict[str, Any]:
-        return {k: self.redact(v) if isinstance(v, str) else v for k, v in attrs.items()
-                if v is not None and v != ""}
+        # --- review(#114): lists too (new failures and test ids are the repo's code's words)
+        return {k: self.redact(list(v)) if isinstance(v, list | tuple) else self.redact(v) if isinstance(v, str)
+                else v for k, v in attrs.items() if v is not None and v != ""}
 
     def room(self) -> bool:
         if self.items >= self.limit:
@@ -160,7 +268,8 @@ class Export:
         if self.truncated:
             res["hangar.export.truncated"] = True
         spans = []
-        for sp in sorted(self.spans, key=lambda x: x["start"]):
+        # --- review(#114): ties (lines read in one poll share a time) keep the event log's order
+        for sp in sorted(self.spans, key=lambda x: (x["start"], x["attrs"].get("hangar.seq") or 0)):
             out: dict[str, Any] = {"traceId": self.trace, "spanId": sp["id"], "name": sp["name"], "kind": INTERNAL,
                                    "startTimeUnixNano": _ns(sp["start"]), "endTimeUnixNano": _ns(sp["end"]),
                                    "attributes": _attrs(sp["attrs"])}
@@ -168,7 +277,8 @@ class Export:
                 out["parentSpanId"] = sp["parent"]
             if sp["events"]:
                 out["events"] = [{"timeUnixNano": _ns(e["ts"]), "name": e["name"], "attributes": _attrs(e["attrs"])}
-                                 for e in sorted(sp["events"], key=lambda e: e["ts"])]
+                                 for e in sorted(sp["events"], key=lambda e: (e["ts"], e["attrs"].get("hangar.seq")
+                                                                               or 0))]
             if sp["error"] is not None:
                 out["status"] = {"code": ERROR, **({"message": sp["error"]} if sp["error"] else {})}
             spans.append(out)
@@ -216,12 +326,13 @@ def _after_name(text: str, name: str | None) -> str:
 
 
 def turn_children(x: Export, parent: str | None, key: str, turn: SessionTurn, harness: str | None,
-                  events: list[RunEvent], turn_span: dict[str, Any] | None) -> None:
+                  events: list[RunEvent], turn_span: dict[str, Any] | None, root: str | None = None) -> None:
     """The turn's tool calls, subagents and approvals as child spans, and its points in time as events on
-    `turn_span` (None: spans only, for live export)."""
+    `turn_span` (None: spans only, for live export). `root`: the repo's checkout in the sandbox, for repo paths."""
     end = turn.finished_at or now()
     open_: dict[str, RunEvent] = {}
     conv = turn.conversation
+    asked: dict[str, int] = {}  # approval id -> the seq of its request in the log (when the log has it)
     for ev in events:
         if ev.kind in ("tool_call", "command"):
             tid = str(ev.data.get("id") or f"seq{ev.seq}")
@@ -229,17 +340,20 @@ def turn_children(x: Export, parent: str | None, key: str, turn: SessionTurn, ha
         elif ev.kind == "tool_result":
             tid = str(ev.data.get("id") or "")
             start = open_.pop(tid, None)
-            _tool_span(x, parent, key, harness, conv, start, ev, end)
+            _tool_span(x, parent, key, harness, conv, start, ev, end, root)
+        elif ev.kind == "approval_request" and ev.data.get("status") == "pending" and ev.seq:
+            asked.setdefault(str(ev.data.get("id")), ev.seq)
         elif turn_span is not None:
-            _point(x, turn_span, ev)
+            _point(x, turn_span, ev, root)
     for start in open_.values():  # the turn ended (or the log was cut) before these answered
-        _tool_span(x, parent, key, harness, conv, start, None, end)
+        _tool_span(x, parent, key, harness, conv, start, None, end, root)
     for a in turn.approvals:
         status = a.status
         x.span(f"{key}/approval/{a.id}", f"approval {a.tool or '?'}", a.requested_at, a.decided_at or end, {
             "hangar.kind": "approval", "hangar.approval.id": a.id, "hangar.approval.tool": a.tool,
             "hangar.approval.detail": a.detail[:TEXT], "hangar.approval.status": status,
-            "hangar.approval.by": a.by, "hangar.approval.message": a.message}, parent=parent)
+            "hangar.approval.by": a.by, "hangar.approval.message": a.message, "hangar.seq": asked.get(a.id),
+            "hangar.shell.ops": shell_ops(a.detail) or None}, parent=parent)
     if turn_span is None:
         return
     for st in turn.steers:
@@ -250,7 +364,7 @@ def turn_children(x: Export, parent: str | None, key: str, turn: SessionTurn, ha
 
 
 def _tool_span(x: Export, parent: str | None, key: str, harness: str | None, conv: str | None,
-               start: RunEvent | None, result: RunEvent | None, turn_end: float) -> None:
+               start: RunEvent | None, result: RunEvent | None, turn_end: float, root: str | None = None) -> None:
     first = start or result
     if first is None:
         return
@@ -264,7 +378,8 @@ def _tool_span(x: Export, parent: str | None, key: str, harness: str | None, con
     ok = bool(result.data.get("ok")) if result is not None else None
     common = {"gen_ai.tool.call.id": tid, "hangar.tool.input": inp,
               "hangar.tool.output": result.text if result else None, "hangar.tool.ok": ok,
-              "gen_ai.conversation.id": conv}
+              "gen_ai.conversation.id": conv,  # --- review(#114): the event log's order (times can tie)
+              "hangar.seq": first.seq or None, "hangar.seq.end": (result.seq or None) if result else None}
     if name in SUBAGENT_TOOLS:
         agent = (start.data.get("subagent") if start else None) or name
         x.span(f"{key}/tool/{tid}", f"invoke_agent {agent}", t0, t1, {
@@ -279,6 +394,10 @@ def _tool_span(x: Export, parent: str | None, key: str, harness: str | None, con
              "gen_ai.agent.name": harness, "hangar.tool.kind": kind, **common}
     if kind in ("edit", "read") and inp:
         attrs["hangar.file.path"] = inp
+        if ", " not in inp:  # Codex's apply_patch names every file it changes: see its file.change events
+            attrs["hangar.file.repo_path"] = repo_path(inp, root)
+    if kind == "shell":
+        attrs["hangar.shell.ops"] = shell_ops(inp) or None
     if kind == "mcp":
         attrs["hangar.mcp.server"], attrs["hangar.mcp.tool"] = _mcp_parts(name)
     if result is not None and isinstance(result.data.get("exit_code"), int):
@@ -291,30 +410,56 @@ def _tool_span(x: Export, parent: str | None, key: str, harness: str | None, con
            error="" if ok is False else None)
 
 
-def _point(x: Export, sp: dict[str, Any], ev: RunEvent) -> None:
+def _point(x: Export, sp: dict[str, Any], ev: RunEvent, root: str | None = None) -> None:
     d = ev.data
+    seq = ev.seq or None  # --- review(#114): the event log's order (times can tie)
     if ev.kind == "message":
-        x.event(sp, "message", ev.ts, {"hangar.kind": "message", "hangar.text": ev.text[:TEXT]})
+        x.event(sp, "message", ev.ts, {"hangar.kind": "message", "hangar.text": ev.text[:TEXT], "hangar.seq": seq})
     elif ev.kind == "file_change":
-        x.event(sp, "file.change", ev.ts, {"hangar.kind": "file.change", "hangar.file.path": d.get("path") or ev.text,
-                                           "hangar.file.op": d.get("op"), "gen_ai.tool.name": d.get("tool")})
+        path = str(d.get("path") or ev.text)
+        rel = repo_path(path, root)
+        known = bool(root) or not path.startswith("/")  # an absolute path needs the checkout's to compare
+        x.event(sp, "file.change", ev.ts, {"hangar.kind": "file.change", "hangar.file.path": path,
+                                           "hangar.file.repo_path": rel,
+                                           "hangar.file.in_repo": (rel is not None) if known else None,
+                                           "hangar.file.op": d.get("op"), "gen_ai.tool.name": d.get("tool"),
+                                           "hangar.seq": seq})
     elif ev.kind == "error":
         x.event(sp, "error", ev.ts, {"hangar.kind": "error", "hangar.text": ev.text[:TEXT],
-                                     "hangar.fatal": d.get("fatal") if isinstance(d.get("fatal"), bool) else None})
+                                     "hangar.fatal": d.get("fatal") if isinstance(d.get("fatal"), bool) else None,
+                                     "hangar.seq": seq})
     elif ev.kind == "progress" and d.get("action") == "verify":
         x.event(sp, "verify", ev.ts, {"hangar.kind": "verify", "hangar.verify.phase": "in_turn",
                                       "hangar.verify.passed": bool(d.get("passed")),
                                       "hangar.verify.exit_code": d.get("exit_code"),
-                                      "hangar.verify.round": d.get("round")})
+                                      "hangar.verify.round": d.get("round"), "hangar.seq": seq})
     elif ev.kind == "progress" and d.get("action") in ("steer", "interrupt"):
         return  # from the turn's own record of steers (who, and whether it was delivered)
     elif ev.kind == "progress":
         x.event(sp, "progress", ev.ts, {"hangar.kind": "progress", "hangar.text": ev.text[:TEXT],
-                                        "hangar.source": d.get("source")})
+                                        "hangar.source": d.get("source"), "hangar.seq": seq})
+
+
+def checkout(svc: Any, s: Session) -> str | None:
+    """Where the session's repo is checked out in its sandboxes (fleet._setup_repo's rule): the environment's
+    `repo.path` for its own repo, else <workspace>/<repo name>. None without a repo."""
+    from hangar.envspec import repo_dirname
+
+    if not s.repo:
+        return None
+    ws = "/workspace"
+    try:
+        ws = svc.fleet.settings.workspace_dir
+        spec = svc.fleet.catalog.get(s.environment)
+        if spec.repo and spec.repo.path and spec.repo.url == s.repo:
+            return spec.repo.path.rstrip("/") or None
+    except Exception:  # noqa: BLE001 - a deleted environment, a test double: the default rule
+        pass
+    return f"{ws.rstrip('/')}/{repo_dirname(s.repo)}"
 
 
 def _turn_span(x: Export, parent: str | None, s: Session, n: int, turn: SessionTurn, events: list[RunEvent],
-               extra: dict[str, Any] | None = None) -> dict[str, Any] | None:
+               extra: dict[str, Any] | None = None, root: str | None = None) -> dict[str, Any] | None:
     key = turn.run_id or f"{s.id}/turn/{n}"
     harness = turn.harness or s.harness
     u = total_usage([turn])
@@ -333,7 +478,7 @@ def _turn_span(x: Export, parent: str | None, s: Session, n: int, turn: SessionT
     sp = x.span(key, f"invoke_agent {harness or ''}".rstrip(), turn.started_at, turn.finished_at or now(), attrs,
                 parent=parent, error=(turn.outcome_reason or turn.outcome or "") if failed else None)
     if sp is not None:
-        turn_children(x, sp["id"], key, turn, harness, events, sp)
+        turn_children(x, sp["id"], key, turn, harness, events, sp, root)
     return sp
 
 
@@ -361,7 +506,7 @@ def session_export(svc: SessionService, s: Session, turn: int | None = None) -> 
             raise KeyError(f"session {s.name} has no turn {turn} (it has {len(s.turns)})")
         t = s.turns[turn - 1]
         evs = read_events(svc.activity, s.id, run_id=t.run_id) if t.run_id else []
-        _turn_span(x, None, s, turn, t, evs)
+        _turn_span(x, None, s, turn, t, evs, root=checkout(svc, s))
         return x.request(resource)
     grouped = _by_turn(read_events(svc.activity, s.id))
     started = [t for t in s.turns if t.started_at]
@@ -372,9 +517,10 @@ def session_export(svc: SessionService, s: Session, turn: int | None = None) -> 
                       "gen_ai.workflow.name": "hangar.session", "hangar.environment": s.environment,
                       "hangar.harness": s.harness, "gen_ai.request.model": s.model,
                       **_usage_attrs(total_usage(s.turns))})
+    where = checkout(svc, s)
     for n, t in enumerate(s.turns, 1):
         if t.started_at:
-            _turn_span(x, root["id"] if root else None, s, n, t, _events_of(grouped, n, t))
+            _turn_span(x, root["id"] if root else None, s, n, t, _events_of(grouped, n, t), root=where)
     return x.request(resource)
 
 
@@ -395,6 +541,7 @@ def job_export(jobs: JobService, job: Job, sessions: list[Session] | None = None
         "hangar.job.id": job.id, "hangar.job.state": job.state.value, "hangar.job.reason": job.reason,
         "hangar.job.strategy": job.strategy, "hangar.environment": job.environment, "hangar.harness": job.harness,
         "gen_ai.request.model": job.model, "hangar.repo": job.repo, "hangar.diff.stat": job.result.diffstat,
+        "hangar.diff.files": list(job.result.files) or None, "hangar.diff.deleted": list(job.result.deleted) or None,
         "hangar.pr.url": job.result.pr_url, **_usage_attrs(usage)},
         error=(job.reason or "") if job.state.value == "failed" else None)
     pid = root["id"] if root else None
@@ -402,9 +549,10 @@ def job_export(jobs: JobService, job: Job, sessions: list[Session] | None = None
         grouped = _by_turn(read_events(svc.activity, s.id))
         attempt = s.labels.get("hangar.attempt")
         extra = {"hangar.attempt": int(attempt)} if attempt and attempt.isdigit() else {}
+        where = checkout(svc, s)
         for n, t in enumerate(s.turns, 1):
             if t.started_at:
-                _turn_span(x, pid, s, n, t, _events_of(grouped, n, t), extra)
+                _turn_span(x, pid, s, n, t, _events_of(grouped, n, t), extra, root=where)
     _job_events(x, root, job)
     try:  # the testresults work (build/testresults): each check's test.run / test.case events on the job
         from hangar import testresults
@@ -475,7 +623,7 @@ def live_children(sp: Any, svc: SessionService, s: Session, turn: SessionTurn) -
         return
     evs = read_events(svc.activity, s.id, run_id=turn.run_id, limit=2000)
     x = Export(trace_id(s.id), svc.fleet.broker.redact, limit=2000)
-    turn_children(x, None, turn.run_id, turn, turn.harness or s.harness, evs, None)
+    turn_children(x, None, turn.run_id, turn, turn.harness or s.harness, evs, None, checkout(svc, s))
     ctx = trace.set_span_in_context(sp)
     for d in x.spans:
         child = tracer.start_span(d["name"], context=ctx, kind=SpanKind.INTERNAL, attributes=d["attrs"],

@@ -309,6 +309,9 @@ class JobResult(BaseModel):
     head_sha: str | None = None
     commits: list[str] = Field(default_factory=list)  # "abc1234 subject", newest first
     diffstat: str | None = None
+    # --- review(#114): the delivered change's files, repo-relative (the trace's hangar.diff.*), at most 1,000
+    files: list[str] = Field(default_factory=list)
+    deleted: list[str] = Field(default_factory=list)
     pushed: bool = False
     pr_url: str | None = None
     pr_number: int | None = None

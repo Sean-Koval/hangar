@@ -1101,6 +1101,10 @@ class JobService:
         job.result.head_sha = head.stdout.strip() or None
         stat = await self._sh(job, f"git diff --stat {q(base)}..HEAD | tail -n 30")
         job.result.diffstat = stat.stdout.strip() or None
+        from hangar.traces import diff_files  # --- review(#114): the change's files, for behavior specs
+
+        names = await self._sh(job, f"git diff --name-status --no-renames -z {q(base)}..HEAD | head -c 400000")
+        job.result.files, job.result.deleted = diff_files(names.stdout)
         self._save(job)
         if job.deliver == "none" or not job.result.commits:
             return
