@@ -14,10 +14,10 @@ A run (nightly, from the ops loop, or `hangar admin doctor run`):
    a request (envrequests.py) in the admins' inbox, with the evidence. The doctor never changes credentials or
    egress policy itself.
 4. **Finds the root cause** of the rest: one job per repo (at most HANGAR_DOCTOR_MAX_JOBS a run), in the repo's own
-   environment, on the team's credentials, with the strongest current model (HANGAR_DOCTOR_MODEL; Claude Code's
-   `best` alias unless set). It gets the evidence as an untrusted file and answers with a structured result: per
-   group, transient or not, the root cause, a confidence, and the fix (a skill, `.hangar/environment.yaml`, an
-   environment spec, a host, a secret, or none).
+   environment, on the team's credentials, with the strongest current model (HANGAR_DOCTOR_MODEL, else the
+   `frontier` policy, resolved and pinned per session by modelpolicy.py). It gets the evidence as an untrusted
+   file and answers with a structured result: per group, transient or not, the root cause, a confidence, and the
+   fix (a skill, `.hangar/environment.yaml`, an environment spec, a host, a secret, or none).
 5. **Fixes only what it is sure of.** A high-confidence fix of a skill, the repo's environment file or an environment
    spec, for a failure seen in at least MIN_RUNS runs, becomes a fix job that opens a PR through the landing path
    (#96): the GitHub App's PR, the review packet, and a human's approval to land it. The PR names the evidence: the
@@ -275,13 +275,17 @@ class Doctor:
     # ================================================================== root cause
     def _harness(self, environment: str) -> tuple[str | None, str | None]:
         """The doctor's harness and model for an environment: HANGAR_DOCTOR_HARNESS, else Claude Code where the
-        environment has it, else its default; HANGAR_DOCTOR_MODEL, else the harness's strongest current model
-        (Claude Code's `best`: Fable where the account has it, else the newest Opus) or the harness's default."""
+        environment has it, else its default; HANGAR_DOCTOR_MODEL, else `frontier` for every harness.
+
+        --- integ3 (#105): one authority ranks models. `frontier` resolves to a concrete id pinned on the session
+        (and named in its events and the review packet), and is explicit, so the environment's own, possibly weaker,
+        `model:` doesn't win. A team key without Fable access sets HANGAR_DOCTOR_MODEL=best, which Claude Code
+        resolves against the key in use."""
         spec = self.fleet.catalog.get(environment)
         s = self.settings
         harness = s.doctor_harness or ("claude-code" if "claude-code" in spec.agent_harnesses
                                        else spec.pick_harness())
-        model = s.doctor_model or ("best" if harness == "claude-code" else None)
+        model = s.doctor_model or "frontier"
         return harness, model
 
     def _team_login(self, harness: str | None) -> bool:
