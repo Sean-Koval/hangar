@@ -672,7 +672,12 @@ async def verify(svc: JobService, job: Job) -> tuple[ExecResult, TestRun | None]
         svc._event(job, f"the check failed only on tests on the repo's flaky list ({', '.join(again[:5])}"
                         + (" …" if len(again) > 5 else "") + "); running it once more (rerun_flaky)")
         res, run2 = await run_check(svc, job, "rerun", turn=turn)
-        svc._event(job, "the rerun passes" if res.exit_code == 0 else f"the rerun fails too (exit {res.exit_code})")
+        if res.exit_code == 0:
+            svc._event(job, "the rerun passes")
+        elif structured_new(svc.store, job, run2) == []:
+            svc._event(job, "the rerun fails only where the base already did")
+        else:
+            svc._event(job, f"the rerun fails too (exit {res.exit_code})")
         run = run2
     job.result.tests = await finish(svc, job, run, "tests") if run is not None else None
     return res, run
@@ -852,7 +857,8 @@ def only_flaky(store: Any, job_ids: list[str], repo: str | None) -> bool:
     if not on_list:
         return False
     for jid in job_ids:
-        runs = [r for r in store.list_where(TestRun, job_id=jid) if r.trusted and r.exit_code not in (0, None)]
+        runs = [r for r in store.list_where(TestRun, job_id=jid)  # the job's own checks, not the base it started on
+                if r.kind in ("verify", "rerun", "attempt") and r.exit_code not in (0, None)]
         if not runs:
             return False
         ids = failing_ids(max(runs, key=lambda r: r.at))
