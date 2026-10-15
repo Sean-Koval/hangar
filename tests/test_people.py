@@ -162,7 +162,7 @@ def test_credentials_for_picks_the_persons_own(store, broker):
     assert people.credentials_for(store, env, "alice", "claude-code", False, agent) == ["gh", "claude-alice"]
     assert people.credentials_for(store, env, "carol", "claude-code", False, agent) == ["claude-team", "gh"]
     assert people.credentials_for(store, env, None, "claude-code", False, agent) == ["claude-team", "gh"]
-    assert people.credentials_for(store, env, "bob", "codex", False, agent) == ["claude-team", "gh", "codex-bob"]
+    assert people.credentials_for(store, env, "bob", "codex", False, agent) == ["claude-team", "codex-bob", "gh"]
     with pytest.raises(CredentialError, match="alice's own"):
         people.credentials_for(store, ["claude-alice"], "bob", "claude-code", True, agent)
 
@@ -257,8 +257,8 @@ def test_members_store_only_their_own_credentials(app_client):
     c = app_client
     login = c.post("/api/people", json={"id": "alice"}, headers=ADMIN_H).json()["login"]
     alice = {"Authorization": f"Bearer {login['token']}"}
-    shared = {"name": "claude-team", "harness": "claude-code", "kind": "oauth_token", "value": "sk-ant-oat01-team-x"}
-    assert c.post("/api/credentials", json=shared, headers=ADMIN_H).status_code == 200
+    shared = {"name": "claude-team", "harness": "claude-code", "kind": "api_key", "value": "sk-ant-api03-team-x"}
+    assert c.post("/api/credentials", json={**shared, "team": True}, headers=ADMIN_H).json()["owner"] == "team"
     mine = {"name": "claude-alice", "harness": "claude-code", "kind": "oauth_token", "value": "sk-ant-oat01-alice"}
     assert c.post("/api/credentials", json=mine, headers=alice).json()["person"] == "alice"
     assert c.post("/api/credentials", json={**shared, "value": "mine now"}, headers=alice).status_code == 403
@@ -271,6 +271,10 @@ def test_members_store_only_their_own_credentials(app_client):
     assert c.put("/api/credentials/claude-team/owner", json={"person": "alice"}, headers=ADMIN_H).json()["person"] \
         == "alice"
     assert c.put("/api/credentials/claude-team/owner", json={"person": None}, headers=ADMIN_H).json()["person"] is None
+    # --- teamcreds: but never someone's own subscription login
+    c.post("/api/credentials", json=mine, headers=alice)
+    r = c.put("/api/credentials/claude-alice/owner", json={"person": None}, headers=ADMIN_H)
+    assert r.status_code == 403 and "can't be a team credential" in r.json()["error"]
 
 
 def test_a_members_mcp_token_is_scoped_over_http(app_client):
@@ -417,8 +421,8 @@ def test_removing_someone_stops_their_schedules(store):
 
 
 def test_adding_a_member_names_the_shared_credentials_they_will_get(app_client, monkeypatch):
-    """Credentials stored before people have no person, so they are the team's: the owner's own Claude or Codex
-    login goes into a new member's sandboxes, where they can read it. Adding someone says which."""
+    """Team credentials go into a new member's sandboxes, where they can read them. Adding someone says which
+    (--- teamcreds: the owner's own logins from before people are no longer among them, test_teamcreds)."""
     c = app_client
     h = c.app.state.hangar
     h.broker.put("claude-max", "claude-code", CredentialKind.OAUTH_TOKEN, "sk-ant-oat01-owner-0123456789")

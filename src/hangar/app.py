@@ -20,7 +20,9 @@ import hangar.identity as identity  # --- identity
 import hangar.identity_api as identity_api  # --- identity
 from hangar import drain as drain  # --- reconciler
 from hangar import exchange, observe  # --- observe
+from hangar import people as people  # --- teamcreds
 from hangar import redeliver as redeliver  # --- reconciler
+from hangar import teamcreds as teamcreds  # --- teamcreds
 from hangar.a2a import A2AServer
 from hangar.auth import SCOPES, TokenAuth, bearer_from_headers
 from hangar.broker import Broker, CredentialError
@@ -61,6 +63,7 @@ class Hangar:
         self.broker = Broker(self.store, self.vault, self.settings.sandbox_user)
         self.catalog = EnvCatalog(self.settings.env_dirs, save_dir=self.settings.saved_env_dir)
         self.fleet = Fleet(self.settings, self.store, self.broker, self.catalog)
+        teamcreds.migrate(self.store, self.settings, self.fleet.audit)  # --- teamcreds: before people: the owner's
         self.auth = TokenAuth(self.store, self.settings.admin_token)
         self.sessions = SessionService(self.fleet, self.vault)
         self.jobs = JobService(self.fleet, self.sessions)
@@ -179,6 +182,7 @@ class CredentialBody(BaseModel):
     file_path: str | None = None
     exposure: str | None = None  # --- identity: sandbox | control_plane (the broker checks it)
     person: str | None = None  # --- identity: whose own credential this is (admins; a member's is always theirs)
+    team: bool = False  # --- teamcreds: a team credential (admins); an admin's without either is their own
 
 
 class LoginBody(BaseModel):
@@ -737,16 +741,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/credentials")
     async def creds(_: str = U):
-        return [{**c.model_dump(mode="json"), "exposure": identity.exposure(c, h.settings)}  # --- identity: in effect
+        return [{**c.model_dump(mode="json"), "exposure": identity.exposure(c, h.settings),  # --- identity: in effect
+                 "owner": teamcreds.owner(c, h.settings)}  # --- teamcreds
                 for c in identity_api.credentials(h)]
 
     @app.post("/api/credentials")
     async def put_cred(body: CredentialBody, who: str = U):
-        person = identity_api.credential_person(h, body.name, body.harness, body.kind, body.person, body.exposure)
+        person = identity_api.credential_person(h, body.name, body.harness, body.kind, body.person, body.exposure,
+                                                body.team)  # --- teamcreds
         c = h.broker.put(body.name, body.harness, body.kind, body.value, body.description, body.env_var,
-                         body.file_path, exposure=body.exposure, person=person)  # --- identity
-        fleet.audit(who, "credential.put", c.name, harness=c.harness, kind=c.kind.value)
-        return c.model_dump(mode="json")
+                         body.file_path, exposure=body.exposure, person=person, team=body.team)  # --- identity
+        fleet.audit(who, "credential.put", c.name, harness=c.harness, kind=c.kind.value, person=c.person)
+        return {**c.model_dump(mode="json"), "owner": teamcreds.owner(c, h.settings)}  # --- teamcreds
 
     @app.delete("/api/credentials/{name}")
     async def del_cred(name: str, who: str = U):
@@ -766,7 +772,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/logins/{login_id}/complete")
     async def complete_login(login_id: str, who: str = A):
-        return (await fleet.complete_login(login_id, actor=who)).model_dump(mode="json")
+        lg = fleet.logins.get(login_id) or {}  # --- teamcreds: a new login is its admin's own, not the team's
+        new = h.store.get(Credential, lg.get("credential") or "") is None
+        person = people.token_person(identity.person()) if new else None
+        return (await fleet.complete_login(login_id, actor=who, person=person)).model_dump(mode="json")
 
     # ------------------------------------------------------------------ tokens / audit
     @app.get("/api/tokens")

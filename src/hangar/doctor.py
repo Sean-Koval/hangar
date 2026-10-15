@@ -167,6 +167,10 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
 
     if (c := exposure_check(fleet.catalog, h.store, s)) is not None:
         out.append(c)
+    # --- teamcreds: personal logins still shared, work no person owns without a team credential, unlinked senders
+    from hangar.teamcreds import doctor_checks as team_checks
+
+    out += team_checks(h)
 
     # --- workstream setup: each mapped repo's webhook exists, is active and sends the events hangar handles
     from hangar.setup_api import webhook_checks

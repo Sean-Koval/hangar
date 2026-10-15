@@ -115,7 +115,7 @@ class Credential(BaseModel):
     # GitHub token with sandboxes; signing keys and App keys stay control-plane whatever this says.
     exposure: Literal["sandbox", "control_plane"] | None = None
     # --- identity: a person's own credential (their Claude or Codex login), used only in their sandboxes; None:
-    # shared by the team
+    # a team credential (--- teamcreds: those stored before people became the owner's, teamcreds.migrate)
     person: str | None = None
 
 
@@ -188,6 +188,9 @@ class Person(BaseModel):
     name: str = ""
     role: Literal["admin", "member"] = "member"
     created_at: float = Field(default_factory=now)
+    # --- teamcreds: their accounts elsewhere ("github:octocat", "slack:U012AB3CD", "jira:<account id>",
+    # "email:a@b.co"): jobs from those senders run for this person (people.resolve_external)
+    links: list[str] = Field(default_factory=list)
 
 
 class AuditEvent(BaseModel):

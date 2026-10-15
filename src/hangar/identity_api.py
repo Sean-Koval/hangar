@@ -5,11 +5,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
 import hangar.identity as identity
-from hangar import people
+from hangar import people, teamcreds
 from hangar.models import ApiToken, Credential, CredentialKind
 
 
@@ -18,7 +18,7 @@ class ExposureBody(BaseModel):
 
 
 class OwnerBody(BaseModel):
-    person: str | None = None  # null: shared by the team
+    person: str | None = None  # null: a team credential
 
 
 class PersonBody(BaseModel):
@@ -30,6 +30,11 @@ class PersonBody(BaseModel):
 
 class RoleBody(BaseModel):
     role: str
+
+
+class LinkBody(BaseModel):  # --- teamcreds
+    source: str = Field(max_length=40)  # github | slack | jira | email
+    id: str = Field(min_length=1, max_length=320)
 
 
 class LoginTokenBody(BaseModel):
@@ -94,15 +99,28 @@ def credentials(h: Any) -> list[Credential]:
 
 
 def credential_person(h: Any, name: str, harness: str, kind: CredentialKind, wanted: str | None,
-                      exposure: str | None) -> str | None:
-    """Whose a credential being stored is. An admin may name anyone (or keep its current owner); a member stores
-    only their own, never over someone else's or the team's, and never a control-plane kind."""
+                      exposure: str | None, team: bool = False) -> str | None:
+    """Whose a credential being stored is. An admin may name anyone, make it the team's (`team`), or keep its
+    current owner; a new one an admin names no owner for is their own (--- teamcreds: deny by default, so an admin's
+    own login never becomes the team's by omission), except the control plane's own. A member stores only their
+    own, never over someone else's or the team's, and never a control-plane kind."""
     p = _caller()
     existing = h.store.get(Credential, name)
+    if team and wanted is not None:  # --- teamcreds
+        raise ValueError("a credential is a person's own or the team's: pass person or team, not both")
     if p.admin:
         if wanted is not None and people.get(h.store, wanted) is None:
             raise KeyError(f"no person '{wanted}'")
-        return wanted if wanted is not None else (existing.person if existing else None)
+        if team:  # --- teamcreds: never a subscription login (the owner's decision)
+            teamcreds.check_team(name, harness, kind)
+            return None
+        if wanted is not None or existing is not None:
+            return wanted if wanted is not None else existing.person  # type: ignore[union-attr]
+        control_plane = harness == "webhook" or kind == CredentialKind.GITHUB_APP or exposure == "control_plane" \
+            or name in identity.reserved_names(h.settings)
+        return None if control_plane else people.token_person(p.person)
+    if team:  # --- teamcreds
+        raise identity.Forbidden("team credentials are added by an admin")
     if wanted not in (None, p.person):
         raise identity.Forbidden("you can store credentials only for yourself")
     if existing is not None and existing.person != p.person:
@@ -134,10 +152,20 @@ def mount(app: FastAPI, h: Any, A: Any) -> None:
         c = h.broker.get(name)
         if body.person is not None and people.get(h.store, body.person) is None:
             raise KeyError(f"no person '{body.person}'")
+        if body.person is None:  # --- teamcreds: never a subscription login
+            teamcreds.check_team(c.name, c.harness, c.kind)
         c.person = body.person
         h.store.put(c)
         h.fleet.audit(who, "credential.owner", name, person=body.person)
-        return c.model_dump(mode="json")
+        return {**c.model_dump(mode="json"), "owner": teamcreds.owner(c, h.settings)}  # --- teamcreds
+
+    # --- teamcreds: what the migration made the owner's, and when
+    @app.get("/api/credentials/migration")
+    async def credential_migration(_: str = A):
+        rec = teamcreds.migration(h.store)
+        if rec is None:
+            raise HTTPException(404, "the credential migration hasn't run; it runs when hangar starts")
+        return rec
 
     @app.get("/api/people")
     async def list_people(_: str = A):
@@ -171,6 +199,21 @@ def mount(app: FastAPI, h: Any, A: Any) -> None:
         revoked = people.remove(h.store, person_id)
         h.fleet.audit(who, "person.remove", person_id, revoked=revoked)
         return {"removed": person_id, "revoked_tokens": revoked}
+
+    # --- teamcreds: a person's accounts elsewhere, so the jobs they start there run for them
+    @app.post("/api/people/{person_id}/links")
+    async def link_person(person_id: str, body: LinkBody, who: str = A):
+        ext, login = await teamcreds.link_id(h, body.source, body.id)  # --- review: a GitHub login -> its id
+        p = people.link(h.store, person_id, body.source, ext)
+        h.fleet.audit(who, "person.link", person_id, link=people.external_key(body.source, ext), login=login)
+        return {**p.model_dump(mode="json"), **({"looked_up": {"login": login, "id": ext}} if login else {})}
+
+    @app.delete("/api/people/{person_id}/links")
+    async def unlink_person(person_id: str, source: str = Query(...), id: str = Query(...), who: str = A):
+        ext, _ = await teamcreds.link_id(h, source, id)  # --- review
+        p = people.unlink(h.store, person_id, source, ext)
+        h.fleet.audit(who, "person.unlink", person_id, link=people.external_key(source, ext))
+        return p.model_dump(mode="json")
 
     @app.post("/api/people/{person_id}/tokens")
     async def login_token(person_id: str, body: LoginTokenBody, who: str = A):

@@ -24,6 +24,7 @@ import httpx
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from hangar import people  # --- teamcreds: Slack users linked to people
 from hangar.exchange import open_question
 from hangar.github import parse_repo
 from hangar.jobs import NOTIFIERS, Caller, JobError, JobNotFound, JobService, SubmitJob
@@ -352,10 +353,18 @@ class SlackFrontDoor:
         return body
 
     # ------------------------------------------------------------------ policy
+    def _person(self, team: str, user: str, user_team: str | None = None) -> str | None:
+        """--- review: the person this Slack user is linked to, keyed by their own workspace (Slack user ids are
+        unique only within one, and a Slack Connect channel carries other organizations' users)."""
+        p = people.resolve_external(self.store, "slack", f"{user_team or team}/{user}")
+        return p.id if p is not None else None
+
     def _refusal(self, team: str, channel: str, user: str, user_team: str | None = None) -> str | None:
         if channel not in self.settings.slack_channels:
             return ("This channel isn't connected to a repo. An admin can map it in HANGAR_SLACK_CHANNELS "
                     "(docs/slack.md).")
+        if self._person(team, user, user_team) is not None:  # --- review: a linked account acts as its person
+            return None
         users = self.settings.slack_users
         # --- front-door-auth: in a Slack Connect channel, members of other organizations post too. They count
         # only when listed by id, even when the allowlist is otherwise empty.
@@ -539,7 +548,7 @@ class SlackFrontDoor:
             elif mention and word.lower() == "status":
                 await self._say(api, channel, reply_in, self._status(rest))
             elif job_id:
-                await self._follow_up(api, team, channel, str(thread_ts), user, job_id, text)
+                await self._follow_up(api, team, channel, str(thread_ts), user, job_id, text, user_team)
             else:
                 try:
                     plan = self._plan(channel, text)
@@ -547,7 +556,7 @@ class SlackFrontDoor:
                     await self._say(api, channel, reply_in, str(e))
                     return
                 context = await self._thread_context(api, channel, thread_ts, ts, bots) if thread_ts else []
-                await self._submit(api, team, channel, reply_in, user, plan, context,
+                await self._submit(api, team, channel, reply_in, user, plan, context, user_team=user_team,
                                    key=f"slack:{channel}:{ts}")
         finally:
             await api.close()
@@ -587,7 +596,7 @@ class SlackFrontDoor:
             log.warning("could not post to Slack thread %s: %s", thread_ref(channel, thread_ts), e)
 
     async def _submit(self, api: SlackAPI, team: str, channel: str, thread_ts: str, user: str, plan: _Plan,
-                      context: list[ContextItem], key: str | None) -> None:
+                      context: list[ContextItem], key: str | None, user_team: str | None = None) -> None:
         ref = thread_ref(channel, thread_ts)
         requester = f"slack:{team}/{user}"
         try:
@@ -595,8 +604,9 @@ class SlackFrontDoor:
                             harness=plan.harness, model=plan.model, context=context, idempotency_key=key,
                             labels={"slack.channel": channel, "slack.thread": thread_ts, "slack.user": user})
             # Restricted like a `jobs` token: mapped repos and environments only, no provider choice.
-            job = self.jobs.submit(req, Caller(requester, requester, restricted=True), source="slack",
-                                   source_ref=ref)
+            person = self._person(team, user, user_team)  # --- teamcreds: theirs if linked
+            job = self.jobs.submit(req, Caller(requester, requester, restricted=True, person=person),
+                                   source="slack", source_ref=ref)
         except ValueError as e:  # JobError and pydantic's ValidationError
             await self._say(api, channel, thread_ts, f"hangar couldn't start a job: {escape(str(e)[:500])}")
             return
@@ -611,10 +621,11 @@ class SlackFrontDoor:
                         "when the agent starts and when it's done.")
 
     async def _follow_up(self, api: SlackAPI, team: str, channel: str, thread_ts: str, user: str, job_id: str,
-                         text: str) -> None:
+                         text: str, user_team: str | None = None) -> None:
         try:
             job = self.jobs.follow_up(job_id, text.strip() or "Continue with the task.",
-                                      requester=f"slack:{team}/{user}", reply_to=thread_ref(channel, thread_ts))
+                                      requester=f"slack:{team}/{user}", reply_to=thread_ref(channel, thread_ts),
+                                      front_door=True, sender_person=self._person(team, user, user_team))  # review
         except JobNotFound:
             await self._say(api, channel, thread_ts, f"Job `{job_id}` no longer exists; start a new one.")
             return

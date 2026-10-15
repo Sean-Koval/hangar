@@ -196,7 +196,8 @@ def person_spent_today(svc: JobService, person: str) -> float:
 
 def caps(svc: JobService, repo: str | None, person: str | None = None) -> list[Cap]:
     """Every daily cap a piece of work counts against: its repo's, and the person's it runs for (identity's
-    person: jobs nobody in particular asked for, such as GitHub- and Slack-triggered ones, have none yet).
+    person; --- teamcreds: a GitHub or Slack sender linked to a person counts as them, while webhooks, schedules
+    without a person and senders linked to nobody have none).
     Submissions, follow-ups and auto-fix rounds check every cap this returns."""
     out: list[Cap] = []
     policy = svc.policies.get(repo)
