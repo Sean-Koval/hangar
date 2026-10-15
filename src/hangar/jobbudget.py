@@ -33,6 +33,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from hangar.events import total_usage
 from hangar.models import Budget, Job, JobBudget, Session, SessionTurn, now
 from hangar.repopolicy import RepoPolicy, repo_key
+from hangar.store import Ge  # --- durable
 
 if TYPE_CHECKING:
     from hangar.jobs import JobService
@@ -61,8 +62,7 @@ class Spent(NamedTuple):
 
 
 def _job_sessions(svc: JobService, job: Job) -> list[Session]:
-    live = svc.sessions._sessions if svc.sessions is not None else {}
-    return [s for s in live.values() if s.job_id == job.id]
+    return svc.sessions.of_job(job.id) if svc.sessions is not None else []  # --- durable: in the store too
 
 
 def spent(svc: JobService, job: Job, leave_out: SessionTurn | None = None) -> Spent:
@@ -164,21 +164,24 @@ def day_start(t: float | None = None, tz: str = "UTC") -> float:
     return datetime(d.year, d.month, d.day, tzinfo=z).timestamp()
 
 
-def _spent_today(svc: JobService, session: Callable[[Session], bool], job_of: Callable[[Job], bool]) -> float:
+def _spent_today(svc: JobService, session: Callable[[Session], bool], job_of: Callable[[Job], bool],
+                 **fields: Any) -> float:
     """What the matching sessions' agent turns cost since midnight (zone()), plus the sessions deleted since of the
-    matching jobs, on the day their job was created."""
+    matching jobs, on the day their job was created. --- durable: today's sessions and jobs (and `fields`, which
+    narrow both), from the store's indexes."""
     since, total = day_start(tz=zone(svc.settings)), 0.0
-    live = svc.sessions._sessions if svc.sessions is not None else {}
-    for s in list(live.values()):
+    sessions = svc.sessions
+    for s in sessions.touched_since(since, **fields) if sessions is not None else []:
         if not session(s):
             continue
         for t in s.turns:
             if (t.started_at or 0) >= since and (t.run_id or t.usage or t.repair_usage):
                 u = total_usage([t])
                 total += (u.cost_usd or 0.0) if u else 0.0
-    for job in list(svc._jobs.values()):
-        if job.created_at >= since and job.deleted_session_usage and job_of(job):
-            total += sum(u.cost_usd or 0.0 for sid, u in job.deleted_session_usage.items() if sid not in live)
+    for job in svc.touched_since(since, created_at=Ge(since), **fields):
+        if job.deleted_session_usage and job_of(job):
+            total += sum(u.cost_usd or 0.0 for sid, u in job.deleted_session_usage.items()
+                         if sessions is None or not sessions.exists(sid))
     return total
 
 
@@ -191,7 +194,7 @@ def repo_spent_today(svc: JobService, key: str) -> float:
 def person_spent_today(svc: JobService, person: str) -> float:
     """--- integration: what a person's agent turns cost today: their interactive sessions and every session of
     their jobs (attempts and judges included), by the person identity records on each (people.py)."""
-    return _spent_today(svc, lambda s: s.person == person, lambda j: j.person == person)
+    return _spent_today(svc, lambda s: s.person == person, lambda j: j.person == person, person=person)
 
 
 def caps(svc: JobService, repo: str | None, person: str | None = None) -> list[Cap]:

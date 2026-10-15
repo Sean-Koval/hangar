@@ -5,6 +5,8 @@ Two guides, newest first:
 - [**This release**](#upgrading-to-the-team-release-75100) (#75–#100): one ordered procedure for everything since the overnight stack. Wave 1 (#75–#90): one hangar for a team of six at ~60 sessions, people and per-person credentials, front-door defaults and job budgets, the reconciler, the MCP deadline contract, and images built before anyone waits. Wave 2 (#91–#100): team credentials and linked accounts, Jira and GitHub Projects intake, egress allowlists, secret scanning and short-lived cloud credentials, a computer for every agent, environments that live with the repo, an approval that lands the PR, the always-on control plane and gated deploys.
 - [**The overnight stack**](#upgrading-from-before-the-overnight-stack-4869) (#48–#69), for a hangar older than that. Do its backup and read its defaults first, then follow this release's procedure: its prebuild also covers the overnight guide's "republish the Codex pack" step.
 
+On top of this release, [**history out of memory**](#history-out-of-memory) changes what hangar holds in memory and how listings page; read it before deploying a build that has it.
+
 Both are written for the GKE install from [gke.md](gke.md): one zonal cluster, gVisor sandboxes, the control plane with SQLite on the `hangar-data` PVC, checkpoints in the session bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / `power.sh`. [CHANGELOG.md](../CHANGELOG.md) lists what each adds.
 
 ## Upgrading to the team release (#75–#100)
@@ -342,6 +344,31 @@ In this order:
    ```
 
 What stays: the node pool (the previous version runs on it unchanged), the database, every session and checkpoint, and the old pack tags in Artifact Registry, which the previous version mounts by tag as before. What the previous version ignores: repo policies, budgets, `person` on records and the owners the migration set (every credential is shared again: remove members first, step 1), `packinfo` digests, the drain (the new `power.sh` treats its 404 as settled), the stale-tool-list records, links, environment builds and requests. GitHub replay marks are compatible both ways. The next upgrade archives the records again; the credential migration doesn't run twice.
+
+## History out of memory
+
+Hangar used to load every job and session ever made at startup and keep them in memory (~30 KB for a finished job), so its memory grew with the team's history: 735 MB at idle with six months of it in the team load test. Now it keeps what is live and what was used in the last hour, and reads the rest from the database when asked; 213 MB in the same test ([team-scale.md](team-scale.md#months-of-job-and-session-history)). Nothing to configure. What changes:
+
+| What | Before → now | Opt out |
+| --- | --- | --- |
+| **Startup** | read every job and session → reads unfinished jobs, jobs whose PR is still landing, live sessions, and the last hour's. The **first start indexes** the jobs and sessions tables (~2 s per 20,000 records on 2 vCPUs) before it answers. | — |
+| **Memory** | everything, forever → live work and the last `HANGAR_RESIDENT_MINUTES` (60); the rest is read back by id, name or index when asked for, and let go of again every 5 minutes | `HANGAR_RESIDENT_MINUTES` (more memory, fewer reads) |
+| **Listings** | `list_jobs`, `list_sessions`, `GET /api/jobs`, `GET /api/sessions` sorted the team's newest 500 and then filtered by person, so a member's older work dropped out → pages from the database's indexes, filtered by person first. Every item has a **`cursor`**; pass the last item's `cursor` back for the next page (REST also sets `X-Next-Cursor` while there is one). `limit` is still at most 500. | — |
+| **Archive** | → finished jobs untouched for 30 days and settled sessions for 30 days move to `jobs_archive` and `sessions_archive`: still found by id and name, in listings, in the usage report; never deleted. Kept out of the archive: open or approved PRs, merged or closed ones whose session hasn't ended, auto-fix triggers waiting, a schedule's last job, sessions with checkpoints, a session a job still points at. | `HANGAR_JOB_RETENTION_DAYS=0`, `HANGAR_SESSION_RETENTION_DAYS=0` |
+| **`/metrics`** | `hangar_jobs` and `hangar_sessions` counted every record in memory → counted by SQLite in a worker thread, at most a minute old; archived ones are left out, as for `hangar_sandboxes` | — |
+
+**Rolling back** to a build without it: the previous version runs on the upgraded database (it ignores the archive tables and keeps the new indexes up to date as it writes), but it doesn't see archived jobs and sessions. Move them back first, in one transaction, then roll back:
+
+```bash
+kubectl -n hangar exec deploy/hangar -- python3 -c "import sqlite3; db = sqlite3.connect('/data/hangar.db'); \
+[db.execute(q.format(t=t)) for t in ('jobs', 'sessions') for q in ( \
+'INSERT OR IGNORE INTO {t}(key, data) SELECT key, data FROM {t}_archive', 'DELETE FROM {t}_archive')]; \
+db.commit()"
+```
+
+Move them, don't copy them: the previous version changes only the main table's copy, so an archive copy left behind is stale. (An upgraded hangar drops any archive row whose key is also in the main table when it starts, so a copy left by an earlier rollback is harmless.)
+
+The previous version loads every job and session again at startup, so give its pod the memory the history needs.
 
 ## Deploying with deploy.yml
 

@@ -172,9 +172,8 @@ class Admission:
         gets through: it returns the job it already started. `untrusted` submissions (they wait for approval) have
         a source bucket of their own, so outsiders with a handful of accounts can't use up the one trusted people
         need."""
-        if req.idempotency_key and any(j.idempotency_key == req.idempotency_key and j.owner == caller.owner
-                                       for j in self.svc._jobs.values()):
-            return
+        if req.idempotency_key and self.svc.where(idempotency_key=req.idempotency_key, owner=caller.owner):
+            return  # --- durable: from the store's index
         if self.exempt(caller, source):
             return
         s = self.settings

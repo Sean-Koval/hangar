@@ -209,7 +209,7 @@ def register_streams(mcp: MCPServer, tool: Callable[[], Any], fleet: Any, sessio
 
     # --- events reach `.../events` subscribers as they are recorded, not when the session is next saved
     def on_events(key: str, _evs: list[RunEvent]) -> None:
-        s = sessions._sessions.get(key)
+        s = sessions._sessions.peek(key)  # --- durable: live events are a live session's; never a store read
         uris = [live.session_uri(s.name) + "/events"] if s is not None else []
         if jobs is not None and key in jobs._jobs:
             uris.append(live.job_uri(key) + "/events")

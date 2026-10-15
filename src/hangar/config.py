@@ -411,6 +411,13 @@ class Settings(BaseSettings):
     # and of every scan, still found by id. Archived ones are deleted after sandbox_archive_days (0 = kept).
     sandbox_retention_days: float = 7
     sandbox_archive_days: float = 180
+    # --- durable: jobs and sessions held in memory are the live ones, and those saved or read in the last
+    # resident_minutes (resident.py); the rest are read from the store when asked for. Finished jobs and sessions
+    # untouched for *_retention_days move to the archive (still found by id and in listings; never deleted), except
+    # what is still referenced: open PRs, sessions with checkpoints, a schedule's last job. 0 = not archived.
+    resident_minutes: float = Field(60, ge=1)
+    job_retention_days: float = Field(30, ge=0)
+    session_retention_days: float = Field(30, ge=0)
     # --- observe: traces, metrics and the cost view (docs/observability.md). Traces are configured with the
     # standard OTEL_* variables and are off unless they name an exporter.
     metrics_enabled: bool = True  # GET /metrics (admin or `metrics` tokens); off: no prometheus_client import

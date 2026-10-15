@@ -38,7 +38,6 @@ from hangar.events import total_usage
 from hangar.fleet import PoweredDown, _clip_tail
 from hangar.harnesses import Harness
 from hangar.models import (
-    JOB_TERMINAL,
     Attempt,
     Job,
     JobState,
@@ -83,9 +82,8 @@ def claim_conversation(svc: SessionService, s: Session) -> None:
     cid = s.harness_session
     if not cid:
         return
-    holders = [x for x in svc._sessions.values()
-               if x.harness_session == cid and x.harness_session_for == s.harness_session_for
-               and x.state != SessionState.ARCHIVED]
+    holders = [x for x in svc.where(harness_session=cid)  # --- durable: suspended ones aren't all in memory
+               if x.harness_session_for == s.harness_session_for and x.state != SessionState.ARCHIVED]
     owner = min(holders, key=lambda x: (x.created_at, x.id), default=s)
     if owner.id != s.id:
         log.warning("session %s shares conversation %s with %s; forking it instead of resuming", s.id, cid, owner.id)
@@ -128,16 +126,15 @@ def _child_names(svc: SessionService, parent: Session, n: int, suffix: str,
                  names: list[str] | None) -> list[tuple[str, str]]:
     """(name, branch) for each child: `<parent>-<suffix>-<i>` on `<parent branch>-<suffix>-<i>`, with i past any
     earlier forks, or the names the caller chose."""
-    live = [x for x in svc._sessions.values() if x.state != SessionState.ARCHIVED]
-    taken_names = {x.name for x in live}
-    taken_branches = {x.branch for x in live}
+    taken_names: set[str] = set()  # --- durable: planned here; the rest are asked of svc.taken (the store's indexes)
+    taken_branches: set[str] = set()
     if names is not None:
         if len(names) != n or len(set(names)) != n:
             raise SessionError(f"give {n} distinct names (or none)")
         for nm in names:
             if not _NAME_RE.match(nm):
                 raise SessionError(f"name '{nm}': lowercase letters, digits, '.', '_' and '-'")
-            if nm in taken_names:
+            if svc.taken(name=nm):
                 raise SessionError(f"a session named '{nm}' already exists")
     out: list[tuple[str, str]] = []
     i = 0
@@ -146,7 +143,8 @@ def _child_names(svc: SessionService, parent: Session, n: int, suffix: str,
             i += 1
             name = names[k] if names else f"{parent.name[:63 - len(suffix) - 6]}-{suffix}-{i}"
             branch = f"{parent.branch}-{suffix}-{i}"
-            if branch not in taken_branches and (names or name not in taken_names):
+            if branch not in taken_branches and not svc.taken(branch=branch) and (
+                    names or (name not in taken_names and not svc.taken(name=name))):
                 break
         if not _BRANCH_RE.match(branch):
             raise SessionError(f"invalid branch '{branch}'")
@@ -252,13 +250,6 @@ def can_reattach(job: Job) -> bool:
         JobState.RUNNING, JobState.VERIFYING, JobState.DELIVERING)
 
 
-def release_restart_holds(jobs: JobService, job: Job) -> None:
-    """A finished best-of-N job's attempt sessions were held through the restart; let them idle out."""
-    if job.state in JOB_TERMINAL:
-        for s in _attempt_sessions(jobs, job).values():
-            jobs.sessions.release_restart_hold(s)
-
-
 def _attempt_sessions(jobs: JobService, job: Job) -> dict[int, Session]:
     out = {}
     for a in job.attempts:
@@ -285,8 +276,8 @@ async def run_best_of_n(jobs: JobService, job: Job) -> None:
                 return
             jobs._event(job, f"preparing {job.n} attempts from the prepared sandbox", JobState.RUNNING, reason=None)
             # A restart between forking and recording the attempts left the children behind: use them.
-            children = sorted((x for x in svc._sessions.values() if x.parent_id == base.id and x.job_id == job.id
-                               and x.state != SessionState.ARCHIVED),
+            children = sorted((x for x in svc.where(parent_id=base.id, job_id=job.id)  # --- durable
+                               if x.state != SessionState.ARCHIVED),
                               key=lambda x: int(x.labels.get("hangar.attempt", "0")))
             if len(children) != job.n:
                 for x in children:

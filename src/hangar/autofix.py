@@ -120,10 +120,13 @@ def _url(u: Any) -> str | None:
 def find_job(svc: JobService, repo: str, numbers: list[int], branches: list[str], sha: str | None) -> Job | None:
     """The hangar job behind a PR: by PR number, else by branch, else by the head commit hangar pushed. Callers pass
     only what ties an event to the job's own PR: a fork's PR can reuse the branch name and even the head commit."""
-    cands = [j for j in svc._jobs.values() if j.result.pr_number and (parse_repo(j.repo) or "").lower() == repo.lower()]
-    for test in (lambda j: j.result.pr_number in numbers, lambda j: j.branch in branches,
-                 lambda j: bool(sha) and j.result.head_sha == sha):
-        hits = [j for j in cands if test(j)]
+    def cands(**f: Any) -> list[Job]:  # --- durable: from the store's indexes, not only the jobs in memory
+        return [j for j in svc.where(**f) if j.result.pr_number and (parse_repo(j.repo) or "").lower() == repo.lower()]
+
+    for find in (lambda: cands(**{"result.pr_number": numbers}) if numbers else [],
+                 lambda: cands(branch=branches) if branches else [],
+                 lambda: cands(**{"result.head_sha": sha}) if sha else []):
+        hits = find()
         if hits:
             return max(hits, key=lambda j: j.created_at)
     return None

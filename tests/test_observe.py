@@ -405,8 +405,9 @@ def _world():
     legacy = Job(title="old", instructions="x", environment="e3", requester="carol",
                  repo="https://tok:secret@git.example/y.git")
     legacy.turns = [Turn(run_id="run-0000000b", started_at=T0, usage=Usage(input_tokens=7, cost_usd=0.07))]
-    return (SimpleNamespace(_sessions={x.id: x for x in (a, fork, b)}),
-            SimpleNamespace(_jobs={j.id: j for j in (j1, legacy)}))
+    sessions, jobs = {x.id: x for x in (a, fork, b)}, {j.id: j for j in (j1, legacy)}
+    return (SimpleNamespace(touched_since=lambda t: list(sessions.values()), exists=lambda sid: sid in sessions),
+            SimpleNamespace(touched_since=lambda t: list(jobs.values())))
 
 
 async def test_usage_keeps_a_deleted_sessions_spend(jobs):  # noqa: F811

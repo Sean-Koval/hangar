@@ -42,12 +42,26 @@ echo '{"type":"result","result":"done","usage":{"input_tokens":600,"output_token
 """
 
 
-def seed_history(db: Path, n: int) -> None:
+def seed_history(db: Path, n: int, jobs: int | None = None, sessions: int = 0) -> None:
     """A team's months of history: `n` settled sandboxes with the run records and stage notes real ones keep, and
-    n/4 finished jobs with a timeline. Written straight into the database, in one transaction."""
+    `jobs` (n/4) finished jobs with a timeline. Written straight into the database, in one transaction.
+
+    --- durable: the jobs spread over six months and six people, about one in five with a PR that merged (its
+    session ended), and `sessions` settled sessions over the same months, each with a few turns and a checkpoint."""
     import sqlite3
 
-    from hangar.models import Job, JobEvent, JobState, Sandbox, SandboxState
+    from hangar.models import (
+        Checkpoint,
+        Job,
+        JobEvent,
+        JobState,
+        Sandbox,
+        SandboxState,
+        Session,
+        SessionState,
+        SessionTurn,
+        Usage,
+    )
     from hangar.store import Store
 
     Store(db)  # creates the tables (and whatever indexes this version of the store keeps)
@@ -60,16 +74,37 @@ def seed_history(db: Path, n: int) -> None:
                      labels={"hangar.session": f"ses-old{i}"}, created_at=t0 + i, last_activity=t0 + i,
                      info={"harness": "claude-code", "runs": runs, "repo_path": "/workspace/repo"})
         sbs.append((sb.id, sb.model_dump_json()))
-    jobs = []
-    for i in range(n // 4):
-        j = Job(title=f"old job {i}", instructions="fix the thing " * 20, environment="loadenv", owner=f"eng-{i % 6}",
-                requester=f"eng-{i % 6}", branch=f"hangar/old-{i}", state=JobState.SUCCEEDED, created_at=t0 + i,
-                events=[JobEvent(state="running", message=f"step {k}", ts=t0 + i + k) for k in range(30)])
-        jobs.append((j.id, j.model_dump_json()))
+    jobs = n // 4 if jobs is None else jobs
+    span = 180 * 86400  # --- durable: months of it, not one afternoon 90 days ago
+    start = time.time() - span - 86400
+    job_rows = []
+    for i in range(jobs):
+        t = start + span * i / max(1, jobs)
+        j = Job(id=f"job-h{i:07d}", title=f"old job {i}", instructions="fix the thing " * 20, environment="loadenv",
+                owner=f"eng-{i % 6}", requester=f"eng-{i % 6}", person=f"eng-{i % 6}", branch=f"hangar/old-{i}",
+                state=JobState.SUCCEEDED,
+                created_at=t, updated_at=t + 600,
+                events=[JobEvent(state="running", message=f"step {k}", ts=t + k) for k in range(30)])
+        if i % 5 == 0:
+            j.result.pr_number, j.landing.pr_state, j.landing.ended = 1000 + i, "merged", True
+        job_rows.append((j.id, j.model_dump_json()))
+    ses_rows = []
+    for i in range(sessions):
+        t = start + span * i / max(1, sessions)
+        s = Session(id=f"ses-h{i:07d}", name=f"old-ses-{i}", environment="loadenv", owner=f"eng-{i % 6}",
+                    person=f"eng-{i % 6}",
+                    state=SessionState.SUSPENDED, created_at=t, last_active_at=t + 3600, updated_at=t + 3600,
+                    turns=[SessionTurn(message=f"step {k} of the work " * 10, run_id=f"run-{k:08d}",
+                                       started_at=t + k * 600, finished_at=t + k * 600 + 300, exit_code=0,
+                                       summary="did the work " * 20, usage=Usage(input_tokens=1000, cost_usd=0.1))
+                           for k in range(4)],
+                    checkpoints=[Checkpoint(reason="suspend", parts={"repo.bundle": 1000, "agent.tgz": 2000})])
+        ses_rows.append((s.id, s.model_dump_json()))
     con = sqlite3.connect(db)
     with con:
         con.executemany("INSERT INTO sandboxes(key, data) VALUES(?, ?)", sbs)
-        con.executemany("INSERT INTO jobs(key, data) VALUES(?, ?)", jobs)
+        con.executemany("INSERT INTO jobs(key, data) VALUES(?, ?)", job_rows)
+        con.executemany("INSERT INTO sessions(key, data) VALUES(?, ?)", ses_rows)
     con.close()
 
 
@@ -123,6 +158,8 @@ def main() -> None:
     p.add_argument("--steps", type=int, default=6, help="agent events per turn, 0.5 s apart")
     p.add_argument("--history", type=int, default=0,
                    help="settled sandbox rows to seed (plus a quarter as many finished jobs) before starting")
+    p.add_argument("--job-history", type=int, default=None, help="finished jobs to seed (default: --history / 4)")
+    p.add_argument("--session-history", type=int, default=0, help="settled sessions to seed")
     p.add_argument("--set", action="append", default=[], metavar="FIELD=JSON", help="a Settings override")
     a = p.parse_args()
 
@@ -149,8 +186,8 @@ def main() -> None:
                     "reaper_interval_seconds": 3600, **overrides})
     s.data_dir.mkdir(parents=True, exist_ok=True)
     s.snapshot_dir.mkdir(parents=True, exist_ok=True)
-    if a.history:
-        seed_history(s.db_path, a.history)
+    if a.history or a.job_history or a.session_history:
+        seed_history(s.db_path, a.history, a.job_history, a.session_history)
     sql = SqlTimer()
     app = create_app(s)
     lag: list[float] = []

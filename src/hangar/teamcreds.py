@@ -34,6 +34,7 @@ from hangar.broker import CredentialError
 from hangar.harnesses import HARNESSES
 from hangar.models import Credential, CredentialKind, ScheduledJob, now
 from hangar.people import OWNER
+from hangar.store import Ge  # --- durable
 
 if TYPE_CHECKING:
     from hangar.config import Settings
@@ -358,10 +359,9 @@ def doctor_checks(h: Any) -> list[dict[str, Any]]:
 
     # 3. frequent senders linked to nobody
     since = now() - UNLINKED_DAYS * 86400
-    seen: Counter[str] = Counter(j.requester for j in h.jobs.list(limit=500)
+    seen: Counter[str] = Counter(j.requester for j in h.jobs.touched_since(since, created_at=Ge(since), person=None)
                                  if j.source in ("github", "slack", "jira", "github-projects")  # --- intake
-                                 and j.person is None and j.created_at >= since
-                                 and not j.requester.endswith(":unknown"))
+                                 and not j.requester.endswith(":unknown"))  # --- durable: every job since
     frequent = [(who, n) for who, n in seen.most_common() if n >= FREQUENT_SENDER_JOBS]
     if frequent:
         cmds = []

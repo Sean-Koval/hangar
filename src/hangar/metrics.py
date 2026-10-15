@@ -125,8 +125,35 @@ class Metrics:
         self.loop_failures = Counter("hangar_loop_failures", "Background loop passes that raised", ["loop"],
                                      registry=r)
         self._lag_task: asyncio.Task | None = None
+        # --- durable: jobs and sessions by state, counted by the store in a worker thread (state_counts)
+        self._counts: dict[str, dict[tuple, int]] = {}
+        self._counting: asyncio.Future | None = None
+        self._counted_at = -60.0
 
     # ------------------------------------------------------------------ scrape-time gauges
+    def state_counts(self, store: Any) -> dict[str, dict[tuple, int]]:
+        """--- durable: sessions and jobs by state (and jobs by reason), up to a minute old; archived ones aren't
+        counted, as for sandboxes. SQLite reads every row to group them (tens of ms at a month of history), so a
+        worker thread counts on a connection of its own while scrapes take the last count (none on the very first)."""
+        from hangar.models import Job, Session
+
+        async def count() -> dict[str, dict[tuple, int]]:
+            return {"sessions": await asyncio.to_thread(store.count_by, Session, "state", own_connection=True),
+                    "jobs": await asyncio.to_thread(store.count_by, Job, "state", "reason", own_connection=True)}
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:  # called from a thread or a script: count here
+            return {"sessions": store.count_by(Session, "state"), "jobs": store.count_by(Job, "state", "reason")}
+        t = self._counting
+        if t is not None and t.done():
+            if not t.cancelled() and t.exception() is None:
+                self._counts = t.result()
+            self._counting = t = None
+        if t is None and time.monotonic() - self._counted_at > 60:
+            self._counted_at = time.monotonic()
+            self._counting = asyncio.ensure_future(count())
+        return self._counts
     def collect_state(self, h: Any) -> None:
         """Set the state gauges from the fleet, sessions and jobs, just before the registry is rendered. On the
         loop, which owns the session and job maps; sandboxes are one GROUP BY in SQLite, like any store call. Not
@@ -137,13 +164,13 @@ class Metrics:
         self.sandboxes.clear()
         for (state, provider), n in counts.items():
             self.sandboxes.labels(str(state), str(provider)).set(n)
+        counts = self.state_counts(h.store)  # --- durable: not all of them are in memory any more
         self.sessions.clear()
-        for state, n in collections.Counter(s.state.value for s in h.sessions._sessions.values()).items():
-            self.sessions.labels(state).set(n)
+        for (state,), n in counts.get("sessions", {}).items():
+            self.sessions.labels(str(state)).set(n)
         self.jobs.clear()
-        for (state, reason), n in collections.Counter((j.state.value, j.reason or "")
-                                                      for j in h.jobs._jobs.values()).items():
-            self.jobs.labels(state, self.label("reason", reason) if reason else "").set(n)
+        for (state, reason), n in counts.get("jobs", {}).items():
+            self.jobs.labels(str(state), self.label("reason", reason) if reason else "").set(n)
         pool = getattr(asyncio.get_running_loop(), "_default_executor", None)
         if pool is not None and hasattr(pool, "_work_queue"):
             self.io_queue.set(pool._work_queue.qsize())

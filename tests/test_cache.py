@@ -244,7 +244,7 @@ def test_usage_report_by_session_and_ttl():
              saved_usd=0.5),
         turn("1h", input_tokens=10, cache_read_tokens=990, saved_usd=0.25)])
     b = Session(name="b", environment="e", harness="codex", turns=[turn(None, input_tokens=100, saved_usd=0.0)])
-    sessions = SimpleNamespace(_sessions={a.id: a, b.id: b})
+    sessions = SimpleNamespace(touched_since=lambda t: [a, b], exists=lambda sid: sid in (a.id, b.id))
     r = usage.aggregate(sessions, None, "session")
     rows = {x["key"]: x for x in r["rows"]}
     assert rows["a"]["cache_hit_ratio"] == pytest.approx(1890 / 2000) and rows["a"]["saved_usd"] == 0.75

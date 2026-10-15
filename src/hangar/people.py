@@ -211,6 +211,15 @@ def usable(creds: list[Credential]) -> list[Credential]:
     return [c for c in creds if c.person is None or c.person == p.person]
 
 
+def scope() -> str | None:
+    """--- durable: `mine` as a store filter: None for everything (admins, in-process callers), else the person
+    whose records the caller sees ("" when the caller has none, which matches nothing)."""
+    p = identity.current.get()
+    if p is None or p.role == "admin":
+        return None
+    return p.person or ""
+
+
 def mine(records: list[Any]) -> list[Any]:
     """The records (with a `person`) the current caller may see."""
     p = identity.current.get()
