@@ -38,6 +38,8 @@ from hangar import (  # strategies: workstream D; --- observe; steer: live turns
     strategies,
     verifyloop,
 )
+from hangar import computer as computer  # --- computer
+from hangar import envdoctor as envdoctor  # --- computer
 from hangar import fairness as fairness  # --- scale
 from hangar import intake as intake  # --- intake: trackers (Jira, GitHub Projects) follow their jobs
 from hangar import people as people  # --- teamcreds: GitHub senders linked to people
@@ -476,6 +478,8 @@ class JobService:
         # workstream C: the session's turns are the job's turns, and carry live usage while one runs
         d["usage"] = u.model_dump(mode="json") if (u := self.usage(job)) else None
         d["pending_approvals"] = [a.model_dump(mode="json") for a in steer.pending(s)]  # workstream steer
+        if s is not None and self.sessions.env_requests is not None:  # --- computer: answered like approvals
+            d["pending_approvals"] += self.sessions.env_requests.approvals_view(s)
         d["autofix_state"] = autofix.view(job)  # --- overnight/autofix: what is waiting, not the logs it carries
         return exchange.scrub_turns(d)  # workstream E: attachment contents never leave in a view
 
@@ -758,6 +762,7 @@ class JobService:
             # workstream E: a question pauses the job (needs_input) instead of ending it
             "If you need a decision you can't make yourself, do not guess: run `hangar-agent ask \"<question>\"` "
             "and end your turn; the job waits for the answer. If the task cannot be done, say why in RESULT.md.",
+            *envdoctor.autonomy_lines(self.fleet, job.environment),  # --- computer: blocked is not idle
         ]
         finish_txt = "\n".join(f"- {f}" for f in finish)
         from hangar.triggers import untrusted_note
@@ -1059,6 +1064,7 @@ class JobService:
                          + ", ".join(f"`{p}`" for p in job.result.touched_tests[:10]) + ". Review them.")
         if job.attempts:
             lines += ["", strategies.attempts_table(job), ""]
+        lines += computer.pr_lines(self, job)  # --- computer: screenshots and recorded demos
         lines.append(f"hangar job `{job.id}` · requested by {job.requester} via {job.source} · "
                      f"{job.environment} / {job.harness}" + (f" / {job.model}" if job.model else ""))
         if usage := self.usage(job):  # workstream C

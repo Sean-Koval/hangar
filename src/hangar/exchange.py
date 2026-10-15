@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any
 
 import jsonschema
 
+from hangar import envdoctor as envdoctor  # --- computer
 from hangar import isolation  # --- isolation
 from hangar.events import add_usage, over_budget
 from hangar.models import Artifact, ContextItem, JobState, Session, SessionTurn, now
@@ -88,9 +89,18 @@ usage: hangar-agent progress [--pct N] MESSAGE   tell the requester how far alon
        hangar-agent artifact PATH [NAME]         hand back a file or directory
        hangar-agent result JSON | - | @FILE      the structured result
        hangar-agent done [SUMMARY]               your summary for the people who asked (RESULT.md)
+       hangar-agent env doctor [--host H[:P]]    what in this environment works and what doesn't (and why)
+       hangar-agent env request secret NAME --why TEXT | egress HOST[:PORT] --why TEXT    ask the owner
+       hangar-agent screenshot [URL] | record start|stop | browse URL | computer start|status    your computer
 QUESTION and SUMMARY are read from stdin when omitted or "-".
 EOF
 }
+case "${1:-}" in  # --- computer: these work outside turns too (docs/computer-use.md)
+  env|screenshot|record|browse|computer)
+    command -v python3 >/dev/null 2>&1 || die "$1 needs python3, and this sandbox has none"
+    if [ "$1" = env ]; then shift; exec python3 "$(dirname "$0")/hangar-env" "$@"; fi
+    exec python3 "$(dirname "$0")/hangar-computer" "$@";;
+esac
 [ -n "${HANGAR_IO:-}" ] || die "HANGAR_IO is not set: this works inside a hangar job or session turn"
 out="$HANGAR_IO/out"
 mkdir -p "$out/artifacts"
@@ -308,6 +318,8 @@ def protocol_note(io_path: str) -> str:
         "- `hangar-agent artifact <path>`: hand back a file or directory (reports, screenshots, generated assets);\n"
         "- `hangar-agent result '<json>'`: the structured result, when one is asked for;\n"
         "- `hangar-agent done \"<summary>\"`: your summary for the people who asked.\n"
+        "- `hangar-agent env doctor`: when something in the environment doesn't work; `hangar-agent env request "
+        "secret <NAME> --why \"...\"` (or `egress <host>`) asks the owner for what blocks you.\n"  # --- computer
         "Attachments for a turn are in `$HANGAR_IO/in/<turn>/`."
     )
 
@@ -367,6 +379,7 @@ async def prepare_turn(svc: SessionService, s: Session, turn: SessionTurn, sb: S
     _, prov = svc.fleet._running(sb.id)
     await install_helper(prov, sb, home)
     await _ensure_on_path(prov, sb, home)
+    await envdoctor.refresh(svc, s, sb, io_path)  # --- computer: the status hangar-env reads, the display
     q = shlex.quote(io_path)
     res = await svc._sh(sb, f"mkdir -p {q}/out/artifacts {q}/in && chmod 700 {q} && "
                             f"find {q}/out -mindepth 1 -maxdepth 1 ! -name artifacts -exec rm -rf {{}} + && "

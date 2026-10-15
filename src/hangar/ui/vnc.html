@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>hangar · agent screen</title>
+<style>
+  :root { --bg: #111418; --fg: #e6e8eb; --muted: #9aa3ad; --accent: #f2c230; --bad: #f87171; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+               font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; gap: 12px; align-items: center; padding: 8px 14px; border-bottom: 1px solid #23282f; }
+  header b { color: var(--accent); }
+  #mode { color: var(--muted); }
+  #status { margin-left: auto; color: var(--muted); }
+  #status.bad { color: var(--bad); }
+  #screen { position: absolute; top: 41px; left: 0; right: 0; bottom: 0; }
+</style>
+</head>
+<body>
+<header><b>hangar</b><span>agent screen</span><span id="mode"></span><span id="status">connecting…</span></header>
+<div id="screen"></div>
+<script type="module">
+  // A one-time ticket from POST /api/screen/tickets (or MCP open_screen) arrives in the fragment, which browsers
+  // never send to a server. Watching is view-only unless the ticket was minted for control; hangar enforces that
+  // itself, so the viewOnly flag here only spares a viewer from typing into nothing.
+  import RFB from "https://cdn.jsdelivr.net/npm/@novnc/novnc@1.7.0/core/rfb.js";
+
+  const params = new URLSearchParams(location.hash.slice(1));
+  history.replaceState(null, "", location.pathname);
+  const ticket = params.get("ticket");
+  const control = params.get("control") === "1";
+  const status = document.getElementById("status");
+  document.getElementById("mode").textContent = control ? "· you have control" : "· view only";
+  const say = (text, bad) => { status.textContent = text; status.className = bad ? "bad" : ""; };
+
+  if (!ticket) {
+    say("no ticket: open this page from `hangar` (open_screen) or POST /api/screen/tickets", true);
+  } else {
+    const scheme = location.protocol === "https:" ? "wss" : "ws";
+    const rfb = new RFB(document.getElementById("screen"),
+                        `${scheme}://${location.host}/api/screen?ticket=${encodeURIComponent(ticket)}`,
+                        { wsProtocols: ["binary"] });
+    rfb.viewOnly = !control;
+    rfb.scaleViewport = true;
+    rfb.addEventListener("connect", () => say("connected"));
+    rfb.addEventListener("disconnect", (e) => say(e.detail.clean ? "disconnected" : "the screen went away", !e.detail.clean));
+    rfb.addEventListener("securityfailure", (e) => say(`refused: ${e.detail.reason || "security failure"}`, true));
+  }
+</script>
+</body>
+</html>

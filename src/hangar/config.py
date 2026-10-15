@@ -238,6 +238,13 @@ class Settings(BaseSettings):
     exchange_max_artifacts_mb: int = 100  # per turn
     exchange_inline_artifact_kb: int = 512  # MCP get_artifact returns at most this much (text or base64)
     exchange_repair_timeout_minutes: int = 10  # the one repair run for a missing or invalid result
+    # --- computer: agents' own computer and self-diagnosis (docs/computer-use.md) ----------
+    env_doctor_mcp: bool = True  # the `hangar-env` MCP server (the doctor, requests) in every harness's config
+    env_request_poll_seconds: float = 30.0  # how often a running turn is checked for new requests (0: at its end)
+    # Screenshots and demos in PR bodies. "off" (default): listed by name, fetched through hangar by people who may see
+    # the job. "signed": embedded through expiring links anyone holding them can open (public repos only, say).
+    pr_media_links: Literal["signed", "off"] = "off"
+    pr_media_link_days: int = 7
     # --- workstream B: slack (docs/slack.md) ---------------------------------
     # Vault credentials: the app's signing secret (verifies requests; the routes are off until it's set) and its
     # bot token (xoxb-…, posts replies and reads threads).

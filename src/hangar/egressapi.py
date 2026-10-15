@@ -46,36 +46,42 @@ class Verdict(BaseModel):
     rule: str | None = None  # the allowlist entry that matched, for the agent to read
 
 
-def _settings() -> Any:
+def _settings(settings: Any = None, fleet: Fleet | None = None) -> Any:
+    """The caller's settings (integration: never the process-wide cached ones when the caller has its own)."""
+    if settings is not None:
+        return settings
+    if fleet is not None:
+        return fleet.settings
     from hangar.config import get_settings
 
     return get_settings()
 
 
-def policy(spec: EnvSpec, *, sandbox: Sandbox | None = None, fleet: Fleet | None = None) -> dict[str, Any]:
+def policy(spec: EnvSpec, *, sandbox: Sandbox | None = None, fleet: Fleet | None = None,
+           settings: Any = None) -> dict[str, Any]:
     """What a sandbox may know about its egress policy (no secrets): {mode, allow, proxy, enforced}. With the
     sandbox (and its fleet), approvals for its session and its repo's policy count too."""
     if sandbox is not None and fleet is not None:
         pol = egress.for_sandbox(fleet, sandbox, spec)
     else:
-        pol = egress.resolve(_settings(), spec, harness=(sandbox.info.get("harness") if sandbox else None))
+        pol = egress.resolve(_settings(settings), spec, harness=(sandbox.info.get("harness") if sandbox else None))
     proxy = ((sandbox.info.get("egress") or {}).get("proxy") if sandbox is not None else None)
     return {"mode": pol.mode, "allow": [r.text for r in pol.rules], "proxy": f"http://{proxy}" if proxy else None,
             "enforced": pol.enforced, "notes": list(pol.notes)}
 
 
 def check(spec: EnvSpec, host: str, port: int | None = None, *, sandbox: Sandbox | None = None,
-          fleet: Fleet | None = None) -> Verdict:
+          fleet: Fleet | None = None, settings: Any = None) -> Verdict:
     """Would the proxy let this sandbox (or one of this environment) reach host:port? `allowed` is None when the
     mode is open (nothing to check)."""
     try:
         h = egress.normalize_host(host)
     except egress.EgressError:
-        return Verdict(allowed=False, mode=egress.env_mode(_settings(), spec), rule=None)
+        return Verdict(allowed=False, mode=egress.env_mode(_settings(settings, fleet), spec), rule=None)
     if sandbox is not None and fleet is not None:
         pol = egress.for_sandbox(fleet, sandbox, spec)
     else:
-        pol = egress.resolve(_settings(), spec, harness=(sandbox.info.get("harness") if sandbox else None))
+        pol = egress.resolve(_settings(settings), spec, harness=(sandbox.info.get("harness") if sandbox else None))
     if pol.mode == "open":
         return Verdict(allowed=None, mode="open")
     rule = pol.allows(h, port or 443)

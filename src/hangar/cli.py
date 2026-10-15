@@ -1289,6 +1289,12 @@ from hangar.people_cli import person_app as _person_app  # noqa: E402
 
 app.add_typer(_person_app, name="person")
 
+# ---------------------------------------------------------------------------- --- computer (computer_cli.py)
+from hangar import computer_cli as _computer  # noqa: E402
+
+app.add_typer(_computer.requests_app, name="requests")
+app.command("screen")(_computer.screen)
+
 
 # ---------------------------------------------------------------------------- overnight/sweep: database backups
 admin_app = typer.Typer(no_args_is_help=True, help="Database backups and restores (docs/gke.md).")

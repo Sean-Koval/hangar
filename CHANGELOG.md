@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Every agent gets its own computer, and can diagnose its environment ([docs/computer-use.md](docs/computer-use.md))
+- **`computer:` in an environment** adds a virtual display, a window manager, VNC on 127.0.0.1, ffmpeg and Chromium
+  (Playwright 1.63.0) to the image. `hangar-agent screenshot`, `record start|stop` and `browse` hand screenshots and
+  MP4 demos back as artifacts; they appear as session events and in the job's PR body, listed by name and fetched
+  through hangar signed in (`HANGAR_PR_MEDIA_LINKS=signed` embeds them through expiring links anyone holding them
+  can open; `HANGAR_PR_MEDIA_LINK_DAYS`). Works under gVisor (Chromium's own sandbox off, with gVisor as the
+  boundary; a small `/dev/shm` handled), and says plainly what is missing where it can't run. `browser_mcp: true`
+  adds Playwright's MCP server for every harness. Sandboxes with a computer get the `hangar-verify-ui` skill.
+- **Watch or take over an agent's screen:** `hangar screen <job|session> [--control]` or `POST /api/screen/tickets`.
+  One-time tickets, owner-scoped; view-only is enforced by hangar; no port is exposed; every view, takeover and
+  disconnect is audited.
+- **`hangar-agent env doctor`** and a `hangar-env` MCP server in every harness report the build version and
+  whether it is a fallback, unhealthy services and ports, missing secret names, whether a host is reachable under the
+  egress policy, and recent setup failures, from `~/.hangar/envstatus.json` (`HANGAR_ENV_DOCTOR_MCP`). Messages in it
+  are redacted.
+- **`hangar-agent env request secret NAME | egress HOST --why ...`** files a request with the owner: an elicitation in
+  `wait_for_turn`, session and job events, the audit log, `hangar requests`, `/api/env-requests`, and in MCP
+  `pending_approvals`, answered with `answer_approval`. No new MCP tools. Never granted automatically, and rate
+  limited (5 a turn, 5 waiting per session, 30 an hour per owner, no re-asking a denied target). Picked up while
+  the turn runs (`HANGAR_ENV_REQUEST_POLL_SECONDS`, 30).
+- **Job prompts ask for autonomy:** report blockers with `env request` and keep working on everything else.
+- `egressapi.py` is the interface to egress enforcement (a stub here, open and unenforced).
+
 The team release (#75–#90): one hangar for a team, with people, per-person caps and budgets; front-door defaults; restarts and the power cycle strand nothing; every MCP tool answers within claude.ai's wait; images and packs are built before anyone waits. **Upgrading a running hangar:** follow [docs/upgrading.md](docs/upgrading.md#upgrading-to-the-team-release-7590) in order: prebuild the new pack tags, quotas and the node pool in the power-down window, then people and budgets.
 
 - **One control plane for a team of six at ~60 sessions.** Sandbox, job and session lookups use expression indexes instead of parsing every record ever made (a team load test: `get_session` p50 3.4 s → 42 ms, event-loop lag p95 5.2 s → 70 ms). Stopped and failed sandbox records idle for 7 days move to an archive table, still found by id, never while a snapshot or a credential lease points at them. Caps per person on live sessions (15), sandboxes (20) and running jobs, counted by the person each record belongs to; a fair job queue serves whoever has the fewest jobs running. `HANGAR_MAX_SANDBOXES` goes to 120 and job slots to auto (8 on GKE; 24 by hand once budgets are set). Workspace archives in flight share a 1 GiB memory budget, so a fork can't exhaust the control plane. On GKE: `n2d-standard-16` sandbox nodes (AMD keeps SMT on under gVisor), up to 10; sandbox pods request half their CPU; `power.sh up` keeps an autoscaling range set while the cluster was down. [docs/team-scale.md](docs/team-scale.md)
