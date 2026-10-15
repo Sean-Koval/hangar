@@ -417,6 +417,23 @@ def test_manifests_and_traces_are_owner_scoped(settings):
         assert r.status_code == 200 and r.json()["resourceSpans"]
         assert c.get(f"/api/jobs/{own.id}/manifest", headers=svc).status_code == 404  # not started: no turn yet
         assert c.get(f"/api/experiments/{own.id}", headers=svc).status_code == 404  # a job, not an experiment
+        # an experiment's index and its trials' stored files, over REST
+        st = experiments.State(spec={"name": "e"}, stage="done", trials=[
+            experiments.Trial(key="t/a/1", task="t", variant="a", trial=1, state="done", stored=["trace.json"])])
+        exp = Job(title="e", instructions="x", environment="plain", owner=tok["id"], state=JobState.SUCCEEDED,
+                  labels={experiments.KIND_LABEL: experiments.KIND})
+        exp.result.data = st.model_dump(mode="json", by_alias=True)
+        h.store.put(exp)
+        experiments._write(experiments._dir(h.settings, exp.id, "t/a/1"), {"trace.json": {"resourceSpans": []}})
+        v = c.get(f"/api/experiments/{exp.id}", headers=svc).json()
+        jsonschema.validate(v, INDEX_SCHEMA)
+        assert v["trials"][0]["links"]["trace"] == f"/api/experiments/{exp.id}/trials/t/a/1/trace"
+        assert c.get(v["trials"][0]["links"]["trace"], headers=svc).json() == {"resourceSpans": []}
+        assert c.get(f"/api/experiments/{exp.id}/trials/t/a/1/manifest", headers=svc).status_code == 404
+        assert c.get(f"/api/experiments/{exp.id}/trials/t/../../x/trace", headers=svc).status_code == 404
+        other_tok = c.post("/api/tokens", json={"name": "svc2", "scopes": ["jobs"]}, headers=admin).json()["token"]
+        assert c.get(f"/api/experiments/{exp.id}", headers={"Authorization": f"Bearer {other_tok}"}).status_code \
+            == 404
 
 
 # ====================================================================== experiments
