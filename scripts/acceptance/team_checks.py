@@ -676,6 +676,95 @@ def check_services(api: Api, state: State, opts: argparse.Namespace) -> str:
     return f"postgres:5432 at {out['address']} answered after {out['seconds']}s (sandbox {boot:.0f}s)"
 
 
+# ---------------------------------------------------------------------------- --- heavy
+HEAVY_COMPOSE = """services:
+  db:
+    image: {image}
+    environment:
+      POSTGRES_PASSWORD: acceptance
+    ports: ["127.0.0.1:{port}:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      retries: 60
+"""
+# A Testcontainers test, as a repo's suite would run it: a Postgres container from the library, its mapped port
+# answering as Postgres. Ryuk (Testcontainers' reaper) runs too: it mounts the Docker socket, as it does on a laptop.
+HEAVY_TESTCONTAINERS = r"""
+import json, socket, sys, time
+from testcontainers.core.container import DockerContainer
+from testcontainers.core.waiting_utils import wait_for_logs
+t0, out = time.time(), {}
+with DockerContainer(sys.argv[1]).with_env("POSTGRES_PASSWORD", "acceptance").with_exposed_ports(5432) as c:
+    wait_for_logs(c, "database system is ready to accept connections", timeout=240)
+    host, port = c.get_container_host_ip(), int(c.get_exposed_port(5432))
+    for _ in range(60):
+        try:
+            s = socket.create_connection((host, port), timeout=5)
+            s.sendall(b"\x00\x00\x00\x08\x04\xd2\x16\x2f")
+            out["answer"] = s.recv(1).decode()
+            s.close()
+            if out["answer"] in ("N", "S"):
+                break
+        except OSError as e:
+            out["last_error"] = str(e)
+        time.sleep(1)
+    out.update(host=host, port=port, seconds=round(time.time() - t0, 1))
+print("HANGAR-ACCEPT " + json.dumps(out))
+"""
+TESTCONTAINERS = "testcontainers==4.15.0"  # PyPI, released 2026-07-24
+
+
+def check_heavy(api: Api, state: State, opts: argparse.Namespace) -> str:
+    """The heavy tier (#heavy): a sandbox with Docker inside its own VM. A Compose stack with Postgres comes up under
+    the supervisor and answers on its published port, and a Testcontainers test passes."""
+    tiers = setting(api, "tiers")
+    if isinstance(tiers, dict) and not tiers.get("heavy"):
+        raise Skip("this hangar has no heavy tier (HANGAR_TIERS lists no providers for heavy)")
+    env = ensure_env(api, opts, "heavy", {"extends": opts.env, "heavy": True})
+    sb, boot = new_sandbox(api, state, opts, env, "heavy", ttl=90)
+    sid = sb["id"]
+    hv = (sb.get("info") or {}).get("heavy") or {}
+    st = hv.get("status") or {}
+    say(f"{sid} in {boot:.0f}s on {sb.get('provider')}: Docker {st.get('version') or '?'} "
+        f"({st.get('storage') or st.get('error') or 'no status'})")
+    if not hv.get("docker"):
+        raise Fail(f"{sid} isn't a heavy sandbox ({hv or 'no heavy record'}): is {env} heavy?")
+    if not st.get("ok"):
+        raise Fail(f"Docker didn't start in {sid}: {st.get('error')}")
+    doctor = api.exec(sid, f"{AGENT} env doctor --json", timeout=60)
+    tier = next((c for c in (json.loads(doctor["stdout"] or "{}").get("checks") or []) if c.get("name") == "tier"),
+                None) if doctor["exit_code"] in (0, 1) else None
+    if not tier or tier.get("status") != "ok" or "heavy" not in tier.get("message", ""):
+        raise Fail(f"`hangar-agent env doctor` doesn't show the heavy tier with Docker answering: {tier}")
+    t0 = time.monotonic()
+    compose = HEAVY_COMPOSE.format(image=opts.service_image, port=15432)
+    api.must(sid, f"mkdir -p ~/accept-heavy && printf %s {shlex.quote(compose)} > ~/accept-heavy/compose.yml")
+    api.must(sid, f"{AGENT} svc add pg --compose accept-heavy/compose.yml", timeout=60)
+    wait = api.exec(sid, f"{AGENT} svc wait pg --timeout {int(opts.service_wait)}", timeout=int(opts.service_wait) + 60)
+    if wait["exit_code"] != 0:
+        logs = api.exec(sid, f"{AGENT} svc logs pg -n 40", timeout=60)["stdout"]
+        raise Fail(f"the compose stack didn't become ready: {wait['stdout'][-300:]}; its log ends: {logs[-600:]}")
+    out = probe(api, sid, PG_PROBE, "127.0.0.1", 15432, opts.service_wait, timeout=int(opts.service_wait) + 60)
+    if "answer" not in out:
+        raise Fail(f"the compose stack's Postgres didn't answer on 127.0.0.1:15432 ({out.get('last_error')})")
+    compose_s = time.monotonic() - t0
+    t0 = time.monotonic()
+    api.must(sid, f"python3 -m venv /tmp/accept-tc && /tmp/accept-tc/bin/pip install -q {TESTCONTAINERS}",
+             timeout=600)
+    tc = api.exec(sid, "/tmp/accept-tc/bin/python -c " + shlex.quote(HEAVY_TESTCONTAINERS) + " "
+                  + shlex.quote(opts.service_image), timeout=600)
+    line = next((ln for ln in reversed(tc["stdout"].splitlines()) if ln.startswith("HANGAR-ACCEPT ")), None)
+    res = json.loads(line[len("HANGAR-ACCEPT "):]) if line else {}
+    if tc["exit_code"] != 0 or res.get("answer") not in ("N", "S"):
+        raise Fail(f"the Testcontainers test failed (exit {tc['exit_code']}): {res or tc['stderr'][-600:]}")
+    tc_s = time.monotonic() - t0
+    note(state, "heavy", timings={"create": boot, "compose_ready": compose_s, "testcontainers": tc_s},
+         docker=st.get("version"), storage=st.get("storage"))
+    return (f"Docker {st.get('version')} in {sid} ({boot:.0f}s); compose Postgres answered after {compose_s:.0f}s; "
+            f"Testcontainers Postgres at {res.get('host')}:{res.get('port')} in {res.get('seconds')}s")
+
+
 # ---------------------------------------------------------------------------- envbuild
 FIXTURE_FILE = ".hangar/environment.yaml"
 FIXTURE_IGNORE = ".gitignore"
@@ -1659,6 +1748,7 @@ def cleanup_last(api: Api, state: State, attempt: Callable[[str, Callable[[], An
 
 CHECKS: dict[str, Callable[[Api, State, argparse.Namespace], str]] = {
     "computer": check_computer, "egress": check_egress, "services": check_services, "envbuild": check_envbuild,
+    "heavy": check_heavy,  # --- heavy
     "secrets": check_secrets, "landing": check_landing, "intake": check_intake, "scale-smoke": check_scale_smoke,
     "power": check_power, "prepull": check_prepull,
     "status": check_status, "clouddoctor": check_clouddoctor,  # --- integ3

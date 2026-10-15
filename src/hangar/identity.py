@@ -33,7 +33,8 @@ current: contextvars.ContextVar[Principal | None] = contextvars.ContextVar("hang
 # arbitrary registry image (prebuilt or as the build's base), a runtime class (runc instead of gVisor), and the git
 # credential mode (direct puts the git token in the sandbox instead of the gateway).
 ADMIN_FIELDS = ("secrets", "image", "base", "runtime_class", "credential_mode",
-                "egress", "build_secrets", "cloud")  # --- egress: reach, build secrets, cloud identity
+                "egress", "build_secrets", "cloud",  # --- egress: reach, build secrets, cloud identity
+                "heavy", "profile")  # --- heavy: Docker (privileged in a VM) and the big profiles cost and widen
 
 
 class Forbidden(PermissionError):
@@ -153,7 +154,10 @@ def check_environment(data: dict[str, Any], store: Store, settings: Settings | N
     """Refuse an environment save that a non-admin may not make, or that maps a control-plane credential."""
     if not is_admin():
         bad = [f for f in ADMIN_FIELDS if data.get(f) is not None and data[f] != {}  # "" is a runtime class (runc)
-               and not (f == "credential_mode" and data[f] == "gateway")]
+               and not (f == "credential_mode" and data[f] == "gateway")
+               and not (f == "heavy" and data[f] is False) and not (f == "profile" and data[f] == "standard")]
+        if data.get("tier") == "heavy":  # --- heavy: the same as heavy: true
+            bad.append("tier: heavy")
         if bad:
             raise Forbidden(f"setting {', '.join(bad)} on an environment needs an admin token; extend an environment "
                             "that already has what you need, or ask an admin")

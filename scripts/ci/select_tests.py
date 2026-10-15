@@ -60,7 +60,7 @@ PATHS: list[tuple[str, list[str] | str]] = [
                   "tests/test_egress.py",  # --- egress: reads the NetworkPolicies too
                   "tests/test_setup_cicd.py"]),  # --- cicd: deploy/gke/setup-cicd.sh
     ("scripts/acceptance/*", ["tests/test_acceptance_script.py", "tests/test_acceptance_team.py",  # --- acceptance
-                              "tests/test_e2e_acceptance_docker.py"]),
+                              "tests/test_e2e_acceptance_docker.py", "tests/test_e2e_heavy_docker.py"]),  # --- heavy
     ("src/hangar/ui/*", ["tests/test_app.py"]),
     ("envs/*", "envs"),
     ("envd/*", "envd"),

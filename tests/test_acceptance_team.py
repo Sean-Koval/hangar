@@ -951,3 +951,23 @@ def test_status_and_a_doctor_dry_run_against_a_real_hangar(tmp_path, hangar_with
     from hangar.clouddoctor import DoctorFinding
 
     assert not hangar_with.h.store.list(DoctorFinding)
+
+
+# ---------------------------------------------------------------------------- --- heavy
+def test_heavy_skips_without_a_heavy_tier(tmp_path, hangar_with):
+    """The heavy check needs HANGAR_TIERS to list providers for heavy; the Docker run is test_e2e_heavy_docker.py."""
+    with pytest.raises(ha.Skip, match="no heavy tier"):
+        tc.check_heavy(hangar_with.api, ha.State(tmp_path / "s.json"), _opts())
+
+
+def test_heavy_check_material():
+    import ast
+
+    import yaml
+
+    stack = yaml.safe_load(tc.HEAVY_COMPOSE.format(image="mirror.gcr.io/library/postgres:17", port=15432))
+    db = stack["services"]["db"]
+    assert db["ports"] == ["127.0.0.1:15432:5432"] and db["healthcheck"]["test"][0] == "CMD-SHELL"
+    ast.parse(tc.HEAVY_TESTCONTAINERS)
+    assert tc.TESTCONTAINERS.startswith("testcontainers==")
+    assert "heavy" in tc.CHECKS and "heavy" in SCRIPT.read_text().split("CHECKS=", 1)[1].split('"', 2)[1]
