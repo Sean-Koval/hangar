@@ -760,8 +760,9 @@ async def check_fix(svc: JobService, job: Job, base: str) -> str | None:
 
 async def after_push(svc: JobService, job: Job) -> str | None:
     """--- review: once hangar pushed a doctor fix, judged again where its agent can't reach. check_fix runs in the
-    job's sandbox, whose agent (with sudo) can put its own `git` first on PATH, and could push to its branch through
-    the gateway afterwards. So the sandbox's push grant goes now, and the branch's head is judged from GitHub's
+    job's sandbox, whose agent (with sudo) can put its own `git` first on PATH. (--- least-privilege: its grant only
+    fetches, and hangar's pinned delivery grant is gone by now.) So the sandbox's grant goes now, and the branch's
+    head is judged from GitHub's
     compare against the base, the files the PR would hold. None: open the PR; else why not (the branch is deleted)."""
     import httpx
 

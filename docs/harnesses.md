@@ -10,7 +10,7 @@ anyone, and how each one gets "the latest strong model" without a stale default.
 | The contract tests | `.github/workflows/harness-contract.yml` | PRs that touch harness, driver or isolation code; every push to main |
 | The canary | `.github/workflows/harness-canary.yml` | nightly, 03:17 ET (07:17 UTC), and by hand |
 | Landing the canary's PR | `.github/workflows/harness-canary-land.yml` | on an approval of it |
-| Model policies | an environment's or repo policy's `model:` (`balanced`, the default, or `frontier`) | when a sandbox or session is created |
+| Model policies | an environment's or repo policy's `model:` (`balanced`, which jobs and `envs/bare.yaml` default to, or `frontier`) | when a sandbox or session is created |
 
 None of these talk to the cluster, so they all work while it is powered down.
 

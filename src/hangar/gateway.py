@@ -587,6 +587,7 @@ class Gateway:
 
     async def start(self) -> None:
         s = self.settings
+        self.narrow()  # --- least-privilege
         if s.gateway_url and s.gateway_port:
             self._server = _Server(self.asgi_app(), s.gateway_host or s.host, s.gateway_port)
             self._server.start()
@@ -646,6 +647,27 @@ class Gateway:
     def drop(self, grant_id: str) -> None:
         self.store.delete(SandboxGrant, grant_id)
 
+    def narrow(self) -> int:
+        """At startup: grants minted before jobs went fetch-only (an upgrade, with a job's sandbox kept for its
+        follow-ups) lose their push refs, and delivery grants a restart cut short go. The token stays the same, so
+        nothing in the sandbox changes. Returns how many grants changed."""
+        n = 0
+        for g in self.grants():
+            sb = self.store.get(Sandbox, g.sandbox_id)
+            if g.pins:
+                self.store.delete(SandboxGrant, g.id)
+            elif g.push_refs and sb is not None and self.fetch_only(sb):
+                g.push_refs = []
+                self.store.put(g)
+                if (sb.info.get("git") or {}).get("mode") == "gateway":
+                    sb.info["git"] = {**sb.info["git"], "push_refs": [], "fetch_only": True}
+                    self.store.put(sb)
+                self.fleet.audit("gateway", "gateway.narrow", sb.id, push_refs=[])
+            else:
+                continue
+            n += 1
+        return n
+
     def fetch_only(self, sb: Sandbox) -> bool:
         """--- least-privilege: whether the sandbox's grant must be fetch-only: a job's (its session carries a job;
         best-of-N attempts, follow-ups, auto-fix rounds, env setup's agents and the Cloud Doctor's jobs alike), a
@@ -688,10 +710,10 @@ class Gateway:
 
     # ------------------------------------------------------------------ sandbox wiring
     def mode_for(self, spec: EnvSpec, sb: Sandbox, parent: Sandbox | None) -> str:
-        # --- least-privilege: a fetch-only sandbox never holds a git token when the gateway serves its repo, whatever
-        # the environment's credential_mode or HANGAR_GATEWAY_FOR_JOBS say (landing refuses to land direct-mode jobs)
-        if self.settings.gateway_url and self.fetch_only(sb) and \
-                parse_remote(sb.repo or (parent.repo if parent else None), self.hosts):
+        # --- least-privilege: with the gateway configured, a fetch-only sandbox never holds a git token, whatever the
+        # environment's credential_mode or HANGAR_GATEWAY_FOR_JOBS say (landing refuses to land direct-mode jobs).
+        # A repo on a host the gateway doesn't serve gets no grant either, and so no git credential at all.
+        if self.settings.gateway_url and self.fetch_only(sb):
             return "gateway"
         if spec.credential_mode:
             return spec.credential_mode

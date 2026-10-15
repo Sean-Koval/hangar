@@ -693,6 +693,7 @@ class Fleet:
         # Nothing awaits from here to broker.acquire, so the free login it picks is still free there.
         cred_names = await teamcreds.for_sandbox(self, cred_names, person, hname, credentials is not None,
                                                  repo or (spec.repo.url if spec.repo else None), progress)
+        cred_names = delivery.clone_credentials(self, cred_names, labels or {})  # --- least-privilege: builds
         for c in [*cred_names, *spec.secrets.values()]:
             self.broker.get(c)  # fail fast on typos
         for c in spec.secrets.values():  # --- identity: and on control-plane credentials mapped in (B4)

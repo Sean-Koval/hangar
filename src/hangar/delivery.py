@@ -39,6 +39,17 @@ def builds_repo_code(sb: Sandbox) -> bool:
     return BUILD_LABEL in sb.labels or VALIDATE_LABEL in sb.labels
 
 
+def clone_credentials(fleet: Fleet, names: list[str], labels: dict[str, str]) -> list[str]:
+    """The credentials a build's or validation's sandbox is created with: git ones only (the gateway picks its
+    upstream credential among them; none is injected). Nothing else is even leased to it, so no login a team pool
+    adds is held by it, and no sign-in file is copied back from it into the vault when it is released."""
+    from hangar.gateway import GIT_KINDS
+
+    if BUILD_LABEL not in labels and VALIDATE_LABEL not in labels:
+        return names
+    return [n for n in names if (c := fleet.store.get(Credential, n)) is not None and c.kind in GIT_KINDS]
+
+
 def secrets(fleet: Fleet, sb: Sandbox, spec: EnvSpec) -> dict[str, str]:
     """The environment's `secrets:` for this sandbox: in a fetch-only gateway sandbox (a job's on a direct-mode
     environment), minus the ones that map a git credential, which would hand the agent the token the gateway keeps."""
@@ -62,11 +73,16 @@ def secrets(fleet: Fleet, sb: Sandbox, spec: EnvSpec) -> dict[str, str]:
 
 
 def clone_hint(sb: Sandbox) -> str:
-    """Why a build's or validation's clone may have failed: it had no git credential, by design."""
-    if builds_repo_code(sb) and (sb.info.get("git") or {}).get("mode") != "gateway":
+    """Why a clone may have failed: the sandbox had no git credential, by design."""
+    git = sb.info.get("git") or {}
+    if builds_repo_code(sb) and git.get("mode") != "gateway":
         return ("\nhangar: a repo build or env-setup validation runs the repo's install, so its sandbox holds no git "
                 "credential; it clones a private repo only through the git gateway's fetch-only grant "
                 "(HANGAR_GATEWAY_URL, docs/security.md#git-credential-gateway)")
+    if git.get("mode") == "gateway" and not git.get("repo"):
+        return ("\nhangar: the git gateway doesn't serve this repo's host (HANGAR_GATEWAY_UPSTREAMS), and this "
+                "sandbox holds no git credential of its own (a job's, a build's and a validation's never do while the "
+                "gateway is configured)")
     return ""
 
 

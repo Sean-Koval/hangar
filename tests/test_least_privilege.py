@@ -110,6 +110,38 @@ async def test_credential_mode_direct_doesnt_give_a_job_a_token(fleet, gw, upstr
     assert res.exit_code != 0 and "may fetch but not push" in res.stderr
 
 
+async def test_a_repoless_job_on_a_direct_environment_gets_no_token(fleet, gw, upstream, tmp_path):  # noqa: F811
+    """No repo (a Slack question, say) or a host the gateway doesn't serve: still no git token in a job's sandbox."""
+    fleet.catalog.add({"name": "direct-norepo", "harnesses": ["git"], "credentials": ["gh-pat"],
+                       "credential_mode": "direct"}, save_dir=tmp_path)
+    sb = await fleet.create("direct-norepo", labels=JOB)
+    assert sb.info["git"]["mode"] == "gateway" and fleet.gateway.grants(sb.id) == []
+    assert _files_containing(_box(fleet, sb), PAT) == []
+    other = Sandbox(name="g", environment="direct-norepo", provider="docker", labels=JOB,
+                    repo="https://gitlab.com/acme/widgets.git")
+    assert fleet.gateway.mode_for(fleet.catalog.get("direct-norepo"), other, None) == "gateway"
+    other.info["git"] = {"mode": "gateway", "repo": None}
+    assert "doesn't serve this repo's host" in delivery.clone_hint(other)
+
+
+async def test_grants_from_before_the_upgrade_are_narrowed_at_startup(fleet, gw, upstream):  # noqa: F811
+    """A job's sandbox kept for follow-ups across the upgrade held `hangar/**` and its branch. At startup its grant
+    keeps its token and loses its push refs; a delivery grant a restart cut short goes."""
+    sb = await fleet.create("auto", labels=JOB, push_branch="hangar/job-4")
+    [own] = fleet.gateway.grants(sb.id)
+    own.push_refs = ["refs/heads/hangar/job-4", "refs/heads/hangar/**"]  # as the old code minted it
+    fleet.store.put(own)
+    session = await fleet.create("auto", labels={"hangar.session": "ses-person"}, push_branch="hangar/session/p")
+    fleet.gateway.mint_delivery(fleet.get(sb.id), "refs/heads/hangar/job-4", "a" * 40, 10)
+    assert fleet.gateway.narrow() == 2
+    assert [g.push_refs for g in fleet.gateway.grants(sb.id)] == [[]]
+    assert fleet.gateway.grants(session.id)[0].push_refs[0] == "refs/heads/hangar/session/p", "sessions keep theirs"
+    res = await fleet.exec(sb.id, "git commit -q --allow-empty -m x && git push origin HEAD:refs/heads/hangar/job-4")
+    assert res.exit_code != 0 and "may fetch but not push" in res.stderr
+    assert (await fleet.exec(sb.id, "git fetch -q origin keep")).exit_code == 0, "same token, still fetches"
+
+
+@pytest.mark.parametrize("repo", ["https://github.com/acme/widgets.git", None, "https://gitlab.com/acme/w.git"])
 @pytest.mark.parametrize("labels", [
     {"hangar.job": "job-1", "hangar.session": "ses-1"},  # a job, a follow-up, an auto-fix round
     {"hangar.job": "job-1", "hangar.attempt": "2", "hangar.session": "ses-2"},  # a best-of-N attempt
@@ -119,11 +151,10 @@ async def test_credential_mode_direct_doesnt_give_a_job_a_token(fleet, gw, upstr
     {envbuilds.VALIDATE_LABEL: "ab" * 16, "hangar.env-setup.parent": "job-1"},  # env setup's validation
     {envbuilds.LABEL: "bld-1"},  # a repo build
 ])
-def test_no_job_kind_or_build_gets_a_push_grant(fleet, labels):
+def test_no_job_kind_or_build_gets_a_push_grant(fleet, labels, repo):
     fleet.settings.gateway_url, fleet.settings.gateway_for_jobs = "http://gw.test", False
     spec = fleet.catalog.get(fleet.catalog.names()[0]).model_copy(update={"credential_mode": "direct"})
-    sb = Sandbox(name="x", environment=spec.name, provider="docker", repo="https://github.com/acme/widgets.git",
-                 labels=labels)
+    sb = Sandbox(name="x", environment=spec.name, provider="docker", repo=repo, labels=labels)
     assert fleet.gateway.mode_for(spec, sb, None) == "gateway"
     assert fleet.gateway.push_scope(sb, "hangar/job-1") == []
 
@@ -148,7 +179,11 @@ async def test_a_build_sandbox_gets_no_credential_secret_or_cloud_token(fleet, t
     fleet.broker.put("gh", "git", CredentialKind.GIT_TOKEN, "ghp_buildCLONEtoken0123456789")
     fleet.broker.put("npm", "custom", CredentialKind.GENERIC, "npm_SECRETvalue", env_var="NPM_TOKEN")
     fleet.broker.put("db", "custom", CredentialKind.GENERIC, "db_SECRETvalue", env_var="UNUSED")
-    fleet.catalog.add({"name": "credenv", "harnesses": ["git"], "credentials": ["gh", "npm"],
+    login = fleet.broker.put("login", "custom", CredentialKind.AUTH_FILE, "login_SECRETvalue",
+                             file_path=".config/tool/auth.json")
+    login.exclusive = True  # a sign-in file: leased to one sandbox, copied back into the vault on release
+    fleet.store.put(login)
+    fleet.catalog.add({"name": "credenv", "harnesses": ["git"], "credentials": ["gh", "npm", "login"],
                        "secrets": {"DB_PASSWORD": "db"}}, save_dir=tmp_path)
     clouds: list[str] = []
     real = fleet.cloud.attach
@@ -159,11 +194,17 @@ async def test_a_build_sandbox_gets_no_credential_secret_or_cloud_token(fleet, t
 
     monkeypatch.setattr(fleet.cloud, "attach", attach)
     prov = fleet.providers["docker"]
-    sb = await fleet.create("credenv", credentials=["gh", "npm"], labels={envbuilds.LABEL: "bld-1"})
+    sb = await fleet.create("credenv", credentials=["gh", "npm", "login"], labels={envbuilds.LABEL: "bld-1"})
     box = _box(fleet, sb)
-    for value in ("ghp_buildCLONEtoken", "npm_SECRETvalue", "db_SECRETvalue"):
+    for value in ("ghp_buildCLONEtoken", "npm_SECRETvalue", "db_SECRETvalue", "login_SECRETvalue"):
         assert _files_containing(box, value) == [], value
     assert sb.id not in clouds, "no cloud token"
+    # not even leased: what `install` writes at the sign-in file's path never goes back into the vault
+    assert fleet.store.get(type(login), "login").leased_to is None and sb.credentials == ["gh"]
+    (box / "home/agent/.config/tool").mkdir(parents=True, exist_ok=True)
+    (box / "home/agent/.config/tool/auth.json").write_text("planted by install")
+    await fleet.destroy(sb.id)
+    assert fleet.broker.secret_text("login") == "login_SECRETvalue"
     plain = await fleet.create("credenv", credentials=["gh", "npm"])  # the label is what takes them away
     env = (await prov.read_file(plain, "/home/agent/.hangar/env") or b"").decode()
     assert "npm_SECRETvalue" in env and "db_SECRETvalue" in env and plain.id in clouds

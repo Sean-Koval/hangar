@@ -641,13 +641,14 @@ async def _push_losers(jobs: JobService, job: Job, sessions: dict[int, Session],
         if a.index == winner or a.rank is None or s is None or not jobs.sessions._alive(s.sandbox_id or ""):
             continue
         branch = f"{job.branch}-attempt-{a.index}"
+        # --- least-privilege: hangar pushes the attempt's head as it was before the scan (delivery.py); the
+        # attempt's sandbox only fetches
+        head = await jobs.fleet.exec(s.sandbox_id, "git rev-parse HEAD", timeout=60, actor=f"job:{job.id}")
         try:  # --- egress: an attempt holding a secret isn't pushed either
             await secretscan.before_push(jobs, job, sandbox_id=s.sandbox_id)
         except secretscan.Blocked as e:
             jobs._event(job, f"attempt {a.index}: {e}")
             continue
-        # --- least-privilege: as hangar, the attempt's head only (delivery.py); its sandbox only fetches
-        head = await jobs.fleet.exec(s.sandbox_id, "git rev-parse HEAD", timeout=60, actor=f"job:{job.id}")
         res = await delivery.push(jobs.fleet, s.sandbox_id, branch, head.stdout.strip() or "HEAD", f"job:{job.id}")
         if res.exit_code == 0:
             a.pushed_branch = branch
