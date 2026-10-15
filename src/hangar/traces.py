@@ -19,6 +19,7 @@ import re
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
 
+from hangar import testresults
 from hangar.events import RunEvent, total_usage
 from hangar.models import Job, Session, SessionTurn, Usage, now
 
@@ -579,11 +580,7 @@ def job_export(jobs: JobService, job: Job, sessions: list[Session] | None = None
             if t.started_at:
                 _turn_span(x, pid, s, n, t, _events_of(grouped, n, t), extra, root=where)
     _job_events(x, root, job)
-    try:  # the testresults work (build/testresults): each check's test.run / test.case events on the job
-        from hangar import testresults
-    except ImportError:
-        testresults = None
-    if testresults is not None and root is not None:
+    if root is not None:  # each check's test.run / test.case events on the job (testresults.py)
         testresults.add_to_export(x, root, jobs.store, job)
     main = next((z for z in sessions if z.id == job.session_id), None)
     return x.request({"hangar.export.scope": "job", "hangar.job.id": job.id, "hangar.environment": job.environment,

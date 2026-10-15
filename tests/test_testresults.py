@@ -587,6 +587,24 @@ def test_trace_events_follow_the_trace_taxonomy_and_the_test_semantic_convention
     assert [n for _, n, _ in x.events] == ["test.run", "test.case", "test.case"] and x.events[0][2] == r.id
 
 
+async def test_a_jobs_trace_export_carries_its_test_runs(jobs):  # noqa: F811
+    """traces.job_export calls add_to_export directly (it was behind an ImportError guard while #114 and #116 were
+    apart): a stored run of the job's check is on the exported `job` span."""
+    from hangar import traces
+
+    job = Job(title="t", instructions="x", environment="plain", branch="hangar/j")
+    jobs.store.put(job)
+    r = testresults.record(jobs.store, results=testreports.merge([_parse("nextest-junit.xml")]), kind="verify",
+                           repo="o/r", job_id=job.id, exit_code=1, command="cargo nextest run")
+    out = traces.job_export(jobs, job, sessions=[])
+    spans = [sp for rs in out["resourceSpans"] for ss in rs["scopeSpans"] for sp in ss["spans"]]
+    root = next(sp for sp in spans if sp["name"] == "invoke_workflow hangar.job")
+    names = [e["name"] for e in root.get("events", [])]
+    assert names.count("test.run") == 1 and names.count("test.case") == 2
+    run = next(e for e in root["events"] if e["name"] == "test.run")
+    assert {"key": "hangar.test.run.id", "value": {"stringValue": r.id}} in run["attributes"]
+
+
 async def test_test_ids_cant_forge_markdown_in_the_packet():
     job = Job(title="t", instructions="x", environment="e", branch="hangar/j", verify="pytest")
     job.result.verify_exit_code = 1
