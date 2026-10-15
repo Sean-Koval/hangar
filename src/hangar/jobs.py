@@ -31,6 +31,7 @@ from hangar import (  # strategies: workstream D; --- observe; steer: live turns
     baseline,  # --- frontdoor
     exchange,
     jobbudget,  # --- frontdoor
+    landing,  # --- landing
     observe,
     repopolicy,  # --- frontdoor
     scratch,  # --- frontdoor
@@ -198,6 +199,7 @@ class JobService:
         from hangar.drain import Drain  # --- reconciler: power-down drain holds jobs that haven't started
 
         self.drain = Drain(self)
+        self.landing = landing.Landing(self)  # --- landing: PR state, the App identity, approval lands the PR
         if sessions is not None:  # --- overnight/sweep: a deleted session's usage stays on its job
             sessions.on_delete.append(self._session_deleted)
 
@@ -248,6 +250,7 @@ class JobService:
             if s is not None and (job.state in JOB_TERMINAL or job.state == JobState.NEEDS_INPUT):
                 self.sessions.release_restart_hold(s)
             strategies.release_restart_holds(self, job)
+        self.landing.restore()  # --- landing: end sessions of merged PRs, land what was approved
         n = fairness.job_slots(self.settings)  # --- scale: sized from capacity unless set
         self._workers = [asyncio.create_task(self._worker(i)) for i in range(n)]
         autofix.restore(self)  # --- overnight/autofix: PR triggers still waiting for their window
@@ -263,6 +266,7 @@ class JobService:
             with contextlib.suppress(BaseException):
                 await t
         self._workers = []
+        await self.landing.close()  # --- landing
 
     async def _worker(self, i: int) -> None:
         while True:
@@ -662,6 +666,7 @@ class JobService:
             await self._report(job)
         finally:
             self._active.discard(job.id)
+            self.landing.idle(job)  # --- landing: arming waits for the turn; so does ending a merged PR's session
 
     async def _sh(self, job: Job, command: str, timeout: int = 120, cwd: str | None = None):
         return await self.fleet.exec(job.sandbox_id, command, cwd=cwd, timeout=timeout, actor=f"job:{job.id}")
@@ -824,6 +829,7 @@ class JobService:
     async def _start_turn(self, job: Job, turn: Turn, s) -> None:
         from hangar.models import SessionTurn
 
+        await self.landing.turn_starting(job)  # --- landing: never an armed auto-merge while an agent can push
         sb = self.fleet.get(job.sandbox_id)
         ctx = self._ctxdir(job)
         await self._sh(job, f"rm -f {shlex.quote(ctx)}/RESULT.md")
@@ -1025,6 +1031,7 @@ class JobService:
         self._event(job, f"pushed {job.branch}")
         if job.deliver in ("pr", "draft_pr"):
             await self._ensure_pr(job, draft=draft or job.deliver == "draft_pr")
+            await self.landing.delivered(job)  # --- landing: a stale approval, the review packet
 
     def _github(self) -> GitHub | None:
         name = self.settings.github_token_credential
@@ -1039,7 +1046,7 @@ class JobService:
 
     async def _ensure_pr(self, job: Job, draft: bool) -> None:
         repo = parse_repo(job.repo)
-        gh = self._github() if repo else None
+        gh = await self.landing.client(repo, job) if repo else None  # --- landing: as the GitHub App, when set
         if gh is None:
             self._event(job, "branch pushed; PR not opened (not a GitHub repo, or HANGAR_GITHUB_TOKEN_CREDENTIAL "
                              "is not set)")
@@ -1052,6 +1059,7 @@ class JobService:
                                       secretscan.clean(self, job, self._pr_body(job), "the PR body"), draft)
                 self._event(job, f"opened {'draft ' if pr.get('draft') else ''}PR #{pr['number']}")
             job.result.pr_url, job.result.pr_number = pr.get("html_url"), pr.get("number")
+            self.landing.opened(job, pr)  # --- landing
             self._save(job)
         except (GitHubError, httpx.HTTPError) as e:
             self._event(job, f"branch pushed; opening the PR failed: {e}")
@@ -1147,7 +1155,8 @@ class JobService:
             await notify(self, job, ref, body, kind)
             return
         m = re.match(r"^github:([^#]+)#(\d+)$", ref)
-        gh = self._github() if m else None
+        # --- landing: the job's own PR hears from the App; issues from the control token
+        gh = await self.landing.comment_client(job, m.group(1), int(m.group(2))) if m else None
         if gh is None:
             return
         try:
@@ -1243,6 +1252,12 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
     envs = svc.repo_envs(f"https://github.com/{repo}") if repo else []
     if not envs:
         return {"ignored": f"repo '{repo}' is not in HANGAR_GITHUB_REPOS"}
+    if event in landing.EVENTS:  # --- landing: PR state, approvals and checks on hangar's PRs
+        landed = await svc.landing.handle(event, payload)
+        if event not in autofix.EVENTS:
+            return landed
+        if landed.get("ok"):  # one delivery, two readers: the response says what each did
+            return {**await autofix.handle(svc, event, delivery, payload), "landing": landed}
     if event in autofix.EVENTS:  # --- overnight/autofix: CI results and reviews on hangar's PRs
         return await autofix.handle(svc, event, delivery, payload)
     issue = payload.get("issue") or {}

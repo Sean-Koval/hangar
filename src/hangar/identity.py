@@ -113,7 +113,8 @@ def _signing_names(settings: Settings) -> set[str]:
 def reserved_names(settings: Settings) -> set[str]:
     """Every credential the control plane names for its own use: the signing keys and bot tokens, and the GitHub
     tokens it calls GitHub with (control-plane unless an admin marks them `sandbox`)."""
-    return _signing_names(settings) | {n for n in (settings.github_token_credential, settings.gateway_credential) if n}
+    return _signing_names(settings) | {n for n in (settings.github_token_credential, settings.gateway_credential,
+                                                   settings.github_app_credential) if n}  # --- landing
 
 
 def locked(cred: Credential, settings: Settings | None) -> bool:

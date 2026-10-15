@@ -401,11 +401,15 @@ async def mint_installation_token(client: httpx.AsyncClient, api_url: str, app: 
 
 
 class AppTokens:
-    """Installation tokens per (credential value, repo), cached in memory only until shortly before they expire."""
+    """Installation tokens per (credential value, repo), cached in memory only until shortly before they expire.
 
-    def __init__(self, api_url: str, client_factory):
+    --- landing: each token gets only `permissions`. Git over HTTPS needs `contents: write` alone, so that is what
+    the gateway asks for; the control plane's PR identity (landing.py) adds `pull_requests: write`."""
+
+    def __init__(self, api_url: str, client_factory, permissions: dict[str, str] | None = None):
         self.api_url = api_url
         self._client = client_factory
+        self.permissions = permissions or {"contents": "write"}
         self._cache: dict[tuple[str, str], tuple[str, float]] = {}
         self._locks: dict[tuple[str, str], asyncio.Lock] = collections.defaultdict(asyncio.Lock)
 
@@ -419,7 +423,7 @@ class AppTokens:
             if hit and hit[1] - time.time() > TOKEN_REFRESH_SECONDS:
                 return hit[0]
             tok, exp = await mint_installation_token(self._client(), self.api_url, parse_app_credential(value), repo,
-                                                     {"contents": "write", "pull_requests": "write"})
+                                                     self.permissions)
             self._cache[key] = (tok, exp)
             return tok
 
@@ -659,7 +663,7 @@ class Gateway:
         if _has_userinfo(repo_url):
             raise GatewayError("the repo URL carries credentials; use a plain https URL with credential_mode: gateway")
         upstream = next((c.name for c in git if c.kind != CredentialKind.SSH_KEY), None) or \
-            self.settings.gateway_credential
+            self.settings.gateway_credential or self.settings.github_app_credential  # --- landing: push as the App
         remote = parse_remote(repo_url, self.hosts)
         push_refs = list(self.settings.gateway_push_refs)
         if branch:

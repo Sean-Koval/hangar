@@ -1085,6 +1085,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import preview  # --- envbuilds: links to a sandbox's preview ports
 
     preview.mount(app, h, U)
+    from hangar import inbox  # --- landing: GET /api/inbox, what needs the caller
+
+    inbox.mount(app, h, U)
     from hangar import backup  # --- overnight/sweep: database backups (hangar admin)
 
     backup.mount(app, h, A)

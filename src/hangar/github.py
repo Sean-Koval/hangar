@@ -78,8 +78,23 @@ class GitHub:
     async def default_branch(self, repo: str) -> str:
         return (await self._req("GET", f"/repos/{repo}"))["default_branch"]
 
-    async def comment(self, repo: str, number: int, body: str) -> None:
-        await self._req("POST", f"/repos/{repo}/issues/{number}/comments", json={"body": f"{MARKER}\n{body}"})
+    async def comment(self, repo: str, number: int, body: str) -> dict[str, Any] | None:
+        return await self._req("POST", f"/repos/{repo}/issues/{number}/comments", json={"body": f"{MARKER}\n{body}"})
+
+    async def edit_comment(self, repo: str, comment_id: int, body: str) -> dict[str, Any] | None:  # --- landing
+        return await self._req("PATCH", f"/repos/{repo}/issues/comments/{int(comment_id)}",
+                               json={"body": f"{MARKER}\n{body}"})
+
+    async def graphql(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        """--- landing: a GraphQL call (auto-merge has no REST route). GitHub answers 200 with `errors` for a refused
+        mutation; those raise like a REST error. Enterprise Server serves it at /api/graphql, next to /api/v3."""
+        base = str(self._client.base_url).rstrip("/")
+        url = base[: -len("/v3")] + "/graphql" if base.endswith("/api/v3") else base + "/graphql"
+        out = await self._req("POST", url, json={"query": query, "variables": variables}) or {}
+        if errs := out.get("errors"):
+            msg = "; ".join(str(e.get("message", e)) for e in errs if isinstance(e, dict)) or str(errs)
+            raise GitHubError(f"GitHub GraphQL: {msg}"[:500])
+        return out.get("data") or {}
 
     async def team_membership(self, org: str, team: str, login: str) -> dict[str, Any] | None:
         """`{"state": "active" | "pending", "role": ...}`, or None when the user isn't on the team (GitHub's 404,

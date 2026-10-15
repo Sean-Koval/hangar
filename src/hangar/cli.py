@@ -1270,6 +1270,10 @@ from hangar import envbuilds_cli as _envbuilds  # noqa: E402
 
 _envbuilds.register(env_app)
 _envbuilds.register_sb(sb_app)
+# ---------------------------------------------------------------------------- --- landing: hangar inbox (inbox_cli.py)
+from hangar import inbox_cli as _inbox  # noqa: E402
+
+_inbox.register(app)
 
 # ---------------------------------------------------------------------------- workstream steer (steer_cli.py)
 from hangar import steer_cli as _steer  # noqa: E402

@@ -176,6 +176,10 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
     from hangar.setup_api import webhook_checks
 
     out += await webhook_checks(h, transport)
+    # --- landing: repos that land on approval have the branch protection that keeps it safe
+    from hangar.landing import doctor_checks as landing_checks
+
+    out += await landing_checks(h)  # through the job service's GitHub transport, like the PRs themselves
 
     # --- workstream B: slack
     from hangar.slack import doctor_checks as slack_checks

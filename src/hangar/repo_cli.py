@@ -56,6 +56,9 @@ def _line(p: dict) -> str:
         bits.append(f"daily cap: ${p['max_usd_per_day']:g} (${p.get('spent_today_usd') or 0:.2f} today)")
     if eg := p.get("egress"):  # --- egress
         bits.append("egress: " + (eg.get("mode") or "env") + (f" +{','.join(eg['allow'])}" if eg.get("allow") else ""))
+    if p.get("land") == "auto_after_approval":  # --- landing
+        who = ", ".join(p.get("approvers") or []) or "code owners"
+        bits.append(f"land: on approval by {who} ({p.get('merge_method') or 'squash'})")
     return f"{p['repo']:40} " + "  ".join(bits)
 
 
@@ -82,6 +85,13 @@ def repo_set(
                                            "the environment's mode for this repo's sandboxes."),
     egress_allow: list[str] = typer.Option([], "--egress-allow", help="A host the repo's sandboxes may reach "
                                            "(host, host:port or *.domain; repeat it). Replaces the list."),
+    # --- landing (docs/landing.md)
+    land: str | None = typer.Option(None, "--land", help="manual, or auto_after_approval: an approval from an "
+                                                         "approver or code owner lands the PR once checks pass."),
+    approver: list[str] = typer.Option([], "--approver", help="GitHub login whose approval lands the PR (repeat)."),
+    merge_method: str | None = typer.Option(None, "--merge-method", help="squash (default), merge or rebase."),
+    risk_path: list[str] = typer.Option([], "--risk-path", help="Glob that makes a PR high risk, e.g. 'infra/**' "
+                                                                "(repeat)."),
     as_json: bool = typer.Option(False, "--json"),
 ):
     """Set the repo's defaults; what you don't pass is kept. Jobs that set a field themselves still win.
@@ -92,7 +102,9 @@ def repo_set(
                  ("max_usd_per_day", max_usd_per_day), ("credentials", credentials),  # --- teamcreds
                  ("budget", _fields(max_cost_usd=max_cost, max_tokens=max_tokens, max_minutes=max_minutes)),
                  ("job_budget", _fields(max_cost_usd=job_max_cost, max_tokens=job_max_tokens,
-                                        max_turns=job_max_turns))):
+                                        max_turns=job_max_turns)),
+                ("land", land), ("approvers", approver or None), ("merge_method", merge_method),  # --- landing
+                ("risk_paths", risk_path or None)):
         if v is not None:
             body[k] = v
     if egress_mode is not None or egress_allow:  # --- egress
@@ -109,7 +121,8 @@ def repo_set(
 def repo_unset(repo: str = typer.Argument(...),
                fields: list[str] = typer.Argument(None, help="Fields to clear (verify, environment, harness, "
                                                              "model, budget, job_budget, max_usd_per_day, "
-                                                             "credentials, egress, build_secrets). None: "
+                                                             "credentials, egress, build_secrets, land, approvers, "
+                                                             "merge_method, risk_paths). None: "
                                                              "remove the repo's policy.")):
     """Clear fields of the repo's policy, or remove it."""
     r = _cli()._call("DELETE", "/api/repos/policy", params={"repo": repo, "field": fields or []})

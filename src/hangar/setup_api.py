@@ -32,8 +32,9 @@ from hangar.models import Credential, CredentialKind
 # Events the webhook sends: labels and /hangar comments on issues and PRs (what jobs.handle_github acts on), and
 # --- overnight/autofix: CI results and reviews on hangar's PRs, which start auto-fix rounds (autofix.py).
 # `ensure_hook` adds any that an existing hook lacks, and `hook_problem` (doctor) names the missing ones.
+# --- landing: `pull_request` (opened, pushed, merged, closed), with the reviews and checks, tracks landing.
 HOOK_EVENTS = ("issues", "issue_comment", "pull_request_review_comment", "pull_request_review", "check_run",
-               "check_suite", "status")
+               "check_suite", "status", "pull_request")
 HOOK_PATH = "/api/hooks/github"
 _WEBHOOK_URL_KEY = "setup:github:webhook_url"  # the URL the wizard registered (when it isn't HANGAR_PUBLIC_URL's)
 _REPO_RE = re.compile(r"^[\w.-]+/[\w.-]+$")

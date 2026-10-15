@@ -307,7 +307,8 @@ def recent_resources(sessions: Any, jobs: Any, limit: int = 25) -> list[types.Re
 # ====================================================================== resources and change notifications
 SESSION_URI = "hangar://sessions/{name}"
 JOB_URI = "hangar://jobs/{job_id}"
-_URI_RE = re.compile(r"hangar://(sessions|jobs)/[A-Za-z0-9._-]+(/events|/patch|/artifacts/\d+/.+)?")
+_URI_RE = re.compile(r"hangar://(sessions|jobs)/[A-Za-z0-9._-]+(/events|/patch|/artifacts/\d+/.+)?"
+                     r"|hangar://inbox")  # --- landing: the inbox (inbox.py)
 MAX_LEGACY_SUBSCRIPTIONS = 2000
 INVALID_PARAMS = -32602
 
@@ -348,7 +349,12 @@ class ChangeFeed:
         elif isinstance(obj, Job):
             key, uris = obj.id, [job_uri(obj.id)]
         else:
+            from hangar.envrequests import EnvRequest
+
+            if isinstance(obj, EnvRequest):  # integration (#94 + #96): a request filed or answered is in the inbox
+                self.mark(["hangar://inbox"])
             return
+        uris.append("hangar://inbox")  # --- landing: what needs people changes with their jobs and sessions
         self.mark(uris, new_key=key)
 
     def bind(self) -> None:
