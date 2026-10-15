@@ -76,6 +76,11 @@ def vm(spec: EnvSpec) -> bool:
     return bool(spec.heavy) or spec.profile in BIG
 
 
+def kata(runtime_class: str | None) -> bool:
+    """A Kata runtime class: the only one a privileged heavy pod may run under (deploy/k8s/heavy-policy.yaml)."""
+    return (runtime_class or "").startswith("kata")
+
+
 def providers(settings: Settings) -> list[str]:
     """The heavy tier's providers, in order (HANGAR_TIERS). None configured: the tier is off."""
     return list((settings.tiers or {}).get("heavy") or [])
@@ -83,7 +88,11 @@ def providers(settings: Settings) -> list[str]:
 
 def unsupported(fleet: Fleet, pname: str) -> str | None:
     """Why `pname` can't run heavy sandboxes, or None."""
-    if pname in ("kubernetes", "e2b"):
+    if pname == "kubernetes":
+        return None if kata(fleet.settings.heavy_runtime_class) else (
+            f"HANGAR_HEAVY_RUNTIME_CLASS is {fleet.settings.heavy_runtime_class!r}: heavy sandboxes run only under a "
+            "Kata runtime class (a privileged container under runc or gVisor isn't inside a VM)")
+    if pname == "e2b":
         return None
     if pname == "docker":
         if fleet.settings.heavy_docker_privileged:
@@ -166,8 +175,6 @@ def decide(fleet: Fleet, spec: EnvSpec, repo: str | None, labels: dict[str, str]
             raise HeavyError(f"profile {asked} is more than this sandbox may ask for ({where}); an admin allows it "
                              f"({hint})")
         profile, source = asked, "job"
-    if not docker and profile is None:
-        return Decision(False, None, source, tuple(notes))
     return Decision(docker, profile, source, tuple(notes))
 
 
@@ -226,6 +233,8 @@ def admit(fleet: Fleet, sb: Sandbox, d: Decision, base: EnvSpec, actor: str, per
     """Refuse a sandbox past its person's cap for its profile, and record the decision (sb.info["heavy"]). Called
     right before the sandbox is first stored, with nothing awaited in between, so two creates can't both slip under
     a cap."""
+    for n in d.notes:  # what the repo asked for and didn't get, whether or not anything is heavy
+        sb.info.setdefault("warnings", []).append(n)
     if not d.docker and d.profile is None:
         return
     from hangar import fairness
@@ -251,8 +260,6 @@ def admit(fleet: Fleet, sb: Sandbox, d: Decision, base: EnvSpec, actor: str, per
                          d.profile if d.profile and d.profile != base.profile else None) if m]
     sb.info["heavy"] = {"docker": d.docker, "profile": d.profile, "vm": d.vm, "source": d.source,
                         "variant": "+".join(marks) or None}
-    for n in d.notes:
-        sb.info.setdefault("warnings", []).append(n)
 
 
 def provider_tag(sb: Sandbox, tag: str) -> str:
@@ -280,6 +287,8 @@ def k8s_pod(pod: dict[str, Any], spec: EnvSpec, settings: Settings) -> str | Non
     if not vm(spec):
         return None
     rc = settings.heavy_runtime_class
+    if not kata(rc):  # unsupported() refuses the create first; never a privileged pod outside a VM
+        raise ValueError(f"HANGAR_HEAVY_RUNTIME_CLASS {rc!r} isn't a Kata runtime class")
     pod["runtimeClassName"] = rc
     pod.pop("nodeSelector", None)
     pod.pop("tolerations", None)

@@ -1,0 +1,41 @@
+# --- heavy: a privileged container in the sandbox namespace only ever runs inside a VM (docs/environments.md#isolation).
+#
+# Heavy sandboxes (src/hangar/heavy.py) are privileged so dockerd can run in them, which is safe only under Kata, where
+# "privileged" means privileged inside the guest (kata-deploy sets containerd's privileged_without_host_devices). Under
+# runc it would be root on the node. hangar never asks for one without a Kata runtime class; this refuses it at
+# admission all the same, whatever made the pod (a misconfigured HANGAR_HEAVY_RUNTIME_CLASS, a template edited by
+# hand). ValidatingAdmissionPolicy is GA since Kubernetes 1.30.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: hangar-privileged-sandboxes-need-a-vm
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods", "pods/ephemeralcontainers"]
+  validations:
+    - expression: >-
+        (has(object.spec.runtimeClassName) && object.spec.runtimeClassName.startsWith('kata')) ||
+        (!object.spec.containers.exists(c, has(c.securityContext) && has(c.securityContext.privileged) &&
+          c.securityContext.privileged) &&
+         (!has(object.spec.initContainers) || !object.spec.initContainers.exists(c, has(c.securityContext) &&
+          has(c.securityContext.privileged) && c.securityContext.privileged)) &&
+         (!has(object.spec.ephemeralContainers) || !object.spec.ephemeralContainers.exists(c,
+          has(c.securityContext) && has(c.securityContext.privileged) && c.securityContext.privileged)))
+      message: "a privileged container in hangar-sandboxes runs only under a Kata runtime class (the heavy tier's VM)"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: hangar-privileged-sandboxes-need-a-vm
+spec:
+  policyName: hangar-privileged-sandboxes-need-a-vm
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: hangar-sandboxes

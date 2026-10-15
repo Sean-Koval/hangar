@@ -684,8 +684,7 @@ class Fleet:
         prov = self.provider(pname)
         self.power.check(pname)  # --- ops: the pools are off for the night: say when, don't wait for a node
         try:  # --- heavy: Docker and the profile (heavy.py); the spec with them, for the image and the provider
-            hv = heavy.decide(self, spec, None if _skip_repo else repo or (spec.repo.url if spec.repo else None),
-                              labels)
+            hv = heavy.decide(self, spec, repo or (spec.repo.url if spec.repo else None), labels)  # as tiers.route
             base_spec, spec = spec, heavy.prepare(self, spec, pname, hv)
         except heavy.HeavyError as e:
             raise FleetError(str(e)) from e

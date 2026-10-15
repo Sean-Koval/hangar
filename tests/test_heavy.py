@@ -385,3 +385,35 @@ def test_repo_policy_fields(hv):
     assert "heavy: on, profile large, up to xlarge" in _line({**p.model_dump(), "effective_verify": None})
     with pytest.raises(ValueError):
         RepoPolicy(repo="acme/app", profile="huge")
+
+
+async def test_a_heavy_pod_is_never_privileged_outside_kata(hv):
+    from hangar.fleet import FleetError
+
+    f = hv
+    f.settings.heavy_runtime_class = "gvisor"
+    with pytest.raises(FleetError, match="Kata runtime class"):
+        await f.create("dind")
+    with pytest.raises(ValueError, match="isn't a Kata runtime class"):
+        heavy.k8s_pod({"containers": [{"securityContext": {}, "resources": {"requests": {}}}]},
+                      EnvSpec(name="d", heavy=True), f.settings)
+
+
+def test_the_cluster_refuses_privileged_sandbox_pods_without_kata():
+    """deploy/k8s/heavy-policy.yaml: defence in depth at admission, in the sandbox namespace only."""
+    from pathlib import Path
+
+    k8s = Path(__file__).parents[1] / "deploy" / "k8s"
+    policy, binding = list(yaml.safe_load_all((k8s / "heavy-policy.yaml").read_text()))
+    assert policy["kind"] == "ValidatingAdmissionPolicy" and policy["spec"]["failurePolicy"] == "Fail"
+    rule = policy["spec"]["matchConstraints"]["resourceRules"][0]
+    assert set(rule["resources"]) == {"pods", "pods/ephemeralcontainers"} and "CREATE" in rule["operations"]
+    expr = policy["spec"]["validations"][0]["expression"]
+    assert "startsWith('kata')" in expr and expr.count("privileged") >= 6
+    for kind in ("containers", "initContainers", "ephemeralContainers"):
+        assert f"object.spec.{kind}" in expr
+    assert binding["spec"]["policyName"] == policy["metadata"]["name"]
+    assert binding["spec"]["validationActions"] == ["Deny"]
+    assert binding["spec"]["matchResources"]["namespaceSelector"]["matchLabels"] == {
+        "kubernetes.io/metadata.name": "hangar-sandboxes"}
+    assert "heavy-policy.yaml" in yaml.safe_load((k8s / "kustomization.yaml").read_text())["resources"]
