@@ -295,7 +295,10 @@ Around the check, in the same shell and the same exec, hangar:
 1. makes a fresh report directory, `$HANGAR_TESTS_DIR` (`~/.hangar/tests/<run>/`), and marks the run's start;
 2. sets the variables the common runners read, unless the environment already sets them:
    - **pytest:** `PYTEST_ADDOPTS=--junitxml=$HANGAR_TESTS_DIR/pytest.xml`, added to what `PYTEST_ADDOPTS` already holds,
-     and not at all when it already names a JUnit file. A `--junitxml` on the command line wins over it.
+     and not at all when it already names a JUnit file, when the check's command names `junitxml`, or when the
+     repo's `pytest.ini`, `pyproject.toml`, `setup.cfg` or `tox.ini` does (PYTEST_ADDOPTS comes after the ini's
+     `addopts`, so it would replace a report path the repo sets, and `-p no:junitxml` would make pytest stop with a
+     usage error). Then the repo's own report is read where it puts it.
    - **gotestsum:** `GOTESTSUM_JUNITFILE` (gotestsum reads the variable as it reads `--junitfile`).
    - **jest-junit:** `JEST_JUNIT_OUTPUT_DIR`, when the repo uses the `jest-junit` reporter.
 3. runs the check, unchanged: its output and exit code are its own;
@@ -331,7 +334,9 @@ runner wrote it (`tests.test_math::test_div[0-1]`, `example.com/app/server::Test
 
 On a red base, the failures the change adds are the after-turn run's failing ids minus the base run's, exactly,
 whenever both left complete reports ([repo-policy.md](repo-policy.md#the-check-on-the-base-commit)). The text of the
-output is the fallback.
+output is the fallback. Reports cover only the runners that write one: when they show nothing new but the output
+names a failure the base didn't have (a second runner without a JUnit reporter), hangar can't tell, and the PR goes
+out as a draft that says so.
 
 ### Flaky tests
 
@@ -346,6 +351,11 @@ add to it: the agent's own sandbox wrote them while the agent worked. With the r
 whose every failure is on the list (on a red base: every new failure) runs once more, and the rerun decides. The
 review packet marks the failing tests that are on the list, and the [Cloud Doctor](doctor.md) counts a failed check
 whose every failure is on it as transient.
+
+The list is advisory. Even hangar's own checks run the repo's code, which the agent may have written, and that code
+writes the reports (a `flakyFailure`, a test that passes once): so a job's failures are excused (rerun, "flaky" in its
+packet, "transient" for the doctor) only by entries on the list before the job started, never by what its own checks
+added. The tree a run is filed under is read in an exec of its own before the check, so the check can't change it.
 
 ### Where it shows
 

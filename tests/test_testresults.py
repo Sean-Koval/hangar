@@ -664,6 +664,98 @@ def test_the_doctor_counts_only_flaky_failures_as_transient(tmp_path):
     assert not testresults.only_flaky(store, ["j1"], "x/y")
 
 
+# ====================================================================== review(#116)
+def test_an_xml_encoding_expat_cant_read_is_an_error_not_an_exception():
+    """A report declaring a multi-byte encoding pyexpat refuses (UTF-7, Shift_JIS) raised ValueError out of the
+    parser, and the whole run's reports were lost with it."""
+    for enc in ("UTF-7", "Shift_JIS"):
+        r = testreports.parse(f'<?xml version="1.0" encoding="{enc}"?><testsuite/>'.encode(), "x.xml")
+        assert r.error and not r.cases, enc
+    cov = f'<?xml version="1.0" encoding="UTF-7"?><coverage line-rate="1"/>'.encode()  # noqa: F541
+    assert testreports.parse_cobertura(cov, "c.xml").error
+    merged = testreports.merge([testreports.parse(b'<?xml version="1.0" encoding="UTF-7"?><testsuite/>', "a.xml"),
+                                _parse("pytest.xml")])
+    assert merged.counts()["total"] == 5 and any("unreadable XML" in e for e in merged.errors)
+
+
+async def test_the_check_cant_rewrite_the_tree_its_run_is_filed_under(tmp_path):
+    """The tree id decides which runs are compared for flakiness. It was a file in $HANGAR_TESTS_DIR the check (the
+    repo's code, which the agent wrote) could overwrite with the tree of a run where its failing test passed."""
+    repo = _git_repo(tmp_path / "repo")
+    ex, rd = _local(repo)
+    fake = "f" * 40
+    _, got = await testresults.execute(ex, rd, f'echo {fake} > "$HANGAR_TESTS_DIR/.tree"; true',
+                                       d=str(tmp_path / "h/tests/tr-1"), repo=str(repo), timeout=60, globs=[])
+    real = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD^{tree}"], capture_output=True, text=True)
+    assert got.tree == real.stdout.strip() != fake
+
+
+def test_a_jobs_own_runs_never_vouch_for_its_failures(tmp_path):
+    """The reports are the repo's code's output: a job whose check writes `flakyFailure` for the test it broke (or
+    passes it once on a tree) puts it on the flaky list. That evidence never earns the same job a rerun, a "flaky"
+    mark in its review packet or a "transient" from the doctor; evidence from before the job does."""
+    store = Store(tmp_path / "db")
+    job = Job(title="t", instructions="x", environment="e", verify="pytest", repo="o/r")
+    job.created_at = now() - 60
+    store.put(job)
+    svc = SimpleNamespace(store=store, policies=SimpleNamespace(get=lambda _r: RepoPolicy(repo="o/r",
+                                                                                          rerun_flaky=True)))
+    forged = testreports.Results()
+    forged.cases["t_broken"] = testreports.Case(id="t_broken", name="t_broken", outcome="passed", flaky=True)
+    testresults.record(store, results=forged, kind="verify", repo="o/r", job_id=job.id, exit_code=1)
+    assert "t_broken" in testresults.flaky(store, "o/r")  # on the list (advisory, for everyone else)
+    run = testresults.record(store, results=_results(t_broken="failed"), kind="verify", repo="o/r", job_id=job.id,
+                             exit_code=1)
+    assert testresults._rerun_wanted(svc, job, run) == []
+    assert testresults.summary(store, run, job).flaky == []
+    assert not testresults.only_flaky(store, [job.id], "o/r")
+    store.kv_set_json(testresults.KV_FLAKY + "o/r", {"t_broken": {"n": 2, "first": job.created_at - 3600,
+                                                                  "last": now()}})
+    assert testresults._rerun_wanted(svc, job, run) == ["t_broken"]
+    assert testresults.summary(store, run, job).flaky == ["t_broken"]
+    assert testresults.only_flaky(store, [job.id], "o/r")
+
+
+def test_a_runner_without_a_report_cant_hide_a_new_failure_on_a_red_base(tmp_path):
+    """`make test` runs pytest (it writes a report) and jest (it doesn't). The reports show nothing new against the
+    base; the output names a new jest failure. Subtracting by the reports alone said "nothing new": a pass."""
+    store = Store(tmp_path / "db")
+    many = {f"ok{i}": "passed" for i in range(50)}
+    base = testresults.record(store, results=_results(old="failed", **many), kind="base", repo="o/r", exit_code=1)
+    job = _job_on(store, base)
+    job.result.baseline.failures, job.result.baseline.parsed = ["math old"], True
+    after = testresults.record(store, results=_results(old="failed", **many), kind="verify", repo="o/r", exit_code=1)
+    svc = SimpleNamespace(store=store)
+    out = "FAIL tests/test_old.py\n  ✕ math old\n  ✕ math divides by zero\n"
+    assert testresults.new_failures(svc, job, after, out, truncated=False) is None  # can't tell: a draft, not a pass
+    assert baseline.verdict(job, 1, None) == "unknown"
+    # where the output agrees (it names only what the base had), the reports decide
+    assert testresults.new_failures(svc, job, after, "  ✕ math old\n", truncated=False) == []
+
+
+async def test_injection_never_changes_what_the_repos_own_pytest_config_does(tmp_path):
+    """PYTEST_ADDOPTS comes after the ini's addopts, so an injected --junitxml replaced the report path a repo
+    configures (a later step reading it failed), and with `-p no:junitxml` pytest stopped with a usage error
+    (exit 4) instead of running the tests."""
+    py = f"{shlex.quote(sys.executable)} -m pytest -q -p no:cacheprovider test_x.py -k ok"
+    repo = _git_repo(tmp_path / "repo")
+    ex, rd = _local(repo)
+    (repo / "pytest.ini").write_text("[pytest]\naddopts = --junitxml=reports/junit.xml\n")
+    res, got = await testresults.execute(ex, rd, f"{py} && test -f reports/junit.xml",
+                                         d=str(tmp_path / "h/tests/tr-1"), repo=str(repo), timeout=120, globs=[])
+    assert res.exit_code == 0, res.stdout + res.stderr
+    assert got.files == ["reports/junit.xml"] and got.results.counts()["passed"] == 1
+    (repo / "pytest.ini").write_text("[pytest]\naddopts = -p no:junitxml\n")
+    res, _ = await testresults.execute(ex, rd, py, d=str(tmp_path / "h/tests/tr-2"), repo=str(repo), timeout=120,
+                                       globs=[])
+    assert res.exit_code == 0, res.stdout + res.stderr
+    (repo / "pytest.ini").unlink()
+    res, _ = await testresults.execute(ex, rd, f"{shlex.quote(sys.executable)} -m pytest -q -p no:cacheprovider "
+                                               "-p no:junitxml test_x.py -k ok", d=str(tmp_path / "h/tests/tr-3"),
+                                       repo=str(repo), timeout=120, globs=[])
+    assert res.exit_code == 0, res.stdout + res.stderr
+
+
 def test_canary_reads_reports_through_the_one_parser(tmp_path):
     from hangar import canary
 

@@ -170,12 +170,25 @@ def prefix(dir_expr: str, repo: str | None = None, inject: bool = True, alone: b
                      'rm -f "$_hi"; }) > /dev/null 2>&1')
     parts.append('export HANGAR_TESTS_DIR="$_ht"')
     if inject:
-        parts.append('case "${PYTEST_ADDOPTS:-}" in *junit*) ;; '
+        # --- review(#116): not when the repo's pytest config names junitxml: PYTEST_ADDOPTS comes after the ini's
+        # addopts, so ours would replace the report path it sets, and with `-p no:junitxml` pytest stops on a usage
+        # error (exit 4). Its own report is then found where it puts it (the default paths, verify_reports).
+        parts.append('grep -qs junitxml pytest.ini pyproject.toml setup.cfg tox.ini || '
+                     'case "${PYTEST_ADDOPTS:-}" in *junit*) ;; '
                      '*) export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:+$PYTEST_ADDOPTS }--junitxml=$_ht/pytest.xml";; esac; '
                      'export GOTESTSUM_JUNITFILE="${GOTESTSUM_JUNITFILE:-$_ht/gotestsum.xml}" '
                      'JEST_JUNIT_OUTPUT_DIR="${JEST_JUNIT_OUTPUT_DIR:-$_ht}"')
     parts.append("unset _ht _hi _hx")
     return "; ".join(parts) + "\n"
+
+
+def tree_script(repo: str) -> str:
+    """The working tree's id (uncommitted and untracked changes included) on stdout: `git write-tree` through a
+    scratch index, so the real index is untouched."""
+    q = shlex.quote
+    return (f'cd {q(repo)} 2>/dev/null && _hd=$(mktemp -d) && {{ cp "$(git rev-parse --git-path index)" "$_hd/i" '
+            '2>/dev/null; GIT_INDEX_FILE="$_hd/i" git add -A >/dev/null 2>&1 && GIT_INDEX_FILE="$_hd/i" git write-tree '
+            '2>/dev/null; rm -rf "$_hd"; }; true')
 
 
 def gather_script(d: str, repo: str | None, globs: list[str], discover: bool = True) -> str:
@@ -258,12 +271,22 @@ async def execute(exec_fn: Exec, read_fn: Read, command: str, *, d: str, repo: s
                   globs: list[str], inject: bool = True, discover: bool = True) -> tuple[ExecResult, Collected]:
     """Run `command` with the report directory `d` set up, then collect. The run's own failure propagates (as an
     exec always did); collecting never fails the check."""
-    res = await exec_fn(prefix(shlex.quote(d), repo, inject, alone=True) + command, timeout)
+    # --- review(#116): the tree is read in an exec of its own, before the check: written beside the reports, the
+    # check (the repo's code, the agent's) could rewrite it to file its run under another tree. And a command that
+    # names junitxml itself (`-p no:junitxml`, its own --junitxml) gets nothing injected.
+    tree = None
+    if repo:
+        with contextlib.suppress(Exception):
+            t = (await exec_fn(tree_script(repo), 60)).stdout.strip()
+            tree = t if re.fullmatch(r"[0-9a-f]{40,64}", t) else None
+    inject = inject and "junitxml" not in command
+    res = await exec_fn(prefix(shlex.quote(d), None, inject, alone=True) + command, timeout)
     try:
         got = await gather(exec_fn, read_fn, d, repo, globs, discover)
     except Exception as e:  # noqa: BLE001 - the check ran; its reports are a bonus
         log.info("collecting test reports from %s failed: %s", d, e)
         got = Collected()
+    got.tree = tree
     if got.results is not None:
         _overwritten(got, (res.stdout or "") + (res.stderr or ""))
     return res, got
@@ -423,6 +446,14 @@ def flaky(store: Any, repo: str | None) -> dict[str, dict[str, Any]]:
     return _flaky_data(store, repo_key(repo) if repo and repo != ACCEPTANCE_REPO else repo)
 
 
+def vouched(store: Any, repo: str | None, job: Job | None) -> set[str]:
+    """--- review(#116): the repo's flaky tests that may excuse `job`'s failures: those on the list before it
+    started. A list entry comes from report contents, which the repo's code writes (the job's agent's, during the
+    job's own checks): a job can't vouch for its own failures."""
+    since = job.created_at if job is not None else None
+    return {k for k, v in flaky(store, repo).items() if since is None or float(v.get("first") or 0) < since}
+
+
 _pruned = 0.0
 
 
@@ -531,18 +562,23 @@ def new_failures(svc: JobService, job: Job, run: TestRun | None, output: str, tr
     """What JobResult.new_failures holds: by test id where both sides have reports, else from the output's text."""
     from hangar import baseline
 
+    text = baseline.new_failures(job, output, truncated)
     if run is not None and not baseline.stops_early(job.verify, output):
         new = structured_new(svc.store, job, run)
+        # --- review(#116): the reports cover only the runners that wrote one (`make test` running pytest and a jest
+        # without a JUnit reporter). "Nothing new" while the output names a failure the base didn't have: can't tell
+        if new == [] and text:
+            return None
         if new is not None:
             return new
-    return baseline.new_failures(job, output, truncated)
+    return text
 
 
 def summary(store: Any, run: TestRun, job: Job | None = None, file: str | None = None) -> TestSummary:
     from hangar import baseline
 
     c = run.counts
-    on_list = set(flaky(store, run.repo)) if run.repo else set()
+    on_list = vouched(store, run.repo, job) if run.repo else set()  # --- review(#116)
     ids = [f["id"] for f in run.failing]
     fl = sorted(set(run.flaky) | {i for i in ids if i in on_list})
     cov = (run.coverage or {}).get("line_rate")
@@ -659,7 +695,7 @@ def _rerun_wanted(svc: JobService, job: Job, run: TestRun) -> list[str]:
         ids = set(new) if new is not None else None
     if not ids:
         return []
-    on_list = set(flaky(svc.store, run.repo))
+    on_list = vouched(svc.store, run.repo, job)  # --- review(#116): not what this job's own checks put there
     return sorted(ids) if ids <= on_list else []
 
 
@@ -857,16 +893,16 @@ def record_acceptance(store: Any, rec: dict[str, Any]) -> TestRun | None:
 def only_flaky(store: Any, job_ids: list[str], repo: str | None) -> bool:
     """For the Cloud Doctor: did each of these jobs' failing checks fail only on tests on the repo's flaky list?
     Without reports for every one of them, no."""
-    if not job_ids or not repo:
-        return False
-    on_list = set(flaky(store, repo))
-    if not on_list:
+    from hangar.models import Job
+
+    if not job_ids or not repo or not flaky(store, repo):
         return False
     for jid in job_ids:
         runs = [r for r in store.list_where(TestRun, job_id=jid)  # the job's own checks, not the base it started on
                 if r.kind in ("verify", "rerun", "attempt") and r.exit_code not in (0, None)]
         if not runs:
             return False
+        on_list = vouched(store, repo, store.get(Job, jid))  # --- review(#116): never the job's own evidence
         ids = failing_ids(max(runs, key=lambda r: r.at))
         if not ids or not ids <= on_list:
             return False

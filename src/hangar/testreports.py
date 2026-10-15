@@ -111,6 +111,8 @@ def _feed(p: expat.XMLParserType, data: bytes) -> str | None:
         return str(e)
     except expat.ExpatError as e:
         return f"not well-formed XML ({expat.ErrorString(e.code)}, line {e.lineno})"
+    except ValueError as e:  # --- review(#116): pyexpat refuses some declared encodings (UTF-7, Shift_JIS) this way
+        return f"unreadable XML ({str(e)[:100]})"
     return None
 
 

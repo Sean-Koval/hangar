@@ -147,13 +147,14 @@ def turn_env(settings: Settings, job: Job, harness: str | None, repo_path: str |
     from hangar import testresults  # --- testresults: the gate's checks leave their reports too
 
     m = testresults.mode(settings)
+    inject = m == "inject" and "junitxml" not in job.verify  # --- review(#116): the command chose its own
     if h.name == "claude-code" or h.live == "claude":
-        hook = testresults.prefix('"$HANGAR_TESTS_DIR"', inject=m == "inject") if m != "off" else ""
+        hook = testresults.prefix('"$HANGAR_TESTS_DIR"', inject=inject) if m != "off" else ""
         return {CLAUDE_ENV: claude_settings(job.verify, repo_path, rounds, until, timeout, hook)}
     if h.live:  # the driver runs it when the turn completes (when the turn falls back to one-shot, nobody does)
         spec = {"command": job.verify, "cwd": repo_path, "rounds": rounds, "deadline": until, "timeout": timeout}
         if m != "off":  # the driver puts the check's report directory in for @D@
-            spec["prefix"] = testresults.prefix("@D@", inject=m == "inject")
+            spec["prefix"] = testresults.prefix("@D@", inject=inject)
         return {GATE_ENV: json.dumps(spec)}
     return {}
 
