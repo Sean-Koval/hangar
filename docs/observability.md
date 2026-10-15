@@ -86,6 +86,10 @@ Hangar continues an incoming `traceparent` header on REST and MCP requests (test
 
 Claude Code sends that header on HTTP MCP requests when its tracing beta is on. Per its docs, that is only when `ANTHROPIC_BASE_URL` is unset or points at the Anthropic API, unless `CLAUDE_CODE_PROPAGATE_TRACEPARENT=1` is set. With both ends exporting, one trace runs from the laptop agent, through hangar, into the cloud agent's sandbox.
 
+### Each tool call, and traces as files
+
+With `HANGAR_TRACE_LIVE_TOOLS=true`, each turn's tool calls, subagents and approvals also go to the collector when the turn ends, as children of its `invoke_agent` span (`execute_tool {tool}`, with the normalized `hangar.tool.kind`). The same spans, with the session, job and their events (steers, verify, commits, PRs, CI), can be exported as OTLP/JSON files at any time: `hangar trace export <session or job>`, `GET /api/sessions/{name}/trace`, `GET /api/jobs/{id}/trace`. The schema and its taxonomy are a versioned contract: [docs/api/traces.md](api/traces.md).
+
 ## Metrics
 
 `GET /metrics` returns the Prometheus text format.
@@ -345,5 +349,6 @@ The endpoint, scopes, collector install and roles were checked against Google's 
 | `OTEL_EXPORTER_OTLP_ENDPOINT` / `_TRACES_ENDPOINT` / `OTEL_TRACES_EXPORTER` | unset | Turn tracing on (see above). Every other standard `OTEL_*` variable applies. |
 | `HANGAR_OTEL_SANDBOX_ENDPOINT` | unset | OTLP/HTTP base URL that sandboxes export Claude Code and Codex telemetry to. A plain `http(s)` URL without credentials. |
 | `HANGAR_METRICS_ENABLED` | `true` | `GET /metrics` |
+| `HANGAR_TRACE_LIVE_TOOLS` | `false` | With tracing on, also send each turn's tool, subagent and approval spans ([above](#each-tool-call-and-traces-as-files)) |
 | `HANGAR_DOCTOR_SCHEDULE` | `30 0 * * *` | When the [nightly pass](#the-nightly-pass) runs (credential checks, the Cloud Doctor); `off` turns it off |
 | `HANGAR_DOCTOR_TIME_ZONE` | the power schedule's | The schedule's IANA time zone (UTC when there's no power schedule) |

@@ -32,11 +32,13 @@ if TYPE_CHECKING:
     from hangar.fleet import Fleet
 
 DELIVERY_MINUTES = 10  # a delivery grant's life: one push of at most HANGAR_GATEWAY_MAX_PUSH_MB
+GRADER_LABEL = "hangar.experiment.grader"  # --- review(#114): experiments.GRADER_LABEL; it runs a trial's code
 
 
 def builds_repo_code(sb: Sandbox) -> bool:
-    """A repo build's sandbox or env setup's validation: it runs the repo's `install`, and holds nothing for it."""
-    return BUILD_LABEL in sb.labels or VALIDATE_LABEL in sb.labels
+    """A repo build's sandbox or env setup's validation: it runs the repo's `install`, and holds nothing for it.
+    --- review(#114): so does an experiment's grader, which runs the trial's agent-written patch."""
+    return BUILD_LABEL in sb.labels or VALIDATE_LABEL in sb.labels or GRADER_LABEL in sb.labels
 
 
 def clone_credentials(fleet: Fleet, names: list[str], labels: dict[str, str]) -> list[str]:

@@ -32,6 +32,7 @@ from hangar import fairness as fairness  # --- scale
 from hangar import flightrec as flightrec  # --- clouddoctor: failed and slow turns leave a record
 from hangar import hot_resume as hot_resume  # --- providers-e2b
 from hangar import keys as keys  # --- durable
+from hangar import manifest as manifest  # --- interfaces: the effective harness manifest of each turn
 from hangar import metrics as metrics  # --- reconciler
 from hangar import pins as pins  # --- canary: the model and the CLI version a session is pinned to
 from hangar import resident as resident  # --- durable: live and recent sessions in memory, the rest in the store
@@ -150,6 +151,7 @@ class SessionService:
         self.activity = Activity(self.settings, fleet.broker.redact)  # workstream C: events, usage, budgets
         # --- overnight/sweep: called with a session just before it is deleted (jobs keep its usage); must not raise
         self.on_delete: list[Callable[[Session], None]] = []
+        self.on_delete.append(lambda s: manifest.store(self.settings).drop(s.id))  # --- interfaces: its manifests
         self.env_requests: Any = None  # --- computer: envrequests.EnvRequests, wired by the app
 
     # ================================================================== lifecycle
@@ -951,19 +953,23 @@ class SessionService:
         except BaseException:
             caching.STAGGER.responded(s.id)
             raise
+        probe = manifest.start_probe(self, s, sb)  # --- interfaces: the instructions and skills the turn will see
         try:
             io_env = await exchange.prepare_turn(self, s, turn, sb)  # workstream E: HANGAR_IO, attachments, local work
-            res = await self.fleet.run_agent(sb.id, prompt if prompt is not None else self._prompt(s, turn, turn.mode),
+            text = prompt if prompt is not None else self._prompt(s, turn, turn.mode)  # --- interfaces: kept
+            res = await self.fleet.run_agent(sb.id, text,
                                              harness=s.harness, model=s.model,
                                              env={**(extra_env or {}), **io_env, **env}, actor=f"session:{s.id}",
                                              run_id=run_id, command=command)
         except BaseException:
+            probe.cancel()  # --- interfaces
             steering.forget(self, run_id)  # workstream steer: the run never started
             caching.STAGGER.responded(s.id)  # --- overnight/cache: nor will it answer; siblings go ahead
             raise
         turn.run_id, turn.started_at = res["run_id"], now()
         slo.record("turn_start", turn.started_at - t0 - (turn.cache_wait_seconds or 0))  # --- clouddoctor
         turn.harness_version = res.get("harness_version")  # --- images
+        self._spawn(manifest.record(self, s, turn, sb, probe, text, {**(extra_env or {}), **env}))  # --- interfaces
         turn.context = exchange.strip(turn.context)
         s.model = s.model or res.get("model")
         s.last_active_at = now()

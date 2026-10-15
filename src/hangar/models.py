@@ -309,6 +309,9 @@ class JobResult(BaseModel):
     head_sha: str | None = None
     commits: list[str] = Field(default_factory=list)  # "abc1234 subject", newest first
     diffstat: str | None = None
+    # --- review(#114): the delivered change's files, repo-relative (the trace's hangar.diff.*), at most 1,000
+    files: list[str] = Field(default_factory=list)
+    deleted: list[str] = Field(default_factory=list)
     pushed: bool = False
     pr_url: str | None = None
     pr_number: int | None = None
@@ -422,7 +425,8 @@ class Job(BaseModel):
     instructions: str
     source: Literal["api", "mcp", "cli", "github", "webhook", "schedule", "slack", "a2a",
                     "jira", "github-projects",
-                    "env-setup"] = "api"  # --- intake; --- autoinstall: an env setup's goal and setup jobs
+                    "env-setup",
+                    "experiment"] = "api"  # --- intake; --- autoinstall: env setup's jobs; --- interfaces: trials
     source_ref: str | None = None  # e.g. "github:owner/repo#12"
     requester: str = "system"
     owner: str | None = None  # token id ("tok-…"), "admin", or "github:<login>"; jobs-scoped tokens see only theirs
@@ -580,6 +584,8 @@ class SessionTurn(BaseModel):
     # setting), and how long it waited for a best-of-N or fork sibling to write the shared prefix first
     cache_ttl: str | None = None
     cache_wait_seconds: float | None = None
+    # --- interfaces: the digest of the effective harness manifest captured as the turn started (manifest.py)
+    manifest: str | None = None
 
 
 class Checkpoint(BaseModel):

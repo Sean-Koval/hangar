@@ -45,6 +45,7 @@ from hangar import computer as computer  # --- computer
 from hangar import delivery as delivery  # --- least-privilege: hangar pushes a job's work
 from hangar import envbuilds as envbuilds  # --- envbuilds
 from hangar import envdoctor as envdoctor  # --- computer
+from hangar import experiments as experiments  # --- interfaces: experiment jobs and their trials
 from hangar import fairness as fairness  # --- scale
 from hangar import flightrec as flightrec  # --- clouddoctor: a failed or slow job's flight record
 from hangar import intake as intake  # --- intake: trackers (Jira, GitHub Projects) follow their jobs
@@ -218,6 +219,8 @@ class JobService:
         resumed: list[str] = []  # --- reconciler: interrupted jobs that go back to the queue, a few at a time
         for job in sorted(self._jobs.values(), key=lambda j: j.created_at):
             if autoinstall.restore(self, job):  # --- autoinstall: an env setup's runner picks up where it was
+                continue
+            if experiments.restore(self, job):  # --- interfaces: so does an experiment's
                 continue
             if job.state in JOB_TERMINAL or job.state == JobState.NEEDS_INPUT:  # needs_input waits for a follow-up
                 continue
@@ -499,6 +502,8 @@ class JobService:
             raise JobError("follow-up message is too long")
         if autoinstall.is_setup(job):  # --- autoinstall: answers the question one of its agents asked
             return autoinstall.follow_up(self, job, message, requester, reply_to, front_door, sender_person)
+        if experiments.is_experiment(job):  # --- interfaces
+            raise JobError(f"{job.id} is an experiment: it takes no follow-ups (submit another experiment)")
         # workstream E: a job waiting on a question (needs_input) takes the answer as a follow-up
         if (job.state not in JOB_TERMINAL and job.state != JobState.NEEDS_INPUT) or job.id in self._active:
             raise JobError(f"job {job.id} is {job.state}; wait for the current turn to finish")
@@ -690,6 +695,9 @@ class JobService:
             if autoinstall.is_setup(job):  # --- autoinstall: its runner drives child jobs; it holds no slot
                 await autoinstall.process(self, job)
                 return
+            if experiments.is_experiment(job):  # --- interfaces: so does an experiment's, its trials
+                await experiments.process(self, job)
+                return
             if job.cancel_requested:
                 self._event(job, "cancelled before it started", JobState.CANCELLED, reason="cancelled")
                 await self._report(job)
@@ -774,6 +782,7 @@ class JobService:
             # Commits need an identity; keep whatever the environment configured.
             await self._sh(job, "git config user.email >/dev/null || git config user.email hangar@localhost; "
                                 f"git config user.name >/dev/null || git config user.name {q('hangar')}")
+        await experiments.prepare_trial(self, job, s)  # --- interfaces: a trial's pinned base and approvals
         ctx = self._ctxdir(job)
         _, prov = self.fleet._running(job.sandbox_id)
         sbx = self.fleet.get(job.sandbox_id)
@@ -1092,6 +1101,10 @@ class JobService:
         job.result.head_sha = head.stdout.strip() or None
         stat = await self._sh(job, f"git diff --stat {q(base)}..HEAD | tail -n 30")
         job.result.diffstat = stat.stdout.strip() or None
+        from hangar.traces import diff_files  # --- review(#114): the change's files, for behavior specs
+
+        names = await self._sh(job, f"git diff --name-status --no-renames -z {q(base)}..HEAD | head -c 400000")
+        job.result.files, job.result.deleted = diff_files(names.stdout)
         self._save(job)
         if job.deliver == "none" or not job.result.commits:
             return

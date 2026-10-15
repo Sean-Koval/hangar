@@ -1426,3 +1426,7 @@ def admin_rotate_key(status: bool = typer.Option(False, "--status", help="Only s
 from hangar import ops_cli as _ops  # noqa: E402
 
 _ops.register(app, admin_app, cred_app)
+# ---------------------------------------------------------------------------- --- interfaces (interfaces_cli.py)
+from hangar import interfaces_cli as _interfaces  # noqa: E402
+
+_interfaces.register(app, session_app, job_app, env_app)
