@@ -60,10 +60,14 @@ team check rolls back. Both land in the run summary and in hangar's deploy recor
 off runs only `doctor`, `power` and `metrics`, and no team checks. In `--only` and `--skip`, `core` stands for the
 core checks.
 
+`doctor` is core, but a doctor check can say it isn't a reason to roll back (`deploy_gate: false`). `credential
+health` does: a person's login that expires, or stops working, during the deploy window is printed in the run
+(`failing, but not a reason to roll back`) and fails `hangar doctor` as before, but a rollback can't fix it.
+
 | | Checks |
 | --- | --- |
 | **Core** (`CORE` in gke.sh) | `doctor`, `sandbox`, `exec`, `stream`, `files`, `mcp`, `isolation`, `session`, `e2b`, `backup`, `metrics`, `power` |
-| Reported | `k8s`, `model`, `steer`, `gateway`, `computer`, `egress`, `services`, `envbuild`, `secrets`, `landing`, `intake`, `scale-smoke`, `prepull`, `warmstart` |
+| Reported | `k8s`, `model`, `steer`, `gateway`, `computer`, `egress`, `services`, `envbuild`, `secrets`, `landing`, `intake`, `scale-smoke`, `prepull`, `warmstart`, `status`, `clouddoctor` |
 
 Core checks exercise the control plane's own paths, run in minutes and depend on nothing outside hangar, so a core
 failure after a deploy almost always means the new image broke something, which a rollback fixes. The reported checks
@@ -93,13 +97,15 @@ until the checks pass by hand: each check without its fixture skips.
 
 ## The first live run after deploying Waves 1–3
 
-Run these in order after [the upgrade](upgrading.md#upgrading-to-the-team-release-75100) (its step 12). Each step
+Run these in order after [the upgrade](upgrading.md#upgrading-to-the-team-release-75110) (its step 14). Each step
 assumes the ones before it passed; when one fails, the next section says where to look. All of them work with
 `--no-kubectl`.
 
 **0. Before anything.** `hangar doctor` shows no failures (warnings are fine to read and move on), and
-`hangar power status` says the sandbox pools are `up`; `hangar status`, where your hangar has it, shows both at a
-glance with the day's failures and what is building. The suite needs sandboxes; while the pools are off it refuses
+`hangar power status` says the sandbox pools are `up`. `hangar status` shows both at a glance, with the loops'
+heartbeats, the day's failures, what is building, the SLOs, credential health and the `models` line (what jobs run on
+by default, and **whether a budget caps it**: set one first if it says `NO job budget or daily cap`, since
+`--with-model` runs paid turns). The suite needs sandboxes; while the pools are off it refuses
 every create but `power`'s, which expects exactly that. Run it as an admin (`hangar login` with an admin token, or
 `HANGAR_URL` and `HANGAR_TOKEN`).
 
@@ -110,6 +116,17 @@ bash scripts/acceptance/gke.sh --no-kubectl --only core
 ```
 
 This is what `deploy.yml` gates on. If it fails, stop here: everything after builds on it.
+
+**1b. The operator's views, a minute, free.**
+
+```bash
+bash scripts/acceptance/gke.sh --no-kubectl --only status,clouddoctor
+```
+
+`status` reads `hangar status` (as `GET /api/status`) and checks its sections; `clouddoctor` runs the Cloud Doctor
+dry (`hangar admin doctor run --dry-run`, `GET /api/admin/doctor/plan`): what a run would do with the flight records
+since the last one (count, watch, propose a request, or start a root-cause job, and what would stop that job, such as
+no team credential), starting no job and writing nothing. On a fresh install it has nothing to do.
 
 **2. The sandbox's own computer, egress and services, ~20 min the first time.**
 
@@ -166,6 +183,12 @@ bash scripts/acceptance/gke.sh --no-kubectl --only core --gate core             
 bash scripts/acceptance/gke.sh --no-kubectl --skip core,model,steer,gateway         # what is only reported
 ```
 
+**What this suite doesn't cover: the harness contract.** The real-CLI contract tests and the nightly harness canary
+([harnesses.md](harnesses.md#the-canary)) run in GitHub Actions only (`harness-contract.yml`, `harness-canary.yml`,
+`harness-canary-land.yml`), never against the cluster: they need no sandboxes and run while the pools are off. Check
+them in the repository's Actions tab: `contract` green on the deploy's commit, and the last nightly canary run green
+or its `harness-canary` issue read. Their owner setup is in [upgrading.md](upgrading.md#11b-the-harness-canary).
+
 ## When a check fails
 
 Each line is the most likely cause first. Where to look is always hangar itself: `hangar doctor`,
@@ -192,6 +215,8 @@ or the REST views named. `--keep` leaves what the run made, so you can look at t
 | `power` | hangar reports the power state; with `--power-cycle`, the pools go down (a create refused at once with 503) and come back up, timed | power.sh couldn't reach the cluster (gcloud, terraform outputs); `HANGAR_POWER_UP_JOB` without `roles/run.invoker` | `hangar power status`; `bash deploy/gke/power.sh status` |
 | `prepull` | after power-up, the first create of each prepulled environment pulls no image | an environment changed since the last power-up (its new image isn't on the floor node until the next prepull); the prepull DaemonSet timed out (`prepull.ready: false`) | `hangar power status` (`last_up.prepull`); `GET /api/admin/power/prepull` |
 | `warmstart` | a warm pool claim against a cold start | `warm_pool` not set on `--warm-env` | `hangar power status` (`warm_pools`) |
+| `status` | `hangar status` answers an admin with power, loops, harnesses, builds, failures, egress denies, requests, SLOs and the `models` line | a hangar from before the console (it skips), an admin token missing the `admin` scope | `hangar status`; its log lines at the end |
+| `clouddoctor` | a Cloud Doctor dry run answers, and says what each new kind of failure would lead to | a hangar from before the doctor (it skips); `blocked` lines name what a real run would miss (a team credential, `HANGAR_DOCTOR_MAX_JOBS`) | `hangar admin doctor run --dry-run`; `hangar admin doctor ls`; [doctor.md](doctor.md) |
 
 A check that **crashed** (`the check crashed (exit N)`) is a bug in the suite or a Python missing its packages: run
 it again with `HANGAR_ACCEPT_PYTHON` pointing at the repo's environment (`uv run python`).
@@ -221,9 +246,10 @@ JSON-lines file.
 - `tests/test_acceptance_script.py` runs gke.sh against a hangar on Docker: the control-plane checks for real, with
   GitHub replaced by a local git server behind the gateway.
 - `tests/test_e2e_acceptance_docker.py` runs the team checks that can run on Docker for real: `computer`, `egress`,
-  `services`, `scale-smoke`, `power`; and checks that `envbuild`, `landing`, `intake` and `prepull` skip cleanly.
-- `tests/test_acceptance_team.py` runs the scale test, Jira intake, the power cycle and the core gate against a real
-  hangar on the fake provider, and the rest by their parts: the RFB client against hangar's own view-only filter, the
+  `services`, `scale-smoke`, `power`, `status`, `clouddoctor`; and checks that `envbuild`, `landing`, `intake` and
+  `prepull` skip cleanly.
+- `tests/test_acceptance_team.py` runs the scale test, Jira intake, the power cycle, `status`, the doctor's dry run
+  and the core gate against a real hangar on the fake provider, and the rest by their parts: the RFB client against hangar's own view-only filter, the
   screenshot and egress verdicts, the synthetic token against hangar's secret scanner, the fixture repo's commits on a
   local repo, and the secrets and landing flows against stand-in hangar and GitHub APIs.
 

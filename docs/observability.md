@@ -227,6 +227,7 @@ cloud doctor: 2 open finding(s); last run 9h ago (done)
 | `requests` | secret and egress requests agents filed that wait for an answer | [env requests](computer-use.md) |
 | `slo` | p50/p95 over 24 hours against the targets below | in memory, saved every minute |
 | `credentials` | [credential health](#credential-health): counts, what needs renewing, pools | [credhealth.py](../src/hangar/credhealth.py) |
+| `models` | what jobs run on by default (`frontier`, the id it resolves to and its list price), the job budget and daily cap that bound it, and the repos whose policy caps them; `NO job budget or daily cap` until one is set, which `hangar doctor` also warns about (`model spend`) | [modelpolicy.py](../src/hangar/modelpolicy.py) |
 | `nightly`, `doctor` | the nightly pass and the [Cloud Doctor](doctor.md)'s last run and open findings | |
 | `log` | the last 50 warnings and errors hangar logged | in memory |
 
@@ -287,7 +288,7 @@ Each agent credential is checked without calling a model:
 
 Each check writes `health` (`ok`, `warn`, `fail` or `unknown`, with a detail and when), `last_ok` and `expires_at` onto the credential. Storing a new value clears them. Checks run when a login is captured, every night (the [nightly pass](#the-nightly-pass)), from `hangar status`, and with `hangar cred check [NAME…]` (`POST /api/credentials/check`).
 
-A credential that fails, or expires within 14 days, shows in `hangar doctor` (`credential health`), in `hangar status`, and in the [inbox](landing.md) of whoever renews it: its person for their own logins, admins for the team's. Pools (several logins one sandbox holds at a time, such as a person's Codex ChatGPT logins) are summed up; a pool with no working login fails the doctor even when each login alone would only warn.
+A credential that fails, or expires within 14 days, shows in `hangar doctor` (`credential health`; marked `deploy_gate: false`, so `deploy.yml`'s acceptance gate reports it rather than rolling back, since a rollback can't renew a login), in `hangar status`, and in the [inbox](landing.md) of whoever renews it: its person for their own logins, admins for the team's. Pools (several logins one sandbox holds at a time, such as a person's Codex ChatGPT logins) are summed up; a pool with no working login fails the doctor even when each login alone would only warn.
 
 ## The nightly pass
 

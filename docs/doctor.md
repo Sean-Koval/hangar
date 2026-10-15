@@ -59,13 +59,14 @@ Every doctor job carries a [job budget](repo-policy.md#budgets) (`HANGAR_DOCTOR_
 
 ```bash
 hangar admin doctor run [--wait]      # now, over the records since the last run
+hangar admin doctor run --dry-run     # what a run would do now, changing nothing (no job, request or finding)
 hangar admin doctor ls [--all]        # open findings, and the last runs
 hangar admin doctor show dr-3f2a9c1e  # the evidence, the root cause, the fix and what was done
 hangar admin doctor dismiss dr-3f2a9c1e --note "flaky mirror, fixed upstream"
 hangar status --section doctor        # the last run and the open findings
 ```
 
-REST (admins): `POST /api/admin/doctor/run`, `GET /api/admin/doctor?all=true`, `GET /api/admin/doctor/findings/{id}`, `POST /api/admin/doctor/findings/{id}/dismiss`. Reports are in the inbox (`hangar inbox`, `hangar://inbox`) of every admin, kind `report`. `hangar://status` has a `doctor` section.
+REST (admins): `POST /api/admin/doctor/run`, `GET /api/admin/doctor/plan` (the dry run: each new kind of failure since the last run, what a run would do with it, and for a root-cause job its harness, model and what would stop it), `GET /api/admin/doctor?all=true`, `GET /api/admin/doctor/findings/{id}`, `POST /api/admin/doctor/findings/{id}/dismiss`. Reports are in the inbox (`hangar inbox`, `hangar://inbox`) of every admin, kind `report`. `hangar://status` has a `doctor` section.
 
 | Finding state | Meaning |
 | --- | --- |
