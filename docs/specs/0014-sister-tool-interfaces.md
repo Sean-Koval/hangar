@@ -93,7 +93,7 @@ grader: {command: "pytest -q tests/hidden", files: {"tests/hidden/test_retry.py"
 
 **Output.** Per trial, the index records its job, session, each turn's manifest digest and the first turn's `config_digest`, its verification (hangar's check after the turn, with new failures against a red base), its test results when parsed, usage and cost, and keeps its manifest and trace export as files (`GET /api/experiments/{id}/trials/{task}/{variant}/{n}/manifest|trace`, `hangar experiment export -o DIR`). Trials of one variant whose `config_digest` differ are flagged `drift`.
 
-**No analysis.** Hangar computes no metric across trials. It does run the experiment's optional external grader command, because that needs a sandbox: after the trial ends, in a clean sandbox of the same environment with no agent credential, on the pinned base with the trial's patch applied and the grader's own files written in (the agent never had them). Its exit code, the end of its output and the JSON it writes to `$HANGAR_GRADE_OUT` are stored with the trial.
+**No analysis.** Hangar computes no metric across trials. It does run the experiment's optional external grader command, because that needs a sandbox: after the trial ends, in a clean sandbox of the same environment that holds nothing (like a repo build's: no credential, no `secrets:`, no cloud token, a fetch-only git grant), on the pinned base with the trial's patch applied and the grader's own files written in (the agent never had them). Its exit code, the end of its output and the JSON it writes to `$HANGAR_GRADE_OUT` are stored with the trial.
 
 **Access.** CLI and REST. On MCP only the resource `hangar://experiments/{id}`: the tool list is at its cap, so no tool and no field were added.
 
@@ -105,7 +105,7 @@ From 0007: the paired analysis and effect sizes (§5.4 rule 4), saturated-task f
 
 - Exports never carry a credential: hangar never records one in events or manifests, the broker's redaction runs again on every export, MCP header and env values and `secrets:` values are never read into a manifest, and MCP URLs lose their query. Tested with a seeded secret in the agent's command, output, message, the task text, the environment's instructions, MCP headers, URL and env.
 - Owner scoping follows #88 on REST and MCP; a record the caller may not see answers as missing.
-- A grader runs code the experiment's author names on agent-written code: in its own sandbox, with the environment's git credentials only (no agent login), destroyed afterwards. It is no more trusted than the trial's own sandbox.
+- A grader runs code the experiment's author names on agent-written code: in its own sandbox, destroyed afterwards. That sandbox is treated as running repo code (`delivery.builds_repo_code`): no credential is injected, no `secrets:`, no cloud token, and its git grant is fetch-only (review of #114: it used to get the environment's git token, `secrets:` and cloud tokens, and a push-capable grant). The trial's code runs beside the grader, so it can write `$HANGAR_GRADE_OUT` or the exit code's outcome itself: a grade is only as trustworthy as the grader's own checks (run hidden tests in a way the patch can't influence, e.g. compare against a reference output).
 - An experiment can spend a lot: per-trial and experiment budgets, daily budgets, `HANGAR_EXPERIMENT_MAX_TRIALS` (200), `parallel`, cancel.
 
 ## 7. Open items

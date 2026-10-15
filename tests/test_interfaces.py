@@ -616,3 +616,39 @@ async def test_an_experiment_survives_a_control_plane_restart(jobs, world, fleet
         assert all(t.verify["passed"] and t.stored for t in st.trials)
     finally:
         await again.stop()
+
+
+# ====================================================================== review(#114)
+async def test_the_graders_sandbox_holds_nothing_the_trials_code_could_take(fleet, tmp_path, monkeypatch):
+    """The grader runs agent-written code (the trial's patch): like a repo build's or a validation's sandbox it gets
+    no credential, no `secrets:`, no cloud token, and only a fetch-only grant (a push-capable one before)."""
+    from hangar.autoinstall import validation_credentials
+    from hangar.models import Sandbox
+    from tests.test_gateway_git import _box, _files_containing
+
+    fleet.broker.put("gh", "git", CredentialKind.GIT_TOKEN, "ghp_graderCLONEtoken0123456789")
+    fleet.broker.put("db", "custom", CredentialKind.GENERIC, "db_SECRETvalue", env_var="UNUSED")
+    fleet.catalog.add({"name": "gradeenv", "harnesses": ["git"], "credentials": ["gh"],
+                       "secrets": {"DB_PASSWORD": "db"}}, save_dir=tmp_path)
+    clouds: list[str] = []
+    real = fleet.cloud.attach
+
+    async def attach(prov, sb, spec):
+        clouds.append(sb.id)
+        return await real(prov, sb, spec)
+
+    monkeypatch.setattr(fleet.cloud, "attach", attach)
+    from hangar import delivery
+
+    assert delivery.GRADER_LABEL == experiments.GRADER_LABEL
+    labels = {experiments.GRADER_LABEL: "job-exp", experiments.TRIAL_LABEL: "t/a/1"}
+    spec = fleet.catalog.get("gradeenv")
+    sb = await fleet.create("gradeenv", credentials=validation_credentials(fleet, spec), labels=labels)
+    box = _box(fleet, sb)
+    for value in ("ghp_graderCLONEtoken", "db_SECRETvalue"):
+        assert _files_containing(box, value) == [], value
+    assert sb.id not in clouds, "no cloud token"
+    grader = Sandbox(name="g", environment="gradeenv", provider="docker", labels=labels)
+    assert fleet.gateway.fetch_only(grader) and fleet.gateway.push_scope(grader, "main") == []
+    fleet.settings.gateway_url = "https://gw.example"
+    assert fleet.gateway.mode_for(spec, grader, None) == "gateway"

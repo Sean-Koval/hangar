@@ -30,8 +30,11 @@ queue in the fair job queue under the experiment's person (#89). The experiment'
 trials once its trials together have spent it; `parallel` caps how many run at once.
 
 **Grading.** `grader.command` runs outside the agent's sandbox: in a clean sandbox of the same environment, on the
-pinned base with the trial's patch applied, with no agent credential, after the trial ended. The agent never had
-the grader's files. Its exit code, the end of its output and `$HANGAR_GRADE_OUT` (JSON) are stored with the trial.
+pinned base with the trial's patch applied, after the trial ended. It runs the trial's agent-written code, so its
+sandbox holds what a repo build's does: no credential, no `secrets:`, no cloud token, a fetch-only grant
+(delivery.builds_repo_code). The agent never had the grader's files, but the code it wrote runs beside the grader:
+a grade is only as trustworthy as the grader's own checks (that code can write $HANGAR_GRADE_OUT too). Its exit
+code, the end of its output and `$HANGAR_GRADE_OUT` (JSON) are stored with the trial.
 """
 
 from __future__ import annotations
@@ -655,7 +658,8 @@ async def _cancel(jobs: JobService, job: Job, st: State, graders: dict[str, asyn
 # ====================================================================== grading
 async def _grade(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t: Trial) -> None:
     """The experiment's grader on this trial's work, in a clean sandbox: the pinned base, the trial's patch, the
-    grader's own files. No agent credential is in it (the environment's git credentials let it clone)."""
+    grader's own files. It runs agent-written code, so it holds nothing (GRADER_LABEL, delivery.builds_repo_code):
+    the environment's git credentials only tell the gateway which one to fetch with."""
     from hangar import exchange
     from hangar.autoinstall import validation_credentials
 
