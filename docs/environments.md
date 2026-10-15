@@ -72,7 +72,8 @@ YAML aliases are refused, and it must be under 64 KiB. It can set only the field
 stays in hangar: the image and base (`image`, `base`), secrets and credentials (`secrets`, `credentials`), MCP
 servers, `runtime_class`, resources, `sudo`, and the git credential mode. A file that names one of these is refused,
 and the message says it's decided in hangar. Secrets stay in hangar, by name. `heavy`, `tier: heavy` and `profile`
-are requests that the repo's policy bounds ([the heavy tier](#what-decides)); no other tier can be asked for.
+are requests that the repo's policy bounds ([the heavy tier](#what-decides)); Docker is off unless an admin allows it
+for the repo (`hangar repo set owner/repo --heavy allow`), and no other tier can be asked for.
 
 Hangar reads the file from the commit (`git cat-file`), never from the working tree. A symlink committed in its
 place is read as the link's text, so it can't make hangar read another file in the sandbox.
@@ -325,7 +326,7 @@ profile: large         # standard (2 vCPU / 4 GiB) | large (8 / 32 / 100 GiB dis
 
 ```yaml
 # .hangar/environment.yaml (the repo's)
-heavy: true            # a request; see "What decides" below
+heavy: true            # a request, off unless an admin allows it; see "What decides" below
 services:
   deps: {compose: docker-compose.yml}              # a Compose stack the supervisor runs (heavy only)
   db: {compose: ops/compose.test.yml, port: 5432}  # ready once 5432 answers
@@ -353,19 +354,34 @@ never anywhere else: like `isolated`, it is a security choice (a privileged sand
 
 Before a sandbox starts (`heavy.decide`):
 
-- **Docker:** the environment (`heavy: true`, `tier: heavy`); else the repo's policy (`hangar repo set acme/app
-  --heavy`); else the repo's `.hangar/environment.yaml` asking for it (as its default branch was last seen), which is
-  honored when this hangar has a heavy tier and the policy doesn't say `--no-heavy`. A heavy repo on a plain
-  environment gets that environment's heavy variant: the same spec, its image built with Docker in it. The repo's
-  builds then start from that variant too.
+- **Docker is deny by default.** It comes from the environment (`heavy: true`, `tier: heavy`; admin fields); else the
+  repo's policy (`hangar repo set acme/app --heavy on`); else the repo's `.hangar/environment.yaml` asking for it (as
+  its default branch was last seen), which is only a **request**: it is honored when an admin has allowed it for that
+  repo (`hangar repo set acme/app --heavy allow`) and this hangar has a heavy tier. Unset, or `--heavy deny`, it isn't:
+  anyone who can push the default branch could otherwise give the repo's sandboxes root in a VM on costlier nodes. A
+  heavy repo on a plain environment gets that environment's heavy variant: the same spec, its image built with Docker
+  in it. The repo's builds then start from that variant too.
+- **A request that isn't allowed** runs on the default tier, without Docker, and says so plainly: a warning on the
+  sandbox (`get_sandbox`'s `info.warnings`, the job's events), a "Docker isn't enabled for this repo" section in the
+  agent's instructions that gives the admin command, and a `WARN` on `hangar-agent env doctor`'s `tier` line:
+
+  ```text
+  WARN tier      tier standard (2 CPUs, 4 GiB, gvisor); Docker isn't enabled for acme/app: its .hangar/environment.yaml
+                 asks for the heavy tier, and a repo's own file only requests it, and an admin hasn't allowed that for
+                 this repo, so this sandbox runs on the default tier, without Docker. An admin enables it: hangar repo
+                 set acme/app --heavy allow
+  ```
 - **Profile:** a job's label `hangar.profile` (`hangar job submit --profile large`, or `labels` on `POST /api/jobs`
   and `create_sandbox`), then the repo's file, each up to the policy's `max_profile` (else no more than the policy's or
   the environment's own profile); then the policy's `profile`; then the environment's. `large` and `xlarge` run on the
   heavy tier's nodes, with Docker or not: the gVisor pool's nodes can't hold them. A profile replaces `resources`.
   Asking past what's allowed fails the create and says which `hangar repo set` raises it.
 - **Caps:** one person holds at most `HANGAR_HEAVY_PERSON_MAX` live sandboxes per profile (3 `large` or larger, 1
-  `xlarge`), with the same per-person accounting as the other caps ([team-scale.md](team-scale.md)). Docker at the
-  standard size isn't capped beyond the usual sandbox caps.
+  `xlarge`), with the same per-person accounting as the other caps ([team-scale.md](team-scale.md)). Work no person
+  owns (jobs from GitHub, Slack or Jira senders linked to nobody, webhooks, schedules without a person) shares one
+  team bucket with the same caps, so it can't take the heavy pool either. Repo builds are hangar's own, one per repo
+  and environment at a time, and aren't counted. Docker at the standard size isn't capped beyond the usual sandbox
+  caps.
 - **Warm pools** of heavy environments stay at 0 unless `HANGAR_HEAVY_WARM_POOLS=true`: a heavy node held warm costs
   (see [team-scale.md](team-scale.md#heavy-tier)).
 

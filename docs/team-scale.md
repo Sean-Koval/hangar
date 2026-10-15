@@ -380,8 +380,9 @@ memory limit: a stack that needs more than the profile gives is OOM-killed insid
 
 ### How many nodes, and the caps
 
-`HANGAR_HEAVY_PERSON_MAX` caps what one person holds: 3 `large` or larger, at most 1 of them `xlarge`. Six people at
-their caps would need ~7 nodes; `heavy_max_nodes = 4` (12 large) assumes about two heavy sandboxes per person at
+`HANGAR_HEAVY_PERSON_MAX` caps what one person holds: 3 `large` or larger, at most 1 of them `xlarge`. Work no person
+owns (jobs from senders linked to nobody, webhooks, schedules without a person) counts as one more person, a team
+bucket with the same caps; repo builds aren't counted. Six people at their caps would need ~7 nodes; `heavy_max_nodes = 4` (12 large) assumes about two heavy sandboxes per person at
 the busiest time. Past it, sandboxes wait with "the sandbox node pool is at its maximum". Quota: `N2_CPUS` ≥ 128 for
 4 nodes, on top of the Kata pool's, and 2,000 GB of `SSD_TOTAL_GB` for their disks.
 

@@ -125,19 +125,74 @@ def test_decide_from_the_environment_the_policy_and_the_repo(hv):
     small = f.catalog.get("small")
     assert heavy.decide(f, small, REPO) == heavy.Decision(False, None, "environment")
     assert heavy.decide(f, f.catalog.get("dind"), REPO).docker
-    RepoPolicies(f.store).put(RepoPolicy(repo="acme/app", heavy=True))
+    RepoPolicies(f.store).put(RepoPolicy(repo="acme/app", heavy="on"))
     d = heavy.decide(f, small, REPO)
     assert d.docker and d.source == "repo policy" and d.vm
-    RepoPolicies(f.store).put(RepoPolicy(repo="acme/app"))
+    RepoPolicies(f.store).put(RepoPolicy(repo="acme/app", heavy="allow"))
     _seen(f, "small", {"heavy": True})
     assert heavy.decide(f, small, REPO).source == "repo config"
-    RepoPolicies(f.store).put(RepoPolicy(repo="acme/app", heavy=False))
+    RepoPolicies(f.store).put(RepoPolicy(repo="acme/app", heavy="deny"))
     d = heavy.decide(f, small, REPO)
-    assert not d.docker and "heavy: false" in d.notes[0]
-    RepoPolicies(f.store).put(RepoPolicy(repo="acme/app"))
+    assert not d.docker and "heavy: deny" in d.notes[0] and d.denied
+    RepoPolicies(f.store).put(RepoPolicy(repo="acme/app", heavy="allow"))
     f.settings.tiers = {"fast": ["e2b"]}
     d = heavy.decide(f, small, REPO)
     assert not d.docker and "HANGAR_TIERS" in d.notes[0], "a repo can't ask for a tier this hangar doesn't have"
+
+
+def test_docker_is_off_for_a_repos_own_file_unless_its_policy_allows_it(hv):
+    """The owner's decision (#117 review): deny by default. A repo's file only requests Docker; the request is honored
+    when an admin's repo policy says `heavy: allow` (or `on`), or the environment itself is heavy."""
+    f = hv
+    small = f.catalog.get("small")
+    _seen(f, "small", {"heavy": True})
+    d = heavy.decide(f, small, REPO)  # no policy at all
+    assert not d.docker and not d.vm and d.source == "environment"
+    assert d.denied.startswith("Docker isn't enabled for acme/app") and "hangar repo set acme/app --heavy allow" \
+        in d.denied and d.denied in d.notes
+    RepoPolicies(f.store).put(RepoPolicy(repo="acme/app", verify="pytest"))  # a policy that says nothing on it
+    assert not heavy.decide(f, small, REPO).docker
+    RepoPolicies(f.store).put(RepoPolicy(repo="acme/app", heavy="allow"))
+    d = heavy.decide(f, small, REPO)
+    assert d.docker and d.source == "repo config" and not d.denied
+    RepoPolicies(f.store).put(RepoPolicy(repo="acme/app", heavy="deny"))
+    assert heavy.decide(f, f.catalog.get("dind"), REPO).docker, "the environment, an admin's, decides for itself"
+    _seen(f, "small", {"tier": "heavy"})
+    RepoPolicies(f.store).put(RepoPolicy(repo="acme/app"))
+    assert not heavy.decide(f, small, REPO).docker, "`tier: heavy` in the file is the same request"
+    assert RepoPolicy(repo="acme/app", heavy=True).heavy == "on" and RepoPolicy(repo="acme/app", heavy=False).heavy \
+        == "deny", "the booleans of before still read"
+    with pytest.raises(ValueError):
+        RepoPolicy(repo="acme/app", heavy="maybe")
+
+
+async def test_a_denied_sandbox_runs_on_the_default_tier_and_says_how_to_enable_docker(hv, monkeypatch):
+    from hangar import envbuilds, envdoctor
+    from hangar import sandbox_env as se
+
+    f = hv
+    _seen(f, "small", {"heavy": True})
+
+    async def nothing(*a, **k):
+        return None
+
+    told: list = []
+
+    async def tell(prov, sb, settings, harness):
+        told.append(heavy.instructions(sb))
+
+    monkeypatch.setattr(f, "_setup_repo", nothing)
+    monkeypatch.setattr(envbuilds.EnvBuilds, "after_setup", nothing)
+    monkeypatch.setattr(heavy, "tell_agent", tell)
+    sb = await f.create("small", repo=REPO, actor="ann")
+    assert sb.provider == "docker" and not f.vm.started and not (sb.info.get("heavy") or {}).get("docker")
+    assert sb.info["heavy_denied"].startswith("Docker isn't enabled for acme/app")
+    assert told and "Docker isn't enabled for this repo" in told[0] and "--heavy allow" in told[0]
+    assert told[0].startswith(heavy.BLOCK_START)
+    st = envdoctor.build_status(f.settings, sb, f.catalog.get("small"), fleet=f)
+    assert st["tier"]["tier"] == "standard" and "hangar repo set acme/app --heavy allow" in st["tier"]["docker_denied"]
+    c = se.check_tier(st)
+    assert c["status"] == "warn" and "Docker isn't enabled for acme/app" in c["message"]
 
 
 def test_profiles_go_up_only_as_far_as_the_policy_allows(hv):
@@ -234,6 +289,22 @@ async def test_a_person_holds_a_bounded_number_of_large_sandboxes(hv):
     await f.create("dind", actor="ann"), "Docker at the standard size isn't capped"
     f.settings.heavy_person_max = {"large": 0, "xlarge": 0}
     await f.create("big", actor="ann")
+
+
+async def test_unattributed_large_sandboxes_share_one_team_bucket(hv):
+    """The #117 review (Medium-low): jobs from unlinked GitHub or Jira senders have no person, and their sandboxes'
+    actor is `session:…`/`job:…`, so a per-person cap never bound them. They now count together, as `unattributed`.
+    Repo builds (hangar's own, one per repo and environment at a time) stay outside it."""
+    f = hv
+    f.settings.heavy_person_max = {"large": 2, "xlarge": 0}
+    await f.create("big", actor="session:s-1")
+    await f.create("big", actor="job:job-2")
+    with pytest.raises(CapReached, match="unattributed work .*already has 2 large or larger sandboxes"):
+        await f.create("big", actor="session:s-3")
+    await f.create("big", actor="session:s-4", person="ann"), "a person's session counts as theirs"
+    await f.create("big", actor="hangar:build:b-1"), "a repo build isn't refused"
+    with pytest.raises(CapReached, match="unattributed"):
+        await f.create("big", actor="job:job-5")
 
 
 async def test_docker_that_doesnt_start_is_a_setup_failure_the_agent_sees(hv):
@@ -382,8 +453,10 @@ def test_the_docker_preset_is_docker_hub():
 def test_repo_policy_fields(hv):
     from hangar.repo_cli import _line
 
-    p = RepoPolicy(repo="acme/app", heavy=True, profile="large", max_profile="xlarge")
+    p = RepoPolicy(repo="acme/app", heavy="on", profile="large", max_profile="xlarge")
     assert "heavy: on, profile large, up to xlarge" in _line({**p.model_dump(), "effective_verify": None})
+    p = RepoPolicy(repo="acme/app", heavy="allow")
+    assert "heavy: allow (the repo's file may ask)" in _line({**p.model_dump(), "effective_verify": None})
     with pytest.raises(ValueError):
         RepoPolicy(repo="acme/app", profile="huge")
 

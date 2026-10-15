@@ -16,7 +16,7 @@ The file lives with the code, so the environment changes in the same commit as t
     lockfiles: [vendor/*.lock]    # more files whose change means a rebuild (the usual lockfiles are watched anyway)
     mocks:                        # stand-ins for real dependencies, recorded so nobody mistakes them (autoinstall)
       - {what: S3, how: "MinIO service at minio:9000", why: no cloud credentials in sandboxes}
-    heavy: true                   # Docker inside, on the VM-isolated heavy tier (or `tier: heavy`); see below
+    heavy: true                   # asks for Docker on the VM-isolated heavy tier (or `tier: heavy`); see below
     profile: large                # standard | large | xlarge, up to what the repo's policy allows
 
 It is untrusted: anyone who can push to the repo writes it. It is parsed strictly (unknown fields are refused, no
@@ -29,8 +29,9 @@ is read from the commit (`git cat-file`), never from the working tree, so a syml
 else in the sandbox.
 
 --- heavy: `heavy` (or `tier: heavy`) and `profile` are requests, decided before a sandbox starts from the config as the
-default branch was last seen (heavy.py): `heavy` is honored when hangar has a heavy tier (HANGAR_TIERS) and the repo's
-policy doesn't say `heavy: false`; `profile` up to the policy's `max_profile` (else the environment's own). `services`
+default branch was last seen (heavy.py): `heavy` is deny by default, honored only when the repo's policy says
+`heavy: allow` (an admin's `hangar repo set owner/repo --heavy allow`) and hangar has a heavy tier (HANGAR_TIERS);
+`profile` up to the policy's `max_profile` (else the environment's own). `services`
 entries may also be `compose: <file>`, a Compose stack the supervisor brings up with `docker compose` (heavy only).
 
 `parse`, `dump` and `check` are the API for writing and validating a config (agent-led setup builds on them).

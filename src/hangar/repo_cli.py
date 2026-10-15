@@ -66,7 +66,8 @@ def _line(p: dict) -> str:
     if p.get("rerun_flaky"):
         bits.append("reruns flaky failures")
     if p.get("heavy") is not None or p.get("profile") or p.get("max_profile"):  # --- heavy
-        bits.append("heavy: " + {True: "on", False: "off", None: "env"}[p.get("heavy")]
+        bits.append("heavy: " + {"on": "on", "allow": "allow (the repo's file may ask)", "deny": "deny",
+                                 None: "deny (default)"}.get(p.get("heavy"), str(p.get("heavy")))
                     + (f", profile {p['profile']}" if p.get("profile") else "")
                     + (f", up to {p['max_profile']}" if p.get("max_profile") else ""))
     return f"{p['repo']:40} " + "  ".join(bits)
@@ -112,8 +113,9 @@ def repo_set(
     rerun_flaky: bool | None = typer.Option(None, "--rerun-flaky/--no-rerun-flaky",
                                             help="Run the check once more when it failed only on tests on the "
                                                  "repo's flaky list."),
-    heavy: bool | None = typer.Option(None, "--heavy/--no-heavy", help="--- heavy: the repo's sandboxes run on the "
-                                      "heavy tier, with Docker; --no-heavy ignores its own file asking for it."),
+    heavy: str | None = typer.Option(None, "--heavy", help="Docker on the heavy tier (off unless allowed): on (the "
+                                     "repo's sandboxes have it), allow (its .hangar/environment.yaml may ask for "
+                                     "it) or deny (the default)."),
     profile: str | None = typer.Option(None, "--profile", help="standard, large or xlarge: the size of the repo's "
                                        "sandboxes (large and xlarge run on the heavy tier)."),
     max_profile: str | None = typer.Option(None, "--max-profile", help="The largest profile a job (label "

@@ -270,6 +270,8 @@ def check_tier(st: dict) -> dict:
         f", {res['disk_gb']} GiB disk" if res.get("disk_gb") else "")
     what = f"tier {tier}" + (f", profile {t['profile']}" if t.get("profile") else "") + f" ({size}"
     what += f", {st['runtime']})" if st.get("runtime") else ")"
+    if not t.get("docker") and t.get("docker_denied"):  # the repo asked for Docker and isn't allowed it
+        return _check("warn", "tier", what + "; " + str(t["docker_denied"])[:400], tier=tier, docker=False)
     if not t.get("docker"):
         return _check("ok", "tier", what + "; no Docker here: Docker runs only on the heavy tier",
                       tier=tier, docker=False)

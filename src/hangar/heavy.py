@@ -17,15 +17,17 @@ gVisor stays the default tier. Its Docker-in-gVisor mode wants added capabilitie
 (docs/environments.md#why-kata-and-not-gvisor).
 
 What decides, before a sandbox starts (`decide`):
-* **Docker**: the environment (`heavy: true` or `tier: heavy`; its image then has Docker), else the repo's policy
-  (`heavy: true`), else the repo's .hangar/environment.yaml asking for it, honored when a heavy tier is configured and
-  the policy doesn't say `heavy: false`. A heavy repo on a plain environment gets the environment's heavy variant: the
-  same spec with Docker in its image.
+* **Docker** is deny by default (the owner's decision): the environment (`heavy: true` or `tier: heavy`, an admin's;
+  its image then has Docker), else the repo's policy (`heavy: on`), else the repo's .hangar/environment.yaml asking
+  for it, honored only when the policy says `heavy: allow` and a heavy tier is configured. A request that isn't
+  allowed runs on the default tier, and the agent's instructions and `env doctor` say how an admin enables it. A heavy
+  repo on a plain environment gets the environment's heavy variant: the same spec with Docker in its image.
 * **Profile** (models.PROFILES: standard, large 8 vCPU / 32 GiB / 100 GiB, xlarge 16 / 64 / 200): a job's label
   `hangar.profile`, then the repo's file, each up to the policy's `max_profile` (else what the environment or policy
   gives); then the policy's `profile`; then the environment's. `large` and `xlarge` run on the heavy tier's VMs too
   (the gVisor pool's nodes can't hold them), with or without Docker.
-* **Caps**: one person holds at most HANGAR_HEAVY_PERSON_MAX sandboxes of a profile at once (fairness.CapReached).
+* **Caps**: one person holds at most HANGAR_HEAVY_PERSON_MAX sandboxes of a profile at once (fairness.CapReached);
+  work no person owns shares one bucket with the same caps, and repo builds are outside them.
 * **Warm pools** of heavy environments stay at 0 unless HANGAR_HEAVY_WARM_POOLS: a warm heavy node costs.
 """
 
@@ -108,6 +110,7 @@ class Decision(NamedTuple):
     profile: str | None  # a named size; None: the environment's own resources
     source: str  # what decided it: environment | repo policy | repo config | job
     notes: tuple[str, ...] = ()
+    denied: str | None = None  # the repo's file asked for Docker and its policy doesn't allow it: what to tell people
 
     @property
     def vm(self) -> bool:
@@ -138,13 +141,19 @@ def decide(fleet: Fleet, spec: EnvSpec, repo: str | None, labels: dict[str, str]
     cfg = _config(fleet, spec, repo)
     name = repo_key(repo) or repo  # how people name it (owner/repo), in what they're told
     notes: list[str] = []
+    denied = None
+    mode = policy.heavy if policy is not None else None
     docker, source = bool(spec.heavy), "environment"
-    if not docker and policy is not None and policy.heavy:
+    if not docker and mode == "on":
         docker, source = True, "repo policy"
     elif not docker and cfg is not None and cfg.wants_heavy:
-        if policy is not None and policy.heavy is False:
-            notes.append(f"{name}'s .hangar/environment.yaml asks for the heavy tier; its repo policy says heavy: "
-                         "false, so this sandbox has no Docker")
+        if mode != "allow":  # --- integration(wave 4): the owner's decision, deny by default
+            why = "its repo policy says heavy: deny" if mode == "deny" else \
+                "a repo's own file only requests it, and an admin hasn't allowed that for this repo"
+            denied = (f"Docker isn't enabled for {name}: its .hangar/environment.yaml asks for the heavy tier, and "
+                      f"{why}, so this sandbox runs on the default tier, without Docker. An admin enables it: "
+                      f"hangar repo set {name} --heavy allow")
+            notes.append(denied)
         elif not providers(fleet.settings):
             notes.append(f"{name}'s .hangar/environment.yaml asks for the heavy tier, which this hangar doesn't have "
                          "(HANGAR_TIERS lists no providers for heavy), so this sandbox has no Docker")
@@ -175,7 +184,7 @@ def decide(fleet: Fleet, spec: EnvSpec, repo: str | None, labels: dict[str, str]
             raise HeavyError(f"profile {asked} is more than this sandbox may ask for ({where}); an admin allows it "
                              f"({hint})")
         profile, source = asked, "job"
-    return Decision(docker, profile, source, tuple(notes))
+    return Decision(docker, profile, source, tuple(notes), denied)
 
 
 def prepare(fleet: Fleet, spec: EnvSpec, pname: str, d: Decision) -> EnvSpec:
@@ -229,17 +238,34 @@ def variant(fleet: Fleet, spec: EnvSpec) -> bool:
         return False
 
 
+UNATTRIBUTED = "~unattributed"  # the team's bucket for HANGAR_HEAVY_PERSON_MAX (no person can be named this)
+_BUILD_ACTOR = "hangar:build:"  # a repo build's sandbox (envbuilds): one per repo and environment at a time
+
+
+def _bucket(person: str | None, actor: str | None) -> str | None:
+    """Whose heavy caps a sandbox counts against: its person; else, for work no person owns (an unlinked sender's
+    job, a webhook's), one shared team bucket, so those can't take the heavy pool past the cap either (the #117
+    review). Repo builds are hangar's own and never refused here."""
+    from hangar import fairness
+
+    if who := person or fairness.person_of(actor):
+        return who
+    return None if (actor or "").startswith(_BUILD_ACTOR) else UNATTRIBUTED
+
+
 def admit(fleet: Fleet, sb: Sandbox, d: Decision, base: EnvSpec, actor: str, person: str | None) -> None:
     """Refuse a sandbox past its person's cap for its profile, and record the decision (sb.info["heavy"]). Called
     right before the sandbox is first stored, with nothing awaited in between, so two creates can't both slip under
     a cap."""
     for n in d.notes:  # what the repo asked for and didn't get, whether or not anything is heavy
         sb.info.setdefault("warnings", []).append(n)
+    if d.denied:  # --- integration(wave 4): the agent's instructions and `env doctor` say so (start, status)
+        sb.info["heavy_denied"] = d.denied
     if not d.docker and d.profile is None:
         return
     from hangar import fairness
 
-    who = person or fairness.person_of(actor)
+    who = _bucket(person, actor)
     caps = fleet.settings.heavy_person_max or {}
     if who and d.profile in BIG:
         from hangar.fleet import ACTIVE
@@ -250,12 +276,15 @@ def admit(fleet: Fleet, sb: Sandbox, d: Decision, base: EnvSpec, actor: str, per
             if cap <= 0 or rank(d.profile) < rank(level):
                 continue
             held = sum(1 for s in active if rank((s.info.get("heavy") or {}).get("profile")) >= rank(level)
-                       and (s.person or fairness.person_of(s.created_by)) == who)
+                       and _bucket(s.person, s.created_by) == who)
             if held >= cap:
+                team = who == UNATTRIBUTED
+                whose = ("unattributed work (jobs and sessions no person owns: unlinked GitHub, Slack or Jira "
+                         "senders, webhooks)" if team else who)
                 raise fairness.CapReached(
-                    f"{who} already has {held} {level}{' or larger' if level == 'large' else ''} sandboxes running "
-                    f"(the limit per person is {cap}); destroy or suspend one first, or ask the operator to raise "
-                    "HANGAR_HEAVY_PERSON_MAX")
+                    f"{whose} already has {held} {level}{' or larger' if level == 'large' else ''} sandboxes running "
+                    f"(the limit {'for it together' if team else 'per person'} is {cap}); destroy or suspend one "
+                    "first, or ask the operator to raise HANGAR_HEAVY_PERSON_MAX")
     marks = [m for m in ("docker" if d.docker and not base.heavy else None,
                          d.profile if d.profile and d.profile != base.profile else None) if m]
     sb.info["heavy"] = {"docker": d.docker, "profile": d.profile, "vm": d.vm, "source": d.source,
@@ -346,6 +375,9 @@ async def start(fleet: Fleet, prov: Provider, sb: Sandbox, spec: EnvSpec) -> Non
     failure the agent and `hangar-agent env doctor` show, with the command that starts it again."""
     hv = sb.info.get("heavy") or {}
     if not hv.get("docker"):
+        if sb.info.get("heavy_denied"):  # the repo asked and isn't allowed: say so, not a silently weaker sandbox
+            with contextlib.suppress(Exception):
+                await tell_agent(prov, sb, fleet.settings, sb.info.get("harness"))
         return
     home = f"/home/{fleet.settings.sandbox_user}"
     status: dict[str, Any]
@@ -391,12 +423,22 @@ def status(sb: Sandbox, spec: EnvSpec) -> dict[str, Any]:
     return {"tier": "heavy" if hv.get("vm") or vm(spec) else "standard", "profile": hv.get("profile") or spec.profile,
             "resources": {"cpus": res.cpus, "memory_gb": res.memory_gb, "disk_gb": res.disk_gb},
             "docker": bool(hv.get("docker") or spec.heavy), "docker_status": hv.get("status"),
-            "source": hv.get("source")}
+            "source": hv.get("source"), "docker_denied": sb.info.get("heavy_denied")}
 
 
 # ====================================================================== telling the agent
 def instructions(sb: Sandbox) -> str:
     hv = sb.info.get("heavy") or {}
+    if not hv.get("docker") and (denied := sb.info.get("heavy_denied")):
+        return "\n".join([
+            BLOCK_START, "## Docker isn't enabled for this repo", "",
+            f"{denied}.",
+            "- There is no `docker` here: use the environment's `services` (sidecar images such as Postgres) and "
+            "tests that don't need Docker.",
+            "- If the task needs Docker (`docker compose`, Testcontainers, building images), say so plainly in your "
+            "summary, with the admin command above, and finish everything else.",
+            "- `hangar-agent env doctor` shows this on its `tier` line.",
+            BLOCK_END]) + "\n"
     st = hv.get("status") or {}
     res = sb.resources
     size = f"{res.cpus:g} CPUs, {res.memory_gb:g} GiB" + (f", {res.disk_gb:g} GiB for Docker" if res.disk_gb else "")
@@ -502,5 +544,5 @@ def compose_unavailable(sb: Sandbox, names: list[str]) -> None:
     xs = sb.info.setdefault("setup_failures", [])
     xs.append({"ts": now(), "step": "services", "message": (
         f"{', '.join(names)}: Compose stacks need Docker, which only the heavy tier has (heavy: true in "
-        ".hangar/environment.yaml, honored where an admin set up the tier); use image services instead")})
+        ".hangar/environment.yaml, honored where an admin allows it); use image services instead")})
     del xs[:-20]
