@@ -227,7 +227,7 @@ cloud doctor: 2 open finding(s); last run 9h ago (done)
 | `requests` | secret and egress requests agents filed that wait for an answer | [env requests](computer-use.md) |
 | `slo` | p50/p95 over 24 hours against the targets below | in memory, saved every minute |
 | `credentials` | [credential health](#credential-health): counts, what needs renewing, pools | [credhealth.py](../src/hangar/credhealth.py) |
-| `models` | what jobs run on by default (`frontier`, the id it resolves to and its list price), the job budget and daily cap that bound it, and the repos whose policy caps them; `NO job budget or daily cap` until one is set, which `hangar doctor` also warns about (`model spend`) | [modelpolicy.py](../src/hangar/modelpolicy.py) |
+| `models` | what jobs run on by default (`balanced`, the id it resolves to and its list price), the job budget and daily cap that bound it, and the repos whose policy caps them; `NO job budget or daily cap` until one is set, which `hangar doctor` also warns about (`model spend`) | [modelpolicy.py](../src/hangar/modelpolicy.py) |
 | `nightly`, `doctor` | the nightly pass and the [Cloud Doctor](doctor.md)'s last run and open findings | |
 | `log` | the last 50 warnings and errors hangar logged | in memory |
 

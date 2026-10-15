@@ -822,7 +822,7 @@ class SessionService:
                     environment=environment, harness=harness, model=model, repo=repo, base_branch=base_branch,
                     branch=branch, provider=provider, labels={**labels, "hangar.job": job_id}, job_id=job_id,
                     extra_dirs=extra_dirs, idle_minutes=max(1, idle_minutes), person=person)  # --- identity
-        pins.pin(self, s)  # --- canary: jobs default to `frontier`
+        pins.pin(self, s)  # --- canary: jobs default to `balanced` (pins.JOB_DEFAULT)
         self._sessions[s.id] = s
         self._set(s, SessionState.SUSPENDED, f"carries job {job_id}")
         return s

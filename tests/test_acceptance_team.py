@@ -944,8 +944,8 @@ def test_status_and_a_doctor_dry_run_against_a_real_hangar(tmp_path, hangar_with
     and nothing changes."""
     state = ha.State(tmp_path / "state.json")
     summary = tc.check_status(hangar_with.api, state, _opts())
-    assert summary.startswith("power up, ") and "jobs on frontier with NO budget or daily cap" in summary, summary
-    assert state.get("data:status")["models"]["job_default"] == "frontier"
+    assert summary.startswith("power up, ") and "jobs on balanced with NO budget or daily cap" in summary, summary
+    assert state.get("data:status")["models"]["job_default"] == "balanced"  # --- least-privilege
     summary = tc.check_clouddoctor(hangar_with.api, state, _opts())
     assert summary.startswith("dry run: 0 new record(s)") and "nothing to do" in summary, summary
     from hangar.clouddoctor import DoctorFinding

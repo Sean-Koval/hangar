@@ -14,8 +14,8 @@ A run (nightly, from the ops loop, or `hangar admin doctor run`):
    a request (envrequests.py) in the admins' inbox, with the evidence. The doctor never changes credentials or
    egress policy itself.
 4. **Finds the root cause** of the rest: one job per repo (at most HANGAR_DOCTOR_MAX_JOBS a run), in the repo's own
-   environment, on the team's credentials, with the strongest current model (HANGAR_DOCTOR_MODEL, else the
-   `frontier` policy, resolved and pinned per session by modelpolicy.py). It gets the evidence as an untrusted
+   environment, on the team's credentials, with a strong current model (HANGAR_DOCTOR_MODEL, else the
+   `balanced` policy, resolved and pinned per session by modelpolicy.py). It gets the evidence as an untrusted
    file and answers with a structured result: per group, transient or not, the root cause, a confidence, and the
    fix (a skill, `.hangar/environment.yaml`, an environment spec, a host, a secret, or none).
 5. **Fixes only what it is sure of.** A high-confidence fix of a skill, the repo's environment file or an environment
@@ -339,17 +339,17 @@ class Doctor:
     # ================================================================== root cause
     def _harness(self, environment: str) -> tuple[str | None, str | None]:
         """The doctor's harness and model for an environment: HANGAR_DOCTOR_HARNESS, else Claude Code where the
-        environment has it, else its default; HANGAR_DOCTOR_MODEL, else `frontier` for every harness.
+        environment has it, else its default; HANGAR_DOCTOR_MODEL, else `balanced` for every harness.
 
-        --- integ3 (#105): one authority ranks models. `frontier` resolves to a concrete id pinned on the session
-        (and named in its events and the review packet), and is explicit, so the environment's own, possibly weaker,
-        `model:` doesn't win. A team key without Fable access sets HANGAR_DOCTOR_MODEL=best, which Claude Code
-        resolves against the key in use."""
+        --- integ3 (#105): one authority ranks models. The policy resolves to a concrete id pinned on the session
+        (and named in its events and the review packet), and is explicit, so the environment's own `model:` doesn't
+        decide. --- least-privilege: `balanced` (Opus on Claude Code) is the owner's default everywhere;
+        HANGAR_DOCTOR_MODEL=frontier asks for more."""
         spec = self.fleet.catalog.get(environment)
         s = self.settings
         harness = s.doctor_harness or ("claude-code" if "claude-code" in spec.agent_harnesses
                                        else spec.pick_harness())
-        model = s.doctor_model or "frontier"
+        model = s.doctor_model or "balanced"  # --- least-privilege: the owner's default
         return harness, model
 
     def _team_login(self, harness: str | None) -> bool:

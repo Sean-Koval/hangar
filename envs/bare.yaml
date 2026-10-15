@@ -8,10 +8,11 @@ tools:
   apt: [gh, fd-find, shellcheck]
 harnesses: [claude-code, codex, pi, antigravity]  # allowed agents; a child env's list replaces this one
 default_harness: claude-code
-# Every harness runs its provider's strongest current model, resolved to a concrete id from the provider's live model
-# list when a sandbox or session is created, and pinned for it (docs/harnesses.md, "Models"). Override per run with
-# run_agent(model=...), per environment or repo policy with `balanced` or a pinned id.
-model: frontier
+# Every harness runs its provider's everyday line (`balanced`: Opus on Claude Code), resolved to a concrete id from the
+# provider's live model list when a sandbox or session is created, and pinned for it (docs/harnesses.md, "Models").
+# Override per run with run_agent(model=...), per environment, repo policy or job with `frontier` (the strongest, at
+# several times the price) or a pinned id.
+model: balanced
 resources:
   cpus: 2
   memory_gb: 4

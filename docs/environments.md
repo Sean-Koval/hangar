@@ -355,7 +355,7 @@ build failed (after a lockfile or CI change). It doesn't run while an earlier en
 open. Otherwise it ends at once (`no_changes`), with no agent started. The agents get the failing build's output
 and update the existing file.
 
-**Models and budget.** Both agents run on the `frontier` model policy, the same one jobs default to
+**Models and budget.** Both agents run on the `balanced` model policy, the same one jobs default to
 ([harnesses.md](harnesses.md#models-the-latest-strong-model-per-provider)): it is resolved from the provider's
 model list (read with `HANGAR_MODEL_LIST_CREDENTIALS`, or OpenRouter's public list for pi) when each agent's
 session is created, and pinned there. A job's own `model` wins, and `HANGAR_ENV_SETUP_MODELS` pins a model or a
@@ -398,7 +398,7 @@ Cancelling it cancels both agents and removes the validation sandbox.
 | `HANGAR_ENV_SETUP_RETRIES` | 5 | Setup turns after a failed validation, each with the failure's output |
 | `HANGAR_ENV_SETUP_MAX_COST_USD`, `HANGAR_ENV_SETUP_MAX_TURNS` | 30, 16 | An env setup's job budget when neither the job nor the repo's policy sets one |
 | `HANGAR_ENV_SETUP_VALIDATE_MINUTES` | 45 | One validation: the sandbox, install, the services and every command |
-| `HANGAR_ENV_SETUP_MODELS` | unset | `{"claude-code": "...", "codex": "balanced"}`: a model or a policy per harness instead of `frontier` |
+| `HANGAR_ENV_SETUP_MODELS` | unset | `{"claude-code": "frontier", "codex": "gpt-6-astra"}`: a model or a policy per harness instead of `balanced` |
 | `HANGAR_ENV_SETUP_LABEL` | `hangar-env-setup` | An issue (GitHub, Jira, GitHub Projects) with this label starts an env setup |
 
 ## REST

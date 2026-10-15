@@ -31,7 +31,7 @@ nothing.
 
 The env-setup job itself runs no agent: a background task (not a job slot, which its own child jobs need) drives the
 stages and keeps its state in the job's `result.data`, so it resumes where it was after a restart. Both agents run on
-`frontier` (modelpolicy.py, resolved and pinned on each agent's session) unless the job names a model or
+`balanced` (modelpolicy.py, resolved and pinned on each agent's session) unless the job names a model or
 HANGAR_ENV_SETUP_MODELS pins one. The job budget
 (#85; HANGAR_ENV_SETUP_MAX_COST_USD and _MAX_TURNS when the job and the repo's policy set none) is split between the
 goal job (a quarter: the proposal and the judging) and the setup job (the rest: every attempt), so together they
@@ -438,7 +438,7 @@ async def _begin(jobs: JobService, job: Job, st: State) -> None:
         # child jobs; pins.pin resolves it on each one's session, so each agent runs a concrete id that never
         # changes mid-conversation, and the session's events name it.
         harness = job.harness or _harness_of(jobs, job)
-        value = (jobs.settings.env_setup_models or {}).get(harness or "") or "frontier"
+        value = (jobs.settings.env_setup_models or {}).get(harness or "") or "balanced"  # --- least-privilege
         label = await _model_label(jobs, harness, value)
         st.models = {"goal": label, "setup": label, "_model": value}
         jobs._event(job, f"both agents run on {label}")
