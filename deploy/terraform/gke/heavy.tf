@@ -45,7 +45,7 @@ variable "heavy_spot" {
 }
 
 variable "heavy_disk_gb" {
-  description = "Boot disk per heavy node: every sandbox's /var/lib/docker lives there (100 GiB for large, 200 for xlarge) next to the images. 500 leaves ~350 GiB for sandboxes after GKE's reservations."
+  description = "Boot disk per heavy node: every sandbox's /var/lib/docker lives there (100 GiB for large, 200 for xlarge) next to the images. 500 GB leaves ~319 GiB of ephemeral storage for sandboxes after GKE's reservations (three large ones request 300)."
   type        = number
   default     = 500
 }

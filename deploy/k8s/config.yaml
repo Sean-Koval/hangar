@@ -28,6 +28,12 @@ data:
   # that don't set egress.mode.
   # HANGAR_EGRESS_URL: "http://hangar-gateway.hangar.svc:3128"
   # HANGAR_EGRESS_DEFAULT: "allowlist"
+  # --- heavy: the heavy tier (docs/environments.md#the-heavy-tier, docs/gke.md section 4a): Docker inside Kata
+  # sandboxes on the sandboxes-heavy pool (enable_heavy_pool), and the large/xlarge profiles. Keep the other tiers.
+  # HANGAR_TIERS: '{"fast": ["e2b"], "isolated": ["kubernetes"], "heavy": ["kubernetes"]}'
+  # HANGAR_HEAVY_REGISTRY_MIRRORS: '["https://mirror.gcr.io"]'
+  # HANGAR_HEAVY_MIRROR: "true"           # Docker Hub through hangar's read-only pull-through (needs the gateway)
+  # HANGAR_HEAVY_MIRROR_UPSTREAM: "https://REGION-docker.pkg.dev/PROJECT_ID/dockerhub"  # terraform output dockerhub_mirror
 ---
 # Create the real secret out of band (never commit it):
 #   kubectl -n hangar create secret generic hangar \
