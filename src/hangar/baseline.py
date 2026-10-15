@@ -15,6 +15,8 @@ So before the agent starts, hangar runs the job's standing check once on the bas
   can't subtract failures), and the check after the turn counts only *new* failures: the test ids it can read from
   the output (pytest, go test, cargo test, jest and vitest), minus the base's. When it can't read them on both
   sides it can't tell what's new: no verify-fix turn, and the PR goes out as a draft that says why.
+* --- testresults: when the check writes test reports (testresults.py), the base's are kept as a TestRun, and a
+  check after the turn that left complete reports too is compared by test id, exactly; the text is the fallback.
 """
 
 from __future__ import annotations
@@ -249,8 +251,14 @@ class Baselines:
             return
         job.result.baseline = b
         svc._save(job)
+        if b.tests:  # --- testresults: the base's failures by test id, in the job's events and the agent's file
+            from hangar import testresults
+
+            with contextlib.suppress(Exception):
+                await testresults.base_ready(svc, job, b.tests)
         if b.red:
-            n = f"; {len(b.failures)} failing test(s)" if b.parsed else "; hangar can't read which tests fail"
+            n = f"; {len(b.failures)} failing test(s)" if b.parsed else f"; {b.test_failures} failing test(s)" \
+                if b.test_failures else "; hangar can't read which tests fail"  # --- testresults: or from reports
             svc._event(job, f"base was red: `{job.verify}` fails on {b.sha[:12]} before any change (exit "
                             f"{b.exit_code}){n}. The agent is told; those failures don't count against the job")
             with contextlib.suppress(Exception):  # the prompt points at it; the check itself still works without
@@ -260,11 +268,12 @@ class Baselines:
             svc._event(job, f"the base is green: `{job.verify}` passes on {b.sha[:12]}")
 
     async def _run(self, job: Job, k: str) -> Baseline | None:
+        from hangar import testresults  # --- testresults
         from hangar.fleet import _clip_tail  # fleet imports verifyloop, which imports this module
 
         svc = self.svc
         try:
-            res = await svc._sh(job, job.verify, timeout=svc.settings.job_verify_timeout_seconds)
+            res, tests = await testresults.run_check(svc, job, "base")  # --- testresults: and its reports
         except Exception as e:  # noqa: BLE001 - the sandbox went away: the next job on this base tries again
             log.warning("job %s: baseline check could not run: %s", job.id, e)
             return None
@@ -272,6 +281,9 @@ class Baselines:
         ids, whole = read_base(out, res.exit_code, job.verify, res.truncated)
         b = Baseline(sha=job.result.base_sha or "", exit_code=res.exit_code, failures=ids, parsed=whole,
                      job_id=job.id, tail=svc.broker.redact(_clip_tail(out)[-4000:]))
+        if tests is not None and not stops_early(job.verify, out) and testresults.failing_ids(tests) is not None \
+                and (res.exit_code == 0 or tests.n_failing):  # --- testresults: all of its failures, by test id
+            b.tests, b.test_failures = tests.id, tests.n_failing
         if res.exit_code not in _NOT_CACHED:
             svc.store.kv_set(KV_PREFIX + k, json.dumps({"repo": repo_key(job.repo), "verify": job.verify,
                                                         "baseline": b.model_dump(mode="json")}))

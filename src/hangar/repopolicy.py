@@ -42,8 +42,18 @@ FIELDS = ("verify", "environment", "harness", "model", "budget", "job_budget", "
           "credentials",  # --- teamcreds
           "egress", "build_secrets",  # --- egress
           "land", "approvers", "merge_method", "risk_paths",  # --- landing: the last four (landing.py)
-          "require_stale_dismissal")  # --- trust
+          "require_stale_dismissal",  # --- trust
+          "verify_reports", "rerun_flaky",  # --- testresults
+          "heavy", "profile", "max_profile")  # --- heavy
 _LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")  # a GitHub login
+
+
+HeavyMode = Literal["on", "allow", "deny"]  # --- heavy: a repo policy's `heavy`
+
+
+def _heavy_mode(v: Any) -> Any:
+    """`heavy: true`/`false` (how #117 first stored it) mean `on`/`deny`."""
+    return {True: "on", False: "deny"}.get(v, v) if isinstance(v, bool) else v
 
 
 class PolicyError(ValueError):
@@ -81,8 +91,24 @@ class RepoPolicy(BaseModel):
     # --- trust: auto-merge is armed only on a base branch that dismisses stale approvals on a push (landing.py);
     # false opts the repo out of that check. None: required.
     require_stale_dismissal: bool | None = None
+    # --- testresults: the reports `verify` writes (a repo's .hangar/environment.yaml `verify_reports` comes first),
+    # and whether a check that failed only on tests on the repo's flaky list runs once more (testresults.py)
+    verify_reports: list[str] | None = Field(None, max_length=16)
+    rerun_flaky: bool | None = None
+    # --- heavy (heavy.py): Docker on the heavy tier is deny by default (the owner's decision). `on`: the repo's
+    # sandboxes run on it; `allow`: its .hangar/environment.yaml may ask for it; `deny` or unset: a request is not
+    # honored. Then the profile its sandboxes get, and the largest one a job (label hangar.profile) or the repo's file
+    # may ask for
+    heavy: HeavyMode | None = None
+    profile: Literal["standard", "large", "xlarge"] | None = None
+    max_profile: Literal["standard", "large", "xlarge"] | None = None
     updated_at: float = Field(default_factory=now)
     updated_by: str | None = None
+
+    @field_validator("heavy", mode="before")
+    @classmethod
+    def _heavy(cls, v: Any) -> Any:  # --- integration(wave 4): the booleans #117 stored read as on and deny
+        return _heavy_mode(v)
 
     @field_validator("approvers")
     @classmethod
@@ -93,6 +119,13 @@ class RepoPolicy(BaseModel):
         if bad := [x for x in out if not _LOGIN.match(x)]:
             raise ValueError(f"not GitHub logins: {', '.join(bad[:5])}")
         return out
+
+    @field_validator("verify_reports")
+    @classmethod
+    def _reports(cls, v: list[str] | None) -> list[str] | None:  # --- testresults
+        from hangar.testresults import check_globs
+
+        return check_globs(v)
 
     @field_validator("model")
     @classmethod
@@ -259,6 +292,16 @@ class PolicyUpdate(BaseModel):
     merge_method: Literal["squash", "merge", "rebase"] | None = None
     risk_paths: list[str] | None = None
     require_stale_dismissal: bool | None = None  # --- trust
+    verify_reports: list[str] | None = None  # --- testresults
+    rerun_flaky: bool | None = None
+    heavy: HeavyMode | None = None  # --- heavy
+    profile: Literal["standard", "large", "xlarge"] | None = None
+    max_profile: Literal["standard", "large", "xlarge"] | None = None
+
+    @field_validator("heavy", mode="before")
+    @classmethod
+    def _heavy(cls, v: Any) -> Any:
+        return _heavy_mode(v)
 
 
 def update(svc: JobService, body: PolicyUpdate, actor: str) -> RepoPolicy:

@@ -52,13 +52,22 @@ def manifest(sb: Sandbox, eff: EnvSpec, repo_path: str) -> dict[str, Any]:
         "services": [{"name": s["name"], "host": s.get("host") or "127.0.0.1", "port": s.get("port"),
                       "ready": s.get("check")} for s in services],
         "ports": [p.model_dump(exclude_none=True) for p in eff.ports],
+        "compose": [{"name": n, "file": s.compose, "port": s.port, "ready": s.ready, "env": s.env}  # --- heavy
+                    for n, s in compose(sb, eff).items()],
     }
 
 
-def programs_info(eff: EnvSpec) -> list[dict[str, Any]]:
+def compose(sb: Sandbox, eff: EnvSpec) -> dict[str, Any]:
+    """--- heavy: the Compose stacks the supervisor runs: the repo's, from this checkout, in a sandbox with Docker."""
+    stacks = {n: s for n, s in eff.services.items() if s.compose}
+    return stacks if (sb.info.get("heavy") or {}).get("docker") else {}
+
+
+def programs_info(eff: EnvSpec, sb: Sandbox | None = None) -> list[dict[str, Any]]:
     """sb.info["services"] entries for terminals and preview ports ({name, kind, port, check})."""
-    out: list[dict[str, Any]] = [{"name": t.name, "kind": "terminal", "port": t.port, "check": t.ready}
-                                 for t in eff.terminals]
+    out: list[dict[str, Any]] = [{"name": n, "kind": "compose", "port": s.port, "check": s.ready, "file": s.compose}
+                                 for n, s in (compose(sb, eff) if sb is not None else {}).items()]  # --- heavy
+    out += [{"name": t.name, "kind": "terminal", "port": t.port, "check": t.ready} for t in eff.terminals]
     out += [{"name": p.name or f"port-{p.port}", "kind": "port", "port": p.port, "check": None} for p in eff.ports]
     return out
 
@@ -67,7 +76,12 @@ async def start(prov: Provider, sb: Sandbox, settings: Settings, eff: EnvSpec, r
     """Write the manifest and start the supervisor (it waits for services, runs `start`, starts the terminals). It
     returns at once: nothing here waits for a dev server. Returns why it didn't start, or None."""
     home = _home(settings)
-    sb.info["services"] = [s for s in sb.info.get("services") or [] if s.get("kind") == "service"] + programs_info(eff)
+    if (stacks := [n for n, s in eff.services.items() if s.compose]) and not compose(sb, eff):  # --- heavy
+        from hangar import heavy
+
+        heavy.compose_unavailable(sb, stacks)
+    sb.info["services"] = [s for s in sb.info.get("services") or [] if s.get("kind") == "service"] + \
+        programs_info(eff, sb)
     data = json.dumps(manifest(sb, eff, repo_path), indent=1).encode()
     await prov.write_file(sb, f"{home}/.hangar/svc/manifest.json", data, mode=0o600)
     res = await prov.exec(sb, f"chmod 700 {home}/.hangar/svc && python3 {home}/.hangar/bin/hangar-svc up",
@@ -100,13 +114,20 @@ def instructions(sb: Sandbox, eff: EnvSpec, repo_path: str, previews: bool = Fal
             lines.append(f"It is behind: {info.get('reason')}. If something fails for a missing or outdated "
                          f"dependency, run the install yourself (`{eff.install}` in {repo_path}).")
         lines.append("")
+    from hangar import buildcache  # --- caches: what's warming, and where the compile caches write
+
+    lines += buildcache.agent_lines(sb)
     services = [s for s in sb.info.get("services") or [] if s.get("kind") == "service"]
-    if eff.start or eff.terminals or services:
+    stacks = compose(sb, eff)  # --- heavy
+    if eff.start or eff.terminals or services or stacks:
         lines += ["A supervisor runs the environment's services and dev servers and restarts them if they exit. "
                   "Use it rather than starting them yourself in the background:"]
         if services:
             lines.append("- Services: " + ", ".join(f"`{s['name']}` at `{s.get('host') or '127.0.0.1'}:{s['port']}`"
                                                    for s in services) + ".")
+        if stacks:  # --- heavy
+            lines.append("- Compose stacks (Docker in this sandbox): " + ", ".join(
+                f"`{n}` (`docker compose -p {n} -f {s.compose}`)" for n, s in stacks.items()) + ".")
         if eff.start:
             lines.append(f"- `start` ran once at sandbox start: `{eff.start}`.")
         for t in eff.terminals:
@@ -162,6 +183,9 @@ image instead (then run the install command it gives you yourself).
 - `hangar-agent svc restart NAME` after changing code or config a process doesn't reload; `stop`, `start`, `--all`.
 - `hangar-agent svc add NAME [--port P] [--ready CMD] -- COMMAND` keeps a process of your own up (a worker, a second
   server). `rm NAME` removes it.
+- With Docker (the heavy tier only; `hangar-agent env doctor` says which tier this is): `services:` entries may be
+  Compose stacks, `{name: {compose: docker-compose.yml}}`, and `hangar-agent svc add NAME --compose FILE` supervises
+  one for this run. The hangar-docker skill has the details.
 
 Don't start long-running servers with `&` or `nohup`: they die with your shell, and nobody restarts them. Don't
 `sleep` waiting for a port: use `svc wait`.

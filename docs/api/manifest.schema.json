@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Sean-Koval/hangar/blob/main/docs/api/manifest.schema.json",
+  "title": "hangar.manifest/v1: the effective harness manifest",
+  "description": "The exact configuration an agent turn ran with (or, for an environment, would run with). Captured at turn start and stored with the turn. Additions within v1 are new optional properties; anything removed or renamed is a new schema version. Credentials never appear: MCP header and env entries are names only, and every string has passed through hangar's secret redaction. See docs/specs/0014-sister-tool-interfaces.md.",
+  "type": "object",
+  "required": ["schema", "digest", "config_digest", "captured_at", "subject", "hangar", "harness", "model",
+               "instructions", "skills", "mcp_servers", "hooks", "permissions", "egress", "environment", "resources",
+               "policy", "warnings"],
+  "properties": {
+    "schema": {"const": "hangar.manifest/v1"},
+    "digest": {"$ref": "#/$defs/digest", "description": "sha256 over the canonical JSON of everything except digest, config_digest, captured_at and subject."},
+    "config_digest": {"$ref": "#/$defs/digest", "description": "sha256 over the harness configuration alone (harness, model, instructions.global, skills, mcp_servers, permissions, egress, environment.name/image/spec_digest, resources): equal for two trials of one experiment variant, different between variants."},
+    "captured_at": {"type": "number", "description": "Unix time, seconds."},
+    "subject": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {"enum": ["turn", "session", "environment"], "description": "turn: captured as the turn started; session: what the session would run with now (no turn captured yet); environment: what a new sandbox of the environment would get."},
+        "session": {"type": ["string", "null"]},
+        "session_id": {"type": ["string", "null"]},
+        "turn": {"type": ["integer", "null"], "minimum": 1},
+        "run_id": {"type": ["string", "null"]},
+        "job": {"type": ["string", "null"]},
+        "person": {"type": ["string", "null"]},
+        "sandbox": {"type": ["string", "null"]}
+      }
+    },
+    "hangar": {"type": "object", "required": ["version"], "properties": {"version": {"type": "string"}}},
+    "harness": {
+      "type": "object",
+      "required": ["name", "version", "locked", "pack", "mode"],
+      "properties": {
+        "name": {"type": ["string", "null"], "description": "claude-code, codex, pi, antigravity, or another registered harness."},
+        "version": {"type": ["string", "null"], "description": "The CLI version the sandbox's pack reported, when known."},
+        "locked": {"type": ["string", "null"], "description": "The version harnesses.lock.yaml pins (the session's, pinned at its creation)."},
+        "pack": {"type": ["string", "null"], "description": "The pack image mounted (a digest reference where the registry gives one)."},
+        "mode": {"enum": ["pack", "bake", "image"]},
+        "live": {"type": ["boolean", "null"], "description": "The turn ran under hangar's driver (steer, interrupt, approvals)."}
+      }
+    },
+    "model": {
+      "type": "object",
+      "required": ["id", "policy", "source", "provider"],
+      "properties": {
+        "id": {"type": ["string", "null"], "description": "The concrete model id the harness was given (null: the harness's own default)."},
+        "policy": {"type": ["string", "null"], "description": "The policy it was resolved from (frontier, balanced), or null when pinned."},
+        "source": {"type": ["string", "null"]},
+        "provider": {"type": ["string", "null"], "description": "gen_ai.provider.name"},
+        "cache_ttl": {"type": ["string", "null"]}
+      }
+    },
+    "instructions": {
+      "type": "object",
+      "required": ["global", "repo"],
+      "properties": {
+        "global": {
+          "type": "object",
+          "required": ["path", "declared", "effective"],
+          "properties": {
+            "path": {"type": ["string", "null"], "description": "The harness's global instructions file, relative to $HOME."},
+            "declared": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/text"}], "description": "The environment's agent_config.instructions."},
+            "effective": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/file"}], "description": "The file in the sandbox as the turn started."}
+          }
+        },
+        "repo": {
+          "type": "object",
+          "required": ["files"],
+          "properties": {
+            "repo": {"type": ["string", "null"]},
+            "commit": {"type": ["string", "null"]},
+            "files": {"type": "array", "items": {"allOf": [{"$ref": "#/$defs/file"}, {"required": ["path"]}]}, "description": "AGENTS.md, CLAUDE.md, .claude/CLAUDE.md and GEMINI.md in the checkout, by reference (path at commit) and digest."}
+          }
+        },
+        "prompt": {"$ref": "#/$defs/text", "description": "The turn's prompt as hangar wrote it."}
+      }
+    },
+    "skills": {
+      "type": "object",
+      "required": ["declared", "effective"],
+      "properties": {
+        "dir": {"type": ["string", "null"]},
+        "declared": {"type": "array", "items": {"type": "object", "required": ["name", "source", "digest"], "properties": {"name": {"type": ["string", "null"]}, "source": {"type": ["string", "null"]}, "digest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]}, "files": {"type": "integer"}, "pinned": {"type": "boolean"}}}},
+        "effective": {"oneOf": [{"type": "null"}, {"type": "array", "items": {"type": "object", "required": ["name", "digest", "files"], "properties": {"name": {"type": "string"}, "digest": {"$ref": "#/$defs/digest"}, "files": {"type": "integer"}}}}], "description": "The skill directories in the sandbox as the turn started (null: not read)."}
+      }
+    },
+    "mcp_servers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "transport", "source", "tools"],
+        "properties": {
+          "name": {"type": "string"},
+          "transport": {"enum": ["http", "stdio"]},
+          "source": {"type": "string"},
+          "url": {"type": "string", "description": "Scheme, host, port and path only: no user info, query or fragment."},
+          "headers": {"type": "array", "items": {"type": "string"}, "description": "Header names; values are never included."},
+          "command": {"type": ["string", "null"]},
+          "args": {"type": "array", "items": {"type": "string"}},
+          "env": {"type": "array", "items": {"type": "string"}, "description": "Variable names; values are never included."},
+          "tools": {"type": ["array", "null"], "items": {"type": "string"}, "description": "When hangar knows them; null otherwise."}
+        }
+      }
+    },
+    "hooks": {"type": "array", "items": {"type": "object", "required": ["event", "source"], "properties": {"event": {"type": "string"}, "source": {"type": "string"}}}},
+    "permissions": {
+      "type": "object",
+      "required": ["approvals", "harness_permission_checks"],
+      "properties": {
+        "approvals": {"enum": ["auto", "ask", "deny-risky"]},
+        "live": {"type": ["boolean", "null"]},
+        "harness_permission_checks": {"enum": ["on", "off"], "description": "off: approvals=auto runs the harness with its permission prompts off."},
+        "uid_split": {"type": ["boolean", "null"]},
+        "hardened": {"type": ["boolean", "null"], "description": "hangar owned the harness's settings for the turn (harden.py)."},
+        "isolation": {"type": ["object", "null"]}
+      }
+    },
+    "egress": {
+      "type": "object",
+      "required": ["declared", "default", "effective"],
+      "properties": {
+        "declared": {"type": ["object", "null"]},
+        "default": {"type": "string"},
+        "effective": {"type": ["object", "null"], "description": "What the sandbox got: mode, enforced, mirrors."}
+      }
+    },
+    "environment": {
+      "type": "object",
+      "required": ["name", "image", "spec_digest", "provider", "build", "services", "secret_env"],
+      "properties": {
+        "name": {"type": "string"},
+        "image": {"type": ["string", "null"]},
+        "spec_digest": {"$ref": "#/$defs/digest"},
+        "provider": {"type": ["string", "null"]},
+        "tier": {"type": ["string", "null"]},
+        "runtime_class": {"type": ["string", "null"]},
+        "build": {"type": ["object", "null"], "description": "The repo's environment build the sandbox started from (#93): version, id, commit, config_digest, fallback, reason, stale."},
+        "services": {"type": "array", "items": {"type": "object", "required": ["name", "image"]}},
+        "secret_env": {"type": "array", "items": {"type": "string"}, "description": "Names of variables that hold a secret. Never values."}
+      }
+    },
+    "resources": {
+      "type": "object",
+      "required": ["cpus", "memory_gb"],
+      "properties": {"cpus": {"type": "number"}, "memory_gb": {"type": "number"}, "disk_gb": {"type": ["number", "null"]}}
+    },
+    "policy": {
+      "type": "object",
+      "properties": {
+        "turn_budget": {"type": ["object", "null"]},
+        "job_budget": {"type": ["object", "null"]},
+        "credential_mode": {"type": ["string", "null"]},
+        "verify": {"type": ["string", "null"]},
+        "deliver": {"type": ["string", "null"]}
+      }
+    },
+    "repo": {"type": "object", "properties": {"url": {"type": ["string", "null"]}, "base_branch": {"type": ["string", "null"]}, "base_sha": {"type": ["string", "null"]}, "branch": {"type": ["string", "null"]}}},
+    "probe": {"type": ["object", "null"], "properties": {"ok": {"type": "boolean"}, "error": {"type": ["string", "null"]}}},
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "file": {"type": "object", "required": ["bytes", "digest"], "properties": {"path": {"type": "string"}, "bytes": {"type": "integer", "minimum": 0}, "digest": {"$ref": "#/$defs/digest"}}},
+    "text": {"type": "object", "required": ["digest", "bytes"], "properties": {"source": {"type": "string"}, "digest": {"$ref": "#/$defs/digest"}, "bytes": {"type": "integer", "minimum": 0}, "text": {"type": "string"}, "truncated": {"type": "boolean"}}}
+  }
+}

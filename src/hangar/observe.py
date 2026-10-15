@@ -373,7 +373,8 @@ def _turn_attrs(s: Any, turn: Any) -> dict[str, Any]:
             "gen_ai.conversation.id": turn.conversation, "hangar.session.id": s.id, "hangar.job.id": s.job_id,
             "hangar.environment": s.environment, "hangar.run.id": turn.run_id, "hangar.turn.mode": turn.mode,
             "hangar.harness": harness,
-            "hangar.harness.version": getattr(turn, "harness_version", None)}  # --- images
+            "hangar.harness.version": getattr(turn, "harness_version", None),  # --- images
+            "hangar.manifest.digest": getattr(turn, "manifest", None)}  # --- interfaces: what it ran with
 
 
 def turn_begin(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -433,6 +434,12 @@ def turn_end(fn: Callable[..., Any]) -> Callable[..., Any]:
         except BaseException as e:
             _safe(_end_turn, sp, s, turn, "error", e)
             raise
+        if sp is not None and getattr(getattr(self, "settings", None), "trace_live_tools", False):  # --- interfaces
+            from hangar import traces
+
+            # --- review(#114): it reads the session's event log (tens of MB): in a thread, from copies
+            await asyncio.to_thread(_safe, traces.live_children, sp, self, s.model_copy(deep=True),
+                                    turn.model_copy(deep=True))
         _safe(_end_turn, sp, s, turn, result[0], None)
         return result
 

@@ -633,6 +633,8 @@ def job_submit(
                                                help="Also run --verify inside the agent's turn (default: on)."),
     autofix: str | None = typer.Option(None, "--autofix", help="React to the PR's CI and reviews: ci,reviews "
                                        "(default) | ci | reviews | off."),
+    profile: str | None = typer.Option(None, "--profile", help="--- heavy: standard | large | xlarge: the job's "
+                                       "sandbox size, up to what the repo's policy allows (label hangar.profile)."),
 ):
     """Submit a job. Example:
 
@@ -664,7 +666,8 @@ def job_submit(
         **({"output_schema": _schema(schema)} if schema else {}),
         **({"strategy": "best_of_n", "n": best_of, "judge": judge} if best_of else {}),
         **({"verify_in_loop": verify_in_loop} if verify_in_loop is not None else {}),
-        **({"autofix": autofix} if autofix else {})})
+        **({"autofix": autofix} if autofix else {}),
+        **({"labels": {"hangar.profile": profile}} if profile else {})})  # --- heavy
     typer.secho(f"{j['id']} queued: {j['title']}", fg="green")
     if wait:
         j = _wait_job(j["id"])
@@ -1426,3 +1429,7 @@ def admin_rotate_key(status: bool = typer.Option(False, "--status", help="Only s
 from hangar import ops_cli as _ops  # noqa: E402
 
 _ops.register(app, admin_app, cred_app)
+# ---------------------------------------------------------------------------- --- interfaces (interfaces_cli.py)
+from hangar import interfaces_cli as _interfaces  # noqa: E402
+
+_interfaces.register(app, session_app, job_app, env_app)

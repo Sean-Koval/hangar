@@ -19,6 +19,7 @@ Design specs for the next round of work. They came out of the first live GKE run
 | [0011 The factory roadmap](0011-factory-roadmap.md) | The next slice: trusted triggers and approvals, Slack, inbound webhooks and schedules, activity events, usage and budgets, `fork_session` and best-of-N, the session I/O protocol (context in, progress and questions during, results, artifacts and code out), the git credential gateway, an A2A endpoint, and the position on Google AX | this PR |
 | [0012 Cutting edge: what to adopt next](0012-cutting-edge.md) | How hangar compares with cloud coding agents (Claude Code, Codex, Cursor, Devin, Copilot and others) and sandbox platforms (E2B, Daytona, Modal, Vercel, Cloudflare, GKE Pod Snapshots) as of October 2026; which protocols to speak (MCP Apps, ACP, Claude self-hosted runners, Codex app-server, Agents SDK); measured gVisor memory fork and install caching; 15 prioritised items and the next three waves | this PR |
 | [0013 E2B and CubeSandbox as references](0013-e2b-cube-fast-sandboxes.md) | The envd wire protocol `hangar-envd` must speak, verified with the real E2B SDKs. E2B's control API, endpoint by endpoint. How CubeSandbox and E2B start fast (snapshot restore, shared page cache, reflink, eBPF). An E2B-compatible API for hangar, with CubeSandbox and self-hosted E2B as `e2b` provider flavours. A microVM tier on GKE nested virtualization. Where Rust pays. Phase gates per tier. Builds on 0012 (#54). | this PR |
+| [0014 The sister tool's interfaces](0014-sister-tool-interfaces.md) | The boundary between hangar (the runtime: sandboxes, sessions, jobs, policy, emitting data) and a sister tool that interprets runs (harness inspection, trace timelines, behavior specs, evals); the three versioned interfaces it reads: the effective harness manifest (`hangar.manifest/v1`), trace export in OTLP/JSON on the OpenTelemetry GenAI conventions (`hangar.trace/v1`) and the experiment job kind (`hangar.experiment/v1`); what moved out of 0005 and 0007 | #114 |
 
 ## Cross-spec decisions
 
@@ -68,6 +69,8 @@ Where a spec conflicts with this list, this list wins. Specs will be updated to 
     - **Trajectories:** ATIF v1.7 is the stored per-run export, built from 0007 M6's normalized spans; OTel stays the live channel.
     - **Learned changes:** the improvement loop opens PRs and never merges to a team environment's default channel (consistent with 0002's human-approved landing).
     - **Tickets:** Jira and GitHub Projects (0007 OQ4), through one source-agnostic intake; GitHub Issues through the existing trigger.
+
+17. **Interpreting runs lives outside hangar (owner, 2026-10-15; [0014](0014-sister-tool-interfaces.md)).** Behavior specs, evals, rubrics, effect sizes, trace visualization and team learning belong to a sister tool in a separate repository. Hangar adds only what needs the sandbox lifecycle, credentials or its trust boundary, and gives that tool three versioned, owner-scoped, redacted interfaces: the effective harness manifest, OTLP trace export and the experiment job kind. Where decision 16 or 0005/0007 put evaluation, labeling or reports in hangar, this decision wins.
 
 ## Build order
 

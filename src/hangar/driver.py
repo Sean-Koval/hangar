@@ -1003,6 +1003,10 @@ class Gate:
         self.command, self.cwd = spec["command"], spec["cwd"]
         self.rounds, self.deadline, self.timeout = spec["rounds"], spec["deadline"], spec["timeout"]
         self.out, self.failed = out, 0
+        # --- testresults: shell that goes before the check (its reporter variables), with @D@ for the directory its
+        # reports go to: one per check, next to the rounds file (~/.hangar/runs/<run>.tests/<n>/)
+        self.prefix = spec.get("prefix") if isinstance(spec.get("prefix"), str) else ""
+        self.checks = 0
         # integrate(#65 x #66): under the uid split the check is the agent's code (the repo's tests), so it runs as
         # the agent, in the harness's environment, never as hangar's user, whose capabilities could make it root.
         # The rounds file is the agent's too, where hangar and the Stop hook read and write it.
@@ -1050,9 +1054,13 @@ class Gate:
     def check(self) -> str | None:
         """Run the check; None when it passes (or can't run: hangar's own check after the turn decides), else
         the message that sends the agent back to work."""
+        command = self.command
+        if self.prefix:  # --- testresults
+            reports = f"{self.state.removesuffix('.verify')}.tests/{self.checks}"
+            command = self.prefix.replace("@D@", shlex.quote(reports)) + self.command
         try:
             with agent_env() as kw:  # --- harden
-                p = subprocess.run(self._argv(["bash", "-c", self.command]), cwd=None if self.agent else self.cwd,
+                p = subprocess.run(self._argv(["bash", "-c", command]), cwd=None if self.agent else self.cwd,
                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                    timeout=max(1, self.timeout), **kw)
             code, output = p.returncode, p.stdout or b""
@@ -1061,6 +1069,7 @@ class Gate:
         except OSError:
             return None
         self._record("pass" if code == 0 else f"fail {code}")
+        self.checks += 1  # --- testresults: one per line of the rounds file, as the Stop hook counts them
         if code == 0:
             self.out.event("verify", round=self.failed, exit_code=0, passed=True)
             return None

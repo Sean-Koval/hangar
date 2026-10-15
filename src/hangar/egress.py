@@ -65,6 +65,11 @@ PRESETS: dict[str, tuple[str, ...]] = {
     "go": ("proxy.golang.org", "sum.golang.org"),
     "github": ("github.com", "api.github.com", "codeload.github.com", "objects.githubusercontent.com",
                "release-assets.githubusercontent.com", "raw.githubusercontent.com"),
+    # --- heavy: Docker Hub for a heavy sandbox's dockerd (docs.docker.com/desktop/setup/allow-list, checked
+    # 2026-10-15: the registry, its token service and its blob CDN, under both names the CDN has had). The registry
+    # also takes pushes with anyone's token: prefer hangar's read-only mirror (HANGAR_HEAVY_MIRROR, regmirror.py).
+    "docker": ("registry-1.docker.io", "auth.docker.io", "production.cloudfront.docker.com",
+               "production.cloudflare.docker.com"),
 }
 # --- egress2: `packages` no longer includes `github`: GitHub takes writes with anyone's token, and sandboxes in
 # gateway mode reach it through hangar's git gateway (and its read-only API path) instead.

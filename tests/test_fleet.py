@@ -229,3 +229,33 @@ async def test_prebuild_and_scheduled_pools(fleet):
     await fleet.sync_scheduled_pools()
     await fleet.sync_scheduled_pools()  # unchanged: not re-applied
     assert synced == [("plain", 2)]
+
+
+async def test_a_create_without_a_repo_build_refills_the_warm_pool(fleet, monkeypatch):
+    """`envbuilds.pick` always returns a Pick (a truthy pydantic model), so the refill must look at its image:
+    with no repo build the sandbox came from the environment's own image, which its warm pool holds."""
+    import asyncio
+
+    from hangar import envbuilds
+
+    fake = fleet.providers["docker"]
+    await fleet.prebuild(["plain"])  # the image build syncs the pool itself; this test is about the create
+    synced = []
+
+    async def sync(spec, image):
+        synced.append((spec.name, spec.warm_pool, image))
+
+    fake.sync_warm_pool = sync
+    sb = await fleet.create("plain")  # no repo: pick() answers an empty Pick()
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert synced == [("plain", 2, sb.image)]
+
+    async def built(*a, **k):  # a repo build's image never refills the environment's pool
+        return envbuilds.Pick(image="reg/plain-build:1")
+
+    monkeypatch.setattr(envbuilds.EnvBuilds, "pick", built)
+    await fleet.create("plain")
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert len(synced) == 1

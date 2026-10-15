@@ -67,7 +67,7 @@ health` does: a person's login that expires, or stops working, during the deploy
 | | Checks |
 | --- | --- |
 | **Core** (`CORE` in gke.sh) | `doctor`, `sandbox`, `exec`, `stream`, `files`, `mcp`, `isolation`, `session`, `e2b`, `backup`, `metrics`, `power` |
-| Reported | `k8s`, `model`, `steer`, `gateway`, `computer`, `egress`, `services`, `envbuild`, `secrets`, `landing`, `intake`, `scale-smoke`, `prepull`, `warmstart`, `status`, `clouddoctor` |
+| Reported | `k8s`, `model`, `steer`, `gateway`, `computer`, `egress`, `services`, `heavy`, `envbuild`, `secrets`, `landing`, `intake`, `scale-smoke`, `prepull`, `warmstart`, `status`, `clouddoctor` |
 
 Core checks exercise the control plane's own paths, run in minutes and depend on nothing outside hangar, so a core
 failure after a deploy almost always means the new image broke something, which a rollback fixes. The reported checks
@@ -97,7 +97,7 @@ until the checks pass by hand: each check without its fixture skips.
 
 ## The first live run after deploying Waves 1–3
 
-Run these in order after [the upgrade](upgrading.md#upgrading-to-the-team-release-75110) (its step 14). Each step
+Run these in order after [the upgrade](upgrading.md#upgrading-to-the-team-release-75117) (its step 14). Each step
 assumes the ones before it passed; when one fails, the next section says where to look. All of them work with
 `--no-kubectl`.
 
@@ -207,6 +207,7 @@ or the REST views named. `--keep` leaves what the run made, so you can look at t
 | `computer` | Chromium runs (under gVisor on GKE), a page screenshot is a whole PNG of the display's size and not blank, the display is captured, 3 s of video record, the screen opens through a one-time ticket, a view-only viewer's pointer and keys never arrive and a control viewer's do | the image build failed (no Chromium), gVisor missing on the pool (`runtime runc`), `/dev/shm` or the display didn't start, the websocket blocked by the load balancer | `hangar env list` (`accept-computer`); `hangar-agent computer status` and `env doctor` in a `--keep` sandbox; `GET /api/audit` for `screen.*` |
 | `egress` | an allowlist sandbox reaches the allowed host through the proxy, gets 403 for another, has no direct route and no DNS; with `--with-model`, the agent's `env request egress` reaches its owner as pending | `HANGAR_EGRESS_URL` unset (no proxy in the sandbox); the `sandbox-egress-proxied` NetworkPolicy missing (direct route); a resolver left in the pod (#97: `dnsPolicy: None`); the proxy refusing the allowed host (its address resolves privately) | `GET /api/egress/sandboxes/<id>` (mode, `enforced`, warning); `GET /api/audit` for `egress.deny`; `hangar requests ls` |
 | `services` | a Postgres sidecar answers at `postgres:5432` | the image refused by `HANGAR_ENV_SERVICE_IMAGES`, over the services budget, or not pulled | the sandbox's `info.setup_failures` (`hangar sb ls --json`); `hangar-agent svc status` in it |
+| `heavy` | a heavy sandbox (`accept-heavy`) starts Docker; `env doctor` says heavy; a Compose stack with Postgres comes up under `hangar-agent svc` and answers on its published port; a Testcontainers test (`testcontainers==4.15.0`) gets a Postgres container that answers. Skips without a heavy tier in `HANGAR_TIERS` | the GKE Agent Sandbox add-on refusing the privileged Kata pod (it never starts: use the OSS controller or microVMs); kata-deploy missing on `sandboxes-heavy`; Docker's start failing (storage, cgroups, iptables: the sandbox's `info.heavy.status.error`); pulls refused by egress | `hangar sb ls --json` (`info.heavy`); `sudo tail /var/log/hangar-dockerd.log` and `hangar-agent svc logs pg` in a `--keep` sandbox |
 | `envbuild` | the fixture's config builds; a failing install leaves the good build active; a new sandbox starts from it with the dev server up; the preview link opens once | the build sandbox can't clone (a private fixture without credentials), install's network blocked by egress, `HANGAR_ENV_BUILDS=false`; a preview domain without DNS or certificate | `hangar env builds you/accept-fixture`, `hangar env build-show <id>` (the install's log) |
 | `secrets` | a job whose change holds a synthetic GitHub token isn't pushed: `secret_found`, its events name the file and line, never the value | `HANGAR_SECRET_SCAN` set to `warn` or `off`; the scan couldn't read the change | `hangar job events <id>`; `GET /api/audit` for `secret.found` |
 | `landing` | the job's PR comes from the GitHub App; the approver's approval arms auto-merge for that commit, a push disarms it | the App not installed on the test repo (the PR comes from the control token: the job's events say so); the webhook lacks `pull_request` or review events (`hangar doctor --fix`); a required check never ran; "merged at once" means nothing kept the PR open (add the code-owner rule above) | `hangar job get <id>` (`landing.note`); `hangar doctor` (`landing …` checks); `hangar inbox` |

@@ -9,6 +9,11 @@ backoff when they exit. Each program's output goes to ~/.hangar/svc/logs/<name>.
 search. The CLI talks to the daemon over a Unix socket in ~/.hangar/svc (0700).
 
 hangar writes ~/.hangar/svc/manifest.json at claim and runs `hangar-svc up`.
+
+--- heavy: in a sandbox with Docker (the heavy tier), a program can be a Compose stack: `docker compose -p NAME -f FILE
+up` in the foreground, so its containers' output is the program's log and a stop (SIGTERM) stops them. Stacks start
+with the services, before `start`, and `start` waits for them to be ready: every service of the file with a container
+running (and healthy, if it has a healthcheck) or exited 0, unless the stack names a port or a `ready` command.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ import fcntl
 import json
 import os
 import selectors
+import shlex
 import signal
 import socket
 import subprocess
@@ -42,6 +48,7 @@ STOP_GRACE = 10.0
 READY_TIMEOUT = 10.0  # a `ready` command's own limit
 SERVICE_WAIT = float(os.environ.get("HANGAR_SVC_SERVICE_WAIT") or 180)  # how long `start` waits for services
 NAME_OK = "abcdefghijklmnopqrstuvwxyz0123456789-"
+DOCKER = os.environ.get("HANGAR_SVC_DOCKER") or "docker"  # --- heavy: the CLI Compose stacks run with (tests set it)
 
 USAGE = """\
 usage: hangar-agent svc COMMAND [ARGS]
@@ -60,6 +67,8 @@ commands:
   restart NAME... | --all         stop, then start
   add NAME [--port P] [--ready CMD] [--cwd DIR] [--once] -- COMMAND...
                                   supervise a command of your own (until the sandbox goes away)
+  add NAME --compose FILE [--port P] [--ready CMD]
+                                  supervise a Compose stack (`docker compose -p NAME -f FILE up`; heavy tier)
   rm NAME                         stop and forget a program you added
   run-start                       run the environment's `start` command again
 
@@ -68,6 +77,7 @@ examples:
   hangar-agent svc wait web --timeout 120 && curl -fsS localhost:3000/health
   hangar-agent svc logs web -n 200 | rg -i error
   hangar-agent svc add worker --ready 'test -f /tmp/worker.ready' -- npm run worker
+  hangar-agent svc add deps --compose docker-compose.yml && hangar-agent svc wait deps --timeout 300
 """
 
 
@@ -113,6 +123,65 @@ def _valid_name(name):
 def _manifest():
     m = _read_json(MANIFEST, {})
     return m if isinstance(m, dict) else {}
+
+
+# ====================================================================== --- heavy: Compose stacks
+def compose_spec(spec):
+    """A Compose stack's program: `docker compose up` in the foreground, ready by its port, its `ready` command, or
+    `hangar-svc compose-ready` (every service up)."""
+    name, f = spec["name"], str(spec["compose"])
+    out = dict(spec)
+    out["command"] = (f"{shlex.quote(DOCKER)} compose -p {shlex.quote(name)} -f {shlex.quote(f)} up --remove-orphans "
+                      "--quiet-pull --no-color")
+    if not out.get("port") and not out.get("ready"):
+        out["ready"] = "{} {} compose-ready {} {}".format(shlex.quote(sys.executable or "python3"),
+                                                          shlex.quote(os.path.abspath(__file__)), shlex.quote(name),
+                                                          shlex.quote(f))
+    return out
+
+
+def _compose_json(text):
+    """`docker compose ps --format json`: a JSON array (older Compose) or one object per line (2.21 and later)."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        try:
+            v = json.loads(text)
+            return [x for x in v if isinstance(x, dict)]
+        except ValueError:
+            return []
+    out = []
+    for line in text.splitlines():
+        try:
+            v = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(v, dict):
+            out.append(v)
+    return out
+
+
+def stack_ready(services, containers):
+    """Every service has a container that is running (healthy, when it has a healthcheck) or exited 0."""
+    ok = set()
+    for c in containers:
+        state, health = c.get("State") or "", c.get("Health") or ""
+        if (state == "running" and health in ("", "healthy")) or (state == "exited" and c.get("ExitCode") == 0):
+            ok.add(c.get("Service"))
+    return bool(services) and set(services) <= ok
+
+
+def compose_ready(name, f):
+    base = [DOCKER, "compose", "-p", name, "-f", f]
+    try:
+        svcs = subprocess.run(base + ["config", "--services"], capture_output=True, text=True, timeout=8)
+        ps = subprocess.run(base + ["ps", "--all", "--format", "json"], capture_output=True, text=True, timeout=8)
+    except (OSError, subprocess.TimeoutExpired):
+        return 1
+    if svcs.returncode != 0 or ps.returncode != 0:
+        return 1
+    return 0 if stack_ready([s for s in svcs.stdout.split() if s], _compose_json(ps.stdout)) else 1
 
 
 # ====================================================================== the daemon
@@ -172,7 +241,11 @@ class Daemon:
         self.repo = m.get("repo") or HOME
         self.services = [s for s in m.get("services") or [] if isinstance(s, dict) and _valid_name(s.get("name"))]
         specs = [(t, "terminal") for t in m.get("terminals") or []]
-        specs += [(t, "added") for t in _read_json(ADDED, [])]
+        specs += [(compose_spec({"name": c.get("name"), "compose": c["file"], "port": c.get("port"),  # --- heavy
+                                 "ready": c.get("ready"), "env": c.get("env") or {}}), "compose")
+                  for c in m.get("compose") or [] if isinstance(c, dict) and c.get("file") and c.get("name")]
+        specs += [(compose_spec(t) if isinstance(t, dict) and t.get("compose") else t, "added")
+                  for t in _read_json(ADDED, [])]
         if m.get("start"):
             specs.append(({"name": "start", "command": m["start"], "restart": "never"}, "start"))
         seen = set()
@@ -186,7 +259,7 @@ class Daemon:
             else:
                 self.programs[name] = Program(spec, kind)
                 if first and (kind == "start" or (kind == "terminal" and spec.get("autostart", True))
-                              or kind == "added"):
+                              or kind in ("added", "compose")):
                     self.programs[name].wanted = True
         for name in [n for n in self.programs if n not in seen and self.programs[n].proc is None]:
             del self.programs[name]
@@ -239,7 +312,10 @@ class Daemon:
             self.start_phase = "waiting-services"
             self.services_since = now
         if self.start_phase == "waiting-services":
-            if all(self._service_ready(s) for s in self.services) or now - self.services_since > SERVICE_WAIT:
+            stacks = [p for p in self.programs.values() if p.spec.get("compose") and p.wanted]  # --- heavy
+            if (all(self._service_ready(s) for s in self.services) and all(p.ready or p.state == "failed"
+                                                                            for p in stacks)) \
+                    or now - self.services_since > SERVICE_WAIT:
                 self.start_phase = "running" if start is not None and start.wanted else "done"
                 if self.start_phase == "running":
                     self._spawn(start)
@@ -248,7 +324,7 @@ class Daemon:
         for p in list(self.programs.values()):
             self._reap(p, now)
             if p.kind != "start" and p.wanted and p.proc is None:
-                if self.start_phase != "done":
+                if self.start_phase != "done" and not p.spec.get("compose"):  # --- heavy: stacks start right away
                     if p.state == "stopped":
                         p.state = "waiting"  # for the services and `start`
                 elif p.state in ("stopped", "waiting") or (p.state == "backoff" and now >= (p.next_start or 0)):
@@ -480,6 +556,10 @@ class Daemon:
             return {"ok": True}
         if op == "add":
             spec = req.get("spec") or {}
+            if spec.get("compose") and _valid_name(spec.get("name")):  # --- heavy
+                if not isinstance(spec["compose"], str) or "\n" in spec["compose"] or "\0" in spec["compose"]:
+                    return {"error": "--compose takes a file name"}
+                spec = compose_spec(spec)
             if not _valid_name(spec.get("name")) or not spec.get("command"):
                 return {"error": "NAME must be lowercase letters, digits and '-', starting with a letter"}
             if spec["name"] in self.programs and self.programs[spec["name"]].kind != "added":
@@ -491,7 +571,7 @@ class Daemon:
                 self._stop(old, wait=True)
             self.programs[spec["name"]] = p = Program(spec, "added")
             p.wanted = True
-            if self.start_phase == "done":
+            if self.start_phase == "done" or spec.get("compose"):  # --- heavy: a stack doesn't wait for `start`
                 self._spawn(p)
             return {"ok": True}
         if op == "rm":
@@ -522,7 +602,7 @@ class Daemon:
                 if op in ("start", "restart"):
                     p.wanted, p.fails = True, 0
                     if p.proc is None:
-                        if self.start_phase == "done" or p.kind == "start":
+                        if self.start_phase == "done" or p.kind == "start" or p.spec.get("compose"):  # --- heavy
                             self._spawn(p)
                         else:
                             p.state = "waiting"
@@ -786,10 +866,15 @@ def main(argv=None):
         print("{}: {}".format(cmd, ", ".join(resp.get("names") or []) or "nothing to do"))
         return 0
     if cmd == "add":
-        pos, opts = _opts(args, {"--once"}, {"--port", "--ready", "--cwd"})
-        if len(pos) < 2:
+        pos, opts = _opts(args, {"--once"}, {"--port", "--ready", "--cwd", "--compose"})
+        if opts.get("--compose"):  # --- heavy: a Compose stack
+            if len(pos) != 1 or opts.get("--cwd") or opts.get("--once"):
+                _die("usage: hangar-agent svc add NAME --compose FILE [--port P] [--ready CMD]")
+            spec = {"name": pos[0], "compose": opts["--compose"]}
+        elif len(pos) < 2:
             _die("usage: hangar-agent svc add NAME [--port P] [--ready CMD] [--cwd DIR] [--once] -- COMMAND...")
-        spec = {"name": pos[0], "command": " ".join(pos[1:]) if len(pos) > 2 else pos[1]}
+        else:
+            spec = {"name": pos[0], "command": " ".join(pos[1:]) if len(pos) > 2 else pos[1]}
         if opts.get("--port"):
             if not str(opts["--port"]).isdigit():
                 _die("--port takes a number")
@@ -816,6 +901,10 @@ def main(argv=None):
     if cmd == "reload":
         _req({"op": "reload"})
         return 0
+    if cmd == "compose-ready":  # --- heavy: a stack's default readiness check
+        if len(args) != 2:
+            _die("usage: hangar-svc compose-ready NAME FILE")
+        return compose_ready(args[0], args[1])
     sys.stderr.write(USAGE)
     return 2
 

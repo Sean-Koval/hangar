@@ -107,6 +107,24 @@ class Settings(BaseSettings):
     # anything not listed (it is a security choice, not a speed one).
     tiers: dict[str, list[str]] = Field(default_factory=lambda: {"fast": ["e2b"], "isolated": ["kubernetes"]})
     tier_cooldown_seconds: int = 60  # a provider that was full or down is skipped for this long
+    # --- heavy: the heavy tier (heavy.py, docs/environments.md#the-heavy-tier): Docker inside a VM-isolated sandbox,
+    # and the large and xlarge profiles. Off until HANGAR_TIERS lists providers for it ({"heavy": ["kubernetes"]}).
+    heavy_runtime_class: str = "kata-qemu-runtime-rs"  # Kubernetes: the VM runtime heavy pods run under
+    heavy_node_selector: bool = True  # Kubernetes: pin them to deploy/terraform/gke's sandboxes-heavy pool
+    heavy_warm_pools: bool = False  # a heavy environment's warm_pool is ignored unless this is on: heavy nodes cost
+    # Live sandboxes one person may hold per profile at once (0: no cap); `large` counts xlarge ones too
+    heavy_person_max: dict[str, int] = Field(default_factory=lambda: {"large": 3, "xlarge": 1})
+    # Where an environment image gets dockerd, containerd, runc and the docker CLI (with compose and buildx) from
+    heavy_docker_image: str = "docker:29.8.2-dind"
+    # dockerd's registry-mirrors (Docker Hub images only), e.g. ["https://mirror.gcr.io"]. With HANGAR_HEAVY_MIRROR
+    # on, hangar's own pull-through on the gateway comes first.
+    heavy_registry_mirrors: list[str] = Field(default_factory=list)
+    heavy_mirror: bool = False  # Docker Hub through hangar's read-only pull-through on the gateway (regmirror.py)
+    # Its upstream: Docker Hub, or an Artifact Registry remote repository for Docker Hub (deploy/terraform/gke)
+    heavy_mirror_upstream: str = "https://registry-1.docker.io"
+    # Docker provider only: heavy sandboxes run privileged under runc, which is root on the host. For CI and
+    # throwaway machines; a VM runtime is the boundary everywhere else.
+    heavy_docker_privileged: bool = False
 
     # --- envd: in-sandbox daemon for exec, files and terminals (docs/envd.md) ---
     envd: Literal["auto", "off"] = "auto"  # auto: Docker and Kubernetes sandboxes use it when it can be reached
@@ -312,6 +330,24 @@ class Settings(BaseSettings):
     package_mirror: bool = True
     package_mirrors: dict[str, str] = Field(default_factory=dict)
     package_mirror_cache_mb: int = Field(1024, ge=0)  # immutable files kept on the data volume; 0: no cache
+    # --- caches: dependency and compile caches across sandboxes (buildcache.py, docs/caches.md). Served at /cache on
+    # the git gateway's port, so they need HANGAR_GATEWAY_URL; a sandbox reads its own repo's with its grant.
+    build_caches: bool = True
+    # Where cached objects live (encrypted with the vault key): gs://bucket[/prefix] or a directory. Unset: the session
+    # bucket's caches/ prefix when HANGAR_SESSION_STORE is a bucket, else <data_dir>/caches.
+    build_cache_store: str | None = None
+    # All repos together, least recently used entries first (private layers' before the shared ones). Unset: 100 GB
+    # in a bucket, 10 GB on the data volume, which holds the database too.
+    build_cache_max_gb: float | None = Field(None, ge=0)
+    build_cache_repo_max_gb: float = Field(20.0, ge=0)  # per repo
+    build_cache_retention_days: float = Field(14.0, gt=0)  # an entry unused this long goes (nightly)
+    build_cache_private_days: float = Field(3.0, gt=0)  # ...and one in a session's private layer, this long
+    # Sessions and jobs read the repo's shared caches (written only by its repo builds) and, with this on, write to a
+    # private layer of their own session and branch that nothing else reads. Off: they only read.
+    build_cache_private_writes: bool = True
+    build_cache_object_max_mb: int = Field(4096, ge=1)  # one cached object (a dependency archive, a compile output)
+    build_cache_transfer_mb: int = Field(256, ge=16)  # cache bytes held in the control plane's memory at once
+    build_cache_wait_minutes: float = Field(10.0, ge=0, le=60)  # a repo build waits this long for its restore
     # --- egress: secret scanning before hangar pushes a job's branch (secretscan.py). block: a hit stops the push
     # and goes back to the agent (at most secret_scan_rounds fix turns); warn: job events only; off.
     secret_scan: Literal["block", "warn", "off"] = "block"
@@ -379,6 +415,10 @@ class Settings(BaseSettings):
     # otherwise (`verify_in_loop`, `max_verify_rounds`); hangar's own check after the turn still decides delivery.
     verify_in_loop: bool = True
     max_verify_rounds: int = Field(3, ge=0, le=10)
+    # --- testresults: structured results of every check (testresults.py, docs/jobs.md#test-results). inject: set the
+    # reporter variables (PYTEST_ADDOPTS --junitxml, GOTESTSUM_JUNITFILE, JEST_JUNIT_OUTPUT_DIR) and read the reports
+    # the check writes; collect: only read the reports (the repo's `verify_reports`, the usual paths); off: neither.
+    test_reports: Literal["inject", "collect", "off"] = "inject"
     # The PR auto-fix loop: a failing CI check on the job's own head, or a trusted reviewer's changes requested or
     # inline comments, start a follow-up turn on the job's session. Per repo: {"owner/repo": "ci"} ("ci,reviews",
     # "ci", "reviews" or "off"); a job's own `autofix` can only narrow it. Default "ci,reviews".
@@ -515,6 +555,11 @@ class Settings(BaseSettings):
     # files in it (fnmatch, `*` crosses directories). Unset: spec fixes are reported, not opened.
     doctor_specs_repo: str | None = None
     doctor_specs_paths: list[str] = Field(default_factory=lambda: ["envs/*.yaml", "envs/*.yml"])
+    # --- interfaces: the sister tool's interfaces (docs/specs/0014-sister-tool-interfaces.md). With tracing on, each
+    # turn's tool calls, subagents and approvals also go to the collector as children of its invoke_agent span.
+    trace_live_tools: bool = False
+    experiment_max_trials: int = Field(200, ge=1, le=2000)  # task x variant x trial in one experiment
+    experiment_parallel: int = Field(8, ge=1, le=64)  # trials running at once, when the experiment doesn't say
 
     @property
     def backup_interval_hours(self) -> float:

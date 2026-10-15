@@ -45,6 +45,7 @@ from hangar import computer as computer  # --- computer
 from hangar import delivery as delivery  # --- least-privilege: hangar pushes a job's work
 from hangar import envbuilds as envbuilds  # --- envbuilds
 from hangar import envdoctor as envdoctor  # --- computer
+from hangar import experiments as experiments  # --- interfaces: experiment jobs and their trials
 from hangar import fairness as fairness  # --- scale
 from hangar import flightrec as flightrec  # --- clouddoctor: a failed or slow job's flight record
 from hangar import intake as intake  # --- intake: trackers (Jira, GitHub Projects) follow their jobs
@@ -53,6 +54,7 @@ from hangar import resident as resident  # --- durable: live and recent jobs in 
 from hangar import restarts as restarts  # --- reconciler: interrupted jobs resume after a restart
 from hangar import secretscan as secretscan  # --- egress: secrets are scanned for before a push
 from hangar import teamcreds as teamcreds  # --- review: only a job's person continues it from a front door
+from hangar import testresults as testresults  # --- testresults: structured results of every check
 from hangar.events import resolve_budget, total_usage, usage_line
 from hangar.fleet import Fleet, FleetError, PoweredDown, _clip_tail  # --- ops: PoweredDown
 from hangar.github import GitHub, GitHubError, parse_repo
@@ -218,6 +220,8 @@ class JobService:
         resumed: list[str] = []  # --- reconciler: interrupted jobs that go back to the queue, a few at a time
         for job in sorted(self._jobs.values(), key=lambda j: j.created_at):
             if autoinstall.restore(self, job):  # --- autoinstall: an env setup's runner picks up where it was
+                continue
+            if experiments.restore(self, job):  # --- interfaces: so does an experiment's
                 continue
             if job.state in JOB_TERMINAL or job.state == JobState.NEEDS_INPUT:  # needs_input waits for a follow-up
                 continue
@@ -499,6 +503,8 @@ class JobService:
             raise JobError("follow-up message is too long")
         if autoinstall.is_setup(job):  # --- autoinstall: answers the question one of its agents asked
             return autoinstall.follow_up(self, job, message, requester, reply_to, front_door, sender_person)
+        if experiments.is_experiment(job):  # --- interfaces
+            raise JobError(f"{job.id} is an experiment: it takes no follow-ups (submit another experiment)")
         # workstream E: a job waiting on a question (needs_input) takes the answer as a follow-up
         if (job.state not in JOB_TERMINAL and job.state != JobState.NEEDS_INPUT) or job.id in self._active:
             raise JobError(f"job {job.id} is {job.state}; wait for the current turn to finish")
@@ -690,6 +696,9 @@ class JobService:
             if autoinstall.is_setup(job):  # --- autoinstall: its runner drives child jobs; it holds no slot
                 await autoinstall.process(self, job)
                 return
+            if experiments.is_experiment(job):  # --- interfaces: so does an experiment's, its trials
+                await experiments.process(self, job)
+                return
             if job.cancel_requested:
                 self._event(job, "cancelled before it started", JobState.CANCELLED, reason="cancelled")
                 await self._report(job)
@@ -774,6 +783,7 @@ class JobService:
             # Commits need an identity; keep whatever the environment configured.
             await self._sh(job, "git config user.email >/dev/null || git config user.email hangar@localhost; "
                                 f"git config user.name >/dev/null || git config user.name {q('hangar')}")
+        await experiments.prepare_trial(self, job, s)  # --- interfaces: a trial's pinned base and approvals
         ctx = self._ctxdir(job)
         _, prov = self.fleet._running(job.sandbox_id)
         sbx = self.fleet.get(job.sandbox_id)
@@ -836,6 +846,7 @@ class JobService:
         finish = [
             "Keep the change focused on the task.",
             *([baseline.finish_line(job, ctx)] if job.verify else []),  # --- frontdoor: says if the base was red
+            *([t] if job.verify and (t := testresults.prompt_line(self, job, ctx)) else []),  # --- testresults
             *([f"Commit your work on {branch} with clear messages. Do not push and do not open a "
                "pull request: hangar checks your work and delivers it."] if repo_path else []),
             f"Write a short summary for the people who asked to `{ctx}/RESULT.md`: what you changed, how you "
@@ -952,6 +963,8 @@ class JobService:
         if job.verify and (rounds := await verifyloop.read_rounds(self, job, turn)):  # --- overnight/autofix
             turn.verify_rounds = rounds
             self._event(job, f"the check failed {rounds} time(s) during the turn; each went back to the agent")
+        if job.verify and verifyloop.max_rounds(self.settings, job):  # --- testresults: the gate's reports
+            await testresults.in_turn(self, job, turn)
         tail = _clip_tail(raw) if raw else ""
         if outcome in ("gone", "error") and self.fleet.power.resume_cut_off(self, job):  # --- ops: resumes at power-up
             if not self._sandbox_alive(job):
@@ -1003,12 +1016,13 @@ class JobService:
         if job.verify and repo_path:
             self._event(job, f"verifying: {job.verify}", JobState.VERIFYING)
             with observe.span("job.verify", {"hangar.job.id": job.id}) as sp:  # --- observe
-                res = await self._sh(job, job.verify, timeout=self.settings.job_verify_timeout_seconds)
+                res, tests = await testresults.verify(self, job)  # --- testresults: its reports too; flaky reruns
                 observe.set_attrs(sp, {"hangar.verify.exit_code": res.exit_code})
             job.result.verify_exit_code = res.exit_code
             job.result.verify_tail = self.broker.redact(_clip_tail((res.stdout or "") + (res.stderr or ""))[-4000:])
-            job.result.new_failures = baseline.new_failures(job, (res.stdout or "") + (res.stderr or ""),
-                                                             res.truncated)
+            # --- testresults: by test id where the base and this run both left reports, else from the output
+            out = (res.stdout or "") + (res.stderr or "")
+            job.result.new_failures = testresults.new_failures(self, job, tests, out, res.truncated)
         # --- frontdoor: on a red base only the failures this change added count ("unknown": can't tell them apart)
         verdict = baseline.verdict(job, job.result.verify_exit_code, job.result.new_failures)
         verify_ok = verdict == "pass"
@@ -1092,6 +1106,10 @@ class JobService:
         job.result.head_sha = head.stdout.strip() or None
         stat = await self._sh(job, f"git diff --stat {q(base)}..HEAD | tail -n 30")
         job.result.diffstat = stat.stdout.strip() or None
+        from hangar.traces import diff_files  # --- review(#114): the change's files, for behavior specs
+
+        names = await self._sh(job, f"git diff --name-status --no-renames -z {q(base)}..HEAD | head -c 400000")
+        job.result.files, job.result.deleted = diff_files(names.stdout)
         self._save(job)
         if job.deliver == "none" or not job.result.commits:
             return

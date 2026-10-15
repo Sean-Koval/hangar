@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nextest-run" tests="3" failures="1" errors="0" uuid="8f1c1e8a-6a4b-4b8e-9a3e-1f4a8c8d2b11" timestamp="2026-10-15T09:12:03.000+00:00" time="2.031">
+    <testsuite name="app::bin/app" tests="3" disabled="0" errors="0" failures="1">
+        <testcase name="tests::it_works" classname="app::bin/app" timestamp="2026-10-15T09:12:03.010+00:00" time="0.004">
+        </testcase>
+        <testcase name="tests::sometimes" classname="app::bin/app" timestamp="2026-10-15T09:12:03.012+00:00" time="0.210">
+            <flakyFailure message="thread 'tests::sometimes' panicked" type="test failure">thread 'tests::sometimes' panicked at src/main.rs:40:9</flakyFailure>
+        </testcase>
+        <testcase name="tests::always_broken" classname="app::bin/app" timestamp="2026-10-15T09:12:03.230+00:00" time="0.003">
+            <failure message="thread 'tests::always_broken' panicked" type="test failure">assertion `left == right` failed</failure>
+            <rerunFailure message="thread 'tests::always_broken' panicked" type="test failure">assertion `left == right` failed</rerunFailure>
+        </testcase>
+    </testsuite>
+</testsuites>

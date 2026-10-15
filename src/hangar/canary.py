@@ -32,7 +32,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -704,23 +703,25 @@ def diff_dirs(locked: Path, candidate: Path) -> dict[str, Any]:
 
 # ====================================================================== the review packet
 def junit_results(paths: list[Path]) -> dict[str, Any]:
-    """Pass/fail/skip counts and the failures, from pytest's --junitxml files."""
+    """Pass/fail/skip counts and the failures, from pytest's --junitxml files. --- testresults: through hangar's one
+    report parser (testreports.py), which reads them safely and caps them."""
+    from hangar import testreports
+
     res: dict[str, Any] = {"passed": 0, "failed": 0, "skipped": 0, "failures": []}
     for p in paths:
         try:
-            root = ET.parse(p).getroot()
-        except (ET.ParseError, OSError):
+            r = testreports.parse_junit(p.read_bytes(), p.name)
+        except OSError:
+            r = testreports.Report(source=p.name, error="unreadable")
+        if r.error or r.kind != "junit":
             res["failures"].append({"test": p.name, "message": "no readable test report"})
             res["failed"] += 1
             continue
-        for case in root.iter("testcase"):
-            name = f"{case.get('classname', '')}::{case.get('name', '')}"
-            bad = case.find("failure") if case.find("failure") is not None else case.find("error")
-            if bad is not None:
+        for case in r.cases:
+            if case.outcome in ("failed", "error"):
                 res["failed"] += 1
-                text = (bad.get("message") or "") + "\n" + (bad.text or "")
-                res["failures"].append({"test": name, "message": text.strip()[-1500:]})
-            elif case.find("skipped") is not None:
+                res["failures"].append({"test": f"{case.classname}::{case.name}", "message": case.message[-1500:]})
+            elif case.outcome == "skipped":
                 res["skipped"] += 1
             else:
                 res["passed"] += 1

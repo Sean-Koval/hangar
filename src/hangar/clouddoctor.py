@@ -132,6 +132,14 @@ class DoctorFinding(BaseModel):
     updated_at: float = Field(default_factory=now)
 
 
+def _flaky(store: Any, last: FlightRecord, ev: dict[str, Any]) -> bool:
+    """--- testresults: a failing check whose every failure, in each of the group's jobs, is on the repo's flaky
+    list is transient: a retry passes it, and the fix is in the tests, not the environment."""
+    from hangar import testresults
+
+    return last.cause == "verify_failed" and testresults.only_flaky(store, ev.get("jobs") or [], last.repo)
+
+
 def _evidence(recs: list[FlightRecord]) -> dict[str, Any]:
     runs = {r.job_id or (r.run_ids[0] if r.run_ids else r.id) for r in recs}
     recs = sorted(recs, key=lambda r: r.at)
@@ -264,14 +272,15 @@ class Doctor:
                     "cause": None, "repo": None, "environment": None, "runs": 0}
         last = max(recs, key=lambda r: r.at)
         ev = _evidence(recs)
+        transient = last.transient or _flaky(self.store, last, ev)  # --- testresults
         item = {"signature": sig, "cause": last.cause, "detail": last.detail, "repo": last.repo,
-                "environment": last.environment, "transient": last.transient, "runs": ev["count"]}
+                "environment": last.environment, "transient": transient, "runs": ev["count"]}
         s = self.settings
         if f is not None:
             return {**item, "action": "update", "finding": f.id, "why": f"finding {f.id} is {f.state}"}
         if last.cause in IGNORED:
             return {**item, "action": "none", "why": f"{last.cause} is what a person asked for"}
-        if last.transient:
+        if transient:
             if ev["count"] < s.doctor_transient_alarm:
                 return {**item, "action": "count", "why": f"transient, {ev['count']} of "
                                                           f"{s.doctor_transient_alarm} runs before it's reported"}
@@ -309,17 +318,21 @@ class Doctor:
             return None
         if last.cause in IGNORED:
             return None
+        flaky = not last.transient and _flaky(self.store, last, ev)  # --- testresults
         base = dict(signature=last.signature, cause=last.cause, detail=last.detail, environment=last.environment,
-                    repo=last.repo, transient=last.transient, evidence=ev, run_id=run["id"], runs=[run["id"]])
-        if last.transient:
+                    repo=last.repo, transient=last.transient or flaky, evidence=ev, run_id=run["id"],
+                    runs=[run["id"]])
+        if last.transient or flaky:
             run["transient"] += len(recs)
             if ev["count"] < self.settings.doctor_transient_alarm:
                 return None
             f = DoctorFinding(**base, state="reported", confidence="low",
                               summary=f"{last.cause} keeps happening in {last.repo or last.environment}"[:200],
-                              note=f"transient by its cause, but seen in {ev['count']} runs in "
-                                   f"{self.settings.doctor_lookback_days} days: look at the provider or the model "
-                                   "API's status rather than the repo")
+                              note=(f"every failing check failed only on tests on the repo's flaky list, in "
+                                    f"{ev['count']} runs: fix or quarantine those tests" if flaky else
+                                    f"transient by its cause, but seen in {ev['count']} runs in "
+                                    f"{self.settings.doctor_lookback_days} days: look at the provider or the model "
+                                    "API's status rather than the repo"))
             self._put(f)
             run["reported"].append(f.id)
             return f
@@ -441,7 +454,11 @@ class Doctor:
                 with contextlib.suppress(Exception):
                     if text := await rec.read_log(self.svc.sessions, r):
                         logs.append({"record": r.id, "log_end": text[-LOG_EXCERPT:]})
+            from hangar import testresults  # --- testresults: the repo's flaky tests are evidence too
+
+            flaky = sorted(testresults.flaky(self.store, f.repo).items(), key=lambda kv: -kv[1].get("n", 0))[:50]
             groups.append({"group": f.id, "signature": f.signature, "cause": f.cause, "detail": f.detail,
+                           "flaky_tests": dict(flaky),
                            "environment": f.environment, "repo": f.repo, "runs": f.evidence.get("count"),
                            "first_at": f.evidence.get("first_at"), "last_at": f.evidence.get("last_at"),
                            "records": [r.model_dump(mode="json", exclude={"log", "labels"}) for r in rs],

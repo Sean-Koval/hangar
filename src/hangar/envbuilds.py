@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
+from hangar import buildcache as buildcache  # --- caches
 from hangar import repoenv, supervisor
 from hangar.envspec import BuildContext, EnvSpec
 from hangar.models import Sandbox, new_id, now
@@ -314,6 +315,10 @@ class EnvBuilds:
             sb.info["env_build"] = self._info(b, fallback=True, reason=(
                 f"{harness} runs on its own image variant on this provider; builds are of the default harness's"))
             return Pick()
+        if spec.heavy and not spec.image and b.base and b.base != self._base(spec, pname)[0]:  # --- heavy
+            sb.info["env_build"] = self._info(b, fallback=True, reason=(
+                f"build {b.version} is of the environment's image without Docker; the next build has it"))
+            return Pick()
         prov = self.fleet.provider(pname)
         try:
             exists = await prov.image_exists(b.image)
@@ -435,7 +440,9 @@ class EnvBuilds:
             sb.info["env_build"] = info
         running = {s["name"] for s in sb.info.get("services") or [] if s.get("kind") == "service"}
         named = {f["step"].removeprefix("service:") for f in sb.info.get("setup_failures") or []}
-        if late := sorted(set(eff.services) - running - named):
+        from hangar.envservices import sidecars  # --- heavy: Compose stacks start now, from this checkout
+
+        if late := sorted(set(sidecars(eff.services)) - running - named):
             self.failure(sb, "services", f"{', '.join(late)}: not in the repo's config when this sandbox started (new, "
                          "or only on this branch); services start with the next sandbox")
         programs = bool(eff.start or eff.terminals or eff.services or eff.ports)
@@ -604,7 +611,9 @@ class EnvBuilds:
 
     async def _build(self, b: Build) -> Sandbox:
         f = self.fleet
-        spec = f.catalog.get(b.environment)
+        from hangar import heavy  # --- heavy: on the base the repo's sandboxes have (Docker in it, for a heavy repo)
+
+        spec = heavy.build_spec(f, f.catalog.get(b.environment), b.repo_url)
         pname = b.provider
         prov = f.provider(pname)
         b.base, _ = self._base(spec, pname)
@@ -632,10 +641,14 @@ class EnvBuilds:
         if not eff.install:
             raise EnvBuildError(f"nothing to build: neither {repoenv.PATH} nor environment {spec.name} has an install")
         values = await self._secrets(b, spec, read.config)
+        caches = buildcache.of(f)  # --- caches: install starts once the restore the create began is done
+        await caches.before_install(prov, sb, lambda m: self._stage(b, m), values)  # review(#115): scanned from now
         self._stage(b, "installing")
         await self._install(b, prov, sb, path, eff.install, values)
         if values:
             await self._leak_scan(prov, sb, values, path)
+        if note := await caches.after_install(prov, sb, path, values, lambda m: self._stage(b, m)):  # --- caches
+            b.log = (b.log + "\n--- build caches\n" + f.broker.redact(note))[-LOG_TAIL:]
         self._stage(b, "capturing the checkout")
         await self._scrub_git(prov, sb, path)  # --- durable
         data = await self._capture(prov, sb, path)
@@ -791,10 +804,16 @@ class EnvBuilds:
         except Exception:  # noqa: BLE001 - prebuild logs the environment's own failure
             return []
         started = []
+        from hangar import heavy
+
         for k in self.store.kv_keys(f"{KV_HEAD}{pname}:{env}:"):
             repo = k[len(f"{KV_HEAD}{pname}:{env}:"):]
             b = self.active(pname, env, repo)
-            if b is not None and b.base != base and self._should_build(pname, env, repo, b.key or "", base):
+            want = base
+            if b is not None and not spec.heavy:  # --- heavy: a heavy repo's builds are on the Docker variant
+                with contextlib.suppress(Exception):
+                    want = self._base(heavy.build_spec(self.fleet, spec, b.repo_url), pname)[0]
+            if b is not None and b.base != want and self._should_build(pname, env, repo, b.key or "", want):
                 self.schedule(b.repo_url, env, pname, reason="base", actor="hangar:prebuild")
                 started.append(repo)
         return started

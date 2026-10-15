@@ -362,6 +362,49 @@ gcloud iam service-accounts add-iam-policy-binding ci-agent@my-proj.iam.gservice
 - The token is not stored in the vault, so redaction doesn't mask it; it's short-lived instead.
 - Tested against google-auth's own `external_account` code with a fake STS. A live pool and an AWS account weren't available to this change.
 
+## Build caches
+
+Dependency and compile caches ([caches.md](caches.md)) are shared infrastructure. Members, branches and repos of
+different trust all use them, and what one sandbox writes another sandbox builds from. A poisoned entry (a
+`node_modules` with a backdoor, a Bazel action result naming a malicious output, a turbo artifact with a different
+`dist/`) runs in the next sandbox that restores it, under that person's credentials, and can end up in their PR. So
+the rules are about who can write what other sandboxes read.
+
+**Assets.** A repo's shared cache layer, which every sandbox of the repo reads. Each session's private layer. The
+cached bytes themselves (dependencies and compile output of private repos). And the control plane's memory and
+storage.
+
+**Adversaries.** An agent (or the repo code it runs) in a session or job sandbox: a member's own, another member's,
+or one working on an untrusted branch or a PR from outside. Someone who can create sandboxes with labels of their
+choosing. A sandbox of a different repo. Someone who can read or write the cache bucket.
+
+| Threat | What stops it | Tests |
+| --- | --- | --- |
+| A session or job writes the repo's shared layer | Writes from anything but a repo build go to the writer's own private layer, or are refused (403) with `HANGAR_BUILD_CACHE_PRIVATE_WRITES=false`. The shared layer is written only by a sandbox hangar created for a running repo build of that repo, and that build runs the `install` of the default branch (or of the branch the environment names). | `test_buildcache.py` |
+| A member's environment writes what everyone's sandboxes read | Members can create environments, and an environment's image and `setup` run in its builds before `install`. Each environment has its own shared layer per repo, written by builds in that environment and read only by sandboxes of that environment. That is the trust a sandbox already places in its environment, which runs its `setup` too. | `test_buildcache.py` |
+| Faking a build | A `hangar.build` label is anyone's to set on a sandbox they create. A sandbox is trusted only if the build it names exists, is running, is of the same repo, and created that sandbox (actor `hangar:build:<id>`, which no principal name can be). Agent-led setup's validation sandboxes (an agent-written branch) are never trusted. | `test_buildcache.py` |
+| Reading or writing another session's private layer | The layer is named by the session and branch. A sandbox's `hangar.session` label counts only for a session of the same person; otherwise the layer is the sandbox's own. Nothing is promoted from a private layer, and builds don't read private layers. | `test_buildcache.py` |
+| Reading another repo's caches | The credential is the sandbox's git grant, which names one repo, and every lookup is within that repo. Chunks live under a per-repo prefix and are never shared across repos, so whether content exists in another repo can't be probed. A delivery grant reads nothing. | `test_buildcache.py` |
+| Swapping or damaging stored objects (bucket access, a bad disk) | Chunks are sealed with the vault key (Fernet: encrypted and authenticated) and named by the SHA-256 of their plaintext; every read checks both and the whole object's digest. A failure is a miss and the entry is dropped. `hangar-cache` checks the archive's digest again before extracting. A Bazel CAS write must hash to its name. | `test_buildcache.py` |
+| A build secret in a shared cache | Every upload from a build that has build secrets, from the start of `install` (sccache, Bazel and turbo upload while it runs) to the save after it, is scanned in the stream, gzip inflated (bounded), for each value, its longest line, its percent-encoding and its base64 at every alignment. A hit refuses the upload (422) and nothing is stored; so does a format the scan can't look into (zstd, zip, xz, bzip2, 7z, lz4: sccache's entries and turbo's artifacts among them), a damaged gzip stream, or data after one. Such a build writes no sccache or turbo entries to the shared layer. The build's log says which kind failed, never the value. | `test_buildcache.py` |
+| A restore overwriting the sandbox's own work | Archives are extracted with `--skip-old-files` into `$HOME` or the checkout only (GNU tar drops leading `/` and `..` members). Directories in the checkout are restored only when git ignores them, and not at all over a repo build's image. | `test_buildcache.py` |
+| A session filling the repo's caches to push the shared entries out | Caps per repo and in total. Eviction takes private layers' entries first, then the least recently used, and private entries expire after 3 days unused. 64 requests in flight per sandbox, and objects up to `HANGAR_BUILD_CACHE_OBJECT_MAX_MB`. Cache bytes held in memory are capped (`HANGAR_BUILD_CACHE_TRANSFER_MB`). | `test_buildcache.py` |
+| A grant after its sandbox stops | Grants are verified as the gateway verifies them (hashed, constant time, live sandbox only). A verified grant is reused for 5 seconds, so a stopped sandbox's grant works for at most 5 seconds more. | `test_buildcache.py` |
+
+What is **not** covered:
+
+- **The default branch is trusted.** Whatever its `install` writes into the caches (or into the build's image)
+  every sandbox of the repo in that environment gets. That is the same trust the repo build itself has: protect the
+  default branch with reviews. The same goes for a branch an environment names (`repo.branch`): its owner decides.
+- **A session poisons only itself.** A sandbox can put anything in its own private layer, and its session's later
+  sandboxes read it. That is the session's own work, like its branch.
+- **Compile caches trust their keys.** Bazel's action cache, sccache and turbo entries are named by hashes the client
+  computes, so an entry can't be checked against its key (only the CAS can). This is why only trusted builds write
+  the shared layer. Turborepo's own artifact signatures (`TURBO_REMOTE_CACHE_SIGNATURE_KEY`) add a check on the
+  client and pass through hangar unchanged.
+- **After an incident**, purge the repo's caches (`hangar admin caches purge <repo>`, audited). The next build
+  writes them again.
+
 ## Threat model: a compromised sandbox
 
 The attacker controls everything inside one sandbox: the agent's process, its files, `~/.hangar/env` (so every command hangar runs there), its git binary and its network traffic. What it should not get:
@@ -387,6 +430,7 @@ The attacker controls everything inside one sandbox: the agent's process, its fi
 | Cloud credentials | GKE node pools use `GKE_METADATA` (Workload Identity), so pods never see the node's service account; sandbox pods mount no Kubernetes token. `sandbox-network.yaml` blocks the metadata server, which matters with Pod snapshots: their KSA can read every sandbox's snapshot. | manifests checked with a server-side dry run |
 | Other sandboxes and the API | GKE: no ingress to sandbox pods (except from hangar's pods to the [envd](envd.md) port), no egress to private ranges; only the gateway port of hangar pods is open. Docker: no traffic between sandboxes on hangar's network. | manifests checked with a server-side dry run and `test_k8s_network.py` (every policy file read together); `test_e2e_isolation_docker.py` |
 | A turn's driver and the approvals it relays | Docker sandboxes whose agent has no sudo run each turn split ([the uid split](steering.md#the-uid-split)): the driver, its key, its control files and the turn's script belong to a `hangar` user, the agent's harness runs as the sandbox user with no capabilities, so code a person allowed can't read the key, write a command or signal or trace the driver. The harness and what it starts run with `no_new_privs`; hangar reads a split run's status, log and approvals from its own files, never through the agent's links. In `ask` and `deny-risky` turns hangar also owns the harness's binary, environment and settings ([hangar-owned harness settings](steering.md#hangar-owned-harness-settings)). Elsewhere one user, with a warning on `ask` and `deny-risky` turns (`HANGAR_UID_SPLIT=required` refuses them). | `test_e2e_isolation_docker.py`, `test_e2e_harden_docker.py`, `test_isolation.py`, `test_harden.py`, `test_harden_real_clis.py` |
+| The node, other pods or the metadata server from a heavy sandbox (root in its VM, with Docker) | A heavy sandbox runs only on a provider with a VM around it (Kata, E2B, CubeSandbox; Docker only with `HANGAR_HEAVY_DOCKER_PRIVILEGED`, for CI). Under Kata the container is privileged inside the guest only: kata-deploy sets containerd's `privileged_without_host_devices`, so no host device reaches the VM. The containers dockerd starts are NATed to the pod's address, so the pod's NetworkPolicy applies to them (no private ranges, no link-local, only the proxy in an allowlist environment); dockerd listens on its Unix socket only. Docker Hub pulls go through the egress policy or hangar's read-only mirror, which takes the sandbox's credential in its path and serves only running heavy sandboxes. Setting `heavy` and big profiles on an environment is an admin's, and Docker is deny by default for a repo: its own `.hangar/environment.yaml` only requests it, honored where an admin's repo policy says `heavy: allow` (anyone who can push the default branch writes that file). At admission (`heavy-policy.yaml`), a privileged container or an added capability in `hangar-sandboxes` needs a Kata runtime class, a RuntimeClass named `kata*` needs a Kata handler, and no sandbox pod gets host namespaces, `hostPath` (Kata would share it into the VM) or `hostPort`. The heavy nodes run as a node service account of their own with only a node's roles, so a guest escape to the node doesn't get the project's default compute identity. | `test_heavy.py`, `test_heavy_mirror.py`, `test_e2e_heavy_docker.py`; the policies checked against a real kube-apiserver 1.36 (review of #117); the `heavy` acceptance check probes the metadata servers from a container inside the VM |
 | Another sandbox's [envd](envd.md) daemon | A daemon accepts only requests signed with its own sandbox's token: HMAC(vault key, sandbox id), never stored and never sent. Each request carries an HMAC over its time, a nonce, method, path and body hash, usable once and for five minutes, so a request that reaches the wrong address (a reused IP) gives whoever got it nothing; a peer without the token is refused before its body is read and can't spend nonces, and connections are capped per address and closed when idle. Answers must carry an HMAC proof of the token, so nothing else at a sandbox's address is taken for its daemon. What a daemon returns is capped (message size, output tail, read limit), never decompressed, and waited for only so long. | `test_envd.py`, `cargo test` in `envd/` |
 
 What is **not** covered:

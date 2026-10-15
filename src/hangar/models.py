@@ -34,6 +34,14 @@ class Resources(BaseModel):
     disk_gb: float | None = None
 
 
+# --- heavy: named resource profiles (heavy.py). `standard` is the default above; the others run on the heavy tier.
+PROFILES: dict[str, Resources] = {
+    "standard": Resources(cpus=2, memory_gb=4),
+    "large": Resources(cpus=8, memory_gb=32, disk_gb=100),
+    "xlarge": Resources(cpus=16, memory_gb=64, disk_gb=200),
+}
+
+
 class Sandbox(BaseModel):
     id: str = Field(default_factory=lambda: new_id("sb"))
     name: str
@@ -287,6 +295,30 @@ class Turn(BaseModel):
     verify_rounds: int = 0
 
 
+class TestSummary(BaseModel):
+    """--- testresults: one run of a check, as structured results (testresults.py): counts, what failed, what is new
+    on a red base, the flaky ones, coverage. The run itself (every case, keyed by test id) is a TestRun record."""
+
+    __test__ = False  # not a pytest class
+    run: str  # the TestRun's id: GET /api/jobs/{id}/tests
+    kind: str  # base | verify | rerun | attempt | in_turn | autoinstall
+    at: float = Field(default_factory=now)
+    exit_code: int | None = None
+    total: int = 0
+    passed: int = 0
+    failed: int = 0
+    errors: int = 0
+    skipped: int = 0
+    complete: bool = True  # every case of every report was read
+    failing: list[str] = Field(default_factory=list)  # the first few failing ids
+    new_failures: list[str] | None = None  # failing here, not on the base (None: no structured base to compare to)
+    flaky: list[str] = Field(default_factory=list)  # failing or retried here, and on the repo's flaky list
+    coverage: float | None = None  # line coverage, percent
+    coverage_delta: float | None = None  # against the base check's, in points
+    reports: int = 0
+    file: str | None = None  # where the agent reads the whole of it in its sandbox
+
+
 class Baseline(BaseModel):
     """--- frontdoor: the job's standing `verify` run once on its base commit, before the agent starts (baseline.py).
     Shared by every job on the same repo, base commit and command."""
@@ -298,6 +330,10 @@ class Baseline(BaseModel):
     tail: str | None = None
     at: float = Field(default_factory=now)
     job_id: str | None = None  # the job whose sandbox ran it
+    # --- testresults: its structured results (a TestRun), when the check wrote reports hangar could read all of;
+    # then a red base's failures are subtracted by test id from those, not from the output's text
+    tests: str | None = None
+    test_failures: int | None = None
 
     @property
     def red(self) -> bool:
@@ -309,6 +345,9 @@ class JobResult(BaseModel):
     head_sha: str | None = None
     commits: list[str] = Field(default_factory=list)  # "abc1234 subject", newest first
     diffstat: str | None = None
+    # --- review(#114): the delivered change's files, repo-relative (the trace's hangar.diff.*), at most 1,000
+    files: list[str] = Field(default_factory=list)
+    deleted: list[str] = Field(default_factory=list)
     pushed: bool = False
     pr_url: str | None = None
     pr_number: int | None = None
@@ -327,6 +366,7 @@ class JobResult(BaseModel):
     baseline: Baseline | None = None
     new_failures: list[str] | None = None
     dropped_files: list[str] = Field(default_factory=list)  # agent scratch files kept out of the PR (scratch.py)
+    tests: TestSummary | None = None  # --- testresults: the last check's structured results
 
 
 # --- overnight/autofix: the PR auto-fix loop's memory, per job (autofix.py)
@@ -407,6 +447,7 @@ class Attempt(BaseModel):
     files: list[str] = Field(default_factory=list)  # "M path" lines from git diff --name-status (capped)
     touched_tests: list[str] = Field(default_factory=list)  # existing test/verify files it changed or removed
     new_failures: list[str] | None = None  # --- frontdoor: failures its check added to a red base (baseline.py)
+    tests: TestSummary | None = None  # --- testresults: its check's structured results
     score: float | None = None
     rank: int | None = None  # 1 = delivered
     summary: str | None = None
@@ -422,7 +463,8 @@ class Job(BaseModel):
     instructions: str
     source: Literal["api", "mcp", "cli", "github", "webhook", "schedule", "slack", "a2a",
                     "jira", "github-projects",
-                    "env-setup"] = "api"  # --- intake; --- autoinstall: an env setup's goal and setup jobs
+                    "env-setup",
+                    "experiment"] = "api"  # --- intake; --- autoinstall: env setup's jobs; --- interfaces: trials
     source_ref: str | None = None  # e.g. "github:owner/repo#12"
     requester: str = "system"
     owner: str | None = None  # token id ("tok-…"), "admin", or "github:<login>"; jobs-scoped tokens see only theirs
@@ -580,6 +622,8 @@ class SessionTurn(BaseModel):
     # setting), and how long it waited for a best-of-N or fork sibling to write the shared prefix first
     cache_ttl: str | None = None
     cache_wait_seconds: float | None = None
+    # --- interfaces: the digest of the effective harness manifest captured as the turn started (manifest.py)
+    manifest: str | None = None
 
 
 class Checkpoint(BaseModel):

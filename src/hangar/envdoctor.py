@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from hangar import computer, egressapi
+from hangar import heavy as heavy  # --- heavy
 from hangar.models import now
 
 if TYPE_CHECKING:
@@ -48,6 +49,8 @@ def runtime(spec: EnvSpec, sb: Sandbox, settings: Settings) -> str:
     """gvisor | kata | runc | e2b | docker: what the sandbox runs under, for the doctor's caveats."""
     if sb.provider == "kubernetes":
         rc = (spec.runtime_class if spec.runtime_class is not None else settings.k8s_runtime_class) or ""
+        if (sb.info.get("heavy") or {}).get("vm") or heavy.vm(spec):  # --- heavy: the heavy tier's VM runtime
+            rc = settings.heavy_runtime_class
         return "gvisor" if "gvisor" in rc else "kata" if "kata" in rc else "runc"
     return sb.provider
 
@@ -77,12 +80,14 @@ def build_status(settings: Settings, sb: Sandbox, spec: EnvSpec, s: Session | No
         "harness": info.get("harness"), "provider": sb.provider, "runtime": runtime(spec, sb, settings),
         "session": s.name if s else None, "job": s.job_id if s else None, "io": io,
         "build": info.get("env_build") if isinstance(info.get("env_build"), dict) else None,
+        "caches": info.get("caches") if isinstance(info.get("caches"), dict) else None,  # --- caches
         "services": [x for x in info.get("services") or [] if isinstance(x, dict)],
         "setup_failures": [x for x in info.get("setup_failures") or [] if isinstance(x, dict)][-20:],
         "warnings": [w for w in info.get("warnings") or [] if isinstance(w, str)][-20:],
         "secrets": expected_secrets(spec),
         "egress": egress,
         "computer": computer.status(spec, settings),
+        "tier": heavy.status(sb, spec),  # --- heavy: the tier, the profile, and whether Docker answers
         "requests": requests or [],
         "request_limit": MAX_PENDING,  # pending at once; the sandbox side says so before filing more
         "artifact_max_mb": settings.exchange_max_artifact_mb,

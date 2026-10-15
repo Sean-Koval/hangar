@@ -11,10 +11,13 @@ The file lives with the code, so the environment changes in the same commit as t
       postgres: {image: postgres:17, port: 5432, env: {POSTGRES_PASSWORD: dev}}
     ports: [{port: 3000, name: web}]   # previews through hangar's authenticated proxy
     verify: uv run pytest -q
+    verify_reports: [reports/*.xml, "**/coverage.xml"]   # test and coverage reports verify writes (testresults)
     build_secrets: [NPM_TOKEN]    # ids only: an admin maps them to credentials (environment or repo policy)
     lockfiles: [vendor/*.lock]    # more files whose change means a rebuild (the usual lockfiles are watched anyway)
     mocks:                        # stand-ins for real dependencies, recorded so nobody mistakes them (autoinstall)
       - {what: S3, how: "MinIO service at minio:9000", why: no cloud credentials in sandboxes}
+    heavy: true                   # asks for Docker on the VM-isolated heavy tier (or `tier: heavy`); see below
+    profile: large                # standard | large | xlarge, up to what the repo's policy allows
 
 It is untrusted: anyone who can push to the repo writes it. It is parsed strictly (unknown fields are refused, no
 YAML aliases, size caps) and can set only the fields above. What an admin decides stays out of its reach: the image
@@ -25,6 +28,12 @@ Resolution, per field: the repo's file, then the repo's policy (repopolicy.py), 
 is read from the commit (`git cat-file`), never from the working tree, so a symlink can't make hangar read anything
 else in the sandbox.
 
+--- heavy: `heavy` (or `tier: heavy`) and `profile` are requests, decided before a sandbox starts from the config as the
+default branch was last seen (heavy.py): `heavy` is deny by default, honored only when the repo's policy says
+`heavy: allow` (an admin's `hangar repo set owner/repo --heavy allow`) and hangar has a heavy tier (HANGAR_TIERS);
+`profile` up to the policy's `max_profile` (else the environment's own). `services`
+entries may also be `compose: <file>`, a Compose stack the supervisor brings up with `docker compose` (heavy only).
+
 `parse`, `dump` and `check` are the API for writing and validating a config (agent-led setup builds on them).
 """
 
@@ -34,7 +43,7 @@ import hashlib
 import json
 import re
 import shlex
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -47,6 +56,7 @@ from hangar.envspec import (
     Terminal,
     check_programs,
     check_services,
+    coerce_services,
 )
 
 if TYPE_CHECKING:
@@ -97,6 +107,15 @@ class RepoEnvironment(BaseModel):
     build_secrets: list[str] = Field(default_factory=list, max_length=32)
     lockfiles: list[str] = Field(default_factory=list, max_length=32)
     mocks: list[Mock] = Field(default_factory=list, max_length=32)  # --- autoinstall: documentation, never applied
+    # --- testresults: JUnit, Cobertura or LCOV files `verify` writes, relative to the repo (`**/` for any depth)
+    verify_reports: list[str] | None = None
+    heavy: bool | None = None  # --- heavy: requests, decided before a sandbox starts (heavy.decide)
+    tier: Literal["heavy"] | None = None  # the other tiers are an admin's choice, on the environment
+    profile: Literal["standard", "large", "xlarge"] | None = None
+
+    @property
+    def wants_heavy(self) -> bool:  # --- heavy
+        return bool(self.heavy) or self.tier == "heavy"
 
     @field_validator("extends")
     @classmethod
@@ -104,6 +123,11 @@ class RepoEnvironment(BaseModel):
         if v is not None and not NAME_RE.match(v):
             raise ValueError(f"'{v[:40]}' is not an environment name")
         return v
+
+    @field_validator("services", mode="before")
+    @classmethod
+    def _compose_short(cls, v: Any) -> Any:  # --- heavy
+        return coerce_services(v)
 
     @field_validator("services")
     @classmethod
@@ -117,6 +141,13 @@ class RepoEnvironment(BaseModel):
             if not _SECRET_ID.match(s):
                 raise ValueError(f"'{s[:40]}' is not a secret id (letters, digits and '_', like NPM_TOKEN)")
         return list(dict.fromkeys(v))
+
+    @field_validator("verify_reports")
+    @classmethod
+    def _reports(cls, v: list[str] | None) -> list[str] | None:  # --- testresults
+        from hangar.testresults import check_globs
+
+        return check_globs(v)
 
     @field_validator("lockfiles")
     @classmethod
@@ -300,7 +331,11 @@ def check(text: str | bytes, settings: Settings, catalog: Any, repo: str | None 
         except (KeyError, ValueError) as e:
             errors.append(str(e))
     for name, svc in (cfg.services or {}).items():
-        if not service_image_allowed(settings, svc.image):
+        if svc.compose:  # --- heavy: a Compose stack needs Docker, which the heavy tier has
+            if not (spec is not None and spec.heavy) and not cfg.wants_heavy:
+                warnings.append(f"services.{name}: a Compose stack runs only in a heavy sandbox (heavy: true)")
+            continue
+        if not service_image_allowed(settings, svc.image or ""):
             errors.append(f"services.{name}: image '{svc.image}' isn't allowed here (HANGAR_ENV_SERVICE_IMAGES)")
     if secret_ids is not None and (missing := [s for s in cfg.build_secrets if s not in secret_ids]):
         errors.append(f"build_secrets: {', '.join(missing)} not mapped to a credential; an admin maps them on the "
@@ -309,5 +344,7 @@ def check(text: str | bytes, settings: Settings, catalog: Any, repo: str | None 
         warnings.append("no install: sandboxes start from the environment's image, with nothing prebuilt")
     if any(t.port is None and t.ready is None for t in cfg.terminals or []):
         warnings.append("terminals without `port` or `ready` count as ready as soon as they start")
+    if (cfg.wants_heavy or cfg.profile in ("large", "xlarge")) and not (settings.tiers or {}).get("heavy"):  # --- heavy
+        warnings.append("heavy/profile: this hangar has no heavy tier (HANGAR_TIERS), so sandboxes run without it")
     return {"valid": not errors, "errors": errors, "warnings": warnings,
             "config": cfg.model_dump(mode="json", exclude_none=True), "environment": env}

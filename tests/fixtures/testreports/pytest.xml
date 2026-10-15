@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="1" failures="1" skipped="1" tests="5" time="0.412" timestamp="2026-10-15T09:12:03.120481+00:00" hostname="sbx"><testcase classname="tests.test_math" name="test_add" time="0.001" /><testcase classname="tests.test_math" name="test_div[0-1]" time="0.002"><failure message="ZeroDivisionError: division by zero">a = 0, b = 1
+
+    def test_div(a, b):
+&gt;       assert b / a
+E       ZeroDivisionError: division by zero
+
+tests/test_math.py:9: ZeroDivisionError</failure></testcase><testcase classname="tests.test_math" name="test_skip" time="0.000"><skipped type="pytest.skip" message="needs a GPU">tests/test_math.py:12: needs a GPU</skipped></testcase><testcase classname="tests.test_db" name="test_query" time="0.000"><error message="failed on setup with &quot;ConnectionRefusedError&quot;">fixture 'db' could not connect</error></testcase><testcase classname="tests.test_db" name="test_ünïcode" time="0.003" /></testsuite></testsuites>

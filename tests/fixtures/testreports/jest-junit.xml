@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="jest tests" tests="3" failures="1" errors="0" time="1.204">
+  <testsuite name="math" errors="0" failures="1" skipped="1" timestamp="2026-10-15T09:12:03" time="0.851" tests="3">
+    <testcase classname="math adds" name="math adds" time="0.002">
+    </testcase>
+    <testcase classname="math subtracts" name="math subtracts" time="0.004">
+      <failure>Error: expect(received).toBe(expected) // Object.is equality
+
+Expected: 1
+Received: 2
+    at Object.&lt;anonymous&gt; (src/math.test.ts:9:21)</failure>
+    </testcase>
+    <testcase classname="math divides" name="math divides" time="0">
+      <skipped/>
+    </testcase>
+  </testsuite>
+</testsuites>

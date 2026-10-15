@@ -94,7 +94,7 @@ def test_doctor_is_clear_when_hangar_said_nothing(home):
     write_status(home, build={"version": "b-1", "fallback": False}, secrets=[])
     rep = se.doctor()
     assert rep["ok"] and {c["name"]: c["status"] for c in rep["checks"]} == {
-        "build": "ok", "services": "ok", "secrets": "ok", "setup": "ok"}
+        "tier": "ok", "build": "ok", "services": "ok", "secrets": "ok", "setup": "ok"}  # --- heavy: tier
 
 
 def test_supervisor_state_counts(home, monkeypatch):

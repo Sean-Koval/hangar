@@ -32,7 +32,7 @@ def _secs(x: float | None) -> str:
 def status(as_json: bool = typer.Option(False, "--json"),
            section: str | None = typer.Option(None, help="Only these sections, comma-separated: power, loops, "
                                               "harnesses, builds, failures, egress, requests, slo, credentials, "
-                                              "nightly, log, models (and doctor)."),
+                                              "nightly, log, models (and doctor, tests, caches)."),
            check_credentials: bool = typer.Option(False, "--check-credentials",
                                                   help="Check every credential now, not only stale results.")):
     """What an operator needs at a glance: power, loops, versions, builds, failures, denies, requests, SLOs."""
@@ -106,15 +106,42 @@ def status(as_json: bool = typer.Option(False, "--json"),
         typer.secho(f"models: jobs default to {m['job_default']} (Claude Code: {m['claude_code']}); {cap}"
                     + (f"; {len(m['repos_capped'])} repo(s) capped by policy" if m.get("repos_capped") else ""),
                     fg="yellow" if m["uncapped"] else None)
+    if (bc := v.get("caches")) is not None:  # --- caches
+        for line in cache_lines(bc):
+            typer.echo(line)
     if doc := v.get("doctor"):
         last = doc.get("last_run") or {}
         typer.echo(f"cloud doctor: {doc.get('open', 0)} open finding(s)" +
                    (f"; last run {_ago(last.get('at'))} ago ({last.get('state')})" if last else ""))
+    if (t := v.get("tests")) and t.get("repos"):  # --- testresults: the repos with the most flaky tests
+        typer.echo(f"flaky tests (seen in the last {t['days']} days):")
+        for r in t["repos"][:8]:
+            top = ", ".join(f"{x['test']} ({x['times']}x)" for x in r["top"][:3])
+            typer.echo(f"  {r['repo']:40} {r['flaky']:4}  {top[:140]}")
     if n := v.get("nightly"):
         typer.echo(f"nightly pass: {_ago(n['at'])} ago")
     for x in v.get("log") or []:
         when = datetime.fromtimestamp(x["at"]).strftime("%H:%M:%S")
         typer.secho(f"  {when} {x['level']:7} {x['logger']}: {x['message'][:160]}", fg="yellow")
+
+
+def _gb(n: int | float) -> str:
+    return f"{n / (1 << 30):.1f} GB" if n >= 1 << 30 else f"{n / (1 << 20):.0f} MB"
+
+
+def cache_lines(bc: dict) -> list[str]:  # --- caches: `hangar status` and `hangar admin caches ls`
+    """The build caches' sizes against their caps, and the biggest repos."""
+    if not bc.get("enabled"):
+        return [f"build caches: off ({bc.get('why') or bc.get('error') or '?'})"]
+    s = bc.get("since_start") or {}
+    out = [f"build caches: {_gb(bc['bytes'])} of {_gb(bc['cap_bytes'])} in {bc['repo_count']} repo(s) "
+           f"(each up to {_gb(bc['repo_cap_bytes'])}); since start {s.get('hits', 0)} hits, {s.get('misses', 0)} "
+           f"misses, {s.get('writes', 0)} writes, {s.get('denied', 0)} read-only refusals"
+           + (f", {s['integrity_failures']} integrity failures" if s.get("integrity_failures") else "")]
+    for r in bc.get("repos") or []:
+        out.append(f"  {r['repo'][:48]:48} {_gb(r['bytes']):>9}  {r['entries']:6} entries  trusted "
+                   f"{_gb(r['trusted_bytes'])}, private {_gb(r['private_bytes'])}  used {_ago(r['last_used'])} ago")
+    return out
 
 
 @records_app.command("ls")
@@ -238,4 +265,33 @@ def register(app: typer.Typer, admin_app: typer.Typer, cred_app: typer.Typer) ->
     app.command("status")(status)
     admin_app.add_typer(records_app, name="records")
     admin_app.add_typer(doctor_app, name="doctor")
+    admin_app.add_typer(caches_app, name="caches")  # --- caches
     cred_app.command("check")(cred_check)
+
+
+caches_app = typer.Typer(no_args_is_help=True, help="Dependency and compile caches (docs/caches.md).")  # --- caches
+
+
+@caches_app.command("ls")
+def caches_ls(as_json: bool = typer.Option(False, "--json")):
+    """Cache sizes per repo against the caps."""
+    cli = _cli()
+    v = cli._call("GET", "/api/caches")
+    if as_json:
+        return cli._print(v)
+    for line in cache_lines(v):
+        typer.echo(line)
+
+
+@caches_app.command("purge")
+def caches_purge(repo: str | None = typer.Argument(None, help="owner/repo or a git URL."),
+                 layer: str | None = typer.Option(None, help="trusted or private (default: both)."),
+                 all_repos: bool = typer.Option(False, "--all", help="Every repo's caches.")):
+    """Delete a repo's caches (all of them, or one layer): after a suspected poisoning, or to start over."""
+    cli = _cli()
+    params = {k: v for k, v in (("repo", repo), ("layer", layer)) if v}
+    if all_repos:
+        params["all"] = "true"
+    r = cli._call("DELETE", "/api/caches", params=params)
+    typer.secho(f"purged {r['entries']} entr{'y' if r['entries'] == 1 else 'ies'} ({r['layer']}) of "
+                f"{r['repo'] or 'every repo'}", fg="green")

@@ -2,7 +2,7 @@
 # Deploy the hangar control plane onto the cluster created by deploy/terraform/gke.
 #
 #   bash deploy/gke/up.sh            # build the image with Cloud Build, deploy, print the URL
-#   KATA=1 bash deploy/gke/up.sh     # also install Kata on the nested-virt pool (enable_kata_pool=true)
+#   KATA=1 bash deploy/gke/up.sh     # also install Kata on the nested-virt pools (enable_kata_pool, enable_heavy_pool)
 #   DOMAIN=hangar.me.dev bash ...    # use your own DNS name (A record -> terraform output static_ip)
 #   PREBUILD=0 bash ...              # skip building environment images and harness packs before rollout
 #
@@ -82,12 +82,13 @@ kubectl apply -k "$OUT"
 kubectl -n hangar rollout status deploy/hangar --timeout=10m
 
 if [ "${KATA:-0}" = 1 ]; then
-  echo "== kata-deploy on the hangar.dev/runtime=kata pool"
+  # --- heavy: on every pool terraform labels for Kata (the Kata pool and the heavy tier's), whatever its taint
+  echo "== kata-deploy on the Kata pools (katacontainers.io/kata-runtime=true: sandboxes-kata, sandboxes-heavy)"
   helm upgrade --install kata-deploy oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy \
     --version "${KATA_VERSION:-4.2.0}" --namespace kata-system --create-namespace \
     --set shims.disableAll=true --set shims.qemu-runtime-rs.enabled=true --set nfd.enabled=false \
-    --set nodeSelector."hangar\.dev/runtime"=kata \
-    --set 'tolerations[0].key=hangar.dev/runtime' --set 'tolerations[0].value=kata' \
+    --set-string nodeSelector."katacontainers\.io/kata-runtime"=true \
+    --set 'tolerations[0].key=hangar.dev/runtime' --set 'tolerations[0].operator=Exists' \
     --set 'tolerations[0].effect=NoSchedule'
   kubectl get runtimeclass
 fi

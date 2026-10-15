@@ -46,6 +46,7 @@ from hangar import ghapi as ghapi  # --- egress2
 from hangar import observe  # --- observe
 from hangar import pkgmirror as pkgmirror  # --- egress2
 from hangar import pushscan as pushscan  # --- egress2
+from hangar import regmirror as regmirror  # --- heavy
 from hangar.auth import hash_token
 from hangar.models import Credential, CredentialKind, Sandbox, SandboxGrant, SandboxState, Session, Snapshot, now
 
@@ -71,8 +72,9 @@ AUTH_WINDOW = 60.0  # ...per this many seconds, before that address gets 429 wit
 # Session branches are hangar/session/<name>: predictable, so only a sandbox granted one exactly may push there.
 SESSION_REFS = "refs/heads/hangar/session/"
 # --- least-privilege: sandboxes whose agent (or repo code) never pushes: a job's (hangar delivers it), a repo build's
-# and env setup's validation (they run the repo's install). Their grant is fetch-only.
-FETCH_ONLY_LABELS = ("hangar.job", "hangar.build", "hangar.env-validate")
+# and env setup's validation (they run the repo's install). Their grant is fetch-only. --- review(#114): and an
+# experiment's grader, which runs a trial's agent-written patch.
+FETCH_ONLY_LABELS = ("hangar.job", "hangar.build", "hangar.env-validate", "hangar.experiment.grader")
 
 _PATH = re.compile(r"^/git/(?P<host>[A-Za-z0-9.-]{1,253}(?::[0-9]{1,5})?)/(?P<owner>[A-Za-z0-9_.-]{1,100})/"
                    r"(?P<repo>[A-Za-z0-9_.-]{1,100})/(?P<svc>info/refs|git-upload-pack|git-receive-pack)$")
@@ -555,7 +557,11 @@ class Gateway:
         self._inflight: dict[str, int] = {}  # token hash -> requests in flight (_InflightLimit)
         self.scanner = pushscan.Scanner(self)  # --- egress2: secret scanning of pushes, before they go upstream
         self.mirror = pkgmirror.Mirror(self)  # --- egress2: read-only package mirrors at /pkg
+        self.registry = regmirror.RegistryMirror(self)  # --- heavy: read-only Docker Hub pull-through at /registry
         self.github = ghapi.GitHubRead(self)  # --- egress2: the read-only GitHub API at /gh/api
+        # --- caches: a grant just minted, by sandbox, until buildcache.attach (in the same create) takes it for the
+        # cache clients' config; never stored
+        self.issued: dict[str, str] = {}
 
     # ------------------------------------------------------------------ plumbing
     @property
@@ -580,7 +586,14 @@ class Gateway:
     def routes(self) -> list[Route]:
         return [Route("/git/{rest:path}", self.handle, methods=["GET", "POST"],
                       middleware=[Middleware(_InflightLimit, gateway=self)]),
-                *self.github.routes(), *(self.mirror.routes() if self.settings.package_mirror else [])]  # --- egress2
+                *self.github.routes(), *(self.mirror.routes() if self.settings.package_mirror else []),  # --- egress2
+                *(self.registry.routes() if self.settings.heavy_mirror else []),  # --- heavy
+                *self._cache_routes()]  # --- caches
+
+    def _cache_routes(self) -> list[Route]:  # --- caches: /cache (buildcache.py)
+        from hangar import buildcache
+
+        return buildcache.routes(self) if self.settings.build_caches else []
 
     async def healthz(self, request: Request) -> Response:
         return JSONResponse({"ok": True, "service": "hangar-gateway"})
@@ -615,6 +628,7 @@ class Gateway:
 
     def revoke(self, sandbox_id: str, audit: bool = True) -> None:
         gone = self.grants(sandbox_id)
+        self.issued.pop(sandbox_id, None)  # --- caches
         for g in gone:
             self.store.delete(SandboxGrant, g.id)
         if gone and audit:
@@ -769,6 +783,7 @@ class Gateway:
                 raise GatewayError(f"credential '{upstream}' is a {cred.kind.value}; the gateway needs a git_token or "
                                    "github_app credential")
             token = self.mint(sb, remote[0], [remote[1]], push_refs, upstream)
+            self.issued[sb.id] = token  # --- caches
             self.fleet.audit(sb.created_by or "system", "gateway.grant", sb.id, repo=remote[1], push_refs=push_refs,
                              credential=upstream)
         await self._configure(prov, sb, token)

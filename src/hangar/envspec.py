@@ -40,9 +40,16 @@ from hangar.cloudcreds import CloudSpec  # --- egress
 from hangar.computer import ComputerSpec  # --- computer
 from hangar.egress import EgressSpec  # --- egress
 from hangar.harnesses import HARNESSES, McpServer, get_harness, pack_script, pack_stage
-from hangar.models import Resources
+from hangar.models import PROFILES, Resources
 
 DEFAULT_BASE = "ubuntu:24.04"
+# --- heavy: what a heavy environment's image copies Docker from (HANGAR_HEAVY_DOCKER_IMAGE), and the packages
+# dockerd needs from the base: iptables for its NAT and port publishing, e2fsprogs and mount for the loop-mounted disk
+# under Kata (docs/environments.md#the-heavy-tier).
+DOCKER_IMAGE = "docker:29.8.2-dind"
+DOCKER_APT = ["iptables", "e2fsprogs", "mount", "pigz"]
+DOCKER_BINARIES = ("docker", "dockerd", "containerd", "containerd-shim-runc-v2", "ctr", "runc", "docker-init",
+                   "docker-proxy")
 BASE_APT = [
     "ca-certificates", "curl", "git", "tmux", "sudo", "unzip", "xz-utils", "jq",
     "ripgrep", "less", "openssh-client", "python3", "python3-venv", "build-essential", "locales",
@@ -128,11 +135,16 @@ class Terminal(BaseModel):
 class Service(BaseModel):
     """A service image (Postgres, Redis...) run beside the sandbox: a pod sidecar on Kubernetes, a container on a
     network of the sandbox's own on Docker. Reachable from the sandbox at its name (and on Kubernetes at
-    127.0.0.1), gone with the sandbox. Runs as uid 1000 without capabilities, like the sandbox."""
+    127.0.0.1), gone with the sandbox. Runs as uid 1000 without capabilities, like the sandbox.
+
+    --- heavy: or a Compose stack, `compose: <file>` (relative to the repo checkout): the supervisor runs `docker
+    compose -f <file> up` inside a heavy sandbox and keeps it up; `port` or `ready` say when it is ready (default:
+    every container running and healthy, or exited 0). `services: {stack: docker-compose.yml}` is short for it."""
 
     model_config = ConfigDict(extra="forbid")
-    image: str = Field(min_length=1, max_length=300, pattern=r"^[A-Za-z0-9][A-Za-z0-9._/:@+-]*$")
-    port: int  # what it listens on; the readiness check and `hangar-agent svc status` use it
+    image: str | None = Field(None, min_length=1, max_length=300, pattern=r"^[A-Za-z0-9][A-Za-z0-9._/:@+-]*$")
+    port: int | None = None  # what it listens on; the readiness check and `hangar-agent svc status` use it
+    compose: str | None = Field(None, min_length=1, max_length=300)  # --- heavy
     env: dict[str, str] = Field(default_factory=dict, max_length=64)
     command: list[str] | None = Field(None, max_length=64)
     args: list[str] | None = Field(None, max_length=64)
@@ -143,13 +155,30 @@ class Service(BaseModel):
 
     @field_validator("port")
     @classmethod
-    def _check_port(cls, v: int) -> int:
-        return _port(v)  # type: ignore[return-value]
+    def _check_port(cls, v: int | None) -> int | None:
+        return _port(v)
 
     @field_validator("env")
     @classmethod
     def _check_env(cls, v: dict[str, str]) -> dict[str, str]:
         return _env(v)
+
+    @field_validator("compose")  # --- heavy
+    @classmethod
+    def _compose_path(cls, v: str | None) -> str | None:
+        if v is not None and (v.startswith(("/", "-")) or ".." in Path(v).parts or "\0" in v or "\n" in v):
+            raise ValueError("compose is a file relative to the repo checkout, without '..'")
+        return v
+
+    @model_validator(mode="after")
+    def _kind(self) -> Service:  # --- heavy: an image service or a Compose stack
+        if self.compose is not None:
+            if self.image or self.command or self.args or self.volumes:
+                raise ValueError("a compose service takes compose, and optionally port, ready and env; not image, "
+                                 "command, args or volumes (those are the compose file's)")
+        elif not self.image or self.port is None:
+            raise ValueError("a service needs image and port (or compose: FILE for a Compose stack)")
+        return self
 
     @field_validator("volumes")
     @classmethod
@@ -182,6 +211,13 @@ class PreviewPort(BaseModel):
 
 
 SERVICE_NAME = re.compile(r"^[a-z][a-z0-9-]{0,30}$")
+
+
+def coerce_services(v: Any) -> Any:
+    """--- heavy: `services: {stack: docker-compose.yml}` is `{stack: {compose: docker-compose.yml}}`."""
+    if isinstance(v, dict):
+        return {k: {"compose": x} if isinstance(x, str) else x for k, x in v.items()}
+    return v
 
 
 def check_services(v: dict[str, Service]) -> dict[str, Service]:
@@ -247,7 +283,12 @@ class EnvSpec(BaseModel):
     runtime_class: str | None = None
     # --- providers-e2b: fast (microVMs restored from a snapshot), isolated or default; picks the provider when a
     # create names none (tiers.py, HANGAR_TIERS). Unset: HANGAR_DEFAULT_PROVIDER.
-    tier: Literal["fast", "isolated", "default"] | None = None
+    tier: Literal["fast", "isolated", "default", "heavy"] | None = None
+    # --- heavy: Docker inside the sandbox, on a VM-isolated tier (heavy.py, docs/environments.md#the-heavy-tier); the
+    # image gets dockerd and the docker CLI. `tier: heavy` says the same. Needs sudo: dockerd runs as root in the VM.
+    heavy: bool = False
+    # --- heavy: a named size instead of `resources` (models.PROFILES); large and xlarge run on the heavy tier
+    profile: Literal["standard", "large", "xlarge"] | None = None
     sudo: bool = True
     # --- workstream F: git gateway. direct: git credentials are written into the sandbox (the old way).
     # gateway: the sandbox gets a grant for its own branch and pushes through hangar's git gateway; no GitHub
@@ -320,6 +361,11 @@ class EnvSpec(BaseModel):
                 raise ValueError(f"invalid env var name in secrets: '{var}'")
         return v
 
+    @field_validator("services", mode="before")
+    @classmethod
+    def _compose_short(cls, v: Any) -> Any:  # --- heavy
+        return coerce_services(v)
+
     @field_validator("services")
     @classmethod
     def _check_services(cls, v: dict[str, Service]) -> dict[str, Service]:  # --- envbuilds
@@ -328,6 +374,18 @@ class EnvSpec(BaseModel):
     @model_validator(mode="after")
     def _unique_programs(self) -> EnvSpec:  # --- envbuilds
         check_programs(self.terminals, self.services)
+        return self
+
+    @model_validator(mode="after")
+    def _heavy(self) -> EnvSpec:  # --- heavy
+        if self.tier == "heavy":
+            self.heavy = True
+        elif self.heavy and self.tier is not None:
+            raise ValueError(f"heavy is its own tier: drop `tier: {self.tier}`, or use `tier: heavy`")
+        if self.heavy and not self.sudo:
+            raise ValueError("heavy needs sudo: true (dockerd runs as root inside the sandbox's VM)")
+        if self.profile is not None:
+            self.resources = PROFILES[self.profile].model_copy()
         return self
 
     @model_validator(mode="after")
@@ -487,9 +545,11 @@ class BuildContext(BaseModel):
 
 
 def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace",
-           extra_ca: bytes | None = None, bake: list[str] | None = None) -> BuildContext:
+           extra_ca: bytes | None = None, bake: list[str] | None = None,
+           docker_image: str | None = None) -> BuildContext:
     """Render the image build. `bake` lists harnesses to copy into the image (the fallback when packs
-    can't be mounted); by default the image carries no harness binaries at all."""
+    can't be mounted); by default the image carries no harness binaries at all. --- heavy: a heavy environment's
+    image also gets Docker, copied from `docker_image` (HANGAR_HEAVY_DOCKER_IMAGE)."""
     home = _home(user)
     files: dict[str, bytes] = {}
     step_no = 0
@@ -522,6 +582,8 @@ def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace",
     for h in baked:  # build stages must precede the final stage
         files[f"packs/{h.name}.sh"] = pack_script(h).encode()
         df.append(pack_stage(h))
+    if spec.heavy:  # --- heavy: static binaries, so an Alpine-based image's Docker runs on any base
+        df.append(f"FROM {docker_image or DOCKER_IMAGE} AS hangar-docker")
     df += [
         f"FROM {spec.base}",
         "ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8",
@@ -529,7 +591,7 @@ def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace",
     ]
 
     # 1. system packages + sandbox user
-    apt = list(dict.fromkeys([*BASE_APT, *spec.tools.apt]))
+    apt = list(dict.fromkeys([*BASE_APT, *(DOCKER_APT if spec.heavy else []), *spec.tools.apt]))  # --- heavy
     df.append(
         _step(
             "apt-get update\n"
@@ -550,6 +612,15 @@ def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace",
                   "REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt "
                   "NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/hangar-extra-ca.crt "
                   "GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt")
+    if spec.heavy:  # --- heavy: Docker's binaries, whichever of them this release ships (containerd may be built in)
+        df.append("COPY --from=hangar-docker /usr/local/bin/ /opt/hangar/docker/bin/")
+        df.append("COPY --from=hangar-docker /usr/local/libexec/docker/cli-plugins/ "
+                  "/usr/local/libexec/docker/cli-plugins/")
+        df.append(_step(
+            f"for b in {' '.join(DOCKER_BINARIES)}; do\n"
+            "  if [ -f /opt/hangar/docker/bin/$b ]; then ln -sf /opt/hangar/docker/bin/$b /usr/local/bin/$b; fi\n"
+            "done\n"
+            "dockerd --version && docker --version && docker compose version"))
     if spec.tools.script:
         df.append(_step(spec.tools.script))
     if spec.computer:  # --- computer: display, VNC, ffmpeg, Chromium

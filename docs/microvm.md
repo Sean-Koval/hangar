@@ -17,7 +17,7 @@ An environment (or a single create) asks for a tier, not a provider:
 ```yaml
 # envs/rollouts.yaml
 name: rollouts
-tier: fast          # fast | isolated | default
+tier: fast          # fast | isolated | default | heavy
 ```
 
 | Tier | Meant for | Providers (`HANGAR_TIERS`) | When none is available |
@@ -25,11 +25,38 @@ tier: fast          # fast | isolated | default
 | `fast` | forks, best-of-N, RL rollouts, short jobs: where start and restore time dominate | `["e2b"]` | falls back to `HANGAR_DEFAULT_PROVIDER`: it is a speed preference |
 | `isolated` | untrusted code that needs a kernel boundary | `["kubernetes"]` (gVisor or Kata) | **fails**: it is a security choice, and falling back to runc would quietly weaken it |
 | `default` | everything else | `HANGAR_DEFAULT_PROVIDER` | |
+| `heavy` | Docker inside the sandbox, the large and xlarge profiles ([below](#the-heavy-tier-on-microvms)) | none until set, e.g. `["kubernetes"]` (Kata) or `["e2b"]` | **fails**: a privileged sandbox needs a VM around it |
 
 - **How a provider is picked.** A create that names no provider takes the first provider in its tier's list that is loaded and not cooling down. A create that names a provider gets that provider, whatever the tier, with one exception: an `isolated` environment (or a create that asks for `isolated`) only ever gets a provider listed for that tier. Naming another provider, or asking for another tier, fails the create.
 - **Fallback.** A provider that answers "full" or "unreachable" (HTTP 429, 502, 503, 504, or no connection) is skipped for `HANGAR_TIER_COOLDOWN_SECONDS` (60), and the create moves to the next provider. The audit log records `sandbox.tier_fallback`. Any other error, such as a missing template, fails the create as before.
 - **Jobs and sessions** use their environment's tier, since they create sandboxes through the same `fleet.create`.
 - **Change the lists** with `HANGAR_TIERS='{"fast": ["e2b"], "isolated": ["kubernetes"]}'`. An empty list is allowed, so `fast` can be just the default provider.
+
+### The heavy tier on microVMs
+
+The heavy tier ([environments.md](environments.md#the-heavy-tier): Docker inside the sandbox, and the large and
+xlarge profiles) can run here as well as on GKE's Kata pool, and on a cluster with GKE's Agent Sandbox add-on it has
+to, since the add-on refuses privileged Kata pods ([gke.md](gke.md#4a-the-heavy-tier-optional)):
+
+```bash
+HANGAR_TIERS='{"fast": ["e2b"], "heavy": ["e2b"]}'   # or ["kubernetes", "e2b"]: Kata first, microVMs when it's full
+```
+
+- **The template is the heavy environment's image**: hangar renders it with dockerd, containerd, runc and the docker
+  CLI (with Compose and Buildx) copied from `HANGAR_HEAVY_DOCKER_IMAGE`, plus iptables. A template mapped out of band
+  (`HANGAR_E2B_ENVIRONMENT_TEMPLATES`) must carry them itself.
+- **dockerd runs on the guest kernel**, started at claim by `hangar-docker` as root through the template's sudo
+  (heavy environments need `sudo: true`). The VM's root disk is a real block device, so `/var/lib/docker` is used as
+  it is: no loop-mounted image as under Kata. The guest kernel needs overlayfs, bridges, veth and netfilter NAT. That
+  wasn't verified on E2B's or CubeSandbox's kernels here (no KVM on this machine): `hangar-docker` reports what fails
+  (`get_sandbox`'s `info.heavy.status`, `hangar-agent env doctor`), and the sandbox runs on without Docker.
+- **Size**: a template is sized when it is built, so a sandbox has its environment's `profile` (or `resources`); a
+  job's `hangar.profile` label that asks for another size is refused here. `disk_gb` becomes Cube's
+  `writableLayerSize`.
+- **Containers stay in the VM**: they leave it NATed to the VM's own address, under the platform's network policy
+  (CubeSandbox's eBPF policy denies private ranges by default).
+- **Hot resume** pauses the VM with its memory, so a resumed session finds dockerd, its images and running stacks as
+  they were.
 
 Hangar's own E2B API never uses tiers. It always creates on `HANGAR_DEFAULT_PROVIDER`, the provider that has hangar-envd, so a `fast` environment requested through `/e2b` can't route back into the `e2b` provider. If that provider pointed at this same hangar, the request would loop. An `isolated` environment is created through `/e2b` only when the default provider is one of the isolated tier's; otherwise the create fails.
 

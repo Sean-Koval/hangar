@@ -51,6 +51,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from hangar import envbuilds, repoenv, supervisor
+from hangar import testresults as testresults  # --- testresults: test commands leave structured results
 from hangar.models import JOB_TERMINAL, ContextItem, Credential, Job, JobBudget, JobState, Sandbox, now
 from hangar.repopolicy import repo_key
 
@@ -926,7 +927,7 @@ async def _run_checks(jobs: JobService, job: Job, st: State, s: Job, att: Attemp
         att.services.verdict = "passed" if att.services.exit_code == 0 else "failed"
     for c in _to_run(st, cfg):
         _check_cancel(job)
-        att.checks.append(await _check(jobs, prov, sb, path, st, c, eff))
+        att.checks.append(await _check(jobs, prov, sb, path, st, c, eff, job=job))  # --- testresults: job
 
 
 def validation_credentials(fleet: Fleet, spec: Any) -> list[str]:
@@ -1001,7 +1002,7 @@ def _blocked(st: State, name: str) -> list[str]:
 
 
 async def _check(jobs: JobService, prov: Any, sb: Sandbox, path: str, st: State, c: Command,
-                 eff: Any) -> Check:
+                 eff: Any, job: Job | None = None) -> Check:
     ck = Check(name=c.name, kind=c.kind, command=c.command, core=c.core, expected=c.exit_code)
     if c.kind == "start":
         if not eff.terminals:
@@ -1012,7 +1013,11 @@ async def _check(jobs: JobService, prov: Any, sb: Sandbox, path: str, st: State,
         return ck
     q = shlex.quote
     t0 = now()
-    res = await prov.exec(sb, f"cd {q(path)} && bash -lc {q(c.command)} 2>&1", timeout=c.timeout_seconds, cwd=path)
+    cmd = f"cd {q(path)} && bash -lc {q(c.command)} 2>&1"
+    if c.kind == "test" and job is not None and testresults.mode(jobs.settings) != "off":  # --- testresults
+        res = await _tests(jobs, prov, sb, path, c, cmd, job)
+    else:
+        res = await prov.exec(sb, cmd, timeout=c.timeout_seconds, cwd=path)
     ck.seconds = round(now() - t0, 1)
     ck.exit_code = res.exit_code
     ck.tail = jobs.broker.redact(res.stdout + (("\n" + res.stderr) if res.stderr.strip() else ""))[-LOG_MAX:]
@@ -1025,6 +1030,30 @@ async def _check(jobs: JobService, prov: Any, sb: Sandbox, path: str, st: State,
         ck.why = (f"timed out after {c.timeout_seconds}s" if res.exit_code == 124
                   else f"exit {res.exit_code}, expected {c.exit_code}")
     return ck
+
+
+async def _tests(jobs: JobService, prov: Any, sb: Sandbox, path: str, c: Command, cmd: str, job: Job) -> Any:
+    """--- testresults: a test command's run with its reports collected, recorded as an `autoinstall` run (a clean
+    sandbox hangar made, so it counts towards the repo's flaky list)."""
+    rid = testresults.run_id()
+
+    async def ex(command: str, t: int) -> Any:
+        return await prov.exec(sb, command, timeout=t, cwd=path)
+
+    async def rd(p: str, limit: int) -> bytes | None:
+        return await prov.read_file(sb, p, limit=limit)
+
+    res, got = await testresults.execute(ex, rd, cmd, d=f"/home/{jobs.settings.sandbox_user}/.hangar/tests/{rid}",
+                                         repo=path, timeout=c.timeout_seconds, globs=[],
+                                         inject=testresults.mode(jobs.settings) == "inject")
+    if got.results is not None and (got.results.cases or got.results.coverage):
+        with contextlib.suppress(Exception):  # the check's verdict stands without its reports
+            run = testresults.record(jobs.store, results=got.results, kind="autoinstall", redact=jobs.broker.redact,
+                                     tree=got.tree, sha=got.head, repo=job.repo, environment=sb.environment,
+                                     job_id=job.id, person=job.person, command=c.command, exit_code=res.exit_code,
+                                     files=got.files, run_id=rid)
+            testresults.export_otel(run)
+    return res
 
 
 def _verdict(att: Attempt) -> None:

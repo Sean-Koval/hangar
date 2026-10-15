@@ -14,6 +14,8 @@ code:
   environment's processes. A process that exits is restarted, so the agent doesn't have to look after it.
 - **Services** (Postgres, Redis...) declared as images, run beside the sandbox and reachable at their name.
 - **Preview ports**: the sandbox's owner opens a declared port in their browser, through hangar, never publicly.
+- **The heavy tier**: Docker inside a VM of the sandbox's own, Compose stacks under the supervisor, and bigger
+  resource profiles, for repos that test with `docker compose` or Testcontainers ([below](#the-heavy-tier)).
 
 ## The file
 
@@ -41,10 +43,13 @@ services:                        # images beside the sandbox, reachable at their
 ports:                           # the owner can open these in a browser, through hangar
   - {port: 5173, name: web}
 verify: uv run pytest -q         # the check jobs run, unless the job names one
+verify_reports: [reports/*.xml]  # JUnit, Cobertura or LCOV files it writes (most runners need none: docs/jobs.md §8)
 build_secrets: [NPM_TOKEN]       # ids only; an admin maps each to a credential (see Build secrets)
 lockfiles: [vendor/*.lock]       # more files whose change means a rebuild
 mocks:                           # stand-ins for real dependencies, so nobody mistakes them (agent-led setup)
   - {what: S3, how: "MinIO service at minio:9000", why: no cloud credentials in sandboxes}
+heavy: true                      # Docker inside, on the heavy tier, where an admin allows it (see The heavy tier)
+profile: large                   # standard | large | xlarge, up to what the repo's policy allows
 ```
 
 Every field is optional. `mocks` is documentation: hangar applies nothing from it, but agent-led setup (below)
@@ -66,7 +71,9 @@ The file is untrusted: anyone who can push to the repo writes it. It is parsed s
 YAML aliases are refused, and it must be under 64 KiB. It can set only the fields above. Everything an admin decides
 stays in hangar: the image and base (`image`, `base`), secrets and credentials (`secrets`, `credentials`), MCP
 servers, `runtime_class`, resources, `sudo`, and the git credential mode. A file that names one of these is refused,
-and the message says it's decided in hangar. Secrets stay in hangar, by name.
+and the message says it's decided in hangar. Secrets stay in hangar, by name. `heavy`, `tier: heavy` and `profile`
+are requests that the repo's policy bounds ([the heavy tier](#what-decides)); Docker is off unless an admin allows it
+for the repo (`hangar repo set owner/repo --heavy allow`), and no other tier can be asked for.
 
 Hangar reads the file from the commit (`git cat-file`), never from the working tree. A symlink committed in its
 place is read as the link's text, so it can't make hangar read another file in the sandbox.
@@ -183,10 +190,18 @@ sandbox never sees any of them. The scan catches a value written as it is, not o
 - Builds are made from the default branch, as Cursor's are. A feature branch's new dependencies are the agent's to
   install, and it is told so.
 
+### Build caches
+
+A build keeps the checkout, not `$HOME`. The package managers' caches, a branch whose lockfile moved on, and compile
+output are covered by [build caches](caches.md). A build restores them before `install` and saves them after it.
+Builds are the only writers of a repo's shared caches. Every sandbox restores them in the background after the clone,
+and sccache, Bazel and Turborepo come pointed at hangar's remote caches.
+
 ## Services
 
 Docker inside a gVisor sandbox is limited, so a service never runs inside the sandbox. It runs next to it, with the
-same isolation, and goes away with it. The sandbox reaches it at its name: `postgres:5432` above.
+same isolation, and goes away with it. The sandbox reaches it at its name: `postgres:5432` above. (On the heavy tier a
+service can also be a Compose stack that runs inside the sandbox: [Compose stacks](#compose-stacks-under-the-supervisor).)
 
 - **Kubernetes:** a sidecar container in the sandbox's pod. It shares the pod's network (127.0.0.1, and its name
   through the pod's `hostAliases`), its runtime class, and its hardening: uid 1000, no capabilities, no privilege
@@ -277,7 +292,8 @@ $ hangar-agent svc add docs --port 8000 -- python3 -m http.server 8000   # super
 When a sandbox starts, hangar writes `~/.hangar/svc/manifest.json` from the effective config and runs
 `hangar-svc up`, which returns at once. The supervisor then:
 
-1. waits for the environment's services to answer (up to 180 s);
+1. starts the Compose stacks (heavy tier), and waits for them and the environment's services to be ready (up to
+   180 s);
 2. runs `start` once, in the repo;
 3. starts every terminal with `autostart` (default true), each in its own process group, through `bash -l` (so
    `~/.hangar/env` applies);
@@ -299,6 +315,188 @@ in the [image contract](specs/0006-environments-and-harness-packs.md)), installe
 `hangar-agent`, with no image rebuild. It holds nothing secret. Its socket and state live in `~/.hangar/svc` (0700).
 Under the [uid split](steering.md#the-uid-split) it stays the agent's: hangar's own user never runs it, and it never
 reaches hangar's runs.
+
+## The heavy tier
+
+Most real repos run their integration tests with `docker compose` or Testcontainers, and build with more than the
+default 2 CPUs and 4 GiB. A **heavy** sandbox is a VM of its own with Docker running natively inside it, so `docker
+build`, `docker compose up` and Testcontainers work as on a laptop, and the containers it starts stay inside that VM.
+The heavy tier also holds the bigger **resource profiles**. gVisor stays the default tier for everything else.
+
+```yaml
+# envs/python-docker.yaml (an admin's environment)
+name: python-docker
+extends: python
+heavy: true            # or `tier: heavy`: Docker in the image and in the sandbox
+profile: large         # standard (2 vCPU / 4 GiB) | large (8 / 32 / 100 GiB disk) | xlarge (16 / 64 / 200)
+```
+
+```yaml
+# .hangar/environment.yaml (the repo's)
+heavy: true            # a request, off unless an admin allows it; see "What decides" below
+services:
+  deps: {compose: docker-compose.yml}              # a Compose stack the supervisor runs (heavy only)
+  db: {compose: ops/compose.test.yml, port: 5432}  # ready once 5432 answers
+  cache: docker-compose.cache.yml                  # short for {compose: docker-compose.cache.yml}
+```
+
+### Turning it on
+
+The tier is off until an admin lists providers for it, as for `fast` and `isolated`:
+
+```bash
+HANGAR_TIERS='{"fast": ["e2b"], "isolated": ["kubernetes"], "heavy": ["kubernetes"]}'
+```
+
+A heavy sandbox only ever runs on a provider listed there, in order, falling back past one that is full or down, and
+never anywhere else: like `isolated`, it is a security choice (a privileged sandbox needs a VM around it).
+
+| Provider | What a heavy sandbox is | Setup |
+| --- | --- | --- |
+| `kubernetes` | a Kata pod (`HANGAR_HEAVY_RUNTIME_CLASS`, `kata-qemu-runtime-rs`) on the `sandboxes-heavy` pool | [gke.md](gke.md#4a-the-heavy-tier-optional): the pool, kata-deploy, and the Agent Sandbox controller caveat |
+| `e2b` | an E2B or CubeSandbox microVM | [microvm.md](microvm.md#the-heavy-tier-on-microvms) |
+| `docker` | a privileged runc container: **root on the host** | `HANGAR_HEAVY_DOCKER_PRIVILEGED=true`, for CI and throwaway machines only |
+
+### What decides
+
+Before a sandbox starts (`heavy.decide`):
+
+- **Docker is deny by default.** It comes from the environment (`heavy: true`, `tier: heavy`; admin fields); else the
+  repo's policy (`hangar repo set acme/app --heavy on`); else the repo's `.hangar/environment.yaml` asking for it (as
+  its default branch was last seen), which is only a **request**: it is honored when an admin has allowed it for that
+  repo (`hangar repo set acme/app --heavy allow`) and this hangar has a heavy tier. Unset, or `--heavy deny`, it isn't:
+  anyone who can push the default branch could otherwise give the repo's sandboxes root in a VM on costlier nodes. A
+  heavy repo on a plain environment gets that environment's heavy variant: the same spec, its image built with Docker
+  in it. The repo's builds then start from that variant too.
+- **A request that isn't allowed** runs on the default tier, without Docker, and says so plainly: a warning on the
+  sandbox (`get_sandbox`'s `info.warnings`, the job's events), a "Docker isn't enabled for this repo" section in the
+  agent's instructions that gives the admin command, and a `WARN` on `hangar-agent env doctor`'s `tier` line:
+
+  ```text
+  WARN tier      tier standard (2 CPUs, 4 GiB, gvisor); Docker isn't enabled for acme/app: its .hangar/environment.yaml
+                 asks for the heavy tier, and a repo's own file only requests it, and an admin hasn't allowed that for
+                 this repo, so this sandbox runs on the default tier, without Docker. An admin enables it: hangar repo
+                 set acme/app --heavy allow
+  ```
+- **Profile:** a job's label `hangar.profile` (`hangar job submit --profile large`, or `labels` on `POST /api/jobs`
+  and `create_sandbox`), then the repo's file, each up to the policy's `max_profile` (else no more than the policy's or
+  the environment's own profile); then the policy's `profile`; then the environment's. `large` and `xlarge` run on the
+  heavy tier's nodes, with Docker or not: the gVisor pool's nodes can't hold them. A profile replaces `resources`.
+  Asking past what's allowed fails the create and says which `hangar repo set` raises it.
+- **Caps:** one person holds at most `HANGAR_HEAVY_PERSON_MAX` live sandboxes per profile (3 `large` or larger, 1
+  `xlarge`), with the same per-person accounting as the other caps ([team-scale.md](team-scale.md)). Work no person
+  owns (jobs from GitHub, Slack or Jira senders linked to nobody, webhooks, schedules without a person) shares one
+  team bucket with the same caps, so it can't take the heavy pool either. Repo builds are hangar's own, one per repo
+  and environment at a time, and aren't counted. Docker at the standard size isn't capped beyond the usual sandbox
+  caps.
+- **Warm pools** of heavy environments stay at 0 unless `HANGAR_HEAVY_WARM_POOLS=true`: a heavy node held warm costs
+  (see [team-scale.md](team-scale.md#heavy-tier)).
+
+`heavy`, `tier: heavy` and a `profile` other than standard are admin fields on an environment, like `runtime_class`.
+
+### Docker in the sandbox
+
+At claim, before the repo's services, hangar installs `~/.hangar/bin/hangar-docker` (a standard-library script, like
+the supervisor) and runs it as root with sudo (heavy environments need `sudo: true`):
+
+1. **Storage.** dockerd's overlay storage can't use virtio-fs as its upper layer, and under Kata the sandbox's volume
+   for `/var/lib/docker` is virtio-fs. So there it makes a sparse ext4 image of the profile's disk on that volume and
+   loop-mounts it on `/var/lib/docker`, the approach Kata's own guide recommends over a memory-backed volume
+   ([How to run Docker in Docker with Kata Containers][kata-dind]). On ext4, xfs, btrfs or tmpfs (a microVM's root disk,
+   a Docker volume) it uses the directory as it is. The volume is an `emptyDir` sized to the disk (`sizeLimit`), with an
+   `ephemeral-storage` request of the same, so the scheduler places the pod where the node's disk has room.
+2. **cgroups.** Kata's guest uses cgroup v1 unless its kernel is told otherwise ([kata-agent][kata-agent]), which
+   dockerd 29 still supports, though deprecated ([Docker deprecations][docker-deprecated]). On cgroup v2 it moves the
+   container's processes into a child cgroup first, so controllers can be delegated (what moby's `hack/dind` does).
+3. **dockerd** (from `HANGAR_HEAVY_DOCKER_IMAGE`, `docker:29.8.2-dind`, copied into the image as static binaries with
+   the CLI, Compose and Buildx), under a loop that restarts it, with iptables for its NAT and published ports, the
+   bridge MTU set to the sandbox's, and its socket owned by the sandbox user's group. Nothing listens on TCP.
+
+Its result is recorded (`get_sandbox`'s `info.heavy.status`) and shown to the agent. If Docker doesn't start, the
+sandbox still starts, with a setup failure that says why and how to start it again. Docker's images and volumes
+live in the sandbox: a resumed session starts with an empty Docker.
+
+### Docker images
+
+dockerd's pulls go through the sandbox's egress policy like everything else:
+
+- **Open** egress: straight to the registries. `HANGAR_HEAVY_REGISTRY_MIRRORS` (dockerd's `registry-mirrors`, Docker
+  Hub only) can name `https://mirror.gcr.io`, Google's cache of popular Docker Hub images, whose pulls don't count
+  against Docker Hub's rate limits ([Pull cached Docker Hub images][ar-mirror]).
+- **Allowlist**: dockerd uses the sandbox's egress proxy, with its own credential. The `docker` preset opens Docker
+  Hub (`registry-1.docker.io`, `auth.docker.io` and its blob CDN, from [Docker's allowlist][docker-allowlist]); other
+  registries go in `allow`. Docker Hub also takes pushes with anyone's token, so prefer hangar's mirror:
+- **Hangar's mirror** (`HANGAR_HEAVY_MIRROR=true`): a read-only pull-through of Docker Hub on the git gateway's port,
+  in the same pattern as the [package mirrors](security.md#package-mirrors): GET and HEAD of manifests, blobs and
+  tags only. Its upstream is Docker Hub, or an Artifact Registry remote repository for Docker Hub
+  (`HANGAR_HEAVY_MIRROR_UPSTREAM`, terraform's `dockerhub_mirror`) holding Docker Hub credentials of your own, so a
+  team's pulls don't hit the anonymous limit. Hangar reads it with its own Google identity; sandboxes never get
+  `*.pkg.dev`, which serves every project's writable repositories too. dockerd can't send credentials to a mirror (it
+  refuses a mirror URL with a user in it), so the sandbox's egress credential is in the mirror's path. Use is summed
+  into the `egress.allow` audit entries as `docker.mirror.hangar`.
+
+In an allowlist sandbox, containers and builds get the egress proxy too (`~/.docker/config.json`'s `proxies`, by
+address: they can't resolve hangar's names).
+
+### Compose stacks under the supervisor
+
+A `services:` entry with `compose: FILE` (relative to the checkout) is a Compose stack: the supervisor runs `docker
+compose -p NAME -f FILE up` in the foreground, so the containers' output is its log (`hangar-agent svc logs NAME`) and
+a stop or restart stops the containers (SIGTERM). Stacks start with the services, before `start`, and `start` and the
+terminals wait for them: ready when `port` answers, or `ready` exits 0, or by default when every service in the file
+has a container running (and healthy, if it has a healthcheck) or exited 0. `env` is passed to Compose (for
+variable substitution). A stack takes only `compose`, `port`, `ready` and `env`: images, commands and volumes are the
+file's. Stacks come from the checkout itself, so one added in a commit starts right away, unlike image services.
+`hangar-agent svc add NAME --compose FILE` supervises one for this run. In a sandbox without Docker, a stack is a
+setup failure that says the heavy tier is needed.
+
+### Isolation
+
+The VM is the boundary. Under Kata the sandbox container is privileged *inside the guest*: kata-deploy configures
+containerd with `privileged_without_host_devices = true`, so no host device is passed into the VM
+([Kata: privileged containers][kata-privileged]). Containers dockerd starts sit on a bridge inside the VM and leave it
+NATed to the pod's own address, so the pod's NetworkPolicy applies to them as to the sandbox: no other pods, no
+node addresses, no metadata server (`deploy/k8s/sandbox-network.yaml`), and only the proxy in an allowlist
+environment. dockerd listens on its Unix socket only, so containers can't reach it over the bridge. Sidecar services
+keep their own unprivileged security context. On the `docker` provider there is no VM: privileged runc is root on the
+host.
+
+### Why Kata and not gVisor
+
+gVisor has a documented Docker-in-gVisor mode ([Docker in gVisor][gvisor-docker], [Docker in GKE Sandbox][gvisor-gke])
+and hangar evaluated it:
+
+- the container needs added capabilities (SYS_ADMIN, NET_ADMIN...) and to run as root, which GKE's Agent Sandbox
+  policy refuses for every sandbox ([Agent Sandbox requirements][gke-agent-sandbox]);
+- `/var/lib/docker` must be tmpfs for overlay (gVisor only takes tmpfs as an overlay upper layer), so every image
+  layer counts against the sandbox's memory, and a 100 GiB disk profile isn't possible;
+- dockerd runs with `--iptables=false`, so published ports (`-p`, Compose's `ports:`, what Testcontainers maps) don't
+  work and containers need `--network=host`;
+- Docker 28 and later need runsc's `--allow-packet-socket-write`, which "allows sandboxed code to craft arbitrary
+  network packets".
+
+So Compose stacks and Testcontainers, the point of the tier, don't work there. Kata runs an unmodified guest kernel
+with overlay, bridges, veth and netfilter built in (its guest kernel config notes "Docker in Docker support requires
+overlay"), and E2B and CubeSandbox are microVMs too. Docker-in-gVisor for builds alone could come later as a lighter
+tier.
+
+### What the agent sees
+
+- `hangar-agent env doctor` starts with a `tier` line: the tier, the profile and its size, the runtime, and whether
+  Docker answers (with the command that starts it when it doesn't).
+- A "Docker (hangar heavy tier)" section in its instructions, and the `hangar-docker` skill: Compose stacks under the
+  supervisor, Testcontainers, and what to do when Docker or a pull fails. The `hangar-environment` skill says Docker
+  exists only on the heavy tier.
+
+[kata-dind]: https://github.com/kata-containers/kata-containers/blob/main/docs/how-to/how-to-run-docker-with-kata.md
+[kata-privileged]: https://github.com/kata-containers/kata-containers/blob/main/docs/how-to/privileged.md
+[kata-agent]: https://github.com/kata-containers/kata-containers/blob/main/src/agent/README.md
+[docker-deprecated]: https://docs.docker.com/engine/misc/deprecated/
+[ar-mirror]: https://docs.cloud.google.com/artifact-registry/docs/pull-cached-dockerhub-images
+[docker-allowlist]: https://docs.docker.com/desktop/setup/allow-list/
+[gvisor-docker]: https://gvisor.dev/docs/tutorials/docker-in-gvisor/
+[gvisor-gke]: https://gvisor.dev/docs/tutorials/docker-in-gke-sandbox/
+[gke-agent-sandbox]: https://docs.cloud.google.com/kubernetes-engine/docs/how-to/how-install-agent-sandbox
 
 ## Agent-led setup
 
@@ -405,6 +603,16 @@ Cancelling it cancels both agents and removes the validation sandbox.
 | `HANGAR_ENV_SETUP_VALIDATE_MINUTES` | 45 | One validation: the sandbox, install, the services and every command |
 | `HANGAR_ENV_SETUP_MODELS` | unset | `{"claude-code": "frontier", "codex": "gpt-6-astra"}`: a model or a policy per harness instead of `balanced` |
 | `HANGAR_ENV_SETUP_LABEL` | `hangar-env-setup` | An issue (GitHub, Jira, GitHub Projects) with this label starts an env setup |
+| `HANGAR_TIERS` `heavy` | unset (off) | The heavy tier's providers, in order (`kubernetes`, `e2b`, `docker`) |
+| `HANGAR_HEAVY_RUNTIME_CLASS` | `kata-qemu-runtime-rs` | Kubernetes: the VM runtime heavy pods run under |
+| `HANGAR_HEAVY_NODE_SELECTOR` | `true` | Kubernetes: pin heavy pods to the `sandboxes-heavy` pool (`hangar.dev/runtime=heavy`) |
+| `HANGAR_HEAVY_PERSON_MAX` | `{"large": 3, "xlarge": 1}` | Live sandboxes per person per profile (`large` counts xlarge too); 0: no cap |
+| `HANGAR_HEAVY_WARM_POOLS` | `false` | Keep heavy environments' warm pools |
+| `HANGAR_HEAVY_DOCKER_IMAGE` | `docker:29.8.2-dind` | Where images get dockerd, containerd, runc and the CLI (Compose, Buildx) |
+| `HANGAR_HEAVY_REGISTRY_MIRRORS` | `[]` | dockerd's `registry-mirrors` (Docker Hub only), e.g. `["https://mirror.gcr.io"]` |
+| `HANGAR_HEAVY_MIRROR` | `false` | Hangar's read-only Docker Hub pull-through on the gateway, first among the mirrors |
+| `HANGAR_HEAVY_MIRROR_UPSTREAM` | `https://registry-1.docker.io` | Its upstream: Docker Hub, or an Artifact Registry remote repository for it |
+| `HANGAR_HEAVY_DOCKER_PRIVILEGED` | `false` | Docker provider: heavy sandboxes as privileged runc containers (root on the host) |
 
 ## REST
 

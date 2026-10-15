@@ -2,28 +2,31 @@
 
 Two guides, newest first:
 
-- [**This release**](#upgrading-to-the-team-release-75110) (#75–#110): one ordered procedure for everything since the overnight stack. Wave 1 (#75–#90): one hangar for a team of six at ~60 sessions, people and per-person credentials, front-door defaults and job budgets, the reconciler, the MCP deadline contract, and images built before anyone waits. Wave 2 (#91–#100): team credentials and linked accounts, Jira and GitHub Projects intake, egress allowlists, secret scanning and short-lived cloud credentials, a computer for every agent, environments that live with the repo, an approval that lands the PR, the always-on control plane and gated deploys. Wave 3 (#101–#110): review-round trust and the stale-approval gate, egress closed further (no ECH, read-only package mirrors, pushes scanned in the gateway), history out of memory, a rotatable vault key, repo builds that pass on less, the operator console and the Cloud Doctor, the harness canary and `frontier` models, agent-led environment setup, and the acceptance suite for all of it.
+- [**This release**](#upgrading-to-the-team-release-75117) (#75–#117): one ordered procedure for everything since the overnight stack. Wave 1 (#75–#90): one hangar for a team of six at ~60 sessions, people and per-person credentials, front-door defaults and job budgets, the reconciler, the MCP deadline contract, and images built before anyone waits. Wave 2 (#91–#100): team credentials and linked accounts, Jira and GitHub Projects intake, egress allowlists, secret scanning and short-lived cloud credentials, a computer for every agent, environments that live with the repo, an approval that lands the PR, the always-on control plane and gated deploys. Wave 3 (#101–#110): review-round trust and the stale-approval gate, egress closed further (no ECH, read-only package mirrors, pushes scanned in the gateway), history out of memory, a rotatable vault key, repo builds that pass on less, the operator console and the Cloud Doctor, the harness canary and `frontier` models, agent-led environment setup, and the acceptance suite for all of it; then least privilege for jobs and builds, CI/CD setup and the infra states (#111–#113). Wave 4 (#114–#117): heavy development environments (Docker inside a VM of the sandbox's own on the heavy tier, deny by default for a repo's own request, and bigger resource profiles), warm dependency and compile caches, structured test results from every check, and the sister tool's three interfaces (harness manifests, trace export, experiment jobs).
 - [**The overnight stack**](#upgrading-from-before-the-overnight-stack-4869) (#48–#69), for a hangar older than that. Do its backup and read its defaults first, then follow this release's procedure: its prebuild also covers the overnight guide's "republish the Codex pack" step.
 
 Both are written for the GKE install from [gke.md](gke.md): one zonal cluster, gVisor sandboxes, the control plane with SQLite on the `hangar-data` PVC, checkpoints in the session bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / `power.sh`. [CHANGELOG.md](../CHANGELOG.md) lists what each adds.
 
-## Upgrading to the team release (#75–#110)
+## Upgrading to the team release (#75–#117)
 
 The short version, in order:
 
 ```bash
 hangar admin backup                                   # 1. back up; record the running image; the vault key in Secret Manager
-#                                                       2. request quotas (days ahead)
+#                                                       2. request quotas (days ahead; N2 too for a heavy pool)
 uv run hangar images build --registry "$REG"          # 3. prebuild the new image and pack tags
-#                                                       4. in the power-down window: terraform apply (node pool, power schedule)
+#                                                       4. in the power-down window: terraform apply (node pool, power
+#                                                          schedule; optional: the heavy pool, the Docker Hub remote repo)
 bash deploy/gke/power.sh up && bash deploy/gke/up.sh  # 5. bring the cluster up, roll out
 hangar doctor && hangar status                        # 6. check
 hangar cred migration                                 # 7. people: your logins became yours; add team API keys
 hangar person add alice
 hangar config set HANGAR_JOB_BUDGET_MAX_COST_USD 10   # 8. budgets (yours to choose; jobs run on balanced), then concurrency
 hangar doctor --fix                                   # 9. front doors: the pull_request event; then the App, Jira, Projects
-hangar config set HANGAR_EGRESS_URL http://hangar-gateway.hangar.svc:3128   # 10. sandboxes: egress, mirrors, cloud, previews
-hangar config set HANGAR_MODEL_LIST_CREDENTIALS '{"anthropic": "anthropic-models"}'   # 11. models, the canary, env setup
+hangar config set HANGAR_EGRESS_URL http://hangar-gateway.hangar.svc:3128   # 10. sandboxes: egress, mirrors, cloud, previews,
+#                                                       the heavy tier, build caches, test results
+hangar config set HANGAR_MODEL_LIST_CREDENTIALS '{"anthropic": "anthropic-models"}'   # 11. models, the canary, env setup,
+#                                                       the sister tool's interfaces
 hangar admin doctor run --dry-run                     # 12. operations: the Cloud Doctor, the console, the vault key
 #                                                       13. deploy.yml: the production environment and its secrets
 bash scripts/acceptance/gke.sh --no-kubectl           # 14. clients and proof: docs/acceptance.md, in its order
@@ -38,8 +41,11 @@ Everything the owner sets up, in the order of the steps. **Required** means the 
 | The vault key in Secret Manager (`hangar-vault-key`), copied from the `hangar` Secret, never to a laptop | **Required** on GKE before step 5 (a backup can't be restored without it, and rotation reads it from there) | [1](#1-back-up) |
 | `HANGAR_BACKUP_STORE`: a bucket of its own, write-only for hangar's service account (`roles/storage.objectCreator`), with a lifecycle rule | Optional (backups stay beside the checkpoints; `hangar doctor` warns) | [1](#1-back-up) |
 | Quotas: `N2D_CPUS` ≥ 160, `CPUS_ALL_REGIONS`, `SSD_TOTAL_GB` ≥ 2,250 | **Required** on GKE | [2](#2-request-quotas-days-ahead) |
+| Quotas for the heavy pool: `N2_CPUS` ≥ 128 (4 × `n2-standard-32`) on top of the Kata pool's, and 2,000 GB more `SSD_TOTAL_GB` | Optional; **required** for the heavy tier on GKE | [2](#2-request-quotas-days-ahead) |
 | Images workflow secrets (`GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT`, `HANGAR_REGISTRY`, repository secrets) | Optional: without them, prebuild by hand | [3](#3-prebuild-the-new-image-and-pack-tags) |
 | `terraform apply`: the `n2d-standard-16` node pool, `power_up_cron` 09:50, `sandbox_warm_nodes`, hangar's `roles/run.invoker` on the power-up job | **Required** on GKE | [4](#4-in-the-power-down-window-the-node-pool-and-the-power-schedule) |
+| `terraform apply` with `enable_heavy_pool = true` (and `heavy_machine_type`, `heavy_max_nodes`, `heavy_spot`, `heavy_disk_gb`): the `sandboxes-heavy` pool and its `hangar-heavy-nodes` service account | Optional; **required** for the heavy tier on GKE | [4](#4-in-the-power-down-window-the-node-pool-and-the-power-schedule) |
+| `terraform apply` with `enable_dockerhub_mirror = true` (`dockerhub_username`, `dockerhub_token_secret`): the Artifact Registry remote repository for Docker Hub | Optional (heavy sandboxes pull from Docker Hub, rate-limited, or `HANGAR_HEAVY_REGISTRY_MIRRORS`) | [4](#4-in-the-power-down-window-the-node-pool-and-the-power-schedule) |
 | `HANGAR_POWER_UP_JOB` | Set by `up.sh`; **required** for `hangar power up` | [5](#5-bring-the-cluster-up-and-roll-out) |
 | Team credentials: API keys (`hangar cred add NAME --team --kind api_key`). A subscription login is refused as one | **Required** for work no person owns (webhooks, schedules without a person, unlinked senders) | [7](#7-people-your-logins-stay-yours-add-team-credentials-then-the-team) |
 | People, their tokens and linked GitHub, Slack and Jira accounts | Optional (required for a team) | [7](#7-people-your-logins-stay-yours-add-team-credentials-then-the-team) |
@@ -65,6 +71,17 @@ Everything the owner sets up, in the order of the steps. **Required** means the 
 | `HANGAR_ENV_SERVICE_IMAGES` | Optional (Docker's official images by default) | [10c](#10c-environments-that-live-with-the-repo) |
 | `HANGAR_PREVIEW_DOMAIN`, its wildcard DNS and certificate, and `deploy/k8s/e2b.yaml`'s NetworkPolicy | Optional (previews are off) | [10d](#10d-preview-ports) |
 | `HANGAR_PR_MEDIA_LINKS=signed` | Optional (screenshots and demos are listed by name) | [10e](#10e-the-agents-computer) |
+| The heavy tier: `HANGAR_TIERS` `heavy` (`["kubernetes"]` or `["e2b"]`), kata-deploy on the heavy pool (`KATA=1 up.sh`), `HANGAR_HEAVY_RUNTIME_CLASS`, `HANGAR_HEAVY_NODE_SELECTOR` | Optional (the tier is off; heavy environments fail to start, saying so); **required** for Docker in sandboxes and the `large`/`xlarge` profiles | [10f](#10f-the-heavy-tier) |
+| On a cluster with GKE's Agent Sandbox add-on: the open-source controller instead, or the heavy tier on microVMs | **Required** for the heavy tier there (the add-on's policy refuses privileged Kata pods) | [10f](#10f-the-heavy-tier) |
+| Repo policy `heavy: allow` (or `on`) per repo, `profile`, `max_profile` | Optional; **required** for a repo whose `.hangar/environment.yaml` asks for Docker: it is deny by default | [10f](#10f-the-heavy-tier) |
+| `HANGAR_HEAVY_MIRROR` and `HANGAR_HEAVY_MIRROR_UPSTREAM` (terraform output `dockerhub_mirror`), `HANGAR_HEAVY_REGISTRY_MIRRORS` | Optional (off) | [10f](#10f-the-heavy-tier) |
+| `HANGAR_HEAVY_PERSON_MAX`, `HANGAR_HEAVY_WARM_POOLS`, `HANGAR_HEAVY_DOCKER_IMAGE` | Optional (3 `large`, 1 `xlarge` per person and for unattributed work together; no heavy warm pools; `docker:29.8.2-dind`) | [10f](#10f-the-heavy-tier) |
+| `HANGAR_HEAVY_DOCKER_PRIVILEGED` | Optional, Docker provider only, for CI and throwaway machines (root on the host) | [10f](#10f-the-heavy-tier) |
+| Build caches: `HANGAR_GATEWAY_URL` | **Required** for caches (sandboxes reach `/cache` on the gateway with its grant; without it nothing is cached) | [10g](#10g-build-caches) |
+| A cache bucket of its own: `HANGAR_BUILD_CACHE_STORE=gs://…`, with `roles/storage.objectAdmin` on it for hangar's service account | Optional (the session bucket's `caches/` prefix, which hangar can already write) | [10g](#10g-build-caches) |
+| `HANGAR_BUILD_CACHE_MAX_GB`, `_REPO_MAX_GB`, `_RETENTION_DAYS`, `_PRIVATE_DAYS`, `_PRIVATE_WRITES`, `_TRANSFER_MB`, `_WAIT_MINUTES` | Optional (100 GB in a bucket, 20 GB a repo, 14 and 3 days, private writes on, 256 MB, 10 min) | [10g](#10g-build-caches) |
+| `HANGAR_TEST_REPORTS`; repo policy `verify_reports` and `rerun_flaky` | Optional (`inject`; reports at the usual paths; no reruns) | [10h](#10h-test-results) |
+| `HANGAR_TRACE_LIVE_TOOLS`, `HANGAR_EXPERIMENT_MAX_TRIALS`, `HANGAR_EXPERIMENT_PARALLEL` | Optional (off, 200, 8) | [11d](#11d-the-sister-tools-interfaces) |
 | Model list keys: `HANGAR_MODEL_LIST_CREDENTIALS` (`webhook` credentials holding Anthropic, OpenAI and Gemini API keys, kept from sandboxes) | Optional: without them, `balanced` and `frontier` resolve to hangar's built-in ids (OpenRouter's list needs no key). Env setup now lists models with these, not with the team's harness keys | [11a](#11a-model-list-keys) |
 | Harness canary, on hangar's own repository: branch protection on `main` (required approval, `contract` as a required check) and *Allow auto-merge* | **Required** before the first bump PR can land (without required approvals auto-merge would need none) | [11b](#11b-the-harness-canary) |
 | Harness canary: repository secrets `CANARY_APP_CLIENT_ID` and `CANARY_APP_PRIVATE_KEY` (a dedicated App, Contents and Pull requests: Read and write); variable `CANARY_APPROVERS` | Optional; the App is **required** for checks to run on the bump PR by themselves and for `images` to run on its merge | [11b](#11b-the-harness-canary) |
@@ -128,6 +145,11 @@ To opt out, use `hangar config set NAME VALUE` (kept in hangar's database) or `h
 | **Jobs only fetch; hangar pushes** (least privilege) | a job's sandbox could push `hangar/**` branches itself through the gateway (the Cloud Doctor's root-cause job included), and a `credential_mode: direct` environment put its git token in a job's sandbox → with `HANGAR_GATEWAY_URL` set, **every job's sandbox gets a fetch-only grant** whatever its environment's `credential_mode` or `HANGAR_GATEWAY_FOR_JOBS` (which now governs sessions only); a git credential its `secrets:` map is left out, with a warning. Hangar pushes the commit it checked with a grant pinned to that branch and commit, without the sandbox's git hooks (a husky `pre-push` no longer runs on delivery: put the check in `verify`). Sessions keep their branch-scoped grant. A job's agent that runs `git push` gets `hangar: this sandbox may fetch but not push`. Job sandboxes alive across the upgrade (kept for follow-ups) are narrowed to fetch-only at the first start (`gateway.narrow` in the audit log); a job with no repo, or on a host the gateway doesn't serve, gets no git credential at all. The gateway's upstream credential now matters for jobs on direct-mode environments: their `git_token`, else `HANGAR_GATEWAY_CREDENTIAL` or the App | — (fork the job's session to push by hand) |
 | **Builds and validation hold nothing** (least privilege) | a repo build's sandbox got the environment's non-agent credentials, `secrets:` and cloud tokens while it ran `install` → it gets a fetch-only grant for its clone, its mapped build secrets (in `install`'s environment only) and egress per policy, nothing else; env setup's validation the same, without build secrets. **Without the gateway** neither gets a git credential, so a private repo's build and validation fail with a message naming `HANGAR_GATEWAY_URL`; set it (Docker on a laptop: `http://host.docker.internal:8788`, [security.md](security.md#turning-it-on)) | — |
 | **Env setup** (#102) | → `hangar env setup <repo>`, the `hangar.kind: env-setup` job label and the `hangar-env-setup` issue label start an agent-led setup that opens a PR with a validated `.hangar/environment.yaml`. Its PR opens only if the branch is still at the commit hangar validated; `.hangar/**` is **high risk** in every PR's packet. | don't use the label |
+| **Build caches** (#115) | every sandbox installed dependencies and compiled from nothing → **on by default** wherever the gateway is configured: after the clone, `hangar-cache` restores the repo's dependency caches in the background (the sandbox is ready at once), and sandboxes get the variables for sccache, Bazel's HTTP cache and Turborepo's remote cache on the gateway's `/cache`. Only repo builds write the shared layer; sessions and jobs write a private layer of their own. Objects go to the session bucket's `caches/` prefix (up to 100 GB, LRU) unless step 10g names another. | `HANGAR_BUILD_CACHES=false` (*restart*); `HANGAR_BUILD_CACHE_PRIVATE_WRITES=false` |
+| **Test reports** (#116) | a check was its exit code and the end of its output → every check hangar runs sets the reporter variables (`PYTEST_ADDOPTS` gains `--junitxml=$HANGAR_TESTS_DIR/pytest.xml`, `GOTESTSUM_JUNITFILE`, `JEST_JUNIT_OUTPUT_DIR`) and reads the JUnit, Cobertura and LCOV files it wrote. Nothing is injected where the command or the repo's pytest config already names `junitxml`, and the check's own output and exit code are unchanged. A red base is then subtracted by test id, and the repo's flaky list starts filling. | `HANGAR_TEST_REPORTS=collect` (read only) or `off` |
+| **Turn manifests** (#114) | → each turn records the configuration it ran with (one command in the sandbox as it starts), stored under the data dir's new `manifests/` (and `experiments/` for experiment jobs). Nothing to migrate. | — |
+| **Warm pools refill on create** (Wave 4 review of #114) | since repo builds (#93) no create refilled its environment's warm pool, so a claimed member was replaced only at the next image build or scheduled sync → a create that started from the environment's own image refills it (never from a repo build's image or for an experiment trial), so warm pools stay at their size through the day, as they did before #93. | the environment's `warm_pool: 0`, `HANGAR_POWER_WARM_POOLS=off` |
+| **Sandbox admission** (#117) | → `kubectl apply -k deploy/k8s` also applies `heavy-policy.yaml`: in `hangar-sandboxes`, no pod gets host namespaces, `hostPath` or `hostPort`, and a privileged container or added capability needs a Kata runtime class (step 10f). Hangar's own pods use none of these. | — |
 | **Harness versions and packs** (#83, #87) | Claude Code and Antigravity followed "latest" → `src/hangar/harnesses.lock.yaml` pins every harness (Claude Code 2.1.296, Codex 0.162.1, Antigravity 1.3.3, pi 1.1.0, Gemini 0.64.0); a pack build fails unless the CLI reports the locked version. Packs hold only the vendor's files and are mounted by digest. **Every pack tag changes once**, and so does every image that bakes a harness in (step 3). `hangar pack publish` no longer overwrites an existing tag without `--force`. | — |
 
 ### 1. Back up
@@ -153,6 +175,8 @@ The previous version runs on the upgraded database file (see [rolling back](#rol
 ### 2. Request quotas, days ahead
 
 The sandbox pool moves to `n2d-standard-16` (AMD keeps SMT on under GKE Sandbox, so 14 sandboxes fit a node) with up to 10 nodes ([team-scale.md](team-scale.md#how-many-nodes)). In *IAM & Admin → Quotas* for your region request `N2D_CPUS` ≥ 160, `CPUS_ALL_REGIONS` to match, and `SSD_TOTAL_GB` ≥ 2,250. Spot VMs take standard `N2D_CPUS` quota unless the region granted preemptible quota. A refused scale-up shows as sandboxes stuck "waiting for a node", and `hangar doctor` names the quota.
+
+**The heavy pool (optional; required for the heavy tier on GKE, step 10f).** Its `n2-standard-32` nodes take `N2_CPUS`: request 128 for the default `heavy_max_nodes = 4`, on top of what the Kata pool uses, and 2,000 GB more `SSD_TOTAL_GB` for their 500 GB disks ([team-scale.md](team-scale.md#how-many-nodes-and-the-caps)).
 
 ### 3. Prebuild the new image and pack tags
 
@@ -181,6 +205,8 @@ One apply does both halves of the release:
 
 - **The node pool (required).** `machine_type` is an in-place node pool update with the google provider ≥ 5.x (`versions.tf` asks for ≥ 6.0): GKE replaces the nodes, not the pool, and with the pool at zero nodes that is quick. **If the plan shows the pool destroyed and created (`-/+`), stop**: something else in it changed (`sandbox_spot` forces a new pool). To keep the old pool, set `sandbox_machine_type` and `sandbox_max_nodes` in your tfvars. Done outside the window, every sandbox on the pool is killed, and GKE needs a node's worth of spare quota to surge.
 - **The power schedule (required with `enable_power_schedule = true`).** `power_up_cron` `0 10 * * *` → `50 9 * * *` with `power_warm_minutes = 10`; the gVisor pool's minimum becomes `sandbox_warm_nodes` (1 with the power schedule, else 0); hangar's service account gets `roles/run.invoker` on the power-up job; output `power_up_job`. The apply turns the gVisor pool's autoscaling back on at its floor, which starts a node: that's fine here, since step 5 brings the cluster up.
+- **The heavy pool (optional; required for the heavy tier on GKE).** `enable_heavy_pool = true` in `terraform.tfvars` (and `heavy_machine_type`, `heavy_max_nodes`, `heavy_spot`, `heavy_disk_gb` if the defaults don't fit) adds `sandboxes-heavy`: Ubuntu, nested virtualization, scaling from zero, tainted `hangar.dev/runtime=heavy`, under the power schedule like the other `sandboxes-*` pools, its nodes running as a service account of their own (`hangar-heavy-nodes`) with only a node's roles and read access to the `hangar` repository. The plan shows only additions. [gke.md §4a](gke.md#4a-the-heavy-tier-optional).
+- **The Docker Hub remote repository (optional).** `enable_dockerhub_mirror = true` creates an Artifact Registry remote repository for Docker Hub, read by hangar's service account, so heavy sandboxes' pulls aren't rate-limited (output `dockerhub_mirror`, used in step 10f). With `dockerhub_username` and `dockerhub_token_secret` (a Secret Manager secret holding an access token) it pulls as that account: use one with **no private repositories**, since every heavy sandbox can pull whatever the account can, through the mirror. Without them it pulls anonymously.
 
 ### 5. Bring the cluster up and roll out
 
@@ -352,6 +378,38 @@ hangar config set HANGAR_PREVIEW_DOMAIN hangar-preview.example.net    # restart
 
 Nothing to set: an environment opts in with `computer: true` (its image gets a layer). **Optional:** `HANGAR_PR_MEDIA_LINKS=signed` embeds screenshots and demos in PRs through expiring links anyone holding them can open; leave it `off` for private repos.
 
+#### 10f. The heavy tier
+
+**Optional** (off until a `heavy` tier is configured; [environments.md](environments.md#the-heavy-tier)). Docker inside a VM of the sandbox's own, and the `large` and `xlarge` profiles.
+
+- **The admission policy (applied by step 5, whether you use the tier or not).** `kubectl apply -k deploy/k8s` now also applies `heavy-policy.yaml`: ValidatingAdmissionPolicies (Kubernetes 1.30 or later) that refuse, in `hangar-sandboxes`, privileged containers and added capabilities unless the pod runs under a Kata runtime class, and host namespaces, `hostPath` volumes and `hostPort` under any runtime; and, cluster-wide, a RuntimeClass named `kata*` whose handler isn't `kata*`. Hangar's own sandbox pods use none of these (heavy ones are privileged under Kata), so nothing changes for them. If anything else runs pods in `hangar-sandboxes`, check them first with `kubectl apply --dry-run=server`.
+- **The tier (required for it):** the heavy pool from step 4, then Kata on it and the tier in `hangar-site` ([gke.md §4a](gke.md#4a-the-heavy-tier-optional)), or E2B or Cube microVMs ([microvm.md](microvm.md#the-heavy-tier-on-microvms)):
+  ```bash
+  KATA=1 bash deploy/gke/up.sh     # kata-deploy on the Kata and heavy pools
+  hangar config set HANGAR_TIERS '{"isolated": ["kubernetes"], "heavy": ["kubernetes"]}'   # keep your other tiers; restart
+  ```
+  `HANGAR_HEAVY_RUNTIME_CLASS` (`kata-qemu-runtime-rs`) and `HANGAR_HEAVY_NODE_SELECTOR` (`true`) fit that setup. **On a cluster with GKE's Agent Sandbox add-on (required there):** its policy refuses privileged Kata pods, so run the open-source Agent Sandbox controller instead of the add-on, or put the tier on microVMs (`HANGAR_TIERS='{"heavy": ["e2b"]}'`); [gke.md §4a](gke.md#4a-the-heavy-tier-optional) has the trade-offs.
+- **Which repos get Docker (required per repo that asks): deny by default.** A heavy environment (an admin's `heavy: true` or `tier: heavy`) has it. A repo's own `.hangar/environment.yaml` asking for it (`heavy: true`) is only honored where you allow it, and otherwise runs on the default tier with the agent told why and how you enable it:
+  ```bash
+  hangar repo set acme/app --heavy allow       # the repo's file may ask for Docker; `on`: all its sandboxes have it
+  hangar repo set acme/app --max-profile large # what a job or the repo's file may ask for
+  ```
+- **Docker Hub through hangar (optional).** With the remote repository from step 4: `HANGAR_HEAVY_MIRROR=true` and `HANGAR_HEAVY_MIRROR_UPSTREAM` set to terraform's `dockerhub_mirror` output, so heavy sandboxes pull through hangar's read-only mirror on the gateway. `HANGAR_HEAVY_REGISTRY_MIRRORS='["https://mirror.gcr.io"]'` adds others.
+- **Caps and cost (optional).** `HANGAR_HEAVY_PERSON_MAX` (3 `large` or larger and 1 `xlarge` per person; work no person owns shares one bucket with the same caps), `HANGAR_HEAVY_WARM_POOLS` (off: a warm heavy node costs; [team-scale.md](team-scale.md#heavy-tier)).
+- **Check it:** `bash scripts/acceptance/gke.sh --only heavy` (a Compose Postgres and a Testcontainers test, and no metadata server reachable from inside the VM).
+
+#### 10g. Build caches
+
+On by default; **`HANGAR_GATEWAY_URL` is required** for them (sandboxes reach `/cache` on the gateway's port with its grant), which every gateway-mode install already sets. Nothing else to do on GKE: objects go to the session bucket's `caches/` prefix, which hangar's service account can already write ([caches.md](caches.md)).
+
+- **A bucket of its own (optional):** create one, give hangar's service account `roles/storage.objectAdmin` on it (it writes, reads and evicts), then `hangar config set HANGAR_BUILD_CACHE_STORE gs://<bucket>` and restart. Objects are sealed with the vault key, as checkpoints are.
+- **Sizes (optional):** `HANGAR_BUILD_CACHE_MAX_GB` (100 in a bucket, 10 on Docker's data volume, which holds the database too: size it), `HANGAR_BUILD_CACHE_REPO_MAX_GB` (20), `HANGAR_BUILD_CACHE_RETENTION_DAYS` (14). `hangar status` shows the sizes; `hangar admin caches purge` empties a repo's.
+- **Off:** `HANGAR_BUILD_CACHES=false` (restart).
+
+#### 10h. Test results
+
+**Optional**, nothing to set: every check now leaves structured results ([jobs.md §8](jobs.md#8-test-results)). Where a runner writes its report somewhere hangar doesn't look, name it in the repo's file or policy (`hangar repo set acme/app --verify-report 'build/**/TEST-*.xml'`), and `--rerun-flaky` lets a check that failed only on the repo's known-flaky tests run once more. `HANGAR_TEST_REPORTS=collect` stops hangar setting the reporter variables; `off` stops it reading reports too.
+
 ### 11. Models, the canary and environment setup
 
 #### 11a. Model list keys
@@ -378,6 +436,10 @@ On **hangar's own repository**, not the repos agents work on ([harnesses.md](har
 #### 11c. Agent-led environment setup
 
 **Optional**, nothing to set. `hangar env setup acme/app [--wait | --drift | --every CRON]` (or `POST /api/env/setup`, or an issue labelled `hangar-env-setup` on GitHub, Jira or GitHub Projects) runs a goal agent and a setup agent on `balanced`, validates the `.hangar/environment.yaml` they write in a clean sandbox with no secrets, and opens a PR through the landing path ([environments.md](environments.md#agent-led-setup)). Its budget is the job's, else the repo policy's, else `HANGAR_ENV_SETUP_MAX_COST_USD` ($30) and `_MAX_TURNS` (16); `HANGAR_ENV_SETUP_MODELS` pins a model or policy per harness.
+
+#### 11d. The sister tool's interfaces
+
+**Optional**, nothing to set ([spec 0014](specs/0014-sister-tool-interfaces.md)). Harness manifests (`hangar session|job|env manifest`), trace export (`hangar trace export`, `GET /api/jobs/{id}/trace`) and experiment jobs (`hangar experiment run`) work as soon as it starts, owner-scoped like the rest. `HANGAR_TRACE_LIVE_TOOLS=true` also sends each turn's tool spans to the configured OpenTelemetry collector; `HANGAR_EXPERIMENT_MAX_TRIALS` (200) and `HANGAR_EXPERIMENT_PARALLEL` (8) bound an experiment.
 
 ### 12. Operations: the Cloud Doctor, the console and the vault key
 
@@ -410,7 +472,7 @@ Nothing to set. `hangar status` (`GET /api/status`, `hangar://status`; admins) s
 
 ### 14. Clients and proof
 
-- **claude.ai users remove the hangar connector and add it again** (Settings → Connectors): the apps never refetch the tool list ([clients.md](clients.md)). CLIs refetch it when a session starts. Waves 2 and 3 add no MCP tools (the inbox and the console are resources, requests ride on `pending_approvals` and `answer_approval`, listings gain a `cursor` field): 54 tools, 24,647 B.
+- **claude.ai users remove the hangar connector and add it again** (Settings → Connectors): the apps never refetch the tool list ([clients.md](clients.md)). CLIs refetch it when a session starts. Waves 2, 3 and 4 add no MCP tools (the inbox and the console are resources, requests ride on `pending_approvals` and `answer_approval`, listings gain a `cursor` field; Wave 4's manifests, traces and test results are resources, REST and CLI): 54 tools, 24,647 B.
 - `bash scripts/acceptance/gke.sh` runs the checks from the overnight guide's [§5](#5-prove-it-on-your-cluster) plus `mcp` (`create_sandbox` over MCP on a multi-harness environment within claude.ai's 230 s, a second create whose client gives up after 5 s still comes up, then `exec`), `power` (a create refused while the pools are off) and `warmstart` (a warm and a cold create, timed). It prints the server's version with its tool-list hash.
 - **Acceptance fixtures (optional; each check skips without its own):** a test repo in `HANGAR_GITHUB_REPOS` with the GitHub App installed, *Allow auto-merge*, and branch protection that requires code owners' review; a second account's classic `repo` token (`HANGAR_ACCEPT_APPROVER_TOKEN`); a token that writes to the test and fixture repos (`HANGAR_ACCEPT_GITHUB_TOKEN`); a fixture repo with an unprotected default branch; a Jira project mapped to the test repo (`HANGAR_ACCEPT_JIRA_WEBHOOK_SECRET`). For deploy.yml, the repos are `production` variables (`HANGAR_ACCEPT_TEST_REPO`, `HANGAR_ACCEPT_FIXTURE_REPO`) and the tokens `production` secrets. [acceptance.md](acceptance.md#before-the-first-run-fixtures) has each one.
 - **The first live run follows [acceptance.md](acceptance.md)**, in its order: the core checks, the operator's views (`status`, a Cloud Doctor dry run), then the team release's own (`computer`, `egress`, `services`, `envbuild`, `secrets`, `landing`, `intake`, `scale-smoke`, `power --power-cycle`, `prepull`), with the fixtures each needs and what each failure most likely means. The harness contract and canary are proved in GitHub Actions, not on the cluster: `contract` green on the commit you deploy.
@@ -423,7 +485,7 @@ In this order:
 
 1. **Remove members first** (`hangar person rm <id>`, which revokes their tokens). The previous version has no people: every `mcp` token would see and act on everyone's work, and `user` tokens are refused.
 2. **Disarm landing.** `hangar repo set REPO --land manual` on each landing repo, and disable auto-merge on any agent PR the inbox shows as approved: the previous version doesn't disarm on a push.
-3. **Know what goes open.** The previous version ignores `egress`, `cloud`, `build_secrets`, `computer`, `services` and `ports`: proxied environments lose their allowlist as the previous version rewrites their templates and starts their sandboxes, cloud tokens stop being minted, and secret scanning stops. Take sensitive environments out of service first.
+3. **Know what goes open.** The previous version ignores `egress`, `cloud`, `build_secrets`, `computer`, `services` and `ports`: proxied environments lose their allowlist as the previous version rewrites their templates and starts their sandboxes, cloud tokens stop being minted, and secret scanning stops. Take sensitive environments out of service first. It also ignores `heavy`, `tier: heavy` and `profile`: take heavy environments out of service too, or their sandboxes start on the default tier without Docker.
 4. **Hand archived sandbox records back.** The previous version runs on the upgraded file (it ignores the archive table and keeps the indexes up to date), but it can't see archived records:
    ```bash
    kubectl -n hangar exec deploy/hangar -- python3 -c "import sqlite3; db = sqlite3.connect('/data/hangar.db'); \
@@ -447,7 +509,7 @@ In this order:
    kubectl -n hangar rollout status deploy/hangar
    ```
 
-What stays: the node pool (the previous version runs on it unchanged), the database, every session and checkpoint, and the old pack tags in Artifact Registry, which the previous version mounts by tag as before. What the previous version ignores: repo policies, budgets, `person` on records and the owners the migration set (every credential is shared again: remove members first, step 1), `packinfo` digests, the drain (the new `power.sh` treats its 404 as settled), the stale-tool-list records, links, environment builds and requests, flight records, the Cloud Doctor's findings, model policies (a session pinned to `claude-fable-5-1` keeps that id), the key ring's state and `HANGAR_BACKUP_STORE` (backups go beside the checkpoints again). GitHub replay marks are compatible both ways. The next upgrade archives the records again; the credential migration doesn't run twice.
+What stays: the node pool (the previous version runs on it unchanged), the database, every session and checkpoint, and the old pack tags in Artifact Registry, which the previous version mounts by tag as before. What the previous version ignores: repo policies, budgets, `person` on records and the owners the migration set (every credential is shared again: remove members first, step 1), `packinfo` digests, the drain (the new `power.sh` treats its 404 as settled), the stale-tool-list records, links, environment builds and requests, flight records, the Cloud Doctor's findings, model policies (a session pinned to `claude-fable-5-1` keeps that id), the key ring's state and `HANGAR_BACKUP_STORE` (backups go beside the checkpoints again), Wave 4's repo policy fields (`heavy`, `profile`, `max_profile`, `verify_reports`, `rerun_flaky`), test runs and flaky lists, turn manifests and experiments, and the build caches (their objects stay in the `caches/` prefix until you delete it). The heavy pool, its node service account, the Docker Hub remote repository and `heavy-policy.yaml` stay; the policy refuses nothing the previous version creates. GitHub replay marks are compatible both ways. The next upgrade archives the records again; the credential migration doesn't run twice.
 
 ## Deploying with deploy.yml
 
@@ -526,7 +588,7 @@ The deploy needs `get`, `list`, `watch` and `patch` on the `hangar` Deployment (
 
 ## Upgrading from before the overnight stack (#48–#69)
 
-This guide takes a hangar that runs the version before the overnight stack (main at `2e3e0a3`, "Merge pull request #43") to the top of the stack, PRs #48–#69. From there, continue with [this release](#upgrading-to-the-team-release-75110). It is written for the GKE install from [gke.md](gke.md): one zonal cluster, gVisor sandboxes, the control plane with SQLite on the `hangar-data` PVC, checkpoints in the session bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / `power.sh`. [CHANGELOG.md](../CHANGELOG.md) lists what the stack adds.
+This guide takes a hangar that runs the version before the overnight stack (main at `2e3e0a3`, "Merge pull request #43") to the top of the stack, PRs #48–#69. From there, continue with [this release](#upgrading-to-the-team-release-75117). It is written for the GKE install from [gke.md](gke.md): one zonal cluster, gVisor sandboxes, the control plane with SQLite on the `hangar-data` PVC, checkpoints in the session bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / `power.sh`. [CHANGELOG.md](../CHANGELOG.md) lists what the stack adds.
 
 Checkpoints are in the bucket only if `hangar-site` names it, as terraform's comment on the bucket says to. Check before you start; a few things below differ when it prints nothing:
 
