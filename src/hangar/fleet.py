@@ -21,6 +21,7 @@ from typing import Any
 import hangar.identity as identity  # --- identity
 import hangar.people as people  # --- identity
 from hangar import cloudcreds as cloudcreds  # --- egress
+from hangar import delivery as delivery  # --- least-privilege
 from hangar import egress as egress  # --- egress
 from hangar import envbuilds as envbuilds  # --- envbuilds
 from hangar import envdoctor as envdoctor  # --- computer
@@ -829,20 +830,20 @@ class Fleet:
         h: Harness | None = HARNESSES.get(hname) if hname else None
         prelude: list[str] = []
         extra_env: dict[str, str] = {}
-        # --- review #102: agent-led setup's validation sandbox runs an unmerged, agent-written install. It gets the
-        # git credential its clone needs and nothing else: no other credential, no `secrets:`, no cloud tokens.
-        validating = envbuilds.VALIDATE_LABEL in sb.labels
+        # --- review #102, least-privilege: a repo build's sandbox and agent-led setup's validation run the repo's
+        # `install` (the validation's unmerged and agent-written). They clone with the gateway's fetch-only grant and
+        # get nothing else: no credential at all (without the gateway not even git's), no `secrets:`, no cloud
+        # tokens. A build's mapped build secrets reach its install command alone (envbuilds._install).
+        validating = delivery.builds_repo_code(sb)
         if validating:
-            from hangar.gateway import GIT_KINDS
-
-            creds = [c for c in creds if c.kind in GIT_KINDS]
+            creds = []
         if h:
             if h.install:
                 extra = "".join(f":{h.prefix}/{d}" for d in h.path_extra)  # --- images: the pack carries no wrapper
                 prelude.append(f'export PATH="{h.prefix}/bin:$PATH{extra}"')
             extra_env.update(h.env)
             extra_env["HANGAR_HARNESS"] = h.name
-        for var, cred in ({} if validating else spec.secrets).items():  # --- review #102
+        for var, cred in ({} if validating else delivery.secrets(self, sb, spec)).items():  # --- least-privilege
             extra_env[var] = self.broker.sandbox_secret(cred)  # --- identity: refuses control-plane credentials
         extra_env.update(await egress.attach(self, prov, sb, spec))  # --- egress: HTTPS_PROXY in a proxied env
         if not validating:  # --- review #102
@@ -1011,8 +1012,8 @@ class Fleet:
         if work_branch:
             script += f" && cd {q(dest)} && git checkout -q -b {q(work_branch)}"
         res = await prov.exec(sb, script, timeout=600)
-        if res.exit_code != 0:
-            raise FleetError(f"repo setup failed: {(res.stderr or res.stdout)[-800:]}")
+        if res.exit_code != 0:  # --- least-privilege: and why a build's clone had no credential
+            raise FleetError(f"repo setup failed: {(res.stderr or res.stdout)[-800:]}{delivery.clone_hint(sb)}")
         setup = spec.repo.setup if spec.repo and spec.repo.url == sb.repo and not baked and not prebuilt else None
         if setup and stage:
             stage(f"running the repo's setup: {setup[:80]}")

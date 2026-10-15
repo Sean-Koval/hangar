@@ -70,6 +70,9 @@ AUTH_FAILURES = 30  # failed grant checks per source address...
 AUTH_WINDOW = 60.0  # ...per this many seconds, before that address gets 429 without a lookup
 # Session branches are hangar/session/<name>: predictable, so only a sandbox granted one exactly may push there.
 SESSION_REFS = "refs/heads/hangar/session/"
+# --- least-privilege: sandboxes whose agent (or repo code) never pushes: a job's (hangar delivers it), a repo build's
+# and env setup's validation (they run the repo's install). Their grant is fetch-only.
+FETCH_ONLY_LABELS = ("hangar.job", "hangar.build", "hangar.env-validate")
 
 _PATH = re.compile(r"^/git/(?P<host>[A-Za-z0-9.-]{1,253}(?::[0-9]{1,5})?)/(?P<owner>[A-Za-z0-9_.-]{1,100})/"
                    r"(?P<repo>[A-Za-z0-9_.-]{1,100})/(?P<svc>info/refs|git-upload-pack|git-receive-pack)$")
@@ -273,6 +276,9 @@ def check_push(grant: SandboxGrant, cmds: Commands, allow_tags: bool, owned_else
             bad[c.ref] = "hangar: push options are not allowed"
         elif not valid_ref(c.ref):
             bad[c.ref] = "hangar: invalid ref name"
+        elif grant.pins and grant.pins.get(c.ref) != c.new:  # --- least-privilege: a delivery grant (delivery.py)
+            bad[c.ref] = ("hangar: this delivery grant pushes only " + ", ".join(
+                f"{sha[:12]} to {r.removeprefix('refs/heads/')}" for r, sha in grant.pins.items()))
         elif _is_zero(c.new):
             bad[c.ref] = "hangar: deleting refs is not allowed"
         elif c.ref.startswith("refs/tags/"):
@@ -615,8 +621,53 @@ class Gateway:
 
     def extend(self, sb: Sandbox) -> None:
         for g in self.grants(sb.id):
+            if g.pins:  # --- least-privilege: a delivery grant keeps its own few minutes
+                continue
             g.expires_at = sb.expires_at
             self.store.put(g)
+
+    # --- least-privilege: hangar's own push of a job's work (delivery.py)
+    def mint_delivery(self, sb: Sandbox, ref: str, sha: str, minutes: float) -> tuple[str, str]:
+        """(token, grant id): a grant beside the sandbox's own (which stays fetch-only) that pushes exactly `sha` to
+        `ref` of the sandbox's repo, for `minutes`. Hangar mints it after a job's checks; a copy the agent lifts can
+        only push that commit there, which is what hangar is pushing."""
+        if not valid_ref(ref) or not _OID.match(sha):
+            raise GatewayError(f"can't push {sha[:12]!r} to {ref!r}")
+        own = next((g for g in self.grants(sb.id) if not g.pins), None)
+        if own is None:
+            raise GatewayError("the sandbox's gateway grant is gone (revoked, or the sandbox stopped)")
+        raw = PREFIX + secrets.token_urlsafe(32)
+        g = SandboxGrant(sandbox_id=sb.id, token_hash=hash_token(raw), host=own.host, repos=list(own.repos),
+                         push_refs=[ref], pins={ref: sha}, credential=own.credential,
+                         expires_at=min(now() + minutes * 60, sb.expires_at or float("inf")))
+        self.store.put(g)
+        return raw, g.id
+
+    def drop(self, grant_id: str) -> None:
+        self.store.delete(SandboxGrant, grant_id)
+
+    def fetch_only(self, sb: Sandbox) -> bool:
+        """--- least-privilege: whether the sandbox's grant must be fetch-only: a job's (its session carries a job;
+        best-of-N attempts, follow-ups, auto-fix rounds, env setup's agents and the Cloud Doctor's jobs alike), a
+        repo build's, or env setup's validation. Hangar pushes a job's work itself, after its checks."""
+        if any(k in sb.labels for k in FETCH_ONLY_LABELS):
+            return True
+        sid = sb.labels.get("hangar.session")
+        s = self.store.get(Session, sid) if sid else None
+        return bool(s and s.job_id)
+
+    def push_scope(self, sb: Sandbox, branch: str | None) -> list[str]:
+        """The refs the sandbox's own grant may push: none for a fetch-only sandbox, else its branch and
+        HANGAR_GATEWAY_PUSH_REFS (sessions, and sandboxes people create)."""
+        if self.fetch_only(sb):
+            return []
+        refs = list(self.settings.gateway_push_refs)
+        if branch:
+            ref = f"refs/heads/{branch}"
+            if not valid_ref(ref):
+                raise GatewayError(f"invalid branch name '{branch}'")
+            refs.insert(0, ref)
+        return refs
 
     def verify(self, raw: str | None) -> SandboxGrant | None:
         """The live grant for a token: unknown, expired, revoked or belonging to a sandbox that is not running
@@ -637,6 +688,11 @@ class Gateway:
 
     # ------------------------------------------------------------------ sandbox wiring
     def mode_for(self, spec: EnvSpec, sb: Sandbox, parent: Sandbox | None) -> str:
+        # --- least-privilege: a fetch-only sandbox never holds a git token when the gateway serves its repo, whatever
+        # the environment's credential_mode or HANGAR_GATEWAY_FOR_JOBS say (landing refuses to land direct-mode jobs)
+        if self.settings.gateway_url and self.fetch_only(sb) and \
+                parse_remote(sb.repo or (parent.repo if parent else None), self.hosts):
+            return "gateway"
         if spec.credential_mode:
             return spec.credential_mode
         if parent is not None and (parent.info.get("git") or {}).get("mode") == "gateway":
@@ -657,9 +713,11 @@ class Gateway:
             snap = self.store.get(Snapshot, parent_snapshot)
             parent = self.store.get(Sandbox, snap.sandbox_id) if snap else None
         mode = self.mode_for(spec, sb, parent)
+        fetch_only = self.fetch_only(sb)  # --- least-privilege: their git `secrets:` are left out (fleet), not refused
         mapped = {var: c.kind for var, name in spec.secrets.items()
                   if (c := self.store.get(Credential, name)) is not None
-                  and (c.kind in GIT_KINDS if mode == "gateway" else c.kind == CredentialKind.GITHUB_APP)}
+                  and (c.kind in GIT_KINDS if mode == "gateway" and not fetch_only
+                       else c.kind == CredentialKind.GITHUB_APP)}
         if mapped:
             raise GatewayError(f"environment {spec.name} maps git credentials into the sandbox through secrets: "
                                f"({', '.join(mapped)}); remove them, the gateway pushes for the sandbox")
@@ -678,12 +736,7 @@ class Gateway:
         upstream = next((c.name for c in git if c.kind != CredentialKind.SSH_KEY), None) or \
             self.settings.gateway_credential or self.settings.github_app_credential  # --- landing: push as the App
         remote = parse_remote(repo_url, self.hosts)
-        push_refs = list(self.settings.gateway_push_refs)
-        if branch:
-            ref = f"refs/heads/{branch}"
-            if not valid_ref(ref):
-                raise GatewayError(f"invalid branch name '{branch}'")
-            push_refs.insert(0, ref)
+        push_refs = self.push_scope(sb, branch)  # --- least-privilege: [] for a job's, a build's, a validation's
         token = None
         if remote:
             if not upstream:
@@ -698,7 +751,8 @@ class Gateway:
                              credential=upstream)
         await self._configure(prov, sb, token)
         sb.info["git"] = {"mode": "gateway", "repo": remote[1] if remote else None,
-                          "push_refs": push_refs if token else [], "credential": upstream if token else None}
+                          "push_refs": push_refs if token else [], "credential": upstream if token else None,
+                          **({"fetch_only": True} if fetch_only else {})}  # --- least-privilege
         self.store.put(sb)
         return [c for c in creds if c.kind not in GIT_KINDS]
 
@@ -825,6 +879,12 @@ class Gateway:
                 return PlainTextResponse("hangar: only git's smart HTTP protocol is supported\n", status_code=403)
         elif request.method != "POST":
             return PlainTextResponse("hangar: method not allowed\n", status_code=405)
+        # --- least-privilege: a fetch-only grant gets no further than the push's first request
+        if not grant.push_refs and (svc == "git-receive-pack" or request.query_params.get("service") ==
+                                    "git-receive-pack"):
+            self._deny(grant, repo, "fetch-only grant")
+            return PlainTextResponse("hangar: this sandbox may fetch but not push: hangar pushes a job's work itself, "
+                                     "after its checks (commit, and end the turn)\n", status_code=403)
         try:
             auth = await self.upstream_auth(grant, repo.lower())
         except Exception as e:  # noqa: BLE001 - shown to git, never includes a secret

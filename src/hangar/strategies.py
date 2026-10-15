@@ -32,6 +32,7 @@ from hangar import (  # --- overnight/cache; verifyloop: --- overnight/autofix
     jobbudget,  # --- frontdoor
     verifyloop,
 )
+from hangar import delivery as delivery  # --- least-privilege
 from hangar import fairness as fairness  # --- scale
 from hangar import pins as pins  # --- canary
 from hangar import secretscan as secretscan  # --- egress
@@ -578,7 +579,7 @@ def _take_over(jobs: JobService, job: Job, w: Attempt, ws: Session) -> None:
     structured result, question and artifacts (--- interactions: as a single job's turn records them)."""
     job.session_id, job.sandbox_id = ws.id, ws.sandbox_id  # follow-ups continue the winner's session
     # From here the winner's session works on the job's branch: a resumed sandbox checks it out by that name, and
-    # (with the git gateway) its grant lets it push there, which a follow-up needs.
+    # hangar's deliveries of its follow-ups push there (its own grant only fetches: --- least-privilege).
     ws.branch = job.branch
     jobs.sessions._save(ws)
     turn = job.turns[0]
@@ -645,8 +646,9 @@ async def _push_losers(jobs: JobService, job: Job, sessions: dict[int, Session],
         except secretscan.Blocked as e:
             jobs._event(job, f"attempt {a.index}: {e}")
             continue
-        res = await jobs.fleet.exec(s.sandbox_id, f"git push -q origin HEAD:refs/heads/{shlex.quote(branch)}",
-                                    timeout=300, actor=f"job:{job.id}")
+        # --- least-privilege: as hangar, the attempt's head only (delivery.py); its sandbox only fetches
+        head = await jobs.fleet.exec(s.sandbox_id, "git rev-parse HEAD", timeout=60, actor=f"job:{job.id}")
+        res = await delivery.push(jobs.fleet, s.sandbox_id, branch, head.stdout.strip() or "HEAD", f"job:{job.id}")
         if res.exit_code == 0:
             a.pushed_branch = branch
         else:

@@ -981,9 +981,10 @@ async def doctor_checks(h: Any) -> list[dict[str, Any]]:
                           "with the control token, and its owner can't approve PRs they authored",
                           "create a GitHub App (docs/landing.md), then hangar config set "
                           "HANGAR_GITHUB_APP_CREDENTIAL <credential>"))
-    if not (s.gateway_url and s.gateway_for_jobs):
+    if not s.gateway_url:  # --- least-privilege: with it, jobs always fetch through it and never push
         out.append(_check("landing: agent tokens", None, "jobs don't use the git gateway, so a job's sandbox holds a "
-                          "GitHub token that could arm auto-merge itself; branch protection is then the only gate",
+                          "GitHub token that could push and arm auto-merge itself; branch protection is then the "
+                          "only gate, and hangar doesn't land such jobs",
                           "set HANGAR_GATEWAY_URL (docs/security.md#git-credential-gateway)"))
     for p in repos:
         repo = p.repo

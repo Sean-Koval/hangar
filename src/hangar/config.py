@@ -273,7 +273,9 @@ class Settings(BaseSettings):
     # control plane. 0 = serve /git on the main port instead.
     gateway_port: int = 8788
     gateway_host: str | None = None  # bind address; default HANGAR_HOST
-    # Jobs and sessions use the gateway when it is configured, unless their environment says credential_mode: direct.
+    # Sessions use the gateway when it is configured, unless their environment says credential_mode: direct.
+    # --- least-privilege: jobs, repo builds and env-setup validation always do, fetch-only (delivery.py), whatever
+    # this or credential_mode say, wherever the gateway serves the repo's host.
     gateway_for_jobs: bool = True
     # Upstream git hosts the gateway proxies to: {host: base URL}. Only these hosts get a grant.
     gateway_upstreams: dict[str, str] = Field(default_factory=lambda: {"github.com": "https://github.com"})

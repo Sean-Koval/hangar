@@ -145,12 +145,9 @@ async def make_room(fleet: Fleet) -> bool:
 async def _regrant(svc: SessionService, s: Session, sb: Sandbox, git: dict[str, Any]) -> None:
     """A new gateway grant for the woken sandbox, for the session's branch now, written where git reads it."""
     gw = svc.fleet.gateway
-    push_refs = list(svc.settings.gateway_push_refs)
-    if s.branch:
-        ref = f"refs/heads/{s.branch}"
-        if not valid_ref(ref):
-            raise RuntimeError(f"invalid branch name {s.branch!r}")
-        push_refs.insert(0, ref)
+    if s.branch and not valid_ref(f"refs/heads/{s.branch}"):
+        raise RuntimeError(f"invalid branch name {s.branch!r}")
+    push_refs = gw.push_scope(sb, s.branch)  # --- least-privilege: a job's session only fetches
     token = gw.mint(sb, git["host"], list(git["repos"]), push_refs, git["credential"])
     await gw._configure(svc.fleet.provider(sb.provider), sb, token)
     sb.info["git"] = {**(sb.info.get("git") or {}), "push_refs": push_refs}
