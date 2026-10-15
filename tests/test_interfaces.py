@@ -551,3 +551,51 @@ async def test_cancelling_an_experiment_stops_its_trials(jobs, world, fleet, set
     first = jobs.get(st.trials[0].job)
     await _until(jobs, first.id, DONE, timeout=30)
     assert st.trials[1].job is None  # never started
+
+
+def test_labels_alone_never_make_a_trial(fleet):
+    """A job or session can carry any labels: only a trial the experiment's runner started gets its overlay."""
+    from hangar.fleet import FleetError
+    from hangar.models import Sandbox
+
+    overlay = {"skills": [], "instructions": "x"}
+    fleet.store.kv_set(f"{experiments.KV_OVERLAY}job-x:a", json.dumps(overlay))
+    sb = Sandbox(name="f", environment="plain", provider="docker",
+                 labels={experiments.EXP_LABEL: "job-x", experiments.VARIANT_LABEL: "a", "hangar.job": "job-mine"})
+    assert experiments.overlay_for(fleet, sb) is None
+    spec = fleet.catalog.get("plain")
+    assert experiments.effective_spec(fleet, sb, spec) is spec
+    fleet.store.kv_set(experiments.KV_TRIAL + "job-mine", "job-x")  # what the runner records as it starts one
+    assert experiments.overlay_for(fleet, sb) == overlay
+    fleet.store.kv_delete(f"{experiments.KV_OVERLAY}job-x:a")
+    with pytest.raises(FleetError, match="overlay for variant a is missing"):  # a real trial fails closed
+        experiments.overlay_for(fleet, sb)
+
+
+async def test_an_experiment_survives_a_control_plane_restart(jobs, world, fleet, monkeypatch):
+    """#75: the runner is tied to no request; a restart resumes it where its index says, and its trials re-attach."""
+    slow = Path(world["root"]) / "slow.sh"
+    slow.write_text("#!/usr/bin/env bash\nsleep 2\necho done > seen.txt && git add seen.txt && git commit -qm s\n")
+    monkeypatch.setitem(HARNESSES, "tagent", HARNESSES["tagent"].model_copy(update={"run": f"bash {slow}"}))
+    spec = experiments.ExperimentSpec.model_validate({
+        "name": "restart", "environment": "tenv", "trials": 2, "parallel": 2,
+        "tasks": [{"id": "t", "instructions": "wait", "repo": world["url"], "verify": "test -f seen.txt"}],
+        "variants": {"a": {}}})
+    exp = experiments.submit(jobs, spec, Caller("svc", "svc"))
+    for _ in range(400):
+        st = experiments.load(jobs.get(exp.id))
+        kids = [jobs.get(t.job) for t in st.trials if t.job]
+        if len(kids) == 2 and all(k.turns and k.turns[0].run_id for k in kids):
+            break
+        await asyncio.sleep(0.05)
+    await jobs.stop()  # mid-trial
+    again = JobService(fleet, jobs.sessions, transport=jobs.transport)
+    await again.start()
+    try:
+        done = await _until(again, exp.id, DONE, timeout=60)
+        assert done.state == JobState.SUCCEEDED, [e.message for e in done.events]
+        st = experiments.load(done)
+        assert [(t.state, t.outcome) for t in st.trials] == [("done", "succeeded")] * 2
+        assert all(t.verify["passed"] and t.stored for t in st.trials)
+    finally:
+        await again.stop()

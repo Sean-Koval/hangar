@@ -69,6 +69,7 @@ GRADER_LABEL = "hangar.experiment.grader"  # on a grader's sandbox
 PACKS_LABEL = "hangar.packs"  # "selected": mount only the sandbox's own harness's pack
 KV_OVERLAY = "experiment-overlay:"  # + <experiment>:<variant>: what its sandboxes get
 KV_BASE = "experiment-base:"  # + <experiment>:<task>: the pinned base commit
+KV_TRIAL = "experiment-trial:"  # + <trial job id> -> <experiment>: labels anyone can set; this only the runner
 NAME = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$"
 MAX_SKILL_BYTES = 1024 * 1024  # a variant's skills, all files together
 MAX_GRADER_FILES = 1024 * 1024
@@ -584,6 +585,7 @@ def _start_trial(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t:
     except JobError as e:
         t.state, t.outcome, t.reason, t.finished_at = "done", "failed", f"could not start: {e}", now()
         return
+    jobs.fleet.store.kv_set(KV_TRIAL + child.id, job.id)  # before it can start: nothing awaits in between
     t.job, t.state, t.started_at = child.id, "running", now()
 
 
@@ -750,8 +752,8 @@ def provider_spec(spec: EnvSpec, sb: Sandbox) -> EnvSpec:
 def overlay_for(fleet: Fleet, sb: Sandbox) -> dict[str, Any] | None:
     """The overlay a trial's sandbox gets (None: not a trial's). A trial whose overlay is gone fails closed."""
     exp, var = sb.labels.get(EXP_LABEL), sb.labels.get(VARIANT_LABEL)
-    if not exp or not var:
-        return None
+    if not exp or not var or fleet.store.kv_get(KV_TRIAL + sb.labels.get("hangar.job", "")) != exp:
+        return None  # not a trial the experiment started (a job or session can carry any labels)
     raw = fleet.store.kv_get(f"{KV_OVERLAY}{exp}:{var}")
     if raw is None:
         from hangar.fleet import FleetError
@@ -774,11 +776,14 @@ async def apply_overlay(fleet: Fleet, prov: Any, sb: Sandbox, spec: EnvSpec, har
     if o.get("skills") is not None and h.skills_dir:
         root = f"{home}/{h.skills_dir}"
         keep = {s["name"] for s in o["skills"]} | ({"verify-ui"} if spec.computer else set())
-        res = await prov.exec(sb, f"mkdir -p {q(root)} && cd {q(root)} && for d in */; do d=${{d%/}}; "
-                                  f"case \" {' '.join(q(k) for k in sorted(keep))} \" in *\" $d \"*) ;; "
-                                  "*) rm -rf -- \"$d\" ;; esac; done; true", timeout=60)
+        res = await prov.exec(sb, f"mkdir -p {q(root)} && cd {q(root)} && for d in */; do "
+                                  "[ -d \"$d\" ] && printf '%s\\0' \"${d%/}\"; done; true", timeout=60)
         if res.exit_code != 0:
             raise RuntimeError(f"could not set the variant's skills: {res.stderr[-300:]}")
+        if drop := sorted(d for d in res.stdout.split("\0") if d and d not in keep):
+            res = await prov.exec(sb, f"cd {q(root)} && rm -rf -- {' '.join(q(d) for d in drop)}", timeout=60)
+            if res.exit_code != 0:
+                raise RuntimeError(f"could not remove the environment's other skills: {res.stderr[-300:]}")
         for s in o["skills"]:
             files = s.get("files")
             if files is None:
@@ -812,7 +817,7 @@ async def prepare_trial(jobs: JobService, job: Job, s: Session) -> None:
     from hangar.jobs import JobError
 
     exp, key = job.labels.get(EXP_LABEL), job.labels.get(TRIAL_LABEL)
-    if not exp or not key:
+    if not exp or not key or job.source != "experiment" or jobs.fleet.store.kv_get(KV_TRIAL + job.id) != exp:
         return
     parent = jobs._jobs.get(exp)
     st = load(parent) if parent is not None else None

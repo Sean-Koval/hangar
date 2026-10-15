@@ -191,17 +191,24 @@ def _usage_attrs(u: Usage | None) -> dict[str, Any]:
 
 
 # ====================================================================== events -> spans
-def read_events(activity: Any, sid: str, limit: int = MAX_ITEMS) -> list[RunEvent]:
-    """All of a session's (or a job's) recorded events, oldest first, at most `limit`."""
-    out: list[RunEvent] = []
-    since = 0
-    while len(out) < limit:
-        page = activity.read(sid, since=since, limit=1000)
-        if not page:
-            break
-        out += page
-        since = page[-1].seq
-    return out[:limit]
+def read_events(activity: Any, sid: str, run_id: str | None = None, limit: int = MAX_ITEMS) -> list[RunEvent]:
+    """A session's recorded events (only `run_id`'s, when given), oldest first: the last `limit` of them. One pass
+    over its log files (paging with `since` would rescan them from the start for every page)."""
+    import collections
+    import contextlib
+
+    out: collections.deque[RunEvent] = collections.deque(maxlen=limit)
+    needle = run_id.encode() if run_id else None
+    for p in activity.log._paths(sid):  # the rotated file first, then the current one
+        with contextlib.suppress(OSError), open(p, "rb") as f:
+            for line in f:
+                if needle is not None and needle not in line:
+                    continue
+                with contextlib.suppress(ValueError):
+                    ev = RunEvent.model_validate_json(line)
+                    if run_id is None or ev.run_id == run_id:
+                        out.append(ev)
+    return list(out)
 
 
 def _after_name(text: str, name: str | None) -> str:
@@ -346,7 +353,6 @@ def session_export(svc: SessionService, s: Session, turn: int | None = None) -> 
     """A session (every turn under a `session` root) or, with `turn`, one run on its own."""
     redact = svc.fleet.broker.redact
     x = Export(trace_id(s.id), redact)
-    grouped = _by_turn(read_events(svc.activity, s.id))
     resource = {"hangar.export.scope": "run" if turn else "session", "hangar.session.id": s.id,
                 "hangar.session.name": s.name, "hangar.job.id": s.job_id, "hangar.environment": s.environment,
                 "hangar.person": s.person}
@@ -354,8 +360,10 @@ def session_export(svc: SessionService, s: Session, turn: int | None = None) -> 
         if not 1 <= turn <= len(s.turns):
             raise KeyError(f"session {s.name} has no turn {turn} (it has {len(s.turns)})")
         t = s.turns[turn - 1]
-        _turn_span(x, None, s, turn, t, _events_of(grouped, turn, t))
+        evs = read_events(svc.activity, s.id, run_id=t.run_id) if t.run_id else []
+        _turn_span(x, None, s, turn, t, evs)
         return x.request(resource)
+    grouped = _by_turn(read_events(svc.activity, s.id))
     started = [t for t in s.turns if t.started_at]
     root = x.span(f"{s.id}/session", "invoke_workflow hangar.session",
                   started[0].started_at if started else s.created_at,
@@ -459,7 +467,7 @@ def live_children(sp: Any, svc: SessionService, s: Session, turn: SessionTurn) -
     tracer = observe._tracer
     if tracer is None or sp is None or not turn.run_id:
         return
-    evs = [e for e in svc.activity.read(s.id, tail=1000) if e.run_id == turn.run_id]
+    evs = read_events(svc.activity, s.id, run_id=turn.run_id, limit=2000)
     x = Export(trace_id(s.id), svc.fleet.broker.redact, limit=2000)
     turn_children(x, None, turn.run_id, turn, turn.harness or s.harness, evs, None)
     ctx = trace.set_span_in_context(sp)
