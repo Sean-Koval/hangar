@@ -39,7 +39,7 @@ KV_PREFIX = "repo-policy:"
 _GITHUB_SHORT = re.compile(r"^[\w.-]+/[\w.-]+$")
 FIELDS = ("verify", "environment", "harness", "model", "budget", "job_budget", "max_usd_per_day",
           "credentials",  # --- teamcreds
-          "egress")  # --- egress
+          "egress", "build_secrets")  # --- egress
 
 
 class PolicyError(ValueError):
@@ -65,6 +65,8 @@ class RepoPolicy(BaseModel):
     credentials: Literal["person", "team", "person_then_team"] | None = None
     # --- egress: tightens the environment's egress mode and adds hosts for this repo's sandboxes (egress.py)
     egress: EgressSpec | None = None
+    # --- egress: build secrets for this repo's environment builds (buildsecrets.py): {SECRET_ID: credential}
+    build_secrets: dict[str, str] | None = None
     updated_at: float = Field(default_factory=now)
     updated_by: str | None = None
 
@@ -75,6 +77,13 @@ class RepoPolicy(BaseModel):
             for h in v:
                 get_harness(h)
         return v
+
+    @field_validator("build_secrets")  # --- egress
+    @classmethod
+    def _build_secret_ids(cls, v: dict[str, str] | None) -> dict[str, str] | None:
+        from hangar.buildsecrets import check_ids
+
+        return check_ids(v) if v else v
 
     @field_validator("harness")
     @classmethod
@@ -218,6 +227,7 @@ class PolicyUpdate(BaseModel):
     max_usd_per_day: float | None = Field(None, gt=0)
     credentials: Literal["person", "team", "person_then_team"] | None = None  # --- teamcreds
     egress: EgressSpec | None = None  # --- egress
+    build_secrets: dict[str, str] | None = None  # --- egress
 
 
 def update(svc: JobService, body: PolicyUpdate, actor: str) -> RepoPolicy:

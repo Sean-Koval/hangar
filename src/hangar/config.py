@@ -280,6 +280,10 @@ class Settings(BaseSettings):
     # addresses (the metadata servers) are refused regardless.
     egress_private_hosts: list[str] = Field(default_factory=list)
     egress_max_connections_per_sandbox: int = 128  # one person's 10 sandboxes stay well under MAX_CONNECTIONS
+    # --- egress: secret scanning before hangar pushes a job's branch (secretscan.py). block: a hit stops the push
+    # and goes back to the agent (at most secret_scan_rounds fix turns); warn: job events only; off.
+    secret_scan: Literal["block", "warn", "off"] = "block"
+    secret_scan_rounds: int = 2
     # --- workstream G: a2a (spec 0011, docs/a2a.md) -------------------------
     a2a_enabled: bool = True  # agent card at /.well-known/agent-card.json, JSON-RPC at /a2a
     a2a_default_repo: str | None = None  # repo for A2A tasks that don't name one in their metadata

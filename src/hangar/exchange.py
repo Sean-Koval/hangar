@@ -641,13 +641,12 @@ async def _wait_repair(svc: SessionService, s: Session, turn: SessionTurn, sb: S
     turn.repair_usage = run.usage or turn.repair_usage
 
 
-def _redact_bytes(svc: SessionService, data: bytes) -> bytes:
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError:
-        return data  # binary: leave it alone
-    red = svc.fleet.broker.redact(text)
-    return red.encode() if red != text else data
+def _redact_bytes(svc: SessionService, data: bytes) -> bytes | None:
+    """--- egress: an artifact as it may leave: text with stored values (and their encodings) and secret-shaped
+    tokens masked; None for a binary file that holds a stored credential's value (secretscan.artifact)."""
+    from hangar import secretscan
+
+    return secretscan.artifact(svc.fleet.broker, data, svc.settings.secret_scan != "off")
 
 
 def artifact_key(s: Session, turn_no: int, path: str) -> str:
@@ -708,7 +707,9 @@ async def _collect_artifacts(svc: SessionService, s: Session, turn: SessionTurn,
         if len(kept) >= max_n:
             turn.warnings.append(f"more than {max_n} new artifacts; kept the first {max_n}")
             break
-        data = _redact_bytes(svc, data)
+        if (data := _redact_bytes(svc, data)) is None:  # --- egress
+            turn.warnings.append(f"artifact {path} holds a stored credential's value; withheld it")
+            continue
         blob = await asyncio.to_thread(svc.vault.encrypt, data)
         await svc.blobs.put(artifact_key(s, n, path), blob)
         kept.append(Artifact(path=path, turn=n, size=len(data), sha256=sha,

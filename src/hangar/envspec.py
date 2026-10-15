@@ -135,6 +135,9 @@ class EnvSpec(BaseModel):
     # --- egress: what sandboxes may reach on the internet: {mode: open|allowlist|none, presets: [...], allow: [...]}
     # (egress.py). Unset: HANGAR_EGRESS_DEFAULT. Needs an admin to set.
     egress: EgressSpec | None = None
+    # --- egress: secrets for the image-build step only, never the running sandbox: {SECRET_ID: credential}
+    # (buildsecrets.py). Needs an admin to set.
+    build_secrets: dict[str, str] = Field(default_factory=dict)
     source_dir: Path | None = Field(default=None, exclude=True)
     # Resolved by the fleet before a provider sees the spec: harness name -> pack image to mount read-only.
     packs: dict[str, str] = Field(default_factory=dict, exclude=True)
@@ -152,6 +155,13 @@ class EnvSpec(BaseModel):
         if v:
             parse_hours(v)
         return v
+
+    @field_validator("build_secrets")  # --- egress
+    @classmethod
+    def _build_secret_ids(cls, v: dict[str, str]) -> dict[str, str]:
+        from hangar.buildsecrets import check_ids
+
+        return check_ids(v)
 
     @field_validator("secrets")
     @classmethod

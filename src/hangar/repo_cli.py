@@ -109,7 +109,7 @@ def repo_set(
 def repo_unset(repo: str = typer.Argument(...),
                fields: list[str] = typer.Argument(None, help="Fields to clear (verify, environment, harness, "
                                                              "model, budget, job_budget, max_usd_per_day, "
-                                                             "credentials, egress). None: "
+                                                             "credentials, egress, build_secrets). None: "
                                                              "remove the repo's policy.")):
     """Clear fields of the repo's policy, or remove it."""
     r = _cli()._call("DELETE", "/api/repos/policy", params={"repo": repo, "field": fields or []})
