@@ -215,7 +215,8 @@ class JobService:
                 continue
             if job.state == JobState.QUEUED:
                 self._queue.put_nowait(job.id)
-            elif job.state == JobState.PROVISIONING and (s := self._session(job)) and s.checkpoints:
+            elif job.state == JobState.PROVISIONING and (s := self._session(job)) and s.checkpoints \
+                    and any(t.run_id for t in job.turns):  # --- trust: before any turn they hold only the base
                 # Restarted while resuming a follow-up: the checkpoints are the job's work; just resume again.
                 self._event(job, "control plane restarted while resuming; resuming again")
                 self._queue.put_nowait(job.id)
@@ -722,6 +723,8 @@ class JobService:
         await prov.write_file(sbx, f"{ctx}/.keep", b"", mode=0o600)
         async with self.sessions.hold(s):  # --- frontdoor: the standing check on the base, before any change
             await self.baselines.ensure(job)
+        if not self._sandbox_alive(job):  # --- trust: it went away under a long base check: provision again
+            return await restarts.lost_while_provisioning(self, job)
         if job.cancel_requested:
             await self._discard_sandbox(job)
             self._event(job, "cancelled while provisioning", JobState.CANCELLED, reason="cancelled")

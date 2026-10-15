@@ -122,6 +122,8 @@ If hangar runs as a GitHub App, give the App the organization's **Projects: Read
 
 Hangar reads the item and sets its status column with GitHub's GraphQL API, using the control plane's own token (`HANGAR_GITHUB_TOKEN_CREDENTIAL`). Give it access to the organization's projects: the `project` scope for a classic token, or **Projects: Read and write** on the organization for a fine-grained token or an App.
 
+GitHub doesn't retry a failed delivery, so at each start hangar asks it to redeliver the `projects_v2_item` deliveries the organization webhook failed to deliver since the last start (up to the 3 days GitHub keeps them), as it does for the repository webhooks ([triggers.md](triggers.md#replays-and-limits)). That reads `GET /orgs/{org}/hooks` and the hook's deliveries and needs the organization's **Webhooks: Read and write** permission (classic tokens: `admin:org_hook`; listing an organization's webhooks also needs an organization owner's token). Without it hangar logs a warning and moves on; boards still work.
+
 ### 3. The boards
 
 ```bash
@@ -141,6 +143,7 @@ When an item moves to the trigger column, hangar reads the item and its issue in
 ## How deliveries are handled
 
 - **Authentic.** Jira's signature (or the Automation token) and GitHub's signature are checked in constant time before anything is parsed. Jira's payload `timestamp` sits inside the signed body and must be recent (`max_age_minutes`).
+- **Within 1 MB.** A Jira delivery larger than 1 MB (in practice, a very long description) isn't taken: hangar answers `413`. One that is authentic and fresh is audited (`jira.too_large`, with its size and delivery id), and if its issue is in the trigger status or has the trigger label, hangar comments on the issue once a day that the description is too large to start a job from. Jira doesn't retry a `413`, so shorten the description (attach long logs as files) and move the issue again.
 - **Once.** Each delivery is claimed (by the digest of its signed body) before it's handled and marked done after. A retry of one that was handled is acknowledged and dropped, and a replay can't pass as new by changing an unsigned header. One that failed half way, or hit a rate limit, runs again on the sender's retry. Jira treats only `200` as delivered, so hangar answers `200` for everything handled or ignored, `429` when rate limited and `503` when misconfigured, which Jira retries.
 - **One job per ticket.** A ticket with an unfinished job doesn't start a second.
 - **Credentials stay in the control plane.** The Jira token, webhook secret and Automation token are control-plane credentials: they can't be attached to a sandbox or mapped into one with `secrets:`.

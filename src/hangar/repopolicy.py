@@ -40,7 +40,8 @@ _GITHUB_SHORT = re.compile(r"^[\w.-]+/[\w.-]+$")
 FIELDS = ("verify", "environment", "harness", "model", "budget", "job_budget", "max_usd_per_day",
           "credentials",  # --- teamcreds
           "egress", "build_secrets",  # --- egress
-          "land", "approvers", "merge_method", "risk_paths")  # --- landing: the last four (landing.py)
+          "land", "approvers", "merge_method", "risk_paths",  # --- landing: the last four (landing.py)
+          "require_stale_dismissal")  # --- trust
 _LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")  # a GitHub login
 
 
@@ -76,6 +77,9 @@ class RepoPolicy(BaseModel):
     approvers: list[str] | None = Field(None, max_length=100)
     merge_method: Literal["squash", "merge", "rebase"] | None = None
     risk_paths: list[str] | None = Field(None, max_length=100)
+    # --- trust: auto-merge is armed only on a base branch that dismisses stale approvals on a push (landing.py);
+    # false opts the repo out of that check. None: required.
+    require_stale_dismissal: bool | None = None
     updated_at: float = Field(default_factory=now)
     updated_by: str | None = None
 
@@ -251,6 +255,7 @@ class PolicyUpdate(BaseModel):
     approvers: list[str] | None = None
     merge_method: Literal["squash", "merge", "rebase"] | None = None
     risk_paths: list[str] | None = None
+    require_stale_dismissal: bool | None = None  # --- trust
 
 
 def update(svc: JobService, body: PolicyUpdate, actor: str) -> RepoPolicy:

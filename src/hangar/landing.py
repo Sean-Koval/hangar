@@ -59,6 +59,7 @@ CACHE_SECONDS = 300  # required checks and CODEOWNERS per (repo, base)
 MAX_FILES = 300
 MAX_CHECKS = 100
 IDLE_WAIT_SECONDS = 600  # how long ending a session waits for a running turn to stop
+STALE = "“dismiss stale approvals when new commits are pushed”"  # --- trust: what arming needs of the base branch
 _ARM = ("mutation($id: ID!, $sha: GitObjectID!, $method: PullRequestMergeMethod!) {"
         " enablePullRequestAutoMerge(input: {pullRequestId: $id, expectedHeadOid: $sha, mergeMethod: $method})"
         " { pullRequest { number } } }")
@@ -528,6 +529,8 @@ class Landing:
             st.head_sha = head  # GitHub's word; a push from here on changes it (and `_arm` looks)
             if pr.get("draft"):
                 return self._note(job, "the PR is a draft: mark it ready for review to land it")
+            if why := await self.stale_gate(gh, repo, _str(_d(pr.get("base")).get("ref")) or "main", policy):
+                return self._note(job, why)  # --- trust
             required = await self.required_checks(gh, repo, _str(_d(pr.get("base")).get("ref")) or "main")
             if why := blocking(st, head, required, _str(pr.get("mergeable_state"))):
                 return self._note(job, why)
@@ -733,6 +736,35 @@ class Landing:
             return frozenset(names)
 
         return await self._cached("required", repo, base, load)
+
+    async def stale_gate(self, gh: GitHub, repo: str, base: str, policy: RepoPolicy) -> str | None:
+        """--- trust (#96 finding 7): why auto-merge can't be armed on `base`, or None. Hangar disarms on every push it
+        hears of, but a person's push whose webhook it misses could merge on the approval of an earlier commit unless
+        GitHub itself dismisses that approval. So the base must dismiss stale approvals (branch protection or a
+        ruleset), unless the repo policy opts out (`require_stale_dismissal: false`). Unreadable counts as missing."""
+        if policy.require_stale_dismissal is False:
+            return None
+
+        async def load() -> tuple[bool, bool]:
+            admin = self.svc._github()  # classic protection needs Administration: read, which the App doesn't have
+            try:
+                missing, seen = await _protection(admin or gh, gh, repo, base)
+            finally:
+                if admin is not None:
+                    await admin.close()
+            return STALE not in missing, seen
+
+        has, seen = await self._cached("stale", repo, base, load)
+        opt_out = f"or opt the repo out: `hangar repo set {repo} --no-require-stale-dismissal`"
+        if not seen:
+            return (f"hangar couldn't read {base}'s branch protection or rulesets to check that it dismisses stale "
+                    "approvals, so it doesn't arm auto-merge: give the control token Administration: read, use a "
+                    f"ruleset, {opt_out}")
+        if not has:
+            return (f"{base} doesn't dismiss stale approvals when new commits are pushed, so a push after the approval "
+                    f"could merge unreviewed: hangar doesn't arm auto-merge. Turn it on (`hangar doctor` says where), "
+                    f"{opt_out}")
+        return None
 
     async def codeowners(self, gh: GitHub, repo: str, base: str) -> str | None:
         async def load() -> str | None:
@@ -960,10 +992,16 @@ async def doctor_checks(h: Any) -> list[dict[str, Any]]:
                    "with 1+ approvals, dismiss stale approvals when new commits are pushed, require approval of "
                    "the most recent reviewable push, and required status checks; and allow auto-merge "
                    f"(https://github.com/{repo}/settings)")
-            if missing:
-                out.append(_check(f"landing {repo}", None, f"{base} is missing: {'; '.join(missing)}" +
-                                  ("" if seen else " (hangar couldn't read the branch protection; give the control "
-                                                   "token Administration: read, or use a ruleset)"), fix))
+            unread = "" if seen else (" (hangar couldn't read the branch protection; give the control token "
+                                      "Administration: read, or use a ruleset)")
+            if (STALE in missing or not seen) and p.require_stale_dismissal is not False:  # --- trust: arming refuses
+                out.append(_check(f"landing {repo}", False, f"{base} is missing: {'; '.join(missing)}{unread}. Until "
+                                  f"it dismisses stale approvals, hangar won't arm auto-merge on {repo}",
+                                  fix + f"; or opt out: hangar repo set {repo} --no-require-stale-dismissal"))
+            elif missing:
+                out.append(_check(f"landing {repo}", None, f"{base} is missing: {'; '.join(missing)}{unread}" +
+                                  ("; the repo policy opted out of requiring stale approvals to be dismissed"
+                                   if p.require_stale_dismissal is False else ""), fix))
             else:
                 out.append(_check(f"landing {repo}", True, f"{base} needs a fresh approval of the latest push and "
                                   "passing checks before anything merges"))
@@ -1000,6 +1038,6 @@ async def _protection(admin: GitHub, gh: GitHub, repo: str, base: str) -> tuple[
                 have["reviews"] |= (prm.get("required_approving_review_count") or 0) >= 1
                 have["stale"] |= bool(prm.get("dismiss_stale_reviews_on_push"))
                 have["last_push"] |= bool(prm.get("require_last_push_approval"))
-    names = {"reviews": "required approving reviews", "stale": "“dismiss stale approvals when new commits are "
-             "pushed”", "last_push": "“require approval of the most recent reviewable push”"}
+    names = {"reviews": "required approving reviews", "stale": STALE,  # --- trust: STALE
+             "last_push": "“require approval of the most recent reviewable push”"}
     return [names[k] for k, v in have.items() if not v], seen
