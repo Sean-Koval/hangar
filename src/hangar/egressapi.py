@@ -67,7 +67,8 @@ def policy(spec: EnvSpec, *, sandbox: Sandbox | None = None, fleet: Fleet | None
         pol = egress.resolve(_settings(settings), spec, harness=(sandbox.info.get("harness") if sandbox else None))
     proxy = ((sandbox.info.get("egress") or {}).get("proxy") if sandbox is not None else None)
     return {"mode": pol.mode, "allow": [r.text for r in pol.rules], "proxy": f"http://{proxy}" if proxy else None,
-            "enforced": pol.enforced, "notes": list(pol.notes)}
+            "enforced": pol.enforced, "notes": list(pol.notes),
+            "mirrors": list(pol.mirrors)}  # --- egress2: ecosystems read through hangar's package mirror
 
 
 def check(spec: EnvSpec, host: str, port: int | None = None, *, sandbox: Sandbox | None = None,

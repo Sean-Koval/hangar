@@ -262,7 +262,8 @@ def _need_playwright(argv: list[str]):
 
 
 def _launch(api_mod, p, headed: bool):
-    args = ["--disable-gpu"]
+    # ECH (GREASE included) is refused by hangar's egress proxy, which must see the server name (--- egress2)
+    args = ["--disable-gpu", "--disable-features=EncryptedClientHello"]
     if (_shm_mb() or 0) < 1024:
         args.append("--disable-dev-shm-usage")  # a small /dev/shm (Docker's 64 MB default) crashes renderers
     w, h = _resolution()

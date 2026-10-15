@@ -98,8 +98,17 @@ def root_script(c: ComputerSpec, user: str) -> str:
         f"{ROOT}/venv/bin/pip install --no-cache-dir playwright=={PLAYWRIGHT_VERSION}\n"
         f"PLAYWRIGHT_BROWSERS_PATH={BROWSERS} {ROOT}/venv/bin/playwright install --with-deps chromium\n"
         f"chown -R {user}:{user} {BROWSERS} && chmod -R a+rX {ROOT}\n"
+        f"{ECH_POLICY}\n"
         "rm -rf /var/lib/apt/lists/*"
     )
+
+
+# --- egress2: hangar's egress proxy refuses ClientHellos with ECH (GREASE included, it looks the same), and Chromium
+# sends GREASE ECH by default. A managed policy turns ECH off for every Chromium build in the image (Chromium's,
+# Chrome's and Chrome for Testing's policy directories); sandbox_computer.py also passes the feature switch.
+ECH_POLICY = ("for d in /etc/chromium /etc/opt/chrome /etc/opt/chrome_for_testing; do "
+              "mkdir -p $d/policies/managed && "
+              "echo '{\"EncryptedClientHelloEnabled\": false}' > $d/policies/managed/hangar-egress.json; done")
 
 
 def user_script(c: ComputerSpec) -> str | None:

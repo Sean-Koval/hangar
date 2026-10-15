@@ -278,6 +278,9 @@ class Settings(BaseSettings):
     gateway_credential: str | None = None  # upstream credential when the sandbox has no git credential of its own
     gateway_max_push_mb: int = 512
     gateway_timeout_seconds: float = 120.0  # upstream connect/read timeout (per read, not per request)
+    # --- egress2: the gateway holds a push and scans it for secrets before forwarding it (pushscan.py, with
+    # HANGAR_SECRET_SCAN). A bigger push is refused in block mode, let through unscanned (audited) in warn mode.
+    gateway_scan_max_mb: int = Field(64, ge=1, le=1024)
     # --- egress: hostname allowlists (egress.py, docs/security.md#egress) ----
     # The mode of environments that don't set `egress.mode`: open (the public internet, as before), allowlist or none.
     egress_default: Literal["open", "allowlist", "none"] = "open"
@@ -291,6 +294,17 @@ class Settings(BaseSettings):
     # addresses (the metadata servers) are refused regardless.
     egress_private_hosts: list[str] = Field(default_factory=list)
     egress_max_connections_per_sandbox: int = 128  # one person's 10 sandboxes stay well under MAX_CONNECTIONS
+    # --- egress2: all of one person's sandboxes together, so 6 people at their caps fit MAX_CONNECTIONS (4096)
+    egress_max_connections_per_person: int = 640
+    # --- egress2: on shutdown the proxy takes no new connection, and open tunnels get this long to finish
+    egress_drain_seconds: int = Field(20, ge=0, le=300)
+    # --- egress2: read-only package mirrors at /pkg/<pypi|npm|go>/ on the git gateway's port (pkgmirror.py). With
+    # it on (and HANGAR_GATEWAY_URL set) the pypi, npm and go presets point proxied sandboxes there, and the public
+    # registries' hosts, which take uploads too, stay closed. Upstreams default to the public registries; on GKE
+    # point them at Artifact Registry remote repositories: {"pypi": "https://us-python.pkg.dev/PROJECT/REPO", ...}.
+    package_mirror: bool = True
+    package_mirrors: dict[str, str] = Field(default_factory=dict)
+    package_mirror_cache_mb: int = Field(1024, ge=0)  # immutable files kept on the data volume; 0: no cache
     # --- egress: secret scanning before hangar pushes a job's branch (secretscan.py). block: a hit stops the push
     # and goes back to the agent (at most secret_scan_rounds fix turns); warn: job events only; off.
     secret_scan: Literal["block", "warn", "off"] = "block"
@@ -298,6 +312,10 @@ class Settings(BaseSettings):
     # --- egress: the OIDC issuer URL in the tokens hangar mints for sandboxes' cloud credentials (cloudcreds.py);
     # default HANGAR_PUBLIC_URL. Must be https; AWS fetches <issuer>/.well-known/openid-configuration from it.
     oidc_issuer: str | None = None
+    # --- egress2: a new signing key every this many days (0: only `POST /api/cloud/rotate`). It is published a week
+    # (at most half the period) before it signs; where the JWKS is uploaded (GCP --jwk-json-path), upload it again
+    # after the `cloud.key.next` audit entry.
+    oidc_key_rotation_days: int = Field(0, ge=0, le=3650)
     # --- workstream G: a2a (spec 0011, docs/a2a.md) -------------------------
     a2a_enabled: bool = True  # agent card at /.well-known/agent-card.json, JSON-RPC at /a2a
     a2a_default_repo: str | None = None  # repo for A2A tasks that don't name one in their metadata

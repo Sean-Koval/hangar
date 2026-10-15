@@ -57,14 +57,34 @@ def test_open_is_the_default_and_allows_everything():
 
 
 def test_allowlist_is_the_harness_the_packages_preset_and_the_listed_hosts():
+    """Without the gateway there is no package mirror: the registries are reached directly, and the sandbox says
+    that their hosts take uploads. --- egress2: GitHub and crates.io (its publish API) are out of `packages`."""
     pol = egress.resolve(Settings(), spec(mode="allowlist", allow=["docs.python.org"]), harness="claude-code")
-    assert pol.proxied and pol.enforced
+    assert pol.proxied and pol.enforced and not pol.mirrors
     for host in ("api.anthropic.com", "platform.claude.com", "pypi.org", "files.pythonhosted.org",
-                 "registry.npmjs.org", "index.crates.io", "proxy.golang.org", "github.com", "docs.python.org"):
+                 "registry.npmjs.org", "index.crates.io", "static.crates.io", "proxy.golang.org", "docs.python.org"):
         assert pol.allows(host, 443), host
+    for host in ("github.com", "api.github.com", "crates.io"):
+        assert pol.allows(host, 443) is None, host
     assert pol.allows("api.openai.com", 443) is None  # another harness's model API
     assert pol.allows("evil.example", 443) is None and pol.allows("pypi.org", 22) is None
     assert pol.allows("pypi.org", 443).source == "preset:packages"
+    assert any("take uploads" in n and "pypi, npm, go" in n for n in pol.notes)
+    # the github preset still exists, for an environment that asks for it
+    assert egress.resolve(Settings(), spec(mode="allowlist", presets=["github"])).allows("github.com", 443)
+
+
+def test_with_the_package_mirror_the_registries_hosts_stay_closed():
+    s = Settings(gateway_url="http://hangar-gateway.hangar.svc:8788")
+    pol = egress.resolve(s, spec(mode="allowlist"), harness="claude-code")
+    assert pol.mirrors == ("pypi", "npm", "go") and not any("take uploads" in n for n in pol.notes)
+    for host in ("pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "proxy.golang.org", "sum.golang.org"):
+        assert pol.allows(host, 443) is None, host
+    assert pol.allows("index.crates.io", 443)  # cargo has no mirror: the read-only index and download hosts
+    assert egress.resolve(s, spec(mode="allowlist", presets=["npm"])).mirrors == ("npm",)
+    assert egress.resolve(s, spec(mode="none")).mirrors == ()
+    s.package_mirror = False
+    assert egress.resolve(s, spec(mode="allowlist")).allows("pypi.org", 443)
 
 
 def test_none_keeps_only_the_harness_and_approvals():
@@ -368,6 +388,73 @@ async def test_a_sandbox_has_a_bounded_number_of_tunnels(proxied):
     w.close()
 
 
+async def test_a_registry_the_mirror_stands_in_for_is_refused_with_a_pointer_to_the_mirror(proxied, tmp_path):
+    """--- egress2: an agent that tries pypi.org itself learns its tools read through the mirror, instead of being
+    told to ask its owner for a host that takes uploads."""
+    p = proxied
+    p.fleet.settings.gateway_url = "http://hangar-gateway.hangar.svc:8788"
+    p.fleet.catalog.add({"name": "pkgs", "harnesses": ["claude-code"], "egress": {"mode": "allowlist"}},
+                        save_dir=tmp_path)
+    sb = Sandbox(id="sb-pkgs0x", name="p", environment="pkgs", provider="docker", state=SandboxState.RUNNING,
+                 person="ann", info={"harness": "claude-code"})
+    p.store.put(sb)
+    first, r, _ = await ask(p.px, f"CONNECT pypi.org:443 HTTP/1.1\r\n{auth(p.fleet, sb)}")
+    body = await r.read()
+    assert first.startswith(b"HTTP/1.1 403") and b"read-only mirror" in body and b"env request" not in body
+    assert audits(p.store, "egress.deny")[0].detail["reason"] == "mirrored"
+    assert egressapi.policy(p.fleet.catalog.get("pkgs"), sandbox=sb, fleet=p.fleet)["mirrors"] == ["pypi", "npm",
+                                                                                                   "go"]
+
+
+async def test_a_persons_sandboxes_share_a_cap_and_others_are_unaffected(proxied):
+    """--- egress2 (#97 review): one person's ten sandboxes can't hold the proxy's connections for the team."""
+    p = proxied
+    p.fleet.settings.egress_max_connections_per_person = 2
+    mine = [p.sb]
+    for i in range(2):
+        sb = Sandbox(id=f"sb-ann{i}x", name=f"a{i}", environment="locked", provider="docker",
+                     state=SandboxState.RUNNING, person="ann", info={"harness": "claude-code"})
+        p.store.put(sb)
+        mine.append(sb)
+    bob = Sandbox(id="sb-bob0x", name="b", environment="locked", provider="docker", state=SandboxState.RUNNING,
+                  person="bob", info={"harness": "claude-code"})
+    p.store.put(bob)
+    held = []
+    for sb in mine[:2]:
+        first, r, w = await ask(p.px, f"CONNECT upstream.test:{p.up} HTTP/1.1\r\n{auth(p.fleet, sb)}")
+        assert first.startswith(b"HTTP/1.1 200")
+        held.append(w)
+    third, r, _ = await ask(p.px, f"CONNECT upstream.test:{p.up} HTTP/1.1\r\n{auth(p.fleet, mine[2])}")
+    assert third.startswith(b"HTTP/1.1 429") and b"ann's sandboxes" in await r.read()
+    other, *_ = await ask(p.px, f"CONNECT upstream.test:{p.up} HTTP/1.1\r\n{auth(p.fleet, bob)}")
+    assert other.startswith(b"HTTP/1.1 200")
+    assert audits(p.store, "egress.deny")[0].detail["reason"] == "too_many_person"
+    for w in held:
+        w.close()
+
+
+async def test_a_shutdown_takes_no_new_tunnel_and_lets_open_ones_finish(proxied):
+    """--- egress2 (#97 review): a restart used to cut every tunnel, model streams mid-answer included."""
+    p = proxied
+    p.fleet.settings.egress_drain_seconds = 5
+    first, r, w = await ask(p.px, f"CONNECT upstream.test:{p.up} HTTP/1.1\r\n{auth(p.fleet, p.sb)}")
+    assert first.startswith(b"HTTP/1.1 200")
+    p.fleet.closing.set()  # the shutdown signal
+    await asyncio.sleep(0.05)
+    with pytest.raises(OSError):  # no new connection
+        await asyncio.open_connection("127.0.0.1", p.px)
+    stopping = asyncio.create_task(p.fleet.egress.stop())
+    await asyncio.sleep(0.3)
+    assert not stopping.done()  # waiting for the open tunnel
+    hello = client_hello("upstream.test")
+    w.write(hello)
+    await w.drain()
+    assert await asyncio.wait_for(r.read(65536), 5) == b"ECHO:" + hello  # it still works
+    w.close()  # and once it ends, the stop goes on without waiting out the drain
+    await asyncio.wait_for(stopping, 3)
+    p.fleet.closing.clear()
+
+
 async def test_garbage_gets_400_and_the_listener_survives(proxied):
     p = proxied
     for junk in (b"\x00\x01\x02\r\n\r\n", b"GET / HTTP/1.1\r\n\r\n", b"CONNECT a b c d\r\n\r\n"):
@@ -424,10 +511,28 @@ async def test_a_proxied_environment_fails_closed_where_it_cant_be_enforced(flee
         await egress.attach(fleet, SimpleNamespace(name="kubernetes"), sb, locked)
     fleet.settings.egress_url = "http://hangar-gateway.hangar.svc:3128"
     fleet.settings.gateway_url = "http://hangar-gateway.hangar.svc:8788"
-    env = await egress.attach(fleet, SimpleNamespace(name="kubernetes"), sb, locked)
+    prov = FakeProvider()
+    prov.name = "kubernetes"
+    await prov.create(sb, "img")
+    await prov.write_file(sb, "/home/agent/.npmrc", b"save-exact=true\n//old.example/:_auth=x\n")
+    env = await egress.attach(fleet, prov, sb, locked)
     assert env["HTTPS_PROXY"].endswith("@hangar-gateway.hangar.svc:3128")
     assert "hangar-gateway.hangar.svc" in env["NO_PROXY"].split(",")
     assert sb.info["egress"]["mode"] == "allowlist" and sb.info["egress"]["enforced"]
+    # --- egress2: package managers read through hangar's mirror on the gateway, with the sandbox's own credential
+    tok = egress.token(fleet.egress.key, sb.id)
+    gw = "hangar-gateway.hangar.svc:8788"
+    assert env["PIP_INDEX_URL"] == env["UV_DEFAULT_INDEX"] == f"http://{sb.id}:{tok}@{gw}/pkg/pypi/simple/"
+    assert env["PIP_TRUSTED_HOST"] == gw and env["GOPROXY"] == f"http://{sb.id}:{tok}@{gw}/pkg/go"
+    assert env["NPM_CONFIG_REGISTRY"] == f"http://{gw}/pkg/npm/" and sb.info["egress"]["mirrors"] == ["pypi", "npm",
+                                                                                                     "go"]
+    npmrc = (await prov.read_file(sb, "/home/agent/.npmrc")).decode().splitlines()
+    assert npmrc[:2] == ["save-exact=true", "//old.example/:_auth=x"] and npmrc[2].startswith(f"//{gw}/pkg/npm/:_auth=")
+    await egress.attach(fleet, prov, sb, locked)  # again (a resumed session): one line of hangar's, not two
+    assert sum(x.startswith(f"//{gw}/") for x in (await prov.read_file(sb, "/home/agent/.npmrc")).decode().split()) == 1
+    # the environment's own index wins
+    own = locked.model_copy(update={"env": {"PIP_INDEX_URL": "https://pypi.internal.example/simple/"}})
+    assert "PIP_INDEX_URL" not in await egress.attach(fleet, prov, sb, own)
 
 
 async def test_docker_puts_a_proxied_environment_on_the_internal_network(fleet, monkeypatch):

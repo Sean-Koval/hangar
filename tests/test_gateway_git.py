@@ -12,6 +12,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, unquote
 
 import httpx
 import pytest
@@ -57,7 +58,24 @@ class Upstream:
                         self.rfile.readline()
                 return self.rfile.read(int(self.headers.get("Content-Length") or 0))
 
+            def _contents(self) -> None:
+                """--- egress2: GitHub's contents API (raw), from the bare repo: what the push scan asks for."""
+                path, _, query = self.path.partition("?")
+                rel = unquote(path.split("/contents/", 1)[1])
+                ref = parse_qs(query).get("ref", [""])[0]
+                p = subprocess.run(["git", "--git-dir", str(up.root / "acme/widgets.git"), "show", f"{ref}:{rel}"],
+                                   capture_output=True)
+                ok = self.headers.get("Authorization") == f"Bearer {PAT}" and p.returncode == 0
+                self.send_response(200 if ok else 404)
+                self.send_header("Content-Length", str(len(p.stdout) if ok else 0))
+                self.end_headers()
+                if ok:
+                    self.wfile.write(p.stdout)
+
             def _serve(self) -> None:
+                if self.path.startswith("/repos/acme/widgets/contents/"):
+                    up.requests.append(("API", self.path))
+                    return self._contents()
                 body = self._body() if self.command == "POST" else b""
                 up.requests.append((self.command, self.path))
                 want = "Basic " + base64.b64encode(f"x-access-token:{PAT}".encode()).decode()
@@ -296,3 +314,51 @@ async def test_gateway_mode_without_url_fails_closed(fleet, settings, broker, tm
     with pytest.raises(Exception, match="HANGAR_GATEWAY_URL"):
         await fleet.create("gw2")
     assert fleet.gateway.grants() == []
+
+
+# --- egress2: the agent's own pushes are scanned for secrets in the gateway, before anything goes upstream
+NEW_TOKEN = "ghp_" + "Ab3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF2hJ5"  # GitHub's classic PAT shape, made up
+OLD_TOKEN = "ghp_" + "Zy9xW8vU7tS6rQ5pO4nM3lK2jI1hG0fE9dC8"
+
+
+async def test_the_agents_own_pushes_are_scanned_for_secrets(fleet, gw, upstream, store, settings, tmp_path):
+    settings.github_api_url = f"http://127.0.0.1:{upstream.port}"  # the fake contents API (Upstream._contents)
+    seed = tmp_path / "seed2"
+    _git("clone", "-q", str(upstream.root / "acme/widgets.git"), str(seed))
+    (seed / "fixture.py").write_text(f"A = 1\nOLD = '{OLD_TOKEN}'\n")  # already on the remote: not the agent's doing
+    _git("add", "fixture.py", cwd=seed)
+    _git("commit", "-qm", "fixture", cwd=seed)
+    _git("push", "-q", "origin", "HEAD:main", cwd=seed)
+    sb = await fleet.create("gw", work_branch="hangar/job-1")
+    pushes = sum(1 for m, p in upstream.requests if m == "POST" and p.endswith("git-receive-pack"))
+
+    # A token in a new file: refused with file and line, never the value, and nothing reaches GitHub.
+    res = await fleet.exec(sb.id, f"printf 'A=1\\nGITHUB_TOKEN={NEW_TOKEN}\\n' > .env && git add .env && "
+                                  "git commit -qm env && git push origin HEAD:refs/heads/hangar/job-1")
+    assert res.exit_code != 0 and "[remote rejected]" in res.stderr, res.stderr
+    assert ".env:2: GitHub token" in res.stderr and NEW_TOKEN not in res.stdout + res.stderr
+    # Deleting it in a later commit doesn't help: that push still sends the commit that added it.
+    res = await fleet.exec(sb.id, "git rm -q .env && git commit -qm 'drop env' && "
+                                  "git push origin HEAD:refs/heads/hangar/job-1")
+    assert res.exit_code != 0 and ".env:2" in res.stderr, res.stderr
+    assert pushes == sum(1 for m, p in upstream.requests if m == "POST" and p.endswith("git-receive-pack"))
+    assert "refs/heads/hangar/job-1" not in upstream.refs()
+
+    # A token that was already in the file it changes isn't the agent's to answer for: the push goes through.
+    res = await fleet.exec(sb.id, "git reset -q --hard origin/main && echo 'B = 2' >> fixture.py && "
+                                  "git commit -qam fixture && git push origin HEAD:refs/heads/hangar/job-1")
+    assert res.exit_code == 0, res.stderr
+    assert "refs/heads/hangar/job-1" in upstream.refs()
+    assert any(m == "API" and "fixture.py" in p for m, p in upstream.requests)
+
+    # warn: let through, and audited
+    settings.secret_scan = "warn"
+    res = await fleet.exec(sb.id, f"echo 'T = \"{NEW_TOKEN}\"' > t.py && git add t.py && git commit -qm t && "
+                                  "git push -q origin HEAD:refs/heads/hangar/job-1")
+    assert res.exit_code == 0, res.stderr
+    found = [e for e in store.audit_tail(200) if e.action == "secret.found"]
+    assert [e.detail["mode"] for e in found] == ["warn", "block", "block"]
+    assert found[-1].detail["hits"] == [".env:2: GitHub token"] and found[-1].detail["source"] == "gateway"
+    # what the gateway wrote (the test's own commands carry the token, and are audited as they were run)
+    dump = " ".join(e.model_dump_json() for e in store.audit_tail(500) if e.action.startswith(("gw.", "secret.")))
+    assert NEW_TOKEN not in dump and OLD_TOKEN not in dump

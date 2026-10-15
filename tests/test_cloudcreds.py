@@ -205,8 +205,46 @@ def test_a_members_environment_cant_take_the_subject_of_another(fleet, tmp_path)
     assert fleet.cloud.subject_env("own") == "own"  # an environment that sets cloud: itself is its own subject
 
 
+def test_a_token_lives_an_hour_at_most():
+    """--- egress2 (#100 review): renewed every few minutes while the sandbox runs, a token's lifetime only bounds how
+    long a copy works after the sandbox stops."""
+    assert CloudSpec(lifetime_minutes=60).lifetime_minutes == 60
+    with pytest.raises(ValueError):
+        CloudSpec(lifetime_minutes=61)
+    assert cloudcreds.MAX_TOKEN_SECONDS <= 61 * 60
+
+
+def test_scheduled_rotation_publishes_the_next_key_before_it_signs(fleet, cloud_env):
+    """--- egress2: HANGAR_OIDC_KEY_ROTATION_DAYS. A relying party that caches the JWKS, or one it is uploaded to,
+    has the next key a week before any token is signed with it; then the old key retires and drops out once no
+    token it signed can be valid."""
+    spec, sb = cloud_env
+    iss = fleet.cloud
+    day = 86400
+    t0 = time.time()
+    first = iss.keys()[0]
+    first["created"] = t0 - 20 * day
+    assert iss.scheduled(t0) is None  # off by default
+    fleet.settings.oidc_key_rotation_days = 30
+    assert iss.scheduled(t0) is None  # not due yet: 30 days, published 7 ahead
+    assert iss.scheduled(t0 + 3 * day + 60) == "scheduled"  # the refresh loop's pass just after it is due
+    nxt = iss.keys()[0]
+    assert nxt["activates"] == pytest.approx(first["created"] + 30 * day, abs=120)
+    assert {k["kid"] for k in iss.jwks()["keys"]} == {first["kid"], nxt["kid"]}
+    head = lambda tok: json.loads(_b64(tok.split(".")[0]))["kid"]  # noqa: E731
+    assert head(iss.mint(sb, "x", 5, now_=t0 + 5 * day)[0]) == first["kid"]  # not before its time
+    assert any(e.action == "cloud.key.next" for e in fleet.store.audit_tail(10))
+    assert iss.scheduled(t0 + 5 * day) is None
+    assert iss.scheduled(t0 + 10 * day + 300) == "rotated"
+    assert head(iss.mint(sb, "x", 5, now_=t0 + 10 * day + 301)[0]) == nxt["kid"]
+    assert iss.keys()[1]["retired"] == pytest.approx(t0 + 10 * day + 300)
+    fleet.cloud._keys = None  # what the vault holds survives a restart
+    assert fleet.cloud.signing_key(t0 + 11 * day)["kid"] == nxt["kid"]
+    assert fleet.cloud.rotate() not in (first["kid"], nxt["kid"])  # by hand, still at once
+
+
 def test_rotation_retires_old_keys_once_no_token_they_signed_can_be_valid(fleet):
-    """Old keys stay published only as long as a token they signed can live (lifetime_minutes is at most 720), and
+    """Old keys stay published only as long as a token they signed can live (lifetime_minutes is at most 60), and
     `drop_old` (a leaked key) unpublishes them at once; before, a stolen key kept verifying through three more
     rotations."""
     iss = fleet.cloud

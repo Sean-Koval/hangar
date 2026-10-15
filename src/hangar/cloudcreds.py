@@ -51,9 +51,13 @@ log = logging.getLogger("hangar.cloud")
 
 VAULT_KEY = "oidc:signing-keys"
 MAX_KEYS = 4  # published at once (GCP takes up to 8 uploaded keys)
-# --- review: how long a retired key stays published: the longest a token it signed can live (lifetime_minutes is at
-# most 720, iat is 30 s back), so a superseded key stops verifying anything new once its tokens are gone.
-MAX_TOKEN_SECONDS = 720 * 60 + 60
+# --- egress2: a token is renewed every few minutes while its sandbox runs, so its lifetime only bounds how long a
+# copy works after the sandbox stops (#100 review): an hour at most.
+MAX_LIFETIME_MINUTES = 60
+# --- review: how long a retired key stays published: the longest a token it signed can live (iat is 30 s back), so
+# a superseded key stops verifying anything new once its tokens are gone.
+MAX_TOKEN_SECONDS = MAX_LIFETIME_MINUTES * 60 + 60
+PREPUBLISH_SECONDS = 7 * 86400  # --- egress2: a scheduled key is in the JWKS this long before it signs anything
 REFRESH_EVERY = 300.0  # seconds between passes of the refresh loop
 TOKEN_DIR = ".hangar/cloud"
 _POOL = re.compile(r"^(?://iam\.googleapis\.com/)?(projects/\d+/locations/global/workloadIdentityPools/[a-z0-9-]{4,32}"
@@ -110,7 +114,7 @@ class CloudSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     gcp: GcpCloud | None = None
     aws: AwsCloud | None = None
-    lifetime_minutes: int = Field(60, ge=5, le=720)
+    lifetime_minutes: int = Field(60, ge=5, le=MAX_LIFETIME_MINUTES)
 
 
 class CloudError(RuntimeError):
@@ -166,10 +170,47 @@ class Issuer:
         leaked, at the price of the tokens it signed. Returns the new kid. Re-upload the JWKS where the cloud
         doesn't fetch it (GCP with --jwk-json-path)."""
         now_ = time.time()
-        old = [] if drop_old else [{**k, "retired": k.get("retired") or now_} for k in self.keys()]
+        old = [] if drop_old else [{**k, "retired": k.get("retired") or now_} for k in self.keys()
+                                   if k.get("activates", 0) <= now_]  # --- egress2: a scheduled key goes too
         self._keys = [self._new_key(), *old][:MAX_KEYS]
         self._save()
         return self._keys[0]["kid"]
+
+    def signing_key(self, now_: float | None = None) -> dict[str, Any]:
+        """--- egress2: the newest key that is due (a scheduled one is published before it signs)."""
+        now_ = now_ if now_ is not None else time.time()
+        return next(k for k in self.keys() if k.get("activates", 0) <= now_)
+
+    def scheduled(self, now_: float | None = None) -> str | None:
+        """--- egress2: rotation on HANGAR_OIDC_KEY_ROTATION_DAYS (run by the refresh loop). The next key is added to
+        the JWKS PREPUBLISH_SECONDS before it starts signing, so a relying party that caches the JWKS, or an operator
+        who uploads it (GCP's --jwk-json-path), has it in time: audited as `cloud.key.next` with when it takes over.
+        Once it does, the key before it retires (published while its tokens can live). Returns what happened."""
+        days = self.settings.oidc_key_rotation_days
+        if days <= 0:
+            return None
+        now_ = now_ if now_ is not None else time.time()
+        keys = self.keys()
+        head = keys[0]
+        if head.get("activates"):
+            if head["activates"] > now_:
+                return None
+            del head["activates"]
+            for k in keys[1:]:
+                k.setdefault("retired", now_)
+            self._save()
+            self.fleet.audit("system", "cloud.key.rotated", head["kid"])
+            return "rotated"
+        due = head["created"] + days * 86400
+        lead = min(PREPUBLISH_SECONDS, days * 86400 / 2)
+        if now_ < due - lead:
+            return None
+        nxt = {**self._new_key(), "activates": max(due, now_ + lead)}
+        self._keys = [nxt, *keys][:MAX_KEYS]
+        self._save()
+        self.fleet.audit("system", "cloud.key.next", nxt["kid"], activates=nxt["activates"],
+                         note="re-upload the JWKS where it is uploaded (GCP --jwk-json-path) before then")
+        return "scheduled"
 
     @staticmethod
     def _new_key() -> dict[str, Any]:
@@ -238,8 +279,8 @@ class Issuer:
 
         from hangar.repopolicy import repo_key
 
-        k = self.keys()[0]
         t = int(now_ if now_ is not None else time.time())
+        k = self.signing_key(t)  # --- egress2: not a scheduled key before its time
         exp = t + lifetime_minutes * 60
         env = env or sb.environment
         claims = {"iss": self.url, "sub": f"hangar:env:{env}", "aud": audience, "iat": t - 30,
@@ -336,6 +377,7 @@ class Issuer:
         while True:
             await asyncio.sleep(REFRESH_EVERY)
             try:
+                self.scheduled()  # --- egress2
                 await self.refresh()
                 metrics.loop_tick("cloud-tokens")
             except Exception:  # noqa: BLE001

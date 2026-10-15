@@ -48,6 +48,12 @@ Everything the owner sets up, in the order of the steps. **Required** means the 
 | GitHub Projects: an organization webhook (Projects v2 items), the control token's `project` scope, `HANGAR_GITHUB_PROJECTS` | Optional | [9d](#9d-github-projects) |
 | `HANGAR_EGRESS_URL` | **Required** on GKE before any environment uses `egress: allowlist` or `none` | [10a](#10a-egress-allowlists) |
 | `HANGAR_EGRESS_DEFAULT` | Optional (default `open`, as before) | [10a](#10a-egress-allowlists) |
+| GKE: Artifact Registry remote repositories for PyPI, npm and Go, `roles/artifactregistry.reader` for hangar's service account, and `HANGAR_PACKAGE_MIRRORS` | Optional (the mirror reads the public registries by default) | [10a](#10a-egress-allowlists) |
+| `presets: [packages, github]` on proxied `credential_mode: direct` environments that clone from GitHub | **Required** for them: `packages` no longer includes `github` | [10a](#10a-egress-allowlists) |
+| GitHub App: *Actions*, *Checks* and *Issues*: Read | Optional: the read-only API through the gateway asks for them | [10a](#10a-egress-allowlists) |
+| `cloud.lifetime_minutes` at most 60 | **Required** for environments that set more (they no longer load) | [10b](#10b-short-lived-cloud-credentials) |
+| `HANGAR_OIDC_KEY_ROTATION_DAYS` | Optional (off) | [10b](#10b-short-lived-cloud-credentials) |
+| Computer environments: rebuild their images | **Required** for their browsers in proxied environments (Chromium's ECH policy) | [10a](#10a-egress-allowlists) |
 | Docker hosts: Docker Engine ≥ 26.0.0 (or 25.0.4, 23.0.11), and the host firewall accepting TCP 3128 and 8788 from `hangar1` | **Required** for proxied environments on Docker | [10a](#10a-egress-allowlists) |
 | `HANGAR_OIDC_ISSUER` (https; public for AWS), and the cloud's trust (a GCP workload identity pool, an AWS role) | Optional; **required** for environments with `cloud:` | [10b](#10b-short-lived-cloud-credentials) |
 | Build secrets: `build_secrets` on an environment or repo policy | Optional; **required** for repos whose `.hangar/environment.yaml` names any | [10c](#10c-environments-that-live-with-the-repo) |
@@ -77,6 +83,8 @@ To opt out, use `hangar config set NAME VALUE` (kept in hangar's database) or `h
 | **Secret scanning** (#98) | a job's branch was pushed as the agent left it → every new commit's patch, the uncommitted change and the commit messages are scanned first; a stored credential's value or a known token format stops the push and goes back to the agent as a fix turn (2 at most, then `secret_found`). PR text, comments and text artifacts are masked. | `HANGAR_SECRET_SCAN=warn` or `off` |
 | **Redaction** (#98) | stored values were masked verbatim → also reversed, in hex, base64 and percent-encoded (values of 12+ characters). | — |
 | **Egress** (#97) | sandboxes reached the public internet → **unchanged by default** (`HANGAR_EGRESS_DEFAULT=open`). An environment's `egress: {mode: allowlist}` sends its sandboxes through hangar's egress proxy (step 10a). The rollout adds port 3128 to the `hangar-gateway` Service and the proxied NetworkPolicies, which select nothing until an environment is proxied. | — |
+| **Egress, closed further** (egress2) | in proxied environments: a ClientHello with Encrypted ClientHello (GREASE too), several or no server names, or an SSL 2/3 hello is cut off; with the gateway configured, `pypi`, `npm` and `go` are read through hangar's read-only mirror (`/pkg/…` on the gateway) instead of the registries' own hosts; `packages` no longer opens GitHub, and `crates` no longer opens crates.io (the publish API); one person's sandboxes share 640 tunnels; a restart lets open tunnels finish for 20 s. Open environments see no change. | `HANGAR_PACKAGE_MIRROR=false` (the registries' hosts again); `presets: [packages, github]` |
+| **Pushes through the gateway are scanned** (egress2) | the agent's own `git push` went up unscanned → the gateway holds each push, scans it for secrets, and refuses one with a hit (file and line in git's output). Pushes over 64 MB are refused. | `HANGAR_SECRET_SCAN=warn` or `off`; `HANGAR_GATEWAY_SCAN_MAX_MB` |
 | **Environments that live with the repo** (#93, #99) | a repo's own setup ran in every sandbox, every time → a repo's `.hangar/environment.yaml` with an `install` gets versioned builds in the background (first sandbox falls back, with a warning, and schedules one); `start`, `terminals` and `services` run with the sandbox. Repos without the file see no change. | `HANGAR_ENV_BUILDS=false` |
 | **The agent's environment report** (#94) | → every harness's MCP config gets a `hangar-env` server (the environment doctor and requests), and job prompts tell the agent to file blockers with `hangar-agent env request` and keep going. Requests are never granted on their own: they wait in `hangar requests`, MCP `pending_approvals` and the inbox. | `HANGAR_ENV_DOCTOR_MCP=false` |
 | **PRs and the inbox** (#96) | → each agent PR gets a review packet comment, and `hangar inbox` / `hangar://inbox` / `GET /api/inbox` lists what waits on each person. Agent PRs keep coming from the control token, and nothing lands by itself, until you set up the App and `land` (step 9b). | — |
@@ -260,12 +268,27 @@ Egress stays `open` until you say otherwise. To proxy an environment's sandboxes
 - **Docker on a Linux host (required** for proxied environments there): Docker Engine 26.0.0 or later (or 25.0.4, 23.0.11), since older engines forward DNS out of internal networks (CVE-2024-29018) and hangar refuses them; a host firewall that drops input must accept TCP 3128 and 8788 from `hangar1`. E2B and Docker Desktop can't enforce egress, so proxied environments don't start there.
 - **Per environment (admin):** `egress: {mode: allowlist, presets: [packages], allow: [docs.python.org]}`. A repo policy can add hosts and tighten the mode (`hangar repo set acme/app --egress-mode none`).
 - **`HANGAR_EGRESS_DEFAULT` (optional):** `allowlist` makes every environment that doesn't set a mode proxied. Turn it on only after the URL above works, and after checking what each environment's agents need.
+- **Package mirrors (egress2).** With `HANGAR_GATEWAY_URL` set, proxied sandboxes read PyPI, npm and Go through `/pkg/…` on the gateway ([security.md](security.md#package-mirrors)); nothing to do on Docker, where hangar caches files on the data volume (`HANGAR_PACKAGE_MIRROR_CACHE_MB`, 1024). On GKE, optionally put Artifact Registry remote repositories behind it, so the cluster pulls from Google's cache:
+  ```bash
+  gcloud artifacts repositories create pypi-remote --location=us --repository-format=python \
+    --mode=remote-repository --remote-python-repo=pypi --remote-repo-config-desc="PyPI"
+  gcloud artifacts repositories create npm-remote --location=us --repository-format=npm \
+    --mode=remote-repository --remote-npm-repo=npmjs --remote-repo-config-desc="npm"
+  for r in pypi-remote npm-remote; do
+    gcloud artifacts repositories add-iam-policy-binding $r --location=us \
+      --member="serviceAccount:$HANGAR_SA" --role=roles/artifactregistry.reader
+  done
+  hangar config set HANGAR_PACKAGE_MIRRORS \
+    '{"pypi": "https://us-python.pkg.dev/PROJECT/pypi-remote", "npm": "https://us-npm.pkg.dev/PROJECT/npm-remote"}'
+  ```
+  Keep Go on the public proxy unless an AR Go repository's fetches from origins are acceptable (security.md explains). Proxied environments in `credential_mode: direct` that clone from GitHub need `presets: [packages, github]` now. For the read-only GitHub API through the gateway, give the GitHub App *Actions*, *Checks* and *Issues*: Read (without them it falls back to the push token, reads only).
+- **Browsers (egress2):** rebuild computer environments' images (`hangar env build NAME`): Chromium sends GREASE ECH, which the proxy refuses, and the new image turns ECH off by policy.
 
 Agents ask for a missing host with `hangar-agent env request egress HOST`, which waits for you in `hangar requests` and the inbox.
 
 #### 10b. Short-lived cloud credentials
 
-**Optional**; required for environments with `cloud:` ([security.md](security.md#short-lived-cloud-credentials)). Set `HANGAR_OIDC_ISSUER` if `HANGAR_PUBLIC_URL` isn't the https URL to use (AWS fetches `<issuer>/.well-known/openid-configuration` itself, so for AWS it must be public), then trust it in the cloud: a GCP workload identity pool with the JWKS from `/oidc/jwks.json` uploaded, granting `principal://…/subject/hangar:env:<env>`; or an AWS role whose trust policy checks `:sub`. Re-upload the JWKS after each `POST /api/cloud/rotate`.
+**Optional**; required for environments with `cloud:` ([security.md](security.md#short-lived-cloud-credentials)). Set `HANGAR_OIDC_ISSUER` if `HANGAR_PUBLIC_URL` isn't the https URL to use (AWS fetches `<issuer>/.well-known/openid-configuration` itself, so for AWS it must be public), then trust it in the cloud: a GCP workload identity pool with the JWKS from `/oidc/jwks.json` uploaded, granting `principal://…/subject/hangar:env:<env>`; or an AWS role whose trust policy checks `:sub`. Re-upload the JWKS after each `POST /api/cloud/rotate`. `lifetime_minutes` is now at most 60 (tokens are renewed while the sandbox runs); lower any environment that sets more. Where the cloud fetches the JWKS itself, set `HANGAR_OIDC_KEY_ROTATION_DAYS` (90, say) to rotate the signing key on a schedule; where it is uploaded, upload it again after each `cloud.key.next` audit entry.
 
 #### 10c. Environments that live with the repo
 
