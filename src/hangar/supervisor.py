@@ -114,6 +114,9 @@ def instructions(sb: Sandbox, eff: EnvSpec, repo_path: str, previews: bool = Fal
             lines.append(f"It is behind: {info.get('reason')}. If something fails for a missing or outdated "
                          f"dependency, run the install yourself (`{eff.install}` in {repo_path}).")
         lines.append("")
+    from hangar import buildcache  # --- caches: what's warming, and where the compile caches write
+
+    lines += buildcache.agent_lines(sb)
     services = [s for s in sb.info.get("services") or [] if s.get("kind") == "service"]
     stacks = compose(sb, eff)  # --- heavy
     if eff.start or eff.terminals or services or stacks:

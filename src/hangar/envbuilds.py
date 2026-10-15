@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
+from hangar import buildcache as buildcache  # --- caches
 from hangar import repoenv, supervisor
 from hangar.envspec import BuildContext, EnvSpec
 from hangar.models import Sandbox, new_id, now
@@ -640,10 +641,14 @@ class EnvBuilds:
         if not eff.install:
             raise EnvBuildError(f"nothing to build: neither {repoenv.PATH} nor environment {spec.name} has an install")
         values = await self._secrets(b, spec, read.config)
+        caches = buildcache.of(f)  # --- caches: install starts once the restore the create began is done
+        await caches.before_install(prov, sb, lambda m: self._stage(b, m))
         self._stage(b, "installing")
         await self._install(b, prov, sb, path, eff.install, values)
         if values:
             await self._leak_scan(prov, sb, values, path)
+        if note := await caches.after_install(prov, sb, path, values, lambda m: self._stage(b, m)):  # --- caches
+            b.log = (b.log + "\n--- build caches\n" + f.broker.redact(note))[-LOG_TAIL:]
         self._stage(b, "capturing the checkout")
         await self._scrub_git(prov, sb, path)  # --- durable
         data = await self._capture(prov, sb, path)

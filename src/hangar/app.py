@@ -1153,6 +1153,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import testresults  # --- testresults: GET /api/jobs/{id}/tests, the sessions', flaky lists, status
 
     testresults.mount(app, h, J, A)
+    from hangar import buildcache  # --- caches: /api/caches, `hangar status`'s caches, the nightly sweep
+
+    buildcache.mount(app, h, A)
+    buildcache.register(h)
     # --- observe: GET /metrics (admin or `metrics` tokens) and GET /api/usage
     from hangar import metrics, usage
 

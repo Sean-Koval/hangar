@@ -20,6 +20,7 @@ from typing import Any
 
 import hangar.identity as identity  # --- identity
 import hangar.people as people  # --- identity
+from hangar import buildcache as buildcache  # --- caches
 from hangar import cloudcreds as cloudcreds  # --- egress
 from hangar import delivery as delivery  # --- least-privilege
 from hangar import egress as egress  # --- egress
@@ -789,9 +790,11 @@ class Fleet:
             await heavy.start(self, prov, sb, spec)  # --- heavy: dockerd in the sandbox's VM, before its services
             if _restore_workspace:
                 await self._restore_workspace(prov, sb, _restore_workspace)
+                await buildcache.of(self).restore(prov, sb, stage)  # --- caches: in the background
             elif sb.repo:
                 stage(f"cloning {repo_dirname(sb.repo)}")
                 await self._setup_repo(prov, sb, spec, work_branch, stage=stage)
+                await buildcache.of(self).restore(prov, sb, stage)  # --- caches: in the background; agent: "warming"
                 # --- envbuilds: the repo's config: the supervisor, the agent's instructions, a rebuild if behind
                 await envbuilds.of(self).after_setup(prov, sb, spec, hname, stage)
                 # integration (#93 + #94): the doctor's status file carries what the repo's config just added
@@ -868,6 +871,7 @@ class Fleet:
         if not validating:  # --- review #102
             extra_env.update(await self.cloud.attach(prov, sb, spec))  # --- egress: cloud OIDC tokens, no stored keys
         extra_env.update(ghapi.sandbox_env(self.settings, sb))  # --- egress2: the read-only GitHub API (gateway)
+        extra_env.update(await buildcache.of(self).attach(prov, sb, spec))  # --- caches: sccache, Bazel, turbo, deps
         # workstream E: the `hangar-agent` helper (context exchange), installed per sandbox: no image rebuild
         await exchange.install_helper(prov, sb, f"/home/{self.settings.sandbox_user}")
         await supervisor.install(prov, sb, f"/home/{self.settings.sandbox_user}")  # --- envbuilds: `hangar-agent svc`

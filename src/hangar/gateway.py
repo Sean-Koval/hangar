@@ -559,6 +559,9 @@ class Gateway:
         self.mirror = pkgmirror.Mirror(self)  # --- egress2: read-only package mirrors at /pkg
         self.registry = regmirror.RegistryMirror(self)  # --- heavy: read-only Docker Hub pull-through at /registry
         self.github = ghapi.GitHubRead(self)  # --- egress2: the read-only GitHub API at /gh/api
+        # --- caches: a grant just minted, by sandbox, until buildcache.attach (in the same create) takes it for the
+        # cache clients' config; never stored
+        self.issued: dict[str, str] = {}
 
     # ------------------------------------------------------------------ plumbing
     @property
@@ -584,7 +587,13 @@ class Gateway:
         return [Route("/git/{rest:path}", self.handle, methods=["GET", "POST"],
                       middleware=[Middleware(_InflightLimit, gateway=self)]),
                 *self.github.routes(), *(self.mirror.routes() if self.settings.package_mirror else []),  # --- egress2
-                *(self.registry.routes() if self.settings.heavy_mirror else [])]  # --- heavy
+                *(self.registry.routes() if self.settings.heavy_mirror else []),  # --- heavy
+                *self._cache_routes()]  # --- caches
+
+    def _cache_routes(self) -> list[Route]:  # --- caches: /cache (buildcache.py)
+        from hangar import buildcache
+
+        return buildcache.routes(self) if self.settings.build_caches else []
 
     async def healthz(self, request: Request) -> Response:
         return JSONResponse({"ok": True, "service": "hangar-gateway"})
@@ -619,6 +628,7 @@ class Gateway:
 
     def revoke(self, sandbox_id: str, audit: bool = True) -> None:
         gone = self.grants(sandbox_id)
+        self.issued.pop(sandbox_id, None)  # --- caches
         for g in gone:
             self.store.delete(SandboxGrant, g.id)
         if gone and audit:
@@ -773,6 +783,7 @@ class Gateway:
                 raise GatewayError(f"credential '{upstream}' is a {cred.kind.value}; the gateway needs a git_token or "
                                    "github_app credential")
             token = self.mint(sb, remote[0], [remote[1]], push_refs, upstream)
+            self.issued[sb.id] = token  # --- caches
             self.fleet.audit(sb.created_by or "system", "gateway.grant", sb.id, repo=remote[1], push_refs=push_refs,
                              credential=upstream)
         await self._configure(prov, sb, token)

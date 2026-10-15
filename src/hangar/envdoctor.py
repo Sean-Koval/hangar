@@ -80,6 +80,7 @@ def build_status(settings: Settings, sb: Sandbox, spec: EnvSpec, s: Session | No
         "harness": info.get("harness"), "provider": sb.provider, "runtime": runtime(spec, sb, settings),
         "session": s.name if s else None, "job": s.job_id if s else None, "io": io,
         "build": info.get("env_build") if isinstance(info.get("env_build"), dict) else None,
+        "caches": info.get("caches") if isinstance(info.get("caches"), dict) else None,  # --- caches
         "services": [x for x in info.get("services") or [] if isinstance(x, dict)],
         "setup_failures": [x for x in info.get("setup_failures") or [] if isinstance(x, dict)][-20:],
         "warnings": [w for w in info.get("warnings") or [] if isinstance(w, str)][-20:],

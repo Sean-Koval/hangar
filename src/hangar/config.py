@@ -330,6 +330,24 @@ class Settings(BaseSettings):
     package_mirror: bool = True
     package_mirrors: dict[str, str] = Field(default_factory=dict)
     package_mirror_cache_mb: int = Field(1024, ge=0)  # immutable files kept on the data volume; 0: no cache
+    # --- caches: dependency and compile caches across sandboxes (buildcache.py, docs/caches.md). Served at /cache on
+    # the git gateway's port, so they need HANGAR_GATEWAY_URL; a sandbox reads its own repo's with its grant.
+    build_caches: bool = True
+    # Where cached objects live (encrypted with the vault key): gs://bucket[/prefix] or a directory. Unset: the session
+    # bucket's caches/ prefix when HANGAR_SESSION_STORE is a bucket, else <data_dir>/caches.
+    build_cache_store: str | None = None
+    # All repos together, least recently used entries first (private layers' before the shared ones). Unset: 100 GB
+    # in a bucket, 10 GB on the data volume, which holds the database too.
+    build_cache_max_gb: float | None = Field(None, ge=0)
+    build_cache_repo_max_gb: float = Field(20.0, ge=0)  # per repo
+    build_cache_retention_days: float = Field(14.0, gt=0)  # an entry unused this long goes (nightly)
+    build_cache_private_days: float = Field(3.0, gt=0)  # ...and one in a session's private layer, this long
+    # Sessions and jobs read the repo's shared caches (written only by its repo builds) and, with this on, write to a
+    # private layer of their own session and branch that nothing else reads. Off: they only read.
+    build_cache_private_writes: bool = True
+    build_cache_object_max_mb: int = Field(4096, ge=1)  # one cached object (a dependency archive, a compile output)
+    build_cache_transfer_mb: int = Field(256, ge=16)  # cache bytes held in the control plane's memory at once
+    build_cache_wait_minutes: float = Field(10.0, ge=0, le=60)  # a repo build waits this long for its restore
     # --- egress: secret scanning before hangar pushes a job's branch (secretscan.py). block: a hit stops the push
     # and goes back to the agent (at most secret_scan_rounds fix turns); warn: job events only; off.
     secret_scan: Literal["block", "warn", "off"] = "block"

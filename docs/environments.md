@@ -190,6 +190,13 @@ sandbox never sees any of them. The scan catches a value written as it is, not o
 - Builds are made from the default branch, as Cursor's are. A feature branch's new dependencies are the agent's to
   install, and it is told so.
 
+### Build caches
+
+A build keeps the checkout, not `$HOME`. The package managers' caches, a branch whose lockfile moved on, and compile
+output are covered by [build caches](caches.md). A build restores them before `install` and saves them after it.
+Builds are the only writers of a repo's shared caches. Every sandbox restores them in the background after the clone,
+and sccache, Bazel and Turborepo come pointed at hangar's remote caches.
+
 ## Services
 
 Docker inside a gVisor sandbox is limited, so a service never runs inside the sandbox. It runs next to it, with the
