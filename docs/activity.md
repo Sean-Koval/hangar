@@ -98,7 +98,7 @@ onboarding-fork-2                     3    41%   180.0k   250.0k   250.0k      $
 
 ## Budgets
 
-A budget caps each agent turn. That means the job's first run and each follow-up separately, and each message to a session. A best-of-N job's budget caps each attempt and the judge separately, so the job as a whole can spend up to N + 1 budgets. A turn's structured-result repair run counts toward that turn: it is stopped when the turn as a whole goes over, and its usage is the turn's `repair_usage`, included in every total.
+A budget caps each agent turn. That means the job's first run and each follow-up separately, and each message to a session. A best-of-N job's budget caps each attempt and the judge separately, so the job as a whole can spend up to N + 1 budgets. To bound a whole job, give it a `job_budget`, and to bound a repo's day, a daily cap: see [repo-policy.md](repo-policy.md#budgets). A turn's structured-result repair run counts toward that turn: it is stopped when the turn as a whole goes over, and its usage is the turn's `repair_usage`, included in every total.
 
 ```json
 "budget": {"max_minutes": 30, "max_tokens": 2000000, "max_cost_usd": 5}

@@ -555,6 +555,9 @@ def job_submit(
     max_cost: float | None = typer.Option(None, "--max-cost", help="Budget: USD per agent turn."),
     max_tokens: int | None = typer.Option(None, "--max-tokens", help="Budget: tokens per agent turn."),
     max_minutes: int | None = typer.Option(None, "--max-minutes", help="Budget: minutes per agent turn."),
+    # --- frontdoor: the whole job's budget
+    job_max_cost: float | None = typer.Option(None, "--job-max-cost", help="Job budget: USD for all its turns."),
+    job_max_turns: int | None = typer.Option(None, "--job-max-turns", help="Job budget: agent turns in all."),
     from_local: bool = typer.Option(False, "--from-local", help="Hand over this checkout's unpushed commits and "
                                     "uncommitted changes (and default --repo/--base from it)."),
     schema: Path | None = typer.Option(None, "--schema", help="JSON Schema file for a structured result."),
@@ -591,6 +594,8 @@ def job_submit(
         "instructions": text, "repo": repo, "environment": env, "title": title, "harness": harness, "model": model,
         "base_branch": base, "verify": verify, "deliver": deliver, "context": items + local, "timeout_minutes": timeout,
         "budget": _budget(max_minutes, max_tokens, max_cost),
+        **({"job_budget": {k: v for k, v in (("max_cost_usd", job_max_cost), ("max_turns", job_max_turns))
+                           if v is not None}} if job_max_cost or job_max_turns else {}),  # --- frontdoor
         **({"output_schema": _schema(schema)} if schema else {}),
         **({"strategy": "best_of_n", "n": best_of, "judge": judge} if best_of else {}),
         **({"verify_in_loop": verify_in_loop} if verify_in_loop is not None else {}),
@@ -1192,6 +1197,11 @@ def schedule_run(ref: str):
 def schedule_rm(ref: str):
     typer.echo(f"deleted {_call('DELETE', f'/api/schedules/{ref}')['deleted']}")
 
+
+# ---------------------------------------------------------------------------- frontdoor: per-repo policy (repo_cli.py)
+from hangar.repo_cli import repo_app as _repo_app  # noqa: E402
+
+app.add_typer(_repo_app, name="repo")
 
 # ---------------------------------------------------------------------------- workstream steer (steer_cli.py)
 from hangar import steer_cli as _steer  # noqa: E402

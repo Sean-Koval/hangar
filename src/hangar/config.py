@@ -137,7 +137,7 @@ class Settings(BaseSettings):
 
     # --- jobs (spec 0009) ---------------------------------------------------
     # Jobs provisioning/running at once; the rest wait in the queue. --- scale: 0 = sized from the fleet: 4 on Docker,
-    # else max_sandboxes / 5 between 4 and 8 (fairness.job_slots; --- review: 8 until job budgets, #85).
+    # else max_sandboxes / 5 between 4 and 8 (fairness.job_slots; --- review: 8, since job budgets are opt-in).
     job_concurrency: int = 0
     job_poll_seconds: float = 5.0
     job_timeout_minutes: int = 60  # per agent turn
@@ -196,6 +196,18 @@ class Settings(BaseSettings):
     budget_max_minutes: int | None = None
     budget_max_tokens: int | None = None
     budget_max_cost_usd: float | None = None
+    # --- frontdoor: default caps for a whole job, all its turns together (jobbudget.py), when neither the job nor
+    # its repo's policy sets one. Unset = no limit.
+    job_budget_max_cost_usd: float | None = None
+    job_budget_max_tokens: int | None = None
+    job_budget_max_turns: int | None = None
+    # --- frontdoor: where a day starts for daily spend caps (an IANA zone, e.g. America/New_York). UTC midnight is
+    # 20:00 in New York, mid working day, so a team elsewhere sets its own.
+    budget_day_timezone: str = "UTC"
+    # --- integration: what one person's jobs may spend in a day, their interactive sessions included (identity's
+    # person; jobs nobody in particular asked for, e.g. GitHub- and Slack-triggered, count only against their
+    # repo's cap). A new job over it waits for approval; follow-ups are refused. Unset or 0 = no limit.
+    person_max_usd_per_day: float | None = None
     events_max_mb: int = 20  # per-session event log size before it rotates (one rotated file is kept)
     # --- workstream A: triggers ----------------------------------------------
     # GitHub logins and "@org/team" entries whose /hangar comments and labels start jobs right away. Unset: the
@@ -327,8 +339,9 @@ class Settings(BaseSettings):
     # How long `hangar serve` waits for open requests (streams, terminals) on shutdown before cutting them.
     # Long-polls answer at once (shutdown.py). Keep it under the pod's terminationGracePeriodSeconds (45).
     shutdown_grace_seconds: int = 15
-    # --- scale: one control plane for a team (docs/team-scale.md). Caps per person, a person being a token's or an
-    # approved OAuth connector's name (fairness.person_of); hangar's own actors are exempt. 0 = off.
+    # --- scale: one control plane for a team (docs/team-scale.md). Caps per person: identity's person (people.py),
+    # else a token's or an approved OAuth connector's name (fairness.person_of); hangar's own actors are exempt.
+    # 0 = off.
     person_max_sessions: int = 15  # live sessions (each holds a sandbox); suspended ones don't count
     person_max_sandboxes: int = 20  # sandboxes started directly (MCP, REST, the E2B API); sessions' are above
     person_max_running_jobs: int = 0  # jobs running at once; 0 = half the job slots, at least 4. Others' jobs go first

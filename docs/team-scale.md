@@ -10,7 +10,7 @@ page covers what keeps that responsive and fair, how to size GKE for it, and wha
 | Every create, lookup by name and listing parsed **every sandbox record ever made**, on the event loop (250–935 ms at 20k records; records were never deleted) | Indexed lookups: an expression index on `state` and `name` (and on jobs' and sessions' `state`), `Store.list_where` / `count_where` / `list_active` | `store.py` |
 | History grows forever | Stopped and failed sandbox records idle for 7 days move to `sandboxes_archive`, in small batches off the event loop; still found by id; deleted after 180 days | `retention.py` |
 | One person's batch could take the whole fleet | Caps per person on live sessions, sandboxes and running jobs | `fairness.py` |
-| Jobs ran first come, first served, 4 at a time | Job slots sized from capacity (8 on GKE at `max_sandboxes=120`, until job budgets land; see the follow-ups); a free slot goes to whoever has the fewest jobs running | `fairness.py` (`FairJobQueue`, `job_slots`) |
+| Jobs ran first come, first served, 4 at a time | Job slots sized from capacity (8 on GKE at `max_sandboxes=120` by default, 24 once job budgets are set; see the follow-ups); a free slot goes to whoever has the fewest jobs running | `fairness.py` (`FairJobQueue`, `job_slots`) |
 | A fork could exhaust the control plane's 2 GiB (B12: ~5 children of a 400 MB workspace, 3 on the pods/exec fallback) | Workspace archives in flight share a memory budget (1 GiB, each counted at 2–3× its size); an oversized archive is refused before it is read; Kubernetes uploads encode base64 a frame at a time; archive disk I/O runs in a thread | `membudget.py`, `fleet.py`, `providers/kubernetes.py` |
 | Each sandbox reserved its whole CPU limit | Sandbox pods request half their CPU and all their memory (Burstable) | `providers/kubernetes.py` |
 
@@ -19,7 +19,7 @@ page covers what keeps that responsive and fair, how to size GKE for it, and wha
 | Variable | Default | |
 | --- | --- | --- |
 | `HANGAR_MAX_SANDBOXES` | 120 (was 50) | The whole fleet: 60 sessions, job slots (8, or up to 24 set by hand), best-of-N attempts, forks, logins |
-| `HANGAR_JOB_CONCURRENCY` | 0 = auto (was 4) | 4 on Docker; elsewhere `max_sandboxes / 5`, between 4 and 8. Set 24 by hand once job budgets and a daily spend cap (#85) are in |
+| `HANGAR_JOB_CONCURRENCY` | 0 = auto (was 4) | 4 on Docker; elsewhere `max_sandboxes / 5`, between 4 and 8. Set 24 by hand once job budgets and daily spend caps are set ([repo-policy.md](repo-policy.md#budgets)) |
 | `HANGAR_PERSON_MAX_SESSIONS` | 15 | Live sessions per person (each holds a sandbox); new, resumed (`send`/`open`) and forked ones count. Suspended ones don't |
 | `HANGAR_PERSON_MAX_SANDBOXES` | 20 | Sandboxes a person starts directly (MCP, REST, the E2B API). Sessions' and jobs' own sandboxes are capped by the two caps around this one |
 | `HANGAR_PERSON_MAX_RUNNING_JOBS` | 0 = half the job slots, at least 4 | Jobs one person runs at once. Queued jobs past it wait while others' run |
@@ -235,11 +235,13 @@ The next upgrade archives them again. `HANGAR_SANDBOX_RETENTION_DAYS=0` turns ar
 
 ## Limits and follow-ups
 
-- **Budgets before concurrency.** Auto job slots stop at 8 (`fairness.AUTO_JOB_SLOTS_MAX`), not 24. Until job
-  budgets and a daily spend cap per repo (#85) land, nothing bounds what a job spends across its follow-ups,
-  verify-fix and auto-fix turns, and the per-person cap bounds one person, not a GitHub label storm across many. A
-  slot is also a job, not a sandbox: 24 best-of-4 jobs could hold all 120 sandboxes, and every new session would be
-  refused at `max_sandboxes`. Once #85 is in, `HANGAR_JOB_CONCURRENCY=24` gives the measured 24.
+- **Budgets before concurrency.** Auto job slots stop at 8 (`fairness.AUTO_JOB_SLOTS_MAX`), not 24. Job budgets
+  and daily spend caps per repo and per person ([repo-policy.md](repo-policy.md#budgets)) are opt-in, so on defaults
+  nothing bounds what a job spends across its follow-ups, verify-fix and auto-fix turns, and the per-person cap
+  bounds one person, not a GitHub label storm across many. A slot is also a job, not a sandbox: 24 best-of-4 jobs
+  could hold all 120 sandboxes, and every new session would be refused at `max_sandboxes`. Once
+  `HANGAR_JOB_BUDGET_MAX_COST_USD` and the repos' `max_usd_per_day` (or `HANGAR_PERSON_MAX_USD_PER_DAY`) are set,
+  `HANGAR_JOB_CONCURRENCY=24` gives the measured 24.
 - **The reconciler** still scans every sandbox once per provider per reaper pass (`Fleet.reconcile`). Retention bounds
   it to a week of records; the reconciler work switches it to `store.list_where(Sandbox, provider=…, state=[…])`.
 - **Jobs and sessions are held in memory**, all of them, since the start (`jobs.py`, `sessions.py`): ~30 KB for a

@@ -162,6 +162,11 @@ def test_doctor_reports_with_fixes(client):
     assert checks["environment ghost"]["status"] == "fail"
     assert checks["environment plain"]["status"] == "fail" and "credentials" in checks["environment plain"]["detail"]
     assert checks["session checkpoint storage"]["status"] == "ok"
+    # --- frontdoor: a repo whose jobs would run with no check, until its policy (or environment) names one
+    assert checks["verify acme/app"]["status"] == "warn"
+    assert "hangar repo set acme/app" in checks["verify acme/app"]["fix"]
+    client.put("/api/repos/policy", json={"repo": "acme/app", "verify": "make test"})
+    assert {c["name"]: c for c in client.get("/api/doctor").json()}["verify acme/app"]["status"] == "ok"
     h.broker.put("gh-hook", "webhook", CredentialKind.GENERIC, "s")
     assert {c["name"]: c for c in client.get("/api/doctor").json()}["github webhook secret"]["status"] == "ok"
 
