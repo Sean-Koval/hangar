@@ -33,12 +33,12 @@ from hangar import (  # --- overnight/cache; verifyloop: --- overnight/autofix
     verifyloop,
 )
 from hangar import fairness as fairness  # --- scale
+from hangar import pins as pins  # --- canary
 from hangar import secretscan as secretscan  # --- egress
 from hangar.events import total_usage
-from hangar.fleet import _clip_tail
+from hangar.fleet import PoweredDown, _clip_tail
 from hangar.harnesses import Harness
 from hangar.models import (
-    JOB_TERMINAL,
     Attempt,
     Job,
     JobState,
@@ -83,9 +83,8 @@ def claim_conversation(svc: SessionService, s: Session) -> None:
     cid = s.harness_session
     if not cid:
         return
-    holders = [x for x in svc._sessions.values()
-               if x.harness_session == cid and x.harness_session_for == s.harness_session_for
-               and x.state != SessionState.ARCHIVED]
+    holders = [x for x in svc.where(harness_session=cid)  # --- durable: suspended ones aren't all in memory
+               if x.harness_session_for == s.harness_session_for and x.state != SessionState.ARCHIVED]
     owner = min(holders, key=lambda x: (x.created_at, x.id), default=s)
     if owner.id != s.id:
         log.warning("session %s shares conversation %s with %s; forking it instead of resuming", s.id, cid, owner.id)
@@ -128,16 +127,15 @@ def _child_names(svc: SessionService, parent: Session, n: int, suffix: str,
                  names: list[str] | None) -> list[tuple[str, str]]:
     """(name, branch) for each child: `<parent>-<suffix>-<i>` on `<parent branch>-<suffix>-<i>`, with i past any
     earlier forks, or the names the caller chose."""
-    live = [x for x in svc._sessions.values() if x.state != SessionState.ARCHIVED]
-    taken_names = {x.name for x in live}
-    taken_branches = {x.branch for x in live}
+    taken_names: set[str] = set()  # --- durable: planned here; the rest are asked of svc.taken (the store's indexes)
+    taken_branches: set[str] = set()
     if names is not None:
         if len(names) != n or len(set(names)) != n:
             raise SessionError(f"give {n} distinct names (or none)")
         for nm in names:
             if not _NAME_RE.match(nm):
                 raise SessionError(f"name '{nm}': lowercase letters, digits, '.', '_' and '-'")
-            if nm in taken_names:
+            if svc.taken(name=nm):
                 raise SessionError(f"a session named '{nm}' already exists")
     out: list[tuple[str, str]] = []
     i = 0
@@ -146,7 +144,8 @@ def _child_names(svc: SessionService, parent: Session, n: int, suffix: str,
             i += 1
             name = names[k] if names else f"{parent.name[:63 - len(suffix) - 6]}-{suffix}-{i}"
             branch = f"{parent.branch}-{suffix}-{i}"
-            if branch not in taken_branches and (names or name not in taken_names):
+            if branch not in taken_branches and not svc.taken(branch=branch) and (
+                    names or (name not in taken_names and not svc.taken(name=name))):
                 break
         if not _BRANCH_RE.match(branch):
             raise SessionError(f"invalid branch '{branch}'")
@@ -203,6 +202,10 @@ async def _fork(svc: SessionService, parent: Session, n: int, requester: str, *,
                 turns=[t.model_copy(update={"run_id": None, "event_cursor": None, "usage": None,
                                             "repair_usage": None}, deep=True) for t in parent.turns],
                 needs_input=parent.needs_input, checkpoints=[ck.model_copy(deep=True)])
+            if child_harness == parent.harness:  # --- canary: the parent's pins, its conversation's CLI version too
+                c.model_policy, c.harness_version = parent.model_policy, parent.harness_version
+            else:
+                pins.pin(svc, c)  # --- canary: that harness's model, resolved
             children.append(c)  # before its copies, so a failure part-way drops them too
             # --- overnight/sweep: copied inside the store (a hard link, or a GCS rewrite), never through memory:
             # a checkpoint's parts can be hundreds of MB, times N children
@@ -252,13 +255,6 @@ def can_reattach(job: Job) -> bool:
         JobState.RUNNING, JobState.VERIFYING, JobState.DELIVERING)
 
 
-def release_restart_holds(jobs: JobService, job: Job) -> None:
-    """A finished best-of-N job's attempt sessions were held through the restart; let them idle out."""
-    if job.state in JOB_TERMINAL:
-        for s in _attempt_sessions(jobs, job).values():
-            jobs.sessions.release_restart_hold(s)
-
-
 def _attempt_sessions(jobs: JobService, job: Job) -> dict[int, Session]:
     out = {}
     for a in job.attempts:
@@ -285,8 +281,8 @@ async def run_best_of_n(jobs: JobService, job: Job) -> None:
                 return
             jobs._event(job, f"preparing {job.n} attempts from the prepared sandbox", JobState.RUNNING, reason=None)
             # A restart between forking and recording the attempts left the children behind: use them.
-            children = sorted((x for x in svc._sessions.values() if x.parent_id == base.id and x.job_id == job.id
-                               and x.state != SessionState.ARCHIVED),
+            children = sorted((x for x in svc.where(parent_id=base.id, job_id=job.id)  # --- durable
+                               if x.state != SessionState.ARCHIVED),
                               key=lambda x: int(x.labels.get("hangar.attempt", "0")))
             if len(children) != job.n:
                 for x in children:
@@ -304,6 +300,8 @@ async def run_best_of_n(jobs: JobService, job: Job) -> None:
         if turn.reply_to:
             await jobs._comment(job, turn.reply_to, f"Agents started on hangar job `{job.id}`: best of {job.n} "
                                                     f"({job.environment}, {base.harness}), branch `{job.branch}`.")
+    elif job.state == JobState.QUEUED:  # --- trust: attempts the power-down set aside, back after power-up
+        jobs._event(job, "resuming the attempts the power-down cut off", JobState.RUNNING, reason=None)
     sessions = _attempt_sessions(jobs, job)
     for s in sessions.values():
         svc.release_restart_hold(s)  # each attempt takes its own hold while it works
@@ -324,6 +322,9 @@ async def run_best_of_n(jobs: JobService, job: Job) -> None:
             await held.enter_async_context(svc.hold(s))
         if pending:
             await asyncio.gather(*(_run_attempt(jobs, job, a) for a in pending))
+        if any(a.state == "waiting" for a in job.attempts):  # --- trust: they resume at power-up; the rest wait
+            await jobs.fleet.power.requeue(jobs, job)
+            return
         await _finish(jobs, job)
 
 
@@ -332,13 +333,16 @@ async def _run_attempt(jobs: JobService, job: Job, a: Attempt) -> None:
     attempt failing (or its sandbox dying) must not take the others down."""
     try:
         await _attempt_steps(jobs, job, a)
+    except PoweredDown:  # --- trust: resuming before the pools are back: it waits with the job again
+        a.state = "waiting"
     except Exception as e:  # noqa: BLE001 - recorded on the attempt; the others carry on
         log.exception("job %s attempt %d failed", job.id, a.index)
         a.error = jobs.broker.redact(str(e))[:500]
         a.outcome = "error" if a.outcome in (None, "exited", "timed_out") else a.outcome
         jobs._event(job, f"attempt {a.index}: {a.error}")
     # Not in a `finally`: a shutdown (CancelledError) leaves the attempt as it was, to be re-attached on restart.
-    a.state = "done"
+    if a.state != "waiting":  # --- trust
+        a.state = "done"
     jobs._save(job)
 
 
@@ -356,6 +360,7 @@ async def _attempt_steps(jobs: JobService, job: Job, a: Attempt) -> None:
             if job.cancel_requested:
                 a.outcome = "cancelled"
                 return
+            resuming = a.restarts > 0  # --- trust: after the power-down, from its checkpoint (resume_attempt)
             a.state = "running"
             jobs._save(job)
             sb = await svc.ensure_sandbox(s)
@@ -367,11 +372,12 @@ async def _attempt_steps(jobs: JobService, job: Job, a: Attempt) -> None:
                 s.turns.append(st)
             # Same task and context; the branch named in the prompt is the attempt's own. --- interactions: and the
             # same exchange as a single job's first turn: local work applied, the output schema and the protocol.
-            exchange.job_turn_io(job, job.turns[0], st, first=True)
+            exchange.job_turn_io(job, job.turns[0], st, first=not resuming)
             # --- overnight/cache: identical across attempts up to the end, where each learns its own branch, so the
             # attempts after the first read the prompt prefix the first one cached
-            prompt = (jobs._prompt(job, job.turns[0], sb.info.get("repo_path"), branch_ref=ATTEMPT_BRANCH)
-                      + exchange.prompt_notes(jobs.settings, s, st, protocol=True)
+            task = st.message if resuming else jobs._prompt(job, job.turns[0], sb.info.get("repo_path"),
+                                                             branch_ref=ATTEMPT_BRANCH)  # --- trust: carry on
+            prompt = (task + exchange.prompt_notes(jobs.settings, s, st, protocol=not resuming)
                       + f"\n\n# Your branch\n\nYou are one of {job.n} independent attempts at this task. Yours is "
                         f"checked out on branch `{s.branch}`: commit there.\n")
             await svc.begin_turn(s, st, prompt=prompt, timeout_minutes=job.timeout_minutes, handoff=False,
@@ -398,6 +404,9 @@ async def _attempt_steps(jobs: JobService, job: Job, a: Attempt) -> None:
             jobs._save(job)
             jobs._event(job, f"attempt {a.index}: agent turn {outcome}"
                              + (f", exit {a.exit_code}" if a.exit_code is not None else ""))
+        if a.outcome in ("gone", "error") and not (s.sandbox_id and svc._alive(s.sandbox_id)) \
+                and jobs.fleet.power.cut_off_attempt(jobs, job, a, s):  # --- trust: resumes at power-up
+            return
         if a.outcome in ("gone", "error", "cancelled", "needs_input"):  # a question is not a result to verify
             return
         if not (s.sandbox_id and svc._alive(s.sandbox_id)):

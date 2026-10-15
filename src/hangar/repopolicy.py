@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from hangar import modelpolicy as modelpolicy  # --- canary
 from hangar.egress import EgressSpec  # --- egress
 from hangar.github import parse_repo
 from hangar.harnesses import get_harness
@@ -40,7 +41,8 @@ _GITHUB_SHORT = re.compile(r"^[\w.-]+/[\w.-]+$")
 FIELDS = ("verify", "environment", "harness", "model", "budget", "job_budget", "max_usd_per_day",
           "credentials",  # --- teamcreds
           "egress", "build_secrets",  # --- egress
-          "land", "approvers", "merge_method", "risk_paths")  # --- landing: the last four (landing.py)
+          "land", "approvers", "merge_method", "risk_paths",  # --- landing: the last four (landing.py)
+          "require_stale_dismissal")  # --- trust
 _LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")  # a GitHub login
 
 
@@ -57,7 +59,7 @@ class RepoPolicy(BaseModel):
     harness: str | None = None
     # A model for every harness, or one per harness ({claude-code: opus, codex: gpt-5.5}), as in environments. A
     # plain string applies only to the policy's own harness (or, without one, when the job didn't pick a harness):
-    # a model id means nothing to another harness.
+    # a model id means nothing to another harness. --- canary: a policy (`frontier`, `balanced`) applies to every one.
     model: str | dict[str, str] | None = None
     budget: Budget | None = None  # per agent turn, under the job's own (jobbudget.py)
     job_budget: JobBudget | None = None  # all of a job's turns together
@@ -76,6 +78,9 @@ class RepoPolicy(BaseModel):
     approvers: list[str] | None = Field(None, max_length=100)
     merge_method: Literal["squash", "merge", "rebase"] | None = None
     risk_paths: list[str] | None = Field(None, max_length=100)
+    # --- trust: auto-merge is armed only on a base branch that dismisses stale approvals on a push (landing.py);
+    # false opts the repo out of that check. None: required.
+    require_stale_dismissal: bool | None = None
     updated_at: float = Field(default_factory=now)
     updated_by: str | None = None
 
@@ -114,6 +119,8 @@ class RepoPolicy(BaseModel):
     def model_for(self, harness: str | None, job_harness: str | None) -> str | None:
         if isinstance(self.model, dict):
             return self.model.get(harness or "")
+        if modelpolicy.is_policy(self.model):  # --- canary: `frontier` means something to every harness
+            return self.model
         if self.harness:
             return self.model if harness == self.harness else None
         return None if job_harness else self.model
@@ -251,6 +258,7 @@ class PolicyUpdate(BaseModel):
     approvers: list[str] | None = None
     merge_method: Literal["squash", "merge", "rebase"] | None = None
     risk_paths: list[str] | None = None
+    require_stale_dismissal: bool | None = None  # --- trust
 
 
 def update(svc: JobService, body: PolicyUpdate, actor: str) -> RepoPolicy:

@@ -206,6 +206,11 @@ class Settings(BaseSettings):
     # {"my-model": {"input": 1.0, "output": 4.0, "cache_read": 0.1, "cache_write": 1.25}}. Keys match model ids
     # exactly or as a prefix followed by a date/variant suffix.
     model_prices: dict[str, dict[str, float]] = Field(default_factory=dict)
+    # --- canary: model policies (`model: frontier`, modelpolicy.py). Vault credentials holding the API keys that list
+    # each provider's models: {"anthropic": "<cred>", "openai": "<cred>", "google": "<cred>"}. OpenRouter's list is
+    # public. Without one, that provider's policies resolve to the last id resolved, else a built-in one.
+    model_list_credentials: dict[str, str] = Field(default_factory=dict)
+    model_list_ttl_minutes: int = 360  # how long a fetched list is used before it is fetched again
     # Default budget for each agent turn of jobs and sessions that don't set one. Unset = no limit.
     budget_max_minutes: int | None = None
     budget_max_tokens: int | None = None
@@ -278,6 +283,9 @@ class Settings(BaseSettings):
     gateway_credential: str | None = None  # upstream credential when the sandbox has no git credential of its own
     gateway_max_push_mb: int = 512
     gateway_timeout_seconds: float = 120.0  # upstream connect/read timeout (per read, not per request)
+    # --- egress2: the gateway holds a push and scans it for secrets before forwarding it (pushscan.py, with
+    # HANGAR_SECRET_SCAN). A bigger push is refused in block mode, let through unscanned (audited) in warn mode.
+    gateway_scan_max_mb: int = Field(64, ge=1, le=1024)
     # --- egress: hostname allowlists (egress.py, docs/security.md#egress) ----
     # The mode of environments that don't set `egress.mode`: open (the public internet, as before), allowlist or none.
     egress_default: Literal["open", "allowlist", "none"] = "open"
@@ -291,6 +299,17 @@ class Settings(BaseSettings):
     # addresses (the metadata servers) are refused regardless.
     egress_private_hosts: list[str] = Field(default_factory=list)
     egress_max_connections_per_sandbox: int = 128  # one person's 10 sandboxes stay well under MAX_CONNECTIONS
+    # --- egress2: all of one person's sandboxes together, so 6 people at their caps fit MAX_CONNECTIONS (4096)
+    egress_max_connections_per_person: int = 640
+    # --- egress2: on shutdown the proxy takes no new connection, and open tunnels get this long to finish
+    egress_drain_seconds: int = Field(20, ge=0, le=300)
+    # --- egress2: read-only package mirrors at /pkg/<pypi|npm|go>/ on the git gateway's port (pkgmirror.py). With
+    # it on (and HANGAR_GATEWAY_URL set) the pypi, npm and go presets point proxied sandboxes there, and the public
+    # registries' hosts, which take uploads too, stay closed. Upstreams default to the public registries; on GKE
+    # point them at Artifact Registry remote repositories: {"pypi": "https://us-python.pkg.dev/PROJECT/REPO", ...}.
+    package_mirror: bool = True
+    package_mirrors: dict[str, str] = Field(default_factory=dict)
+    package_mirror_cache_mb: int = Field(1024, ge=0)  # immutable files kept on the data volume; 0: no cache
     # --- egress: secret scanning before hangar pushes a job's branch (secretscan.py). block: a hit stops the push
     # and goes back to the agent (at most secret_scan_rounds fix turns); warn: job events only; off.
     secret_scan: Literal["block", "warn", "off"] = "block"
@@ -298,6 +317,10 @@ class Settings(BaseSettings):
     # --- egress: the OIDC issuer URL in the tokens hangar mints for sandboxes' cloud credentials (cloudcreds.py);
     # default HANGAR_PUBLIC_URL. Must be https; AWS fetches <issuer>/.well-known/openid-configuration from it.
     oidc_issuer: str | None = None
+    # --- egress2: a new signing key every this many days (0: only `POST /api/cloud/rotate`). It is published a week
+    # (at most half the period) before it signs; where the JWKS is uploaded (GCP --jwk-json-path), upload it again
+    # after the `cloud.key.next` audit entry.
+    oidc_key_rotation_days: int = Field(0, ge=0, le=3650)
     # --- workstream G: a2a (spec 0011, docs/a2a.md) -------------------------
     a2a_enabled: bool = True  # agent card at /.well-known/agent-card.json, JSON-RPC at /a2a
     a2a_default_repo: str | None = None  # repo for A2A tasks that don't name one in their metadata
@@ -377,6 +400,10 @@ class Settings(BaseSettings):
     # when HANGAR_SESSION_STORE is a GCS bucket, else off; 0 = off. `hangar admin backup` works either way.
     backup_hours: float | None = None
     backup_keep: int = 14  # newest backups kept; older ones are deleted after each backup
+    # --- durable: where backups go when not next to the checkpoints (gs://bucket[/prefix] or a path). Best a bucket
+    # where hangar's service account may only create objects, with a lifecycle rule doing the keeping
+    # (docs/security.md#backups-and-the-vault-key). Unset: the session store's `_backups/`.
+    backup_store: str | None = None
     # How long `hangar serve` waits for open requests (streams, terminals) on shutdown before cutting them.
     # Long-polls answer at once (shutdown.py). Keep it under the pod's terminationGracePeriodSeconds (45).
     shutdown_grace_seconds: int = 15
@@ -393,6 +420,13 @@ class Settings(BaseSettings):
     # and of every scan, still found by id. Archived ones are deleted after sandbox_archive_days (0 = kept).
     sandbox_retention_days: float = 7
     sandbox_archive_days: float = 180
+    # --- durable: jobs and sessions held in memory are the live ones, and those saved or read in the last
+    # resident_minutes (resident.py); the rest are read from the store when asked for. Finished jobs and sessions
+    # untouched for *_retention_days move to the archive (still found by id and in listings; never deleted), except
+    # what is still referenced: open PRs, sessions with checkpoints, a schedule's last job. 0 = not archived.
+    resident_minutes: float = Field(60, ge=1)
+    job_retention_days: float = Field(30, ge=0)
+    session_retention_days: float = Field(30, ge=0)
     # --- observe: traces, metrics and the cost view (docs/observability.md). Traces are configured with the
     # standard OTEL_* variables and are off unless they name an exporter.
     metrics_enabled: bool = True  # GET /metrics (admin or `metrics` tokens); off: no prometheus_client import
@@ -437,6 +471,13 @@ class Settings(BaseSettings):
     # cpus and memory_gb are the repo's to write; memory is requested in full on Kubernetes: docs/team-scale.md).
     env_services_max_cpus: float = Field(2.0, ge=0, le=32)
     env_services_max_memory_gb: float = Field(2.0, ge=0, le=64)
+    # --- autoinstall: agent-led environment setup (`hangar env setup`, autoinstall.py, docs/environments.md).
+    env_setup_retries: int = Field(5, ge=0, le=10)  # setup turns after a failed validation, each with its output
+    env_setup_max_cost_usd: float = Field(30.0, gt=0)  # the job budget when the job and the repo's policy set none
+    env_setup_max_turns: int = Field(16, ge=2, le=100)
+    env_setup_validate_minutes: int = Field(45, ge=5, le=240)  # one validation: sandbox, install, every command
+    env_setup_models: dict[str, str] = Field(default_factory=dict)  # harness -> model or policy, instead of frontier
+    env_setup_label: str = "hangar-env-setup"  # an issue (GitHub, Jira) with this label starts an env setup
     # Preview ports (preview.py): `<port>-<sandbox>.<this domain>` reaches a sandbox's declared port, for its owner,
     # through hangar. Needs wildcard DNS pointing at hangar; `localhost` on a laptop. Unset: previews are off.
     preview_domain: str | None = None
@@ -450,6 +491,28 @@ class Settings(BaseSettings):
     power_warm_pools: str = "auto"
     power_warm_max: int = Field(3, ge=0, le=50)
     power_prepull_image: str = "registry.k8s.io/pause:3.10.1"  # the prepull DaemonSet's only container
+    # --- clouddoctor: the nightly pass (opstatus.py): credential checks, then the Cloud Doctor (docs/doctor.md). A
+    # cron in doctor_time_zone (unset: the power schedule's zone, else UTC); "off" turns it off. Half past midnight
+    # in the power schedule's zone is before the sandbox pools power down at 01:00.
+    doctor_schedule: str = "30 0 * * *"
+    doctor_time_zone: str | None = None
+    # The Cloud Doctor's jobs (clouddoctor.py): harness and model (unset: Claude Code where the environment has it,
+    # else the environment's harness; the `frontier` policy for every harness, or `best` for a Claude Code team key
+    # without Fable access), its budget per run (all its jobs together) and per job, how many root-cause jobs a run
+    # starts, how many separate runs make a failure worth fixing, how far back it counts, and how often a transient
+    # failure may recur before it is reported anyway.
+    doctor_harness: str | None = None
+    doctor_model: str | None = None
+    doctor_max_usd: float = Field(10.0, ge=0)
+    doctor_job_max_usd: float = Field(3.0, gt=0)
+    doctor_max_jobs: int = Field(3, ge=0, le=20)
+    doctor_min_runs: int = Field(2, ge=1)
+    doctor_lookback_days: int = Field(7, ge=1, le=14)
+    doctor_transient_alarm: int = Field(5, ge=1)
+    # Where environment specs live as files, for fixes to them: a repo hangar's jobs can open PRs on, and the spec
+    # files in it (fnmatch, `*` crosses directories). Unset: spec fixes are reported, not opened.
+    doctor_specs_repo: str | None = None
+    doctor_specs_paths: list[str] = Field(default_factory=lambda: ["envs/*.yaml", "envs/*.yml"])
 
     @property
     def backup_interval_hours(self) -> float:

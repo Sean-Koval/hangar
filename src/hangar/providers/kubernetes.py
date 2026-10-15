@@ -348,21 +348,25 @@ class KubernetesProvider(Provider):
         key = (image, spec.warm_pool, tuple(sorted(spec.packs.items())),
                egress.proxied(self.settings, spec),  # --- egress: a mode change re-applies the template
                envservices.digest(spec.services))  # --- envbuilds: a change of sidecars re-applies the template
-        if self._synced.get(spec.name) != key:
-            await self.sync_warm_pool(spec, image)  # idempotent; keeps template image and packs current
-            self._synced[spec.name] = key
-        claim = f"hangar-{sandbox.id}"
-        body = {
-            "apiVersion": f"{EXT_GROUP}/{EXT_V}", "kind": "SandboxClaim",
-            "metadata": {"name": claim, "labels": {**MANAGED, "dev.hangar/sandbox": sandbox.id,
-                                                   "dev.hangar/env": spec.name}},
-            "spec": {"warmPoolRef": {"name": f"hangar-{spec.name}"},
-                     "lifecycle": {"shutdownPolicy": "Delete"}},
-        }
-        if sandbox.expires_at:
-            body["spec"]["lifecycle"]["shutdownTime"] = _rfc3339(sandbox.expires_at + 300)  # reaper first, k8s backstop
-        await asyncio.to_thread(self.crd.create_namespaced_custom_object, EXT_GROUP, EXT_V, self.ns,
-                                "sandboxclaims", body)
+        from hangar import k8sgc  # --- review: the template sweep leaves it alone until the claim is made
+
+        async with k8sgc.creating(self, spec.name):
+            if self._synced.get(spec.name) != key:
+                await self.sync_warm_pool(spec, image)  # idempotent; keeps template image and packs current
+                self._synced[spec.name] = key
+            sandbox.info["k8s_template"] = f"hangar-{spec.name}"  # --- durable: k8sgc keeps it while the sandbox lives
+            claim = f"hangar-{sandbox.id}"
+            body = {
+                "apiVersion": f"{EXT_GROUP}/{EXT_V}", "kind": "SandboxClaim",
+                "metadata": {"name": claim, "labels": {**MANAGED, "dev.hangar/sandbox": sandbox.id,
+                                                       "dev.hangar/env": spec.name}},
+                "spec": {"warmPoolRef": {"name": f"hangar-{spec.name}"},
+                         "lifecycle": {"shutdownPolicy": "Delete"}},
+            }
+            if sandbox.expires_at:
+                body["spec"]["lifecycle"]["shutdownTime"] = _rfc3339(sandbox.expires_at + 300)  # reaper, then k8s
+            await asyncio.to_thread(self.crd.create_namespaced_custom_object, EXT_GROUP, EXT_V, self.ns,
+                                    "sandboxclaims", body)
         sandbox.provider_ref = claim
 
     async def _claim(self, sandbox: Sandbox) -> dict | None:

@@ -6,10 +6,12 @@ sandboxes never see it.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import re
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -78,6 +80,28 @@ class GitHub:
     async def default_branch(self, repo: str) -> str:
         return (await self._req("GET", f"/repos/{repo}"))["default_branch"]
 
+    # --- review(clouddoctor): the Cloud Doctor judges its pushed fix from GitHub (clouddoctor.after_push)
+    async def branch_sha(self, repo: str, branch: str) -> str:
+        return (await self._req("GET", f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}"))["object"]["sha"]
+
+    async def compare(self, repo: str, base: str, head: str) -> dict[str, Any]:
+        return await self._req("GET", f"/repos/{repo}/compare/{quote(base, safe='')}...{quote(head, safe='')}")
+
+    async def file_at(self, repo: str, path: str, ref: str) -> str | None:
+        """A file's text at `ref`; None when it isn't there; `<symlink>` and the like for what isn't a file."""
+        r = await self._client.get(f"/repos/{repo}/contents/{quote(path)}", params={"ref": ref})
+        if r.status_code == 404:
+            return None
+        if r.status_code >= 400:
+            raise GitHubError(f"GitHub GET contents of {path}: {r.status_code}"[:500])
+        d = r.json()
+        if not isinstance(d, dict) or d.get("type") != "file" or d.get("encoding") != "base64":
+            return f"<{d.get('type') if isinstance(d, dict) else 'directory'}>"
+        return base64.b64decode(d.get("content") or "").decode("utf-8", "replace")
+
+    async def delete_branch(self, repo: str, branch: str) -> None:
+        await self._req("DELETE", f"/repos/{repo}/git/refs/heads/{quote(branch, safe='/')}")
+
     async def comment(self, repo: str, number: int, body: str) -> dict[str, Any] | None:
         return await self._req("POST", f"/repos/{repo}/issues/{number}/comments", json={"body": f"{MARKER}\n{body}"})
 
@@ -107,21 +131,23 @@ class GitHub:
         return r.json()
 
     async def hook_deliveries(self, repo: str, hook_id: int, cursor: str | None = None,
-                              per_page: int = 100) -> tuple[list[dict[str, Any]], str | None]:
+                              per_page: int = 100, org: bool = False) -> tuple[list[dict[str, Any]], str | None]:
         """--- reconciler: one page of a repo webhook's recent deliveries, newest first, and the cursor of the next
-        page (GitHub pages these by a cursor in the Link header, not by page number)."""
+        page (GitHub pages these by a cursor in the Link header, not by page number). --- trust: `org`: `repo` is an
+        organization and the hook is its own (GET /orgs/{org}/hooks/{hook_id}/deliveries, the same paging)."""
         params: dict[str, Any] = {"per_page": per_page}
         if cursor:
             params["cursor"] = cursor
-        path = f"/repos/{repo}/hooks/{int(hook_id)}/deliveries"
+        path = f"/{'orgs' if org else 'repos'}/{repo}/hooks/{int(hook_id)}/deliveries"
         r = await self._client.get(path, params=params)
         if r.status_code >= 400:
             raise GitHubError(f"GitHub GET {path}: {r.status_code}"[:500])
         nxt = (r.links.get("next") or {}).get("url")
         return r.json() or [], (httpx.URL(nxt).params.get("cursor") if nxt else None)
 
-    async def redeliver(self, repo: str, hook_id: int, delivery_id: int) -> None:  # --- reconciler
-        await self._req("POST", f"/repos/{repo}/hooks/{int(hook_id)}/deliveries/{int(delivery_id)}/attempts")
+    async def redeliver(self, repo: str, hook_id: int, delivery_id: int, org: bool = False) -> None:  # --- reconciler
+        await self._req("POST", f"/{'orgs' if org else 'repos'}/{repo}/hooks/{int(hook_id)}/deliveries/"
+                                f"{int(delivery_id)}/attempts")
 
     async def issue_comments(self, repo: str, number: int, limit: int = 20) -> list[dict[str, Any]]:
         out = await self._req("GET", f"/repos/{repo}/issues/{number}/comments", params={"per_page": 100})

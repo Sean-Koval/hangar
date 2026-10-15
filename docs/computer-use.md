@@ -131,6 +131,11 @@ egress policy lets out. What stops it there:
 - **Either way, limit the reach:** an egress allowlist for the environment, credentials scoped to the work and
   short-lived, and browsing only the app under test and what it needs. Playwright is pinned and should be bumped
   with Chromium security releases.
+- **Encrypted ClientHello is off.** The egress proxy refuses ClientHellos with ECH, which would hide the site
+  behind its CDN's name ([security.md](security.md#egress-allowlists)), and Chromium sends a GREASE ECH extension by
+  default. The image sets the `EncryptedClientHelloEnabled: false` managed policy for Chromium, Chrome and Chrome
+  for Testing, and `hangar-agent browse` also passes `--disable-features=EncryptedClientHello`. A browser of the
+  agent's own needs the same switch to work through the proxy.
 
 `hangar-agent env doctor` reports the runtime, the `/dev/shm` size and any missing tool, so an agent can tell "the
 environment can't" from "my test is wrong". An environment without `computer:` still has `hangar-computer`, which

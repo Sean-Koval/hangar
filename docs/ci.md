@@ -7,6 +7,8 @@ tests, and when it goes red, hands the bisect and the repair to a hangar job. Tw
 | --- | --- | --- | --- |
 | `.github/workflows/pr.yml` | every pull request | ruff; the selected tests in 4 shards; the Docker smoke suite, Rust and terraform when their paths change | about 40 s for a one-module change, about 50 s for the whole suite (the required `test` check) |
 | `.github/workflows/ci.yml` | every push to main; `workflow_dispatch` on any branch | ruff; every test in 4 shards; all 12 Docker e2e suites; envd's clippy and tests; the image build; terraform; flake report; bisect hook | about 2 min |
+| `.github/workflows/harness-contract.yml` | PRs that touch harness, driver or isolation code; every push to main | the real agent CLIs at the locked versions, offline, and the recorded protocols ([harnesses.md](harnesses.md#the-contract-tests)) | about 1 min with the CLIs cached |
+| `.github/workflows/harness-canary.yml` | nightly | the newest upstream CLIs against the same tests; a lock-bump PR or an issue ([harnesses.md](harnesses.md#the-canary)) | a few minutes |
 
 Before this, one job ran the 734 unit tests one after another (5 min 24 s), one of the 12 Docker suites ran, and envd
 wasn't built or tested at all. Both PRs and main took about 5.5 minutes.

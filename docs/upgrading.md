@@ -2,29 +2,31 @@
 
 Two guides, newest first:
 
-- [**This release**](#upgrading-to-the-team-release-75100) (#75–#100): one ordered procedure for everything since the overnight stack. Wave 1 (#75–#90): one hangar for a team of six at ~60 sessions, people and per-person credentials, front-door defaults and job budgets, the reconciler, the MCP deadline contract, and images built before anyone waits. Wave 2 (#91–#100): team credentials and linked accounts, Jira and GitHub Projects intake, egress allowlists, secret scanning and short-lived cloud credentials, a computer for every agent, environments that live with the repo, an approval that lands the PR, the always-on control plane and gated deploys.
+- [**This release**](#upgrading-to-the-team-release-75110) (#75–#110): one ordered procedure for everything since the overnight stack. Wave 1 (#75–#90): one hangar for a team of six at ~60 sessions, people and per-person credentials, front-door defaults and job budgets, the reconciler, the MCP deadline contract, and images built before anyone waits. Wave 2 (#91–#100): team credentials and linked accounts, Jira and GitHub Projects intake, egress allowlists, secret scanning and short-lived cloud credentials, a computer for every agent, environments that live with the repo, an approval that lands the PR, the always-on control plane and gated deploys. Wave 3 (#101–#110): review-round trust and the stale-approval gate, egress closed further (no ECH, read-only package mirrors, pushes scanned in the gateway), history out of memory, a rotatable vault key, repo builds that pass on less, the operator console and the Cloud Doctor, the harness canary and `frontier` models, agent-led environment setup, and the acceptance suite for all of it.
 - [**The overnight stack**](#upgrading-from-before-the-overnight-stack-4869) (#48–#69), for a hangar older than that. Do its backup and read its defaults first, then follow this release's procedure: its prebuild also covers the overnight guide's "republish the Codex pack" step.
 
 Both are written for the GKE install from [gke.md](gke.md): one zonal cluster, gVisor sandboxes, the control plane with SQLite on the `hangar-data` PVC, checkpoints in the session bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / `power.sh`. [CHANGELOG.md](../CHANGELOG.md) lists what each adds.
 
-## Upgrading to the team release (#75–#100)
+## Upgrading to the team release (#75–#110)
 
 The short version, in order:
 
 ```bash
-hangar admin backup                                   # 1. back up; record the running image
+hangar admin backup                                   # 1. back up; record the running image; the vault key in Secret Manager
 #                                                       2. request quotas (days ahead)
 uv run hangar images build --registry "$REG"          # 3. prebuild the new image and pack tags
 #                                                       4. in the power-down window: terraform apply (node pool, power schedule)
 bash deploy/gke/power.sh up && bash deploy/gke/up.sh  # 5. bring the cluster up, roll out
-hangar doctor && hangar power                         # 6. check
+hangar doctor && hangar status                        # 6. check
 hangar cred migration                                 # 7. people: your logins became yours; add team API keys
 hangar person add alice
-hangar config set HANGAR_BUDGET_DAY_TIMEZONE America/New_York   # 8. budgets, then job concurrency
+hangar config set HANGAR_JOB_BUDGET_MAX_COST_USD 10   # 8. budgets (yours to choose; jobs now run on frontier), then concurrency
 hangar doctor --fix                                   # 9. front doors: the pull_request event; then the App, Jira, Projects
-hangar config set HANGAR_EGRESS_URL http://hangar-gateway.hangar.svc:3128   # 10. sandboxes: egress, cloud, previews
-#                                                       11. deploy.yml: the production environment and its secrets
-bash scripts/acceptance/gke.sh                        # 12. clients and proof
+hangar config set HANGAR_EGRESS_URL http://hangar-gateway.hangar.svc:3128   # 10. sandboxes: egress, mirrors, cloud, previews
+hangar config set HANGAR_MODEL_LIST_CREDENTIALS '{"anthropic": "anthropic-models"}'   # 11. models, the canary, env setup
+hangar admin doctor run --dry-run                     # 12. operations: the Cloud Doctor, the console, the vault key
+#                                                       13. deploy.yml: the production environment and its secrets
+bash scripts/acceptance/gke.sh --no-kubectl           # 14. clients and proof: docs/acceptance.md, in its order
 ```
 
 ### What you configure
@@ -33,29 +35,48 @@ Everything the owner sets up, in the order of the steps. **Required** means the 
 
 | What | Required? | Step |
 | --- | --- | --- |
+| The vault key in Secret Manager (`hangar-vault-key`), copied from the `hangar` Secret, never to a laptop | **Required** on GKE before step 5 (a backup can't be restored without it, and rotation reads it from there) | [1](#1-back-up) |
+| `HANGAR_BACKUP_STORE`: a bucket of its own, write-only for hangar's service account (`roles/storage.objectCreator`), with a lifecycle rule | Optional (backups stay beside the checkpoints; `hangar doctor` warns) | [1](#1-back-up) |
 | Quotas: `N2D_CPUS` ≥ 160, `CPUS_ALL_REGIONS`, `SSD_TOTAL_GB` ≥ 2,250 | **Required** on GKE | [2](#2-request-quotas-days-ahead) |
 | Images workflow secrets (`GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT`, `HANGAR_REGISTRY`, repository secrets) | Optional: without them, prebuild by hand | [3](#3-prebuild-the-new-image-and-pack-tags) |
 | `terraform apply`: the `n2d-standard-16` node pool, `power_up_cron` 09:50, `sandbox_warm_nodes`, hangar's `roles/run.invoker` on the power-up job | **Required** on GKE | [4](#4-in-the-power-down-window-the-node-pool-and-the-power-schedule) |
 | `HANGAR_POWER_UP_JOB` | Set by `up.sh`; **required** for `hangar power up` | [5](#5-bring-the-cluster-up-and-roll-out) |
 | Team credentials: API keys (`hangar cred add NAME --team --kind api_key`). A subscription login is refused as one | **Required** for work no person owns (webhooks, schedules without a person, unlinked senders) | [7](#7-people-your-logins-stay-yours-add-team-credentials-then-the-team) |
 | People, their tokens and linked GitHub, Slack and Jira accounts | Optional (required for a team) | [7](#7-people-your-logins-stay-yours-add-team-credentials-then-the-team) |
-| `HANGAR_BUDGET_DAY_TIMEZONE`, `HANGAR_JOB_BUDGET_MAX_COST_USD`, `HANGAR_PERSON_MAX_USD_PER_DAY`, repo `max_usd_per_day` | Optional; **required** before raising `HANGAR_JOB_CONCURRENCY` | [8](#8-budgets-then-job-concurrency) |
+| `HANGAR_BUDGET_DAY_TIMEZONE`, `HANGAR_JOB_BUDGET_MAX_COST_USD`, `HANGAR_PERSON_MAX_USD_PER_DAY`, repo `max_usd_per_day` | Optional; **required** before raising `HANGAR_JOB_CONCURRENCY`. Hangar sets no amount: jobs default to `frontier`, uncapped, and `hangar doctor` warns (`model spend`) until one is set | [8](#8-budgets-then-job-concurrency) |
 | The webhook's `pull_request` event (`hangar doctor --fix`) | **Required** | [9a](#9a-the-github-webhook) |
 | GitHub App: `github_app` credential and `HANGAR_GITHUB_APP_CREDENTIAL` | Optional; **required** for landing | [9b](#9b-the-github-app-and-landing) |
-| Branch protection (1 approval, dismiss stale approvals, approval of the latest push, required checks) and *Allow auto-merge* | **Required** on every repo with `land: auto_after_approval` | [9b](#9b-the-github-app-and-landing) |
+| Branch protection (1 approval, **dismiss stale approvals**, approval of the latest push, required checks) and *Allow auto-merge* | **Required** on every repo with `land: auto_after_approval`: without stale dismissal hangar doesn't arm and `hangar doctor` fails (opt out per repo: `--no-require-stale-dismissal`) | [9b](#9b-the-github-app-and-landing) |
 | Repo policy `land`, `approvers`, `merge_method`, `risk_paths` | Optional (landing is off by default) | [9b](#9b-the-github-app-and-landing) |
 | Jira: an account and API token (`jira-api`), the webhook and its secret (`jira-webhook`) or an Automation token, `HANGAR_JIRA` | Optional | [9c](#9c-jira) |
 | GitHub Projects: an organization webhook (Projects v2 items), the control token's `project` scope, `HANGAR_GITHUB_PROJECTS` | Optional | [9d](#9d-github-projects) |
+| The control token's organization *Webhooks: Read and write* (classic: `admin:org_hook`) | Optional: without it, missed Projects deliveries aren't redelivered (a warning) | [9d](#9d-github-projects) |
 | `HANGAR_EGRESS_URL` | **Required** on GKE before any environment uses `egress: allowlist` or `none` | [10a](#10a-egress-allowlists) |
 | `HANGAR_EGRESS_DEFAULT` | Optional (default `open`, as before) | [10a](#10a-egress-allowlists) |
+| GKE: Artifact Registry remote repositories for PyPI and npm (Go stays on the public proxy), `roles/artifactregistry.reader` for hangar's service account, and `HANGAR_PACKAGE_MIRRORS` | Optional (the mirror reads the public registries by default) | [10a](#10a-egress-allowlists) |
+| `presets: [packages, github]` on proxied `credential_mode: direct` environments that clone from GitHub | **Required** for them: `packages` no longer includes `github` | [10a](#10a-egress-allowlists) |
+| GitHub App: *Actions*, *Checks* and *Issues*: Read | Optional: the read-only API through the gateway asks for them | [10a](#10a-egress-allowlists) |
+| `cloud.lifetime_minutes` at most 60 | **Required** for environments that set more (they no longer load) | [10b](#10b-short-lived-cloud-credentials) |
+| `HANGAR_OIDC_KEY_ROTATION_DAYS` | Optional (off) | [10b](#10b-short-lived-cloud-credentials) |
+| Computer environments: rebuild their images | **Required** for their browsers in proxied environments (Chromium's ECH policy) | [10a](#10a-egress-allowlists) |
 | Docker hosts: Docker Engine ≥ 26.0.0 (or 25.0.4, 23.0.11), and the host firewall accepting TCP 3128 and 8788 from `hangar1` | **Required** for proxied environments on Docker | [10a](#10a-egress-allowlists) |
 | `HANGAR_OIDC_ISSUER` (https; public for AWS), and the cloud's trust (a GCP workload identity pool, an AWS role) | Optional; **required** for environments with `cloud:` | [10b](#10b-short-lived-cloud-credentials) |
 | Build secrets: `build_secrets` on an environment or repo policy | Optional; **required** for repos whose `.hangar/environment.yaml` names any | [10c](#10c-environments-that-live-with-the-repo) |
 | `HANGAR_ENV_SERVICE_IMAGES` | Optional (Docker's official images by default) | [10c](#10c-environments-that-live-with-the-repo) |
 | `HANGAR_PREVIEW_DOMAIN`, its wildcard DNS and certificate, and `deploy/k8s/e2b.yaml`'s NetworkPolicy | Optional (previews are off) | [10d](#10d-preview-ports) |
 | `HANGAR_PR_MEDIA_LINKS=signed` | Optional (screenshots and demos are listed by name) | [10e](#10e-the-agents-computer) |
-| deploy.yml: the `production` environment (you as required reviewer; `main` and `v*` tags only), its secrets `GCP_DEPLOY_SERVICE_ACCOUNT`, `GKE_CLUSTER`, `GKE_LOCATION`, `HANGAR_URL`, `HANGAR_DEPLOY_TOKEN`, and the `hangar-deploy` service account and Role | Optional; **required** to deploy with deploy.yml | [11](#11-deploying-with-deployyml) |
-| claude.ai users re-add the hangar connector | **Required** for claude.ai | [12](#12-clients-and-proof) |
+| Model list keys: `HANGAR_MODEL_LIST_CREDENTIALS` (`webhook` credentials holding Anthropic, OpenAI and Gemini API keys, kept from sandboxes) | Optional: without them, `frontier` resolves to hangar's built-in ids (OpenRouter's list needs no key). Env setup now lists models with these, not with the team's harness keys | [11a](#11a-model-list-keys) |
+| Harness canary, on hangar's own repository: branch protection on `main` (required approval, `contract` as a required check) and *Allow auto-merge* | **Required** before the first bump PR can land (without required approvals auto-merge would need none) | [11b](#11b-the-harness-canary) |
+| Harness canary: repository secrets `CANARY_APP_CLIENT_ID` and `CANARY_APP_PRIVATE_KEY` (a dedicated App, Contents and Pull requests: Read and write); variable `CANARY_APPROVERS` | Optional; the App is **required** for checks to run on the bump PR by themselves and for `images` to run on its merge | [11b](#11b-the-harness-canary) |
+| Env setup: `HANGAR_ENV_SETUP_MODELS`, `HANGAR_ENV_SETUP_MAX_COST_USD` / `_MAX_TURNS`, `HANGAR_ENV_SETUP_LABEL` | Optional (defaults: `frontier`, $30 and 16 turns, `hangar-env-setup`) | [11c](#11c-agent-led-environment-setup) |
+| The Cloud Doctor: a **team API key** for its harness (Claude Code unless `HANGAR_DOCTOR_HARNESS`) | Optional: without one the doctor only reports, never starts a job | [12a](#12a-the-cloud-doctor) |
+| `HANGAR_DOCTOR_SPECS_REPO` (and `HANGAR_DOCTOR_SPECS_PATHS`): the repo holding environment specs as files | Optional: without it, fixes to environment specs are reported, not opened as PRs | [12a](#12a-the-cloud-doctor) |
+| `HANGAR_DOCTOR_MODEL=best` | Optional; **required** when the doctor's team key has no Fable access (`frontier` would pick it) | [12a](#12a-the-cloud-doctor) |
+| `HANGAR_DOCTOR_MAX_USD`, `HANGAR_DOCTOR_JOB_MAX_USD`, `HANGAR_DOCTOR_SCHEDULE` | Optional ($10 a run, $3 a job, 00:30; `off` turns it off) | [12a](#12a-the-cloud-doctor) |
+| A new vault key in Secret Manager, then `hangar admin rotate-key` | Optional (rotate on a schedule, when someone who could read it leaves, at once on a leak) | [12c](#12c-rotating-the-vault-key) |
+| deploy.yml: the `production` environment (you as required reviewer; `main` and `v*` tags only), its secrets `GCP_DEPLOY_SERVICE_ACCOUNT`, `GKE_CLUSTER`, `GKE_LOCATION`, `HANGAR_URL`, `HANGAR_DEPLOY_TOKEN`, and the `hangar-deploy` service account and Role | Optional; **required** to deploy with deploy.yml | [13](#13-deploying-with-deployyml) |
+| claude.ai users re-add the hangar connector | **Required** for claude.ai | [14](#14-clients-and-proof) |
+| Acceptance fixtures: a test repo (App installed, *Allow auto-merge*, branch protection with code owners), an approver account's classic `repo` token, a fixture repo, a Jira project mapped to the test repo; deploy.yml's `HANGAR_ACCEPT_TEST_REPO`, `HANGAR_ACCEPT_FIXTURE_REPO` (variables), `HANGAR_ACCEPT_GITHUB_TOKEN`, `HANGAR_ACCEPT_APPROVER_TOKEN`, `HANGAR_ACCEPT_JIRA_WEBHOOK_SECRET` (secrets) | Optional: each check skips, saying why, without its fixture; **required** for `secrets`, `landing`, `envbuild` and `intake` to prove anything | [14](#14-clients-and-proof) |
 
 ### What changes as soon as it starts
 
@@ -77,17 +98,34 @@ To opt out, use `hangar config set NAME VALUE` (kept in hangar's database) or `h
 | **Secret scanning** (#98) | a job's branch was pushed as the agent left it → every new commit's patch, the uncommitted change and the commit messages are scanned first; a stored credential's value or a known token format stops the push and goes back to the agent as a fix turn (2 at most, then `secret_found`). PR text, comments and text artifacts are masked. | `HANGAR_SECRET_SCAN=warn` or `off` |
 | **Redaction** (#98) | stored values were masked verbatim → also reversed, in hex, base64 and percent-encoded (values of 12+ characters). | — |
 | **Egress** (#97) | sandboxes reached the public internet → **unchanged by default** (`HANGAR_EGRESS_DEFAULT=open`). An environment's `egress: {mode: allowlist}` sends its sandboxes through hangar's egress proxy (step 10a). The rollout adds port 3128 to the `hangar-gateway` Service and the proxied NetworkPolicies, which select nothing until an environment is proxied. | — |
+| **Egress, closed further** (#107) | in proxied environments: a ClientHello with Encrypted ClientHello (GREASE too), several or no server names, or an SSL 2/3 hello is cut off; with the gateway configured, `pypi`, `npm` and `go` are read through hangar's read-only mirror (`/pkg/…` on the gateway) instead of the registries' own hosts; `packages` no longer opens GitHub, and `crates` no longer opens crates.io (the publish API); one person's sandboxes share 640 tunnels; a restart lets open tunnels finish for 20 s. Open environments see no change. | `HANGAR_PACKAGE_MIRROR=false` (the registries' hosts again); `presets: [packages, github]` |
+| **Pushes through the gateway are scanned** (#107) | the agent's own `git push` went up unscanned → the gateway holds each push, scans it for secrets, and refuses one with a hit (file and line in git's output). Pushes over 64 MB are refused. | `HANGAR_SECRET_SCAN=warn` or `off`; `HANGAR_GATEWAY_SCAN_MAX_MB` |
 | **Environments that live with the repo** (#93, #99) | a repo's own setup ran in every sandbox, every time → a repo's `.hangar/environment.yaml` with an `install` gets versioned builds in the background (first sandbox falls back, with a warning, and schedules one); `start`, `terminals` and `services` run with the sandbox. Repos without the file see no change. | `HANGAR_ENV_BUILDS=false` |
 | **The agent's environment report** (#94) | → every harness's MCP config gets a `hangar-env` server (the environment doctor and requests), and job prompts tell the agent to file blockers with `hangar-agent env request` and keep going. Requests are never granted on their own: they wait in `hangar requests`, MCP `pending_approvals` and the inbox. | `HANGAR_ENV_DOCTOR_MCP=false` |
 | **PRs and the inbox** (#96) | → each agent PR gets a review packet comment, and `hangar inbox` / `hangar://inbox` / `GET /api/inbox` lists what waits on each person. Agent PRs keep coming from the control token, and nothing lands by itself, until you set up the App and `land` (step 9b). | — |
+| **Landing needs stale approvals dismissed** (#101) | `land: auto_after_approval` armed auto-merge whatever the base branch's protection → it arms only when the base branch's protection or a ruleset dismisses stale approvals on a push (or hangar can read neither: it doesn't arm), and `hangar doctor` fails until then. | `hangar repo set owner/repo --no-require-stale-dismissal` |
+| **Auto-fix review rounds** (#101) | any collaborator's review started a round on any job, as an instruction → on a person's job only their linked account, an admin's, the policy's `approvers` or a code owner of every touched path; never a bot; and review text is an untrusted attachment ([team.md](team.md#who-is-trusted), rule 6). | `HANGAR_GITHUB_AUTOFIX` (`ci` only) |
 | **`power.sh down`** (#84, #90, #95) | every node pool and hangar went to 0 at 01:00, so GitHub, Slack and Jira events were lost → it drains (`POST /api/admin/drain`), checkpoints running turns, then powers down **only the sandbox pools** (`^sandboxes-`: gVisor, Kata, microVM). Hangar and the `system` pool stay up: events are queued, jobs wait with `waiting: sandboxes power on at 10:00 EDT`, creates answer at once (REST `503` with `Retry-After`). A job turn the pools take away resumes from its checkpoint after power-up. | `POWER_POOLS` (a regex) for the script |
 | **`power.sh up`** (#90, #95) | pools back at their ranges at 10:00, a cold first create (2–4.5 min) → at 09:50 the gVisor pool comes back at a warm floor of 1 node, every image and pack is pulled onto it (the `hangar-prepull` DaemonSet), then queued jobs start and warm pools are sized from last week's 10:00 hour. It keeps an autoscaling range a `terraform apply` set while the pools were down, and the microVM pool comes back at its fixed size. | `sandbox_warm_nodes = 0`; `HANGAR_POWER_WARM_POOLS=off` |
 | **Cost** (#95) | the system node runs around the clock, and one Spot sandbox node all powered hours: about **+$22/month** and **up to +$163/month** ([team-scale.md](team-scale.md#cost)) | as above |
 | **Interrupted jobs** (#84) | a job caught by a restart or the power-down failed as `interrupted` → it resumes from its session's checkpoint, at most twice, 20 s apart. | `HANGAR_JOB_RESTART_RESUMES=0` |
 | **The reconciler** (#84) | rows a restart left `starting` or `stopping` stayed so, with their leases → a pass at startup and every `HANGAR_RECONCILE_INTERVAL_SECONDS` (30) finishes them; a GKE pod recreated blank under its claim counts as gone and its session resumes from its checkpoint. Sandboxes from before adopt their current pod's UID. It assumes one hangar process per database (`replicas: 1`, `strategy: Recreate`, as shipped). | — |
 | **GitHub redelivery** (#84) | deliveries that failed while hangar was down were lost → at each start hangar asks GitHub to redeliver them (up to 3 days back). The stored GitHub token needs *Webhooks: Read and write*, as `hangar setup github` already asks. | `HANGAR_GITHUB_REDELIVER_ON_START=false` |
+| **GitHub Projects redelivery** (#101) | missed `projects_v2_item` deliveries were lost → the startup pass also asks each `HANGAR_GITHUB_PROJECTS` organization's webhook to redeliver them. The control token needs the organization's *Webhooks: Read and write* (classic: `admin:org_hook`); without it hangar logs a warning. | `HANGAR_GITHUB_REDELIVER_ON_START=false` |
 | **MCP waits** (#86) | `wait_for_turn` waited up to 300 s by default (600 at most), `exec` as long as its `timeout`, `process` `attach` up to 600 s, `terminal_send` up to its `wait_ms` → each at most `HANGAR_MCP_TOOL_WAIT_SECONDS` (150 s), so claude.ai (which gives up after about 230 s) gets an answer: `wait_for_turn` says `done: false`, an `exec` that runs into the cap points at `process`. Destroy, pause, resume, extend, snapshot, `fork_session` and `run_agent` answer within it too and finish in the background. Any other tool still waiting just past it (165 s) gets an error. | Raise `HANGAR_MCP_TOOL_WAIT_SECONDS` only if all your clients wait longer than claude.ai |
-| **Tool-list notice** (#86) | `serverInfo.version` was `0.1.0` → `<version>+tools.<hash>`. A claude.ai connector whose tool list is older than the server's gets a one-line note (at most hourly) asking to remove and re-add the connector (step 12). | — |
+| **Tool-list notice** (#86) | `serverInfo.version` was `0.1.0` → `<version>+tools.<hash>`. A claude.ai connector whose tool list is older than the server's gets a one-line note (at most hourly) asking to remove and re-add the connector (step 14). | — |
+| **Models** (#105) | `envs/bare.yaml` ran Claude Code on the alias `opus`, pi and Antigravity on flash ids, Codex on its account default, and jobs on whatever the environment said → **`model: frontier`** for every harness of `bare` and of every environment that inherits its `model`, and jobs default to `frontier`, as do env setup's agents and the Cloud Doctor's jobs. It is resolved when a sandbox or session is created and pinned for it (`claude-fable-5-1` with no Anthropic key to list with: $10/$50 per MTok against Opus 5.5's $4/$20). Running sessions keep their model. | `model: balanced` or a pinned id in the environment or repo policy |
+| **Session CLI versions** (#105) | → a session records the locked CLI version it was created under. A follow-up on a sandbox running another version hands off (a summary in a new conversation) instead of resuming; sessions from before this release adopt the version of their next sandbox. | — |
+| **History out of memory** (#108) | every job and session ever made was loaded at startup and kept (~30 KB a finished job) → live work and the last `HANGAR_RESIDENT_MINUTES` (60) stay in memory; the rest is read back by id, name or index. The **first start indexes** the jobs and sessions tables (~2 s per 20,000 records on 2 vCPUs) before it answers. | `HANGAR_RESIDENT_MINUTES` (more memory, fewer reads) |
+| **Listings page** (#108) | `list_jobs`, `list_sessions`, `GET /api/jobs` and `/api/sessions` sorted the team's newest 500, then filtered by person → pages from the indexes, filtered by person first; each item has a `cursor` for the next page (REST also sets `X-Next-Cursor`). | — |
+| **Job and session archive** (#108) | → finished jobs and settled sessions untouched for 30 days move to `jobs_archive` and `sessions_archive`: still found, listed and in the usage report, never deleted. Kept out: open or approved PRs, merged or closed ones whose session hasn't ended, auto-fix triggers waiting, a schedule's last job, sessions with checkpoints, a session a job points at. `/metrics` counts them off the event loop. | `HANGAR_JOB_RETENTION_DAYS=0`, `HANGAR_SESSION_RETENTION_DAYS=0` |
+| **The vault key ring** (#109) | one key → `HANGAR_SECRET_KEY` (or the key file) holds keys newest first; a single key is a ring of one, so nothing changes until you rotate (step 12c). The first start records which key sealed the store (a fingerprint, never the key). | — |
+| **Repo builds' `.git`** (#110) | hooks and git config that `install` left went into every sandbox from the build → hooks (but the samples) and every config key but remotes, branches, user, core, sparse-checkout and git-lfs's own filters are removed before the checkout is captured; hangar's git commands run with hooks off. A repo that relied on `install` setting up hooks (husky's `prepare`) sets them up in `start`. | — |
+| **Kubernetes templates per build and per set of services** (#110) | services' templates were never deleted; a build's was deleted under a session still running from it → the reaper deletes either, with its warm pool, once no live sandbox uses it (every 10 minutes at most, never in its first 10). The first sweep deletes the services' templates that piled up. | — |
+| **Credential health** (#104) | → every agent credential is checked without a model (by age, format, `codex login status`, `gcloud`) at capture, nightly and from `hangar status`; one that fails or expires within 14 days shows in `hangar doctor`, `hangar status` and its renewer's inbox. It never rolls a deploy back (`deploy_gate: false`). | — |
+| **Flight records and the nightly pass** (#104, #106) | → a record for each failed, timed-out or slow job and turn (its log end masked and sealed, kept 14 days); at 00:30 the nightly pass checks credentials and runs the Cloud Doctor, which **only reports until it has a team key** (step 12a). | `HANGAR_DOCTOR_SCHEDULE=off` |
+| **Model spend** (#105) | → `hangar doctor` warns (`model spend`) and `hangar status`'s `models` line says `NO job budget or daily cap` while jobs default to `frontier` with neither `HANGAR_JOB_BUDGET_MAX_COST_USD` nor `HANGAR_PERSON_MAX_USD_PER_DAY` set (step 8). | set a budget |
+| **Env setup** (#102) | → `hangar env setup <repo>`, the `hangar.kind: env-setup` job label and the `hangar-env-setup` issue label start an agent-led setup that opens a PR with a validated `.hangar/environment.yaml`. Its PR opens only if the branch is still at the commit hangar validated; `.hangar/**` is **high risk** in every PR's packet. | don't use the label |
 | **Harness versions and packs** (#83, #87) | Claude Code and Antigravity followed "latest" → `src/hangar/harnesses.lock.yaml` pins every harness (Claude Code 2.1.296, Codex 0.162.1, Antigravity 1.3.3, pi 1.1.0, Gemini 0.64.0); a pack build fails unless the CLI reports the locked version. Packs hold only the vendor's files and are mounted by digest. **Every pack tag changes once**, and so does every image that bakes a harness in (step 3). `hangar pack publish` no longer overwrites an existing tag without `--force`. | — |
 
 ### 1. Back up
@@ -97,7 +135,18 @@ kubectl -n hangar get deploy hangar -o jsonpath='{.spec.template.spec.containers
 hangar admin backup && hangar admin backups      # encrypted with the vault key, into the session store
 ```
 
-Keep the vault key outside the cluster too ([§1 of the overnight guide](#1-back-up-first) shows how). The previous version runs on the upgraded database file (see [rolling back](#rolling-back-this-release)), so the backup is for a disaster, not for the rollback.
+**The vault key in Secret Manager (required on GKE, before step 5).** Every credential, checkpoint and backup is encrypted with it, a backup can't be restored without it, and a rotation (step 12c) works from there. If it lives only in the `hangar` Secret (what `up.sh` does), copy it once, piped, never to a file on your machine ([security.md](security.md#where-the-keys-live)):
+
+```bash
+kubectl -n hangar get secret hangar -o jsonpath='{.data.HANGAR_SECRET_KEY}' | base64 -d | \
+  gcloud secrets create hangar-vault-key --data-file=- --replication-policy=automatic
+```
+
+Give `roles/secretmanager.secretAccessor` on it only to the operators who rotate keys.
+
+**Backups apart from the checkpoints (optional).** Backups go to `_backups/` in the checkpoints' bucket, under hangar's own service account, and `hangar doctor` warns about that (`backup isolation`). To fix it, create a bucket of its own where hangar's service account has only `roles/storage.objectCreator` (it writes backups, can't read or delete them), add a lifecycle rule that deletes them after the time you keep them, and `hangar config set HANGAR_BACKUP_STORE gs://<bucket>` (restart). Restores are then an operator's (`hangar admin restore --local`).
+
+The previous version runs on the upgraded database file (see [rolling back](#rolling-back-this-release)), so the backup is for a disaster, not for the rollback.
 
 ### 2. Request quotas, days ahead
 
@@ -140,16 +189,17 @@ bash deploy/gke/up.sh           # prebuild (finds nothing missing), deploy/k8s (
                                 # NetworkPolicies), the rollout; sets HANGAR_POWER_UP_JOB from terraform
 ```
 
-Do this before the team starts, or let the 10:00 schedule run `power.sh up` and deploy right after. The Deployment uses `Recreate`, so the URL answers 502 until the new pod is ready. On its first start hangar makes the earlier credentials the owner's, creates the store's indexes and archive table (20,000 records index in well under a second), runs a reconciler pass before sessions and jobs look at their sandboxes, resumes jobs the power-down interrupted, and asks GitHub to redeliver what it missed overnight. From the next 01:00, `power.sh down` leaves hangar up.
+Do this before the team starts, or let the 10:00 schedule run `power.sh up` and deploy right after. The Deployment uses `Recreate`, so the URL answers 502 until the new pod is ready. On its first start hangar makes the earlier credentials the owner's, creates the store's indexes and archive tables (20,000 sandbox records index in well under a second; the jobs and sessions tables take ~2 s per 20,000 before hangar answers), records which vault key sealed the store, runs a reconciler pass before sessions and jobs look at their sandboxes, resumes jobs the power-down interrupted, and asks GitHub to redeliver what it missed overnight. From the next 01:00, `power.sh down` leaves hangar up.
 
 ### 6. Check
 
 ```bash
 hangar doctor
+hangar status    # the console: power, loops, versions, builds, failures, requests, SLOs, credentials, models
 hangar power     # "sandboxes: on"; the last power-up, the last deploy, the loops' heartbeats
 ```
 
-The doctor names environments that attach the control plane's own GitHub token in direct mode (fix with `hangar cred exposure <name> sandbox`, or switch them to the gateway), mapped repos whose jobs would run with no check (`hangar repo set <repo> --verify "…"`), the webhook's events (step 9a) and quota errors. New in this release: **personal credentials shared** (fails on a subscription login stored as the team's), **team credentials for jobs**, **unlinked senders**, the Jira configuration, landing repos' branch protection, **sandbox power**, **last deploy** and **background loops**.
+The doctor names environments that attach the control plane's own GitHub token in direct mode (fix with `hangar cred exposure <name> sandbox`, or switch them to the gateway), mapped repos whose jobs would run with no check (`hangar repo set <repo> --verify "…"`), the webhook's events (step 9a) and quota errors. New in this release: **personal credentials shared** (fails on a subscription login stored as the team's), **team credentials for jobs**, **unlinked senders**, the Jira configuration, landing repos' branch protection (**fails** without stale-approval dismissal), **sandbox power**, **last deploy**, **background loops**, **vault key** (a pending rotation, a retired key still configured), **backup isolation**, **credential health** and **model spend** (warns until step 8 sets a budget).
 
 ### 7. People: your logins stay yours; add team credentials, then the team
 
@@ -189,6 +239,8 @@ kubectl -n hangar rollout restart deploy/hangar
 ```
 
 A slot is a job, not a sandbox: 24 best-of-4 jobs could hold all 120 sandboxes, so keep `HANGAR_PERSON_MAX_RUNNING_JOBS` (half the slots) and the budgets in place ([team-scale.md](team-scale.md#limits-and-follow-ups)).
+
+**Jobs now default to `frontier`** (Claude Fable 5.1 on Claude Code, $10/$50 per MTok; [harnesses.md](harnesses.md#models-the-latest-strong-model-per-provider)), and **hangar sets no spend cap of its own**: the amounts above are examples, and choosing them is yours. Until `HANGAR_JOB_BUDGET_MAX_COST_USD` or `HANGAR_PERSON_MAX_USD_PER_DAY` is set, `hangar doctor` warns (`model spend`) and `hangar status` shows `NO job budget or daily cap` on its `models:` line. A repo policy's `job_budget` or `--max-usd-per-day` caps only that repo. Where price matters more than the last bit of capability, use `model: balanced` in the environment or the repo policy.
 
 ### 9. Front doors
 
@@ -234,7 +286,7 @@ In Jira, *Settings → System → WebHooks*: URL `https://<your hangar>/api/hook
 **Optional.** [intake.md](intake.md#github-projects) has the details.
 
 1. An **organization** webhook (repository webhooks never get project events): payload URL `https://<your hangar>/api/hooks/github`, `application/json`, the same secret as the repository webhooks, only the **Projects v2 items** event.
-2. The control token (`HANGAR_GITHUB_TOKEN_CREDENTIAL`) needs the organization's projects: the `project` scope on a classic token, or **Projects: Read and write** on a fine-grained one.
+2. The control token (`HANGAR_GITHUB_TOKEN_CREDENTIAL`) needs the organization's projects: the `project` scope on a classic token, or **Projects: Read and write** on a fine-grained one. For hangar to redeliver the board moves it missed while down, it also needs the organization's **Webhooks: Read and write** (classic: `admin:org_hook`).
 3. The boards:
    ```bash
    hangar config set github_projects '{"acme/7": {"trigger": "Ready for agent", "repos": ["acme/api"],
@@ -257,12 +309,27 @@ Egress stays `open` until you say otherwise. To proxy an environment's sandboxes
 - **Docker on a Linux host (required** for proxied environments there): Docker Engine 26.0.0 or later (or 25.0.4, 23.0.11), since older engines forward DNS out of internal networks (CVE-2024-29018) and hangar refuses them; a host firewall that drops input must accept TCP 3128 and 8788 from `hangar1`. E2B and Docker Desktop can't enforce egress, so proxied environments don't start there.
 - **Per environment (admin):** `egress: {mode: allowlist, presets: [packages], allow: [docs.python.org]}`. A repo policy can add hosts and tighten the mode (`hangar repo set acme/app --egress-mode none`).
 - **`HANGAR_EGRESS_DEFAULT` (optional):** `allowlist` makes every environment that doesn't set a mode proxied. Turn it on only after the URL above works, and after checking what each environment's agents need.
+- **Package mirrors (#107).** With `HANGAR_GATEWAY_URL` set, proxied sandboxes read PyPI, npm and Go through `/pkg/…` on the gateway ([security.md](security.md#package-mirrors)); nothing to do on Docker, where hangar caches files on the data volume (`HANGAR_PACKAGE_MIRROR_CACHE_MB`, 1024). On GKE, optionally put Artifact Registry remote repositories behind it, so the cluster pulls from Google's cache:
+  ```bash
+  gcloud artifacts repositories create pypi-remote --location=us --repository-format=python \
+    --mode=remote-repository --remote-python-repo=pypi --remote-repo-config-desc="PyPI"
+  gcloud artifacts repositories create npm-remote --location=us --repository-format=npm \
+    --mode=remote-repository --remote-npm-repo=npmjs --remote-repo-config-desc="npm"
+  for r in pypi-remote npm-remote; do
+    gcloud artifacts repositories add-iam-policy-binding $r --location=us \
+      --member="serviceAccount:$HANGAR_SA" --role=roles/artifactregistry.reader
+  done
+  hangar config set HANGAR_PACKAGE_MIRRORS \
+    '{"pypi": "https://us-python.pkg.dev/PROJECT/pypi-remote", "npm": "https://us-npm.pkg.dev/PROJECT/npm-remote"}'
+  ```
+  Keep Go on the public proxy unless an AR Go repository's fetches from origins are acceptable (security.md explains). Proxied environments in `credential_mode: direct` that clone from GitHub need `presets: [packages, github]` now. For the read-only GitHub API through the gateway, give the GitHub App *Actions*, *Checks* and *Issues*: Read (without them it falls back to the push token, reads only).
+- **Browsers (#107):** rebuild computer environments' images (`hangar env build NAME`): Chromium sends GREASE ECH, which the proxy refuses, and the new image turns ECH off by policy.
 
 Agents ask for a missing host with `hangar-agent env request egress HOST`, which waits for you in `hangar requests` and the inbox.
 
 #### 10b. Short-lived cloud credentials
 
-**Optional**; required for environments with `cloud:` ([security.md](security.md#short-lived-cloud-credentials)). Set `HANGAR_OIDC_ISSUER` if `HANGAR_PUBLIC_URL` isn't the https URL to use (AWS fetches `<issuer>/.well-known/openid-configuration` itself, so for AWS it must be public), then trust it in the cloud: a GCP workload identity pool with the JWKS from `/oidc/jwks.json` uploaded, granting `principal://…/subject/hangar:env:<env>`; or an AWS role whose trust policy checks `:sub`. Re-upload the JWKS after each `POST /api/cloud/rotate`.
+**Optional**; required for environments with `cloud:` ([security.md](security.md#short-lived-cloud-credentials)). Set `HANGAR_OIDC_ISSUER` if `HANGAR_PUBLIC_URL` isn't the https URL to use (AWS fetches `<issuer>/.well-known/openid-configuration` itself, so for AWS it must be public), then trust it in the cloud: a GCP workload identity pool with the JWKS from `/oidc/jwks.json` uploaded, granting `principal://…/subject/hangar:env:<env>`; or an AWS role whose trust policy checks `:sub`. Re-upload the JWKS after each `POST /api/cloud/rotate`. `lifetime_minutes` is now at most 60 (tokens are renewed while the sandbox runs); lower any environment that sets more. Where the cloud fetches the JWKS itself, set `HANGAR_OIDC_KEY_ROTATION_DAYS` (90, say) to rotate the signing key on a schedule; where it is uploaded, upload it again after each `cloud.key.next` audit entry.
 
 #### 10c. Environments that live with the repo
 
@@ -283,14 +350,68 @@ hangar config set HANGAR_PREVIEW_DOMAIN hangar-preview.example.net    # restart
 
 Nothing to set: an environment opts in with `computer: true` (its image gets a layer). **Optional:** `HANGAR_PR_MEDIA_LINKS=signed` embeds screenshots and demos in PRs through expiring links anyone holding them can open; leave it `off` for private repos.
 
-### 11. Deploying with deploy.yml
+### 11. Models, the canary and environment setup
+
+#### 11a. Model list keys
+
+**Optional.** `frontier` and `balanced` resolve from each provider's live model list. Without a key for a provider hangar uses the last id it resolved, else a built-in one (`claude-fable-5-1`, `gpt-6-astra`), and the session says so. To list with your accounts (the keys are control-plane credentials: they never reach a sandbox):
+
+```bash
+hangar cred add anthropic-models --harness webhook --kind generic   # an Anthropic API key (Ctrl-D)
+hangar cred add openai-models --harness webhook --kind generic
+hangar config set HANGAR_MODEL_LIST_CREDENTIALS '{"anthropic": "anthropic-models", "openai": "openai-models"}'
+hangar env list                                                      # each harness's model, its policy and list price
+```
+
+Env setup (`hangar env setup`) uses the same lists; it used to list with the team's harness API keys. [harnesses.md](harnesses.md#models-the-latest-strong-model-per-provider) has how each provider's strongest model is picked.
+
+#### 11b. The harness canary
+
+On **hangar's own repository**, not the repos agents work on ([harnesses.md](harnesses.md#setup)). The contract tests (`harness-contract.yml`) run on their own; the nightly canary (`harness-canary.yml`, 03:17 ET) opens a lock-bump PR that lands on one approval (`harness-canary-land.yml`).
+
+1. **Branch protection on `main` (required** before the first bump lands): a required approval, dismiss stale approvals, and **`contract` as a required check**; and under Settings → General, **Allow auto-merge**. Without required approvals, auto-merge would merge a bump nobody approved.
+2. **A dedicated GitHub App (optional, recommended):** Contents and Pull requests: Read and write, no Workflows permission, installed on this repository only; not hangar's own App. Store it as repository secrets `CANARY_APP_CLIENT_ID` and `CANARY_APP_PRIVATE_KEY`. Without it the bump PR comes from the workflow token, so no checks run on it (close and reopen it) and `images` doesn't run on its merge (run it by hand).
+3. **`CANARY_APPROVERS` (optional):** a repository variable with the logins that may approve a bump; the repository's owner otherwise.
+
+#### 11c. Agent-led environment setup
+
+**Optional**, nothing to set. `hangar env setup acme/app [--wait | --drift | --every CRON]` (or `POST /api/env/setup`, or an issue labelled `hangar-env-setup` on GitHub, Jira or GitHub Projects) runs a goal agent and a setup agent on `frontier`, validates the `.hangar/environment.yaml` they write in a clean sandbox with no secrets, and opens a PR through the landing path ([environments.md](environments.md#agent-led-setup)). Its budget is the job's, else the repo policy's, else `HANGAR_ENV_SETUP_MAX_COST_USD` ($30) and `_MAX_TURNS` (16); `HANGAR_ENV_SETUP_MODELS` pins a model or policy per harness.
+
+### 12. Operations: the Cloud Doctor, the console and the vault key
+
+#### 12a. The Cloud Doctor
+
+**Optional**, on by default in report-only form: every night at 00:30 (`HANGAR_DOCTOR_SCHEDULE`, in the power schedule's zone) it reads the flight records, counts transient failures, files requests for hosts and secrets agents keep needing, and, **with a team API key** for its harness, starts root-cause jobs and opens fix PRs only when sure ([doctor.md](doctor.md)). Every PR goes through landing and a human approval.
+
+```bash
+hangar cred add claude-team --team --harness claude-code --kind api_key --file team-key.txt   # if step 7 didn't
+hangar config set HANGAR_DOCTOR_SPECS_REPO acme/hangar-envs         # optional: where environment specs live as files
+hangar config set HANGAR_DOCTOR_MODEL best                          # only if that key has no Fable access
+hangar admin doctor run --dry-run                                   # what a run would do now, changing nothing
+```
+
+- **Model:** `frontier` for every harness (resolved and pinned on each job's session). `frontier` picks Fable on Claude Code; a team key without Fable access needs `HANGAR_DOCTOR_MODEL=best`, which Claude Code resolves against the key in use.
+- **Budget:** `HANGAR_DOCTOR_MAX_USD` ($10 a run) and `HANGAR_DOCTOR_JOB_MAX_USD` ($3 a job); at most 3 doctor PRs open at once.
+- **Specs:** without `HANGAR_DOCTOR_SPECS_REPO` (and `HANGAR_DOCTOR_SPECS_PATHS`), a fix to an environment spec is reported instead of opened.
+
+#### 12b. The operator console
+
+Nothing to set. `hangar status` (`GET /api/status`, `hangar://status`; admins) shows the power state and last deploy, the loops' heartbeats, harness versions, builds, the day's failures by cause, egress denies, waiting requests, SLOs, credential health, the `models` line, the Cloud Doctor and recent warnings. `hangar admin records ls|show` reads the flight records; `hangar cred check` checks credentials now ([observability.md](observability.md)).
+
+#### 12c. Rotating the vault key
+
+**Optional**; nothing changes until you do it. Rotate on a schedule, when an operator who could read the key leaves, and at once when it may have leaked. The full procedure, with every command, is [security.md](security.md#rotating-the-vault-key); in short: put a new key first in Secret Manager (`<new>,<old>`) and the `hangar` Secret, restart, run `hangar admin rotate-key` (it re-seals the vault, re-encrypts checkpoints and backups in the background, and retires the old key when nothing holds it; `--status` shows where it is), then remove the old key from the configuration and **disable** (not destroy) its Secret Manager version until every backup made before the rotation has aged out. Take a backup afterwards.
+
+### 13. Deploying with deploy.yml
 
 **Optional**; required to deploy through `.github/workflows/deploy.yml` rather than `up.sh`. The setup is [below](#deploying-with-deployyml): the `production` environment with you as its required reviewer and only `main` and `v*` tags allowed; its five environment secrets; the `hangar-deploy` service account with `roles/container.clusterViewer` and a Role on the `hangar` Deployment.
 
-### 12. Clients and proof
+### 14. Clients and proof
 
-- **claude.ai users remove the hangar connector and add it again** (Settings → Connectors): the apps never refetch the tool list ([clients.md](clients.md)). CLIs refetch it when a session starts. Wave 2 adds no MCP tools (the inbox is a resource, and requests ride on `pending_approvals` and `answer_approval`).
+- **claude.ai users remove the hangar connector and add it again** (Settings → Connectors): the apps never refetch the tool list ([clients.md](clients.md)). CLIs refetch it when a session starts. Waves 2 and 3 add no MCP tools (the inbox and the console are resources, requests ride on `pending_approvals` and `answer_approval`, listings gain a `cursor` field): 54 tools, 24,647 B.
 - `bash scripts/acceptance/gke.sh` runs the checks from the overnight guide's [§5](#5-prove-it-on-your-cluster) plus `mcp` (`create_sandbox` over MCP on a multi-harness environment within claude.ai's 230 s, a second create whose client gives up after 5 s still comes up, then `exec`), `power` (a create refused while the pools are off) and `warmstart` (a warm and a cold create, timed). It prints the server's version with its tool-list hash.
+- **Acceptance fixtures (optional; each check skips without its own):** a test repo in `HANGAR_GITHUB_REPOS` with the GitHub App installed, *Allow auto-merge*, and branch protection that requires code owners' review; a second account's classic `repo` token (`HANGAR_ACCEPT_APPROVER_TOKEN`); a token that writes to the test and fixture repos (`HANGAR_ACCEPT_GITHUB_TOKEN`); a fixture repo with an unprotected default branch; a Jira project mapped to the test repo (`HANGAR_ACCEPT_JIRA_WEBHOOK_SECRET`). For deploy.yml, the repos are `production` variables (`HANGAR_ACCEPT_TEST_REPO`, `HANGAR_ACCEPT_FIXTURE_REPO`) and the tokens `production` secrets. [acceptance.md](acceptance.md#before-the-first-run-fixtures) has each one.
+- **The first live run follows [acceptance.md](acceptance.md)**, in its order: the core checks, the operator's views (`status`, a Cloud Doctor dry run), then the team release's own (`computer`, `egress`, `services`, `envbuild`, `secrets`, `landing`, `intake`, `scale-smoke`, `power --power-cycle`, `prepull`), with the fixtures each needs and what each failure most likely means. The harness contract and canary are proved in GitHub Actions, not on the cluster: `contract` green on the commit you deploy.
 - `uv run hangar images plan --registry "$REG"` exits 0, and `hangar pack list` shows each pack's locked and installed version.
 - The first 09:50 power-up should report `prepull.ready: true` in `hangar power`.
 
@@ -306,16 +427,25 @@ In this order:
    kubectl -n hangar exec deploy/hangar -- python3 -c "import sqlite3; db = sqlite3.connect('/data/hangar.db'); \
    db.execute('INSERT OR IGNORE INTO sandboxes(key, data) SELECT key, data FROM sandboxes_archive'); db.commit()"
    ```
-5. **Set `HANGAR_JOB_CONCURRENCY` back to 4** if you raised it: the previous version has no job budgets or daily caps.
-6. **Suspend live sessions** (as `power.sh down` does), or let running turns finish.
-7. **The power schedule:** set `power_up_cron = "0 10 * * *"` and `sandbox_warm_nodes = 0`, and `terraform apply`. The old `power.sh` is in the old checkout; the Cloud Run jobs embed whichever script the last apply read.
-8. **Put the previous image back:**
+5. **Hand archived jobs and sessions back, moved, not copied** (the previous version doesn't read the archive, and changes only the main table's copy, so a copy left behind would be stale):
+   ```bash
+   kubectl -n hangar exec deploy/hangar -- python3 -c "import sqlite3; db = sqlite3.connect('/data/hangar.db'); \
+   [db.execute(q.format(t=t)) for t in ('jobs', 'sessions') for q in ( \
+   'INSERT OR IGNORE INTO {t}(key, data) SELECT key, data FROM {t}_archive', 'DELETE FROM {t}_archive')]; \
+   db.commit()"
+   ```
+   The previous version loads every job and session at startup again, so give its pod the memory the history needs. (An upgraded hangar drops an archive row whose key is also in the main table when it starts, so a copy an earlier rollback left is harmless.)
+6. **One vault key.** Finish a rotation (or don't start one), then put the single key `hangar admin rotate-key --status` lists as encrypting back in `HANGAR_SECRET_KEY`: the previous version reads one key and doesn't start with two. With a key file, `secret.key` holds one key once a rotation is retired.
+7. **Set `HANGAR_JOB_CONCURRENCY` back to 4** if you raised it: the previous version has no job budgets or daily caps.
+8. **Suspend live sessions** (as `power.sh down` does), or let running turns finish.
+9. **The power schedule:** set `power_up_cron = "0 10 * * *"` and `sandbox_warm_nodes = 0`, and `terraform apply`. The old `power.sh` is in the old checkout; the Cloud Run jobs embed whichever script the last apply read.
+10. **Put the previous image back:**
    ```bash
    kubectl -n hangar set image deploy/hangar hangar="$(cat ~/.hangar/pre-upgrade-image)"
    kubectl -n hangar rollout status deploy/hangar
    ```
 
-What stays: the node pool (the previous version runs on it unchanged), the database, every session and checkpoint, and the old pack tags in Artifact Registry, which the previous version mounts by tag as before. What the previous version ignores: repo policies, budgets, `person` on records and the owners the migration set (every credential is shared again: remove members first, step 1), `packinfo` digests, the drain (the new `power.sh` treats its 404 as settled), the stale-tool-list records, links, environment builds and requests. GitHub replay marks are compatible both ways. The next upgrade archives the records again; the credential migration doesn't run twice.
+What stays: the node pool (the previous version runs on it unchanged), the database, every session and checkpoint, and the old pack tags in Artifact Registry, which the previous version mounts by tag as before. What the previous version ignores: repo policies, budgets, `person` on records and the owners the migration set (every credential is shared again: remove members first, step 1), `packinfo` digests, the drain (the new `power.sh` treats its 404 as settled), the stale-tool-list records, links, environment builds and requests, flight records, the Cloud Doctor's findings, model policies (a session pinned to `claude-fable-5-1` keeps that id), the key ring's state and `HANGAR_BACKUP_STORE` (backups go beside the checkpoints again). GitHub replay marks are compatible both ways. The next upgrade archives the records again; the credential migration doesn't run twice.
 
 ## Deploying with deploy.yml
 
@@ -325,7 +455,7 @@ What stays: the node pool (the previous version runs on it unchanged), the datab
 2. **Approval.** The deploy job uses the `production` environment, so it waits for a required reviewer (the owner) to approve it ([deployments and environments][envs]).
 3. **Preflight.** It reads hangar's power state and **refuses while the sandbox pools are powered down** (the checks need sandboxes) unless the run's `force` input is set; a forced deploy runs only the checks that need no sandbox (`doctor`, `power`, `metrics`). It lists the server's MCP tools and records the running image and the doctor checks already failing.
 4. **Drain**, then `kubectl set image deploy/hangar hangar=<image>`, `kubectl rollout status`, and `/healthz` through the public URL.
-5. **Acceptance:** `scripts/acceptance/gke.sh --no-kubectl --skip model,steer,gateway`, so every check talks to hangar's REST, MCP and E2B endpoints, including #86's MCP deadline check; none uses kubectl.
+5. **Acceptance:** `scripts/acceptance/gke.sh --no-kubectl --only core --gate core`, so every check talks to hangar's REST, MCP and E2B endpoints, including #86's MCP deadline check; none uses kubectl. Only these [core checks](acceptance.md#core-checks-what-a-deploy-rolls-back-for) decide the rollback. The team checks run after them (`--skip core,model,steer,gateway`) in a step that can't fail the deploy (`continue-on-error`, its own time limit), and are reported. They use the `production` environment's optional `HANGAR_ACCEPT_TEST_REPO` and `HANGAR_ACCEPT_FIXTURE_REPO` variables and `HANGAR_ACCEPT_GITHUB_TOKEN` and `HANGAR_ACCEPT_JIRA_WEBHOOK_SECRET` secrets, and skip without them.
 6. **Run summary:** the server version before → after (`<version>+tools.<hash>`), the MCP tools added and removed, each check's result, and the warm and cold create times.
 7. **On any failure after the image changed**, a cancelled or timed-out run included: `kubectl set image` back to the image it replaced (recorded in step 3; not `rollout undo`, which would go one revision further back when the run redeployed the running image), wait for it, and fail the run. A `doctor` check that already failed before the deploy (step 3 records them) is reported in the summary and doesn't roll back: a rollback can't fix it, and would block every deploy, the fix included. Either way it records the result in hangar (`POST /api/admin/deploys`), which `hangar doctor` and `hangar power` show.
 
@@ -385,7 +515,7 @@ The deploy needs `get`, `watch` and `patch` on the `hangar` Deployment (`kubectl
 
 ## Upgrading from before the overnight stack (#48–#69)
 
-This guide takes a hangar that runs the version before the overnight stack (main at `2e3e0a3`, "Merge pull request #43") to the top of the stack, PRs #48–#69. From there, continue with [this release](#upgrading-to-the-team-release-75100). It is written for the GKE install from [gke.md](gke.md): one zonal cluster, gVisor sandboxes, the control plane with SQLite on the `hangar-data` PVC, checkpoints in the session bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / `power.sh`. [CHANGELOG.md](../CHANGELOG.md) lists what the stack adds.
+This guide takes a hangar that runs the version before the overnight stack (main at `2e3e0a3`, "Merge pull request #43") to the top of the stack, PRs #48–#69. From there, continue with [this release](#upgrading-to-the-team-release-75110). It is written for the GKE install from [gke.md](gke.md): one zonal cluster, gVisor sandboxes, the control plane with SQLite on the `hangar-data` PVC, checkpoints in the session bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / `power.sh`. [CHANGELOG.md](../CHANGELOG.md) lists what the stack adds.
 
 Checkpoints are in the bucket only if `hangar-site` names it, as terraform's comment on the bucket says to. Check before you start; a few things below differ when it prints nothing:
 
@@ -416,10 +546,11 @@ Every claim below was checked against the code, not the PR descriptions. A few t
 kubectl -n hangar get deploy hangar -o jsonpath='{.spec.template.spec.containers[0].image}' | tee ~/.hangar/pre-upgrade-image
 ```
 
-**Save the vault key** if it isn't already somewhere outside the cluster. Every credential, every checkpoint and every backup is encrypted with it:
+**Save the vault key** in Secret Manager if it isn't already somewhere outside the cluster. Every credential, every checkpoint and every backup is encrypted with it. Pipe it straight there; don't write it to a file on your machine ([security.md](security.md#where-the-keys-live)):
 
 ```bash
-( umask 077; kubectl -n hangar get secret hangar -o jsonpath='{.data.HANGAR_SECRET_KEY}' | base64 -d > ~/.hangar/vault-key )
+kubectl -n hangar get secret hangar -o jsonpath='{.data.HANGAR_SECRET_KEY}' | base64 -d | \
+  gcloud secrets create hangar-vault-key --data-file=- --replication-policy=automatic
 ```
 
 **A copy of the database.** Copying `hangar.db` and `hangar.db-wal` separately from a running hangar can tear: SQLite may checkpoint the WAL into the main file between the two copies. Use SQLite's online backup API inside the pod instead. It is what `hangar admin backup` uses: one read transaction, while hangar keeps working.
@@ -577,7 +708,7 @@ Each check prints PASS, FAIL or SKIP with its time:
 | `power` | hangar's power state answers. With the sandbox pools on: what the last power-up pulled and the warm pools. With them off: a create is refused at once (HTTP 503) with when they're back |
 | `warmstart` | two creates back to back on `--warm-env` (default `claude-python`, which keeps a warm pool): the first claims the warm pod, the second starts cold; both times are printed, and `--record FILE` keeps them as JSON lines |
 
-The script never runs `power.sh`. To check power down and up: `bash deploy/gke/power.sh down`, run the script (`power` then checks the refusal), then `power.sh up` and run it again. Everything the script creates is named `accept-<run>` and is removed at the end, also after a failure or Ctrl-C (`--keep` leaves it). `tests/test_acceptance_script.py` runs the script against a hangar on Docker, with GitHub replaced by a local git server behind the gateway. Every check but `k8s` and `steer` runs there for real, `model` with a scripted agent in place of Claude. `k8s`, `steer` and the in-cluster exec measurement run against stand-ins: a fake kubectl, a fake API, and the Docker provider in place of the Kubernetes one.
+The script runs `power.sh` only with `--power-cycle`, which powers the pools down (checking the refusal) and up again, timed, and refuses while others are working ([acceptance.md](acceptance.md)). Everything the script creates is named `accept-<run>` and is removed at the end, also after a failure or Ctrl-C (`--keep` leaves it). `tests/test_acceptance_script.py` runs the script against a hangar on Docker, with GitHub replaced by a local git server behind the gateway. Every check but `k8s` and `steer` runs there for real, `model` with a scripted agent in place of Claude. `k8s`, `steer` and the in-cluster exec measurement run against stand-ins: a fake kubectl, a fake API, and the Docker provider in place of the Kubernetes one.
 
 ### 6. Rolling back
 

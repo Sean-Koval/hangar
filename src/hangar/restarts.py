@@ -13,10 +13,11 @@ apart: a power-up starts on a cold cluster, and every one of them needs a sandbo
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import TYPE_CHECKING
 
 from hangar import strategies
-from hangar.models import Job, JobState, Turn, now
+from hangar.models import Attempt, Job, JobState, Session, SessionState, SessionTurn, Turn, now
 
 if TYPE_CHECKING:
     from hangar.jobs import JobService
@@ -33,16 +34,43 @@ def _left(svc: JobService, job: Job) -> bool:
     return job.restarts < max(0, svc.settings.job_restart_resumes) and not strategies.is_attempt_phase(job)
 
 
-def start_over(svc: JobService, job: Job) -> bool:
+def start_over(svc: JobService, job: Job, why: str = "control plane restarted while provisioning") -> bool:
     """A job the restart caught while provisioning, with nothing saved yet (its sandbox already discarded): queue it
-    to provision again. False when it has used up its restarts."""
+    to provision again, base check included. False when it has used up its restarts."""
     if not _left(svc, job):
         return False
     job.restarts += 1
+    s = svc._session(job)
+    if s is not None and s.state != SessionState.ARCHIVED and not any(t.run_id for t in job.turns):
+        # --- trust: a checkpoint taken while provisioning (the drain's) holds only the base: drop it, so provisioning
+        # starts the session afresh (for_job reuses it) and runs the base check again
+        svc.sessions.release_restart_hold(s)
+        with contextlib.suppress(Exception):
+            svc.sessions.archive(s.id, requester=f"job:{job.id}")
     job.session_id = None  # its session never got a checkpoint and was archived with the sandbox
     job.sandbox_id = None
-    svc._event(job, "control plane restarted while provisioning; starting over", JobState.QUEUED, reason=None)
+    job.result.baseline = None  # --- trust: checked again on the new sandbox
+    svc._event(job, f"{why}; starting over", JobState.QUEUED, reason=None)
     return True
+
+
+async def lost_while_provisioning(svc: JobService, job: Job) -> bool:
+    """--- trust: the job's sandbox went away before its first turn, typically under a long base check (#82's
+    baseline): provision again from the start, like a restart that caught it there, instead of starting the turn
+    on a session with no sandbox and no baseline. With the pools powered down it waits for them (the worker's
+    PoweredDown path). Always False: this provisioning didn't finish."""
+    from hangar.fleet import PoweredDown
+
+    if (why := svc.fleet.power.refusal(job.provider)) is not None:
+        job.result.baseline = None
+        raise PoweredDown(why)
+    await svc._discard_sandbox(job)
+    if start_over(svc, job, "the sandbox went away while provisioning"):
+        release(svc, [job.id])
+    else:
+        svc._event(job, "the sandbox went away while provisioning", JobState.FAILED, reason="sandbox_gone")
+        await svc._report(job)
+    return False
 
 
 def resume(svc: JobService, job: Job, why: str = "the control plane restarted", message: str = CONTINUE) -> bool:
@@ -66,6 +94,28 @@ def resume(svc: JobService, job: Job, why: str = "the control plane restarted", 
                               trigger="restart"))
     svc._event(job, f"{why} and the sandbox is gone; resuming from its last checkpoint "
                     f"(restart {job.restarts} of {svc.settings.job_restart_resumes})", JobState.QUEUED, reason=None)
+    return True
+
+
+def resume_attempt(svc: JobService, job: Job, a: Attempt, s: Session, why: str, message: str) -> bool:
+    """--- trust: a best-of-N attempt whose sandbox went away mid-turn (#95: the nightly power-down) resumes its own
+    session from its last checkpoint, the way `resume` does a job's: its cut-off turn ends `gone`, a turn that tells
+    the agent to carry on is queued on the session, and the attempt waits (`waiting`) to run again. At most
+    HANGAR_JOB_RESTART_RESUMES times per attempt; False when it can't (no checkpoint, or no resumes left), and the
+    attempt ends as before."""
+    if not s.checkpoints or a.restarts >= max(0, svc.settings.job_restart_resumes):
+        return False
+    a.restarts += 1
+    for st in s.turns:
+        if st.run_id == a.run_id:
+            st.finished_at = st.finished_at or now()
+            st.outcome, st.outcome_reason = "gone", why
+    s.turns.append(SessionTurn(message=message, requester="hangar"))
+    svc.sessions._save(s)
+    a.run_id = a.outcome = a.exit_code = a.finished_at = a.error = None
+    a.state = "waiting"
+    svc._event(job, f"attempt {a.index}: {why} and its sandbox is gone; it resumes from its last checkpoint "
+                    f"(restart {a.restarts} of {svc.settings.job_restart_resumes})")
     return True
 
 

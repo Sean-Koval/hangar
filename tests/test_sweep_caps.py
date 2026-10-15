@@ -202,8 +202,9 @@ def test_replay_entries_commit_with_a_wal_sync(store):
     guard._last_prune = time.time()  # pruning (expired entries only) may stay on NORMAL
     assert _synced(store, lambda: guard.put("github", "d1", "job-1", 60)) == [True]
     assert _synced(store, lambda: guard.forget("github", "d1")) == [True]
-    door = SimpleNamespace(store=store, _last_prune=time.time())
-    assert _synced(store, lambda: SlackFrontDoor._first(door, "Ev0123")) == [True]
+    # --- trust: Slack's marks are the replay guard's now (claim, then done after handling)
+    door = SimpleNamespace(jobs=SimpleNamespace(admission=SimpleNamespace(replays=guard)))
+    assert _synced(store, lambda: SlackFrontDoor._claim(door, "event:Ev0123", [])) == [True]
     assert store._db.execute("PRAGMA synchronous").fetchone()[0] == 1
 
 

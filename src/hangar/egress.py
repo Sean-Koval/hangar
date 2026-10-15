@@ -59,13 +59,21 @@ MAX_RULES = 200
 PRESETS: dict[str, tuple[str, ...]] = {
     "pypi": ("pypi.org", "files.pythonhosted.org"),
     "npm": ("registry.npmjs.org",),
-    "crates": ("crates.io", "index.crates.io", "static.crates.io"),
+    # --- egress2: not crates.io itself, the API that takes `cargo publish`; a build needs the sparse index and the
+    # download host only (index.crates.io/config.json names them).
+    "crates": ("index.crates.io", "static.crates.io"),
     "go": ("proxy.golang.org", "sum.golang.org"),
     "github": ("github.com", "api.github.com", "codeload.github.com", "objects.githubusercontent.com",
                "release-assets.githubusercontent.com", "raw.githubusercontent.com"),
 }
-PRESETS["packages"] = tuple(h for p in ("pypi", "npm", "crates", "go", "github") for h in PRESETS[p])
+# --- egress2: `packages` no longer includes `github`: GitHub takes writes with anyone's token, and sandboxes in
+# gateway mode reach it through hangar's git gateway (and its read-only API path) instead.
+PACKAGES = ("pypi", "npm", "crates", "go")
+PRESETS["packages"] = tuple(h for p in PACKAGES for h in PRESETS[p])
 DEFAULT_PRESETS = ("packages",)
+# Presets served by hangar's read-only package mirror when it is on (pkgmirror.py): their registries' hosts, which
+# also take uploads, aren't opened.
+MIRRORED = ("pypi", "npm", "go")
 
 # What each harness needs to reach its model and refresh its login, always allowed in a proxied mode (an agent that
 # can't reach its model is no agent). Claude Code: code.claude.com/docs/en/network-config ("Network access
@@ -200,6 +208,7 @@ class Policy(NamedTuple):
     rules: tuple[Rule, ...]
     proxied: bool  # the sandbox's network admits only the proxy (its environment's mode isn't open)
     notes: tuple[str, ...] = ()
+    mirrors: tuple[str, ...] = ()  # --- egress2: ecosystems it reads through hangar's package mirror
 
     @property
     def enforced(self) -> bool:
@@ -213,7 +222,7 @@ class Policy(NamedTuple):
 
     def view(self) -> dict[str, Any]:
         return {"mode": self.mode, "enforced": self.enforced, "allow": [r.text for r in self.rules],
-                "notes": list(self.notes)}
+                "mirrors": list(self.mirrors), "notes": list(self.notes)}
 
 
 def env_mode(settings: Settings, spec: EnvSpec) -> str:
@@ -253,6 +262,7 @@ def resolve(settings: Settings, spec: EnvSpec, repo: EgressSpec | None = None, h
         notes.append(f"egress {mode} is not enforced: environment {spec.name}'s network is open (set egress.mode on "
                      "the environment)")
     rules: list[Rule] = []
+    mirrors: list[str] = []
     if mode != "open":
         rules += [Rule(h, False, None, "harness") for h in HARNESS_HOSTS.get(harness or "", ())]
         for key, r in _mcp_rules(spec):  # the environment's remote MCP servers, where an admin configured them
@@ -268,7 +278,21 @@ def resolve(settings: Settings, spec: EnvSpec, repo: EgressSpec | None = None, h
         if mode == "allowlist":  # none: the harness's hosts and approved requests only
             presets = _presets_for(env, mode)
             presets += [p for p in (repo.presets or [] if repo else []) if p not in presets]
-            rules += [Rule(h, False, None, f"preset:{p}") for p in presets for h in PRESETS[p]]
+            # --- egress2: pypi, npm and go through hangar's read-only mirror when it is on (pkgmirror.py)
+            from hangar.pkgmirror import available
+
+            mirror = available(settings) and is_proxied
+            public: list[str] = []
+            for p in presets:
+                for part in PACKAGES if p == "packages" else (p,):
+                    if part in MIRRORED and mirror:
+                        mirrors += [part] if part not in mirrors else []
+                        continue
+                    rules += [Rule(h, False, None, f"preset:{p}") for h in PRESETS[part]]
+                    public += [part] if part in MIRRORED and part not in public else []
+            if public and is_proxied:
+                notes.append(f"{', '.join(public)}: reached at the public registries, whose hosts also take uploads "
+                             "(hangar's read-only package mirror needs HANGAR_GATEWAY_URL and HANGAR_PACKAGE_MIRROR)")
             rules += [parse_rule(r, "environment") for r in (env.allow if env else [])]
             rules += [parse_rule(r, "repo") for r in (repo.allow if repo else [])]
         for a in approved or []:
@@ -282,7 +306,7 @@ def resolve(settings: Settings, spec: EnvSpec, repo: EgressSpec | None = None, h
         if (k := (r.host, r.wildcard, r.port)) not in seen:
             seen.add(k)
             out.append(r)
-    return Policy(mode, tuple(out[:MAX_RULES * 4]), is_proxied, tuple(notes))
+    return Policy(mode, tuple(out[:MAX_RULES * 4]), is_proxied, tuple(notes), tuple(mirrors))
 
 
 def _mcp_rule(url: Any) -> Rule | None:
@@ -434,8 +458,19 @@ async def attach(fleet: Fleet, prov: Provider, sb: Sandbox, spec: EnvSpec) -> di
         return {}
     proxy = await _proxy_url(fleet, prov, sb)
     info["proxy"] = urlsplit(proxy).netloc
+    from hangar import keys  # --- durable: during a key rotation, a sandbox from before keeps its credential
+
+    password = token(keys.key_for(fleet.settings, sb.created_at), sb.id)
+    env = proxy_env(proxy, sb.id, password, _direct_hosts(fleet.settings))
+    if pol.mirrors:  # --- egress2: package managers read through hangar's mirror; the environment's own env wins
+        from hangar import pkgmirror
+
+        menv, npmrc = pkgmirror.sandbox_env(fleet.settings, pol.mirrors, sb.id, password)
+        env.update({k: v for k, v in menv.items() if k not in (getattr(spec, "env", None) or {})})
+        await pkgmirror.write_npmrc(prov, sb, f"/home/{fleet.settings.sandbox_user}", npmrc)
+        info["mirrors"] = list(pol.mirrors)
     sb.info["egress"] = info
-    return proxy_env(proxy, sb.id, token(fleet.egress.key, sb.id), _direct_hosts(fleet.settings))
+    return env
 
 
 def _direct_hosts(settings: Settings) -> list[str]:

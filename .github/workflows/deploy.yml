@@ -2,7 +2,8 @@
 #   1. images.yml builds every environment image and harness pack tag the commit needs, and this builds and pushes
 #      the control-plane image;
 #   2. after the owner approves the `production` environment: kubectl set image, wait for the rollout;
-#   3. scripts/acceptance/gke.sh against the new server over its REST and MCP endpoints (no kubectl in the checks);
+#   3. scripts/acceptance/gke.sh against the new server over its REST and MCP endpoints (no kubectl in the checks):
+#      the core checks, which roll back when they fail, then the team checks, which are only reported;
 #   4. the run summary gets the MCP tool-list diff, the new server version and the acceptance results, and hangar
 #      records the deploy (`hangar doctor`, `hangar power`).
 # Any failure once the image has changed, a cancel or a timeout included, puts the image it replaced back and fails
@@ -118,7 +119,7 @@ jobs:
     needs: [setup, images, control-plane]
     if: needs.setup.outputs.ready == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 180  # --- acceptance: the core checks' 75 and the team checks' 60, with the rollout and a rollback
     environment: production  # the owner approves here (a required reviewer); its secrets exist only past this
     permissions:
       contents: read
@@ -209,9 +210,29 @@ jobs:
         env:
           ONLY: ${{ steps.pre.outputs.only }}
         run: |
-          # shellcheck disable=SC2086 # ONLY is empty or "--only a,b,c"
-          bash scripts/acceptance/gke.sh --no-kubectl --skip model,steer,gateway --record accept.jsonl \
-            --doctor-baseline doctor-before.json $ONLY
+          # --- acceptance: the core checks (CORE in gke.sh) alone decide this step, and so the rollback. The team
+          # checks run in the next step, which can't fail the job: neither a failing nor a slow one rolls back.
+          # shellcheck disable=SC2086 # ONLY is empty or "--only a,b,c" (forced: it narrows the core checks)
+          bash scripts/acceptance/gke.sh --no-kubectl --only core --record accept.jsonl \
+            --report accept-report.json --gate core --doctor-baseline doctor-before.json $ONLY
+      # --- acceptance: the team checks (docs/acceptance.md), reported in the summary and the deploy record. Each
+      # check without its fixture skips and says so; repos are variables, tokens secrets, of the production
+      # environment. No model turns (they cost money) and no power cycle: those run by hand. continue-on-error keeps
+      # its failure, or its timeout, from failing the job; `timeout` stops it first, so its cleanup still runs.
+      - name: Acceptance, reported (the team checks; never rolls back)
+        id: team
+        if: success() && steps.pre.outputs.only == ''
+        continue-on-error: true
+        timeout-minutes: 60
+        env:
+          HANGAR_ACCEPT_TEST_REPO: ${{ vars.HANGAR_ACCEPT_TEST_REPO }}
+          HANGAR_ACCEPT_FIXTURE_REPO: ${{ vars.HANGAR_ACCEPT_FIXTURE_REPO }}
+          HANGAR_ACCEPT_GITHUB_TOKEN: ${{ secrets.HANGAR_ACCEPT_GITHUB_TOKEN }}
+          HANGAR_ACCEPT_JIRA_WEBHOOK_SECRET: ${{ secrets.HANGAR_ACCEPT_JIRA_WEBHOOK_SECRET }}
+          GH_TOKEN: ${{ secrets.HANGAR_ACCEPT_GITHUB_TOKEN }}  # cleanup deletes test branches with gh
+        run: |
+          timeout --signal=INT --kill-after=8m 50m bash scripts/acceptance/gke.sh --no-kubectl \
+            --skip core,model,steer,gateway --record accept.jsonl --report accept-team-report.json
       - name: Summary (version, tool-list diff, acceptance)
         if: always() && steps.rollout.outputs.changed == 'true'
         run: |
@@ -236,13 +257,15 @@ jobs:
                   print(f"- removed `{t}`")
               if added or removed:
                   print("\nclaude.ai keeps its tool list until the connector is removed and added again.")
-          print("\n| check | result | time | summary |\n|---|---|---|---|")
           try:
               rows = [json.loads(line) for line in open("accept.jsonl")]
           except OSError:
               rows = []
+          core = set(load("accept-report.json").get("core") or [])  # --- acceptance: what the rollback counts
+          print("\n| check | result | core | time | summary |\n|---|---|---|---|---|")
           for r in rows:
-              print(f"| {r['check']} | {r['status']} | {r['seconds']} s | {r['summary'].replace('|', '/')[:300]} |")
+              print(f"| {r['check']} | {r['status']} | {'yes' if r['check'] in core else ''} | {r['seconds']} s | "
+                    f"{r['summary'].replace('|', '/')[:300]} |")
           for r in rows:
               if r["check"] == "warmstart" and r.get("data"):
                   runs = ", ".join(f"{c['path']} {c['seconds']} s" for c in r["data"]["creates"])

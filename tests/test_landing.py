@@ -605,7 +605,8 @@ async def test_the_review_packet(svc, gh, settings):
     (cid, body), = gh.comments.items()
     assert job.landing.packet_comment_id == cid
     for want in ("`uv run pytest -q` passed", "**Risk:** high: touches `.github/workflows/ci.yml`",
-                 "**Files:** 2 (2 files changed, 3 insertions(+))", "claude-code 2.1.90 · model claude-opus-4-7",
+                 "**Files:** 2 (2 files changed, 3 insertions(+))",
+                 "claude-code 2.1.90 · model `claude-opus-4-7` (list price $5/$25 per MTok in/out)",
                  "no usage recorded", f"[`demo/checkout.mp4`](https://hangar.example/api/jobs/{job.id}/artifacts/1/"
                  "demo/checkout.mp4)", "an approval from @alice or a code owner",
                  "[`demo/x](https://evil.example)`](https://hangar.example"):
@@ -620,6 +621,8 @@ async def test_the_review_packet(svc, gh, settings):
 def test_paths_risk_and_codeowners():
     assert landing.risk(["docs/a.md", "tests/test_x.py"], None)[0] == "low"
     assert landing.risk(["src/a.py"], ["infra/**"]) == ("normal", [])
+    # --- integ3 (review #102): the repo's environment runs in every build and sandbox
+    assert landing.risk([".hangar/environment.yaml", "AGENTS.md"], None) == ("high", [".hangar/environment.yaml"])
     assert landing.risk(["infra/net/main.tf", "src/a.py"], ["infra/**"]) == ("high", ["infra/net/main.tf"])
     owners = "*  @lead\n/build/logs/ @ops\ndocs/*  @dave\n*.js @js\napps/ @apps\n/scripts/ \n"
     assert landing.owners_of(owners, "src/a.py") == ["@lead"]
@@ -667,5 +670,21 @@ async def test_doctor_reads_the_branch_protection(svc, gh, settings):
     svc.transport = httpx.MockTransport(no_ruleset)
     gh.allow_auto_merge = False
     c = {c["name"]: c for c in await landing.doctor_checks(h)}["landing o/r"]
-    assert c["status"] == "warn" and "dismiss stale approvals" in c["detail"] and "most recent reviewable push" in \
+    # --- trust: arming refuses without stale-approval dismissal, so it fails rather than warns (test_trust_landing)
+    assert c["status"] == "fail" and "dismiss stale approvals" in c["detail"] and "most recent reviewable push" in \
         c["detail"] and "Allow auto-merge" in c["detail"] and "settings/branches" in c["fix"]
+
+
+async def test_the_packet_names_the_model_that_ran_and_its_price(svc, gh, settings, monkeypatch):
+    """--- review #105: a job's model is a policy (jobs default to `frontier`) resolved on its session, so the packet
+    shows the session's concrete id and what it costs, not the request's `model` (None: "the harness default")."""
+    from types import SimpleNamespace
+
+    job = pr_job(svc)
+    job.model = None
+    monkeypatch.setattr(svc, "_session", lambda j: SimpleNamespace(
+        name="s-1", model="claude-fable-5-1", model_policy="frontier"))
+    await svc.landing.post_packet(job)
+    (_, body), = gh.comments.items()
+    assert "model `claude-fable-5-1` (`frontier`; list price $10/$50 per MTok in/out)" in body, body
+    assert "no job budget" in body

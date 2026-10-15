@@ -34,7 +34,7 @@ from hangar.store import Store
 if TYPE_CHECKING:
     from hangar.fleet import Fleet
     from hangar.jobs import JobService
-    from hangar.models import Job
+    from hangar.models import Attempt, Job, Session
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +52,8 @@ RUN_API = "https://run.googleapis.com/v2"
 METADATA = "http://metadata.google.internal/computeMetadata/v1"
 # Background loops and how often each passes (metrics.loop_tick); one silent for 3 intervals and a minute is stuck.
 LOOPS: dict[str, str | float] = {"reaper": "reaper_interval_seconds", "reconciler": "reconcile_interval_seconds",
-                                 "sessions": 60.0, "schedules": "schedule_poll_seconds"}
+                                 "sessions": 60.0, "schedules": "schedule_poll_seconds",
+                                 "ops": 60.0}  # --- clouddoctor: SLO samples, record pruning, the nightly pass
 
 POWERED_DOWN = (
     "The sandbox you were working in was shut down when hangar's sandbox nodes powered down for the night, and it "
@@ -254,6 +255,15 @@ class Power:
         svc._event(job, f"waiting: {self.status_line()}", reason=WAITING)
         self._hold(svc, job.id)
         return True
+
+    def cut_off_attempt(self, svc: JobService, job: Job, a: Attempt, s: Session) -> bool:
+        """--- trust: a best-of-N attempt's turn the power-down cut off resumes from its checkpoint after power-up,
+        like a job's turn (resume_cut_off), instead of failing on its own. The job then waits (`requeue`)."""
+        from hangar import restarts
+
+        if not self.off or not self.affects(job.provider):
+            return False
+        return restarts.resume_attempt(svc, job, a, s, why="the sandbox pools powered down", message=POWERED_DOWN)
 
     # ------------------------------------------------------------------ warm pools
     def warm_for(self, env: str) -> int:

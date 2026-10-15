@@ -37,7 +37,8 @@ from urllib.parse import quote
 import httpx
 
 from hangar import baseline
-from hangar.events import usage_line
+from hangar import modelpolicy as modelpolicy  # --- review #105
+from hangar.events import DEFAULT_PRICES, usage_line
 from hangar.gateway import AppTokens
 from hangar.github import GitHub, GitHubError, parse_repo
 from hangar.models import JOB_TERMINAL, ContextItem, Job, JobState, LandingState, ScheduledJob, now
@@ -53,12 +54,15 @@ PERMISSIONS = {"contents": "write", "pull_requests": "write"}  # what the App's 
 PACKET = "<!-- hangar:packet -->"
 OK = {"success", "neutral", "skipped"}
 FAILED = {"failure", "timed_out", "startup_failure", "cancelled", "action_required", "error", "stale"}
-DEFAULT_RISK = (".github/**",)  # workflows, CODEOWNERS and the like: always high risk
+# Always high risk: workflows, CODEOWNERS and the like; --- integ3 (review #102): and `.hangar/`, whose
+# environment.yaml install and start commands run in every build (with its build secrets) and every sandbox
+DEFAULT_RISK = (".github/**", ".hangar/**")
 CODEOWNERS = (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS")  # GitHub's search order
 CACHE_SECONDS = 300  # required checks and CODEOWNERS per (repo, base)
 MAX_FILES = 300
 MAX_CHECKS = 100
 IDLE_WAIT_SECONDS = 600  # how long ending a session waits for a running turn to stop
+STALE = "“dismiss stale approvals when new commits are pushed”"  # --- trust: what arming needs of the base branch
 _ARM = ("mutation($id: ID!, $sha: GitObjectID!, $method: PullRequestMergeMethod!) {"
         " enablePullRequestAutoMerge(input: {pullRequestId: $id, expectedHeadOid: $sha, mergeMethod: $method})"
         " { pullRequest { number } } }")
@@ -146,7 +150,7 @@ _DOCS = re.compile(r"(^|/)docs?/|\.(md|mdx|rst|txt|adoc)$", re.I)
 
 
 def risk(files: list[str], globs: list[str] | None) -> tuple[str, list[str]]:
-    """(tier, the paths that made it high). High: any path matching the policy's `risk_paths` or `.github/**`;
+    """(tier, the paths that made it high). High: any path matching the policy's `risk_paths` or DEFAULT_RISK;
     low: only docs and tests; normal otherwise."""
     pats = [*DEFAULT_RISK, *(globs or [])]
     high = [f for f in files if any(matches(g, f) for g in pats)]
@@ -528,6 +532,8 @@ class Landing:
             st.head_sha = head  # GitHub's word; a push from here on changes it (and `_arm` looks)
             if pr.get("draft"):
                 return self._note(job, "the PR is a draft: mark it ready for review to land it")
+            if why := await self.stale_gate(gh, repo, _str(_d(pr.get("base")).get("ref")) or "main", policy):
+                return self._note(job, why)  # --- trust
             required = await self.required_checks(gh, repo, _str(_d(pr.get("base")).get("ref")) or "main")
             if why := blocking(st, head, required, _str(pr.get("mergeable_state"))):
                 return self._note(job, why)
@@ -734,6 +740,35 @@ class Landing:
 
         return await self._cached("required", repo, base, load)
 
+    async def stale_gate(self, gh: GitHub, repo: str, base: str, policy: RepoPolicy) -> str | None:
+        """--- trust (#96 finding 7): why auto-merge can't be armed on `base`, or None. Hangar disarms on every push it
+        hears of, but a person's push whose webhook it misses could merge on the approval of an earlier commit unless
+        GitHub itself dismisses that approval. So the base must dismiss stale approvals (branch protection or a
+        ruleset), unless the repo policy opts out (`require_stale_dismissal: false`). Unreadable counts as missing."""
+        if policy.require_stale_dismissal is False:
+            return None
+
+        async def load() -> tuple[bool, bool]:
+            admin = self.svc._github()  # classic protection needs Administration: read, which the App doesn't have
+            try:
+                missing, seen = await _protection(admin or gh, gh, repo, base)
+            finally:
+                if admin is not None:
+                    await admin.close()
+            return STALE not in missing, seen
+
+        has, seen = await self._cached("stale", repo, base, load)
+        opt_out = f"or opt the repo out: `hangar repo set {repo} --no-require-stale-dismissal`"
+        if not seen:
+            return (f"hangar couldn't read {base}'s branch protection or rulesets to check that it dismisses stale "
+                    "approvals, so it doesn't arm auto-merge: give the control token Administration: read, use a "
+                    f"ruleset, {opt_out}")
+        if not has:
+            return (f"{base} doesn't dismiss stale approvals when new commits are pushed, so a push after the approval "
+                    f"could merge unreviewed: hangar doesn't arm auto-merge. Turn it on (`hangar doctor` says where), "
+                    f"{opt_out}")
+        return None
+
     async def codeowners(self, gh: GitHub, repo: str, base: str) -> str | None:
         async def load() -> str | None:
             for path in CODEOWNERS:
@@ -837,11 +872,18 @@ class Landing:
             caps = [f"${b.max_cost_usd:g}" if b.max_cost_usd else "", f"{b.max_tokens:,} tokens" if b.max_tokens
                     else "", f"{b.max_turns} turns" if b.max_turns else ""]
             cost += " · job budget " + ", ".join(c for c in caps if c)
+        else:
+            cost += " · no job budget (`job_budget` in the repo policy, or HANGAR_JOB_BUDGET_MAX_COST_USD)"
         out.append(cost + f" · {len([t for t in job.turns if t.run_id])} agent turn(s)")
         version = next((t.harness_version for t in reversed(job.turns) if t.harness_version), None)
+        s = svc._session(job)
+        # --- review #105: the id the job's session ran (a policy, resolved and pinned there), and its price
+        model = modelpolicy.describe(getattr(s, "model", None) or job.model, getattr(s, "model_policy", None),
+                                     {**DEFAULT_PRICES, **{k.lower(): v for k, v in
+                                                           (self.settings.model_prices or {}).items()}})
         out.append(f"- **Agent:** {job.harness or 'default harness'}" + (f" {version}" if version else "")
-                   + f" · model {job.model or 'the harness default'} · environment `{job.environment}`")
-        if s := svc._session(job):
+                   + f" · model {model} · environment `{job.environment}`")
+        if s:
             out.append(f"- **Session:** `{s.name}`: `hangar session pull {s.name}` checks it out locally; reply "
                        "`/hangar <message>` here to have the agent continue")
         base = self.settings.public_url.rstrip("/")
@@ -850,6 +892,9 @@ class Landing:
         if demos:
             out.append("- **Recorded demos:** " + ", ".join(
                 f"[{_code(a.path)}]({base}/api/jobs/{job.id}/artifacts/{a.turn}/{quote(a.path)})" for a in demos[:10]))
+        from hangar import autoinstall  # --- autoinstall: an env setup's PR: what was validated, mocked, missing
+
+        out += autoinstall.packet_lines(svc, job)
         if policy and policy.land == "auto_after_approval":
             who = ", ".join(f"@{a}" for a in policy.approvers or []) or "a code owner"
             out.append(f"- **Landing:** an approval from {who}" + (" or a code owner" if policy.approvers else "")
@@ -960,10 +1005,16 @@ async def doctor_checks(h: Any) -> list[dict[str, Any]]:
                    "with 1+ approvals, dismiss stale approvals when new commits are pushed, require approval of "
                    "the most recent reviewable push, and required status checks; and allow auto-merge "
                    f"(https://github.com/{repo}/settings)")
-            if missing:
-                out.append(_check(f"landing {repo}", None, f"{base} is missing: {'; '.join(missing)}" +
-                                  ("" if seen else " (hangar couldn't read the branch protection; give the control "
-                                                   "token Administration: read, or use a ruleset)"), fix))
+            unread = "" if seen else (" (hangar couldn't read the branch protection; give the control token "
+                                      "Administration: read, or use a ruleset)")
+            if (STALE in missing or not seen) and p.require_stale_dismissal is not False:  # --- trust: arming refuses
+                out.append(_check(f"landing {repo}", False, f"{base} is missing: {'; '.join(missing)}{unread}. Until "
+                                  f"it dismisses stale approvals, hangar won't arm auto-merge on {repo}",
+                                  fix + f"; or opt out: hangar repo set {repo} --no-require-stale-dismissal"))
+            elif missing:
+                out.append(_check(f"landing {repo}", None, f"{base} is missing: {'; '.join(missing)}{unread}" +
+                                  ("; the repo policy opted out of requiring stale approvals to be dismissed"
+                                   if p.require_stale_dismissal is False else ""), fix))
             else:
                 out.append(_check(f"landing {repo}", True, f"{base} needs a fresh approval of the latest push and "
                                   "passing checks before anything merges"))
@@ -1000,6 +1051,6 @@ async def _protection(admin: GitHub, gh: GitHub, repo: str, base: str) -> tuple[
                 have["reviews"] |= (prm.get("required_approving_review_count") or 0) >= 1
                 have["stale"] |= bool(prm.get("dismiss_stale_reviews_on_push"))
                 have["last_push"] |= bool(prm.get("require_last_push_approval"))
-    names = {"reviews": "required approving reviews", "stale": "“dismiss stale approvals when new commits are "
-             "pushed”", "last_push": "“require approval of the most recent reviewable push”"}
+    names = {"reviews": "required approving reviews", "stale": STALE,  # --- trust: STALE
+             "last_push": "“require approval of the most recent reviewable push”"}
     return [names[k] for k, v in have.items() if not v], seen

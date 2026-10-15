@@ -29,8 +29,13 @@ from hangar import cache as caching  # --- overnight/cache: prompt-cache TTL, on
 from hangar import ckpt, exchange, isolation, observe  # --- observe, isolation
 from hangar import computer as computer  # --- computer
 from hangar import fairness as fairness  # --- scale
+from hangar import flightrec as flightrec  # --- clouddoctor: failed and slow turns leave a record
 from hangar import hot_resume as hot_resume  # --- providers-e2b
+from hangar import keys as keys  # --- durable
 from hangar import metrics as metrics  # --- reconciler
+from hangar import pins as pins  # --- canary: the model and the CLI version a session is pinned to
+from hangar import resident as resident  # --- durable: live and recent sessions in memory, the rest in the store
+from hangar import slo as slo  # --- clouddoctor: turn-start and resume times for `hangar status`
 from hangar import steer as steering  # workstream steer: live turns
 from hangar.checkpoints import CheckpointStore, make_store
 from hangar.ckpt import CKPT_DIR, CKPT_REF, PACK_READ_LIMIT, PARTS, RESTORE_DIR  # noqa: F401 - re-exported (strategies, exchange)
@@ -51,6 +56,7 @@ from hangar.models import (
     SessionTurn,
     now,
 )
+from hangar.store import Ge, Not  # --- durable
 from hangar.vault import Vault
 
 log = logging.getLogger("hangar.sessions")
@@ -128,8 +134,12 @@ class SessionService:
         self.store = fleet.store
         self.vault = vault
         self.root = self.settings.data_dir / "sessions"
-        self.blobs: CheckpointStore = make_store(self.settings.session_store, self.settings.data_dir)
-        self._sessions: dict[str, Session] = {}
+        # --- durable: copies re-encrypt what an old vault key sealed while a key rotation runs (keys.Resealing)
+        self.blobs: CheckpointStore = keys.Resealing(make_store(self.settings.session_store, self.settings.data_dir),
+                                                     vault.ring)
+        # --- durable: live sessions and those used in the last HANGAR_RESIDENT_MINUTES; the store has the rest
+        self._sessions: resident.Resident[Session] = resident.Resident(
+            self.store, Session, self._pinned, lambda: self.settings.resident_minutes * 60)
         self._locks: dict[str, asyncio.Lock] = collections.defaultdict(asyncio.Lock)
         self._busy: set[str] = set()  # sessions with a turn, boot or suspend of their own in flight
         self._holds: collections.Counter[str] = collections.Counter()  # outside holders (jobs), refcounted
@@ -145,7 +155,7 @@ class SessionService:
     # ================================================================== lifecycle
     async def start(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
-        self._sessions = {s.id: s for s in self.store.list(Session)}
+        self._sessions.adopt(self._load())  # --- durable: not every session ever
         for s in self._sessions.values():
             if s.state in SESSION_LIVE or s.state == SessionState.SUSPENDING:
                 if s.sandbox_id and self._alive(s.sandbox_id):
@@ -201,20 +211,79 @@ class SessionService:
 
     # ================================================================== public API
     def get(self, ref: str) -> Session:
+        # --- durable: by id, then by name, in memory first, then in the store (archive included)
         s = self._sessions.get(ref) or next(
-            (x for x in self._sessions.values() if x.name == ref and x.state != SessionState.ARCHIVED), None)
+            (x for x in self._sessions.values() if x.name == ref and x.state != SessionState.ARCHIVED), None) \
+            or next(iter(self.where(name=ref, state=Not(SessionState.ARCHIVED))), None)
         if s is None:
             raise SessionNotFound(f"no session '{ref}'")
-        return s
+        return self._sessions.get(s.id)
 
-    def list(self, include_archived: bool = False, limit: int = 100) -> list[Session]:
-        out = [s for s in self._sessions.values() if include_archived or s.state != SessionState.ARCHIVED]
-        return sorted(out, key=lambda s: s.last_active_at, reverse=True)[: max(1, min(limit, 500))]
+    def list(self, include_archived: bool = False, limit: int = 100, person: str | None = None,
+             cursor: str | None = None) -> list[Session]:
+        return [s for s, _ in self.page(include_archived, limit, person, cursor)[0]]
+
+    def page(self, include_archived: bool = False, limit: int = 100, person: str | None = None,
+             cursor: str | None = None) -> tuple[list[tuple[Session, str]], str | None]:
+        """--- durable: sessions most recently active first, from the store's indexes, filtered there (a person's
+        are all of theirs). Each comes with its cursor, where it stood in the store (the copy in memory may have
+        moved on since), then the next page's cursor, None at the end. See JobService.page."""
+        limit = max(1, min(limit, 500))
+        fields: dict[str, Any] = {} if include_archived else {"state": Not(SessionState.ARCHIVED)}
+        if person is not None:
+            fields["person"] = person
+        rows = self.store.page(Session, limit + 1, resident.after(cursor), archived=True, **fields)
+        marks = [resident.cursor(at, r.id) for r, at in rows[:limit]]  # --- review: SQLite's reading of the time
+        return (list(zip(self._sessions.adopt([r for r, _ in rows[:limit]]), marks, strict=True)),
+                marks[-1] if len(rows) > limit else None)
+
+    # --- durable: lookups that see every session, not just those in memory
+    def where(self, **fields: Any) -> list[Session]:
+        """Sessions whose fields match (Resident.where): archived ones too, as the copies in memory."""
+        return self._sessions.where(**fields)
+
+    def of_job(self, job_id: str) -> list[Session]:
+        """Every session that carried the job: its own, best-of-N attempts and the judge. A session's job is saved
+        with it when it's made (for_job, the forks), so no pass over the sessions in memory: views call this."""
+        return self._sessions.where(memory=False, job_id=job_id)
+
+    def touched_since(self, t: float, **fields: Any) -> list[Session]:
+        """Sessions saved since `t` (and matching `fields`), to read only: the copy in memory where there is one,
+        else the store's, which stays out of memory."""
+        return self._sessions.read(updated_at=Ge(t), **fields)
+
+    def exists(self, sid: str) -> bool:
+        return self._sessions.peek(sid) is not None or self.store.get(Session, sid) is not None
+
+    def taken(self, name: str | None = None, branch: str | None = None) -> bool:
+        """Whether a session that isn't archived has this name (or branch)."""
+        fields = {k: v for k, v in (("name", name), ("branch", branch)) if v is not None}
+        return bool(self._sessions.read(state=Not(SessionState.ARCHIVED), **fields))
+
+    def _pinned(self, s: Session) -> bool:
+        """Kept in memory whatever its age: live, suspending, or something drives it (a turn, a job, a lock)."""
+        return (s.state in SESSION_LIVE or s.state == SessionState.SUSPENDING or self.busy(s.id)
+                or s.id in self._restart_holds or (s.id in self._locks and self._locks[s.id].locked()))
+
+    def _load(self) -> list[Session]:
+        """At start: live and suspending sessions, and those changed in the last HANGAR_RESIDENT_MINUTES."""
+        found = [*self.store.list_where(Session, state=(*SESSION_LIVE, SessionState.SUSPENDING)),
+                 *self.store.list_where(Session, updated_at=Ge(now() - self.settings.resident_minutes * 60))]
+        return list({s.id: s for s in found}.values())
+
+    def evict(self) -> int:
+        """Let go of the sessions nothing needs in memory any more (resident.py); returns how many."""
+        gone = self._sessions.evict()
+        for sid in gone:
+            if sid in self._locks and not self._locks[sid].locked():
+                del self._locks[sid]
+            self._last_checked.pop(sid, None)
+        return len(gone)
 
     def new(self, req: NewSession, owner: str, requester: str, person: str | None = None) -> Session:
         if not _NAME_RE.match(req.name):
             raise SessionError("name: lowercase letters, digits, '.', '_' and '-' (start with a letter or digit)")
-        if any(s.name == req.name and s.state != SessionState.ARCHIVED for s in self._sessions.values()):
+        if self.taken(name=req.name):  # --- durable: in the store too
             raise SessionError(f"a session named '{req.name}' already exists; open it, or archive it first")
         env = req.environment or self._env_for_repo(req.repo)
         if not env:
@@ -244,6 +313,7 @@ class SessionService:
                     person=person)  # --- identity
         s.budget = resolve_budget(req.budget, self.settings)
         caching.pin_model(self, s)  # --- overnight/cache
+        pins.pin(self, s)  # --- canary: a policy becomes a concrete id; the CLI version
         self._sessions[s.id] = s
         self._set(s, SessionState.STARTING, f"created by {requester}")
         self.fleet.audit(requester, "session.new", s.id, name=s.name, environment=env, repo=s.repo)
@@ -272,6 +342,7 @@ class SessionService:
             except ValueError as e:
                 raise SessionError(str(e)) from e
             s.model = spec.model_for(s.harness)  # --- overnight/cache: model ids are per harness; a switch hands off
+            pins.pin(self, s)  # --- canary
             self._save(s)
         if self.busy(s.id) or (live and s.state in SESSION_LIVE):
             return s
@@ -298,6 +369,7 @@ class SessionService:
             model = caching.check_model(model)  # --- overnight/cache
         except ValueError as e:
             raise SessionError(str(e)) from e
+        model = pins.concrete(self, s, model)  # --- canary: `frontier` names a model now, not each turn
         if s.state == SessionState.ARCHIVED:
             raise SessionError(f"session {s.name} is archived")
         if s.job_id:
@@ -447,6 +519,7 @@ class SessionService:
         if s.sandbox_id and self._alive(s.sandbox_id):
             return self.fleet.get(s.sandbox_id)
         s.sandbox_id = None
+        t0 = now()  # --- clouddoctor
         self._set(s, SessionState.STARTING, "starting a sandbox" + (" and restoring the last checkpoint"
                                                                      if s.checkpoints else ""))
         ttl = max(s.idle_minutes * 3, 120) + self.settings.session_turn_timeout_minutes
@@ -457,6 +530,7 @@ class SessionService:
                 progress(msg)
 
         if (hot := await hot_resume.wake(self, s, stage)) is not None:  # --- providers-e2b: its memory, if parked
+            slo.record("resume", now() - t0, "hot")  # --- clouddoctor
             return hot
         sb = await self.fleet.create(
             s.environment, name=f"ses-{s.name[:30]}-{uuid.uuid4().hex[:4]}", repo=s.repo, branch=s.base_branch,
@@ -478,6 +552,8 @@ class SessionService:
         s.sandbox_id = sb.id
         s.harness = s.harness or sb.info.get("harness")
         s.last_active_at = now()
+        if s.checkpoints:  # --- clouddoctor
+            slo.record("resume", now() - t0, "cold")
         self._set(s, SessionState.IDLE, note or ("ready" + (" (restored)" if s.checkpoints else "")))
         return sb
 
@@ -739,13 +815,14 @@ class SessionService:
                 extra_dirs: list[str], idle_minutes: int, person: str | None = None) -> Session:
         """The session that carries a job: same sandbox lifecycle, checkpoints and conversation resume, but turns
         are driven by the job service (which verifies and delivers them)."""
-        existing = next((x for x in self._sessions.values() if x.job_id == job_id and not x.parent_id), None)
+        existing = next((x for x in self.of_job(job_id) if not x.parent_id), None)  # --- durable: in the store too
         if existing:
             return existing
         s = Session(name=f"job-{job_id.removeprefix('job-')}", title=f"job {job_id}", owner="jobs",
                     environment=environment, harness=harness, model=model, repo=repo, base_branch=base_branch,
                     branch=branch, provider=provider, labels={**labels, "hangar.job": job_id}, job_id=job_id,
                     extra_dirs=extra_dirs, idle_minutes=max(1, idle_minutes), person=person)  # --- identity
+        pins.pin(self, s)  # --- canary: jobs default to `frontier`
         self._sessions[s.id] = s
         self._set(s, SessionState.SUSPENDED, f"carries job {job_id}")
         return s
@@ -835,6 +912,7 @@ class SessionService:
         it can. `prompt` overrides the session's prompt (jobs write their own); handoff=False when that prompt
         already carries the history."""
         sb = self.fleet.get(s.sandbox_id or "")
+        t0 = now()  # --- clouddoctor: turn start, for `hangar status`
         # The sandbox must outlive this turn (the idle loop skips busy sessions, so extend now).
         tmo = timeout_minutes if timeout_minutes is not None else self.settings.session_turn_timeout_minutes
         want = now() + (tmo + max(s.idle_minutes, 30) + 30) * 60
@@ -844,6 +922,7 @@ class SessionService:
 
         h = get_harness(s.harness)
         env: dict[str, str] = {}
+        pins.before_turn(self, s, sb, turn)  # --- canary: another CLI version than the conversation's hands off
         claim_conversation(self, s)
         if self.will_resume(s):
             turn.mode = "resume"
@@ -883,6 +962,7 @@ class SessionService:
             caching.STAGGER.responded(s.id)  # --- overnight/cache: nor will it answer; siblings go ahead
             raise
         turn.run_id, turn.started_at = res["run_id"], now()
+        slo.record("turn_start", turn.started_at - t0 - (turn.cache_wait_seconds or 0))  # --- clouddoctor
         turn.harness_version = res.get("harness_version")  # --- images
         turn.context = exchange.strip(turn.context)
         s.model = s.model or res.get("model")
@@ -944,6 +1024,7 @@ class SessionService:
             self._set(s, SessionState.SUSPENDED if s.checkpoints else SessionState.FAILED,
                       "the sandbox went away during the turn")
             turn.outcome = outcome  # workstream E
+            flightrec.of(self.fleet).turn_ended(self, s, turn, outcome, "")  # --- clouddoctor
             return outcome, ""
         if outcome in ("cancelled", "timed_out", "error", "over_budget"):
             # Never leave an agent running that nobody is watching (it would keep working, and spending).
@@ -983,6 +1064,8 @@ class SessionService:
         else:  # destroyed while we were finishing up (the pre-destroy hook checkpointed it)
             s.sandbox_id = None
             self._set(s, SessionState.SUSPENDED, f"turn {len(s.turns)} finished; sandbox released")
+        # --- clouddoctor: the session is idle: a failed or slow turn's record (its log is read and sealed off-turn)
+        flightrec.of(self.fleet).turn_ended(self, s, turn, outcome, raw)
         return outcome, raw
 
     async def _turn_status(self, s: Session, turn: SessionTurn, wait: float, watch: Any) -> dict[str, Any]:

@@ -1,0 +1,6 @@
+{
+ "models": [
+  {"name": "models/gemini-embedding-2", "version": "2", "displayName": "Gemini Embedding 2", "supportedGenerationMethods": ["embedContent"]},
+  {"name": "models/gemini-2.5-pro", "version": "2.5", "displayName": "Gemini 2.5 Pro", "supportedGenerationMethods": ["generateContent", "countTokens"]}
+ ]
+}

@@ -74,12 +74,13 @@ def _repo(url: str | None) -> str:
     return u._replace(netloc=u.netloc.rpartition("@")[2]).geturl().removesuffix(".git")  # never userinfo
 
 
-def _turns(sessions: Any, jobs: Any) -> list[dict[str, Any]]:
-    """One record per agent turn: when, what it used, and who and what it was for."""
-    job_map = dict(jobs._jobs) if jobs is not None else {}
+def _turns(sessions: Any, jobs: Any, since: float = 0.0) -> list[dict[str, Any]]:
+    """One record per agent turn: when, what it used, and who and what it was for. --- durable: of the sessions and
+    jobs saved since `since` (a turn's session and job are saved as it runs), read from the store's indexes."""
+    job_map = {j.id: j for j in jobs.touched_since(since)} if jobs is not None else {}
     out: list[dict[str, Any]] = []
     carried: set[str] = set()
-    for s in list(sessions._sessions.values()):
+    for s in sessions.touched_since(since):
         job = job_map.get(s.job_id or "")
         for t in s.turns:
             if not (t.run_id or t.usage or t.repair_usage):
@@ -91,11 +92,10 @@ def _turns(sessions: Any, jobs: Any) -> list[dict[str, Any]]:
                         "harness": t.harness or s.harness, "environment": s.environment, "repo": s.repo,
                         "requester": t.requester or (job.requester if job else s.owner),
                         "session": s.name, "job": s.job_id, "cache_ttl": t.cache_ttl})
-    live = sessions._sessions
     for job in job_map.values():
         # integrate (#57): a session deleted since keeps its total on the job (Job.deleted_session_usage), not its
         # turns, so it counts on the day the job was created, as no turns
-        gone = [u for sid, u in job.deleted_session_usage.items() if sid not in live]
+        gone = [u for sid, u in job.deleted_session_usage.items() if not sessions.exists(sid)]
         out += [{"ts": job.created_at, "usage": u, "outcome": None, "reason": None, "model": job.model,
                  "harness": job.harness, "environment": job.environment, "repo": job.repo,
                  "requester": job.requester, "session": None, "job": job.id, "turns": 0, "cache_ttl": None}
@@ -134,7 +134,7 @@ def aggregate(sessions: Any, jobs: Any, group_by: str = "day", since: float | No
     rows: dict[str, dict[str, Any]] = {}
     total = _empty("total")
     stops: list[dict[str, Any]] = []
-    for rec in _turns(sessions, jobs):
+    for rec in _turns(sessions, jobs, since):
         if rec["ts"] < since:
             continue
         key = _key(rec, group_by)

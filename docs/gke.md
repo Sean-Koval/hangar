@@ -206,7 +206,7 @@ hangar power up                   # an admin powers the pools on early (runs the
 - A create (`create_sandbox`, REST, the E2B API, `new_session`, a message to a suspended session) answers at once with a plain message and when sandboxes are back, instead of waiting for a node that won't come: REST answers `503` with `Retry-After`. Nothing is left half made.
 - Sessions and the dashboard are readable; suspended sessions resume when their next message arrives after power-up.
 
-`down` tells hangar first (`POST /api/admin/power/state`), so new creates are refused from that moment, then drains (`POST /api/admin/drain`): queued jobs wait instead of starting. It suspends idle sessions and waits up to 10 minutes for running agent turns to finish. Turns still running then get a fresh checkpoint, and it waits up to 3 more minutes for sandbox creates, destroys and suspends already under way. Only then do the pools go. A job turn the pools take away anyway resumes from its checkpoint after power-up (at most `HANGAR_JOB_RESTART_RESUMES` times), as after a restart. Each pool's autoscaling range (or a fixed pool's node count, for the microVM pool) is saved as a label on the cluster, and `up` restores it; a range a `terraform apply` set while the pools were down wins over the saved one.
+`down` tells hangar first (`POST /api/admin/power/state`), so new creates are refused from that moment, then drains (`POST /api/admin/drain`): queued jobs wait instead of starting. It suspends idle sessions and waits up to 10 minutes for running agent turns to finish. Turns still running then get a fresh checkpoint, and it waits up to 3 more minutes for sandbox creates, destroys and suspends already under way. Only then do the pools go. A job turn the pools take away anyway resumes from its checkpoint after power-up (at most `HANGAR_JOB_RESTART_RESUMES` times), as after a restart, and so does each best-of-N attempt. Each pool's autoscaling range (or a fixed pool's node count, for the microVM pool) is saved as a label on the cluster, and `up` restores it; a range a `terraform apply` set while the pools were down wins over the saved one.
 
 **Warm start.** `up` runs at 09:50 so that sandboxes are ready by 10:00:
 1. The gVisor pool comes back at its warm floor, `sandbox_warm_nodes` (default 1 with the power schedule: the pool's autoscaling minimum while it's on).
@@ -258,10 +258,11 @@ hangar doctor              # "database backups": fails when the newest is more t
 
 `HANGAR_BACKUP_HOURS` changes the interval (`0` turns it off; unset means 24 with a bucket, off without one) and `HANGAR_BACKUP_KEEP` the count. Both apply without a restart, from the next scheduled run (within an hour when backups were off). Without a bucket, backups go to `<data dir>/sessions/_backups`, which is the same disk: use PD snapshots instead (below).
 
-**Keep the vault key somewhere else.** A backup is useless without the `HANGAR_SECRET_KEY` it was encrypted with, and so is everything in the vault. `up.sh` keeps it in the `hangar` Secret, which dies with the cluster. Save a copy in Secret Manager or your password manager:
+**Keep the vault key somewhere else.** A backup is useless without the `HANGAR_SECRET_KEY` it was encrypted with, and so is everything in the vault. `up.sh` keeps it in the `hangar` Secret, which dies with the cluster. Keep it in Secret Manager, piped straight there, not in a file on your machine; [security.md](security.md#the-vault-key) has how to rotate it:
 
 ```bash
-kubectl -n hangar get secret hangar -o jsonpath='{.data.HANGAR_SECRET_KEY}' | base64 -d
+kubectl -n hangar get secret hangar -o jsonpath='{.data.HANGAR_SECRET_KEY}' | base64 -d | \
+  gcloud secrets create hangar-vault-key --data-file=- --replication-policy=automatic
 ```
 
 **Restore.** A restore is staged, then applied by the next start, before anything opens the database. The database it replaces is kept beside it as `hangar.db.before-restore-<time>`.

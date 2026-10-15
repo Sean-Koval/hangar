@@ -103,6 +103,7 @@ def _sb(s: Sandbox) -> dict[str, Any]:
         "expires_at": s.expires_at, "error": s.error,
         "stage": s.info.get("stage") if s.state.value in ("starting", "pending") else None,
         "env_build": s.info.get("env_build"),  # --- envbuilds: the repo build it runs, or why the base image
+        "model": s.info.get("model"),  # --- canary: the concrete model its runs use (a policy, resolved at create)
     }
 
 
@@ -244,7 +245,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
     @tool()
     def list_credentials() -> list[dict[str, Any]]:
         """Credentials available to attach to sandboxes (names and metadata only, never secrets)."""
-        return [c.model_dump(include={"name", "harness", "kind", "exclusive", "leased_to", "description", "person"})
+        return [c.model_dump(include={"name", "harness", "kind", "exclusive", "leased_to", "description", "person",
+                                      "expires_at", "last_ok", "health"})  # --- clouddoctor: credhealth.py
                 for c in people.usable(fleet.broker.list())]  # --- identity: shared and the caller's own
 
     # ------------------------------------------------------------------ lifecycle
@@ -564,13 +566,15 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             return sessions.view(sessions.new(req, owner=who, requester=who, person=identity.person()))  # identity
 
         @tool()
-        async def list_sessions(include_archived: bool = False, limit: int = 30) -> list[live.SessionOut]:
-            """Streams of work, most recently active first: name, state (idle | running | suspended ...), repo,
-            branch and the agent's last summary."""
+        async def list_sessions(include_archived: bool = False, limit: int = 30,
+                                cursor: str | None = None) -> list[live.SessionOut]:
+            """Sessions, last active first: name, state, repo, branch, last summary. More: cursor=the last one's."""
             keep = ("id", "name", "title", "state", "environment", "harness", "repo", "branch", "last_active_at",
                     "last_summary", "sandbox_id", "needs_input")
-            mine = people.mine(sessions.list(include_archived=include_archived, limit=500))  # --- identity
-            return [{k: v for k, v in sessions.view(s).items() if k in keep} for s in mine[:max(1, min(limit, 500))]]
+            # --- identity; --- durable: the caller's own, filtered in the store, a page at a time
+            page, _ = sessions.page(include_archived=include_archived, limit=limit, person=people.scope(),
+                                    cursor=cursor)
+            return [{**{k: v for k, v in sessions.view(s).items() if k in keep}, "cursor": c} for s, c in page]
 
         @tool()
         async def get_session(session: str) -> live.SessionOut:
@@ -802,6 +806,10 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         from hangar import inbox  # --- landing: hangar://inbox, what needs the caller (a resource, not a tool)
 
         inbox.register(mcp, jobs)
+        from hangar import flightrec, opstatus  # --- clouddoctor: hangar://status (admins), job flight records
+
+        opstatus.register(mcp, fleet, sessions, jobs)
+        flightrec.register(mcp, jobs, guard)
         mcp.recent = lambda: live.recent_resources(sessions, jobs)
         live.register_prompts(mcp, sessions)
         fleet.store.on_put.append(feed.on_put)
@@ -858,12 +866,11 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         return jobs.view(jobs.get(job))
 
     @tool()
-    async def list_jobs(state: str | None = None, limit: int = 20) -> list[live.JobOut]:
-        """Recent jobs, newest first (state: queued | provisioning | running | verifying | delivering |
-        needs_input | succeeded | failed | cancelled)."""
-        mine = people.mine(jobs.list(state=state, limit=500))  # --- identity
-        return [{k: v for k, v in jobs.view(j).items() if k not in ("events", "instructions", "turns")}
-                for j in mine[:max(1, min(limit, 500))]]
+    async def list_jobs(state: str | None = None, limit: int = 20, cursor: str | None = None) -> list[live.JobOut]:
+        """Jobs, newest first; state: queued|running|needs_input|succeeded|failed... More: cursor=the last one's."""
+        page, _ = jobs.page(state=state, limit=limit, person=people.scope(), cursor=cursor)  # identity
+        return [{**{k: v for k, v in jobs.view(j).items() if k not in ("events", "instructions", "turns")},
+                 "cursor": c} for j, c in page]
 
     @tool()
     async def follow_up_job(job: str, message: str, context: list[dict[str, Any]] | None = None,

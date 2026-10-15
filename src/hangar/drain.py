@@ -78,7 +78,7 @@ class Drain:
 
     def status(self, h: Any) -> dict[str, Any]:
         flight = h.fleet.reconciler.in_flight()
-        sessions = h.sessions.list(limit=500)
+        sessions = h.sessions._sessions.values()  # --- durable: starting, suspending or busy ones are in memory
         busy = {s.id for s in sessions if h.sessions.busy(s.id)}
         starting = [s.name for s in sessions if s.state == SessionState.STARTING]
         # a suspend runs until its sandbox is destroyed, after the session already says `suspended`

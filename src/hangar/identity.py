@@ -114,7 +114,8 @@ def reserved_names(settings: Settings) -> set[str]:
     """Every credential the control plane names for its own use: the signing keys and bot tokens, and the GitHub
     tokens it calls GitHub with (control-plane unless an admin marks them `sandbox`)."""
     return _signing_names(settings) | {n for n in (settings.github_token_credential, settings.gateway_credential,
-                                                   settings.github_app_credential) if n}  # --- landing
+                                                   settings.github_app_credential) if n} \
+        | {n for n in (settings.model_list_credentials or {}).values() if n}  # --- landing; --- canary: list keys
 
 
 def locked(cred: Credential, settings: Settings | None) -> bool:

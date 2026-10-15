@@ -52,10 +52,45 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("hangar.envbuilds")
 
+# --- durable: what a build keeps of its checkout's git directory (EnvBuilds._scrub_git). The config is read and
+# edited as a plain file (`--file`, `--no-includes`), so nothing in it runs meanwhile; submodules' git dirs too.
+GIT_KEEP = ("core.repositoryformatversion|core.filemode|core.bare|core.logallrefupdates|core.ignorecase|"
+            "core.precomposeunicode|core.symlinks|extensions.*|remote.*.url|remote.*.pushurl|remote.*.fetch|"
+            "remote.*.promisor|remote.*.partialclonefilter|branch.*.remote|branch.*.merge|submodule.*.url|"
+            "submodule.*.active|user.name|user.email|"
+            # --- review: sparse checkouts (in config.worktree), and LFS's format version (its filters: GIT_LFS)
+            "core.sparsecheckout|core.sparsecheckoutcone|index.sparse|lfs.repositoryformatversion")
+# --- review: `git lfs install --local` puts LFS's filters in the repo's config; without them every LFS file reads as
+# changed and `git add` stages the file instead of its pointer. Kept only as git-lfs's own commands, one value each.
+GIT_LFS = ("'filter.lfs.clean=git-lfs clean -- %f'|'filter.lfs.smudge=git-lfs smudge -- %f'|"
+           "'filter.lfs.smudge=git-lfs smudge --skip -- %f'|'filter.lfs.process=git-lfs filter-process'|"
+           "'filter.lfs.process=git-lfs filter-process --skip'|'filter.lfs.required=true'")
+# --- review: config.worktree too (git reads it when extensions.worktreeConfig is set), the superproject's and each
+# submodule's git dir.
+GIT_SCRUB = ("cd {path} || exit 1\n"
+             "gd=$(git rev-parse --absolute-git-dir 2>/dev/null) || exit 0\n"
+             "for d in \"$gd\" $(find \"$gd/modules\" -name config -type f ! -path '*/refs/*' ! -path '*/logs/*' "
+             "-exec dirname {{}} \\; 2>/dev/null); do\n"
+             "  find \"$d/hooks\" -mindepth 1 ! -name '*.sample' ! -type d -exec rm -f {{}} + 2>/dev/null\n"
+             "  for f in \"$d/config\" \"$d/config.worktree\"; do\n"
+             "    [ -f \"$f\" ] || continue\n"
+             "    git config --file \"$f\" --no-includes --name-only --list | sort -u | while IFS= read -r k; do\n"
+             "      case \"$k\" in\n"
+             f"        {GIT_KEEP}) ;;\n"
+             "        filter.lfs.*) v=$(git config --file \"$f\" --no-includes --get-all \"$k\")\n"
+             f"          case \"$k=$v\" in {GIT_LFS}) ;; *) git config --file \"$f\" --unset-all \"$k\" ;; esac ;;\n"
+             "        *) git config --file \"$f\" --unset-all \"$k\" ;;\n"
+             "      esac\n"
+             "    done\n"
+             "  done\n"
+             "done\n")
 KV_BUILD = "envbuild:"
 KV_HEAD = "envbuild-head:"
 KV_SEEN = "envbuild-seen:"
 LABEL = "hangar.build"  # on a build's own sandbox: it never uses (or schedules) builds itself
+# --- autoinstall: on agent-led setup's validation sandbox, which starts clean (no build) from a proposed config that
+# hangar applies itself; its value is a nonce naming that config (autoinstall.py)
+VALIDATE_LABEL = "hangar.env-validate"
 PROVIDERS = ("docker", "kubernetes")  # where a build can be captured as an image
 LOG_TAIL = 16_000
 FAILURES_MAX = 20
@@ -270,7 +305,7 @@ class EnvBuilds:
     async def _pick(self, spec: EnvSpec, pname: str, harness: str | None, sb: Sandbox,
                     stage: Callable[[str], None] | None) -> Pick:
         repo = repo_key(sb.repo)
-        if not repo or LABEL in sb.labels or self._supported(pname):
+        if not repo or LABEL in sb.labels or VALIDATE_LABEL in sb.labels or self._supported(pname):  # autoinstall
             return Pick()
         b = self.active(pname, spec.name, repo)
         if b is None or not b.image:
@@ -330,13 +365,16 @@ class EnvBuilds:
         be some commits behind. Untracked files `install` left (not ignored ones like node_modules) are removed, so
         the agent's diff is its own."""
         q = shlex.quote
-        script = (f"cd {q(dest)} && git remote set-url origin {q(sb.repo or '')} && git fetch -q --prune origin && ")
+        # --- durable: hooks never run in hangar's own git commands here (the build's are gone, see GIT_SCRUB; this
+        # covers a build from before that)
+        g = "git -c core.hooksPath=/dev/null -c core.fsmonitor=false"
+        script = (f"cd {q(dest)} && {g} remote set-url origin {q(sb.repo or '')} && {g} fetch -q --prune origin && ")
         if sb.branch:
-            script += f"git checkout -q -f -B {q(sb.branch)} {q('origin/' + sb.branch)}"
+            script += f"{g} checkout -q -f -B {q(sb.branch)} {q('origin/' + sb.branch)}"
         else:
-            script += ('b=$(git symbolic-ref -q --short refs/remotes/origin/HEAD) && '
-                       'git checkout -q -f -B "${b#origin/}" "$b"')
-        return script + " && git clean -fdq"
+            script += (f'b=$({g} symbolic-ref -q --short refs/remotes/origin/HEAD) && '
+                       f'{g} checkout -q -f -B "${{b#origin/}}" "$b"')
+        return script + f" && {g} clean -fdq"
 
     # ================================================================== after the clone
     async def after_setup(self, prov: Provider, sb: Sandbox, spec: EnvSpec, harness: str | None,
@@ -344,7 +382,7 @@ class EnvBuilds:
         """Read the repo's config from the checkout, start what it declares under the supervisor, tell the agent
         about its environment, and schedule a rebuild when the build is behind. Never fails the create: problems are
         recorded (sb.info["setup_failures"]) and shown to the agent."""
-        if not self.settings.env_builds or LABEL in sb.labels:
+        if not self.settings.env_builds or LABEL in sb.labels or VALIDATE_LABEL in sb.labels:  # --- autoinstall
             return
         try:
             await self._after_setup(prov, sb, spec, harness, stage)
@@ -502,7 +540,8 @@ class EnvBuilds:
         return out
 
     async def _forget(self, b: Build) -> None:
-        """A build out of the history: its record, its local image, and (Kubernetes) its sandbox template."""
+        """A build out of the history: its record and its local image. --- durable: not its Kubernetes template,
+        which a session started from the build may still run on; k8sgc deletes it once no live sandbox does."""
         self.store.kv_delete(KV_BUILD + b.id)
         prov = self.fleet.providers.get(b.provider)
         if prov is None or not b.image:
@@ -510,10 +549,8 @@ class EnvBuilds:
         try:
             if hasattr(prov, "delete_image"):
                 await prov.delete_image(b.image)  # type: ignore[attr-defined]
-            if b.provider == "kubernetes":
-                await _delete_template(prov, f"hangar-{b.environment[:40]}-{b.id.removeprefix('bld-')}")
         except Exception:  # noqa: BLE001 - garbage; the registry's own cleanup policy is the backstop
-            log.info("could not remove build %s's image or template", b.id, exc_info=True)
+            log.info("could not remove build %s's image", b.id, exc_info=True)
 
     async def _run(self, b: Build) -> None:
         if self._sem is None:
@@ -600,6 +637,7 @@ class EnvBuilds:
         if values:
             await self._leak_scan(prov, sb, values, path)
         self._stage(b, "capturing the checkout")
+        await self._scrub_git(prov, sb, path)  # --- durable
         data = await self._capture(prov, sb, path)
         if values and (hits := await asyncio.to_thread(archive_leaks, data, values)):  # --- review: what's imaged
             raise EnvBuildError("install left build secret(s) in the checkout, which every sandbox would get: "
@@ -655,6 +693,16 @@ class EnvBuilds:
             raise EnvBuildError("install left build secret(s) in the checkout, which every sandbox would get: "
                                 + "; ".join(hits[:10]) + ". Write them outside the repo, or remove them at the end "
                                 "of install")
+
+    async def _scrub_git(self, prov: Provider, sb: Sandbox, path: str) -> None:
+        """--- durable (#99 review): the checkout's git directory is reused by every sandbox started from the build.
+        `install` ran there, so its hooks and its git config (hooksPath, fsmonitor, filters, aliases, includes: all
+        things git runs) would run in every one of them, and outlive the commit that put them there until a rebuild.
+        Only the hooks' samples and the config hangar and git need stay. A repo that wants hooks in every sandbox sets
+        them up in `start`."""
+        res = await prov.exec(sb, GIT_SCRUB.format(path=shlex.quote(path)), timeout=120)
+        if res.exit_code != 0:
+            raise EnvBuildError(f"could not clean the checkout's git hooks and config: {res.stderr[-300:]}")
 
     async def _capture(self, prov: Provider, sb: Sandbox, path: str) -> bytes:
         """The checkout as a gzip tar (uid 1000 as in the sandbox), within HANGAR_SNAPSHOT_MAX_MB."""
@@ -849,6 +897,26 @@ def environment_for(jobs: Any, repo: str, environment: str | None) -> str:
     return env
 
 
+def validate(jobs: Any, content: str, repo: str | None = None, environment: str | None = None) -> dict[str, Any]:
+    """`POST /api/envbuilds/validate`: a config checked the way hangar will use it (repoenv.check), with the repo's
+    allowed environments and the build secret ids mapped for it. Agent-led setup checks its proposals with this too.
+    """
+    from hangar import buildsecrets
+    from hangar.repopolicy import RepoPolicies
+
+    fleet = jobs.fleet
+    allowed = jobs.repo_envs(repo) if repo else []
+    ids = None
+    try:
+        env = environment or repoenv.parse(content).extends
+        if env and env in fleet.catalog.names():
+            ids = set(buildsecrets.mapping(fleet.catalog.get(env), RepoPolicies(fleet.store).get(repo)))
+    except repoenv.RepoEnvError:
+        pass
+    return repoenv.check(content, fleet.settings, fleet.catalog, repo=repo, allowed_envs=allowed,
+                         environment=environment, secret_ids=ids)
+
+
 def view(b: Build, h: Head | None = None) -> dict[str, Any]:
     d = b.model_dump(mode="json")
     d["version"] = b.version
@@ -926,20 +994,7 @@ def mount(app: Any, h: Any, admin: Any, member: Any) -> None:
         content = body.get("content")
         if not isinstance(content, str):
             raise HTTPException(400, "content: the .hangar/environment.yaml text")
-        repo = body.get("repo")
-        allowed = h.jobs.repo_envs(repo) if repo else []
-        ids = None
-        from hangar import buildsecrets
-        from hangar.repopolicy import RepoPolicies
-
-        try:
-            env = body.get("environment") or repoenv.parse(content).extends
-            if env and env in fleet.catalog.names():
-                ids = set(buildsecrets.mapping(fleet.catalog.get(env), RepoPolicies(fleet.store).get(repo)))
-        except repoenv.RepoEnvError:
-            pass
-        return repoenv.check(content, fleet.settings, fleet.catalog, repo=repo, allowed_envs=allowed,
-                             environment=body.get("environment"), secret_ids=ids)
+        return validate(h.jobs, content, body.get("repo"), body.get("environment"))  # --- autoinstall: shared
 
     @app.post("/api/envbuilds/{build_id}/rollback")
     async def builds_rollback(build_id: str, who: str = admin):
@@ -965,17 +1020,6 @@ def _event(info: dict[str, Any], eff: EnvSpec) -> str:
     if info.get("stale"):
         msg += f"; {info.get('reason')}"
     return msg
-
-
-async def _delete_template(prov: Any, name: str) -> None:
-    from hangar.providers.kubernetes import EXT_GROUP, EXT_V, ApiException
-
-    for plural in ("sandboxwarmpools", "sandboxtemplates"):
-        try:
-            await asyncio.to_thread(prov.crd.delete_namespaced_custom_object, EXT_GROUP, EXT_V, prov.ns, plural, name)
-        except ApiException as e:
-            if e.status != 404:
-                raise
 
 
 def of(fleet: Fleet) -> EnvBuilds:

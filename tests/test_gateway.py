@@ -265,8 +265,11 @@ async def test_receive_pack_policy_and_limits(gwfleet, store, settings):
     token = gwfleet.gateway.mint(sb, "github.com", ["acme/widgets"], ["refs/heads/hangar/job-1"], "pat")
     url = "/git/github.com/acme/widgets.git/git-receive-pack"
     hdrs = {**_basic(token), "Content-Type": "application/x-git-receive-pack-request"}
+    from tests.test_pushscan import make_pack
+
     async with _client(gwfleet) as c:
-        body = cmd_body((OLD, NEW, "refs/heads/hangar/job-1"), pack=b"PACK" + b"\0" * 5000)
+        # --- egress2: a real pack, since the gateway reads it to scan for secrets
+        body = cmd_body((OLD, NEW, "refs/heads/hangar/job-1"), pack=make_pack([(3, b"\0" * 5000)]))
         r = await c.post(url, content=body, headers=hdrs)
         assert r.status_code == 200
         req, sent = stub.requests[-1]
@@ -298,6 +301,11 @@ async def test_receive_pack_policy_and_limits(gwfleet, store, settings):
             for _ in range(40):
                 yield b"P" * 65536
 
+        # --- egress2: held for the secret scan, a push over the cap is refused before anything goes upstream...
+        r = await c.post(url, content=chunked(), headers=hdrs)
+        assert r.status_code == 200 and "larger than the gateway's limit" in " ".join(parse_report(r.content, True))
+        assert len(stub.requests) == n
+        settings.secret_scan = "off"  # ...and without the scan, streamed until the cap cuts it
         r = await c.post(url, content=chunked(), headers=hdrs)
         assert r.status_code == 502
     deny = [e for e in store.audit_tail(50) if e.action == "gw.git.deny"]

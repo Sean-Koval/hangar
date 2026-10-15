@@ -24,6 +24,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from hangar import autoinstall as autoinstall  # --- autoinstall: an issue labelled for an env setup
 from hangar import intake
 from hangar.github import GitHubError
 from hangar.jobs import JobService, SubmitJob
@@ -350,7 +351,9 @@ async def _submit(svc: JobService, delivery: str | None, board: Board, key: str,
         title=f"#{number}: {title}"[:200], repo=f"https://github.com/{repo}.git", context=context,
         idempotency_key=f"ghproject-delivery:{delivery}" if delivery else None,
         labels={"github.kind": "issue", "github.issue": str(number), "ghproject.board": key,
-                intake.TRACKER: tracker_ref(str(project.get("id") or ""), str(item.get("id") or ""))})
+                intake.TRACKER: tracker_ref(str(project.get("id") or ""), str(item.get("id") or "")),
+                **autoinstall.kind_labels(svc.settings, [  # --- autoinstall: an env setup
+                    str(n.get("name")) for n in ((issue.get("labels") or {}).get("nodes")) or [] if n])})
     requester = f"github:{login or 'unknown'}"
     res = intake.submit(svc, req, source="github-projects", ref=ref, requester=requester, person=person,
                         trusted=trusted, who=login or "someone", restricted=False)

@@ -16,11 +16,13 @@ import time
 from collections.abc import Callable, Collection, Iterator
 from enum import Enum
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, NamedTuple, TypeVar
 
 from pydantic import BaseModel
 
+from hangar.clouddoctor import DoctorFinding  # --- clouddoctor: what the Cloud Doctor found
 from hangar.envrequests import EnvRequest  # --- computer: requests agents file with their owners
+from hangar.flightrec import FlightRecord  # --- clouddoctor: failed and slow runs
 from hangar.models import (
     JOB_TERMINAL,
     SESSION_LIVE,
@@ -52,6 +54,8 @@ _TABLES: dict[type[BaseModel], tuple[str, str]] = {
     SandboxGrant: ("sandbox_grants", "id"),  # workstream F: git gateway
     Person: ("people", "id"),  # --- identity
     EnvRequest: ("env_requests", "id"),  # --- computer
+    FlightRecord: ("flight_records", "id"),  # --- clouddoctor
+    DoctorFinding: ("doctor_findings", "id"),  # --- clouddoctor
 }
 # --- review(perf): access control must not roll back on a node crash (a revoked token coming back), so these
 # commits, and the secrets table's, sync the WAL like synchronous=FULL; everything else stays on NORMAL.
@@ -63,6 +67,8 @@ _INDEXED: dict[type[BaseModel], tuple[str, ...]] = {
     Job: ("state",),
     Session: ("state",),
     EnvRequest: ("state", "session_id"),  # --- computer
+    FlightRecord: ("at", "job_id"),  # --- clouddoctor: `at` serves list_range
+    DoctorFinding: ("state", "signature"),  # --- clouddoctor
 }
 # The states in which a record holds, or is about to hold, resources (list_active). Sandbox: fleet.ACTIVE.
 _ACTIVE: dict[type[BaseModel], frozenset[str]] = {
@@ -79,6 +85,31 @@ _ARCHIVABLE: frozenset[type[BaseModel]] = frozenset({Sandbox})
 _REFERENCED_BY: dict[type[BaseModel], tuple[tuple[str, str], ...]] = {
     Sandbox: (("snapshots", "sandbox_id"), ("credentials", "leased_to")),
 }
+# --- durable: jobs and sessions aren't all held in memory any more (resident.py). What they are looked up and
+# listed by is indexed, in the archive too, which listings and lookups by key read along with the main table.
+_INDEXED[Job] = (*_INDEXED[Job], "person", "owner", "source_ref", "idempotency_key", "session_id", "branch",
+                 "updated_at", "result.pr_number", "result.head_sha", "landing.pr_state", "autofix_state.due_at")
+_INDEXED[Session] = (*_INDEXED[Session], "name", "job_id", "parent_id", "harness_session", "branch", "updated_at",
+                     "needs_input")
+# kind -> (the field listings sort by, newest first; the filters a listing combines with it, each indexed with it)
+_ORDERED: dict[type[BaseModel], tuple[str, tuple[str, ...]]] = {
+    Job: ("created_at", ("person", "owner", "state")),
+    Session: ("last_active_at", ("person",)),
+}
+_ARCHIVABLE = _ARCHIVABLE | {Job, Session}
+# A finished job is archived once nothing needs it in the main table: not while its PR is open or approved, or is
+# merged or closed with its session not yet ended (landing.py), nor with auto-fix triggers waiting (autofix.py), nor
+# while a schedule's next run updates its PR (landing.open_pr_job). A session with checkpoints can always be resumed,
+# so it is never archived, and nor is one a job in the main table points at: the job goes first.
+_KEPT: dict[type[BaseModel], str] = {
+    Job: "coalesce(json_extract(data, '$.landing.pr_state'), '') IN ('open', 'approved') "
+         "OR (coalesce(json_extract(data, '$.landing.pr_state'), '') IN ('merged', 'closed') "
+         "AND coalesce(json_extract(data, '$.landing.ended'), 0) = 0) "
+         "OR coalesce(json_array_length(data, '$.autofix_state.pending'), 0) > 0",
+    Session: "coalesce(json_array_length(data, '$.checkpoints'), 0) > 0",
+}
+_REFERENCED_BY[Job] = (("schedules", "last_job_id"),)
+_REFERENCED_BY[Session] = (("jobs", "session_id"),)
 
 
 class Store:
@@ -103,10 +134,24 @@ class Store:
         for cls, fields in _INDEXED.items():  # --- scale
             table = _TABLES[cls][0]
             for f in fields:
-                self._db.execute(f"CREATE INDEX IF NOT EXISTS {table}_by_{f} ON {table}({_field(f)})")
+                self._db.execute(f"CREATE INDEX IF NOT EXISTS {table}_by_{_ix(f)} ON {table}({_field(f)})")  # durable
         for cls in _ARCHIVABLE:
             self._db.execute(f"CREATE TABLE IF NOT EXISTS {_TABLES[cls][0]}_archive "
                              "(key TEXT PRIMARY KEY, data TEXT NOT NULL, archived_at REAL NOT NULL)")
+            # --- review: a record is in one table. One in both was handed back by a rollback (docs/upgrading.md),
+            # and the previous version wrote only the main table's copy since: the archive's is stale.
+            t = _TABLES[cls][0]
+            self._db.execute(f"DELETE FROM {t}_archive WHERE key IN (SELECT key FROM {t})")
+        for cls, (order, by) in _ORDERED.items():  # --- durable: the same indexes on the archive, and ordered ones
+            table = _TABLES[cls][0]
+            for t in (table, f"{table}_archive"):
+                if t != table:
+                    for f in _INDEXED[cls]:
+                        self._db.execute(f"CREATE INDEX IF NOT EXISTS {t}_by_{_ix(f)} ON {t}({_field(f)})")
+                self._db.execute(f"CREATE INDEX IF NOT EXISTS {t}_by_{order} ON {t}({_field(order)})")
+                for f in by:
+                    self._db.execute(f"CREATE INDEX IF NOT EXISTS {t}_by_{f}_{order} "
+                                     f"ON {t}({_field(f)}, {_field(order)})")
         # --- workstream mcp-modern: called after every put (MCP resource-updated notifications); must not raise
         self.on_put: list[Callable[[BaseModel], None]] = []
 
@@ -122,15 +167,31 @@ class Store:
         finally:
             self._db.execute("PRAGMA synchronous=NORMAL")
 
+    @contextlib.contextmanager
+    def _atomic(self, on: bool) -> Iterator[None]:
+        """--- durable: what runs inside commits as one transaction. Caller holds the lock."""
+        if not on:
+            yield
+            return
+        self._db.execute("BEGIN")
+        try:
+            yield
+        except BaseException:
+            self._db.execute("ROLLBACK")
+            raise
+        self._db.execute("COMMIT")
+
     # --- generic model CRUD -------------------------------------------------
     def put(self, obj: BaseModel) -> None:
         table, key_field = _TABLES[type(obj)]
-        with self._lock, self._synced(type(obj) in _DURABLE):
+        with self._lock, self._synced(type(obj) in _DURABLE), self._atomic(type(obj) in _ARCHIVABLE):
             self._db.execute(
                 f"INSERT INTO {table}(key, data) VALUES(?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET data=excluded.data",
                 (getattr(obj, key_field), obj.model_dump_json()),
             )
+            if type(obj) in _ARCHIVABLE:  # --- durable: back in the main table, it is in one place only
+                self._db.execute(f"DELETE FROM {table}_archive WHERE key=?", (getattr(obj, key_field),))
         for fn in self.on_put:  # workstream mcp-modern
             try:
                 fn(obj)
@@ -152,20 +213,59 @@ class Store:
         return [cls.model_validate_json(r[0]) for r in rows]
 
     # --- scale: indexed lookups. Whatever runs per request or per reaper pass uses these, not list().
-    def list_where(self, cls: type[T], **fields: Any) -> list[T]:
+    def list_where(self, cls: type[T], archived: bool = False, **fields: Any) -> list[T]:
         """Records whose top-level `fields` equal the given values (a collection: any of them), decoding only
-        those. Fields in _INDEXED are answered from their index; any other field works but scans the table."""
+        those. Fields in _INDEXED are answered from their index; any other field works but scans the table.
+        --- durable: `archived` reads the kind's archive too; Ge, Not and NOT_NULL compare instead of matching."""
         where, params = _where(fields)
         table, _ = _TABLES[cls]
+        sql = f"SELECT data FROM {table} WHERE {where}"
+        if archived and cls in _ARCHIVABLE:
+            sql, params = f"{sql} UNION ALL SELECT data FROM {table}_archive WHERE {where}", params * 2
         with self._lock:
-            rows = self._db.execute(f"SELECT data FROM {table} WHERE {where}", params).fetchall()
+            rows = self._db.execute(sql, params).fetchall()
         return [cls.model_validate_json(r[0]) for r in rows]
+
+    def page(self, cls: type[T], limit: int, after: tuple[Any, str] | None = None, archived: bool = False,
+             **fields: Any) -> list[tuple[T, Any]]:
+        """--- durable: up to `limit` records matching `fields`, newest first by the kind's _ORDERED field, from
+        just after `after` (the order value and key of the last record of the page before). A keyset page: what
+        any page costs doesn't grow with history, and records added meanwhile don't shift the pages after them.
+        Filtering on one of the kind's _ORDERED filters walks that filter's index in order and stops at `limit`.
+        --- review: each record comes with its order value as SQLite reads it, which is what `after` must carry:
+        SQLite's reading of a JSON number can be a ulp away from Python's, and a cursor holding Python's skipped
+        records made at the same instant."""
+        order, _ = _ORDERED[cls]
+        table, _ = _TABLES[cls]
+        o = _field(order)
+        where, params = _where(fields) if fields else ("1", [])
+        if after is not None:  # a range on the index, then the ties at its edge by key
+            where += f" AND {o} <= ? AND NOT ({o} = ? AND key >= ?)"
+            params = [*params, after[0], after[0], after[1]]
+        sql = f"SELECT key, data, {o} FROM {table} WHERE {where}"
+        if archived and cls in _ARCHIVABLE:
+            sql, params = f"{sql} UNION ALL SELECT key, data, {o} FROM {table}_archive WHERE {where}", params * 2
+        with self._lock:
+            rows = self._db.execute(f"{sql} ORDER BY 3 DESC, 1 DESC LIMIT ?", [*params, max(0, limit)]).fetchall()
+        return [(cls.model_validate_json(r[1]), r[2]) for r in rows]
 
     def count_where(self, cls: type[BaseModel], **fields: Any) -> int:
         where, params = _where(fields)
         table, _ = _TABLES[cls]
         with self._lock:
             return self._db.execute(f"SELECT count(*) FROM {table} WHERE {where}", params).fetchone()[0]
+
+    def list_range(self, cls: type[T], field: str, lo: float, hi: float | None = None,
+                   limit: int = 10_000) -> list[T]:
+        """--- clouddoctor: records whose numeric `field` is in [lo, hi), newest first; from its index when it has
+        one (_INDEXED)."""
+        f = _field(field)
+        table, _ = _TABLES[cls]
+        sql = f"SELECT data FROM {table} WHERE {f} >= ?" + (f" AND {f} < ?" if hi is not None else "")
+        params: list[Any] = [lo] + ([hi] if hi is not None else [])
+        with self._lock:
+            rows = self._db.execute(f"{sql} ORDER BY {f} DESC LIMIT ?", [*params, limit]).fetchall()
+        return [cls.model_validate_json(r[0]) for r in rows]
 
     def list_active(self, cls: type[T]) -> list[T]:
         """Records in a state that holds resources (_ACTIVE): live sandboxes, unfinished jobs, live sessions."""
@@ -181,8 +281,9 @@ class Store:
         where, params = _where({"state": states})
         table, _ = _TABLES[cls]
         with self._lock:
+            kept = f" AND NOT ({_KEPT[cls]})" if cls in _KEPT else ""  # --- durable
             keys = [r[0] for r in self._db.execute(
-                f"SELECT key FROM {table} WHERE {where} AND {_field(field)} < ?{_unreferenced(cls)} LIMIT ?",
+                f"SELECT key FROM {table} WHERE {where} AND {_field(field)} < ?{_unreferenced(cls)}{kept} LIMIT ?",
                 [*params, before, batch]).fetchall()]
             if not keys:
                 return 0
@@ -213,14 +314,25 @@ class Store:
             return self._db.execute(f"SELECT count(*) FROM {table}_archive").fetchone()[0]
 
     # --- observe: /metrics gauges
-    def count_by(self, cls: type[BaseModel], *fields: str) -> dict[tuple, int]:
-        """Records per combination of top-level fields, counted by SQLite without decoding a model each."""
+    def count_by(self, cls: type[BaseModel], *fields: str, own_connection: bool = False) -> dict[tuple, int]:
+        """Records per combination of top-level fields, counted by SQLite without decoding a model each.
+        --- durable: `own_connection` counts on a read-only connection of its own, for a worker thread: SQLite still
+        reads every row for a GROUP BY (tens of ms for a month of jobs), and WAL lets a reader run beside the
+        store's writes instead of holding its lock meanwhile."""
         table, _ = _TABLES[cls]
         if not fields or not all(f.isidentifier() for f in fields):
             raise ValueError(f"bad fields {fields}")
         cols = ", ".join(f"json_extract(data, '$.{f}')" for f in fields)
-        with self._lock:
-            rows = self._db.execute(f"SELECT {cols}, count(*) FROM {table} GROUP BY {cols}").fetchall()
+        sql = f"SELECT {cols}, count(*) FROM {table} GROUP BY {cols}"
+        if own_connection and self.path != ":memory:":
+            con = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True)
+            try:
+                rows = con.execute(sql).fetchall()
+            finally:
+                con.close()
+        else:
+            with self._lock:
+                rows = self._db.execute(sql).fetchall()
         return {tuple(r[:-1]): r[-1] for r in rows}
 
     def delete(self, cls: type[BaseModel], key: str) -> None:
@@ -247,10 +359,51 @@ class Store:
         with self._lock, self._synced(True):
             self._db.execute("DELETE FROM secrets WHERE name=?", (name,))
 
+    def secret_blobs(self, limit: int) -> list[bytes]:
+        """--- review: a few vault rows, sealed as they are (keys.load: which key sealed the vault)."""
+        with self._lock:
+            return [r[0] for r in self._db.execute("SELECT blob FROM secrets LIMIT ?", (limit,)).fetchall()]
+
+    def reseal_secrets(self, reseal: Callable[[bytes], bytes]) -> int:
+        """--- durable: every vault row through `reseal` (a key rotation), in one transaction: all or none."""
+        with self._lock, self._synced(True), self._atomic(True):
+            rows = self._db.execute("SELECT name, blob FROM secrets").fetchall()
+            for name, blob in rows:
+                self._db.execute("UPDATE secrets SET blob=? WHERE name=?", (reseal(blob), name))
+        return len(rows)
+
     # --- audit --------------------------------------------------------------
     def audit(self, event: AuditEvent) -> None:
         with self._lock:
             self._db.execute("INSERT INTO audit(ts, data) VALUES(?, ?)", (event.ts, event.model_dump_json()))
+
+    def audit_since(self, since: float, actions: Collection[str], target: str | None = None,
+                    limit: int = 500) -> list[AuditEvent]:
+        """--- clouddoctor: the newest entries of `actions` (on `target`) at or after `since`. The audit table has no
+        index on time, so the first row at `since` is found by bisecting row ids (ts grows with them), and only
+        the rows after it are read."""
+        acts = sorted(set(actions))
+        if not acts:
+            return []
+        with self._lock:
+            lo, hi = self._db.execute("SELECT min(id), max(id) FROM audit").fetchone()
+            if lo is None:
+                return []
+            while lo < hi:
+                mid = (lo + hi) // 2
+                row = self._db.execute("SELECT ts FROM audit WHERE id >= ? ORDER BY id LIMIT 1", (mid,)).fetchone()
+                if row is None or row[0] >= since:
+                    hi = mid
+                else:
+                    lo = mid + 1
+            where = f"id >= ? AND json_extract(data, '$.action') IN ({','.join('?' * len(acts))})"
+            params: list[Any] = [lo, *acts]
+            if target is not None:
+                where += " AND json_extract(data, '$.target') = ?"
+                params.append(target)
+            rows = self._db.execute(f"SELECT data FROM audit WHERE {where} AND ts >= ? ORDER BY id DESC LIMIT ?",
+                                    [*params, since, limit]).fetchall()
+        return [AuditEvent.model_validate_json(r[0]) for r in rows]
 
     def audit_tail(self, limit: int = 200) -> list[AuditEvent]:
         with self._lock:
@@ -292,10 +445,31 @@ class Store:
 
 # --- scale
 def _field(name: str) -> str:
-    """The SQL for a top-level JSON field: exactly the expression its index was built on, so SQLite uses it."""
-    if not name.isidentifier():
+    """The SQL for a top-level JSON field: exactly the expression its index was built on, so SQLite uses it.
+    --- durable: or a nested one, `result.pr_number`."""
+    if not all(p.isidentifier() for p in name.split(".")):
         raise ValueError(f"bad field {name!r}")
     return f"json_extract(data, '$.{name}')"
+
+
+def _ix(name: str) -> str:
+    """--- durable: a field's part of its index's name."""
+    return name.replace(".", "_")
+
+
+class Ge(NamedTuple):
+    """--- durable: a list_where/page value matching records whose field is at least this."""
+
+    value: Any
+
+
+class Not(NamedTuple):
+    """--- durable: a list_where/page value matching records whose field is anything but this (or missing)."""
+
+    value: Any
+
+
+NOT_NULL = object()  # --- durable: a list_where/page value matching records that have the field set
 
 
 def _unreferenced(cls: type[BaseModel]) -> str:
@@ -315,7 +489,15 @@ def _where(fields: dict[str, Any]) -> tuple[str, list[Any]]:
     parts: list[str] = []
     params: list[Any] = []
     for name, want in fields.items():
-        if isinstance(want, str | bytes) or not isinstance(want, Collection):
+        if want is NOT_NULL:  # --- durable
+            parts.append(f"{_field(name)} IS NOT NULL")
+        elif isinstance(want, Ge):
+            parts.append(f"{_field(name)} >= ?")
+            params.append(_sql_value(want.value))
+        elif isinstance(want, Not):
+            parts.append(f"{_field(name)} IS NOT ?")
+            params.append(_sql_value(want.value))
+        elif isinstance(want, str | bytes) or not isinstance(want, Collection):
             parts.append(f"{_field(name)} IS ?")
             params.append(_sql_value(want))
         else:

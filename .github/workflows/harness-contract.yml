@@ -1,0 +1,79 @@
+# The harness contract (docs/harnesses.md): the real agent CLIs, at the versions src/hangar/harnesses.lock.yaml pins,
+# driven by hangar's driver offline against scripted model APIs (tests/test_*real_clis.py), plus the protocols the
+# driver speaks with them, which must match the recorded ones (tests/fixtures/protocol). It runs on PRs that touch
+# harness, driver or isolation code, and on every push to main. The CLIs are cached by the lock and the recipes, so a
+# run that finds them takes about a minute. It needs no secrets and never talks to the cluster.
+name: harness-contract
+on:
+  pull_request:
+    paths:
+      - src/hangar/harnesses.py
+      - src/hangar/harnesses.lock.yaml
+      - src/hangar/driver.py
+      - src/hangar/harden.py
+      - src/hangar/isolation.py
+      - src/hangar/verifyloop.py
+      - src/hangar/steer.py
+      - src/hangar/cache.py
+      - src/hangar/events.py
+      - src/hangar/canary.py
+      - tests/test_*real_clis.py
+      - tests/test_cache.py
+      - tests/fixtures/live/**
+      - tests/fixtures/protocol/**
+      - .github/workflows/harness-contract.yml
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: harness-contract-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  PYTEST_ADDOPTS: -p no:cacheprovider --durations=10
+  UV_COMPILE_BYTECODE: "1"
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - uses: actions/setup-node@v7  # pi's recipe bundles this node (it needs >= 22.19), as the pack builder's does
+        with:
+          node-version: "22"
+      # Keyed on what decides the installs; an older entry is restored when the lock moved, and `install` redoes only
+      # the harnesses whose recipe or version changed (each install records its pack digest).
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/hangar-clis
+          key: harness-clis-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/hangar/harnesses.lock.yaml', 'src/hangar/harnesses.py') }}
+          restore-keys: harness-clis-${{ runner.os }}-${{ runner.arch }}-
+      - run: uv sync --all-extras --locked
+      - name: Install the locked CLIs
+        run: |
+          uv run --locked python -m hangar.canary install --dest ~/.cache/hangar-clis --env-file "$GITHUB_ENV"
+          echo "$HOME/.cache/hangar-clis/codex/libexec/codex-path" >> "$GITHUB_PATH"  # codex's bundled rg
+      - name: Contract tests
+        run: |
+          uv run --locked pytest -v --junitxml junit-contract.xml tests/test_*real_clis.py tests/test_cache.py
+      - name: Every test ran
+        if: always()
+        run: |
+          set -o pipefail
+          uv run --locked python -m hangar.canary junit junit-contract.xml | tee -a "$GITHUB_STEP_SUMMARY"
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: harness-contract
+          path: junit-contract.xml
+          if-no-files-found: ignore
+          retention-days: 30

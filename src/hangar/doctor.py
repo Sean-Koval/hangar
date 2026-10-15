@@ -211,10 +211,23 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
 
         if (c := await doctor_check(backups, s, "kubernetes" in fleet.providers)) is not None:
             out.append(c)
+        from hangar.backup import isolation_check  # --- durable: backups apart from the checkpoints
+
+        if (c := await isolation_check(backups, s)) is not None:
+            out.append(c)
+    from hangar.keys import doctor_checks as key_checks  # --- durable: the vault key and its rotation
+
+    out += key_checks(h)
     # git gateway (workstream F): reachable, and every GitHub App credential can mint a token
     out += await fleet.gateway.doctor(transport)
     from hangar import power  # --- ops: the pools' power state, the last deploy, the background loops
 
     out += power.doctor_checks(h)
+    from hangar import credhealth  # --- clouddoctor: logins that stopped working or expire soon
+
+    out += credhealth.doctor_checks(h)
+    from hangar import modelpolicy  # --- integ3 (review #105): `frontier` jobs with no budget and no daily cap
+
+    out += modelpolicy.doctor_checks(h)
     await asyncio.sleep(0)
     return out

@@ -27,9 +27,14 @@ from hangar import envdoctor as envdoctor  # --- computer
 from hangar import envservices as envservices  # --- envbuilds
 from hangar import exchange, harden, images, isolation, observe  # --- observe, isolation, harden, images
 from hangar import fairness as fairness  # --- scale
+from hangar import ghapi as ghapi  # --- egress2
+from hangar import k8sgc as k8sgc  # --- durable
 from hangar import metrics as metrics  # --- reconciler
+from hangar import modelpolicy as modelpolicy  # --- canary: `model: frontier` resolved to an id
+from hangar import opstatus as opstatus  # --- clouddoctor: the day's failures and credential health in the overview
 from hangar import power as power  # --- ops: the sandbox pools' power schedule
 from hangar import reconciler as reconciler  # --- reconciler
+from hangar import slo as slo  # --- clouddoctor: create times by path, for `hangar status`
 from hangar import supervisor as supervisor  # --- envbuilds
 from hangar import teamcreds as teamcreds  # --- teamcreds
 from hangar.broker import AUTH_FILE_LIMIT, Broker, CredentialError
@@ -251,6 +256,9 @@ class Fleet:
                                          "installed": {p: v for p in self.providers
                                                        if (v := self.harness_version(p, h))}}
                                      for h in spec.agent_harnesses if HARNESSES[h].install},
+                # --- canary: what `model` resolves to now for each harness (a policy: from the provider's list)
+                "models": {h: modelpolicy.of(self).view(h, spec.model_for(h))  # --- review #105: and its price
+                           for h in spec.agent_harnesses},
             })
         return out
 
@@ -709,6 +717,10 @@ class Fleet:
         )
         if hname:
             sb.info["harness"] = hname
+            # --- canary: the environment's model for it, a policy resolved now and pinned for the sandbox's runs
+            res = modelpolicy.of(self).resolve(hname, spec.model_for(hname))
+            sb.info.update({k: v for k, v in (("model", res.model), ("model_policy", res.policy),
+                                              ("model_note", res.note)) if v})
         self.reconciler.own(sb.id, "create")  # --- reconciler: this task owns the row until it settles
         self.store.put(sb)
         self.audit(actor, "sandbox.create", sb.id, environment=environment, provider=pname, name=sb.name)
@@ -745,6 +757,8 @@ class Fleet:
                 sb.info["packs"] = dict(spec.packs)
                 if hname in spec.packs and (v := self.harness_version(pname, hname)):  # --- images
                     sb.info["harness_version"] = v
+                if hname in spec.packs:  # --- canary: the locked version its pack was built for (pins.py)
+                    sb.info["harness_lock"] = get_harness(hname).version
             stage("starting the sandbox")
             with observe.span("sandbox.start", {"hangar.sandbox.id": sb.id, "hangar.provider": pname}):  # --- observe
                 # image may be a snapshot ref (forks); --- envbuilds: a build's own template on Kubernetes
@@ -771,6 +785,7 @@ class Fleet:
             sb.state = SandboxState.RUNNING
             sb.error = None
             self._touch(sb)
+            slo.created(sb, fork=_parent is not None or _image is not None)  # --- clouddoctor
             # --- ops: + the day's size; --- envbuilds: never from a repo build's image
             if self._warm(spec).warm_pool and pname in self.providers and _image is None and not build:
                 asyncio.create_task(self._refill(self._warm(spec), pname, image))
@@ -814,16 +829,25 @@ class Fleet:
         h: Harness | None = HARNESSES.get(hname) if hname else None
         prelude: list[str] = []
         extra_env: dict[str, str] = {}
+        # --- review #102: agent-led setup's validation sandbox runs an unmerged, agent-written install. It gets the
+        # git credential its clone needs and nothing else: no other credential, no `secrets:`, no cloud tokens.
+        validating = envbuilds.VALIDATE_LABEL in sb.labels
+        if validating:
+            from hangar.gateway import GIT_KINDS
+
+            creds = [c for c in creds if c.kind in GIT_KINDS]
         if h:
             if h.install:
                 extra = "".join(f":{h.prefix}/{d}" for d in h.path_extra)  # --- images: the pack carries no wrapper
                 prelude.append(f'export PATH="{h.prefix}/bin:$PATH{extra}"')
             extra_env.update(h.env)
             extra_env["HANGAR_HARNESS"] = h.name
-        for var, cred in spec.secrets.items():
+        for var, cred in ({} if validating else spec.secrets).items():  # --- review #102
             extra_env[var] = self.broker.sandbox_secret(cred)  # --- identity: refuses control-plane credentials
         extra_env.update(await egress.attach(self, prov, sb, spec))  # --- egress: HTTPS_PROXY in a proxied env
-        extra_env.update(await self.cloud.attach(prov, sb, spec))  # --- egress: cloud OIDC tokens, no stored keys
+        if not validating:  # --- review #102
+            extra_env.update(await self.cloud.attach(prov, sb, spec))  # --- egress: cloud OIDC tokens, no stored keys
+        extra_env.update(ghapi.sandbox_env(self.settings, sb))  # --- egress2: the read-only GitHub API (gateway)
         # workstream E: the `hangar-agent` helper (context exchange), installed per sandbox: no image rebuild
         await exchange.install_helper(prov, sb, f"/home/{self.settings.sandbox_user}")
         await supervisor.install(prov, sb, f"/home/{self.settings.sandbox_user}")  # --- envbuilds: `hangar-agent svc`
@@ -1237,7 +1261,9 @@ class Fleet:
         if not hname:
             raise FleetError(f"environment {sb.environment} has no agent harness enabled")
         h = get_harness(hname)
-        model = model or spec.model_for(hname)
+        models = modelpolicy.of(self)  # --- canary: a policy is a concrete id by the time a run starts
+        model = models.concrete(hname, model) or (sb.info.get("model") if hname == selected else None) \
+            or models.concrete(hname, spec.model_for(hname))
         if run_id is not None and not re.fullmatch(r"run-[0-9a-f]{8}", run_id):
             raise FleetError(f"invalid run id '{run_id}'")
         run_id = run_id or new_id("run")
@@ -1532,6 +1558,9 @@ class Fleet:
         cred = self.broker.put(lg["credential"], lg["harness"], kind, value,
                                description=f"{h.title} login captured {time.strftime('%Y-%m-%d')}",
                                person=person)  # --- teamcreds: the login is its person's own, not the team's
+        from hangar import credhealth  # --- clouddoctor: checked where it was made (codex login status)
+
+        await credhealth.on_capture(self, cred, lg["sandbox"])
         await self.destroy(lg["sandbox"], actor=actor)
         self.logins.pop(login_id, None)
         self.audit(actor, "credential.login_complete", cred.name, harness=lg["harness"])
@@ -1589,6 +1618,7 @@ class Fleet:
                                      return_exceptions=True)
                 await self.sync_scheduled_pools()  # --- reconciler: reconcile runs on its own task now
                 await envservices.sweep(self)  # --- envbuilds: services whose sandbox is gone (Docker)
+                await k8sgc.sweep(self)  # --- durable: build and services templates nothing uses (Kubernetes)
                 metrics.loop_tick("reaper")  # --- reconciler: heartbeat
             except asyncio.CancelledError:
                 return
@@ -1610,7 +1640,7 @@ class Fleet:
             "credentials": len(self.broker.list()),
             "harnesses": {k: {"title": v.title, "agent": v.agent, "version": v.version or "latest",
                               "deprecated": v.deprecated} for k, v in HARNESSES.items()},
-        } | self.power.overview()  # --- ops: power, the last deploy, the background loops
+        } | self.power.overview() | opstatus.overview_fields(self)  # --- ops; --- clouddoctor: failures, credentials
 
 
 __all__ = ["Fleet", "FleetError", "CredentialError", "CredentialKind"]

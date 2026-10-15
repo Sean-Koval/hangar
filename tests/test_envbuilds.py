@@ -153,6 +153,37 @@ async def test_first_sandbox_falls_back_and_the_next_starts_from_the_build(fl, w
     assert not envbuilds.wait_for_tasks(fl)  # nothing moved: no rebuild
 
 
+async def test_a_builds_git_hooks_and_config_dont_carry_into_later_sandboxes(fl, world):
+    """#99 review: the build's `.git` came from after `install` and every sandbox started from the build got it, so a
+    hook `install` left (or a hooksPath, fsmonitor, filter or alias it configured) ran in all of them, starting with
+    hangar's own checkout, and outlived the commit that put it there until a rebuild."""
+    push(world, ".hangar/environment.yaml", "install: |\n"
+         "  mkdir -p node_modules .githooks\n"
+         "  printf '#!/bin/sh\\ntouch \"$HOME/hooked-$(basename $0)\"\\n' > .git/hooks/post-checkout\n"
+         "  cp .git/hooks/post-checkout .githooks/post-checkout\n"
+         "  chmod +x .git/hooks/post-checkout .githooks/post-checkout\n"
+         "  git config core.hooksPath .githooks\n"
+         "  git config core.fsmonitor .githooks/post-checkout\n"
+         "  git config filter.x.smudge 'touch $HOME/smudged'\n"
+         "  git config alias.st status\n"
+         "  git config include.path ../../extra.cfg\n")
+    eb = envbuilds.of(fl)
+    await fl.create("appenv", repo=world.url)
+    await drain(fl)
+    b = eb.active("docker", "appenv", repo_key(world.url))
+    assert b is not None and b.state == "succeeded", b and (b.error, b.log)
+    sb = await fl.create("appenv", repo=world.url, work_branch="hangar/x")
+    assert sb.info["env_build"]["fallback"] is False
+    hooks = (await sh(fl, sb, "ls /workspace/app/.git/hooks")).split()
+    assert hooks and all(h.endswith(".sample") for h in hooks), hooks
+    cfg = await sh(fl, sb, "cd /workspace/app && git config --local --no-includes --name-only --list")
+    assert "remote.origin.url" in cfg
+    for key in ("core.hookspath", "core.fsmonitor", "filter.x.smudge", "alias.st", "include.path"):
+        assert key not in cfg, cfg
+    assert (await sh(fl, sb, "ls -a /home/agent")).split().count("hooked-post-checkout") == 0  # nothing ran
+    assert (await sh(fl, sb, "cd /workspace/app && git rev-parse --abbrev-ref HEAD")).strip() == "hangar/x"
+
+
 async def test_drift_rebuilds_in_the_background_and_the_checkout_is_current(fl, world):
     eb = envbuilds.of(fl)
     await fl.create("appenv", repo=world.url)
@@ -460,7 +491,53 @@ def test_checkout_script_quotes_and_defaults_to_the_remote_head():
     s = envbuilds.EnvBuilds.checkout_script(sb, "/workspace/a b")
     assert "cd '/workspace/a b'" in s and "'https://x/a b.git'" in s and "-B 'feat/'\"'\"'x'\"'\"''" in s
     sb.branch = None
-    assert "refs/remotes/origin/HEAD" in envbuilds.EnvBuilds.checkout_script(sb, "/w")
+    s = envbuilds.EnvBuilds.checkout_script(sb, "/w")
+    assert "refs/remotes/origin/HEAD" in s
+    # --- durable: no hook runs in hangar's own git commands there (a build from before kept its hooks)
+    assert s.count("git -c core.hooksPath=/dev/null -c core.fsmonitor=false") == s.count("git ") == 5
+
+
+def _scrubbed(tmp_path: Path, setup: list[list[str]]) -> tuple[dict[str, str], dict[str, str]]:
+    """A repo configured by `setup` (git config arguments), scrubbed; its config and config.worktree after."""
+    env = {**os.environ, "HOME": str(tmp_path), "GIT_CONFIG_NOSYSTEM": "1"}
+    repo = tmp_path / "r"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, env=env)
+    for args in setup:
+        subprocess.run(["git", "-C", str(repo), "config", *args], check=True, env=env)
+    subprocess.run(["bash", "-c", envbuilds.GIT_SCRUB.format(path=shlex.quote(str(repo)))], check=True, env=env)
+
+    def read(name: str) -> dict[str, str]:
+        f = repo / ".git" / name
+        if not f.exists():
+            return {}
+        out = subprocess.run(["git", "config", "--file", str(f), "--list"], capture_output=True, text=True, env=env)
+        return dict(line.split("=", 1) for line in out.stdout.splitlines())
+
+    return read("config"), read("config.worktree")
+
+
+def test_the_git_scrub_keeps_lfs_and_sparse_checkout(tmp_path):
+    """--- review: `git lfs install --local` (in `install`) puts LFS's filters in the repo's config, and sparse
+    checkouts keep theirs in config.worktree. Scrubbed, every LFS file showed as modified and `git add` staged the
+    real file instead of its pointer, so an agent's commit pushed the binaries past LFS."""
+    cfg, wt = _scrubbed(tmp_path, [
+        ["filter.lfs.clean", "git-lfs clean -- %f"], ["filter.lfs.smudge", "git-lfs smudge -- %f"],
+        ["filter.lfs.process", "git-lfs filter-process"], ["filter.lfs.required", "true"],
+        ["lfs.repositoryformatversion", "0"], ["extensions.worktreeConfig", "true"],
+        ["--worktree", "core.sparseCheckout", "true"], ["--worktree", "core.sparseCheckoutCone", "true"]])
+    assert cfg["filter.lfs.process"] == "git-lfs filter-process" and cfg["filter.lfs.clean"] == "git-lfs clean -- %f"
+    assert cfg["filter.lfs.smudge"] == "git-lfs smudge -- %f" and cfg["filter.lfs.required"] == "true"
+    assert wt == {"core.sparsecheckout": "true", "core.sparsecheckoutcone": "true"}
+
+
+def test_the_git_scrub_covers_config_worktree_and_lfs_filters_that_run_something_else(tmp_path):
+    """--- review: `extensions.worktreeConfig` (kept) makes git read .git/config.worktree, which the scrub didn't
+    touch: a hooksPath `install` put there ran in every sandbox. An LFS filter is kept only as git-lfs's own."""
+    cfg, wt = _scrubbed(tmp_path, [
+        ["extensions.worktreeConfig", "true"], ["--worktree", "core.hooksPath", ".githooks"],
+        ["--worktree", "core.fsmonitor", "touch /tmp/x"], ["filter.lfs.process", "sh -c 'touch /tmp/x'"],
+        ["filter.lfs.smudge", "git-lfs smudge -- %f"], ["--add", "filter.lfs.smudge", "touch /tmp/x"]])
+    assert wt == {} and "filter.lfs.process" not in cfg and "filter.lfs.smudge" not in cfg, (cfg, wt)
 
 
 # ---------------------------------------------------------------------- jobs, MCP, REST

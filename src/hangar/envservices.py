@@ -77,7 +77,11 @@ def _prepare(fleet: Fleet, spec: EnvSpec, sb: Sandbox, build_config: dict[str, A
     from hangar import envbuilds
 
     cfg = None
-    if build_config:
+    if envbuilds.VALIDATE_LABEL in sb.labels:  # --- autoinstall: the proposed config hangar is validating, only
+        from hangar import autoinstall
+
+        cfg = autoinstall.validation_config(fleet, sb)
+    elif build_config:
         with contextlib.suppress(ValueError):
             cfg = repoenv.RepoEnvironment.model_validate(build_config)
     elif fleet.settings.env_builds and sb.repo:

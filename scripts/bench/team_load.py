@@ -11,7 +11,8 @@ Each actor has its own token and does what an engineer's MCP client and open das
 - keeps a dashboard open: GET /api/sessions, /api/sandboxes and /api/jobs every --dashboard seconds;
 - and, once a minute, creates and destroys a bare sandbox over REST (the create path's own control-plane cost).
 
---history seeds months of settled sandboxes and finished jobs first, since hangar keeps them. The server is the
+--history seeds months of settled sandboxes and finished jobs first, since hangar keeps them (--job-history and
+--session-history set how many jobs and sessions, spread over six months). The server is the
 real app (fakeserver.py) in its own process; what is measured is hangar's own overhead. Metrics: p50/p95 of every
 MCP tool and REST route above, under load; notes: event-loop lag, RSS, CPU seconds and SQLite time (on the event
 loop and in threads, per store method), the sessions' turn times and the jobs' queue waits.
@@ -216,7 +217,8 @@ async def main(a: argparse.Namespace) -> dict:
     base = f"http://127.0.0.1:{port}"
     cmd = [sys.executable, str(HERE / "fakeserver.py"), "--data", str(root / "srv"), "--port", str(port),
            "--latency-ms", str(a.latency_ms), "--watchdog-ms", str(a.watchdog_ms), "--steps", str(a.steps),
-           "--history", str(a.history), *(x for kv in a.set for x in ("--set", kv))]
+           "--history", str(a.history), *(["--job-history", str(a.job_history)] if a.job_history is not None else []),
+           "--session-history", str(a.session_history), *(x for kv in a.set for x in ("--set", kv))]
     srv = subprocess.Popen(cmd)
     try:
         async with httpx.AsyncClient(base_url=base, headers=ADMIN, timeout=120) as c:
@@ -229,10 +231,10 @@ async def main(a: argparse.Namespace) -> dict:
                 await asyncio.sleep(0.1)
             actors = [Actor(i, a, base, url, rec) for i in range(a.actors)]
             tokens = []
-            for act in actors:
-                r = await c.post("/api/tokens", json={"name": act.name, "scopes": ["admin"]})
+            for act in actors:  # --- durable: a person each (their own caps, as on a team), admins for the dashboard
+                r = await c.post("/api/people", json={"id": act.name, "role": "admin"})
                 r.raise_for_status()
-                tokens.append(r.json()["token"])
+                tokens.append(r.json()["login"]["token"])
             await c.get("/bench/stats")  # starts the loop monitor (its first answer has no samples yet)
             await asyncio.sleep(1)
             idle = (await c.get("/bench/stats", params={"reset": True})).json()
@@ -264,7 +266,8 @@ async def main(a: argparse.Namespace) -> dict:
             srv.kill()
         shutil.rmtree(root, ignore_errors=True)
     return rec.result(provider="fake", actors=a.actors, sessions=a.sessions, turns=a.turns, jobs=a.jobs,
-                      history=a.history, steps=a.steps, latency_ms=a.latency_ms, settings=a.set)
+                      history=a.history, job_history=a.job_history, session_history=a.session_history,
+                      steps=a.steps, latency_ms=a.latency_ms, settings=a.set)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -274,6 +277,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--turns", type=int, default=2, help="per session")
     p.add_argument("--jobs", type=int, default=2, help="per actor")
     p.add_argument("--history", type=int, default=20000, help="settled sandbox rows seeded first")
+    p.add_argument("--job-history", type=int, default=None,
+                   help="finished jobs over six months seeded first (default: --history / 4)")
+    p.add_argument("--session-history", type=int, default=0, help="settled sessions over six months seeded first")
     p.add_argument("--steps", type=int, default=16, help="agent events per turn, 0.5 s apart")
     p.add_argument("--poll", type=float, default=5.0, help="seconds between two get_session calls on a session")
     p.add_argument("--list", type=float, default=10.0, help="seconds between list_* rounds")

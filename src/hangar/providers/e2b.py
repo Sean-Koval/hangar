@@ -333,7 +333,6 @@ class E2BProvider(Provider):
         # sandbox must never be served through hangar's own E2B API (that would loop back here).
         self.dataplane = E2BEnvd(self, settings)
         self._aliases: dict[str, str] = {}
-        self._sealer = None  # review(#64): see _fernet
 
     @property
     def capabilities(self) -> Capabilities:
@@ -513,15 +512,13 @@ class E2BProvider(Provider):
     # without it), and CubeProxy wants it on every port of a private sandbox. So it is kept with the sandbox,
     # sealed with a key derived from hangar's own: a resume or a control plane restart can still reach envd.
     def _fernet(self):
-        if self._sealer is None:
-            from cryptography.fernet import Fernet
+        """--- durable: sealed with the newest vault key's, opened with any not yet retired (a key rotation)."""
+        from cryptography.fernet import Fernet, MultiFernet
 
-            from hangar.vault import load_or_create_key
+        from hangar import keys
 
-            self.settings.data_dir.mkdir(parents=True, exist_ok=True)
-            key = load_or_create_key(self.settings.secret_key, self.settings.data_dir)
-            self._sealer = Fernet(urlsafe_b64encode(hmac.new(key, b"hangar-e2b-traffic", hashlib.sha256).digest()))
-        return self._sealer
+        return MultiFernet([Fernet(urlsafe_b64encode(hmac.new(k, b"hangar-e2b-traffic", hashlib.sha256).digest()))
+                            for k in keys.verify_keys(self.settings)])
 
     def _seal_traffic(self, sb: Sandbox, traffic: str) -> None:
         sb.info.setdefault("e2b", {})["traffic"] = self._fernet().encrypt(traffic.encode()).decode()

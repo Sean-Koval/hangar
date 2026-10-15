@@ -172,9 +172,8 @@ class Admission:
         gets through: it returns the job it already started. `untrusted` submissions (they wait for approval) have
         a source bucket of their own, so outsiders with a handful of accounts can't use up the one trusted people
         need."""
-        if req.idempotency_key and any(j.idempotency_key == req.idempotency_key and j.owner == caller.owner
-                                       for j in self.svc._jobs.values()):
-            return
+        if req.idempotency_key and self.svc.where(idempotency_key=req.idempotency_key, owner=caller.owner):
+            return  # --- durable: from the store's index
         if self.exempt(caller, source):
             return
         s = self.settings
@@ -285,6 +284,8 @@ _AUDITED = {401, 403, 413, 429}
 class FrontDoorMiddleware:
     """Caps request bodies before the app reads them, and audits 401/403/413/429 answers."""
 
+    STREAMED = -2  # --- trust: the route reads and caps its own body (audited all the same)
+
     def __init__(self, app, hangar, oauth=None):
         self.app = app
         self.h = hangar
@@ -303,9 +304,7 @@ class FrontDoorMiddleware:
         if path.startswith("/api/hooks/inbound/"):
             return s.inbound_max_body_bytes
         if path == "/api/hooks/jira":  # --- intake: an issue with a long description is well past 64 KB
-            from hangar.jira import MAX_BODY as JIRA_MAX_BODY
-
-            return JIRA_MAX_BODY
+            return self.STREAMED  # --- trust: jira.receive says on the issue what it couldn't take
         if path.startswith(("/api/", "/mcp")) or path == "/a2a":
             return -1  # depends on the caller
         return ANON_MAX_BODY  # the OAuth endpoints, and anything else
@@ -356,7 +355,7 @@ class FrontDoorMiddleware:
                         self._audit(scope, msg["status"])
             await send(msg)
 
-        if scope.get("method") in ("GET", "HEAD", "OPTIONS"):
+        if scope.get("method") in ("GET", "HEAD", "OPTIONS") or cap == self.STREAMED:  # --- trust: STREAMED
             return await self.app(scope, receive, send_)
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
         length = headers.get("content-length")

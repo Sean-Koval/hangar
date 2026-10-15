@@ -163,7 +163,8 @@ async def test_retention_off(fleet, settings):
     settings.sandbox_retention_days = 0
     settings.sandbox_archive_days = 0
     _seed(fleet.store, 10)
-    assert await Retention(fleet.store, settings).sweep() == {"archived": 0, "purged": 0}
+    out = await Retention(fleet.store, settings).sweep()
+    assert (out["archived"], out["purged"]) == (0, 0)
     assert len(fleet.store.list(Sandbox)) == 10
 
 
@@ -316,7 +317,8 @@ async def test_team_load_smoke():
     finally:
         sys.path.remove(str(bench))
     a = team_load.parser().parse_args(["--actors", "2", "--sessions", "2", "--turns", "2", "--jobs", "1",
-                                       "--history", "2000", "--steps", "2", "--poll", "1", "--list", "2",
+                                       "--history", "2000", "--session-history", "200", "--steps", "2",
+                                       "--poll", "1", "--list", "2",
                                        "--exec", "1", "--dashboard", "1", "--timeout", "120", "--watchdog-ms", "0"])
     assert isinstance(a, argparse.Namespace)
     r = await team_load.main(a)
@@ -325,8 +327,9 @@ async def test_team_load_smoke():
     assert m["session_turn_wall"]["n"] == 8  # 2 people × 2 sessions × 2 turns
     for tool in ("mcp_new_session", "mcp_get_session", "mcp_list_sandboxes", "rest_sandboxes"):
         assert m[tool]["n"] > 0, tool
-    scans = {k: v for k, v in notes["server"]["sqlite"]["top"].items() if k.startswith("loop:list:sandboxes")}
-    assert not scans, f"full scans of the sandbox table on the event loop: {scans}"
+    scans = {k: v for k, v in notes["server"]["sqlite"]["top"].items()
+             if k.startswith(("loop:list:sandboxes", "loop:list:jobs", "loop:list:sessions"))}  # --- durable: + jobs
+    assert not scans, f"full scans of the sandbox, job or session table on the event loop: {scans}"
 
 
 # ---------------------------------------------------------------------------- B12: forks within a memory budget

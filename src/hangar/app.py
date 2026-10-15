@@ -22,6 +22,7 @@ from hangar import drain as drain  # --- reconciler
 from hangar import envbuilds as envbuilds  # --- envbuilds
 from hangar import exchange, observe  # --- observe
 from hangar import ghprojects as ghprojects  # --- intake: registers the GitHub Projects write-back
+from hangar import modelpolicy as modelpolicy  # --- canary
 from hangar import people as people  # --- teamcreds
 from hangar import redeliver as redeliver  # --- reconciler
 from hangar import teamcreds as teamcreds  # --- teamcreds
@@ -46,7 +47,7 @@ from hangar.strategies import SessionForkBody, fork_session  # workstream D: for
 from hangar.streams import credential as stream_credential  # --- stream
 from hangar.streams import token_check
 from hangar.triggers import ScheduleSpec, ScheduleUpdate, Triggers
-from hangar.vault import Vault, load_or_create_key
+from hangar.vault import Vault
 
 log = logging.getLogger("hangar")
 
@@ -62,7 +63,9 @@ class Hangar:
 
         self.config = SettingsStore(self.store, self.settings)
         self.config.apply()
-        self.vault = Vault(self.store, load_or_create_key(self.settings.secret_key, self.settings.data_dir))
+        from hangar import keys  # --- durable: a key ring (newest first), and its rotation
+
+        self.vault = Vault(self.store, keys.load(self.settings, self.store))
         self.broker = Broker(self.store, self.vault, self.settings.sandbox_user)
         self.catalog = EnvCatalog(self.settings.env_dirs, save_dir=self.settings.saved_env_dir)
         self.fleet = Fleet(self.settings, self.store, self.broker, self.catalog)
@@ -74,12 +77,23 @@ class Hangar:
 
         self.env_requests = EnvRequests(self.fleet, self.sessions, self.jobs)
         self.triggers = Triggers(self.jobs)  # workstream A: approvals, inbound webhooks, schedules
-        from hangar.backup import Backups  # --- overnight/sweep: database backups into the session store
+        from hangar.backup import Backups, backup_store  # --- overnight/sweep: database backups
 
-        self.backups = Backups(self.settings, self.vault, self.sessions.blobs)
+        self.backups = Backups(self.settings, self.vault, backup_store(self.settings, self.sessions.blobs))
+        # --- durable: rotating the vault key over the vault, the database's other sealed rows and the stores
+        from hangar import steer
+
+        stores = [(self.sessions.blobs, False)] + ([(self.backups.blobs, True)]
+                                                    if self.backups.blobs is not self.sessions.blobs else [])
+        self.rotation = keys.Rotation(self.settings, self.store, self.vault.ring, stores,
+                                      lambda: self.store.list_active(Sandbox), self.fleet.audit)
+        self.rotation.resealers.append(steer.reseal)
         from hangar.retention import Retention  # --- scale: settled sandbox records move to the archive
 
-        self.retention = Retention(self.store, self.settings)
+        self.retention = Retention(self.store, self.settings, self.jobs, self.sessions)  # --- durable: + their memory
+        from hangar.opstatus import Ops  # --- clouddoctor: SLO samples, record pruning, the nightly pass
+
+        self.ops = Ops(self)
 
 
 # ---------------------------------------------------------------------------- MCP auth
@@ -330,7 +344,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         restore_signals = shutdown.on_signal(asyncio.get_running_loop(), h.fleet.closing.set)
         h.backups.start()
+        h.rotation.resume()  # --- durable: a key rotation a restart interrupted carries on
         h.retention.start()  # --- scale
+        h.ops.start()  # --- clouddoctor
+        modelpolicy.of(h.fleet).start()  # --- canary: providers' model lists, fetched now and kept fresh
         missed = redeliver.start(h)  # --- reconciler: GitHub deliveries that failed while hangar was down
         async with mcp.session_manager.run():
             yield
@@ -338,7 +355,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         restore_signals()
         missed.cancel()  # --- reconciler
         await h.backups.stop()
+        await h.rotation.stop()  # --- durable
         await h.retention.stop()  # --- scale
+        await h.ops.stop()  # --- clouddoctor
+        await modelpolicy.of(h.fleet).stop()  # --- canary
         if prebuild:
             prebuild.cancel()
         await h.triggers.stop()
@@ -387,6 +407,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         from hangar.sandbox_router import SandboxRouter
 
         app.state.e2b = E2BService(h)
+        h.rotation.resealers.append(app.state.e2b.reseal)  # --- durable: its sandboxes' envVars are sealed
         app.mount(e2b_path, build_api(app.state.e2b))
         app.add_middleware(SandboxRouter, svc=app.state.e2b)  # outermost: sandbox traffic skips the body caps
     if h.settings.preview_domain:  # --- envbuilds: preview ports, for each sandbox's owner (preview.py)
@@ -831,8 +852,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return jobs.view(jobs.submit(body, caller, source="api"))
 
     @app.get("/api/jobs")
-    async def job_list(state: str | None = None, limit: int = 50, caller: Caller = J):
-        return FastJSON([jobs.view(j) for j in jobs.list(state=state, owner=owner_filter(caller), limit=limit)])
+    async def job_list(state: str | None = None, limit: int = 50, cursor: str | None = None, caller: Caller = J):
+        # --- durable: a page, each job with its `cursor`; X-Next-Cursor when there are more
+        page, nxt = jobs.page(state=state, owner=owner_filter(caller), limit=limit, person=people.scope(),
+                              cursor=cursor)
+        return FastJSON([{**jobs.view(j), "cursor": c} for j, c in page],
+                        headers={"X-Next-Cursor": nxt} if nxt else None)
 
     @app.get("/api/jobs/{job_id}")
     async def job_get(job_id: str, caller: Caller = J):
@@ -963,8 +988,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return sessions.view(sessions.new(body, owner=who, requester=who))
 
     @app.get("/api/sessions")
-    async def session_list(include_archived: bool = False, limit: int = 100, _: str = A):
-        return FastJSON([sessions.view(s) for s in sessions.list(include_archived=include_archived, limit=limit)])
+    async def session_list(include_archived: bool = False, limit: int = 100, cursor: str | None = None,
+                           _: str = A):
+        page, nxt = sessions.page(include_archived=include_archived, limit=limit, cursor=cursor)  # durable
+        return FastJSON([{**sessions.view(s), "cursor": c} for s, c in page],
+                        headers={"X-Next-Cursor": nxt} if nxt else None)
 
     @app.get("/api/sessions/{ref}")
     async def session_get(ref: str, _: str = A):
@@ -1082,6 +1110,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     repopolicy.mount(app, h, A)
     envbuilds.mount(app, h, A, U)  # --- envbuilds: repo builds (hangar env builds) and config checks
+    from hangar import autoinstall  # --- autoinstall: POST /api/env/setup (hangar env setup)
+
+    autoinstall.mount(app, h, J)
     from hangar import preview  # --- envbuilds: links to a sandbox's preview ports
 
     preview.mount(app, h, U)
@@ -1091,6 +1122,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import backup  # --- overnight/sweep: database backups (hangar admin)
 
     backup.mount(app, h, A)
+    from hangar import keys  # --- durable: /api/admin/rotate-key
+
+    keys.mount(app, h, A)
     drain.mount(app, h, A)  # --- reconciler: POST/GET/DELETE /api/admin/drain (power.sh down)
     from hangar import egress  # --- egress: what a sandbox may reach; approved hosts, and revoking them
 
@@ -1101,6 +1135,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import power  # --- ops: /api/admin/power (power.sh, `hangar power`) and /api/admin/deploys
 
     power.mount(app, h, A)
+    from hangar import credhealth, flightrec, opstatus  # --- clouddoctor: status, flight records, credential health
+
+    opstatus.mount(app, h, A)
+    flightrec.mount(app, h, A, U)
+    credhealth.mount(app, h, A)
+    credhealth.register_inbox()
+    from hangar import clouddoctor  # --- clouddoctor: the Cloud Doctor (docs/doctor.md)
+
+    clouddoctor.mount(app, h, A)
+    clouddoctor.register(h)
     # --- observe: GET /metrics (admin or `metrics` tokens) and GET /api/usage
     from hangar import metrics, usage
 

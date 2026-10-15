@@ -105,3 +105,15 @@ def test_sb_exec_keeps_each_argument_whole(monkeypatch):
     runner.invoke(cli.app, ["sb", "exec", "box", "git status | head -3"])  # one argument: a shell line, as before
     assert sent == ["python3 -c 'print('\"'\"'a b'\"'\"')'", "git status | head -3"]
 
+
+
+def test_env_list_shows_what_each_model_resolves_to_and_costs(monkeypatch):
+    """--- review #105: `frontier` can cost several times `balanced`; the list says what runs and its price."""
+    envs = [{**ENVS[0], "models": {"claude-code": {
+        "model": "claude-fable-5-1", "policy": "frontier", "source": "live",
+        "about": "`claude-fable-5-1` (`frontier`; list price $10/$50 per MTok in/out)"}}}]
+    _patch(monkeypatch, envs)
+    r = runner.invoke(cli.app, ["env", "list"])
+    assert r.exit_code == 0
+    assert r.output == (f"{'python':22} {'claude, codex':34} docker:abc\n"
+                        "  claude-code: `claude-fable-5-1` (`frontier`; list price $10/$50 per MTok in/out)\n")

@@ -59,6 +59,8 @@ def _line(p: dict) -> str:
     if p.get("land") == "auto_after_approval":  # --- landing
         who = ", ".join(p.get("approvers") or []) or "code owners"
         bits.append(f"land: on approval by {who} ({p.get('merge_method') or 'squash'})")
+        if p.get("require_stale_dismissal") is False:  # --- trust
+            bits.append("(stale approvals need not be dismissed)")
     return f"{p['repo']:40} " + "  ".join(bits)
 
 
@@ -92,6 +94,10 @@ def repo_set(
     merge_method: str | None = typer.Option(None, "--merge-method", help="squash (default), merge or rebase."),
     risk_path: list[str] = typer.Option([], "--risk-path", help="Glob that makes a PR high risk, e.g. 'infra/**' "
                                                                 "(repeat)."),
+    require_stale_dismissal: bool | None = typer.Option(  # --- trust
+        None, "--require-stale-dismissal/--no-require-stale-dismissal",
+        help="Arm auto-merge only when the base branch dismisses stale approvals on a push (the default); --no- "
+             "opts the repo out."),
     as_json: bool = typer.Option(False, "--json"),
 ):
     """Set the repo's defaults; what you don't pass is kept. Jobs that set a field themselves still win.
@@ -104,7 +110,8 @@ def repo_set(
                  ("job_budget", _fields(max_cost_usd=job_max_cost, max_tokens=job_max_tokens,
                                         max_turns=job_max_turns)),
                 ("land", land), ("approvers", approver or None), ("merge_method", merge_method),  # --- landing
-                ("risk_paths", risk_path or None)):
+                ("risk_paths", risk_path or None),
+                ("require_stale_dismissal", require_stale_dismissal)):  # --- trust
         if v is not None:
             body[k] = v
     if egress_mode is not None or egress_allow:  # --- egress
@@ -122,7 +129,8 @@ def repo_unset(repo: str = typer.Argument(...),
                fields: list[str] = typer.Argument(None, help="Fields to clear (verify, environment, harness, "
                                                              "model, budget, job_budget, max_usd_per_day, "
                                                              "credentials, egress, build_secrets, land, approvers, "
-                                                             "merge_method, risk_paths). None: "
+                                                             "merge_method, risk_paths, "
+                                                             "require_stale_dismissal). None: "
                                                              "remove the repo's policy.")):
     """Clear fields of the repo's policy, or remove it."""
     r = _cli()._call("DELETE", "/api/repos/policy", params={"repo": repo, "field": fields or []})

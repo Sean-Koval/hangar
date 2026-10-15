@@ -117,6 +117,12 @@ class Credential(BaseModel):
     # --- identity: a person's own credential (their Claude or Codex login), used only in their sandboxes; None:
     # a team credential (--- teamcreds: those stored before people became the owner's, teamcreds.migrate)
     person: str | None = None
+    # --- clouddoctor: credential health (credhealth.py), from a check that calls no model: when it stops working
+    # (None: no known end), when a check last passed, and the last check {status, detail, checked_at, method, by}.
+    # Storing a new value starts these over.
+    expires_at: float | None = None
+    last_ok: float | None = None
+    health: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------- workstream C: events/usage/budgets
@@ -387,7 +393,9 @@ class Attempt(BaseModel):
     session_id: str | None = None
     branch: str | None = None  # the attempt session's own branch (inside its sandbox)
     pushed_branch: str | None = None  # set when losers are pushed (HANGAR_BEST_OF_N_PUSH_ATTEMPTS)
-    state: Literal["pending", "running", "verifying", "done"] = "pending"
+    # --- trust: `waiting`: the power-down cut its turn off; it resumes from its checkpoint at power-up
+    state: Literal["pending", "running", "verifying", "waiting", "done"] = "pending"
+    restarts: int = 0  # --- trust: times it resumed from its checkpoint (restarts.resume_attempt)
     outcome: str | None = None  # exited | timed_out | cancelled | gone | error
     run_id: str | None = None
     exit_code: int | None = None
@@ -413,7 +421,8 @@ class Job(BaseModel):
     title: str
     instructions: str
     source: Literal["api", "mcp", "cli", "github", "webhook", "schedule", "slack", "a2a",
-                    "jira", "github-projects"] = "api"  # --- intake
+                    "jira", "github-projects",
+                    "env-setup"] = "api"  # --- intake; --- autoinstall: an env setup's goal and setup jobs
     source_ref: str | None = None  # e.g. "github:owner/repo#12"
     requester: str = "system"
     owner: str | None = None  # token id ("tok-…"), "admin", or "github:<login>"; jobs-scoped tokens see only theirs
@@ -624,6 +633,10 @@ class Session(BaseModel):
     approvals: ApprovalPolicy | None = None  # --- workstream steer: unset = the environment's, else HANGAR_APPROVALS
     cache: CachePolicy | None = None  # --- overnight/cache: unset = the environment's, else HANGAR_CACHE
     person: str | None = None  # --- identity: the owning person; a job's session has its job's
+    # --- canary (pins.py): pinned at creation. The policy `model` was resolved from (`model` is then its concrete
+    # id), and the locked version of the harness's CLI: a turn on another version hands off instead of resuming.
+    model_policy: str | None = None
+    harness_version: str | None = None
 
 
 # ---------------------------------------------------------------------------- workstream F: git gateway (spec 0003)

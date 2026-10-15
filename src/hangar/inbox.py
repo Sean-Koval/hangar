@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from hangar import identity, steer
 from hangar.models import JobState, now
+from hangar.store import NOT_NULL, Ge  # --- durable
 
 if TYPE_CHECKING:
     from hangar.auth import Principal
@@ -69,7 +70,9 @@ def items(svc: JobService, p: Principal | None = None) -> list[dict[str, Any]]:
     """What waits on the caller (`p`, or identity's current principal), newest first."""
     p = p if p is not None else identity.principal()
     out: list[dict[str, Any]] = []
-    jobs = [j for j in svc._jobs.values() if yours(j.person, p)]
+    # --- durable: unfinished jobs and PRs on their way are in memory; recent failures are asked of the store
+    failed = svc.where(state=JobState.FAILED, updated_at=Ge(now() - FAILED_DAYS * 86400))
+    jobs = [j for j in {x.id: x for x in [*svc._jobs.values(), *failed]}.values() if yours(j.person, p)]
     job_sessions: set[str] = set()
     for j in jobs:
         st, r = j.landing, j.result
@@ -99,7 +102,10 @@ def items(svc: JobService, p: Principal | None = None) -> list[dict[str, Any]]:
         elif r.pr_number and st.pr_state == "approved" and not st.armed_sha and st.note:
             out.append(_item("review", f"PR #{r.pr_number} is approved but not landing: {st.note}",
                              f"merge it, or fix what holds it: {r.pr_url}", st.approved_at or j.updated_at, **ref))
-    for s in svc.sessions.list(limit=500) if svc.sessions is not None else []:  # the most recently active
+    # --- durable: a live turn's approvals are in memory; an open question can be anywhere
+    sessions = [*svc.sessions._sessions.values(), *svc.sessions.where(needs_input=NOT_NULL)] \
+        if svc.sessions is not None else []
+    for s in {x.id: x for x in sessions}.values():
         owner = s.person
         if s.job_id:
             job = svc._jobs.get(s.job_id)

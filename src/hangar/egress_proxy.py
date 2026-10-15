@@ -36,7 +36,8 @@ import time
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
-from hangar import egress, metrics
+from hangar import egress, egress_tls, metrics
+from hangar import keys as keys  # --- durable
 from hangar.models import Sandbox, SandboxState
 
 if TYPE_CHECKING:
@@ -53,7 +54,6 @@ CLOSE_GRACE_SECONDS = 15.0  # after the far side closes, how long the client sid
 # BUF (asyncio's default is 256 KB), and a write waits for the 64 KB high-water mark. A client that stops reading
 # then pins at most about 5 * BUF (320 KB), so even MAX_CONNECTIONS stalled tunnels fit the control plane's memory.
 BUF = 64 * 1024
-TLS_RECORD_MAX = 16384 + 2048  # a TLSPlaintext fragment is at most 2^14 bytes; leave room for what clients send
 MAX_CONNECTIONS = 4096  # the process's file limit is the real bound; leave room for everything else
 POLICY_SECONDS = 5.0  # an approval or a policy change applies within this long (approve() also invalidates)
 FLUSH_SECONDS = 60.0
@@ -112,38 +112,7 @@ def split_hostport(target: str, default: int | None) -> tuple[str, int]:
     return egress.normalize_host(host), port
 
 
-def sni(record: bytes) -> str | None:
-    """The server name in a TLS ClientHello record (RFC 8446 4.1.2, RFC 6066 3), or None when the record isn't a
-    ClientHello or has no host_name. Never raises on garbage."""
-    try:
-        if len(record) < 5 or record[0] != 0x16:
-            return None
-        body = record[5:5 + int.from_bytes(record[3:5], "big")]
-        if not body or body[0] != 0x01:
-            return None
-        p = 4 + 2 + 32  # handshake header, legacy_version, random
-        p += 1 + body[p]  # legacy_session_id
-        p += 2 + int.from_bytes(body[p:p + 2], "big")  # cipher_suites
-        p += 1 + body[p]  # legacy_compression_methods
-        end = p + 2 + int.from_bytes(body[p:p + 2], "big")
-        p += 2
-        while p + 4 <= min(end, len(body)):
-            etype, elen = int.from_bytes(body[p:p + 2], "big"), int.from_bytes(body[p + 2:p + 4], "big")
-            data = body[p + 4:p + 4 + elen]
-            p += 4 + elen
-            if etype != 0:
-                continue
-            q = 2  # server_name_list length
-            while q + 3 <= len(data):
-                ntype, nlen = data[q], int.from_bytes(data[q + 1:q + 3], "big")
-                name = data[q + 3:q + 3 + nlen]
-                q += 3 + nlen
-                if ntype == 0:
-                    return name.decode("ascii")
-            return None
-    except (IndexError, UnicodeDecodeError):
-        return None
-    return None
+sni = egress_tls.sni  # --- egress2: the ClientHello checks live in egress_tls.py
 
 
 # IPv6 ranges that carry an IPv4 address in their last 32 bits and reach it wherever a translator exists: NAT64's
@@ -200,7 +169,6 @@ class EgressProxy:
         self.settings = fleet.settings
         self._servers: dict[tuple[str, int], asyncio.AbstractServer] = {}
         self._listen_lock: asyncio.Lock | None = None
-        self._key: bytes | None = None
         self._policies: dict[str, tuple[float, egress.Policy]] = {}
         self._open: collections.Counter[str] = collections.Counter()
         self._total = 0
@@ -212,14 +180,14 @@ class EgressProxy:
         self._failures: Any = None
         self._flusher: asyncio.Task | None = None
         self.activity: Any = None  # SessionService.activity, set by the app: denials become session events
+        self._conns: set[asyncio.StreamWriter] = set()  # --- egress2: open client connections, for the drain
+        self._closing_at: float | None = None
+        self._watcher: asyncio.Task | None = None
 
     @property
     def key(self) -> bytes:
-        if self._key is None:
-            from hangar.vault import load_or_create_key
-
-            self._key = load_or_create_key(self.settings.secret_key, self.settings.data_dir)
-        return self._key
+        """The key a new sandbox's proxy credential is made with: the newest vault key (keys.key_for)."""
+        return keys.key_for(self.settings)
 
     @property
     def port(self) -> int:
@@ -249,6 +217,10 @@ class EgressProxy:
         sandboxes reach only its gateway address) also relay the git gateway's port there."""
         if self._listen_lock is None:
             self._listen_lock = asyncio.Lock()
+        if self._closing_at is not None:  # --- egress2: shutting down
+            raise OSError("hangar is shutting down")
+        if self._watcher is None and (closing := getattr(self.fleet, "closing", None)) is not None:
+            self._watcher = asyncio.create_task(self._close_on(closing))
         async with self._listen_lock:
             if (host, self.port) not in self._servers:
                 self._servers[(host, self.port)] = await asyncio.start_server(
@@ -264,15 +236,40 @@ class EgressProxy:
                 self._flusher = asyncio.create_task(self._flush_loop())
 
     async def stop(self) -> None:
-        for s in self._servers.values():
-            s.close()
+        """--- egress2: drain. No new connection from the shutdown signal on (close_listeners); open tunnels (a
+        model's stream mid-answer) get until HANGAR_EGRESS_DRAIN_SECONDS after it to finish, and are cut then."""
+        closing = getattr(self.fleet, "closing", None)
+        shutdown = closing is not None and closing.is_set()  # a process shutdown, not a stop of the proxy alone
+        self.close_listeners()
+        loop = asyncio.get_running_loop()
+        deadline = (self._closing_at or loop.time()) + (self.settings.egress_drain_seconds if shutdown else 0)
+        while self._conns and loop.time() < deadline:
+            await asyncio.sleep(0.1)
+        for w in list(self._conns):
+            with contextlib.suppress(Exception):
+                w.close()
         for s in self._servers.values():
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(s.wait_closed(), 5)
         self._servers.clear()
         if self._flusher:
             self._flusher.cancel()
+        if self._watcher:
+            self._watcher.cancel()
+            self._watcher = None
+        self._closing_at = None  # a proxy stopped on its own (tests, a restart in process) may listen again
         self.flush()
+
+    async def _close_on(self, closing: asyncio.Event) -> None:
+        await closing.wait()
+        self.close_listeners()
+
+    def close_listeners(self) -> None:
+        """Stop accepting connections (the shutdown signal: Fleet.closing); those open carry on."""
+        if self._closing_at is None:
+            self._closing_at = asyncio.get_running_loop().time()
+        for s in self._servers.values():
+            s.close()
 
     def invalidate(self, sandbox_id: str | None = None) -> None:
         """Forget cached policies (all, or one sandbox's): an approval applies to the next connection."""
@@ -291,11 +288,13 @@ class EgressProxy:
             return
         self._total += 1
         self._peers[peer] += 1
+        self._conns.add(writer)
         try:
             await self._handle(reader, writer)
         except Exception:  # noqa: BLE001 - one connection must never take the listener down
             log.exception("egress proxy: connection failed")
         finally:
+            self._conns.discard(writer)
             self._total -= 1
             self._peers[peer] -= 1
             if self._peers[peer] <= 0:
@@ -341,9 +340,14 @@ class EgressProxy:
             if self._open[sb.id] >= self.settings.egress_max_connections_per_sandbox:
                 raise Denied(429, "too_many", f"this sandbox has {self._open[sb.id]} connections open through the "
                              "proxy already", "limit")
+            who = f"person:{sb.person or '-'}"  # --- egress2: one person's sandboxes share a cap, so 6 people fit
+            if self._open[who] >= self.settings.egress_max_connections_per_person:
+                raise Denied(429, "too_many_person", f"{sb.person or 'this'}'s sandboxes have {self._open[who]} "
+                             "connections open through the proxy already", "limit")
         except Denied as d:
             return await self._refuse(writer, sb, host, port, d, pol.mode if pol else None)
         self._open[sb.id] += 1  # taken before connecting, so a burst of CONNECTs can't all pass the check
+        self._open[who] += 1
         metrics.egress_open(1)
         n = [0, 0]  # bytes out (to the internet), in
         relayed = False
@@ -353,11 +357,12 @@ class EgressProxy:
                 up_r, up_w = await self._connect(host, port)
             except Denied as d:
                 return await self._refuse(writer, sb, host, port, d, pol.mode)
+            tls = False
             if origin is None:
                 writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
                 await writer.drain()
                 try:
-                    first = await asyncio.wait_for(self._first(reader, host), HEAD_SECONDS)
+                    first, tls = await asyncio.wait_for(self._first(reader, host), HEAD_SECONDS)
                 except Denied as d:
                     self._denied(sb, host, port, d, pol.mode)  # the 200 is sent: close without an answer
                     return
@@ -369,11 +374,18 @@ class EgressProxy:
             relayed = True
             up_w.write(first)
             n[0] += len(first)
+            if tls:  # --- egress2: a HelloRetryRequest brings a second ClientHello in clear; it is checked too
+                try:
+                    await self._retry_hello(reader, writer, up_r, up_w, host, n)
+                except Denied as d:
+                    self._denied(sb, host, port, d, pol.mode)
+                    return
             await self._splice(reader, writer, up_r, up_w, n)
         finally:
-            self._open[sb.id] -= 1
-            if self._open[sb.id] <= 0:
-                del self._open[sb.id]
+            for k in (sb.id, who):
+                self._open[k] -= 1
+                if self._open[k] <= 0:
+                    del self._open[k]
             metrics.egress_open(-1)
             metrics.egress_bytes(n[0], n[1])
             if relayed:  # the bytes go to the current summary, even if it was flushed while the tunnel was open
@@ -398,7 +410,8 @@ class EgressProxy:
                 user, _, password = base64.b64decode(cred.strip(), validate=True).decode().partition(":")
             except (ValueError, UnicodeDecodeError):
                 user = password = ""
-            if egress.check_token(self.key, user, password):
+            # --- durable: any vault key not yet retired (a sandbox from before a rotation keeps its credential)
+            if any(egress.check_token(k, user, password) for k in keys.verify_keys(self.settings)):
                 sb = self.fleet.store.get(Sandbox, user)
                 if sb is not None and sb.state not in (SandboxState.STARTING, SandboxState.RUNNING):
                     sb = None
@@ -424,6 +437,11 @@ class EgressProxy:
         except Exception as e:  # noqa: BLE001 - its environment is gone or unreadable: deny
             raise Denied(403, "no_policy", f"no egress policy for this sandbox ({type(e).__name__})", "policy") from e
         rule = pol.allows(host, port)
+        # --- egress2: a registry the package mirror stands in for: say so, rather than suggest asking for the host
+        if rule is None and (eco := next((e for e in pol.mirrors if host in egress.PRESETS[e]), None)):
+            raise Denied(403, "mirrored", f"{host} isn't reachable from a sandbox: {eco} packages come through "
+                         "hangar's read-only mirror, which the sandbox's package tools are set up for (PIP_INDEX_URL, "
+                         "NPM_CONFIG_REGISTRY, GOPROXY in ~/.hangar/env)", "policy")
         if rule is None:
             raise Denied(403, "not_allowed",
                          f"{host}:{port} is not on this sandbox's egress allowlist (mode {pol.mode}, environment "
@@ -456,34 +474,63 @@ class EgressProxy:
                 last = e
         raise Denied(502, "connect", f"could not connect to {host}:{port} ({type(last).__name__})", "upstream")
 
-    async def _first(self, reader: asyncio.StreamReader, host: str) -> bytes:
-        """The client's first bytes in a tunnel, checked to name `host`: TLS SNI, or the Host of an HTTP request."""
+    async def _first(self, reader: asyncio.StreamReader, host: str) -> tuple[bytes, bool]:
+        """The client's first bytes in a tunnel, checked to name `host`, and whether they are TLS: a whole ClientHello
+        (egress_tls: one SNI, the CONNECT host, no ECH), or an HTTP request whose Host is `host`."""
         head = await reader.readexactly(5)
-        if head[0] == 0x16:
-            n = int.from_bytes(head[3:5], "big")
-            if n > TLS_RECORD_MAX:
-                raise Denied(403, "bad_tls", "malformed TLS record", "protocol")
-            rec = head + await reader.readexactly(n)
-            name = sni(rec)
-            if name is None:
-                if egress._is_ip(host):
-                    return rec  # clients send no SNI for an IP address
-                raise Denied(403, "no_sni", f"the TLS ClientHello names no server; {host} must be in SNI", "sni")
+        if head[0] == egress_tls.HANDSHAKE:
             try:
-                if egress.normalize_host(name) == host:
-                    return rec
-            except egress.EgressError:
-                pass
-            raise Denied(403, "sni_mismatch", f"the TLS ClientHello names {name[:100]}, not {host}", "sni")
+                raw, msg = await egress_tls.read_hello(reader, head)
+                egress_tls.check(msg, host)
+            except egress_tls.Refused as e:
+                raise Denied(403, e.reason, str(e), "sni") from None
+            return raw, True
+        if head[0] & 0x80 and head[2] == egress_tls.CLIENT_HELLO:  # an SSL 2.0-style hello: no extensions, no SNI
+            raise Denied(403, "old_tls", "an SSL 2.0-style ClientHello carries no server name; use TLS 1.2 or 1.3",
+                         "sni")
         rest = await reader.readuntil(b"\r\n\r\n")
         try:
             _, _, _, headers = parse_head(head + rest)
             h = header(headers, "host")
             if h is not None and split_hostport(h, 80)[0] == host:
-                return head + rest
+                return head + rest, False
         except ValueError:
             raise Denied(403, "not_tls_or_http", "only TLS or HTTP goes through this proxy", "protocol") from None
         raise Denied(403, "host_mismatch", f"the HTTP request's Host isn't {host}", "sni")
+
+    async def _retry_hello(self, cr: asyncio.StreamReader, cw: asyncio.StreamWriter, ur: asyncio.StreamReader,
+                           uw: asyncio.StreamWriter, host: str, n: list[int]) -> None:
+        """--- egress2: pass the server's first record to the client; when it is a HelloRetryRequest, the client's
+        second ClientHello must pass the same checks as the first before it goes upstream. Raises Denied."""
+        try:
+            rec = await asyncio.wait_for(ur.readexactly(5), HEAD_SECONDS)
+        except asyncio.IncompleteReadError as e:
+            rec = e.partial  # the server closed: pass on what it sent, the splice ends the tunnel
+        except TimeoutError:
+            raise Denied(504, "no_server_hello", f"{host} didn't answer the ClientHello", "upstream") from None
+        size = int.from_bytes(rec[3:5], "big") if len(rec) == 5 else 0
+        if rec[:1] == bytes([egress_tls.HANDSHAKE]) and 0 < size <= egress_tls.RECORD_MAX:
+            try:
+                rec += await asyncio.wait_for(ur.readexactly(size), HEAD_SECONDS)
+            except asyncio.IncompleteReadError as e:
+                rec += e.partial
+            except TimeoutError:
+                raise Denied(504, "no_server_hello", f"{host} didn't finish its ServerHello", "upstream") from None
+        cw.write(rec)
+        n[1] += len(rec)
+        await cw.drain()
+        if not egress_tls.is_hello_retry(rec):
+            return
+        try:
+            raw, msg = await asyncio.wait_for(egress_tls.read_second_hello(cr), HEAD_SECONDS)
+            egress_tls.check(msg, host)
+        except egress_tls.Refused as e:
+            raise Denied(403, e.reason, f"second ClientHello: {e}", "sni") from None
+        except (TimeoutError, asyncio.IncompleteReadError, ConnectionError):
+            raise Denied(400, "no_hello", "the client sent no second ClientHello after a HelloRetryRequest",
+                         "protocol") from None
+        uw.write(raw)
+        n[0] += len(raw)
 
     @staticmethod
     def _rewrite(method: str, origin: str, version: str, headers: list[tuple[str, str]], host: str,
@@ -549,9 +596,11 @@ class EgressProxy:
         except (OSError, TimeoutError):
             writer.close()
             return
+        self._conns.add(writer)
         try:
             await self._splice(reader, writer, ur, uw, [0, 0])
         finally:
+            self._conns.discard(writer)
             uw.close()
             writer.close()
 
@@ -599,6 +648,17 @@ class EgressProxy:
                 self.flush()
             u = self._usage[key] = [0, 0, 0, rule.text, rule.source, mode]
         u[0] += 1
+
+    def record(self, sb: Sandbox, host: str, port: int, rule: str, mode: str, out: int, in_: int) -> None:
+        """--- egress2: a request hangar served the sandbox itself (the package mirror), summed into the same
+        egress.allow entries as proxied traffic."""
+        metrics.egress_connection("allow", "mirror", mode)
+        if len(self._usage) > 50_000:
+            self.flush()
+        u = self._usage.setdefault((sb.id, host, port), [0, 0, 0, rule, "mirror", mode])
+        u[0] += 1
+        u[1] += out
+        u[2] += in_
 
     def _event(self, sb: Sandbox, text: str, data: dict[str, Any]) -> None:
         sid = sb.labels.get("hangar.session")
