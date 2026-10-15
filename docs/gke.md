@@ -230,7 +230,16 @@ the cluster): each scheduled run reads hangar's record before deciding and the n
 So `hangar power hold` takes effect at the next scheduled run, and `power.sh hold` at once. When a hold ends, the next
 scheduled run clears it and does its job; nothing powers up early. `hangar power`, `hangar status` and `hangar doctor`
 show it, and hangar's own "sandboxes are back at" moves to the first power-up after it. `hangar power up` and
-`power.sh up` end a hold; holds last at most 90 days.
+`power.sh up` end a hold; holds last at most 90 days. The newer-wins copy compares the clocks of whoever set each side
+(your laptop's for `power.sh`), which are assumed to be in sync.
+
+**One run at a time, and failing closed.** `down`, `up` and `off` take a lock (the `hangar-power-lock` label, with
+the run's start): a scheduled run that finds another under way skips with a log line, and one by hand stops and says
+so. A lock over 45 minutes old (the jobs time out at 40) belonged to a run that died and is taken over. The scheduled
+power-down that can't reach hangar (no kubectl, or no answer) doesn't power down: without hangar there's no drain, so
+running turns would be cut off, and a `hangar power hold` couldn't be read. The job fails, visibly, and the pools stay
+up; `power.sh down` by hand still goes ahead. A pool's saved range is cleared only once its resize back has worked,
+and a size that can't be read stops `down` before that pool goes, so a failed run never loses what `up` needs.
 
 **Off.** `power.sh off` first sets the hold (7 days, or `--days` / `--until`) and the `hangar-power-off` label, so a
 scheduled power-up meanwhile skips. Then it does what `down` does (tell hangar, drain, suspend sessions, checkpoint

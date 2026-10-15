@@ -394,21 +394,26 @@ class Power:
             if not token:
                 raise PowerError("can't get a Google Cloud token from the metadata server: `hangar power up` works "
                                  "where hangar runs on GKE with Workload Identity")
+            # --- infra-state: powering on by hand ends a hold, before the job starts: it reads hangar's record before
+            # the cluster's copy (power.sh sync_hold). Put back if the job doesn't start.
+            held = powerhold.record(self.store) if powerhold.active(self.store, self.clock()) else None
+            if held:
+                powerhold.end_hold(self.store, None, by, self.clock())
             try:
                 r = await c.post(f"{RUN_API}/{job}:run", json={}, headers={"Authorization": f"Bearer {token}"})
             except httpx.HTTPError as e:
+                if held:
+                    self.store.kv_set_json(powerhold.HOLD_KEY, held)
                 raise PowerError(f"couldn't reach Cloud Run: {e}") from e
         if r.status_code >= 400:
+            if held:
+                self.store.kv_set_json(powerhold.HOLD_KEY, held)
             detail = ""
             with contextlib.suppress(ValueError, KeyError, TypeError, AttributeError):
                 detail = r.json()["error"]["message"]
             hint = (" (hangar's service account needs roles/run.invoker on the job: terraform apply in "
                     "deploy/terraform/gke grants it)") if r.status_code == 403 else ""
             raise PowerError(f"Cloud Run refused to run {job}: HTTP {r.status_code} {detail[:300]}{hint}")
-        # --- infra-state: powering on by hand ends a hold. The job reads this from hangar before the cluster's copy
-        # (power.sh sync_hold), and it installs kubectl first, so it can't have looked yet.
-        if powerhold.active(self.store, self.clock()):
-            powerhold.end_hold(self.store, None, by, self.clock())
         execution = None
         with contextlib.suppress(ValueError, KeyError, TypeError, AttributeError):
             execution = r.json().get("metadata", {}).get("name") or r.json().get("name")

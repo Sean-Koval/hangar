@@ -24,8 +24,15 @@ pytestmark = pytest.mark.skipif(not shutil.which("bash") or not shutil.which("py
 GCLOUD = r"""#!/bin/bash
 echo "$*" >> "$GCLOUD_LOG"
 case "$*" in
+  *"--update-labels=hangar-power-lock="*) l="$*"; l=${l##*--update-labels=hangar-power-lock=}
+                                         echo "${l%% *}" > "$GCLOUD_LOG.lock" ;;
+  *"--remove-labels=hangar-power-lock"*) rm -f "$GCLOUD_LOG.lock" ;;
   *"node-pools list"*) printf 'system\nsandboxes-gvisor\n' ;;
-  *"clusters describe"*) printf '%s\n' "$GCLOUD_LABELS" ;;
+  *"clusters describe"*) python3 -c 'import json, os
+d, p = json.loads(os.environ["GCLOUD_LABELS"]), os.environ["GCLOUD_LOG"] + ".lock"
+if os.path.exists(p):
+    d["resourceLabels"]["hangar-power-lock"] = open(p).read().strip()
+print(json.dumps(d))' ;;
   *"node-pools describe system"*) printf 'False\t1\t2\n' ;;
   *"node-pools describe sandboxes-gvisor"*) printf '%b\n' "$GCLOUD_SANDBOX_AUTOSCALING" ;;
 esac
@@ -81,6 +88,9 @@ with open(os.environ["GCLOUD_LOG"], "a") as f:
     f.write(line + "\n")
 with open(os.environ["CALL_LOG"], "a") as f:  # --- infra-state: gcloud and kubectl in one sequence
     f.write("gcloud " + line + "\n")
+if os.environ.get("GCLOUD_FAIL") and os.environ["GCLOUD_FAIL"] in line:  # a call that fails, for the tests
+    sys.stderr.write("ERROR: (gcloud) injected failure\n")
+    sys.exit(1)
 path = os.environ["GCLOUD_STATE"]
 st = json.load(open(path))
 def arg(name):
@@ -193,13 +203,11 @@ if a[:2] == ["auth", "status"]:
 if a[:2] == ["repo", "view"]:
     print(cfg["repo"])
 elif a[:1] == ["api"] and a[1].endswith("/commits/main"):
-    print(json.dumps({"sha": cfg["head"]}))
+    print(cfg["head"] if a[2:] == ["--jq", ".sha"] else json.dumps({"sha": cfg["head"]}))
 elif a[:1] == ["api"] and "/compare/" in a[1]:
     print(json.dumps({"status": cfg["compare"], "ahead_by": 3}))
 elif a[:2] == ["run", "list"]:
     print(json.dumps(cfg.get("runs", [])))
-elif a[:1] == ["api"] and "/actions/workflows/deploy.yml/runs" in a[1]:  # deploy.yml: newer runs (after --jq)
-    print(cfg.get("newer", 0))
 elif a[:2] == ["workflow", "run"]:
     pass
 else:
@@ -468,6 +476,59 @@ def test_off_keeps_the_system_node_while_hangar_is_still_stopping(cluster):
     assert "hasn't stopped" in out and cluster["state"]()["pools"]["system"]["size"] == 1
 
 
+def test_the_scheduled_power_down_fails_closed_without_hangar(cluster):
+    """Without hangar there's no drain (running turns would be cut off) and no reading `hangar power hold`: the
+    scheduled power-down leaves the pools up and fails, visibly. By hand it still goes ahead."""
+    cluster["set_hangar"]({"replicas": 0})  # crash-looping, say; the cluster isn't off
+    out = cluster["run"]("down", POWER_SCHEDULED="1", ok=False)
+    assert "not powering down" in out and cluster["state"]()["pools"]["sandboxes-gvisor"]["size"] == 3
+    assert "hangar-power-lock" not in cluster["state"]()["labels"]  # released on the way out
+    cluster["run"]("down")
+    assert cluster["state"]()["pools"]["sandboxes-gvisor"]["size"] == 0
+
+
+def test_one_power_run_at_a_time(cluster):
+    st = cluster["state"]()
+    st["labels"]["hangar-power-lock"] = f"{int(time.time()) - 60}-123"  # a run that started a minute ago
+    cluster["set_state"](st)
+    assert "another power run" in cluster["run"]("up", ok=False)
+    for action in ("down", "up"):
+        assert "another power run" in cluster["run"](action, POWER_SCHEDULED="1")  # skips, exit 0
+    assert cluster["state"]()["pools"]["sandboxes-gvisor"]["size"] == 3
+    assert cluster["state"]()["labels"]["hangar-power-lock"] == st["labels"]["hangar-power-lock"]  # not ours
+    st["labels"]["hangar-power-lock"] = f"{int(time.time()) - 3 * 3600}-123"  # one that died: taken over
+    cluster["set_state"](st)
+    cluster["run"]("down")
+    assert cluster["state"]()["pools"]["sandboxes-gvisor"]["size"] == 0
+    assert "hangar-power-lock" not in cluster["state"]()["labels"]
+
+
+def test_a_failed_resize_keeps_the_saved_size_for_the_next_up(cluster):
+    cluster["run"]("down")
+    cluster["run"]("up", ok=False, GCLOUD_FAIL="--node-pool sandboxes-microvm --num-nodes 2")
+    st = cluster["state"]()
+    assert st["labels"]["hangar-power-sandboxes-microvm"] == "fixed-2" and st["pools"]["sandboxes-microvm"]["size"] == 0
+    cluster["run"]("up")
+    assert cluster["state"]()["pools"]["sandboxes-microvm"]["size"] == 2
+
+
+def test_a_size_that_cant_be_read_stops_down_before_the_pool_goes(cluster):
+    out = cluster["run"]("down", ok=False, GCLOUD_FAIL="instance-groups managed describe")
+    st = cluster["state"]()
+    assert "couldn't read sandboxes-microvm's size" in out and st["pools"]["sandboxes-microvm"]["size"] == 2
+    assert "hangar-power-sandboxes-microvm" not in st["labels"]
+
+
+def test_off_stops_when_hangars_pods_cant_be_listed(cluster):
+    kubectl = cluster["tmp"] / "bin" / "kubectl"
+    kubectl.write_text(kubectl.read_text().replace('elif "get pods" in line:',
+                                                   'elif "get pods" in line:\n    sys.exit(1)'))
+    out = cluster["run"]("off", ok=False)
+    st = cluster["state"]()
+    assert "couldn't be listed" in out and st["pools"]["system"]["size"] == 1
+    assert "hangar-power-off" not in st["labels"] and "hangar-power-hold" in st["labels"]  # held; not marked off
+
+
 @pytest.mark.parametrize("labels, summary", [
     ({}, "up"),
     ({"hangar-power-sandboxes-gvisor": "1-10"}, "down"),
@@ -532,7 +593,7 @@ def test_the_scheduled_power_up_never_starts_a_deploy(cluster):
 
 
 # ---------------------------------------------------------------------- deploy.yml: a merge deploys only while up
-def _decide(cluster, tmp_path, event: str, ref: str, labels: dict, newer: int = 0, signed_in: bool = True):
+def _decide(cluster, tmp_path, event: str, ref: str, labels: dict, moved: bool = False, signed_in: bool = True):
     doc = yaml.safe_load((ROOT / ".github/workflows/deploy.yml").read_text())
     step = next(s for s in doc["jobs"]["state"]["steps"] if s.get("id") == "decide")
     st = cluster["state"]()
@@ -544,7 +605,8 @@ def _decide(cluster, tmp_path, event: str, ref: str, labels: dict, newer: int = 
     env.update(PATH=f"{cluster['tmp'] / 'bin'}:{env['PATH']}", GITHUB_OUTPUT=str(out),
                GITHUB_STEP_SUMMARY=str(summary), GITHUB_SHA=HEAD, GITHUB_REF=ref, GITHUB_REPOSITORY="o/r",
                GITHUB_RUN_NUMBER="41", EVENT=event, SIGNED_IN="true" if signed_in else "false", GH_TOKEN="t",
-               HANGAR_CLUSTER="projects/p/locations/z/clusters/c", FAKE_GH=json.dumps({"newer": newer}),
+               HANGAR_CLUSTER="projects/p/locations/z/clusters/c",
+               FAKE_GH=json.dumps({"head": "c" * 40 if moved else HEAD}),  # main's head now
                GCLOUD_LOG=str(tmp_path / "g.log"), GCLOUD_STATE=str(cluster["tmp"] / "state.json"),
                CALL_LOG=str(tmp_path / "c.log"), GH_LOG=str(tmp_path / "gh.log"))
     r = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]], cwd=ROOT, env=env,
@@ -556,19 +618,20 @@ def _decide(cluster, tmp_path, event: str, ref: str, labels: dict, newer: int = 
 MAIN = "refs/heads/main"
 
 
-@pytest.mark.parametrize("event, ref, labels, newer, deploy, says", [
-    ("push", MAIN, {}, 0, "true", None),
-    ("push", MAIN, {"hangar-power-sandboxes-gvisor": "1-10"}, 0, "false",
+@pytest.mark.parametrize("event, ref, labels, moved, deploy, says", [
+    ("push", MAIN, {}, False, "true", None),
+    ("push", MAIN, {"hangar-power-sandboxes-gvisor": "1-10"}, False, "false",
      f"infra is down; not deploying {HEAD[:12]}; it will deploy on the next power-up"),
-    ("push", MAIN, {"hangar-power-hold": "9999999999"}, 0, "false", "infra is held; not deploying"),
-    ("push", MAIN, {"hangar-power-off": "1", "hangar-power-system": "1-2"}, 0, "false", "infra is off; not deploying"),
-    ("push", MAIN, {}, 1, "false", "A newer push to main is queued"),  # a burst of merges: the newest deploys
-    ("workflow_dispatch", MAIN, {"hangar-power-sandboxes-gvisor": "1-10"}, 0, "true", None),  # the deploy job decides
-    ("workflow_dispatch", MAIN, {"hangar-power-off": "1"}, 0, "refused", "hangar is off"),
-    ("push", "refs/tags/v1.2.0", {"hangar-power-hold": "9999999999"}, 0, "true", None),  # a release tag
+    ("push", MAIN, {"hangar-power-hold": "9999999999"}, False, "false", "infra is held; not deploying"),
+    ("push", MAIN, {"hangar-power-off": "1", "hangar-power-system": "1-2"}, False, "false",
+     "infra is off; not deploying"),
+    ("push", MAIN, {}, True, "false", "main has moved on to cccccccccccc"),  # a burst of merges: the newest deploys
+    ("workflow_dispatch", MAIN, {"hangar-power-sandboxes-gvisor": "1-10"}, False, "true", None),  # the deploy job
+    ("workflow_dispatch", MAIN, {"hangar-power-off": "1"}, False, "refused", "hangar is off"),
+    ("push", "refs/tags/v1.2.0", {"hangar-power-hold": "9999999999"}, False, "true", None),  # a release tag
 ])
-def test_a_merge_deploys_only_while_the_infra_is_up(cluster, tmp_path, event, ref, labels, newer, deploy, says):
-    got, out = _decide(cluster, tmp_path, event, ref, labels, newer)
+def test_a_merge_deploys_only_while_the_infra_is_up(cluster, tmp_path, event, ref, labels, moved, deploy, says):
+    got, out = _decide(cluster, tmp_path, event, ref, labels, moved)
     assert got == deploy, out
     if says:
         assert says in out, out
@@ -590,6 +653,8 @@ def test_no_merge_deploys_without_the_owners_approval():
     jobs = doc["jobs"]
     state = json.dumps(jobs["state"])
     assert "GCP_STATE_SERVICE_ACCOUNT" in state and "environment" not in jobs["state"]
+    assert jobs["state"]["permissions"] == {"contents": "read", "id-token": "write"}
+    assert jobs["deploy"]["permissions"] == {"contents": "read", "id-token": "write"}
     for forbidden in ("HANGAR_DEPLOY_TOKEN", "GCP_DEPLOY_SERVICE_ACCOUNT", "secrets.GCP_SERVICE_ACCOUNT", "kubectl",
                       "get-gke-credentials", "HANGAR_URL"):
         assert forbidden not in state, forbidden

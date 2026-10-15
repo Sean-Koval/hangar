@@ -397,8 +397,9 @@ if ! skipped accounts; then
   }
   # --- infra-state: a merge to main deploys only while the infra is up, which deploy.yml's `state` job reads from
   # the cluster's power labels before any approval (so not as the deploy account, which only the approved job can
-  # use). Its account holds a custom role with container.clusters.get alone: the cluster's metadata and labels, no
-  # list of other clusters, no connect, and nothing inside the cluster (no RBAC binding).
+  # use). Its account holds a custom role with container.clusters.get alone, on the project (GKE has no per-cluster
+  # IAM): the metadata and labels of the project's clusters; not list or connect, and inside a cluster no binding, so
+  # only the discovery Kubernetes grants every authenticated identity. It can change nothing.
   note "state ($STATE_SA): reads the cluster's metadata and labels only ($STATE_ROLE: $STATE_PERMISSIONS)."
   role_json=$(look gcloud iam roles describe "$STATE_ROLE_ID" --project "$PROJECT" --format=json)
   if [ -z "$role_json" ]; then

@@ -28,7 +28,7 @@ It is safe to re-run: each step looks first and changes only what is missing or 
 | --- | --- | --- |
 | Pool `github`, provider `hangar` | Runs of this repository (checked by name and by numeric id) on `main` or a `v*` tag, started by a push or by hand; pull requests, other branches, forks and `pull_request_target`, `workflow_run`, schedule or comment runs get no Google token. The pool holds no other provider (the check fails if it does: any provider in the pool could sign in as these accounts) | Exchange GitHub's OIDC token for the accounts below |
 | `hangar-ci@` (images) | Any run the provider admits | `roles/artifactregistry.writer` on the `hangar` repository only. No cluster access, no Cloud Build (images build with Docker on the runner) |
-| `hangar-state@` (is the infra up?) | Any run the provider admits | A custom role, `hangarClusterState`, with `container.clusters.get` alone: the cluster's metadata and power labels. Not `clusterViewer` (which adds `list` and `connect`), no binding inside the cluster, nothing it can change |
+| `hangar-state@` (is the infra up?) | Any run the provider admits | A custom role, `hangarClusterState`, with `container.clusters.get` alone, on the project (GKE has no per-cluster IAM): the clusters' metadata and power labels. Not `clusterViewer` (which adds `list` and `connect`); inside the cluster no binding, so only the API discovery Kubernetes grants every authenticated identity; nothing it can change |
 | `hangar-deploy@` (deploys) | Only jobs in the `production` environment: subject `repo:OWNER/REPO:environment:production`, or `repo:OWNER@OWNER_ID/REPO@REPO_ID:environment:production` for repositories created after 2026-07-15 ([GitHub's immutable subjects][immutable]); both are bound | `roles/container.clusterViewer` (fetch the cluster's credentials) and a Role in `hangar`: `get`, `list`, `watch`, `patch` on `deployments/hangar`. No secrets, no exec, nothing else |
 | The `production` environment | You approve each deploy; only `main` and `v*` tags deploy | Releases its secrets to the deploy job after your approval |
 | A tag ruleset on `refs/tags/v*` | Only repository admins (you) create, move or delete `v*` tags | A `v*` tag starts a deploy, and its builds run as `hangar-ci@` before your approval |
@@ -84,8 +84,11 @@ needed because it can't change anything.
   whatever the power state.
 - **A burst of merges:** the `deploy-production` concurrency group keeps one run going and at most one waiting;
   GitHub cancels the waiting run when a newer one queues ([concurrency][concurrency]: "any existing `pending` job or
-  workflow in the same concurrency group will be canceled"). A run that a newer push to `main` has overtaken skips with
-  a notice, both before its builds and again right after your approval, so you approve the newest commit, not each one.
+  workflow in the same concurrency group will be canceled"). A merge's run whose commit is no longer `main`'s head
+  skips with a notice, both before its builds and again right after your approval (a re-run of an old one too), so you
+  approve the newest commit, not each one. Two things follow from GitHub's rules: a `v*` tag run waiting behind a
+  deploy is replaced by a merge queued after it (push the tag again, or run it once the queue is clear), and a merge
+  whose push started no run (`[skip ci]`) leaves the one before it skipped too, until the next merge or power-up.
 - **The infra went down while a run waited for you:** the deploy job checks hangar's power state again after the
   approval, and skips green if the pools are down or held.
 

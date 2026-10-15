@@ -71,7 +71,8 @@ PYLIB=$(cat <<'PY'
 import json, os, re, sys
 from datetime import datetime
 
-SPECIAL = {"hangar-power-hold", "hangar-power-hold-set", "hangar-power-off", "hangar-power-starting"}
+SPECIAL = {"hangar-power-hold", "hangar-power-hold-set", "hangar-power-off", "hangar-power-starting",
+           "hangar-power-lock"}
 STARTING_GRACE = 3600  # an `up` that never finished: its starting mark counts for this long
 MAX_DAYS = 90
 
@@ -223,14 +224,44 @@ drop_label() {  # KEY: only when it's there
 label_key() { echo "hangar-power-$(tr -c 'a-z0-9_\n-' '-' <<<"$1" | cut -c1-50)"; }
 pools() { gcloud container node-pools list --cluster "$CLUSTER" "${G[@]}" --format='value(name)'; }
 powered() { grep -Eq -- "$POOLS_RE" <<<"$1"; }
-pool_size() {  # a pool's node count now: the target size of its instance groups
-  local n=0 url s
-  for url in $(gcloud container node-pools describe "$1" --cluster "$CLUSTER" "${G[@]}" \
-      --format='value(instanceGroupUrls)' | tr ';,' '  '); do
-    s=$(gcloud compute instance-groups managed describe "$url" --format='value(targetSize)' 2>/dev/null || echo 0)
-    n=$((n + ${s:-0}))
+pool_size() {  # a pool's node count now: the target size of its instance groups. A failed read stops the run: a
+  # fixed-size pool's count is what `up` brings it back to, and none saved would leave it at 0 nodes for good
+  local n=0 urls url s
+  urls=$(gcloud container node-pools describe "$1" --cluster "$CLUSTER" "${G[@]}" --format='value(instanceGroupUrls)') ||
+    die "couldn't read $1's instance groups; nothing was saved or resized for it"
+  for url in $(tr ';,' '  ' <<<"$urls"); do
+    s=$(gcloud compute instance-groups managed describe "$url" --format='value(targetSize)') ||
+      die "couldn't read $1's size ($url); nothing was saved or resized for it"
+    [[ "$s" =~ ^[0-9]+$ ]] || die "$1's size reads '$s'; nothing was saved or resized for it"
+    n=$((n + s))
   done
   echo "$n"
+}
+
+# One power run at a time (the scheduled jobs, `hangar power up`, a person): a label with the run's start and id.
+# A run holding it for over 45 minutes (the jobs time out at 40) died, and its lock is taken over.
+LOCK=hangar-power-lock LOCKED=""
+lock() {
+  local mine held
+  held=$(py label "$(labels)" "$LOCK")
+  if [ -n "$held" ] && [ $(( $(date +%s) - ${held%%-*} )) -lt 2700 ]; then
+    if [ "$SCHEDULED" = 1 ]; then
+      log "another power run (started $(py fmt "${held%%-*}")) is under way: skipping this scheduled power-$ACTION"
+      exit 0
+    fi
+    die "another power run (started $(py fmt "${held%%-*}")) is under way. Wait for it; if it died, remove the" \
+      "cluster label $LOCK and run this again."
+  fi
+  mine="$(date +%s)-$RANDOM$RANDOM"
+  set_labels "$LOCK=$mine"
+  [ "$(py label "$(labels)" "$LOCK")" = "$mine" ] || die "another power run took the lock at the same moment; run this again"
+  LOCKED=$mine
+  trap unlock EXIT
+}
+unlock() {
+  if [ -n "$LOCKED" ] && [ "$(py label "$(labels)" "$LOCK")" = "$LOCKED" ]; then
+    gcloud container clusters update "$CLUSTER" "${G[@]}" --quiet --remove-labels="$LOCK" >/dev/null 2>&1 || true
+  fi
 }
 
 # kubectl is optional for down and up: without it, `down` skips the graceful part (sessions still have their last
@@ -288,7 +319,7 @@ sync_hold() {
   # `hangar power hold` and `release` are recorded in hangar, which can't write the cluster's labels (it has no
   # container.clusters.update, and gets none). Whichever side changed last wins and is copied to the other.
   local rec plan
-  rec=$(hangar_api GET /api/admin/power/hold 2>/dev/null) || return 0
+  rec=$(hangar_api GET /api/admin/power/hold 2>/dev/null) || return 1
   read -r -a plan <<<"$(py holdplan "$LABELS" "$rec" "$(date +%s)")"
   case ${plan[0]} in
     label-set) set_labels "$HOLD=${plan[1]},$HOLD_SET=${plan[2]}"
@@ -307,14 +338,22 @@ schedule_gate() {
   # the run goes ahead: the schedule resumes at its next time, nothing powers up early.
   [ "$SCHEDULED" = 1 ] || return 0
   LABELS=$(labels)
-  if kube && hangar_ready; then sync_hold; fi
-  local until now
+  local until now read=0
+  if kube && hangar_ready && sync_hold; then read=1; fi
   until=$(py label "$LABELS" "$HOLD")
   now=$(date +%s)
   if [ -n "$until" ] && [ "$until" -gt "$now" ]; then
     log "held until $(py fmt "$until"): skipping the scheduled power-$ACTION (power.sh up or release, or" \
       "hangar power release, ends the hold)"
     exit 0
+  fi
+  # Powering down without hangar would skip the drain (running turns are cut off at their last checkpoint) and any
+  # `hangar power hold`: fail closed, and leave the pools up, unless the cluster is off and hangar meant to be stopped.
+  if [ "$ACTION" = down ] && [ $read = 0 ] && [ -z "$(py label "$LABELS" "$OFF")" ]; then
+    echo "error: couldn't reach hangar (kubectl, or its hold record): not powering down, so nothing is cut off" \
+      "and a hold set in hangar isn't overridden. The sandbox pools stay up; see this job's log, then run" \
+      "bash deploy/gke/power.sh down by hand." >&2
+    exit 1
   fi
   if [ -n "$until" ]; then
     drop_label "$HOLD"
@@ -411,13 +450,12 @@ quiesce() {  # [HOLD_UNTIL SET_AT]: tell hangar the sandboxes are going (and the
 }
 
 pools_to_zero() {  # sandbox|control: the sandbox pools (POWER_POOLS), or every other pool (the system pool)
-  local saved p on min max had keep n
-  saved=$(labels)
+  local p on min max had keep n
   for p in $(pools); do
     if [ "$1" = sandbox ]; then powered "$p" || continue; else ! powered "$p" || continue; fi
     read -r on min max < <(gcloud container node-pools describe "$p" --cluster "$CLUSTER" "${G[@]}" \
       --format='value(autoscaling.enabled,autoscaling.minNodeCount,autoscaling.maxNodeCount)')
-    had=$(py label "$saved" "$(label_key "$p")")
+    had=$(py label "$(labels)" "$(label_key "$p")")  # read now, not before the loop
     # Remember how to bring it back as a label on the cluster (not the pool: pool labels become node labels), so
     # `up` restores it without terraform: an autoscaling range, or a fixed pool's node count (the microVM pool).
     if [ "$on" = "True" ]; then
@@ -472,13 +510,14 @@ restore_pools() {  # sandbox|control: back to the ranges saved at down/off; FLOO
       log "$p: nothing saved at down; left as it is"
       continue
     fi
-    if [ -n "$range" ]; then
-      gcloud container clusters update "$CLUSTER" "${G[@]}" --quiet --remove-labels="$(label_key "$p")" >/dev/null
-    fi
     if [ "$min" -gt 0 ]; then
       gcloud container clusters resize "$CLUSTER" "${G[@]}" --node-pool "$p" --num-nodes "$min" --quiet >/dev/null
       # an autoscaled sandbox pool's minimum is its warm floor: the prepull waits for those nodes
       if [ "$1" = control ] || [[ "$range" != fixed-* ]]; then FLOORS+=("$p:$min"); fi
+    fi
+    # Only once it's back: a resize that failed leaves the saved range for the next `up`
+    if [ -n "$range" ]; then
+      gcloud container clusters update "$CLUSTER" "${G[@]}" --quiet --remove-labels="$(label_key "$p")" >/dev/null
     fi
   done
 }
@@ -577,6 +616,7 @@ catch_up() {
 
 case "$ACTION" in
 down)
+  lock
   schedule_gate
   LABELS=$(labels)
   if [ -n "$(py label "$LABELS" "$OFF")" ]; then
@@ -591,9 +631,10 @@ off)
   until=$(py until "$DAYS" "$UNTIL" "$now" 7) || exit 2
   # Hangar is stopped with kubectl, and must have stopped (its database closed) before its node goes.
   kube || die "off stops hangar with kubectl (and gke-gcloud-auth-plugin), which aren't available here. Nothing was changed."
+  lock
   LABELS=$(labels)
-  # The hold first, so a scheduled power-up that starts meanwhile skips instead of bringing things back.
-  set_labels "$HOLD=$until,$HOLD_SET=$now,$OFF=$now"
+  # The hold first, so a scheduled run that starts meanwhile skips instead of bringing things back.
+  set_labels "$HOLD=$until,$HOLD_SET=$now"
   log "held until $(py fmt "$until"): the scheduled power-ups and power-downs skip until then"
   quiesce "$until" "$now"
   pools_to_zero sandbox
@@ -602,11 +643,13 @@ off)
     kubectl -n "$NS" scale deploy/hangar --replicas=0 >/dev/null
   fi
   kubectl -n "$NS" wait --for=delete pod -l app=hangar --timeout=180s >/dev/null 2>&1 || true
-  if [ -n "$(kubectl -n "$NS" get pods -l app=hangar -o name 2>/dev/null)" ]; then
-    die "hangar's pod hasn't stopped after 3 minutes, so the system pool stays up (hangar's database is on that" \
-      "node's volume). Run power.sh off again, or power.sh up to bring the sandboxes back."
+  # Gone means listed as gone: a failed listing counts as still there
+  if ! running=$(kubectl -n "$NS" get pods -l app=hangar -o name) || [ -n "$running" ]; then
+    die "hangar's pod hasn't stopped after 3 minutes (or couldn't be listed), so the system pool stays up" \
+      "(hangar's database is on that node's volume). Run power.sh off again, or power.sh up to bring it all back."
   fi
   pools_to_zero control
+  set_labels "$OFF=$now"  # last: only an off that got here is "off"
   log "off until $(py fmt "$until"). Nothing was deleted. Bring it back with: bash deploy/gke/power.sh up"
   log "while off, webhooks aren't received: GitHub's are redelivered at the next start if at most 3 days old;" \
     "Jira's and Slack's are lost (docs/gke.md, \"Infra states\")"
@@ -628,6 +671,7 @@ release)
   if kube && hangar_ready; then tell_hold "" "$now"; fi
   ;;
 up)
+  lock
   schedule_gate
   LABELS=$(labels)
   off_since=$(py label "$LABELS" "$OFF")

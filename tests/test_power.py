@@ -514,11 +514,19 @@ async def test_hangar_power_up_ends_the_hold(settings, store):
             return httpx.Response(200, json={"access_token": "t"})
         return httpx.Response(200, json={"metadata": {"name": "e"}})
 
+    def denied(req: httpx.Request) -> httpx.Response:
+        if req.url.host == "metadata.google.internal":
+            return httpx.Response(200, json={"access_token": "t"})
+        return httpx.Response(403, json={"error": {"message": "denied"}})
+
     settings.power_up_job = "projects/p/locations/r/jobs/hangar-power-up"
     p = Power(store, settings)
     off(p)
     powerhold.set_hold(store, {"days": 5}, "sean", NY, time.time())
     assert p.hold_view()
+    with pytest.raises(PowerError):  # the job didn't start: the hold stays
+        await p.request_up("admin", httpx.MockTransport(denied))
+    assert p.hold_view()["by"] == "sean"
     await p.request_up("admin", httpx.MockTransport(handler))
     assert p.hold_view() is None and powerhold.record(store)["until"] is None  # the job reads this before it decides
 
