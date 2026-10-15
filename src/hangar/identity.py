@@ -32,7 +32,8 @@ current: contextvars.ContextVar[Principal | None] = contextvars.ContextVar("hang
 # Environment fields that widen what a sandbox reaches or weaken its isolation: vault secrets mapped into it, an
 # arbitrary registry image (prebuilt or as the build's base), a runtime class (runc instead of gVisor), and the git
 # credential mode (direct puts the git token in the sandbox instead of the gateway).
-ADMIN_FIELDS = ("secrets", "image", "base", "runtime_class", "credential_mode")
+ADMIN_FIELDS = ("secrets", "image", "base", "runtime_class", "credential_mode",
+                "egress", "build_secrets", "cloud")  # --- egress: reach, build secrets, cloud identity
 
 
 class Forbidden(PermissionError):
@@ -102,13 +103,18 @@ def _signing_names(settings: Settings) -> set[str]:
     for cfg in (settings.inbound_webhooks or {}).values():
         if isinstance(cfg, dict) and isinstance(cfg.get("secret"), str):
             names.add(cfg["secret"])
+    jira = getattr(settings, "jira", None) or {}  # --- intake: Jira's API token, webhook secret, Automation token
+    for key in ("token_credential", "webhook_secret_credential", "automation_token_credential"):
+        if isinstance(jira, dict) and isinstance(jira.get(key), str):
+            names.add(jira[key])
     return {n for n in names if n}
 
 
 def reserved_names(settings: Settings) -> set[str]:
     """Every credential the control plane names for its own use: the signing keys and bot tokens, and the GitHub
     tokens it calls GitHub with (control-plane unless an admin marks them `sandbox`)."""
-    return _signing_names(settings) | {n for n in (settings.github_token_credential, settings.gateway_credential) if n}
+    return _signing_names(settings) | {n for n in (settings.github_token_credential, settings.gateway_credential,
+                                                   settings.github_app_credential) if n}  # --- landing
 
 
 def locked(cred: Credential, settings: Settings | None) -> bool:

@@ -73,6 +73,11 @@ if [[ "$BUCKET" == gs://* ]]; then
     echo "note: session checkpoints stay on the control plane's disk; $BUCKET is ready for them (docs/sessions.md)"
   fi
 fi
+# --- ops: `hangar power up` runs the power-up job (null, so empty, without the power schedule)
+POWER_JOB=$(tfo power_up_job 2>/dev/null || true)
+if [[ "$POWER_JOB" == projects/* ]]; then
+  sed -i "s|^  # HANGAR_POWER_UP_JOB: .*|  HANGAR_POWER_UP_JOB: \"$POWER_JOB\"|" "$OUT/config.yaml"
+fi
 kubectl apply -k "$OUT"
 kubectl -n hangar rollout status deploy/hangar --timeout=10m
 

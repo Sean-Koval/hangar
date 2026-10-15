@@ -14,7 +14,7 @@ set -uo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 HELPER="$ROOT/scripts/acceptance/hangar_accept.py"
-CHECKS="doctor k8s sandbox exec stream files mcp isolation session model steer gateway e2b backup metrics power"
+CHECKS="doctor k8s sandbox exec stream files mcp isolation session model steer gateway e2b backup metrics power warmstart"
 ONLY="" SKIPS="" KEEP=0 WITH_MODEL=0 NO_KUBECTL=0 EXPECT_ENVD=1
 ARGS=()
 
@@ -34,6 +34,10 @@ usage: $0 [options]
   --with-model          also run a real short agent turn and a steered turn with an approval (costs money)
   --model NAME          model for those turns (default: the environment's)
   --mcp-env NAME        multi-harness environment the mcp check creates sandboxes from over MCP (default: python)
+  --warm-env NAME       environment with a warm pool the warmstart check times a warm and a cold create on
+                        (default: claude-python)
+  --record FILE         also append each check's result (and its numbers) to FILE as JSON lines
+  --doctor-baseline F   JSON list of doctor checks already failing before a deploy: reported, not failed on
   --exec-calls N        exec round trips to time (default: 20)
   --internet-probe H:P  an address sandboxes must reach, so closed ports in the isolation check mean a policy
                         and not a sandbox with no network (default: github.com:443)
@@ -50,7 +54,7 @@ EOF
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --env|--session-env|--repo|--gateway-repo|--model|--exec-calls|--internet-probe|--mcp-env)
+    --env|--session-env|--repo|--gateway-repo|--model|--exec-calls|--internet-probe|--mcp-env|--warm-env|--record|--doctor-baseline)
       [ $# -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; }
       ARGS+=("$1" "$2"); shift 2 ;;
     --with-model) WITH_MODEL=1; shift ;;
@@ -160,9 +164,8 @@ check gateway   "git gateway: push to hangar/accept-<run> works, a push outside 
 check e2b       "the e2b SDK with a sandboxes token: create, run, files, list, kill"
 check backup    "back up the database now and list the backups"
 check metrics   "/metrics, and a metrics-scoped token that reaches nothing else"
-if wanted power; then
-  record INFO power 0.0 "not run; to check it yourself: bash deploy/gke/power.sh down, then power.sh up, then rerun this script"
-fi
+check power     "hangar answers with the sandbox pools off: a create is refused at once with when they're back"
+check warmstart "create latency: a warm pool claim against a cold start, back to back"
 
 cleanup
 echo

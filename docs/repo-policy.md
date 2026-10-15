@@ -10,6 +10,7 @@ hangar repo get acme/app            # the policy, and the environment it falls b
 hangar repo unset acme/app model    # clear one field
 hangar repo unset acme/app          # remove the policy
 hangar repo set acme/app --job-max-cost 5 --job-max-turns 12 --max-usd-per-day 60
+hangar repo set acme/app --land auto_after_approval --approver alice --risk-path 'infra/**'   # docs/landing.md
 ```
 
 | Field | What it sets |
@@ -21,14 +22,24 @@ hangar repo set acme/app --job-max-cost 5 --job-max-turns 12 --max-usd-per-day 6
 | `budget` | The default per-turn budget (`max_minutes`, `max_tokens`, `max_cost_usd`), field by field under the job's own. |
 | `job_budget` | The default [job budget](#budgets) (`max_cost_usd`, `max_tokens`, `max_turns`). |
 | `max_usd_per_day` | The repo's [daily spend cap](#budgets). |
+| `credentials` | Whose login the repo's jobs run with: `person` (the person the job runs for; a job for no one fails), `team`, or `person_then_team` (the default: theirs when they have one, else the team's). See [team.md](team.md#whose-login-a-job-uses). |
+| `egress` | `{mode, presets, allow}` for the repo's sandboxes: adds presets and hosts to the environment's allowlist, and can tighten its mode but never widen it (`hangar repo set acme/app --egress-mode none --egress-allow docs.example.com`). See [egress allowlists](security.md#egress-allowlists). |
+| `build_secrets` | `{SECRET_ID: credential}` for the repo's [environment builds](environments.md#build-secrets), winning over the environment's (admins; `PUT /api/repos/policy`). See [build secrets](security.md#build-secrets). |
+| `land` | `auto_after_approval`: an approval of the PR's head by an approver or code owner, with green required checks, lands it ([landing.md](landing.md)). `manual` or unset: a person merges. |
+| `approvers` | GitHub logins whose approval lands the repo's agent PRs (`--approver`, repeated). |
+| `merge_method` | `squash` (default), `merge` or `rebase`, for PRs hangar lands. |
+| `risk_paths` | Globs (`infra/**`) that make a PR high risk in its [review packet](landing.md#6-the-review-packet), on top of `.github/**`. |
 
 The repo is `owner/repo` for GitHub (any URL form, any case), or the git URL for another host.
 
 ## Precedence
 
-For each field: **the job, then the repo's policy, then the environment, then hangar's settings.**
+For each field: **the job, then the repo's own `.hangar/environment.yaml`, then the repo's policy, then the
+environment, then hangar's settings.**
 
 - A job's own `verify`, `environment`, `harness` or `model` always wins.
+- A repo's `.hangar/environment.yaml` can set its `verify` and, with `extends`, its environment (within the allowlist).
+  Hangar uses the file as the default branch had it at the last clone. See [environments.md](environments.md).
 - An environment can carry a `verify:` too, the fallback for every repo that runs in it:
 
   ```yaml

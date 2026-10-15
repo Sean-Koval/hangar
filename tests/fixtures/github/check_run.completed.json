@@ -1,0 +1,28 @@
+{
+  "action": "completed",
+  "check_run": {
+    "id": 31873390661,
+    "name": "test",
+    "node_id": "CR_kwDOMh3e8M8AAAAHa8T0RQ",
+    "head_sha": "6dcb09b5b57875f334f61aebed695e2e4193db5e",
+    "external_id": "8a3f3e41-1b0c-5a2b-9f0e-4c2b8d9a7e61",
+    "url": "https://api.github.com/repos/o/r/check-runs/31873390661",
+    "html_url": "https://github.com/o/r/actions/runs/11330129468/job/31873390661",
+    "details_url": "https://github.com/o/r/actions/runs/11330129468/job/31873390661",
+    "status": "completed",
+    "conclusion": "success",
+    "started_at": "2026-10-14T09:01:12Z",
+    "completed_at": "2026-10-14T09:03:58Z",
+    "output": {"title": null, "summary": null, "text": null, "annotations_count": 0},
+    "check_suite": {"id": 29516733080, "head_branch": "hangar/job-0001",
+                    "head_sha": "6dcb09b5b57875f334f61aebed695e2e4193db5e", "status": "completed",
+                    "conclusion": null},
+    "app": {"id": 15368, "slug": "github-actions", "name": "GitHub Actions"},
+    "pull_requests": [{"url": "https://api.github.com/repos/o/r/pulls/7", "id": 2104837561, "number": 7,
+                       "head": {"ref": "hangar/job-0001", "sha": "6dcb09b5b57875f334f61aebed695e2e4193db5e"},
+                       "base": {"ref": "main", "sha": "e5bd3914e2e596debea16f433f57875b5b90bcd6"}}]
+  },
+  "repository": {"id": 849738224, "node_id": "R_kgDOMh3e8A", "name": "r", "full_name": "o/r", "private": true,
+                 "owner": {"login": "o", "type": "Organization"}},
+  "sender": {"login": "github-actions[bot]", "type": "Bot"}
+}

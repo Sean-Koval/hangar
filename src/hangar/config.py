@@ -188,6 +188,10 @@ class Settings(BaseSettings):
     github_api_url: str = "https://api.github.com"
     # Vault credential holding a GitHub token the *control plane* uses to open PRs and comment.
     github_token_credential: str | None = None
+    # --- landing: a `github_app` credential. Set, agent PRs are opened, commented on and landed as the App (tokens
+    # minted per repo with contents and pull_requests write only), and it pushes for gateway sandboxes that have no
+    # git credential of their own. The token above still comments on issues (docs/landing.md).
+    github_app_credential: str | None = None
     # Vault credential holding the webhook secret; the webhook route is off until this is set.
     github_webhook_secret_credential: str | None = None
     # Repos that may trigger jobs, mapped to the environment to run them in: {"owner/repo": "env"}.
@@ -238,6 +242,13 @@ class Settings(BaseSettings):
     exchange_max_artifacts_mb: int = 100  # per turn
     exchange_inline_artifact_kb: int = 512  # MCP get_artifact returns at most this much (text or base64)
     exchange_repair_timeout_minutes: int = 10  # the one repair run for a missing or invalid result
+    # --- computer: agents' own computer and self-diagnosis (docs/computer-use.md) ----------
+    env_doctor_mcp: bool = True  # the `hangar-env` MCP server (the doctor, requests) in every harness's config
+    env_request_poll_seconds: float = 30.0  # how often a running turn is checked for new requests (0: at its end)
+    # Screenshots and demos in PR bodies. "off" (default): listed by name, fetched through hangar by people who may see
+    # the job. "signed": embedded through expiring links anyone holding them can open (public repos only, say).
+    pr_media_links: Literal["signed", "off"] = "off"
+    pr_media_link_days: int = 7
     # --- workstream B: slack (docs/slack.md) ---------------------------------
     # Vault credentials: the app's signing secret (verifies requests; the routes are off until it's set) and its
     # bot token (xoxb-…, posts replies and reads threads).
@@ -267,6 +278,26 @@ class Settings(BaseSettings):
     gateway_credential: str | None = None  # upstream credential when the sandbox has no git credential of its own
     gateway_max_push_mb: int = 512
     gateway_timeout_seconds: float = 120.0  # upstream connect/read timeout (per read, not per request)
+    # --- egress: hostname allowlists (egress.py, docs/security.md#egress) ----
+    # The mode of environments that don't set `egress.mode`: open (the public internet, as before), allowlist or none.
+    egress_default: Literal["open", "allowlist", "none"] = "open"
+    # The egress proxy's port. On GKE it listens on HANGAR_EGRESS_HOST (default HANGAR_GATEWAY_HOST, then HANGAR_HOST)
+    # when HANGAR_EGRESS_URL is set; on Docker on the egress network's gateway address, when a sandbox needs it.
+    egress_port: int = 3128
+    egress_host: str | None = None
+    # URL Kubernetes sandboxes reach the proxy at, e.g. http://hangar-gateway.hangar.svc:3128 (deploy/k8s/gateway.yaml).
+    egress_url: str | None = None
+    # Hosts the proxy may connect to at private addresses (an internal package mirror). Loopback and link-local
+    # addresses (the metadata servers) are refused regardless.
+    egress_private_hosts: list[str] = Field(default_factory=list)
+    egress_max_connections_per_sandbox: int = 128  # one person's 10 sandboxes stay well under MAX_CONNECTIONS
+    # --- egress: secret scanning before hangar pushes a job's branch (secretscan.py). block: a hit stops the push
+    # and goes back to the agent (at most secret_scan_rounds fix turns); warn: job events only; off.
+    secret_scan: Literal["block", "warn", "off"] = "block"
+    secret_scan_rounds: int = 2
+    # --- egress: the OIDC issuer URL in the tokens hangar mints for sandboxes' cloud credentials (cloudcreds.py);
+    # default HANGAR_PUBLIC_URL. Must be https; AWS fetches <issuer>/.well-known/openid-configuration from it.
+    oidc_issuer: str | None = None
     # --- workstream G: a2a (spec 0011, docs/a2a.md) -------------------------
     a2a_enabled: bool = True  # agent card at /.well-known/agent-card.json, JSON-RPC at /a2a
     a2a_default_repo: str | None = None  # repo for A2A tasks that don't name one in their metadata
@@ -355,6 +386,9 @@ class Settings(BaseSettings):
     person_max_sessions: int = 15  # live sessions (each holds a sandbox); suspended ones don't count
     person_max_sandboxes: int = 20  # sandboxes started directly (MCP, REST, the E2B API); sessions' are above
     person_max_running_jobs: int = 0  # jobs running at once; 0 = half the job slots, at least 4. Others' jobs go first
+    # --- teamcreds: how long a job's or session's sandbox waits for a free login when every login it could use is
+    # leased (a Codex ChatGPT login goes into one sandbox at a time); then it fails, saying which are busy
+    login_wait_seconds: float = Field(600, ge=0)
     # Stopped and failed sandbox records older than this move to an archive table (retention.py): out of listings
     # and of every scan, still found by id. Archived ones are deleted after sandbox_archive_days (0 = kept).
     sandbox_retention_days: float = 7
@@ -381,6 +415,41 @@ class Settings(BaseSettings):
     # Follow a running turn's log through hangar-envd (`tail -F`), so its events arrive as the agent writes them
     # instead of on the next poll (session_poll_seconds). Off, or without hangar-envd: polling, as before.
     stream_turn_logs: bool = True
+    # --- intake: tracker intake (docs/intake.md). Jira: {"url": "https://acme.atlassian.net", "email": ...,
+    # "token_credential": ..., "webhook_secret_credential": ..., "projects": {"ABC": {"repo": "owner/repo"}},
+    # "trigger": {"status": "Ready for agent"}, "statuses": {"started": "In Progress", ...}} (jira.JiraConfig).
+    jira: dict[str, Any] = Field(default_factory=dict)
+    # GitHub Projects boards, by "org/number": {"acme/7": {"trigger": "Ready for agent", "repos": ["acme/api"],
+    # "statuses": {"started": "In progress", "delivered": "In review"}}} (ghprojects.Board).
+    github_projects: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # --- envbuilds: environments that live with the repo (docs/environments.md). Off: a repo's
+    # .hangar/environment.yaml is ignored and sandboxes start from the environment's image, as before.
+    env_builds: bool = True
+    env_builds_keep: int = Field(5, ge=1, le=50)  # builds kept per repo, environment and provider (the active one too)
+    env_build_timeout_minutes: int = Field(30, ge=1, le=240)  # clone, install and capture, each build
+    env_builds_concurrency: int = Field(2, ge=1, le=16)  # builds at once (each is a sandbox, then an image build)
+    # Images a service may run: patterns where `*` matches within one path segment and `**` across them. Default:
+    # Docker's official images (`postgres:17`, `redis`), directly or through mirror.gcr.io. Add your registry's, e.g.
+    # "us-docker.pkg.dev/acme/services/**".
+    env_service_images: list[str] = Field(default_factory=lambda: [
+        "*", "docker.io/library/*", "mirror.gcr.io/library/*"])
+    # --- envbuilds review: what a sandbox's services may add up to, on top of its own resources (each service's
+    # cpus and memory_gb are the repo's to write; memory is requested in full on Kubernetes: docs/team-scale.md).
+    env_services_max_cpus: float = Field(2.0, ge=0, le=32)
+    env_services_max_memory_gb: float = Field(2.0, ge=0, le=64)
+    # Preview ports (preview.py): `<port>-<sandbox>.<this domain>` reaches a sandbox's declared port, for its owner,
+    # through hangar. Needs wildcard DNS pointing at hangar; `localhost` on a laptop. Unset: previews are off.
+    preview_domain: str | None = None
+    preview_session_hours: float = Field(12, gt=0, le=168)  # how long an opened preview stays signed in
+    # --- ops: the sandbox node pools power down at night while hangar stays up (power.py, docs/gke.md). Providers
+    # whose sandboxes run on those pools (add e2b when it runs on the microVM pool): while they are off, creates on
+    # them answer at once with when they're back, and jobs wait queued.
+    power_providers: list[str] = Field(default_factory=lambda: ["kubernetes"])
+    power_up_job: str | None = None  # `hangar power up` runs this Cloud Run job (terraform output power_up_job)
+    # Warm pools for the day at power-up: `auto` (from last week's creates in that hour), `off`, or `env=N,env2=M`
+    power_warm_pools: str = "auto"
+    power_warm_max: int = Field(3, ge=0, le=50)
+    power_prepull_image: str = "registry.k8s.io/pause:3.10.1"  # the prepull DaemonSet's only container
 
     @property
     def backup_interval_hours(self) -> float:

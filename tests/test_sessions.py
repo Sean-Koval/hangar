@@ -47,7 +47,9 @@ async def test_claude_config_and_mcp(fleet, creds):
     assert "only-pi" not in cfg["mcpServers"], "harness-scoped servers go only to that harness"
     assert "private" not in cfg["mcpServers"]
     assert any("'private' skipped: needs NOPE" in w for w in sb.info["warnings"])
-    assert sb.info["mcp"] == ["github"]
+    assert sb.info["mcp"] == ["github", "hangar-env"]  # --- computer: hangar's own doctor, in every harness
+    assert cfg["mcpServers"]["hangar-env"] == {"type": "stdio", "command": "/home/agent/.hangar/bin/hangar-env",
+                                               "args": ["mcp"]}
 
 
 async def test_pi_sandbox(fleet, creds):
@@ -55,7 +57,7 @@ async def test_pi_sandbox(fleet, creds):
     env = await _env(fleet, sb)
     assert "OPENROUTER_API_KEY=sk-or" in env and "sk-claude" not in env
     mcp = await _json(fleet, sb, "/home/agent/.pi/agent/mcp.json")
-    assert set(mcp["mcpServers"]) == {"github", "only-pi"}
+    assert set(mcp["mcpServers"]) == {"github", "only-pi", "hangar-env"}  # --- computer
 
 
 async def test_codex_mcp_toml_preserves_user_config(fleet, creds):

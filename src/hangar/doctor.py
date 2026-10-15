@@ -167,16 +167,27 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
 
     if (c := exposure_check(fleet.catalog, h.store, s)) is not None:
         out.append(c)
+    # --- teamcreds: personal logins still shared, work no person owns without a team credential, unlinked senders
+    from hangar.teamcreds import doctor_checks as team_checks
+
+    out += team_checks(h)
 
     # --- workstream setup: each mapped repo's webhook exists, is active and sends the events hangar handles
     from hangar.setup_api import webhook_checks
 
     out += await webhook_checks(h, transport)
+    # --- landing: repos that land on approval have the branch protection that keeps it safe
+    from hangar.landing import doctor_checks as landing_checks
+
+    out += await landing_checks(h)  # through the job service's GitHub transport, like the PRs themselves
 
     # --- workstream B: slack
     from hangar.slack import doctor_checks as slack_checks
 
     out += await slack_checks(h, transport)
+    from hangar.jira import doctor_checks as jira_checks  # --- intake
+
+    out += await jira_checks(h, transport)
 
     # checkpoint storage is writable
     key = f"_doctor/{now():.0f}"
@@ -202,5 +213,8 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
             out.append(c)
     # git gateway (workstream F): reachable, and every GitHub App credential can mint a token
     out += await fleet.gateway.doctor(transport)
+    from hangar import power  # --- ops: the pools' power state, the last deploy, the background loops
+
+    out += power.doctor_checks(h)
     await asyncio.sleep(0)
     return out

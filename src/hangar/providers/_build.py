@@ -85,7 +85,8 @@ async def docker_available() -> bool:
 
 
 async def docker_build(ctx: BuildContext, tag: str, log: LogFn | None = None, platform: str | None = None,
-                       push: bool = False) -> str:
+                       push: bool = False, secret_args: list[str] | None = None) -> str:
+    """`secret_args`: `--secret id=…,src=…` from buildsecrets.docker_args (--- egress); never logged."""
     if not shutil.which("docker"):
         raise ProviderError("docker CLI not found; install Docker Desktop / OrbStack / docker-ce to build images")
     args = ["docker", "build", "-t", tag]
@@ -94,8 +95,8 @@ async def docker_build(ctx: BuildContext, tag: str, log: LogFn | None = None, pl
     if platform:
         args += ["--platform", platform]
     args.append("-")
-    await _emit(log, f"$ {' '.join(args)}")
-    await run_cli(args, stdin=ctx.tar(), log=log)
+    await _emit(log, f"$ {' '.join(args)}" + (f" ({len(secret_args) // 2} build secret(s))" if secret_args else ""))
+    await run_cli([*args[:-1], *(secret_args or []), "-"], stdin=ctx.tar(), log=log)
     if push:
         await _emit(log, f"$ docker push {tag}")
         await run_cli(["docker", "push", tag], log=log)

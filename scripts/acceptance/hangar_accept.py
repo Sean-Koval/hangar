@@ -224,16 +224,45 @@ def by_transport(before: dict[str, float], after: dict[str, float]) -> dict[str,
 
 
 # ---------------------------------------------------------------------------- checks
+def _baseline(opts: argparse.Namespace) -> set[str]:
+    """--- ops: the doctor checks that failed before a deploy (deploy.yml's `doctor-failing`); empty if unknown."""
+    path = getattr(opts, "doctor_baseline", None)
+    try:
+        names = json.loads(Path(path).read_text()) if path else []
+    except (OSError, ValueError):
+        return set()
+    return {n for n in names if isinstance(n, str)} if isinstance(names, list) else set()
+
+
 def check_doctor(api: Api, state: State, opts: argparse.Namespace) -> str:
     checks = api.call("GET", "/api/doctor")
     fails = [c for c in checks if c["status"] == "fail"]
     warns = [c for c in checks if c["status"] == "warn"]
     for c in fails + warns:
         say(f"{c['status']}: {c['name']}: {c['detail']}" + (f"  (fix: {c['fix']})" if c.get("fix") else ""))
-    if fails:
-        raise Fail(f"{len(fails)} problem(s): {', '.join(c['name'] for c in fails)}; `hangar doctor --fix` repairs "
-                   "what it can")
-    return f"{len(checks)} checks, no failures" + (f", {len(warns)} warning(s)" if warns else "")
+    # --- ops: a deploy rolls back for what it broke, not for what was already red before it (a rollback can't fix
+    # that, and would block every deploy, the fix for it included); those are reported
+    before = _baseline(opts)
+    old = [c["name"] for c in fails if c["name"] in before]
+    new = [c for c in fails if c["name"] not in before]
+    also = f"; already failing before the deploy: {', '.join(old)}" if old else ""
+    if new:
+        raise Fail(f"{len(new)} {'new ' if before else ''}problem(s): {', '.join(c['name'] for c in new)}; `hangar "
+                   f"doctor --fix` repairs what it can{also}")
+    return f"{len(checks)} checks, no {'new ' if old else ''}failures" + (
+        f", {len(warns)} warning(s)" if warns else "") + also
+
+
+def doctor_failing() -> int:
+    """--- ops: the names of the doctor's failing checks as JSON (deploy.yml's baseline before a rollout); 2 if
+    hangar can't be asked, so the caller falls back to no baseline (every failure then counts)."""
+    try:
+        checks = Api(*target()).call("GET", "/api/doctor")
+    except Exception as e:  # noqa: BLE001
+        print(f"can't read the doctor: {type(e).__name__}: {e}", file=sys.stderr)
+        return 2
+    print(json.dumps(sorted({c["name"] for c in checks if c.get("status") == "fail"})))
+    return 0
 
 
 def check_k8s(api: Api, state: State, opts: argparse.Namespace) -> str:
@@ -859,6 +888,91 @@ def check_metrics(api: Api, state: State, opts: argparse.Namespace) -> str:
     return f"{len(names)} series; the metrics scope works and is confined"
 
 
+# ---------------------------------------------------------------------------- --- ops: power and warm starts
+def check_power(api: Api, state: State, opts: argparse.Namespace) -> str:
+    """Hangar answers with the sandbox pools off (the control plane stays up): what it reports about them, and while
+    they are off, a create refused at once with when they're back instead of a wait for a node that won't come."""
+    r = api.http.get("/api/admin/power")
+    if r.status_code == 404:
+        raise Skip("this hangar has no power state (it predates the always-on control plane)")
+    if r.status_code != 200:
+        raise Fail(f"GET /api/admin/power: HTTP {r.status_code}")
+    p = r.json()["power"]
+    state.set("data:power", {"state": p["state"], "when": p.get("when"), "last_up": p.get("last_up")})
+    if p["state"] == "up":
+        last = p.get("last_up") or {}
+        pre = last.get("prepull") or {}
+        warm = ", ".join(f"{k}={v}" for k, v in sorted((p.get("warm_pools") or {}).items()))
+        say("sandboxes on" + (f"; last power-up pulled {pre['images']} images onto {pre.get('nodes', '?')} node(s) in "
+                              f"{pre.get('seconds')} s" if pre.get("images") is not None else "")
+            + (f"; warm pools {warm}" if warm else ""))
+        return "sandboxes on" + (" (the recorded down state is stale)" if p.get("stale") else "")
+    t0 = time.perf_counter()
+    rr = api.http.post("/api/sandboxes", json={"environment": opts.env, "name": f"accept-{state.run}-power",
+                                               "ttl_minutes": 30, "labels": {LABEL: state.run}})
+    secs = time.perf_counter() - t0
+    if rr.status_code == 200:
+        for sb in rr.json():
+            if "id" in sb:
+                state.add("sandboxes", sb["id"])
+        raise Fail(f"sandboxes are {p['state']}, yet a create was accepted")
+    msg = (rr.json() if "json" in rr.headers.get("content-type", "") else {}).get("error", rr.text)
+    say(f"create refused in {secs * 1000:.0f} ms (HTTP {rr.status_code}): {msg}")
+    if rr.status_code != 503 or secs > 10:
+        raise Fail(f"a create with the pools {p['state']} should be refused at once with HTTP 503 "
+                   f"(got {rr.status_code} after {secs:.1f}s)")
+    return f"sandboxes {p['state']} until {p.get('when') or '?'}; a create was refused in {secs * 1000:.0f} ms"
+
+
+def check_warmstart(api: Api, state: State, opts: argparse.Namespace) -> str:
+    """Create latency from a warm pod against a cold start: two creates back to back on --warm-env (an environment
+    with a warm pool). The first claims the warm pod; the second finds the pool empty (it refills in the background)
+    and starts cold. Each create's time is to `running`, as a client waits for it."""
+    runs = []
+    for i in (1, 2):
+        t0 = time.monotonic()
+        sb = api.call("POST", "/api/sandboxes", json={
+            "environment": opts.warm_env, "name": f"accept-{state.run}-warm{i}", "ttl_minutes": 30,
+            "labels": {LABEL: state.run}})[0]
+        if "id" not in sb:
+            raise Fail(sb.get("error") or str(sb))
+        state.add("sandboxes", sb["id"])
+        _running(api, sb["id"], opts.boot_timeout)
+        secs = time.monotonic() - t0
+        warm = bool((api.call("GET", f"/api/sandboxes/{sb['id']}").get("info") or {}).get("warm"))
+        runs.append({"path": "warm" if warm else "cold", "seconds": round(secs, 2)})
+        say(f"create {i}: {secs:.1f}s ({runs[-1]['path']})")
+    state.set("data:warmstart", {"environment": opts.warm_env, "creates": runs})
+    by = {r["path"]: r["seconds"] for r in reversed(runs)}
+    if "warm" not in by:
+        return (f"{opts.warm_env}: no warm pod was ready (is warm_pool set?): cold {runs[0]['seconds']:.1f}s and "
+                f"{runs[1]['seconds']:.1f}s")
+    return f"{opts.warm_env}: warm {by['warm']:.1f}s" + (f", cold {by['cold']:.1f}s" if "cold" in by else
+                                                          " (both warm)")
+
+
+def tools() -> int:
+    """The server's MCP version and tool names as JSON (deploy.yml diffs them across a deploy); 2 if unreachable."""
+    async def listed(url: str, token: str) -> dict[str, Any]:
+        from mcp import Client
+        from mcp.client.streamable_http import streamable_http_client
+        from mcp.shared._httpx_utils import create_mcp_http_client
+
+        http = create_mcp_http_client(headers={"Authorization": f"Bearer {token}"})
+        async with http, Client(streamable_http_client(f"{url}/mcp", http_client=http)) as c:
+            names = sorted(t.name for t in (await c.list_tools()).tools)
+            return {"version": c.server_info.version, "tools": names}
+
+    try:
+        url, token = target()
+        out = asyncio.run(asyncio.wait_for(listed(url, token), 60))
+    except Exception as e:  # noqa: BLE001 - an old or stopped server: the caller records "unreachable"
+        print(f"can't list the tools: {type(e).__name__}: {e}", file=sys.stderr)
+        return 2
+    print(json.dumps(out))
+    return 0
+
+
 # ---------------------------------------------------------------------------- cleanup
 def cleanup(api: Api, state: State, opts: argparse.Namespace) -> str:
     """Remove everything this run created. Never fails part-way: each step reports and the next one runs."""
@@ -916,6 +1030,7 @@ CHECKS: dict[str, Callable[[Api, State, argparse.Namespace], str]] = {
     "files": check_files, "mcp": check_mcp,
     "isolation": check_isolation, "session": check_session, "model": check_model, "steer": check_steer,
     "gateway": check_gateway, "e2b": check_e2b, "backup": check_backup, "metrics": check_metrics,
+    "power": check_power, "warmstart": check_warmstart,  # --- ops
     "cleanup": cleanup,
 }
 
@@ -935,6 +1050,10 @@ def whoami() -> int:
 def main(argv: list[str]) -> int:
     if argv[:1] == ["whoami"]:
         return whoami()
+    if argv[:1] == ["tools"]:  # --- ops
+        return tools()
+    if argv[:1] == ["doctor-failing"]:  # --- ops
+        return doctor_failing()
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("check", choices=sorted(CHECKS))
     p.add_argument("--state", type=Path, required=True)
@@ -956,6 +1075,10 @@ def main(argv: list[str]) -> int:
     p.add_argument("--mcp-env", default="python", help="a multi-harness environment for the mcp check")
     p.add_argument("--mcp-drop-after", type=float, default=5.0, help="when the mcp check's impatient client leaves")
     p.add_argument("--turn-timeout", type=float, default=900.0)
+    p.add_argument("--warm-env", default="claude-python", help="an environment with a warm pool (warmstart check)")
+    p.add_argument("--record", type=Path, default=None, help="append each check's result to this JSON-lines file")
+    p.add_argument("--doctor-baseline", type=Path, default=None,
+                   help="JSON list of doctor checks already failing before a deploy: reported, not failed on")
     opts = p.parse_args(argv)
     if opts.gateway_repo and not re.fullmatch(r"[\w.-]+/[\w.-]+", opts.gateway_repo):
         p.error("--gateway-repo is OWNER/REPO")
@@ -980,6 +1103,11 @@ def main(argv: list[str]) -> int:
         opts.summary.write_text(f"{time.monotonic() - t0:.1f}\n{' '.join(summary.split())}\n")
     else:
         print(summary)
+    if opts.record and opts.check != "cleanup":  # --- ops: deploy.yml's run summary reads these
+        with opts.record.open("a") as f:
+            f.write(json.dumps({"check": opts.check, "status": {PASS: "pass", FAIL: "fail", SKIP: "skip"}[code],
+                                "seconds": round(time.monotonic() - t0, 1), "summary": " ".join(summary.split()),
+                                "data": state.get(f"data:{opts.check}")}) + "\n")
     return code
 
 

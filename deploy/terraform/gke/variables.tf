@@ -96,14 +96,27 @@ variable "session_retention_days" {
 }
 
 variable "enable_power_schedule" {
-  description = "Scale every node pool to 0 at power_down_cron and back at power_up_cron (deploy/gke/power.sh), via Cloud Scheduler and Cloud Run jobs."
+  description = "Scale the sandbox node pools (gVisor, Kata, microVM) to 0 at power_down_cron and back at power_up_cron (deploy/gke/power.sh), via Cloud Scheduler and Cloud Run jobs. Hangar and the system pool stay up."
   type        = bool
   default     = false
 }
 
 variable "power_up_cron" {
-  type    = string
-  default = "0 10 * * *"
+  description = "When the power-up job starts: power_warm_minutes before people arrive, so the floor node is up and the images are pulled by then."
+  type        = string
+  default     = "50 9 * * *"
+}
+
+variable "power_warm_minutes" {
+  description = "How long the power-up takes (floor node, image prepull): hangar tells people sandboxes are ready this long after power_up_cron (10:00 with the defaults)."
+  type        = number
+  default     = 10
+}
+
+variable "sandbox_warm_nodes" {
+  description = "gVisor sandbox nodes kept up while the pools are on (the autoscaler's minimum), so the first create of the day lands on a node that is already up with its images pulled. null = 1 with the power schedule (the pool is off at night anyway), 0 without it (a node around the clock costs ~$240/month on Spot)."
+  type        = number
+  default     = null
 }
 
 variable "power_down_cron" {

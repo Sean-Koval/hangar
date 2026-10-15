@@ -33,6 +33,7 @@ from hangar import (  # --- overnight/cache; verifyloop: --- overnight/autofix
     verifyloop,
 )
 from hangar import fairness as fairness  # --- scale
+from hangar import secretscan as secretscan  # --- egress
 from hangar.events import total_usage
 from hangar.fleet import _clip_tail
 from hangar.harnesses import Harness
@@ -630,6 +631,11 @@ async def _push_losers(jobs: JobService, job: Job, sessions: dict[int, Session],
         if a.index == winner or a.rank is None or s is None or not jobs.sessions._alive(s.sandbox_id or ""):
             continue
         branch = f"{job.branch}-attempt-{a.index}"
+        try:  # --- egress: an attempt holding a secret isn't pushed either
+            await secretscan.before_push(jobs, job, sandbox_id=s.sandbox_id)
+        except secretscan.Blocked as e:
+            jobs._event(job, f"attempt {a.index}: {e}")
+            continue
         res = await jobs.fleet.exec(s.sandbox_id, f"git push -q origin HEAD:refs/heads/{shlex.quote(branch)}",
                                     timeout=300, actor=f"job:{job.id}")
         if res.exit_code == 0:

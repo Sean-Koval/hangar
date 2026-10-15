@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any
 
 import jsonschema
 
+from hangar import envdoctor as envdoctor  # --- computer
 from hangar import isolation  # --- isolation
 from hangar.events import add_usage, over_budget
 from hangar.models import Artifact, ContextItem, JobState, Session, SessionTurn, now
@@ -88,9 +89,22 @@ usage: hangar-agent progress [--pct N] MESSAGE   tell the requester how far alon
        hangar-agent artifact PATH [NAME]         hand back a file or directory
        hangar-agent result JSON | - | @FILE      the structured result
        hangar-agent done [SUMMARY]               your summary for the people who asked (RESULT.md)
+       hangar-agent env doctor [--host H[:P]]    what in this environment works and what doesn't (and why)
+       hangar-agent env request secret NAME --why TEXT | egress HOST[:PORT] --why TEXT    ask the owner
+       hangar-agent screenshot [URL] | record start|stop | browse URL | computer start|status    your computer
+       hangar-agent svc status|wait|logs|start|stop|restart|add ...
+                                                 your environment's services and dev servers (svc --help)
 QUESTION and SUMMARY are read from stdin when omitted or "-".
 EOF
 }
+case "${1:-}" in  # --- computer: these work outside turns too (docs/computer-use.md)
+  env|screenshot|record|browse|computer)
+    command -v python3 >/dev/null 2>&1 || die "$1 needs python3, and this sandbox has none"
+    if [ "$1" = env ]; then shift; exec python3 "$(dirname "$0")/hangar-env" "$@"; fi
+    exec python3 "$(dirname "$0")/hangar-computer" "$@";;
+esac
+# --- envbuilds: the supervisor works anywhere in the sandbox, not only inside a turn
+if [ "${1:-}" = "svc" ]; then shift; exec python3 "$(dirname "$0")/hangar-svc" "$@"; fi
 [ -n "${HANGAR_IO:-}" ] || die "HANGAR_IO is not set: this works inside a hangar job or session turn"
 out="$HANGAR_IO/out"
 mkdir -p "$out/artifacts"
@@ -308,6 +322,8 @@ def protocol_note(io_path: str) -> str:
         "- `hangar-agent artifact <path>`: hand back a file or directory (reports, screenshots, generated assets);\n"
         "- `hangar-agent result '<json>'`: the structured result, when one is asked for;\n"
         "- `hangar-agent done \"<summary>\"`: your summary for the people who asked.\n"
+        "- `hangar-agent env doctor`: when something in the environment doesn't work; `hangar-agent env request "
+        "secret <NAME> --why \"...\"` (or `egress <host>`) asks the owner for what blocks you.\n"  # --- computer
         "Attachments for a turn are in `$HANGAR_IO/in/<turn>/`."
     )
 
@@ -367,6 +383,7 @@ async def prepare_turn(svc: SessionService, s: Session, turn: SessionTurn, sb: S
     _, prov = svc.fleet._running(sb.id)
     await install_helper(prov, sb, home)
     await _ensure_on_path(prov, sb, home)
+    await envdoctor.refresh(svc, s, sb, io_path)  # --- computer: the status hangar-env reads, the display
     q = shlex.quote(io_path)
     res = await svc._sh(sb, f"mkdir -p {q}/out/artifacts {q}/in && chmod 700 {q} && "
                             f"find {q}/out -mindepth 1 -maxdepth 1 ! -name artifacts -exec rm -rf {{}} + && "
@@ -641,13 +658,12 @@ async def _wait_repair(svc: SessionService, s: Session, turn: SessionTurn, sb: S
     turn.repair_usage = run.usage or turn.repair_usage
 
 
-def _redact_bytes(svc: SessionService, data: bytes) -> bytes:
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError:
-        return data  # binary: leave it alone
-    red = svc.fleet.broker.redact(text)
-    return red.encode() if red != text else data
+def _redact_bytes(svc: SessionService, data: bytes) -> bytes | None:
+    """--- egress: an artifact as it may leave: text with stored values (and their encodings) and secret-shaped
+    tokens masked; None for a binary file that holds a stored credential's value (secretscan.artifact)."""
+    from hangar import secretscan
+
+    return secretscan.artifact(svc.fleet.broker, data, svc.settings.secret_scan != "off")
 
 
 def artifact_key(s: Session, turn_no: int, path: str) -> str:
@@ -708,7 +724,9 @@ async def _collect_artifacts(svc: SessionService, s: Session, turn: SessionTurn,
         if len(kept) >= max_n:
             turn.warnings.append(f"more than {max_n} new artifacts; kept the first {max_n}")
             break
-        data = _redact_bytes(svc, data)
+        if (data := _redact_bytes(svc, data)) is None:  # --- egress
+            turn.warnings.append(f"artifact {path} holds a stored credential's value; withheld it")
+            continue
         blob = await asyncio.to_thread(svc.vault.encrypt, data)
         await svc.blobs.put(artifact_key(s, n, path), blob)
         kept.append(Artifact(path=path, turn=n, size=len(data), sha256=sha,
@@ -1042,7 +1060,8 @@ def open_question(job: Job) -> str | None:
     return job.result.question or (job.turns[-1].question if job.turns else None)
 
 
-def answer_on_issue(svc: JobService, ref: str, sender: str, text: str) -> dict[str, Any] | None:
+def answer_on_issue(svc: JobService, ref: str, sender: str, text: str,
+                    sender_person: str | None = None) -> dict[str, Any] | None:
     """A `/hangar …` comment on an issue whose job is waiting on a question answers it (a follow-up). The caller
     passes only a trusted person's comment: the answer steers the agent, and anyone can comment on a public issue."""
     from hangar.jobs import JobError
@@ -1051,7 +1070,8 @@ def answer_on_issue(svc: JobService, ref: str, sender: str, text: str) -> dict[s
     if job is None:
         return None
     try:
-        svc.follow_up(job.id, text or "Continue with the task.", requester=f"github:{sender}", reply_to=ref)
+        svc.follow_up(job.id, text or "Continue with the task.", requester=f"github:{sender}", reply_to=ref,
+                      front_door=True, sender_person=sender_person)  # --- review: only the job's person answers
     except JobError as e:
         svc._spawn(svc._comment(job, ref, f"Can't continue yet: {e}"))
         return {"ignored": str(e)}

@@ -104,8 +104,10 @@ def register(mcp: Any, tool: Any, sessions: Any, jobs: Any, caller: Any) -> None
 
     @tool()
     async def answer_approval(ref: str, approval: str, decision: str, message: str | None = None) -> dict[str, Any]:
-        """Answer a tool call the agent waits on (`pending_approvals` on get_session/get_job): `decision` allow |
-        deny | allow_always (for the rest of the turn). `message` goes to the agent."""
+        """Answer what the agent waits on (`pending_approvals` on get_session/get_job): `decision` allow | deny |
+        allow_always (rest of the turn; not for `rq-` requests). `message` goes to the agent."""
         s, _ = exchange.resolve(sessions, jobs, ref)
+        if approval.startswith("rq-"):  # --- computer: envrequests, its one decision path (never a value)
+            return await sessions.env_requests.answer(s, approval, decision, f"mcp:{caller()}", message)
         a = await steering.answer(sessions, s, approval, decision, caller(), message)
         return a.model_dump(mode="json")

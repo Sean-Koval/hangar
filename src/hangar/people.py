@@ -7,8 +7,12 @@ person id in `person`; that is also the key per-person quotas use (`identity.per
 * **Migration.** Tokens minted before people existed have no person: they belong to `OWNER`, an admin, as do the
   server's own admin token and the bootstrap token. Records made before have no person, so only admins see them.
 * **Credentials.** A credential with a `person` is that person's own (their Claude or Codex login) and only ever
-  goes into their sandboxes; one without is shared by the team. A sandbox for a person who has their own
-  credential for its harness uses that one instead of the environment's shared ones.
+  goes into their sandboxes; one without is a team credential. Those stored before people became the owner's
+  (teamcreds.migrate). A sandbox for a person who has their own credential for its harness uses that one instead
+  of the team's (teamcreds.resolve).
+* **Linked identities.** A person's GitHub user id, Slack workspace/user id and Jira account id or email: those
+  accounts act as the person (`resolve_external`): trusted, their caps and login, visible to them, and only they
+  continue their jobs from a front door (docs/team.md#who-is-trusted).
 * **Visibility.** Enforced at the front doors (MCP tools and resources, REST routes), not inside the services:
   the job and session machinery runs work for everyone and must see all of it.
 """
@@ -109,6 +113,87 @@ def check_token_scopes(person: Person, scopes: list[str]) -> None:
     if person.role != "admin" and (bad := [s for s in scopes if s not in MEMBER_SCOPES]):
         raise PeopleError(f"{person.id} is a member; their tokens may hold {', '.join(MEMBER_SCOPES)}, not "
                           f"{', '.join(bad)}")
+
+
+# ---------------------------------------------------------------------------- linked identities (--- teamcreds)
+SOURCES = ("github", "slack", "jira", "email")
+# What intake may call a source: a GitHub Projects item's actor is a GitHub user
+_SOURCE_ALIASES = {"github_projects": "github", "github-projects": "github"}
+_EXTERNAL_RE = {
+    # --- review: a GitHub user's numeric id, never the login: a renamed login can be registered by anyone, who
+    # would then act as this person (their trust, budget and own login). The REST link route looks a login up.
+    "github": re.compile(r"^[1-9][0-9]{0,19}$"),
+    # --- review: a Slack user id is unique only within its workspace (Slack's user object: use it "together with
+    # team_id as a unique key"), and a Slack Connect channel carries other organizations' users
+    "slack": re.compile(r"^[TE][A-Z0-9]{1,30}/[UW][A-Z0-9]{1,30}$"),
+    "jira": re.compile(r"^[A-Za-z0-9][A-Za-z0-9.:_-]{0,127}$"),  # an Atlassian account id; a Data Center user key
+    "email": re.compile(r"^[^@\s]{1,64}@[^@\s]{1,253}\.[^@\s]{2,63}$"),
+}
+_EXTERNAL_HINT = {"github": "a GitHub user id (a number; hangar person link looks one up from a login)",
+                  "slack": "a Slack workspace and user id (like T0123ABCD/U012AB3CD)",
+                  "jira": "a Jira (Atlassian) account id", "email": "an email address"}
+
+
+def external_key(source: str, external_id: str | int) -> str:
+    """`source:id`, normalized the way each source compares ids (emails ignore case)."""
+    src = (source or "").strip().lower()
+    src = _SOURCE_ALIASES.get(src, src)
+    if src not in SOURCES:
+        raise PeopleError(f"source must be one of {', '.join(SOURCES)}")
+    v = str(external_id if external_id is not None else "").strip()
+    v = v.lower() if src == "email" else v.upper() if src == "slack" else v
+    if not _EXTERNAL_RE[src].match(v):
+        raise PeopleError(f"'{external_id}' isn't {_EXTERNAL_HINT[src]}")
+    return f"{src}:{v}"
+
+
+def _linked_to(store: Store, key: str) -> Person | None:
+    return next((p for p in list_people(store) if key in p.links), None)
+
+
+def link(store: Store, person_id: str, source: str, external_id: str) -> Person:
+    """Link an account elsewhere to a person (admins). One account links to one person."""
+    key = external_key(source, external_id)
+    p = get(store, person_id)
+    if p is None:
+        raise KeyError(f"no person '{person_id}'")
+    other = _linked_to(store, key)
+    if other is not None and other.id != p.id:
+        raise PeopleError(f"{key} is linked to {other.id}; unlink it there first (hangar person unlink {other.id} "
+                          f"{key.replace(':', ' ', 1)})")
+    if key not in p.links:
+        p.links.append(key)
+        store.put(p)
+    return p
+
+
+def unlink(store: Store, person_id: str, source: str, external_id: str) -> Person:
+    key = external_key(source, external_id)
+    p = get(store, person_id)
+    if p is None or key not in p.links:
+        raise KeyError(f"{key} isn't linked to '{person_id}'")
+    p.links.remove(key)
+    store.put(p)
+    return p
+
+
+def resolve_external(store: Store, source: str, external_id: str | int | None) -> Person | None:
+    """The person an account elsewhere is linked to, for a front door to attribute a job (`Caller(...,
+    person=p.id)`): a GitHub user's numeric id (the payload's `sender.id`, never the login), a Slack `TEAM/USER`
+    (the poster's own workspace: `user_team` in a Slack Connect channel), a Jira account id (Data Center: the user
+    key) or an email. None for anyone linked to nobody, and for an id that isn't one. A linked account acts as its
+    person (docs/team.md#who-is-trusted); anyone else's work runs for the team under the front door's own trust
+    rule. A Jira id with an `@` is looked up as an email."""
+    if external_id is None or external_id == "" or isinstance(external_id, bool):
+        return None
+    external_id = str(external_id)
+    if (source or "").strip().lower() == "jira" and "@" in external_id:
+        source = "email"
+    try:
+        key = external_key(source, external_id)
+    except PeopleError:
+        return None
+    return _linked_to(store, key)
 
 
 # ---------------------------------------------------------------------------- visibility
@@ -247,29 +332,16 @@ def claim_environment(store: Store, catalog: Any, data: dict[str, Any]) -> None:
 
 # ---------------------------------------------------------------------------- credentials
 def credentials_for(store: Store, names: list[str], person: str | None, harness: str | None, explicit: bool,
-                    is_agent: Any) -> list[str]:
-    """The credentials a sandbox owned by `person` gets.
+                    is_agent: Any, mode: str = "person_then_team") -> list[str]:
+    """The credentials a sandbox owned by `person` gets (--- teamcreds: teamcreds.resolve, which fleet.create
+    calls through teamcreds.for_sandbox so it can wait for a leased login).
 
     `names` is what the caller passed (`explicit`) or the environment's list for the selected harness. Another
     person's credential is refused when named, and dropped from an environment's list. When the person has their
-    own credentials for the sandbox's agent harness, those replace the environment's shared ones for it."""
-    from hangar.broker import CredentialError
+    own credentials for the sandbox's agent harness, those replace the team's for it."""
+    from hangar.teamcreds import resolve
 
-    creds = {c.name: c for c in store.list(Credential)}
-    out: list[str] = []
-    for n in names:
-        c = creds.get(n)
-        if c is not None and c.person is not None and c.person != person:
-            if explicit and person is not None:
-                raise CredentialError(f"credential '{n}' is {c.person}'s own; attach your own or a shared one")
-            continue
-        out.append(n)
-    if explicit or person is None or not harness or not is_agent(harness):
-        return out
-    own = sorted(c.name for c in creds.values() if c.person == person and c.harness == harness)
-    if not own:
-        return out
-    return [n for n in out if creds.get(n) is None or creds[n].harness != harness] + own
+    return resolve(store, names, person, harness, explicit, is_agent, mode).names
 
 
 def check_secrets(store: Store, secrets: dict[str, str], person: str | None) -> None:

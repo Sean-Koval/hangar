@@ -1,0 +1,27 @@
+{
+  "action": "dismissed",
+  "review": {
+    "id": 2378104455,
+    "node_id": "PRR_kwDOMh3e8M6Nvk0H",
+    "user": {"login": "alice", "id": 1294, "type": "User"},
+    "body": "Looks right. Ship it.",
+    "commit_id": "6dcb09b5b57875f334f61aebed695e2e4193db5e",
+    "submitted_at": "2026-10-14T09:41:27Z",
+    "state": "dismissed",
+    "html_url": "https://github.com/o/r/pull/7#pullrequestreview-2378104455",
+    "author_association": "MEMBER"
+  },
+  "pull_request": {
+    "url": "https://api.github.com/repos/o/r/pulls/7",
+    "id": 2104837561,
+    "node_id": "PR_kwDOMh3e8M59dZ65",
+    "number": 7,
+    "state": "open",
+    "draft": false,
+    "head": {"label": "o:hangar/job-0001", "ref": "hangar/job-0001", "sha": "9c3f2a1be04d6e5f7a8b9c0d1e2f3a4b5c6d7e8f"},
+    "base": {"label": "o:main", "ref": "main", "sha": "e5bd3914e2e596debea16f433f57875b5b90bcd6"}
+  },
+  "repository": {"id": 849738224, "name": "r", "full_name": "o/r", "private": true,
+                 "owner": {"login": "o", "type": "Organization"}},
+  "sender": {"login": "github-actions[bot]", "type": "Bot"}
+}

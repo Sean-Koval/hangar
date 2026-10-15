@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
+import time  # --- ops
 from typing import Any
 
 # A requester, model or environment beyond this many distinct values is reported as "other".
@@ -83,6 +84,13 @@ class Metrics:
                                     ["reason"], buckets=_BYTES, registry=r)
         self.pushes = Counter("hangar_gateway_pushes", "Pushes the git gateway forwarded", ["result"], registry=r)
         self.denials = Counter("hangar_gateway_denials", "Requests the git gateway refused", ["reason"], registry=r)
+        # --- egress: connections through the egress proxy (egress_proxy.py), by decision and a bounded reason
+        self.egress = Counter("hangar_egress_connections", "Connections the egress proxy allowed or denied",
+                              ["decision", "reason", "mode"], registry=r)
+        self.egress_bytes = Counter("hangar_egress_bytes", "Bytes through the egress proxy (out: to the internet)",
+                                    ["direction"], registry=r)
+        self.egress_open = Gauge("hangar_egress_open_connections", "Tunnels open through the egress proxy",
+                                 registry=r)
         self.mcp_calls = Counter("hangar_mcp_calls", "MCP tool calls", ["tool", "status"], registry=r)
         # integrate (#60): how commands reach sandboxes: hangar-envd, the provider's exec, or neither (error)
         self.execs = Histogram("hangar_sandbox_exec_seconds", "Sandbox commands hangar ran, by how they ran (envd, "
@@ -259,12 +267,18 @@ def db_backup(ok: bool, seconds: float) -> None:  # integrate (#57)
         M.backup_last.set_to_current_time()
 
 
+TICKS: dict[str, float] = {}  # --- ops: also kept with metrics off, for doctor and the overview (power.loops)
+FAILS: collections.Counter[str] = collections.Counter()
+
+
 def loop_tick(loop: str) -> None:  # --- reconciler
+    TICKS[loop] = time.time()  # --- ops
     if M is not None:
         M.loop_tick.labels(loop).set_to_current_time()
 
 
 def loop_failed(loop: str) -> None:  # --- reconciler
+    FAILS[loop] += 1  # --- ops
     if M is not None:
         M.loop_failures.labels(loop).inc()
 
@@ -277,6 +291,22 @@ def gateway_push(result: str) -> None:
 def gateway_denied(reason: str) -> None:
     if M is not None:
         M.denials.labels(reason).inc()
+
+
+def egress_connection(decision: str, reason: str, mode: str) -> None:  # --- egress
+    if M is not None:
+        M.egress.labels(decision, reason, mode).inc()
+
+
+def egress_bytes(out: int, in_: int) -> None:  # --- egress
+    if M is not None:
+        M.egress_bytes.labels("out").inc(out)
+        M.egress_bytes.labels("in").inc(in_)
+
+
+def egress_open(delta: int) -> None:  # --- egress
+    if M is not None:
+        M.egress_open.inc(delta)
 
 
 def sandbox_exec(transport: str, seconds: float) -> None:  # integrate (#60)

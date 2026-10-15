@@ -117,9 +117,9 @@ def test_sandbox_egress_reaches_no_pod_metadata_or_private_address():
                 assert "namespaceSelector" in peer and ns, f"{p['_file']}: egress to {peer} can reach sandboxes"
                 assert ns.get("kubernetes.io/metadata.name") not in (None, SANDBOXES), f"{p['_file']}: {peer}"
                 if ns["kubernetes.io/metadata.name"] == "hangar":
-                    # hangar's pods: the gateway port only, never the API/dashboard/MCP port
+                    # hangar's pods: the gateway port, or (--- egress) the egress proxy's; never the API/dashboard/MCP
                     ports = [(x.get("port"), x.get("endPort")) for x in rule.get("ports") or []]
-                    assert ports == [(8788, None)], f"{p['_file']}: {rule}"
+                    assert ports in ([(8788, None)], [(3128, None)]), f"{p['_file']}: {rule}"
 
 
 def test_the_baseline_still_lets_sandboxes_reach_the_internet_and_dns():

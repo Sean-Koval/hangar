@@ -20,6 +20,7 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
+from hangar.envrequests import EnvRequest  # --- computer: requests agents file with their owners
 from hangar.models import (
     JOB_TERMINAL,
     SESSION_LIVE,
@@ -50,6 +51,7 @@ _TABLES: dict[type[BaseModel], tuple[str, str]] = {
     ScheduledJob: ("schedules", "id"),  # workstream A
     SandboxGrant: ("sandbox_grants", "id"),  # workstream F: git gateway
     Person: ("people", "id"),  # --- identity
+    EnvRequest: ("env_requests", "id"),  # --- computer
 }
 # --- review(perf): access control must not roll back on a node crash (a revoked token coming back), so these
 # commits, and the secrets table's, sync the WAL like synchronous=FULL; everything else stays on NORMAL.
@@ -60,6 +62,7 @@ _INDEXED: dict[type[BaseModel], tuple[str, ...]] = {
     Sandbox: ("state", "name"),
     Job: ("state",),
     Session: ("state",),
+    EnvRequest: ("state", "session_id"),  # --- computer
 }
 # The states in which a record holds, or is about to hold, resources (list_active). Sandbox: fleet.ACTIVE.
 _ACTIVE: dict[type[BaseModel], frozenset[str]] = {

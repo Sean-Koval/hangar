@@ -6,7 +6,7 @@ Hangar exists to run untrusted, model-generated code. The design assumes any san
 | --- | --- |
 | Sandbox ↔ host | runc (laptop, trusted use), gVisor user-space kernel, or Kata/Firecracker microVM with its own guest kernel |
 | Sandbox ↔ sandbox | Separate containers/pods/VMs; no shared volumes; per-sandbox credentials |
-| Sandbox ↔ network | GKE: `deploy/k8s/sandbox-network.yaml` (and Agent Sandbox's managed policy) deny RFC1918, link-local (metadata server) and all ingress. Docker: hangar's own network, where sandboxes can't reach each other ([below](#sandbox-networking-on-docker)); the single-VM install also drops what they send to link-local addresses |
+| Sandbox ↔ network | GKE: `deploy/k8s/sandbox-network.yaml` (and Agent Sandbox's managed policy) deny RFC1918, link-local (metadata server) and all ingress. Docker: hangar's own network, where sandboxes can't reach each other ([below](#sandbox-networking-on-docker)); the single-VM install also drops what they send to link-local addresses. Environments in `allowlist` or `none` mode reach the internet only through hangar's [egress proxy](#egress-allowlists), by hostname |
 | Client ↔ control plane | Bearer tokens (hashed at rest), single-use tickets for browser streams, TLS via ingress, optional IAP in front |
 | Secrets | Fernet-encrypted vault; never in images, API responses, MCP results, logs, or audit entries |
 
@@ -16,10 +16,10 @@ Hangar exists to run untrusted, model-generated code. The design assumes any san
 - **Forks.** A fork scrubs inherited secret files before re-injecting only the credentials it was granted.
 - **Exclusive credentials** are ones with rotating refresh tokens, like a Codex ChatGPT login. Each is leased to one sandbox. When that sandbox stops, the possibly rotated file is copied back into the vault.
 - **Snapshots** of a running sandbox (Docker `commit`) may contain secrets that were present at snapshot time. They stay in the local image store and are never pushed.
-- **Control-plane credentials never enter a sandbox.** Some credentials exist only for hangar itself: webhook signing keys (`webhook` credentials, the GitHub webhook secret, inbound webhook keys), the Slack bot token and signing secret, GitHub App keys, and the GitHub tokens hangar calls GitHub with (`HANGAR_GITHUB_TOKEN_CREDENTIAL`, `HANGAR_GATEWAY_CREDENTIAL`). Hangar refuses to put them in a sandbox by any path: an environment's `secrets:` (refused when the environment is saved, and again when a sandbox starts), an attached credential's env var or file, and so MCP config resolution, which only sees what those wrote. With the webhook secret anyone could forge trusted GitHub deliveries. `hangar cred ls` marks them `control-plane`. To share the control plane's GitHub token with direct-mode sandboxes on purpose, an admin runs `hangar cred exposure <name> sandbox`; signing keys, bot tokens and App keys can't be shared.
+- **Control-plane credentials never enter a sandbox.** Some credentials exist only for hangar itself: webhook signing keys (`webhook` credentials, the GitHub webhook secret, inbound webhook keys), the Slack bot token and signing secret, GitHub App keys, and the GitHub tokens hangar calls GitHub with (`HANGAR_GITHUB_TOKEN_CREDENTIAL`, `HANGAR_GATEWAY_CREDENTIAL`, `HANGAR_GITHUB_APP_CREDENTIAL`). Hangar refuses to put them in a sandbox by any path: an environment's `secrets:` (refused when the environment is saved, and again when a sandbox starts), an attached credential's env var or file, and so MCP config resolution, which only sees what those wrote. With the webhook secret anyone could forge trusted GitHub deliveries. `hangar cred ls` marks them `control-plane`. To share the control plane's GitHub token with direct-mode sandboxes on purpose, an admin runs `hangar cred exposure <name> sandbox`; signing keys, bot tokens and App keys can't be shared.
 - **Exposure inside the sandbox.** Anything you inject is readable by the agent in that sandbox, and by any MCP client holding a hangar token (`exec`/`read_file` can read `~/.hangar/env`). Prefer scoped credentials: fine-grained GitHub tokens limited to the target repo, and API keys with spend limits. For git, use the [gateway](#git-credential-gateway): the token then never enters the sandbox.
 - **Forks** run `tmux kill-server` before scrubbing secret files, so shells that exported the parent's secrets don't survive into the copy. A full memory snapshot (E2B) still carries any secrets held in other long-running processes' memory, so fork from a clean point when it matters.
-- **Audit redaction.** Commands, prompts and terminal input are recorded in the audit log with stored credential values masked as `***`. Secrets that were never stored in the vault can't be recognized, so don't paste unrelated secrets into agent terminals.
+- **Audit redaction.** Commands, prompts and terminal input are recorded in the audit log with stored credential values masked as `***`. Secrets that were never stored in the vault can't be recognized, so don't paste unrelated secrets into agent terminals. See [what redaction can and can't stop](#redaction).
 - **Browser streams.** The dashboard never puts its token in a URL. Websocket terminals and build-log streams use single-use tickets that expire after 60 seconds.
 
 ## Git credential gateway
@@ -29,10 +29,10 @@ By default (`credential_mode: direct`) a sandbox gets the GitHub token itself, i
 - The sandbox gets a **grant**: an `hgs_…` token that works only at hangar's gateway, only for the sandbox's repo, and only while the sandbox runs. Hangar stores its hash; the token itself is written once, to the sandbox's `~/.git-credentials`.
 - The sandbox's git is pointed at the gateway with `url.<gateway>/git/github.com/.insteadOf https://github.com/` (and the `git@github.com:` and `ssh://` forms). Clones, fetches and pushes keep working with the usual URLs.
 - The gateway reads each push's ref updates before any of the pack is forwarded. It allows only the sandbox's own branch (the job or session branch, or `work_branch`), plus *creating* new branches under `refs/heads/hangar/` (`HANGAR_GATEWAY_PUSH_REFS`); a branch a sandbox created that way becomes its own, and nobody else can update it. That rule never creates a branch under `hangar/session/`, another session's branch, or one that would block either. It refuses pushes to other branches, deletes, tags (`HANGAR_GATEWAY_ALLOW_TAGS`), push options and signed pushes. Git shows the reason: `! [remote rejected] main -> main (hangar: this sandbox may push only to hangar/job-…)`.
-- Allowed requests are streamed to GitHub with the real credential: a PAT from the vault, or a **GitHub App** installation token minted for that one repo (`contents: write`, `pull_requests: write`), cached in memory until shortly before it expires.
+- Allowed requests are streamed to GitHub with the real credential: a PAT from the vault, or a **GitHub App** installation token minted for that one repo with `contents: write` only (all a push needs), cached in memory until shortly before it expires.
 - Pushes and refusals are in the audit log (`gw.git.push`, `gw.git.deny`) with the refs and the result. The grant is revoked when the sandbox is destroyed, expires or disappears; a fork gets its own grant.
 
-The control plane's own GitHub calls (opening PRs and commenting, `HANGAR_GITHUB_TOKEN_CREDENTIAL`) are unchanged.
+The control plane's own GitHub calls don't go through the gateway: it opens and comments on agent PRs as the GitHub App when `HANGAR_GITHUB_APP_CREDENTIAL` is set, and comments on issues with `HANGAR_GITHUB_TOKEN_CREDENTIAL` ([landing.md](landing.md#what-each-identity-does)).
 
 ### Turning it on
 
@@ -82,12 +82,12 @@ What changes for agents: `git push` works for their own branch and fails with a 
    rm ~/Downloads/hangar-agents.*.private-key.pem
    ```
 
-The push is made as the App; commits keep the agent's git identity. PRs for jobs are still opened with `HANGAR_GITHUB_TOKEN_CREDENTIAL`.
+The push is made as the App; commits keep the agent's git identity. Set `HANGAR_GITHUB_APP_CREDENTIAL` to the same credential and the App also opens the jobs' PRs and lands them on approval; the gateway then uses it for sandboxes that have no git credential of their own, so `HANGAR_GATEWAY_CREDENTIAL` can stay unset ([landing.md](landing.md#1-the-github-app)).
 
 ### What the gateway does and doesn't cover
 
 - It covers: a prompt-injected agent reading the GitHub token, pushing to `main` or another agent's branch, deleting branches, pushing tags, and using a dead sandbox's grant. Grant tokens are bound to one sandbox, stored hashed, compared in constant time, and never accepted by the main API; hangar API tokens are never accepted by the gateway.
-- It doesn't cover: what is *in* the pushed branch (review the PR; keep secrets out of `push`-triggered workflows), the GitHub REST API from inside the sandbox (not proxied yet), egress filtering (a sandbox can still reach the internet unless your network policy says otherwise), or the model credential, which is still injected.
+- It doesn't cover: what is *in* the pushed branch (review the PR; keep secrets out of `push`-triggered workflows), the GitHub REST API from inside the sandbox (not proxied yet), egress filtering (that is the environment's `egress` mode, [egress allowlists](#egress-allowlists)), or the model credential, which is still injected.
 - Force pushes to the sandbox's own branch are allowed (agents rebase); force pushes anywhere else are refused like any other update. Keep branch protection on `main` as a second wall.
 - Inside the cluster the gateway speaks plain HTTP, so the grant crosses the pod network unencrypted. It is worth little: it dies with the sandbox and reaches one branch of one repo.
 
@@ -108,6 +108,187 @@ Docker has no setting that keeps containers off link-local addresses, so on a cl
 iptables -I DOCKER-USER -i hangar0 -d 169.254.0.0/16 -p tcp ! --dport 53 -j DROP
 ```
 
+A sandbox with [services](environments.md#services) (Postgres, Redis) is also attached to a network of its own, `hangar-svc-<sandbox>`, which holds only its services. The network is `internal`: it has no route out, so the services can't reach the internet, the host or the metadata server, and nobody else's sandbox is on it. The services run as uid 1000, without capabilities, with `no-new-privileges`, under the sandbox's runtime. [Preview ports](environments.md#preview-ports) go through hangar's authenticated proxy, owner-scoped, and are never published on the host.
+
+## Egress allowlists
+
+An environment says what its sandboxes may reach on the internet, by hostname:
+
+```yaml
+name: api
+egress:
+  mode: allowlist            # open | allowlist | none
+  presets: [pypi, github]    # default [packages]: pypi, npm, crates, go and github together
+  allow: [docs.python.org, "*.internal.example.com", "registry.example.com:8443"]
+```
+
+| Mode | Network | What gets through |
+| --- | --- | --- |
+| `open` (the default, `HANGAR_EGRESS_DEFAULT`) | the public internet directly, as before | everything public |
+| `allowlist` | only the git gateway and hangar's egress proxy (no DNS) | the harness's own hosts (its model API and login refresh), the environment's remote MCP servers, the presets, `allow`, and hosts an owner approved |
+| `none` | the same | the harness's own hosts, the environment's MCP servers and approved hosts only |
+
+A rule is a host (`pypi.org`, ports 443 and 80), a host and port, or `*.domain` (any name below it, not the domain itself). There is no `*` rule: that is mode `open`.
+
+- **Presets** (`egress.PRESETS`): `pypi` (pypi.org, files.pythonhosted.org), `npm` (registry.npmjs.org), `crates` (crates.io, index.crates.io, static.crates.io), `go` (proxy.golang.org, sum.golang.org), `github` (github.com, api.github.com, codeload.github.com, objects/release-assets/raw.githubusercontent.com), and `packages`, all of them.
+- **The harness's hosts** are always allowed in a proxied mode, since an agent can't work without its model: Claude Code's are `api.anthropic.com`, `claude.ai` and `platform.claude.com` ([Claude Code's network requirements](https://code.claude.com/docs/en/network-config#network-access-requirements)); Codex's `api.openai.com`, `chatgpt.com` and `auth.openai.com`; Gemini and Antigravity's `generativelanguage.googleapis.com`, `cloudcode-pa.googleapis.com` and `oauth2.googleapis.com`. A pi router not among them goes in `allow`.
+- **Per repo.** A repo policy's `egress` (`PUT /api/repos/policy`, admin) adds presets and hosts for that repo's sandboxes and can tighten the mode (`open` < `allowlist` < `none`). It can't widen it. A repo policy that asks for `allowlist` in an `open` environment isn't enforced, because the network decides that; the sandbox carries a warning saying so.
+- **Who sets it.** `egress` on an environment needs an admin, like `secrets:` and `image`.
+- **Git.** Clones and pushes to GitHub go through the [git gateway](#git-credential-gateway), which jobs and sessions use by default. The gateway is reachable in every mode, so they need no rule. A `credential_mode: direct` environment clones from github.com itself through the proxy, which needs the `github` preset; in mode `none` its clone fails.
+- **Asking for a host.** The agent runs `hangar-agent env request egress <host> --why '…'`, and the proxy's refusal says exactly that. The session's or job's owner, or an admin, approves or denies the request. An approval adds the host to that session's allowlist; an admin can widen it to the whole environment. It applies to the next connection, and is audited as `egress.approve`. Nothing is granted automatically. Admins list approvals with `GET /api/egress/approvals?environment=…` (or `session=…`) and revoke one with `DELETE` and `rule=` (audited as `egress.revoke`). `GET /api/egress/sandboxes/<id>` shows what a sandbox may reach and why.
+
+**How it is enforced.** An environment's mode decides the network its sandboxes start on:
+
+- **GKE.** Pods of a proxied environment carry `dev.hangar/egress=proxied`. `sandbox-network.yaml`'s internet baseline leaves them out. `gateway.yaml`'s `sandbox-egress-proxied` gives them the proxy on hangar's pods (port 3128, `HANGAR_EGRESS_URL=http://hangar-gateway.hangar.svc:3128`), and `allow-hangar-gateway` gives them the git gateway. They get no DNS: kube-dns resolves any name by asking the internet, so a sandbox that may query it can send data out in the names it looks up. Their pods' resolver is loopback (`dnsPolicy: None`), and hangar's own Service names (the proxy, the git gateway, an in-cluster `HANGAR_OTEL_SANDBOX_ENDPOINT`) are in `/etc/hosts`, resolved by the control plane when it writes the template. Tools hand the proxy a host name, so they need no resolver of their own. Their SandboxTemplate carries the same rules as its `networkPolicy`, so Agent Sandbox applies that policy instead of its default one, which allows the public internet. The template stays `Managed`.
+- **Docker.** Their containers go on `hangar-egress` (bridge `hangar1`), an *internal* network: Docker gives it no route out, but its gateway address reaches the host. Hangar listens there with the proxy and relays the git gateway's port; `host.docker.internal` points at that address in those containers. DNS on an internal network answers container names only, from Docker 26.0.0 (and 25.0.4, 23.0.11); older engines forward it to the host's resolver (CVE-2024-29018), so hangar refuses to start a proxied sandbox on them. This needs hangar on the Docker host (Linux). Docker Desktop's VM has that address and the Mac doesn't, so a proxied sandbox fails to start there with a message that says so; keep `open` for local work. A host firewall that drops input (ufw's default) must accept TCP 3128 and 8788 from `hangar1`.
+- **E2B and other providers** can't keep a sandbox off the internet, so a proxied environment fails to start there rather than run unenforced.
+
+**The proxy** is part of the control plane, next to the git gateway (`egress_proxy.py`). It is an HTTP CONNECT proxy that never terminates TLS. For each connection it:
+
+1. authenticates the sandbox. HTTPS_PROXY carries `<sandbox id>:<HMAC(vault key, sandbox id)>`; the value is never stored and is refused once the sandbox isn't running. 30 bad credentials a minute from one address are refused without a check;
+2. checks host and port against the sandbox's policy: its environment, its repo's policy and its session's approvals, cached for 5 seconds;
+3. resolves the name itself and connects only to public addresses, to the address it checked. A name that resolves into the VPC, the cluster, loopback or the metadata server is refused. `HANGAR_EGRESS_PRIVATE_HOSTS` lists internal mirrors that may resolve to private addresses, but never to loopback or link-local ones;
+4. reads the client's first bytes before relaying any of them. A TLS ClientHello must name the same host in SNI, and plain HTTP must carry it in `Host`; anything else is cut off. Absolute-form `http://` requests are forwarded one per connection, without `Proxy-Authorization`;
+5. relays bytes both ways until a side closes or nothing moves for 15 minutes. A sandbox has at most `HANGAR_EGRESS_MAX_CONNECTIONS_PER_SANDBOX` (128) tunnels open, and a tunnel whose client stops reading holds at most about 320 KB of the proxy's memory.
+
+Why there and not a separate proxy: the decision needs the sandbox, its person, its session's approvals and the audit log, all of which live in the control plane. A connection costs one SQLite read by primary key, and relaying is socket copying with 64 KB reads. An off-the-shelf proxy (Smokescreen, Squid) would need per-sandbox roles, a way to receive approvals live, and its logs mapped back to people. A Rust proxy in `envd/`'s workspace would need the same policy over an API. The relay is the part to move out if a profile ever shows it costing the control plane.
+
+**What is recorded.** Every denied connection is an `egress.deny` audit entry with the sandbox, person, environment, session, job, host, port and reason. A sandbox gets at most 30 a minute; the next entry records how many were dropped (`suppressed_before`). It also appears in the events of the sandbox's session. Allowed connections are summed per sandbox and host into `egress.allow` entries every minute: connections, bytes out and in, and the rule that allowed them. Metrics: `hangar_egress_connections{decision,reason,mode}`, `hangar_egress_bytes{direction}`, `hangar_egress_open_connections`.
+
+**What it doesn't stop.** Anything sent *to* an allowed host. GitHub and package registries accept uploads, and a URL to any allowed host can carry data. The allowlist narrows where data can go and records who sent how much where; it doesn't make an allowed host safe. That includes the harness's own model API with a key the attacker brings, and GitHub with an attacker's token. Prefer exact hosts to wildcards: `*.googleapis.com` includes `storage.googleapis.com`, where anyone can write to their own bucket. Without TLS interception the proxy pins the address but can't see inside TLS, so it can't stop reaching *another site on the same front end* as an allowed host: a `Host` header or HTTP/2 `:authority` that differs from SNI on a CDN that doesn't check them, or Encrypted ClientHello, whose outer SNI may name the allowed host while the encrypted inner one names any site on that CDN (Cloudflare, for one, offers ECH to every site). The proxy can't refuse ECH, since browsers send a GREASE extension that looks the same. Remote MCP servers count toward the allowlist only when someone who may widen egress configured them: in an environment that sets `egress`, or one an admin owns; a member's environment that adds or repoints one gets a warning instead. Tools that ignore `HTTPS_PROXY` (some JVM builds, raw sockets) simply fail in a proxied environment.
+
+## Secret scanning
+
+Before hangar pushes a job's branch it scans what would leave:
+
+- each new commit's own patch, since `git push` sends every commit: a token one commit adds and a later one deletes still leaves, so the net diff since the base isn't enough. Commits the remote already has don't count;
+- the uncommitted change and untracked-but-not-ignored files (what hangar would commit). Added lines only;
+- the new commits' messages.
+
+What counts as a secret:
+
+- any stored credential's value, as is or encoded ([redaction](#redaction));
+- a match for a high-signal token format: GitHub (`ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`, `github_pat_`), Slack (`xox?-`, `xapp-`, webhook URLs), AWS access key ids (`AKIA`, `ASIA`) and `aws_secret_access_key = …`, Google API keys (`AIza`), OAuth client secrets (`GOCSPX-`) and service-account key ids, Anthropic (`sk-ant-…`), OpenAI (`sk-proj-`, `sk-svcacct-`, `sk-admin-`, legacy keys), PEM and OpenSSH private keys (the header and the start of a body: code that checks for the header isn't a key), npm (`npm_`), PyPI (`pypi-`), GitLab (`glpat-`), Stripe live keys, Hugging Face (`hf_`), and hangar's own `hgr_`/`hgs_` tokens. Slack tokens need Slack's numbered shape, so `xoxb-test-token` fixtures pass.
+
+Documentation placeholders such as `AKIAIOSFODNN7EXAMPLE` are ignored.
+
+**On a hit the push doesn't happen.** The agent gets a follow-up turn listing each file and line (or commit) and the kind of secret, never the value. It is asked to remove the secret, rewrite the commits that carry it, and finish; hangar then scans again. After `HANGAR_SECRET_SCAN_ROUNDS` (2) such turns, or when the job's budget is spent, the job fails with reason `secret_found`, and nothing is pushed. Every hit is audited as `secret.found` (locations and kinds only). A best-of-N attempt that holds a secret isn't pushed either. `HANGAR_SECRET_SCAN=warn` turns blocking into job events, and `off` turns scanning off.
+
+**Text hangar posts is masked.** PR titles and bodies, and comments on GitHub issues and in Slack threads, have every secret replaced with `[hangar: secret removed]`, and a job event says what kind was removed.
+
+**Artifacts** handed back by the agent are masked the same way when they are text. A binary artifact that contains a stored credential's value is withheld, with a warning on the turn.
+
+**Large diffs are fast to scan.** Hangar reads at most 64 MB of a change. Each pattern makes one pass over the text; each starts with a literal, which CPython's regex engine finds with a fast scan, or runs only when a substring it needs is there. File and line are worked out only for hits. A 60 MB change scans in about half a second.
+
+**Not covered:**
+
+- binary files in the diff;
+- a secret split or encoded in a way the patterns don't know;
+- anything past the first 64 MB of a change;
+- pushes the agent makes itself (below).
+
+The sandbox's own git produces the diff, so a compromised sandbox can hide things from the scan. The scan exists to catch accidents, the common case: a `.env` file or a pasted token.
+
+## Redaction
+
+Tool results, events, turn summaries, artifacts and audit entries are passed through `broker.redact`. It masks every stored credential value (8 characters or more) as `***`. For values of 12 characters or more it also masks cheap, common encodings:
+
+- the value reversed (`rev`, hardening B4);
+- hex, in lower and upper case (`xxd -p`);
+- base64, standard and URL-safe, at each of the three alignments a value can have inside a longer string, so `echo "X=$SECRET" | base64` is caught as well as `printf %s "$SECRET" | base64`;
+- percent-encoding, with or without `/` escaped, in upper- or lower-case escapes.
+
+Line-wrapped output, such as `base64`'s 76 columns and `xxd -p`'s 60, is matched across the line breaks. Below 12 characters an encoded form would match too much ordinary text.
+
+**What redaction can't stop:**
+
+- any transformation not on that list: gzip, base32, an XOR, two layers of encoding, every other character, a value split across commands;
+- secrets hangar never stored;
+- a secret sent out over the network instead of printed.
+
+An agent that can read a secret can always get it out in a form redaction doesn't know. Redaction keeps secrets out of logs, transcripts and results by accident. The protections that hold against a determined agent keep the secret out of the sandbox altogether: the [git gateway](#git-credential-gateway), [build secrets](#build-secrets), [short-lived cloud credentials](#short-lived-cloud-credentials) and control-plane-only credentials.
+
+## Build secrets
+
+Some secrets are needed only to build an environment, such as a private registry's read token. They go to the build step and never to a running sandbox. They can be named only where an admin decides:
+
+```yaml
+name: api
+build_secrets: {NPM_TOKEN: npm-ci-token}      # secret id -> vault credential; needs an admin
+```
+
+A repo policy can set its own (`PUT /api/repos/policy` with `build_secrets`, admin), which win for that repo. A repo's own environment file lists only the ids it needs (`build_secrets: [NPM_TOKEN]`); an id the admin hasn't mapped fails the build and names the id. So anyone who can push to the repo can ask for a mapped secret by id, but can't point an id at another credential.
+
+How a build uses them (`hangar.buildsecrets`, used by repo environment builds):
+
+| Build step | How the value gets there | What keeps it out of the sandbox |
+| --- | --- | --- |
+| Dockerfile (`docker build`) | `--secret id=NPM_TOKEN,src=<file>`; the Dockerfile uses `RUN --mount=type=secret,id=NPM_TOKEN[,env=NPM_TOKEN] …` | BuildKit mounts it for that one instruction and doesn't write it to a layer. The file is 0600 in a 0700 temp directory, removed when the build ends, and never on a command line or in the build log. |
+| Install step in a build sandbox | env vars on that one exec | Never written to `~/.hangar/env`. Before the result is captured, `leak_scan` greps the workspace and `$HOME` for each value (patterns from a 0600 file, not the command line) and fails the build naming the file and the id, never the value (`npm config set` writes the token to `.npmrc`). The build sandbox is destroyed. |
+| Cloud Build | refused | Cloud Build reads Secret Manager, not hangar's vault: build that image with Docker. |
+
+Mark a build-only credential control-plane only (`hangar cred exposure npm-ci-token control_plane`) so no environment can also map it into a running sandbox. Signing keys, bot tokens and GitHub App keys are refused as build secrets. **A build secret reaches the code the build runs, and that code can send it wherever the build's network allows.** Give builds tokens that can only read the registry they're for. The build sandbox follows the environment's [egress mode](#egress-allowlists).
+
+## Short-lived cloud credentials
+
+Don't store a GCP service-account key or an AWS access key as a credential: the agent can read it, and it lives as long as the key does. Give the environment `cloud:` instead (admin only):
+
+```yaml
+name: infra
+cloud:
+  gcp:
+    provider: projects/123456789/locations/global/workloadIdentityPools/hangar/providers/hangar
+    service_account: ci-agent@my-proj.iam.gserviceaccount.com   # optional: impersonate it
+  aws:
+    role_arn: arn:aws:iam::123456789012:role/hangar-agents
+    region: us-east-1                                            # optional
+  lifetime_minutes: 60                                           # 5 to 720
+```
+
+Hangar is an OIDC issuer (`cloudcreds.py`). Each sandbox of the environment gets an ID token, signed RS256 with a key kept in hangar's vault, with these claims:
+
+- `iss`: `HANGAR_OIDC_ISSUER`, or `HANGAR_PUBLIC_URL`;
+- `sub`: `hangar:env:<environment>`, where the environment is the one whose own file sets `cloud:`. Only an admin can write that, so a member's environment that `extends` it speaks for it, and can't take another's subject by taking its name (before an admin creates it, or after one is removed);
+- `aud`: the cloud's audience;
+- `exp`: `lifetime_minutes` from now;
+- `environment` (the same name) and `person` (who started the sandbox): hangar vouches for both, so grant on them;
+- `sandbox_environment`, `repo`, `sandbox`, `session` and `job`: they describe the sandbox, but whoever starts one picks its repo and environment, so **don't grant on them**. A condition on `repo` lets any member who can start a sandbox with `cloud:` name that repo.
+
+The token is written to `~/.hangar/cloud/` (0600). While the sandbox runs, hangar replaces it once less than half its life is left, checking every 5 minutes. It is never renewed after the sandbox stops, and each issuance is audited as `cloud.token`. Discovery is public at `/.well-known/openid-configuration`, and the public keys at `/oidc/jwks.json`. `POST /api/cloud/rotate` (admin) adds a new signing key and signs with it at once. The keys it replaces stay published for 12 hours (the longest a token can live), so tokens already issued still verify, and then drop out of the JWKS. For a key that leaked, `POST /api/cloud/rotate?drop_old=true` unpublishes the old keys now, and the tokens they signed stop working. Where the JWKS is uploaded (GCP's `--jwk-json-path`), upload it again right after rotating: tokens signed with the new key fail until Google has it. Rotation isn't scheduled; rotate on your own calendar.
+
+**GCP (Workload Identity Federation).** The sandbox gets the `external_account` credential configuration that `gcloud iam workload-identity-pools create-cred-config --credential-source-file=… --credential-source-type=text` produces. `GOOGLE_APPLICATION_CREDENTIALS` and `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE` point client libraries and gcloud at it. google-auth reads the token file again on every refresh, so a renewed token is picked up. Set up the pool once:
+
+```sh
+curl -s https://hangar.example.com/oidc/jwks.json > hangar-jwks.json   # or let Google fetch it, if it can reach hangar
+gcloud iam workload-identity-pools create hangar --location=global
+gcloud iam workload-identity-pools providers create-oidc hangar --location=global --workload-identity-pool=hangar \
+  --issuer-uri=https://hangar.example.com --jwk-json-path=hangar-jwks.json \
+  --attribute-mapping='google.subject=assertion.sub,attribute.environment=assertion.environment,attribute.person=assertion.person' \
+  --attribute-condition='assertion.environment in ["infra"]'
+gcloud iam service-accounts add-iam-policy-binding ci-agent@my-proj.iam.gserviceaccount.com \
+  --role=roles/iam.workloadIdentityUser \
+  --member='principal://iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/hangar/subject/hangar:env:infra'
+```
+
+- **The issuer can stay private.** Uploading the JWKS (`--jwk-json-path`, up to 8 keys) means Google never has to reach hangar, which suits a control plane behind IAP. Re-upload after `rotate`.
+- **The audience** is the provider's default, `https://iam.googleapis.com/projects/…/providers/…`. Set `gcp.audience` if the provider was created with `--allowed-audiences`.
+- **Tokens:** Google accepts RS256 tokens whose `exp` is at most 24 hours after `iat`.
+
+**AWS (`AssumeRoleWithWebIdentity`).** The sandbox gets `AWS_ROLE_ARN`, `AWS_WEB_IDENTITY_TOKEN_FILE` and `AWS_ROLE_SESSION_NAME` (`hangar-<sandbox id>`), which every AWS SDK and the CLI use to assume the role from the token file and re-read it. The token's `aud` is `aws.audience` (`sts.amazonaws.com`). Create an IAM OIDC identity provider for the issuer URL with that audience as its client id. The role's trust policy **must** match the condition key `<issuer without https://>:sub` against `hangar:env:<environment>`, as well as `:aud`. Every environment's token has the same `aud`, and `AWS_ROLE_ARN` is just a variable the agent can change, so a trust policy that checks only `aud` lets any hangar sandbox with AWS credentials assume the role. For the same reason, on GCP grant to `principal://…/subject/hangar:env:<environment>` (or an attribute condition on `environment`), never to the whole pool (`principalSet://…/*`). **AWS fetches the discovery document and JWKS itself**, so the issuer URL must be publicly reachable over HTTPS. If hangar sits behind IAP, publish the two documents somewhere public (`/.well-known/openid-configuration` with `jwks_uri` pointing at the JWKS file) and set `HANGAR_OIDC_ISSUER` to that URL.
+
+**Egress.** In `allowlist` and `none` environments the token exchange is let through automatically: `sts.googleapis.com` and `iamcredentials.googleapis.com`, `sts.amazonaws.com` and `sts.<region>.amazonaws.com`.
+
+**What it does and doesn't cover.**
+
+- The agent can read the token and use it, which is the point, but only:
+  - for the audience it names;
+  - for what the cloud grants its subject, which you can narrow per environment and person (not per repo: see the claims above);
+  - for at most `lifetime_minutes` after the sandbox stops.
+- An access token the cloud already issued from it lives its own lifetime (GCP's default is an hour).
+- Don't give a sandbox a role you wouldn't give the agent.
+- The token is not stored in the vault, so redaction doesn't mask it; it's short-lived instead.
+- Tested against google-auth's own `external_account` code with a fake STS. A live pool and an AWS account weren't available to this change.
+
 ## Threat model: a compromised sandbox
 
 The attacker controls everything inside one sandbox: the agent's process, its files, `~/.hangar/env` (so every command hangar runs there), its git binary and its network traffic. What it should not get:
@@ -121,6 +302,12 @@ The attacker controls everything inside one sandbox: the agent's process, its fi
 | The control plane's attention | 8 requests in flight per grant (counted on the same Authorization header the gateway authenticates), deadlines on reading push and fetch requests, push size cap, a single pass over the command list. What hangar reads back is bounded where it is read, not by sizes the sandbox reports (its `~/.hangar/env` can redefine `stat` and `find`): command output keeps a bounded tail as it streams (Docker, Kubernetes), and every file hangar reads from a sandbox is read with a cap (Docker, Kubernetes, E2B): results, questions, artifacts, checkpoint parts and run logs; rotated auth files written back on release and login captures (1 MB; a bigger one is not stored); `~/.hangar/env` (1 MB; a bigger one is rewritten); harness configs hangar merges into (8 MB; a bigger one is left alone, with a warning); workspace snapshots (`HANGAR_SNAPSHOT_MAX_MB`, 512); and the MCP `read_file` tool (its first 10 MB). | `test_sandbox_security.py`, `test_e2e_sandbox_limits_docker.py`, `test_sweep_caps.py` |
 | The requester's machine (`session pull --checkout`) | The untracked-files archive is the sandbox's: only regular files, directories and in-tree symlinks are restored, never under `.git` (any spelling), never through a symlink (including one the session's patch created), never over an existing file, at most 20,000 entries and 1 GB (the archive is capped compressed; gzip expands ~1000x). The checkpoint's head must be a commit id. The patch goes through `git apply`, which refuses `.git` paths. | `test_sandbox_security.py` |
 | The dashboard's origin | Artifacts are served as attachments with `Content-Security-Policy: sandbox` and `nosniff`; active types are downgraded to `text/plain`. | `test_exchange.py` |
+| Sending code or tokens to a host of its choosing (`allowlist`/`none` environments) | The network admits only DNS, the git gateway and the egress proxy. The proxy authenticates the sandbox and checks each connection's host against the sandbox's allowlist, then checks the TLS SNI or HTTP `Host` against it, so fronting by SNI fails. Approvals come from the owner, never from the agent. Every denial is audited and shown in the session, and allowed traffic is audited per host. | `test_egress.py`, `test_k8s_network.py` |
+| The VPC, the cluster or the metadata server through the proxy | The proxy resolves names itself and connects only to the public address it checked (a name that re-resolves later doesn't matter). Loopback and link-local addresses are refused even for `HANGAR_EGRESS_PRIVATE_HOSTS`. | `test_egress.py` |
+| Getting a secret into a pushed branch, a PR or a Slack thread (by accident, the common case) | Before hangar delivers a job, the change and its commit messages are scanned for stored values, their encodings, and high-signal token formats. A hit blocks the push and goes back to the agent with file and line, never the value. PR text, comments and artifacts are masked. | `test_secretscan.py` |
+| Reading a stored secret back through hangar (`exec` output, events, results) | Every stored value is masked verbatim and, from 12 characters, reversed, in hex, base64 at any alignment (wrapped too) and percent-encoded. The B4 repro (`\| rev`) now comes back `***`. This is not a wall: other encodings get through ([redaction](#redaction)). | `test_secretscan.py` |
+| A build secret in the running sandbox | Build secrets are named only in admin-set places, reach only the build step (BuildKit secret mounts, or one exec's environment in a build sandbox checked for leftovers before capture), and are never written to `~/.hangar/env`. | `test_secretscan.py` |
+| A cloud key it can keep (`cloud:` environments) | No cloud key is stored or injected: a per-sandbox OIDC token, scoped to one audience, valid at most `lifetime_minutes`, renewed only while the sandbox runs, is exchanged by the cloud for short-lived credentials. | `test_cloudcreds.py` |
 | Cloud credentials | GKE node pools use `GKE_METADATA` (Workload Identity), so pods never see the node's service account; sandbox pods mount no Kubernetes token. `sandbox-network.yaml` blocks the metadata server, which matters with Pod snapshots: their KSA can read every sandbox's snapshot. | manifests checked with a server-side dry run |
 | Other sandboxes and the API | GKE: no ingress to sandbox pods (except from hangar's pods to the [envd](envd.md) port), no egress to private ranges; only the gateway port of hangar pods is open. Docker: no traffic between sandboxes on hangar's network. | manifests checked with a server-side dry run and `test_k8s_network.py` (every policy file read together); `test_e2e_isolation_docker.py` |
 | A turn's driver and the approvals it relays | Docker sandboxes whose agent has no sudo run each turn split ([the uid split](steering.md#the-uid-split)): the driver, its key, its control files and the turn's script belong to a `hangar` user, the agent's harness runs as the sandbox user with no capabilities, so code a person allowed can't read the key, write a command or signal or trace the driver. The harness and what it starts run with `no_new_privs`; hangar reads a split run's status, log and approvals from its own files, never through the agent's links. In `ask` and `deny-risky` turns hangar also owns the harness's binary, environment and settings ([hangar-owned harness settings](steering.md#hangar-owned-harness-settings)). Elsewhere one user, with a warning on `ask` and `deny-risky` turns (`HANGAR_UID_SPLIT=required` refuses them). | `test_e2e_isolation_docker.py`, `test_e2e_harden_docker.py`, `test_isolation.py`, `test_harden.py`, `test_harden_real_clis.py` |
@@ -130,12 +317,39 @@ What is **not** covered:
 
 - **Docker on a laptop or VM is a trusted-use setup.** Sandboxes can't reach each other's ports ([networking](#sandbox-networking-on-docker)), but they can reach the host (and the API port if hangar listens beyond loopback), and get `sudo` unless the environment sets `sudo: false`. On a cloud VM, block the metadata server as the single-VM install does (the rule above). For untrusted work use GKE (gVisor/Kata).
 - **Inside the sandbox the agent is in charge.** Hangar's own reads and writes there (attachments in, results and artifacts out) follow whatever the agent left in place. On Docker with `sudo` that grants nothing new; with `sudo: false`, a symlink placed in `$HANGAR_IO` can make hangar write an attachment, or read a file, as root inside that container.
-- **Secrets the sandbox already holds.** The model credential is still injected. Redaction masks stored values in results, artifacts and logs, not encoded copies. A grant the agent copies out works from anywhere that reaches the gateway until its sandbox stops.
+- **Secrets the sandbox already holds.** The model credential is still injected. Redaction masks stored values and a few common encodings of them in results, artifacts and logs, but not every transformation ([redaction](#redaction)). A grant the agent copies out works from anywhere that reaches the gateway until its sandbox stops.
+- **Pushes an agent makes itself.** Secret scanning runs when hangar delivers a job. A session's agent that runs `git push` through the gateway isn't scanned, and neither is a direct-mode sandbox pushing with its own token.
 - **What is in the pushed branch.** Review PRs, and keep secrets out of `push`-triggered workflows.
-- **Egress.** Sandboxes can reach the public internet; there is no allowlist yet (spec 0003).
+- **Egress.** Sandboxes in `open` environments (the default) can reach the public internet. In `allowlist` and `none` environments, data can still go *to* an allowed host: package registries and GitHub accept uploads, and URLs carry data. So can traffic to another site on an allowed host's CDN ([what egress doesn't stop](#egress-allowlists)).
 - **Predictable custom branch names.** A session with a custom branch outside `hangar/session/` can be pre-created by another sandbox before the session exists, and a session continues an existing branch. (A job's branch is reserved from the moment the job is submitted.)
 - **E2B command output.** The E2B SDK buffers a command's whole output before hangar sees it, so on E2B a sandbox can still make one of hangar's commands return a very large output.
 - **Idle connections.** The gateway listener has no connection cap (uvicorn's counts idle sockets and would let one sandbox lock out the rest), so many idle connections from one sandbox are bounded only by the process's file limit.
+
+## The agent's screen and its requests
+
+- **Screens** ([computer-use.md](computer-use.md)): VNC listens on 127.0.0.1 inside the sandbox and is reached only
+  through hangar, over the provider's own exec stream; no port is exposed. Tickets are single-use, last 60 seconds,
+  are minted only for the work's owner or an admin, and are stored hashed. Watching is view-only unless the ticket
+  asked for control, and hangar enforces that by dropping the viewer's input messages itself. Every ticket, view
+  (with the client address), takeover and disconnect is audited. A ticket is a bearer for its 60 seconds: whoever
+  opens it first gets the screen.
+- **Inside a sandbox, VNC and the X display have no access control.** Any process there (and, on Kubernetes, the
+  pod's sidecars) can watch and drive the screen. They are the agent's own processes, so this is accepted.
+- **Chromium runs without its own sandbox** on every runtime (it can't start under gVisor). A page that exploits
+  Chromium gets the sandbox user and everything the agent has (workspace, injected credentials, allowed egress).
+  Under gVisor, gVisor is what keeps it off the node; under runc or Docker only the container does. Limit the reach
+  with an egress allowlist and short-lived, narrowly scoped credentials; don't browse untrusted sites under runc.
+- **Media in PR bodies** is listed by name by default and fetched through hangar, signed in and owner-scoped.
+  `HANGAR_PR_MEDIA_LINKS=signed` embeds it through signed links (HMAC with a key derived from the vault key) that
+  name one artifact and expire (`HANGAR_PR_MEDIA_LINK_DAYS`). Such a link is its own credential: anyone who reads
+  the PR and can reach hangar opens it. Use it only where every PR reader may see the work; turning it off revokes
+  them all.
+- **Requests** (`hangar-agent env request`) carry a variable name or a host and a redacted reason, never a value.
+  They are never granted automatically: only the owner or an admin decides, once, and every decision is audited.
+  A request file can't set its own state, and an agent can't flood its owner (5 new a turn, 5 waiting per
+  session, 30 an hour per owner, no re-asking a denied target).
+- **What a sandbox learns about itself** (`~/.hangar/envstatus.json`, the `hangar-env` MCP server) is names,
+  versions, health checks and the egress policy, never a secret value; messages in it are redacted like logs.
 
 ## People
 
@@ -145,13 +359,14 @@ One hangar serves a team: run one per team rather than splitting one between tea
 | --- | --- | --- |
 | Sandboxes, sessions, jobs, snapshots, schedules | everyone's | their own; anyone else's answers "not found", by id or by name |
 | Environments | create and change any | create new ones and change their own; `secrets`, `image`, `base`, `runtime_class` and `credential_mode: direct` need an admin |
-| Credentials | all; assign one to a person (`hangar cred owner`) | the team's shared ones and their own (`hangar cred add` stores it as theirs) |
+| Credentials | all; add team credentials (`hangar cred add --team`), assign one to a person (`hangar cred owner`) | the team credentials and their own (`hangar cred add` stores it as theirs) |
 | Tokens | mint for anyone, within that person's role | their own: `user` (their login), `mcp` (what `hangar connect` mints), `jobs` |
 | REST | everything | `/api/me`, `/api/connect`, their tokens and credentials; jobs through a `jobs` token |
 
-- **A person's own credential** (their Claude or Codex login) goes only into their sandboxes. A sandbox for someone who has their own credential for its harness uses it in place of the environment's shared one; anyone else gets the shared one. Naming another person's credential is refused.
-- **Ownership is recorded** as `person` on sandboxes, snapshots, sessions, jobs and schedules. A job's session and sandbox, a fork and a best-of-N attempt are their source's person's. Work started from GitHub, Slack and inbound webhooks has no person yet, so only admins see it.
-- **Existing installs keep working.** Tokens minted before people, the server's admin token and the bootstrap token belong to `owner`, an admin. Records made before have no person, so they are the admins'. **Credentials stored before people have no person either, so they are shared:** once you add a member, your own Claude or Codex login goes into their sandboxes too. Make it yours first (`hangar cred owner NAME owner`) and give environments a shared team credential for everyone else and for jobs triggered from GitHub or Slack ([upgrading.md](upgrading.md#7-people-keep-your-own-logins-yours-then-add-the-team)).
+- **A person's own credential** (their Claude or Codex login) goes only into their sandboxes. A sandbox for someone who has their own credential for its harness uses it in place of the team's; anyone else gets the team's. Naming another person's credential is refused. A repo's policy can require one or the other (`credentials: person | team | person_then_team`).
+- **Team credentials** are added by an admin on purpose (`hangar cred add --team`); an admin's credential without `--team` is their own. Jobs no person owns use them: webhooks, schedules without a person, and GitHub and Slack senders linked to nobody. They are API keys, or other credentials the vendor's terms allow for automation: a subscription login (Claude Pro or Max, ChatGPT) is refused as a team credential, since the vendors' terms make it one person's and Claude Code's forbid routing requests through a Pro or Max login on behalf of others ([team.md](team.md#what-the-vendors-allow)).
+- **Ownership is recorded** as `person` on sandboxes, snapshots, sessions, jobs and schedules. A job's session and sandbox, a fork and a best-of-N attempt are their source's person's. Work from a GitHub, Slack or Jira account an admin linked to a person (`hangar person link`, by ids that don't change hands: a GitHub user id, a Slack workspace and user id, a Jira account id) is that person's: their caps, their budget, their lists. A linked account acts as its person, so it is trusted at every front door, and only it continues that person's jobs there ([team.md](team.md#who-is-trusted)). Work from anyone linked to nobody, and from inbound webhooks, has no person, so only admins see it; the front door's own rule decides whether it waits for approval.
+- **Existing installs keep working, and the owner's logins stay the owner's.** Tokens minted before people, the server's admin token and the bootstrap token belong to `owner`, an admin. Records made before have no person, so they are the admins'. Credentials stored before people become the owner's own on the first start, once (`hangar cred migration` shows which), so your Claude or Codex login never reaches a member's sandbox or a job no person owns; control-plane ones stay the control plane's. Add team credentials for everyone else ([team.md](team.md)).
 - **Removing someone** revokes their tokens (OAuth grants they approved stop with them). Their work stays, visible to admins; their own credentials go into nobody's sandbox until an admin reassigns them. Demoting an admin drops the `admin` scope from their tokens at once.
 - **Visibility is enforced at the front doors** (MCP tools and resources, REST), by the record each tool call names, so a new MCP tool with a `sandbox`, `session`, `job`, `ref`, `source` or `schedule` argument is covered without a change.
 
@@ -173,8 +388,8 @@ Work enters hangar through REST, MCP, A2A, GitHub webhooks, Slack, signed inboun
 | --- | --- | --- |
 | REST, A2A | An admin token: anything. A `jobs` token: its own jobs only (another token's job id or A2A `contextId`/`taskId` is "not found") | `jobs` tokens: repos in `HANGAR_GITHUB_REPOS` and their environments, no provider choice, their `max_budget` |
 | MCP | Admin tokens, and people's `user` and `mcp` tokens; an OAuth grant acts as the token that approved it | A member's tokens reach only their own work ([People](#people)); `mcp` tokens can't set `secrets`, `image`, `base`, `runtime_class` or `credential_mode: direct` on an environment, or call admin-only tools |
-| GitHub | Trusted people ([triggers.md](triggers.md#1-who-can-start-work-from-github)); anyone else's trigger waits for approval, and their comments can't continue a job or answer its question | mapped repos, their environments |
-| Slack | Members of your workspace in a mapped channel (or `HANGAR_SLACK_USERS`); Slack Connect guests from other organizations only when listed | like a `jobs` token |
+| GitHub | Linked accounts and trusted people ([triggers.md](triggers.md#1-who-can-start-work-from-github)); anyone else's trigger waits for approval, and their comments can't continue a job or answer its question. A person's job is continued only by that person's linked account | mapped repos, their environments |
+| Slack | Linked accounts; members of your workspace in a mapped channel (or `HANGAR_SLACK_USERS`); Slack Connect guests from other organizations only when listed. A person's job is continued only by them | like a `jobs` token |
 | Inbound webhooks | Whoever holds the source's HMAC key | the source's configured repo and environment |
 | Schedules | Admin tokens create them | the template, validated at creation |
 

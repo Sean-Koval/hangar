@@ -1,13 +1,15 @@
 # --------------------------------------------------------------------------- power schedule
-# Turns the cluster's nodes off at night and back on in the morning (deploy/gke/power.sh down / up), from two
-# Cloud Run jobs that Cloud Scheduler starts. Nothing is deleted: disks, images, checkpoints and the IP stay.
+# Turns the sandbox node pools off at night and back on in the morning (deploy/gke/power.sh down / up), from two
+# Cloud Run jobs that Cloud Scheduler starts. Hangar and the system pool stay up. Nothing is deleted: disks, images,
+# checkpoints and the IP stay.
 #
 #   enable_power_schedule = true      # in terraform.tfvars
-#   power_up_cron         = "0 10 * * *"
+#   power_up_cron         = "50 9 * * *"   # floor node and image prepull; ready power_warm_minutes later
 #   power_down_cron       = "0 1 * * *"
 #   power_time_zone       = "America/New_York"
 #
-# Run a job by hand: gcloud run jobs execute hangar-power-down --region <region>
+# Run a job by hand: gcloud run jobs execute hangar-power-down --region <region>. `hangar power up` runs the
+# power-up job as hangar's own service account (granted below; set HANGAR_POWER_UP_JOB to output power_up_job).
 
 locals {
   power = var.enable_power_schedule ? {
@@ -67,6 +69,19 @@ resource "google_cloud_run_v2_job" "power" {
           name  = "HANGAR_POWER_INSTALL"
           value = "1"
         }
+        # What hangar tells people about the morning (when sandboxes are ready); sent at both down and up.
+        env {
+          name  = "POWER_UP_CRON"
+          value = var.power_up_cron
+        }
+        env {
+          name  = "POWER_TIME_ZONE"
+          value = var.power_time_zone
+        }
+        env {
+          name  = "POWER_WARM_MINUTES"
+          value = tostring(var.power_warm_minutes)
+        }
         resources {
           limits = {
             cpu    = "1"
@@ -85,6 +100,20 @@ resource "google_cloud_run_v2_job_iam_member" "power" {
   location = var.region
   role     = "roles/run.invoker"
   member   = "serviceAccount:${google_service_account.power[0].email}"
+}
+
+# An admin powering the sandboxes on early (`hangar power up`) runs the power-up job as hangar's own service account.
+resource "google_cloud_run_v2_job_iam_member" "hangar_power_up" {
+  count    = var.enable_power_schedule ? 1 : 0
+  name     = google_cloud_run_v2_job.power["up"].name
+  location = var.region
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${local.sa_email}"
+}
+
+output "power_up_job" {
+  description = "Set as HANGAR_POWER_UP_JOB in hangar-site, so `hangar power up` can run it."
+  value       = var.enable_power_schedule ? "projects/${var.project_id}/locations/${var.region}/jobs/${google_cloud_run_v2_job.power["up"].name}" : null
 }
 
 resource "google_cloud_scheduler_job" "power" {

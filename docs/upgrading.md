@@ -2,12 +2,12 @@
 
 Two guides, newest first:
 
-- [**This release**](#upgrading-to-the-team-release-7590) (#75–#90): one hangar for a team of six at ~60 sessions, people and per-person credentials, front-door defaults and job budgets, the reconciler, the MCP deadline contract, and images built before anyone waits.
+- [**This release**](#upgrading-to-the-team-release-75100) (#75–#100): one ordered procedure for everything since the overnight stack. Wave 1 (#75–#90): one hangar for a team of six at ~60 sessions, people and per-person credentials, front-door defaults and job budgets, the reconciler, the MCP deadline contract, and images built before anyone waits. Wave 2 (#91–#100): team credentials and linked accounts, Jira and GitHub Projects intake, egress allowlists, secret scanning and short-lived cloud credentials, a computer for every agent, environments that live with the repo, an approval that lands the PR, the always-on control plane and gated deploys.
 - [**The overnight stack**](#upgrading-from-before-the-overnight-stack-4869) (#48–#69), for a hangar older than that. Do its backup and read its defaults first, then follow this release's procedure: its prebuild also covers the overnight guide's "republish the Codex pack" step.
 
 Both are written for the GKE install from [gke.md](gke.md): one zonal cluster, gVisor sandboxes, the control plane with SQLite on the `hangar-data` PVC, checkpoints in the session bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / `power.sh`. [CHANGELOG.md](../CHANGELOG.md) lists what each adds.
 
-## Upgrading to the team release (#75–#90)
+## Upgrading to the team release (#75–#100)
 
 The short version, in order:
 
@@ -15,14 +15,47 @@ The short version, in order:
 hangar admin backup                                   # 1. back up; record the running image
 #                                                       2. request quotas (days ahead)
 uv run hangar images build --registry "$REG"          # 3. prebuild the new image and pack tags
-#                                                       4. in the power-down window: terraform apply (the node pool)
+#                                                       4. in the power-down window: terraform apply (node pool, power schedule)
 bash deploy/gke/power.sh up && bash deploy/gke/up.sh  # 5. bring the cluster up, roll out
-hangar doctor                                         # 6. check
-hangar cred owner <your-claude-login> owner           # 7. people: keep your own logins yours, then add the team
+hangar doctor && hangar power                         # 6. check
+hangar cred migration                                 # 7. people: your logins became yours; add team API keys
 hangar person add alice
 hangar config set HANGAR_BUDGET_DAY_TIMEZONE America/New_York   # 8. budgets, then job concurrency
-bash scripts/acceptance/gke.sh                        # 9. prove it
+hangar doctor --fix                                   # 9. front doors: the pull_request event; then the App, Jira, Projects
+hangar config set HANGAR_EGRESS_URL http://hangar-gateway.hangar.svc:3128   # 10. sandboxes: egress, cloud, previews
+#                                                       11. deploy.yml: the production environment and its secrets
+bash scripts/acceptance/gke.sh                        # 12. clients and proof
 ```
+
+### What you configure
+
+Everything the owner sets up, in the order of the steps. **Required** means the release, or the feature named, doesn't work without it; **optional** means it is off (or keeps its old behaviour) until you set it. `hangar config set NAME VALUE` keeps a setting in hangar's database; `hangar-site` wins over it.
+
+| What | Required? | Step |
+| --- | --- | --- |
+| Quotas: `N2D_CPUS` ≥ 160, `CPUS_ALL_REGIONS`, `SSD_TOTAL_GB` ≥ 2,250 | **Required** on GKE | [2](#2-request-quotas-days-ahead) |
+| Images workflow secrets (`GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT`, `HANGAR_REGISTRY`, repository secrets) | Optional: without them, prebuild by hand | [3](#3-prebuild-the-new-image-and-pack-tags) |
+| `terraform apply`: the `n2d-standard-16` node pool, `power_up_cron` 09:50, `sandbox_warm_nodes`, hangar's `roles/run.invoker` on the power-up job | **Required** on GKE | [4](#4-in-the-power-down-window-the-node-pool-and-the-power-schedule) |
+| `HANGAR_POWER_UP_JOB` | Set by `up.sh`; **required** for `hangar power up` | [5](#5-bring-the-cluster-up-and-roll-out) |
+| Team credentials: API keys (`hangar cred add NAME --team --kind api_key`). A subscription login is refused as one | **Required** for work no person owns (webhooks, schedules without a person, unlinked senders) | [7](#7-people-your-logins-stay-yours-add-team-credentials-then-the-team) |
+| People, their tokens and linked GitHub, Slack and Jira accounts | Optional (required for a team) | [7](#7-people-your-logins-stay-yours-add-team-credentials-then-the-team) |
+| `HANGAR_BUDGET_DAY_TIMEZONE`, `HANGAR_JOB_BUDGET_MAX_COST_USD`, `HANGAR_PERSON_MAX_USD_PER_DAY`, repo `max_usd_per_day` | Optional; **required** before raising `HANGAR_JOB_CONCURRENCY` | [8](#8-budgets-then-job-concurrency) |
+| The webhook's `pull_request` event (`hangar doctor --fix`) | **Required** | [9a](#9a-the-github-webhook) |
+| GitHub App: `github_app` credential and `HANGAR_GITHUB_APP_CREDENTIAL` | Optional; **required** for landing | [9b](#9b-the-github-app-and-landing) |
+| Branch protection (1 approval, dismiss stale approvals, approval of the latest push, required checks) and *Allow auto-merge* | **Required** on every repo with `land: auto_after_approval` | [9b](#9b-the-github-app-and-landing) |
+| Repo policy `land`, `approvers`, `merge_method`, `risk_paths` | Optional (landing is off by default) | [9b](#9b-the-github-app-and-landing) |
+| Jira: an account and API token (`jira-api`), the webhook and its secret (`jira-webhook`) or an Automation token, `HANGAR_JIRA` | Optional | [9c](#9c-jira) |
+| GitHub Projects: an organization webhook (Projects v2 items), the control token's `project` scope, `HANGAR_GITHUB_PROJECTS` | Optional | [9d](#9d-github-projects) |
+| `HANGAR_EGRESS_URL` | **Required** on GKE before any environment uses `egress: allowlist` or `none` | [10a](#10a-egress-allowlists) |
+| `HANGAR_EGRESS_DEFAULT` | Optional (default `open`, as before) | [10a](#10a-egress-allowlists) |
+| Docker hosts: Docker Engine ≥ 26.0.0 (or 25.0.4, 23.0.11), and the host firewall accepting TCP 3128 and 8788 from `hangar1` | **Required** for proxied environments on Docker | [10a](#10a-egress-allowlists) |
+| `HANGAR_OIDC_ISSUER` (https; public for AWS), and the cloud's trust (a GCP workload identity pool, an AWS role) | Optional; **required** for environments with `cloud:` | [10b](#10b-short-lived-cloud-credentials) |
+| Build secrets: `build_secrets` on an environment or repo policy | Optional; **required** for repos whose `.hangar/environment.yaml` names any | [10c](#10c-environments-that-live-with-the-repo) |
+| `HANGAR_ENV_SERVICE_IMAGES` | Optional (Docker's official images by default) | [10c](#10c-environments-that-live-with-the-repo) |
+| `HANGAR_PREVIEW_DOMAIN`, its wildcard DNS and certificate, and `deploy/k8s/e2b.yaml`'s NetworkPolicy | Optional (previews are off) | [10d](#10d-preview-ports) |
+| `HANGAR_PR_MEDIA_LINKS=signed` | Optional (screenshots and demos are listed by name) | [10e](#10e-the-agents-computer) |
+| deploy.yml: the `production` environment (you as required reviewer; `main` and `v*` tags only), its secrets `GCP_DEPLOY_SERVICE_ACCOUNT`, `GKE_CLUSTER`, `GKE_LOCATION`, `HANGAR_URL`, `HANGAR_DEPLOY_TOKEN`, and the `hangar-deploy` service account and Role | Optional; **required** to deploy with deploy.yml | [11](#11-deploying-with-deployyml) |
+| claude.ai users re-add the hangar connector | **Required** for claude.ai | [12](#12-clients-and-proof) |
 
 ### What changes as soon as it starts
 
@@ -34,17 +67,27 @@ To opt out, use `hangar config set NAME VALUE` (kept in hangar's database) or `h
 | **Fleet size and caps** (#89, #90) | `HANGAR_MAX_SANDBOXES` 50 → **120**. Per person: 15 live sessions, 20 sandboxes started directly, half the job slots (at least 4) running jobs; a cap reached is a 429 or an MCP error. Caps count the person hangar records on the work, so all of a person's tokens share them ([team-scale.md](team-scale.md#settings)). | `HANGAR_PERSON_MAX_SESSIONS`, `_MAX_SANDBOXES`, `_MAX_RUNNING_JOBS` (0 = off) |
 | **Job concurrency** (#89, #90) | 4 → `HANGAR_JOB_CONCURRENCY=0` (auto): 4 on Docker, **8 on GKE**. A free slot goes to whoever has the fewest jobs running. Step 8 raises it to 24 once budgets are set. | set a number (*restart*) |
 | **Sandbox CPU** (#89) | each sandbox pod requested its whole CPU limit → half of it (`HANGAR_K8S_CPU_REQUEST_FRACTION=0.5`); the limit and all memory stay reserved. Each environment's warm-pool template is rewritten once, so the first create of each after the rollout is cold. The control plane requests `500m`/`1Gi` (limit `3Gi`). | `HANGAR_K8S_CPU_REQUEST_FRACTION=1` (*restart*) |
-| **People** (#88) | every token was root over everyone's work → every token belongs to a person. Existing tokens, the admin token and the bootstrap token belong to **`owner`**, an admin, so nothing changes until you add someone (step 7). Credentials stored before this release have no person: they are **shared** with everyone you add. | — |
-| **Control-plane credentials** (#81) | an `mcp` token could map the webhook secret or bot token into a sandbox → signing keys, GitHub App keys, Slack secrets and the GitHub tokens the settings name never reach a sandbox. A direct-mode environment that attaches the same GitHub token as `HANGAR_GITHUB_TOKEN_CREDENTIAL` or `HANGAR_GATEWAY_CREDENTIAL` now fails to start; `hangar doctor` names it (step 6). Saving an environment that sets `secrets`, `image`, `base`, `runtime_class` or `credential_mode: direct` needs an admin. | `hangar cred exposure <name> sandbox` |
+| **People** (#88) | every token was root over everyone's work → every token belongs to a person. Existing tokens, the admin token and the bootstrap token belong to **`owner`**, an admin, so nothing changes until you add someone (step 7). | — |
+| **Your credentials** (#91) | an unowned credential went into every sandbox → **every credential stored before this release becomes the owner's own** on the first start, once (`hangar cred migration`; control-plane ones excepted). Jobs no person owns need a **team credential**, which must be an API key: hangar refuses a Claude Pro or Max login or a ChatGPT login as one (step 7). A git token (PAT) you stored for sandboxes is yours too until `hangar cred owner NAME team`. | — |
+| **Who a front-door job belongs to** (#91, #92) | GitHub and Slack jobs ran for no one → a sender linked to a person (`hangar person link`) acts as that person: trusted, their caps, budget and login, and **only they continue their jobs** from a front door (others get a refusal; an admin uses `hangar job follow-up`). Unlinked senders' jobs run for the team as before. Nothing changes until you link someone. | — |
+| **Control-plane credentials** (#81) | an `mcp` token could map the webhook secret or bot token into a sandbox → signing keys, GitHub App keys, Slack and Jira secrets and the GitHub tokens the settings name never reach a sandbox. A direct-mode environment that attaches the same GitHub token as `HANGAR_GITHUB_TOKEN_CREDENTIAL` or `HANGAR_GATEWAY_CREDENTIAL` now fails to start; `hangar doctor` names it (step 6). Saving an environment that sets `secrets`, `image`, `base`, `runtime_class`, `credential_mode: direct`, `egress`, `build_secrets` or `cloud` needs an admin. | `hangar cred exposure <name> sandbox` |
 | **Front-door defaults** (#82) | jobs from GitHub issues, Slack, A2A and webhooks had no `verify` → they take the repo's [policy](repo-policy.md) (`hangar repo set`), then the environment's new `verify:` field. **`envs/hangar.yaml` (and `hangar-jobs`) now sets `verify: bash scripts/ci/verify.sh`**. A standing check also runs once per base commit before the agent starts; on a red base only new failures count. | `hangar repo set owner/repo --verify ""`, or `verify: ""` in the environment |
 | **Agent scratch files** (#82) | delivery committed everything the agent left, including the `HANDOFF.md` the `repo-conventions` skill asked for → the skill no longer asks for it, and new root `HANDOFF.md`, `RESULT.md` and `NOTES.md` files and `*.orig`/`*.rej` leftovers beside their source stay out of PRs unless the task names them. Images with the skill rebuild once, since its layer changed. | name the file in the task |
 | **Job budgets and daily caps** (#85) | none → `job_budget` caps all of a job's turns together, and a repo's `max_usd_per_day` or `HANGAR_PERSON_MAX_USD_PER_DAY` holds new jobs for approval. **All unset by default**, and a day starts at UTC midnight (20:00 in New York) until `HANGAR_BUDGET_DAY_TIMEZONE` is set (step 8). | — |
-| **The reconciler** (#84) | rows a restart left `starting` or `stopping` stayed so, with their leases → a pass at startup and every `HANGAR_RECONCILE_INTERVAL_SECONDS` (30) finishes them; a GKE pod recreated blank under its claim counts as gone and its session resumes from its checkpoint. Sandboxes from before adopt their current pod's UID. It assumes one hangar process per database (`replicas: 1`, `strategy: Recreate`, as shipped). | — |
+| **Secret scanning** (#98) | a job's branch was pushed as the agent left it → every new commit's patch, the uncommitted change and the commit messages are scanned first; a stored credential's value or a known token format stops the push and goes back to the agent as a fix turn (2 at most, then `secret_found`). PR text, comments and text artifacts are masked. | `HANGAR_SECRET_SCAN=warn` or `off` |
+| **Redaction** (#98) | stored values were masked verbatim → also reversed, in hex, base64 and percent-encoded (values of 12+ characters). | — |
+| **Egress** (#97) | sandboxes reached the public internet → **unchanged by default** (`HANGAR_EGRESS_DEFAULT=open`). An environment's `egress: {mode: allowlist}` sends its sandboxes through hangar's egress proxy (step 10a). The rollout adds port 3128 to the `hangar-gateway` Service and the proxied NetworkPolicies, which select nothing until an environment is proxied. | — |
+| **Environments that live with the repo** (#93, #99) | a repo's own setup ran in every sandbox, every time → a repo's `.hangar/environment.yaml` with an `install` gets versioned builds in the background (first sandbox falls back, with a warning, and schedules one); `start`, `terminals` and `services` run with the sandbox. Repos without the file see no change. | `HANGAR_ENV_BUILDS=false` |
+| **The agent's environment report** (#94) | → every harness's MCP config gets a `hangar-env` server (the environment doctor and requests), and job prompts tell the agent to file blockers with `hangar-agent env request` and keep going. Requests are never granted on their own: they wait in `hangar requests`, MCP `pending_approvals` and the inbox. | `HANGAR_ENV_DOCTOR_MCP=false` |
+| **PRs and the inbox** (#96) | → each agent PR gets a review packet comment, and `hangar inbox` / `hangar://inbox` / `GET /api/inbox` lists what waits on each person. Agent PRs keep coming from the control token, and nothing lands by itself, until you set up the App and `land` (step 9b). | — |
+| **`power.sh down`** (#84, #90, #95) | every node pool and hangar went to 0 at 01:00, so GitHub, Slack and Jira events were lost → it drains (`POST /api/admin/drain`), checkpoints running turns, then powers down **only the sandbox pools** (`^sandboxes-`: gVisor, Kata, microVM). Hangar and the `system` pool stay up: events are queued, jobs wait with `waiting: sandboxes power on at 10:00 EDT`, creates answer at once (REST `503` with `Retry-After`). A job turn the pools take away resumes from its checkpoint after power-up. | `POWER_POOLS` (a regex) for the script |
+| **`power.sh up`** (#90, #95) | pools back at their ranges at 10:00, a cold first create (2–4.5 min) → at 09:50 the gVisor pool comes back at a warm floor of 1 node, every image and pack is pulled onto it (the `hangar-prepull` DaemonSet), then queued jobs start and warm pools are sized from last week's 10:00 hour. It keeps an autoscaling range a `terraform apply` set while the pools were down, and the microVM pool comes back at its fixed size. | `sandbox_warm_nodes = 0`; `HANGAR_POWER_WARM_POOLS=off` |
+| **Cost** (#95) | the system node runs around the clock, and one Spot sandbox node all powered hours: about **+$22/month** and **up to +$163/month** ([team-scale.md](team-scale.md#cost)) | as above |
 | **Interrupted jobs** (#84) | a job caught by a restart or the power-down failed as `interrupted` → it resumes from its session's checkpoint, at most twice, 20 s apart. | `HANGAR_JOB_RESTART_RESUMES=0` |
+| **The reconciler** (#84) | rows a restart left `starting` or `stopping` stayed so, with their leases → a pass at startup and every `HANGAR_RECONCILE_INTERVAL_SECONDS` (30) finishes them; a GKE pod recreated blank under its claim counts as gone and its session resumes from its checkpoint. Sandboxes from before adopt their current pod's UID. It assumes one hangar process per database (`replicas: 1`, `strategy: Recreate`, as shipped). | — |
 | **GitHub redelivery** (#84) | deliveries that failed while hangar was down were lost → at each start hangar asks GitHub to redeliver them (up to 3 days back). The stored GitHub token needs *Webhooks: Read and write*, as `hangar setup github` already asks. | `HANGAR_GITHUB_REDELIVER_ON_START=false` |
-| **`power.sh down`** (#84, #90) | stopped hangar after 10 minutes → it drains first (`POST /api/admin/drain`), checkpoints running turns and waits for creates and destroys in flight. `power.sh up` keeps an autoscaling range set while the cluster was down. | — |
 | **MCP waits** (#86) | `wait_for_turn` waited up to 300 s by default (600 at most), `exec` as long as its `timeout`, `process` `attach` up to 600 s, `terminal_send` up to its `wait_ms` → each at most `HANGAR_MCP_TOOL_WAIT_SECONDS` (150 s), so claude.ai (which gives up after about 230 s) gets an answer: `wait_for_turn` says `done: false`, an `exec` that runs into the cap points at `process`. Destroy, pause, resume, extend, snapshot, `fork_session` and `run_agent` answer within it too and finish in the background. Any other tool still waiting just past it (165 s) gets an error. | Raise `HANGAR_MCP_TOOL_WAIT_SECONDS` only if all your clients wait longer than claude.ai |
-| **Tool-list notice** (#86) | `serverInfo.version` was `0.1.0` → `<version>+tools.<hash>`. A claude.ai connector whose tool list is older than the server's gets a one-line note (at most hourly) asking to remove and re-add the connector (step 9). | — |
+| **Tool-list notice** (#86) | `serverInfo.version` was `0.1.0` → `<version>+tools.<hash>`. A claude.ai connector whose tool list is older than the server's gets a one-line note (at most hourly) asking to remove and re-add the connector (step 12). | — |
 | **Harness versions and packs** (#83, #87) | Claude Code and Antigravity followed "latest" → `src/hangar/harnesses.lock.yaml` pins every harness (Claude Code 2.1.296, Codex 0.162.1, Antigravity 1.3.3, pi 1.1.0, Gemini 0.64.0); a pack build fails unless the CLI reports the locked version. Packs hold only the vendor's files and are mounted by digest. **Every pack tag changes once**, and so does every image that bakes a harness in (step 3). `hangar pack publish` no longer overwrites an existing tag without `--force`. | — |
 
 ### 1. Back up
@@ -71,61 +114,70 @@ uv run hangar images build --registry "$REG"   # Docker here (linux/amd64), else
 uv run hangar images plan --registry "$REG"    # exit 0: nothing missing
 ```
 
-If the cluster sets `HANGAR_IMAGE_PREFIX`, `HANGAR_SANDBOX_USER`, `HANGAR_WORKSPACE_DIR`, `HANGAR_EXTRA_CA_BUNDLE` or `HANGAR_K8S_IMAGE_VOLUMES` in `hangar-site` or its database, export the same values first: they change the tags. With the images workflow's secrets set ([gke.md](gke.md#images-and-packs-built-in-ci)), the push to `main` does this for you and the run's summary lists each tag. `up.sh` runs the same build before it touches the cluster (`PREBUILD=0` skips it). If nothing prebuilt them, nothing breaks: running sandboxes keep the pack they mounted, the new control plane rebuilds the packs in the background, and the first sandbox for a harness whose pack isn't built yet waits for it.
+If the cluster sets `HANGAR_IMAGE_PREFIX`, `HANGAR_SANDBOX_USER`, `HANGAR_WORKSPACE_DIR`, `HANGAR_EXTRA_CA_BUNDLE` or `HANGAR_K8S_IMAGE_VOLUMES` in `hangar-site` or its database, export the same values first: they change the tags. With the images workflow's secrets set ([gke.md](gke.md#images-and-packs-built-in-ci); *optional*), the push to `main` does this for you and the run's summary lists each tag. `up.sh` runs the same build before it touches the cluster (`PREBUILD=0` skips it). If nothing prebuilt them, nothing breaks: running sandboxes keep the pack they mounted, the new control plane rebuilds the packs in the background, and the first sandbox for a harness whose pack isn't built yet waits for it. Environments you give `computer:` later (step 10e) build a new image layer then; repo environment builds (step 10c) build in the background, never on a create.
 
-### 4. In the power-down window: the node pool
+### 4. In the power-down window: the node pool and the power schedule
 
 After `power.sh down` has finished (it runs at 01:00 ET; the cluster is down until 10:00), so no sandbox is on the pool:
 
 ```bash
 cd deploy/terraform/gke
-terraform plan    # expect "~ update in-place" on google_container_node_pool.sandboxes
+terraform plan    # expect "~ update in-place" on google_container_node_pool.sandboxes, the new cron and IAM
 terraform apply
 ```
 
-`machine_type` is an in-place node pool update with the google provider ≥ 5.x (`versions.tf` asks for ≥ 6.0): GKE replaces the nodes, not the pool, and with the pool at zero nodes that is quick. **If the plan shows the pool destroyed and created (`-/+`), stop**: something else in it changed (`sandbox_spot` forces a new pool). To keep the old pool, set `sandbox_machine_type` and `sandbox_max_nodes` in your tfvars. Done outside the window, every sandbox on the pool is killed, and GKE needs a node's worth of spare quota to surge.
+One apply does both halves of the release:
+
+- **The node pool (required).** `machine_type` is an in-place node pool update with the google provider ≥ 5.x (`versions.tf` asks for ≥ 6.0): GKE replaces the nodes, not the pool, and with the pool at zero nodes that is quick. **If the plan shows the pool destroyed and created (`-/+`), stop**: something else in it changed (`sandbox_spot` forces a new pool). To keep the old pool, set `sandbox_machine_type` and `sandbox_max_nodes` in your tfvars. Done outside the window, every sandbox on the pool is killed, and GKE needs a node's worth of spare quota to surge.
+- **The power schedule (required with `enable_power_schedule = true`).** `power_up_cron` `0 10 * * *` → `50 9 * * *` with `power_warm_minutes = 10`; the gVisor pool's minimum becomes `sandbox_warm_nodes` (1 with the power schedule, else 0); hangar's service account gets `roles/run.invoker` on the power-up job; output `power_up_job`. The apply turns the gVisor pool's autoscaling back on at its floor, which starts a node: that's fine here, since step 5 brings the cluster up.
 
 ### 5. Bring the cluster up and roll out
 
 ```bash
-bash deploy/gke/power.sh up     # keeps the 0-10 range the apply set, instead of the 0-4 saved at down
-bash deploy/gke/up.sh           # prebuild (finds nothing missing), then the rollout
+bash deploy/gke/power.sh up     # the new script: brings back the system pool and hangar an old down stopped too,
+                                # and keeps the 0-10 range the apply set, instead of the 0-4 saved at down
+bash deploy/gke/up.sh           # prebuild (finds nothing missing), deploy/k8s (incl. the egress port 3128 and its
+                                # NetworkPolicies), the rollout; sets HANGAR_POWER_UP_JOB from terraform
 ```
 
-Do this before the team starts, or let the 10:00 schedule run `power.sh up` and deploy right after. The Deployment uses `Recreate`, so the URL answers 502 until the new pod is ready. On its first start hangar creates the store's indexes and archive table (20,000 records index in well under a second), runs a reconciler pass before sessions and jobs look at their sandboxes, resumes jobs the power-down interrupted, and asks GitHub to redeliver what it missed overnight.
+Do this before the team starts, or let the 10:00 schedule run `power.sh up` and deploy right after. The Deployment uses `Recreate`, so the URL answers 502 until the new pod is ready. On its first start hangar makes the earlier credentials the owner's, creates the store's indexes and archive table (20,000 records index in well under a second), runs a reconciler pass before sessions and jobs look at their sandboxes, resumes jobs the power-down interrupted, and asks GitHub to redeliver what it missed overnight. From the next 01:00, `power.sh down` leaves hangar up.
 
 ### 6. Check
 
 ```bash
 hangar doctor
+hangar power     # "sandboxes: on"; the last power-up, the last deploy, the loops' heartbeats
 ```
 
-It names environments that attach the control plane's own GitHub token in direct mode (fix with `hangar cred exposure <name> sandbox`, or switch them to the gateway), mapped repos whose jobs would run with no check (`hangar repo set <repo> --verify "…"`), the webhook's events and quota errors.
+The doctor names environments that attach the control plane's own GitHub token in direct mode (fix with `hangar cred exposure <name> sandbox`, or switch them to the gateway), mapped repos whose jobs would run with no check (`hangar repo set <repo> --verify "…"`), the webhook's events (step 9a) and quota errors. New in this release: **personal credentials shared** (fails on a subscription login stored as the team's), **team credentials for jobs**, **unlinked senders**, the Jira configuration, landing repos' branch protection, **sandbox power**, **last deploy** and **background loops**.
 
-### 7. People: keep your own logins yours, then add the team
+### 7. People: your logins stay yours; add team credentials, then the team
 
-Every existing token now belongs to `owner` (you, an admin), and records from before have no person, so only admins see them. **Every credential stored before this release is shared**: once you add a member, it goes into their sandboxes, where `cat ~/.hangar/env` reads it. That includes your own Claude Max or ChatGPT login (review on #88). Before adding anyone:
+Every existing token now belongs to `owner` (you, an admin), and records from before have no person, so only admins see them. **Every credential stored before this release became yours on the first start**, once, so your Claude Max or ChatGPT login never goes into a member's sandbox. Control-plane credentials (signing keys, bot tokens, hangar's own GitHub token) stayed the control plane's. That also means jobs no person owns (GitHub, Slack, Jira and Projects senders you haven't linked, webhooks, schedules) no longer get your login: give them a team credential (**required** if any such work runs), and link yourself so your own issues run as you:
 
 ```bash
-hangar cred ls                                    # which of these are your own logins?
-hangar cred owner claude-sean owner               # yours from now on: only your sandboxes get it
-hangar cred owner codex-sean owner
-hangar cred add claude-team --harness claude-code --kind api_key --file team-key.txt   # a team key (an example)
+hangar cred migration                             # what became yours
+hangar cred add claude-team --team --harness claude-code --kind api_key --file team-key.txt   # an Anthropic Console key
+hangar cred add codex-team --team --harness codex --kind api_key --file openai-key.txt        # an OpenAI project key
+hangar cred owner gh-jobs team                    # an API key or git token of yours the team may use
+hangar person link owner github <your-login>      # your GitHub issues and comments run as you, with your login
+hangar doctor                                     # "team credentials for jobs" names what still has none
 ```
 
-A credential that is yours replaces an environment's shared one for its harness in your sandboxes, so put a shared team credential (an API key) in the environments: teammates without a login of their own, and jobs triggered from GitHub or Slack (which run for no one yet), use it. Without one, those jobs start with no login for that harness. A shared Codex ChatGPT login is also leased to one sandbox at a time across the whole team, so ten parallel Codex sessions need API keys or several logins.
+**A team credential is an API key** (or another credential the vendor's terms allow for automation). Hangar refuses a Claude Pro or Max login or a ChatGPT login as the team's, whether added with `--team` or moved with `hangar cred owner NAME team`: the vendors' terms make a login one person's, and Claude Code's forbid routing requests through a Pro or Max login on behalf of others. The full guide, including what the vendors allow and Codex logins, is [team.md](team.md).
 
-Then add each engineer:
+Then add each engineer (optional, and the point of the release):
 
 ```bash
-hangar person add alice --name "Alice"            # prints her login token once, and lists the shared credentials she will get
+hangar person add alice --name "Alice"            # prints her login token once, and lists the team credentials she will get
+hangar person link alice github alice-gh          # stored as her numeric GitHub id; also: slack T…/U…, jira <account id>, email
 ```
 
-She runs `hangar login <url>` with it, `hangar connect` for her MCP clients, and `hangar cred add` for her own Claude or Codex login, which then goes only into her sandboxes. Members see and act on their own sandboxes, sessions and jobs; admins on everyone's ([security.md](security.md#people)). The per-person caps count her as one person across all her tokens.
+She runs `hangar login <url>` with it, `hangar connect` for her MCP clients, and `hangar cred add` for her own Claude or Codex login, which then goes only into her sandboxes. Members see and act on their own sandboxes, sessions and jobs; admins on everyone's ([security.md](security.md#people)). The per-person caps count her as one person across all her tokens. Only admins link accounts, and a linked account acts as its person ([team.md](team.md#who-is-trusted)): link one you've seen the person use.
 
 ### 8. Budgets, then job concurrency
 
-Job slots stay at 8 on GKE because nothing bounds what a job spends until budgets are set. Set them, then raise the slots to the measured 24:
+Job slots stay at 8 on GKE because nothing bounds what a job spends until budgets are set. Set them (optional, but **required** before raising the slots), then raise the slots to the measured 24:
 
 ```bash
 hangar config set HANGAR_BUDGET_DAY_TIMEZONE America/New_York     # a day starts at local midnight
@@ -138,35 +190,202 @@ kubectl -n hangar rollout restart deploy/hangar
 
 A slot is a job, not a sandbox: 24 best-of-4 jobs could hold all 120 sandboxes, so keep `HANGAR_PERSON_MAX_RUNNING_JOBS` (half the slots) and the budgets in place ([team-scale.md](team-scale.md#limits-and-follow-ups)).
 
-### 9. Clients and proof
+### 9. Front doors
 
-- **claude.ai users remove the hangar connector and add it again** (Settings → Connectors): the apps never refetch the tool list ([clients.md](clients.md)). CLIs refetch it when a session starts.
-- `bash scripts/acceptance/gke.sh` runs the checks from the overnight guide's [§5](#5-prove-it-on-your-cluster) plus `mcp`: `create_sandbox` over MCP on a multi-harness environment (`--mcp-env`, default `python`) answers within claude.ai's 230 s, a second create whose client gives up after 5 s still comes up, then `exec`. It prints the server's version with its tool-list hash.
+#### 9a. The GitHub webhook
+
+**Required.** Landing needs the `pull_request` event on each mapped repo's webhook, which hooks set up before don't have:
+
+```bash
+hangar doctor --fix      # adds pull_request to every mapped repo's hook
+```
+
+#### 9b. The GitHub App and landing
+
+**Optional**; required for an approval to land the PR. Until then agent PRs come from the control token and are merged by hand. [landing.md](landing.md) has the details.
+
+1. Create a GitHub App under the organization with exactly **Contents: Read and write**, **Pull requests: Read and write** and **Metadata: Read**, its webhook off; generate a private key; install it on only the repos agents work on. Don't put it on any bypass list.
+2. Store it and point hangar at it:
+   ```bash
+   jq -n --arg id 123456 --rawfile key ~/Downloads/hangar-agents.*.private-key.pem \
+     '{app_id: $id, private_key: $key}' | hangar cred add github-app --harness git --kind github_app
+   hangar config set HANGAR_GITHUB_APP_CREDENTIAL github-app
+   ```
+3. On each repo that should land (**required** for it), under Settings → Branches or Rules: require a pull request with at least 1 approval, dismiss stale approvals on new commits, require approval of the most recent push, require status checks; and under Settings → General, **Allow auto-merge**.
+4. Turn it on per repo: `hangar repo set acme/app --land auto_after_approval --approver alice --risk-path 'infra/**'`. Then `hangar doctor` checks the protection for every such repo.
+
+#### 9c. Jira
+
+**Optional.** [intake.md](intake.md#jira-cloud) has the details, and Data Center's differences.
+
+```bash
+hangar cred add jira-api --harness webhook --kind generic        # the hangar account's API token (Ctrl-D)
+hangar cred add jira-webhook --harness webhook --kind generic    # the webhook's secret
+hangar config set jira '{"url": "https://acme.atlassian.net", "email": "hangar@acme.com",
+  "token_credential": "jira-api", "webhook_secret_credential": "jira-webhook",
+  "projects": {"ABC": {"repo": "acme/api"}}, "trigger": {"status": "Ready for agent"},
+  "statuses": {"started": "In Progress", "needs_input": "Blocked", "delivered": "In Review"}}'
+```
+
+In Jira, *Settings → System → WebHooks*: URL `https://<your hangar>/api/hooks/jira`, the same secret, events Issue created and updated and Comment created, with JQL `project in (ABC)`. Prefer this signed webhook to an Automation rule. Mapped repos must be in `HANGAR_GITHUB_REPOS`. Then link your teammates' Jira accounts (`hangar person link alice jira <account id>`): an unlinked Jira sender's job always waits for a linked teammate's `/hangar approve`.
+
+#### 9d. GitHub Projects
+
+**Optional.** [intake.md](intake.md#github-projects) has the details.
+
+1. An **organization** webhook (repository webhooks never get project events): payload URL `https://<your hangar>/api/hooks/github`, `application/json`, the same secret as the repository webhooks, only the **Projects v2 items** event.
+2. The control token (`HANGAR_GITHUB_TOKEN_CREDENTIAL`) needs the organization's projects: the `project` scope on a classic token, or **Projects: Read and write** on a fine-grained one.
+3. The boards:
+   ```bash
+   hangar config set github_projects '{"acme/7": {"trigger": "Ready for agent", "repos": ["acme/api"],
+     "statuses": {"started": "In progress", "needs_input": "Blocked", "delivered": "In review"}}}'
+   ```
+
+A board mover is trusted when linked to a person or listed in `HANGAR_GITHUB_TRUSTED`; anyone else's job waits for approval on the issue.
+
+### 10. Sandboxes
+
+#### 10a. Egress allowlists
+
+Egress stays `open` until you say otherwise. To proxy an environment's sandboxes ([security.md](security.md#egress-allowlists)):
+
+- **GKE: `HANGAR_EGRESS_URL` (required** before any environment uses `allowlist` or `none`; without it such sandboxes fail to start, saying so). Step 5 already applied the Service port and the NetworkPolicies:
+  ```bash
+  hangar config set HANGAR_EGRESS_URL http://hangar-gateway.hangar.svc:3128   # or in hangar-site; restart
+  kubectl -n hangar rollout restart deploy/hangar
+  ```
+- **Docker on a Linux host (required** for proxied environments there): Docker Engine 26.0.0 or later (or 25.0.4, 23.0.11), since older engines forward DNS out of internal networks (CVE-2024-29018) and hangar refuses them; a host firewall that drops input must accept TCP 3128 and 8788 from `hangar1`. E2B and Docker Desktop can't enforce egress, so proxied environments don't start there.
+- **Per environment (admin):** `egress: {mode: allowlist, presets: [packages], allow: [docs.python.org]}`. A repo policy can add hosts and tighten the mode (`hangar repo set acme/app --egress-mode none`).
+- **`HANGAR_EGRESS_DEFAULT` (optional):** `allowlist` makes every environment that doesn't set a mode proxied. Turn it on only after the URL above works, and after checking what each environment's agents need.
+
+Agents ask for a missing host with `hangar-agent env request egress HOST`, which waits for you in `hangar requests` and the inbox.
+
+#### 10b. Short-lived cloud credentials
+
+**Optional**; required for environments with `cloud:` ([security.md](security.md#short-lived-cloud-credentials)). Set `HANGAR_OIDC_ISSUER` if `HANGAR_PUBLIC_URL` isn't the https URL to use (AWS fetches `<issuer>/.well-known/openid-configuration` itself, so for AWS it must be public), then trust it in the cloud: a GCP workload identity pool with the JWKS from `/oidc/jwks.json` uploaded, granting `principal://…/subject/hangar:env:<env>`; or an AWS role whose trust policy checks `:sub`. Re-upload the JWKS after each `POST /api/cloud/rotate`.
+
+#### 10c. Environments that live with the repo
+
+Nothing to set: a repo opts in by committing `.hangar/environment.yaml` ([environments.md](environments.md)).
+
+- **Build secrets (required** for a repo whose file names `build_secrets`; its builds fail, naming the id, until mapped): `build_secrets: {NPM_TOKEN: npm-ci-token}` on the environment or the repo policy (admin), and preferably `hangar cred exposure npm-ci-token control_plane`.
+- **Service images (optional):** `HANGAR_ENV_SERVICE_IMAGES` lists what `services:` may run (Docker's official images by default); `HANGAR_ENV_SERVICES_MAX_CPUS` and `_MAX_MEMORY_GB` (2 and 2) bound them per sandbox.
+
+#### 10d. Preview ports
+
+**Optional** (off until set). A registrable domain of its own, not a subdomain of your company's or hangar's, with wildcard DNS pointing at hangar, and on GKE a wildcard certificate for `*.<domain>` on hangar's ingress and `deploy/k8s/e2b.yaml`'s `allow-hangar-sandbox-ports` NetworkPolicy:
+
+```bash
+hangar config set HANGAR_PREVIEW_DOMAIN hangar-preview.example.net    # restart
+```
+
+#### 10e. The agent's computer
+
+Nothing to set: an environment opts in with `computer: true` (its image gets a layer). **Optional:** `HANGAR_PR_MEDIA_LINKS=signed` embeds screenshots and demos in PRs through expiring links anyone holding them can open; leave it `off` for private repos.
+
+### 11. Deploying with deploy.yml
+
+**Optional**; required to deploy through `.github/workflows/deploy.yml` rather than `up.sh`. The setup is [below](#deploying-with-deployyml): the `production` environment with you as its required reviewer and only `main` and `v*` tags allowed; its five environment secrets; the `hangar-deploy` service account with `roles/container.clusterViewer` and a Role on the `hangar` Deployment.
+
+### 12. Clients and proof
+
+- **claude.ai users remove the hangar connector and add it again** (Settings → Connectors): the apps never refetch the tool list ([clients.md](clients.md)). CLIs refetch it when a session starts. Wave 2 adds no MCP tools (the inbox is a resource, and requests ride on `pending_approvals` and `answer_approval`).
+- `bash scripts/acceptance/gke.sh` runs the checks from the overnight guide's [§5](#5-prove-it-on-your-cluster) plus `mcp` (`create_sandbox` over MCP on a multi-harness environment within claude.ai's 230 s, a second create whose client gives up after 5 s still comes up, then `exec`), `power` (a create refused while the pools are off) and `warmstart` (a warm and a cold create, timed). It prints the server's version with its tool-list hash.
 - `uv run hangar images plan --registry "$REG"` exits 0, and `hangar pack list` shows each pack's locked and installed version.
+- The first 09:50 power-up should report `prepull.ready: true` in `hangar power`.
 
 ### Rolling back this release
 
 In this order:
 
 1. **Remove members first** (`hangar person rm <id>`, which revokes their tokens). The previous version has no people: every `mcp` token would see and act on everyone's work, and `user` tokens are refused.
-2. **Hand archived sandbox records back.** The previous version runs on the upgraded file (it ignores the archive table and keeps the indexes up to date), but it can't see archived records:
+2. **Disarm landing.** `hangar repo set REPO --land manual` on each landing repo, and disable auto-merge on any agent PR the inbox shows as approved: the previous version doesn't disarm on a push.
+3. **Know what goes open.** The previous version ignores `egress`, `cloud`, `build_secrets`, `computer`, `services` and `ports`: proxied environments lose their allowlist as the previous version rewrites their templates and starts their sandboxes, cloud tokens stop being minted, and secret scanning stops. Take sensitive environments out of service first.
+4. **Hand archived sandbox records back.** The previous version runs on the upgraded file (it ignores the archive table and keeps the indexes up to date), but it can't see archived records:
    ```bash
    kubectl -n hangar exec deploy/hangar -- python3 -c "import sqlite3; db = sqlite3.connect('/data/hangar.db'); \
    db.execute('INSERT OR IGNORE INTO sandboxes(key, data) SELECT key, data FROM sandboxes_archive'); db.commit()"
    ```
-3. **Set `HANGAR_JOB_CONCURRENCY` back to 4** if you raised it: the previous version has no job budgets or daily caps.
-4. **Suspend live sessions** (as `power.sh down` does), or let running turns finish.
-5. **Put the previous image back:**
+5. **Set `HANGAR_JOB_CONCURRENCY` back to 4** if you raised it: the previous version has no job budgets or daily caps.
+6. **Suspend live sessions** (as `power.sh down` does), or let running turns finish.
+7. **The power schedule:** set `power_up_cron = "0 10 * * *"` and `sandbox_warm_nodes = 0`, and `terraform apply`. The old `power.sh` is in the old checkout; the Cloud Run jobs embed whichever script the last apply read.
+8. **Put the previous image back:**
    ```bash
    kubectl -n hangar set image deploy/hangar hangar="$(cat ~/.hangar/pre-upgrade-image)"
    kubectl -n hangar rollout status deploy/hangar
    ```
 
-What stays: the node pool (the previous version runs on it unchanged), the database, every session and checkpoint, and the old pack tags in Artifact Registry, which the previous version mounts by tag as before. What the previous version ignores: repo policies, budgets, `person` on records, `packinfo` digests, the drain (the new `power.sh` treats its 404 as settled) and the stale-tool-list records. GitHub replay marks are compatible both ways. The next upgrade archives the records again.
+What stays: the node pool (the previous version runs on it unchanged), the database, every session and checkpoint, and the old pack tags in Artifact Registry, which the previous version mounts by tag as before. What the previous version ignores: repo policies, budgets, `person` on records and the owners the migration set (every credential is shared again: remove members first, step 1), `packinfo` digests, the drain (the new `power.sh` treats its 404 as settled), the stale-tool-list records, links, environment builds and requests. GitHub replay marks are compatible both ways. The next upgrade archives the records again; the credential migration doesn't run twice.
+
+## Deploying with deploy.yml
+
+`.github/workflows/deploy.yml` runs by hand (*Actions → deploy → Run workflow*) or on a `v*` tag:
+
+1. **Images.** It calls `images.yml`, which builds every environment image and harness pack tag the commit needs ([gke.md](gke.md#images-and-packs-built-in-ci)), and builds and pushes the control-plane image, `<registry>/control-plane:<sha>`, by digest.
+2. **Approval.** The deploy job uses the `production` environment, so it waits for a required reviewer (the owner) to approve it ([deployments and environments][envs]).
+3. **Preflight.** It reads hangar's power state and **refuses while the sandbox pools are powered down** (the checks need sandboxes) unless the run's `force` input is set; a forced deploy runs only the checks that need no sandbox (`doctor`, `power`, `metrics`). It lists the server's MCP tools and records the running image and the doctor checks already failing.
+4. **Drain**, then `kubectl set image deploy/hangar hangar=<image>`, `kubectl rollout status`, and `/healthz` through the public URL.
+5. **Acceptance:** `scripts/acceptance/gke.sh --no-kubectl --skip model,steer,gateway`, so every check talks to hangar's REST, MCP and E2B endpoints, including #86's MCP deadline check; none uses kubectl.
+6. **Run summary:** the server version before → after (`<version>+tools.<hash>`), the MCP tools added and removed, each check's result, and the warm and cold create times.
+7. **On any failure after the image changed**, a cancelled or timed-out run included: `kubectl set image` back to the image it replaced (recorded in step 3; not `rollout undo`, which would go one revision further back when the run redeployed the running image), wait for it, and fail the run. A `doctor` check that already failed before the deploy (step 3 records them) is reported in the summary and doesn't roll back: a rollback can't fix it, and would block every deploy, the fix included. Either way it records the result in hangar (`POST /api/admin/deploys`), which `hangar doctor` and `hangar power` show.
+
+Until the repository secrets below exist (or on a fork) it skips with a notice and stays green. The deploy's own secrets are **`production` environment secrets**, which GitHub releases to a job only once the required reviewer approves it. As repository secrets, any workflow on any branch could read the admin token, and the approval would gate nothing.
+
+| Secret | Where | Value |
+| --- | --- | --- |
+| `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT`, `HANGAR_REGISTRY` | repository | shared with `images.yml` ([gke.md](gke.md#images-and-packs-built-in-ci)); `GCP_SERVICE_ACCOUNT` pushes the control-plane image, and never deploys |
+| `GCP_DEPLOY_SERVICE_ACCOUNT` | `production` | `hangar-deploy@<project>.iam.gserviceaccount.com`, impersonable only from the `production` environment, with only what a deploy needs (below). Required: there is no fallback to `GCP_SERVICE_ACCOUNT`, which every branch's workflows can impersonate |
+| `GKE_CLUSTER`, `GKE_LOCATION` | `production` | the cluster's name and zone (`hangar`, `us-central1-a`; `terraform output get_credentials`) |
+| `HANGAR_URL` | `production` | `https://<your hangar>` |
+| `HANGAR_DEPLOY_TOKEN` | `production` | an admin token for the acceptance checks and the deploy record: `hangar token create deploy --scope admin` |
+
+First, in *Settings → Environments*, create `production`, add yourself under *Required reviewers*, and under *Deployment branches and tags* allow only `main` and `v*` tags. Required reviewers need a public repository, or GitHub Enterprise for a private one ([deployments and environments][envs]). Then, as a project owner, after the images setup in gke.md (same `PROJECT`, `NUM`, `REPO`):
+
+```bash
+gcloud iam service-accounts create hangar-deploy --project "$PROJECT"
+# IAM: only enough to fetch the cluster's credentials (container.clusters.get); what it may do inside the cluster
+# comes from the Role below, in the hangar namespace only
+gcloud projects add-iam-policy-binding "$PROJECT" --role roles/container.clusterViewer \
+  --member "serviceAccount:hangar-deploy@$PROJECT.iam.gserviceaccount.com"
+kubectl apply -f - <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: hangar-deploy, namespace: hangar}
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [hangar]
+    verbs: [get, watch, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: hangar-deploy, namespace: hangar}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: hangar-deploy}
+subjects:
+  - {kind: User, name: hangar-deploy@$PROJECT.iam.gserviceaccount.com}
+EOF
+# Only jobs in the production environment (subject repo:OWNER/REPO:environment:production) may act as it
+gcloud iam service-accounts add-iam-policy-binding "hangar-deploy@$PROJECT.iam.gserviceaccount.com" --project "$PROJECT" \
+  --role roles/iam.workloadIdentityUser \
+  --member "principal://iam.googleapis.com/projects/$NUM/locations/global/workloadIdentityPools/github/subject/repo:$REPO:environment:production"
+gh secret set GCP_DEPLOY_SERVICE_ACCOUNT --env production --body "hangar-deploy@$PROJECT.iam.gserviceaccount.com"
+gh secret set GKE_CLUSTER --env production --body hangar
+gh secret set GKE_LOCATION --env production --body "$(terraform -chdir=deploy/terraform/gke output -raw get_credentials | sed -E 's/.*--zone ([^ ]+).*/\1/')"
+gh secret set HANGAR_URL --env production --body "https://<your hangar>"
+hangar token create deploy --scope admin | tail -1 | gh secret set HANGAR_DEPLOY_TOKEN --env production
+```
+
+Moving from an earlier setup of this workflow: set the four secrets above with `--env production`, delete the repository copies (`gh secret delete HANGAR_DEPLOY_TOKEN`, and the others), and replace `roles/container.developer` with the binding above. That role reads every Secret and can exec into every pod in every cluster of the project, which a deploy doesn't need, and a deploy run executes the commit's dependencies (`uv sync`) with it.
+
+The deploy needs `get`, `watch` and `patch` on the `hangar` Deployment (`kubectl get`, `set image`, `rollout status`) and `container.clusters.get` to fetch credentials ([GKE roles][gkeroles], [RBAC on GKE: a service account is a `User` subject named by its email, and `container.clusters.get` authenticates without authorizing anything in the cluster][gkerbac]). The kubeconfig `get-gke-credentials` writes holds a token that lasts an hour, so the workflow fetches a fresh one before a rollback.
+
+[envs]: https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments
+[gkeroles]: https://docs.cloud.google.com/iam/docs/roles-permissions/container
+[gkerbac]: https://docs.cloud.google.com/kubernetes-engine/docs/how-to/role-based-access-control
 
 ## Upgrading from before the overnight stack (#48–#69)
 
-This guide takes a hangar that runs the version before the overnight stack (main at `2e3e0a3`, "Merge pull request #43") to the top of the stack, PRs #48–#69. From there, continue with [this release](#upgrading-to-the-team-release-7590). It is written for the GKE install from [gke.md](gke.md): one zonal cluster, gVisor sandboxes, the control plane with SQLite on the `hangar-data` PVC, checkpoints in the session bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / `power.sh`. [CHANGELOG.md](../CHANGELOG.md) lists what the stack adds.
+This guide takes a hangar that runs the version before the overnight stack (main at `2e3e0a3`, "Merge pull request #43") to the top of the stack, PRs #48–#69. From there, continue with [this release](#upgrading-to-the-team-release-75100). It is written for the GKE install from [gke.md](gke.md): one zonal cluster, gVisor sandboxes, the control plane with SQLite on the `hangar-data` PVC, checkpoints in the session bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / `power.sh`. [CHANGELOG.md](../CHANGELOG.md) lists what the stack adds.
 
 Checkpoints are in the bucket only if `hangar-site` names it, as terraform's comment on the bucket says to. Check before you start; a few things below differ when it prints nothing:
 
@@ -355,8 +574,10 @@ Each check prints PASS, FAIL or SKIP with its time:
 | `e2b` | the stock `e2b` SDK (if installed: `uv sync --extra e2b`) with a `sandboxes` token: create, run, files, list, kill |
 | `backup` | `hangar admin backup` now and in the list, stored in `gs://` |
 | `metrics` | `/metrics` serves hangar's series, and a `metrics` token reads it and nothing else |
+| `power` | hangar's power state answers. With the sandbox pools on: what the last power-up pulled and the warm pools. With them off: a create is refused at once (HTTP 503) with when they're back |
+| `warmstart` | two creates back to back on `--warm-env` (default `claude-python`, which keeps a warm pool): the first claims the warm pod, the second starts cold; both times are printed, and `--record FILE` keeps them as JSON lines |
 
-The script never runs `power.sh`. To check power down and up: `bash deploy/gke/power.sh down`, then `power.sh up`, then run the script again. Everything the script creates is named `accept-<run>` and is removed at the end, also after a failure or Ctrl-C (`--keep` leaves it). `tests/test_acceptance_script.py` runs the script against a hangar on Docker, with GitHub replaced by a local git server behind the gateway. Every check but `k8s` and `steer` runs there for real, `model` with a scripted agent in place of Claude. `k8s`, `steer` and the in-cluster exec measurement run against stand-ins: a fake kubectl, a fake API, and the Docker provider in place of the Kubernetes one.
+The script never runs `power.sh`. To check power down and up: `bash deploy/gke/power.sh down`, run the script (`power` then checks the refusal), then `power.sh up` and run it again. Everything the script creates is named `accept-<run>` and is removed at the end, also after a failure or Ctrl-C (`--keep` leaves it). `tests/test_acceptance_script.py` runs the script against a hangar on Docker, with GitHub replaced by a local git server behind the gateway. Every check but `k8s` and `steer` runs there for real, `model` with a scripted agent in place of Claude. `k8s`, `steer` and the in-cluster exec measurement run against stand-ins: a fake kubectl, a fake API, and the Docker provider in place of the Kubernetes one.
 
 ### 6. Rolling back
 

@@ -26,6 +26,10 @@ import time
 import uuid
 from pathlib import Path
 
+from hangar import (
+    egress,  # --- egress
+    envservices,  # --- envbuilds
+)
 from hangar.config import Settings
 from hangar.envd import OFF, SKIP, KubernetesEnvd, Off  # --- envd
 from hangar.envspec import BuildContext, EnvSpec
@@ -224,7 +228,7 @@ class KubernetesProvider(Provider):
     async def _cloud_build(self, ctx: BuildContext, tag: str, log: LogFn | None) -> None:
         await cloud_build(ctx, tag, log, self.settings.k8s_build_service_account)  # --- images: shared with the CLI
 
-    def _pod_template(self, spec: EnvSpec, image: str) -> dict:
+    def _pod_template(self, spec: EnvSpec, image: str, dns: dict | None = None) -> dict:
         s = self.settings
         res = spec.resources
         pod: dict = {
@@ -272,7 +276,15 @@ class KubernetesProvider(Provider):
                 pod["nodeSelector"] = {"hangar.dev/runtime": "kata"}
                 pod["tolerations"] = [{"key": "hangar.dev/runtime", "operator": "Equal", "value": "kata",
                                        "effect": "NoSchedule"}]
+        envservices.add_sidecars(pod, spec, s.k8s_cpu_request_fraction)  # --- envbuilds: services as sidecars
+        services_hosts = list(pod.get("hostAliases") or [])
         labels = {**MANAGED, "dev.hangar/env": spec.name}
+        if egress.proxied(s, spec):  # --- egress: left out of the internet baseline (deploy/k8s/gateway.yaml)
+            labels[egress.K8S_LABEL] = "proxied"
+            pod.update(dns or {})  # --- review(egress): no resolver, hangar's names in /etc/hosts (egress.k8s_pod_dns)
+            # integration (#97 + #99): the services' names (127.0.0.1) stay in /etc/hosts beside hangar's own
+            if hosts := [*services_hosts, *(dns or {}).get("hostAliases", [])]:
+                pod["hostAliases"] = hosts
         if s.k8s_pod_snapshots and rc == "gvisor":
             # Pod snapshots need gVisor, a KSA with access to the snapshot bucket, and the policy's label.
             labels.update(SNAPSHOT_LABEL)
@@ -310,9 +322,18 @@ class KubernetesProvider(Provider):
         name = f"hangar-{spec.name}"
         meta = {"name": name, "labels": {**MANAGED, "dev.hangar/env": spec.name},
                 "annotations": {"dev.hangar/image": image}}
+        dns = None
+        if egress.proxied(self.settings, spec):  # --- review(egress): kube-dns would be a tunnel out
+            try:
+                dns = await asyncio.to_thread(egress.k8s_pod_dns, self.settings)
+            except egress.EgressError as e:
+                raise ProviderError(str(e)) from e
+        tspec: dict = {"podTemplate": self._pod_template(spec, image, dns)}
+        if egress.proxied(self.settings, spec):  # --- egress: not Agent Sandbox's default policy (public internet)
+            tspec["networkPolicy"] = egress.k8s_template_policy()
         await self._apply("sandboxtemplates", {
             "apiVersion": f"{EXT_GROUP}/{EXT_V}", "kind": "SandboxTemplate", "metadata": dict(meta),
-            "spec": {"podTemplate": self._pod_template(spec, image)},
+            "spec": tspec,
         })
         await self._apply("sandboxwarmpools", {
             "apiVersion": f"{EXT_GROUP}/{EXT_V}", "kind": "SandboxWarmPool", "metadata": dict(meta),
@@ -324,7 +345,9 @@ class KubernetesProvider(Provider):
     async def create(self, sandbox: Sandbox, image: str, spec: EnvSpec | None = None) -> None:
         if spec is None:
             raise ProviderError("kubernetes provider needs the environment spec to create a sandbox")
-        key = (image, spec.warm_pool, tuple(sorted(spec.packs.items())))
+        key = (image, spec.warm_pool, tuple(sorted(spec.packs.items())),
+               egress.proxied(self.settings, spec),  # --- egress: a mode change re-applies the template
+               envservices.digest(spec.services))  # --- envbuilds: a change of sidecars re-applies the template
         if self._synced.get(spec.name) != key:
             await self.sync_warm_pool(spec, image)  # idempotent; keeps template image and packs current
             self._synced[spec.name] = key

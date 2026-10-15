@@ -20,12 +20,21 @@ from typing import Any
 
 import hangar.identity as identity  # --- identity
 import hangar.people as people  # --- identity
+from hangar import cloudcreds as cloudcreds  # --- egress
+from hangar import egress as egress  # --- egress
+from hangar import envbuilds as envbuilds  # --- envbuilds
+from hangar import envdoctor as envdoctor  # --- computer
+from hangar import envservices as envservices  # --- envbuilds
 from hangar import exchange, harden, images, isolation, observe  # --- observe, isolation, harden, images
 from hangar import fairness as fairness  # --- scale
 from hangar import metrics as metrics  # --- reconciler
+from hangar import power as power  # --- ops: the sandbox pools' power schedule
 from hangar import reconciler as reconciler  # --- reconciler
+from hangar import supervisor as supervisor  # --- envbuilds
+from hangar import teamcreds as teamcreds  # --- teamcreds
 from hangar.broker import AUTH_FILE_LIMIT, Broker, CredentialError
 from hangar.config import Settings
+from hangar.egress_proxy import EgressProxy  # --- egress
 from hangar.envspec import BuildContext, EnvCatalog, EnvSpec, render, repo_dirname, warm_pool_now
 from hangar.gateway import Gateway
 from hangar.harnesses import (
@@ -75,6 +84,10 @@ ARCHIVE_WRITE_COST = 2
 
 class FleetError(RuntimeError):
     pass
+
+
+class PoweredDown(FleetError):  # --- ops
+    """The sandbox pools are powered down (power.py): the create is refused at once, saying when they're back."""
 
 
 def _slug(s: str) -> str:
@@ -170,10 +183,13 @@ class Fleet:
         self.closing = asyncio.Event()
         # --- workstream F: git gateway. Grants for sandboxes in credential_mode: gateway (spec 0003).
         self.gateway = Gateway(self)
+        self.egress = EgressProxy(self)  # --- egress: the hostname-allowlist proxy (egress_proxy.py)
+        self.cloud = cloudcreds.Issuer(self)  # --- egress: short-lived cloud credentials (cloudcreds.py)
         self.tier_down: dict[str, float] = {}  # --- providers-e2b: provider -> monotonic time it may be tried again
         # --- scale: B12. Workspace archives in the control plane's memory at once (snapshots, forks, restores).
         self.archive_memory = MemoryBudget(settings.workspace_transfer_mb * 1024 * 1024)
         self.reconciler = reconciler.Reconciler(self)  # --- reconciler: rows a restart left unfinished, replaced pods
+        self.power = power.Power(store, settings)  # --- ops: creates on powered-down pools answer at once
 
     # ================================================================== setup
     async def start(self) -> None:
@@ -186,11 +202,13 @@ class Fleet:
         await self.reconciler.run(boot=True)  # --- reconciler: before sessions and jobs look at their sandboxes
         self.reconciler.start()
         self._reaper = asyncio.create_task(self._reaper_loop())
+        self.cloud.start()  # --- egress: renews sandboxes' cloud tokens
 
     async def stop(self) -> None:
         if self._reaper:
             self._reaper.cancel()
         await self.reconciler.stop()  # --- reconciler: destroys in flight get a moment to finish
+        await self.cloud.stop()  # --- egress
         for t in self._pack_builds.values():
             t.cancel()
         for p in self.providers.values():
@@ -650,6 +668,7 @@ class Fleet:
         spec = self.catalog.get(environment)
         pname = provider or self.settings.default_provider
         prov = self.provider(pname)
+        self.power.check(pname)  # --- ops: the pools are off for the night: say when, don't wait for a node
         try:
             hname = spec.pick_harness(harness)
         except ValueError as e:
@@ -661,8 +680,10 @@ class Fleet:
             cred_names = [c for c in dict.fromkeys(spec.credentials)
                           if self._cred_harness(c) in (hname, None) or not self._is_agent(self._cred_harness(c))]
         # --- identity: never another person's credential; the person's own one for this harness when they have it
-        cred_names = people.credentials_for(self.store, cred_names, person, hname, credentials is not None,
-                                            self._is_agent)
+        # --- teamcreds: else the team's (the repo policy's `credentials`), waiting while every login is leased.
+        # Nothing awaits from here to broker.acquire, so the free login it picks is still free there.
+        cred_names = await teamcreds.for_sandbox(self, cred_names, person, hname, credentials is not None,
+                                                 repo or (spec.repo.url if spec.repo else None), progress)
         for c in [*cred_names, *spec.secrets.values()]:
             self.broker.get(c)  # fail fast on typos
         for c in spec.secrets.values():  # --- identity: and on control-plane credentials mapped in (B4)
@@ -703,7 +724,12 @@ class Fleet:
             creds = self.broker.acquire(cred_names, sb.id)  # fail before starting anything
             sb.state = SandboxState.STARTING
             self.store.put(sb)
-            image = _image or await self._ensure_image(spec, pname, actor, hname, stage=stage)
+            # --- envbuilds: the repo's last good build of this environment, when it has one (envbuilds.py)
+            build = None if _image or _skip_repo else await envbuilds.of(self).pick(spec, pname, hname, sb, stage)
+            image = _image or (build.image if build else None) or \
+                await self._ensure_image(spec, pname, actor, hname, stage=stage)
+            if not _image:  # --- envbuilds: the services it starts with (Kubernetes sidecars, Docker containers)
+                envservices.prepare(self, spec, sb, build.build.config if build and build.build else None)
             sb.image = image
             pack_started, last_stage = time.monotonic(), 0.0
 
@@ -721,7 +747,8 @@ class Fleet:
                     sb.info["harness_version"] = v
             stage("starting the sandbox")
             with observe.span("sandbox.start", {"hangar.sandbox.id": sb.id, "hangar.provider": pname}):  # --- observe
-                await prov.create(sb, image, self._warm(spec))  # image may be a snapshot ref (forks)
+                # image may be a snapshot ref (forks); --- envbuilds: a build's own template on Kubernetes
+                await prov.create(sb, image, envbuilds.EnvBuilds.provider_spec(self._warm(spec), sb))
             self.store.put(sb)
             await self._wait_running(prov, sb, stage=stage)
             if _parent:
@@ -734,11 +761,18 @@ class Fleet:
             elif sb.repo:
                 stage(f"cloning {repo_dirname(sb.repo)}")
                 await self._setup_repo(prov, sb, spec, work_branch, stage=stage)
+                # --- envbuilds: the repo's config: the supervisor, the agent's instructions, a rebuild if behind
+                await envbuilds.of(self).after_setup(prov, sb, spec, hname, stage)
+                # integration (#93 + #94): the doctor's status file carries what the repo's config just added
+                # (services, programs, setup failures, the build), not only what the claim knew
+                await envdoctor.write_status(prov, sb, f"/home/{self.settings.sandbox_user}",
+                                             envdoctor.build_status(self.settings, sb, spec, fleet=self))
             sb.info.pop("stage", None)
             sb.state = SandboxState.RUNNING
             sb.error = None
             self._touch(sb)
-            if spec.warm_pool and pname in self.providers and _image is None:
+            # --- ops: + the day's size; --- envbuilds: never from a repo build's image
+            if self._warm(spec).warm_pool and pname in self.providers and _image is None and not build:
                 asyncio.create_task(self._refill(self._warm(spec), pname, image))
             self.reconciler.disown(sb.id)  # --- reconciler
             return sb
@@ -788,9 +822,13 @@ class Fleet:
             extra_env["HANGAR_HARNESS"] = h.name
         for var, cred in spec.secrets.items():
             extra_env[var] = self.broker.sandbox_secret(cred)  # --- identity: refuses control-plane credentials
+        extra_env.update(await egress.attach(self, prov, sb, spec))  # --- egress: HTTPS_PROXY in a proxied env
+        extra_env.update(await self.cloud.attach(prov, sb, spec))  # --- egress: cloud OIDC tokens, no stored keys
         # workstream E: the `hangar-agent` helper (context exchange), installed per sandbox: no image rebuild
         await exchange.install_helper(prov, sb, f"/home/{self.settings.sandbox_user}")
+        await supervisor.install(prov, sb, f"/home/{self.settings.sandbox_user}")  # --- envbuilds: `hangar-agent svc`
         prelude.append(exchange.PATH_LINE)
+        await envdoctor.install(self, prov, sb, spec, h, extra_env)  # --- computer: hangar-env, the display, status
         env = await self.broker.inject(sb, prov, creds, extra_env=extra_env, prelude=prelude)
         if not h:
             return
@@ -798,6 +836,7 @@ class Fleet:
         for rel, patch in h.config.items():
             await self._merge_json(prov, sb, f"{home}/{rel}", patch)
         servers = {n: s for n, s in spec.mcp.items() if s.harnesses is None or h.name in s.harnesses}
+        servers.update(envdoctor.builtin_mcp(spec, self.settings, home))  # --- computer: hangar-env, browser
         resolved = {}
         for n, srv in servers.items():
             missing: set[str] = set()
@@ -843,7 +882,7 @@ class Fleet:
 
     def _warm(self, spec: EnvSpec) -> EnvSpec:
         """The spec with the warm pool size that applies now (warm_pool_hours schedules it to 0 off-hours)."""
-        n = warm_pool_now(spec)
+        n = max(warm_pool_now(spec), self.power.warm_for(spec.name))  # --- ops: sized for the day at power-up
         return spec if n == spec.warm_pool else spec.model_copy(update={"warm_pool": n})
 
     async def sync_scheduled_pools(self) -> None:
@@ -881,6 +920,8 @@ class Fleet:
                 await self._ensure_image(spec, pname, "prebuild")
                 await self._resolve_packs(spec, pname, "prebuild")
                 log.info("prebuild: %s ready on %s", name, pname)
+                if stale := envbuilds.of(self).refresh(name, pname):  # --- envbuilds: repo builds on its old image
+                    log.info("prebuild: rebuilding %s's repo builds on its new image: %s", name, ", ".join(stale))
             except Exception as e:  # noqa: BLE001
                 log.warning("prebuild of %s failed: %s", name, e)
 
@@ -933,8 +974,11 @@ class Fleet:
         dest = (spec.repo.path if spec.repo and spec.repo.path and spec.repo.url == sb.repo else None) or \
             f"{ws}/{repo_dirname(sb.repo)}"
         baked = bool(spec.repo and spec.repo.bake and spec.repo.url == sb.repo)
+        prebuilt = envbuilds.EnvBuilds.prebuilt(sb)  # --- envbuilds: the repo's build holds its checkout, installed
         q = shlex.quote
-        if baked:
+        if prebuilt:  # --- envbuilds
+            script = envbuilds.EnvBuilds.checkout_script(sb, dest)
+        elif baked:
             script = f"cd {q(dest)} && git fetch --all --prune -q"
             if sb.branch:
                 script += f" && git checkout -q {q(sb.branch)} && git pull -q --ff-only || true"
@@ -945,7 +989,7 @@ class Fleet:
         res = await prov.exec(sb, script, timeout=600)
         if res.exit_code != 0:
             raise FleetError(f"repo setup failed: {(res.stderr or res.stdout)[-800:]}")
-        setup = spec.repo.setup if spec.repo and spec.repo.url == sb.repo and not baked else None
+        setup = spec.repo.setup if spec.repo and spec.repo.url == sb.repo and not baked and not prebuilt else None
         if setup and stage:
             stage(f"running the repo's setup: {setup[:80]}")
         if setup:
@@ -1465,7 +1509,7 @@ class Fleet:
         self.audit(actor, "credential.login_start", credential_name, harness=harness, sandbox=sb.id)
         return {**self.logins[login_id], "instructions": flow.notes or "Complete the login in the terminal."}
 
-    async def complete_login(self, login_id: str, actor: str = "system") -> Credential:
+    async def complete_login(self, login_id: str, actor: str = "system", person: str | None = None) -> Credential:
         lg = self.logins.get(login_id)
         if not lg:
             raise FleetError(f"no login session {login_id}")
@@ -1486,7 +1530,8 @@ class Fleet:
             raise FleetError("login not finished yet: no token/credential file found. Finish the flow in the "
                              "terminal, then complete again.")
         cred = self.broker.put(lg["credential"], lg["harness"], kind, value,
-                               description=f"{h.title} login captured {time.strftime('%Y-%m-%d')}")
+                               description=f"{h.title} login captured {time.strftime('%Y-%m-%d')}",
+                               person=person)  # --- teamcreds: the login is its person's own, not the team's
         await self.destroy(lg["sandbox"], actor=actor)
         self.logins.pop(login_id, None)
         self.audit(actor, "credential.login_complete", cred.name, harness=lg["harness"])
@@ -1543,6 +1588,7 @@ class Fleet:
                 await asyncio.gather(*(self.destroy(sb.id, actor="reaper") for sb in expired),
                                      return_exceptions=True)
                 await self.sync_scheduled_pools()  # --- reconciler: reconcile runs on its own task now
+                await envservices.sweep(self)  # --- envbuilds: services whose sandbox is gone (Docker)
                 metrics.loop_tick("reaper")  # --- reconciler: heartbeat
             except asyncio.CancelledError:
                 return
@@ -1564,7 +1610,7 @@ class Fleet:
             "credentials": len(self.broker.list()),
             "harnesses": {k: {"title": v.title, "agent": v.agent, "version": v.version or "latest",
                               "deprecated": v.deprecated} for k, v in HARNESSES.items()},
-        }
+        } | self.power.overview()  # --- ops: power, the last deploy, the background loops
 
 
 __all__ = ["Fleet", "FleetError", "CredentialError", "CredentialKind"]

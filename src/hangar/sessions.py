@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 from hangar import cache as caching  # --- overnight/cache: prompt-cache TTL, one model per session, siblings
 from hangar import ckpt, exchange, isolation, observe  # --- observe, isolation
+from hangar import computer as computer  # --- computer
 from hangar import fairness as fairness  # --- scale
 from hangar import hot_resume as hot_resume  # --- providers-e2b
 from hangar import metrics as metrics  # --- reconciler
@@ -139,6 +140,7 @@ class SessionService:
         self.activity = Activity(self.settings, fleet.broker.redact)  # workstream C: events, usage, budgets
         # --- overnight/sweep: called with a session just before it is deleted (jobs keep its usage); must not raise
         self.on_delete: list[Callable[[Session], None]] = []
+        self.env_requests: Any = None  # --- computer: envrequests.EnvRequests, wired by the app
 
     # ================================================================== lifecycle
     async def start(self) -> None:
@@ -232,6 +234,7 @@ class SessionService:
         if (context or schema) and not req.message:
             raise SessionError("context and output_schema go with a message for the agent")
         fairness.check_sessions(self, owner, person=person)  # --- scale: live sessions per person
+        self.fleet.power.check(None)  # --- ops: no session that can't start until morning
         s = Session(name=req.name, title=(req.title or (req.message or req.name).strip().splitlines()[0])[:200],
                     owner=owner, environment=env, harness=harness, model=req.model,
                     repo=req.repo or (spec.repo.url if spec.repo else None), base_branch=req.base_branch,
@@ -273,6 +276,7 @@ class SessionService:
         if self.busy(s.id) or (live and s.state in SESSION_LIVE):
             return s
         fairness.check_sessions(self, s.owner, s)  # --- scale: resuming takes a sandbox
+        self.fleet.power.check(s.provider)  # --- ops
         self._busy.add(s.id)
         self._set(s, SessionState.STARTING, f"opened by {requester}")
         self.fleet.audit(requester, "session.open", s.id)
@@ -308,6 +312,7 @@ class SessionService:
             raise SessionError(f"session {s.name} is busy ({s.state}); wait for it to finish, or interrupt it")
         if not (s.sandbox_id and self._alive(s.sandbox_id)):
             fairness.check_sessions(self, s.owner, s)  # --- scale: resuming takes a sandbox
+            self.fleet.power.check(s.provider)  # --- ops: the message stays unsent, not a failed turn
         warning = caching.switch_model(self, s, model, requester)  # --- overnight/cache
         self.start_turn(s, message, requester, context, output_schema)
         if warning:
@@ -386,6 +391,8 @@ class SessionService:
             t.pop("event_cursor", None)
         d["usage"] = u.model_dump(mode="json") if (u := total_usage(s.turns)) else None
         d["pending_approvals"] = [a.model_dump(mode="json") for a in steering.pending(s)]  # workstream steer
+        if self.env_requests is not None:  # --- computer: the agent's requests, answered like approvals
+            d["pending_approvals"] += self.env_requests.approvals_view(s)
         return exchange.scrub_turns(d)  # workstream E: attachment contents never leave in a view
 
     @staticmethod
@@ -922,6 +929,8 @@ class SessionService:
             if over := await watch.poll():  # workstream C
                 outcome = "over_budget"
                 break
+            if self.env_requests is not None:  # --- computer: what the agent asks its owner for, while it works
+                await self.env_requests.tick(s, turn)
         turn.finished_at = now()
         if outcome == "exited" and turn.exit_code == 130:  # --- workstream steer: stopped by an interrupt
             outcome = "interrupted"
@@ -960,6 +969,9 @@ class SessionService:
         await watch.finish()  # workstream C: whatever the last polls missed
         # workstream E: result, question (-> needs_input), artifacts; before the checkpoint so it has them all
         outcome = await exchange.after_turn(self, s, turn, outcome)
+        if self.env_requests is not None:  # --- computer: the last requests, and screenshots/demos as events
+            await self.env_requests.scan(s, turn)
+        computer.note_media(self, s, turn)
         try:
             async with self._locks[s.id]:
                 await self._checkpoint(s, "turn")

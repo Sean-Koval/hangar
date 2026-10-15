@@ -23,7 +23,7 @@ hangar doctor --fix                                                         # ap
 - recent failed sandbox starts (quota);
 - the GitHub token's access to each mapped repo;
 - the webhook secret;
-- that each mapped repo has an active JSON webhook to hangar with the events hangar handles (issues, issue_comment, pull_request_review_comment, pull_request_review, check_run, check_suite and status);
+- that each mapped repo has an active JSON webhook to hangar with the events hangar handles (issues, issue_comment, pull_request_review_comment, pull_request_review, check_run, check_suite, status and pull_request);
 - that each mapped environment exists, has credentials, and is built;
 - Slack, when configured: its credentials, the bot token, and that each mapped channel's repo is allowed;
 - that checkpoint storage is writable.
@@ -134,7 +134,7 @@ The wizard:
    - **What it's for:** the control plane uses it to comment and open PRs; it never goes into a sandbox.
 2. **Stores** the token as `gh-control` and a generated webhook secret as `gh-webhook` in the vault. Running the wizard again keeps the secret. `--rotate-secret` makes a new one and stores it only once every repo's webhook has it: if GitHub refuses one (a token with *Webhooks*: Read only), the hooks already changed are set back and the old secret stays, so deliveries keep verifying.
 3. **Saves** `HANGAR_GITHUB_TOKEN_CREDENTIAL`, `HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL` and `HANGAR_GITHUB_REPOS` in hangar's database. They apply at once and survive redeploys, with no config map to edit. If the server's environment (on GKE, `hangar-site`) also sets one of them, the environment wins, and the wizard tells you.
-4. **Registers the webhook** on each repo, or updates the existing one: `https://<hangar>/api/hooks/github`, JSON, the stored secret, and the **issues**, **issue_comment**, **pull_request_review_comment**, **pull_request_review**, **check_run**, **check_suite** and **status** events (the last four drive [auto-fix](#7-an-agent-loop-that-finishes-the-job)). A hook that lacks any of them, such as one set up before auto-fix that sent only the first three, gets the missing events added; `hangar doctor` names them and `hangar doctor --fix` adds them.
+4. **Registers the webhook** on each repo, or updates the existing one: `https://<hangar>/api/hooks/github`, JSON, the stored secret, and the **issues**, **issue_comment**, **pull_request_review_comment**, **pull_request_review**, **check_run**, **check_suite**, **status** and **pull_request** events (`pull_request_review` through `status` drive [auto-fix](#7-an-agent-loop-that-finishes-the-job); with `pull_request` they also track [landing](landing.md)). A hook that lacks any of them, such as one set up before auto-fix that sent only the first three, gets the missing events added; `hangar doctor` names them and `hangar doctor --fix` adds them.
 5. **Tests it twice.** First with a signed delivery through hangar's own route, then with a ping from GitHub, whose result it reads back from the hook's recent deliveries.
 
 GitHub can't deliver to `localhost`. On a laptop the wizard still stores everything and skips the webhook; pass `--webhook-url https://<tunnel>` to register one through a tunnel. `--no-webhook` skips it if you'd rather add it by hand. A generated secret is never shown, so bring your own: `openssl rand -hex 32 > ~/.hangar/gh-webhook-secret`, then pass `--webhook-secret-file ~/.hangar/gh-webhook-secret`, and on GitHub use the URL, content type `application/json`, that secret, and the seven events above. Updating an existing hook keeps its other events and its SSL verification setting.
@@ -157,6 +157,10 @@ Jobs from every front door get the repo's defaults (`verify`, environment, harne
 
 `/hangar <instructions>` or `@hangar <instructions>` in a mapped channel starts a job on the channel's repo. Hangar replies in a thread when the agent starts, needs input and finishes, and a reply in the thread is a follow-up. Setup (app manifest, credentials, channel map) is in [slack.md](slack.md).
 
+## 4b. Trigger from Jira or GitHub Projects
+
+An issue moved to a configured status (or given a label) in a mapped Jira project, or an issue moved to a configured column on a GitHub Projects board, starts a job. Hangar comments on the issue when the agent starts, asks its questions there (a comment answers), and moves the ticket's status as the job goes. Setup is in [intake.md](intake.md).
+
 ## 5. Work with the agent
 
 Every job runs in a [session](sessions.md). The agent keeps its conversation between turns, and the job's sandbox, context and work in progress are checkpointed. So a reply always works:
@@ -167,7 +171,7 @@ Every job runs in a [session](sessions.md). The agent keeps its conversation bet
 
 If the sandbox was released, hangar starts a new one from the job's last checkpoint, and the agent continues where it left off.
 
-The same happens on its own after a control-plane restart (a deploy, the nightly power-down) that took the job's sandbox with it. A job caught mid-turn whose session has a checkpoint goes back to the queue with a follow-up turn that resumes from it and tells the agent the restart happened; a job caught provisioning starts over. Each job does this at most `HANGAR_JOB_RESTART_RESUMES` times, and such jobs re-enter the queue `HANGAR_JOB_RESTART_STAGGER_SECONDS` apart, so a power-up doesn't ask a cold cluster for every sandbox at once. A job with no checkpoint to resume from still fails as `interrupted`.
+The same happens on its own after a control-plane restart (a deploy) that took the job's sandbox with it, and when the nightly power-down takes the sandbox pools away under a running turn (hangar itself stays up; the job waits for power-up, [gke.md](gke.md#6-sandbox-nodes-off-at-night-optional)). A job caught mid-turn whose session has a checkpoint goes back to the queue with a follow-up turn that resumes from it and tells the agent the restart happened; a job caught provisioning starts over. Each job does this at most `HANGAR_JOB_RESTART_RESUMES` times, and such jobs re-enter the queue `HANGAR_JOB_RESTART_STAGGER_SECONDS` apart, so a power-up doesn't ask a cold cluster for every sandbox at once. A job with no checkpoint to resume from still fails as `interrupted`.
 
 - **Watch:** attach to the job's sandbox terminal from the dashboard, or with `hangar sb attach <sandbox_id>` (the run is tmux session `terminal_session`).
 - **Steer:** follow up from the API, MCP, CLI or a PR comment. Each follow-up is a new agent turn with your message and the previous summary, on the same branch. The PR updates in place. While a Claude Code or Codex turn runs, you can also steer or interrupt it, and answer its tool approvals when its environment uses `approvals: ask` (`POST /api/jobs/{id}/steer`, `/interrupt`, `/approvals`; MCP `steer_turn`, `answer_approval`; see [steering](steering.md)). An interrupt with a message carries on with it; without one, the job pauses in `needs_input` until you follow up or cancel, and nothing is delivered.
@@ -300,6 +304,7 @@ The webhook needs the `pull_request_review`, `check_run`, `check_suite` and `sta
 | `HANGAR_GITHUB_TOKEN_CREDENTIAL`, `HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL`, `HANGAR_GITHUB_REPOS`, `HANGAR_GITHUB_TRIGGER_LABEL` | | See §4 |
 | `HANGAR_GITHUB_TRUSTED`, `HANGAR_JOB_APPROVAL_TTL_HOURS`, `HANGAR_INBOUND_WEBHOOKS`, `HANGAR_SCHEDULE_POLL_SECONDS` | | See [triggers.md](triggers.md) |
 | `HANGAR_SLACK_SIGNING_SECRET_CREDENTIAL`, `HANGAR_SLACK_BOT_TOKEN_CREDENTIAL`, `HANGAR_SLACK_CHANNELS`, `HANGAR_SLACK_USERS` | | See [slack.md](slack.md) |
+| `HANGAR_JIRA`, `HANGAR_GITHUB_PROJECTS` | `{}` | See [intake.md](intake.md) |
 
 ## Security notes
 

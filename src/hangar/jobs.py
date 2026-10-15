@@ -31,6 +31,7 @@ from hangar import (  # strategies: workstream D; --- observe; steer: live turns
     baseline,  # --- frontdoor
     exchange,
     jobbudget,  # --- frontdoor
+    landing,  # --- landing
     observe,
     repopolicy,  # --- frontdoor
     scratch,  # --- frontdoor
@@ -38,10 +39,17 @@ from hangar import (  # strategies: workstream D; --- observe; steer: live turns
     strategies,
     verifyloop,
 )
+from hangar import computer as computer  # --- computer
+from hangar import envbuilds as envbuilds  # --- envbuilds
+from hangar import envdoctor as envdoctor  # --- computer
 from hangar import fairness as fairness  # --- scale
+from hangar import intake as intake  # --- intake: trackers (Jira, GitHub Projects) follow their jobs
+from hangar import people as people  # --- teamcreds: GitHub senders linked to people
 from hangar import restarts as restarts  # --- reconciler: interrupted jobs resume after a restart
+from hangar import secretscan as secretscan  # --- egress: secrets are scanned for before a push
+from hangar import teamcreds as teamcreds  # --- review: only a job's person continues it from a front door
 from hangar.events import resolve_budget, total_usage, usage_line
-from hangar.fleet import Fleet, FleetError, _clip_tail
+from hangar.fleet import Fleet, FleetError, PoweredDown, _clip_tail  # --- ops: PoweredDown
 from hangar.github import GitHub, GitHubError, parse_repo
 from hangar.models import (
     JOB_TERMINAL,
@@ -191,6 +199,7 @@ class JobService:
         from hangar.drain import Drain  # --- reconciler: power-down drain holds jobs that haven't started
 
         self.drain = Drain(self)
+        self.landing = landing.Landing(self)  # --- landing: PR state, the App identity, approval lands the PR
         if sessions is not None:  # --- overnight/sweep: a deleted session's usage stays on its job
             sessions.on_delete.append(self._session_deleted)
 
@@ -241,6 +250,7 @@ class JobService:
             if s is not None and (job.state in JOB_TERMINAL or job.state == JobState.NEEDS_INPUT):
                 self.sessions.release_restart_hold(s)
             strategies.release_restart_holds(self, job)
+        self.landing.restore()  # --- landing: end sessions of merged PRs, land what was approved
         n = fairness.job_slots(self.settings)  # --- scale: sized from capacity unless set
         self._workers = [asyncio.create_task(self._worker(i)) for i in range(n)]
         autofix.restore(self)  # --- overnight/autofix: PR triggers still waiting for their window
@@ -256,6 +266,7 @@ class JobService:
             with contextlib.suppress(BaseException):
                 await t
         self._workers = []
+        await self.landing.close()  # --- landing
 
     async def _worker(self, i: int) -> None:
         while True:
@@ -264,6 +275,8 @@ class JobService:
                 if job_id in self._active:
                     continue  # already being handled (duplicate enqueue)
                 if self.drain.hold(job_id):  # --- reconciler: draining for a power-down; queued again after
+                    continue
+                if self.fleet.power.hold(self, job_id):  # --- ops: the sandbox pools are off; queued again at power-up
                     continue
                 await self._process(job_id)
             except asyncio.CancelledError:
@@ -327,10 +340,13 @@ class JobService:
             if req.callback_secret and req.callback_secret != caller.callback_secret:
                 raise JobError("callbacks are signed with the key bound to this token; omit callback_secret")
         policy = self.policies.get(req.repo)  # --- frontdoor: job, then the repo's policy, then the environment
-        env = req.environment or repopolicy.environment(policy, allowed_envs) or \
+        # --- envbuilds: the repo's own .hangar/environment.yaml comes before its policy (`extends`, `verify`)
+        repo_cfg, repo_env = envbuilds.job_defaults(self.fleet, req.repo, allowed_envs, req.environment)
+        env = req.environment or repo_env or repopolicy.environment(policy, allowed_envs) or \
             (allowed_envs[0] if allowed_envs else None)
         if not env:
             raise JobError("environment is required (or a repo listed in HANGAR_GITHUB_REPOS)")
+        repo_cfg = envbuilds.job_config(self.fleet, req.repo, env, repo_cfg)  # --- envbuilds review
         try:
             spec = self.fleet.catalog.get(env)
         except KeyError as e:
@@ -338,6 +354,11 @@ class JobService:
         if policy is None and not req.repo and spec.repo:  # --- frontdoor: the environment names the repo
             policy = self.policies.get(spec.repo.url)
         defaults = repopolicy.resolve(req, policy, spec)
+        if req.verify is None and repo_cfg is not None and repo_cfg.verify is not None:  # --- envbuilds
+            v = repo_cfg.verify.strip()
+            defaults = defaults._replace(verify=v or None, verify_source="repo" if v else None, notes=[
+                *(n for n in defaults.notes if not n.startswith(("verify `", "no verify"))),
+                f"verify `{v}` (its {envbuilds.repoenv.PATH})" if v else f"no verify (its {envbuilds.repoenv.PATH})"])
         try:
             spec.pick_harness(defaults.harness)
         except ValueError as e:
@@ -409,8 +430,14 @@ class JobService:
 
     def follow_up(self, job_id: str, message: str, requester: str, owner: str | None = None,
                   reply_to: str | None = None, context: list[ContextItem] | None = None,
-                  output_schema: dict[str, Any] | None = None) -> Job:
+                  output_schema: dict[str, Any] | None = None,
+                  front_door: bool = False, sender_person: str | None = None) -> Job:
         job = self.get(job_id, owner)
+        # --- review: from a front door (GitHub, Slack, Jira; `sender_person` is the sender's linked person): a
+        # person's job runs with their own login, so only they continue it there (teamcreds.may_continue)
+        if front_door and (why := teamcreds.may_continue(job.person, sender_person)):
+            self.admission.refused(f"owner:{requester}", requester, "job.follow_up.refused", job.id, why=why)
+            raise JobError(why)
         self.admission.admit_follow_up(requester, owner)  # --- front-door-auth
         if not message.strip():
             raise JobError("follow-up message is empty")
@@ -466,6 +493,8 @@ class JobService:
         # workstream C: the session's turns are the job's turns, and carry live usage while one runs
         d["usage"] = u.model_dump(mode="json") if (u := self.usage(job)) else None
         d["pending_approvals"] = [a.model_dump(mode="json") for a in steer.pending(s)]  # workstream steer
+        if s is not None and self.sessions.env_requests is not None:  # --- computer: answered like approvals
+            d["pending_approvals"] += self.sessions.env_requests.approvals_view(s)
         d["autofix_state"] = autofix.view(job)  # --- overnight/autofix: what is waiting, not the logs it carries
         return exchange.scrub_turns(d)  # workstream E: attachment contents never leave in a view
 
@@ -633,12 +662,15 @@ class JobService:
                 await self._finish_turn(job, turn, s)
         except asyncio.CancelledError:
             raise
+        except PoweredDown:  # --- ops: the pools went off between the worker's check and the create: wait for them
+            await self.fleet.power.requeue(self, job)
         except Exception as e:  # noqa: BLE001
             log.exception("job %s failed", job.id)
             self._event(job, f"error: {e}", JobState.FAILED, reason="error")
             await self._report(job)
         finally:
             self._active.discard(job.id)
+            self.landing.idle(job)  # --- landing: arming waits for the turn; so does ending a merged PR's session
 
     async def _sh(self, job: Job, command: str, timeout: int = 120, cwd: str | None = None):
         return await self.fleet.exec(job.sandbox_id, command, cwd=cwd, timeout=timeout, actor=f"job:{job.id}")
@@ -748,6 +780,7 @@ class JobService:
             # workstream E: a question pauses the job (needs_input) instead of ending it
             "If you need a decision you can't make yourself, do not guess: run `hangar-agent ask \"<question>\"` "
             "and end your turn; the job waits for the answer. If the task cannot be done, say why in RESULT.md.",
+            *envdoctor.autonomy_lines(self.fleet, job.environment),  # --- computer: blocked is not idle
         ]
         finish_txt = "\n".join(f"- {f}" for f in finish)
         from hangar.triggers import untrusted_note
@@ -800,6 +833,7 @@ class JobService:
     async def _start_turn(self, job: Job, turn: Turn, s) -> None:
         from hangar.models import SessionTurn
 
+        await self.landing.turn_starting(job)  # --- landing: never an armed auto-merge while an agent can push
         sb = self.fleet.get(job.sandbox_id)
         ctx = self._ctxdir(job)
         await self._sh(job, f"rm -f {shlex.quote(ctx)}/RESULT.md")
@@ -856,6 +890,11 @@ class JobService:
             turn.verify_rounds = rounds
             self._event(job, f"the check failed {rounds} time(s) during the turn; each went back to the agent")
         tail = _clip_tail(raw) if raw else ""
+        if outcome in ("gone", "error") and self.fleet.power.resume_cut_off(self, job):  # --- ops: resumes at power-up
+            if not self._sandbox_alive(job):
+                job.sandbox_id = None
+            self._save(job)
+            return
         if outcome in ("gone", "error"):
             more = "; follow up to continue from its last checkpoint" if self.sessions.resumable(s) else ""
             self._event(job, "the sandbox went away during the turn" + more, JobState.FAILED, reason="sandbox_gone")
@@ -929,6 +968,14 @@ class JobService:
             self._event(job, "delivering", JobState.DELIVERING)
             try:
                 await self._deliver(job, draft=not (clean and verify_ok) or bool(job.result.touched_tests))
+            except _SecretFound as e:  # --- egress: back to the agent to remove it while rounds are left
+                if (nxt := secretscan.fix_turn(self, job, turn, e.blocked)) is not None:
+                    job.turns.append(nxt)
+                    await self._start_turn(job, nxt, s)
+                    await self._finish_turn(job, nxt, s)
+                    return
+                self._event(job, str(e))
+                state, reason = JobState.FAILED, "secret_found"
             except _DeliveryError as e:
                 self._event(job, str(e))
                 state, reason = JobState.FAILED, "push_failed"
@@ -982,6 +1029,10 @@ class JobService:
         self._save(job)
         if job.deliver == "none" or not job.result.commits:
             return
+        try:  # --- egress: nothing that looks like a secret is pushed (secretscan.py)
+            await secretscan.before_push(self, job)
+        except secretscan.Blocked as e:
+            raise _SecretFound(e) from None
         push = await self._sh(job, f"git push -q origin HEAD:refs/heads/{q(job.branch)}", timeout=300)
         if push.exit_code != 0:
             raise _DeliveryError(f"push failed: {(push.stderr or push.stdout)[-500:]}")
@@ -989,6 +1040,7 @@ class JobService:
         self._event(job, f"pushed {job.branch}")
         if job.deliver in ("pr", "draft_pr"):
             await self._ensure_pr(job, draft=draft or job.deliver == "draft_pr")
+            await self.landing.delivered(job)  # --- landing: a stale approval, the review packet
 
     def _github(self) -> GitHub | None:
         name = self.settings.github_token_credential
@@ -1003,7 +1055,7 @@ class JobService:
 
     async def _ensure_pr(self, job: Job, draft: bool) -> None:
         repo = parse_repo(job.repo)
-        gh = self._github() if repo else None
+        gh = await self.landing.client(repo, job) if repo else None  # --- landing: as the GitHub App, when set
         if gh is None:
             self._event(job, "branch pushed; PR not opened (not a GitHub repo, or HANGAR_GITHUB_TOKEN_CREDENTIAL "
                              "is not set)")
@@ -1012,9 +1064,11 @@ class JobService:
             pr = await gh.find_pr(repo, job.branch)
             if pr is None:
                 pr = await gh.open_pr(repo, job.branch, job.base_branch or await gh.default_branch(repo),
-                                      job.title, self._pr_body(job), draft)
+                                      secretscan.clean(self, job, job.title, "the PR title"),  # --- egress
+                                      secretscan.clean(self, job, self._pr_body(job), "the PR body"), draft)
                 self._event(job, f"opened {'draft ' if pr.get('draft') else ''}PR #{pr['number']}")
             job.result.pr_url, job.result.pr_number = pr.get("html_url"), pr.get("number")
+            self.landing.opened(job, pr)  # --- landing
             self._save(job)
         except (GitHubError, httpx.HTTPError) as e:
             self._event(job, f"branch pushed; opening the PR failed: {e}")
@@ -1036,6 +1090,7 @@ class JobService:
                          + ", ".join(f"`{p}`" for p in job.result.touched_tests[:10]) + ". Review them.")
         if job.attempts:
             lines += ["", strategies.attempts_table(job), ""]
+        lines += computer.pr_lines(self, job)  # --- computer: screenshots and recorded demos
         lines.append(f"hangar job `{job.id}` · requested by {job.requester} via {job.source} · "
                      f"{job.environment} / {job.harness}" + (f" / {job.model}" if job.model else ""))
         if usage := self.usage(job):  # workstream C
@@ -1080,7 +1135,8 @@ class JobService:
             if red := baseline.pr_line(job):  # --- frontdoor
                 lines.append(red)
         if job.state == JobState.FAILED and job.reason in ("error", "interrupted", "sandbox_gone", "bad_branch",
-                                                           "push_failed", "agent_failed", "timed_out"):
+                                                           "push_failed", "agent_failed", "timed_out",
+                                                           "secret_found"):  # --- egress
             # Say what went wrong: the last event that isn't the outcome line itself.
             cause = next((e.message for e in reversed(job.events)
                           if not e.message.startswith(("failed", "succeeded", "cancelled"))), None)
@@ -1102,11 +1158,14 @@ class JobService:
         return "\n".join(lines)
 
     async def _comment(self, job: Job | None, ref: str, body: str, kind: str = "note") -> None:
+        await intake.track(self, job, kind)  # --- intake: the ticket's status, whichever thread this goes to
+        body = secretscan.clean(self, job, body, "a comment")  # --- egress: GitHub and Slack never get a secret
         if (notify := NOTIFIERS.get(ref.split(":", 1)[0])) is not None:
             await notify(self, job, ref, body, kind)
             return
         m = re.match(r"^github:([^#]+)#(\d+)$", ref)
-        gh = self._github() if m else None
+        # --- landing: the job's own PR hears from the App; issues from the control token
+        gh = await self.landing.comment_client(job, m.group(1), int(m.group(2))) if m else None
         if gh is None:
             return
         try:
@@ -1162,6 +1221,12 @@ class _DeliveryError(RuntimeError):
     pass
 
 
+class _SecretFound(_DeliveryError):  # --- egress: the secret scan blocked the push (best-of-N reports it as is)
+    def __init__(self, blocked: secretscan.Blocked):
+        super().__init__(str(blocked))
+        self.blocked = blocked
+
+
 # ====================================================================== GitHub trigger
 _OPT_RE = re.compile(r"^(harness|model|env)=(\S+)$")
 
@@ -1188,10 +1253,20 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
 
     if event == "ping":
         return {"ok": True, "pong": True}
+    if event == "projects_v2_item":  # --- intake: an organization webhook for GitHub Projects (ghprojects.py)
+        from hangar import ghprojects
+
+        return await ghprojects.handle(svc, delivery, payload)
     repo = (payload.get("repository") or {}).get("full_name") or ""
     envs = svc.repo_envs(f"https://github.com/{repo}") if repo else []
     if not envs:
         return {"ignored": f"repo '{repo}' is not in HANGAR_GITHUB_REPOS"}
+    if event in landing.EVENTS:  # --- landing: PR state, approvals and checks on hangar's PRs
+        landed = await svc.landing.handle(event, payload)
+        if event not in autofix.EVENTS:
+            return landed
+        if landed.get("ok"):  # one delivery, two readers: the response says what each did
+            return {**await autofix.handle(svc, event, delivery, payload), "landing": landed}
     if event in autofix.EVENTS:  # --- overnight/autofix: CI results and reviews on hangar's PRs
         return await autofix.handle(svc, event, delivery, payload)
     issue = payload.get("issue") or {}
@@ -1204,14 +1279,16 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
                 svc.settings.github_trigger_label:
             return {"ignored": "not the trigger label"}
         sender = (payload.get("sender") or {}).get("login", "unknown")
-        trusted = await svc.trust.labeler_trusted(sender, issue)
+        linked = people.resolve_external(svc.store, "github", (payload.get("sender") or {}).get("id"))  # --- review
+        trusted = linked is not None or await svc.trust.labeler_trusted(sender, issue)  # --- review: acts as them
     elif event == "issue_comment":
         c = payload.get("comment") or {}
         body = c.get("body") or ""
         if payload.get("action") != "created" or MARKER in body or not body.lstrip().startswith("/hangar"):
             return {"ignored": "not a /hangar comment"}
         sender = (c.get("user") or {}).get("login", "unknown")
-        trusted = await svc.trust.trusted(sender, c.get("author_association"))
+        linked = people.resolve_external(svc.store, "github", (c.get("user") or {}).get("id"))  # --- review
+        trusted = linked is not None or await svc.trust.trusted(sender, c.get("author_association"))  # --- review
         opts, extra = parse_command(body)
         if decision := approval_command(extra):
             if is_pr:
@@ -1229,7 +1306,8 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
                 return {"ignored": "PR was not opened by a hangar job"}
             try:
                 svc.follow_up(job.id, extra or "Continue with the task.", requester=f"github:{sender}",
-                              reply_to=f"github:{repo}#{number}")
+                              reply_to=f"github:{repo}#{number}", front_door=True,  # --- review
+                              sender_person=linked.id if linked else None)
             except JobError as e:
                 await svc._comment(job, f"github:{repo}#{number}", f"Can't continue yet: {e}")
                 return {"ignored": str(e)}
@@ -1242,7 +1320,8 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
     # workstream E: the comment answers a job's question. front-door-auth: only a trusted person's does; anyone
     # else's would steer the agent with text nobody vetted.
     if event == "issue_comment" and trusted and \
-            (answered := exchange.answer_on_issue(svc, ref, sender, extra)) is not None:
+            (answered := exchange.answer_on_issue(svc, ref, sender, extra,
+                                                  sender_person=linked.id if linked else None)) is not None:
         return answered
 
     def running() -> Job | None:
@@ -1263,7 +1342,8 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
     labels = ", ".join(lb.get("name", "") for lb in issue.get("labels") or [])
     author = (issue.get("user") or {}).get("login", "?")
     assoc = issue.get("author_association", "NONE")
-    author_trusted = await svc.trust.trusted(author, assoc)
+    author_trusted = await svc.trust.trusted(author, assoc) or \
+        people.resolve_external(svc.store, "github", (issue.get("user") or {}).get("id")) is not None  # --- review
     context = [ContextItem(name=f"issue-{number}.md", kind="issue", untrusted=not author_trusted, content=(
         f"# {title}\n\n{issue.get('body') or '(no description)'}\n\n---\n{issue.get('html_url', '')}\n"
         f"Opened by {author} ({assoc.lower()})" + (f"; labels: {labels}" if labels else "")))]
@@ -1302,8 +1382,9 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
     from hangar.frontdoor import RateLimited, TooManyActive
 
     try:
-        job = svc.submit(req, Caller(f"github:{sender}", f"github:{sender}"), source="github", source_ref=ref,
-                         approval=approval, untrusted_source=untrusted_source)
+        # --- teamcreds: theirs if linked (--- review: resolved by user id above)
+        job = svc.submit(req, Caller(f"github:{sender}", f"github:{sender}", person=linked.id if linked else None),
+                         source="github", source_ref=ref, approval=approval, untrusted_source=untrusted_source)
     except RateLimited as e:  # --- front-door-auth: tell trusted people; an outsider's flood gets no comments
         if trusted:
             svc._spawn(svc._comment(None, ref, f"hangar couldn't start a job for this issue yet: {e}"))

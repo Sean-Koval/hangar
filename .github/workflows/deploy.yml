@@ -1,0 +1,302 @@
+# Gated deploys of the control plane (docs/upgrading.md, "Deploying with deploy.yml"). By hand, or on a release tag:
+#   1. images.yml builds every environment image and harness pack tag the commit needs, and this builds and pushes
+#      the control-plane image;
+#   2. after the owner approves the `production` environment: kubectl set image, wait for the rollout;
+#   3. scripts/acceptance/gke.sh against the new server over its REST and MCP endpoints (no kubectl in the checks);
+#   4. the run summary gets the MCP tool-list diff, the new server version and the acceptance results, and hangar
+#      records the deploy (`hangar doctor`, `hangar power`).
+# Any failure once the image has changed, a cancel or a timeout included, puts the image it replaced back and fails
+# the run. A doctor check that already failed before the deploy is reported, not rolled back for.
+#
+# It refuses to deploy while the sandbox pools are powered down (the checks need sandboxes) unless `force` is set; a
+# forced deploy then runs only the checks that need no sandbox.
+#
+# Repository secrets, shared with images.yml (docs/gke.md): GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_SERVICE_ACCOUNT,
+# HANGAR_REGISTRY. Without them (before setup, or on a fork) it skips with a notice and stays green.
+# `production` environment secrets, released only once the required reviewer approves (as repository secrets any
+# workflow on any branch could read them, and the approval would gate nothing):
+#   GCP_DEPLOY_SERVICE_ACCOUNT   the deploy identity, impersonable only from the production environment
+#                                (docs/upgrading.md); there is no fallback to GCP_SERVICE_ACCOUNT
+#   GKE_CLUSTER, GKE_LOCATION    the cluster's name and zone
+#   HANGAR_URL                   https://<your hangar>
+#   HANGAR_DEPLOY_TOKEN          an admin token: the acceptance checks and the deploy record
+name: deploy
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Deploy even while the sandbox pools are powered down (then only checks that need no sandbox run)
+        type: boolean
+        default: false
+  push:
+    tags: ["v*"]
+
+# One deploy at a time, never cancelled half way.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    env:
+      WIF_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      WIF_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      HANGAR_REGISTRY: ${{ secrets.HANGAR_REGISTRY }}
+    steps:
+      - name: Check setup
+        id: check
+        run: |
+          missing=()
+          for v in WIF_PROVIDER WIF_SERVICE_ACCOUNT HANGAR_REGISTRY; do
+            [ -n "${!v}" ] || missing+=("$v")
+          done
+          if [ ${#missing[@]} -eq 0 ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=deploy: skipped::Missing secrets: ${missing[*]} (WIF_* are GCP_WORKLOAD_IDENTITY_PROVIDER and GCP_SERVICE_ACCOUNT). docs/upgrading.md, \"Deploying with deploy.yml\", lists them."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  images:
+    needs: setup
+    if: needs.setup.outputs.ready == 'true'
+    uses: ./.github/workflows/images.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      id-token: write
+
+  control-plane:
+    needs: setup
+    if: needs.setup.outputs.ready == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image: ${{ steps.out.outputs.image }}
+    env:
+      HANGAR_REGISTRY: ${{ secrets.HANGAR_REGISTRY }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: google-github-actions/auth@v3
+        id: auth
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
+      - name: Registry host
+        id: reg
+        run: echo "host=${HANGAR_REGISTRY%%/*}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ steps.reg.outputs.host }}
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        id: build
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.HANGAR_REGISTRY }}/control-plane:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - id: out
+        run: echo "image=$HANGAR_REGISTRY/control-plane:$GITHUB_SHA@${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: [setup, images, control-plane]
+    if: needs.setup.outputs.ready == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: production  # the owner approves here (a required reviewer); its secrets exist only past this
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      HANGAR_URL: ${{ secrets.HANGAR_URL }}
+      HANGAR_TOKEN: ${{ secrets.HANGAR_DEPLOY_TOKEN }}
+      HANGAR_REGISTRY: ${{ secrets.HANGAR_REGISTRY }}
+      IMAGE: ${{ needs.control-plane.outputs.image }}
+      FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
+      NS: hangar
+    steps:
+      - name: Check the production environment's secrets
+        env:
+          DEPLOY_SA: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          GKE_CLUSTER: ${{ secrets.GKE_CLUSTER }}
+          GKE_LOCATION: ${{ secrets.GKE_LOCATION }}
+        run: |
+          missing=()
+          for v in DEPLOY_SA GKE_CLUSTER GKE_LOCATION HANGAR_URL HANGAR_TOKEN; do [ -n "${!v}" ] || missing+=("$v"); done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error title=deploy: not set up::The production environment lacks: ${missing[*]} (DEPLOY_SA is GCP_DEPLOY_SERVICE_ACCOUNT, HANGAR_TOKEN is HANGAR_DEPLOY_TOKEN). They are environment secrets, not repository ones: docs/upgrading.md, \"Deploying with deploy.yml\"."
+            exit 1
+          fi
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Project (from the registry, <region>-docker.pkg.dev/<project>/hangar)
+        id: project
+        run: echo "id=$(cut -d/ -f2 <<<"$HANGAR_REGISTRY")" >> "$GITHUB_OUTPUT"
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/get-gke-credentials@v3
+        with:
+          cluster_name: ${{ secrets.GKE_CLUSTER }}
+          location: ${{ secrets.GKE_LOCATION }}
+          project_id: ${{ steps.project.outputs.id }}
+      - name: Before (power state, the server's tools, the running image)
+        id: pre
+        run: |
+          uv sync --locked
+          api() { curl -fsS --max-time 30 -H "Authorization: Bearer $HANGAR_TOKEN" "$@"; }
+          power=$(api "$HANGAR_URL/api/admin/power" | jq -r '.power.state') || power=unknown
+          echo "power=$power" >> "$GITHUB_OUTPUT"
+          echo "sandbox pools: $power"
+          if [ "$power" = down ] || [ "$power" = starting ]; then
+            if [ "$FORCE" != true ]; then
+              echo "::error title=deploy: refused::The sandbox pools are $power, so the acceptance checks can't run. Deploy after they power on, or run again with force (only the checks that need no sandbox run)."
+              exit 1
+            fi
+            echo "only=--only doctor,power,metrics" >> "$GITHUB_OUTPUT"
+            echo "::warning::Forced while the sandbox pools are $power: only the checks that need no sandbox run."
+          fi
+          uv run --locked python scripts/acceptance/hangar_accept.py tools > before.json || echo '{}' > before.json
+          # what the doctor already fails on: the acceptance reports it, and doesn't roll back for it
+          uv run --locked python scripts/acceptance/hangar_accept.py doctor-failing > doctor-before.json ||
+            echo '[]' > doctor-before.json
+          echo "doctor failing before the deploy: $(cat doctor-before.json)"
+          prev=$(kubectl -n "$NS" get deploy hangar -o jsonpath='{.spec.template.spec.containers[?(@.name=="hangar")].image}')
+          [ -n "$prev" ] || { echo "::error::can't read the running image, so there would be nothing to roll back to"; exit 1; }
+          echo "previous=$prev" >> "$GITHUB_OUTPUT"
+          echo "running $prev; deploying $IMAGE"
+      - name: Drain (creates and destroys in flight finish before hangar restarts)
+        id: drain
+        run: |
+          api() { curl -fsS --max-time 30 -H "Authorization: Bearer $HANGAR_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          api -X POST -d '{"minutes": 30}' "$HANGAR_URL/api/admin/drain" > /dev/null || { echo "no drain (hangar unreachable)"; exit 0; }
+          echo "began=true" >> "$GITHUB_OUTPUT"
+          for _ in $(seq 60); do
+            [ "$(api "$HANGAR_URL/api/admin/drain" | jq -r .settled)" = true ] && { echo "settled"; exit 0; }
+            sleep 5
+          done
+          echo "not settled after 5 min; the reconciler finishes what a restart catches half way"
+      - name: Roll out
+        id: rollout
+        run: |
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          kubectl -n "$NS" set image deploy/hangar hangar="$IMAGE"
+          kubectl -n "$NS" rollout status deploy/hangar --timeout=15m
+          for _ in $(seq 60); do curl -fsS --max-time 10 "$HANGAR_URL/healthz" > /dev/null && exit 0; sleep 5; done
+          echo "::error::$HANGAR_URL/healthz didn't answer within 5 min of the rollout"; exit 1
+      - name: Acceptance
+        timeout-minutes: 75  # a step timeout fails the step (and rolls back); the job's would cancel it
+        env:
+          ONLY: ${{ steps.pre.outputs.only }}
+        run: |
+          # shellcheck disable=SC2086 # ONLY is empty or "--only a,b,c"
+          bash scripts/acceptance/gke.sh --no-kubectl --skip model,steer,gateway --record accept.jsonl \
+            --doctor-baseline doctor-before.json $ONLY
+      - name: Summary (version, tool-list diff, acceptance)
+        if: always() && steps.rollout.outputs.changed == 'true'
+        run: |
+          uv run --locked python scripts/acceptance/hangar_accept.py tools > after.json || echo '{}' > after.json
+          python3 - >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, os
+          def load(path):
+              try:
+                  return json.load(open(path))
+              except (OSError, ValueError):
+                  return {}
+          before, after = load("before.json"), load("after.json")
+          print(f"## Deploy `{os.environ['IMAGE'].split('@')[0].rsplit('/', 1)[-1]}`\n")
+          print(f"Server version: `{before.get('version', 'unreachable')}` → `{after.get('version', 'unreachable')}`\n")
+          old, new = set(before.get("tools", [])), set(after.get("tools", []))
+          if before and after:
+              added, removed = sorted(new - old), sorted(old - new)
+              print(f"MCP tools: {len(old)} → {len(new)}" + ("" if added or removed else ", no change"))
+              for t in added:
+                  print(f"- added `{t}`")
+              for t in removed:
+                  print(f"- removed `{t}`")
+              if added or removed:
+                  print("\nclaude.ai keeps its tool list until the connector is removed and added again.")
+          print("\n| check | result | time | summary |\n|---|---|---|---|")
+          try:
+              rows = [json.loads(line) for line in open("accept.jsonl")]
+          except OSError:
+              rows = []
+          for r in rows:
+              print(f"| {r['check']} | {r['status']} | {r['seconds']} s | {r['summary'].replace('|', '/')[:300]} |")
+          for r in rows:
+              if r["check"] == "warmstart" and r.get("data"):
+                  runs = ", ".join(f"{c['path']} {c['seconds']} s" for c in r["data"]["creates"])
+                  print(f"\nCreate latency on `{r['data']['environment']}`: {runs}")
+          PY
+      # The kubeconfig's token lasts an hour, which a long acceptance run can outlast: a fresh one for the rollback.
+      # A cancelled run (by hand, or the job's timeout) rolls back too.
+      - uses: google-github-actions/get-gke-credentials@v3
+        if: (failure() || cancelled()) && steps.rollout.outputs.changed == 'true'
+        with:
+          cluster_name: ${{ secrets.GKE_CLUSTER }}
+          location: ${{ secrets.GKE_LOCATION }}
+          project_id: ${{ steps.project.outputs.id }}
+      # The image it replaced, not `rollout undo`: undo goes back one revision, which is the version *before* the
+      # running one when `set image` failed or redeployed the running image (no new revision).
+      - name: Roll back
+        id: rollback
+        if: (failure() || cancelled()) && steps.rollout.outputs.changed == 'true'
+        env:
+          PREVIOUS: ${{ steps.pre.outputs.previous }}
+        run: |
+          echo "::error::Rolling back to $PREVIOUS"
+          kubectl -n "$NS" set image deploy/hangar hangar="$PREVIOUS"
+          kubectl -n "$NS" rollout status deploy/hangar --timeout=15m
+          for _ in $(seq 60); do curl -fsS --max-time 10 "$HANGAR_URL/healthz" > /dev/null && break; sleep 5; done
+          echo "## Rolled back to \`$PREVIOUS\`" >> "$GITHUB_STEP_SUMMARY"
+      - name: Record the deploy in hangar
+        if: always() && steps.rollout.outputs.changed == 'true'
+        env:
+          RESULT: ${{ steps.rollback.outcome == 'success' && 'rolled_back' || job.status == 'success' && 'passed' || 'failed' }}
+          PREVIOUS: ${{ steps.pre.outputs.previous }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          body=$(python3 - <<'PY'
+          import json, os
+          try:
+              rows = [json.loads(line) for line in open("accept.jsonl")]
+          except OSError:
+              rows = []
+          try:
+              version = json.load(open("after.json")).get("version")
+          except (OSError, ValueError):
+              version = None
+          failed = [r["check"] for r in rows if r["status"] == "fail"]
+          print(json.dumps({"result": os.environ["RESULT"], "image": os.environ["IMAGE"], "sha": os.environ["GITHUB_SHA"],
+                            "version": version, "previous_image": os.environ["PREVIOUS"], "run_url": os.environ["RUN_URL"],
+                            "checks": {r["check"]: r["status"] for r in rows},
+                            "summary": ("failed: " + ", ".join(failed)) if failed else ""}))
+          PY
+          )
+          curl -fsS --max-time 30 -X POST -H "Authorization: Bearer $HANGAR_TOKEN" -H 'Content-Type: application/json' \
+            -d "$body" "$HANGAR_URL/api/admin/deploys" > /dev/null || echo "::warning::couldn't record the deploy in hangar"
+      # A restarted hangar starts undrained; one that never restarted (set image failed, or the same image) doesn't
+      - name: End the drain
+        if: always() && steps.drain.outputs.began == 'true'
+        run: |
+          curl -fsS --max-time 30 -X DELETE -H "Authorization: Bearer $HANGAR_TOKEN" "$HANGAR_URL/api/admin/drain" > /dev/null || true

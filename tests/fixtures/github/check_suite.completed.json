@@ -1,0 +1,24 @@
+{
+  "action": "completed",
+  "check_suite": {
+    "id": 29516733080,
+    "node_id": "CS_kwDOMh3e8M8AAAAG36DdmA",
+    "head_branch": "hangar/job-0001",
+    "head_sha": "6dcb09b5b57875f334f61aebed695e2e4193db5e",
+    "status": "completed",
+    "conclusion": "success",
+    "url": "https://api.github.com/repos/o/r/check-suites/29516733080",
+    "before": "e5bd3914e2e596debea16f433f57875b5b90bcd6",
+    "after": "6dcb09b5b57875f334f61aebed695e2e4193db5e",
+    "pull_requests": [{"url": "https://api.github.com/repos/o/r/pulls/7", "id": 2104837561, "number": 7,
+                       "head": {"ref": "hangar/job-0001", "sha": "6dcb09b5b57875f334f61aebed695e2e4193db5e"},
+                       "base": {"ref": "main", "sha": "e5bd3914e2e596debea16f433f57875b5b90bcd6"}}],
+    "app": {"id": 15368, "slug": "github-actions", "name": "GitHub Actions"},
+    "created_at": "2026-10-14T09:01:05Z",
+    "updated_at": "2026-10-14T09:03:59Z",
+    "latest_check_runs_count": 1
+  },
+  "repository": {"id": 849738224, "node_id": "R_kgDOMh3e8A", "name": "r", "full_name": "o/r", "private": true,
+                 "owner": {"login": "o", "type": "Organization"}},
+  "sender": {"login": "github-actions[bot]", "type": "Bot"}
+}

@@ -49,18 +49,19 @@ START_DELAY = 5.0  # seconds after startup, so the webhook route is serving when
 
 
 # ====================================================================== commit after handle
-def claim(replays: ReplayGuard, digest: str, ttl: float) -> bool:
+def claim(replays: ReplayGuard, digest: str, ttl: float, scope: str = "github") -> bool:
     """Mark a signed delivery as being handled by this process. False when it was handled already, or is being
-    handled now; True when it is new or a process that died left it half handled."""
-    seen = replays.get("github", digest)
+    handled now; True when it is new or a process that died left it half handled. `scope` keeps each sender's
+    deliveries apart (--- intake: Jira's are "jira")."""
+    seen = replays.get(scope, digest)
     if seen is not None and not (seen.startswith(PENDING) and seen != PENDING + BOOT):
         return False
-    replays.put("github", digest, PENDING + BOOT, ttl)
+    replays.put(scope, digest, PENDING + BOOT, ttl)
     return True
 
 
-def done(replays: ReplayGuard, digest: str, ttl: float) -> None:
-    replays.put("github", digest, DONE, ttl)
+def done(replays: ReplayGuard, digest: str, ttl: float, scope: str = "github") -> None:
+    replays.put(scope, digest, DONE, ttl)
 
 
 # ====================================================================== redelivery at startup

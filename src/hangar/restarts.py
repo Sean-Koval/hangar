@@ -45,9 +45,10 @@ def start_over(svc: JobService, job: Job) -> bool:
     return True
 
 
-def resume(svc: JobService, job: Job) -> bool:
+def resume(svc: JobService, job: Job, why: str = "the control plane restarted", message: str = CONTINUE) -> bool:
     """A job whose sandbox is gone after the restart: queue it to resume its session from the last checkpoint. False
-    when there is no checkpoint to resume from, or it has used up its restarts."""
+    when there is no checkpoint to resume from, or it has used up its restarts. --- ops: `why` and `message` for a
+    sandbox the nightly power-down took away while hangar stayed up (power.py)."""
     s = svc._session(job)
     if s is None or not svc.sessions.resumable(s) or not _left(svc, job):
         return False
@@ -56,14 +57,14 @@ def resume(svc: JobService, job: Job) -> bool:
     if last is not None and last.run_id is not None:  # a turn ran: a new one picks up where the checkpoint left it
         if last.finished_at is None:
             last.finished_at = now()
-            last.outcome, last.outcome_reason = "gone", "the control plane restarted"
+            last.outcome, last.outcome_reason = "gone", why
             for st in s.turns:  # the session's record of that turn ends too, so nothing waits on it
                 if st.run_id == last.run_id and st.finished_at is None:
-                    st.finished_at, st.outcome, st.outcome_reason = now(), "gone", "the control plane restarted"
+                    st.finished_at, st.outcome, st.outcome_reason = now(), "gone", why
             svc.sessions._save(s)
-        job.turns.append(Turn(kind="follow_up", message=CONTINUE, requester="hangar", reply_to=last.reply_to,
+        job.turns.append(Turn(kind="follow_up", message=message, requester="hangar", reply_to=last.reply_to,
                               trigger="restart"))
-    svc._event(job, "control plane restarted and the sandbox is gone; resuming from its last checkpoint "
+    svc._event(job, f"{why} and the sandbox is gone; resuming from its last checkpoint "
                     f"(restart {job.restarts} of {svc.settings.job_restart_resumes})", JobState.QUEUED, reason=None)
     return True
 
