@@ -67,6 +67,13 @@ _ACTIVE: dict[type[BaseModel], frozenset[str]] = {
 }
 # Kinds whose settled records `archive` moves to <table>_archive: out of every listing, still found by get().
 _ARCHIVABLE: frozenset[type[BaseModel]] = frozenset({Sandbox})
+# --- review: (table, field) of records that point at an archivable one by key. A record something points at is
+# neither archived nor deleted: a fork of a snapshot inherits from the snapshot's sandbox (credentials, harness,
+# labels, the git gateway's mode), and an exclusive credential's lease names its sandbox. Kept out of the archive
+# too, so a control plane rolled back to a version that never reads the archive still finds them.
+_REFERENCED_BY: dict[type[BaseModel], tuple[tuple[str, str], ...]] = {
+    Sandbox: (("snapshots", "sandbox_id"), ("credentials", "leased_to")),
+}
 
 
 class Store:
@@ -170,7 +177,7 @@ class Store:
         table, _ = _TABLES[cls]
         with self._lock:
             keys = [r[0] for r in self._db.execute(
-                f"SELECT key FROM {table} WHERE {where} AND {_field(field)} < ? LIMIT ?",
+                f"SELECT key FROM {table} WHERE {where} AND {_field(field)} < ?{_unreferenced(cls)} LIMIT ?",
                 [*params, before, batch]).fetchall()]
             if not keys:
                 return 0
@@ -187,12 +194,13 @@ class Store:
         return len(keys)
 
     def purge_archive(self, cls: type[BaseModel], before: float) -> int:
-        """Delete records archived before `before`; returns how many."""
+        """Delete records archived before `before`, except those something still points at; returns how many."""
         if cls not in _ARCHIVABLE:
             raise ValueError(f"{cls.__name__} records are not archived")
         table, _ = _TABLES[cls]
         with self._lock:
-            return self._db.execute(f"DELETE FROM {table}_archive WHERE archived_at < ?", (before,)).rowcount
+            return self._db.execute(f"DELETE FROM {table}_archive WHERE archived_at < ?{_unreferenced(cls)}",
+                                    (before,)).rowcount
 
     def count_archived(self, cls: type[BaseModel]) -> int:
         table, _ = _TABLES[cls]
@@ -283,6 +291,13 @@ def _field(name: str) -> str:
     if not name.isidentifier():
         raise ValueError(f"bad field {name!r}")
     return f"json_extract(data, '$.{name}')"
+
+
+def _unreferenced(cls: type[BaseModel]) -> str:
+    """--- review: an `AND` clause leaving out the keys _REFERENCED_BY records point at. NULLs are filtered out of
+    each subquery: `key NOT IN (…, NULL)` is never true, which would keep every record."""
+    return "".join(f" AND key NOT IN (SELECT {_field(f)} FROM {t} WHERE {_field(f)} IS NOT NULL)"
+                   for t, f in _REFERENCED_BY.get(cls, ()))
 
 
 def _sql_value(v: Any) -> Any:

@@ -137,7 +137,7 @@ class Settings(BaseSettings):
 
     # --- jobs (spec 0009) ---------------------------------------------------
     # Jobs provisioning/running at once; the rest wait in the queue. --- scale: 0 = sized from the fleet: 4 on Docker,
-    # else max_sandboxes / 5 between 4 and 24 (fairness.job_slots).
+    # else max_sandboxes / 5 between 4 and 8 (fairness.job_slots; --- review: 8 until job budgets, #85).
     job_concurrency: int = 0
     job_poll_seconds: float = 5.0
     job_timeout_minutes: int = 60  # per agent turn
@@ -331,7 +331,7 @@ class Settings(BaseSettings):
     # approved OAuth connector's name (fairness.person_of); hangar's own actors are exempt. 0 = off.
     person_max_sessions: int = 15  # live sessions (each holds a sandbox); suspended ones don't count
     person_max_sandboxes: int = 20  # sandboxes started directly (MCP, REST, the E2B API); sessions' are above
-    person_max_running_jobs: int = 0  # jobs running at once; 0 = half the job slots. Others' jobs go first
+    person_max_running_jobs: int = 0  # jobs running at once; 0 = half the job slots, at least 4. Others' jobs go first
     # Stopped and failed sandbox records older than this move to an archive table (retention.py): out of listings
     # and of every scan, still found by id. Archived ones are deleted after sandbox_archive_days (0 = kept).
     sandbox_retention_days: float = 7

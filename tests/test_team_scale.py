@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import itertools
 import shutil
 import sqlite3
 import sys
@@ -26,11 +27,15 @@ needs_tools = pytest.mark.skipif(not shutil.which("tmux") or not shutil.which("g
 DAY = 86400
 
 
+_SEQ = itertools.count()  # seeded ids: 20k random 8-hex ids collide about one run in twenty
+
+
 def _seed(store: Store, n: int, state: SandboxState = SandboxState.STOPPED, age_days: float = 30) -> None:
     """`n` settled sandbox records, written in one transaction (the way months of history pile up)."""
     t = time.time() - age_days * DAY
     rows = [(sb.id, sb.model_dump_json()) for sb in (
-        Sandbox(name=f"old-{i}", environment="plain", provider="docker", state=state, created_at=t, last_activity=t,
+        Sandbox(id=f"sb-old{next(_SEQ):07d}", name=f"old-{i}", environment="plain", provider="docker", state=state,
+                created_at=t, last_activity=t,
                 info={"runs": [{"run_id": f"run-{k}", "exit_code": 0} for k in range(8)]}) for i in range(n))]
     con = sqlite3.connect(store.path)
     with con:
@@ -125,6 +130,35 @@ async def test_retention_archives_settled_records_and_get_still_finds_them(fleet
     assert fleet.store.get(Sandbox, gone.id) is None and fleet.store.count_archived(Sandbox) == 0
 
 
+async def test_retention_keeps_records_something_still_points_at(fleet, settings):
+    """--- review: a snapshot's parent is what a fork of it inherits from (credentials, harness, labels, the git
+    gateway's mode), and an exclusive credential's lease names its sandbox. Retention left those to the archive and
+    then deleted them after HANGAR_SANDBOX_ARCHIVE_DAYS, and a rolled-back control plane, which never reads the
+    archive, lost them at once: such records stay where every version finds them, and are never deleted."""
+    from hangar.models import Credential, Snapshot, SnapshotKind
+
+    settings.sandbox_retention_days = 7
+    settings.sandbox_archive_days = 1
+    old = time.time() - 30 * DAY
+    parent, leased, plain = (Sandbox(name=n, environment="plain", provider="docker", state=SandboxState.STOPPED,
+                                     last_activity=old, credentials=["gh"]) for n in ("parent", "leased", "plain"))
+    for sb in (parent, leased, plain):
+        fleet.store.put(sb)
+    fleet.store.put(Snapshot(sandbox_id=parent.id, environment="plain", provider="docker",
+                             kind=SnapshotKind.WORKSPACE, ref="/nowhere.tgz"))
+    fleet.store.put(Credential(name="codex-auth", harness="codex", kind="auth_file", exclusive=True,
+                               leased_to=leased.id))
+    fleet.store.put(Credential(name="plain-key", harness="claude-code", kind="api_key"))  # no lease: NULL
+    assert (await Retention(fleet.store, settings).sweep())["archived"] == 1
+    assert {s.id for s in fleet.store.list(Sandbox)} == {parent.id, leased.id}  # what the old code still sees
+    # A snapshot taken of a record that is already archived: kept in the archive, never deleted from it.
+    fleet.store.put(Snapshot(sandbox_id=plain.id, environment="plain", provider="docker",
+                             kind=SnapshotKind.WORKSPACE, ref="/nowhere2.tgz"))
+    fleet.store._db.execute("UPDATE sandboxes_archive SET archived_at = archived_at - 2 * 86400")
+    assert (await Retention(fleet.store, settings).sweep())["purged"] == 0
+    assert fleet.store.get(Sandbox, plain.id).credentials == ["gh"]
+
+
 async def test_retention_off(fleet, settings):
     settings.sandbox_retention_days = 0
     settings.sandbox_archive_days = 0
@@ -154,6 +188,26 @@ async def test_sandbox_cap_per_person(fleet, settings):
     await fleet.create("plain", actor="session:ses-1")  # hangar's own: capped where a person asked
     settings.person_max_sandboxes = 0
     await fleet.create("plain", actor="mcp:sean")
+
+
+async def test_a_cap_reached_over_mcp_is_a_plain_tool_error(fleet, settings):
+    """--- review: what an MCP client sees at a cap: the cap's own message, not an internal error."""
+    from mcp import Client
+
+    from hangar import mcp_server
+    from hangar.jobs import JobService
+
+    settings.person_max_sandboxes = 1
+    jobs = JobService(fleet, None)  # type: ignore[arg-type] - create_sandbox needs no sessions
+    token = mcp_server.current_actor.set("sean")
+    try:
+        async with Client(mcp_server.build_mcp(fleet, jobs, None)) as c:
+            assert not (await c.call_tool("create_sandbox", {"environment": "plain"})).is_error
+            res = await c.call_tool("create_sandbox", {"environment": "plain"})
+    finally:
+        mcp_server.current_actor.reset(token)
+    assert res.is_error
+    assert "sean already has 1 sandboxes running (the limit per person is 1)" in res.content[0].text
 
 
 @needs_tools
@@ -187,7 +241,9 @@ def test_job_slots_from_capacity(settings):
     settings.job_concurrency = 0
     assert job_slots(settings) == 4  # Docker: one machine
     settings.default_provider = "kubernetes"
-    assert settings.max_sandboxes == 120 and job_slots(settings) == 24
+    # --- review: at most 8 until job budgets and a daily spend cap (#85) bound what concurrent jobs can spend;
+    # 24 slots of best-of-N jobs could also take every one of the 120 sandboxes from sessions
+    assert settings.max_sandboxes == 120 and job_slots(settings) == 8
     settings.max_sandboxes = 30
     assert job_slots(settings) == 6
     settings.max_sandboxes = 5
@@ -195,7 +251,9 @@ def test_job_slots_from_capacity(settings):
     settings.job_concurrency = 7
     assert job_slots(settings) == 7
     settings.person_max_running_jobs = 0
-    assert job_cap(settings) == 3
+    assert job_cap(settings) == 4  # --- review: half the slots, but never under 4 (main ran 4 at once for anyone)
+    settings.job_concurrency = 24
+    assert job_cap(settings) == 12
     settings.person_max_running_jobs = 5
     assert job_cap(settings) == 5
 
@@ -242,7 +300,8 @@ def test_job_service_uses_the_fair_queue_and_derived_slots(fleet, settings):
               state=JobState.QUEUED)
     jobs._jobs[job.id] = job
     assert jobs._person(job.id) == "sean" and jobs._person("job-missing") == ""
-    assert fairness.job_cap(settings) == 2
+    # --- review: on Docker (4 slots) the one person of a solo install still runs 4 jobs at once, as on main
+    assert fairness.job_slots(settings) == 4 and fairness.job_cap(settings) == 4
 
 
 # ---------------------------------------------------------------------------- the load test itself, small
