@@ -48,6 +48,7 @@ STOP_GRACE = 10.0
 READY_TIMEOUT = 10.0  # a `ready` command's own limit
 SERVICE_WAIT = float(os.environ.get("HANGAR_SVC_SERVICE_WAIT") or 180)  # how long `start` waits for services
 NAME_OK = "abcdefghijklmnopqrstuvwxyz0123456789-"
+DOCKER = os.environ.get("HANGAR_SVC_DOCKER") or "docker"  # --- heavy: the CLI Compose stacks run with (tests set it)
 
 USAGE = """\
 usage: hangar-agent svc COMMAND [ARGS]
@@ -130,8 +131,8 @@ def compose_spec(spec):
     `hangar-svc compose-ready` (every service up)."""
     name, f = spec["name"], str(spec["compose"])
     out = dict(spec)
-    out["command"] = (f"docker compose -p {shlex.quote(name)} -f {shlex.quote(f)} up --remove-orphans --quiet-pull "
-                      "--no-color")
+    out["command"] = (f"{shlex.quote(DOCKER)} compose -p {shlex.quote(name)} -f {shlex.quote(f)} up --remove-orphans "
+                      "--quiet-pull --no-color")
     if not out.get("port") and not out.get("ready"):
         out["ready"] = "{} {} compose-ready {} {}".format(shlex.quote(sys.executable or "python3"),
                                                           shlex.quote(os.path.abspath(__file__)), shlex.quote(name),
@@ -172,7 +173,7 @@ def stack_ready(services, containers):
 
 
 def compose_ready(name, f):
-    base = ["docker", "compose", "-p", name, "-f", f]
+    base = [DOCKER, "compose", "-p", name, "-f", f]
     try:
         svcs = subprocess.run(base + ["config", "--services"], capture_output=True, text=True, timeout=8)
         ps = subprocess.run(base + ["ps", "--all", "--format", "json"], capture_output=True, text=True, timeout=8)

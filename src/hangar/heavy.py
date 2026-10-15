@@ -123,20 +123,21 @@ def _config(fleet: Fleet, spec: EnvSpec, repo: str | None) -> RepoEnvironment | 
 def decide(fleet: Fleet, spec: EnvSpec, repo: str | None, labels: dict[str, str] | None = None) -> Decision:
     """Docker and the profile for a sandbox of `spec` (the catalog's) for `repo`, with a create's `labels`. Raises
     HeavyError for a profile asked for past what the repo allows."""
-    from hangar.repopolicy import RepoPolicies
+    from hangar.repopolicy import RepoPolicies, repo_key
 
     policy = RepoPolicies(fleet.store).get(repo) if repo else None
     cfg = _config(fleet, spec, repo)
+    name = repo_key(repo) or repo  # how people name it (owner/repo), in what they're told
     notes: list[str] = []
     docker, source = bool(spec.heavy), "environment"
     if not docker and policy is not None and policy.heavy:
         docker, source = True, "repo policy"
     elif not docker and cfg is not None and cfg.wants_heavy:
         if policy is not None and policy.heavy is False:
-            notes.append(f"{repo}'s .hangar/environment.yaml asks for the heavy tier; its repo policy says heavy: "
+            notes.append(f"{name}'s .hangar/environment.yaml asks for the heavy tier; its repo policy says heavy: "
                          "false, so this sandbox has no Docker")
         elif not providers(fleet.settings):
-            notes.append(f"{repo}'s .hangar/environment.yaml asks for the heavy tier, which this hangar doesn't have "
+            notes.append(f"{name}'s .hangar/environment.yaml asks for the heavy tier, which this hangar doesn't have "
                          "(HANGAR_TIERS lists no providers for heavy), so this sandbox has no Docker")
         else:
             docker, source = True, "repo config"
@@ -147,21 +148,21 @@ def decide(fleet: Fleet, spec: EnvSpec, repo: str | None, labels: dict[str, str]
         source = "repo policy" if source == "environment" else source
     if cfg is not None and cfg.profile and cfg.profile != profile:
         if cfg.profile in BIG and not providers(fleet.settings):
-            notes.append(f"{repo}'s .hangar/environment.yaml asks for profile {cfg.profile}, which runs on the heavy "
+            notes.append(f"{name}'s .hangar/environment.yaml asks for profile {cfg.profile}, which runs on the heavy "
                          "tier this hangar doesn't have (HANGAR_TIERS)")
         elif rank(cfg.profile) <= ceiling:
             profile, source = cfg.profile, "repo config"
         else:
-            notes.append(f"{repo}'s .hangar/environment.yaml asks for profile {cfg.profile}; its policy allows up to "
-                         f"{ORDER[ceiling]} (an admin raises it: hangar repo set {repo} --max-profile {cfg.profile})")
+            notes.append(f"{name}'s .hangar/environment.yaml asks for profile {cfg.profile}; its policy allows up to "
+                         f"{ORDER[ceiling]} (an admin raises it: hangar repo set {name} --max-profile {cfg.profile})")
     asked = (labels or {}).get(LABEL)
     if asked:
         if asked not in PROFILES:
             raise HeavyError(f"unknown profile '{asked[:40]}' ({', '.join(ORDER)})")
         if rank(asked) > ceiling:
-            where = f"{repo}'s policy allows up to {ORDER[ceiling]}" if repo else \
+            where = f"{name}'s policy allows up to {ORDER[ceiling]}" if repo else \
                 f"environment {spec.name} is {given or 'standard'}"
-            hint = f"hangar repo set {repo} --max-profile {asked}" if repo else "an environment with that profile"
+            hint = f"hangar repo set {name} --max-profile {asked}" if repo else "an environment with that profile"
             raise HeavyError(f"profile {asked} is more than this sandbox may ask for ({where}); an admin allows it "
                              f"({hint})")
         profile, source = asked, "job"
