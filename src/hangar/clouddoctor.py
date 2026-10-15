@@ -296,7 +296,11 @@ class Doctor:
         from hangar import jobbudget
 
         total = 0.0
-        for j in list(self.svc._jobs.values()):
+        # --- integ3 (durable): a finished job leaves memory after HANGAR_RESIDENT_MINUTES, so the run's jobs are read
+        # from the store: every one was saved after the run started
+        run = next((r for r in self.runs() if r.get("id") == run_id), None)
+        since = float(run["at"]) if run and run.get("at") else now() - self.settings.doctor_lookback_days * 86400
+        for j in self.svc.touched_since(since):
             if j.labels.get(f"{LABEL}.run") != run_id:
                 continue
             used = jobbudget.spent(self.svc, j).cost_usd

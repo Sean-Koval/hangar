@@ -214,6 +214,25 @@ async def test_no_team_credential_or_no_budget_means_a_report(jobs, store, setti
     assert "budget" in f2.note and "HANGAR_DOCTOR_MAX_USD" in f2.note
 
 
+async def test_a_runs_spend_counts_its_jobs_that_left_memory(jobs, store, monkeypatch):  # noqa: F811
+    """--- integ3 (#106 x #108): finished jobs are evicted after HANGAR_RESIDENT_MINUTES, and a run's later fix jobs
+    must still see what its root-cause jobs spent, or HANGAR_DOCTOR_MAX_USD stops holding."""
+    from hangar import jobbudget
+    from hangar.models import Job
+
+    doc = clouddoctor.of(jobs)
+    doc._save_run({"id": "drun-x", "at": now() - 7200})
+    old = Job(id="job-rca-old", title="rca", instructions="x", environment="plain", state=JobState.SUCCEEDED,
+              labels={clouddoctor.LABEL: "rca", f"{clouddoctor.LABEL}.run": "drun-x"})
+    other = Job(id="job-other", title="o", instructions="x", environment="plain", state=JobState.SUCCEEDED,
+                labels={clouddoctor.LABEL: "rca", f"{clouddoctor.LABEL}.run": "drun-y"})
+    store.put(old)
+    store.put(other)
+    assert jobs._jobs.peek("job-rca-old") is None  # in the store only, as after an eviction
+    monkeypatch.setattr(jobbudget, "spent", lambda svc, j: SimpleNamespace(cost_usd=2.5))
+    assert doc.spent("drun-x") == 2.5
+
+
 async def test_a_failed_root_cause_job_reports_and_forged_labels_do_nothing(jobs, store):  # noqa: F811
     f = DoctorFinding(signature="x", cause="install", environment="plain", state="analyzing", rca_job="job-rca")
     store.put(f)
