@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Sean-Koval/hangar/blob/main/docs/api/experiment.schema.json",
+  "title": "hangar.experiment/v1: an experiment's index of trials",
+  "description": "What GET /api/experiments/{id} returns: what each variant and task was pinned to, and per trial its job, the digests of the manifests it ran with, its verification and test results, an optional external grader's output, and links to its stored manifest and trace export. An index, not an analysis: effect sizes, rubrics and leaderboards belong to the sister tool. Additions within v1 are new optional properties. See docs/specs/0014-sister-tool-interfaces.md.",
+  "type": "object",
+  "required": ["schema", "id", "name", "state", "spec", "pins", "counts", "trials", "notes"],
+  "properties": {
+    "schema": {"const": "hangar.experiment/v1"},
+    "id": {"type": "string", "description": "The experiment's job id."},
+    "name": {"type": ["string", "null"]},
+    "state": {"enum": ["queued", "provisioning", "running", "verifying", "delivering", "succeeded", "failed", "cancelled", "awaiting_approval", "needs_input"]},
+    "reason": {"type": ["string", "null"]},
+    "requester": {"type": "string"},
+    "person": {"type": ["string", "null"]},
+    "created_at": {"type": "number"},
+    "finished_at": {"type": ["number", "null"]},
+    "spec": {"type": "object", "description": "The experiment as submitted (redacted)."},
+    "pins": {
+      "type": "object",
+      "properties": {
+        "variants": {"type": "object", "additionalProperties": {
+          "type": "object",
+          "required": ["environment", "harness", "harness_version", "model", "approvals", "skills"],
+          "properties": {
+            "environment": {"type": "string"},
+            "harness": {"type": "string"},
+            "harness_version": {"type": ["string", "null"], "description": "The locked version every trial ran."},
+            "model": {"type": ["string", "null"], "description": "The concrete model id every trial got (a policy is resolved once, at the start)."},
+            "model_policy": {"type": ["string", "null"]},
+            "approvals": {"type": "string"},
+            "skills": {"type": ["array", "null"], "description": "The variant's whole skill set (null: the environment's)."},
+            "instructions": {"type": ["string", "null"], "description": "The digest of the instructions the variant writes, when it has an overlay."}
+          }
+        }},
+        "tasks": {"type": "object", "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "repo": {"type": ["string", "null"]},
+            "base_branch": {"type": ["string", "null"]},
+            "base_sha": {"type": ["string", "null"], "description": "Pinned at the start from GitHub, else by the first trial's clone (then every trial checks it out)."},
+            "issue": {"type": ["string", "null"]}
+          }
+        }},
+        "pinned_at": {"type": "number"}
+      }
+    },
+    "counts": {"type": "object", "additionalProperties": {"type": "integer"}},
+    "trials": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["key", "task", "variant", "trial", "job", "state", "manifests", "config_digest", "verify", "grade", "stored", "drift", "links"],
+        "properties": {
+          "key": {"type": "string", "pattern": "^[^/]+/[^/]+/[0-9]+$", "description": "<task>/<variant>/<trial>"},
+          "task": {"type": "string"},
+          "variant": {"type": "string"},
+          "trial": {"type": "integer", "minimum": 1},
+          "job": {"type": ["string", "null"]},
+          "state": {"enum": ["pending", "running", "grading", "done", "cancelled", "skipped"]},
+          "outcome": {"type": ["string", "null"], "description": "The trial job's final state: succeeded, failed or cancelled."},
+          "reason": {"type": ["string", "null"]},
+          "session": {"type": ["string", "null"]},
+          "started_at": {"type": ["number", "null"]},
+          "finished_at": {"type": ["number", "null"]},
+          "turns": {"type": "integer"},
+          "manifests": {"type": "array", "items": {"type": ["string", "null"]}, "description": "Each agent turn's manifest digest."},
+          "config_digest": {"type": ["string", "null"], "description": "The first turn's manifest config_digest: equal across a variant's trials unless drift says otherwise."},
+          "verify": {"type": ["object", "null"], "properties": {"command": {"type": ["string", "null"]}, "exit_code": {"type": ["integer", "null"]}, "passed": {"type": ["boolean", "null"]}, "new_failures": {"type": ["array", "null"]}, "tail": {"type": ["string", "null"]}}},
+          "tests": {"description": "The trial's parsed test results, when hangar has them."},
+          "usage": {"type": ["object", "null"]},
+          "grade": {"type": ["object", "null"], "properties": {"command": {"type": "string"}, "exit_code": {"type": "integer"}, "tail": {"type": "string"}, "data": {}, "error": {"type": "string"}, "applied": {"type": "boolean"}, "seconds": {"type": "number"}}},
+          "stored": {"type": "array", "items": {"enum": ["manifest.json", "trace.json"]}},
+          "drift": {"type": "array", "items": {"type": "string"}},
+          "links": {"type": "object", "properties": {"job": {"type": ["string", "null"]}, "manifest": {"type": ["string", "null"]}, "trace": {"type": ["string", "null"]}}}
+        }
+      }
+    },
+    "notes": {"type": "array", "items": {"type": "string"}}
+  }
+}

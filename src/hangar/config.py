@@ -515,6 +515,11 @@ class Settings(BaseSettings):
     # files in it (fnmatch, `*` crosses directories). Unset: spec fixes are reported, not opened.
     doctor_specs_repo: str | None = None
     doctor_specs_paths: list[str] = Field(default_factory=lambda: ["envs/*.yaml", "envs/*.yml"])
+    # --- interfaces: the sister tool's interfaces (docs/specs/0014-sister-tool-interfaces.md). With tracing on, each
+    # turn's tool calls, subagents and approvals also go to the collector as children of its invoke_agent span.
+    trace_live_tools: bool = False
+    experiment_max_trials: int = Field(200, ge=1, le=2000)  # task x variant x trial in one experiment
+    experiment_parallel: int = Field(8, ge=1, le=64)  # trials running at once, when the experiment doesn't say
 
     @property
     def backup_interval_hours(self) -> float:

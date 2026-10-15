@@ -141,6 +141,9 @@ def plan(fleet: Any, sb: Sandbox, h: Harness, run_id: str, wd: str, env: dict[st
             spec = fleet.catalog.get(sb.environment)
         except (KeyError, ValueError):
             return f"its environment {sb.environment} is no longer defined"
+        from hangar import experiments  # --- interfaces: a trial's variant may replace the instructions
+
+        spec = experiments.effective_spec(fleet, sb, spec)
         settings = claude_settings(spec, fleet.settings.sandbox_user, env.get(CLAUDE_ENV))
         if [k for k in PLUGIN_KEYS if settings.pop(k, None)]:  # review(#69)
             p.warnings.append(CLAUDE_PLUGINS)

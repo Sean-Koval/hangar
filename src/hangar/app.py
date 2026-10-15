@@ -1145,6 +1145,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     clouddoctor.mount(app, h, A)
     clouddoctor.register(h)
+    # --- interfaces: the sister tool's three (spec 0014): manifests, trace export, experiments
+    from hangar import experiments, manifest
+
+    manifest.mount(app, h, U, J, owner_filter)  # sessions and environments: a member sees their own
+    experiments.mount(app, h, J, owner_filter)
     # --- observe: GET /metrics (admin or `metrics` tokens) and GET /api/usage
     from hangar import metrics, usage
 

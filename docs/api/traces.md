@@ -29,7 +29,7 @@ missing one does.
 
 **Secrets.** Every string in an export passes through the broker's redaction (`broker.redact`) when it is exported,
 on top of the redaction applied when events are recorded. Credential values never appear: hangar never records them
-in events, and a stored secret that turns up in a command, a tool's output or a message is replaced with `[REDACTED]`.
+in events, and a stored secret that turns up in a command, a tool's output or a message is masked (`***`).
 Tool inputs, outputs and messages are clipped (500, 500 and 2,000 characters), as the event log keeps them.
 
 **Live export.** Separately from these files, a control plane with tracing on (`OTEL_EXPORTER_OTLP_ENDPOINT`,

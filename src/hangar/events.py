@@ -447,7 +447,9 @@ class Parser:
         self.tools[tid] = [name, path]
         if name in _SHELL_TOOLS:
             return self._ev("command", _brief(args), id=tid, tool=name)
-        return self._ev("tool_call", f"{name} {_brief(args)}".strip(), id=tid, tool=name)
+        # --- interfaces: which subagent a Claude Code Task/Agent call starts (the trace's `subagent` span)
+        sub = args.get("subagent_type") if name in ("Task", "Agent") and isinstance(args, dict) else None
+        return self._ev("tool_call", f"{name} {_brief(args)}".strip(), id=tid, tool=name, subagent=sub)
 
     def _tool_end(self, tid: str, ok: bool, output: Any, path: str | None = None, **data: Any) -> list[RunEvent]:
         name, opath = self.tools.pop(tid, [data.pop("tool", None), None])

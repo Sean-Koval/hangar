@@ -27,6 +27,7 @@ from hangar import envbuilds as envbuilds  # --- envbuilds
 from hangar import envdoctor as envdoctor  # --- computer
 from hangar import envservices as envservices  # --- envbuilds
 from hangar import exchange, harden, images, isolation, observe  # --- observe, isolation, harden, images
+from hangar import experiments as experiments  # --- interfaces: experiment trials (packs, overlays)
 from hangar import fairness as fairness  # --- scale
 from hangar import ghapi as ghapi  # --- egress2
 from hangar import k8sgc as k8sgc  # --- durable
@@ -755,6 +756,7 @@ class Fleet:
                           f"harness changed in an upgrade; usually a few minutes): {msg[-160:]}")
 
             await self._resolve_packs(spec, pname, actor, log_fn=pack_stage, only=hname, lazy=True)
+            experiments.select_packs(spec, sb, hname)  # --- interfaces: a trial mounts only its own harness
             if spec.packs:
                 sb.info["packs"] = dict(spec.packs)
                 if hname in spec.packs and (v := self.harness_version(pname, hname)):  # --- images
@@ -764,7 +766,8 @@ class Fleet:
             stage("starting the sandbox")
             with observe.span("sandbox.start", {"hangar.sandbox.id": sb.id, "hangar.provider": pname}):  # --- observe
                 # image may be a snapshot ref (forks); --- envbuilds: a build's own template on Kubernetes
-                await prov.create(sb, image, envbuilds.EnvBuilds.provider_spec(self._warm(spec), sb))
+                await prov.create(sb, image, experiments.provider_spec(  # --- interfaces: not from a warm pool
+                    envbuilds.EnvBuilds.provider_spec(self._warm(spec), sb), sb))
             self.store.put(sb)
             await self._wait_running(prov, sb, stage=stage)
             if _parent:
@@ -772,6 +775,7 @@ class Fleet:
             # workstream F: in gateway mode this mints the grant and drops git secrets before anything is injected
             creds = await self.gateway.attach(prov, sb, spec, creds, push_branch or work_branch, _parent)
             await self._apply_session(prov, sb, spec, hname, creds)
+            await experiments.apply_overlay(self, prov, sb, spec, hname)  # --- interfaces: a variant's skills
             if _restore_workspace:
                 await self._restore_workspace(prov, sb, _restore_workspace)
             elif sb.repo:
