@@ -441,6 +441,25 @@ def test_stored_manifests_and_trial_files_are_redacted_on_the_way_out(settings, 
     assert experiments.trial_file(js, exp, "t/a/1", "trace.json") == {"x": ["***"]}  # type: ignore[arg-type]
 
 
+def test_an_egress_change_mid_experiment_stops_new_trials(fleet, tmp_path):
+    """Egress parity holds for the whole experiment, not only at submit: an approved egress request (or an edit)
+    that widens one environment mid-way would run later trials of its variants with more of the network."""
+    fleet.catalog.add({"name": "ea", "harnesses": ["codex"], "egress": {"mode": "allowlist", "allow": ["a.example"]}},
+                      save_dir=tmp_path)
+    fleet.catalog.add({"name": "eb", "harnesses": ["codex"], "egress": {"mode": "allowlist", "allow": ["a.example"]}},
+                      save_dir=tmp_path)
+    spec = experiments.ExperimentSpec.model_validate({
+        "name": "e", "environment": "ea", "tasks": [{"id": "t", "instructions": "x", "repo": "r"}],
+        "variants": {"a": {}, "b": {"environment": "eb"}}})
+    st = experiments.State(spec=spec.model_dump(mode="json"), pins={"egress": experiments._egress(fleet, spec)})
+    js = SimpleNamespace(fleet=fleet, _jobs={})
+    assert experiments._stop_starting(js, Job(title="e", instructions="x", environment="ea"), st, spec) is None
+    fleet.catalog.add({"name": "eb", "harnesses": ["codex"],
+                       "egress": {"mode": "allowlist", "allow": ["a.example", "b.example"]}}, save_dir=tmp_path)
+    why = experiments._stop_starting(js, Job(title="e", instructions="x", environment="ea"), st, spec)
+    assert why and "egress policy of eb changed" in why
+
+
 def test_list_attributes_are_redacted_too(broker):
     broker.put("seeded", "webhook", CredentialKind.GENERIC, SECRET)
     x = traces.Export(traces.trace_id("j"), broker.redact)

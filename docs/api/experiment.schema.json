@@ -42,6 +42,7 @@
             "issue": {"type": ["string", "null"]}
           }
         }},
+        "egress": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Each environment's egress policy at the start (canonical JSON); a change stops new trials."},
         "pinned_at": {"type": "number"}
       }
     },

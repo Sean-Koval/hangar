@@ -251,14 +251,10 @@ def submit(jobs: JobService, spec: ExperimentSpec, caller: Any, source: str = "a
     if n > jobs.settings.experiment_max_trials:
         raise JobError(f"{n} trials (tasks x variants x trials) is over HANGAR_EXPERIMENT_MAX_TRIALS "
                        f"({jobs.settings.experiment_max_trials})")
-    envs = {v.environment or spec.environment for v in spec.variants.values()} | {spec.environment}
-    egress: dict[str, str] = {}
-    for name in sorted(envs):
-        try:
-            e = jobs.fleet.catalog.get(name)
-        except KeyError as ex:
-            raise JobError(str(ex).strip("'\"")) from ex
-        egress[name] = json.dumps(e.egress.model_dump(mode="json") if e.egress else None, sort_keys=True)
+    try:
+        egress = _egress(jobs.fleet, spec)
+    except KeyError as ex:
+        raise JobError(str(ex).strip("'\"")) from ex
     if len(set(egress.values())) > 1:
         raise JobError("egress is fixed per experiment, and these environments differ in it: "
                        + "; ".join(f"{k}: {v}" for k, v in egress.items()))
@@ -273,6 +269,16 @@ def submit(jobs: JobService, spec: ExperimentSpec, caller: Any, source: str = "a
         st = State(spec=spec.model_dump(mode="json", exclude_none=True))
         _save(jobs, job, st)
     return job
+
+
+def _egress(fleet: Fleet, spec: ExperimentSpec) -> dict[str, str]:
+    """Each of the experiment's environments' egress policy, canonical JSON (KeyError: one is gone)."""
+    envs = {v.environment or spec.environment for v in spec.variants.values()} | {spec.environment}
+    out: dict[str, str] = {}
+    for name in sorted(envs):
+        e = fleet.catalog.get(name)
+        out[name] = json.dumps(e.egress.model_dump(mode="json") if e.egress else None, sort_keys=True)
+    return out
 
 
 def _variant_harness(fleet: Fleet, spec: ExperimentSpec, vname: str, v: Variant) -> tuple[str, str | None]:
@@ -384,7 +390,8 @@ async def _begin(jobs: JobService, job: Job, st: State, spec: ExperimentSpec) ->
         issue_text = await _issue_text(jobs, t.issue) if t.issue else None
         tasks[t.id] = {"repo": repo, "base_branch": t.base_branch, "base_sha": pinned,
                        "issue": t.issue, "issue_text": issue_text}
-    st.pins = {"variants": variants, "tasks": tasks, "pinned_at": now()}
+    # --- review(#114): egress too: an approved egress request widens an environment mid-experiment
+    st.pins = {"variants": variants, "tasks": tasks, "egress": _egress(fleet, spec), "pinned_at": now()}
     st.trials = [Trial(key=f"{t.id}/{vname}/{i}", task=t.id, variant=vname, trial=i)
                  for i in range(1, spec.trials + 1) for t in spec.tasks for vname in spec.variants]
     st.stage = "running"
@@ -543,6 +550,14 @@ def _stop_starting(jobs: JobService, job: Job, st: State, spec: ExperimentSpec) 
         if now_v != v.get("harness_version"):
             return (f"the harness lock changed mid-experiment ({v['harness']} {v.get('harness_version')} -> "
                     f"{now_v}, variant {vname}): the trials left would not run under the same conditions")
+    if (pinned := st.pins.get("egress")) is not None:  # --- review(#114)
+        try:
+            current = _egress(jobs.fleet, spec)
+        except KeyError as e:
+            return f"an environment of the experiment is gone ({str(e).strip(chr(39))[:200]})"
+        if changed := sorted(k for k in pinned if current.get(k) != pinned[k]):
+            return (f"the egress policy of {', '.join(changed)} changed mid-experiment: the trials left would not "
+                    "run under the same conditions")
     b = spec.budget
     if b is None:
         return None
