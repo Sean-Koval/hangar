@@ -1,6 +1,172 @@
 # Upgrading a running hangar
 
-This guide takes a hangar that runs the version before the overnight stack (main at `2e3e0a3`, "Merge pull request #43") to the top of the stack, PRs #48–#69. It is written for the GKE install from [gke.md](gke.md): one zonal cluster, gVisor sandboxes, the control plane with SQLite on the `hangar-data` PVC, checkpoints in the session bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / `power.sh`. [CHANGELOG.md](../CHANGELOG.md) lists what the stack adds.
+Two guides, newest first:
+
+- [**This release**](#upgrading-to-the-team-release-7590) (#75–#90): one hangar for a team of six at ~60 sessions, people and per-person credentials, front-door defaults and job budgets, the reconciler, the MCP deadline contract, and images built before anyone waits.
+- [**The overnight stack**](#upgrading-from-before-the-overnight-stack-4869) (#48–#69), for a hangar older than that. Do its backup and read its defaults first, then follow this release's procedure: its prebuild also covers the overnight guide's "republish the Codex pack" step.
+
+Both are written for the GKE install from [gke.md](gke.md): one zonal cluster, gVisor sandboxes, the control plane with SQLite on the `hangar-data` PVC, checkpoints in the session bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / `power.sh`. [CHANGELOG.md](../CHANGELOG.md) lists what each adds.
+
+## Upgrading to the team release (#75–#90)
+
+The short version, in order:
+
+```bash
+hangar admin backup                                   # 1. back up; record the running image
+#                                                       2. request quotas (days ahead)
+uv run hangar images build --registry "$REG"          # 3. prebuild the new image and pack tags
+#                                                       4. in the power-down window: terraform apply (the node pool)
+bash deploy/gke/power.sh up && bash deploy/gke/up.sh  # 5. bring the cluster up, roll out
+hangar doctor                                         # 6. check
+hangar cred owner <your-claude-login> owner           # 7. people: keep your own logins yours, then add the team
+hangar person add alice
+hangar config set HANGAR_BUDGET_DAY_TIMEZONE America/New_York   # 8. budgets, then job concurrency
+bash scripts/acceptance/gke.sh                        # 9. prove it
+```
+
+### What changes as soon as it starts
+
+To opt out, use `hangar config set NAME VALUE` (kept in hangar's database) or `hangar-site` (wins over the database). Settings marked *restart* apply after `kubectl -n hangar rollout restart deploy/hangar`.
+
+| What | Before → now | Opt out |
+| --- | --- | --- |
+| **The store** (#89) | every lookup scanned every sandbox record ever made → expression indexes on state and name, and stopped or failed sandbox records idle for 7 days move to a `sandboxes_archive` table (still found by id; deleted after 180 days; never while a snapshot or a credential lease points at one). Both happen on the first start, in the background, 100 rows at a time. | `HANGAR_SANDBOX_RETENTION_DAYS=0`, `HANGAR_SANDBOX_ARCHIVE_DAYS=0` |
+| **Fleet size and caps** (#89, #90) | `HANGAR_MAX_SANDBOXES` 50 → **120**. Per person: 15 live sessions, 20 sandboxes started directly, half the job slots (at least 4) running jobs; a cap reached is a 429 or an MCP error. Caps count the person hangar records on the work, so all of a person's tokens share them ([team-scale.md](team-scale.md#settings)). | `HANGAR_PERSON_MAX_SESSIONS`, `_MAX_SANDBOXES`, `_MAX_RUNNING_JOBS` (0 = off) |
+| **Job concurrency** (#89, #90) | 4 → `HANGAR_JOB_CONCURRENCY=0` (auto): 4 on Docker, **8 on GKE**. A free slot goes to whoever has the fewest jobs running. Step 8 raises it to 24 once budgets are set. | set a number (*restart*) |
+| **Sandbox CPU** (#89) | each sandbox pod requested its whole CPU limit → half of it (`HANGAR_K8S_CPU_REQUEST_FRACTION=0.5`); the limit and all memory stay reserved. Each environment's warm-pool template is rewritten once, so the first create of each after the rollout is cold. The control plane requests `500m`/`1Gi` (limit `3Gi`). | `HANGAR_K8S_CPU_REQUEST_FRACTION=1` (*restart*) |
+| **People** (#88) | every token was root over everyone's work → every token belongs to a person. Existing tokens, the admin token and the bootstrap token belong to **`owner`**, an admin, so nothing changes until you add someone (step 7). Credentials stored before this release have no person: they are **shared** with everyone you add. | — |
+| **Control-plane credentials** (#81) | an `mcp` token could map the webhook secret or bot token into a sandbox → signing keys, GitHub App keys, Slack secrets and the GitHub tokens the settings name never reach a sandbox. A direct-mode environment that attaches the same GitHub token as `HANGAR_GITHUB_TOKEN_CREDENTIAL` or `HANGAR_GATEWAY_CREDENTIAL` now fails to start; `hangar doctor` names it (step 6). Saving an environment that sets `secrets`, `image`, `base`, `runtime_class` or `credential_mode: direct` needs an admin. | `hangar cred exposure <name> sandbox` |
+| **Front-door defaults** (#82) | jobs from GitHub issues, Slack, A2A and webhooks had no `verify` → they take the repo's [policy](repo-policy.md) (`hangar repo set`), then the environment's new `verify:` field. **`envs/hangar.yaml` (and `hangar-jobs`) now sets `verify: bash scripts/ci/verify.sh`**. A standing check also runs once per base commit before the agent starts; on a red base only new failures count. | `hangar repo set owner/repo --verify ""`, or `verify: ""` in the environment |
+| **Agent scratch files** (#82) | delivery committed everything the agent left, including the `HANDOFF.md` the `repo-conventions` skill asked for → the skill no longer asks for it, and new root `HANDOFF.md`, `RESULT.md` and `NOTES.md` files and `*.orig`/`*.rej` leftovers beside their source stay out of PRs unless the task names them. Images with the skill rebuild once, since its layer changed. | name the file in the task |
+| **Job budgets and daily caps** (#85) | none → `job_budget` caps all of a job's turns together, and a repo's `max_usd_per_day` or `HANGAR_PERSON_MAX_USD_PER_DAY` holds new jobs for approval. **All unset by default**, and a day starts at UTC midnight (20:00 in New York) until `HANGAR_BUDGET_DAY_TIMEZONE` is set (step 8). | — |
+| **The reconciler** (#84) | rows a restart left `starting` or `stopping` stayed so, with their leases → a pass at startup and every `HANGAR_RECONCILE_INTERVAL_SECONDS` (30) finishes them; a GKE pod recreated blank under its claim counts as gone and its session resumes from its checkpoint. Sandboxes from before adopt their current pod's UID. It assumes one hangar process per database (`replicas: 1`, `strategy: Recreate`, as shipped). | — |
+| **Interrupted jobs** (#84) | a job caught by a restart or the power-down failed as `interrupted` → it resumes from its session's checkpoint, at most twice, 20 s apart. | `HANGAR_JOB_RESTART_RESUMES=0` |
+| **GitHub redelivery** (#84) | deliveries that failed while hangar was down were lost → at each start hangar asks GitHub to redeliver them (up to 3 days back). The stored GitHub token needs *Webhooks: Read and write*, as `hangar setup github` already asks. | `HANGAR_GITHUB_REDELIVER_ON_START=false` |
+| **`power.sh down`** (#84, #90) | stopped hangar after 10 minutes → it drains first (`POST /api/admin/drain`), checkpoints running turns and waits for creates and destroys in flight. `power.sh up` keeps an autoscaling range set while the cluster was down. | — |
+| **MCP waits** (#86) | `wait_for_turn` waited up to 300 s by default (600 at most), `exec` as long as its `timeout`, `process` `attach` up to 600 s, `terminal_send` up to its `wait_ms` → each at most `HANGAR_MCP_TOOL_WAIT_SECONDS` (150 s), so claude.ai (which gives up after about 230 s) gets an answer: `wait_for_turn` says `done: false`, an `exec` that runs into the cap points at `process`. Destroy, pause, resume, extend, snapshot, `fork_session` and `run_agent` answer within it too and finish in the background. Any other tool still waiting just past it (165 s) gets an error. | Raise `HANGAR_MCP_TOOL_WAIT_SECONDS` only if all your clients wait longer than claude.ai |
+| **Tool-list notice** (#86) | `serverInfo.version` was `0.1.0` → `<version>+tools.<hash>`. A claude.ai connector whose tool list is older than the server's gets a one-line note (at most hourly) asking to remove and re-add the connector (step 9). | — |
+| **Harness versions and packs** (#83, #87) | Claude Code and Antigravity followed "latest" → `src/hangar/harnesses.lock.yaml` pins every harness (Claude Code 2.1.296, Codex 0.162.1, Antigravity 1.3.3, pi 1.1.0, Gemini 0.64.0); a pack build fails unless the CLI reports the locked version. Packs hold only the vendor's files and are mounted by digest. **Every pack tag changes once**, and so does every image that bakes a harness in (step 3). `hangar pack publish` no longer overwrites an existing tag without `--force`. | — |
+
+### 1. Back up
+
+```bash
+kubectl -n hangar get deploy hangar -o jsonpath='{.spec.template.spec.containers[0].image}' | tee ~/.hangar/pre-upgrade-image
+hangar admin backup && hangar admin backups      # encrypted with the vault key, into the session store
+```
+
+Keep the vault key outside the cluster too ([§1 of the overnight guide](#1-back-up-first) shows how). The previous version runs on the upgraded database file (see [rolling back](#rolling-back-this-release)), so the backup is for a disaster, not for the rollback.
+
+### 2. Request quotas, days ahead
+
+The sandbox pool moves to `n2d-standard-16` (AMD keeps SMT on under GKE Sandbox, so 14 sandboxes fit a node) with up to 10 nodes ([team-scale.md](team-scale.md#how-many-nodes)). In *IAM & Admin → Quotas* for your region request `N2D_CPUS` ≥ 160, `CPUS_ALL_REGIONS` to match, and `SSD_TOTAL_GB` ≥ 2,250. Spot VMs take standard `N2D_CPUS` quota unless the region granted preemptible quota. A refused scale-up shows as sandboxes stuck "waiting for a node", and `hangar doctor` names the quota.
+
+### 3. Prebuild the new image and pack tags
+
+Before the rollout, so no create waits on a Cloud Build. This talks only to Artifact Registry, so it works while the cluster is powered down:
+
+```bash
+REG=$(terraform -chdir=deploy/terraform/gke output -raw registry)
+uv run hangar images plan --registry "$REG"    # every tag the commit needs; exit 3 = something to build
+uv run hangar images build --registry "$REG"   # Docker here (linux/amd64), else Cloud Build
+uv run hangar images plan --registry "$REG"    # exit 0: nothing missing
+```
+
+If the cluster sets `HANGAR_IMAGE_PREFIX`, `HANGAR_SANDBOX_USER`, `HANGAR_WORKSPACE_DIR`, `HANGAR_EXTRA_CA_BUNDLE` or `HANGAR_K8S_IMAGE_VOLUMES` in `hangar-site` or its database, export the same values first: they change the tags. With the images workflow's secrets set ([gke.md](gke.md#images-and-packs-built-in-ci)), the push to `main` does this for you and the run's summary lists each tag. `up.sh` runs the same build before it touches the cluster (`PREBUILD=0` skips it). If nothing prebuilt them, nothing breaks: running sandboxes keep the pack they mounted, the new control plane rebuilds the packs in the background, and the first sandbox for a harness whose pack isn't built yet waits for it.
+
+### 4. In the power-down window: the node pool
+
+After `power.sh down` has finished (it runs at 01:00 ET; the cluster is down until 10:00), so no sandbox is on the pool:
+
+```bash
+cd deploy/terraform/gke
+terraform plan    # expect "~ update in-place" on google_container_node_pool.sandboxes
+terraform apply
+```
+
+`machine_type` is an in-place node pool update with the google provider ≥ 5.x (`versions.tf` asks for ≥ 6.0): GKE replaces the nodes, not the pool, and with the pool at zero nodes that is quick. **If the plan shows the pool destroyed and created (`-/+`), stop**: something else in it changed (`sandbox_spot` forces a new pool). To keep the old pool, set `sandbox_machine_type` and `sandbox_max_nodes` in your tfvars. Done outside the window, every sandbox on the pool is killed, and GKE needs a node's worth of spare quota to surge.
+
+### 5. Bring the cluster up and roll out
+
+```bash
+bash deploy/gke/power.sh up     # keeps the 0-10 range the apply set, instead of the 0-4 saved at down
+bash deploy/gke/up.sh           # prebuild (finds nothing missing), then the rollout
+```
+
+Do this before the team starts, or let the 10:00 schedule run `power.sh up` and deploy right after. The Deployment uses `Recreate`, so the URL answers 502 until the new pod is ready. On its first start hangar creates the store's indexes and archive table (20,000 records index in well under a second), runs a reconciler pass before sessions and jobs look at their sandboxes, resumes jobs the power-down interrupted, and asks GitHub to redeliver what it missed overnight.
+
+### 6. Check
+
+```bash
+hangar doctor
+```
+
+It names environments that attach the control plane's own GitHub token in direct mode (fix with `hangar cred exposure <name> sandbox`, or switch them to the gateway), mapped repos whose jobs would run with no check (`hangar repo set <repo> --verify "…"`), the webhook's events and quota errors.
+
+### 7. People: keep your own logins yours, then add the team
+
+Every existing token now belongs to `owner` (you, an admin), and records from before have no person, so only admins see them. **Every credential stored before this release is shared**: once you add a member, it goes into their sandboxes, where `cat ~/.hangar/env` reads it. That includes your own Claude Max or ChatGPT login (review on #88). Before adding anyone:
+
+```bash
+hangar cred ls                                    # which of these are your own logins?
+hangar cred owner claude-sean owner               # yours from now on: only your sandboxes get it
+hangar cred owner codex-sean owner
+hangar cred add claude-team --harness claude-code --kind api_key --file team-key.txt   # a team key (an example)
+```
+
+A credential that is yours replaces an environment's shared one for its harness in your sandboxes, so put a shared team credential (an API key) in the environments: teammates without a login of their own, and jobs triggered from GitHub or Slack (which run for no one yet), use it. Without one, those jobs start with no login for that harness. A shared Codex ChatGPT login is also leased to one sandbox at a time across the whole team, so ten parallel Codex sessions need API keys or several logins.
+
+Then add each engineer:
+
+```bash
+hangar person add alice --name "Alice"            # prints her login token once, and lists the shared credentials she will get
+```
+
+She runs `hangar login <url>` with it, `hangar connect` for her MCP clients, and `hangar cred add` for her own Claude or Codex login, which then goes only into her sandboxes. Members see and act on their own sandboxes, sessions and jobs; admins on everyone's ([security.md](security.md#people)). The per-person caps count her as one person across all her tokens.
+
+### 8. Budgets, then job concurrency
+
+Job slots stay at 8 on GKE because nothing bounds what a job spends until budgets are set. Set them, then raise the slots to the measured 24:
+
+```bash
+hangar config set HANGAR_BUDGET_DAY_TIMEZONE America/New_York     # a day starts at local midnight
+hangar config set HANGAR_JOB_BUDGET_MAX_COST_USD 10                # every job's turns together (an example)
+hangar config set HANGAR_PERSON_MAX_USD_PER_DAY 150                # per person, all their tokens (an example)
+hangar repo set acme/app --max-usd-per-day 60 --verify "uv run pytest -q"
+hangar config set HANGAR_JOB_CONCURRENCY 24                        # restart
+kubectl -n hangar rollout restart deploy/hangar
+```
+
+A slot is a job, not a sandbox: 24 best-of-4 jobs could hold all 120 sandboxes, so keep `HANGAR_PERSON_MAX_RUNNING_JOBS` (half the slots) and the budgets in place ([team-scale.md](team-scale.md#limits-and-follow-ups)).
+
+### 9. Clients and proof
+
+- **claude.ai users remove the hangar connector and add it again** (Settings → Connectors): the apps never refetch the tool list ([clients.md](clients.md)). CLIs refetch it when a session starts.
+- `bash scripts/acceptance/gke.sh` runs the checks from the overnight guide's [§5](#5-prove-it-on-your-cluster) plus `mcp`: `create_sandbox` over MCP on a multi-harness environment (`--mcp-env`, default `python`) answers within claude.ai's 230 s, a second create whose client gives up after 5 s still comes up, then `exec`. It prints the server's version with its tool-list hash.
+- `uv run hangar images plan --registry "$REG"` exits 0, and `hangar pack list` shows each pack's locked and installed version.
+
+### Rolling back this release
+
+In this order:
+
+1. **Remove members first** (`hangar person rm <id>`, which revokes their tokens). The previous version has no people: every `mcp` token would see and act on everyone's work, and `user` tokens are refused.
+2. **Hand archived sandbox records back.** The previous version runs on the upgraded file (it ignores the archive table and keeps the indexes up to date), but it can't see archived records:
+   ```bash
+   kubectl -n hangar exec deploy/hangar -- python3 -c "import sqlite3; db = sqlite3.connect('/data/hangar.db'); \
+   db.execute('INSERT OR IGNORE INTO sandboxes(key, data) SELECT key, data FROM sandboxes_archive'); db.commit()"
+   ```
+3. **Set `HANGAR_JOB_CONCURRENCY` back to 4** if you raised it: the previous version has no job budgets or daily caps.
+4. **Suspend live sessions** (as `power.sh down` does), or let running turns finish.
+5. **Put the previous image back:**
+   ```bash
+   kubectl -n hangar set image deploy/hangar hangar="$(cat ~/.hangar/pre-upgrade-image)"
+   kubectl -n hangar rollout status deploy/hangar
+   ```
+
+What stays: the node pool (the previous version runs on it unchanged), the database, every session and checkpoint, and the old pack tags in Artifact Registry, which the previous version mounts by tag as before. What the previous version ignores: repo policies, budgets, `person` on records, `packinfo` digests, the drain (the new `power.sh` treats its 404 as settled) and the stale-tool-list records. GitHub replay marks are compatible both ways. The next upgrade archives the records again.
+
+## Upgrading from before the overnight stack (#48–#69)
+
+This guide takes a hangar that runs the version before the overnight stack (main at `2e3e0a3`, "Merge pull request #43") to the top of the stack, PRs #48–#69. From there, continue with [this release](#upgrading-to-the-team-release-7590). It is written for the GKE install from [gke.md](gke.md): one zonal cluster, gVisor sandboxes, the control plane with SQLite on the `hangar-data` PVC, checkpoints in the session bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / `power.sh`. [CHANGELOG.md](../CHANGELOG.md) lists what the stack adds.
 
 Checkpoints are in the bucket only if `hangar-site` names it, as terraform's comment on the bucket says to. Check before you start; a few things below differ when it prints nothing:
 
@@ -21,7 +187,7 @@ bash scripts/acceptance/gke.sh            # proves it on your cluster (§5)
 
 Every claim below was checked against the code, not the PR descriptions. A few things can only be seen on a cluster. [The last section](#what-couldnt-be-checked-without-gke) lists them, and the acceptance script checks them.
 
-## 1. Back up first
+### 1. Back up first
 
 `hangar admin backup` arrives with the upgrade, so the old version can't run it. Take one of these before `up.sh`, preferably both.
 
@@ -63,7 +229,7 @@ gcloud compute snapshots create "hangar-pre-upgrade-$(date +%Y%m%d-%H%M)" --proj
 
 A snapshot of a running hangar is crash-consistent, like a power loss: SQLite recovers it, and may drop the last commits. For a clean one, run `kubectl -n hangar scale deploy/hangar --replicas=0` first. Sandboxes keep running meanwhile, and `up.sh` sets the replicas back to 1. [gke.md §7](gke.md#7-backups-and-restore) explains how to restore a snapshot.
 
-## 2. What happens to your data
+### 2. What happens to your data
 
 **No migration, and nothing one-way.** The schema is unchanged: the same tables, each a key and a JSON document (`src/hangar/store.py`). New state goes into new JSON fields, which all have defaults, and into new keys in the `kv` table:
 
@@ -89,7 +255,7 @@ No startup step converts anything. Records gain the new fields the next time han
 - *Job events* are also appended to a log per job (#49), so job sessions' events take twice the space on the volume.
 - *Backups* go to `gs://<bucket>/_backups/` (§3), or to `/data/sessions/_backups/` on the PVC without a bucket. If you set `session_retention_days` in terraform, the bucket's lifecycle rule deletes backups older than that too.
 
-## 3. Defaults that change behaviour
+### 3. Defaults that change behaviour
 
 Each of these is on, or different, as soon as the new version starts. To opt out, use `hangar config set NAME VALUE`, which keeps the value in hangar's database across redeploys, or the `hangar-site` config map, which wins over the database. Settings marked *restart* apply after `kubectl -n hangar rollout restart deploy/hangar`; `hangar config set` says so. A change to `hangar-site` always needs that restart: the pod reads it as environment variables when it starts.
 
@@ -103,8 +269,6 @@ Each of these is on, or different, as soon as the new version starts. To opt out
 | **Prompt-cache TTL** (#63) | the harness default (5 min) → `HANGAR_CACHE=auto`: a Claude Code turn asks for the **1-hour** cache when its session can wait more than 5 minutes for the next message. With the default `HANGAR_SESSION_IDLE_MINUTES=30`, that is most sessions. **1-hour cache writes cost 2× the input price, against 1.25× for 5-minute writes**; reads cost the same. It pays off when a session's next message comes after 5 minutes and before an hour. With a Claude subscription login rather than an API key, nothing is billed per token. pi gets the same policy; Codex and Antigravity cache by themselves. Best-of-N attempts and forks started together now wait up to `HANGAR_CACHE_STAGGER_SECONDS` (15) for the first one to write the shared prefix. | `HANGAR_CACHE=5m` (or `off`), `HANGAR_CACHE_STAGGER_SECONDS=0` |
 | **Verify inside the turn** (#65) | a job's `verify` ran after the turn → it also runs inside the turn, and a failure goes back to the agent, up to `HANGAR_MAX_VERIFY_ROUNDS` (3) times per turn. Turns can take longer and use more tokens. While the gate is on, a job whose diff changes the check's own test files is **delivered as a draft PR**, with the files listed in `result.touched_tests`. | `HANGAR_VERIFY_IN_LOOP=false`, or `verify_in_loop: false` per job |
 | **PR auto-fix** (#65) | n/a → on for every repo (`ci,reviews`). A failing check on a job's own PR, or a trusted reviewer's "changes requested" or inline comments, starts a follow-up turn on that job's session (which costs money). There are at most `HANGAR_AUTOFIX_MAX_ROUNDS` (3) rounds per PR, 120 s apart. **It only fires once the webhook sends the new events (§4).** | `hangar config set HANGAR_GITHUB_AUTOFIX '{"owner/repo": "off"}'` per repo, or `"autofix": "off"` per job. `HANGAR_AUTOFIX_MAX_ROUNDS=0` also stops it, but posts an "Auto-fix stopped" comment the first time. |
-| **Front-door defaults** | jobs from GitHub issues, Slack, A2A and webhooks had no `verify` → they take the repo's [policy](repo-policy.md) (`hangar repo set`), then the environment's new `verify:` field. **`envs/hangar.yaml` (and `hangar-jobs`) now sets `verify: bash scripts/ci/verify.sh`**, so jobs on hangar itself run ruff and the selected tests. A standing check also runs once per base commit before the agent starts; on a red base only new failures count. | `hangar repo set owner/repo --verify ""`, or `verify: ""` in the environment |
-| **Agent scratch files** | delivery committed everything the agent left, including the `HANDOFF.md` the `repo-conventions` skill asked for → the skill no longer asks for it, and new root `HANDOFF.md`, `RESULT.md` and `NOTES.md` files and `*.orig`/`*.rej` leftovers stay out of PRs unless the task names them. Images with the skill rebuild on their next use, since the skill's layer changed. | name the file in the task |
 | **`/metrics`** (#55) | none → `GET /metrics` on the public URL, for admin tokens and new `metrics`-scoped tokens only. Traces stay off unless `OTEL_*` variables name an exporter. | `HANGAR_METRICS_ENABLED=false` (*restart*) |
 | **The E2B-compatible API** (#61) | none → mounted at `/e2b` on the public URL, with the sandbox router in front of the app. It is for admin tokens and new `sandboxes`-scoped tokens, rate-limited per `sandboxes` token. | `HANGAR_E2B_API_PATH=""` (*restart*) |
 | **Database backups** (#57) | none → with `HANGAR_SESSION_STORE` on a `gs://` bucket: one ~5 minutes after each start when none is recent, then every 24 h, into `gs://<bucket>/_backups/`, keeping the newest 14. They are gzipped and encrypted with the vault key. Until the first one exists, `hangar doctor` warns "none yet". Without a bucket nothing is scheduled, and `hangar doctor` warns "no scheduled backups of hangar's database": `hangar config set HANGAR_BACKUP_HOURS 24` writes them to the PVC, which a PD snapshot then covers too. | `HANGAR_BACKUP_HOURS=0`; `HANGAR_BACKUP_KEEP` sets the count |
@@ -116,12 +280,11 @@ Each of these is on, or different, as soon as the new version starts. To opt out
 | **The git gateway** (#48) | still off unless `HANGAR_GATEWAY_URL` is set. When it's on: branches under `hangar/session/` are reserved for their sessions, a grant gets at most 8 requests at once, and a source address with 30 failed grant checks in a minute gets 429s. | — |
 | **The Docker network** (#62) | *laptop and single VM only, not GKE:* sandboxes go on hangar's own `hangar-sandboxes` network (bridge `hangar0`), where they can't reach each other. Running sandboxes stay on their network until they're recreated. | `HANGAR_DOCKER_NETWORK=bridge` (*restart*) |
 | **Shutdown** (#57) | SIGTERM ended everything at once → long-polls answer straight away, streams and terminals get `HANGAR_SHUTDOWN_GRACE_SECONDS` (15), then hangar shuts down. The Deployment's `terminationGracePeriodSeconds` is now 45 (§4). | — |
-| **MCP waits** | `wait_for_turn` waited up to 300 s by default (600 at most), `exec` as long as its `timeout`, `process` `attach` up to 600 s, `terminal_send` up to its `wait_ms` → each at most `HANGAR_MCP_TOOL_WAIT_SECONDS` (150 s), so claude.ai (which gives up after about 230 s) gets an answer: `wait_for_turn` says `done: false`, an `exec` that runs into the cap is stopped and its answer points at `process`. Destroy, pause, resume, extend, snapshot, `fork_session` and `run_agent` answer within it too and finish in the background. Any other tool still waiting just past it (165 s) gets an error. | Raise `HANGAR_MCP_TOOL_WAIT_SECONDS` only if all your clients wait longer than claude.ai |
 | **I/O threads** (#53) | Python's default (CPUs + 4) → 32 per CPU, between 64 and 128, for blocking provider calls. | `HANGAR_IO_THREADS` (*restart*) |
 
 Not changed for GKE: the default provider, the runtime class, warm pools, and approvals (`auto`). Harness packs are the same except Codex's, whose tag changes (§4). Tiers and hot resume (#64) apply only to environments that ask for `tier: fast` and to the `e2b` provider, which isn't enabled on the GKE install.
 
-## 4. Upgrade
+### 4. Upgrade
 
 ```bash
 git pull                      # main with the stack merged
@@ -165,7 +328,7 @@ The Deployment uses `Recreate`, so the URL answers 502 from the moment the old p
    - `deploy/k8s/e2b.yaml` (#61) gives E2B SDKs per-sandbox host names under your own domain. It needs the Gateway API on the cluster, Certificate Manager and a static IP ([gke.md §8](gke.md#8-e2b-sdk-clients-optional)). Without it, SDKs work through the existing URL (`E2B_API_URL=https://<host>/e2b`, `E2B_SANDBOX_URL=https://<host>/e2b/sandbox`).
 7. **Settings can move into the database.** `hangar config list` shows where each value comes from. Values in `hangar-site` keep winning; [gke.md §2a](gke.md#2a-log-in-connect-and-configure) explains when to keep them there.
 
-## 5. Prove it on your cluster
+### 5. Prove it on your cluster
 
 ```bash
 hangar login https://<your hangar> --token-file ~/.hangar/gke-admin-token   # if you haven't
@@ -184,7 +347,6 @@ Each check prints PASS, FAIL or SKIP with its time:
 | `exec` | 20 exec round trips: their p50/p95 from your laptop, and the transport they used (from `/metrics`: `envd` or `exec`). It fails unless all of them went through hangar-envd (`--no-expect-envd` relaxes that). It also measures **inside the control-plane pod**: 20 × `true` through pods/exec, then 20 × through hangar-envd, the in-cluster comparison spec 0013 asked for. |
 | `stream` | a streamed exec over Server-Sent Events, through the ingress (#68): the first line arrives while the command still runs, so nothing in between buffers the stream. It fails when the command wasn't streamed through hangar-envd (`--no-expect-envd` relaxes that). |
 | `files` | a 1 MiB file written and read back intact through MCP `write_file`/`read_file` |
-| `mcp` | the way claude.ai uses hangar, with no kubectl: `create_sandbox` over MCP on a multi-harness environment (`--mcp-env`, default `python`) answers within claude.ai's 230 s; a second create whose client gives up after 5 s still comes up instead of ending in `error`; then `exec` over MCP. It prints the server's version (with its tool-list hash) and how long `tools/list` took. |
 | `isolation` | from sandbox A: sandbox B's hangar-envd port, the metadata server (169.254.169.254:80), GKE's Workload Identity metadata server (169.254.169.252:988), hangar's Service and hangar's API port on its pod are all closed, while the internet is open |
 | `session` | a session with no model turn: a commit, a change and an untracked file, then checkpoint, suspend (its sandbox goes) and open (a new sandbox restores all three), each timed |
 | `model` | `--with-model`: a short real turn whose answer contains a requested word, with its cost |
@@ -196,7 +358,7 @@ Each check prints PASS, FAIL or SKIP with its time:
 
 The script never runs `power.sh`. To check power down and up: `bash deploy/gke/power.sh down`, then `power.sh up`, then run the script again. Everything the script creates is named `accept-<run>` and is removed at the end, also after a failure or Ctrl-C (`--keep` leaves it). `tests/test_acceptance_script.py` runs the script against a hangar on Docker, with GitHub replaced by a local git server behind the gateway. Every check but `k8s` and `steer` runs there for real, `model` with a scripted agent in place of Claude. `k8s`, `steer` and the in-cluster exec measurement run against stand-ins: a fake kubectl, a fake API, and the Docker provider in place of the Kubernetes one.
 
-## 6. Rolling back
+### 6. Rolling back
 
 Put the previous image back:
 
@@ -216,7 +378,7 @@ The tag is `control-plane:<short sha>` of the commit you deployed from, `control
 - **Everything new is gone:** steering and approvals, envd (daemons left running in sandboxes are ignored), streaming (background processes started with `process` keep running in their sandboxes, unseen), the E2B API, `/metrics`, auto-fix, backups (the files in `_backups/` stay), MCP tasks and the new MCP features.
 - **Turns that are running** when you roll back were started under the new driver. Suspend sessions first, as `power.sh down` does, or let running turns finish.
 
-## What couldn't be checked without GKE
+### What couldn't be checked without GKE
 
 These were checked on Docker and with fakes only. The acceptance script checks each on the cluster:
 

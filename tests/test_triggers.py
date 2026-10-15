@@ -375,7 +375,7 @@ def test_verify_inbound_schemes():
 
     b64 = SignatureSpec(header="Sig", encoding="base64")
     assert verify_inbound(b64, "k", {"Sig": base64.b64encode(mac.digest()).decode()}, body, t) is None
-    # a timestamp header with a skew limit, in seconds or milliseconds (Linear-Timestamp)
+    # a timestamp header with a skew limit, in seconds or milliseconds
     ts = SignatureSpec(header="Sig", timestamp_header="Ts", max_skew_seconds=60)
     ok = {"Sig": mac.hexdigest()}
     assert verify_inbound(ts, "k", {**ok, "Ts": str(int(t) - 30)}, body, t) is None

@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any, Literal
 
+import yaml
 from pydantic import BaseModel, Field, model_validator
 
 from hangar.models import CredentialKind
@@ -61,7 +63,10 @@ class Harness(BaseModel):
     name: str
     title: str
     agent: bool = True  # False for helpers such as git that are not a coding agent
-    version: str = "latest"  # pinned into the pack tag; bump to roll a fleet forward
+    version: str = "latest"  # pinned into the pack tag; set from harnesses.lock.yaml for every harness with `install`
+    # --- images: the lock's other fields for this harness (checksums, build ids), exported to `install` as
+    # upper-case variables: `sha256: {x86_64: ...}` becomes $SHA256_X86_64.
+    pin: dict[str, str] = Field(default_factory=dict)
     # Shell run as root in the pack builder with $PREFIX (= PACK_ROOT/<name>), $VERSION and a throwaway $HOME.
     # Must leave runnable entrypoints in $PREFIX/bin and nothing outside $PREFIX that they depend on.
     install: str = ""
@@ -98,35 +103,45 @@ class Harness(BaseModel):
     # --- overnight/cache: env that asks the CLI for each prompt-cache TTL it supports ("5m", "1h", "off"; cache.py).
     # A TTL missing here is one the CLI can't be asked for; the provider's own caching applies.
     cache_env: dict[str, dict[str, str]] = Field(default_factory=dict)
+    # --- images (harness P2): directories in the prefix appended to PATH for the selected harness (lowest priority),
+    # set at claim time with the rest of its environment rather than by a wrapper in the pack.
+    path_extra: list[str] = Field(default_factory=list)
 
     @property
     def prefix(self) -> str:
         return f"{PACK_ROOT}/{self.name}"
 
 
+# --- images: the locked release's binary straight from the vendor's release bucket (what install.sh would fetch for
+# that version), checked against the lock's sha256, rather than install.sh, which starts from whatever is latest.
 _CLAUDE_INSTALL = r"""
-curl -fsSL https://claude.ai/install.sh | bash ${VERSION:+-s "$VERSION"}
-install -D -m 755 "$(readlink -f "$HOME/.local/bin/claude")" "$PREFIX/bin/claude"
+case "$(uname -m)" in
+  x86_64) P=linux-x64 SUM=$SHA256_X86_64 ;;
+  aarch64) P=linux-arm64 SUM=$SHA256_AARCH64 ;;
+  *) echo "no Claude Code build for $(uname -m)" >&2; exit 1 ;;
+esac
+curl -fsSL "https://downloads.claude.ai/claude-code-releases/$VERSION/$P/claude" -o /tmp/claude
+echo "$SUM  /tmp/claude" | sha256sum -c -
+install -D -m 755 /tmp/claude "$PREFIX/bin/claude"
+rm -f /tmp/claude
 """
 
 # The npm package is a node launcher around a static musl binary; ship the binary, its helper binaries and
-# resources, and a wrapper that adds the bundled ripgrep the launcher would have put on PATH. --- harden: the wrapper
-# names its prefix (packs and bakes both put it there) instead of finding it with dirname and readlink, which a
-# hardened turn would otherwise look up on the agent's PATH before codex starts.
+# resources. --- images (harness P2): the pack holds the vendor's files only. bin/codex links to the binary, and the
+# bundled ripgrep the launcher would have put on PATH comes from `path_extra`, which hangar applies at claim time: a
+# change to how hangar starts codex ships with hangar, not as a new pack.
 _CODEX_INSTALL = r"""
 npm install -g --prefix /tmp/codex-npm "@openai/codex@$VERSION"
-V=$(find /tmp/codex-npm -type d -path '*/vendor/x86_64-unknown-linux-musl' | head -1)
+V=$(find /tmp/codex-npm -type d -path "*/vendor/$(uname -m)-unknown-linux-musl" | head -1)
 test -x "$V/bin/codex"
 mkdir -p "$PREFIX/bin" "$PREFIX/libexec"
 cp -a "$V/." "$PREFIX/libexec/"
-cat > "$PREFIX/bin/codex" <<SH
-#!/bin/sh
-PATH="\$PATH:$PREFIX/libexec/codex-path" exec "$PREFIX/libexec/bin/codex" "\$@"
-SH
-chmod 755 "$PREFIX/bin/codex"
+ln -s ../libexec/bin/codex "$PREFIX/bin/codex"
 """
 
 # pi needs node >= 22.19. Bundle the builder's node so pi never depends on (or changes) the project's node.
+# --- images (harness P2): the launcher names its prefix rather than finding it with dirname and readlink, which a
+# hardened turn would look up on the agent's PATH (harness B5): one fixed line, nothing to change in it later.
 _PI_INSTALL = r"""
 mkdir -p "$PREFIX/bin" "$PREFIX/node/bin"
 install -m 755 "$(command -v node)" "$PREFIX/node/bin/node"
@@ -135,15 +150,24 @@ PKG="$PREFIX/lib/lib/node_modules/@earendil-works/pi-coding-agent"
 ENTRY=$(node -p "require('$PKG/package.json').bin.pi")
 cat > "$PREFIX/bin/pi" <<SH
 #!/bin/sh
-D=\$(dirname "\$(dirname "\$(readlink -f "\$0")")")
-exec "\$D/node/bin/node" "\$D/lib/lib/node_modules/@earendil-works/pi-coding-agent/$ENTRY" "\$@"
+exec "$PREFIX/node/bin/node" "$PKG/$ENTRY" "\$@"
 SH
 chmod 755 "$PREFIX/bin/pi"
 """
 
+# --- images: agy's install.sh takes no version (it installs the updater's current one), so fetch the locked build's
+# archive, the one install.sh downloads for that version, and check it against the lock's sha512.
 _AGY_INSTALL = r"""
-curl -fsSL https://antigravity.google/cli/install.sh | bash
-install -D -m 755 "$(readlink -f "$HOME/.local/bin/agy")" "$PREFIX/bin/agy"
+case "$(uname -m)" in
+  x86_64) P=linux-x64/cli_linux_x64 SUM=$SHA512_X86_64 ;;
+  aarch64) P=linux-arm/cli_linux_arm64 SUM=$SHA512_AARCH64 ;;
+  *) echo "no Antigravity CLI build for $(uname -m)" >&2; exit 1 ;;
+esac
+curl -fsSL "https://storage.googleapis.com/antigravity-public/antigravity-cli/$VERSION-$BUILD/$P.tar.gz" -o /tmp/agy.tgz
+echo "$SUM  /tmp/agy.tgz" | sha512sum -c -
+tar -xzf /tmp/agy.tgz -C /tmp antigravity
+install -D -m 755 /tmp/antigravity "$PREFIX/bin/agy"
+rm -f /tmp/agy.tgz /tmp/antigravity
 """
 
 # A GCP service-account key, billed to the key's own project. The project comes from the key file;
@@ -166,7 +190,6 @@ HARNESSES: dict[str, Harness] = {
         name="claude-code",
         title="Claude Code",
         install=_CLAUDE_INSTALL,
-        version="",  # the installer takes an optional version; empty = latest stable
         env={"DISABLE_AUTOUPDATER": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"},
         credentials=[
             CredentialSlot(kind=CredentialKind.API_KEY, env_var="ANTHROPIC_API_KEY"),
@@ -220,7 +243,6 @@ HARNESSES: dict[str, Harness] = {
     "codex": Harness(
         name="codex",
         title="OpenAI Codex CLI",
-        version="0.162.1",
         install=_CODEX_INSTALL,
         credentials=[
             CredentialSlot(
@@ -253,6 +275,7 @@ HARNESSES: dict[str, Harness] = {
         # --- overnight/cache: no cache_env. Verified with 0.162.1: requests carry prompt_cache_key = the thread id
         # and no prompt_cache_retention / prompt_cache_options, and there is no flag or config key for them. OpenAI
         # caches automatically (GPT-5.6+: at least 30 min).
+        path_extra=["libexec/codex-path"],  # the bundled rg (--- images)
         session_dirs=[".codex/sessions"],
         resume="capture",
         # Verified with 0.162.1: `codex exec fork <id>` starts a new thread (its thread_id is in thread.started)
@@ -268,7 +291,6 @@ HARNESSES: dict[str, Harness] = {
     "pi": Harness(
         name="pi",
         title="pi coding agent",
-        version="1.1.0",
         install=_PI_INSTALL,
         credentials=[
             # Any provider key works: pass env_var (OPENAI_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY...)
@@ -354,8 +376,8 @@ HARNESSES: dict[str, Harness] = {
         install=(
             'mkdir -p "$PREFIX/bin" "$PREFIX/node/bin" && install -m 755 "$(command -v node)" "$PREFIX/node/bin/node"\n'
             'npm install -g --prefix "$PREFIX/lib" "@google/gemini-cli@$VERSION"\n'
-            "printf '#!/bin/sh\\nD=$(dirname \"$(dirname \"$(readlink -f \"$0\")\")\")\\n"
-            "exec \"$D/node/bin/node\" \"$D/lib/bin/gemini\" \"$@\"\\n' > \"$PREFIX/bin/gemini\"\n"
+            "printf '#!/bin/sh\\nexec \"%s/node/bin/node\" \"%s/lib/bin/gemini\" \"$@\"\\n' \"$PREFIX\" \"$PREFIX\" "
+            "> \"$PREFIX/bin/gemini\"\n"
             'chmod 755 "$PREFIX/bin/gemini"'
         ),
         env={"NO_BROWSER": "true"},
@@ -404,6 +426,43 @@ HARNESSES: dict[str, Harness] = {
 }
 
 
+# --- images: the harness lock (harnesses.lock.yaml): every harness hangar installs is pinned there, nowhere else.
+LOCK_FILE = Path(__file__).with_name("harnesses.lock.yaml")
+_PIN_VALUE = re.compile(r"[A-Za-z0-9._-]+")  # exported unquoted-safe into the install script
+
+
+def _flatten(prefix: str, value: Any, out: dict[str, str]) -> None:
+    if isinstance(value, dict):
+        for k, v in value.items():
+            _flatten(f"{prefix}_{k}" if prefix else str(k), v, out)
+        return
+    if not _PIN_VALUE.fullmatch(str(value)):
+        raise ValueError(f"{LOCK_FILE.name}: {prefix} = {value!r} is not a plain version, checksum or id")
+    key = re.sub(r"[^A-Z0-9_]", "_", prefix.upper())
+    if not re.fullmatch(r"[A-Z][A-Z0-9_]*", key) or key in ("PREFIX", "VERSION", "HOME", "PATH"):
+        raise ValueError(f"{LOCK_FILE.name}: {prefix!r} can't be an install variable")
+    out[key] = str(value)
+
+
+def apply_lock(harnesses: dict[str, Harness], lock: dict[str, Any]) -> None:
+    """Pin each harness to its lock entry. A harness that installs something must have one, so nothing floats."""
+    if unknown := sorted(set(lock) - set(harnesses)):
+        raise ValueError(f"{LOCK_FILE.name} names unknown harnesses: {', '.join(unknown)}")
+    for name, h in harnesses.items():
+        entry = dict(lock.get(name) or {})
+        if not h.install:
+            continue
+        version = str(entry.pop("version", "") or "")
+        if not _PIN_VALUE.fullmatch(version) or version == "latest":
+            raise ValueError(f"{LOCK_FILE.name}: {name} needs an exact `version`")
+        pin: dict[str, str] = {}
+        _flatten("", entry, pin)
+        h.version, h.pin = version, pin
+
+
+apply_lock(HARNESSES, yaml.safe_load(LOCK_FILE.read_text()) or {})
+
+
 def get_harness(name: str) -> Harness:
     try:
         return HARNESSES[name]
@@ -419,13 +478,31 @@ def slot_for(harness: str, kind: CredentialKind) -> CredentialSlot | None:
 
 
 # --------------------------------------------------------------------------- packs
+# --- images: what the installed CLI says it is (`verify`, its --version). The pack build prints it on a marker line
+# (VERSION_MARKER), fails when it doesn't name the locked version, and keeps it in VERSION_FILE: its own last layer,
+# so hangar can read it from the registry without pulling the pack, and mounted at <prefix>/.hangar-version.
+VERSION_MARKER = "hangar-harness-version: "
+VERSION_FILE = ".hangar-version"
+
+
 def pack_script(h: Harness) -> str:
+    pins = "".join(f" {k}={v}" for k, v in sorted(h.pin.items()))
     return (
         "#!/bin/bash\nset -euxo pipefail\n"
-        f"export PREFIX={h.prefix} VERSION={json.dumps(h.version)} HOME=/tmp/pack-home\n"
+        f"export PREFIX={h.prefix} VERSION={json.dumps(h.version)} HOME=/tmp/pack-home{pins}\n"
         'mkdir -p "$HOME" "$PREFIX"\n'
         f"{h.install.strip()}\n"
-        f'PATH="$PREFIX/bin:$PATH" {h.verify}\n'
+        f'OUT=$(PATH="$PREFIX/bin:$PATH" {h.verify} 2>&1)\n'
+        "{ set +x; } 2>/dev/null\n"
+        # the line naming the version (a runtime may warn first), else the first line, for the error. The whole version:
+        # 1.2 must not pass for 1.2.3, nor 2.1.29 for 2.1.296 (review)
+        'INSTALLED=$(printf \'%s\\n\' "$OUT" | grep -E -m1 -- "(^|[^0-9A-Za-z.])v?${VERSION//./[.]}([^0-9A-Za-z.]|$)" '
+        "|| true)\n"
+        "if [ -z \"$INSTALLED\" ]; then echo \"installed '${OUT%%$'\\n'*}', but the lock pins $VERSION\" >&2; "
+        "exit 1; fi\n"
+        f"printf '%s\\n' \"$INSTALLED\" > /{VERSION_FILE}\n"
+        f"echo \"{VERSION_MARKER}$INSTALLED\"\n"
+        "set -x\n"
         'rm -rf "$HOME" /tmp/*-npm\n'
     )
 
@@ -438,8 +515,18 @@ def pack_stage(h: Harness) -> str:
 
 
 def pack_dockerfile(h: Harness) -> str:
-    # The image's root *is* the prefix: it is mounted at PACK_ROOT/<name>.
-    return pack_stage(h) + f"FROM scratch\nCOPY --from=pack-{h.name} {h.prefix}/ /\n"
+    # The image's root *is* the prefix: it is mounted at PACK_ROOT/<name>. The version file is a layer of its own,
+    # the last one (--- images).
+    return (pack_stage(h) + f"FROM scratch\nCOPY --from=pack-{h.name} {h.prefix}/ /\n"
+            f"COPY --from=pack-{h.name} /{VERSION_FILE} /{VERSION_FILE}\n")
+
+
+def version_from_log(lines: list[str] | str) -> str | None:
+    """The installed version a pack build printed (VERSION_MARKER), from its build log."""
+    for line in (lines.splitlines() if isinstance(lines, str) else lines):
+        if (i := line.find(VERSION_MARKER)) >= 0 and "echo" not in line[:i]:
+            return line[i + len(VERSION_MARKER):].strip()[:200] or None
+    return None
 
 
 def pack_digest(h: Harness) -> str:

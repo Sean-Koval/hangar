@@ -1,0 +1,100 @@
+# Environment images and harness packs, built before anyone waits (docs/gke.md, "Images and packs, built in CI").
+# On every push to main, and by hand, `hangar images build` builds the image and pack tags this commit needs that
+# Artifact Registry lacks, and pushes them. The cluster then finds them with one registry lookup instead of building
+# on a create, and deploy/gke/up.sh has nothing left to build before rollout.
+#
+# It signs in to Google Cloud with Workload Identity Federation (no key). The owner adds three repository secrets:
+#   GCP_WORKLOAD_IDENTITY_PROVIDER  projects/<project number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>
+#   GCP_SERVICE_ACCOUNT             <name>@<project>.iam.gserviceaccount.com, with roles/artifactregistry.writer on the repo
+#   HANGAR_REGISTRY                 <region>-docker.pkg.dev/<project>/hangar (terraform -chdir=deploy/terraform/gke output registry)
+# Without them (before setup, or on a fork) the job skips with a notice and stays green. It never talks to the cluster,
+# so it works while the cluster is powered down.
+name: images
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One run at a time, never cancelled: a later push waits and then finds what this one pushed.
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      id-token: write  # the OIDC token Workload Identity Federation exchanges
+    env:
+      WIF_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      WIF_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      HANGAR_REGISTRY: ${{ secrets.HANGAR_REGISTRY }}
+    steps:
+      - name: Check setup
+        id: setup
+        run: |
+          if [ -n "$WIF_PROVIDER" ] && [ -n "$WIF_SERVICE_ACCOUNT" ] && [ -n "$HANGAR_REGISTRY" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=images: skipped::Add the GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_SERVICE_ACCOUNT and HANGAR_REGISTRY secrets (docs/gke.md) to build environment images and harness packs here before rollout."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.setup.outputs.ready == 'true'
+        uses: actions/checkout@v7
+      - if: steps.setup.outputs.ready == 'true'
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - if: steps.setup.outputs.ready == 'true'
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
+      - if: steps.setup.outputs.ready == 'true'
+        uses: google-github-actions/setup-gcloud@v3
+      - name: Registry login and disk space
+        if: steps.setup.outputs.ready == 'true'
+        run: |
+          # The credential helper refreshes its token, so pushes late in a long run still authenticate.
+          gcloud auth configure-docker "${HANGAR_REGISTRY%%/*}" --quiet
+          # Environment images are a few GB each; drop toolchains this job never uses.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Plan
+        if: steps.setup.outputs.ready == 'true'
+        run: |
+          uv sync --locked
+          status=0
+          uv run --locked hangar images plan --provider kubernetes || status=$?
+          [ "$status" -eq 0 ] || [ "$status" -eq 3 ]  # 3: something is missing, which the next step builds
+      - name: Build what's missing
+        if: steps.setup.outputs.ready == 'true'
+        run: |
+          set -o pipefail
+          uv run --locked hangar images build --provider kubernetes --builder docker --jobs 2 --json \
+            | tee images.json
+      - name: Summary
+        if: always() && steps.setup.outputs.ready == 'true'
+        run: |
+          [ -s images.json ] || exit 0
+          python3 - >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json
+          r = json.load(open("images.json"))
+          print("| kind | name | status | ref |\n|---|---|---|---|")
+          for i in r["items"]:
+              print(f"| {i['kind']} | {i['name']}{'@' + i['version'] if i.get('version') else ''} | {i['status']} "
+                    f"| `{i.get('ref') or i.get('tag', '')}` |")
+          PY
+      - if: always() && steps.setup.outputs.ready == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: images
+          path: images.json
+          if-no-files-found: ignore
+          retention-days: 30

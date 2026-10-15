@@ -123,6 +123,7 @@ def up_gke(dry_run: bool, yes: bool, allow_destroy: bool, domain: str | None, da
         raise _fail(f"not deployed: run bash {UP_SH} when you're ready")
     typer.secho(f"\n== {UP_SH}", fg="cyan")
     env = {**os.environ, **({"DOMAIN": domain} if domain else {})}
+    env.setdefault("HANGAR_CLI", f"{sys.executable} -m hangar.cli")  # --- images: up.sh's prebuild, this hangar
     if subprocess.run(["bash", str(root / UP_SH)], env=env, stdin=subprocess.DEVNULL).returncode != 0:
         raise _fail(f"{UP_SH} failed (see above); it is safe to run again")
     _login(root, domain)

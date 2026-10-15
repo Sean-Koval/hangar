@@ -22,7 +22,6 @@ import json
 import logging
 import shlex
 import shutil
-import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -32,8 +31,9 @@ from hangar.envd import OFF, SKIP, KubernetesEnvd, Off  # --- envd
 from hangar.envspec import BuildContext, EnvSpec
 from hangar.harnesses import PACK_ROOT
 from hangar.models import ExecResult, Sandbox, SandboxState
-from hangar.providers._build import docker_available, docker_build, run_cli
+from hangar.providers._build import cloud_build, docker_available, docker_build
 from hangar.providers.base import Capabilities, LogFn, OutputTail, Provider, ProviderError, TerminalStream
+from hangar.registry import Registry, RegistryError, is_registry_ref  # --- images
 
 try:
     from kubernetes import client, config
@@ -121,6 +121,7 @@ class K8sTerminal(TerminalStream):
 class KubernetesProvider(Provider):
     name = "kubernetes"
     envd: KubernetesEnvd | Off = OFF  # --- envd: set in __init__
+    _registry: Registry | None = None  # --- images: made on first use
 
     def __init__(self, settings: Settings):
         if client is None:
@@ -165,6 +166,15 @@ class KubernetesProvider(Provider):
     async def image_exists(self, tag: str) -> bool:
         if tag in self._known_images:
             return True
+        # --- images: ask the registry over HTTP (no gcloud process per probe); the CLIs below only when it can't say
+        if is_registry_ref(tag):
+            try:
+                if await self._reg().exists(tag):
+                    self._known_images.add(tag)
+                    return True
+                return False
+            except RegistryError as e:
+                log.info("registry can't tell whether %s exists (%s); asking the CLIs", tag, e)
         probes = []
         if await docker_available():
             probes.append(["docker", "manifest", "inspect", tag])
@@ -177,6 +187,26 @@ class KubernetesProvider(Provider):
                 self._known_images.add(tag)
                 return True
         return False
+
+    # --- images
+    def _reg(self) -> Registry:
+        if self._registry is None:
+            self._registry = Registry()
+        return self._registry
+
+    async def image_digest(self, tag: str) -> str | None:
+        try:
+            return await self._reg().pinned(tag) if is_registry_ref(tag) else None
+        except RegistryError as e:
+            log.warning("can't resolve the digest of %s: %s", tag, e)
+            return None
+
+    async def pack_version(self, ref: str) -> str | None:
+        try:
+            return await self._reg().harness_version(ref) if is_registry_ref(ref) else None
+        except RegistryError as e:
+            log.info("can't read the harness version of %s: %s", ref, e)
+            return None
 
     async def build_template(self, spec: EnvSpec, ctx: BuildContext, tag: str, log: LogFn | None = None) -> str:
         if not self.settings.registry:
@@ -192,24 +222,7 @@ class KubernetesProvider(Provider):
         return tag
 
     async def _cloud_build(self, ctx: BuildContext, tag: str, log: LogFn | None) -> None:
-        with tempfile.TemporaryDirectory() as d:
-            root = Path(d)
-            (root / "Dockerfile").write_text(ctx.dockerfile)
-            for rel, data in ctx.files.items():
-                p = root / rel
-                p.parent.mkdir(parents=True, exist_ok=True)
-                p.write_bytes(data)
-            sa = self.settings.k8s_build_service_account
-            (root / "cloudbuild.yaml").write_text(
-                "steps:\n- name: gcr.io/cloud-builders/docker\n  env: ['DOCKER_BUILDKIT=1']\n"
-                f"  args: ['build', '-t', '{tag}', '.']\nimages: ['{tag}']\ntimeout: 3600s\n"
-                # A user-specified build SA can't write to the default logs bucket.
-                + ("options:\n  logging: CLOUD_LOGGING_ONLY\n" if sa else "")
-            )
-            args = ["gcloud", "builds", "submit", "--config", str(root / "cloudbuild.yaml")]
-            if sa:
-                args.append(f"--service-account=projects/-/serviceAccounts/{sa}")
-            await run_cli([*args, str(root)], log=log)
+        await cloud_build(ctx, tag, log, self.settings.k8s_build_service_account)  # --- images: shared with the CLI
 
     def _pod_template(self, spec: EnvSpec, image: str) -> dict:
         s = self.settings
@@ -241,7 +254,8 @@ class KubernetesProvider(Provider):
             pod["containers"][0]["resources"]["requests"]["ephemeral-storage"] = f"{int(res.disk_gb)}Gi"
         if spec.packs:
             # Harness packs: OCI images mounted read-only (image volumes, stable in Kubernetes 1.36). Pulled once
-            # per node and shared by every sandbox, so environment images carry no harness binaries.
+            # per node and shared by every sandbox, so environment images carry no harness binaries. --- images: refs
+            # are `repo@sha256:...` once the registry told hangar the digest, so IfNotPresent can't keep stale bits.
             pod["volumes"] = [{"name": f"pack-{n}", "image": {"reference": ref, "pullPolicy": "IfNotPresent"}}
                               for n, ref in sorted(spec.packs.items())]
             pod["containers"][0]["volumeMounts"] = [
@@ -708,6 +722,8 @@ class KubernetesProvider(Provider):
 
     async def close(self) -> None:  # --- envd
         await self.envd.close()
+        if self._registry is not None:  # --- images
+            await self._registry.close()
 
 
 def _explain_event(reason: str, message: str) -> str:

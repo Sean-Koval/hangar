@@ -266,7 +266,7 @@ def test_e2b_registry_auth_selection(monkeypatch):
 
 
 async def test_cloud_build_runs_as_configured_service_account(monkeypatch, tmp_path):
-    import hangar.providers.kubernetes as k
+    import hangar.providers._build as k  # --- images: the Cloud Build helper is shared with `hangar images build`
 
     seen = {}
 
