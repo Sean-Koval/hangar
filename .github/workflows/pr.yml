@@ -31,7 +31,7 @@ jobs:
         run: |
           command -v shellcheck >/dev/null || { sudo apt-get update -q && sudo apt-get install -yq shellcheck; }
           shellcheck --version | head -2
-          shellcheck deploy/gke/setup-cicd.sh
+          shellcheck deploy/gke/setup-cicd.sh deploy/gke/power.sh  # --- infra-state
 
   unit:
     name: unit (${{ matrix.shard }}/4)

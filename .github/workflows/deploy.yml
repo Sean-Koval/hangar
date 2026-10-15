@@ -1,4 +1,5 @@
-# Gated deploys of the control plane (docs/upgrading.md, "Deploying with deploy.yml"). By hand, or on a release tag:
+# Gated deploys of the control plane (docs/upgrading.md, "Deploying with deploy.yml"). By hand, on a release tag, or on
+# a merge to main while the infra is up:
 #   1. images.yml builds every environment image and harness pack tag the commit needs, and this builds and pushes
 #      the control-plane image;
 #   2. after the owner approves the `production` environment: kubectl set image, wait for the rollout;
@@ -12,9 +13,19 @@
 # It refuses to deploy while the sandbox pools are powered down (the checks need sandboxes) unless `force` is set; a
 # forced deploy then runs only the checks that need no sandbox.
 #
+# --- infra-state: a merge to main deploys too, only while the infra is up (docs/cicd.md, "Infra states"). The `state`
+# job reads the cluster's power labels (`power.sh state`) as GCP_STATE_SERVICE_ACCOUNT, which can read the cluster's
+# metadata and nothing else. While it is off, held or down, the run skips green and builds nothing: the next
+# `power.sh up` starts deploy.yml for main when main is ahead of what hangar runs. Up, it builds and waits for the
+# owner's approval like any deploy. Merges in a burst coalesce: the concurrency group keeps one run going and only the
+# newest waiting (GitHub cancels a waiting run when a newer one queues), and a run that a newer push to main has
+# overtaken skips, before its builds and again after the approval.
+#
 # deploy/gke/setup-cicd.sh sets up everything below, once, from the owner's machine (docs/cicd.md).
 # Repository secrets, shared with images.yml (docs/gke.md): GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_SERVICE_ACCOUNT,
-# HANGAR_REGISTRY. Without them (before setup, or on a fork) it skips with a notice and stays green. It runs only from
+# HANGAR_REGISTRY; and for the state check GCP_STATE_SERVICE_ACCOUNT and HANGAR_CLUSTER
+# (projects/<project>/locations/<zone>/clusters/<name>): names, not credentials. Without the first three (before
+# setup, or on a fork) it skips with a notice and stays green; without the last two a merge doesn't deploy. It runs only from
 # main or a v* tag: the production environment deploys nothing else, and Google Cloud trusts nothing else.
 # `production` environment secrets, released only once the required reviewer approves (as repository secrets any
 # workflow on any branch could read them, and the approval would gate nothing):
@@ -32,9 +43,11 @@ on:
         type: boolean
         default: false
   push:
+    branches: [main]  # --- infra-state: only while the infra is up (the state job)
     tags: ["v*"]
 
-# One deploy at a time, never cancelled half way.
+# One deploy at a time, never cancelled half way. GitHub keeps at most one more run waiting in the group and cancels
+# it when a newer one queues, so a burst of merges deploys the run already going and the newest.
 concurrency:
   group: deploy-production
   cancel-in-progress: false
@@ -71,9 +84,78 @@ jobs:
             echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
 
-  images:
+  # --- infra-state: is the infra up? Only the cluster's labels are read, as an account that can read the cluster's
+  # metadata and nothing else (container.clusters.get; deploy/gke/setup-cicd.sh). No hangar token, no kubectl.
+  state:
     needs: setup
     if: needs.setup.outputs.ready == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read  # and main's head: a merge it has moved past doesn't deploy
+      id-token: write
+    outputs:
+      deploy: ${{ steps.decide.outputs.deploy }}
+    env:
+      STATE_SA: ${{ secrets.GCP_STATE_SERVICE_ACCOUNT }}
+      HANGAR_CLUSTER: ${{ secrets.HANGAR_CLUSTER }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: deploy/gke/power.sh
+          sparse-checkout-cone-mode: false
+      - uses: google-github-actions/auth@v3
+        id: auth
+        if: env.STATE_SA != '' && env.HANGAR_CLUSTER != ''
+        continue-on-error: true  # unread, a merge skips (with a warning) rather than failing
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_STATE_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
+        if: steps.auth.outcome == 'success'
+      - name: Decide (a merge deploys only while the infra is up)
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          SIGNED_IN: ${{ steps.auth.outcome == 'success' }}
+        run: |
+          short=${GITHUB_SHA:0:12}
+          state=unknown
+          if [ "$SIGNED_IN" = true ]; then
+            IFS=/ read -r _ PROJECT _ ZONE _ CLUSTER <<<"$HANGAR_CLUSTER"
+            export PROJECT ZONE CLUSTER
+            if out=$(bash deploy/gke/power.sh state); then
+              state=$(jq -r '.summary // "unknown"' <<<"$out")
+              echo "infra: $out"
+            fi
+          fi
+          deploy=true
+          if [ "$EVENT" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then
+            head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha) || head=""
+            if [ -z "$head" ]; then
+              echo "::warning title=deploy: skipped::Couldn't read main's head, so $short isn't deployed (it may be an old commit). Run deploy.yml by hand to deploy main."
+              deploy=false
+            elif [ "$head" != "$GITHUB_SHA" ]; then
+              echo "::notice title=deploy: superseded::main has moved on to ${head:0:12}; the run for that merge deploys instead of $short."
+              deploy=false
+            elif [ "$state" = unknown ]; then
+              echo "::warning title=deploy: skipped::Couldn't read the infra state (GCP_STATE_SERVICE_ACCOUNT and HANGAR_CLUSTER; deploy/gke/setup-cicd.sh sets them up), so $short isn't deployed. Run deploy.yml by hand to deploy it."
+              deploy=false
+            elif [ "$state" != up ]; then
+              echo "::notice title=deploy: skipped::infra is $state; not deploying $short; it will deploy on the next power-up (power.sh up starts deploy.yml; after a scheduled one, hangar power shows the command)"
+              deploy=false
+            fi
+          elif [ "$state" = off ]; then
+            echo "::error title=deploy: refused::hangar is off (power.sh off). Bring it back with bash deploy/gke/power.sh up, which then deploys main if it is ahead."
+            exit 1
+          fi
+          echo "deploy=$deploy" >> "$GITHUB_OUTPUT"
+          echo "Infra: **$state**. Deploying $short: **$deploy**." >> "$GITHUB_STEP_SUMMARY"
+
+  images:
+    needs: [setup, state]
+    if: needs.state.outputs.deploy == 'true'
     uses: ./.github/workflows/images.yml
     secrets: inherit
     permissions:
@@ -81,8 +163,8 @@ jobs:
       id-token: write
 
   control-plane:
-    needs: setup
-    if: needs.setup.outputs.ready == 'true'
+    needs: [setup, state]
+    if: needs.state.outputs.deploy == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -122,8 +204,8 @@ jobs:
         run: echo "image=$HANGAR_REGISTRY/control-plane:$GITHUB_SHA@${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
 
   deploy:
-    needs: [setup, images, control-plane]
-    if: needs.setup.outputs.ready == 'true'
+    needs: [setup, state, images, control-plane]
+    if: needs.state.outputs.deploy == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 180  # --- acceptance: the core checks' 75 and the team checks' 60, with the rollout and a rollback
     environment: production  # the owner approves here (a required reviewer); its secrets exist only past this
@@ -169,12 +251,32 @@ jobs:
           project_id: ${{ steps.project.outputs.id }}
       - name: Before (power state, the server's tools, the running image)
         id: pre
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           uv sync --locked
+          # --- infra-state: a merge waited here for approval. One main has moved past deploys no more (the newer
+          # merge's run does, a re-run of an old one included), and one that finds the pools down or held, or
+          # hangar not answering (off since), skips green: the next power-up deploys main.
+          merge=false
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then merge=true; fi
+          skip() { echo "::notice title=deploy: skipped::$1"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          if [ "$merge" = true ]; then
+            head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha) || head=""
+            if [ -z "$head" ]; then skip "Couldn't read main's head; run deploy.yml by hand to deploy main."; fi
+            if [ "$head" != "$GITHUB_SHA" ]; then
+              skip "main has moved on to ${head:0:12}; the run for that merge deploys instead of ${GITHUB_SHA:0:12}."
+            fi
+          fi
           api() { curl -fsS --max-time 30 -H "Authorization: Bearer $HANGAR_TOKEN" "$@"; }
-          power=$(api "$HANGAR_URL/api/admin/power" | jq -r '.power.state') || power=unknown
+          view=$(api "$HANGAR_URL/api/admin/power") || view='{}'
+          power=$(jq -r '.power.state // "unknown"' <<<"$view" 2>/dev/null) || power=unknown
+          held=$(jq -r '.power.hold.when // empty' <<<"$view" 2>/dev/null) || held=""
           echo "power=$power" >> "$GITHUB_OUTPUT"
-          echo "sandbox pools: $power"
+          echo "sandbox pools: $power${held:+ (held until $held)}"
+          if [ "$merge" = true ] && { [ "$power" != up ] || [ -n "$held" ]; }; then
+            skip "infra is ${held:+held, }$power; not deploying ${GITHUB_SHA:0:12}; it will deploy on the next power-up (a fix for a hangar that doesn't answer: run deploy.yml by hand)"
+          fi
           if [ "$power" = down ] || [ "$power" = starting ]; then
             if [ "$FORCE" != true ]; then
               echo "::error title=deploy: refused::The sandbox pools are $power, so the acceptance checks can't run. Deploy after they power on, or run again with force (only the checks that need no sandbox run)."
@@ -192,8 +294,10 @@ jobs:
           [ -n "$prev" ] || { echo "::error::can't read the running image, so there would be nothing to roll back to"; exit 1; }
           echo "previous=$prev" >> "$GITHUB_OUTPUT"
           echo "running $prev; deploying $IMAGE"
+          echo "go=true" >> "$GITHUB_OUTPUT"
       - name: Drain (creates and destroys in flight finish before hangar restarts)
         id: drain
+        if: steps.pre.outputs.go == 'true'
         run: |
           api() { curl -fsS --max-time 30 -H "Authorization: Bearer $HANGAR_TOKEN" -H 'Content-Type: application/json' "$@"; }
           api -X POST -d '{"minutes": 30}' "$HANGAR_URL/api/admin/drain" > /dev/null || { echo "no drain (hangar unreachable)"; exit 0; }
@@ -205,6 +309,7 @@ jobs:
           echo "not settled after 5 min; the reconciler finishes what a restart catches half way"
       - name: Roll out
         id: rollout
+        if: steps.pre.outputs.go == 'true'
         run: |
           echo "changed=true" >> "$GITHUB_OUTPUT"
           kubectl -n "$NS" set image deploy/hangar hangar="$IMAGE"
@@ -212,6 +317,7 @@ jobs:
           for _ in $(seq 60); do curl -fsS --max-time 10 "$HANGAR_URL/healthz" > /dev/null && exit 0; sleep 5; done
           echo "::error::$HANGAR_URL/healthz didn't answer within 5 min of the rollout"; exit 1
       - name: Acceptance
+        if: steps.pre.outputs.go == 'true'
         timeout-minutes: 75  # a step timeout fails the step (and rolls back); the job's would cancel it
         env:
           ONLY: ${{ steps.pre.outputs.only }}
@@ -227,7 +333,7 @@ jobs:
       # its failure, or its timeout, from failing the job; `timeout` stops it first, so its cleanup still runs.
       - name: Acceptance, reported (the team checks; never rolls back)
         id: team
-        if: success() && steps.pre.outputs.only == ''
+        if: success() && steps.pre.outputs.go == 'true' && steps.pre.outputs.only == ''
         continue-on-error: true
         timeout-minutes: 60
         env:

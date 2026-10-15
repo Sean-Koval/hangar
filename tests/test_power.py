@@ -15,7 +15,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from hangar import metrics, power
+from hangar import metrics, power, powerhold
 from hangar.envspec import warm_pool_now
 from hangar.fleet import PoweredDown
 from hangar.jobs import Caller, SubmitJob
@@ -453,6 +453,137 @@ def test_hangar_power_cli(monkeypatch):
     assert r.exit_code == 0 and "powering on" in r.output and calls[-1] == ("POST", "/api/admin/power/up")
 
 
+# ====================================================================== --- infra-state: holds, the pending deploy
+def test_a_hold_keeps_the_pools_off_until_the_first_power_up_after_it(settings, store):
+    """The power-up the power-down named is skipped (the jobs honour the hold), so hangar mustn't call the pools
+    stale an hour after it and send creates to nodes that won't come."""
+    p = Power(store, settings, clock=lambda: at("2026-10-14T01:00:00"))
+    off(p)
+    powerhold.set_hold(store, {"until": at("2026-10-17T00:00:00")}, "sean", NY, p.clock())
+    p.clock = lambda: at("2026-10-14T12:00:00")  # past 10:00 and the hour's grace
+    st = p.state()
+    assert not st.get("stale") and p.off and st["ready_at"] == at("2026-10-17T10:00:00")
+    msg = p.message()
+    assert "held off until Sat 17 Oct 00:00 EDT" in msg and "power on at 10:00 EDT" in msg, msg
+    assert p.hold_view()["by"] == "sean" and "held off until" in p.status_line()
+    assert p.overview()["power"]["hold"]["when"] == "Sat 17 Oct 00:00 EDT"
+    p.clock = lambda: at("2026-10-17T09:00:00")  # the hold is over: off until the next scheduled power-up
+    assert p.off and p.state()["ready_at"] == at("2026-10-17T10:00:00") and p.hold_view() is None
+    p.clock = lambda: at("2026-10-17T11:30:00")  # and past that, stale as before
+    assert p.state().get("stale") and not p.off
+    powerhold.end_hold(store, None, "sean", at("2026-10-17T11:30:00"))
+    p.clock = lambda: at("2026-10-14T12:00:00")
+    assert p.state().get("stale")  # a released hold changes nothing
+
+
+def test_hold_and_release_over_rest_admins_only(settings):
+    app = _app(settings)
+    with TestClient(app) as client:
+        client.headers["Authorization"] = "Bearer t0ken"
+        r = client.post("/api/admin/power/hold", json={"days": 7})
+        assert r.status_code == 200 and "Held until" in r.json()["message"], r.text
+        hold = client.get("/api/admin/power").json()["power"]["hold"]
+        assert 7 * 86400 - 60 < hold["until"] - time.time() <= 7 * 86400 and hold["by"]
+        assert client.get("/api/admin/power/hold").json()["record"]["until"] == hold["until"]
+        assert client.get("/api/status").json()["power"]["hold"]["until"] == hold["until"]  # `hangar status`
+        checks = {c["name"]: c for c in client.get("/api/doctor").json()}
+        assert checks["power hold"]["status"] == "ok" and "held until" in checks["power hold"]["detail"]
+        for bad in ({}, {"days": 0}, {"days": 91}, {"days": "x"}, {"days": True}, {"days": 1, "until": 2e9},
+                    {"until": "2001-01-01"}, {"until": "soon"}, {"until": time.time() + 100 * 86400}):
+            assert client.post("/api/admin/power/hold", json=bad).status_code == 400, bad
+        # power.sh copies the cluster's hold with when it was set there, never later than now
+        r = client.post("/api/admin/power/hold", json={"until": "2099-01-01", "set_at": time.time() + 3600})
+        assert r.status_code == 400  # more than 90 days
+        until = time.time() + 86400
+        assert client.post("/api/admin/power/hold", json={"until": until, "set_at": time.time() + 3600}).is_success
+        assert client.get("/api/admin/power/hold").json()["record"]["set_at"] <= time.time()
+        assert client.post("/api/admin/power/release").json()["hold"] is None
+        assert client.get("/api/admin/power").json()["power"]["hold"] is None
+        assert "power hold" not in {c["name"] for c in client.get("/api/doctor").json()}
+        jobs = client.post("/api/tokens", json={"name": "svc", "scopes": ["jobs"]}).json()["token"]
+        client.headers["Authorization"] = f"Bearer {jobs}"
+        for path, body in (("/api/admin/power/hold", {"days": 1}), ("/api/admin/power/release", None),
+                           ("/api/admin/deploys/pending", {"head": None})):
+            assert client.post(path, json=body).status_code == 403, path
+        assert client.get("/api/admin/power/hold").status_code == 403
+
+
+async def test_hangar_power_up_ends_the_hold(settings, store):
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.host == "metadata.google.internal":
+            return httpx.Response(200, json={"access_token": "t"})
+        return httpx.Response(200, json={"metadata": {"name": "e"}})
+
+    def denied(req: httpx.Request) -> httpx.Response:
+        if req.url.host == "metadata.google.internal":
+            return httpx.Response(200, json={"access_token": "t"})
+        return httpx.Response(403, json={"error": {"message": "denied"}})
+
+    settings.power_up_job = "projects/p/locations/r/jobs/hangar-power-up"
+    p = Power(store, settings)
+    off(p)
+    powerhold.set_hold(store, {"days": 5}, "sean", NY, time.time())
+    assert p.hold_view()
+    with pytest.raises(PowerError):  # the job didn't start: the hold stays
+        await p.request_up("admin", httpx.MockTransport(denied))
+    assert p.hold_view()["by"] == "sean"
+    await p.request_up("admin", httpx.MockTransport(handler))
+    assert p.hold_view() is None and powerhold.record(store)["until"] is None  # the job reads this before it decides
+
+
+def test_a_deploy_waiting_for_a_power_up_shows_until_one_is_recorded(settings):
+    app = _app(settings)
+    head, old = "a" * 40, "b" * 40
+    with TestClient(app) as client:
+        client.headers["Authorization"] = "Bearer t0ken"
+        body = {"repo": "o/r", "head": head, "deployed": old, "ahead": 3, "started": False}
+        assert client.post("/api/admin/deploys/pending", json=body).status_code == 200
+        for bad in ({**body, "head": "x; rm"}, {**body, "repo": "o/r --x"}, {**body, "ahead": "many"}):
+            assert client.post("/api/admin/deploys/pending", json=bad).status_code == 400, bad
+        checks = {c["name"]: c for c in client.get("/api/doctor").json()}
+        assert checks["deploy pending"]["status"] == "warn"
+        assert checks["deploy pending"]["fix"] == "gh workflow run deploy.yml --repo o/r --ref main, then approve it"
+        assert client.get("/api/admin/power").json()["power"]["deploy_pending"]["ahead"] == 3
+        client.post("/api/admin/deploys/pending", json={**body, "started": True})
+        assert {c["name"]: c for c in client.get("/api/doctor").json()}["deploy pending"]["status"] == "ok"
+        client.post("/api/admin/deploys", json={"result": "passed", "sha": head})
+        assert client.get("/api/admin/power").json()["power"]["deploy_pending"] is None
+        client.post("/api/admin/deploys/pending", json=body)
+        client.post("/api/admin/deploys/pending", json={"head": None})  # a power-up found nothing to do
+        assert "deploy pending" not in {c["name"] for c in client.get("/api/doctor").json()}
+
+
+def test_hangar_power_hold_and_release_cli(monkeypatch):
+    from typer.testing import CliRunner
+
+    from hangar import cli
+
+    calls = []
+
+    def fake(method, path, **kw):
+        calls.append((method, path, kw.get("json")))
+        if path == "/api/admin/power":
+            return {"power": {"state": "down", "stale": False, "when": "10:00 EDT", "jobs_waiting": 0,
+                              "warm_pools": {}, "hold": {"until": 1, "by": "sean", "when": "Sat 17 Oct 00:00 EDT"},
+                              "deploy_pending": {"head": "a" * 40, "ahead": 2, "started": False,
+                                                 "command": "gh workflow run deploy.yml --repo o/r --ref main"}},
+                    "loops": {}}
+        return {"message": "Held until Sat 17 Oct 00:00 EDT"}
+
+    monkeypatch.setattr(cli, "_call", fake)
+    r = CliRunner().invoke(cli.app, ["power", "hold", "--days", "3"])
+    assert r.exit_code == 0 and calls[-1] == ("POST", "/api/admin/power/hold", {"days": 3.0}), r.output
+    r = CliRunner().invoke(cli.app, ["power", "hold", "--until", "2026-10-22T09:00-04:00"])
+    assert r.exit_code == 0 and calls[-1][2] == {"until": datetime.fromisoformat("2026-10-22T09:00-04:00").timestamp()}
+    assert CliRunner().invoke(cli.app, ["power", "hold"]).exit_code != 0  # --days or --until
+    assert CliRunner().invoke(cli.app, ["power", "hold", "--until", "someday"]).exit_code != 0
+    r = CliRunner().invoke(cli.app, ["power", "release"])
+    assert r.exit_code == 0 and calls[-1][:2] == ("POST", "/api/admin/power/release")
+    r = CliRunner().invoke(cli.app, ["power"])
+    assert "held until Sat 17 Oct 00:00 EDT by sean" in r.output
+    assert "deploy pending: main (aaaaaaaaaaaa) is 2 commit(s) ahead" in r.output and "gh workflow run" in r.output
+
+
 # ====================================================================== deploy.yml
 def _workflow(name: str) -> tuple[str, dict]:
     import yaml
@@ -470,7 +601,9 @@ def test_the_deploy_secrets_are_behind_the_approval():
     from tests.test_acceptance_script import ROOT
 
     text, wf = _workflow("deploy.yml")
-    assert set(wf[True]) == {"workflow_dispatch", "push"} and wf[True]["push"] == {"tags": ["v*"]}
+    # --- infra-state: a merge to main too, only while the infra is up (test_power_script)
+    assert set(wf[True]) == {"workflow_dispatch", "push"} and wf[True]["push"] == {"branches": ["main"],
+                                                                                  "tags": ["v*"]}
     for f in (ROOT / ".github" / "workflows").glob("*.yml"):
         assert "pull_request_target" not in f.read_text(), f
     deploy = wf["jobs"]["deploy"]

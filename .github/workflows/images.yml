@@ -18,9 +18,11 @@ on:
   workflow_dispatch:
   workflow_call:  # --- ops: deploy.yml builds every tag before it rolls out
 
-# One run at a time, never cancelled: a later push waits and then finds what this one pushed.
+# One run at a time, never cancelled: a later push waits and then finds what this one pushed. --- infra-state: called
+# from deploy.yml, github.workflow is the caller's name ("deploy"), so a deploy's build has a group of its own: in the
+# push run's group, a newer push would cancel it while it waited, and the deploy with it.
 concurrency:
-  group: images-${{ github.ref }}
+  group: images-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:

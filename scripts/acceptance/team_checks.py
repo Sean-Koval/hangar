@@ -1365,7 +1365,8 @@ def power_up(api: Api, state: State, opts: argparse.Namespace, since: float) -> 
     if not cmd and setting(api, "HANGAR_POWER_UP_JOB"):
         api.call("POST", "/api/admin/power/up")
     else:
-        _run(cmd or f"bash {ROOT}/deploy/gke/power.sh up", opts.power_timeout)
+        # --- infra-state: a power cycle under test doesn't start a deploy of main (power.sh up's catch-up)
+        _run(cmd or f"env POWER_CATCH_UP=0 bash {ROOT}/deploy/gke/power.sh up", opts.power_timeout)
         if _power(api)["state"] != "up":
             api.call("POST", "/api/admin/power/state", json={"state": "up"})
     p = _wait_power(api, "up", opts.power_timeout, after=since)

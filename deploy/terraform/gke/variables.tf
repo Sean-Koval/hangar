@@ -129,6 +129,16 @@ variable "power_time_zone" {
   default = "America/New_York"
 }
 
+variable "power_deploy_repo" {
+  description = "OWNER/REPO whose main deploy.yml deploys (a public repository). After the scheduled power-up, the job tells hangar when main is ahead of what it runs; it holds no GitHub credential and never starts a deploy (power.sh up by hand does). Empty: no check."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.power_deploy_repo == "" || can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.power_deploy_repo))
+    error_message = "power_deploy_repo: OWNER/REPO, or empty."
+  }
+}
+
 variable "power_image" {
   description = "Image the power jobs run in: needs gcloud and python3 (kubectl is installed at run time if missing)."
   type        = string

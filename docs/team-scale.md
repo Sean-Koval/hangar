@@ -257,6 +257,26 @@ node up. `sandbox_warm_nodes = 0` gives it back (and the first create of the day
 image pulls), as does a weekday-only `power_up_cron = "50 9 * * 1-5"` (then weekends stay off until someone runs
 `hangar power up`). The prepull pulls from Artifact Registry in the same region, which costs no egress.
 
+**A week in each infra state** (--- infra-state; [gke.md](gke.md#infra-states)). All *estimates*, from the prices
+above and these, checked 2026-10-15: a global forwarding rule, $0.025 / h for the first five ([load balancing
+pricing][lb]: GKE's Ingress needs one or two, both within that rate); the `hangar-data` volume, 20 GiB of pd-balanced
+at the disk price above; the management fee, $0.10 / h, charged "irrespective of ... cluster size" ([GKE
+pricing][gke]), so with no nodes too, and covered by the free tier for one zonal cluster. Not included, the same in
+every state: the bucket, Artifact Registry storage, the static IP (its price wasn't re-checked here) and egress.
+
+| Held for a whole week in (*estimate*) | What's billed | Per week |
+| --- | --- | --- |
+| **off** (`power.sh off`) | Load balancer rule $4.20, `hangar-data` disk $0.46 | **~$5** (+$16.80 when the free tier is spent on another cluster) |
+| **down** (held down: sandbox pools at 0) | + the system node $11.26 and its 100 GB disk $2.30 | **~$18** |
+| **up, on the nightly schedule, idle** | + the warm floor node and its disk, ~106 powered hours × $0.354 | **~$56** |
+| **up, on the nightly schedule, a typical team week** | + ~390 sandbox node-hours (the typical scenario above) | **~$157** |
+| **up around the clock, idle** (no schedule, or held up) | + the warm floor node, 168 h | **~$78** |
+| **up around the clock, 10 nodes busy** | 1,680 node-hours | **~$613** |
+
+So a week off instead of letting the schedule run saves about $50 idle and about $150 in a working week; off instead
+of held down saves the system node, ~$13 a week, and costs what's lost while nothing receives webhooks
+([cicd.md](cicd.md#taking-a-week-off)).
+
 ### Applying it
 
 1. **Request the quotas above first**; a refused scale-up shows as sandboxes stuck "waiting for a node".
@@ -341,6 +361,7 @@ db.commit()"
 [spot]: https://cloud.google.com/spot-vms/pricing
 [disks]: https://cloud.google.com/compute/disks-image-pricing
 [gke]: https://cloud.google.com/kubernetes-engine/pricing
+[lb]: https://cloud.google.com/load-balancing/pricing
 [holori]: https://calculator.holori.com/gcp/vm/n2d-standard-16
 [overlay]: https://gvisor.dev/blog/2023/05/08/rootfs-overlay/
 [quotas]: https://docs.cloud.google.com/compute/quotas

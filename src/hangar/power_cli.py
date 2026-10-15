@@ -8,7 +8,7 @@ from datetime import datetime
 
 import typer
 
-power_app = typer.Typer(help="The sandbox node pools' power schedule: status, and powering them on early.",
+power_app = typer.Typer(help="The sandbox node pools' power schedule: status, powering them on early, and holds.",
                         invoke_without_command=True)
 
 
@@ -22,6 +22,28 @@ def _at(ts: float | None) -> str:
     return datetime.fromtimestamp(ts).strftime("%a %H:%M") if ts else "-"
 
 
+def hold_lines(p: dict) -> list[str]:
+    """--- infra-state: the hold and the deploy waiting for a power-up, for `hangar power` and `hangar status`."""
+    out = []
+    if h := p.get("hold"):
+        out.append(f"held until {h['when']} by {h.get('by') or '?'}: the scheduled power-ups and power-downs skip "
+                   "until then (hangar power release ends it)")
+    if d := p.get("deploy_pending"):
+        out.append(f"deploy pending: main ({d['head'][:12]}) is {d['ahead']} commit(s) ahead of the running hangar; " +
+                   ("deploy.yml has started and waits for your approval" if d.get("started") else
+                    f"start it: {d['command']}"))
+    return out
+
+
+def _until(text: str) -> float:
+    """A date (that day's 00:00) or a date and time, in this machine's time zone unless it has an offset."""
+    try:
+        d = datetime.fromisoformat(text.strip())
+    except ValueError as e:
+        raise typer.BadParameter(f"'{text}' isn't a date (2026-10-22, or 2026-10-22T09:00)") from e
+    return (d if d.tzinfo else d.astimezone()).timestamp()
+
+
 def _show(o: dict) -> None:
     p = o["power"]
     color = "green" if p["state"] == "up" else "yellow"
@@ -32,6 +54,8 @@ def _show(o: dict) -> None:
                 fg=color)
     if p["jobs_waiting"]:
         typer.echo(f"jobs waiting for power: {p['jobs_waiting']}")
+    for line in hold_lines(p):  # --- infra-state
+        typer.secho(line, fg="yellow")
     if last := p.get("last_up"):
         pre = last.get("prepull") or {}
         typer.echo(f"last power-up: {_at(last.get('at'))} by {last.get('by')}" + (
@@ -90,3 +114,23 @@ def up(wait: bool = typer.Option(False, "--wait", help="Wait until the pools rep
         typer.echo(f"  {p['state']}" + (f", ready at {p['when']}" if p.get("when") else ""))
     typer.secho("still not on; see `hangar power` and the power-up job's logs", fg="red", err=True)
     raise typer.Exit(1)
+
+
+@power_app.command("hold")
+def hold(days: float | None = typer.Option(None, "--days", help="Hold for this many days (at most 90)."),
+         until: str | None = typer.Option(None, "--until", help="Hold until this date (its 00:00) or date and time, "
+                                          "in your time zone: 2026-10-22, 2026-10-22T09:00.")):
+    """Pause the power schedule: the scheduled power-ups and power-downs skip until then, and the pools stay as they
+    are. The next scheduled run reads it from hangar (`bash deploy/gke/power.sh hold` sets it on the cluster at
+    once). `hangar power release`, `hangar power up` or `power.sh up` end it early."""
+    if (days is None) == (until is None):
+        raise typer.BadParameter("--days N or --until DATE")
+    r = _cli()._call("POST", "/api/admin/power/hold", json={"days": days} if days is not None else
+                     {"until": _until(until or "")})
+    typer.secho(r["message"], fg="yellow")
+
+
+@power_app.command("release")
+def release():
+    """End a hold: the power schedule runs again from its next time (it doesn't power anything on now)."""
+    typer.secho(_cli()._call("POST", "/api/admin/power/release")["message"], fg="green")

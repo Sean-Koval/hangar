@@ -26,7 +26,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from hangar import metrics
+from hangar import metrics, powerhold
 from hangar.config import Settings
 from hangar.models import JobState, Sandbox
 from hangar.store import Store
@@ -78,12 +78,41 @@ class Power:
     # ------------------------------------------------------------------ state
     def state(self) -> dict[str, Any]:
         st = dict(self.store.kv_get_json(STATE_KEY, None) or {"state": "up"})
+        # --- infra-state: a hold that began while the pools were off keeps them off until it ends, so they're back
+        # at the first scheduled power-up after it, not the one the power-down named (the jobs skip that one)
+        hold = powerhold.record(self.store)
+        since = float(st.get("since") or 0)
+        held_until = float(hold["until"]) if hold and hold.get("until") is not None else None
+        if st.get("state") == "down" and held_until is not None and held_until > since:
+            st["ready_at"] = self._after(st, held_until)
+            if held_until > self.clock():
+                st["held_until"] = held_until
         ready = st.get("ready_at")
-        # with no ready time (a `down` from a laptop that never set the schedule), a day
-        limit = float(ready) + GRACE if ready is not None else float(st.get("since") or 0) + 86400
+        # with no ready time (a `down` from a laptop that never set the schedule), a day (after the hold, if any)
+        limit = float(ready) + GRACE if ready is not None else max(since, held_until or 0) + 86400
         if st.get("state") != "up" and self.clock() > limit:
             st["stale"] = True
         return st
+
+    def _after(self, st: dict[str, Any], t: float) -> float | None:
+        """--- infra-state: when sandboxes are ready after `t`: the next scheduled power-up, plus its warm minutes."""
+        from hangar.triggers import Cron, CronError
+
+        if not st.get("up_cron"):
+            return None
+        try:
+            nxt = Cron(st["up_cron"], st.get("time_zone") or "UTC").next_after(t)
+        except (CronError, ValueError):
+            return None
+        return nxt + 60 * float(st.get("warm_minutes") or 0) if nxt is not None else None
+
+    def hold_view(self) -> dict[str, Any] | None:
+        """--- infra-state: the hold in force, for people: when it ends and who set it."""
+        rec = powerhold.active(self.store, self.clock())
+        if rec is None:
+            return None
+        return {"until": rec["until"], "by": rec.get("by"), "set_at": rec.get("set_at"),
+                "when": powerhold.fmt(rec["until"], self._tz(self.state()))}
 
     @property
     def off(self) -> bool:
@@ -124,6 +153,10 @@ class Power:
     def message(self) -> str:
         st = self.state()
         when = self.when(st)
+        if st.get("held_until"):  # --- infra-state
+            return ("Sandboxes are powered down and held off until " + powerhold.fmt(st["held_until"], self._tz(st))
+                    + (f"; they power on at {when}" if when else "") + ". Jobs submitted now are queued and start "
+                    "then; an admin can end the hold and power them on with `hangar power up`.")
         if st.get("state") == "starting":
             return ("Sandboxes are powering on now" + (f" and are ready at about {when}" if when else "") +
                     ". Try again then; jobs submitted now are queued and start once they're on.")
@@ -136,6 +169,9 @@ class Power:
         when = self.when()
         if self.state().get("state") == "starting":
             return "sandboxes are powering on" + (f"; ready at about {when}" if when else "")
+        if held := self.state().get("held_until"):  # --- infra-state
+            return "sandboxes are held off until " + powerhold.fmt(held, self._tz(self.state())) + \
+                (f"; they power on at {when}" if when else "")
         return "sandboxes power on at " + when if when else "the sandbox pools are powered down"
 
     def mark(self, state: str, by: str, *, up_cron: str | None = None, time_zone: str | None = None,
@@ -358,11 +394,20 @@ class Power:
             if not token:
                 raise PowerError("can't get a Google Cloud token from the metadata server: `hangar power up` works "
                                  "where hangar runs on GKE with Workload Identity")
+            # --- infra-state: powering on by hand ends a hold, before the job starts: it reads hangar's record before
+            # the cluster's copy (power.sh sync_hold). Put back if the job doesn't start.
+            held = powerhold.record(self.store) if powerhold.active(self.store, self.clock()) else None
+            if held:
+                powerhold.end_hold(self.store, None, by, self.clock())
             try:
                 r = await c.post(f"{RUN_API}/{job}:run", json={}, headers={"Authorization": f"Bearer {token}"})
             except httpx.HTTPError as e:
+                if held:
+                    self.store.kv_set_json(powerhold.HOLD_KEY, held)
                 raise PowerError(f"couldn't reach Cloud Run: {e}") from e
         if r.status_code >= 400:
+            if held:
+                self.store.kv_set_json(powerhold.HOLD_KEY, held)
             detail = ""
             with contextlib.suppress(ValueError, KeyError, TypeError, AttributeError):
                 detail = r.json()["error"]["message"]
@@ -382,7 +427,9 @@ class Power:
         return {"power": {"state": "up" if st.get("stale") else st.get("state", "up"), "stale": bool(st.get("stale")),
                           "since": st.get("since"), "ready_at": st.get("ready_at"), "when": self.when(st),
                           "jobs_waiting": len(self.held), "warm_pools": dict(self._warm),
-                          "last_up": st.get("last_up"), "last_down": st.get("last_down")},
+                          "last_up": st.get("last_up"), "last_down": st.get("last_down"),
+                          "hold": self.hold_view(),  # --- infra-state
+                          "deploy_pending": powerhold.pending(self.store)},
                 "last_deploy": (deploys(self.store) or [None])[0],
                 "loops": loops(self.settings, self.started, self.clock())}
 
@@ -484,6 +531,7 @@ def record_deploy(store: Store, body: dict[str, Any], by: str, clock=time.time) 
     if rec.get("run_url") and not rec["run_url"].startswith("https://"):
         rec.pop("run_url")
     store.kv_set_json(DEPLOYS_KEY, [rec, *deploys(store)][:MAX_DEPLOYS])
+    powerhold.clear_pending(store)  # --- infra-state: the deploy a power-up asked for has run (or been tried)
     return rec
 
 
@@ -537,6 +585,18 @@ def doctor_checks(h: Any) -> list[dict[str, Any]]:
         if p._warm:
             bits.append("warm pools " + ", ".join(f"{k}={v}" for k, v in sorted(p._warm.items())))
         out.append(_check("sandbox power", True, "; ".join(bits)))
+    if hold := p.hold_view():  # --- infra-state
+        out.append(_check("power hold", True, f"held until {hold['when']} by {hold.get('by') or '?'}: the scheduled "
+                          "power-ups and power-downs skip until then (`hangar power release` or `bash "
+                          "deploy/gke/power.sh up` ends it)"))
+    if pend := powerhold.pending(h.store):
+        what = (f"main ({pend['head'][:12]}) is {pend['ahead']} commit(s) ahead of the running hangar "
+                f"({(pend.get('deployed') or '?')[:12]})")
+        if pend.get("started"):
+            out.append(_check("deploy pending", True, f"{what}; deploy.yml has started and waits for your approval"))
+        else:
+            out.append(_check("deploy pending", None, f"{what}: deploy.yml skipped those merges while the infra was "
+                              "off, held or down", f"{pend['command']}, then approve it"))
     if last_deploy := (deploys(h.store) or [None])[0]:
         what = f"{last_deploy.get('version') or last_deploy.get('image', '?')}"
         when = f"{_ago(t - float(last_deploy['at']))} ago"
@@ -637,3 +697,5 @@ def mount(app: Any, h: Any, admin: Any) -> None:
     @app.get("/api/admin/deploys")
     async def deploy_list(_: str = admin):
         return deploys(h.store)
+
+    powerhold.mount(app, h, admin)  # --- infra-state: hold, release, and the deploy waiting for a power-up
