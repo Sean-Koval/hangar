@@ -60,7 +60,8 @@ def env_tag(settings: Settings, spec: EnvSpec, provider: str, bake: list[str] | 
             ) -> tuple[str, BuildContext]:
     """An environment image's tag and build, exactly as Fleet computes them (Fleet._tag_for calls this)."""
     extra = settings.extra_ca_bundle.expanduser().read_bytes() if settings.extra_ca_bundle else None
-    ctx = render(spec, settings.sandbox_user, settings.workspace_dir, extra, bake=bake)
+    ctx = render(spec, settings.sandbox_user, settings.workspace_dir, extra, bake=bake,
+                 docker_image=settings.heavy_docker_image)  # --- heavy
     return image_tag(spec, ctx, settings.image_prefix, registry_for(settings, provider)), ctx
 
 

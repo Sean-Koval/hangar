@@ -43,7 +43,8 @@ FIELDS = ("verify", "environment", "harness", "model", "budget", "job_budget", "
           "egress", "build_secrets",  # --- egress
           "land", "approvers", "merge_method", "risk_paths",  # --- landing: the last four (landing.py)
           "require_stale_dismissal",  # --- trust
-          "verify_reports", "rerun_flaky")  # --- testresults
+          "verify_reports", "rerun_flaky",  # --- testresults
+          "heavy", "profile", "max_profile")  # --- heavy
 _LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")  # a GitHub login
 
 
@@ -86,6 +87,12 @@ class RepoPolicy(BaseModel):
     # and whether a check that failed only on tests on the repo's flaky list runs once more (testresults.py)
     verify_reports: list[str] | None = Field(None, max_length=16)
     rerun_flaky: bool | None = None
+    # --- heavy (heavy.py): the repo's sandboxes run on the heavy tier, with Docker (true), or never on the repo's own
+    # say (false: its .hangar/environment.yaml asking for heavy is ignored); the profile its sandboxes get, and the
+    # largest one a job (label hangar.profile) or the repo's file may ask for
+    heavy: bool | None = None
+    profile: Literal["standard", "large", "xlarge"] | None = None
+    max_profile: Literal["standard", "large", "xlarge"] | None = None
     updated_at: float = Field(default_factory=now)
     updated_by: str | None = None
 
@@ -273,6 +280,9 @@ class PolicyUpdate(BaseModel):
     require_stale_dismissal: bool | None = None  # --- trust
     verify_reports: list[str] | None = None  # --- testresults
     rerun_flaky: bool | None = None
+    heavy: bool | None = None  # --- heavy
+    profile: Literal["standard", "large", "xlarge"] | None = None
+    max_profile: Literal["standard", "large", "xlarge"] | None = None
 
 
 def update(svc: JobService, body: PolicyUpdate, actor: str) -> RepoPolicy:

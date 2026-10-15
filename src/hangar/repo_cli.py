@@ -65,6 +65,10 @@ def _line(p: dict) -> str:
         bits.append("reports: " + ",".join(p["verify_reports"]))
     if p.get("rerun_flaky"):
         bits.append("reruns flaky failures")
+    if p.get("heavy") is not None or p.get("profile") or p.get("max_profile"):  # --- heavy
+        bits.append("heavy: " + {True: "on", False: "off", None: "env"}[p.get("heavy")]
+                    + (f", profile {p['profile']}" if p.get("profile") else "")
+                    + (f", up to {p['max_profile']}" if p.get("max_profile") else ""))
     return f"{p['repo']:40} " + "  ".join(bits)
 
 
@@ -108,6 +112,12 @@ def repo_set(
     rerun_flaky: bool | None = typer.Option(None, "--rerun-flaky/--no-rerun-flaky",
                                             help="Run the check once more when it failed only on tests on the "
                                                  "repo's flaky list."),
+    heavy: bool | None = typer.Option(None, "--heavy/--no-heavy", help="--- heavy: the repo's sandboxes run on the "
+                                      "heavy tier, with Docker; --no-heavy ignores its own file asking for it."),
+    profile: str | None = typer.Option(None, "--profile", help="standard, large or xlarge: the size of the repo's "
+                                       "sandboxes (large and xlarge run on the heavy tier)."),
+    max_profile: str | None = typer.Option(None, "--max-profile", help="The largest profile a job (label "
+                                           "hangar.profile) or the repo's .hangar/environment.yaml may ask for."),
     as_json: bool = typer.Option(False, "--json"),
 ):
     """Set the repo's defaults; what you don't pass is kept. Jobs that set a field themselves still win.
@@ -122,7 +132,8 @@ def repo_set(
                 ("land", land), ("approvers", approver or None), ("merge_method", merge_method),  # --- landing
                 ("risk_paths", risk_path or None),
                 ("require_stale_dismissal", require_stale_dismissal),  # --- trust
-                ("verify_reports", verify_report or None), ("rerun_flaky", rerun_flaky)):  # --- testresults
+                ("verify_reports", verify_report or None), ("rerun_flaky", rerun_flaky),  # --- testresults
+                ("heavy", heavy), ("profile", profile), ("max_profile", max_profile)):  # --- heavy
         if v is not None:
             body[k] = v
     if egress_mode is not None or egress_allow:  # --- egress
@@ -142,7 +153,8 @@ def repo_unset(repo: str = typer.Argument(...),
                                                              "credentials, egress, build_secrets, land, approvers, "
                                                              "merge_method, risk_paths, "
                                                              "require_stale_dismissal, verify_reports, "
-                                                             "rerun_flaky). None: "
+                                                             "rerun_flaky, heavy, profile, "
+                                                             "max_profile). None: "
                                                              "remove the repo's policy.")):
     """Clear fields of the repo's policy, or remove it."""
     r = _cli()._call("DELETE", "/api/repos/policy", params={"repo": repo, "field": fields or []})

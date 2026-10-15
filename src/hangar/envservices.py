@@ -50,6 +50,11 @@ def specs(sb: Sandbox) -> dict[str, Service]:
     return out
 
 
+def sidecars(services: dict[str, Service]) -> dict[str, Service]:
+    """--- heavy: the services that run beside the sandbox (images); Compose stacks run inside it (supervisor)."""
+    return {n: s for n, s in services.items() if not s.compose}
+
+
 def digest(services: dict[str, Service]) -> str:
     raw = json.dumps({k: v.model_dump(mode="json") for k, v in sorted(services.items())}, sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()[:8]
@@ -87,6 +92,7 @@ def _prepare(fleet: Fleet, spec: EnvSpec, sb: Sandbox, build_config: dict[str, A
     elif fleet.settings.env_builds and sb.repo:
         cfg = envbuilds.of(fleet).seen_config(spec.name, sb.repo)
     wanted = cfg.services if cfg is not None and cfg.services is not None else spec.services
+    wanted = sidecars(wanted)  # --- heavy: Compose stacks are the supervisor's, once the repo is cloned
     if not wanted:
         return
     eb = envbuilds.of(fleet)
@@ -119,11 +125,14 @@ def _prepare(fleet: Fleet, spec: EnvSpec, sb: Sandbox, build_config: dict[str, A
 
 def provider_spec(spec: EnvSpec, sb: Sandbox, suffix: str | None) -> EnvSpec:
     """The spec the provider gets when the sandbox's services aren't the environment's own: its own name (on
-    Kubernetes, a SandboxTemplate with those sidecars) and no warm pool (warm sandboxes have the environment's)."""
+    Kubernetes, a SandboxTemplate with those sidecars) and no warm pool (warm sandboxes have the environment's).
+    --- heavy: the same when its Docker or profile isn't the environment's own (heavy.provider_tag)."""
+    from hangar import heavy
+
     svcs = specs(sb)
-    if svcs == spec.services and not suffix:
+    if svcs == sidecars(spec.services) and not suffix and not (sb.info.get("heavy") or {}).get("variant"):
         return spec
-    tag = suffix or f"s{digest(svcs)}"
+    tag = heavy.provider_tag(sb, suffix or f"s{digest(svcs)}")
     return spec.model_copy(update={"name": f"{spec.name[:40]}-{tag}", "warm_pool": 0, "warm_pool_hours": None,
                                    "services": svcs})
 
@@ -131,11 +140,12 @@ def provider_spec(spec: EnvSpec, sb: Sandbox, suffix: str | None) -> EnvSpec:
 # ====================================================================== Kubernetes: sidecars
 def add_sidecars(pod: dict[str, Any], spec: EnvSpec, cpu_request_fraction: float) -> None:
     """Append the spec's services to a pod template as sidecar containers, with hostAliases for their names."""
-    if not spec.services:
+    services = sidecars(spec.services)  # --- heavy
+    if not services:
         return
     main = pod["containers"][0]
     volumes = pod.setdefault("volumes", [])
-    for name, svc in sorted(spec.services.items()):
+    for name, svc in sorted(services.items()):
         c: dict[str, Any] = {
             "name": f"svc-{name}",
             "image": svc.image,
@@ -159,7 +169,7 @@ def add_sidecars(pod: dict[str, Any], spec: EnvSpec, cpu_request_fraction: float
                 volumes.append({"name": vol, "emptyDir": {}})
                 c["volumeMounts"].append({"name": vol, "mountPath": path})
         pod["containers"].append(c)
-    pod["hostAliases"] = [{"ip": "127.0.0.1", "hostnames": sorted(spec.services)}]
+    pod["hostAliases"] = [{"ip": "127.0.0.1", "hostnames": sorted(services)}]
 
 
 # ====================================================================== Docker: a network of the sandbox's own

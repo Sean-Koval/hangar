@@ -247,6 +247,40 @@ def check_computer(st: dict) -> dict | None:
     return _check(status, "computer", msg, tools=tools, shm_mb=shm)
 
 
+def _docker_ping(sock: str = "/var/run/docker.sock") -> str | None:
+    """None when dockerd answers on its socket, else why not."""
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(3)
+    try:
+        s.connect(sock)
+        s.sendall(b"GET /_ping HTTP/1.0\r\nHost: docker\r\n\r\n")
+        line = s.recv(256).split(b"\r\n", 1)[0].split()
+        return None if line[1:2] == [b"200"] else f"answered {line[1:2]}"
+    except OSError as e:
+        return str(e.strerror or e) or type(e).__name__
+    finally:
+        s.close()
+
+
+def check_tier(st: dict) -> dict:
+    """--- heavy: the tier this sandbox runs on, its size, and whether Docker answers (docs/environments.md)."""
+    t = st.get("tier") if isinstance(st.get("tier"), dict) else {}
+    tier, res = t.get("tier") or "standard", t.get("resources") or {}
+    size = f"{res.get('cpus', '?')} CPUs, {res.get('memory_gb', '?')} GiB" + (
+        f", {res['disk_gb']} GiB disk" if res.get("disk_gb") else "")
+    what = f"tier {tier}" + (f", profile {t['profile']}" if t.get("profile") else "") + f" ({size}"
+    what += f", {st['runtime']})" if st.get("runtime") else ")"
+    if not t.get("docker"):
+        return _check("ok", "tier", what + "; no Docker here: Docker runs only on the heavy tier",
+                      tier=tier, docker=False)
+    why = _docker_ping()
+    if why is None:
+        return _check("ok", "tier", what + "; Docker answers at /var/run/docker.sock", tier=tier, docker=True)
+    err = (t.get("docker_status") or {}).get("error")
+    return _check("fail", "tier", what + f"; Docker doesn't answer ({why})" + (f": {err[:200]}" if err else "")
+                  + ". Start it: sudo ~/.hangar/bin/hangar-docker start ~/.hangar/docker.json", tier=tier, docker=True)
+
+
 def _shm_mb() -> int | None:
     try:
         s = os.statvfs("/dev/shm")
@@ -326,7 +360,7 @@ def _connect_via(proxy: str, host: str, port: int) -> tuple[int | None, str | No
 
 def doctor(hosts: list[str] | None = None) -> dict:
     st = load_status()
-    checks = [check_build(st), check_services(st), check_secrets(st), check_setup(st)]
+    checks = [check_tier(st), check_build(st), check_services(st), check_secrets(st), check_setup(st)]  # --- heavy
     if (c := check_computer(st)) is not None:
         checks.append(c)
     report: dict = {"v": VERSION, "ok": all(c["status"] != "fail" for c in checks), "checks": checks,

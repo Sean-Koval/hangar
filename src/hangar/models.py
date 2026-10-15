@@ -34,6 +34,14 @@ class Resources(BaseModel):
     disk_gb: float | None = None
 
 
+# --- heavy: named resource profiles (heavy.py). `standard` is the default above; the others run on the heavy tier.
+PROFILES: dict[str, Resources] = {
+    "standard": Resources(cpus=2, memory_gb=4),
+    "large": Resources(cpus=8, memory_gb=32, disk_gb=100),
+    "xlarge": Resources(cpus=16, memory_gb=64, disk_gb=200),
+}
+
+
 class Sandbox(BaseModel):
     id: str = Field(default_factory=lambda: new_id("sb"))
     name: str

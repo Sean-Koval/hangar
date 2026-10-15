@@ -30,6 +30,7 @@ from hangar import exchange, harden, images, isolation, observe  # --- observe, 
 from hangar import experiments as experiments  # --- interfaces: experiment trials (packs, overlays)
 from hangar import fairness as fairness  # --- scale
 from hangar import ghapi as ghapi  # --- egress2
+from hangar import heavy as heavy  # --- heavy
 from hangar import k8sgc as k8sgc  # --- durable
 from hangar import metrics as metrics  # --- reconciler
 from hangar import modelpolicy as modelpolicy  # --- canary: `model: frontier` resolved to an id
@@ -273,7 +274,8 @@ class Fleet:
         if spec.image:
             return {"spec": spec.model_dump(mode="json"), "raw": self.catalog.raw(name),
                     "dockerfile": f"# prebuilt image, not built by hangar\n# {spec.image}\n", "digest": None}
-        ctx = render(spec, self.settings.sandbox_user, self.settings.workspace_dir, self._extra_ca())
+        ctx = render(spec, self.settings.sandbox_user, self.settings.workspace_dir, self._extra_ca(),
+                     docker_image=self.settings.heavy_docker_image)  # --- heavy
         return {"spec": spec.model_dump(mode="json"), "raw": self.catalog.raw(name), "dockerfile": ctx.dockerfile,
                 "digest": ctx.digest}
 
@@ -295,7 +297,8 @@ class Fleet:
         try:
             spec = scratch.get(name)
             dockerfile = None if spec.image else render(
-                spec, self.settings.sandbox_user, self.settings.workspace_dir, self._extra_ca()).dockerfile
+                spec, self.settings.sandbox_user, self.settings.workspace_dir, self._extra_ca(),
+                docker_image=self.settings.heavy_docker_image).dockerfile  # --- heavy
         except Exception as e:  # noqa: BLE001 - reported to the caller
             return {"valid": False, "errors": [str(e)]}
         known = {c.name for c in self.broker.list()}
@@ -579,15 +582,16 @@ class Fleet:
             return registered
         if await prov.image_exists(tag):
             ref = prov.image_ref(tag)
-            if bake == self._bake_for(spec, pname, spec.pick_harness()):
+            if bake == self._bake_for(spec, pname, spec.pick_harness()) and not heavy.variant(self, spec):  # --- heavy
                 # Built earlier (another replica, a lost data volume): record it, so warm pools and
                 # `hangar doctor` see the environment as built.
                 self.store.kv_set(f"image:{pname}:{spec.name}", ref)
             return ref
         if stage:
             stage(f"building the {spec.name} image (first use or the environment changed; usually a few minutes)")
-        if bake and bake != self._bake_for(spec, pname, spec.pick_harness()):
-            # A non-default harness on a provider without packs: build that variant directly.
+        if (bake and bake != self._bake_for(spec, pname, spec.pick_harness())) or heavy.variant(self, spec):
+            # A non-default harness on a provider without packs: build that variant directly. --- heavy: so is a heavy
+            # repo's variant of a plain environment (Docker in its image).
             return await prov.build_template(spec, ctx, tag)
         job = await self.build(spec.name, pname, actor=actor, for_create=(harness,))
         if job.state != "succeeded" or not job.image:
@@ -663,7 +667,7 @@ class Fleet:
         # Must stay the first statement, so locals() is exactly the arguments.
         from hangar import tiers
 
-        if tier := tiers.route(self, environment, tier, provider):
+        if tier := tiers.route(self, environment, tier, provider, repo, labels):  # --- heavy: repo, labels
             call = {k: v for k, v in locals().items() if k not in ("self", "tier", "tiers")}
             return await tiers.create(self, tier, call)
         active = self.store.list_where(Sandbox, state=ACTIVE)  # --- scale: indexed, not a scan
@@ -679,6 +683,12 @@ class Fleet:
         pname = provider or self.settings.default_provider
         prov = self.provider(pname)
         self.power.check(pname)  # --- ops: the pools are off for the night: say when, don't wait for a node
+        try:  # --- heavy: Docker and the profile (heavy.py); the spec with them, for the image and the provider
+            hv = heavy.decide(self, spec, None if _skip_repo else repo or (spec.repo.url if spec.repo else None),
+                              labels)
+            base_spec, spec = spec, heavy.prepare(self, spec, pname, hv)
+        except heavy.HeavyError as e:
+            raise FleetError(str(e)) from e
         try:
             hname = spec.pick_harness(harness)
         except ValueError as e:
@@ -724,6 +734,7 @@ class Fleet:
             res = modelpolicy.of(self).resolve(hname, spec.model_for(hname))
             sb.info.update({k: v for k, v in (("model", res.model), ("model_policy", res.policy),
                                               ("model_note", res.note)) if v})
+        heavy.admit(self, sb, hv, base_spec, actor, person)  # --- heavy: its person's cap, then sb.info["heavy"]
         self.reconciler.own(sb.id, "create")  # --- reconciler: this task owns the row until it settles
         self.store.put(sb)
         self.audit(actor, "sandbox.create", sb.id, environment=environment, provider=pname, name=sb.name)
@@ -776,6 +787,7 @@ class Fleet:
             creds = await self.gateway.attach(prov, sb, spec, creds, push_branch or work_branch, _parent)
             await self._apply_session(prov, sb, spec, hname, creds)
             await experiments.apply_overlay(self, prov, sb, spec, hname)  # --- interfaces: a variant's skills
+            await heavy.start(self, prov, sb, spec)  # --- heavy: dockerd in the sandbox's VM, before its services
             if _restore_workspace:
                 await self._restore_workspace(prov, sb, _restore_workspace)
             elif sb.repo:
@@ -916,6 +928,7 @@ class Fleet:
     def _warm(self, spec: EnvSpec) -> EnvSpec:
         """The spec with the warm pool size that applies now (warm_pool_hours schedules it to 0 off-hours)."""
         n = max(warm_pool_now(spec), self.power.warm_for(spec.name))  # --- ops: sized for the day at power-up
+        n = heavy.warm(self.settings, spec, n)  # --- heavy: none unless HANGAR_HEAVY_WARM_POOLS
         return spec if n == spec.warm_pool else spec.model_copy(update={"warm_pool": n})
 
     async def sync_scheduled_pools(self) -> None:

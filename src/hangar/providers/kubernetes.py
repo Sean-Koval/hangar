@@ -29,6 +29,7 @@ from pathlib import Path
 from hangar import (
     egress,  # --- egress
     envservices,  # --- envbuilds
+    heavy,  # --- heavy
 )
 from hangar.config import Settings
 from hangar.envd import OFF, SKIP, KubernetesEnvd, Off  # --- envd
@@ -277,6 +278,7 @@ class KubernetesProvider(Provider):
                 pod["tolerations"] = [{"key": "hangar.dev/runtime", "operator": "Equal", "value": "kata",
                                        "effect": "NoSchedule"}]
         envservices.add_sidecars(pod, spec, s.k8s_cpu_request_fraction)  # --- envbuilds: services as sidecars
+        rc = heavy.k8s_pod(pod, spec, s) or rc  # --- heavy: Kata on the heavy pool; with Docker, privileged in the VM
         services_hosts = list(pod.get("hostAliases") or [])
         labels = {**MANAGED, "dev.hangar/env": spec.name}
         if egress.proxied(s, spec):  # --- egress: left out of the internet baseline (deploy/k8s/gateway.yaml)
@@ -337,7 +339,7 @@ class KubernetesProvider(Provider):
         })
         await self._apply("sandboxwarmpools", {
             "apiVersion": f"{EXT_GROUP}/{EXT_V}", "kind": "SandboxWarmPool", "metadata": dict(meta),
-            "spec": {"replicas": max(0, spec.warm_pool), "sandboxTemplateRef": {"name": name},
+            "spec": {"replicas": heavy.warm(self.settings, spec), "sandboxTemplateRef": {"name": name},  # --- heavy
                      "updateStrategy": {"type": "Recreate"}},
         })
 
