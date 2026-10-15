@@ -21,6 +21,7 @@ from typing import Any, NamedTuple, TypeVar
 from pydantic import BaseModel
 
 from hangar.envrequests import EnvRequest  # --- computer: requests agents file with their owners
+from hangar.flightrec import FlightRecord  # --- clouddoctor: failed and slow runs
 from hangar.models import (
     JOB_TERMINAL,
     SESSION_LIVE,
@@ -52,6 +53,7 @@ _TABLES: dict[type[BaseModel], tuple[str, str]] = {
     SandboxGrant: ("sandbox_grants", "id"),  # workstream F: git gateway
     Person: ("people", "id"),  # --- identity
     EnvRequest: ("env_requests", "id"),  # --- computer
+    FlightRecord: ("flight_records", "id"),  # --- clouddoctor
 }
 # --- review(perf): access control must not roll back on a node crash (a revoked token coming back), so these
 # commits, and the secrets table's, sync the WAL like synchronous=FULL; everything else stays on NORMAL.
@@ -63,6 +65,7 @@ _INDEXED: dict[type[BaseModel], tuple[str, ...]] = {
     Job: ("state",),
     Session: ("state",),
     EnvRequest: ("state", "session_id"),  # --- computer
+    FlightRecord: ("at", "job_id"),  # --- clouddoctor: `at` serves list_range
 }
 # The states in which a record holds, or is about to hold, resources (list_active). Sandbox: fleet.ACTIVE.
 _ACTIVE: dict[type[BaseModel], frozenset[str]] = {
@@ -249,6 +252,18 @@ class Store:
         with self._lock:
             return self._db.execute(f"SELECT count(*) FROM {table} WHERE {where}", params).fetchone()[0]
 
+    def list_range(self, cls: type[T], field: str, lo: float, hi: float | None = None,
+                   limit: int = 10_000) -> list[T]:
+        """--- clouddoctor: records whose numeric `field` is in [lo, hi), newest first; from its index when it has
+        one (_INDEXED)."""
+        f = _field(field)
+        table, _ = _TABLES[cls]
+        sql = f"SELECT data FROM {table} WHERE {f} >= ?" + (f" AND {f} < ?" if hi is not None else "")
+        params: list[Any] = [lo] + ([hi] if hi is not None else [])
+        with self._lock:
+            rows = self._db.execute(f"{sql} ORDER BY {f} DESC LIMIT ?", [*params, limit]).fetchall()
+        return [cls.model_validate_json(r[0]) for r in rows]
+
     def list_active(self, cls: type[T]) -> list[T]:
         """Records in a state that holds resources (_ACTIVE): live sandboxes, unfinished jobs, live sessions."""
         return self.list_where(cls, state=_ACTIVE[cls])
@@ -358,6 +373,34 @@ class Store:
     def audit(self, event: AuditEvent) -> None:
         with self._lock:
             self._db.execute("INSERT INTO audit(ts, data) VALUES(?, ?)", (event.ts, event.model_dump_json()))
+
+    def audit_since(self, since: float, actions: Collection[str], target: str | None = None,
+                    limit: int = 500) -> list[AuditEvent]:
+        """--- clouddoctor: the newest entries of `actions` (on `target`) at or after `since`. The audit table has no
+        index on time, so the first row at `since` is found by bisecting row ids (ts grows with them), and only
+        the rows after it are read."""
+        acts = sorted(set(actions))
+        if not acts:
+            return []
+        with self._lock:
+            lo, hi = self._db.execute("SELECT min(id), max(id) FROM audit").fetchone()
+            if lo is None:
+                return []
+            while lo < hi:
+                mid = (lo + hi) // 2
+                row = self._db.execute("SELECT ts FROM audit WHERE id >= ? ORDER BY id LIMIT 1", (mid,)).fetchone()
+                if row is None or row[0] >= since:
+                    hi = mid
+                else:
+                    lo = mid + 1
+            where = f"id >= ? AND json_extract(data, '$.action') IN ({','.join('?' * len(acts))})"
+            params: list[Any] = [lo, *acts]
+            if target is not None:
+                where += " AND json_extract(data, '$.target') = ?"
+                params.append(target)
+            rows = self._db.execute(f"SELECT data FROM audit WHERE {where} AND ts >= ? ORDER BY id DESC LIMIT ?",
+                                    [*params, since, limit]).fetchall()
+        return [AuditEvent.model_validate_json(r[0]) for r in rows]
 
     def audit_tail(self, limit: int = 200) -> list[AuditEvent]:
         with self._lock:

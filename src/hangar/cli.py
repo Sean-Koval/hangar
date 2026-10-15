@@ -1414,3 +1414,9 @@ def admin_rotate_key(status: bool = typer.Option(False, "--status", help="Only s
     for b in r.get("blockers") or []:
         typer.echo(f"  still running from before the rotation: {b}")
     typer.secho(f"next: {r['next']}", fg="green")
+
+
+# ---------------------------------------------------------------------------- --- clouddoctor (ops_cli.py)
+from hangar import ops_cli as _ops  # noqa: E402
+
+_ops.register(app, admin_app, cred_app)

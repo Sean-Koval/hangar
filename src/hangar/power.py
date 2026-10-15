@@ -52,7 +52,8 @@ RUN_API = "https://run.googleapis.com/v2"
 METADATA = "http://metadata.google.internal/computeMetadata/v1"
 # Background loops and how often each passes (metrics.loop_tick); one silent for 3 intervals and a minute is stuck.
 LOOPS: dict[str, str | float] = {"reaper": "reaper_interval_seconds", "reconciler": "reconcile_interval_seconds",
-                                 "sessions": 60.0, "schedules": "schedule_poll_seconds"}
+                                 "sessions": 60.0, "schedules": "schedule_poll_seconds",
+                                 "ops": 60.0}  # --- clouddoctor: SLO samples, record pruning, the nightly pass
 
 POWERED_DOWN = (
     "The sandbox you were working in was shut down when hangar's sandbox nodes powered down for the night, and it "

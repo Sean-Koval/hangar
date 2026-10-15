@@ -30,8 +30,10 @@ from hangar import fairness as fairness  # --- scale
 from hangar import ghapi as ghapi  # --- egress2
 from hangar import k8sgc as k8sgc  # --- durable
 from hangar import metrics as metrics  # --- reconciler
+from hangar import opstatus as opstatus  # --- clouddoctor: the day's failures and credential health in the overview
 from hangar import power as power  # --- ops: the sandbox pools' power schedule
 from hangar import reconciler as reconciler  # --- reconciler
+from hangar import slo as slo  # --- clouddoctor: create times by path, for `hangar status`
 from hangar import supervisor as supervisor  # --- envbuilds
 from hangar import teamcreds as teamcreds  # --- teamcreds
 from hangar.broker import AUTH_FILE_LIMIT, Broker, CredentialError
@@ -773,6 +775,7 @@ class Fleet:
             sb.state = SandboxState.RUNNING
             sb.error = None
             self._touch(sb)
+            slo.created(sb, fork=_parent is not None or _image is not None)  # --- clouddoctor
             # --- ops: + the day's size; --- envbuilds: never from a repo build's image
             if self._warm(spec).warm_pool and pname in self.providers and _image is None and not build:
                 asyncio.create_task(self._refill(self._warm(spec), pname, image))
@@ -1535,6 +1538,9 @@ class Fleet:
         cred = self.broker.put(lg["credential"], lg["harness"], kind, value,
                                description=f"{h.title} login captured {time.strftime('%Y-%m-%d')}",
                                person=person)  # --- teamcreds: the login is its person's own, not the team's
+        from hangar import credhealth  # --- clouddoctor: checked where it was made (codex login status)
+
+        await credhealth.on_capture(self, cred, lg["sandbox"])
         await self.destroy(lg["sandbox"], actor=actor)
         self.logins.pop(login_id, None)
         self.audit(actor, "credential.login_complete", cred.name, harness=lg["harness"])
@@ -1614,7 +1620,7 @@ class Fleet:
             "credentials": len(self.broker.list()),
             "harnesses": {k: {"title": v.title, "agent": v.agent, "version": v.version or "latest",
                               "deprecated": v.deprecated} for k, v in HARNESSES.items()},
-        } | self.power.overview()  # --- ops: power, the last deploy, the background loops
+        } | self.power.overview() | opstatus.overview_fields(self)  # --- ops; --- clouddoctor: failures, credentials
 
 
 __all__ = ["Fleet", "FleetError", "CredentialError", "CredentialKind"]

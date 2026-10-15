@@ -244,7 +244,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
     @tool()
     def list_credentials() -> list[dict[str, Any]]:
         """Credentials available to attach to sandboxes (names and metadata only, never secrets)."""
-        return [c.model_dump(include={"name", "harness", "kind", "exclusive", "leased_to", "description", "person"})
+        return [c.model_dump(include={"name", "harness", "kind", "exclusive", "leased_to", "description", "person",
+                                      "expires_at", "last_ok", "health"})  # --- clouddoctor: credhealth.py
                 for c in people.usable(fleet.broker.list())]  # --- identity: shared and the caller's own
 
     # ------------------------------------------------------------------ lifecycle
@@ -804,6 +805,10 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         from hangar import inbox  # --- landing: hangar://inbox, what needs the caller (a resource, not a tool)
 
         inbox.register(mcp, jobs)
+        from hangar import flightrec, opstatus  # --- clouddoctor: hangar://status (admins), job flight records
+
+        opstatus.register(mcp, fleet, sessions, jobs)
+        flightrec.register(mcp, jobs, guard)
         mcp.recent = lambda: live.recent_resources(sessions, jobs)
         live.register_prompts(mcp, sessions)
         fleet.store.on_put.append(feed.on_put)
