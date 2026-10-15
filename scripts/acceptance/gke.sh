@@ -20,7 +20,7 @@ set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 HELPER="$ROOT/scripts/acceptance/hangar_accept.py"
 CHECKS="doctor k8s sandbox exec stream files mcp isolation session model steer gateway e2b backup metrics computer
-egress services envbuild secrets landing intake scale-smoke power prepull warmstart status clouddoctor"
+egress services heavy envbuild secrets landing intake scale-smoke power prepull warmstart status clouddoctor"
 # The core checks: the control plane's own paths, quick and with nothing outside hangar to depend on. With --gate core
 # (deploy.yml) only these decide the exit status and so a rollback; the others are reported.
 CORE="doctor sandbox exec stream files mcp isolation session e2b backup metrics power"
@@ -234,6 +234,7 @@ check metrics     "/metrics, and a metrics-scoped token that reaches nothing els
 check computer    "computer: Chromium screenshot, display, 3 s of video, a screen ticket; view-only drops input"
 check egress      "allowlist egress: the allowed host through the proxy, 403 otherwise, no direct route, no DNS"
 check services    "a Postgres service beside the sandbox, reachable by name"
+check heavy       "heavy tier: Docker in the sandbox's VM; a compose Postgres under svc, and a Testcontainers test"
 check envbuild    "a repo's environment builds; a broken install doesn't replace it; svc dev server; preview once"
 check secrets     "a job whose change holds a token isn't pushed, and its events name the file and line"
 check landing     "a job's PR comes from the GitHub App; an approval arms auto-merge, a push disarms it"

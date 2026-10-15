@@ -17,7 +17,10 @@ import time
 import docker
 from docker.errors import APIError, ImageNotFound, NotFound
 
-from hangar import envservices  # --- envbuilds
+from hangar import (
+    envservices,  # --- envbuilds
+    heavy,  # --- heavy
+)
 from hangar.config import Settings
 from hangar.envd import OFF, SKIP, DockerEnvd, Off  # --- envd
 from hangar.envd import PORT as ENVD_PORT  # --- envd
@@ -238,15 +241,17 @@ class DockerProvider(Provider):
             for c in pool:
                 if c not in alive:
                     await asyncio.to_thread(c.remove, force=True)
-            for c in alive[max(0, spec.warm_pool):]:  # scaled down (e.g. a schedule's hours ended)
+            want = heavy.warm(self.settings, spec)  # --- heavy: none for a heavy environment unless asked
+            for c in alive[want:]:  # scaled down (e.g. a schedule's hours ended)
                 await asyncio.to_thread(c.remove, force=True)
             ip = None
-            if self.network and spec.warm_pool > len(alive):
+            if self.network and want > len(alive):
                 ip = await self._ensure_net(net)  # --- isolation, egress
-            for _ in range(max(0, spec.warm_pool - len(alive))):
+            for _ in range(max(0, want - len(alive))):
                 name = f"hangar-pool-{spec.name}-{int(time.time() * 1000) % 10**8}"
                 kw = self._run_kwargs(name, image, spec.resources, {POOL_LABEL: image, "dev.hangar.env": spec.name},
                                       hostname=spec.name, packs=spec.packs, net=net, egress_ip=ip)
+                heavy.docker_kwargs(kw, spec)  # --- heavy
                 await asyncio.to_thread(self.client.containers.run, **kw)
 
     async def _ensure_net(self, net: str) -> str | None:
@@ -301,6 +306,7 @@ class DockerProvider(Provider):
         ip = await self._ensure_net(net)  # --- isolation, egress
         kw = self._run_kwargs(name, image, sandbox.resources, labels, hostname=sandbox.name,
                               packs=spec.packs if spec else None, net=net, egress_ip=ip)
+        heavy.docker_kwargs(kw, spec)  # --- heavy: privileged, /var/lib/docker on a volume of its own
         try:
             if envservices.specs(sandbox):  # --- envbuilds
                 c = await envservices.docker_run(self, sandbox, kw)
@@ -334,7 +340,7 @@ class DockerProvider(Provider):
             c = await self._container(sandbox)
         except ProviderError:
             return
-        await asyncio.to_thread(c.remove, force=True)
+        await asyncio.to_thread(c.remove, force=True, v=bool(sandbox.info.get("heavy")))  # --- heavy: its volume
 
     async def pause(self, sandbox: Sandbox) -> None:
         await asyncio.to_thread((await self._container(sandbox)).pause)

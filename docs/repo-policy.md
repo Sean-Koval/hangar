@@ -33,6 +33,9 @@ hangar repo set acme/app --land auto_after_approval --approver alice --risk-path
 | `require_stale_dismissal` | `false` lets hangar arm auto-merge on a base branch that doesn't dismiss stale approvals on a push. Unset (the default) it refuses ([landing.md](landing.md#3-the-branch-protection-to-enable)). |
 | `verify_reports` | The JUnit, Cobertura or LCOV files `verify` writes, relative to the repo, `**/` for any depth (`--verify-report 'build/**/TEST-*.xml'`, repeated). The repo's `.hangar/environment.yaml` `verify_reports` comes first. Most runners need none: see [jobs §8](jobs.md#where-the-reports-come-from). |
 | `rerun_flaky` | `true`: a check whose every failure is on the repo's [flaky list](jobs.md#flaky-tests) runs once more, and the rerun decides (`--rerun-flaky`). Unset: a failure stands. |
+| `heavy` | Docker on the [heavy tier](environments.md#the-heavy-tier), **deny by default**. `on`: the repo's sandboxes run on it, with Docker inside (`--heavy on`). `allow`: the repo's `.hangar/environment.yaml` may ask for it (`heavy: true` or `tier: heavy`), and the request is honored (`--heavy allow`). `deny`, or unset: a request in the repo's file isn't honored; the sandbox runs on the default tier, and the agent's instructions and `hangar-agent env doctor` say Docker isn't enabled for the repo and give this command. A heavy environment (an admin's `heavy: true`) has Docker whatever this says. `true` and `false`, sent by an older client, mean `on` and `deny`. |
+| `profile` | `standard`, `large` or `xlarge`: the size of the repo's sandboxes ([profiles](environments.md#what-decides)). Large and xlarge run on the heavy tier. |
+| `max_profile` | The largest profile a job (label `hangar.profile`, `hangar job submit --profile`) or the repo's file may ask for. Unset: no more than `profile` or the environment's own. |
 
 The repo is `owner/repo` for GitHub (any URL form, any case), or the git URL for another host.
 

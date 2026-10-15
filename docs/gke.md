@@ -171,6 +171,48 @@ Kata needs real nested virtualization, which is why the pool uses Intel N2 machi
 
 Hangar adds the matching nodeSelector and toleration to sandbox pods automatically.
 
+## 4a. The heavy tier (optional)
+
+Sandboxes with Docker inside, as Kata microVMs, and the `large` and `xlarge` profiles
+([environments.md](environments.md#the-heavy-tier)). Off until you turn it on:
+
+1. **The pool.** `enable_heavy_pool = true` in `terraform.tfvars` (and `heavy_machine_type`, `heavy_max_nodes`,
+   `heavy_spot`, `heavy_disk_gb` if the defaults don't fit: [team-scale.md](team-scale.md#heavy-tier)), then apply.
+   That adds `sandboxes-heavy`: Ubuntu, nested virtualization, `n2-standard-32` by default, scaling from zero,
+   labelled and tainted `hangar.dev/runtime=heavy`. Its name puts it under the power schedule: it goes to zero at night,
+   and holds and `off` keep it there ([6](#6-sandbox-nodes-off-at-night-optional)). Its nodes run as a service account
+   of their own, `hangar-heavy-nodes`, with only `roles/container.defaultNodeServiceAccount` and read access to the
+   `hangar` image repository: a heavy sandbox is root in its VM, so its node shouldn't carry the project's default
+   compute identity. (The other sandbox pools still use the default account; giving them the same is a follow-up.)
+2. **Kata on it.** `KATA=1 bash deploy/gke/up.sh` installs kata-deploy on every pool labelled
+   `katacontainers.io/kata-runtime=true` (the Kata pool and the heavy one), tolerating their taints. kata-deploy
+   configures containerd with `privileged_without_host_devices = true` for its runtimes, which is what keeps a heavy
+   sandbox's privileges inside its VM; check it on a node if you install Kata another way.
+3. **hangar-site:** `HANGAR_TIERS: '{"heavy": ["kubernetes"], ...}'` (keep your other tiers in the same JSON), and
+   optionally `HANGAR_HEAVY_REGISTRY_MIRRORS: '["https://mirror.gcr.io"]'`.
+4. **Docker Hub without rate limits (optional):** `enable_dockerhub_mirror = true` (with `dockerhub_username` and a
+   Secret Manager secret of its access token in `dockerhub_token_secret`, or anonymously), then
+   `HANGAR_HEAVY_MIRROR: "true"` and `HANGAR_HEAVY_MIRROR_UPSTREAM` set to the output `dockerhub_mirror`. Heavy
+   sandboxes pull Docker Hub images through hangar's read-only mirror, which reads that repository with hangar's own
+   service account.
+5. **Check it:** `bash scripts/acceptance/gke.sh --only heavy` brings up a Compose stack with Postgres and runs a
+   Testcontainers test in a heavy sandbox.
+
+> **The GKE Agent Sandbox add-on refuses heavy sandboxes**, as it refuses Kata ([4](#4-kata-microvms-optional)): its
+> admission policy requires `runtimeClassName: gvisor`, non-root containers without added capabilities, and no
+> `privileged: true` ([Agent Sandbox requirements](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/how-install-agent-sandbox)).
+> A heavy sandbox is a privileged container under Kata, so on a cluster with the add-on its claims never get a pod
+> (`hangar sb ls --json` shows the stage and the controller's reason while it waits). Run the open-source Agent Sandbox controller
+> instead of the add-on, or put the heavy tier on microVMs ([microvm.md](microvm.md#the-heavy-tier-on-microvms)):
+> `HANGAR_TIERS='{"heavy": ["e2b"]}'`. GKE's managed `microvm` RuntimeClass, which the add-on does allow, refuses
+> privileged containers all the same.
+
+Nested virtualization takes C3, C4, C4D, N2, N4 or N4D machines (not E2, N2D, Arm or memory-optimized ones), can't
+be turned on for an existing pool, and is blocked by the `compute.disableNestedVirtualization` organization policy.
+Google states a CPU penalty of 10% or more for nested VMs, more for I/O-bound work
+([nested virtualization](https://docs.cloud.google.com/compute/docs/instances/nested-virtualization/overview);
+[on GKE](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/nested-virtualization)).
+
 ## 5. Pause and resume with Pod snapshots (optional)
 
 Without Pod snapshots, Kubernetes sandboxes can't be paused. With them, `pause_sandbox` snapshots the pod (memory, running processes and filesystem) and suspends it, which frees its node capacity. `resume_sandbox` brings it back exactly where it was.

@@ -46,6 +46,7 @@ from hangar import ghapi as ghapi  # --- egress2
 from hangar import observe  # --- observe
 from hangar import pkgmirror as pkgmirror  # --- egress2
 from hangar import pushscan as pushscan  # --- egress2
+from hangar import regmirror as regmirror  # --- heavy
 from hangar.auth import hash_token
 from hangar.models import Credential, CredentialKind, Sandbox, SandboxGrant, SandboxState, Session, Snapshot, now
 
@@ -556,6 +557,7 @@ class Gateway:
         self._inflight: dict[str, int] = {}  # token hash -> requests in flight (_InflightLimit)
         self.scanner = pushscan.Scanner(self)  # --- egress2: secret scanning of pushes, before they go upstream
         self.mirror = pkgmirror.Mirror(self)  # --- egress2: read-only package mirrors at /pkg
+        self.registry = regmirror.RegistryMirror(self)  # --- heavy: read-only Docker Hub pull-through at /registry
         self.github = ghapi.GitHubRead(self)  # --- egress2: the read-only GitHub API at /gh/api
 
     # ------------------------------------------------------------------ plumbing
@@ -581,7 +583,8 @@ class Gateway:
     def routes(self) -> list[Route]:
         return [Route("/git/{rest:path}", self.handle, methods=["GET", "POST"],
                       middleware=[Middleware(_InflightLimit, gateway=self)]),
-                *self.github.routes(), *(self.mirror.routes() if self.settings.package_mirror else [])]  # --- egress2
+                *self.github.routes(), *(self.mirror.routes() if self.settings.package_mirror else []),  # --- egress2
+                *(self.registry.routes() if self.settings.heavy_mirror else [])]  # --- heavy
 
     async def healthz(self, request: Request) -> Response:
         return JSONResponse({"ok": True, "service": "hangar-gateway"})

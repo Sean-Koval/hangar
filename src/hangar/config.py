@@ -107,6 +107,24 @@ class Settings(BaseSettings):
     # anything not listed (it is a security choice, not a speed one).
     tiers: dict[str, list[str]] = Field(default_factory=lambda: {"fast": ["e2b"], "isolated": ["kubernetes"]})
     tier_cooldown_seconds: int = 60  # a provider that was full or down is skipped for this long
+    # --- heavy: the heavy tier (heavy.py, docs/environments.md#the-heavy-tier): Docker inside a VM-isolated sandbox,
+    # and the large and xlarge profiles. Off until HANGAR_TIERS lists providers for it ({"heavy": ["kubernetes"]}).
+    heavy_runtime_class: str = "kata-qemu-runtime-rs"  # Kubernetes: the VM runtime heavy pods run under
+    heavy_node_selector: bool = True  # Kubernetes: pin them to deploy/terraform/gke's sandboxes-heavy pool
+    heavy_warm_pools: bool = False  # a heavy environment's warm_pool is ignored unless this is on: heavy nodes cost
+    # Live sandboxes one person may hold per profile at once (0: no cap); `large` counts xlarge ones too
+    heavy_person_max: dict[str, int] = Field(default_factory=lambda: {"large": 3, "xlarge": 1})
+    # Where an environment image gets dockerd, containerd, runc and the docker CLI (with compose and buildx) from
+    heavy_docker_image: str = "docker:29.8.2-dind"
+    # dockerd's registry-mirrors (Docker Hub images only), e.g. ["https://mirror.gcr.io"]. With HANGAR_HEAVY_MIRROR
+    # on, hangar's own pull-through on the gateway comes first.
+    heavy_registry_mirrors: list[str] = Field(default_factory=list)
+    heavy_mirror: bool = False  # Docker Hub through hangar's read-only pull-through on the gateway (regmirror.py)
+    # Its upstream: Docker Hub, or an Artifact Registry remote repository for Docker Hub (deploy/terraform/gke)
+    heavy_mirror_upstream: str = "https://registry-1.docker.io"
+    # Docker provider only: heavy sandboxes run privileged under runc, which is root on the host. For CI and
+    # throwaway machines; a VM runtime is the boundary everywhere else.
+    heavy_docker_privileged: bool = False
 
     # --- envd: in-sandbox daemon for exec, files and terminals (docs/envd.md) ---
     envd: Literal["auto", "off"] = "auto"  # auto: Docker and Kubernetes sandboxes use it when it can be reached
