@@ -51,6 +51,7 @@ log = logging.getLogger("hangar.kubernetes")
 CONTAINER = "sandbox"
 MANAGED = {"app.kubernetes.io/managed-by": "hangar"}
 MAX_OUTPUT = 256 * 1024
+_REPLACED = "the pod of sandbox {id} was replaced; it no longer has the sandbox's files"  # --- reconciler
 
 
 def _rfc3339(ts: float) -> str:
@@ -349,6 +350,15 @@ class KubernetesProvider(Provider):
         obj = await asyncio.to_thread(self.crd.get_namespaced_custom_object, CORE_GROUP, CORE_V, self.ns,
                                       "sandboxes", sb_name)
         pod = (obj["metadata"].get("annotations") or {}).get("agents.x-k8s.io/pod-name") or sb_name
+        if want := sandbox.info.get("pod_uid"):  # --- reconciler: a pod recreated under the claim is not this sandbox
+            try:
+                p = await asyncio.to_thread(self.core.read_namespaced_pod, pod, self.ns)
+            except ApiException as e:
+                if e.status != 404:
+                    raise
+                p = None
+            if p is None or p.metadata.uid != want:
+                raise ProviderError(_REPLACED.format(id=sandbox.id))
         sandbox.info["pod"] = pod
         sandbox.info["k8s_sandbox"] = sb_name
         sandbox.info["warm"] = (obj["metadata"].get("labels") or {}).get("agents.x-k8s.io/launch-type") == "warm"
@@ -363,9 +373,16 @@ class KubernetesProvider(Provider):
             try:
                 pod = await self._pod(sandbox)
                 p = await asyncio.to_thread(self.core.read_namespaced_pod, pod, self.ns)
+                # --- reconciler: the first pod seen is the sandbox's; a different one later is a blank replacement
+                if sandbox.info.setdefault("pod_uid", p.metadata.uid) != p.metadata.uid:
+                    return SandboxState.STOPPED
                 return SandboxState.RUNNING if p.status.phase == "Running" else SandboxState.STARTING
-            except (ProviderError, ApiException):
+            except ApiException as e:
+                if e.status == 404 and sandbox.info.get("pod_uid"):  # --- reconciler: its pod is gone
+                    return SandboxState.STOPPED
                 return SandboxState.STARTING
+            except ProviderError as e:
+                return SandboxState.STOPPED if str(e) == _REPLACED.format(id=sandbox.id) else SandboxState.STARTING
         if ready and ready.get("reason") in ("Failed", "Error", "TemplateNotFound", "WarmPoolNotFound"):
             return SandboxState.ERROR
         return SandboxState.STARTING
@@ -416,6 +433,44 @@ class KubernetesProvider(Provider):
             ready = _cond(it, "Ready")
             out[it["metadata"]["name"]] = (SandboxState.RUNNING if ready and ready.get("status") == "True"
                                            else SandboxState.STARTING)
+        return out
+
+    async def find_ref(self, sandbox: Sandbox) -> str | None:  # --- reconciler
+        items = await asyncio.to_thread(self.crd.list_namespaced_custom_object, EXT_GROUP, EXT_V, self.ns,
+                                        "sandboxclaims", label_selector=f"dev.hangar/sandbox={sandbox.id}")
+        names = [it["metadata"]["name"] for it in items.get("items", [])]
+        return names[0] if names else None
+
+    async def replaced(self, sandboxes: list[Sandbox]) -> dict[str, str]:  # --- reconciler
+        """Agent Sandbox recreates a missing pod (node repair, auto-upgrade, scale-down, preemption) under the same
+        claim, blank: no credentials, clone, MCP config or envd. The pod UID recorded when the sandbox first ran
+        tells them apart. One list per pass, plus a read for a pod the list doesn't show."""
+        watch = [sb for sb in sandboxes if sb.info.get("pod")]
+        if not watch:
+            return {}
+        pods = await asyncio.to_thread(self.core.list_namespaced_pod, self.ns,
+                                       label_selector="app.kubernetes.io/managed-by=hangar")
+        uids = {p.metadata.name: p.metadata.uid for p in pods.items or []}
+        out: dict[str, str] = {}
+        for sb in watch:
+            name = sb.info["pod"]
+            uid = uids.get(name)
+            if uid is None:
+                try:
+                    uid = (await asyncio.to_thread(self.core.read_namespaced_pod, name, self.ns)).metadata.uid
+                except ApiException as e:
+                    if e.status != 404:
+                        raise
+            want = sb.info.get("pod_uid")
+            if not want:
+                if uid:
+                    sb.info["pod_uid"] = uid  # from before UIDs were recorded: this pod is the one from now on
+                continue
+            if uid is None:
+                out[sb.id] = f"its pod {name} is gone (node repair, scale-down or preemption)"
+            elif uid != want:
+                out[sb.id] = (f"its pod {name} was replaced (node repair, scale-down or preemption) and the new one "
+                              "has none of the sandbox's files")
         return out
 
     # ------------------------------------------------------------------ I/O
@@ -594,6 +649,7 @@ class KubernetesProvider(Provider):
                 raise
             await asyncio.sleep(2)
         sandbox.info.pop("pod", None)
+        sandbox.info.pop("pod_uid", None)  # --- reconciler: resume records the restored pod's
         sandbox.info["paused_snapshot"] = uid
 
     async def resume(self, sandbox: Sandbox) -> None:
@@ -622,6 +678,7 @@ class KubernetesProvider(Provider):
                         f"{getattr(restored, 'message', 'no PodRestored condition')}. Files outside the image "
                         "were lost; destroy and recreate it.")
                 sandbox.info.pop("paused_snapshot", None)
+                sandbox.info["pod_uid"] = p.metadata.uid  # --- reconciler: the restored pod is the sandbox now
                 return
             await asyncio.sleep(2)
         raise ProviderError("timed out waiting for the sandbox to resume")

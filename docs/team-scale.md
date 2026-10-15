@@ -242,8 +242,8 @@ The next upgrade archives them again. `HANGAR_SANDBOX_RETENTION_DAYS=0` turns ar
   could hold all 120 sandboxes, and every new session would be refused at `max_sandboxes`. Once
   `HANGAR_JOB_BUDGET_MAX_COST_USD` and the repos' `max_usd_per_day` (or `HANGAR_PERSON_MAX_USD_PER_DAY`) are set,
   `HANGAR_JOB_CONCURRENCY=24` gives the measured 24.
-- **The reconciler** still scans every sandbox once per provider per reaper pass (`Fleet.reconcile`). Retention bounds
-  it to a week of records; the reconciler work switches it to `store.list_where(Sandbox, provider=…, state=[…])`.
+- **The reconciler** reads only live and unfinished sandboxes, from the state index (`reconciler.sandboxes_in`), once
+  per pass on its own task. `hangar gc` still lists every record; it is an admin's occasional command.
 - **Jobs and sessions are held in memory**, all of them, since the start (`jobs.py`, `sessions.py`): ~30 KB for a
   finished job with a 30-event timeline (the seeded history), so 18,000 jobs (6 months at 100 a day) is ~0.5 GB. They need the same archive, with usage rolled up first.
 - **Token lookups** decode every API token on every request (`auth.principal`), ~1 ms at a handful of tokens. An index

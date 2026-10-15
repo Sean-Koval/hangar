@@ -430,6 +430,8 @@ class Job(BaseModel):
     autofix: str | None = None  # "ci,reviews" | "ci" | "reviews" | "off"
     autofix_state: AutofixState = Field(default_factory=AutofixState)
     person: str | None = None  # --- identity: the person it runs for (None: GitHub, Slack, webhooks, older jobs)
+    # --- reconciler: times the job resumed on its own after a control-plane restart interrupted it (restarts.py)
+    restarts: int = 0
 
 
 # ---------------------------------------------------------------------------- scheduled jobs (workstream A)

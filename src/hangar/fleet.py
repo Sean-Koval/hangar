@@ -22,6 +22,8 @@ import hangar.identity as identity  # --- identity
 import hangar.people as people  # --- identity
 from hangar import exchange, harden, isolation, observe  # --- observe, isolation, harden
 from hangar import fairness as fairness  # --- scale
+from hangar import metrics as metrics  # --- reconciler
+from hangar import reconciler as reconciler  # --- reconciler
 from hangar.broker import AUTH_FILE_LIMIT, Broker, CredentialError
 from hangar.config import Settings
 from hangar.envspec import BuildContext, EnvCatalog, EnvSpec, image_tag, render, repo_dirname, warm_pool_now
@@ -169,6 +171,7 @@ class Fleet:
         self.tier_down: dict[str, float] = {}  # --- providers-e2b: provider -> monotonic time it may be tried again
         # --- scale: B12. Workspace archives in the control plane's memory at once (snapshots, forks, restores).
         self.archive_memory = MemoryBudget(settings.workspace_transfer_mb * 1024 * 1024)
+        self.reconciler = reconciler.Reconciler(self)  # --- reconciler: rows a restart left unfinished, replaced pods
 
     # ================================================================== setup
     async def start(self) -> None:
@@ -178,12 +181,14 @@ class Fleet:
             except Exception as e:  # noqa: BLE001 - surface in UI, keep serving other providers
                 self.provider_errors[name] = str(e)
                 log.warning("provider %s unavailable: %s", name, e)
-        await self.reconcile()
+        await self.reconciler.run(boot=True)  # --- reconciler: before sessions and jobs look at their sandboxes
+        self.reconciler.start()
         self._reaper = asyncio.create_task(self._reaper_loop())
 
     async def stop(self) -> None:
         if self._reaper:
             self._reaper.cancel()
+        await self.reconciler.stop()  # --- reconciler: destroys in flight get a moment to finish
         for t in self._pack_builds.values():
             t.cancel()
         for p in self.providers.values():
@@ -618,10 +623,12 @@ class Fleet:
         )
         if hname:
             sb.info["harness"] = hname
+        self.reconciler.own(sb.id, "create")  # --- reconciler: this task owns the row until it settles
         self.store.put(sb)
         self.audit(actor, "sandbox.create", sb.id, environment=environment, provider=pname, name=sb.name)
         def stage(msg: str) -> None:
             sb.info["stage"] = msg
+            reconciler.note_stage(sb, msg)  # --- reconciler: the flight record keeps where it went
             self.store.put(sb)
             if progress:
                 with contextlib.suppress(Exception):
@@ -666,11 +673,15 @@ class Fleet:
             self._touch(sb)
             if spec.warm_pool and pname in self.providers and _image is None:
                 asyncio.create_task(self._refill(self._warm(spec), pname, image))
+            self.reconciler.disown(sb.id)  # --- reconciler
             return sb
         except BaseException as e:  # includes CancelledError (client cancelled / tool timeout)
             sb.state = SandboxState.ERROR
             sb.error = str(e) or type(e).__name__
             self.store.put(sb)
+            self.reconciler.disown(sb.id)  # --- reconciler
+            # --- reconciler: the lease goes now, not in the cleanup below, which a shutdown can cut short
+            reconciler.release_leases(self.store, sb.id)
             log.warning("create failed for %s: %s", sb.id, sb.error)
 
             async def _cleanup() -> None:
@@ -880,6 +891,9 @@ class Fleet:
     @observe.traced("sandbox.destroy")  # --- observe
     async def destroy(self, ref: str, actor: str = "system") -> Sandbox:
         sb = self.get(ref)
+        if (running := self.reconciler.destroying(sb.id)) is not None:  # --- reconciler: one destroy at a time
+            await asyncio.shield(running)
+            return self.get(sb.id)
         prov = self.providers.get(sb.provider)
         if prov and sb.state == SandboxState.RUNNING:
             for hook in list(self.pre_destroy):
@@ -889,6 +903,11 @@ class Fleet:
                     log.warning("pre-destroy hook for %s failed: %s", sb.id, e)
         sb.state = SandboxState.STOPPING
         self.store.put(sb)
+        # --- reconciler: the rest on a task of its own, so a caller cancelled now (a client that gave up, a
+        # shutdown) can't leave the sandbox stopping with its pod and lease; after a restart the reconciler ends it
+        return await asyncio.shield(self.reconciler.detach(sb.id, self._finish_destroy(sb, prov, actor)))
+
+    async def _finish_destroy(self, sb: Sandbox, prov: Provider | None, actor: str) -> Sandbox:
         self.gateway.revoke(sb.id)  # workstream F: the grant dies before the sandbox does
         if prov:
             await self.broker.release(sb, prov, write_back=True)
@@ -910,7 +929,12 @@ class Fleet:
 
     async def pause(self, ref: str, actor: str = "system") -> Sandbox:
         sb = self.get(ref)
-        await self.provider(sb.provider).pause(sb)
+        # --- reconciler: on GKE the pod goes away long before the row says paused; no pass may judge it gone
+        self.reconciler.own(sb.id, "pause")
+        try:
+            await self.provider(sb.provider).pause(sb)
+        finally:
+            self.reconciler.disown(sb.id)
         sb.state = SandboxState.PAUSED
         self.store.put(sb)
         self.audit(actor, "sandbox.pause", sb.id)
@@ -918,7 +942,11 @@ class Fleet:
 
     async def resume(self, ref: str, actor: str = "system") -> Sandbox:
         sb = self.get(ref)
-        await self.provider(sb.provider).resume(sb)
+        self.reconciler.own(sb.id, "resume")  # --- reconciler: a new pod comes up under the claim
+        try:
+            await self.provider(sb.provider).resume(sb)
+        finally:
+            self.reconciler.disown(sb.id)
         sb.state = SandboxState.RUNNING
         self._touch(sb)
         self.audit(actor, "sandbox.resume", sb.id)
@@ -1429,24 +1457,9 @@ class Fleet:
         self.audit("reaper", "sandbox.gone", sb.id, reason=reason)
 
     async def reconcile(self) -> None:
-        """Mark sandboxes whose backing container/pod/VM died or vanished as stopped."""
-        for pname, prov in self.providers.items():
-            try:
-                refs = await prov.list_refs()
-            except Exception:  # noqa: BLE001
-                continue
-            if refs is None:  # provider can't enumerate; nothing to compare against
-                continue
-            for sb in self.store.list(Sandbox):
-                if sb.provider != pname or not sb.provider_ref:
-                    continue
-                if sb.state not in (SandboxState.RUNNING, SandboxState.PAUSED):
-                    continue  # pending/starting sandboxes may not be listed yet
-                reported = refs.get(sb.provider_ref)
-                if reported is None:
-                    self._mark_gone(sb, "disappeared from provider")
-                elif reported in (SandboxState.STOPPED, SandboxState.ERROR):
-                    self._mark_gone(sb, f"provider reports {reported.value}")
+        """One reconciler pass (reconciler.py): sandboxes whose backing container/pod/VM died, vanished or was
+        replaced are marked stopped, and rows a dead task left pending, starting or stopping are finished."""
+        await self.reconciler.run()  # --- reconciler
 
     async def _reaper_loop(self) -> None:
         while True:
@@ -1459,12 +1472,13 @@ class Fleet:
                 # concurrently: a destroy may first checkpoint a session (pre-destroy hook), which takes a while
                 await asyncio.gather(*(self.destroy(sb.id, actor="reaper") for sb in expired),
                                      return_exceptions=True)
-                await self.reconcile()
-                await self.sync_scheduled_pools()
+                await self.sync_scheduled_pools()  # --- reconciler: reconcile runs on its own task now
+                metrics.loop_tick("reaper")  # --- reconciler: heartbeat
             except asyncio.CancelledError:
                 return
             except Exception:  # noqa: BLE001
                 log.exception("reaper iteration failed")
+                metrics.loop_failed("reaper")  # --- reconciler
 
     def overview(self) -> dict[str, Any]:
         sbs = self.list()

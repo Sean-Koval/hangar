@@ -132,6 +132,8 @@ class Settings(BaseSettings):
     default_ttl_minutes: int = 240
     max_sandboxes: int = 120  # --- scale: 6 people × 10 sessions, plus job slots, forks and best-of-N attempts
     reaper_interval_seconds: int = 60
+    # --- reconciler: how often rows a restart left unfinished, and dead or replaced sandboxes, are looked for
+    reconcile_interval_seconds: int = 30
     sandbox_user: str = "agent"
     workspace_dir: str = "/workspace"
 
@@ -147,6 +149,11 @@ class Settings(BaseSettings):
     job_max_context_items: int = 50
     # Hosts allowed for plain-http callbacks or private-address callbacks (https to public hosts always allowed).
     job_callback_hosts: list[str] = Field(default_factory=list)
+    # --- reconciler: a job a restart interrupted (deploy, power-down) whose session has a checkpoint resumes on its
+    # own this many times, instead of failing as `interrupted`; such jobs re-enter the queue this many seconds apart,
+    # so a power-up doesn't start them all at once on a cold cluster
+    job_restart_resumes: int = 2
+    job_restart_stagger_seconds: float = 20.0
 
     # --- sessions (spec 0010) -----------------------------------------------
     session_idle_minutes: int = 30  # suspend (checkpoint + release the sandbox) after this long idle
@@ -186,6 +193,9 @@ class Settings(BaseSettings):
     # Repos that may trigger jobs, mapped to the environment to run them in: {"owner/repo": "env"}.
     github_repos: dict[str, str] = Field(default_factory=dict)
     github_trigger_label: str = "hangar"
+    # --- reconciler: at startup, ask GitHub to redeliver the webhook deliveries that failed since the last start
+    # (the cluster was down, or hangar died mid-delivery); GitHub keeps them for 3 days and never retries on its own
+    github_redeliver_on_start: bool = True
 
     # --- workstream C: events/usage/budgets ----------------------------------
     # USD per million tokens, merged over the built-in table in events.py (dated list prices):

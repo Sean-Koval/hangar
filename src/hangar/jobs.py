@@ -39,6 +39,7 @@ from hangar import (  # strategies: workstream D; --- observe; steer: live turns
     verifyloop,
 )
 from hangar import fairness as fairness  # --- scale
+from hangar import restarts as restarts  # --- reconciler: interrupted jobs resume after a restart
 from hangar.events import resolve_budget, total_usage, usage_line
 from hangar.fleet import Fleet, FleetError, _clip_tail
 from hangar.github import GitHub, GitHubError, parse_repo
@@ -187,6 +188,9 @@ class JobService:
         self.admission = Admission(self)
         self.policies = repopolicy.RepoPolicies(self.store)  # --- frontdoor: per-repo defaults for every front door
         self.baselines = baseline.Baselines(self)  # --- frontdoor: the check on the base commit, once per base
+        from hangar.drain import Drain  # --- reconciler: power-down drain holds jobs that haven't started
+
+        self.drain = Drain(self)
         if sessions is not None:  # --- overnight/sweep: a deleted session's usage stays on its job
             sessions.on_delete.append(self._session_deleted)
 
@@ -194,6 +198,7 @@ class JobService:
     async def start(self) -> None:
         self._jobs = {j.id: j for j in self.store.list(Job)}
         interrupted: list[Job] = []
+        resumed: list[str] = []  # --- reconciler: interrupted jobs that go back to the queue, a few at a time
         for job in sorted(self._jobs.values(), key=lambda j: j.created_at):
             if job.state in JOB_TERMINAL or job.state == JobState.NEEDS_INPUT:  # needs_input waits for a follow-up
                 continue
@@ -207,7 +212,11 @@ class JobService:
                 self._queue.put_nowait(job.id)
             elif job.state == JobState.PROVISIONING:
                 await self._discard_sandbox(job)
-                self._event(job, "control plane restarted while provisioning", JobState.FAILED, reason="interrupted")
+                if restarts.start_over(self, job):  # --- reconciler: provisioning is safe to run again
+                    resumed.append(job.id)
+                else:
+                    self._event(job, "control plane restarted while provisioning", JobState.FAILED,
+                                reason="interrupted")
             elif strategies.can_reattach(job):
                 self._event(job, "control plane restarted; re-attaching to the attempts")
                 self._queue.put_nowait(job.id)
@@ -215,6 +224,8 @@ class JobService:
                 self._event(job, "control plane restarted; re-attached to the job" if job.turns[-1].run_id
                             else "control plane restarted before the turn started; starting it now")
                 self._queue.put_nowait(job.id)
+            elif restarts.resume(self, job):  # --- reconciler: the session's checkpoint has the work
+                resumed.append(job.id)
             else:
                 s = self._session(job)
                 tail = ("; follow up to continue from its last checkpoint"
@@ -233,10 +244,12 @@ class JobService:
         n = fairness.job_slots(self.settings)  # --- scale: sized from capacity unless set
         self._workers = [asyncio.create_task(self._worker(i)) for i in range(n)]
         autofix.restore(self)  # --- overnight/autofix: PR triggers still waiting for their window
+        restarts.release(self, resumed)  # --- reconciler
         for job in interrupted:
             self._spawn(self._report(job))
 
     async def stop(self) -> None:
+        self.drain.close()  # --- reconciler
         for t in [*self._workers, *self._background]:
             t.cancel()
         for t in [*self._workers, *self._background]:
@@ -250,6 +263,8 @@ class JobService:
             try:
                 if job_id in self._active:
                     continue  # already being handled (duplicate enqueue)
+                if self.drain.hold(job_id):  # --- reconciler: draining for a power-down; queued again after
+                    continue
                 await self._process(job_id)
             except asyncio.CancelledError:
                 raise

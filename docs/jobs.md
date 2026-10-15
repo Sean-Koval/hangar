@@ -167,6 +167,8 @@ Every job runs in a [session](sessions.md). The agent keeps its conversation bet
 
 If the sandbox was released, hangar starts a new one from the job's last checkpoint, and the agent continues where it left off.
 
+The same happens on its own after a control-plane restart (a deploy, the nightly power-down) that took the job's sandbox with it. A job caught mid-turn whose session has a checkpoint goes back to the queue with a follow-up turn that resumes from it and tells the agent the restart happened; a job caught provisioning starts over. Each job does this at most `HANGAR_JOB_RESTART_RESUMES` times, and such jobs re-enter the queue `HANGAR_JOB_RESTART_STAGGER_SECONDS` apart, so a power-up doesn't ask a cold cluster for every sandbox at once. A job with no checkpoint to resume from still fails as `interrupted`.
+
 - **Watch:** attach to the job's sandbox terminal from the dashboard, or with `hangar sb attach <sandbox_id>` (the run is tmux session `terminal_session`).
 - **Steer:** follow up from the API, MCP, CLI or a PR comment. Each follow-up is a new agent turn with your message and the previous summary, on the same branch. The PR updates in place. While a Claude Code or Codex turn runs, you can also steer or interrupt it, and answer its tool approvals when its environment uses `approvals: ask` (`POST /api/jobs/{id}/steer`, `/interrupt`, `/approvals`; MCP `steer_turn`, `answer_approval`; see [steering](steering.md)). An interrupt with a message carries on with it; without one, the job pauses in `needs_input` until you follow up or cancel, and nothing is delivered.
 - **Take over:** work in the sandbox yourself. Your commits go out with the next follow-up's delivery.
@@ -285,6 +287,7 @@ The webhook needs the `pull_request_review`, `check_run`, `check_suite` and `sta
 | `HANGAR_JOB_VERIFY_TIMEOUT_SECONDS` | 1800 | |
 | `HANGAR_JOB_MAX_CONTEXT_BYTES` / `_ITEMS` | 2 MB / 50 | |
 | `HANGAR_JOB_CALLBACK_HOSTS` | `[]` | Hosts allowed for http or internal callbacks |
+| `HANGAR_JOB_RESTART_RESUMES`, `HANGAR_JOB_RESTART_STAGGER_SECONDS` | 2, 20 | How often a job a restart interrupted resumes on its own, and how far apart such jobs re-enter the queue (§5) |
 | `HANGAR_BUDGET_MAX_MINUTES` / `_MAX_TOKENS` / `_MAX_COST_USD`, `HANGAR_MODEL_PRICES` | unset | Default budget per turn and the price table; see [activity.md](activity.md) |
 | `HANGAR_JOB_BUDGET_MAX_COST_USD` / `_MAX_TOKENS` / `_MAX_TURNS` | unset | Default budget for a whole job; see [repo-policy.md](repo-policy.md#budgets) |
 | `HANGAR_BUDGET_DAY_TIMEZONE` | `UTC` | The IANA zone whose midnight starts a day for daily spend caps, e.g. `America/New_York` |

@@ -27,6 +27,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from hangar import metrics as metrics  # --- reconciler
 from hangar.exchange import UNTRUSTED_RULES
 from hangar.github import GitHubError
 from hangar.jobs import Caller, JobError, JobService, SubmitJob
@@ -529,8 +530,10 @@ class Triggers:
         while True:  # the first tick expires approvals that ran out while the control plane was down
             try:
                 self.tick()
+                metrics.loop_tick("schedules")  # --- reconciler: heartbeat
             except Exception:  # noqa: BLE001 - keep ticking; the next one may succeed
                 log.exception("scheduler tick failed")
+                metrics.loop_failed("schedules")  # --- reconciler
             await asyncio.sleep(max(0.05, self.settings.schedule_poll_seconds))
 
     def tick(self) -> None:

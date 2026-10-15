@@ -221,6 +221,13 @@ class Envd:
             await self._http.aclose()
             self._http = None
 
+    @staticmethod
+    def instance(sb: Sandbox) -> str | None:
+        """What a cached daemon address belongs to: the provider ref, and on Kubernetes the pod's UID too, since the
+        claim name stays the same when a pod is replaced or a paused sandbox resumes on a new pod (--- reconciler)."""
+        uid = sb.info.get("pod_uid")
+        return f"{sb.provider_ref}#{uid}" if uid and sb.provider_ref else sb.provider_ref
+
     def forget(self, sb: Sandbox) -> None:
         """The sandbox is gone (destroy): drop what is known about its daemon."""
         self._eps.pop(sb.id, None)
@@ -301,7 +308,7 @@ class Envd:
         if self._closed or not self.binaries or not sb.provider_ref:
             return None
         ep = self._eps.get(sb.id)
-        if ep is not None and ep.ref == sb.provider_ref:
+        if ep is not None and ep.ref == self.instance(sb):  # --- reconciler: by pod, not just by claim
             return ep
         if self._down.get(sb.id, 0.0) > time.monotonic():
             return None
@@ -321,7 +328,7 @@ class Envd:
         return self._eps.get(sb.id)
 
     async def _bring_up(self, sb: Sandbox) -> None:
-        ref = sb.provider_ref
+        ref = self.instance(sb)  # --- reconciler
         try:
             ep = await asyncio.wait_for(self._connect(sb), START_TIMEOUT)
         except asyncio.CancelledError:
@@ -332,7 +339,7 @@ class Envd:
         finally:
             if self._starting.get(sb.id) is asyncio.current_task():
                 del self._starting[sb.id]
-        if sb.provider_ref != ref:
+        if self.instance(sb) != ref:  # --- reconciler
             return  # replaced meanwhile
         self._eps[sb.id] = ep
         self._down.pop(sb.id, None)
@@ -354,7 +361,7 @@ class Envd:
 
     async def _probe(self, sb: Sandbox, urls: list[str], token: str) -> Endpoint | None:
         for url in urls:
-            ep = Endpoint(url=url, token=token, ref=sb.provider_ref)
+            ep = Endpoint(url=url, token=token, ref=self.instance(sb))  # --- reconciler
             try:
                 status, body = await self.send_capped(
                     self.request(ep, "GET", "/info", timeout=httpx.Timeout(2.0, connect=0.5)), 65536)
@@ -762,6 +769,8 @@ class KubernetesEnvd(Installer):
     async def urls(self, sb: Sandbox) -> list[str]:
         pod = await self.p._pod(sb)  # type: ignore[attr-defined]
         p = await asyncio.to_thread(self.p.core.read_namespaced_pod, pod, self.p.ns)  # type: ignore[attr-defined]
+        if (want := sb.info.get("pod_uid")) and p is not None and p.metadata.uid != want:  # --- reconciler
+            raise EnvdError(f"the pod of sandbox {sb.id} was replaced; not starting a daemon in a blank pod")
         ip = (p.status.pod_ip if p and p.status else None) or ""
         u = _http_url(ip)
         return [u] if u else []
