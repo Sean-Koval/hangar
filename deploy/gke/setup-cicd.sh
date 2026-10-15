@@ -191,7 +191,7 @@ REPO=${REPO:-$(look gh repo view --json nameWithOwner --jq .nameWithOwner)}
 REPO_JSON=$(look gh api "repos/$REPO")
 REPO_ID=$(json 'd["id"]' <<<"$REPO_JSON" || true)
 OWNER_ID=$(json 'd["owner"]["id"]' <<<"$REPO_JSON" || true)
-[ -n "$REPO_ID" ] && [ -n "$OWNER_ID" ] || die "can't read $REPO with gh (gh api repos/$REPO)"
+if [ -z "$REPO_ID" ] || [ -z "$OWNER_ID" ]; then die "can't read $REPO with gh (gh api repos/$REPO)"; fi
 if [ -z "${REVIEWER:-}" ]; then
   if [ "$(json 'd["owner"]["type"]' <<<"$REPO_JSON")" = User ]; then REVIEWER=$(json 'd["owner"]["login"]' <<<"$REPO_JSON")
   else REVIEWER=$(look gh api user --jq .login); fi
@@ -204,7 +204,7 @@ look env KUBECONFIG="$KCFG" gcloud container clusters get-credentials "$CLUSTER"
   --project "$PROJECT" >/dev/null
 
 CLI_JSON=${HANGAR_CLI_CONFIG:-$HOME/.hangar/cli.json}
-saved() { [ -f "$CLI_JSON" ] && json 'd.get(a[0]) or ""' "$1" < "$CLI_JSON" 2>/dev/null || true; }
+saved() { if [ -f "$CLI_JSON" ]; then json 'd.get(a[0]) or ""' "$1" < "$CLI_JSON" 2>/dev/null || true; fi; }
 HANGAR_URL=${HANGAR_URL:-$(saved url)}
 [ -n "$HANGAR_URL" ] || HANGAR_URL=$(look kc -n "$NS" get configmap hangar -o jsonpath='{.data.HANGAR_PUBLIC_URL}')
 HANGAR_URL=${HANGAR_URL%/}
