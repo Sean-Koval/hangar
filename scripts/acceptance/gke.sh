@@ -14,7 +14,7 @@ set -uo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 HELPER="$ROOT/scripts/acceptance/hangar_accept.py"
-CHECKS="doctor k8s sandbox exec stream files isolation session model steer gateway e2b backup metrics power"
+CHECKS="doctor k8s sandbox exec stream files mcp isolation session model steer gateway e2b backup metrics power"
 ONLY="" SKIPS="" KEEP=0 WITH_MODEL=0 NO_KUBECTL=0 EXPECT_ENVD=1
 ARGS=()
 
@@ -33,6 +33,7 @@ usage: $0 [options]
                         Both branches are deleted afterwards with the gh CLI if you have it.
   --with-model          also run a real short agent turn and a steered turn with an approval (costs money)
   --model NAME          model for those turns (default: the environment's)
+  --mcp-env NAME        multi-harness environment the mcp check creates sandboxes from over MCP (default: python)
   --exec-calls N        exec round trips to time (default: 20)
   --internet-probe H:P  an address sandboxes must reach, so closed ports in the isolation check mean a policy
                         and not a sandbox with no network (default: github.com:443)
@@ -49,7 +50,7 @@ EOF
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --env|--session-env|--repo|--gateway-repo|--model|--exec-calls|--internet-probe)
+    --env|--session-env|--repo|--gateway-repo|--model|--exec-calls|--internet-probe|--mcp-env)
       [ $# -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; }
       ARGS+=("$1" "$2"); shift 2 ;;
     --with-model) WITH_MODEL=1; shift ;;
@@ -150,6 +151,7 @@ check sandbox   "create a sandbox"
 check exec      "exec round trips, the transport they use (hangar-envd or pods/exec), in-cluster baseline"
 check stream    "a streamed exec over SSE: the first line arrives while the command runs"
 check files     "write and read a file through MCP"
+check mcp       "create_sandbox over MCP within claude.ai's 230 s, a dropped client's create still comes up, exec"
 check isolation "a sandbox can't reach another sandbox's envd, the metadata server or hangar's API"
 check session   "session: checkpoint, suspend, resume in a new sandbox with the work restored (no model)"
 check model     "a real short agent turn"

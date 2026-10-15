@@ -431,6 +431,91 @@ async def _mcp(url: str, token: str, calls: list[tuple[str, dict[str, Any]]]) ->
     return out
 
 
+CLIENT_DEADLINE = 230.0  # --- deadlines: claude.ai gives up on a tool call after about this long
+POLL_SECONDS = 3.0
+
+
+async def _mcp_within(url: str, token: str, name: str, args: dict[str, Any], deadline: float
+                      ) -> tuple[Any, float, dict[str, Any]]:
+    """Call one tool as a deadline-bound client does: give up after `deadline` seconds and disconnect. Returns
+    (the result, or None if it gave up; the seconds the call took; what the server said about itself)."""
+    from mcp import Client
+    from mcp.client.streamable_http import streamable_http_client
+    from mcp.shared._httpx_utils import create_mcp_http_client
+
+    http = create_mcp_http_client(headers={"Authorization": f"Bearer {token}"})
+    async with http, Client(streamable_http_client(f"{url}/mcp", http_client=http)) as c:
+        t0 = time.perf_counter()
+        tools = (await c.list_tools()).tools
+        about = {"version": c.server_info.version, "tools": len(tools), "list_ms": (time.perf_counter() - t0) * 1000}
+        t0 = time.perf_counter()
+        try:
+            async with asyncio.timeout(deadline):
+                res = await c.call_tool(name, args)
+        except TimeoutError:
+            return None, time.perf_counter() - t0, about  # leaving the block disconnects, as the client would
+    secs = time.perf_counter() - t0
+    text = " ".join(getattr(b, "text", "") for b in res.content)
+    if res.is_error:
+        raise Fail(f"MCP {name}: {text[:300]}")
+    sc = res.structured_content
+    return (sc.get("result", sc) if isinstance(sc, dict) and set(sc) == {"result"} else sc), secs, about
+
+
+def check_mcp(api: Api, state: State, opts: argparse.Namespace) -> str:
+    """The way claude.ai uses hangar: create_sandbox over MCP on a multi-harness environment (a pack or an image
+    may be built first) must answer within the client's 230 s, starting or running; a second create whose client
+    drops after a few seconds must still come up (not end in `error`); then exec over MCP in the first."""
+    base = {"environment": opts.mcp_env, "ttl_minutes": 120, "labels": {LABEL: state.run}}
+    sb, secs, about = asyncio.run(_mcp_within(api.url, api.token, "create_sandbox",
+                                              {**base, "name": f"accept-{state.run}-mcp"}, CLIENT_DEADLINE))
+    say(f"server {about['version']}: {about['tools']} tools listed in {about['list_ms']:.0f} ms")
+    if sb is None:
+        raise Fail(f"create_sandbox on {opts.mcp_env} didn't answer within {CLIENT_DEADLINE:.0f}s, so claude.ai would "
+                   "have shown an error; HANGAR_MCP_TOOL_WAIT_SECONDS should keep it under that")
+    state.add("sandboxes", sb["id"])
+    say(f"create_sandbox answered in {secs:.1f}s: {sb['id']} {sb['state']}"
+        + (f" ({sb['stage']})" if sb.get("stage") else ""))
+    if sb["state"] not in ("running", "starting", "pending"):
+        raise Fail(f"create_sandbox answered {sb['state']}: {sb.get('error')}")
+    drop_name = f"accept-{state.run}-mcp-drop"
+    dropped, drop_secs, _ = asyncio.run(_mcp_within(api.url, api.token, "create_sandbox",
+                                                    {**base, "name": drop_name}, opts.mcp_drop_after))
+    say(f"a client that gives up after {opts.mcp_drop_after:.0f}s: " + (
+        "dropped mid-create" if dropped is None else f"got its answer first ({drop_secs:.1f}s, {dropped['state']})"))
+    up = _running(api, sb["id"], opts.boot_timeout)
+    mine = [s for s in api.call("GET", "/api/sandboxes", params={"label": f"{LABEL}={state.run}"})
+            if s["name"].startswith(drop_name)]
+    for s in mine:
+        state.add("sandboxes", s["id"])
+    if not mine:
+        raise Fail(f"the sandbox whose client dropped ({drop_name}) is gone: the disconnect cancelled its create")
+    _running(api, mine[0]["id"], opts.boot_timeout)
+    ran, = asyncio.run(_mcp(api.url, api.token, [("exec", {"sandbox": sb["id"], "command": "echo mcp-ok; id -un"})]))
+    if ran["exit_code"] != 0 or "mcp-ok" not in ran["stdout"]:
+        raise Fail(f"exec over MCP exited {ran['exit_code']}: {(ran['stderr'] or ran['stdout'])[-300:].strip()}")
+    return (f"{opts.mcp_env}: answered in {secs:.0f}s ({sb['state']}), running after {up:.0f}s; a dropped client's "
+            f"create still came up; exec ok; {about['version']}")
+
+
+def _running(api: Api, sb: str, timeout: float) -> float:
+    """Seconds until the sandbox is running; fails on `error`, `stopped` or the timeout."""
+    t0, last = time.monotonic(), None
+    while True:
+        s = api.call("GET", f"/api/sandboxes/{sb}")
+        now = (s["state"], (s.get("info") or {}).get("stage"))
+        if now != last:
+            say(f"{sb}: {now[0]}" + (f" ({now[1]})" if now[1] and now[0] != "running" else ""))
+            last = now
+        if s["state"] == "running":
+            return time.monotonic() - t0
+        if s["state"] in ("error", "stopped"):
+            raise Fail(f"sandbox {sb} ended {s['state']}: {s.get('error')}")
+        if time.monotonic() - t0 > timeout:
+            raise Fail(f"sandbox {sb} still {s['state']} after {timeout:.0f}s ({now[1]})")
+        time.sleep(POLL_SECONDS)
+
+
 def check_files(api: Api, state: State, opts: argparse.Namespace) -> str:
     """Write and read back a binary file through MCP's write_file/read_file (the provider's file transfer: envd or
     exec), and check it from a shell in the sandbox too."""
@@ -828,7 +913,7 @@ def cleanup(api: Api, state: State, opts: argparse.Namespace) -> str:
 
 CHECKS: dict[str, Callable[[Api, State, argparse.Namespace], str]] = {
     "doctor": check_doctor, "k8s": check_k8s, "sandbox": check_sandbox, "exec": check_exec, "stream": check_stream,
-    "files": check_files,
+    "files": check_files, "mcp": check_mcp,
     "isolation": check_isolation, "session": check_session, "model": check_model, "steer": check_steer,
     "gateway": check_gateway, "e2b": check_e2b, "backup": check_backup, "metrics": check_metrics,
     "cleanup": cleanup,
@@ -868,6 +953,8 @@ def main(argv: list[str]) -> int:
     p.add_argument("--file-kb", type=int, default=1024)
     p.add_argument("--internet-probe", default="github.com:443", help="host:port a sandbox must reach")
     p.add_argument("--boot-timeout", type=float, default=1200.0)
+    p.add_argument("--mcp-env", default="python", help="a multi-harness environment for the mcp check")
+    p.add_argument("--mcp-drop-after", type=float, default=5.0, help="when the mcp check's impatient client leaves")
     p.add_argument("--turn-timeout", type=float, default=900.0)
     opts = p.parse_args(argv)
     if opts.gateway_repo and not re.fullmatch(r"[\w.-]+/[\w.-]+", opts.gateway_repo):

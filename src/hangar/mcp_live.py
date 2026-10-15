@@ -17,6 +17,7 @@ from typing import Any
 import mcp_types as types
 from mcp.server.context import ServerRequestContext
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError  # --- deadlines
 from mcp.server.subscriptions import ResourcesListChanged, ResourceUpdated, SubscriptionBus
 from mcp.shared.exceptions import MCPError
 from mcp_types import ToolAnnotations
@@ -252,12 +253,36 @@ class HangarMCP(MCPServer):
     the current jobs and sessions listed as resources, so clients can offer them (@-mentions in Claude Code)."""
 
     recent: Any = None  # () -> list[types.Resource], set by build_mcp
+    fresh: Any = None  # --- deadlines: mcp_fresh.Freshness, set by build_mcp once every tool is registered
+
+    def listing(self) -> list[types.Tool]:
+        """tools/list as clients get it (--- deadlines: synchronous, so build_mcp can hash it for serverInfo)."""
+        return [types.Tool(name=i.name, title=i.title, description=i.description,
+                           input_schema=_slim(i.parameters, True),
+                           output_schema=_slim(i.output_schema, False) if i.output_schema else None,
+                           annotations=i.annotations, icons=i.icons, _meta=i.meta)
+                for i in self._tool_manager.list_tools() if i.name not in HIDDEN_TOOLS]
 
     async def list_tools(self) -> list[types.Tool]:
-        tools = await super().list_tools()
-        return [t.model_copy(update={"input_schema": _slim(t.input_schema, True),
-                                     "output_schema": _slim(t.output_schema, False) if t.output_schema else None})
-                for t in tools if t.name not in HIDDEN_TOOLS]
+        if self.fresh is not None:
+            self.fresh.listed()
+        return self.listing()
+
+    async def call_tool(self, name: str, arguments: dict[str, Any], context: Any = None) -> Any:
+        """--- deadlines: a call from a client working from an older tool list says so (mcp_fresh)."""
+        if self.fresh is None:
+            return await super().call_tool(name, arguments, context)
+        if self._tool_manager.get_tool(name) is None:
+            raise ToolError(self.fresh.unknown(name))
+        try:
+            result = await super().call_tool(name, arguments, context)
+        except ToolError as e:
+            if type(e) is ToolError and (note := self.fresh.note(name)):
+                raise ToolError(f"{e}\n\n{note}") from e.__cause__
+            raise
+        if isinstance(result, types.CallToolResult) and (note := self.fresh.note(name)):
+            result.content.append(types.TextContent(type="text", text=note))
+        return result
 
     async def list_resources(self) -> list[types.Resource]:
         return [*await super().list_resources(), *(self.recent() if self.recent else [])]

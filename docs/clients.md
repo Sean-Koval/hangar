@@ -26,6 +26,10 @@ Files are replaced atomically. A new file is created with mode 600. An existing 
 
 Claude Desktop's config file only starts local (stdio) servers, so the entry runs the [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) bridge, which needs Node.js. The token goes in a mode-600 header file under `~/.hangar/mcp-headers/`, not in the command line, where other users could read it from the process list. To use OAuth with Claude Desktop instead, add hangar as a custom connector under **Settings → Connectors**.
 
+### When hangar's tools change
+
+After an upgrade that adds or changes tools, a client has to fetch the tool list again to see them. Claude Code, Codex and the other CLIs do that when a session starts. The claude.ai web, desktop and mobile apps don't: they keep the list from when the connector was added ([claude-code#38324](https://github.com/anthropics/claude-code/issues/38324)). Remove the hangar connector and add it again (**Settings → Connectors**) to refresh it. Hangar notices calls from an older list and says so in the tool's answer, at most once an hour ([mcp.md](mcp.md#deployment-notes)); `serverInfo.version` (`<version>+tools.<hash>`) tells you which tool list a hangar serves.
+
 ### Where these formats come from
 
 Each format was checked against the client itself or its official docs on 2026-10-13:
