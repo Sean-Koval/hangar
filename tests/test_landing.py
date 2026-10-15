@@ -676,7 +676,7 @@ async def test_doctor_reads_the_branch_protection(svc, gh, settings):
 
 
 async def test_the_packet_names_the_model_that_ran_and_its_price(svc, gh, settings, monkeypatch):
-    """--- review #105: a job's model is a policy (jobs default to `frontier`) resolved on its session, so the packet
+    """--- review #105: a job's model is a policy (jobs default to `balanced`) resolved on its session, so the packet
     shows the session's concrete id and what it costs, not the request's `model` (None: "the harness default")."""
     from types import SimpleNamespace
 

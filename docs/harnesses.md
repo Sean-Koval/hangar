@@ -10,7 +10,7 @@ anyone, and how each one gets "the latest strong model" without a stale default.
 | The contract tests | `.github/workflows/harness-contract.yml` | PRs that touch harness, driver or isolation code; every push to main |
 | The canary | `.github/workflows/harness-canary.yml` | nightly, 03:17 ET (07:17 UTC), and by hand |
 | Landing the canary's PR | `.github/workflows/harness-canary-land.yml` | on an approval of it |
-| Model policies | an environment's or repo policy's `model:` (`frontier`, `balanced`) | when a sandbox or session is created |
+| Model policies | an environment's or repo policy's `model:` (`balanced`, which jobs and `envs/bare.yaml` default to, or `frontier`) | when a sandbox or session is created |
 
 None of these talk to the cluster, so they all work while it is powered down.
 
@@ -155,12 +155,12 @@ A `model:` value is either a pinned id (`claude-opus-5-5`, `gpt-6.1-sol`), passe
 
 | Policy | Picks |
 | --- | --- |
-| `frontier` | the strongest current model the provider lists for your account. **The default for jobs**, and `envs/bare.yaml`'s for every harness |
-| `balanced` | the provider's everyday line: Anthropic's opus, OpenAI's sol, Google's flash |
+| `balanced` | the provider's everyday line: Anthropic's opus, OpenAI's sol, Google's flash. **The default** for jobs, `envs/bare.yaml`'s every harness, agent-led env setup and the Cloud Doctor. On Claude Code it is Opus (today `claude-opus-5-5`, by the `line` rule below) |
+| `frontier` | the strongest current model the provider lists for your account, at several times the price. Asked for per environment, repo policy or job |
 | `frontier@openai`, `balanced@google`, … | the same, from one vendor, for a harness that reaches several (pi on OpenRouter; Anthropic's otherwise) |
 
-Environments (`model: frontier`, or per harness `model: {codex: balanced}`) and repo policies (`hangar repo set acme/app
---model frontier`) accept a policy. A policy in a repo policy applies to every harness, where a pinned id applies only
+Environments (`model: frontier`, or per harness `model: {claude-code: frontier}`) and repo policies (`hangar repo set
+acme/app --model frontier`) accept a policy. A policy in a repo policy applies to every harness, where a pinned id applies only
 to the policy's own harness. So do `submit_job(model=…)`, `send_to_session(model=…)` and `run_agent(model=…)`.
 
 ### Where the ids come from
@@ -192,17 +192,19 @@ gpt-6.1-sol "near-Astra performance at a lower cost", $2/$10). OpenRouter's `-pr
 not on OpenAI's pages and are never picked.
 
 **What `frontier` costs.** On Anthropic it picks Claude Fable 5.1 ($10/$50 per MTok, against Opus 5.5's $4/$20), and
-on OpenAI gpt-6-astra ($10/$50, against gpt-6.1-sol's $2/$10): roughly 2.5 to 5 times `balanced`. Jobs default to it,
-so:
+on OpenAI gpt-6-astra ($10/$50, against gpt-6.1-sol's $2/$10): roughly 2.5 to 5 times `balanced`. That is why jobs
+default to `balanced` (the owner's decision); `frontier` stays a line away for an environment, a repo policy or one
+job. Either way:
 
 - every id a policy resolves to is in hangar's price table, including OpenRouter's dotted ids and agy's
   thinking-level ids, so job budgets and the daily caps ([repo-policy.md](repo-policy.md#budgets)) count its cost;
-- **set a budget**: no job budget or daily cap is set by default. `HANGAR_JOB_BUDGET_MAX_COST_USD`, a repo policy's
-  `job_budget` and `max_usd_per_day`, and `HANGAR_PERSON_MAX_USD_PER_DAY` bound it;
+- **set a budget**: no job budget or daily cap is set by default, and `hangar doctor` (`model spend`) and `hangar
+  status` warn until one is. `HANGAR_JOB_BUDGET_MAX_COST_USD`, a repo policy's `job_budget` and `max_usd_per_day`,
+  and `HANGAR_PERSON_MAX_USD_PER_DAY` bound it;
 - the review packet on each agent PR names the model the job's session ran, the policy it came from and its list
   price (`model `claude-fable-5-1` (`frontier`; list price $10/$50 per MTok in/out)`), and says when the job had no
   budget; `hangar env list` shows the same for each environment's harnesses;
-- use `balanced` where the price matters more than the last bit of capability.
+- ask for `frontier` where the last bit of capability matters more than the price.
 
 ### Pinned, cached, and what happens when a list can't be had
 
@@ -215,8 +217,9 @@ so:
   refreshed.
 - **Fallback, said out loud.** With no list (no key, the provider unreachable, nothing qualifying), hangar uses the
   last id it resolved for that harness and policy. Failing that, it uses a built-in one, dated 2026-10-14:
-  `claude-fable-5-1`, Codex `gpt-6-astra` (`balanced`: `gpt-6.1-sol`), `openrouter/anthropic/claude-fable-5.1` (and
-  one per vendor for `frontier@openai` and the like), `gemini-3.8-flash-high`. Every built-in policy has one, so a
+  `balanced`: `claude-opus-5-5`, Codex `gpt-6.1-sol`; `frontier`: `claude-fable-5-1`, Codex `gpt-6-astra`; pi
+  `openrouter/anthropic/claude-opus-5.5` and `…/claude-fable-5.1` (and one per vendor for `frontier@openai` and the
+  like); `gemini-3.8-flash-high`. Every built-in policy has one, so a
   session never starts on the harness's own default and switches model when the list arrives. The session's activity
   says which, and why.
   `list_environments` shows what each harness's `model` resolves to now (`models`, with `source`: `live`,

@@ -148,15 +148,15 @@ async def test_a_job_that_commits_a_token_fixes_it_before_anything_is_pushed(job
     script.write_text(LEAKER.replace("{TOKEN}", GH))
     monkeypatch.setitem(HARNESSES, "scripted", Harness(name="scripted", title="Scripted", run=f"bash {script}"))
     pushes = []
-    real = jobs._sh
+    real = jobs.fleet.exec
 
-    async def spy(job, command, **kw):
-        if command.startswith("git push"):
+    async def spy(ref, command, *a, **kw):
+        if " push -q origin " in command:  # --- least-privilege: hangar's push (delivery.push)
             pushes.append(subprocess.run(["git", "--git-dir", str(world["remote"]), "branch", "--list"],
                                          capture_output=True, text=True).stdout)
-        return await real(job, command, **kw)
+        return await real(ref, command, *a, **kw)
 
-    monkeypatch.setattr(jobs, "_sh", spy)
+    monkeypatch.setattr(jobs.fleet, "exec", spy)
     job = jobs.submit(SubmitJob(instructions="add config", repo=world["url"], environment="jobenv"),
                       Caller("svc", "svc"))
     job = await _until(jobs, job.id, DONE, timeout=40)

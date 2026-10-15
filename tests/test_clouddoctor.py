@@ -287,13 +287,13 @@ async def test_a_doctor_fix_never_changes_credentials_egress_or_isolation(store,
     assert await check_fix(svc, job, "base") is None  # type: ignore[arg-type]
 
 
-def test_the_doctor_picks_the_strongest_model_unless_told(jobs, settings):  # noqa: F811
+def test_the_doctor_runs_balanced_unless_told(jobs, settings):  # noqa: F811
     doc = clouddoctor.of(jobs)
-    assert doc._harness("agent") == ("claude-code", "frontier")  # --- integ3: one model authority (#105)
+    assert doc._harness("agent") == ("claude-code", "balanced")  # --- least-privilege: the owner's default (#105)
     settings.doctor_harness = "codex"
-    assert doc._harness("agent") == ("codex", "frontier")  # every harness, not only Claude Code
-    settings.doctor_model = "best"  # the documented fallback for a team key without Fable access
-    assert doc._harness("agent")[1] == "best"
+    assert doc._harness("agent") == ("codex", "balanced")  # every harness, not only Claude Code
+    settings.doctor_model = "frontier"  # asked for
+    assert doc._harness("agent")[1] == "frontier"
     settings.doctor_model = "claude-opus-5-5"
     assert doc._harness("agent")[1] == "claude-opus-5-5"
 
@@ -498,6 +498,6 @@ async def test_a_dry_run_says_what_a_run_would_do_and_changes_nothing(jobs, worl
     assert p["dry_run"] and acts == {"model_api": "count", "install": "analyze", "egress": "propose",
                                      "missing_tool": "watch"}, p
     [rca] = [i for i in p["items"] if i["action"] == "analyze"]
-    assert rca["harness"] == "scripted" and rca["model"] == "frontier" and "no team credential" in rca["blocked"]
+    assert rca["harness"] == "scripted" and rca["model"] == "balanced" and "no team credential" in rca["blocked"]
     assert not store.list(DoctorFinding) and not store.list(EnvRequest) and not doc.runs()
     assert store.kv_get_json(clouddoctor.CURSOR_KEY, None) is None

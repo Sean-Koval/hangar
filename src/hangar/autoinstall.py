@@ -31,7 +31,7 @@ nothing.
 
 The env-setup job itself runs no agent: a background task (not a job slot, which its own child jobs need) drives the
 stages and keeps its state in the job's `result.data`, so it resumes where it was after a restart. Both agents run on
-`frontier` (modelpolicy.py, resolved and pinned on each agent's session) unless the job names a model or
+`balanced` (modelpolicy.py, resolved and pinned on each agent's session) unless the job names a model or
 HANGAR_ENV_SETUP_MODELS pins one. The job budget
 (#85; HANGAR_ENV_SETUP_MAX_COST_USD and _MAX_TURNS when the job and the repo's policy set none) is split between the
 goal job (a quarter: the proposal and the judging) and the setup job (the rest: every attempt), so together they
@@ -438,7 +438,7 @@ async def _begin(jobs: JobService, job: Job, st: State) -> None:
         # child jobs; pins.pin resolves it on each one's session, so each agent runs a concrete id that never
         # changes mid-conversation, and the session's events name it.
         harness = job.harness or _harness_of(jobs, job)
-        value = (jobs.settings.env_setup_models or {}).get(harness or "") or "frontier"
+        value = (jobs.settings.env_setup_models or {}).get(harness or "") or "balanced"  # --- least-privilege
         label = await _model_label(jobs, harness, value)
         st.models = {"goal": label, "setup": label, "_model": value}
         jobs._event(job, f"both agents run on {label}")
@@ -930,10 +930,10 @@ async def _run_checks(jobs: JobService, job: Job, st: State, s: Job, att: Attemp
 
 
 def validation_credentials(fleet: Fleet, spec: Any) -> list[str]:
-    """--- review #102: what a validation sandbox may hold: the environment's git credentials, which its clone
-    needs (in gateway mode not even those: a grant). The install it runs is unmerged and agent-written, so nothing
-    else the environment carries (a registry token, a tool's API key) goes near it; fleet drops `secrets:` and
-    cloud tokens for it too."""
+    """--- review #102: what a validation sandbox is created with: the environment's git credentials, so the
+    gateway knows which one to fetch with upstream. --- least-privilege: none of them is injected (fleet,
+    delivery.builds_repo_code): the install it runs is unmerged and agent-written, so it clones with the gateway's
+    fetch-only grant and gets no credential, no `secrets:` and no cloud tokens."""
     from hangar.gateway import GIT_KINDS
 
     return [c for c in spec.credentials if (cred := fleet.store.get(Credential, c)) is not None
@@ -1182,10 +1182,11 @@ async def _deliver(jobs: JobService, job: Job, st: State) -> None:
 
 
 async def _head_moved(jobs: JobService, s: Job, att: Attempt) -> str | None:
-    """--- integ3 (review #102): the PR must hold exactly the commit hangar validated. The validation sandbox runs
-    the agent-written install with the setup branch's push scope, and the setup sandbox can still push, so a branch
-    whose head moved after validation is refused, not opened. None: open it (or no PR can be opened at all, which
-    _ensure_pr reports). An unreadable head refuses too: it fails closed."""
+    """--- integ3 (review #102): the PR must hold exactly the commit hangar validated, so a branch whose head moved
+    after validation is refused, not opened. None: open it (or no PR can be opened at all, which _ensure_pr
+    reports). An unreadable head refuses too: it fails closed. --- least-privilege: neither the setup sandbox nor
+    the validation sandbox can push any more (fetch-only grants); this stays for a direct-mode setup without the
+    gateway, and for anyone else with write access to the branch."""
     import httpx
 
     from hangar import landing
@@ -1204,8 +1205,7 @@ async def _head_moved(jobs: JobService, s: Job, att: Attempt) -> str | None:
         await gh.close()
     if head != att.head_sha:
         return (f"{s.branch} is at {str(head)[:12]}, not {(att.head_sha or '?')[:12]}, the commit hangar validated: "
-                "something pushed to it after the validation (the agent-written install runs with the branch's push "
-                "scope). The PR isn't opened; run the env setup again.")
+                "something pushed to it after the validation. The PR isn't opened; run the env setup again.")
     return None
 
 

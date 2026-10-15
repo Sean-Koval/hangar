@@ -3,8 +3,10 @@
 A `model:` value (an environment's, a repo policy's, a job's, a session's) is either a pinned id, passed through as
 it is, or a policy:
 
-* `frontier`: the strongest current model the provider lists for this account (the default for jobs);
-* `balanced`: the provider's everyday line (Anthropic's opus, OpenAI's sol, Google's flash);
+* `frontier`: the strongest current model the provider lists for this account (asked for per environment, repo
+  policy or job);
+* `balanced`: the provider's everyday line (Anthropic's opus, OpenAI's sol, Google's flash). The default for jobs,
+  `envs/bare.yaml`, env setup and the Cloud Doctor;
 * `frontier@openai` (or `balanced@google`, ...): the same, from one vendor, for a harness that reaches several (pi
   on OpenRouter; it picks Anthropic's otherwise).
 
@@ -425,12 +427,16 @@ def describe(model: str | None, policy: str | None, prices: dict[str, dict[str, 
     return f"`{model}` ({f'`{policy}`; ' if policy else ''}{price})"
 
 
-# --- integ3 (review #105): `frontier` jobs are uncapped unless the owner sets a budget. Hangar sets no default cap,
-# because what the team may spend is the owner's call; it says so in `hangar doctor` and `hangar status` instead.
+# --- integ3 (review #105): jobs are uncapped unless the owner sets a budget. Hangar sets no default cap, because what
+# the team may spend is the owner's call; it says so in `hangar doctor` and `hangar status` instead.
 def spend_guard(fleet: Fleet) -> dict[str, Any]:
-    """Whether jobs, which default to a policy (`frontier`), have a bound on what they spend: a default job budget
-    (HANGAR_JOB_BUDGET_MAX_COST_USD) or a daily cap per person (HANGAR_PERSON_MAX_USD_PER_DAY). Repo policies with
-    their own `job_budget` or `max_usd_per_day` are listed, but each covers only its repo."""
+    """Whether jobs have a bound on what they spend: a default job budget (HANGAR_JOB_BUDGET_MAX_COST_USD) or a daily
+    cap per person (HANGAR_PERSON_MAX_USD_PER_DAY). Repo policies with their own `job_budget` or `max_usd_per_day` are
+    listed, but each covers only its repo.
+
+    --- least-privilege: jobs default to `balanced` now, but an environment, repo policy or job can still ask for
+    `frontier` (several times the price), and any model spends without bound with neither cap set. So the warning is
+    about the missing cap, whatever the default."""
     from hangar import pins
     from hangar.repopolicy import RepoPolicies
 
@@ -439,29 +445,28 @@ def spend_guard(fleet: Fleet) -> dict[str, Any]:
                     if p.max_usd_per_day or (p.job_budget and p.job_budget.max_cost_usd))
     job, day = s.job_budget_max_cost_usd or None, s.person_max_usd_per_day or None
     default = pins.JOB_DEFAULT
-    uncapped = bool(is_policy(default) and (parse(default) or ("",))[0] == "frontier" and not job and not day)
+    uncapped = not job and not day
     return {"job_default": default, "claude_code": of(fleet).view("claude-code", default)["about"],
             "job_budget_usd": job, "person_max_usd_per_day": day, "repos_capped": capped, "uncapped": uncapped}
 
 
 def doctor_checks(h: Any) -> list[dict[str, Any]]:
-    """--- integ3 (review #105): a warning while `frontier` jobs have no job budget and no daily cap."""
+    """--- integ3 (review #105): a warning while jobs have no job budget and no daily cap."""
     from hangar.doctor import _check
 
     g = spend_guard(h.fleet)
     if g["uncapped"]:
         repos = f"; {len(g['repos_capped'])} repo policies set their own" if g["repos_capped"] else ""
-        return [_check("model spend", None, f"jobs default to `{g['job_default']}` (Claude Code: {g['claude_code']}) "
-                       "and neither HANGAR_JOB_BUDGET_MAX_COST_USD nor HANGAR_PERSON_MAX_USD_PER_DAY is set, so a "
-                       f"job's spend is bounded only by its own budget{repos}",
+        return [_check("model spend", None, f"jobs have no budget: they default to `{g['job_default']}` (Claude Code: "
+                       f"{g['claude_code']}), `frontier` where an environment, repo policy or job asks for it, and "
+                       "neither HANGAR_JOB_BUDGET_MAX_COST_USD nor HANGAR_PERSON_MAX_USD_PER_DAY is set, so a job's "
+                       f"spend is bounded only by the budget it brings{repos}",
                        "pick the amounts (hangar sets none): hangar config set HANGAR_JOB_BUDGET_MAX_COST_USD <usd>, "
-                       "and/or HANGAR_PERSON_MAX_USD_PER_DAY <usd>; or `model: balanced` where price matters more "
-                       "(docs/upgrading.md, docs/harnesses.md)")]
+                       "and/or HANGAR_PERSON_MAX_USD_PER_DAY <usd> (docs/upgrading.md, docs/harnesses.md)")]
     bounds = [b for b in (f"${g['job_budget_usd']:g} a job" if g["job_budget_usd"] else "",
                           f"${g['person_max_usd_per_day']:g} a person a day" if g["person_max_usd_per_day"] else "")
               if b]
-    return [_check("model spend", True, f"jobs default to `{g['job_default']}`, "
-                   + (f"bounded at {' and '.join(bounds)}" if bounds else "not a policy that needs a cap"))]
+    return [_check("model spend", True, f"jobs default to `{g['job_default']}`, bounded at {' and '.join(bounds)}")]
 
 
 def of(fleet: Fleet) -> Resolver:

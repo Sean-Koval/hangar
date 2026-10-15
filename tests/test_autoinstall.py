@@ -233,7 +233,7 @@ async def test_goal_setup_validate_retry_and_pr(jobs, world, fleet):
     kids = children(jobs, job.id)
     goal_job, setup_job = kids["goal"], kids["setup"]
     assert goal_job.deliver == "none" and len(goal_job.turns) == 2  # the proposal, then the judgement
-    assert st.models["_model"] == "frontier" == goal_job.model == setup_job.model  # --- integ3: one model module
+    assert st.models["_model"] == "balanced" == goal_job.model == setup_job.model  # --- integ3, least-privilege
     assert len(setup_job.turns) == 2 and setup_job.verify is None
     retry = setup_job.turns[1].message
     assert "Hangar validated your setup" in retry and "payments API" in retry
@@ -570,11 +570,12 @@ async def test_a_push_after_validation_means_no_pr(jobs, world, monkeypatch):
     assert not jobs.hooks.prs
 
 
-async def test_frontier_or_a_pin_for_both_agents_labelled_with_id_and_price(jobs):
-    """--- integ3 (review #102): one model module. Unless the request names a model, both agents get `frontier`,
-    or HANGAR_ENV_SETUP_MODELS' pin; the label is modelpolicy's: the id it resolves to, the policy, the price."""
-    label = await autoinstall._model_label(jobs, "claude-code", "frontier")
-    assert label.startswith("`claude-fable-5-1` (`frontier`; list price $10/$50") and "built-in" in label
+async def test_balanced_or_a_pin_for_both_agents_labelled_with_id_and_price(jobs):
+    """--- integ3 (review #102): one model module. Unless the request names a model, both agents get `balanced`
+    (least-privilege: the owner's default), or HANGAR_ENV_SETUP_MODELS' pin; the label is modelpolicy's: the id it
+    resolves to, the policy, the price."""
+    label = await autoinstall._model_label(jobs, "claude-code", "balanced")
+    assert label.startswith("`claude-opus-5-5` (`balanced`; list price $4/$20") and "built-in" in label
     jobs.settings.env_setup_models = {"claude-code": "claude-opus-5-5"}
     label = await autoinstall._model_label(jobs, "claude-code", "claude-opus-5-5")
     assert label.startswith("`claude-opus-5-5` (list price $4/$20") and "HANGAR_ENV_SETUP_MODELS" in label

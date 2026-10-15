@@ -276,10 +276,17 @@ async def test_a_session_keeps_the_model_it_was_created_with(svc, world, fleet, 
     assert s.model == "claude-fable-6" and any("model switched" in w for w in s.turns[-1].warnings)
 
 
-async def test_a_job_session_defaults_to_frontier_and_says_where_the_id_came_from(svc, world, fleet):  # noqa: F811
+async def test_a_job_session_defaults_to_balanced_and_says_where_the_id_came_from(svc, world, fleet):  # noqa: F811
+    """--- least-privilege: the owner's decision, `balanced` is the job default (Opus on Claude Code)."""
     s = svc.for_job(job_id="job-12345678", environment="agent", harness="codex", model=None, repo=None,
                     base_branch=None, branch="b", provider=None, labels={}, extra_dirs=[], idle_minutes=5)
-    assert (s.model, s.model_policy) == ("gpt-6-astra", "frontier"), "no list: the built-in frontier for codex"
+    assert (s.model, s.model_policy) == ("gpt-6.1-sol", "balanced"), "no list: the built-in balanced for codex"
+    c = svc.for_job(job_id="job-87654321", environment="agent", harness="claude-code", model=None, repo=None,
+                    base_branch=None, branch="c", provider=None, labels={}, extra_dirs=[], idle_minutes=5)
+    assert (c.model, c.model_policy) == ("claude-opus-5-5", "balanced")
+    f = svc.for_job(job_id="job-11223344", environment="agent", harness="claude-code", model="frontier", repo=None,
+                    base_branch=None, branch="d", provider=None, labels={}, extra_dirs=[], idle_minutes=5)
+    assert (f.model, f.model_policy) == ("claude-fable-5-1", "frontier"), "a job can still ask for frontier"
     events = svc.activity.read(s.id, 0, 10, False)
     assert any(e.data.get("warning") == "model_resolution" and "built-in" in e.text for e in events)
 
@@ -398,18 +405,21 @@ def test_list_environments_says_what_each_model_costs(fleet):
     assert fleet.store.kv_get("modelpick:claude-code:frontier") is None, "a listing only looks"
 
 
-def test_frontier_jobs_with_no_budget_and_no_daily_cap_get_a_doctor_warning(fleet):
-    """--- integ3 (review #105): jobs default to `frontier` and nothing caps them unless the owner sets a budget.
-    Hangar sets no default cap (the owner's call); the doctor and `hangar status` say so instead."""
+def test_jobs_with_no_budget_and_no_daily_cap_get_a_doctor_warning(fleet):
+    """--- integ3 (review #105): nothing caps jobs unless the owner sets a budget. Hangar sets no default cap (the
+    owner's call); the doctor and `hangar status` say so instead. --- least-privilege: jobs default to `balanced`
+    now, and the warning still fires: it is about the missing budget, and `frontier` is still a job away."""
     from types import SimpleNamespace
 
     from hangar.repopolicy import RepoPolicies
 
     h = SimpleNamespace(fleet=fleet)
     g = modelpolicy.spend_guard(fleet)
-    assert g["uncapped"] and g["job_default"] == "frontier" and "claude-fable-5-1" in g["claude_code"]
+    assert g["uncapped"] and g["job_default"] == "balanced" and "claude-opus-5-5" in g["claude_code"]
     [c] = modelpolicy.doctor_checks(h)
     assert c["name"] == "model spend" and c["status"] == "warn"
+    assert c["detail"].startswith("jobs have no budget: they default to `balanced` (Claude Code: `claude-opus-5-5`")
+    assert "`frontier` where an environment, repo policy or job asks for it" in c["detail"]
     assert "HANGAR_JOB_BUDGET_MAX_COST_USD" in c["detail"] and "hangar sets none" in c["fix"]
     RepoPolicies(fleet.store).put(RepoPolicy(repo="acme/app", max_usd_per_day=20))
     assert modelpolicy.spend_guard(fleet)["repos_capped"] == ["acme/app"]

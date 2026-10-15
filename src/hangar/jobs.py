@@ -42,6 +42,7 @@ from hangar import (  # strategies: workstream D; --- observe; steer: live turns
 from hangar import autoinstall as autoinstall  # --- autoinstall: agent-led environment setup jobs
 from hangar import clouddoctor as clouddoctor  # --- clouddoctor: its own jobs report back; its fixes are fenced
 from hangar import computer as computer  # --- computer
+from hangar import delivery as delivery  # --- least-privilege: hangar pushes a job's work
 from hangar import envbuilds as envbuilds  # --- envbuilds
 from hangar import envdoctor as envdoctor  # --- computer
 from hangar import fairness as fairness  # --- scale
@@ -1098,7 +1099,9 @@ class JobService:
             await secretscan.before_push(self, job)
         except secretscan.Blocked as e:
             raise _SecretFound(e) from None
-        push = await self._sh(job, f"git push -q origin HEAD:refs/heads/{q(job.branch)}", timeout=300)
+        # --- least-privilege: the job's sandbox only fetches; hangar pushes the commit it checked (delivery.py)
+        push = await delivery.push(self.fleet, job.sandbox_id or "", job.branch, job.result.head_sha or "HEAD",
+                                   f"job:{job.id}")
         if push.exit_code != 0:
             raise _DeliveryError(f"push failed: {(push.stderr or push.stdout)[-500:]}")
         job.result.pushed = True

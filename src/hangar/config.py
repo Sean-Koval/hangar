@@ -273,7 +273,9 @@ class Settings(BaseSettings):
     # control plane. 0 = serve /git on the main port instead.
     gateway_port: int = 8788
     gateway_host: str | None = None  # bind address; default HANGAR_HOST
-    # Jobs and sessions use the gateway when it is configured, unless their environment says credential_mode: direct.
+    # Sessions use the gateway when it is configured, unless their environment says credential_mode: direct.
+    # --- least-privilege: jobs, repo builds and env-setup validation always do, fetch-only (delivery.py), whatever
+    # this or credential_mode say, wherever the gateway serves the repo's host.
     gateway_for_jobs: bool = True
     # Upstream git hosts the gateway proxies to: {host: base URL}. Only these hosts get a grant.
     gateway_upstreams: dict[str, str] = Field(default_factory=lambda: {"github.com": "https://github.com"})
@@ -476,7 +478,7 @@ class Settings(BaseSettings):
     env_setup_max_cost_usd: float = Field(30.0, gt=0)  # the job budget when the job and the repo's policy set none
     env_setup_max_turns: int = Field(16, ge=2, le=100)
     env_setup_validate_minutes: int = Field(45, ge=5, le=240)  # one validation: sandbox, install, every command
-    env_setup_models: dict[str, str] = Field(default_factory=dict)  # harness -> model or policy, instead of frontier
+    env_setup_models: dict[str, str] = Field(default_factory=dict)  # harness -> model or policy, instead of balanced
     env_setup_label: str = "hangar-env-setup"  # an issue (GitHub, Jira) with this label starts an env setup
     # Preview ports (preview.py): `<port>-<sandbox>.<this domain>` reaches a sandbox's declared port, for its owner,
     # through hangar. Needs wildcard DNS pointing at hangar; `localhost` on a laptop. Unset: previews are off.
@@ -497,8 +499,8 @@ class Settings(BaseSettings):
     doctor_schedule: str = "30 0 * * *"
     doctor_time_zone: str | None = None
     # The Cloud Doctor's jobs (clouddoctor.py): harness and model (unset: Claude Code where the environment has it,
-    # else the environment's harness; the `frontier` policy for every harness, or `best` for a Claude Code team key
-    # without Fable access), its budget per run (all its jobs together) and per job, how many root-cause jobs a run
+    # else the environment's harness; the `balanced` policy for every harness, `frontier` to ask for more), its
+    # budget per run (all its jobs together) and per job, how many root-cause jobs a run
     # starts, how many separate runs make a failure worth fixing, how far back it counts, and how often a transient
     # failure may recur before it is reported anyway.
     doctor_harness: str | None = None

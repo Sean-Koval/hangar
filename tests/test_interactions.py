@@ -509,7 +509,8 @@ async def test_best_of_n_through_the_gateway_winner_losers_and_follow_ups_push(j
     job = await until(jobs, job.id, SETTLED)
     assert job.state == JobState.SUCCEEDED, [e.message for e in job.events]
     refs = upstream.refs()
-    # the winner pushed the job branch and the loser its own attempt branch, each with only its own grant
+    # hangar pushed the winner to the job branch and the loser to its own attempt branch, each with a delivery
+    # grant pinned to that attempt's head (--- least-privilege: the attempts' own grants only fetch)
     assert f"refs/heads/{job.branch}\n" in refs and f"refs/heads/{job.branch}-attempt-2" in refs, refs
     assert job.attempts[0].rank == 1 and job.attempts[1].pushed_branch == f"{job.branch}-attempt-2"
     for a in job.attempts:
@@ -524,12 +525,12 @@ async def test_best_of_n_through_the_gateway_winner_losers_and_follow_ups_push(j
     head = subprocess.run(["git", "--git-dir", str(upstream.root / "acme/widgets.git"), "log", "-1", "--format=%s",
                            job.branch], capture_output=True, text=True).stdout.strip()
     assert head == "choose B"
-    # ...and so does one in a fresh sandbox restored from the winner's checkpoint (its grant names the job branch)
+    # ...and so does one in a fresh sandbox restored from the winner's checkpoint, which only fetches: hangar pushes
     await jobs.sessions.release(jobs.sessions.get(job.session_id), "test: free the sandbox")
     jobs.follow_up(job.id, "TASK-ANSWER again", requester="svc")
     job = await until(jobs, job.id, SETTLED)
     assert job.state == JobState.SUCCEEDED, [e.message for e in job.events]
-    assert jobs.fleet.get(job.sandbox_id).info["git"]["push_refs"][0] == f"refs/heads/{job.branch}"
+    assert jobs.fleet.get(job.sandbox_id).info["git"]["push_refs"] == []  # --- least-privilege
     log = subprocess.run(["git", "--git-dir", str(upstream.root / "acme/widgets.git"), "log", "--format=%s",
                           job.branch], capture_output=True, text=True).stdout.splitlines()
     assert log[:2] == ["choose B", "choose B"], log
@@ -702,7 +703,7 @@ async def test_best_of_n_question_answered_after_a_resume_pushes_through_the_gat
     jobs.follow_up(job.id, "TASK-ANSWER: B", requester="svc")
     job = await until(jobs, job.id, SETTLED)
     assert job.state == JobState.SUCCEEDED and job.result.pushed, [e.message for e in job.events]
-    assert jobs.fleet.get(job.sandbox_id).info["git"]["push_refs"][0] == f"refs/heads/{job.branch}"
+    assert jobs.fleet.get(job.sandbox_id).info["git"]["push_refs"] == []  # --- least-privilege: hangar pushed
     log = subprocess.run(["git", "--git-dir", str(upstream.root / "acme/widgets.git"), "log", "--format=%s",
                           job.branch], capture_output=True, text=True).stdout.splitlines()
     asked = next(a.index for a in job.attempts if a.session_id == asker.id)
