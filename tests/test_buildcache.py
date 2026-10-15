@@ -108,6 +108,29 @@ async def test_lookups_take_the_exact_key_then_each_restore_prefix_newest_first_
     assert look("r", [T], "deps/uv", "any/ffffffff", ["an_/"]) is None  # LIKE's wildcards are literal
 
 
+async def test_drain_returns_when_a_finished_delete_is_still_listed(cs):
+    """A delete task that finished in the loop iteration that wakes `drain` is still in `_tasks` (its discard runs
+    next). gather() over finished futures completes without yielding (Python 3.12's eager path), so a drain that
+    re-gathered `_tasks` spun forever and the discard never ran: test_caps_evict... hung on a 2-CPU machine."""
+    import signal
+
+    t = asyncio.get_running_loop().create_task(asyncio.sleep(0))
+    while not t.done():
+        await asyncio.sleep(0)
+    cs._tasks.add(t)  # finished, as if its discard callback were still to come
+
+    def spun(*_):
+        raise TimeoutError("drain spun without yielding")
+
+    old = signal.signal(signal.SIGALRM, spun)
+    signal.setitimer(signal.ITIMER_REAL, 2)
+    try:
+        await cs.drain()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, old)
+
+
 async def test_caps_evict_the_least_recently_used_per_repo_and_in_total(cs, settings):
     settings.build_cache_max_gb = 1e6
     for i in range(8):

@@ -503,11 +503,13 @@ class CacheStore:
                 self._locks.pop(k, None)
 
     async def drain(self) -> None:
-        """Wait for the deletes in flight (tests, shutdown)."""
-        while self._tasks or (self._evicting is not None and not self._evicting.done()):
-            await asyncio.gather(*self._tasks, *([self._evicting] if self._evicting else []), return_exceptions=True)
-            if self._evicting is not None and self._evicting.done():
-                self._evicting = None
+        """Wait for the deletes in flight (tests, shutdown). Only unfinished tasks are awaited: a finished one can still
+        be listed until its discard callback runs, and gather() over finished futures doesn't yield, so waiting on
+        those would spin without ever letting that callback run."""
+        while pending := [t for t in (*self._tasks, self._evicting) if t is not None and not t.done()]:
+            await asyncio.gather(*pending, return_exceptions=True)
+        if self._evicting is not None and self._evicting.done():
+            self._evicting = None
 
     def maybe_evict(self) -> None:
         if self._evicting is None or self._evicting.done():
