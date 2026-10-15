@@ -63,7 +63,7 @@ hangar repo set acme/app --land auto_after_approval --approver alice --approver 
 | `land` | `auto_after_approval` lands on approval; `manual` (or unset) never arms anything, and the inbox tells the approver to merge |
 | `approvers` | GitHub logins whose approval lands the PR |
 | `merge_method` | `squash` (default), `merge` or `rebase` |
-| `risk_paths` | globs that make a PR **high risk** in its packet, on top of `.github/**` |
+| `risk_paths` | globs that make a PR **high risk** in its packet, on top of `.github/**` and `.hangar/**` |
 | `require_stale_dismissal` | unset or `true`: arm only when the base branch dismisses stale approvals ([section 3](#3-the-branch-protection-to-enable)); `false` (`--no-require-stale-dismissal`) opts the repo out |
 
 **Who may approve.** A login in `approvers`, or a **code owner of every path the PR touches** (a rename's old path included). A file no line owns needs an approver from the policy, so owning one docs file doesn't land changes elsewhere; a PR with more than 300 files needs a policy approver too. CODEOWNERS is read from the base branch (`.github/CODEOWNERS`, then `CODEOWNERS`, then `docs/CODEOWNERS`, as GitHub does). The last matching line wins, and a line with no owners leaves a file unowned. A team entry (`@org/team`) counts when the control token can see the person's active membership, which needs the org's Members: read. Anyone else's approval is recorded in the job's events and lands nothing. GitHub's own rules still apply on top: with "require review from code owners" on, GitHub waits for a code owner even after an approver's approval.
@@ -137,7 +137,7 @@ To use the **App's webhook** instead of per-repo hooks, point it at `https://<ha
 Hangar writes one comment on each agent PR when it delivers, and edits it on every later push, rather than posting again. It is built from the job record, so it works for any repo without a CI job:
 
 - **Verification**: the command and its result, "base was red" when the [check on the base](repo-policy.md#the-check-on-the-base-commit) failed, and whether the agent changed the check's own tests;
-- **Risk**: `high` when a path matches `.github/**` or the policy's `risk_paths`, `low` for docs and tests only, `normal` otherwise;
+- **Risk**: `high` when a path matches `.github/**`, `.hangar/**` (the repo's environment, which runs in every build and sandbox) or the policy's `risk_paths`, `low` for docs and tests only, `normal` otherwise;
 - **Files** touched, with the diffstat;
 - **Cost**: tokens and dollars so far, the job budget, and the agent turns;
 - **Agent**: harness and the version its pack installed, model, environment;

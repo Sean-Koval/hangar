@@ -31,7 +31,8 @@ nothing.
 
 The env-setup job itself runs no agent: a background task (not a job slot, which its own child jobs need) drives the
 stages and keeps its state in the job's `result.data`, so it resumes where it was after a restart. Both agents run on
-the strongest current model of their harness's provider (modelpick.py) unless the job names one. The job budget
+`frontier` (modelpolicy.py, resolved and pinned on each agent's session) unless the job names a model or
+HANGAR_ENV_SETUP_MODELS pins one. The job budget
 (#85; HANGAR_ENV_SETUP_MAX_COST_USD and _MAX_TURNS when the job and the repo's policy set none) is split between the
 goal job (a quarter: the proposal and the judging) and the setup job (the rest: every attempt), so together they
 can't cross it.
@@ -409,8 +410,6 @@ async def _drive(jobs: JobService, job: Job, st: State) -> None:
 
 
 async def _begin(jobs: JobService, job: Job, st: State) -> None:
-    from hangar import modelpick
-
     st.mode = "drift" if job.labels.get(MODE_LABEL) == "drift" else "setup"
     if job.job_budget is None:  # #85: always bounded; the job's or the repo policy's own budget wins
         job.job_budget = JobBudget(max_cost_usd=jobs.settings.env_setup_max_cost_usd,
@@ -435,9 +434,13 @@ async def _begin(jobs: JobService, job: Job, st: State) -> None:
     if job.model and job.labels.get(MODEL_LABEL) == "request":
         st.models = {"goal": f"{job.model} (asked for)", "setup": f"{job.model} (asked for)", "_model": job.model}
     else:
-        p = await modelpick.pick(jobs.fleet, job.harness, jobs.transport)
-        label = f"{p.model or 'the harness default'} ({p.source})"
-        st.models = {"goal": label, "setup": label, "_model": p.model or ""}
+        # --- integ3 (review #102): one model module. The policy (or HANGAR_ENV_SETUP_MODELS' pin) goes to both
+        # child jobs; pins.pin resolves it on each one's session, so each agent runs a concrete id that never
+        # changes mid-conversation, and the session's events name it.
+        harness = job.harness or _harness_of(jobs, job)
+        value = (jobs.settings.env_setup_models or {}).get(harness or "") or "frontier"
+        label = await _model_label(jobs, harness, value)
+        st.models = {"goal": label, "setup": label, "_model": value}
         jobs._event(job, f"both agents run on {label}")
     turn = job.turns[0] if job.turns else None
     if turn is not None and turn.reply_to:
@@ -446,6 +449,35 @@ async def _begin(jobs: JobService, job: Job, st: State) -> None:
                                                 "with the PR, or with what's missing.")
     st.stage = "goal"
     _save(jobs, job, st)
+
+
+def _harness_of(jobs: JobService, job: Job) -> str | None:
+    with contextlib.suppress(KeyError, ValueError):
+        return jobs.fleet.catalog.get(job.environment).pick_harness()
+    return None
+
+
+_SOURCES = {"live": "from the provider's model list", "cached": "from a cached model list",
+            "last": "the last id resolved", "seed": "hangar's built-in id", "pinned": "pinned",
+            "default": "the harness's own default"}
+
+
+async def _model_label(jobs: JobService, harness: str | None, value: str) -> str:
+    """--- integ3 (review #102): what `value` resolves to now (id, policy, list price, where it came from), for the
+    job's events, its report and the packet. A cold start fetches the provider's list first, briefly, so the label
+    isn't the built-in seed's while a list can be had."""
+    from hangar import modelpolicy
+
+    res = modelpolicy.of(jobs.fleet)
+    provider = modelpolicy.PROVIDER.get(harness or "")
+    if modelpolicy.is_policy(value) and provider in modelpolicy.LISTS and res._listable(provider):
+        got = res.cached(provider)
+        if got is None or now() - float(got.get("at") or 0) >= res.ttl:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(res.refresh(provider), 10)
+    v = res.view(harness, value)
+    src = "pinned by HANGAR_ENV_SETUP_MODELS" if v.get("source") == "pinned" else _SOURCES.get(v.get("source", ""), "")
+    return f"{v['about']}" + (f", {src}" if src else "")
 
 
 def _model(st: State, job: Job) -> str | None:
@@ -1132,6 +1164,8 @@ async def _deliver(jobs: JobService, job: Job, st: State) -> None:
     s.result.summary = pr_summary(jobs, job, st, agent)
     jobs._save(s)
     if not s.result.pr_url:
+        if (why := await _head_moved(jobs, s, att)) is not None:  # --- integ3 (review #102)
+            raise _Stop("validation_stale", why)
         await jobs._ensure_pr(s, draft=att.partial)
         if s.result.pr_url:
             await jobs.landing.delivered(s)
@@ -1145,6 +1179,34 @@ async def _deliver(jobs: JobService, job: Job, st: State) -> None:
     reason = "secrets_needed" if att.partial else None
     jobs._event(job, f"succeeded{f' ({reason})' if reason else ''}: {where}", JobState.SUCCEEDED, reason=reason)
     await jobs._report(job)
+
+
+async def _head_moved(jobs: JobService, s: Job, att: Attempt) -> str | None:
+    """--- integ3 (review #102): the PR must hold exactly the commit hangar validated. The validation sandbox runs
+    the agent-written install with the setup branch's push scope, and the setup sandbox can still push, so a branch
+    whose head moved after validation is refused, not opened. None: open it (or no PR can be opened at all, which
+    _ensure_pr reports). An unreadable head refuses too: it fails closed."""
+    import httpx
+
+    from hangar import landing
+    from hangar.github import GitHubError
+
+    repo = landing.parse_repo(s.repo or "")
+    gh = await jobs.landing.client(repo, s) if repo else None
+    if gh is None or repo is None:
+        return None
+    try:
+        head = await gh.branch_sha(repo, s.branch)
+    except (GitHubError, httpx.HTTPError, KeyError, TypeError) as e:
+        return (f"couldn't read {s.branch}'s head on GitHub to check that it is the commit hangar validated "
+                f"({str(e)[:200]}); the PR isn't opened")
+    finally:
+        await gh.close()
+    if head != att.head_sha:
+        return (f"{s.branch} is at {str(head)[:12]}, not {(att.head_sha or '?')[:12]}, the commit hangar validated: "
+                "something pushed to it after the validation (the agent-written install runs with the branch's push "
+                "scope). The PR isn't opened; run the env setup again.")
+    return None
 
 
 def _span(s: Any) -> str:
@@ -1277,7 +1339,8 @@ def packet_lines(svc: JobService, job: Job) -> list[str]:
     ran = [c for c in [att.install, att.services, *att.checks] if c is not None and c.verdict != "skipped"]
     ok = [c for c in ran if c.verdict == "passed"]
     out = [f"- **Environment setup:** {len(ok)} of {len(ran)} check(s) passed in a clean sandbox (attempt "
-           f"{att.n}): " + ", ".join(f"`{c.name}` {c.verdict}" for c in ran[:12])]
+           f"{att.n}, validated `{(att.head_sha or '?')[:12]}`): "  # --- integ3 (review #102): the sha validated
+           + ", ".join(f"`{c.name}` {c.verdict}" for c in ran[:12])]
     mocks = (st.config or {}).get("mocks") or []
     out.append("  - mocked: " + ("; ".join(_mock_text(m) for m in mocks[:8]) if mocks else "nothing"))
     if st.secrets_needed:
@@ -1301,7 +1364,13 @@ def _latest_failed_build(jobs: JobService, job: Job) -> envbuilds.Build | None:
 def drift_reason(jobs: JobService, job: Job) -> tuple[str | None, str]:
     """Why a drift run should set the repo up again, or (None, why it's fine)."""
     key = repo_key(job.repo)
-    for other in list(jobs._jobs.values()):  # an earlier env setup's PR still waits for review
+    # --- integ3 (#108): a finished env setup leaves memory after HANGAR_RESIDENT_MINUTES; its setup job's PR, still
+    # open, is found through the store's index, and leads back to its parent (whose record is what's trusted)
+    parents = {j.id: j for j in jobs._jobs.values()}
+    for child in jobs.where(**{"landing.pr_state": ("open", "approved")}):
+        if (pid := child.labels.get(PARENT_LABEL)) and pid not in parents and (p := jobs._jobs.get(pid)) is not None:
+            parents[pid] = p
+    for other in parents.values():  # an earlier env setup's PR still waits for review
         if other.id == job.id or not is_setup(other) or repo_key(other.repo) != key:
             continue
         s = jobs._jobs.get(load(other).setup_job or "")

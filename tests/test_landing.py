@@ -621,6 +621,8 @@ async def test_the_review_packet(svc, gh, settings):
 def test_paths_risk_and_codeowners():
     assert landing.risk(["docs/a.md", "tests/test_x.py"], None)[0] == "low"
     assert landing.risk(["src/a.py"], ["infra/**"]) == ("normal", [])
+    # --- integ3 (review #102): the repo's environment runs in every build and sandbox
+    assert landing.risk([".hangar/environment.yaml", "AGENTS.md"], None) == ("high", [".hangar/environment.yaml"])
     assert landing.risk(["infra/net/main.tf", "src/a.py"], ["infra/**"]) == ("high", ["infra/net/main.tf"])
     owners = "*  @lead\n/build/logs/ @ops\ndocs/*  @dave\n*.js @js\napps/ @apps\n/scripts/ \n"
     assert landing.owners_of(owners, "src/a.py") == ["@lead"]

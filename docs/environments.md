@@ -355,17 +355,20 @@ build failed (after a lockfile or CI change). It doesn't run while an earlier en
 open. Otherwise it ends at once (`no_changes`), with no agent started. The agents get the failing build's output
 and update the existing file.
 
-**Models and budget.** Both agents run on the strongest current model of their harness's provider, picked from
-the provider's own model list (`hangar.modelpick`): Anthropic's, OpenAI's or Google's, read with the team's API
-key for the harness, or OpenRouter's public list without one. Only general models of the newest generation count,
-ranked by list price (`HANGAR_MODEL_PRICES` and the built-in table; a release not priced yet takes its line's
-price). A job's own `model` wins, and `HANGAR_ENV_SETUP_MODELS` pins one per harness. When no list can be read,
-the harness's own default applies, and the job's events say so. The job budget is the job's, else the repo
+**Models and budget.** Both agents run on the `frontier` model policy, the same one jobs default to
+([harnesses.md](harnesses.md#models-the-latest-strong-model-per-provider)): it is resolved from the provider's
+model list (read with `HANGAR_MODEL_LIST_CREDENTIALS`, or OpenRouter's public list for pi) when each agent's
+session is created, and pinned there. A job's own `model` wins, and `HANGAR_ENV_SETUP_MODELS` pins a model or a
+policy per harness. The job's events, its report and the PR's packet name the id, the policy, its list price and
+where the id came from (a live list, the last id resolved, or hangar's built-in one). The job budget is the job's, else the repo
 policy's, else `HANGAR_ENV_SETUP_MAX_COST_USD` and `HANGAR_ENV_SETUP_MAX_TURNS`. The goal job gets a quarter of it
 (the proposal and the judging; at least one turn), and the setup job gets the rest (every attempt), so together
 they can't exceed it. A budget of fewer than 2 turns is refused. When the goal job's turns run out, later outputs are
-judged by their exit codes, and the job's events say so. Antigravity gets the picked Gemini id in agy's own form
-(`gemini-3.1-pro-high`: no `-preview`, a thinking level).
+judged by their exit codes, and the job's events say so.
+
+**The PR holds what was validated.** The packet names the commit hangar validated. If the setup branch's head has
+moved since (the agent-written install runs with the branch's push scope, and could push), the PR isn't opened and
+the job fails `validation_stale`. `.hangar/**` is high risk in every PR's packet.
 
 **Safety.** The validation sandbox runs code an agent wrote on an unmerged branch, so it gets less than a build:
 only the environment's git credential, which its clone needs (with the git gateway on for jobs,
@@ -395,8 +398,7 @@ Cancelling it cancels both agents and removes the validation sandbox.
 | `HANGAR_ENV_SETUP_RETRIES` | 5 | Setup turns after a failed validation, each with the failure's output |
 | `HANGAR_ENV_SETUP_MAX_COST_USD`, `HANGAR_ENV_SETUP_MAX_TURNS` | 30, 16 | An env setup's job budget when neither the job nor the repo's policy sets one |
 | `HANGAR_ENV_SETUP_VALIDATE_MINUTES` | 45 | One validation: the sandbox, install, the services and every command |
-| `HANGAR_ENV_SETUP_MODELS` | unset | `{"claude-code": "...", "codex": "..."}`: pin the agents' model per harness instead of the pick |
-| `HANGAR_ENV_SETUP_MODEL_CACHE_HOURS` | 6 | How long providers' model lists are cached |
+| `HANGAR_ENV_SETUP_MODELS` | unset | `{"claude-code": "...", "codex": "balanced"}`: a model or a policy per harness instead of `frontier` |
 | `HANGAR_ENV_SETUP_LABEL` | `hangar-env-setup` | An issue (GitHub, Jira, GitHub Projects) with this label starts an env setup |
 
 ## REST
