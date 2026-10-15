@@ -633,3 +633,97 @@ async def test_bench_npm_install_cold_and_warm(sw):  # pragma: no cover - a meas
             times["cold: save"] = time.monotonic() - t
     print("\n" + "\n".join(f"{k:34} {v:6.1f}s" for k, v in times.items()))
     print(json.dumps({**w.cache.status()["since_start"], "bytes": w.cache.status()["bytes"]}))
+
+
+# ====================================================================== review(#115)
+async def test_compile_cache_uploads_during_a_builds_install_are_scanned_for_its_build_secrets(pw):
+    """Build secrets reach `install`, and sccache, Bazel and turbo upload while it runs: a secret baked into a compile
+    output must not reach the shared layer (every sandbox of the environment reads it). The scan used to start only
+    after install, for `hangar-cache save`."""
+    w = pw
+    sb, build = _build_sandbox(w)
+    _, reader = _sandbox(w, "sb-reader", person="bob")
+    secret = b"sk_live_BUILDsecret0123456789"
+    await w.cache.before_install(w.fleet.providers["docker"], sb, None, values={"STRIPE_KEY": secret})
+    async with w.client() as c:
+        r = await c.put(f"/cache/bazel/ac/{'a' * 64}", content=b"bundle.js: const k='" + secret + b"';",
+                        headers=_bearer(build))
+        assert r.status_code == 422
+        r = await c.put("/cache/turbo/v8/artifacts/abc123", content=b"x" * 100 + secret, headers=_bearer(build))
+        assert r.status_code == 422
+        assert (await c.put(f"/cache/bazel/ac/{'b' * 64}", content=b"clean", headers=_bearer(build))).status_code == 200
+        assert (await c.get(f"/cache/bazel/ac/{'a' * 64}", headers=_bearer(reader))).status_code == 404
+        assert (await c.get(f"/cache/bazel/ac/{'b' * 64}", headers=_bearer(reader))).content == b"clean"
+
+
+async def test_with_build_secrets_an_upload_hangar_cant_look_into_is_refused(cs):
+    """sccache entries are zip archives of zstd blobs and turbo artifacts are tar.zst: a scan of their raw bytes finds
+    nothing, so a build with build secrets doesn't store them. Without build secrets they are stored as before."""
+    secret = b"sk_live_BUILDsecret0123456789"
+    for magic in (b"\x28\xb5\x2f\xfd", b"PK\x03\x04", b"\xfd7zXZ\x00", b"BZh91AY&SY"):
+        with pytest.raises(CacheError) as ei:
+            await cs.ingest("r", _stream(magic + os.urandom(2000)), 1 << 30, needles=[secret])
+        assert ei.value.status == 422 and "can't look into" in str(ei.value)
+        d, *_ = await cs.ingest("r", _stream(magic + os.urandom(200)), 1 << 30)
+        assert d
+
+
+async def test_a_build_secret_is_found_base64_or_percent_encoded(cs):
+    secret = b"p@ss:w0rd/with+chars=and-more"
+    needles = buildcache._needles({"TOKEN": secret})
+    for encoded in (base64.b64encode(secret), base64.b64encode(b"user:" + secret), base64.b64encode(b"ab" + secret),
+                    b"https://u:p%40ss%3Aw0rd%2Fwith%2Bchars%3Dand-more@host/"):
+        with pytest.raises(CacheError):
+            await cs.ingest("r", _stream(b"prefix " + encoded + b" suffix"), 1 << 30, needles=needles)
+
+
+async def test_what_an_upload_buffers_and_a_download_holds_counts_against_the_memory_budget(cs):
+    """Each upload buffers up to a chunk before it is sealed, and each download holds a chunk until the client takes
+    it: with 60 sandboxes and 64 requests each in flight, that is far more than the control plane's memory unless the
+    budget (HANGAR_BUILD_CACHE_TRANSFER_MB) counts it."""
+    gate = asyncio.Event()
+
+    async def slow():
+        yield b"x" * 600  # under a chunk (1024 here): buffered, not yet sealed
+        await gate.wait()
+        yield b"y" * 100
+
+    task = asyncio.create_task(cs.ingest("r", slow(), 1 << 30))
+    for _ in range(50):
+        await asyncio.sleep(0)
+    assert cs.memory.used >= 600
+    gate.set()
+    await task
+    assert cs.memory.used == 0
+    data = os.urandom(3000)
+    e = await _put(cs, "r", T, "sccache", "big", data)
+    first = await cs.first(e)
+    it = cs.stream(e, first)
+    assert await it.__anext__() == first
+    assert cs.memory.used >= len(first)  # the client hasn't taken it yet
+    rest = await _bytes(it)
+    assert first + rest == data and cs.memory.used == 0
+
+
+async def test_writes_dont_scan_every_chunk_row_to_check_the_caps(cs, settings):
+    """A build writes thousands of compile-cache entries, and each write checked the caps with a GROUP BY over every
+    chunk row, on the event loop. The totals are kept as entries come and go."""
+    for i in range(5):
+        await _put(cs, "a", T, "sccache", f"k{i}", os.urandom(1500))
+    await _put(cs, "b", T, "sccache", "k", os.urandom(500))
+    await cs.drain()
+    queries: list[str] = []
+    cs.index._db.set_trace_callback(queries.append)
+    try:
+        await _put(cs, "a", T, "sccache", "k-new", os.urandom(1500))
+        await cs.drain()
+    finally:
+        cs.index._db.set_trace_callback(None)
+    assert not [q for q in queries if "FROM chunks" in q and ("GROUP BY" in q or "sum(" in q)], queries
+    raw = dict(cs.index._db.execute("SELECT repo, sum(size) FROM chunks GROUP BY repo").fetchall())
+    assert cs.index.stored("a") == raw["a"] and cs.index.stored() == sum(raw.values())
+    for e in cs.index.where("repo='a'"):
+        cs._free(e.repo, cs.index.delete(e))
+    await cs.drain()
+    assert cs.index.stored("a") == 0 and cs.index.stored() == raw["b"]
+    assert cs.index.repos_over(100) == ["b"]

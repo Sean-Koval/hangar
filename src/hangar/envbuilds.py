@@ -642,7 +642,7 @@ class EnvBuilds:
             raise EnvBuildError(f"nothing to build: neither {repoenv.PATH} nor environment {spec.name} has an install")
         values = await self._secrets(b, spec, read.config)
         caches = buildcache.of(f)  # --- caches: install starts once the restore the create began is done
-        await caches.before_install(prov, sb, lambda m: self._stage(b, m))
+        await caches.before_install(prov, sb, lambda m: self._stage(b, m), values)  # review(#115): scanned from now
         self._stage(b, "installing")
         await self._install(b, prov, sb, path, eff.install, values)
         if values:

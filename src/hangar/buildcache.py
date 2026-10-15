@@ -32,6 +32,7 @@ import logging
 import re
 import shlex
 import time
+import urllib.parse
 from dataclasses import dataclass
 from email.utils import formatdate
 from pathlib import Path
@@ -364,8 +365,21 @@ def _needles(values: dict[str, bytes]) -> list[bytes]:
     out: list[bytes] = []
     for v in values.values():
         for n in (v.strip(), max(v.strip().splitlines() or [b""], key=len).strip()):
-            if len(n) >= 8 and n not in out:
-                out.append(n)
+            # review(#115): and as the value is written where it is used: percent-encoded in a URL's userinfo, and
+            # base64 (a Basic auth header, an .npmrc `_auth`) at each of the three alignments it can have in a longer
+            # string, keeping only the characters that don't depend on the bytes around it
+            for x in (n, urllib.parse.quote(n, safe="").encode(), *_b64_cores(n)):
+                if len(x) >= 8 and x not in out:
+                    out.append(x)
+    return out
+
+
+def _b64_cores(n: bytes) -> list[bytes]:
+    out = []
+    for offset in range(3):
+        enc = base64.b64encode(b"\0" * offset + n)
+        core = enc[-(-offset * 8 // 6):(offset + len(n)) * 8 // 6]  # skip what the prefix touches, and the tail
+        out += [core, core.replace(b"+", b"-").replace(b"/", b"_")]
     return out
 
 
@@ -486,9 +500,21 @@ class BuildCaches:
             stage("restoring dependency caches in the background")
 
     # ------------------------------------------------------------------ in a repo build (envbuilds._build)
-    async def before_install(self, prov: Provider, sb: Sandbox, stage: Any = None) -> None:
+    async def before_install(self, prov: Provider, sb: Sandbox, stage: Any = None,
+                             values: dict[str, bytes] | None = None) -> None:
         """A build installs only once its restore is done (or HANGAR_BUILD_CACHE_WAIT_MINUTES passed): install and
-        the restore write the same directories."""
+        the restore write the same directories.
+
+        review(#115): `values`, the build's build secrets, are what its uploads are scanned for from here on, not only
+        after install: sccache, Bazel and turbo upload while `install` runs, and a secret compiled into an output
+        would reach every sandbox of the environment."""
+        from hangar.fleet import ACTIVE
+
+        for sid in list(self.needles):  # builds that failed before after_install
+            if (x := self.fleet.store.get(Sandbox, sid)) is None or x.state not in ACTIVE:
+                self.needles.pop(sid, None)
+        if values and (ns := _needles(values)):
+            self.needles[sb.id] = ns
         c = sb.info.get("caches") or {}
         if c.get("state") != "warming":
             return
@@ -512,7 +538,8 @@ class BuildCaches:
             return "\n".join(out)
         if stage:
             stage("saving the build caches")
-        self.needles[sb.id] = _needles(values)
+        if values:
+            self.needles[sb.id] = _needles(values)
         try:
             res = await prov.exec(sb, f'"$HOME/.hangar/bin/hangar-cache" save --repo {shlex.quote(path)}',
                                   timeout=TRANSFER_TIMEOUT + 300)
@@ -695,7 +722,8 @@ class Server:
         if length is not None and (not length.isdigit() or int(length) > cap):
             raise CacheError(413, f"over HANGAR_BUILD_CACHE_OBJECT_MAX_MB ({cap >> 20} MB)")
         digest, size, chunks, sizes = await st.ingest(acc.repo, request.stream(), cap, expect=expect,
-                                                      needles=self.caches.needles.get(acc.sandbox.id))
+                                                      needles=self.caches.needles.get(acc.sandbox.id),
+                                                      size_hint=int(length) if length is not None else None)
         return st.commit(acc.repo, acc.write, ns, key, digest, size, chunks, sizes, writer=acc.sandbox.id, meta=meta)
 
     # ------------------------------------------------------------------ dependency caches

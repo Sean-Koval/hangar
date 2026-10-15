@@ -52,6 +52,10 @@ CHUNK = 8 * 1024 * 1024
 TOUCH_EVERY = 60.0  # seconds between `used` updates of one entry: a hot entry isn't a write per hit
 SWEEP_GRACE = 3600.0  # an object younger than this may belong to an upload still running
 INFLATE_STEP = 4 * 1024 * 1024  # bytes inflated at a time while a trusted upload is checked for build secrets
+# review(#115): an upload's hold on the memory budget, in multiples of what it buffers (up to a chunk): the buffer, the
+# chunk's copy, the sealed token and its base64
+UPLOAD_HOLD = 4
+IDLE_SECONDS = 60.0  # an upload that sends nothing this long is cut off (and lets go of its memory)
 TRUSTED = "trusted:"  # + the environment: a repo's shared layer, per environment its builds run in
 PRIVATE = "private:"  # + the session (or sandbox) and branch
 
@@ -128,6 +132,12 @@ class Index:
         self._db.execute("CREATE TABLE IF NOT EXISTS chunks (repo TEXT, digest TEXT, size INTEGER, refs INTEGER, "
                          "created REAL, PRIMARY KEY (repo, digest))")
         self._db.execute("CREATE INDEX IF NOT EXISTS chunks_refs ON chunks(refs)")
+        # review(#115): bytes of chunk rows per repo, kept as rows come and go, so the caps a write checks aren't a
+        # GROUP BY over every chunk (a build writes thousands of compile-cache entries, each a check)
+        fresh = self._db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='totals'").fetchone() is None
+        self._db.execute("CREATE TABLE IF NOT EXISTS totals (repo TEXT PRIMARY KEY, bytes INTEGER)")
+        if fresh:  # an index from before the table: count once
+            self._db.execute("INSERT OR REPLACE INTO totals SELECT repo, sum(size) FROM chunks GROUP BY repo")
 
     def close(self) -> None:
         with self._lock:
@@ -190,8 +200,12 @@ class Index:
             old = db.execute("SELECT chunks FROM entries WHERE repo=? AND layer=? AND ns=? AND key=?",
                              (e.repo, e.layer, e.ns, e.key)).fetchone()
             for d in e.chunks:
-                db.execute("INSERT INTO chunks(repo, digest, size, refs, created) VALUES(?, ?, ?, 1, ?) "
-                           "ON CONFLICT(repo, digest) DO UPDATE SET refs=refs+1", (e.repo, d, sizes[d], e.created))
+                if db.execute("INSERT INTO chunks(repo, digest, size, refs, created) VALUES(?, ?, ?, 1, ?) "
+                              "ON CONFLICT(repo, digest) DO NOTHING", (e.repo, d, sizes[d], e.created)).rowcount:
+                    db.execute("INSERT INTO totals(repo, bytes) VALUES(?, ?) "
+                               "ON CONFLICT(repo) DO UPDATE SET bytes=bytes+excluded.bytes", (e.repo, sizes[d]))
+                else:
+                    db.execute("UPDATE chunks SET refs=refs+1 WHERE repo=? AND digest=?", (e.repo, d))
             db.execute(f"INSERT OR REPLACE INTO entries({self._COLS}) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                        (e.repo, e.layer, e.ns, e.key, e.digest, e.size, json.dumps(e.chunks), e.created, e.used,
                         e.writer, json.dumps(e.meta)))
@@ -228,10 +242,13 @@ class Index:
     def drop_chunk(self, repo: str, digest: str) -> bool:
         """Forget a chunk nothing points at. False when an entry took it again meanwhile."""
         with self._tx() as db:
-            row = db.execute("SELECT refs FROM chunks WHERE repo=? AND digest=?", (repo, digest)).fetchone()
+            row = db.execute("SELECT refs, size FROM chunks WHERE repo=? AND digest=?", (repo, digest)).fetchone()
             if row and row[0] > 0:
                 return False
-            db.execute("DELETE FROM chunks WHERE repo=? AND digest=?", (repo, digest))
+            if row:
+                db.execute("DELETE FROM chunks WHERE repo=? AND digest=?", (repo, digest))
+                db.execute("UPDATE totals SET bytes=bytes-? WHERE repo=?", (int(row[1]), repo))
+                db.execute("DELETE FROM totals WHERE repo=? AND bytes<=0", (repo,))
             return True
 
     def where(self, sql: str, args: tuple = (), limit: int = 1000) -> list[Entry]:
@@ -244,20 +261,19 @@ class Index:
         """Bytes of chunks (plaintext) held, for one repo or all: what the caps count."""
         with self._lock:
             if repo is None:
-                row = self._db.execute("SELECT coalesce(sum(size), 0) FROM chunks").fetchone()
+                row = self._db.execute("SELECT coalesce(sum(bytes), 0) FROM totals").fetchone()
             else:
-                row = self._db.execute("SELECT coalesce(sum(size), 0) FROM chunks WHERE repo=?", (repo,)).fetchone()
+                row = self._db.execute("SELECT coalesce(sum(bytes), 0) FROM totals WHERE repo=?", (repo,)).fetchone()
         return int(row[0])
 
     def repos_over(self, cap: int) -> list[str]:
         with self._lock:
-            return [r[0] for r in self._db.execute(
-                "SELECT repo FROM chunks GROUP BY repo HAVING sum(size) > ?", (cap,)).fetchall()]
+            return [r[0] for r in self._db.execute("SELECT repo FROM totals WHERE bytes > ?", (cap,)).fetchall()]
 
     def usage(self) -> list[dict[str, Any]]:
         """Per repo: bytes held, entries, bytes of entries in the trusted and private layers, last use."""
         with self._lock:
-            held = dict(self._db.execute("SELECT repo, sum(size) FROM chunks GROUP BY repo").fetchall())
+            held = dict(self._db.execute("SELECT repo, bytes FROM totals").fetchall())
             rows = self._db.execute(
                 "SELECT repo, count(*), sum(CASE WHEN substr(layer, 1, ?)=? THEN size ELSE 0 END), "
                 "sum(CASE WHEN substr(layer, 1, ?)=? THEN 0 ELSE size END), max(used) FROM entries GROUP BY repo",
@@ -295,11 +311,16 @@ class CacheStore:
 
     # ------------------------------------------------------------------ writing
     async def ingest(self, repo: str, stream: AsyncIterator[bytes], max_bytes: int, *,
-                     expect: str | None = None, needles: list[bytes] | None = None) -> tuple[str, int, list[str],
-                                                                                            dict[str, int]]:
+                     expect: str | None = None, needles: list[bytes] | None = None,
+                     size_hint: int | None = None) -> tuple[str, int, list[str], dict[str, int]]:
         """Store a stream as chunks: (sha256, size, chunk digests, chunk sizes). Nothing is indexed here; `commit`
         does that. `expect`: the object's sha256 must be this (Bazel's CAS). `needles`: build secret values that
-        must not be in the object (gzip is looked into)."""
+        must not be in the object (gzip is looked into). `size_hint`: the body's Content-Length, when it has one.
+
+        review(#115): what the upload holds counts against the memory budget for as long as it runs: its buffer (up
+        to a chunk), the chunk's copy, and the sealed token with its base64. A body with a length holds that much;
+        one without (chunked), a whole chunk's worth. A client that stops sending for IDLE_SECONDS is cut off, so
+        nobody keeps budget by trickling."""
         whole = hashlib.sha256()
         size = 0
         digests: list[str] = []
@@ -308,20 +329,29 @@ class CacheStore:
         pins: list[tuple[str, str]] = []
         scan = _Scanner(needles) if needles else None
         buf = bytearray()
+        reserve = UPLOAD_HOLD * min(CHUNK, max(0, size_hint) if size_hint is not None else CHUNK)
         try:
-            async for piece in stream:
-                size += len(piece)
-                if size > max_bytes:
-                    raise CacheError(413, f"over HANGAR_BUILD_CACHE_OBJECT_MAX_MB ({max_bytes >> 20} MB)")
-                whole.update(piece)
-                if scan is not None:
-                    scan.feed(piece)
-                buf += piece
-                while len(buf) >= CHUNK:
-                    await self._chunk(repo, bytes(buf[:CHUNK]), digests, sizes, put, pins)
-                    del buf[:CHUNK]
-            if buf or not digests:
-                await self._chunk(repo, bytes(buf), digests, sizes, put, pins)
+            async with self.memory.hold(reserve):
+                pieces = stream.__aiter__()
+                while True:
+                    try:
+                        piece = await asyncio.wait_for(pieces.__anext__(), IDLE_SECONDS)
+                    except StopAsyncIteration:
+                        break
+                    except TimeoutError as e:
+                        raise CacheError(408, f"the upload sent nothing for {IDLE_SECONDS:g}s") from e
+                    size += len(piece)
+                    if size > max_bytes:
+                        raise CacheError(413, f"over HANGAR_BUILD_CACHE_OBJECT_MAX_MB ({max_bytes >> 20} MB)")
+                    whole.update(piece)
+                    if scan is not None:
+                        scan.feed(piece)
+                    buf += piece
+                    while len(buf) >= CHUNK:
+                        await self._chunk(repo, bytes(buf[:CHUNK]), digests, sizes, put, pins)
+                        del buf[:CHUNK]
+                if buf or not digests:
+                    await self._chunk(repo, bytes(buf), digests, sizes, put, pins)
             if scan is not None:
                 scan.end()
             digest = whole.hexdigest()
@@ -353,9 +383,8 @@ class CacheStore:
         async with self._guard((repo, d)):
             if self.index.has_chunk(repo, d):
                 return
-            async with self.memory.hold(len(data) * 3):  # the plaintext, the token and its base64
-                blob = await asyncio.to_thread(self.vault.encrypt, data)
-                await self.blobs.put(object_key(repo, d), blob)
+            blob = await asyncio.to_thread(self.vault.encrypt, data)  # the memory: ingest's hold covers it
+            await self.blobs.put(object_key(repo, d), blob)
         put.append(d)
 
     async def _unput(self, repo: str, put: list[str]) -> None:
@@ -404,13 +433,15 @@ class CacheStore:
         """The entry's bytes after `first`. A chunk that fails its check ends the stream short (the client sees a
         truncated body, which every cache client treats as a failed fetch) and the entry goes."""
         whole = hashlib.sha256(first)
-        yield first
+        async with self.memory.hold(len(first)):  # review(#115): a chunk the client hasn't taken yet is still held
+            yield first
         for i in range(1, len(e.chunks)):
             data = await self._read(e, i)
             if data is None:
                 raise CacheError(502, "a chunk failed its integrity check")
             whole.update(data)
-            yield data
+            async with self.memory.hold(len(data)):
+                yield data
         if whole.hexdigest() != e.digest:
             self.damaged(e, "didn't match its digest")
             raise CacheError(502, "the object didn't match its digest")
@@ -590,6 +621,13 @@ class CacheStore:
         return False
 
 
+# review(#115): formats a build-secret scan can't see into (sccache's entries are zip archives of zstd blobs, turbo's
+# artifacts tar.zst): with build secrets around, uploads in them are refused. Magic numbers from each format's spec.
+OPAQUE = (b"\x28\xb5\x2f\xfd", b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08", b"\xfd7zXZ\x00", b"BZh",
+          b"7z\xbc\xaf\x27\x1c", b"\x04\x22\x4d\x18")
+_SNIFF = b"\x00" * 6  # enough of the start to tell them apart
+
+
 class _Scanner:
     """Build secret values in a stream, looked for in the gzip-decompressed bytes when the stream is gzip (as
     dependency archives are) and in the raw bytes otherwise, across chunk boundaries. Raises CacheError on a hit."""
@@ -601,6 +639,7 @@ class _Scanner:
         self.tail_plain = b""
         self.inflate: Any = None
         self.started = False
+        self.head = b""  # the first bytes, until there are enough to tell the format
 
     def _look(self, buf: bytes) -> None:
         if any(n in buf for n in self.needles):
@@ -609,10 +648,23 @@ class _Scanner:
     def feed(self, piece: bytes) -> None:
         if not self.needles:
             return
-        if not self.started:
-            self.started = True
-            if piece[:2] == b"\x1f\x8b":
-                self.inflate = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        if not self.started and not self.inflate:
+            if len(self.head) + len(piece) < len(_SNIFF):
+                self.head += piece
+                return
+            piece, self.head = self.head + piece, b""
+            self._sniff(piece)
+        self._feed(piece)
+
+    def _sniff(self, first: bytes) -> None:
+        self.started = True
+        if first[:2] == b"\x1f\x8b":
+            self.inflate = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        elif first.startswith(OPAQUE):  # review(#115): a secret in there is invisible to a scan of the raw bytes
+            raise CacheError(422, "this build has build secrets, and hangar can't look into this upload's format "
+                                  "(zstd, zip, xz, bzip2, 7z or lz4) to check it holds none; nothing was stored")
+
+    def _feed(self, piece: bytes) -> None:
         buf = self.tail_raw + piece
         self._look(buf)
         self.tail_raw = buf[-self.keep:] if self.keep else b""
@@ -620,19 +672,26 @@ class _Scanner:
         while self.inflate is not None and data:
             try:  # bounded: a small archive can inflate a thousandfold
                 plain = self.inflate.decompress(data, INFLATE_STEP)
-            except zlib.error:
-                self.inflate = None
-                return
+            except zlib.error as e:  # review(#115): what isn't inflated isn't checked
+                raise CacheError(422, "a damaged gzip stream from a build with build secrets; nothing was "
+                                      "stored") from e
             data = self.inflate.unconsumed_tail
             buf = self.tail_plain + plain
             self._look(buf)
             self.tail_plain = buf[-self.keep:] if self.keep else b""
             if self.inflate.eof:  # gzip members after the first (pigz, concatenated streams): a new inflater
                 data = self.inflate.unused_data + data
-                self.inflate = zlib.decompressobj(16 + zlib.MAX_WBITS) if data[:2] == b"\x1f\x8b" else None
+                if data[:2] != b"\x1f\x8b" and len(data) >= 2:  # review(#115): not gzip, so not looked into
+                    raise CacheError(422, "data after the gzip stream from a build with build secrets; nothing "
+                                          "was stored")
+                self.inflate = zlib.decompressobj(16 + zlib.MAX_WBITS) if data else None
                 self.started = bool(data)  # nothing left of this piece: the next one may start a member
 
     def end(self) -> None:
+        if self.head:  # an object shorter than a format's magic: its raw bytes are all there is
+            piece, self.head = self.head, b""
+            self._sniff(piece)
+            self._feed(piece)
         if self.inflate is not None:
             with contextlib.suppress(zlib.error):
                 self._look(self.tail_plain + self.inflate.flush())

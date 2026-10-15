@@ -38,7 +38,7 @@ serves. Jobs and sessions always have a grant when the gateway is configured.
 | `HANGAR_BUILD_CACHE_PRIVATE_DAYS` | 3 | The same for an entry in a session's private layer. |
 | `HANGAR_BUILD_CACHE_PRIVATE_WRITES` | `true` | Off: sessions and jobs only read. |
 | `HANGAR_BUILD_CACHE_OBJECT_MAX_MB` | 4096 | The largest single object (a dependency archive, a compile output). |
-| `HANGAR_BUILD_CACHE_TRANSFER_MB` | 256 | Cache bytes held in the control plane's memory at once. |
+| `HANGAR_BUILD_CACHE_TRANSFER_MB` | 256 | Cache bytes held in the control plane's memory at once: what uploads buffer and seal (up to four times a chunk each, or four times their length when it is smaller) and the chunks downloads haven't sent yet. Requests past it wait; an upload that sends nothing for 60 s is cut off. |
 | `HANGAR_BUILD_CACHE_WAIT_MINUTES` | 10 | How long a repo build waits for its restore before `install`. |
 
 On GKE the session bucket is where caches go, and hangar's service account can already write there. On Docker,
@@ -54,7 +54,10 @@ Each repo's caches have layers:
   compile caches written during `install` (an `install` that runs `cargo build` with sccache, for example) land
   there too. The layer belongs to the repo's builds in one environment, and only that environment's sandboxes read
   it. An environment's image and `setup` run in its builds before `install`, and members create environments, so a
-  build in one member's environment never writes what sandboxes of another environment read.
+  build in one member's environment never writes what sandboxes of another environment read. A build with
+  [build secrets](security.md#build-secrets) has every upload scanned for them from the start of `install`, and
+  can't store what the scan can't look into (zstd, zip and the like), so its sccache and turbo entries aren't kept
+  ([security.md](security.md#build-caches)).
 - **A private layer per session (or sandbox) and branch.** A session's or job's sandbox reads its own private layer
   first and the shared layer second. Its writes, from sccache, Bazel, turbo or `hangar-cache save`, go to its
   private layer. Nothing else ever reads that layer: not another session, not another person, and not a build.
