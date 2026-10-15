@@ -39,6 +39,7 @@ from hangar import (  # strategies: workstream D; --- observe; steer: live turns
     verifyloop,
 )
 from hangar import fairness as fairness  # --- scale
+from hangar import intake as intake  # --- intake: trackers (Jira, GitHub Projects) follow their jobs
 from hangar import people as people  # --- teamcreds: GitHub senders linked to people
 from hangar import restarts as restarts  # --- reconciler: interrupted jobs resume after a restart
 from hangar import teamcreds as teamcreds  # --- review: only a job's person continues it from a front door
@@ -1110,6 +1111,7 @@ class JobService:
         return "\n".join(lines)
 
     async def _comment(self, job: Job | None, ref: str, body: str, kind: str = "note") -> None:
+        await intake.track(self, job, kind)  # --- intake: the ticket's status, whichever thread this goes to
         if (notify := NOTIFIERS.get(ref.split(":", 1)[0])) is not None:
             await notify(self, job, ref, body, kind)
             return
@@ -1196,6 +1198,10 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
 
     if event == "ping":
         return {"ok": True, "pong": True}
+    if event == "projects_v2_item":  # --- intake: an organization webhook for GitHub Projects (ghprojects.py)
+        from hangar import ghprojects
+
+        return await ghprojects.handle(svc, delivery, payload)
     repo = (payload.get("repository") or {}).get("full_name") or ""
     envs = svc.repo_envs(f"https://github.com/{repo}") if repo else []
     if not envs:

@@ -47,7 +47,7 @@ MIGRATION_KEY = "teamcreds:migration"
 # Consumer sign-ins (`claude setup-token`, a ChatGPT or Google login): one person's, by the vendors' terms.
 SUBSCRIPTION_KINDS = frozenset({CredentialKind.OAUTH_TOKEN, CredentialKind.AUTH_FILE})
 POLL_SECONDS = 5.0  # how often a create waiting for a leased login looks again
-FREQUENT_SENDER_JOBS = 3  # unlinked GitHub or Slack senders with this many jobs in UNLINKED_DAYS: doctor names them
+FREQUENT_SENDER_JOBS = 3  # unlinked senders (GitHub, Slack, Jira, Projects) with this many jobs in UNLINKED_DAYS
 UNLINKED_DAYS = 14
 
 
@@ -292,7 +292,7 @@ def _check(name: str, status: str, detail: str, fix: str | None = None) -> dict[
 
 def doctor_checks(h: Any) -> list[dict[str, Any]]:
     """`hangar doctor`: personal logins still shared, work no person owns that has no team credential, and the
-    GitHub and Slack senders who start jobs often but are linked to nobody."""
+    GitHub, Slack, Jira and GitHub Projects senders who start jobs often but are linked to nobody."""
     out: list[dict[str, Any]] = []
     s, store = h.settings, h.store
     creds = store.list(Credential)
@@ -359,12 +359,16 @@ def doctor_checks(h: Any) -> list[dict[str, Any]]:
     # 3. frequent senders linked to nobody
     since = now() - UNLINKED_DAYS * 86400
     seen: Counter[str] = Counter(j.requester for j in h.jobs.list(limit=500)
-                                 if j.source in ("github", "slack") and j.person is None and j.created_at >= since)
+                                 if j.source in ("github", "slack", "jira", "github-projects")  # --- intake
+                                 and j.person is None and j.created_at >= since
+                                 and not j.requester.endswith(":unknown"))
     frequent = [(who, n) for who, n in seen.most_common() if n >= FREQUENT_SENDER_JOBS]
     if frequent:
         cmds = []
         for who, _ in frequent[:3]:
-            src, _, ext = who.partition(":")  # github:<login> (looked up when linked), slack:<team>/<user>
+            # github:<login> (looked up when linked; GitHub Projects movers too), slack:<team>/<user>,
+            # jira:<account id>
+            src, _, ext = who.partition(":")
             cmds.append(f"hangar person link PERSON {src} {ext}")
         out.append(_check("unlinked senders", "warn",
                           f"started jobs in the last {UNLINKED_DAYS} days but are linked to nobody, so their jobs run "
@@ -373,7 +377,7 @@ def doctor_checks(h: Any) -> list[dict[str, Any]]:
                           "; ".join(cmds)))
     else:
         out.append(_check("unlinked senders", "ok",
-                          f"no GitHub or Slack sender linked to nobody started {FREQUENT_SENDER_JOBS}+ jobs in the "
-                          f"last {UNLINKED_DAYS} days"))
+                          f"no GitHub, Slack, Jira or Projects sender linked to nobody started "
+                          f"{FREQUENT_SENDER_JOBS}+ jobs in the last {UNLINKED_DAYS} days"))
     return out
 

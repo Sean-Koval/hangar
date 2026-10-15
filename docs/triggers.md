@@ -57,7 +57,7 @@ The prompt also tells the agent to ignore requests in that text to reveal creden
 
 ## 2. Inbound webhooks
 
-Systems that can only send webhooks (Sentry, Jira, GitHub Projects, PagerDuty, internal services) start jobs at `POST /api/hooks/inbound/<source>`. Each source is configured in `HANGAR_INBOUND_WEBHOOKS`, a JSON mapping from source name to its settings:
+Systems that can only send webhooks (Sentry, PagerDuty, internal services) start jobs at `POST /api/hooks/inbound/<source>`. Jira and GitHub Projects have their own front doors, which also write back to the ticket and attribute the job to the linked person: see [intake.md](intake.md). Each source is configured in `HANGAR_INBOUND_WEBHOOKS`, a JSON mapping from source name to its settings:
 
 ```json
 {

@@ -1,0 +1,18 @@
+{
+  "data": {
+    "node": {
+      "field": {
+        "id": "PVTSSF_lADOBUjMRs4AqZ1Tzgh1yvc",
+        "name": "Status",
+        "options": [
+          {"id": "f75ad846", "name": "Todo"},
+          {"id": "47fc9ee4", "name": "Ready for agent"},
+          {"id": "98236657", "name": "In progress"},
+          {"id": "0c1b4d5e", "name": "Blocked"},
+          {"id": "4d2c9a11", "name": "In review"},
+          {"id": "c3d1e2f0", "name": "Done"}
+        ]
+      }
+    }
+  }
+}

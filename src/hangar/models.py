@@ -384,7 +384,8 @@ class Job(BaseModel):
     id: str = Field(default_factory=lambda: new_id("job"))
     title: str
     instructions: str
-    source: Literal["api", "mcp", "cli", "github", "webhook", "schedule", "slack", "a2a"] = "api"
+    source: Literal["api", "mcp", "cli", "github", "webhook", "schedule", "slack", "a2a",
+                    "jira", "github-projects"] = "api"  # --- intake
     source_ref: str | None = None  # e.g. "github:owner/repo#12"
     requester: str = "system"
     owner: str | None = None  # token id ("tok-…"), "admin", or "github:<login>"; jobs-scoped tokens see only theirs

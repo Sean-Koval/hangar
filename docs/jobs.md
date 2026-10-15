@@ -157,6 +157,10 @@ Jobs from every front door get the repo's defaults (`verify`, environment, harne
 
 `/hangar <instructions>` or `@hangar <instructions>` in a mapped channel starts a job on the channel's repo. Hangar replies in a thread when the agent starts, needs input and finishes, and a reply in the thread is a follow-up. Setup (app manifest, credentials, channel map) is in [slack.md](slack.md).
 
+## 4b. Trigger from Jira or GitHub Projects
+
+An issue moved to a configured status (or given a label) in a mapped Jira project, or an issue moved to a configured column on a GitHub Projects board, starts a job. Hangar comments on the issue when the agent starts, asks its questions there (a comment answers), and moves the ticket's status as the job goes. Setup is in [intake.md](intake.md).
+
 ## 5. Work with the agent
 
 Every job runs in a [session](sessions.md). The agent keeps its conversation between turns, and the job's sandbox, context and work in progress are checkpointed. So a reply always works:
@@ -300,6 +304,7 @@ The webhook needs the `pull_request_review`, `check_run`, `check_suite` and `sta
 | `HANGAR_GITHUB_TOKEN_CREDENTIAL`, `HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL`, `HANGAR_GITHUB_REPOS`, `HANGAR_GITHUB_TRIGGER_LABEL` | | See §4 |
 | `HANGAR_GITHUB_TRUSTED`, `HANGAR_JOB_APPROVAL_TTL_HOURS`, `HANGAR_INBOUND_WEBHOOKS`, `HANGAR_SCHEDULE_POLL_SECONDS` | | See [triggers.md](triggers.md) |
 | `HANGAR_SLACK_SIGNING_SECRET_CREDENTIAL`, `HANGAR_SLACK_BOT_TOKEN_CREDENTIAL`, `HANGAR_SLACK_CHANNELS`, `HANGAR_SLACK_USERS` | | See [slack.md](slack.md) |
+| `HANGAR_JIRA`, `HANGAR_GITHUB_PROJECTS` | `{}` | See [intake.md](intake.md) |
 
 ## Security notes
 

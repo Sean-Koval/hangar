@@ -144,7 +144,7 @@ Your logins then never reach a member's sandbox, nor a job no person owns. Make 
 
 - **personal credentials shared**: fails for any subscription login stored as a team credential, and says what the migration did.
 - **team credentials for jobs**: mapped repos (GitHub and Slack), inbound webhooks and schedules without a person whose environment's harness would get no login, and repos whose `credentials: person` policy makes unlinked senders' jobs fail.
-- **unlinked senders**: GitHub and Slack accounts linked to nobody that started 3 or more jobs in the last 14 days, with the `hangar person link` command for each.
+- **unlinked senders**: GitHub, Slack, Jira and GitHub Projects accounts linked to nobody that started 3 or more jobs in the last 14 days, with the `hangar person link` command for each.
 
 ## REST
 
