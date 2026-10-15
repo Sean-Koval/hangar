@@ -43,7 +43,7 @@ exported files.
 - **OpenTelemetry GenAI semantic conventions** for agent and tool spans: `invoke_agent`, `execute_tool` and
   `invoke_workflow` operations, `gen_ai.*` attributes. Target: the
   [semantic-conventions-genai](https://github.com/open-telemetry/semantic-conventions-genai) registry at commit
-  `f3c6d0c` (2026-10-14), schema `https://opentelemetry.io/schemas/gen-ai-dev/1.42.0-dev`, built on core semantic
+  `f3c6d0c9bb66ebd474668a3a0be25c61226f02c2` (2026-10-14; the repository has no release tags yet), schema `https://opentelemetry.io/schemas/gen-ai-dev/1.42.0-dev`, built on core semantic
   conventions **1.44.0**. **Stability: development.** Every `gen_ai.*` attribute and GenAI span used here is marked
   *Development* in that registry, so upstream may still rename them; hangar pins this version and will move to a later
   one only with a new `hangar.trace` version. `error.type` is stable; `process.exit.code` is release candidate.
@@ -66,7 +66,7 @@ Spans have a duration; events are points in time. Kinds are stable within `hanga
 | `session` | `invoke_workflow hangar.session` | `invoke_workflow` | root | A session export's root: first turn's start to last turn's end. |
 | `job` | `invoke_workflow hangar.job` | `invoke_workflow` | root | A job export's root, from submission to its last event. |
 | `turn` | `invoke_agent {harness}` | `invoke_agent` | `session` or `job` (or root, in a one-run export) | One agent run: a turn of a session or job. |
-| `tool.call` | `execute_tool {tool}` | `execute_tool` | `turn` | One tool call, from the call to its result. |
+| `tool.call` | `execute_tool {tool}`, or `execute_tool {tool} {executable}` for a one-process shell command and `execute_tool {tool} {skill}` for a skill (GenAI's command and skill refinements) | `execute_tool` | `turn` | One tool call, from the call to its result. |
 | `subagent` | `invoke_agent {subagent type}` | `invoke_agent` | `turn` | A subagent the agent started (Claude Code's `Task`/`Agent` tool). Its start is the subagent's start. |
 | `approval` | `approval {tool}` | — | `turn` | A tool permission asked during a live turn, from the request to the answer. |
 
@@ -172,7 +172,9 @@ Status: `ERROR` when the outcome is anything but `exited`/`needs_input`/`interru
 
 GenAI: `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name` (as the harness names it), `gen_ai.tool.call.id`,
 `gen_ai.tool.type` (`extension` for `mcp` and `web`, `function` for the rest: the harness runs them),
-`gen_ai.agent.name`, `gen_ai.conversation.id`; for `shell`, `process.exit.code` when the harness reports it.
+`gen_ai.agent.name`, `gen_ai.conversation.id`; for `shell`, `process.exit.code` when the harness reports it and
+`process.executable.name` when the command is one process (not a list or a pipeline); for `skill`,
+`gen_ai.skill.name`.
 
 Hangar: `hangar.tool.kind`, `hangar.tool.input` (a one-line summary: the command, the path, the pattern or the URL;
 clipped, redacted), `hangar.tool.output` (the start of the result; clipped, redacted), `hangar.tool.ok`,

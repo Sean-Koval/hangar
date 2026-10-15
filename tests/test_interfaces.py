@@ -307,6 +307,8 @@ def test_shell_ops_and_repo_paths():
     assert rp("/workspace/app2/x", "/workspace/app") is None and rp("../x", "/workspace/app") is None
     assert rp("/etc/hosts", "/workspace/app") is None and rp("/workspace/app/src/a.py", None) is None
     assert traces.diff_files("M\0src/a.py\0D\0old.py\0A\0new") == (["src/a.py", "old.py"], ["old.py"])
+    assert traces.executable("CI=1 /usr/bin/pytest -q") == "pytest" and traces.executable("cd x && make") is None
+    assert traces._skill_name('{"skill": "pdf"}') == "pdf" and traces._skill_name("not json") is None
 
 
 def _behavior(export: dict) -> dict:
@@ -551,7 +553,8 @@ def test_live_export_adds_the_tool_spans_under_the_turn(settings, broker):
     finally:
         observe._tracer = old
     got = {sp.name: sp for sp in exp.get_finished_spans()}
-    child = got["execute_tool shell"]
+    child = got["execute_tool shell cat"]  # GenAI's command refinement: the executable, when it is one process
+    assert child.attributes["process.executable.name"] == "cat"
     assert child.parent.span_id == got["invoke_agent codex"].context.span_id
     assert child.attributes["hangar.tool.kind"] == "shell" and child.attributes["process.exit.code"] == 2
     assert child.attributes["hangar.tool.input"] == "cat ***"

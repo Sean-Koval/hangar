@@ -29,9 +29,9 @@ if TYPE_CHECKING:
 log = logging.getLogger("hangar.traces")
 
 SCHEMA = "hangar.trace/v1"
-# OpenTelemetry GenAI semantic conventions, github.com/open-telemetry/semantic-conventions-genai at f3c6d0c
-# (2026-10-14): its registry's schema; it builds on the core conventions 1.44.0. Every GenAI name used here is
-# "development" there.
+# OpenTelemetry GenAI semantic conventions, github.com/open-telemetry/semantic-conventions-genai at
+# f3c6d0c9bb66ebd474668a3a0be25c61226f02c2 (2026-10-14; no release tags yet): its registry's schema; it builds on
+# the core conventions 1.44.0. Every GenAI name used here is "development" there.
 GENAI = "gen-ai-dev/1.42.0-dev"
 SCHEMA_URL = "https://opentelemetry.io/schemas/1.44.0"
 SCOPE = {"name": "hangar.trace", "version": "1"}
@@ -119,6 +119,27 @@ def _op(words: list[str]) -> str | None:
             and args[1].split(":")[0] in ("test", "tests"))):
         return "test"
     return None
+
+
+def executable(command: str | None) -> str | None:
+    """`process.executable.name` (GenAI's command-tool refinement: "if the tool directly executes a single process"):
+    the program of a one-segment command, None for a pipeline or a list."""
+    segs = [s for s in _SEGMENT.split(command or "") if s.strip()]
+    words = _words(segs[0].strip()) if len(segs) == 1 else []
+    return words[0].rsplit("/", 1)[-1][:100] or None if words else None
+
+
+def _skill_name(inp: str | None) -> str | None:
+    """The skill a Skill tool call loads (`gen_ai.skill.name`): its input is the call's JSON arguments."""
+    import json
+
+    try:
+        args = json.loads(inp or "")
+    except ValueError:
+        return None
+    name = next((args[k] for k in ("skill", "name", "command") if isinstance(args, dict)
+                 and isinstance(args.get(k), str)), None)
+    return name[:100] if name else None
 
 
 def shell_ops(command: str | None) -> list[str]:
@@ -396,8 +417,12 @@ def _tool_span(x: Export, parent: str | None, key: str, harness: str | None, con
         attrs["hangar.file.path"] = inp
         if ", " not in inp:  # Codex's apply_patch names every file it changes: see its file.change events
             attrs["hangar.file.repo_path"] = repo_path(inp, root)
+    suffix = None  # GenAI's command and skill refinements: `execute_tool {tool} {executable or skill}`
     if kind == "shell":
         attrs["hangar.shell.ops"] = shell_ops(inp) or None
+        attrs["process.executable.name"] = suffix = executable(inp)
+    if kind == "skill":
+        attrs["gen_ai.skill.name"] = suffix = _skill_name(inp)
     if kind == "mcp":
         attrs["hangar.mcp.server"], attrs["hangar.mcp.tool"] = _mcp_parts(name)
     if result is not None and isinstance(result.data.get("exit_code"), int):
@@ -406,8 +431,8 @@ def _tool_span(x: Export, parent: str | None, key: str, harness: str | None, con
         attrs["hangar.tool.incomplete"] = True
     if ok is False:
         attrs["error.type"] = "tool_error"
-    x.span(f"{key}/tool/{tid}", f"execute_tool {name}", t0, t1, attrs, parent=parent,
-           error="" if ok is False else None)
+    x.span(f"{key}/tool/{tid}", f"execute_tool {name} {suffix}" if suffix else f"execute_tool {name}", t0, t1,
+           attrs, parent=parent, error="" if ok is False else None)
 
 
 def _point(x: Export, sp: dict[str, Any], ev: RunEvent, root: str | None = None) -> None:
