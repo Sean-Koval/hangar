@@ -180,7 +180,10 @@ Sandboxes with Docker inside, as Kata microVMs, and the `large` and `xlarge` pro
    `heavy_spot`, `heavy_disk_gb` if the defaults don't fit: [team-scale.md](team-scale.md#heavy-tier)), then apply.
    That adds `sandboxes-heavy`: Ubuntu, nested virtualization, `n2-standard-32` by default, scaling from zero,
    labelled and tainted `hangar.dev/runtime=heavy`. Its name puts it under the power schedule: it goes to zero at night,
-   and holds and `off` keep it there ([6](#6-sandbox-nodes-off-at-night-optional)).
+   and holds and `off` keep it there ([6](#6-sandbox-nodes-off-at-night-optional)). Its nodes run as a service account
+   of their own, `hangar-heavy-nodes`, with only `roles/container.defaultNodeServiceAccount` and read access to the
+   `hangar` image repository: a heavy sandbox is root in its VM, so its node shouldn't carry the project's default
+   compute identity. (The other sandbox pools still use the default account; giving them the same is a follow-up.)
 2. **Kata on it.** `KATA=1 bash deploy/gke/up.sh` installs kata-deploy on every pool labelled
    `katacontainers.io/kata-runtime=true` (the Kata pool and the heavy one), tolerating their taints. kata-deploy
    configures containerd with `privileged_without_host_devices = true` for its runtimes, which is what keeps a heavy

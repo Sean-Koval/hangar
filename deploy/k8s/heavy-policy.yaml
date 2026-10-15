@@ -1,10 +1,14 @@
-# --- heavy: a privileged container in the sandbox namespace only ever runs inside a VM (docs/environments.md#isolation).
+# --- heavy: nothing in the sandbox namespace reaches the node: a privileged container only ever runs inside a VM, and no
+# sandbox pod gets the node's namespaces, files or ports, under any runtime (docs/environments.md#isolation).
 #
 # Heavy sandboxes (src/hangar/heavy.py) are privileged so dockerd can run in them, which is safe only under Kata, where
 # "privileged" means privileged inside the guest (kata-deploy sets containerd's privileged_without_host_devices). Under
 # runc it would be root on the node. hangar never asks for one without a Kata runtime class; this refuses it at
 # admission all the same, whatever made the pod (a misconfigured HANGAR_HEAVY_RUNTIME_CLASS, a template edited by
-# hand). ValidatingAdmissionPolicy is GA since Kubernetes 1.30.
+# hand). The VM is no boundary for what the pod spec hands it from the node: a hostPath volume is shared into a Kata
+# guest over virtio-fs, and host namespaces and ports are the node's whatever the runtime, so those are refused for
+# every pod here. Added capabilities are refused outside Kata too: under runc, CAP_SYS_ADMIN is as good as privileged.
+# ValidatingAdmissionPolicy is GA since Kubernetes 1.30. Checked against a real kube-apiserver 1.36 (review of #117).
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -17,9 +21,12 @@ spec:
         apiVersions: ["v1"]
         operations: ["CREATE", "UPDATE"]
         resources: ["pods", "pods/ephemeralcontainers"]
+  variables:
+    - name: kata
+      expression: "has(object.spec.runtimeClassName) && object.spec.runtimeClassName.startsWith('kata')"
   validations:
     - expression: >-
-        (has(object.spec.runtimeClassName) && object.spec.runtimeClassName.startsWith('kata')) ||
+        variables.kata ||
         (!object.spec.containers.exists(c, has(c.securityContext) && has(c.securityContext.privileged) &&
           c.securityContext.privileged) &&
          (!has(object.spec.initContainers) || !object.spec.initContainers.exists(c, has(c.securityContext) &&
@@ -27,6 +34,29 @@ spec:
          (!has(object.spec.ephemeralContainers) || !object.spec.ephemeralContainers.exists(c,
           has(c.securityContext) && has(c.securityContext.privileged) && c.securityContext.privileged)))
       message: "a privileged container in hangar-sandboxes runs only under a Kata runtime class (the heavy tier's VM)"
+    - expression: >-
+        variables.kata ||
+        (!object.spec.containers.exists(c, has(c.securityContext) && has(c.securityContext.capabilities) &&
+          has(c.securityContext.capabilities.add) && size(c.securityContext.capabilities.add) > 0) &&
+         (!has(object.spec.initContainers) || !object.spec.initContainers.exists(c, has(c.securityContext) &&
+          has(c.securityContext.capabilities) && has(c.securityContext.capabilities.add) &&
+          size(c.securityContext.capabilities.add) > 0)) &&
+         (!has(object.spec.ephemeralContainers) || !object.spec.ephemeralContainers.exists(c,
+          has(c.securityContext) && has(c.securityContext.capabilities) && has(c.securityContext.capabilities.add) &&
+          size(c.securityContext.capabilities.add) > 0)))
+      message: "added capabilities in hangar-sandboxes only under a Kata runtime class (under runc they reach the node)"
+    - expression: >-
+        !(has(object.spec.hostNetwork) && object.spec.hostNetwork) &&
+        !(has(object.spec.hostPID) && object.spec.hostPID) &&
+        !(has(object.spec.hostIPC) && object.spec.hostIPC)
+      message: "sandbox pods never share the node's network, PID or IPC namespace, whatever their runtime"
+    - expression: "!has(object.spec.volumes) || !object.spec.volumes.exists(v, has(v.hostPath))"
+      message: "sandbox pods never mount the node's files (hostPath), whatever their runtime: Kata shares them into the VM"
+    - expression: >-
+        !object.spec.containers.exists(c, has(c.ports) && c.ports.exists(p, has(p.hostPort) && p.hostPort != 0)) &&
+        (!has(object.spec.initContainers) || !object.spec.initContainers.exists(c, has(c.ports) &&
+          c.ports.exists(p, has(p.hostPort) && p.hostPort != 0)))
+      message: "sandbox pods never bind the node's ports (hostPort)"
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
@@ -39,3 +69,31 @@ spec:
     namespaceSelector:
       matchLabels:
         kubernetes.io/metadata.name: hangar-sandboxes
+---
+# The policy above trusts a runtime class's name: a RuntimeClass called `kata-...` that hands pods to runc would pass a
+# privileged pod straight to the node. So a RuntimeClass named kata* must name a kata* handler (kata-deploy's are named
+# after their handler: kata-qemu -> kata-qemu), and the handler is a runtime in the node's containerd config, which
+# only someone with root on the node writes. RuntimeClass is cluster-scoped, so this binding has no namespace selector.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: hangar-kata-runtime-classes-run-kata
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["node.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["runtimeclasses"]
+  validations:
+    - expression: "!object.metadata.name.startsWith('kata') || object.handler.startsWith('kata')"
+      message: "a RuntimeClass named kata* must use a Kata handler: hangar runs privileged sandboxes on kata* classes"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: hangar-kata-runtime-classes-run-kata
+spec:
+  policyName: hangar-kata-runtime-classes-run-kata
+  validationActions: [Deny]

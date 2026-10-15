@@ -5,6 +5,7 @@ Providers are fakes: nothing here starts a VM or a dockerd (the Docker e2e suite
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 import yaml
@@ -399,19 +400,55 @@ async def test_a_heavy_pod_is_never_privileged_outside_kata(hv):
                       EnvSpec(name="d", heavy=True), f.settings)
 
 
+def heavy_pool_uses_its_own_node_account(tf: str) -> None:
+    pool = tf.split('resource "google_container_node_pool" "heavy"', 1)[1].split("\nresource ", 1)[0]
+    assert re.search(r"service_account\s*=\s*google_service_account\.heavy_nodes\[0\]\.email", pool)
+    sa = tf.split('resource "google_project_iam_member" "heavy_nodes"', 1)[1].split("\n}", 1)[0]
+    assert 'role    = "roles/container.defaultNodeServiceAccount"' in sa
+    assert "roles/artifactregistry.reader" in tf and "roles/editor" not in tf
+
+
+def test_heavy_nodes_run_as_a_least_privilege_account():
+    """review(#117): a heavy sandbox is root in its VM, one Kata escape from the node: the node's own identity mustn't
+    be the Compute Engine default account (often Editor on the project)."""
+    from pathlib import Path
+
+    heavy_pool_uses_its_own_node_account(
+        (Path(__file__).parents[1] / "deploy" / "terraform" / "gke" / "heavy.tf").read_text())
+
+
 def test_the_cluster_refuses_privileged_sandbox_pods_without_kata():
     """deploy/k8s/heavy-policy.yaml: defence in depth at admission, in the sandbox namespace only."""
     from pathlib import Path
 
     k8s = Path(__file__).parents[1] / "deploy" / "k8s"
-    policy, binding = list(yaml.safe_load_all((k8s / "heavy-policy.yaml").read_text()))
+    policy, binding, rc_policy, rc_binding = list(yaml.safe_load_all((k8s / "heavy-policy.yaml").read_text()))
     assert policy["kind"] == "ValidatingAdmissionPolicy" and policy["spec"]["failurePolicy"] == "Fail"
     rule = policy["spec"]["matchConstraints"]["resourceRules"][0]
     assert set(rule["resources"]) == {"pods", "pods/ephemeralcontainers"} and "CREATE" in rule["operations"]
-    expr = policy["spec"]["validations"][0]["expression"]
-    assert "startsWith('kata')" in expr and expr.count("privileged") >= 6
+    assert policy["spec"]["variables"] == [
+        {"name": "kata", "expression": "has(object.spec.runtimeClassName) && "
+                                       "object.spec.runtimeClassName.startsWith('kata')"}]
+    exprs = [v["expression"] for v in policy["spec"]["validations"]]
+    priv = next(e for e in exprs if "privileged" in e)
+    assert priv.startswith("variables.kata ||") and priv.count("privileged") >= 6
     for kind in ("containers", "initContainers", "ephemeralContainers"):
-        assert f"object.spec.{kind}" in expr
+        assert f"object.spec.{kind}" in priv
+    # review(#117): privileged isn't the only way onto the node. Under runc an added capability (SYS_ADMIN) is, and
+    # under any runtime the node's namespaces, files and ports are: Kata shares a hostPath into its guest over
+    # virtio-fs. Each of these got past the policy on a real kube-apiserver 1.36 before.
+    caps = next(e for e in exprs if "capabilities.add" in e)
+    assert caps.startswith("variables.kata ||") and caps.count("capabilities.add") >= 6
+    always = [e for e in exprs if "variables.kata" not in e]
+    for field in ("hostNetwork", "hostPID", "hostIPC", "hostPath", "hostPort"):
+        assert any(field in e for e in always), field
+    # ... and a RuntimeClass can't be named kata-* and run something else (the policy above trusts the name).
+    assert rc_policy["spec"]["matchConstraints"]["resourceRules"][0]["resources"] == ["runtimeclasses"]
+    assert rc_policy["spec"]["failurePolicy"] == "Fail"
+    assert rc_policy["spec"]["validations"][0]["expression"] == (
+        "!object.metadata.name.startsWith('kata') || object.handler.startsWith('kata')")
+    assert rc_binding["spec"]["policyName"] == rc_policy["metadata"]["name"]
+    assert rc_binding["spec"]["validationActions"] == ["Deny"] and "matchResources" not in rc_binding["spec"]
     assert binding["spec"]["policyName"] == policy["metadata"]["name"]
     assert binding["spec"]["validationActions"] == ["Deny"]
     assert binding["spec"]["matchResources"]["namespaceSelector"]["matchLabels"] == {

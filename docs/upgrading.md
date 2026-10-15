@@ -354,7 +354,7 @@ Nothing to set: an environment opts in with `computer: true` (its image gets a l
 
 #### 10f. The heavy tier
 
-**Optional** (off until a `heavy` tier is configured; [environments.md](environments.md#the-heavy-tier)). On GKE, `kubectl apply -k deploy/k8s` now also applies `heavy-policy.yaml`, a ValidatingAdmissionPolicy (Kubernetes 1.30 or later) that refuses privileged pods in `hangar-sandboxes` unless they run under a Kata runtime class; hangar's own sandbox pods are unprivileged unless heavy, so nothing changes for them. To use the tier, follow [gke.md §4a](gke.md#4a-the-heavy-tier-optional) (heavy node pool, kata-deploy, `HANGAR_HEAVY_RUNTIME_CLASS`) or [microvm.md](microvm.md) for E2B and Cube.
+**Optional** (off until a `heavy` tier is configured; [environments.md](environments.md#the-heavy-tier)). On GKE, `kubectl apply -k deploy/k8s` now also applies `heavy-policy.yaml`: ValidatingAdmissionPolicies (Kubernetes 1.30 or later) that refuse, in `hangar-sandboxes`, privileged containers and added capabilities unless the pod runs under a Kata runtime class, and host namespaces, `hostPath` volumes and `hostPort` under any runtime; and, cluster-wide, a RuntimeClass named `kata*` whose handler isn't `kata*`. hangar's own sandbox pods use none of these (heavy ones are privileged under Kata), so nothing changes for them. If anything else runs pods in `hangar-sandboxes`, check them first with `kubectl apply --dry-run=server`. To use the tier, follow [gke.md §4a](gke.md#4a-the-heavy-tier-optional) (heavy node pool, kata-deploy, `HANGAR_HEAVY_RUNTIME_CLASS`) or [microvm.md](microvm.md) for E2B and Cube.
 
 ### 11. Models, the canary and environment setup
 

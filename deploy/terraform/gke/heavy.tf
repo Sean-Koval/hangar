@@ -56,6 +56,32 @@ variable "heavy_disk_type" {
   default     = null
 }
 
+# The heavy nodes' own service account, with only what a node needs (review of #117): logs, metrics and pulling
+# hangar's images. A heavy sandbox is root in its VM, so the step from there to the node is one Kata/QEMU escape, and
+# a node on the Compute Engine default account (often Editor on the project, with the cloud-platform scope) would hand
+# that escape the whole project. GKE_METADATA keeps pods off this identity; this keeps the node itself small.
+# roles/container.defaultNodeServiceAccount: cloud.google.com/kubernetes-engine/docs/how-to/service-accounts.
+resource "google_service_account" "heavy_nodes" {
+  count        = var.enable_heavy_pool ? 1 : 0
+  account_id   = "hangar-heavy-nodes"
+  display_name = "hangar heavy sandbox nodes"
+}
+
+resource "google_project_iam_member" "heavy_nodes" {
+  count   = var.enable_heavy_pool ? 1 : 0
+  project = var.project_id
+  role    = "roles/container.defaultNodeServiceAccount"
+  member  = "serviceAccount:${google_service_account.heavy_nodes[0].email}"
+}
+
+resource "google_artifact_registry_repository_iam_member" "heavy_nodes_pull" {
+  count      = var.enable_heavy_pool ? 1 : 0
+  location   = google_artifact_registry_repository.hangar.location
+  repository = google_artifact_registry_repository.hangar.name
+  role       = "roles/artifactregistry.reader"
+  member     = "serviceAccount:${google_service_account.heavy_nodes[0].email}"
+}
+
 resource "google_container_node_pool" "heavy" {
   count    = var.enable_heavy_pool ? 1 : 0
   name     = "sandboxes-heavy"
@@ -73,7 +99,9 @@ resource "google_container_node_pool" "heavy" {
     spot         = var.heavy_spot
     disk_size_gb = var.heavy_disk_gb
     disk_type    = var.heavy_disk_type
-    oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+    # --- review(#117): its own least-privilege account (above), not the Compute Engine default
+    service_account = google_service_account.heavy_nodes[0].email
+    oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]
     labels = {
       "hangar.dev/runtime"                    = "heavy"
       "katacontainers.io/kata-runtime"        = "true"
@@ -92,6 +120,7 @@ resource "google_container_node_pool" "heavy" {
       mode = "GKE_METADATA"
     }
   }
+  depends_on = [google_project_iam_member.heavy_nodes, google_artifact_registry_repository_iam_member.heavy_nodes_pull]
 }
 
 output "heavy_pool" {
