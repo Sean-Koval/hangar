@@ -280,6 +280,40 @@ Settings:
 
 The webhook needs the `pull_request_review`, `check_run`, `check_suite` and `status` events ([§4](#4-trigger-from-github)): run `hangar setup github` again, or `hangar doctor --fix`.
 
+## 8. Experiments
+
+An experiment runs the same tasks under several configurations, each several times, so a tool outside hangar can
+compare them. It is a job of kind `experiment`; each trial is an ordinary job of its own (`source: experiment`,
+`deliver: none`).
+
+```yaml
+# skills-ab.yaml
+name: skills-ab
+environment: hangar
+tasks:
+  - {id: fix-retry, instructions: "Make the reaper retry a failed destroy.",
+     repo: https://github.com/Sean-Koval/hangar.git, verify: "uv run pytest -q tests/test_fleet.py"}
+variants:
+  control: {}
+  no-skills: {skills: []}
+  codex: {harness: codex, model: balanced}
+trials: 3
+trial_job_budget: {max_cost_usd: 3}
+budget: {max_cost_usd: 40}
+```
+
+```bash
+hangar experiment run skills-ab.yaml --wait   # or POST /api/experiments
+hangar experiment get job-1a2b3c4d             # the index: pins, and per trial its job, verify, grade
+hangar experiment export job-1a2b3c4d -o out/  # index.json and each trial's manifest.json and trace.json
+```
+
+Hangar pins the harness version, the model id and each task's base commit, mounts only the trial's harness, writes
+exactly the variant's skills and instructions, and keeps egress the same for every variant. It records what each
+trial ran with (its [manifest](api/manifest.schema.json)), what it did (its [trace](api/traces.md)) and its
+verification, and runs an optional `grader.command` in a clean sandbox on each trial's patch. It doesn't compare the
+variants: that is the sister tool's job. The details are in [spec 0014](specs/0014-sister-tool-interfaces.md#4-experiment-jobs-hangarexperimentv1).
+
 ## Settings
 
 | Variable | Default | |

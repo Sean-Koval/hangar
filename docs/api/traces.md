@@ -185,6 +185,11 @@ An export stops at 20,000 spans and events; `hangar.export.truncated=true` on th
 event log keeps the last `HANGAR_EVENTS_MAX_MB` (20 MB, two files) of events: older turns of a very long session have
 no tool spans left.
 
+Span status is set only on failure (`code: 2`, `ERROR`); a span that succeeded leaves it unset, as the conventions
+recommend. Event and tool-call times are when hangar read the line from the agent's run log: within a second when the
+log is followed live, else up to the poll interval (`HANGAR_SESSION_POLL_SECONDS`), so tool durations are close, not
+exact. Turn start and end times are exact.
+
 ## Example
 
 ```json
@@ -203,14 +208,12 @@ no tool spans left.
                       {"key": "gen_ai.operation.name", "value": {"stringValue": "invoke_agent"}},
                       {"key": "gen_ai.usage.output_tokens", "value": {"intValue": "1830"}}],
        "events": [{"timeUnixNano": "1760530080000000000", "name": "file.change",
-                   "attributes": [{"key": "hangar.file.path", "value": {"stringValue": "src/app.py"}}]}],
-       "status": {"code": 1}},
+                   "attributes": [{"key": "hangar.file.path", "value": {"stringValue": "src/app.py"}}]}]},
       {"traceId": "5b8efff798038103d269b633813fc60c", "spanId": "aa19b7ec3c1b1740",
        "parentSpanId": "eee19b7ec3c1b174", "name": "execute_tool Bash", "kind": 1,
        "startTimeUnixNano": "1760530010000000000", "endTimeUnixNano": "1760530012000000000",
        "attributes": [{"key": "hangar.kind", "value": {"stringValue": "tool.call"}},
                       {"key": "hangar.tool.kind", "value": {"stringValue": "shell"}},
                       {"key": "gen_ai.tool.name", "value": {"stringValue": "Bash"}},
-                      {"key": "hangar.tool.input", "value": {"stringValue": "pytest -q"}}],
-       "status": {"code": 1}}]}]}]}
+                      {"key": "hangar.tool.input", "value": {"stringValue": "pytest -q"}}]}]}]}]}
 ```
