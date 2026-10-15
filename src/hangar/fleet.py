@@ -20,6 +20,7 @@ from typing import Any
 
 import hangar.identity as identity  # --- identity
 import hangar.people as people  # --- identity
+from hangar import cloudcreds as cloudcreds  # --- egress
 from hangar import egress as egress  # --- egress
 from hangar import exchange, harden, images, isolation, observe  # --- observe, isolation, harden, images
 from hangar import fairness as fairness  # --- scale
@@ -174,6 +175,7 @@ class Fleet:
         # --- workstream F: git gateway. Grants for sandboxes in credential_mode: gateway (spec 0003).
         self.gateway = Gateway(self)
         self.egress = EgressProxy(self)  # --- egress: the hostname-allowlist proxy (egress_proxy.py)
+        self.cloud = cloudcreds.Issuer(self)  # --- egress: short-lived cloud credentials (cloudcreds.py)
         self.tier_down: dict[str, float] = {}  # --- providers-e2b: provider -> monotonic time it may be tried again
         # --- scale: B12. Workspace archives in the control plane's memory at once (snapshots, forks, restores).
         self.archive_memory = MemoryBudget(settings.workspace_transfer_mb * 1024 * 1024)
@@ -190,11 +192,13 @@ class Fleet:
         await self.reconciler.run(boot=True)  # --- reconciler: before sessions and jobs look at their sandboxes
         self.reconciler.start()
         self._reaper = asyncio.create_task(self._reaper_loop())
+        self.cloud.start()  # --- egress: renews sandboxes' cloud tokens
 
     async def stop(self) -> None:
         if self._reaper:
             self._reaper.cancel()
         await self.reconciler.stop()  # --- reconciler: destroys in flight get a moment to finish
+        await self.cloud.stop()  # --- egress
         for t in self._pack_builds.values():
             t.cancel()
         for p in self.providers.values():
@@ -795,6 +799,7 @@ class Fleet:
         for var, cred in spec.secrets.items():
             extra_env[var] = self.broker.sandbox_secret(cred)  # --- identity: refuses control-plane credentials
         extra_env.update(await egress.attach(self, prov, sb, spec))  # --- egress: HTTPS_PROXY in a proxied env
+        extra_env.update(await self.cloud.attach(prov, sb, spec))  # --- egress: cloud OIDC tokens, no stored keys
         # workstream E: the `hangar-agent` helper (context exchange), installed per sandbox: no image rebuild
         await exchange.install_helper(prov, sb, f"/home/{self.settings.sandbox_user}")
         prelude.append(exchange.PATH_LINE)

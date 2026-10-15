@@ -284,6 +284,9 @@ class Settings(BaseSettings):
     # and goes back to the agent (at most secret_scan_rounds fix turns); warn: job events only; off.
     secret_scan: Literal["block", "warn", "off"] = "block"
     secret_scan_rounds: int = 2
+    # --- egress: the OIDC issuer URL in the tokens hangar mints for sandboxes' cloud credentials (cloudcreds.py);
+    # default HANGAR_PUBLIC_URL. Must be https; AWS fetches <issuer>/.well-known/openid-configuration from it.
+    oidc_issuer: str | None = None
     # --- workstream G: a2a (spec 0011, docs/a2a.md) -------------------------
     a2a_enabled: bool = True  # agent card at /.well-known/agent-card.json, JSON-RPC at /a2a
     a2a_default_repo: str | None = None  # repo for A2A tasks that don't name one in their metadata

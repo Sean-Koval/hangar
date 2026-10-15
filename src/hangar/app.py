@@ -1076,6 +1076,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import egress  # --- egress: what a sandbox may reach; approved hosts, and revoking them
 
     egress.mount(app, h, A)
+    from hangar import cloudcreds  # --- egress: OIDC discovery and JWKS for sandboxes' cloud tokens
+
+    cloudcreds.mount(app, h, A)
     # --- observe: GET /metrics (admin or `metrics` tokens) and GET /api/usage
     from hangar import metrics, usage
 

@@ -262,6 +262,9 @@ def resolve(settings: Settings, spec: EnvSpec, repo: EgressSpec | None = None, h
                 notes.append(f"MCP server '{key}' ({r.text}) isn't on the egress allowlist: it comes from an "
                              "environment that neither sets egress nor belongs to an admin, and only an admin widens "
                              f"egress (egress.allow, or approve `{request_hint(r.host, r.port or 443)}`)")
+        from hangar.cloudcreds import egress_hosts  # its cloud's token exchange (cloudcreds.py)
+
+        rules += [Rule(h, False, None, "cloud") for h in egress_hosts(getattr(spec, "cloud", None))]
         if mode == "allowlist":  # none: the harness's hosts and approved requests only
             presets = _presets_for(env, mode)
             presets += [p for p in (repo.presets or [] if repo else []) if p not in presets]
