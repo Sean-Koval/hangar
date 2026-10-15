@@ -12,6 +12,8 @@ code:
   Sandboxes for the repo start from it, with everything installed.
 - **The supervisor** (`hangar-agent svc`): one command for the agent to see, start, restart and read the logs of the
   environment's processes. A process that exits is restarted, so the agent doesn't have to look after it.
+- **Services** (Postgres, Redis...) declared as images, run beside the sandbox and reachable at their name.
+- **Preview ports**: the sandbox's owner opens a declared port in their browser, through hangar, never publicly.
 
 ## The file
 
@@ -30,13 +32,21 @@ terminals:                       # long-running processes the supervisor keeps u
     ready: test -f /tmp/worker.ready   # ...or once this exits 0
     autostart: false             # declared, started when the agent asks: hangar-agent svc start worker
     restart: on-failure          # always (default) | on-failure | never
+services:                        # images beside the sandbox, reachable at their name (postgres:5432)
+  postgres:
+    image: postgres:17
+    port: 5432
+    env: {POSTGRES_PASSWORD: dev, PGDATA: /var/lib/postgresql/data/pgdata}
+    volumes: [/var/lib/postgresql/data]   # empty, writable directories
+ports:                           # the owner can open these in a browser, through hangar
+  - {port: 5173, name: web}
 verify: uv run pytest -q         # the check jobs run, unless the job names one
 build_secrets: [NPM_TOKEN]       # ids only; an admin maps each to a credential (see Build secrets)
 lockfiles: [vendor/*.lock]       # more files whose change means a rebuild
 ```
 
 Every field is optional. Each field the file sets replaces the environment's own: an environment spec takes the same
-`install`, `start`, `terminals` and `verify` fields, so a team can share defaults there and a repo can override them.
+`install`, `start`, `terminals`, `services`, `ports` and `verify` fields, so a team can share defaults there and a repo can override them.
 `hangar env check` validates a file against your hangar without saving or building anything:
 
 ```console
@@ -158,6 +168,83 @@ sandbox never sees any of them. The scan catches a value written as it is, not o
 - Builds are made from the default branch, as Cursor's are. A feature branch's new dependencies are the agent's to
   install, and it is told so.
 
+## Services
+
+Docker inside a gVisor sandbox is limited, so a service never runs inside the sandbox. It runs next to it, with the
+same isolation, and goes away with it. The sandbox reaches it at its name: `postgres:5432` above.
+
+- **Kubernetes:** a sidecar container in the sandbox's pod. It shares the pod's network (127.0.0.1, and its name
+  through the pod's `hostAliases`), its runtime class, and its hardening: uid 1000, no capabilities, no privilege
+  escalation, which GKE Sandbox's admission policy requires of every container. Its `cpus` and `memory_gb` (0.5 each
+  by default) count toward the pod, memory requested in full. It takes the sandbox's own network policy: it reaches
+  what the sandbox reaches (the internet, not other pods), and nothing reaches it from outside the pod.
+- **Docker:** a container on a network of the sandbox's own (`hangar-svc-<sandbox>`), with the sandbox attached to it
+  before it starts (gVisor can't take a network added later) and an `/etc/hosts` entry per service. hangar's own
+  network keeps sandboxes from reaching each other, so it can't carry this. The services' network is internal: no route
+  out, no metadata server, and nobody else's sandbox or services on it. The services run under the same runtime, as uid
+  1000, without capabilities, with `no-new-privileges`. They are removed with the sandbox; the reaper removes any whose
+  sandbox went away some other way.
+
+Services run as uid 1000, so give a database a writable data directory: `volumes` lists empty directories (an
+`emptyDir` on Kubernetes, a tmpfs on Docker). The official `postgres` image runs as any uid when `PGDATA` is a
+directory it can create, as in the example. `redis` and most others need nothing.
+
+Images must match `HANGAR_ENV_SERVICE_IMAGES`: by default Docker's official images (`postgres:17`, `redis`), directly
+or through `mirror.gcr.io/library/`, which GKE nodes pull without Docker Hub's rate limits. An admin adds a registry
+with a pattern such as `us-docker.pkg.dev/acme/services/**` (`*` stays within one path segment, `**` crosses them).
+Other images are left out, with a setup failure that names them. Hangar's own images (under `HANGAR_REGISTRY` or
+`HANGAR_IMAGE_PREFIX`: environments, and repo builds that hold their repo's checkout) are never a service, whatever
+the patterns say.
+
+The repo writes each service's `cpus` and `memory_gb`, so together a sandbox's services must fit
+`HANGAR_ENV_SERVICES_MAX_CPUS` and `HANGAR_ENV_SERVICES_MAX_MEMORY_GB` (2 and 2 GiB); the ones past that are left
+out, with a setup failure. That budget is what a node's packing must allow for on top of the sandbox: using all of
+it, a 2 vCPU / 4 GiB sandbox requests 2 vCPU and 6 GiB (`HANGAR_K8S_CPU_REQUEST_FRACTION=0.5`), so a node of
+[team-scale.md](team-scale.md) holds 7 such sandboxes (CPU-bound), not 14. Most repos declare none or one or two.
+
+The services are decided before the sandbox starts: those of the build it starts from, else the repo's file as its
+default branch was last seen, else the environment's. A service added in a commit starts with the next sandbox, and
+the agent is told so. A sandbox with services of its own starts cold: on Kubernetes it gets a SandboxTemplate per set of
+services (or per build), and on Docker a warm container can't join a network. Services that the environment itself
+declares are part of its own template and warm pool. The supervisor waits for the services to answer before it runs
+`start`, and `hangar-agent svc status` shows them. Forks don't get services yet. E2B doesn't run them, and its
+sandboxes get a setup failure saying so.
+
+## Preview ports
+
+A declared port (`ports:`) can be opened by the sandbox's owner in a browser. Nothing is public, and it never runs on
+hangar's own origin:
+
+```console
+$ hangar sb preview my-sandbox
+ 5173  web        https://5173-sb-1a2b3c4d.hangar-preview.example.net/__hangar/preview?t=...
+```
+
+- **One origin per port per sandbox:** `<port>-<sandbox>.<HANGAR_PREVIEW_DOMAIN>`. What a dev server serves (the
+  agent's HTML and scripts) can't reach the dashboard's token or another sandbox's preview.
+- **Owner-scoped.** `GET /api/sandboxes/{ref}/previews` (the owner's `user` token, or an admin's) gives a link per
+  port that works for two minutes, once. Opening it signs that browser in to that origin only: an HttpOnly cookie (`__Host-`
+  on https), signed and bound to the sandbox, the port and the person, valid `HANGAR_PREVIEW_SESSION_HOURS` (12).
+  Every request checks it again against the sandbox's owner as it is then. `curl -H "Authorization: Bearer $TOKEN"`
+  works too, with a `user` or admin token.
+- **Deny by default.** Only declared ports, never hangar-envd's, only while the sandbox runs. Links and refusals are
+  audited (`preview.link`, `preview.denied`, `preview.port.denied`).
+- **Nothing of hangar's reaches the app:** the proxy drops the `Authorization` header and its own cookie. It reaches
+  the port at the address the sandbox's hangar-envd proved, never loopback, link-local or another sandbox's
+  (the same proxy as [E2B's sandbox URLs](e2b.md)). HTTP and WebSockets both work.
+
+Set it up with wildcard DNS for the domain pointing at hangar (on GKE, a wildcard certificate for `*.<domain>` on
+hangar's ingress too: a preview's host is one label under the domain), then for example
+`HANGAR_PREVIEW_DOMAIN=hangar-preview.example.net`. On a laptop, `HANGAR_PREVIEW_DOMAIN=localhost` is enough: browsers
+resolve `*.localhost` to 127.0.0.1. Dev servers must listen on 0.0.0.0, and the agent is told so. Previews need
+hangar-envd (Docker and Kubernetes sandboxes); on Kubernetes, also the `allow-hangar-sandbox-ports` NetworkPolicy
+(`deploy/k8s/e2b.yaml`), since sandbox pods take no other ingress.
+
+**Give previews a registrable domain of their own**, not a subdomain of your company's or of hangar's host. The
+proxy drops hangar's credentials, but it can't tell the app's own cookies from others the browser sends: under
+`preview.example.com`, cookies your SSO or intranet set for `example.com` would reach the agent's app. A domain of its
+own (as `githubusercontent.com` is GitHub's) also keeps the agent's pages from being same-site with your other apps.
+
 ## The supervisor: `hangar-agent svc`
 
 ```console
@@ -206,6 +293,10 @@ reaches hangar's runs.
 | `HANGAR_ENV_BUILDS_KEEP` | 5 | Builds kept per repo, environment and provider (the active one is always kept) |
 | `HANGAR_ENV_BUILD_TIMEOUT_MINUTES` | 30 | Clone, install and capture, per build |
 | `HANGAR_ENV_BUILDS_CONCURRENCY` | 2 | Builds at once |
+| `HANGAR_ENV_SERVICE_IMAGES` | `*`, `docker.io/library/*`, `mirror.gcr.io/library/*` | Images services may use |
+| `HANGAR_ENV_SERVICES_MAX_CPUS`, `HANGAR_ENV_SERVICES_MAX_MEMORY_GB` | 2, 2 | What a sandbox's services may add up to |
+| `HANGAR_PREVIEW_DOMAIN` | unset (off) | `<port>-<sandbox>.<domain>` serves preview ports (a registrable domain of its own) |
+| `HANGAR_PREVIEW_SESSION_HOURS` | 12 | How long an opened preview stays signed in |
 
 ## REST
 
@@ -218,5 +309,6 @@ reaches hangar's runs.
 | `POST /api/envbuilds/{id}/rollback` | admin | Make it active, pinned |
 | `POST /api/envbuilds/unpin {repo, environment?, provider?}` | admin | Let new builds replace the active one again |
 | `POST /api/envbuilds/validate {content, repo?, environment?}` | member | Check a file; nothing is saved |
+| `GET /api/sandboxes/{ref}/previews` | owner, admin | Two-minute links to its preview ports |
 
 The environment, when not named, is the one a job for the repo would get.

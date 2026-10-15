@@ -250,7 +250,11 @@ def _glob(pattern: str) -> re.Pattern[str]:
 
 def service_image_allowed(settings: Settings, image: str) -> bool:
     """HANGAR_ENV_SERVICE_IMAGES: the images services may use. `*` stays within one path segment, so the default
-    `*` is Docker's official images (`postgres:17`, `redis@sha256:...`) and never `evil.example/x`."""
+    `*` is Docker's official images (`postgres:17`, `redis@sha256:...`) and never `evil.example/x`. Never hangar's own
+    (environments, and repo builds holding their repos' checkouts), whatever the patterns say."""
+    own = [f"{p.rstrip('/')}/" for p in (settings.registry, settings.image_prefix) if p]
+    if any(image.startswith(p) for p in own):
+        return False
     return any(_glob(p).match(image) for p in settings.env_service_images)
 
 

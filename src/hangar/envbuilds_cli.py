@@ -114,3 +114,23 @@ def register(env_app: typer.Typer) -> None:
             raise typer.Exit(1)
         typer.secho(f"{path}: valid" + (f" (extends {r['environment']})" if r.get("environment") else ""),
                     fg="green")
+
+
+def register_sb(sb_app: typer.Typer) -> None:
+    @sb_app.command("preview")
+    def sb_preview(sandbox: str, port: int | None = typer.Argument(None, help="One of its ports (default: all)."),
+                   open_: bool = typer.Option(False, "--open", help="Open it in your browser.")):
+        """Links to a sandbox's preview ports (its `ports:`), for you as its owner: each works for two minutes and
+        signs your browser in to that port."""
+        r = _cli()._call("GET", f"/api/sandboxes/{sandbox}/previews")
+        links = [p for p in r["previews"] if port is None or p["port"] == port]
+        if not links:
+            typer.echo("No preview ports: declare them under `ports:` in the repo's .hangar/environment.yaml"
+                       if port is None else f"port {port} isn't one of its preview ports")
+            raise typer.Exit(1)
+        for p in links:
+            typer.echo(f"{p['port']:>5}  {p.get('name') or '':10} {p['url']}")
+        if open_:
+            import webbrowser
+
+            webbrowser.open(links[0]["url"])

@@ -1269,6 +1269,7 @@ app.add_typer(_repo_app, name="repo")
 from hangar import envbuilds_cli as _envbuilds  # noqa: E402
 
 _envbuilds.register(env_app)
+_envbuilds.register_sb(sb_app)
 
 # ---------------------------------------------------------------------------- workstream steer (steer_cli.py)
 from hangar import steer_cli as _steer  # noqa: E402

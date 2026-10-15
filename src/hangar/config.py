@@ -429,6 +429,14 @@ class Settings(BaseSettings):
     # "us-docker.pkg.dev/acme/services/**".
     env_service_images: list[str] = Field(default_factory=lambda: [
         "*", "docker.io/library/*", "mirror.gcr.io/library/*"])
+    # --- envbuilds review: what a sandbox's services may add up to, on top of its own resources (each service's
+    # cpus and memory_gb are the repo's to write; memory is requested in full on Kubernetes: docs/team-scale.md).
+    env_services_max_cpus: float = Field(2.0, ge=0, le=32)
+    env_services_max_memory_gb: float = Field(2.0, ge=0, le=64)
+    # Preview ports (preview.py): `<port>-<sandbox>.<this domain>` reaches a sandbox's declared port, for its owner,
+    # through hangar. Needs wildcard DNS pointing at hangar; `localhost` on a laptop. Unset: previews are off.
+    preview_domain: str | None = None
+    preview_session_hours: float = Field(12, gt=0, le=168)  # how long an opened preview stays signed in
 
     @property
     def backup_interval_hours(self) -> float:
