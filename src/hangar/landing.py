@@ -54,7 +54,9 @@ PERMISSIONS = {"contents": "write", "pull_requests": "write"}  # what the App's 
 PACKET = "<!-- hangar:packet -->"
 OK = {"success", "neutral", "skipped"}
 FAILED = {"failure", "timed_out", "startup_failure", "cancelled", "action_required", "error", "stale"}
-DEFAULT_RISK = (".github/**",)  # workflows, CODEOWNERS and the like: always high risk
+# Always high risk: workflows, CODEOWNERS and the like; --- integ3 (review #102): and `.hangar/`, whose
+# environment.yaml install and start commands run in every build (with its build secrets) and every sandbox
+DEFAULT_RISK = (".github/**", ".hangar/**")
 CODEOWNERS = (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS")  # GitHub's search order
 CACHE_SECONDS = 300  # required checks and CODEOWNERS per (repo, base)
 MAX_FILES = 300
@@ -148,7 +150,7 @@ _DOCS = re.compile(r"(^|/)docs?/|\.(md|mdx|rst|txt|adoc)$", re.I)
 
 
 def risk(files: list[str], globs: list[str] | None) -> tuple[str, list[str]]:
-    """(tier, the paths that made it high). High: any path matching the policy's `risk_paths` or `.github/**`;
+    """(tier, the paths that made it high). High: any path matching the policy's `risk_paths` or DEFAULT_RISK;
     low: only docs and tests; normal otherwise."""
     pats = [*DEFAULT_RISK, *(globs or [])]
     high = [f for f in files if any(matches(g, f) for g in pats)]
@@ -890,6 +892,9 @@ class Landing:
         if demos:
             out.append("- **Recorded demos:** " + ", ".join(
                 f"[{_code(a.path)}]({base}/api/jobs/{job.id}/artifacts/{a.turn}/{quote(a.path)})" for a in demos[:10]))
+        from hangar import autoinstall  # --- autoinstall: an env setup's PR: what was validated, mocked, missing
+
+        out += autoinstall.packet_lines(svc, job)
         if policy and policy.land == "auto_after_approval":
             who = ", ".join(f"@{a}" for a in policy.approvers or []) or "a code owner"
             out.append(f"- **Landing:** an approval from {who}" + (" or a code owner" if policy.approvers else "")

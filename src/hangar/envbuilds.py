@@ -88,6 +88,9 @@ KV_BUILD = "envbuild:"
 KV_HEAD = "envbuild-head:"
 KV_SEEN = "envbuild-seen:"
 LABEL = "hangar.build"  # on a build's own sandbox: it never uses (or schedules) builds itself
+# --- autoinstall: on agent-led setup's validation sandbox, which starts clean (no build) from a proposed config that
+# hangar applies itself; its value is a nonce naming that config (autoinstall.py)
+VALIDATE_LABEL = "hangar.env-validate"
 PROVIDERS = ("docker", "kubernetes")  # where a build can be captured as an image
 LOG_TAIL = 16_000
 FAILURES_MAX = 20
@@ -302,7 +305,7 @@ class EnvBuilds:
     async def _pick(self, spec: EnvSpec, pname: str, harness: str | None, sb: Sandbox,
                     stage: Callable[[str], None] | None) -> Pick:
         repo = repo_key(sb.repo)
-        if not repo or LABEL in sb.labels or self._supported(pname):
+        if not repo or LABEL in sb.labels or VALIDATE_LABEL in sb.labels or self._supported(pname):  # autoinstall
             return Pick()
         b = self.active(pname, spec.name, repo)
         if b is None or not b.image:
@@ -379,7 +382,7 @@ class EnvBuilds:
         """Read the repo's config from the checkout, start what it declares under the supervisor, tell the agent
         about its environment, and schedule a rebuild when the build is behind. Never fails the create: problems are
         recorded (sb.info["setup_failures"]) and shown to the agent."""
-        if not self.settings.env_builds or LABEL in sb.labels:
+        if not self.settings.env_builds or LABEL in sb.labels or VALIDATE_LABEL in sb.labels:  # --- autoinstall
             return
         try:
             await self._after_setup(prov, sb, spec, harness, stage)
@@ -894,6 +897,26 @@ def environment_for(jobs: Any, repo: str, environment: str | None) -> str:
     return env
 
 
+def validate(jobs: Any, content: str, repo: str | None = None, environment: str | None = None) -> dict[str, Any]:
+    """`POST /api/envbuilds/validate`: a config checked the way hangar will use it (repoenv.check), with the repo's
+    allowed environments and the build secret ids mapped for it. Agent-led setup checks its proposals with this too.
+    """
+    from hangar import buildsecrets
+    from hangar.repopolicy import RepoPolicies
+
+    fleet = jobs.fleet
+    allowed = jobs.repo_envs(repo) if repo else []
+    ids = None
+    try:
+        env = environment or repoenv.parse(content).extends
+        if env and env in fleet.catalog.names():
+            ids = set(buildsecrets.mapping(fleet.catalog.get(env), RepoPolicies(fleet.store).get(repo)))
+    except repoenv.RepoEnvError:
+        pass
+    return repoenv.check(content, fleet.settings, fleet.catalog, repo=repo, allowed_envs=allowed,
+                         environment=environment, secret_ids=ids)
+
+
 def view(b: Build, h: Head | None = None) -> dict[str, Any]:
     d = b.model_dump(mode="json")
     d["version"] = b.version
@@ -971,20 +994,7 @@ def mount(app: Any, h: Any, admin: Any, member: Any) -> None:
         content = body.get("content")
         if not isinstance(content, str):
             raise HTTPException(400, "content: the .hangar/environment.yaml text")
-        repo = body.get("repo")
-        allowed = h.jobs.repo_envs(repo) if repo else []
-        ids = None
-        from hangar import buildsecrets
-        from hangar.repopolicy import RepoPolicies
-
-        try:
-            env = body.get("environment") or repoenv.parse(content).extends
-            if env and env in fleet.catalog.names():
-                ids = set(buildsecrets.mapping(fleet.catalog.get(env), RepoPolicies(fleet.store).get(repo)))
-        except repoenv.RepoEnvError:
-            pass
-        return repoenv.check(content, fleet.settings, fleet.catalog, repo=repo, allowed_envs=allowed,
-                             environment=body.get("environment"), secret_ids=ids)
+        return validate(h.jobs, content, body.get("repo"), body.get("environment"))  # --- autoinstall: shared
 
     @app.post("/api/envbuilds/{build_id}/rollback")
     async def builds_rollback(build_id: str, who: str = admin):

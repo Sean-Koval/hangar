@@ -471,6 +471,13 @@ class Settings(BaseSettings):
     # cpus and memory_gb are the repo's to write; memory is requested in full on Kubernetes: docs/team-scale.md).
     env_services_max_cpus: float = Field(2.0, ge=0, le=32)
     env_services_max_memory_gb: float = Field(2.0, ge=0, le=64)
+    # --- autoinstall: agent-led environment setup (`hangar env setup`, autoinstall.py, docs/environments.md).
+    env_setup_retries: int = Field(5, ge=0, le=10)  # setup turns after a failed validation, each with its output
+    env_setup_max_cost_usd: float = Field(30.0, gt=0)  # the job budget when the job and the repo's policy set none
+    env_setup_max_turns: int = Field(16, ge=2, le=100)
+    env_setup_validate_minutes: int = Field(45, ge=5, le=240)  # one validation: sandbox, install, every command
+    env_setup_models: dict[str, str] = Field(default_factory=dict)  # harness -> model or policy, instead of frontier
+    env_setup_label: str = "hangar-env-setup"  # an issue (GitHub, Jira) with this label starts an env setup
     # Preview ports (preview.py): `<port>-<sandbox>.<this domain>` reaches a sandbox's declared port, for its owner,
     # through hangar. Needs wildcard DNS pointing at hangar; `localhost` on a laptop. Unset: previews are off.
     preview_domain: str | None = None

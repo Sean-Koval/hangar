@@ -29,7 +29,7 @@ hangar repo set acme/app --land auto_after_approval --approver alice --risk-path
 | `land` | `auto_after_approval`: an approval of the PR's head by an approver or code owner, with green required checks, lands it ([landing.md](landing.md)). `manual` or unset: a person merges. |
 | `approvers` | GitHub logins whose approval lands the repo's agent PRs (`--approver`, repeated). |
 | `merge_method` | `squash` (default), `merge` or `rebase`, for PRs hangar lands. |
-| `risk_paths` | Globs (`infra/**`) that make a PR high risk in its [review packet](landing.md#6-the-review-packet), on top of `.github/**`. |
+| `risk_paths` | Globs (`infra/**`) that make a PR high risk in its [review packet](landing.md#6-the-review-packet), on top of `.github/**` and `.hangar/**`. |
 | `require_stale_dismissal` | `false` lets hangar arm auto-merge on a base branch that doesn't dismiss stale approvals on a push. Unset (the default) it refuses ([landing.md](landing.md#3-the-branch-protection-to-enable)). |
 
 The repo is `owner/repo` for GitHub (any URL form, any case), or the git URL for another host.

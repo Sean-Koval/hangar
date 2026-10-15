@@ -1110,6 +1110,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     repopolicy.mount(app, h, A)
     envbuilds.mount(app, h, A, U)  # --- envbuilds: repo builds (hangar env builds) and config checks
+    from hangar import autoinstall  # --- autoinstall: POST /api/env/setup (hangar env setup)
+
+    autoinstall.mount(app, h, J)
     from hangar import preview  # --- envbuilds: links to a sandbox's preview ports
 
     preview.mount(app, h, U)

@@ -33,6 +33,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from hangar import autoinstall as autoinstall  # --- autoinstall: an issue labelled for an env setup
 from hangar import intake
 from hangar.exchange import open_question
 from hangar.github import parse_repo, verify_signature
@@ -786,7 +787,9 @@ class JiraFrontDoor:
         req = SubmitJob(instructions=instructions, title=f"{key}: {summary}"[:200], repo=url,
                         environment=proj.environment, context=context,
                         idempotency_key=f"jira-delivery:{delivery}" if delivery else None,
-                        labels={"jira.issue": key, "jira.project": project, intake.TRACKER: ref})
+                        labels={"jira.issue": key, "jira.project": project, intake.TRACKER: ref,
+                                **autoinstall.kind_labels(svc.settings, [  # --- autoinstall: an env setup
+                                    str(x) for x in fields.get("labels") or []])})
         res = intake.submit(svc, req, source="jira", ref=ref, requester=requester, person=person,
                             trusted=person is not None, who=who)
         job = svc._jobs.get(res.get("job") or "")

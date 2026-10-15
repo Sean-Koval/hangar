@@ -421,7 +421,8 @@ class Job(BaseModel):
     title: str
     instructions: str
     source: Literal["api", "mcp", "cli", "github", "webhook", "schedule", "slack", "a2a",
-                    "jira", "github-projects"] = "api"  # --- intake
+                    "jira", "github-projects",
+                    "env-setup"] = "api"  # --- intake; --- autoinstall: an env setup's goal and setup jobs
     source_ref: str | None = None  # e.g. "github:owner/repo#12"
     requester: str = "system"
     owner: str | None = None  # token id ("tok-…"), "admin", or "github:<login>"; jobs-scoped tokens see only theirs
