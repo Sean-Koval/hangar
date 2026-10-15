@@ -194,7 +194,8 @@ Sandboxes with Docker inside, as Kata microVMs, and the `large` and `xlarge` pro
    Secret Manager secret of its access token in `dockerhub_token_secret`, or anonymously), then
    `HANGAR_HEAVY_MIRROR: "true"` and `HANGAR_HEAVY_MIRROR_UPSTREAM` set to the output `dockerhub_mirror`. Heavy
    sandboxes pull Docker Hub images through hangar's read-only mirror, which reads that repository with hangar's own
-   service account.
+   service account. Every heavy sandbox can pull whatever that Docker Hub account can, so use one with **no private
+   repositories**.
 5. **Check it:** `bash scripts/acceptance/gke.sh --only heavy` brings up a Compose stack with Postgres and runs a
    Testcontainers test in a heavy sandbox.
 
