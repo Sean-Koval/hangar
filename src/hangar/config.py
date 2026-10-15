@@ -267,6 +267,19 @@ class Settings(BaseSettings):
     gateway_credential: str | None = None  # upstream credential when the sandbox has no git credential of its own
     gateway_max_push_mb: int = 512
     gateway_timeout_seconds: float = 120.0  # upstream connect/read timeout (per read, not per request)
+    # --- egress: hostname allowlists (egress.py, docs/security.md#egress) ----
+    # The mode of environments that don't set `egress.mode`: open (the public internet, as before), allowlist or none.
+    egress_default: Literal["open", "allowlist", "none"] = "open"
+    # The egress proxy's port. On GKE it listens on HANGAR_EGRESS_HOST (default HANGAR_GATEWAY_HOST, then HANGAR_HOST)
+    # when HANGAR_EGRESS_URL is set; on Docker on the egress network's gateway address, when a sandbox needs it.
+    egress_port: int = 3128
+    egress_host: str | None = None
+    # URL Kubernetes sandboxes reach the proxy at, e.g. http://hangar-gateway.hangar.svc:3128 (deploy/k8s/gateway.yaml).
+    egress_url: str | None = None
+    # Hosts the proxy may connect to at private addresses (an internal package mirror). Loopback and link-local
+    # addresses (the metadata servers) are refused regardless.
+    egress_private_hosts: list[str] = Field(default_factory=list)
+    egress_max_connections_per_sandbox: int = 128  # one person's 10 sandboxes stay well under MAX_CONNECTIONS
     # --- workstream G: a2a (spec 0011, docs/a2a.md) -------------------------
     a2a_enabled: bool = True  # agent card at /.well-known/agent-card.json, JSON-RPC at /a2a
     a2a_default_repo: str | None = None  # repo for A2A tasks that don't name one in their metadata

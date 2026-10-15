@@ -306,6 +306,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await observe.start(h.settings, redact=h.broker.redact)  # --- observe: OTEL_* traces, /metrics
         await h.fleet.start()
         await h.fleet.gateway.start()  # workstream F: the git gateway's own listener (HANGAR_GATEWAY_PORT)
+        h.fleet.egress.activity = h.sessions.activity  # --- egress: denied connections show in the session
         await h.sessions.start()  # first: jobs look up their sessions
         await h.jobs.start()
         await h.triggers.start()  # after jobs: it expires approvals and submits scheduled jobs
@@ -1072,6 +1073,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     backup.mount(app, h, A)
     drain.mount(app, h, A)  # --- reconciler: POST/GET/DELETE /api/admin/drain (power.sh down)
+    from hangar import egress  # --- egress: what a sandbox may reach; approved hosts, and revoking them
+
+    egress.mount(app, h, A)
     # --- observe: GET /metrics (admin or `metrics` tokens) and GET /api/usage
     from hangar import metrics, usage
 

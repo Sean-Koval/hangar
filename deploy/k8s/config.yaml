@@ -20,6 +20,11 @@ data:
   # Git credential gateway (docs/security.md): jobs and sessions push through hangar, no GitHub token in sandboxes.
   # HANGAR_GATEWAY_URL: "http://hangar-gateway.hangar.svc:8788"
   # HANGAR_GATEWAY_CREDENTIAL: "github-app"  # vault credential (github_app or git_token) used upstream
+  # Egress allowlists (docs/security.md#egress-allowlists): sandboxes of an `allowlist`/`none` environment reach the
+  # internet only through hangar's egress proxy on the gateway Service. HANGAR_EGRESS_DEFAULT applies to environments
+  # that don't set egress.mode.
+  # HANGAR_EGRESS_URL: "http://hangar-gateway.hangar.svc:3128"
+  # HANGAR_EGRESS_DEFAULT: "allowlist"
 ---
 # Create the real secret out of band (never commit it):
 #   kubectl -n hangar create secret generic hangar \

@@ -1,8 +1,10 @@
-# Git credential gateway (docs/security.md, spec 0003). Sandboxes push and fetch through the control plane on
-# its own port, 8788, so the GitHub token never enters a sandbox. Enable it with HANGAR_GATEWAY_URL in config.yaml.
+# Git credential gateway and egress proxy (docs/security.md, spec 0003). Sandboxes push and fetch through the control
+# plane on its own port, 8788, so the GitHub token never enters a sandbox; sandboxes of an `allowlist`/`none`
+# environment reach the internet only through the egress proxy on 3128. Enable them with HANGAR_GATEWAY_URL and
+# HANGAR_EGRESS_URL in config.yaml.
 #
-# The gateway port is cluster-internal: the Ingress only routes to the main port (8787), and only sandboxes need
-# to reach this Service.
+# Both ports are cluster-internal: the Ingress only routes to the main port (8787), and only sandboxes need to reach
+# this Service.
 apiVersion: v1
 kind: Service
 metadata:
@@ -10,7 +12,7 @@ metadata:
   namespace: hangar
 spec:
   selector: {app: hangar}
-  ports: [{name: gateway, port: 8788, targetPort: gateway}]
+  ports: [{name: gateway, port: 8788, targetPort: gateway}, {name: egress, port: 3128, targetPort: egress}]
 ---
 # Let sandboxes reach the gateway, and nothing else of the control plane.
 #
@@ -33,3 +35,27 @@ spec:
           podSelector:
             matchLabels: {app: hangar}
       ports: [{protocol: TCP, port: 8788}]
+---
+# --- egress: sandboxes of an `allowlist`/`none` environment carry dev.hangar/egress=proxied (hangar sets it on their
+# SandboxTemplate's pods). sandbox-network.yaml's internet baseline leaves them out, so all they may reach is the git
+# gateway (above) and the egress proxy on hangar's pods (this policy). No DNS: kube-dns resolves any name by asking the
+# internet, so a sandbox that may query it can send data out in the names it looks up. Their pods have no resolver and
+# find hangar's Services in /etc/hosts (egress.k8s_pod_dns); the proxy resolves everything else. Their SandboxTemplate
+# also carries the same rules as its managed `networkPolicy`, so Agent Sandbox's default policy, which allows the
+# public internet, isn't applied to them. The proxy checks every connection's host against the sandbox's allowlist.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-egress-proxied
+  namespace: hangar-sandboxes
+spec:
+  podSelector:
+    matchLabels: {dev.hangar/egress: proxied}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: hangar}
+          podSelector:
+            matchLabels: {app: hangar}
+      ports: [{protocol: TCP, port: 3128}]

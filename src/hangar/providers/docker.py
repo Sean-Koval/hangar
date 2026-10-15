@@ -25,7 +25,7 @@ from hangar.harnesses import PACK_ROOT
 from hangar.models import ExecResult, Sandbox, SandboxState
 from hangar.providers._build import docker_build
 from hangar.providers.base import Capabilities, LogFn, OutputTail, Provider, ProviderError, TerminalStream
-from hangar.providers.docker_net import Network, joined, network  # --- isolation
+from hangar.providers.docker_net import EGRESS_NAME, Network, joined, network, network_for  # --- isolation, egress
 
 MAX_OUTPUT = 256 * 1024
 LABEL = "dev.hangar.sandbox"
@@ -183,7 +183,8 @@ class DockerProvider(Provider):
         return await docker_build(ctx, tag, log=log)
 
     def _run_kwargs(self, name: str, image: str, spec_resources, labels: dict[str, str], hostname: str,
-                    packs: dict[str, str] | None = None) -> dict:
+                    packs: dict[str, str] | None = None, net: str | None = None,
+                    egress_ip: str | None = None) -> dict:
         kw = dict(
             image=image,
             name=name,
@@ -199,12 +200,16 @@ class DockerProvider(Provider):
         )
         if self.settings.docker_runtime:
             kw["runtime"] = self.settings.docker_runtime
-        kw["network"] = network(self.settings)  # --- isolation: hangar's own network unless one is named
+        kw["network"] = net or network(self.settings)  # --- isolation: hangar's own network unless one is named
         # workstream F: on Linux, host.docker.internal (the git gateway on the host) needs an explicit mapping
         if "host.docker.internal" in (self.settings.gateway_url or ""):
             kw["extra_hosts"] = {"host.docker.internal": "host-gateway"}
-        # --- envd: the daemon's port on loopback too, for hosts that can't route to container IPs (Docker Desktop)
-        if self.envd.enabled and kw["network"] not in ("host", "none"):
+        egress_net = kw["network"] == EGRESS_NAME
+        if egress_net:  # --- egress: no route out; hangar relays the git gateway on the network's gateway address
+            kw["extra_hosts"] = {"host.docker.internal": egress_ip} if egress_ip else {}
+        # --- envd: the daemon's port on loopback too, for hosts that can't route to container IPs (Docker Desktop).
+        # Not on the egress network: it publishes nothing (internal), and the host reaches the container's IP.
+        if self.envd.enabled and kw["network"] not in ("host", "none") and not egress_net:
             kw["ports"] = {f"{ENVD_PORT}/tcp": ("127.0.0.1", None)}
         if packs:
             kw["mounts"] = [{"Type": "image", "Source": ref, "Target": f"{PACK_ROOT}/{n}", "ReadOnly": True}
@@ -227,28 +232,40 @@ class DockerProvider(Provider):
                 if c.name.startswith("hangar-pool-") and c.labels.get(POOL_LABEL) != image:
                     await asyncio.to_thread(c.remove, force=True)
             # --- isolation: members started on another network (before hangar had its own) are replaced too
-            alive = [c for c in pool if c.status in ("running", "created") and joined(c.attrs, network(self.settings))]
+            net = network_for(self.settings, spec)  # --- egress: or since the environment's egress mode changed
+            alive = [c for c in pool if c.status in ("running", "created") and joined(c.attrs, net)]
             for c in pool:
                 if c not in alive:
                     await asyncio.to_thread(c.remove, force=True)
             for c in alive[max(0, spec.warm_pool):]:  # scaled down (e.g. a schedule's hours ended)
                 await asyncio.to_thread(c.remove, force=True)
+            ip = None
             if self.network and spec.warm_pool > len(alive):
-                await self.network.ensure()  # --- isolation
+                ip = await self._ensure_net(net)  # --- isolation, egress
             for _ in range(max(0, spec.warm_pool - len(alive))):
                 name = f"hangar-pool-{spec.name}-{int(time.time() * 1000) % 10**8}"
                 kw = self._run_kwargs(name, image, spec.resources, {POOL_LABEL: image, "dev.hangar.env": spec.name},
-                                      hostname=spec.name, packs=spec.packs)
+                                      hostname=spec.name, packs=spec.packs, net=net, egress_ip=ip)
                 await asyncio.to_thread(self.client.containers.run, **kw)
 
-    async def _claim_warm(self, image: str):
+    async def _ensure_net(self, net: str) -> str | None:
+        """--- egress: make sure the network exists; for the egress network, its gateway address (for the git
+        gateway's host name in the sandbox)."""
+        if self.network is None:
+            return None
+        if net == EGRESS_NAME:
+            return await self.network.egress_gateway()
+        await self.network.ensure()
+        return None
+
+    async def _claim_warm(self, image: str, net: str | None = None):
         async with self._pool_lock:
             pool = await asyncio.to_thread(
                 self.client.containers.list,
                 filters={"label": f"{POOL_LABEL}={image}", "status": "running", "name": "hangar-pool-"},
             )
             pool = [c for c in pool if c.name.startswith("hangar-pool-")
-                    and joined(c.attrs, network(self.settings))]  # --- isolation
+                    and joined(c.attrs, net or network(self.settings))]  # --- isolation, egress
             if not pool:
                 return None
             # Rename inside the lock so two concurrent claims can never take the same container.
@@ -259,7 +276,8 @@ class DockerProvider(Provider):
     # ------------------------------------------------------------------ lifecycle
     async def create(self, sandbox: Sandbox, image: str, spec: EnvSpec | None = None) -> None:
         name = f"hangar-{sandbox.id}"
-        warm = await self._claim_warm(image) if spec and spec.warm_pool else None
+        net = network_for(self.settings, spec)  # --- egress
+        warm = await self._claim_warm(image, net) if spec and spec.warm_pool else None
         if warm is not None:
             # Labels are immutable in Docker; pool membership is the name prefix + label, so a
             # rename takes the container out of the pool and the store becomes the source of truth.
@@ -277,10 +295,9 @@ class DockerProvider(Provider):
             sandbox.info["pool_image"] = image
             return
         labels = {LABEL: sandbox.id, "dev.hangar.env": sandbox.environment}
-        if self.network:
-            await self.network.ensure()  # --- isolation
+        ip = await self._ensure_net(net)  # --- isolation, egress
         kw = self._run_kwargs(name, image, sandbox.resources, labels, hostname=sandbox.name,
-                              packs=spec.packs if spec else None)
+                              packs=spec.packs if spec else None, net=net, egress_ip=ip)
         try:
             c = await asyncio.to_thread(self.client.containers.run, **kw)
         except ImageNotFound as e:

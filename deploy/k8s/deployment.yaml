@@ -36,7 +36,8 @@ spec:
       containers:
         - name: hangar
           image: REGION-docker.pkg.dev/PROJECT_ID/hangar/control-plane:latest
-          ports: [{containerPort: 8787, name: http}, {containerPort: 8788, name: gateway}]  # gateway: gateway.yaml
+          ports: [{containerPort: 8787, name: http}, {containerPort: 8788, name: gateway},
+                  {containerPort: 3128, name: egress}]  # gateway, egress: gateway.yaml
           envFrom:
             - configMapRef: {name: hangar}
             # Site settings that deploy/gke/up.sh never overwrites. Optional: `hangar config set` / `hangar setup`

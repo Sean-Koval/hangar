@@ -570,10 +570,12 @@ class Gateway:
         if s.gateway_url and s.gateway_port:
             self._server = _Server(self.asgi_app(), s.gateway_host or s.host, s.gateway_port)
             self._server.start()
+        await self.fleet.egress.start()  # --- egress: the proxy's listeners live and die with the gateway's
 
     async def stop(self) -> None:
         if self._server:
             await self._server.stop()
+        await self.fleet.egress.stop()  # --- egress
         if self._client is not None:
             with contextlib.suppress(Exception):
                 await self._client.aclose()

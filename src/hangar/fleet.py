@@ -20,6 +20,7 @@ from typing import Any
 
 import hangar.identity as identity  # --- identity
 import hangar.people as people  # --- identity
+from hangar import egress as egress  # --- egress
 from hangar import exchange, harden, images, isolation, observe  # --- observe, isolation, harden, images
 from hangar import fairness as fairness  # --- scale
 from hangar import metrics as metrics  # --- reconciler
@@ -27,6 +28,7 @@ from hangar import reconciler as reconciler  # --- reconciler
 from hangar import teamcreds as teamcreds  # --- teamcreds
 from hangar.broker import AUTH_FILE_LIMIT, Broker, CredentialError
 from hangar.config import Settings
+from hangar.egress_proxy import EgressProxy  # --- egress
 from hangar.envspec import BuildContext, EnvCatalog, EnvSpec, render, repo_dirname, warm_pool_now
 from hangar.gateway import Gateway
 from hangar.harnesses import (
@@ -171,6 +173,7 @@ class Fleet:
         self.closing = asyncio.Event()
         # --- workstream F: git gateway. Grants for sandboxes in credential_mode: gateway (spec 0003).
         self.gateway = Gateway(self)
+        self.egress = EgressProxy(self)  # --- egress: the hostname-allowlist proxy (egress_proxy.py)
         self.tier_down: dict[str, float] = {}  # --- providers-e2b: provider -> monotonic time it may be tried again
         # --- scale: B12. Workspace archives in the control plane's memory at once (snapshots, forks, restores).
         self.archive_memory = MemoryBudget(settings.workspace_transfer_mb * 1024 * 1024)
@@ -791,6 +794,7 @@ class Fleet:
             extra_env["HANGAR_HARNESS"] = h.name
         for var, cred in spec.secrets.items():
             extra_env[var] = self.broker.sandbox_secret(cred)  # --- identity: refuses control-plane credentials
+        extra_env.update(await egress.attach(self, prov, sb, spec))  # --- egress: HTTPS_PROXY in a proxied env
         # workstream E: the `hangar-agent` helper (context exchange), installed per sandbox: no image rebuild
         await exchange.install_helper(prov, sb, f"/home/{self.settings.sandbox_user}")
         prelude.append(exchange.PATH_LINE)

@@ -32,7 +32,8 @@ current: contextvars.ContextVar[Principal | None] = contextvars.ContextVar("hang
 # Environment fields that widen what a sandbox reaches or weaken its isolation: vault secrets mapped into it, an
 # arbitrary registry image (prebuilt or as the build's base), a runtime class (runc instead of gVisor), and the git
 # credential mode (direct puts the git token in the sandbox instead of the gateway).
-ADMIN_FIELDS = ("secrets", "image", "base", "runtime_class", "credential_mode")
+ADMIN_FIELDS = ("secrets", "image", "base", "runtime_class", "credential_mode",
+                "egress")  # --- egress: what the sandbox may reach on the internet
 
 
 class Forbidden(PermissionError):

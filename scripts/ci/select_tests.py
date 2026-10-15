@@ -56,7 +56,8 @@ PATHS: list[tuple[str, list[str] | str]] = [
     (".dockerignore", []),
     (".gitignore", []),
     ("deploy/terraform/*", []),  # the terraform job
-    ("deploy/*", ["tests/test_k8s_network.py", "tests/test_sweep_durability.py", "tests/test_up_gke.py"]),
+    ("deploy/*", ["tests/test_k8s_network.py", "tests/test_sweep_durability.py", "tests/test_up_gke.py",
+                  "tests/test_egress.py"]),  # --- egress: reads the NetworkPolicies too
     ("scripts/acceptance/*", ["tests/test_acceptance_script.py"]),
     ("src/hangar/ui/*", ["tests/test_app.py"]),
     ("envs/*", "envs"),

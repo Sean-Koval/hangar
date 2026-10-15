@@ -35,6 +35,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from hangar.egress import EgressSpec  # --- egress
 from hangar.harnesses import HARNESSES, McpServer, get_harness, pack_script, pack_stage
 from hangar.models import Resources
 
@@ -131,6 +132,9 @@ class EnvSpec(BaseModel):
     # --- frontdoor: the check jobs in this environment run when neither the job nor its repo's policy names one
     # (repopolicy.py), e.g. "uv run pytest -q". Run in the repo checkout; "" means no check.
     verify: str | None = Field(None, max_length=2000)
+    # --- egress: what sandboxes may reach on the internet: {mode: open|allowlist|none, presets: [...], allow: [...]}
+    # (egress.py). Unset: HANGAR_EGRESS_DEFAULT. Needs an admin to set.
+    egress: EgressSpec | None = None
     source_dir: Path | None = Field(default=None, exclude=True)
     # Resolved by the fleet before a provider sees the spec: harness name -> pack image to mount read-only.
     packs: dict[str, str] = Field(default_factory=dict, exclude=True)
