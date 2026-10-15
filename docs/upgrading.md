@@ -496,10 +496,14 @@ roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: hangar-deploy}
 subjects:
   - {kind: User, name: hangar-deploy@$PROJECT.iam.gserviceaccount.com}
 EOF
-# Only jobs in the production environment (subject repo:OWNER/REPO:environment:production) may act as it
-gcloud iam service-accounts add-iam-policy-binding "hangar-deploy@$PROJECT.iam.gserviceaccount.com" --project "$PROJECT" \
-  --role roles/iam.workloadIdentityUser \
-  --member "principal://iam.googleapis.com/projects/$NUM/locations/global/workloadIdentityPools/github/subject/repo:$REPO:environment:production"
+# Only jobs in the production environment may act as it. GitHub's subject for them is repo:OWNER/REPO:environment:production,
+# or repo:OWNER@OWNER_ID/REPO@REPO_ID:environment:production for repositories created after 2026-07-15: bind both.
+REPO_ID=$(gh api "repos/$REPO" --jq .id); OWNER_ID=$(gh api "repos/$REPO" --jq .owner.id)
+for subject in "repo:$REPO:environment:production" "repo:${REPO%%/*}@$OWNER_ID/${REPO#*/}@$REPO_ID:environment:production"; do
+  gcloud iam service-accounts add-iam-policy-binding "hangar-deploy@$PROJECT.iam.gserviceaccount.com" --project "$PROJECT" \
+    --role roles/iam.workloadIdentityUser \
+    --member "principal://iam.googleapis.com/projects/$NUM/locations/global/workloadIdentityPools/github/subject/$subject"
+done
 gh secret set GCP_DEPLOY_SERVICE_ACCOUNT --env production --body "hangar-deploy@$PROJECT.iam.gserviceaccount.com"
 gh secret set GKE_CLUSTER --env production --body hangar
 gh secret set GKE_LOCATION --env production --body "$(terraform -chdir=deploy/terraform/gke output -raw get_credentials | sed -E 's/.*--zone ([^ ]+).*/\1/')"
@@ -507,7 +511,7 @@ gh secret set HANGAR_URL --env production --body "https://<your hangar>"
 hangar token create deploy --scope admin | tail -1 | gh secret set HANGAR_DEPLOY_TOKEN --env production
 ```
 
-Moving from an earlier setup of this workflow: set the four secrets above with `--env production`, delete the repository copies (`gh secret delete HANGAR_DEPLOY_TOKEN`, and the others), and replace `roles/container.developer` with the binding above. The script does all of that, removing `roles/container.developer` (and `container.admin`) from `hangar-deploy`, and it narrows a provider made from gke.md's earlier condition (any ref of the repository) to `main` and `v*` tags. That role reads every Secret and can exec into every pod in every cluster of the project, which a deploy doesn't need, and a deploy run executes the commit's dependencies (`uv sync`) with it.
+Moving from an earlier setup of this workflow: set the four secrets above with `--env production`, delete the repository copies (`gh secret delete HANGAR_DEPLOY_TOKEN`, and the others), and replace `roles/container.developer` with the binding above. The script does all of that, removing every project role but `container.clusterViewer` from `hangar-deploy` and every project role from `hangar-ci` (the first setup let `GCP_SERVICE_ACCOUNT` deploy with `container.developer`), any other federated identity bound to either account, and it narrows a provider made from gke.md's earlier condition (any ref of the repository) to `main` and `v*` tags. It also adds a tag ruleset so only repository admins create `v*` tags, which start deploys. That role reads every Secret and can exec into every pod in every cluster of the project, which a deploy doesn't need, and a deploy run executes the commit's dependencies (`uv sync`) with it.
 
 The deploy needs `get`, `list`, `watch` and `patch` on the `hangar` Deployment (`kubectl get`, `set image`, and `rollout status`, which lists and then watches it with a `metadata.name` field selector: [RBAC allows that on a named resource][rbacnames], and without `list` the first rollout fails as forbidden) and `container.clusters.get` to fetch credentials ([GKE roles][gkeroles], [RBAC on GKE: a service account is a `User` subject named by its email, and `container.clusters.get` authenticates without authorizing anything in the cluster][gkerbac]). The kubeconfig `get-gke-credentials` writes holds a token that lasts an hour, so the workflow fetches a fresh one before a rollback.
 

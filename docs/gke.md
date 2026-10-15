@@ -117,7 +117,8 @@ See [specs/0006-environments-and-harness-packs.md](specs/0006-environments-and-h
 
 One-time setup, as a project owner: `bash deploy/gke/setup-cicd.sh` does this, deploy.yml's setup too, and checks it
 ([cicd.md](cicd.md)). By hand (replace `OWNER/REPO` with the repository, e.g. `Sean-Koval/hangar`), the same provider:
-only this repository, by name and by id, and only runs of `main` or a `v*` tag.
+only this repository, by name and by id, and only push or manual runs of `main` or a `v*` tag. Use a pool of its own:
+the accounts trust every provider in it. Then restrict who can create `v*` tags with a tag ruleset (the script does).
 
 ```bash
 PROJECT=<project>; REGION=<region>; REPO=OWNER/REPO
@@ -128,7 +129,7 @@ gcloud iam workload-identity-pools create github --project "$PROJECT" --location
 gcloud iam workload-identity-pools providers create-oidc hangar --project "$PROJECT" --location global \
   --workload-identity-pool github --issuer-uri https://token.actions.githubusercontent.com \
   --attribute-mapping 'google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.repository_id=assertion.repository_id,attribute.repository_owner_id=assertion.repository_owner_id,attribute.ref=assertion.ref' \
-  --attribute-condition "assertion.repository == '$REPO' && assertion.repository_id == '$REPO_ID' && assertion.repository_owner_id == '$OWNER_ID' && (assertion.ref == 'refs/heads/main' || assertion.ref.startsWith('refs/tags/v'))"
+  --attribute-condition "assertion.repository == '$REPO' && assertion.repository_id == '$REPO_ID' && assertion.repository_owner_id == '$OWNER_ID' && (assertion.ref == 'refs/heads/main' || assertion.ref.startsWith('refs/tags/v')) && (assertion.event_name == 'push' || assertion.event_name == 'workflow_dispatch')"
 gcloud iam service-accounts create hangar-ci --project "$PROJECT"
 gcloud artifacts repositories add-iam-policy-binding hangar --project "$PROJECT" --location "$REGION" \
   --member "serviceAccount:hangar-ci@$PROJECT.iam.gserviceaccount.com" --role roles/artifactregistry.writer

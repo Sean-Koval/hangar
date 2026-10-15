@@ -24,10 +24,11 @@ It is safe to re-run: each step looks first and changes only what is missing or 
 
 | What | Who can use it | What it can do |
 | --- | --- | --- |
-| Pool `github`, provider `hangar` | Runs of this repository (checked by name and by numeric id) on `main` or a `v*` tag; pull requests, other branches and forks get no Google token | Exchange GitHub's OIDC token for the accounts below |
+| Pool `github`, provider `hangar` | Runs of this repository (checked by name and by numeric id) on `main` or a `v*` tag, started by a push or by hand; pull requests, other branches, forks and `pull_request_target`, `workflow_run`, schedule or comment runs get no Google token. The pool holds no other provider (the check fails if it does: any provider in the pool could sign in as these accounts) | Exchange GitHub's OIDC token for the accounts below |
 | `hangar-ci@` (images) | Any run the provider admits | `roles/artifactregistry.writer` on the `hangar` repository only. No cluster access, no Cloud Build (images build with Docker on the runner) |
-| `hangar-deploy@` (deploys) | Only jobs in the `production` environment (subject `repo:OWNER/REPO:environment:production`) | `roles/container.clusterViewer` (fetch the cluster's credentials) and a Role in `hangar`: `get`, `list`, `watch`, `patch` on `deployments/hangar`. No secrets, no exec, nothing else |
+| `hangar-deploy@` (deploys) | Only jobs in the `production` environment: subject `repo:OWNER/REPO:environment:production`, or `repo:OWNER@OWNER_ID/REPO@REPO_ID:environment:production` for repositories created after 2026-07-15 ([GitHub's immutable subjects][immutable]); both are bound | `roles/container.clusterViewer` (fetch the cluster's credentials) and a Role in `hangar`: `get`, `list`, `watch`, `patch` on `deployments/hangar`. No secrets, no exec, nothing else |
 | The `production` environment | You approve each deploy; only `main` and `v*` tags deploy | Releases its secrets to the deploy job after your approval |
+| A tag ruleset on `refs/tags/v*` | Only repository admins (you) create, move or delete `v*` tags | A `v*` tag starts a deploy, and its builds run as `hangar-ci@` before your approval |
 | Repository secrets | Every workflow run | `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT`, `HANGAR_REGISTRY`: names, not credentials, and none of them deploys |
 | `production` secrets | The approved deploy job | `GCP_DEPLOY_SERVICE_ACCOUNT`, `GKE_CLUSTER`, `GKE_LOCATION`, `HANGAR_URL`, and `HANGAR_DEPLOY_TOKEN` |
 
@@ -40,8 +41,12 @@ The script also does the [upgrade](upgrading.md#upgrading-to-the-team-release-75
 copies the vault key from the `hangar` Secret into Secret Manager (`hangar-vault-key`, piped, never printed), and
 creates the PyPI and npm remote repositories for the package mirrors. It prints, without doing them, what needs you:
 the quota requests (Google reviews each, so they can't be automated reliably), the `terraform apply` for the node pool
-in the power-down window, branch protection, a tag ruleset so only you create `v*` tags, the GitHub Apps, Jira, and
-the optional [acceptance fixtures](acceptance.md#before-the-first-run-fixtures).
+in the power-down window, branch protection, the GitHub Apps, Jira, and the optional
+[acceptance fixtures](acceptance.md#before-the-first-run-fixtures).
+
+Re-running it narrows an earlier, wider setup: it removes any other project role from both accounts (an earlier
+`deploy.yml` setup gave `roles/container.developer` to one of them), any other federated identity bound to them, a
+deployment policy for another branch, repository copies of the deploy secrets, and a looser provider condition.
 
 ## 2. Start the deploy, then approve it
 
@@ -91,9 +96,11 @@ To go back to an earlier release later, push or re-run a `v*` tag that points at
 - **`images: skipped` on a branch:** expected. Google Cloud trusts only runs of `main` and `v*` tags, so `images.yml`
   run by hand on another branch skips with a notice, and `deploy.yml` refuses before it builds anything.
 - **`Permission 'iam.serviceAccounts.getAccessToken' denied` in the deploy job:** the job must run in the `production`
-  environment with GitHub's default subject claim. Re-run the script; it warns if the repository customizes the claim.
+  environment with GitHub's default subject claim (either format). Re-run the script; it warns if the repository
+  customizes the claim.
 - **`deployments.apps "hangar" is forbidden` from kubectl:** the Role is missing or out of date (it needs `list` for
   `rollout status`); re-run the script, which applies it and checks it with `kubectl auth can-i`.
 
 [wif]: https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines
+[immutable]: https://github.blog/changelog/2026-04-23-immutable-subject-claims-for-GitHub-actions-oidc-tokens/
 [review]: https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/review-deployments

@@ -7,6 +7,7 @@ sets are the ones deploy.yml and images.yml read."""
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -101,6 +102,8 @@ FAKE = textwrap.dedent('''\
             out("hangar\\tus-central1-a")
         if w[:2] in (("compute", "regions"), ("compute", "project-info")):
             out("N2D_CPUS  0.0  24.0")
+        if w[:4] == ("iam", "workload-identity-pools", "providers", "list"):
+            out("\\n".join(([st["provider"]["name"]] if st.get("provider") else []) + st.get("other_providers", [])))
         if w[:3] == ("iam", "workload-identity-pools", "providers"):
             name, key = w[4], "provider"
             if w[3] == "describe":
@@ -187,11 +190,26 @@ FAKE = textwrap.dedent('''\
             save()
             sys.exit(0)
         if w[0] == "api":
-            path, method = w[1], flags.get("-X", "GET")
+            path, method = w[1].split("?")[0], flags.get("-X", "GET")
             base = f"repos/{{cfg['repo']}}/environments/production"
             if path == f"repos/{{cfg['repo']}}":
-                out({{"id": cfg["repo_id"], "owner": {{"id": cfg["owner_id"], "login": cfg["repo"].split("/")[0],
-                                                     "type": "User"}}}})
+                out({{"id": cfg["repo_id"], "full_name": cfg["repo"], "name": cfg["repo"].split("/")[1],
+                      "owner": {{"id": cfg["owner_id"], "login": cfg["repo"].split("/")[0], "type": "User"}}}})
+            if path.startswith(f"repos/{{cfg['repo']}}/rulesets"):
+                rs, rid = st.setdefault("rulesets", []), path.split("/rulesets")[1].strip("/")
+                if method == "GET" and not rid:
+                    out([{{"id": r["id"], "name": r["name"], "enforcement": r["enforcement"]}} for r in rs])
+                if method == "GET":
+                    out(next((r for r in rs if str(r["id"]) == rid), None) or fail("HTTP 404: Not Found"))
+                body = json.loads(sys.stdin.read())
+                if method == "POST":
+                    rs.append({{**body, "id": 900 + len(rs)}})
+                elif method == "PUT":
+                    st["rulesets"] = [{{**body, "id": r["id"]}} if str(r["id"]) == rid else r for r in rs]
+                else:
+                    unexpected()
+                save()
+                sys.exit(0)
             if path.startswith("users/"):
                 out({{"id": cfg["owner_id"], "login": path[6:]}})
             if path.endswith("/actions/oidc/customization/sub"):
@@ -239,13 +257,13 @@ FAKE = textwrap.dedent('''\
         url, method = args[-1], flags.get("-X", "GET")
         path = url[len(cfg["public_url"]):]
         if path == "/api/tokens" and method == "GET":
-            out([{{"id": t["id"], "name": t["name"]}} for t in st["tokens"]])
+            out([{{"id": t["id"], "name": t["name"], "person": t.get("person", "owner")}} for t in st["tokens"]])
         if path == "/api/tokens" and method == "POST":
             body = json.loads(flags["--data"])
             tid = f"tok{{len(st['tokens']) + 1}}"
             st["tokens"].append({{"id": tid, "name": body["name"], "scopes": body["scopes"]}})
             save()
-            out({{"id": tid, "name": body["name"], "token": cfg["minted"]}})
+            out({{"id": tid, "name": body["name"], "person": "owner", "token": cfg["minted"]}})
         if path.startswith("/api/tokens/") and method == "DELETE":
             st["tokens"] = [t for t in st["tokens"] if t["id"] != path.rsplit("/", 1)[1]]
             st["revoked"].append(path.rsplit("/", 1)[1])
@@ -254,7 +272,11 @@ FAKE = textwrap.dedent('''\
         unexpected()
     ''')
 
-MUTATING = re.compile(r"\b(create|create-oidc|update-oidc|undelete|add-iam-policy-binding|enable|apply|set|delete)\b")
+MUTATING = re.compile(r"\b(create|create-oidc|update-oidc|undelete|add-iam-policy-binding|remove-iam-policy-binding|"
+                      r"enable|apply|set|delete)\b")
+# The interpreter the script runs under: SETUP_CICD_BASH=/path/to/bash-3.2 runs these tests as macOS's /bin/bash would.
+BASH = os.environ.get("SETUP_CICD_BASH", "bash")
+IMMUTABLE_SUBJECT = f"repo:Sean-Koval@{OWNER_ID}/hangar@{REPO_ID}:environment:production"
 
 
 @pytest.fixture
@@ -273,7 +295,7 @@ def cicd(tmp_path):
     log, state, unexpected = tmp_path / "calls.log", tmp_path / "state.json", tmp_path / "unexpected.log"
     state.write_text(json.dumps({"pool": None, "provider": None, "sas": [], "policies": {}, "gcp_secrets": {},
                                  "ar": [], "env": None, "policies_gh": [], "gh_secrets": {}, "vars": {}, "k8s": [],
-                                 "tokens": [], "revoked": []}))
+                                 "tokens": [], "revoked": [], "rulesets": []}))
     cfg = {"project": PROJECT, "number": NUMBER, "repo": GH_REPO, "repo_id": REPO_ID, "owner_id": OWNER_ID,
            "public_url": "https://hangar.test", "vault_key": VAULT_KEY, "admin_token": ADMIN, "minted": MINTED,
            "outputs": {"registry": f"us-central1-docker.pkg.dev/{PROJECT}/hangar",
@@ -285,12 +307,12 @@ def cicd(tmp_path):
         def __init__(self):
             self.cfg = cfg
 
-        def run(self, *flags, **env):
+        def run(self, *flags, shell_opts=(), **env):
             log.write_text("")
             e = {"PATH": f"{bin_}:{Path(sys.executable).parent}:/usr/bin:/bin", "HOME": str(home),
                  "FAKE_CFG": json.dumps(self.cfg), "FAKE_STATE": str(state), "FAKE_LOG": str(log),
                  "FAKE_UNEXPECTED": str(unexpected), **env}
-            r = subprocess.run(["bash", str(root / "deploy/gke/setup-cicd.sh"), *flags], env=e,
+            r = subprocess.run([BASH, *shell_opts, str(root / "deploy/gke/setup-cicd.sh"), *flags], env=e,
                                capture_output=True, text=True, timeout=120)
             r.output = r.stdout + r.stderr
             return r
@@ -309,6 +331,8 @@ def cicd(tmp_path):
                 elif tool == "curl":
                     if any(a in ("POST", "DELETE") for a in c):
                         out.append(c)
+                elif tool == "kubectl" and words[:2] == ["auth", "can-i"]:
+                    continue  # a question ("may it create pods/exec?"), not a change
                 elif tool == "kubectl" and "get" in c and "secret" in c:
                     out.append(c)  # reading the vault key is never part of a dry run
                 elif tool in ("gcloud", "gh", "kubectl") and words[:3] != ["container", "clusters", "get-credentials"] \
@@ -326,6 +350,16 @@ def cicd(tmp_path):
             return unexpected.read_text() if unexpected.exists() else ""
 
     return C()
+
+
+def _only_admins_make_release_tags(st):
+    """One active tag ruleset: only repository admins create, move or delete v* tags, nested ones (v1/x) included,
+    since a v* tag starts deploy.yml and its runs sign in to Google Cloud."""
+    (rs,) = st["rulesets"]
+    assert rs["target"] == "tag" and rs["enforcement"] == "active"
+    assert rs["conditions"]["ref_name"] == {"include": ["refs/tags/v*", "refs/tags/v*/**/*"], "exclude": []}
+    assert sorted(r["type"] for r in rs["rules"]) == ["creation", "deletion", "update"]
+    assert rs["bypass_actors"] == [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}]
 
 
 def _no_secret_anywhere(c, r):
@@ -357,10 +391,13 @@ def test_dry_run_prints_every_change_and_makes_none(cicd):
         "--role=roles/container.clusterViewer",
         f"principal://iam.googleapis.com/projects/{NUMBER}/locations/global/workloadIdentityPools/github/subject/"
         f"repo:{GH_REPO}:environment:production",
+        f"principal://iam.googleapis.com/projects/{NUMBER}/locations/global/workloadIdentityPools/github/subject/"
+        f"{IMMUTABLE_SUBJECT}",
         f"principalSet://iam.googleapis.com/projects/{NUMBER}/locations/global/workloadIdentityPools/github/"
         f"attribute.repository/{GH_REPO}",
         "verbs: [get, list, watch, patch]",
         f"+ gh api -X PUT repos/{GH_REPO}/environments/production --input -",
+        f"+ gh api -X POST repos/{GH_REPO}/rulesets --input -", '"refs/tags/v*"',
         "-f name=main -f type=branch", "-f 'name=v*' -f type=tag",
         "+ gh secret set GCP_WORKLOAD_IDENTITY_PROVIDER",
         f"# projects/{NUMBER}/locations/global/workloadIdentityPools/github/providers/hangar",
@@ -378,6 +415,14 @@ def test_dry_run_prints_every_change_and_makes_none(cicd):
         assert line in out, line + "\n" + out
     for name in ("GCP_DEPLOY_SERVICE_ACCOUNT", "GKE_CLUSTER", "GKE_LOCATION", "HANGAR_URL"):
         assert f"+ gh secret set {name} --repo {GH_REPO} --env production" in out, name
+    # What it prints can be pasted: quoted so a shell reads back the exact arguments (macOS's bash 3.2 too)
+    printed = shlex.split(next(x for x in out.splitlines() if "create-oidc" in x).split("+ ", 1)[1])
+    cond = next(a for a in printed if a.startswith("--attribute-condition="))
+    assert cond == (f"--attribute-condition=assertion.repository == '{GH_REPO}' && assertion.repository_id == "
+                    f"'{REPO_ID}' && assertion.repository_owner_id == '{OWNER_ID}' && (assertion.ref == "
+                    "'refs/heads/main' || assertion.ref.startsWith('refs/tags/v')) && (assertion.event_name == "
+                    "'push' || assertion.event_name == 'workflow_dispatch')")
+    assert "-d '{\"name\": \"github-deploy\", \"scopes\": [\"admin\"]}' | gh secret set HANGAR_DEPLOY_TOKEN" in out
 
 
 def test_setup_from_nothing_then_a_rerun_changes_nothing(cicd):
@@ -393,14 +438,20 @@ def test_setup_from_nothing_then_a_rerun_changes_nothing(cicd):
     cond = st["provider"]["attributeCondition"]
     assert f"assertion.repository == '{GH_REPO}'" in cond and "assertion.ref == 'refs/heads/main'" in cond
     assert "assertion.ref.startsWith('refs/tags/v')" in cond
+    # only the events the trusted workflows run on: not pull_request_target, workflow_run, schedule or a comment,
+    # which run on main's ref too
+    assert "(assertion.event_name == 'push' || assertion.event_name == 'workflow_dispatch')" in cond
     assert st["provider"]["attributeMapping"]["google.subject"] == "assertion.sub"
     ci, deploy = (f"{n}@{PROJECT}.iam.gserviceaccount.com" for n in ("hangar-ci", "hangar-deploy"))
     pool = f"projects/{NUMBER}/locations/global/workloadIdentityPools/github"
     writer = ["roles/artifactregistry.writer", f"serviceAccount:{ci}"]
     assert st["policies"]["artifacts repositories hangar"] == [writer]
+    # Both subject formats of the production environment: repositories created after 2026-07-15 (this one was
+    # created 2026-10-11) get GitHub's immutable `repo:OWNER@ID/REPO@ID:...` subject; older ones the name-only one.
     assert st["policies"][f"iam service-accounts {deploy}"] == [
         ["roles/iam.workloadIdentityUser",
-         f"principal://iam.googleapis.com/{pool}/subject/repo:{GH_REPO}:environment:production"]]
+         f"principal://iam.googleapis.com/{pool}/subject/repo:{GH_REPO}:environment:production"],
+        ["roles/iam.workloadIdentityUser", f"principal://iam.googleapis.com/{pool}/subject/{IMMUTABLE_SUBJECT}"]]
     assert st["policies"][f"iam service-accounts {ci}"] == [
         ["roles/iam.workloadIdentityUser", f"principalSet://iam.googleapis.com/{pool}/attribute.repository/{GH_REPO}"]]
     assert st["policies"][f"projects {PROJECT}"] == [["roles/container.clusterViewer", f"serviceAccount:{deploy}"]]
@@ -411,6 +462,7 @@ def test_setup_from_nothing_then_a_rerun_changes_nothing(cicd):
     assert st["env"]["deployment_branch_policy"] == {"protected_branches": False, "custom_branch_policies": True}
     assert st["env"]["protection_rules"][0]["reviewers"] == [{"type": "User", "reviewer": {"id": OWNER_ID}}]
     assert sorted((p["type"], p["name"]) for p in st["policies_gh"]) == [("branch", "main"), ("tag", "v*")]
+    _only_admins_make_release_tags(st)
     repo_s, env_s = st["gh_secrets"]["repo"], st["gh_secrets"]["production"]
     assert repo_s == {"GCP_WORKLOAD_IDENTITY_PROVIDER": f"{pool}/providers/hangar", "GCP_SERVICE_ACCOUNT": ci,
                       "HANGAR_REGISTRY": f"us-central1-docker.pkg.dev/{PROJECT}/hangar"}
@@ -439,13 +491,16 @@ def test_setup_from_nothing_then_a_rerun_changes_nothing(cicd):
 
 def test_rotation_sets_the_new_token_before_revoking_the_old(cicd):
     assert cicd.run().returncode == 0
+    st = cicd.state()  # an admin lists everyone's tokens: a teammate's of the same name isn't ours to revoke
+    st["tokens"].append({"id": "tokA", "name": "github-deploy", "scopes": ["admin"], "person": "alice"})
+    cicd.set_state(st)
     r = cicd.run("--rotate-deploy-token")
     assert r.returncode == 0, r.output
     calls = cicd.calls()
     set_at = next(i for i, c in enumerate(calls) if c[:4] == ["gh", "secret", "set", "HANGAR_DEPLOY_TOKEN"])
     revoke_at = next(i for i, c in enumerate(calls) if c[0] == "curl" and "DELETE" in c)
     assert set_at < revoke_at and calls[revoke_at][-1].endswith("/api/tokens/tok1")
-    assert [t["id"] for t in cicd.state()["tokens"]] == ["tok2"]
+    assert [t["id"] for t in cicd.state()["tokens"]] == ["tokA", "tok3"]
     _no_secret_anywhere(cicd, r)
 
 
@@ -463,19 +518,67 @@ def test_an_earlier_wider_setup_is_narrowed(cicd):
     and a branch policy that lets any branch deploy. A run narrows each."""
     assert cicd.run().returncode == 0
     st = cicd.state()
-    deploy = f"serviceAccount:hangar-deploy@{PROJECT}.iam.gserviceaccount.com"
+    ci_email, deploy_email = (f"{n}@{PROJECT}.iam.gserviceaccount.com" for n in ("hangar-ci", "hangar-deploy"))
+    ci, deploy = f"serviceAccount:{ci_email}", f"serviceAccount:{deploy_email}"
+    pool = f"principalSet://iam.googleapis.com/projects/{NUMBER}/locations/global/workloadIdentityPools/github"
+    any_ref = f"{pool}/attribute.repository/{GH_REPO}"  # every run the provider admits, no approval
     st["provider"]["attributeCondition"] = f"assertion.repository == '{GH_REPO}'"
-    st["policies"][f"projects {PROJECT}"].append(["roles/container.developer", deploy])
+    st["policies"][f"projects {PROJECT}"] += [
+        ["roles/container.developer", deploy], ["roles/editor", deploy],
+        ["roles/container.developer", ci],  # the first deploy.yml: "without it GCP_SERVICE_ACCOUNT deploys"
+        ["roles/viewer", "user:owner@example.com"]]  # not ours to touch
+    st["policies"][f"iam service-accounts {deploy_email}"] += [
+        ["roles/iam.workloadIdentityUser", any_ref], ["roles/iam.serviceAccountTokenCreator", any_ref]]
+    st["policies"][f"iam service-accounts {ci_email}"] += [
+        ["roles/iam.workloadIdentityUser", f"{pool}/attribute.repository_owner/Sean-Koval"],
+        ["roles/iam.serviceAccountTokenCreator", "user:owner@example.com"]]  # a person, not a federated identity
+    (rs,) = st["rulesets"]
+    rs.update(enforcement="disabled",
+              bypass_actors=rs["bypass_actors"] + [{"actor_id": 4, "actor_type": "RepositoryRole",
+                                                    "bypass_mode": "always"}])
     st["policies_gh"].append({"id": 7, "name": "*", "type": "branch"})
     st["gh_secrets"]["repo"]["HANGAR_DEPLOY_TOKEN"] = "old"
     cicd.set_state(st)
     r = cicd.run()
     assert r.returncode == 0, r.output
+    assert not cicd.unexpected(), cicd.unexpected()
     st = cicd.state()
     assert "refs/heads/main" in st["provider"]["attributeCondition"] and "updating it" in r.output
-    assert st["policies"][f"projects {PROJECT}"] == [["roles/container.clusterViewer", deploy]]
+    assert st["policies"][f"projects {PROJECT}"] == [["roles/container.clusterViewer", deploy],
+                                                      ["roles/viewer", "user:owner@example.com"]]
+    subject = pool.replace("principalSet://", "principal://") + "/subject/"
+    assert st["policies"][f"iam service-accounts {deploy_email}"] == [
+        ["roles/iam.workloadIdentityUser", f"{subject}repo:{GH_REPO}:environment:production"],
+        ["roles/iam.workloadIdentityUser", f"{subject}{IMMUTABLE_SUBJECT}"]]
+    assert st["policies"][f"iam service-accounts {ci_email}"] == [
+        ["roles/iam.workloadIdentityUser", any_ref], ["roles/iam.serviceAccountTokenCreator", "user:owner@example.com"]]
+    _only_admins_make_release_tags(st)
     assert sorted((p["type"], p["name"]) for p in st["policies_gh"]) == [("branch", "main"), ("tag", "v*")]
     assert "HANGAR_DEPLOY_TOKEN" not in st["gh_secrets"]["repo"] and "HANGAR_URL" not in st["gh_secrets"]["repo"]
+    assert "FAIL" not in r.output
+
+
+def test_another_provider_in_the_pool_fails_the_check(cicd):
+    """The accounts trust the pool's principals, which every provider in it can mint: one with a looser condition
+    (gke.md's any-ref one under another name, or one for another repository) would undo the ref restriction."""
+    assert cicd.run().returncode == 0
+    st = cicd.state()
+    st["other_providers"] = ["legacy"]
+    cicd.set_state(st)
+    r = cicd.run()
+    assert r.returncode == 1 and "FAIL" in r.output and "legacy" in r.output, r.output
+    assert not cicd.unexpected(), cicd.unexpected()
+
+
+def test_no_secret_under_xtrace_or_in_a_here_string(cicd):
+    """`bash -x setup-cicd.sh` while debugging must not trace the tokens or the vault key; and secrets never go
+    through a here-string, which bash before 5.1 (macOS's 3.2) writes to a temporary file."""
+    r = cicd.run(shell_opts=("-x",), HANGAR_ACCEPT_GITHUB_TOKEN=ACCEPT)
+    assert r.returncode == 0, r.output
+    assert cicd.state()["gcp_secrets"] == {"hangar-vault-key": VAULT_KEY}
+    _no_secret_anywhere(cicd, r)
+    text = SCRIPT.read_text()
+    assert not re.search(r'<<<\s*"?\$\{?(minted|key64|ADMIN_TOKEN|value|listing)\b', text)
 
 
 def test_no_admin_token_is_a_clear_error(cicd, tmp_path):
@@ -507,6 +610,10 @@ def test_the_workflows_read_what_the_script_sets_at_the_level_it_sets_them():
     assert _secrets_read(deploy["jobs"]["deploy"]) - optional == env_level | {"GCP_WORKLOAD_IDENTITY_PROVIDER",
                                                                             "HANGAR_REGISTRY"}
     assert deploy["jobs"]["deploy"]["environment"] == "production"
+    # The deploy Role grants get, list, watch and patch on deployments/hangar: enough for `set image` (get, patch)
+    # and `rollout status` (get, then list and watch by name), not for `rollout undo`, which lists the namespace's
+    # ReplicaSets. The rollback sets the previous image instead.
+    assert not any("rollout undo" in s.get("run", "") for s in deploy["jobs"]["deploy"]["steps"])
 
     for wf in WORKFLOWS.glob("*.yml"):
         doc = yaml.safe_load(wf.read_text())

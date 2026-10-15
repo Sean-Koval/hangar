@@ -26,7 +26,9 @@
 #   HANGAR_ACCEPT_JIRA_WEBHOOK_SECRET (secrets, piped to gh; never arguments).
 #
 # Secret values (the deploy token, the vault key, acceptance tokens) go from one program to the next on stdin. They
-# are never printed, never on a command line, and never in a file. There is no `set -x`.
+# are never printed, never on a command line, and never in a file (no here-strings: bash before 5.1, macOS's 3.2
+# included, writes those to a temporary file). Tracing is off even under `bash -x`: it would print them.
+set +x
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -45,7 +47,7 @@ ISSUER=https://token.actions.githubusercontent.com
 DRY=0
 ROTATE=0
 SKIP=,
-usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,/^set +x/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; }
 while [ $# -gt 0 ]; do
   case $1 in
     --dry-run) DRY=1 ;;
@@ -69,10 +71,10 @@ skipped() { case $SKIP in *",$1,"*) note "skipped (--skip $1)"; return 0 ;; esac
 
 # A command line as you could paste it: plain words as they are, the rest single-quoted.
 show() {
-  local out="" a
+  local out="" a q="'\\''"  # q: a quote inside single quotes. As a variable: bash 3.2 quotes ${a//…/…} differently.
   for a in "$@"; do
     case $a in
-      *[!A-Za-z0-9_./:=@,+%-]*|"") a="'${a//\'/\'\\\'\'}'" ;;
+      *[!A-Za-z0-9_./:=@,+%-]*|"") a=${a//\'/$q}; a="'$a'" ;;
     esac
     out="$out $a"
   done
@@ -135,17 +137,35 @@ hangar_api() {  # METHOD PATH [BODY]
   fi
 }
 
-# Does the IAM policy (JSON on stdin) bind MEMBER to ROLE without a condition (with "any": with or without one)?
-has_binding() {  # ROLE MEMBER [any]
+# Does the IAM policy (JSON on stdin) bind MEMBER to ROLE without a condition?
+has_binding() {  # ROLE MEMBER
   python3 -c '
 import json, sys
 try:
     p = json.load(sys.stdin)
 except ValueError:
     sys.exit(1)
-ok = any(b.get("role") == sys.argv[1] and sys.argv[2] in b.get("members", [])
-         and (sys.argv[3] == "any" or not b.get("condition")) for b in p.get("bindings", []))
-sys.exit(0 if ok else 1)' "$1" "$2" "${3:-}"
+ok = any(b.get("role") == sys.argv[1] and sys.argv[2] in b.get("members", []) and not b.get("condition")
+         for b in p.get("bindings", []))
+sys.exit(0 if ok else 1)' "$1" "$2"
+}
+
+# What an IAM policy (JSON on stdin) grants the members PATTERNS match (space-separated, * wildcards) beyond the
+# ROLE=MEMBER pairs this setup grants: "ROLE MEMBER" lines, for narrowing what an earlier setup left.
+unwanted() {  # PATTERNS [ROLE=MEMBER...]
+  python3 -c '
+import fnmatch, json, sys
+try:
+    p = json.load(sys.stdin)
+except ValueError:
+    sys.exit(0)
+keep, seen = set(sys.argv[2:]), set()
+for b in p.get("bindings", []):
+    for m in b.get("members", []):
+        pair = b.get("role", "") + "=" + m
+        if any(fnmatch.fnmatchcase(m, x) for x in sys.argv[1].split()) and pair not in keep | seen:
+            seen.add(pair)
+            print(b.get("role", ""), m)' "$@"
 }
 
 KCFG=$(mktemp)
@@ -191,7 +211,14 @@ REPO=${REPO:-$(look gh repo view --json nameWithOwner --jq .nameWithOwner)}
 REPO_JSON=$(look gh api "repos/$REPO")
 REPO_ID=$(json 'd["id"]' <<<"$REPO_JSON" || true)
 OWNER_ID=$(json 'd["owner"]["id"]' <<<"$REPO_JSON" || true)
-if [ -z "$REPO_ID" ] || [ -z "$OWNER_ID" ]; then die "can't read $REPO with gh (gh api repos/$REPO)"; fi
+FULL_NAME=$(json 'd["full_name"]' <<<"$REPO_JSON" || true)
+if [ -z "$REPO_ID" ] || [ -z "$OWNER_ID" ] || [ -z "$FULL_NAME" ]; then die "can't read $REPO with gh (gh api repos/$REPO)"; fi
+# GitHub's own spelling: the claims and subjects the bindings match are case-sensitive. These go into the provider's
+# condition, so anything but a plain OWNER/REPO and numeric ids is refused.
+REPO=$FULL_NAME
+case $REPO in ?*/?*) ;; *) die "unexpected repository name '$REPO'" ;; esac
+case $REPO in */*/*|*[!A-Za-z0-9._/-]*) die "unexpected repository name '$REPO'" ;; esac
+case $REPO_ID$OWNER_ID in *[!0-9]*) die "unexpected ids for $REPO: $REPO_ID, $OWNER_ID" ;; esac
 if [ -z "${REVIEWER:-}" ]; then
   if [ "$(json 'd["owner"]["type"]' <<<"$REPO_JSON")" = User ]; then REVIEWER=$(json 'd["owner"]["login"]' <<<"$REPO_JSON")
   else REVIEWER=$(look gh api user --jq .login); fi
@@ -219,14 +246,27 @@ WIF_PROVIDER=$WIF_POOL/providers/$PROVIDER
 CI_SA=$CI_SA_NAME@$PROJECT.iam.gserviceaccount.com
 DEPLOY_SA=$DEPLOY_SA_NAME@$PROJECT.iam.gserviceaccount.com
 # Who may sign in through the provider at all: this repository, by name and by id (ids don't come back if the repo or
-# its owner is deleted and the name taken: Google's guidance), and only runs of main or a v* release tag, the refs the
-# production environment deploys from. Pull requests, other branches and forks get no Google token.
+# its owner is deleted and the name taken: Google's guidance), only runs of main or a v* release tag, the refs the
+# production environment deploys from, and only on the events the deploy and images workflows run on (a push, or
+# started by hand). Pull requests, other branches and forks get no Google token, nor do pull_request_target,
+# workflow_run, schedule or comment runs, which run on main's ref too.
 MAPPING="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.repository_id=assertion.repository_id,attribute.repository_owner_id=assertion.repository_owner_id,attribute.ref=assertion.ref"
-CONDITION="assertion.repository == '$REPO' && assertion.repository_id == '$REPO_ID' && assertion.repository_owner_id == '$OWNER_ID' && (assertion.ref == 'refs/heads/main' || assertion.ref.startsWith('refs/tags/v'))"
+CONDITION="assertion.repository == '$REPO' && assertion.repository_id == '$REPO_ID' && assertion.repository_owner_id == '$OWNER_ID' && (assertion.ref == 'refs/heads/main' || assertion.ref.startsWith('refs/tags/v')) && (assertion.event_name == 'push' || assertion.event_name == 'workflow_dispatch')"
 # images.yml (and deploy.yml's image build) as the images account: any run the provider lets in.
 CI_MEMBER="principalSet://iam.googleapis.com/$WIF_POOL/attribute.repository/$REPO"
-# The deploy account: only jobs in the production environment, which run after your approval.
+# The deploy account: only jobs in the production environment, which run after your approval. GitHub's subject for
+# them is repo:OWNER/REPO:environment:production, or, for repositories created (or renamed, or transferred) after
+# 2026-07-15 and those that opted in, the immutable repo:OWNER@OWNER_ID/REPO@REPO_ID:environment:production. Both
+# name this repository's production environment, so both are bound.
 DEPLOY_MEMBER="principal://iam.googleapis.com/$WIF_POOL/subject/repo:$REPO:environment:$ENVIRONMENT"
+DEPLOY_MEMBER_IDS="principal://iam.googleapis.com/$WIF_POOL/subject/repo:${REPO%%/*}@$OWNER_ID/${REPO#*/}@$REPO_ID:environment:$ENVIRONMENT"
+FEDERATED="principal://* principalSet://*"
+# Only repository admins create, move or delete v* tags: a v* tag starts deploy.yml, whose builds sign in to Google
+# Cloud as the images account before your approval, so whoever could push one would run that commit's workflows with
+# it. Nested ones (v1/x) too: the provider's condition admits refs/tags/v1/x, and `*` stops at a slash.
+RULESET_NAME="release tags (deploy/gke/setup-cicd.sh)"
+RULESET="{\"name\": \"$RULESET_NAME\", \"target\": \"tag\", \"enforcement\": \"active\", \"bypass_actors\": [{\"actor_id\": 5, \"actor_type\": \"RepositoryRole\", \"bypass_mode\": \"always\"}], \"conditions\": {\"ref_name\": {\"include\": [\"refs/tags/v*\", \"refs/tags/v*/**/*\"], \"exclude\": []}}, \"rules\": [{\"type\": \"creation\"}, {\"type\": \"update\"}, {\"type\": \"deletion\"}]}"
+RULESET_SAME='d.get("target") == "tag" and d.get("enforcement") == "active" and sorted(d.get("conditions", {}).get("ref_name", {}).get("include", [])) == ["refs/tags/v*", "refs/tags/v*/**/*"] and not d.get("conditions", {}).get("ref_name", {}).get("exclude") and sorted(r["type"] for r in d.get("rules", [])) == ["creation", "deletion", "update"] and [(b.get("actor_type"), b.get("actor_id"), b.get("bypass_mode", "always")) for b in d.get("bypass_actors") or []] == [("RepositoryRole", 5, "always")]'
 # Over GET repos/R/environments/E: who must approve, and whether only named branches and tags may deploy
 REVIEWER_IDS='[r["reviewer"]["id"] for x in d.get("protection_rules", []) if x.get("type") == "required_reviewers" for r in x.get("reviewers", [])]'
 CUSTOM_POLICIES='d.get("deployment_branch_policy") == {"protected_branches": False, "custom_branch_policies": True}'
@@ -281,6 +321,14 @@ if ! skipped wif; then
       --issuer-uri="$ISSUER" --attribute-mapping="$MAPPING" --attribute-condition="$CONDITION"
   fi
   note "condition: $CONDITION"
+  # The accounts trust the pool's identities, which any provider in the pool can mint, whatever its condition.
+  others=$(look gcloud iam workload-identity-pools providers list "${prov[@]}" --format='value(name.basename())' |
+    grep -vxF -- "$PROVIDER" || true)
+  if [ -n "$others" ]; then
+    note "warning: pool $POOL has other providers ($(paste -sd, - <<<"$others")). Any can sign in as the accounts below,"
+    note "  past this provider's condition: delete them (gcloud iam workload-identity-pools providers delete), or set"
+    note "  POOL to a pool of its own. The check (step 9) fails until then."
+  fi
 fi
 
 # ------------------------------------------------------------------------------------------------- 3. accounts
@@ -321,15 +369,31 @@ if ! skipped accounts; then
   ensure_sa "$DEPLOY_SA_NAME" "$DEPLOY_SA" "GitHub Actions: deploy.yml in the $ENVIRONMENT environment rolls out deploy/hangar"
   bind project "$PROJECT" roles/container.clusterViewer "serviceAccount:$DEPLOY_SA"
   bind sa "$DEPLOY_SA" roles/iam.workloadIdentityUser "$DEPLOY_MEMBER"
-  # An earlier setup of deploy.yml gave it roles/container.developer: every Secret, exec into every pod (#95 review)
-  policy=$(look gcloud projects get-iam-policy "$PROJECT" --format=json)
-  for wide in roles/container.developer roles/container.admin; do
-    if has_binding "$wide" "serviceAccount:$DEPLOY_SA" any <<<"$policy"; then
-      note "$DEPLOY_SA has $wide, far more than a deploy needs: removing it"
-      run gcloud projects remove-iam-policy-binding "$PROJECT" --role="$wide" --member="serviceAccount:$DEPLOY_SA" \
-        --all --format=none
-    fi
-  done
+  bind sa "$DEPLOY_SA" roles/iam.workloadIdentityUser "$DEPLOY_MEMBER_IDS"
+
+  # Narrowing an earlier setup: the first deploy.yml gave roles/container.developer (every Secret, exec into every
+  # pod) to the deploy account, or to the images account when there was no deploy account (#95 review), and an
+  # account bound by repository alone is usable from any run the provider admits, without your approval. Each account
+  # keeps only what is granted above: no other project role, and no other federated identity on it.
+  narrow() {  # projects|sa RESOURCE PATTERNS [ROLE=MEMBER...]
+    local group=projects res=$2 extra role member
+    [ "$1" = sa ] && group="iam service-accounts"
+    shift 2
+    # shellcheck disable=SC2086 # $group is one or two words on purpose
+    extra=$(look gcloud $group get-iam-policy "$res" --project "$PROJECT" --format=json | unwanted "$@")
+    while read -r role member; do
+      [ -n "$role" ] || continue
+      note "$member has $role on $res, which this setup doesn't grant: removing it"
+      # shellcheck disable=SC2086
+      run gcloud $group remove-iam-policy-binding "$res" --project "$PROJECT" --role="$role" --member="$member" \
+        --all --format=none </dev/null
+    done <<<"$extra"
+  }
+  narrow projects "$PROJECT" "serviceAccount:$CI_SA serviceAccount:$DEPLOY_SA" \
+    "roles/container.clusterViewer=serviceAccount:$DEPLOY_SA"
+  narrow sa "$CI_SA" "$FEDERATED" "roles/iam.workloadIdentityUser=$CI_MEMBER"
+  narrow sa "$DEPLOY_SA" "$FEDERATED" "roles/iam.workloadIdentityUser=$DEPLOY_MEMBER" \
+    "roles/iam.workloadIdentityUser=$DEPLOY_MEMBER_IDS"
   # get: the running image and `set image`'s read; list and watch: `rollout status` lists and watches with a
   # metadata.name field selector, which resourceNames allows; patch: `set image`. No secrets, no exec, no other object.
   role=$(cat <<EOF
@@ -357,7 +421,7 @@ EOF
 fi
 
 # ------------------------------------------------------------------------------------------------- 4. GitHub
-step "4. GitHub: the $ENVIRONMENT environment (your approval; main and v* tags only) and its secrets"
+step "4. GitHub: the $ENVIRONMENT environment (your approval; main and v* tags only), who makes v* tags, the secrets"
 if ! skipped github; then
   env_json=$(look gh api "repos/$REPO/environments/$ENVIRONMENT")
   if [ -n "$env_json" ] && json "$REVIEWER_IDS" <<<"$env_json" | grep -qw "$REVIEWER_ID" &&
@@ -386,6 +450,26 @@ if ! skipped github; then
     run gh api -X DELETE "repos/$REPO/environments/$ENVIRONMENT/deployment-branch-policies/$id" --silent
   done <<<"$policies"
 
+  # The environment lets any v* tag deploy, after your approval; the ruleset decides who can make one (RULESET above)
+  ruleset_id=$(look gh api "repos/$REPO/rulesets?includes_parents=false" \
+    --jq ".[] | select(.name == \"$RULESET_NAME\") | .id" | head -1)
+  if [ -n "$ruleset_id" ] &&
+     [ "$(look gh api "repos/$REPO/rulesets/$ruleset_id" | json "$RULESET_SAME" || true)" = true ]; then
+    note "only repository admins create, move or delete v* tags (ruleset $ruleset_id)"
+  else
+    if [ -n "$ruleset_id" ]; then
+      note "the ruleset '$RULESET_NAME' lets more than repository admins make v* tags, or is off: narrowing it"
+      method=PUT path=repos/$REPO/rulesets/$ruleset_id
+    else
+      method=POST path=repos/$REPO/rulesets
+    fi
+    printf '   + %s <<< %s\n' "$(show gh api -X "$method" "$path" --input -)" "'$RULESET'"
+    if [ "$DRY" = 0 ]; then
+      gh api -X "$method" "$path" --input - <<<"$RULESET" >/dev/null ||
+        die "couldn't $method the tag ruleset (rulesets need a public repository, or GitHub Pro or Team for a private one)"
+    fi
+  fi
+
   note "repository secrets (images.yml runs outside the environment, on every push to main; none of them deploys):"
   set_secret GCP_WORKLOAD_IDENTITY_PROVIDER "$WIF_PROVIDER" public
   set_secret GCP_SERVICE_ACCOUNT "$CI_SA" public
@@ -412,9 +496,10 @@ if ! skipped github; then
   if grep -qx HANGAR_DEPLOY_TOKEN <<<"$env_secrets" && [ "$ROTATE" = 0 ]; then
     note "HANGAR_DEPLOY_TOKEN is set (--rotate-deploy-token replaces it and revokes the old token)"
   else
+    # In a variable: bash 3.2 brace-expands a {"a": 1, "b": 2} written inside "$(…)"
+    mint_body="{\"name\": \"$TOKEN_NAME\", \"scopes\": [\"admin\"]}"
     printf '   + %s | gh secret set HANGAR_DEPLOY_TOKEN --env %s --repo %s  # the new token on stdin, not shown\n' \
-      "$(show curl -X POST "$HANGAR_URL/api/tokens" -d "{\"name\": \"$TOKEN_NAME\", \"scopes\": [\"admin\"]}")" \
-      "$ENVIRONMENT" "$REPO"
+      "$(show curl -X POST "$HANGAR_URL/api/tokens" -d "$mint_body")" "$ENVIRONMENT" "$REPO"
     if [ "$DRY" = 0 ]; then
       ADMIN_TOKEN=${HANGAR_TOKEN:-}
       if [ -z "$ADMIN_TOKEN" ] && [ "$(saved url)" = "$HANGAR_URL" ]; then ADMIN_TOKEN=$(saved token); fi
@@ -422,18 +507,24 @@ if ! skipped github; then
         ADMIN_TOKEN=$(tr -d '\n' < "$HOME/.hangar/gke-admin-token")
       fi
       [ -n "$ADMIN_TOKEN" ] || die "no admin token for $HANGAR_URL: hangar login $HANGAR_URL, or set HANGAR_TOKEN"
-      old=$(hangar_api GET /api/tokens | json '[t["id"] for t in d if t.get("name") == a[0]]' "$TOKEN_NAME") ||
+      listing=$(hangar_api GET /api/tokens) || listing=
+      if ! printf '%s' "$listing" | json 'len(d)' >/dev/null; then
         die "couldn't list hangar's tokens at $HANGAR_URL (is the token an admin's?)"
-      minted=$(hangar_api POST /api/tokens "{\"name\": \"$TOKEN_NAME\", \"scopes\": [\"admin\"]}") ||
+      fi
+      minted=$(hangar_api POST /api/tokens "$mint_body") ||
         die "couldn't mint a token at $HANGAR_URL"
-      new_id=$(json 'd["id"]' <<<"$minted")
-      if ! json 'd["token"]' <<<"$minted" | tr -d '\n' | gh secret set HANGAR_DEPLOY_TOKEN --env "$ENVIRONMENT" --repo "$REPO"; then
+      new_id=$(printf '%s' "$minted" | json 'd["id"]') || die "hangar answered the mint without a token id"
+      if ! printf '%s' "$minted" | json 'd["token"]' | tr -d '\n' |
+           gh secret set HANGAR_DEPLOY_TOKEN --env "$ENVIRONMENT" --repo "$REPO"; then
         hangar_api DELETE "/api/tokens/$new_id" >/dev/null || true
         die "gh secret set HANGAR_DEPLOY_TOKEN failed; the new token ($new_id) was revoked"
       fi
+      person=$(printf '%s' "$minted" | json 'd.get("person") or ""')
       minted=
       note "minted $TOKEN_NAME ($new_id), an admin token, into HANGAR_DEPLOY_TOKEN"
-      for id in $(json '" ".join(i for i in d if i != a[0])' "$new_id" <<<"$old"); do
+      # The previous ones: this name, and the same person (an admin lists everyone's; a teammate's isn't ours)
+      for id in $(printf '%s' "$listing" | json '" ".join(t["id"] for t in d if t.get("name") == a[0]
+          and (t.get("person") or "") == a[1] and t["id"] != a[2])' "$TOKEN_NAME" "$person" "$new_id"); do
         hangar_api DELETE "/api/tokens/$id" >/dev/null && note "revoked the previous $TOKEN_NAME ($id)"
       done
     fi
@@ -463,7 +554,8 @@ if ! skipped vault; then
       key64=$(kc -n "$NS" get secret hangar -o 'jsonpath={.data.HANGAR_SECRET_KEY}') ||
         die "can't read the hangar Secret in $NS (is the cluster reachable?)"
       [ -n "$key64" ] || die "the hangar Secret has no HANGAR_SECRET_KEY"
-      python3 -c 'import base64, sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))' <<<"$key64" |
+      printf '%s' "$key64" |
+        python3 -c 'import base64, sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))' |
         gcloud secrets create "$VAULT_SECRET" --data-file=- --replication-policy=automatic --project "$PROJECT"
       key64=
     fi
@@ -520,10 +612,13 @@ check() {  # WHAT OK-OR-NOT
 }
 checks=(
   "gcloud iam workload-identity-pools providers describe $PROVIDER --workload-identity-pool=$POOL --location=global --project=$PROJECT --format=value(state,attributeCondition)"
+  "gcloud iam workload-identity-pools providers list --workload-identity-pool=$POOL --location=global --project=$PROJECT (no other)"
   "gcloud iam service-accounts get-iam-policy $DEPLOY_SA --project $PROJECT"
   "gcloud iam service-accounts get-iam-policy $CI_SA --project $PROJECT"
-  "kubectl auth can-i patch deployments/hangar -n $NS --as=$DEPLOY_SA (and not secrets)"
+  "gcloud projects get-iam-policy $PROJECT (no role for either account but clusterViewer for $DEPLOY_SA_NAME)"
+  "kubectl auth can-i patch deployments/hangar -n $NS --as=$DEPLOY_SA (and not secrets, exec or other deployments)"
   "gh api repos/$REPO/environments/$ENVIRONMENT"
+  "gh api repos/$REPO/rulesets (only admins make v* tags)"
   "gh secret list --env $ENVIRONMENT --repo $REPO"
   "gh secret list --repo $REPO"
 )
@@ -534,20 +629,41 @@ else
   p=$(look gcloud iam workload-identity-pools providers describe "$PROVIDER" --workload-identity-pool="$POOL" \
     --location=global --project="$PROJECT" --format=json)
   check "provider $WIF_PROVIDER is active" "$([ "$(json 'd.get("state")' <<<"$p")" = ACTIVE ] && echo ok)"
-  check "its condition admits only $REPO on main and v* tags" \
+  check "its condition admits only $REPO's pushes and manual runs, on main and v* tags" \
     "$([ "$(json 'd.get("attributeCondition")' <<<"$p")" = "$CONDITION" ] && echo ok)"
+  others=$(look gcloud iam workload-identity-pools providers list --workload-identity-pool="$POOL" \
+    --location=global --project="$PROJECT" --format='value(name.basename())' | grep -vxF -- "$PROVIDER" || true)
+  check "pool $POOL has no other provider, which could sign in as these accounts" \
+    "$(if [ -z "$others" ]; then echo ok; else echo "it has $(paste -sd, - <<<"$others")"; fi)"
+  pol=$(look gcloud iam service-accounts get-iam-policy "$DEPLOY_SA" --project "$PROJECT" --format=json)
   check "$DEPLOY_SA: impersonable from the $ENVIRONMENT environment only" \
-    "$(look gcloud iam service-accounts get-iam-policy "$DEPLOY_SA" --project "$PROJECT" --format=json |
-       has_binding roles/iam.workloadIdentityUser "$DEPLOY_MEMBER" && echo ok)"
-  check "$CI_SA: impersonable from $REPO's runs" \
-    "$(look gcloud iam service-accounts get-iam-policy "$CI_SA" --project "$PROJECT" --format=json |
-       has_binding roles/iam.workloadIdentityUser "$CI_MEMBER" && echo ok)"
+    "$(has_binding roles/iam.workloadIdentityUser "$DEPLOY_MEMBER" <<<"$pol" &&
+       has_binding roles/iam.workloadIdentityUser "$DEPLOY_MEMBER_IDS" <<<"$pol" &&
+       [ -z "$(unwanted "$FEDERATED" "roles/iam.workloadIdentityUser=$DEPLOY_MEMBER" \
+                 "roles/iam.workloadIdentityUser=$DEPLOY_MEMBER_IDS" <<<"$pol")" ] && echo ok)"
+  pol=$(look gcloud iam service-accounts get-iam-policy "$CI_SA" --project "$PROJECT" --format=json)
+  check "$CI_SA: impersonable from $REPO's runs the provider admits, and nothing else federated" \
+    "$(has_binding roles/iam.workloadIdentityUser "$CI_MEMBER" <<<"$pol" &&
+       [ -z "$(unwanted "$FEDERATED" "roles/iam.workloadIdentityUser=$CI_MEMBER" <<<"$pol")" ] && echo ok)"
+  pol=$(look gcloud projects get-iam-policy "$PROJECT" --format=json)
+  check "no project role for $CI_SA_NAME, and only clusterViewer for $DEPLOY_SA_NAME" \
+    "$(has_binding roles/container.clusterViewer "serviceAccount:$DEPLOY_SA" <<<"$pol" &&
+       [ -z "$(unwanted "serviceAccount:$CI_SA serviceAccount:$DEPLOY_SA" \
+                 "roles/container.clusterViewer=serviceAccount:$DEPLOY_SA" <<<"$pol")" ] && echo ok)"
   for verb in get list watch patch; do
     check "$DEPLOY_SA may $verb deployments/hangar in $NS" \
       "$([ "$(look kc auth can-i "$verb" deployments.apps/hangar -n "$NS" --as="$DEPLOY_SA")" = yes ] && echo ok)"
   done
-  check "$DEPLOY_SA may not read secrets in $NS" \
-    "$([ "$(look kc auth can-i get secrets -n "$NS" --as="$DEPLOY_SA")" = no ] && echo ok)"
+  # An earlier binding (a ClusterRoleBinding, another Role) would show here: the Role above grants none of these
+  for denied in "get secrets" "create pods/exec" "patch deployments.apps" "list replicasets.apps"; do
+    # shellcheck disable=SC2086 # two words on purpose
+    check "$DEPLOY_SA may not ${denied/%deployments.apps/other deployments} in $NS" \
+      "$([ "$(look kc auth can-i $denied -n "$NS" --as="$DEPLOY_SA")" = no ] && echo ok)"
+  done
+  check "only repository admins create, move or delete v* tags" \
+    "$(look gh api "repos/$REPO/rulesets?includes_parents=false" --jq ".[] | select(.name == \"$RULESET_NAME\") | .id" |
+       head -1 | { read -r id && look gh api "repos/$REPO/rulesets/$id" | json "$RULESET_SAME"; } | grep -qx true &&
+       echo ok)"
   e=$(look gh api "repos/$REPO/environments/$ENVIRONMENT")
   check "$ENVIRONMENT: $REVIEWER is a required reviewer" \
     "$(json "$REVIEWER_IDS" <<<"$e" | grep -qw "$REVIEWER_ID" && echo ok)"
@@ -570,9 +686,6 @@ cat <<EOF
    [ ] Branch protection on $REPO's main: a required approval, dismiss stale approvals, require approval of the
        most recent push, \`contract\` as a required check; and Allow auto-merge (step 11b).
        https://github.com/$REPO/settings/branches   https://github.com/$REPO/settings
-   [ ] Only you create release tags: a tag ruleset on refs/tags/v* (restrict creations, updates, deletions; bypass:
-       repository admin), since a v* tag can deploy (after your approval) and sign in to Google Cloud.
-       https://github.com/$REPO/settings/rules/new?target=tag
    [ ] The GitHub App agents open PRs as (step 9b), installed on the repos agents work on:
        https://github.com/settings/apps/new   then: hangar cred add github-app --harness git --kind github_app
    [ ] The canary's own App (step 11b), as repository secrets:
