@@ -125,7 +125,7 @@ creates them with `MKCOL` before a `PUT`. Hangar answers both: keys are flat, so
 `GET` and `HEAD`, and `DELETE`, `MOVE` and `COPY` are refused. `RUSTC_WRAPPER` points at
 `~/.hangar/bin/hangar-rustc-wrapper`, which runs rustc through sccache when the image has `sccache` and runs rustc
 directly when it doesn't, so a sandbox without sccache builds as before. An environment that maps one of these
-variables itself (through `secrets:`) keeps its own.
+variables itself (in `env:` or `secrets:`) keeps its own.
 
 **Bazel** uses its HTTP caching protocol: `GET` and `PUT` under `/ac/` (action results) and `/cas/` (outputs, named by
 their SHA-256). Hangar adds a block to `~/.bazelrc`, Bazel's home rc file, which Bazel reads after the workspace's

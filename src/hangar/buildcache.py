@@ -434,8 +434,8 @@ class BuildCaches:
         if write is None:
             env.update(SCCACHE_WEBDAV_RW_MODE="READ_ONLY", TURBO_REMOTE_CACHE_READ_ONLY="1",
                        TURBO_CACHE="local:rw,remote:r")
-        # An environment that maps one of these itself (its own remote cache, say) keeps its own.
-        return {k: v for k, v in env.items() if k not in spec.secrets}
+        # An environment that sets one of these itself (its own remote cache, say) keeps its own.
+        return {k: v for k, v in env.items() if k not in spec.secrets and k not in spec.env}
 
     async def _bazelrc(self, prov: Provider, sb: Sandbox, home: str, to: tuple[str, str, bool] | None) -> None:
         """hangar's block in ~/.bazelrc (Bazel's home rc file, read after the workspace's: bazel.build/run/bazelrc),

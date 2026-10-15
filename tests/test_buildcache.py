@@ -557,8 +557,9 @@ async def test_the_clients_are_pointed_at_hangar_without_touching_the_repo(sw):
     w.settings.build_cache_private_writes = False
     (box / "home/agent/.bazelrc").write_text("build --jobs=4\n" + rc)
     w.fleet.gateway.issued[sb.id] = w.fleet.gateway.mint(sb, "github.com", ["acme/app"], [], "pat")
-    env = await w.cache.attach(w.fake, sb, w.spec)
+    env = await w.cache.attach(w.fake, sb, w.spec.model_copy(update={"env": {"TURBO_API": "https://own.example"}}))
     assert env["SCCACHE_WEBDAV_RW_MODE"] == "READ_ONLY" and env["TURBO_CACHE"] == "local:rw,remote:r"
+    assert "TURBO_API" not in env  # the environment's own remote cache stays
     rc = (box / "home/agent/.bazelrc").read_text()
     assert rc.startswith("build --jobs=4\n") and rc.count("remote_cache=") == 1
     assert "build --remote_upload_local_results=false" in rc
