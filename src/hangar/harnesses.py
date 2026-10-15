@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from pathlib import Path
 from typing import Any, Literal
 
@@ -485,11 +486,14 @@ VERSION_MARKER = "hangar-harness-version: "
 VERSION_FILE = ".hangar-version"
 
 
-def pack_script(h: Harness) -> str:
+def pack_script(h: Harness, prefix: str | None = None, version_file: str = f"/{VERSION_FILE}") -> str:
+    """`prefix` and `version_file` (--- canary): install somewhere other than the pack builder's paths, as CI does to
+    run the real CLIs without root. The defaults give the pack's own script, byte for byte (it is the pack digest)."""
     pins = "".join(f" {k}={v}" for k, v in sorted(h.pin.items()))
     return (
         "#!/bin/bash\nset -euxo pipefail\n"
-        f"export PREFIX={h.prefix} VERSION={json.dumps(h.version)} HOME=/tmp/pack-home{pins}\n"
+        f"export PREFIX={shlex.quote(prefix) if prefix else h.prefix} VERSION={json.dumps(h.version)} "
+        f"HOME=/tmp/pack-home{pins}\n"
         'mkdir -p "$HOME" "$PREFIX"\n'
         f"{h.install.strip()}\n"
         f'OUT=$(PATH="$PREFIX/bin:$PATH" {h.verify} 2>&1)\n'
@@ -500,7 +504,7 @@ def pack_script(h: Harness) -> str:
         "|| true)\n"
         "if [ -z \"$INSTALLED\" ]; then echo \"installed '${OUT%%$'\\n'*}', but the lock pins $VERSION\" >&2; "
         "exit 1; fi\n"
-        f"printf '%s\\n' \"$INSTALLED\" > /{VERSION_FILE}\n"
+        f"printf '%s\\n' \"$INSTALLED\" > {shlex.quote(version_file)}\n"
         f"echo \"{VERSION_MARKER}$INSTALLED\"\n"
         "set -x\n"
         'rm -rf "$HOME" /tmp/*-npm\n'

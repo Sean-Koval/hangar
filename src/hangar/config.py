@@ -206,6 +206,11 @@ class Settings(BaseSettings):
     # {"my-model": {"input": 1.0, "output": 4.0, "cache_read": 0.1, "cache_write": 1.25}}. Keys match model ids
     # exactly or as a prefix followed by a date/variant suffix.
     model_prices: dict[str, dict[str, float]] = Field(default_factory=dict)
+    # --- canary: model policies (`model: frontier`, modelpolicy.py). Vault credentials holding the API keys that list
+    # each provider's models: {"anthropic": "<cred>", "openai": "<cred>", "google": "<cred>"}. OpenRouter's list is
+    # public. Without one, that provider's policies resolve to the last id resolved, else a built-in one.
+    model_list_credentials: dict[str, str] = Field(default_factory=dict)
+    model_list_ttl_minutes: int = 360  # how long a fetched list is used before it is fetched again
     # Default budget for each agent turn of jobs and sessions that don't set one. Unset = no limit.
     budget_max_minutes: int | None = None
     budget_max_tokens: int | None = None
@@ -485,10 +490,10 @@ class Settings(BaseSettings):
     doctor_schedule: str = "30 0 * * *"
     doctor_time_zone: str | None = None
     # The Cloud Doctor's jobs (clouddoctor.py): harness and model (unset: Claude Code where the environment has it,
-    # with its `best` alias, the strongest model the account can use; else the environment's harness and its
-    # default), its budget per run (all its jobs together) and per job, how many root-cause jobs a run starts, how
-    # many separate runs make a failure worth fixing, how far back it counts, and how often a transient failure may
-    # recur before it is reported anyway.
+    # else the environment's harness; the `frontier` policy for every harness, or `best` for a Claude Code team key
+    # without Fable access), its budget per run (all its jobs together) and per job, how many root-cause jobs a run
+    # starts, how many separate runs make a failure worth fixing, how far back it counts, and how often a transient
+    # failure may recur before it is reported anyway.
     doctor_harness: str | None = None
     doctor_model: str | None = None
     doctor_max_usd: float = Field(10.0, ge=0)

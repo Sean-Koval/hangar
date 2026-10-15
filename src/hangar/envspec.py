@@ -225,7 +225,8 @@ class EnvSpec(BaseModel):
     harness_mode: Literal["auto", "pack", "bake"] = "auto"
     # Default model for agent runs. Model ids are harness-specific, so prefer a map per harness:
     # {claude-code: opus, pi: openrouter/google/gemini-3.8-flash, antigravity: gemini-3.8-flash-high}.
-    # A plain string applies to whichever harness the sandbox runs.
+    # A plain string applies to whichever harness the sandbox runs. --- canary: a policy, `frontier` or `balanced`
+    # (modelpolicy.py), is resolved to the provider's concrete id when a sandbox or a session is created.
     model: str | dict[str, str] | None = None
     mcp: dict[str, McpServer] = Field(default_factory=dict)  # MCP servers, rendered per harness at claim
     secrets: dict[str, str] = Field(default_factory=dict)  # ENV_VAR -> credential name, injected at claim

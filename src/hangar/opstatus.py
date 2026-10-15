@@ -42,7 +42,7 @@ PRUNE_EVERY = 3600.0
 NIGHTLY_KEY = "ops:nightly"
 SLOT_KEY = "ops:nightly:slot"
 SECTIONS = ("power", "loops", "harnesses", "builds", "failures", "egress", "requests", "slo", "credentials",
-            "nightly", "log")
+            "nightly", "log", "models")  # --- integ3: + models (review #105)
 # More of the nightly pass: fn(h, by) -> a JSON-able summary. The credential checks are the first.
 NIGHTLY: list[tuple[str, Callable[[Any, str], Awaitable[Any]]]] = []
 # More status sections: name -> fn(fleet, sessions, jobs) -> JSON-able (the Cloud Doctor's).
@@ -192,6 +192,10 @@ async def status(fleet: Any, sessions: Any = None, jobs: Any = None, sections: s
         out["credentials"] = credhealth.summary(fleet.store)
     if want("nightly"):
         out["nightly"] = fleet.store.kv_get_json(NIGHTLY_KEY, None)
+    if want("models"):  # --- integ3 (review #105): what jobs run on by default, and whether anything caps it
+        from hangar import modelpolicy
+
+        out["models"] = modelpolicy.spend_guard(fleet)
     for name, fn in EXTRA.items():
         if want(name):
             try:

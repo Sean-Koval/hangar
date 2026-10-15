@@ -103,6 +103,7 @@ def _sb(s: Sandbox) -> dict[str, Any]:
         "expires_at": s.expires_at, "error": s.error,
         "stage": s.info.get("stage") if s.state.value in ("starting", "pending") else None,
         "env_build": s.info.get("env_build"),  # --- envbuilds: the repo build it runs, or why the base image
+        "model": s.info.get("model"),  # --- canary: the concrete model its runs use (a policy, resolved at create)
     }
 
 

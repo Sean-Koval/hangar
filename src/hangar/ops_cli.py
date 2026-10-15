@@ -32,7 +32,7 @@ def _secs(x: float | None) -> str:
 def status(as_json: bool = typer.Option(False, "--json"),
            section: str | None = typer.Option(None, help="Only these sections, comma-separated: power, loops, "
                                               "harnesses, builds, failures, egress, requests, slo, credentials, "
-                                              "nightly, log (and doctor)."),
+                                              "nightly, log, models (and doctor)."),
            check_credentials: bool = typer.Option(False, "--check-credentials",
                                                   help="Check every credential now, not only stale results.")):
     """What an operator needs at a glance: power, loops, versions, builds, failures, denies, requests, SLOs."""
@@ -93,6 +93,15 @@ def status(as_json: bool = typer.Option(False, "--json"),
             if len(p["logins"]) > 1:
                 typer.echo(f"  pool {p['owner']}/{p['harness']}: {p['working']} of {len(p['logins'])} working, "
                            f"{p['leased']} in use")
+    if m := v.get("models"):  # --- integ3 (review #105)
+        bounds = [b for b in (f"${m['job_budget_usd']:g}/job" if m.get("job_budget_usd") else "",
+                              f"${m['person_max_usd_per_day']:g}/person/day" if m.get("person_max_usd_per_day")
+                              else "") if b]
+        cap = ("NO job budget or daily cap (HANGAR_JOB_BUDGET_MAX_COST_USD, HANGAR_PERSON_MAX_USD_PER_DAY)"
+               if m["uncapped"] else f"capped at {', '.join(bounds)}" if bounds else "no cap needed")
+        typer.secho(f"models: jobs default to {m['job_default']} (Claude Code: {m['claude_code']}); {cap}"
+                    + (f"; {len(m['repos_capped'])} repo(s) capped by policy" if m.get("repos_capped") else ""),
+                    fg="yellow" if m["uncapped"] else None)
     if doc := v.get("doctor"):
         last = doc.get("last_run") or {}
         typer.echo(f"cloud doctor: {doc.get('open', 0)} open finding(s)" +

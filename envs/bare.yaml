@@ -8,12 +8,10 @@ tools:
   apt: [gh, fd-find, shellcheck]
 harnesses: [claude-code, codex, pi, antigravity]  # allowed agents; a child env's list replaces this one
 default_harness: claude-code
-# Default models per harness (checked 2026-10-12 with each CLI's model list). Override per run with
-# run_agent(model=...). Codex is left on its own default, which tracks the newest model for the account.
-model:
-  claude-code: opus
-  pi: openrouter/google/gemini-3.8-flash
-  antigravity: gemini-3.8-flash-high
+# Every harness runs its provider's strongest current model, resolved to a concrete id from the provider's live model
+# list when a sandbox or session is created, and pinned for it (docs/harnesses.md, "Models"). Override per run with
+# run_agent(model=...), per environment or repo policy with `balanced` or a pinned id.
+model: frontier
 resources:
   cpus: 2
   memory_gb: 4

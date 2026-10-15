@@ -226,6 +226,9 @@ def env_list(as_json: bool = typer.Option(False, "--json", help="Print the raw l
     for e in envs:
         imgs = ", ".join(f"{k}:{v.split(':')[-1]}" for k, v in (e.get("images") or {}).items()) or "not built"
         typer.echo(f"{e['name']:22} {', '.join(e.get('harnesses') or []):34} {imgs}")
+        for h, m in (e.get("models") or {}).items():  # --- review #105: what each runs, and its list price
+            if m.get("about"):
+                typer.echo(f"  {h}: {m['about']}")
 
 
 @env_app.command("render")

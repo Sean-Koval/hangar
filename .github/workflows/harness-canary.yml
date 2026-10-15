@@ -1,0 +1,229 @@
+# The nightly harness canary (docs/harnesses.md). For each harness it resolves the newest stable upstream release from
+# the vendor's own release source (Claude Code's release manifest, npm, Antigravity's updater), checks the published
+# checksums against the artifacts, runs the contract tests against those versions and diffs the Codex app-server
+# schema and Claude Code's stream-json protocol against the recorded (locked) ones.
+#
+# Two jobs, split at the trust boundary: `canary` installs and runs the upstream releases with a read-only token
+# and no secrets; `publish` runs none of them and holds the write token and the App key.
+#
+# - Everything passed: it opens (or updates) one lock-bump PR from `canary/harness-lock`, whose body is the review
+#   packet. One person's approval lands it (harness-canary-land.yml); nothing merges without that approval.
+# - Something failed: it opens (or comments on) one issue labelled `harness-canary`, with the failing tests and diff.
+#
+# It runs on GitHub's runners and never talks to the cluster, so it works while the cluster is powered down.
+#
+# Identity: with the CANARY_APP_CLIENT_ID and CANARY_APP_PRIVATE_KEY secrets (a dedicated GitHub App with Contents
+# and Pull requests read and write on this repo only, not one with wider reach), the PR comes from the App, so pr.yml
+# and the contract checks run on it and the merge triggers ci.yml and images.yml on main. Without them it uses the
+# workflow token, and GitHub runs no workflow for that PR or its merge (docs/harnesses.md says what to do then).
+name: harness-canary
+on:
+  schedule:
+    - cron: "17 7 * * *"  # 03:17 ET in summer: after upstream's US-day releases, well before the 10:00 power-up
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Resolve, test and write the packet, but open no PR or issue
+        type: boolean
+        default: false
+
+concurrency:
+  group: harness-canary
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PYTEST_ADDOPTS: -p no:cacheprovider --durations=10
+  UV_COMPILE_BYTECODE: "1"
+  BRANCH: canary/harness-lock
+
+jobs:
+  # Everything that installs or runs an upstream release happens here: npm installs, new binaries, the contract tests
+  # against them. A process in a job can read the job's token and every secret the job references from the runner, so
+  # this job has a read-only token and no secrets; what it produces is handed to `publish` as an artifact.
+  canary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      run: ${{ steps.resolve.outputs.run }}
+      changes: ${{ steps.resolve.outputs.changes }}
+      ok: ${{ steps.packet.outputs.ok }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - uses: actions/setup-node@v7  # the recipes' npm installs, and `npm audit signatures` in resolve
+        with:
+          node-version: "22"
+      - run: uv sync --all-extras --locked
+      - name: Resolve the newest stable releases
+        id: resolve
+        run: |
+          set -o pipefail
+          mkdir -p canary
+          uv run --locked python -m hangar.canary resolve --out canary/harnesses.lock.yaml \
+            --report canary/resolve.json | tee canary/resolve.out
+          changes=$(jq -c .changes canary/resolve.json)
+          errors=$(jq -c '[.harnesses | to_entries[] | select(.value.status == "error") | .key]' canary/resolve.json)
+          echo "changes=$changes" >> "$GITHUB_OUTPUT"
+          echo "errors=$errors" >> "$GITHUB_OUTPUT"
+          if [ "$changes" = "{}" ] && [ "$errors" = "[]" ]; then
+            echo "Every harness is at its newest stable release." >> "$GITHUB_STEP_SUMMARY"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      # The locked installs from the contract workflow's cache, read only: `install` keeps the unchanged ones and
+      # reinstalls only the harnesses the candidate moves.
+      - if: steps.resolve.outputs.run == 'true'
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/hangar-clis
+          key: harness-clis-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/hangar/harnesses.lock.yaml', 'src/hangar/harnesses.py') }}
+          restore-keys: harness-clis-${{ runner.os }}-${{ runner.arch }}-
+      - name: Install the candidate CLIs
+        id: install
+        if: steps.resolve.outputs.run == 'true'
+        run: |
+          set -o pipefail
+          uv run --locked python -m hangar.canary install --lock canary/harnesses.lock.yaml --only all \
+            --dest ~/.cache/hangar-clis --env-file "$GITHUB_ENV" 2>&1 | tee canary/install.log
+          echo "$HOME/.cache/hangar-clis/codex/libexec/codex-path" >> "$GITHUB_PATH"
+      - name: Contract tests against the candidates
+        if: steps.resolve.outputs.run == 'true' && steps.install.outcome == 'success'
+        continue-on-error: true  # the packet reports the failures
+        env:
+          HANGAR_PROTOCOL_OUT: canary/protocol
+        run: |
+          uv run --locked pytest -v --junitxml canary/junit.xml tests/test_*real_clis.py tests/test_cache.py
+      - name: Protocol diff and the review packet
+        id: packet
+        if: always() && steps.resolve.outputs.run == 'true'
+        run: |
+          [ -f canary/junit.xml ] || printf '<testsuite><testcase classname="canary" name="install"><failure message="the candidate CLIs did not install">%s</failure></testcase></testsuite>\n' \
+            "$(tail -c 3000 canary/install.log 2>/dev/null | sed 's/[<&]/ /g')" > canary/junit.xml
+          uv run --locked python -m hangar.canary diff --locked tests/fixtures/protocol --candidate canary/protocol \
+            --report canary/diff.json
+          status=0
+          uv run --locked python -m hangar.canary packet --resolve canary/resolve.json --diff canary/diff.json \
+            --tests canary/junit.xml --out canary/packet.md \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" || status=$?
+          cat canary/packet.md >> "$GITHUB_STEP_SUMMARY"
+          echo "ok=$([ "$status" -eq 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          [ "$status" -eq 0 ] || [ "$status" -eq 2 ]  # 2: the canary failed, which the issue reports
+      - if: always() && steps.resolve.outputs.run == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: harness-canary
+          path: canary/
+          retention-days: 30
+
+  # Pushes the bump and opens the PR, or files the issue. It runs no upstream code: hangar's own (from this commit)
+  # and git. The artifact was written where the candidates ran, so it is data: `canary check` validates the lock and
+  # the two protocol records, and only those three files are copied into the commit.
+  publish:
+    needs: canary
+    if: always() && needs.canary.outputs.run == 'true' && !inputs.dry_run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write  # the canary branch (the workflow token; an App token when configured)
+      pull-requests: write
+      issues: write  # the failure issue
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false  # the push below uses the App's token, not a header for the workflow's
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --locked
+      - uses: actions/download-artifact@v8
+        continue-on-error: true  # a run that failed before its upload still files the issue
+        with:
+          name: harness-canary
+          path: canary
+      - name: App token
+        id: app
+        if: needs.canary.outputs.ok == 'true'
+        env:
+          CLIENT_ID: ${{ secrets.CANARY_APP_CLIENT_ID }}
+        run: echo "ready=$([ -n "$CLIENT_ID" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - if: steps.app.outputs.ready == 'true'
+        id: token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.CANARY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CANARY_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Open or update the lock-bump PR
+        if: needs.canary.outputs.ok == 'true' && needs.canary.outputs.changes != '{}'
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token || github.token }}
+          APP: ${{ steps.app.outputs.ready }}
+          CHANGES: ${{ needs.canary.outputs.changes }}
+        run: |
+          set -euo pipefail
+          uv run --locked python -m hangar.canary check --lock canary/harnesses.lock.yaml --protocol canary/protocol
+          summary=$(jq -r 'to_entries | map("\(.key) \(.value[0]) -> \(.value[1])") | join(", ")' <<< "$CHANGES")
+          cp canary/harnesses.lock.yaml src/hangar/harnesses.lock.yaml
+          cp canary/protocol/codex-app-server.json canary/protocol/claude-stream-json.json tests/fixtures/protocol/
+          git config user.name "hangar canary"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git switch -c "$BRANCH"
+          git add src/hangar/harnesses.lock.yaml tests/fixtures/protocol/codex-app-server.json \
+            tests/fixtures/protocol/claude-stream-json.json
+          git commit -q -m "harness lock: $summary" -m "The nightly canary: contract tests and the protocol diff passed against these versions. $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          body=canary/pr.md
+          { cat canary/packet.md
+            echo
+            echo "---"
+            echo "Lands on one approval of its current head by an approver (harness-canary-land.yml); a newer candidate pushed here disarms it first. Sessions created after the merge get the new versions; existing sessions keep theirs until a follow-up hands off (docs/harnesses.md)."
+            if [ "$APP" != "true" ]; then
+              echo
+              echo "Opened with the workflow token, so GitHub runs no checks on this PR: close and reopen it to run them. After the merge, run images.yml by hand (Actions → images → Run workflow)."
+            fi
+          } > "$body"
+          pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=open&head=${GITHUB_REPOSITORY_OWNER}:${BRANCH}" --jq '.[0].number // empty')
+          if [ -n "$pr" ] && git fetch -q origin "$BRANCH" && git diff --quiet FETCH_HEAD HEAD -- src/hangar/harnesses.lock.yaml tests/fixtures/protocol; then
+            echo "PR #$pr already proposes these versions; refreshing its packet"
+          else
+            # off before the push, and again after it: an approval landed in between must not ride along
+            [ -z "$pr" ] || uv run --locked python -m hangar.canary disarm --repo "$GITHUB_REPOSITORY" --pr "$pr"
+            git push -q -f origin "HEAD:refs/heads/$BRANCH"
+            [ -z "$pr" ] || uv run --locked python -m hangar.canary disarm --repo "$GITHUB_REPOSITORY" --pr "$pr"
+          fi
+          if [ -n "$pr" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/pulls/$pr" -f title="harness lock: $summary" -F body=@"$body" >/dev/null
+          else
+            base=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)  # a schedule's event names no repository
+            pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls" -f title="harness lock: $summary" -f head="$BRANCH" \
+                   -f base="$base" -F body=@"$body" --jq .number)
+          fi
+          echo "Lock-bump PR: #$pr" >> "$GITHUB_STEP_SUMMARY"
+      - name: Open or update the failure issue
+        if: always() && needs.canary.outputs.ok != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [ -f canary/packet.md ] || echo "The canary run failed before it wrote a packet: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > canary/packet.md
+          issue=$(gh api "repos/$GITHUB_REPOSITORY/issues?state=open&labels=harness-canary" --jq '[.[] | select(.pull_request == null)][0].number // empty')
+          if [ -n "$issue" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/issues/$issue/comments" -F body=@canary/packet.md >/dev/null
+          else
+            issue=$(gh api "repos/$GITHUB_REPOSITORY/issues" -f title="Harness canary: a candidate CLI fails the contract" \
+                      -F body=@canary/packet.md -f "labels[]=harness-canary" --jq .number)
+          fi
+          echo "Failure issue: #$issue" >> "$GITHUB_STEP_SUMMARY"

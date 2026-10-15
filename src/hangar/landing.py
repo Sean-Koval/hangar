@@ -37,7 +37,8 @@ from urllib.parse import quote
 import httpx
 
 from hangar import baseline
-from hangar.events import usage_line
+from hangar import modelpolicy as modelpolicy  # --- review #105
+from hangar.events import DEFAULT_PRICES, usage_line
 from hangar.gateway import AppTokens
 from hangar.github import GitHub, GitHubError, parse_repo
 from hangar.models import JOB_TERMINAL, ContextItem, Job, JobState, LandingState, ScheduledJob, now
@@ -869,11 +870,18 @@ class Landing:
             caps = [f"${b.max_cost_usd:g}" if b.max_cost_usd else "", f"{b.max_tokens:,} tokens" if b.max_tokens
                     else "", f"{b.max_turns} turns" if b.max_turns else ""]
             cost += " · job budget " + ", ".join(c for c in caps if c)
+        else:
+            cost += " · no job budget (`job_budget` in the repo policy, or HANGAR_JOB_BUDGET_MAX_COST_USD)"
         out.append(cost + f" · {len([t for t in job.turns if t.run_id])} agent turn(s)")
         version = next((t.harness_version for t in reversed(job.turns) if t.harness_version), None)
+        s = svc._session(job)
+        # --- review #105: the id the job's session ran (a policy, resolved and pinned there), and its price
+        model = modelpolicy.describe(getattr(s, "model", None) or job.model, getattr(s, "model_policy", None),
+                                     {**DEFAULT_PRICES, **{k.lower(): v for k, v in
+                                                           (self.settings.model_prices or {}).items()}})
         out.append(f"- **Agent:** {job.harness or 'default harness'}" + (f" {version}" if version else "")
-                   + f" · model {job.model or 'the harness default'} · environment `{job.environment}`")
-        if s := svc._session(job):
+                   + f" · model {model} · environment `{job.environment}`")
+        if s:
             out.append(f"- **Session:** `{s.name}`: `hangar session pull {s.name}` checks it out locally; reply "
                        "`/hangar <message>` here to have the agent continue")
         base = self.settings.public_url.rstrip("/")

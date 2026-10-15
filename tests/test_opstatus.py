@@ -98,6 +98,7 @@ async def test_status_brings_the_operators_view_together(fleet, store, sessions,
     assert v["builds"] == {"images": [], "packs": [], "repos": []}
     assert "reaper" in v["loops"] and v["power"]["state"] == "up"
     assert v["credentials"]["counts"] == {}
+    assert v["models"]["uncapped"] and v["models"]["job_default"] == "frontier"  # --- integ3 (review #105)
     # the CLI prints the real thing
     from typer.testing import CliRunner
 
@@ -109,6 +110,8 @@ async def test_status_brings_the_operators_view_together(fleet, store, sessions,
     assert out.exit_code == 0, out.output
     assert "missing_tool" in out.output and "registry.npmjs.org" in out.output and "create     warm" in out.output
     assert called[0][1]["params"] == {"check_credentials": "false", "section": "slo,failures"}
+    out = CliRunner().invoke(cli.app, ["status"])  # --- integ3: the uncapped `frontier` default is shown
+    assert "models: jobs default to frontier" in out.output and "NO job budget or daily cap" in out.output
     only = await opstatus.status(fleet, sessions, sections={"slo"})
     assert set(only) == {"at", "version", "slo"}
     ov = fleet.overview()

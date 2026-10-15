@@ -289,7 +289,11 @@ async def test_a_doctor_fix_never_changes_credentials_egress_or_isolation(store,
 
 def test_the_doctor_picks_the_strongest_model_unless_told(jobs, settings):  # noqa: F811
     doc = clouddoctor.of(jobs)
-    assert doc._harness("agent") == ("claude-code", "best")
+    assert doc._harness("agent") == ("claude-code", "frontier")  # --- integ3: one model authority (#105)
+    settings.doctor_harness = "codex"
+    assert doc._harness("agent") == ("codex", "frontier")  # every harness, not only Claude Code
+    settings.doctor_model = "best"  # the documented fallback for a team key without Fable access
+    assert doc._harness("agent")[1] == "best"
     settings.doctor_model = "claude-opus-5-5"
     assert doc._harness("agent")[1] == "claude-opus-5-5"
 

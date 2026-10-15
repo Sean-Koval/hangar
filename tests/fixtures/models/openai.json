@@ -1,0 +1,16 @@
+{
+ "object": "list",
+ "data": [
+  {"id": "gpt-6.1-sol", "object": "model", "created": 1790702882, "owned_by": "system"},
+  {"id": "gpt-6.1-sol-pro", "object": "model", "created": 1790702886, "owned_by": "system"},
+  {"id": "gpt-6-sol", "object": "model", "created": 1790100775, "owned_by": "system"},
+  {"id": "gpt-6-luna", "object": "model", "created": 1790100786, "owned_by": "system"},
+  {"id": "gpt-6-astra", "object": "model", "created": 1788552838, "owned_by": "system"},
+  {"id": "gpt-6-astra-2026-09-03", "object": "model", "created": 1788552838, "owned_by": "system"},
+  {"id": "gpt-5.6-terra", "object": "model", "created": 1783590857, "owned_by": "system"},
+  {"id": "gpt-5.6-cyber", "object": "model", "created": 1783590850, "owned_by": "system"},
+  {"id": "gpt-5.3-codex", "object": "model", "created": 1771959164, "owned_by": "system"},
+  {"id": "text-embedding-3-large", "object": "model", "created": 1705953180, "owned_by": "system"},
+  {"id": "gpt-image-2", "object": "model", "created": 1780000000, "owned_by": "system"}
+ ]
+}

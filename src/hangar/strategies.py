@@ -33,6 +33,7 @@ from hangar import (  # --- overnight/cache; verifyloop: --- overnight/autofix
     verifyloop,
 )
 from hangar import fairness as fairness  # --- scale
+from hangar import pins as pins  # --- canary
 from hangar import secretscan as secretscan  # --- egress
 from hangar.events import total_usage
 from hangar.fleet import PoweredDown, _clip_tail
@@ -201,6 +202,10 @@ async def _fork(svc: SessionService, parent: Session, n: int, requester: str, *,
                 turns=[t.model_copy(update={"run_id": None, "event_cursor": None, "usage": None,
                                             "repair_usage": None}, deep=True) for t in parent.turns],
                 needs_input=parent.needs_input, checkpoints=[ck.model_copy(deep=True)])
+            if child_harness == parent.harness:  # --- canary: the parent's pins, its conversation's CLI version too
+                c.model_policy, c.harness_version = parent.model_policy, parent.harness_version
+            else:
+                pins.pin(svc, c)  # --- canary: that harness's model, resolved
             children.append(c)  # before its copies, so a failure part-way drops them too
             # --- overnight/sweep: copied inside the store (a hard link, or a GCS rewrite), never through memory:
             # a checkpoint's parts can be hundreds of MB, times N children

@@ -65,6 +65,8 @@ Everything the owner sets up, in the order of the steps. **Required** means the 
 | deploy.yml: the `production` environment (you as required reviewer; `main` and `v*` tags only), its secrets `GCP_DEPLOY_SERVICE_ACCOUNT`, `GKE_CLUSTER`, `GKE_LOCATION`, `HANGAR_URL`, `HANGAR_DEPLOY_TOKEN`, and the `hangar-deploy` service account and Role | Optional; **required** to deploy with deploy.yml | [11](#11-deploying-with-deployyml) |
 | claude.ai users re-add the hangar connector | **Required** for claude.ai | [12](#12-clients-and-proof) |
 | The Cloud Doctor: a team API key for its harness (Claude Code unless `HANGAR_DOCTOR_HARNESS`), `HANGAR_DOCTOR_MAX_USD`, and `HANGAR_DOCTOR_SPECS_REPO` for fixes to environment specs ([doctor.md](doctor.md)) | Optional: without a team key it only reports; `HANGAR_DOCTOR_SCHEDULE=off` turns it off | — |
+| Model list keys: `HANGAR_MODEL_LIST_CREDENTIALS` (`webhook` credentials holding Anthropic, OpenAI and Gemini API keys) | Optional: without them, `frontier` resolves to hangar's built-in ids (OpenRouter's list needs no key) | [harnesses.md](harnesses.md#pinned-cached-and-what-happens-when-a-list-cant-be-had) |
+| Harness canary: branch protection and *Allow auto-merge* on hangar's own `main`; secrets `CANARY_APP_CLIENT_ID`, `CANARY_APP_PRIVATE_KEY`; variable `CANARY_APPROVERS` | Optional; the App is **required** for checks to run on the bump PR by themselves | [harnesses.md](harnesses.md#setup) |
 
 ### What changes as soon as it starts
 
@@ -102,6 +104,8 @@ To opt out, use `hangar config set NAME VALUE` (kept in hangar's database) or `h
 | **GitHub Projects redelivery** (trust) | missed `projects_v2_item` deliveries were lost → the startup pass also asks each `HANGAR_GITHUB_PROJECTS` organization's webhook to redeliver them. The control token needs the organization's *Webhooks: Read and write* (classic: `admin:org_hook`); without it hangar logs a warning. | `HANGAR_GITHUB_REDELIVER_ON_START=false` |
 | **MCP waits** (#86) | `wait_for_turn` waited up to 300 s by default (600 at most), `exec` as long as its `timeout`, `process` `attach` up to 600 s, `terminal_send` up to its `wait_ms` → each at most `HANGAR_MCP_TOOL_WAIT_SECONDS` (150 s), so claude.ai (which gives up after about 230 s) gets an answer: `wait_for_turn` says `done: false`, an `exec` that runs into the cap points at `process`. Destroy, pause, resume, extend, snapshot, `fork_session` and `run_agent` answer within it too and finish in the background. Any other tool still waiting just past it (165 s) gets an error. | Raise `HANGAR_MCP_TOOL_WAIT_SECONDS` only if all your clients wait longer than claude.ai |
 | **Tool-list notice** (#86) | `serverInfo.version` was `0.1.0` → `<version>+tools.<hash>`. A claude.ai connector whose tool list is older than the server's gets a one-line note (at most hourly) asking to remove and re-add the connector (step 12). | — |
+| **Models** (canary) | `envs/bare.yaml` ran Claude Code on the alias `opus`, pi and Antigravity on flash ids, Codex on its account default, and jobs on whatever the environment said → **`model: frontier`** for every harness of `bare` and of every environment that inherits its `model`, and jobs default to `frontier`. It is resolved when a sandbox or session is created and pinned for it (`claude-fable-5-1` with no Anthropic key to list with: $10/$50 per MTok against Opus 5.5's $4/$20). Running sessions keep their model. | `model: balanced` or a pinned id in the environment or repo policy |
+| **Session CLI versions** (canary) | → a session records the locked CLI version it was created under. A follow-up on a sandbox running another version hands off (a summary in a new conversation) instead of resuming; sessions from before this release adopt the version of their next sandbox. | — |
 | **Harness versions and packs** (#83, #87) | Claude Code and Antigravity followed "latest" → `src/hangar/harnesses.lock.yaml` pins every harness (Claude Code 2.1.296, Codex 0.162.1, Antigravity 1.3.3, pi 1.1.0, Gemini 0.64.0); a pack build fails unless the CLI reports the locked version. Packs hold only the vendor's files and are mounted by digest. **Every pack tag changes once**, and so does every image that bakes a harness in (step 3). `hangar pack publish` no longer overwrites an existing tag without `--force`. | — |
 
 ### 1. Back up
@@ -203,6 +207,8 @@ kubectl -n hangar rollout restart deploy/hangar
 ```
 
 A slot is a job, not a sandbox: 24 best-of-4 jobs could hold all 120 sandboxes, so keep `HANGAR_PERSON_MAX_RUNNING_JOBS` (half the slots) and the budgets in place ([team-scale.md](team-scale.md#limits-and-follow-ups)).
+
+**Jobs now default to `frontier`** (Claude Fable 5.1 on Claude Code, $10/$50 per MTok; [harnesses.md](harnesses.md#models-the-latest-strong-model-per-provider)), and **hangar sets no spend cap of its own**: the amounts above are examples, and choosing them is yours. Until `HANGAR_JOB_BUDGET_MAX_COST_USD` or `HANGAR_PERSON_MAX_USD_PER_DAY` is set, `hangar doctor` warns (`model spend`) and `hangar status` shows `NO job budget or daily cap` on its `models:` line. A repo policy's `job_budget` or `--max-usd-per-day` caps only that repo. Where price matters more than the last bit of capability, use `model: balanced` in the environment or the repo policy.
 
 ### 9. Front doors
 

@@ -1,0 +1,69 @@
+# Lands the nightly canary's lock-bump PR on one approval (docs/harnesses.md), with the rule hangar's landing uses for
+# agent PRs with `land: auto_after_approval` (docs/landing.md): an approval of the PR's current head, by an approver
+# (the CANARY_APPROVERS repository variable, comma-separated logins; else the repository's owner) who isn't its
+# author, with no changes requested, arms auto-merge for exactly that commit. GitHub's branch protection (required
+# checks, dismissal of stale approvals) still decides when it merges. Only a PR that changes nothing but the lock and
+# the recorded protocols lands this way. It runs the gate from the default branch, never from the PR's own code.
+name: harness-canary-land
+on:
+  pull_request_review:
+    types: [submitted]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: The lock-bump PR to land (it still needs an approval of its head)
+        required: true
+        type: number
+
+concurrency:
+  group: harness-canary-land
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  land:
+    if: >-
+      github.event_name == 'workflow_dispatch' || (github.event.review.state == 'approved'
+      && github.event.pull_request.head.ref == 'canary/harness-lock'
+      && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write  # merge an already mergeable PR
+      pull-requests: write  # arm auto-merge
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --locked
+      - name: App token
+        id: app
+        env:
+          CLIENT_ID: ${{ secrets.CANARY_APP_CLIENT_ID }}
+        run: echo "ready=$([ -n "$CLIENT_ID" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - if: steps.app.outputs.ready == 'true'
+        id: token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.CANARY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CANARY_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Land
+        env:
+          # the App arms it when configured, so the merge's push to main runs ci.yml and images.yml
+          GH_TOKEN: ${{ steps.token.outputs.token || github.token }}
+          PR: ${{ inputs.pr || github.event.pull_request.number }}
+          APPROVERS: ${{ vars.CANARY_APPROVERS || github.repository_owner }}
+        run: |
+          set -o pipefail
+          status=0
+          uv run --locked python -m hangar.canary land --repo "$GITHUB_REPOSITORY" --pr "$PR" \
+            --approvers "$APPROVERS" | tee -a "$GITHUB_STEP_SUMMARY" || status=$?
+          [ "$status" -eq 0 ] || [ "$status" -eq 3 ]  # 3: the gate said no (and why); nothing was armed

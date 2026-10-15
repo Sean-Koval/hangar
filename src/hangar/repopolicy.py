@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from hangar import modelpolicy as modelpolicy  # --- canary
 from hangar.egress import EgressSpec  # --- egress
 from hangar.github import parse_repo
 from hangar.harnesses import get_harness
@@ -58,7 +59,7 @@ class RepoPolicy(BaseModel):
     harness: str | None = None
     # A model for every harness, or one per harness ({claude-code: opus, codex: gpt-5.5}), as in environments. A
     # plain string applies only to the policy's own harness (or, without one, when the job didn't pick a harness):
-    # a model id means nothing to another harness.
+    # a model id means nothing to another harness. --- canary: a policy (`frontier`, `balanced`) applies to every one.
     model: str | dict[str, str] | None = None
     budget: Budget | None = None  # per agent turn, under the job's own (jobbudget.py)
     job_budget: JobBudget | None = None  # all of a job's turns together
@@ -118,6 +119,8 @@ class RepoPolicy(BaseModel):
     def model_for(self, harness: str | None, job_harness: str | None) -> str | None:
         if isinstance(self.model, dict):
             return self.model.get(harness or "")
+        if modelpolicy.is_policy(self.model):  # --- canary: `frontier` means something to every harness
+            return self.model
         if self.harness:
             return self.model if harness == self.harness else None
         return None if job_harness else self.model
