@@ -27,6 +27,11 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - run: uv run --locked --only-dev ruff check src tests scripts/ci
+      - name: shellcheck (deploy/gke/setup-cicd.sh)  # --- cicd: its --dry-run is tested in tests/test_setup_cicd.py
+        run: |
+          command -v shellcheck >/dev/null || { sudo apt-get update -q && sudo apt-get install -yq shellcheck; }
+          shellcheck --version | head -2
+          shellcheck deploy/gke/setup-cicd.sh
 
   unit:
     name: unit (${{ matrix.shard }}/4)

@@ -12,8 +12,10 @@
 # It refuses to deploy while the sandbox pools are powered down (the checks need sandboxes) unless `force` is set; a
 # forced deploy then runs only the checks that need no sandbox.
 #
+# deploy/gke/setup-cicd.sh sets up everything below, once, from the owner's machine (docs/cicd.md).
 # Repository secrets, shared with images.yml (docs/gke.md): GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_SERVICE_ACCOUNT,
-# HANGAR_REGISTRY. Without them (before setup, or on a fork) it skips with a notice and stays green.
+# HANGAR_REGISTRY. Without them (before setup, or on a fork) it skips with a notice and stays green. It runs only from
+# main or a v* tag: the production environment deploys nothing else, and Google Cloud trusts nothing else.
 # `production` environment secrets, released only once the required reviewer approves (as repository secrets any
 # workflow on any branch could read them, and the approval would gate nothing):
 #   GCP_DEPLOY_SERVICE_ACCOUNT   the deploy identity, impersonable only from the production environment
@@ -58,11 +60,15 @@ jobs:
           for v in WIF_PROVIDER WIF_SERVICE_ACCOUNT HANGAR_REGISTRY; do
             [ -n "${!v}" ] || missing+=("$v")
           done
-          if [ ${#missing[@]} -eq 0 ]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice title=deploy: skipped::Missing secrets: ${missing[*]} (WIF_* are GCP_WORKLOAD_IDENTITY_PROVIDER and GCP_SERVICE_ACCOUNT). docs/upgrading.md, \"Deploying with deploy.yml\", lists them."
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::notice title=deploy: skipped::Missing secrets: ${missing[*]} (WIF_* are GCP_WORKLOAD_IDENTITY_PROVIDER and GCP_SERVICE_ACCOUNT). deploy/gke/setup-cicd.sh sets them (docs/cicd.md)."
             echo "ready=false" >> "$GITHUB_OUTPUT"
+          elif [ "$GITHUB_REF" != refs/heads/main ] && [[ "$GITHUB_REF" != refs/tags/v* ]]; then
+            # --- cicd: refused here, before building anything, rather than at the environment's gate
+            echo "::error title=deploy: refused::Deploys run from main or a v* tag (the production environment's policy, and the only refs Google Cloud trusts); this run is on $GITHUB_REF."
+            exit 1
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
 
   images:

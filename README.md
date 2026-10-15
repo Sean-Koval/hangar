@@ -242,7 +242,7 @@ For remote instances, run `uv run hangar login https://YOUR-HANGAR-HOST` once; f
 
 Hangar uses a single control-plane replica with SQLite state. Kubernetes forks copy workspace files; do not assume they preserve process memory. E2B, Pod snapshots, and Kata on GKE have not yet been validated live in the existing project reference. See [the full limitations](docs/guide.md#known-limits) and [security model](docs/security.md).
 
-For an existing deployment, read [the upgrade guide](docs/upgrading.md) before updating.
+For an existing deployment, read [the upgrade guide](docs/upgrading.md) before updating. To deploy from GitHub Actions with your approval instead of from a laptop, see [deploying from CI/CD](docs/cicd.md).
 
 ## Documentation
 

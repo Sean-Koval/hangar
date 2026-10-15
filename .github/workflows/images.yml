@@ -3,12 +3,14 @@
 # Artifact Registry lacks, and pushes them. The cluster then finds them with one registry lookup instead of building
 # on a create, and deploy/gke/up.sh has nothing left to build before rollout.
 #
-# It signs in to Google Cloud with Workload Identity Federation (no key). The owner adds three repository secrets:
+# It signs in to Google Cloud with Workload Identity Federation (no key). Three repository secrets, which
+# deploy/gke/setup-cicd.sh sets (docs/cicd.md):
 #   GCP_WORKLOAD_IDENTITY_PROVIDER  projects/<project number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>
 #   GCP_SERVICE_ACCOUNT             <name>@<project>.iam.gserviceaccount.com, with roles/artifactregistry.writer on the repo
 #   HANGAR_REGISTRY                 <region>-docker.pkg.dev/<project>/hangar (terraform -chdir=deploy/terraform/gke output registry)
-# Without them (before setup, or on a fork) the job skips with a notice and stays green. It never talks to the cluster,
-# so it works while the cluster is powered down.
+# Without them (before setup, or on a fork) the job skips with a notice and stays green. The provider trusts only runs of
+# main and v* tags, so on any other ref it skips too. It never talks to the cluster, so it works while the cluster is
+# powered down.
 name: images
 on:
   push:
@@ -39,11 +41,15 @@ jobs:
       - name: Check setup
         id: setup
         run: |
-          if [ -n "$WIF_PROVIDER" ] && [ -n "$WIF_SERVICE_ACCOUNT" ] && [ -n "$HANGAR_REGISTRY" ]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice title=images: skipped::Add the GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_SERVICE_ACCOUNT and HANGAR_REGISTRY secrets (docs/gke.md) to build environment images and harness packs here before rollout."
+          if [ -z "$WIF_PROVIDER" ] || [ -z "$WIF_SERVICE_ACCOUNT" ] || [ -z "$HANGAR_REGISTRY" ]; then
+            echo "::notice title=images: skipped::Add the GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_SERVICE_ACCOUNT and HANGAR_REGISTRY secrets (deploy/gke/setup-cicd.sh, docs/cicd.md) to build environment images and harness packs here before rollout."
             echo "ready=false" >> "$GITHUB_OUTPUT"
+          elif [ "$GITHUB_REF" != refs/heads/main ] && [[ "$GITHUB_REF" != refs/tags/v* ]]; then
+            # --- cicd: the provider's condition admits only these refs; anything else would fail to sign in
+            echo "::notice title=images: skipped::Google Cloud trusts only runs of main and v* tags (deploy/gke/setup-cicd.sh); this run is on $GITHUB_REF."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
       - if: steps.setup.outputs.ready == 'true'
         uses: actions/checkout@v7

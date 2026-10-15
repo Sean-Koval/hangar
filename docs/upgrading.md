@@ -144,7 +144,7 @@ kubectl -n hangar get secret hangar -o jsonpath='{.data.HANGAR_SECRET_KEY}' | ba
   gcloud secrets create hangar-vault-key --data-file=- --replication-policy=automatic
 ```
 
-Give `roles/secretmanager.secretAccessor` on it only to the operators who rotate keys.
+Give `roles/secretmanager.secretAccessor` on it only to the operators who rotate keys. `deploy/gke/setup-cicd.sh` does this copy when the secret doesn't exist yet ([cicd.md](cicd.md)).
 
 **Backups apart from the checkpoints (optional).** Backups go to `_backups/` in the checkpoints' bucket, under hangar's own service account, and `hangar doctor` warns about that (`backup isolation`). To fix it, create a bucket of its own where hangar's service account has only `roles/storage.objectCreator` (it writes backups, can't read or delete them), add a lifecycle rule that deletes them after the time you keep them, and `hangar config set HANGAR_BACKUP_STORE gs://<bucket>` (restart). Restores are then an operator's (`hangar admin restore --local`).
 
@@ -406,7 +406,7 @@ Nothing to set. `hangar status` (`GET /api/status`, `hangar://status`; admins) s
 
 ### 13. Deploying with deploy.yml
 
-**Optional**; required to deploy through `.github/workflows/deploy.yml` rather than `up.sh`. The setup is [below](#deploying-with-deployyml): the `production` environment with you as its required reviewer and only `main` and `v*` tags allowed; its five environment secrets; the `hangar-deploy` service account with `roles/container.clusterViewer` and a Role on the `hangar` Deployment.
+**Optional**; required to deploy through `.github/workflows/deploy.yml` rather than `up.sh`. The setup is [below](#deploying-with-deployyml): the `production` environment with you as its required reviewer and only `main` and `v*` tags allowed; its five environment secrets; the `hangar-deploy` service account with `roles/container.clusterViewer` and a Role on the `hangar` Deployment. `bash deploy/gke/setup-cicd.sh` does all of it, with the images workflow's secrets (step 3), the vault key (step 1) and the package mirrors (step 10a), and prints the rest; [cicd.md](cicd.md) walks through the first deploy.
 
 ### 14. Clients and proof
 
@@ -471,7 +471,7 @@ Until the repository secrets below exist (or on a fork) it skips with a notice a
 | `HANGAR_URL` | `production` | `https://<your hangar>` |
 | `HANGAR_DEPLOY_TOKEN` | `production` | an admin token for the acceptance checks and the deploy record: `hangar token create deploy --scope admin` |
 
-First, in *Settings → Environments*, create `production`, add yourself under *Required reviewers*, and under *Deployment branches and tags* allow only `main` and `v*` tags. Required reviewers need a public repository, or GitHub Enterprise for a private one ([deployments and environments][envs]). Then, as a project owner, after the images setup in gke.md (same `PROJECT`, `NUM`, `REPO`):
+`bash deploy/gke/setup-cicd.sh` sets up everything in this section, idempotently, and checks it ([cicd.md](cicd.md)); `--dry-run` prints each change first. By hand: in *Settings → Environments*, create `production`, add yourself under *Required reviewers*, and under *Deployment branches and tags* allow only `main` and `v*` tags. Required reviewers need a public repository, or GitHub Enterprise for a private one ([deployments and environments][envs]). Then, as a project owner, after the images setup in gke.md (same `PROJECT`, `NUM`, `REPO`):
 
 ```bash
 gcloud iam service-accounts create hangar-deploy --project "$PROJECT"
@@ -487,7 +487,7 @@ rules:
   - apiGroups: [apps]
     resources: [deployments]
     resourceNames: [hangar]
-    verbs: [get, watch, patch]
+    verbs: [get, list, watch, patch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -507,13 +507,14 @@ gh secret set HANGAR_URL --env production --body "https://<your hangar>"
 hangar token create deploy --scope admin | tail -1 | gh secret set HANGAR_DEPLOY_TOKEN --env production
 ```
 
-Moving from an earlier setup of this workflow: set the four secrets above with `--env production`, delete the repository copies (`gh secret delete HANGAR_DEPLOY_TOKEN`, and the others), and replace `roles/container.developer` with the binding above. That role reads every Secret and can exec into every pod in every cluster of the project, which a deploy doesn't need, and a deploy run executes the commit's dependencies (`uv sync`) with it.
+Moving from an earlier setup of this workflow: set the four secrets above with `--env production`, delete the repository copies (`gh secret delete HANGAR_DEPLOY_TOKEN`, and the others), and replace `roles/container.developer` with the binding above. The script does all of that, removing `roles/container.developer` (and `container.admin`) from `hangar-deploy`, and it narrows a provider made from gke.md's earlier condition (any ref of the repository) to `main` and `v*` tags. That role reads every Secret and can exec into every pod in every cluster of the project, which a deploy doesn't need, and a deploy run executes the commit's dependencies (`uv sync`) with it.
 
-The deploy needs `get`, `watch` and `patch` on the `hangar` Deployment (`kubectl get`, `set image`, `rollout status`) and `container.clusters.get` to fetch credentials ([GKE roles][gkeroles], [RBAC on GKE: a service account is a `User` subject named by its email, and `container.clusters.get` authenticates without authorizing anything in the cluster][gkerbac]). The kubeconfig `get-gke-credentials` writes holds a token that lasts an hour, so the workflow fetches a fresh one before a rollback.
+The deploy needs `get`, `list`, `watch` and `patch` on the `hangar` Deployment (`kubectl get`, `set image`, and `rollout status`, which lists and then watches it with a `metadata.name` field selector: [RBAC allows that on a named resource][rbacnames], and without `list` the first rollout fails as forbidden) and `container.clusters.get` to fetch credentials ([GKE roles][gkeroles], [RBAC on GKE: a service account is a `User` subject named by its email, and `container.clusters.get` authenticates without authorizing anything in the cluster][gkerbac]). The kubeconfig `get-gke-credentials` writes holds a token that lasts an hour, so the workflow fetches a fresh one before a rollback.
 
 [envs]: https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments
 [gkeroles]: https://docs.cloud.google.com/iam/docs/roles-permissions/container
 [gkerbac]: https://docs.cloud.google.com/kubernetes-engine/docs/how-to/role-based-access-control
+[rbacnames]: https://kubernetes.io/docs/reference/access-authn-authz/rbac/#referring-to-resources
 
 ## Upgrading from before the overnight stack (#48–#69)
 
