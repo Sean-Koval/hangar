@@ -208,7 +208,7 @@ class SessionService:
         out = [s for s in self._sessions.values() if include_archived or s.state != SessionState.ARCHIVED]
         return sorted(out, key=lambda s: s.last_active_at, reverse=True)[: max(1, min(limit, 500))]
 
-    def new(self, req: NewSession, owner: str, requester: str) -> Session:
+    def new(self, req: NewSession, owner: str, requester: str, person: str | None = None) -> Session:
         if not _NAME_RE.match(req.name):
             raise SessionError("name: lowercase letters, digits, '.', '_' and '-' (start with a letter or digit)")
         if any(s.name == req.name and s.state != SessionState.ARCHIVED for s in self._sessions.values()):
@@ -230,13 +230,14 @@ class SessionService:
         schema = exchange.check_schema(req.output_schema)
         if (context or schema) and not req.message:
             raise SessionError("context and output_schema go with a message for the agent")
-        fairness.check_sessions(self, owner)  # --- scale: live sessions per person
+        fairness.check_sessions(self, owner, person=person)  # --- scale: live sessions per person
         s = Session(name=req.name, title=(req.title or (req.message or req.name).strip().splitlines()[0])[:200],
                     owner=owner, environment=env, harness=harness, model=req.model,
                     repo=req.repo or (spec.repo.url if spec.repo else None), base_branch=req.base_branch,
                     branch=branch, labels=req.labels, approvals=req.approvals, cache=req.cache,
                     idle_minutes=(req.idle_minutes if req.idle_minutes is not None
-                                  else self.settings.session_idle_minutes))
+                                  else self.settings.session_idle_minutes),
+                    person=person)  # --- identity
         s.budget = resolve_budget(req.budget, self.settings)
         caching.pin_model(self, s)  # --- overnight/cache
         self._sessions[s.id] = s
@@ -453,7 +454,8 @@ class SessionService:
             s.environment, name=f"ses-{s.name[:30]}-{uuid.uuid4().hex[:4]}", repo=s.repo, branch=s.base_branch,
             harness=s.harness, ttl_minutes=ttl, labels={**s.labels, "hangar.session": s.id}, provider=s.provider,
             actor=f"session:{s.id}", progress=stage,
-            push_branch=s.branch)  # workstream F: the one branch a gateway-mode sandbox may push
+            push_branch=s.branch,  # workstream F: the one branch a gateway-mode sandbox may push
+            person=s.person)  # --- identity: the session's person's sandbox, with their credentials
         if s.checkpoints and sb.info.get("repo_path"):
             stage("restoring the last checkpoint")
         note = None
@@ -721,7 +723,7 @@ class SessionService:
     # ================================================================== jobs (spec 0010 M2)
     def for_job(self, *, job_id: str, environment: str, harness: str | None, model: str | None, repo: str | None,
                 base_branch: str | None, branch: str, provider: str | None, labels: dict[str, str],
-                extra_dirs: list[str], idle_minutes: int) -> Session:
+                extra_dirs: list[str], idle_minutes: int, person: str | None = None) -> Session:
         """The session that carries a job: same sandbox lifecycle, checkpoints and conversation resume, but turns
         are driven by the job service (which verifies and delivers them)."""
         existing = next((x for x in self._sessions.values() if x.job_id == job_id and not x.parent_id), None)
@@ -730,7 +732,7 @@ class SessionService:
         s = Session(name=f"job-{job_id.removeprefix('job-')}", title=f"job {job_id}", owner="jobs",
                     environment=environment, harness=harness, model=model, repo=repo, base_branch=base_branch,
                     branch=branch, provider=provider, labels={**labels, "hangar.job": job_id}, job_id=job_id,
-                    extra_dirs=extra_dirs, idle_minutes=max(1, idle_minutes))
+                    extra_dirs=extra_dirs, idle_minutes=max(1, idle_minutes), person=person)  # --- identity
         self._sessions[s.id] = s
         self._set(s, SessionState.SUSPENDED, f"carries job {job_id}")
         return s

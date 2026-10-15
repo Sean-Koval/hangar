@@ -271,6 +271,10 @@ def register_streams(mcp: MCPServer, tool: Callable[[], Any], fleet: Any, sessio
             raise MCPError(INVALID_PARAMS, f"not a watch URI: {uri} (hangar://sandboxes/<sandbox>/watch?path=<dir>"
                                            "[&recursive=true])")
         try:
+            from hangar.people import visible  # --- identity: a member watches only their own sandboxes
+
+            if not visible(fleet.get(parsed[0]).person):
+                raise FleetError(f"no sandbox '{parsed[0]}'")
             return watches.acquire(owner(), parsed[0], parsed[1], parsed[2], uri)
         except (FleetError, ValueError) as e:
             raise MCPError(INVALID_PARAMS, str(e)) from e

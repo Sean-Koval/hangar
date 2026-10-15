@@ -79,6 +79,7 @@ class Caller(NamedTuple):
     restricted: bool = False  # jobs-scoped token: allowlisted repos/envs only, own jobs only, its own callback key
     callback_secret: str | None = None
     max_budget: Budget | None = None  # jobs-scoped token: the most a job's budget may allow (workstream C)
+    person: str | None = None  # --- identity: the person the job runs for (people.py)
 
 
 class JobNotFound(KeyError):
@@ -252,7 +253,7 @@ class JobService:
     def _person(self, job_id: str) -> str:
         """--- scale: whose share of the job slots a job takes (fairness.FairJobQueue): who submitted it."""
         job = self._jobs.get(job_id)
-        return (fairness.person_of(job.requester) or "") if job else ""
+        return (fairness.person_of(job.requester, job.person) or "") if job else ""  # --- integration: + person
 
     # ================================================================== public API
     def get(self, job_id: str, owner: str | None = None) -> Job:
@@ -349,6 +350,7 @@ class JobService:
                         reply_to=source_ref if source_ref and source_ref.split(":", 1)[0] in ("github", *NOTIFIERS)
                         else None)],
             approval=approval, untrusted_source=untrusted_source,
+            person=caller.person,  # --- identity
         )
         job.budget = resolve_budget(req.budget, self.settings, caller.max_budget if caller.restricted else None)
         job.strategy, job.n, job.judge = req.strategy, attempts, req.judge  # workstream D
@@ -604,7 +606,8 @@ class JobService:
         s = self.sessions.for_job(
             job_id=job.id, environment=job.environment, harness=job.harness, model=job.model, repo=job.repo,
             base_branch=job.base_branch, branch=job.branch, provider=job.provider, labels=job.labels,
-            extra_dirs=[f".hangar/jobs/{job.id}"], idle_minutes=job.keep_minutes)
+            extra_dirs=[f".hangar/jobs/{job.id}"], idle_minutes=job.keep_minutes,
+            person=job.person)  # --- identity
         job.session_id = s.id
         self._save(job)
         async with self.sessions.hold(s):
@@ -654,7 +657,8 @@ class JobService:
         s = self.sessions.for_job(
             job_id=job.id, environment=job.environment, harness=job.harness, model=job.model, repo=job.repo,
             base_branch=job.base_branch, branch=job.branch, provider=job.provider, labels=job.labels,
-            extra_dirs=[f".hangar/jobs/{job.id}"], idle_minutes=job.keep_minutes)
+            extra_dirs=[f".hangar/jobs/{job.id}"], idle_minutes=job.keep_minutes,
+            person=job.person)  # --- identity
         turns = [SessionTurn(message=t.message or job.instructions, requester=t.requester, run_id=t.run_id,
                              harness=job.harness, started_at=t.started_at, finished_at=t.finished_at,
                              exit_code=t.exit_code, summary=t.summary) for t in job.turns if t.run_id]

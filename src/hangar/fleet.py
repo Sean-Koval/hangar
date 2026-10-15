@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
+import copy  # --- review(identity)
 import json
 import logging
 import re
@@ -18,6 +19,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 import hangar.identity as identity  # --- identity
+import hangar.people as people  # --- identity
 from hangar import exchange, harden, isolation, observe  # --- observe, isolation, harden
 from hangar import fairness as fairness  # --- scale
 from hangar.broker import AUTH_FILE_LIMIT, Broker, CredentialError
@@ -237,6 +239,7 @@ class Fleet:
 
     def save_environment(self, data: dict[str, Any], actor: str = "system") -> EnvSpec:
         identity.check_environment(data, self.store, self.settings)  # --- identity: admin fields, control-plane secrets
+        people.claim_environment(self.store, self.catalog, data)  # --- identity: members change only their own
         spec = self.catalog.add(data)
         self.audit(actor, "environment.save", spec.name)
         return spec
@@ -245,19 +248,16 @@ class Fleet:
         """Check a spec without saving it: resolves `extends`, validates, renders the Dockerfile."""
         name = str(data.get("name") or "")
         problems: list[str] = []
-        prev = self.catalog._raw.get(name)
+        # --- review(identity): on a copy of the catalog. Swapping the spec into the shared one (from a sync tool's
+        # worker thread) let sandboxes starting meanwhile, anyone's, use the caller's spec.
+        scratch = copy.copy(self.catalog)
+        scratch._raw = {**self.catalog._raw, name: (data, self.catalog.dirs[0] if self.catalog.dirs else None)}
         try:
-            self.catalog._raw[name] = (data, self.catalog.dirs[0] if self.catalog.dirs else None)
-            spec = self.catalog.get(name)
+            spec = scratch.get(name)
             dockerfile = None if spec.image else render(
                 spec, self.settings.sandbox_user, self.settings.workspace_dir, self._extra_ca()).dockerfile
         except Exception as e:  # noqa: BLE001 - reported to the caller
             return {"valid": False, "errors": [str(e)]}
-        finally:
-            if prev is None:
-                self.catalog._raw.pop(name, None)
-            else:
-                self.catalog._raw[name] = prev
         known = {c.name for c in self.broker.list()}
         for c in [*spec.credentials, *spec.secrets.values()]:
             if c not in known:
@@ -555,6 +555,7 @@ class Fleet:
         progress: Callable[[str], None] | None = None,
         push_branch: str | None = None,
         tier: str | None = None,
+        person: str | None = None,  # --- identity: the owning person (people.py); picks their own credentials
     ) -> Sandbox:
         """`progress` gets short plain-language updates while the sandbox starts (image build, waiting for a
         node, cloning...), so callers can show where the time goes. `push_branch` (default: `work_branch`) is
@@ -575,7 +576,7 @@ class Fleet:
                 active = self.store.list_where(Sandbox, state=ACTIVE)  # --- scale
         if len(active) >= self.settings.max_sandboxes:
             raise FleetError(f"fleet is at max_sandboxes={self.settings.max_sandboxes}; destroy some first")
-        fairness.check_sandboxes(self.settings, active, actor)  # --- scale: one person can't take the whole fleet
+        fairness.check_sandboxes(self.settings, active, actor, person)  # --- scale: one person can't take the fleet
         spec = self.catalog.get(environment)
         pname = provider or self.settings.default_provider
         prov = self.provider(pname)
@@ -589,10 +590,14 @@ class Fleet:
             # Only the selected harness's credentials (plus non-agent ones such as git) go into the sandbox.
             cred_names = [c for c in dict.fromkeys(spec.credentials)
                           if self._cred_harness(c) in (hname, None) or not self._is_agent(self._cred_harness(c))]
+        # --- identity: never another person's credential; the person's own one for this harness when they have it
+        cred_names = people.credentials_for(self.store, cred_names, person, hname, credentials is not None,
+                                            self._is_agent)
         for c in [*cred_names, *spec.secrets.values()]:
             self.broker.get(c)  # fail fast on typos
         for c in spec.secrets.values():  # --- identity: and on control-plane credentials mapped in (B4)
             self.broker.check_sandbox(c)
+        people.check_secrets(self.store, spec.secrets, person)  # --- identity review: and on another person's own
         ttl = ttl_minutes if ttl_minutes is not None else self.settings.default_ttl_minutes
         base_name = _slug(name or f"{environment}-{new_id('x')[2:]}")
         taken = {s.name for s in active}
@@ -609,6 +614,7 @@ class Fleet:
             parent=_parent,
             expires_at=now() + ttl * 60 if ttl else None,
             created_by=actor,
+            person=person,  # --- identity
         )
         if hname:
             sb.info["harness"] = hname
@@ -1218,6 +1224,7 @@ class Fleet:
                 use_full = False
         if not use_full:
             snap = await self._workspace_snapshot(prov, sb, snap_id, label)
+        snap.person = sb.person  # --- identity
         self.store.put(snap)
         self.audit(actor, "sandbox.snapshot", sb.id, snapshot=snap.id, kind=snap.kind.value)
         return snap
@@ -1317,6 +1324,7 @@ class Fleet:
                 _restore_workspace=snap.ref if snap.kind == SnapshotKind.WORKSPACE else None,
                 _skip_repo=same_provider or snap.kind == SnapshotKind.WORKSPACE,
                 push_branch=f"{work_branch_prefix}-{i + 1}" if work_branch_prefix else None,  # workstream F
+                person=parent.person if parent else snap.person,  # --- identity: a fork is its source's person's
             )
             if parent and parent.info.get("repo_path"):
                 sb.info["repo_path"] = parent.info["repo_path"]

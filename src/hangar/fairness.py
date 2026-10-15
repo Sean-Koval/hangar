@@ -2,8 +2,8 @@
 
 A person can hold only so much at once: live sessions, sandboxes started directly, and running jobs. The job queue
 gives a free slot to whoever has the fewest jobs running, so one person's batch can't hold everyone else's work
-behind it for an hour. `person_of` is the one place that maps the actor strings hangar passes around to a person;
-the identity work's `principal.person` replaces its body.
+behind it for an hour. `person_of` is the one place that maps who acted to the person a cap counts: the person
+identity recorded (people.py; `owner` for the admin's tokens), else the person in the actor string.
 """
 
 from __future__ import annotations
@@ -30,10 +30,13 @@ class CapReached(ValueError):
     """A person is at one of their caps. A ValueError, so every front door already answers it as a 4xx."""
 
 
-def person_of(actor: str | None) -> str | None:
-    """The person behind an actor string, or None for hangar's own actors. The same token reached over MCP
-    ("mcp:sean", "sean") or REST ("ui:sean") is one person, and so is an OAuth connector a person approved
-    ("oauth:<client>(sean)"): its grant carries the approver's name."""
+def person_of(actor: str | None, person: str | None = None) -> str | None:
+    """The person a cap counts for an actor, or None for hangar's own actors. `person` is identity's person on the
+    record or the caller's principal (identity.person()): when it is known, every token and connector of that
+    person, the owner's included, shares one set of caps. Without it (records from before people, in-process
+    callers) the actor string decides: the same token reached over MCP ("mcp:sean", "sean") or REST ("ui:sean") is
+    one person, and so is an OAuth connector a person approved ("oauth:<client>(sean)"): its grant carries the
+    approver's name."""
     if not actor:
         return None
     a = actor
@@ -41,6 +44,16 @@ def person_of(actor: str | None) -> str | None:
         if a.startswith(prefix):
             a = a[len(prefix):]
             break
+    # --- integration: hangar's own actors stay exempt even on a record that carries its person (a session's or a
+    # job's sandbox is counted where the person asked for the session or job)
+    if a in _INTERNAL or a.startswith(_INTERNAL_PREFIXES):
+        return None
+    if person:
+        return person
+    # --- identity: a teammate's actors are `@<person>:<token name>` (identity.actor_name), so all their tokens and
+    # connectors share one person's caps
+    if a.startswith("@") and ":" in a:
+        return a[1:].split(":", 1)[0] or None
     if a.startswith("oauth:") and a.endswith(")") and "(" in a:
         subject = a[a.index("(") + 1:-1]
         if subject and subject != "?":
@@ -50,29 +63,30 @@ def person_of(actor: str | None) -> str | None:
     return a
 
 
-def check_sandboxes(settings: Settings, active: Iterable[Sandbox], actor: str) -> None:
+def check_sandboxes(settings: Settings, active: Iterable[Sandbox], actor: str, person: str | None = None) -> None:
     """Refuse a create past HANGAR_PERSON_MAX_SANDBOXES live sandboxes the same person started directly."""
     cap = settings.person_max_sandboxes
-    who = person_of(actor)
+    who = person_of(actor, person)
     if cap <= 0 or who is None:
         return
-    held = sum(1 for s in active if person_of(s.created_by) == who)
+    held = sum(1 for s in active if person_of(s.created_by, s.person) == who)
     if held >= cap:
         raise CapReached(f"{who} already has {held} sandboxes running (the limit per person is {cap}); destroy one "
                          "first, or ask the operator to raise HANGAR_PERSON_MAX_SANDBOXES")
 
 
-def check_sessions(svc: SessionService, owner: str, starting: Session | None = None, adding: int = 1) -> None:
+def check_sessions(svc: SessionService, owner: str, starting: Session | None = None, adding: int = 1,
+                   person: str | None = None) -> None:
     """Refuse `adding` new or resumed sessions (`starting`, when it is one) past HANGAR_PERSON_MAX_SESSIONS live ones:
     each holds a sandbox. Sessions with a boot or turn already on its way count too, so two sends at once can't both
-    slip under the cap."""
+    slip under the cap. `person` defaults to `starting`'s."""
     cap = svc.settings.person_max_sessions
-    who = person_of(owner)
+    who = person_of(owner, person or (starting.person if starting else None))
     if cap <= 0 or who is None:
         return
     live = sum(1 for s in svc._sessions.values()
                if (s.state in SESSION_LIVE or s.id in svc._busy) and (starting is None or s.id != starting.id)
-               and person_of(s.owner) == who)
+               and person_of(s.owner, s.person) == who)
     if live + adding > cap:
         raise CapReached(f"{who} already has {live} sessions running (the limit per person is {cap}); suspend one "
                          "first (suspend_session), or ask the operator to raise HANGAR_PERSON_MAX_SESSIONS")

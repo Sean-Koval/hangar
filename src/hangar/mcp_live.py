@@ -264,13 +264,16 @@ class HangarMCP(MCPServer):
 
 
 def recent_resources(sessions: Any, jobs: Any, limit: int = 25) -> list[types.Resource]:
-    """The sessions and jobs worth following now: the most recently active, newest first."""
+    """The sessions and jobs worth following now: the most recently active, newest first (the caller's own)."""
+    from hangar.people import mine  # --- identity
+
     out = [types.Resource(uri=session_uri(s.name), name=f"session {s.name}", mime_type="application/json",
                           description=f"{s.state.value}: {(s.title or s.repo or '')[:100]}")
-           for s in sessions.list(limit=limit)]
+           for s in mine(sessions.list(limit=500))[:limit]]
     if jobs is not None:
         out += [types.Resource(uri=job_uri(j.id), name=f"job {j.id}", mime_type="application/json",
-                               description=f"{j.state.value}: {j.title[:100]}") for j in jobs.list(limit=limit)]
+                               description=f"{j.state.value}: {j.title[:100]}")
+                for j in mine(jobs.list(limit=500))[:limit]]
     return out
 
 
@@ -419,12 +422,18 @@ def _json(d: Any) -> str:
     return json.dumps(d, indent=1, default=str)
 
 
-def register_resources(mcp: MCPServer, sessions: Any, jobs: Any) -> None:
-    """Sessions and jobs as resources, so a client can read and follow them (subscribe) instead of polling."""
+def register_resources(mcp: MCPServer, sessions: Any, jobs: Any, guard: Any = None) -> None:
+    """Sessions and jobs as resources, so a client can read and follow them (subscribe) instead of polling.
+    `guard` (people.Guard) keeps a member to their own (--- identity)."""
+
+    def check(kind: str, ref: str) -> None:
+        if guard is not None:
+            guard.check(kind, ref)
 
     @mcp.resource(SESSION_URI, name="session", mime_type="application/json",
                   description="A session: state, turns, the agent's summaries and question, checkpoints.")
     async def session_resource(name: str) -> str:
+        check("session", name)
         return _json(sessions.view(sessions.get(name)))
 
     # --- stream: `?since=<seq>` reads only the events after one already seen (a subscriber's next read)
@@ -432,6 +441,7 @@ def register_resources(mcp: MCPServer, sessions: Any, jobs: Any) -> None:
                   description="The last 200 activity events of a session (messages, tool calls, commands...); "
                               "with ?since=<seq>, the ones after it.")
     async def session_events(name: str, since: str = "") -> str:
+        check("session", name)
         if since.isdigit():
             return _json({"events": sessions.events(name, since=int(since), limit=500)})
         return _json({"events": sessions.events(name, tail=200)})
@@ -439,6 +449,7 @@ def register_resources(mcp: MCPServer, sessions: Any, jobs: Any) -> None:
     @mcp.resource(SESSION_URI + "/patch", name="session-patch", mime_type="text/x-diff",
                   description="The session's work as one patch against its base branch, ready for git apply.")
     async def session_patch(name: str) -> str:
+        check("session", name)
         p = await exchange.session_patch(sessions, sessions.get(name), 5_000_000)
         return p["patch"]
 
@@ -448,11 +459,13 @@ def register_resources(mcp: MCPServer, sessions: Any, jobs: Any) -> None:
     @mcp.resource(JOB_URI, name="job", mime_type="application/json",
                   description="A job: state, timeline, result (commits, PR, verification, summary), attempts.")
     async def job_resource(job_id: str) -> str:
+        check("job", job_id)
         return _json(jobs.view(jobs.get(job_id)))
 
     @mcp.resource(JOB_URI + "/events{?since}", name="job-events", mime_type="application/json",
                   description="The last 200 activity events of a job's agent; with ?since=<seq>, the ones after it.")
     async def job_events(job_id: str, since: str = "") -> str:
+        check("job", job_id)
         if since.isdigit():  # --- stream
             return _json({"events": jobs.events(job_id, since=int(since), limit=500)})
         return _json({"events": jobs.events(job_id, tail=200)})
@@ -518,7 +531,12 @@ Issue or instructions: {issue}
                 description="Catch up on a hangar session (what was asked, what the agent did, where it stopped) "
                             "and continue it.")
     def pick_up(session: str) -> str:
+        from hangar.people import visible  # --- identity
+        from hangar.sessions import SessionNotFound
+
         s = sessions.get(session)
+        if not visible(s.person):
+            raise SessionNotFound(f"no session '{session}'")
         turns = s.turns[-3:]
         recap = "\n".join(f"- turn {len(s.turns) - len(turns) + i}: asked {t.message[:300]!r} -> "
                           f"{t.outcome or 'running'}: {(t.summary or t.question or '')[:500]}"

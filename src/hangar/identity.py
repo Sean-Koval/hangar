@@ -43,6 +43,26 @@ def principal() -> Principal | None:
     return current.get()
 
 
+def person() -> str | None:
+    """The calling person's id: the stable key for ownership and per-person quotas (None: in-process)."""
+    p = current.get()
+    return p.person if p else None
+
+
+def sees_all() -> bool:
+    """True for admins (by role, whatever the token's scopes) and in-process callers: they see everyone's work."""
+    p = current.get()
+    return p is None or p.role == "admin"
+
+
+def actor_name(p: Principal) -> str:
+    """The MCP actor: what audit entries, task handles and stream caps are keyed by. Token names aren't unique, so
+    a teammate's are prefixed with their person (`:` can't occur in a token name); the owner's stay as they were.
+    The `@` keeps them apart from requesters such as `github:octocat`, so per-person caps (fairness.person_of)
+    find the person in them (review)."""
+    return p.name if p.person in (None, "owner") else f"@{p.person}:{p.name}"
+
+
 def is_admin() -> bool:
     """True for admin tokens and for in-process callers (no principal set)."""
     p = current.get()
@@ -135,3 +155,42 @@ def check_environment(data: dict[str, Any], store: Store, settings: Settings | N
         cred = store.get(Credential, str(name)) if isinstance(name, str) else None
         if cred is not None and exposure(cred, settings) == "control_plane":
             raise Forbidden(f"secrets: {var}: {refusal(cred, settings)}")
+
+
+# ---------------------------------------------------------------------------- doctor (review)
+def doctor_check(catalog: Any, store: Store, settings: Settings) -> dict[str, Any] | None:
+    """`hangar doctor`: environments whose sandboxes fail to start because they attach or map a control-plane
+    credential (an upgrade from before exposure: a direct-mode environment listing hangar's own GitHub token).
+    Gateway mode drops git credentials before they would be written, so those don't count there."""
+    from hangar.gateway import GIT_KINDS
+
+    creds = {c.name: c for c in store.list(Credential)}
+    gateway_jobs = bool(settings.gateway_url and settings.gateway_for_jobs)
+    fails: list[str] = []
+    warns: list[str] = []
+    names: set[str] = set()
+    for env in catalog.names():
+        try:
+            spec = catalog.get(env)
+        except Exception:  # noqa: BLE001 - a broken spec is reported where it is used
+            continue
+        for name in [*spec.credentials, *spec.secrets.values()]:
+            c = creds.get(name)
+            if c is None or exposure(c, settings) != "control_plane":
+                continue
+            mapped = name in spec.secrets.values()
+            if not mapped and c.kind in GIT_KINDS and spec.credential_mode == "gateway":
+                continue
+            names.add(name)
+            # with the gateway on for jobs, only sandboxes made directly (create_sandbox) from it fail
+            gw = not mapped and c.kind in GIT_KINDS and spec.credential_mode is None and gateway_jobs
+            (warns if gw else fails).append(f"{env}: {name}")
+    if not fails and not warns:
+        return {"name": "control-plane credentials", "status": "ok", "fix": None,
+                "detail": "no environment attaches a credential that stays out of sandboxes"}
+    shared = " or ".join(f"hangar cred exposure {n} sandbox" for n in sorted(names))
+    return {"name": "control-plane credentials", "status": "fail" if fails else "warn",
+            "detail": f"sandboxes from these environments fail to start, the credential is control-plane only: "
+                      f"{', '.join(fails + warns)}",
+            "fix": "list a git token of the sandboxes' own instead (hangar cred add NAME --harness git --kind "
+                   f"git_token), use credential_mode: gateway, or share it with sandboxes on purpose: {shared}"}

@@ -457,9 +457,10 @@ class A2AServer:
                 _rpc_error(None, RpcError(-32000, "unauthorized: send Authorization: Bearer <hangar token>"), V1),
                 status_code=401, headers={"WWW-Authenticate": 'Bearer realm="hangar"'})
         if p.admin:
-            return Caller(p.name, p.id)
+            return Caller(p.name, p.id, person=p.person)  # --- identity: person
         if "jobs" in p.scopes:  # front-door-auth: with the token's budget cap, as over REST
-            return Caller(p.name, p.id, restricted=True, callback_secret=p.callback_secret, max_budget=p.max_budget)
+            return Caller(p.name, p.id, restricted=True, callback_secret=p.callback_secret, max_budget=p.max_budget,
+                          person=p.person)
         return JSONResponse(_rpc_error(None, RpcError(-32000, f"token scopes {p.scopes} do not allow jobs"), V1),
                             status_code=403)
 
