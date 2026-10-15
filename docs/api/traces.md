@@ -107,8 +107,15 @@ A `subagent` call is a `subagent` span, not a `tool.call`.
 | `pr.merge` | `job` | `hangar.pr.number`, `hangar.pr.merged_by` |
 | `job.state` | `job` | `hangar.job.state`, `hangar.text`: each entry of the job's timeline |
 
-Reserved for test results (the `testresults` work): `test.run` (one run of a test command: totals) and `test.case`
-(one test's outcome), as events on `job` or `turn`, with attributes under `hangar.test.*`.
+**Test results** (the `testresults` work: structured results of every check hangar runs), as events on `job`:
+
+| Name | Attributes |
+| --- | --- |
+| `test.run` | One run of a check: `test.suite.name` (the command), `test.suite.run.status` (`success`, `failure`, `timed_out`, `aborted`), `hangar.test.run.id`, `hangar.test.run.kind` (`base`, `verify`, `rerun`, `attempt`, `in_turn`...), `hangar.test.run.trusted` (false for the agent's own in-turn runs), `hangar.test.exit_code`, `hangar.test.total`, `.passed`, `.failed`, `.errors`, `.skipped`, `hangar.test.complete`, `hangar.test.flaky` (how many), `hangar.test.coverage.line_rate`, `hangar.test.attempt`, `vcs.ref.head.revision` |
+| `test.case` | A failing or flaky test: `test.case.name` (its id), `test.case.result.status` (`pass`, `fail`), `hangar.test.outcome`, `hangar.test.flaky`, `hangar.test.message` (clipped, redacted), `hangar.test.run.id` |
+
+`test.suite.*` and `test.case.*` are OpenTelemetry's test semantic conventions (core registry, Development). Passing
+tests are counted on `test.run`, not listed. `GET /api/jobs/{id}/tests?format=otel` returns the same events.
 
 ## Attributes
 

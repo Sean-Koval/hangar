@@ -598,7 +598,8 @@ async def _finish_trial(jobs: JobService, job: Job, st: State, spec: ExperimentS
     t.verify = {"command": child.verify, "exit_code": r.verify_exit_code, "passed": (
         r.verify_exit_code == 0 if r.verify_exit_code is not None else None), "new_failures": r.new_failures,
         "baseline_red": r.baseline.red if r.baseline else None, "tail": (r.verify_tail or "")[-TAIL:] or None}
-    t.tests = getattr(r, "tests", None)  # the testresults work's parsed results, when present
+    tests = getattr(r, "tests", None)  # the testresults work's TestSummary, when hangar parsed the check's reports
+    t.tests = tests.model_dump(mode="json") if isinstance(tests, BaseModel) else tests
     if (u := jobs.usage(child)) is not None:
         t.usage = {"cost_usd": u.cost_usd, "tokens": u.tokens, "input_tokens": u.input_tokens,
                    "output_tokens": u.output_tokens, "cache_read_tokens": u.cache_read_tokens, "model": u.model}
