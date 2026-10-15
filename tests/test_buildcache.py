@@ -727,3 +727,20 @@ async def test_writes_dont_scan_every_chunk_row_to_check_the_caps(cs, settings):
     await cs.drain()
     assert cs.index.stored("a") == 0 and cs.index.stored() == raw["b"]
     assert cs.index.repos_over(100) == ["b"]
+
+
+async def test_a_caches_db_from_before_the_totals_counts_them_once_when_opened(cs, tmp_path):
+    await _put(cs, "a", T, "sccache", "k", os.urandom(1500))
+    await _put(cs, "b", T, "sccache", "k", os.urandom(700))
+    await cs.drain()
+    before = cs.index.stored()
+    cs.index._db.execute("DROP TABLE totals")  # as the PR's first version left it
+    cs.index.close()
+    idx = Index(tmp_path / "caches.db")
+    try:
+        assert idx.stored() == before and idx.stored("b") == 700 and idx.repos_over(1000) == ["a"]
+        idx.close()
+        idx = Index(tmp_path / "caches.db")  # opened again: not counted twice
+        assert idx.stored() == before
+    finally:
+        idx.close()
