@@ -199,7 +199,7 @@ Sandboxes with Docker inside, as Kata microVMs, and the `large` and `xlarge` pro
 > admission policy requires `runtimeClassName: gvisor`, non-root containers without added capabilities, and no
 > `privileged: true` ([Agent Sandbox requirements](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/how-install-agent-sandbox)).
 > A heavy sandbox is a privileged container under Kata, so on a cluster with the add-on its claims never get a pod
-> (`hangar get <sandbox>` shows the controller's reason while it waits). Run the open-source Agent Sandbox controller
+> (`hangar sb ls --json` shows the stage and the controller's reason while it waits). Run the open-source Agent Sandbox controller
 > instead of the add-on, or put the heavy tier on microVMs ([microvm.md](microvm.md#the-heavy-tier-on-microvms)):
 > `HANGAR_TIERS='{"heavy": ["e2b"]}'`. GKE's managed `microvm` RuntimeClass, which the add-on does allow, refuses
 > privileged containers all the same.

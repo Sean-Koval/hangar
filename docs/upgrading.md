@@ -352,6 +352,10 @@ hangar config set HANGAR_PREVIEW_DOMAIN hangar-preview.example.net    # restart
 
 Nothing to set: an environment opts in with `computer: true` (its image gets a layer). **Optional:** `HANGAR_PR_MEDIA_LINKS=signed` embeds screenshots and demos in PRs through expiring links anyone holding them can open; leave it `off` for private repos.
 
+#### 10f. The heavy tier
+
+**Optional** (off until a `heavy` tier is configured; [environments.md](environments.md#the-heavy-tier)). On GKE, `kubectl apply -k deploy/k8s` now also applies `heavy-policy.yaml`, a ValidatingAdmissionPolicy (Kubernetes 1.30 or later) that refuses privileged pods in `hangar-sandboxes` unless they run under a Kata runtime class; hangar's own sandbox pods are unprivileged unless heavy, so nothing changes for them. To use the tier, follow [gke.md §4a](gke.md#4a-the-heavy-tier-optional) (heavy node pool, kata-deploy, `HANGAR_HEAVY_RUNTIME_CLASS`) or [microvm.md](microvm.md) for E2B and Cube.
+
 ### 11. Models, the canary and environment setup
 
 #### 11a. Model list keys
