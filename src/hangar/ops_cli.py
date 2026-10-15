@@ -48,6 +48,10 @@ def status(as_json: bool = typer.Option(False, "--json"),
         typer.secho(f"sandboxes: {line}" + (f"; ready at {p['when']}" if p["state"] != "up" and p.get("when") else "")
                     + (f"; {p['jobs_waiting']} job(s) waiting" if p.get("jobs_waiting") else ""),
                     fg="green" if p["state"] == "up" else "yellow")
+        from hangar.power_cli import hold_lines  # --- infra-state: the hold, and a deploy waiting for a power-up
+
+        for line in hold_lines(p):
+            typer.secho(line, fg="yellow")
     if d := v.get("last_deploy"):
         typer.echo(f"last deploy: {_ago(d['at'])} ago, {d.get('version') or d.get('image', '')}: "
                    f"{d['result'].replace('_', ' ')}")

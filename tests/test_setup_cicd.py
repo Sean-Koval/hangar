@@ -125,6 +125,22 @@ FAKE = textwrap.dedent('''\
                 save()
                 sys.exit(0)
             unexpected()
+        if w[:2] == ("iam", "roles"):  # --- infra-state: the state account's custom role
+            roles, rid = st.setdefault("roles", {{}}), w[3]
+            if w[2] == "describe":
+                roles.get(rid) or fail()
+                out(roles[rid])
+            if w[2] == "create":
+                roles[rid] = {{"name": f"projects/{{cfg['project']}}/roles/{{rid}}", "stage": flags.get("--stage"),
+                              "includedPermissions": flags["--permissions"].split(",")}}
+            elif w[2] == "update" and rid in roles:
+                roles[rid]["includedPermissions"] = flags["--permissions"].split(",")
+            elif w[2] == "undelete" and rid in roles:
+                roles[rid]["deleted"] = False
+            else:
+                unexpected()
+            save()
+            sys.exit(0)
         if w[:2] == ("iam", "service-accounts") and w[2] in ("describe", "create"):
             email = w[3] if "@" in w[3] else f"{{w[3]}}@{{cfg['project']}}.iam.gserviceaccount.com"
             if w[2] == "describe":
@@ -273,7 +289,7 @@ FAKE = textwrap.dedent('''\
     ''')
 
 MUTATING = re.compile(r"\b(create|create-oidc|update-oidc|undelete|add-iam-policy-binding|remove-iam-policy-binding|"
-                      r"enable|apply|set|delete)\b")
+                      r"enable|apply|set|delete|update)\b")
 # The interpreter the script runs under: SETUP_CICD_BASH=/path/to/bash-3.2 runs these tests as macOS's /bin/bash would.
 BASH = os.environ.get("SETUP_CICD_BASH", "bash")
 IMMUTABLE_SUBJECT = f"repo:Sean-Koval@{OWNER_ID}/hangar@{REPO_ID}:environment:production"
@@ -386,6 +402,13 @@ def test_dry_run_prints_every_change_and_makes_none(cicd):
         f"assertion.repository_owner_id == '{OWNER_ID}'",
         "+ gcloud iam service-accounts create hangar-ci",
         "+ gcloud iam service-accounts create hangar-deploy",
+        "+ gcloud iam service-accounts create hangar-state",  # --- infra-state
+        "+ gcloud iam roles create hangarClusterState --project sk-ml-inference",
+        "--permissions=container.clusters.get --stage=GA",
+        f"--role=projects/{PROJECT}/roles/hangarClusterState",
+        "+ gh secret set GCP_STATE_SERVICE_ACCOUNT --repo Sean-Koval/hangar",
+        f"+ gh secret set HANGAR_CLUSTER --repo Sean-Koval/hangar  # projects/{PROJECT}/locations/us-central1-a/"
+        "clusters/hangar",
         "+ gcloud artifacts repositories add-iam-policy-binding hangar --location=us-central1",
         "--role=roles/artifactregistry.writer",
         "--role=roles/container.clusterViewer",
@@ -454,7 +477,14 @@ def test_setup_from_nothing_then_a_rerun_changes_nothing(cicd):
         ["roles/iam.workloadIdentityUser", f"principal://iam.googleapis.com/{pool}/subject/{IMMUTABLE_SUBJECT}"]]
     assert st["policies"][f"iam service-accounts {ci}"] == [
         ["roles/iam.workloadIdentityUser", f"principalSet://iam.googleapis.com/{pool}/attribute.repository/{GH_REPO}"]]
-    assert st["policies"][f"projects {PROJECT}"] == [["roles/container.clusterViewer", f"serviceAccount:{deploy}"]]
+    # --- infra-state: deploy.yml's state check, before any approval: any run the provider admits, reading the
+    # cluster's metadata and labels and nothing else
+    state_sa = f"hangar-state@{PROJECT}.iam.gserviceaccount.com"
+    state_role = f"projects/{PROJECT}/roles/hangarClusterState"
+    assert st["policies"][f"iam service-accounts {state_sa}"] == st["policies"][f"iam service-accounts {ci}"]
+    assert st["roles"]["hangarClusterState"]["includedPermissions"] == ["container.clusters.get"]
+    assert st["policies"][f"projects {PROJECT}"] == [["roles/container.clusterViewer", f"serviceAccount:{deploy}"],
+                                                      [state_role, f"serviceAccount:{state_sa}"]]
     # the deploy account gets nothing else in Google Cloud, and the images account no cluster access
     assert not any(deploy in m for k, b in st["policies"].items() if k != f"projects {PROJECT}" for _, m in b)
     assert "resourceNames: [hangar]" in st["k8s"][0] and "secrets" not in st["k8s"][0]
@@ -465,7 +495,9 @@ def test_setup_from_nothing_then_a_rerun_changes_nothing(cicd):
     _only_admins_make_release_tags(st)
     repo_s, env_s = st["gh_secrets"]["repo"], st["gh_secrets"]["production"]
     assert repo_s == {"GCP_WORKLOAD_IDENTITY_PROVIDER": f"{pool}/providers/hangar", "GCP_SERVICE_ACCOUNT": ci,
-                      "HANGAR_REGISTRY": f"us-central1-docker.pkg.dev/{PROJECT}/hangar"}
+                      "HANGAR_REGISTRY": f"us-central1-docker.pkg.dev/{PROJECT}/hangar",
+                      "GCP_STATE_SERVICE_ACCOUNT": state_sa,
+                      "HANGAR_CLUSTER": f"projects/{PROJECT}/locations/us-central1-a/clusters/hangar"}
     assert env_s == {"GCP_DEPLOY_SERVICE_ACCOUNT": deploy, "GKE_CLUSTER": "hangar", "GKE_LOCATION": "us-central1-a",
                      "HANGAR_URL": "https://hangar.test", "HANGAR_DEPLOY_TOKEN": MINTED,
                      "HANGAR_ACCEPT_GITHUB_TOKEN": ACCEPT}
@@ -532,6 +564,10 @@ def test_an_earlier_wider_setup_is_narrowed(cicd):
     st["policies"][f"iam service-accounts {ci_email}"] += [
         ["roles/iam.workloadIdentityUser", f"{pool}/attribute.repository_owner/Sean-Koval"],
         ["roles/iam.serviceAccountTokenCreator", "user:owner@example.com"]]  # a person, not a federated identity
+    # --- infra-state: the state account given more than its one permission, and its role widened
+    state_email = f"hangar-state@{PROJECT}.iam.gserviceaccount.com"
+    st["policies"][f"projects {PROJECT}"] += [["roles/container.viewer", f"serviceAccount:{state_email}"]]
+    st["roles"]["hangarClusterState"]["includedPermissions"] += ["container.clusters.update"]
     (rs,) = st["rulesets"]
     rs.update(enforcement="disabled",
               bypass_actors=rs["bypass_actors"] + [{"actor_id": 4, "actor_type": "RepositoryRole",
@@ -544,8 +580,11 @@ def test_an_earlier_wider_setup_is_narrowed(cicd):
     assert not cicd.unexpected(), cicd.unexpected()
     st = cicd.state()
     assert "refs/heads/main" in st["provider"]["attributeCondition"] and "updating it" in r.output
-    assert st["policies"][f"projects {PROJECT}"] == [["roles/container.clusterViewer", deploy],
-                                                      ["roles/viewer", "user:owner@example.com"]]
+    assert st["policies"][f"projects {PROJECT}"] == [
+        ["roles/container.clusterViewer", deploy],
+        [f"projects/{PROJECT}/roles/hangarClusterState", f"serviceAccount:{state_email}"],
+        ["roles/viewer", "user:owner@example.com"]]
+    assert st["roles"]["hangarClusterState"]["includedPermissions"] == ["container.clusters.get"]
     subject = pool.replace("principalSet://", "principal://") + "/subject/"
     assert st["policies"][f"iam service-accounts {deploy_email}"] == [
         ["roles/iam.workloadIdentityUser", f"{subject}repo:{GH_REPO}:environment:production"],
@@ -600,7 +639,8 @@ def test_the_workflows_read_what_the_script_sets_at_the_level_it_sets_them():
     repo_level = set(re.findall(r"^  set_secret ([A-Z_]+) \S+ public$", text, re.M))
     env_level = set(re.findall(r"^  set_secret ([A-Z_]+) \S+ public --env", text, re.M)) | {"HANGAR_DEPLOY_TOKEN"}
     optional = {"HANGAR_ACCEPT_GITHUB_TOKEN", "HANGAR_ACCEPT_JIRA_WEBHOOK_SECRET"}
-    assert repo_level == {"GCP_WORKLOAD_IDENTITY_PROVIDER", "GCP_SERVICE_ACCOUNT", "HANGAR_REGISTRY"}
+    assert repo_level == {"GCP_WORKLOAD_IDENTITY_PROVIDER", "GCP_SERVICE_ACCOUNT", "HANGAR_REGISTRY",
+                          "GCP_STATE_SERVICE_ACCOUNT", "HANGAR_CLUSTER"}  # --- infra-state: names, not credentials
 
     deploy = yaml.safe_load((WORKFLOWS / "deploy.yml").read_text())
     images = yaml.safe_load((WORKFLOWS / "images.yml").read_text())

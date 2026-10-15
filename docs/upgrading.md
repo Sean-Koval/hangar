@@ -451,7 +451,11 @@ What stays: the node pool (the previous version runs on it unchanged), the datab
 
 ## Deploying with deploy.yml
 
-`.github/workflows/deploy.yml` runs by hand (*Actions → deploy → Run workflow*) or on a `v*` tag:
+`.github/workflows/deploy.yml` runs by hand (*Actions → deploy → Run workflow*), on a `v*` tag, or on a merge to `main`
+while the infra is up: a merge skips green while it's off, held or powered down, and `power.sh up` deploys main
+afterwards ([cicd.md](cicd.md#merges-to-main-deploy-while-the-infra-is-up)). Re-run `setup-cicd.sh` once for the
+read-only `hangar-state@` account that check uses, and `terraform apply` once (in the power-down window) so the
+scheduled power jobs honour holds:
 
 1. **Images.** It calls `images.yml`, which builds every environment image and harness pack tag the commit needs ([gke.md](gke.md#images-and-packs-built-in-ci)), and builds and pushes the control-plane image, `<registry>/control-plane:<sha>`, by digest.
 2. **Approval.** The deploy job uses the `production` environment, so it waits for a required reviewer (the owner) to approve it ([deployments and environments][envs]).

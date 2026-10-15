@@ -39,6 +39,9 @@ POOL=${POOL:-github}
 PROVIDER=${PROVIDER:-hangar}
 CI_SA_NAME=${CI_SA_NAME:-hangar-ci}
 DEPLOY_SA_NAME=${DEPLOY_SA_NAME:-hangar-deploy}
+STATE_SA_NAME=${STATE_SA_NAME:-hangar-state}  # --- infra-state: deploy.yml's read-only infra check
+STATE_ROLE_ID=${STATE_ROLE_ID:-hangarClusterState}
+STATE_PERMISSIONS=container.clusters.get
 TOKEN_NAME=${TOKEN_NAME:-github-deploy}
 MIRROR_LOCATION=${MIRROR_LOCATION:-us}
 VAULT_SECRET=${VAULT_SECRET:-hangar-vault-key}
@@ -245,6 +248,9 @@ WIF_POOL=projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$POOL
 WIF_PROVIDER=$WIF_POOL/providers/$PROVIDER
 CI_SA=$CI_SA_NAME@$PROJECT.iam.gserviceaccount.com
 DEPLOY_SA=$DEPLOY_SA_NAME@$PROJECT.iam.gserviceaccount.com
+STATE_SA=$STATE_SA_NAME@$PROJECT.iam.gserviceaccount.com
+STATE_ROLE=projects/$PROJECT/roles/$STATE_ROLE_ID
+HANGAR_CLUSTER=projects/$PROJECT/locations/$GKE_LOCATION/clusters/$CLUSTER
 # Who may sign in through the provider at all: this repository, by name and by id (ids don't come back if the repo or
 # its owner is deleted and the name taken: Google's guidance), only runs of main or a v* release tag, the refs the
 # production environment deploys from, and only on the events the deploy and images workflows run on (a push, or
@@ -277,7 +283,7 @@ cat <<EOF
    registry        $REGISTRY
    hangar          $HANGAR_URL (service account $HANGAR_SA)
    repository      $REPO (id $REPO_ID); deploys approved by $REVIEWER
-   identities      $CI_SA (images), $DEPLOY_SA (deploys); the canary needs none
+   identities      $CI_SA (images), $DEPLOY_SA (deploys), $STATE_SA (is the infra up?); the canary needs none
 EOF
 
 if [ "$(look gh api "repos/$REPO/actions/oidc/customization/sub" --jq .use_default)" = false ]; then
@@ -389,9 +395,34 @@ if ! skipped accounts; then
         --all --format=none </dev/null
     done <<<"$extra"
   }
-  narrow projects "$PROJECT" "serviceAccount:$CI_SA serviceAccount:$DEPLOY_SA" \
-    "roles/container.clusterViewer=serviceAccount:$DEPLOY_SA"
+  # --- infra-state: a merge to main deploys only while the infra is up, which deploy.yml's `state` job reads from
+  # the cluster's power labels before any approval (so not as the deploy account, which only the approved job can
+  # use). Its account holds a custom role with container.clusters.get alone: the cluster's metadata and labels, no
+  # list of other clusters, no connect, and nothing inside the cluster (no RBAC binding).
+  note "state ($STATE_SA): reads the cluster's metadata and labels only ($STATE_ROLE: $STATE_PERMISSIONS)."
+  role_json=$(look gcloud iam roles describe "$STATE_ROLE_ID" --project "$PROJECT" --format=json)
+  if [ -z "$role_json" ]; then
+    run gcloud iam roles create "$STATE_ROLE_ID" --project "$PROJECT" --title="hangar cluster state (read)" \
+      --description="deploy.yml reads whether the infra is up (deploy/gke/setup-cicd.sh)" \
+      --permissions="$STATE_PERMISSIONS" --stage=GA
+  else
+    if [ "$(json 'bool(d.get("deleted"))' <<<"$role_json")" = true ]; then
+      run gcloud iam roles undelete "$STATE_ROLE_ID" --project "$PROJECT"
+    fi
+    if [ "$(json '",".join(sorted(d.get("includedPermissions", [])))' <<<"$role_json")" = "$STATE_PERMISSIONS" ]; then
+      note "role $STATE_ROLE_ID: $STATE_PERMISSIONS only"
+    else
+      run gcloud iam roles update "$STATE_ROLE_ID" --project "$PROJECT" --permissions="$STATE_PERMISSIONS" --quiet
+    fi
+  fi
+  ensure_sa "$STATE_SA_NAME" "$STATE_SA" "GitHub Actions: deploy.yml reads whether hangar's infra is up (read-only)"
+  bind project "$PROJECT" "$STATE_ROLE" "serviceAccount:$STATE_SA"
+  bind sa "$STATE_SA" roles/iam.workloadIdentityUser "$CI_MEMBER"
+
+  narrow projects "$PROJECT" "serviceAccount:$CI_SA serviceAccount:$DEPLOY_SA serviceAccount:$STATE_SA" \
+    "roles/container.clusterViewer=serviceAccount:$DEPLOY_SA" "$STATE_ROLE=serviceAccount:$STATE_SA"
   narrow sa "$CI_SA" "$FEDERATED" "roles/iam.workloadIdentityUser=$CI_MEMBER"
+  narrow sa "$STATE_SA" "$FEDERATED" "roles/iam.workloadIdentityUser=$CI_MEMBER"
   narrow sa "$DEPLOY_SA" "$FEDERATED" "roles/iam.workloadIdentityUser=$DEPLOY_MEMBER" \
     "roles/iam.workloadIdentityUser=$DEPLOY_MEMBER_IDS"
   # get: the running image and `set image`'s read; list and watch: `rollout status` lists and watches with a
@@ -474,6 +505,8 @@ if ! skipped github; then
   set_secret GCP_WORKLOAD_IDENTITY_PROVIDER "$WIF_PROVIDER" public
   set_secret GCP_SERVICE_ACCOUNT "$CI_SA" public
   set_secret HANGAR_REGISTRY "$REGISTRY" public
+  set_secret GCP_STATE_SERVICE_ACCOUNT "$STATE_SA" public
+  set_secret HANGAR_CLUSTER "$HANGAR_CLUSTER" public
   note "$ENVIRONMENT secrets (released to the deploy job only after your approval):"
   set_secret GCP_DEPLOY_SERVICE_ACCOUNT "$DEPLOY_SA" public --env "$ENVIRONMENT"
   set_secret GKE_CLUSTER "$CLUSTER" public --env "$ENVIRONMENT"
@@ -615,7 +648,9 @@ checks=(
   "gcloud iam workload-identity-pools providers list --workload-identity-pool=$POOL --location=global --project=$PROJECT (no other)"
   "gcloud iam service-accounts get-iam-policy $DEPLOY_SA --project $PROJECT"
   "gcloud iam service-accounts get-iam-policy $CI_SA --project $PROJECT"
-  "gcloud projects get-iam-policy $PROJECT (no role for either account but clusterViewer for $DEPLOY_SA_NAME)"
+  "gcloud iam service-accounts get-iam-policy $STATE_SA --project $PROJECT"
+  "gcloud iam roles describe $STATE_ROLE_ID --project $PROJECT ($STATE_PERMISSIONS only)"
+  "gcloud projects get-iam-policy $PROJECT (no role for $CI_SA_NAME; clusterViewer for $DEPLOY_SA_NAME; $STATE_ROLE_ID for $STATE_SA_NAME)"
   "kubectl auth can-i patch deployments/hangar -n $NS --as=$DEPLOY_SA (and not secrets, exec or other deployments)"
   "gh api repos/$REPO/environments/$ENVIRONMENT"
   "gh api repos/$REPO/rulesets (only admins make v* tags)"
@@ -645,11 +680,21 @@ else
   check "$CI_SA: impersonable from $REPO's runs the provider admits, and nothing else federated" \
     "$(has_binding roles/iam.workloadIdentityUser "$CI_MEMBER" <<<"$pol" &&
        [ -z "$(unwanted "$FEDERATED" "roles/iam.workloadIdentityUser=$CI_MEMBER" <<<"$pol")" ] && echo ok)"
+  pol=$(look gcloud iam service-accounts get-iam-policy "$STATE_SA" --project "$PROJECT" --format=json)
+  check "$STATE_SA: impersonable from $REPO's runs the provider admits, and nothing else federated" \
+    "$(has_binding roles/iam.workloadIdentityUser "$CI_MEMBER" <<<"$pol" &&
+       [ -z "$(unwanted "$FEDERATED" "roles/iam.workloadIdentityUser=$CI_MEMBER" <<<"$pol")" ] && echo ok)"
+  check "role $STATE_ROLE_ID grants $STATE_PERMISSIONS and nothing else" \
+    "$([ "$(look gcloud iam roles describe "$STATE_ROLE_ID" --project "$PROJECT" --format=json |
+          json '",".join(sorted(d.get("includedPermissions", []))) if not d.get("deleted") else ""')" = \
+         "$STATE_PERMISSIONS" ] && echo ok)"
   pol=$(look gcloud projects get-iam-policy "$PROJECT" --format=json)
-  check "no project role for $CI_SA_NAME, and only clusterViewer for $DEPLOY_SA_NAME" \
+  check "no project role for $CI_SA_NAME, only clusterViewer for $DEPLOY_SA_NAME, only $STATE_ROLE_ID for $STATE_SA_NAME" \
     "$(has_binding roles/container.clusterViewer "serviceAccount:$DEPLOY_SA" <<<"$pol" &&
-       [ -z "$(unwanted "serviceAccount:$CI_SA serviceAccount:$DEPLOY_SA" \
-                 "roles/container.clusterViewer=serviceAccount:$DEPLOY_SA" <<<"$pol")" ] && echo ok)"
+       has_binding "$STATE_ROLE" "serviceAccount:$STATE_SA" <<<"$pol" &&
+       [ -z "$(unwanted "serviceAccount:$CI_SA serviceAccount:$DEPLOY_SA serviceAccount:$STATE_SA" \
+                 "roles/container.clusterViewer=serviceAccount:$DEPLOY_SA" \
+                 "$STATE_ROLE=serviceAccount:$STATE_SA" <<<"$pol")" ] && echo ok)"
   for verb in get list watch patch; do
     check "$DEPLOY_SA may $verb deployments/hangar in $NS" \
       "$([ "$(look kc auth can-i "$verb" deployments.apps/hangar -n "$NS" --as="$DEPLOY_SA")" = yes ] && echo ok)"
@@ -674,7 +719,7 @@ else
     check "$ENVIRONMENT secret $s" "$(grep -qx "$s" <<<"$have" && echo ok)"
   done
   have=$(look gh secret list --repo "$REPO" --json name --jq '.[].name')
-  for s in GCP_WORKLOAD_IDENTITY_PROVIDER GCP_SERVICE_ACCOUNT HANGAR_REGISTRY; do
+  for s in GCP_WORKLOAD_IDENTITY_PROVIDER GCP_SERVICE_ACCOUNT HANGAR_REGISTRY GCP_STATE_SERVICE_ACCOUNT HANGAR_CLUSTER; do
     check "repository secret $s" "$(grep -qx "$s" <<<"$have" && echo ok)"
   done
   check "no repository copy of HANGAR_DEPLOY_TOKEN" "$(grep -qx HANGAR_DEPLOY_TOKEN <<<"$have" || echo ok)"

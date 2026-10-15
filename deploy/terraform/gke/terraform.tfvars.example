@@ -12,3 +12,4 @@ enable_kata_pool = false
 # power_down_cron       = "0 1 * * *"
 # power_time_zone       = "America/New_York"
 # sandbox_warm_nodes    = 1
+# power_deploy_repo     = "OWNER/REPO"   # public: after the power-up, hangar shows when main is ahead of it

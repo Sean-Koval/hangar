@@ -1,7 +1,8 @@
 # --------------------------------------------------------------------------- power schedule
 # Turns the sandbox node pools off at night and back on in the morning (deploy/gke/power.sh down / up), from two
 # Cloud Run jobs that Cloud Scheduler starts. Hangar and the system pool stay up. Nothing is deleted: disks, images,
-# checkpoints and the IP stay.
+# checkpoints and the IP stay. A hold (power.sh hold / off, hangar power hold) makes both jobs skip until it ends:
+# each reads the cluster's labels first and exits with a log line.
 #
 #   enable_power_schedule = true      # in terraform.tfvars
 #   power_up_cron         = "50 9 * * *"   # floor node and image prepull; ready power_warm_minutes later
@@ -68,6 +69,17 @@ resource "google_cloud_run_v2_job" "power" {
         env {
           name  = "HANGAR_POWER_INSTALL"
           value = "1"
+        }
+        # A hold (power.sh hold/off, hangar power hold) skips the scheduled runs; by hand, `up` ends it.
+        env {
+          name  = "POWER_SCHEDULED"
+          value = "1"
+        }
+        # After a power-up, main ahead of what hangar runs is reported to hangar (`hangar power`, doctor). This job
+        # holds no GitHub credential: it compares anonymously (public repositories), and never starts a deploy.
+        env {
+          name  = "POWER_DEPLOY_REPO"
+          value = var.power_deploy_repo
         }
         # What hangar tells people about the morning (when sandboxes are ready); sent at both down and up.
         env {

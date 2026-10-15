@@ -2,8 +2,10 @@
 
 Hangar's control plane deploys from GitHub Actions, not from a laptop. `.github/workflows/images.yml` builds the
 environment images and harness packs on every push to `main`; `.github/workflows/deploy.yml` builds the control-plane
-image, waits for your approval, rolls it out, proves it with the acceptance checks and rolls back on failure. The
-nightly harness canary needs no cloud access. This page takes you through the first deploy, end to end.
+image, waits for your approval, rolls it out, proves it with the acceptance checks and rolls back on failure. A merge
+to `main` starts a deploy while the infra is up, and skips it while the infra is off, held or powered down
+([Infra states](#infra-states)). The nightly harness canary needs no cloud access. This page takes you through the
+first deploy, end to end.
 
 ## 1. Set up the identities, once
 
@@ -26,10 +28,11 @@ It is safe to re-run: each step looks first and changes only what is missing or 
 | --- | --- | --- |
 | Pool `github`, provider `hangar` | Runs of this repository (checked by name and by numeric id) on `main` or a `v*` tag, started by a push or by hand; pull requests, other branches, forks and `pull_request_target`, `workflow_run`, schedule or comment runs get no Google token. The pool holds no other provider (the check fails if it does: any provider in the pool could sign in as these accounts) | Exchange GitHub's OIDC token for the accounts below |
 | `hangar-ci@` (images) | Any run the provider admits | `roles/artifactregistry.writer` on the `hangar` repository only. No cluster access, no Cloud Build (images build with Docker on the runner) |
+| `hangar-state@` (is the infra up?) | Any run the provider admits | A custom role, `hangarClusterState`, with `container.clusters.get` alone: the cluster's metadata and power labels. Not `clusterViewer` (which adds `list` and `connect`), no binding inside the cluster, nothing it can change |
 | `hangar-deploy@` (deploys) | Only jobs in the `production` environment: subject `repo:OWNER/REPO:environment:production`, or `repo:OWNER@OWNER_ID/REPO@REPO_ID:environment:production` for repositories created after 2026-07-15 ([GitHub's immutable subjects][immutable]); both are bound | `roles/container.clusterViewer` (fetch the cluster's credentials) and a Role in `hangar`: `get`, `list`, `watch`, `patch` on `deployments/hangar`. No secrets, no exec, nothing else |
 | The `production` environment | You approve each deploy; only `main` and `v*` tags deploy | Releases its secrets to the deploy job after your approval |
 | A tag ruleset on `refs/tags/v*` | Only repository admins (you) create, move or delete `v*` tags | A `v*` tag starts a deploy, and its builds run as `hangar-ci@` before your approval |
-| Repository secrets | Every workflow run | `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT`, `HANGAR_REGISTRY`: names, not credentials, and none of them deploys |
+| Repository secrets | Every workflow run | `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT`, `HANGAR_REGISTRY`, `GCP_STATE_SERVICE_ACCOUNT`, `HANGAR_CLUSTER` (`projects/P/locations/ZONE/clusters/NAME`): names, not credentials, and none of them deploys |
 | `production` secrets | The approved deploy job | `GCP_DEPLOY_SERVICE_ACCOUNT`, `GKE_CLUSTER`, `GKE_LOCATION`, `HANGAR_URL`, and `HANGAR_DEPLOY_TOKEN` |
 
 `HANGAR_DEPLOY_TOKEN` is an admin token named `github-deploy`, minted through hangar's REST API and piped straight into
@@ -64,7 +67,75 @@ touches the cluster, and the environment's secrets don't exist for the run, unti
 run with nothing changed.
 
 The deploy refuses while the pools are powered down. `gh workflow run deploy.yml --ref main -f force=true` deploys
-anyway and runs only the checks that need no sandbox (`doctor`, `power`, `metrics`).
+anyway and runs only the checks that need no sandbox (`doctor`, `power`, `metrics`). With hangar off
+(`power.sh off`) it refuses even forced: there is nothing running to deploy to; `power.sh up` deploys main for you.
+
+### Merges to main deploy while the infra is up
+
+A push to `main` starts `deploy.yml` too. Its first job, `state`, runs `bash deploy/gke/power.sh state` as
+`hangar-state@`, which reads the cluster's power labels and nothing else: no hangar token, no kubectl, no approval
+needed because it can't change anything.
+
+- **Up:** the run builds and then waits for your approval on `production`, like any deploy. A merge never deploys
+  without your click: the deploy job, the only one with the deploy account, `kubectl` and hangar's admin token, is the
+  `production` environment's.
+- **Off, held or down:** the run ends green with a notice, *infra is down; not deploying `<sha>`; it will deploy on
+  the next power-up*, and builds nothing. No failure, no rollback. `images.yml` still builds the images on every merge,
+  whatever the power state.
+- **A burst of merges:** the `deploy-production` concurrency group keeps one run going and at most one waiting;
+  GitHub cancels the waiting run when a newer one queues ([concurrency][concurrency]: "any existing `pending` job or
+  workflow in the same concurrency group will be canceled"). A run that a newer push to `main` has overtaken skips with
+  a notice, both before its builds and again right after your approval, so you approve the newest commit, not each one.
+- **The infra went down while a run waited for you:** the deploy job checks hangar's power state again after the
+  approval, and skips green if the pools are down or held.
+
+Before `setup-cicd.sh` has made `hangar-state@` (an older setup), a merge skips with a warning instead: re-run the
+script, or deploy by hand.
+
+**Catch-up on power-up.** `bash deploy/gke/power.sh up` (by hand, from off, down or a hold) ends by comparing `main`'s
+head with the commit hangar runs (its newest deploy record, else the running image's tag) through GitHub's compare
+API. When main is ahead, and no `deploy.yml` run for main is already queued or waiting, it starts one with
+`gh workflow run deploy.yml --ref main`, as you; it waits for your approval. Same commit, behind, or diverged (a tag
+deploy): nothing. `POWER_CATCH_UP=0` turns it off.
+
+The scheduled power-up job doesn't start deploys. It holds no GitHub credential, and gets none: a token that can start
+workflows (`actions: write`) can also re-run, cancel and delete runs and their logs, and stored in Secret Manager it
+would be one more long-lived secret, readable by an account that already administers the cluster, to protect and
+rotate, for the sake of saving one command. Instead, with `power_deploy_repo` set in terraform (a public repository:
+it compares anonymously), it tells hangar that main is ahead. `hangar power`, `hangar status` and `hangar doctor`
+then show **deploy pending** with the command to run, `gh workflow run deploy.yml --repo OWNER/REPO --ref main`, until
+the next deploy is recorded. Nothing is recorded at merge time: what's pending is worked out at power-up, from GitHub
+and hangar, so it can't go stale.
+
+## Infra states
+
+| State | What runs | What it costs a week (*estimate*, [team-scale.md](team-scale.md#cost)) | Webhooks | Jobs and sessions | A merge to main | How to get back |
+| --- | --- | --- | --- | --- | --- | --- |
+| **up** | System node, hangar, sandbox pools (gVisor at its warm floor, autoscaling) | Idle, the warm floor around the clock ~$78; a typical team week on the schedule ~$157 | Received | Run | Builds, waits for your approval, deploys | - |
+| **down** (nightly, 01:00 to 09:50 ET) | System node and hangar; sandbox pools at 0 nodes | The system node, ~$18 for a whole week down | Received and queued | Queued jobs wait (`waiting: sandboxes power on at 10:00`); creates answer `503` with `Retry-After`; sessions are suspended (checkpointed) and resume on their next message | Skips green; deploys on the next power-up | The 09:50 power-up, `hangar power up`, or `bash deploy/gke/power.sh up` |
+| **held** (`power.sh hold`, `hangar power hold`) | Whatever ran when the hold began: the scheduled power-ups and power-downs skip until it ends | That state's | That state's | That state's | Skips green while held | It ends by itself at its date and the schedule resumes at its next time (nothing powers up early); `power.sh release` / `hangar power release` end it now; `power.sh up` / `hangar power up` end it and power on |
+| **off** (`power.sh off`) | Nothing: every pool at 0 nodes, hangar scaled to 0. Kept: the cluster, the `hangar-data` disk with the SQLite store, the bucket and checkpoints, images, the IP and the load balancer | ~$5, plus GKE's management fee when the free tier is spent on another cluster | **Not received** (the load balancer answers 502). GitHub's are redelivered on the next start if at most 3 days old; Jira's and Slack's are lost | Nothing runs; queued jobs and suspended sessions wait in the store and carry on after `up` | Skips green; `power.sh up` deploys main | `bash deploy/gke/power.sh up`; or when the hold `off` set ends, the next scheduled power-up brings everything back (without the catch-up deploy) |
+
+### Taking a week off
+
+```bash
+hangar status                                 # anything running you want to finish first?
+bash deploy/gke/power.sh off --until 2026-10-26   # drain, checkpoint and suspend sessions, then everything to 0
+                                              # nodes; held until then so the schedule leaves it off
+# ... keep developing: merges build images (images.yml) and skip the deploy, green
+bash deploy/gke/power.sh status               # cluster: off (everything at 0 nodes); held until Mon 26 Oct 00:00
+bash deploy/gke/power.sh up                   # system pool, hangar (ready), sandbox pools, warm floor and prepull;
+                                              # ends the hold; starts deploy.yml for main if it's ahead: approve it
+hangar doctor                                 # the deploy, the loops, anything stale
+```
+
+While it's off, nothing receives webhooks. On its next start hangar asks GitHub to redeliver the deliveries it missed,
+but GitHub keeps them for 3 days only ([redelivering webhooks][redeliver]: "You can redeliver webhook deliveries that
+occurred in the past 3 days"), so a `/hangar` label or comment from earlier in the week is lost: add it again. Jira
+retries a failed webhook up to five times, 5 to 15 minutes apart ([Jira webhooks][jirahooks]), and has no
+redelivery, so a Jira issue moved during the week is lost: move it again. Slack events and slash commands are lost
+too. A hold from `off` ends by itself at its date, and the next scheduled power-up then brings everything back; pick a
+date after your return, or come back with `power.sh up`.
 
 ## 3. Read the result in the run summary
 
@@ -101,6 +172,13 @@ To go back to an earlier release later, push or re-run a `v*` tag that points at
 - **`deployments.apps "hangar" is forbidden` from kubectl:** the Role is missing or out of date (it needs `list` for
   `rollout status`); re-run the script, which applies it and checks it with `kubectl auth can-i`.
 
+- **`deploy: skipped` with a warning on a merge, "Couldn't read the infra state":** `GCP_STATE_SERVICE_ACCOUNT` or
+  `HANGAR_CLUSTER` is missing, or `hangar-state@` can't sign in or read the cluster. Re-run the script (it creates and
+  checks them); meanwhile deploy by hand.
+
 [wif]: https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines
+[concurrency]: https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/control-the-concurrency-of-workflows-and-jobs
+[redeliver]: https://docs.github.com/en/webhooks/testing-and-troubleshooting-webhooks/redelivering-webhooks
+[jirahooks]: https://developer.atlassian.com/cloud/jira/platform/webhooks/
 [immutable]: https://github.blog/changelog/2026-04-23-immutable-subject-claims-for-GitHub-actions-oidc-tokens/
 [review]: https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/review-deployments
