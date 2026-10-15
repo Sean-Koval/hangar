@@ -133,7 +133,10 @@ jobs:
           deploy=true
           if [ "$EVENT" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then
             head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha) || head=""
-            if [ -n "$head" ] && [ "$head" != "$GITHUB_SHA" ]; then
+            if [ -z "$head" ]; then
+              echo "::warning title=deploy: skipped::Couldn't read main's head, so $short isn't deployed (it may be an old commit). Run deploy.yml by hand to deploy main."
+              deploy=false
+            elif [ "$head" != "$GITHUB_SHA" ]; then
               echo "::notice title=deploy: superseded::main has moved on to ${head:0:12}; the run for that merge deploys instead of $short."
               deploy=false
             elif [ "$state" = unknown ]; then
@@ -260,7 +263,8 @@ jobs:
           skip() { echo "::notice title=deploy: skipped::$1"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; }
           if [ "$merge" = true ]; then
             head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha) || head=""
-            if [ -n "$head" ] && [ "$head" != "$GITHUB_SHA" ]; then
+            if [ -z "$head" ]; then skip "Couldn't read main's head; run deploy.yml by hand to deploy main."; fi
+            if [ "$head" != "$GITHUB_SHA" ]; then
               skip "main has moved on to ${head:0:12}; the run for that merge deploys instead of ${GITHUB_SHA:0:12}."
             fi
           fi

@@ -165,6 +165,10 @@ elif cmd == "summary":  # LABELS_JSON POOLS_RE NOW: the cluster's power state, f
     print(json.dumps({"summary": "off" if off else "held" if held else state, "state": state, "held": held,
                       "hold_until": until if held else None, "hold_set": num(lb.get("hangar-power-hold-set")),
                       "off_since": num(lb.get("hangar-power-off")), "saved_pools": sorted(saved)}))
+elif cmd == "is_off":  # LABELS_JSON POOLS_RE: "1" when off (marked so, or a non-sandbox pool was saved), else ""
+    lb, pools_re = labels(a[0]), re.compile(a[1])
+    saved = [k[len("hangar-power-"):] for k in lb if k.startswith("hangar-power-") and k not in SPECIAL]
+    print("1" if "hangar-power-off" in lb or any(not pools_re.search(p) for p in saved) else "")
 elif cmd == "describe":  # SUMMARY_JSON: one line for people
     s = load(a[0]) or {}
     line = {"up": "on", "down": "sandbox pools powered down", "starting": "powering on",
@@ -238,25 +242,32 @@ pool_size() {  # a pool's node count now: the target size of its instance groups
   echo "$n"
 }
 
-# One power run at a time (the scheduled jobs, `hangar power up`, a person): a label with the run's start and id.
-# A run holding it for over 45 minutes (the jobs time out at 40) died, and its lock is taken over.
+# One power run at a time (the scheduled jobs, `hangar power up`, a person): a label with when the run last moved on
+# a step, and its id. One not refreshed for 45 minutes died (no step takes 25; the jobs time out at 40) and is taken
+# over. It narrows the window rather than closing it: two runs starting within the same second can both get it (GKE's
+# labels have no compare-and-swap through gcloud). A scheduled run that finds it held fails, so the job shows it.
 LOCK=hangar-power-lock LOCKED=""
 lock() {
-  local mine held
-  held=$(py label "$(labels)" "$LOCK")
+  local mine held raw
+  raw=$(labels) || die "couldn't read the cluster's labels (the lock and the hold); nothing was changed"
+  held=$(py label "$raw" "$LOCK")
   if [ -n "$held" ] && [ $(( $(date +%s) - ${held%%-*} )) -lt 2700 ]; then
-    if [ "$SCHEDULED" = 1 ]; then
-      log "another power run (started $(py fmt "${held%%-*}")) is under way: skipping this scheduled power-$ACTION"
-      exit 0
-    fi
-    die "another power run (started $(py fmt "${held%%-*}")) is under way. Wait for it; if it died, remove the" \
-      "cluster label $LOCK and run this again."
+    die "another power run (last step $(py fmt "${held%%-*}")) is under way, so this power-$ACTION does nothing." \
+      "Wait for it; if it died, remove the cluster label $LOCK and run this again."
   fi
   mine="$(date +%s)-$RANDOM$RANDOM"
+  LOCKED=$mine  # before the label: whatever happens next, the trap removes ours (and only ours)
+  trap unlock EXIT
+  trap 'exit 143' TERM INT  # a stopped job (bash is PID 1 there) still releases it
   set_labels "$LOCK=$mine"
   [ "$(py label "$(labels)" "$LOCK")" = "$mine" ] || die "another power run took the lock at the same moment; run this again"
+}
+touch_lock() {  # a step done: the lock stays fresh however long the whole run takes
+  [ -n "$LOCKED" ] || return 0
+  local mine
+  mine="$(date +%s)-${LOCKED#*-}"
+  set_labels "$LOCK=$mine"
   LOCKED=$mine
-  trap unlock EXIT
 }
 unlock() {
   if [ -n "$LOCKED" ] && [ "$(py label "$(labels)" "$LOCK")" = "$LOCKED" ]; then
@@ -321,15 +332,17 @@ sync_hold() {
   local rec plan
   rec=$(hangar_api GET /api/admin/power/hold 2>/dev/null) || return 1
   read -r -a plan <<<"$(py holdplan "$LABELS" "$rec" "$(date +%s)")"
+  # Called as a condition, so `set -e` is off in here: every write that fails returns 1 (hangar's hold not applied)
   case ${plan[0]} in
-    label-set) set_labels "$HOLD=${plan[1]},$HOLD_SET=${plan[2]}"
+    label-set) set_labels "$HOLD=${plan[1]},$HOLD_SET=${plan[2]}" || return 1
                log "hangar holds the schedule until $(py fmt "${plan[1]}") (hangar power hold)" ;;
-    label-clear) set_labels "$HOLD_SET=${plan[1]}"; drop_label "$HOLD"
+    label-clear) set_labels "$HOLD_SET=${plan[1]}" || return 1
+                 drop_label "$HOLD" || return 1
                  log "hangar ended the hold (hangar power release)" ;;
     hangar-set) tell_hold "${plan[1]}" "${plan[2]}" ;;
     hangar-clear) tell_hold "" "${plan[1]}" ;;
   esac
-  LABELS=$(labels)
+  LABELS=$(labels) || return 1
 }
 
 schedule_gate() {
@@ -349,7 +362,7 @@ schedule_gate() {
   fi
   # Powering down without hangar would skip the drain (running turns are cut off at their last checkpoint) and any
   # `hangar power hold`: fail closed, and leave the pools up, unless the cluster is off and hangar meant to be stopped.
-  if [ "$ACTION" = down ] && [ $read = 0 ] && [ -z "$(py label "$LABELS" "$OFF")" ]; then
+  if [ "$ACTION" = down ] && [ $read = 0 ] && [ -z "$(py is_off "$LABELS" "$POOLS_RE")" ]; then
     echo "error: couldn't reach hangar (kubectl, or its hold record): not powering down, so nothing is cut off" \
       "and a hold set in hangar isn't overridden. The sandbox pools stay up; see this job's log, then run" \
       "bash deploy/gke/power.sh down by hand." >&2
@@ -619,10 +632,11 @@ down)
   lock
   schedule_gate
   LABELS=$(labels)
-  if [ -n "$(py label "$LABELS" "$OFF")" ]; then
+  if [ -n "$(py is_off "$LABELS" "$POOLS_RE")" ]; then
     log "the cluster is off (power.sh off): nothing to power down"; exit 0
   fi
   quiesce
+  touch_lock
   pools_to_zero sandbox
   log "down; hangar stays up. Bring the sandboxes back with: bash deploy/gke/power.sh up (or hangar power up)"
   ;;
@@ -637,7 +651,9 @@ off)
   set_labels "$HOLD=$until,$HOLD_SET=$now"
   log "held until $(py fmt "$until"): the scheduled power-ups and power-downs skip until then"
   quiesce "$until" "$now"
+  touch_lock
   pools_to_zero sandbox
+  touch_lock
   if [ "$(hangar_replicas)" != 0 ]; then
     log "stopping hangar (its data stays on the hangar-data volume)"
     kubectl -n "$NS" scale deploy/hangar --replicas=0 >/dev/null
@@ -648,6 +664,7 @@ off)
     die "hangar's pod hasn't stopped after 3 minutes (or couldn't be listed), so the system pool stays up" \
       "(hangar's database is on that node's volume). Run power.sh off again, or power.sh up to bring it all back."
   fi
+  touch_lock
   pools_to_zero control
   set_labels "$OFF=$now"  # last: only an off that got here is "off"
   log "off until $(py fmt "$until"). Nothing was deleted. Bring it back with: bash deploy/gke/power.sh up"
@@ -689,10 +706,12 @@ up)
   restore_pools control
   if kube; then
     for f in ${FLOORS[@]+"${FLOORS[@]}"}; do wait_nodes "${f%%:*}" "${f##*:}" || true; done
+    touch_lock
     if [ "$(hangar_replicas)" = "0" ]; then
       log "starting hangar"
       kubectl -n "$NS" scale deploy/hangar --replicas=1
       kubectl -n "$NS" rollout status deploy/hangar --timeout=900s
+      touch_lock
     fi
     if hangar_ready; then
       hangar_api POST /api/admin/power/state "$(state_body starting)" >/dev/null || true
@@ -713,6 +732,7 @@ up)
     log "up"; exit 0
   fi
   for f in ${floors[@]+"${floors[@]}"}; do wait_nodes "${f%%:*}" "${f##*:}" || true; done
+  touch_lock
   pre='{}'
   if [ ${#floors[@]} -gt 0 ]; then
     log "pulling environment images and harness packs onto the sandbox nodes"

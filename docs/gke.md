@@ -234,8 +234,11 @@ show it, and hangar's own "sandboxes are back at" moves to the first power-up af
 (your laptop's for `power.sh`), which are assumed to be in sync.
 
 **One run at a time, and failing closed.** `down`, `up` and `off` take a lock (the `hangar-power-lock` label, with
-the run's start): a scheduled run that finds another under way skips with a log line, and one by hand stops and says
-so. A lock over 45 minutes old (the jobs time out at 40) belonged to a run that died and is taken over. The scheduled
+the time of the run's last step): a run that finds another under way does nothing and fails, saying so (a scheduled
+job then shows as failed and retries once; a `hangar power up` that hits it leaves hangar's state to go stale, which
+`hangar doctor` reports). A lock not refreshed for 45 minutes belonged to a run that died and is taken over. It's a
+best effort: GKE's labels can't be compare-and-swapped through `gcloud`, so two runs started in the same second could
+both take it. The scheduled
 power-down that can't reach hangar (no kubectl, or no answer) doesn't power down: without hangar there's no drain, so
 running turns would be cut off, and a `hangar power hold` couldn't be read. The job fails, visibly, and the pools stay
 up; `power.sh down` by hand still goes ahead. A pool's saved range is cleared only once its resize back has worked,

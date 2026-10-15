@@ -203,6 +203,8 @@ if a[:2] == ["auth", "status"]:
 if a[:2] == ["repo", "view"]:
     print(cfg["repo"])
 elif a[:1] == ["api"] and a[1].endswith("/commits/main"):
+    if not cfg.get("head"):
+        sys.exit(1)  # GitHub not answering
     print(cfg["head"] if a[2:] == ["--jq", ".sha"] else json.dumps({"sha": cfg["head"]}))
 elif a[:1] == ["api"] and "/compare/" in a[1]:
     print(json.dumps({"status": cfg["compare"], "ahead_by": 3}))
@@ -487,13 +489,30 @@ def test_the_scheduled_power_down_fails_closed_without_hangar(cluster):
     assert cluster["state"]()["pools"]["sandboxes-gvisor"]["size"] == 0
 
 
+def test_a_hangar_hold_that_cant_be_copied_to_the_cluster_still_stops_the_power_down(cluster):
+    now = int(time.time())
+    cluster["set_hangar"]({"replicas": 1, "hold": {"until": now + 86400, "set_at": now, "by": "sean"}})
+    out = cluster["run"]("down", POWER_SCHEDULED="1", ok=False, GCLOUD_FAIL="--update-labels=hangar-power-hold=")
+    assert "not powering down" in out and cluster["state"]()["pools"]["sandboxes-gvisor"]["size"] == 3
+
+
+def test_a_half_finished_off_counts_as_off_for_the_schedule(cluster):
+    """`off` stopped everything but couldn't mark the cluster off: the system pool's saved range says it is."""
+    st = cluster["state"]()
+    st["labels"] = {"hangar-power-system": "1-2", "hangar-power-sandboxes-gvisor": "1-10"}
+    st["pools"]["system"]["size"] = 0
+    cluster["set_state"](st)
+    cluster["set_hangar"]({"replicas": 0})
+    assert "the cluster is off" in cluster["run"]("down", POWER_SCHEDULED="1")
+
+
 def test_one_power_run_at_a_time(cluster):
     st = cluster["state"]()
     st["labels"]["hangar-power-lock"] = f"{int(time.time()) - 60}-123"  # a run that started a minute ago
     cluster["set_state"](st)
     assert "another power run" in cluster["run"]("up", ok=False)
-    for action in ("down", "up"):
-        assert "another power run" in cluster["run"](action, POWER_SCHEDULED="1")  # skips, exit 0
+    for action in ("down", "up"):  # the scheduled ones do nothing and fail, so the job shows it (and retries once)
+        assert "another power run" in cluster["run"](action, POWER_SCHEDULED="1", ok=False)
     assert cluster["state"]()["pools"]["sandboxes-gvisor"]["size"] == 3
     assert cluster["state"]()["labels"]["hangar-power-lock"] == st["labels"]["hangar-power-lock"]  # not ours
     st["labels"]["hangar-power-lock"] = f"{int(time.time()) - 3 * 3600}-123"  # one that died: taken over
@@ -593,7 +612,8 @@ def test_the_scheduled_power_up_never_starts_a_deploy(cluster):
 
 
 # ---------------------------------------------------------------------- deploy.yml: a merge deploys only while up
-def _decide(cluster, tmp_path, event: str, ref: str, labels: dict, moved: bool = False, signed_in: bool = True):
+def _decide(cluster, tmp_path, event: str, ref: str, labels: dict, moved: bool | None = False,
+            signed_in: bool = True):
     doc = yaml.safe_load((ROOT / ".github/workflows/deploy.yml").read_text())
     step = next(s for s in doc["jobs"]["state"]["steps"] if s.get("id") == "decide")
     st = cluster["state"]()
@@ -606,7 +626,7 @@ def _decide(cluster, tmp_path, event: str, ref: str, labels: dict, moved: bool =
                GITHUB_STEP_SUMMARY=str(summary), GITHUB_SHA=HEAD, GITHUB_REF=ref, GITHUB_REPOSITORY="o/r",
                GITHUB_RUN_NUMBER="41", EVENT=event, SIGNED_IN="true" if signed_in else "false", GH_TOKEN="t",
                HANGAR_CLUSTER="projects/p/locations/z/clusters/c",
-               FAKE_GH=json.dumps({"head": "c" * 40 if moved else HEAD}),  # main's head now
+               FAKE_GH=json.dumps({"head": None if moved is None else "c" * 40 if moved else HEAD}),  # main's head
                GCLOUD_LOG=str(tmp_path / "g.log"), GCLOUD_STATE=str(cluster["tmp"] / "state.json"),
                CALL_LOG=str(tmp_path / "c.log"), GH_LOG=str(tmp_path / "gh.log"))
     r = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]], cwd=ROOT, env=env,
@@ -626,6 +646,7 @@ MAIN = "refs/heads/main"
     ("push", MAIN, {"hangar-power-off": "1", "hangar-power-system": "1-2"}, False, "false",
      "infra is off; not deploying"),
     ("push", MAIN, {}, True, "false", "main has moved on to cccccccccccc"),  # a burst of merges: the newest deploys
+    ("push", MAIN, {}, None, "false", "Couldn't read main's head"),  # it might be an old commit: not deployed
     ("workflow_dispatch", MAIN, {"hangar-power-sandboxes-gvisor": "1-10"}, False, "true", None),  # the deploy job
     ("workflow_dispatch", MAIN, {"hangar-power-off": "1"}, False, "refused", "hangar is off"),
     ("push", "refs/tags/v1.2.0", {"hangar-power-hold": "9999999999"}, False, "true", None),  # a release tag
@@ -636,7 +657,7 @@ def test_a_merge_deploys_only_while_the_infra_is_up(cluster, tmp_path, event, re
     if says:
         assert says in out, out
     if deploy == "false":
-        assert "::notice title=deploy:" in out and "::error" not in out  # green, no failure
+        assert ("::notice title=deploy:" in out or "::warning title=deploy:" in out) and "::error" not in out
 
 
 def test_a_merge_without_the_state_check_set_up_skips_with_a_warning(cluster, tmp_path):
