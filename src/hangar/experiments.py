@@ -873,7 +873,7 @@ def view(jobs: JobService, job: Job) -> dict[str, Any]:
     return {"schema": SCHEMA, "id": job.id, "name": st.spec.get("name"), "state": job.state.value,
             "reason": job.reason, "requester": job.requester, "person": job.person, "created_at": job.created_at,
             "finished_at": st.finished_at, "spec": jobs.broker.redact(st.spec), "pins": jobs.broker.redact(st.pins),
-            "counts": counts, "trials": trials, "notes": st.notes}
+            "counts": counts, "trials": jobs.broker.redact(trials), "notes": jobs.broker.redact(st.notes)}
 
 
 def trial_file(jobs: JobService, job: Job, key: str, name: str) -> dict[str, Any]:
@@ -883,7 +883,8 @@ def trial_file(jobs: JobService, job: Job, key: str, name: str) -> dict[str, Any
         raise KeyError(f"experiment {job.id} has no trial '{key}'")
     if name not in t.stored:
         raise KeyError(f"trial {key} has no {name} (it hasn't finished, or it couldn't be stored)")
-    return json.loads((_dir(jobs.settings, job.id, key) / name).read_text())
+    # --- review(#114): redacted again on the way out (a secret stored since the trial ended is masked too)
+    return jobs.broker.redact(json.loads((_dir(jobs.settings, job.id, key) / name).read_text()))
 
 
 def experiment(jobs: JobService, exp_id: str, owner: str | None = None) -> Job:

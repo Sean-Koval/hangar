@@ -394,6 +394,53 @@ def test_behavior_specs_can_be_written_from_the_export_alone(settings, broker):
     assert _attrs(hosts)["hangar.file.in_repo"] is False and "hangar.file.repo_path" not in _attrs(hosts)
 
 
+async def test_live_tool_spans_read_the_event_log_off_the_event_loop(settings, monkeypatch):
+    """HANGAR_TRACE_LIVE_TOOLS reads the session's event log (up to HANGAR_EVENTS_MAX_MB) as each turn ends: never on
+    the event loop, which 60 sessions share."""
+    import threading
+
+    from hangar import observe
+
+    pytest.importorskip("opentelemetry.sdk")
+    from opentelemetry.sdk.trace import TracerProvider
+
+    seen: list[int] = []
+    monkeypatch.setattr(traces, "live_children", lambda *a: seen.append(threading.get_ident()))
+    monkeypatch.setattr(observe, "_tracer", TracerProvider().get_tracer("hangar"))
+    settings.trace_live_tools = True
+
+    class Svc:
+        def __init__(self):
+            self.settings = settings
+
+        @observe.turn_end
+        async def finish(self, s, turn):
+            return ("exited", None)
+
+    s = Session(name="s", environment="plain", turns=[SessionTurn(message="m", run_id="r", started_at=1.0)])
+    assert await Svc().finish(s, s.turns[0]) == ("exited", None)
+    assert seen and seen[0] != threading.get_ident()
+
+
+def test_stored_manifests_and_trial_files_are_redacted_on_the_way_out(settings, broker):
+    """A secret stored after a manifest or a trial's files were written is masked when they are read, as trace
+    exports are (spec 0014: redacted on the way out)."""
+    late = "hglate-SECRET-0a1b2c3d4e5f6a7b"
+    s = Session(name="s", environment="plain", turns=[SessionTurn(message="m", run_id="r", manifest="sha256:x")])
+    manifest.store(settings).put(s.id, 1, {"schema": manifest.SCHEMA, "instructions": {"prompt": {"text": late}}})
+    svc = SimpleNamespace(settings=settings, fleet=SimpleNamespace(broker=broker))
+    st = experiments.State(spec={"name": "e"}, stage="done", trials=[
+        experiments.Trial(key="t/a/1", task="t", variant="a", trial=1, state="done", stored=["trace.json"])])
+    exp = Job(title="e", instructions="x", environment="plain", labels={experiments.KIND_LABEL: experiments.KIND})
+    exp.result.data = st.model_dump(mode="json", by_alias=True)
+    experiments._write(experiments._dir(settings, exp.id, "t/a/1"), {"trace.json": {"x": [late]}})
+    js = SimpleNamespace(settings=settings, broker=broker)
+    broker.put("late", "webhook", CredentialKind.GENERIC, late)
+    assert late not in json.dumps(manifest.for_session(svc, s, 1))  # type: ignore[arg-type]
+    assert late not in json.dumps(manifest.for_session(svc, s))  # type: ignore[arg-type]
+    assert experiments.trial_file(js, exp, "t/a/1", "trace.json") == {"x": ["***"]}  # type: ignore[arg-type]
+
+
 def test_list_attributes_are_redacted_too(broker):
     broker.put("seeded", "webhook", CredentialKind.GENERIC, SECRET)
     x = traces.Export(traces.trace_id("j"), broker.redact)

@@ -437,7 +437,9 @@ def turn_end(fn: Callable[..., Any]) -> Callable[..., Any]:
         if sp is not None and getattr(getattr(self, "settings", None), "trace_live_tools", False):  # --- interfaces
             from hangar import traces
 
-            _safe(traces.live_children, sp, self, s, turn)
+            # --- review(#114): it reads the session's event log (tens of MB): in a thread, from copies
+            await asyncio.to_thread(_safe, traces.live_children, sp, self, s.model_copy(deep=True),
+                                    turn.model_copy(deep=True))
         _safe(_end_turn, sp, s, turn, result[0], None)
         return result
 

@@ -442,6 +442,7 @@ def for_session(svc: SessionService, s: Session, turn: int | None = None) -> dic
     """A turn's stored manifest (`turn`, else the latest turn that has one). Without one, what the session would run
     with now (`subject.kind: session`, not captured)."""
     st = store(svc.settings)
+    redact = svc.fleet.broker.redact  # --- review(#114): again on the way out: a secret stored since is masked too
     if turn is not None:
         if not 1 <= turn <= len(s.turns):
             raise KeyError(f"session {s.name} has no turn {turn} (it has {len(s.turns)})")
@@ -449,10 +450,10 @@ def for_session(svc: SessionService, s: Session, turn: int | None = None) -> dic
         if m is None:
             raise KeyError(f"turn {turn} of session {s.name} has no manifest (it started before hangar recorded "
                            "them, or recording it failed)")
-        return m
+        return redact(m)
     for n in range(len(s.turns), 0, -1):
         if s.turns[n - 1].manifest and (m := st.get(s.id, n)) is not None:
-            return m
+            return redact(m)
     spec = svc.fleet.catalog.get(s.environment)
     sb = None
     with contextlib.suppress(Exception):
