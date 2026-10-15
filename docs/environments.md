@@ -41,6 +41,7 @@ services:                        # images beside the sandbox, reachable at their
 ports:                           # the owner can open these in a browser, through hangar
   - {port: 5173, name: web}
 verify: uv run pytest -q         # the check jobs run, unless the job names one
+verify_reports: [reports/*.xml]  # JUnit, Cobertura or LCOV files it writes (most runners need none: docs/jobs.md §8)
 build_secrets: [NPM_TOKEN]       # ids only; an admin maps each to a credential (see Build secrets)
 lockfiles: [vendor/*.lock]       # more files whose change means a rebuild
 mocks:                           # stand-ins for real dependencies, so nobody mistakes them (agent-led setup)

@@ -1150,6 +1150,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     manifest.mount(app, h, U, J, owner_filter)  # sessions and environments: a member sees their own
     experiments.mount(app, h, J, owner_filter)
+    from hangar import testresults  # --- testresults: GET /api/jobs/{id}/tests, the sessions', flaky lists, status
+
+    testresults.mount(app, h, J, A)
     # --- observe: GET /metrics (admin or `metrics` tokens) and GET /api/usage
     from hangar import metrics, usage
 

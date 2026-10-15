@@ -280,7 +280,108 @@ Settings:
 
 The webhook needs the `pull_request_review`, `check_run`, `check_suite` and `status` events ([§4](#4-trigger-from-github)): run `hangar setup github` again, or `hangar doctor --fix`.
 
-## 8. Experiments
+## 8. Test results
+
+Every check hangar runs leaves structured results, not just an exit code and the end of its output: the check on
+the base commit, the check after each turn (and its [flaky rerun](#flaky-tests)), best-of-N attempts, agent-led
+setup's validation, and the checks the [in-turn gate](#the-verify-gate-inside-the-turn) runs for the agent. The deploy
+acceptance checks are recorded the same way. The design is in `src/hangar/testresults.py`; the one report parser is
+`src/hangar/testreports.py`.
+
+### Where the reports come from
+
+Around the check, in the same shell and the same exec, hangar:
+
+1. makes a fresh report directory, `$HANGAR_TESTS_DIR` (`~/.hangar/tests/<run>/`), and marks the run's start;
+2. sets the variables the common runners read, unless the environment already sets them:
+   - **pytest:** `PYTEST_ADDOPTS=--junitxml=$HANGAR_TESTS_DIR/pytest.xml`, added to what `PYTEST_ADDOPTS` already holds,
+     and not at all when it already names a JUnit file. A `--junitxml` on the command line wins over it.
+   - **gotestsum:** `GOTESTSUM_JUNITFILE` (gotestsum reads the variable as it reads `--junitfile`).
+   - **jest-junit:** `JEST_JUNIT_OUTPUT_DIR`, when the repo uses the `jest-junit` reporter.
+3. runs the check, unchanged: its output and exit code are its own;
+4. reads the report files the run wrote (newer than its start, regular files, not links) from that directory, from the
+   paths the repo declares, and from the usual places: Maven surefire and failsafe and Gradle (`TEST-*.xml`),
+   cargo-nextest (`target/nextest/<profile>/junit.xml`), vitest and jest (`*junit*.xml`), `test-results/` and
+   `test-reports/`, and coverage: `coverage.xml` (coverage.py, pytest-cov), `cobertura*.xml` (istanbul), `lcov.info`
+   and `*.lcov`.
+
+vitest's `junit` reporter, nextest's JUnit output and a `--junitxml` elsewhere aren't set by a variable. Name where
+they go with `verify_reports`, in the repo's `.hangar/environment.yaml` (it comes first) or its
+[policy](repo-policy.md):
+
+```yaml
+verify: npx vitest run --reporter=junit --outputFile=reports/vitest.xml
+verify_reports: [reports/*.xml, "**/coverage/lcov.info"]   # relative to the repo; **/ for any depth
+```
+
+`HANGAR_TEST_REPORTS=collect` reads reports without setting any variable; `off` does neither.
+
+**Reports are untrusted.** The repo's code writes them. They are read as the sandbox's user, the same one that ran
+the check, and parsed with defusedxml's rules: an entity declaration or an external entity reference stops the parse
+(no XXE, no entity expansion), no DTD is fetched, and a report is capped at 8 MiB, 2 million elements, 64 levels deep
+and 100,000 test cases (64 files and 32 MiB a run). Messages are clipped and pass through `broker.redact` before they
+are kept.
+
+### What is kept
+
+A **test run** per run of a check: the counts (passed, failed, error, skipped), the first 200 failures with their
+messages, every case's outcome keyed by test id (compressed, up to 20,000, kept 3 days, and a base check's 14), the
+coverage totals, and the commit and tree it ran on. Runs are kept 14 days. A test id is `classname::name`, as the
+runner wrote it (`tests.test_math::test_div[0-1]`, `example.com/app/server::TestServe/timeout`).
+
+On a red base, the failures the change adds are the after-turn run's failing ids minus the base run's, exactly,
+whenever both left complete reports ([repo-policy.md](repo-policy.md#the-check-on-the-base-commit)). The text of the
+output is the fallback.
+
+### Flaky tests
+
+A test is **flaky** when, in one repo and environment:
+
+- it passed and failed on the same tree: the working tree's content, uncommitted changes included (two base checks of
+  one commit by two people, a verify-fix round that changed nothing, a rerun); or
+- the runner retried it and it passed (surefire's and nextest's `flakyFailure`).
+
+Each repo keeps a list of them, each test dropped 30 days after it was last seen flaky. The in-turn gate's runs never
+add to it: the agent's own sandbox wrote them while the agent worked. With the repo policy's `rerun_flaky`, a check
+whose every failure is on the list (on a red base: every new failure) runs once more, and the rerun decides. The
+review packet marks the failing tests that are on the list, and the [Cloud Doctor](doctor.md) counts a failed check
+whose every failure is on it as transient.
+
+### Where it shows
+
+- **The job:** `result.tests` on `get_job` and `wait_for_turn`, and on each best-of-N attempt: counts, the first
+  failing ids, `new_failures` against the base, `flaky`, line `coverage` and `coverage_delta` against the base.
+- **Events:** a `progress` event with `data.action: "tests"` in the job's and the session's events, and a line in the
+  job's timeline.
+- **The agent:** `TEST-RESULTS.json` in the job's directory, rewritten after each of hangar's runs: every failure
+  with its message (up to 2,000), what is new against the base, the base's own failures, the flaky ones and coverage.
+  The prompt and each verify-fix message point at it, so the agent searches a file instead of scrolling output.
+- **The review packet:** pass, fail and skip counts, new failures against the base, flaky tests, and the coverage
+  change against the base.
+- **REST:** `GET /api/jobs/{id}/tests` and `GET /api/sessions/{ref}/tests`: the summary, every run, and the latest in
+  full. `?run=<id>` gives one run, `&cases=true` every case, and `?format=otel` the runs as spans (below).
+  `GET /api/repos/tests/flaky?repo=` is a repo's list (admins). The resource `hangar://jobs/<id>/tests`.
+- **`hangar status`:** the repos with the most flaky tests, with their worst.
+
+### In traces
+
+Each run is span events in the trace export's taxonomy (`hangar.trace/v1`, which reserves `test.run` and `test.case`
+for them), with OpenTelemetry's
+[test semantic conventions](https://opentelemetry.io/docs/specs/semconv/registry/attributes/test/) (stability:
+development) alongside:
+
+- `test.run`: `test.suite.name` (the command), `test.suite.run.status` (`success`, `failure`, `timed_out`,
+  `aborted`), and the totals under `hangar.test.*` (`total`, `passed`, `failed`, `errors`, `skipped`, `flaky`,
+  `complete`, `coverage.line_rate`, `run.id`, `run.kind`, `exit_code`), with `vcs.ref.head.revision`;
+- `test.case`, one per failing or flaky test: `test.case.name`, `test.case.result.status` (`pass` or `fail`),
+  `hangar.test.outcome` (`failed` or `error`), `hangar.test.flaky` and the start of `hangar.test.message`. Passing tests
+  are counted, not listed.
+
+With tracing on ([observability.md](observability.md)) they go on the span that ran the check (`job.verify`, the
+job's provisioning for the base). `GET /api/jobs/{id}/tests?format=otel` serves them as data, and
+`testresults.add_to_export` puts them on a job export's `job` span.
+
+## 9. Experiments
 
 An experiment runs the same tasks under several configurations, each several times, so a tool outside hangar can
 compare them. It is a job of kind `experiment`; each trial is an ordinary job of its own (`source: experiment`,
@@ -334,6 +435,7 @@ variants: that is the sister tool's job. The details are in [spec 0014](specs/00
 | `HANGAR_BEST_OF_N_PUSH_ATTEMPTS` | false | Also push attempts that weren't delivered |
 | `HANGAR_BEST_OF_N_JUDGE_TIMEOUT_MINUTES` | 15 | The judge turn's limit |
 | `HANGAR_VERIFY_IN_LOOP`, `HANGAR_MAX_VERIFY_ROUNDS` | true, 3 | The verify gate inside the turn; see [§7](#7-an-agent-loop-that-finishes-the-job) |
+| `HANGAR_TEST_REPORTS` | `inject` | `inject`: set the reporter variables and read the reports; `collect`: only read them; `off`. See [§8](#8-test-results) |
 | `HANGAR_GITHUB_AUTOFIX`, `HANGAR_AUTOFIX_MAX_ROUNDS`, `HANGAR_AUTOFIX_COOLDOWN_SECONDS`, `HANGAR_AUTOFIX_COALESCE_SECONDS`, `HANGAR_AUTOFIX_LOG_BYTES` | `{}`, 3, 120, 60, 16000 | PR auto-fix; see [§7](#7-an-agent-loop-that-finishes-the-job) |
 | `HANGAR_GITHUB_TOKEN_CREDENTIAL`, `HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL`, `HANGAR_GITHUB_REPOS`, `HANGAR_GITHUB_TRIGGER_LABEL` | | See §4 |
 | `HANGAR_GITHUB_TRUSTED`, `HANGAR_JOB_APPROVAL_TTL_HOURS`, `HANGAR_INBOUND_WEBHOOKS`, `HANGAR_SCHEDULE_POLL_SECONDS` | | See [triggers.md](triggers.md) |

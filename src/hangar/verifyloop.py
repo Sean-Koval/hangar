@@ -98,11 +98,15 @@ def deadline(settings: Settings, job: Job, timeout_minutes: int, budget: Budget 
     return int(now() + limit - min(settings.job_verify_timeout_seconds, limit // 4))
 
 
-def stop_hook(verify: str, cwd: str, rounds: int, until: int) -> str:
+def stop_hook(verify: str, cwd: str, rounds: int, until: int, reports: str = "") -> str:
     """The Stop hook's command (bash, as Claude Code runs command hooks). Exit 2 with the output on stderr blocks
     the stop and hands Claude the output; exit 0 lets it stop. Verified against the hooks reference for 2.1.x:
-    exit 2 on Stop "sends Claude back to keep working" with stderr as the reason."""
+    exit 2 on Stop "sends Claude back to keep working" with stderr as the reason.
+
+    --- testresults: `reports` (testresults.prefix) goes before the check in its shell: each check's reports land in
+    ~/.hangar/runs/<run>.tests/<n>/, n counting the checks so far (the lines of the rounds file)."""
     q = shlex.quote
+    check = f"{reports}{verify}" if reports else verify
     intro = ("hangar: the job's check `%s` failed (exit %s), round %s of %s. Fix the cause and run the check "
              "again before you finish. Don't change the check or the tests it runs to make it pass; if the failure "
              "is outside this task, say so in RESULT.md. The check's output ends with:\n")
@@ -112,7 +116,9 @@ def stop_hook(verify: str, cwd: str, rounds: int, until: int) -> str:
         f'[ "$n" -ge {int(rounds)} ] && exit 0; '
         f'[ "$(date +%s)" -ge {int(until)} ] && exit 0; '
         f'cd {q(cwd)} 2>/dev/null || exit 0; '
-        f'out=$(bash -c {q(verify)} 2>&1 </dev/null); rc=$?; '
+        + ('c=$(grep -c "" "$f" 2>/dev/null); export HANGAR_TESTS_DIR="${f%.verify}.tests/${c:-0}"; '
+           if reports else '')
+        + f'out=$(bash -c {q(check)} 2>&1 </dev/null); rc=$?; '
         'if [ "$rc" -eq 0 ]; then echo pass >> "$f"; exit 0; fi; '
         'echo "fail $rc" >> "$f"; n=$((n + 1)); '
         f'printf {q(intro)} {q(verify)} "$rc" "$n" {int(rounds)} >&2; '
@@ -121,8 +127,8 @@ def stop_hook(verify: str, cwd: str, rounds: int, until: int) -> str:
     )
 
 
-def claude_settings(verify: str, cwd: str, rounds: int, until: int, timeout: int) -> str:
-    hook = {"type": "command", "command": stop_hook(verify, cwd, rounds, until), "timeout": int(timeout) + 30,
+def claude_settings(verify: str, cwd: str, rounds: int, until: int, timeout: int, reports: str = "") -> str:
+    hook = {"type": "command", "command": stop_hook(verify, cwd, rounds, until, reports), "timeout": int(timeout) + 30,
             "statusMessage": "hangar: running the job's check"}
     return json.dumps({"disableAllHooks": False, "hooks": {"Stop": [{"hooks": [hook]}]}})
 
@@ -138,11 +144,17 @@ def turn_env(settings: Settings, job: Job, harness: str | None, repo_path: str |
         return {}
     until = deadline(settings, job, timeout_minutes, budget)
     timeout = settings.job_verify_timeout_seconds
+    from hangar import testresults  # --- testresults: the gate's checks leave their reports too
+
+    m = testresults.mode(settings)
     if h.name == "claude-code" or h.live == "claude":
-        return {CLAUDE_ENV: claude_settings(job.verify, repo_path, rounds, until, timeout)}
+        hook = testresults.prefix('"$HANGAR_TESTS_DIR"', inject=m == "inject") if m != "off" else ""
+        return {CLAUDE_ENV: claude_settings(job.verify, repo_path, rounds, until, timeout, hook)}
     if h.live:  # the driver runs it when the turn completes (when the turn falls back to one-shot, nobody does)
-        return {GATE_ENV: json.dumps({"command": job.verify, "cwd": repo_path, "rounds": rounds, "deadline": until,
-                                      "timeout": timeout})}
+        spec = {"command": job.verify, "cwd": repo_path, "rounds": rounds, "deadline": until, "timeout": timeout}
+        if m != "off":  # the driver puts the check's report directory in for @D@
+            spec["prefix"] = testresults.prefix("@D@", inject=m == "inject")
+        return {GATE_ENV: json.dumps(spec)}
     return {}
 
 
@@ -162,12 +174,15 @@ async def read_rounds(jobs: JobService, job: Job, turn: Turn) -> int:
 
 def fix_message(job: Job, exit_code: int | None, tail: str | None, n: int, of: int) -> str:
     out = (tail or "").strip()[-TAIL:] or "(no output)"
+    t = job.result.tests  # --- testresults: where every failure is, with its message
+    where = (f"Every failing test, with its message, is in `{t.file}`" + (" (and which are new against the base)"
+             if t.new_failures is not None else "") + ".\n\n") if t is not None and t.file else ""
     new = ""  # --- frontdoor: on a red base, only what the change added came back
     if job.result.new_failures:
         new = ("It already failed on the base commit; these failures are new: "
                + ", ".join(job.result.new_failures[:20]) + ". Fix those; leave the base's.\n\n")
     return (f"hangar ran the job's check after your turn and it failed (exit {exit_code}), round {n} of {of}:\n\n"
-            f"    {job.verify}\n\n{new}Its output ends with:\n\n```\n{out}\n```\n\n"
+            f"    {job.verify}\n\n{new}{where}Its output ends with:\n\n```\n{out}\n```\n\n"
             "Fix the cause and run the check again before you finish. Don't change the check or the tests it runs "
             "to make it pass; if the failure is outside this task, say so in RESULT.md.")
 

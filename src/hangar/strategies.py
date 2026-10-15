@@ -431,11 +431,15 @@ async def _inspect(jobs: JobService, job: Job, a: Attempt, s: Session) -> None:
     if not repo:
         return
     if job.verify:
-        res = await fleet.exec(sb.id, job.verify, timeout=jobs.settings.job_verify_timeout_seconds, actor=actor)
+        from hangar import testresults  # --- testresults: the attempt's reports, and its failures by test id
+
+        res, tests = await testresults.run_check(jobs, job, "attempt", sandbox_id=sb.id, session_id=s.id,
+                                                 attempt=a.index)
         a.verify_exit_code = res.exit_code
         a.verify_tail = red(_clip_tail((res.stdout or "") + (res.stderr or ""))[-2000:])
-        a.new_failures = baseline.new_failures(job, (res.stdout or "") + (res.stderr or ""),  # --- frontdoor
-                                                 res.truncated)
+        a.new_failures = testresults.new_failures(jobs, job, tests, (res.stdout or "") + (res.stderr or ""),
+                                                  res.truncated)  # --- frontdoor
+        a.tests = testresults.summary(jobs.store, tests, job) if tests is not None else None
     st = await fleet.exec(sb.id, "git status --porcelain", actor=actor)
     changed = [ln for ln in st.stdout.splitlines() if ln.strip()]
     if changed and job.deliver != "none" and len(changed) <= 2000:
@@ -601,6 +605,7 @@ async def _deliver_winner(jobs: JobService, job: Job, w: Attempt, ws: Session, s
     r = job.result
     r.verify_exit_code, r.verify_tail = w.verify_exit_code, w.verify_tail
     r.new_failures = w.new_failures  # --- frontdoor
+    r.tests = w.tests  # --- testresults
     jobs._save(job)
     clean = w.outcome == "exited" and w.exit_code == 0
     verdict = baseline.verdict(job, w.verify_exit_code, w.new_failures)  # --- frontdoor

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="2" failures="1" errors="0" time="0.31">
+    <testsuite name="src/a.test.ts" timestamp="2026-10-15T09:12:03.000Z" hostname="sbx" tests="2" failures="1" errors="0" skipped="0" time="0.012">
+        <testcase classname="src/a.test.ts" name="math &gt; adds" time="0.001">
+        </testcase>
+        <testcase classname="src/a.test.ts" name="math &gt; multiplies" time="0.003">
+            <failure message="expected 6 to be 7 // Object.is equality" type="AssertionError">
+AssertionError: expected 6 to be 7 // Object.is equality
+ ❯ src/a.test.ts:8:20
+            </failure>
+        </testcase>
+    </testsuite>
+</testsuites>

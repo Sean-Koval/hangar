@@ -164,6 +164,8 @@ New event types (added to 0001 §5.4's table; no existing type changes meaning):
 | `tool.decision` | `tool_id?, name, decision ("accept"/"reject"), source (config/user/…)` | otel (`claude_code.tool_decision`) | Permission outcomes. With `--dangerously-skip-permissions` these are all accepts, so low value on the current run command. |
 | `decision` | `decision_id, task, label, p_top, mode` | hangar | One row per `DecisionService` result, so cursors see it (5.5). |
 
+**Test results (implemented, diverging from the sketch above; [jobs.md §8](../jobs.md#8-test-results)).** The `test.result` this spec's `failure_triage` reads is not a run event: each run of a check hangar makes is a `TestRun` record (counts, failures with messages, every case's outcome by test id, coverage, commit and tree), and a `progress` event with `data.action: "tests"` and the counts goes into the job's and session's events. In traces it is a `test.run` span event and one `test.case` event per failing or flaky test (the kinds [`hangar.trace/v1`](../api/traces.md) reserves, attributes under `hangar.test.*`), with OpenTelemetry's test semantic conventions alongside (`test.suite.name`, `test.suite.run.status`, `test.case.name`, `test.case.result.status`; development stability); `GET /api/jobs/{id}/tests?format=otel` serves the same events as data.
+
 Enrichment rules, not new rows:
 
 - `claude_code.tool_result` with duration and success enriches the matching `tool.end` (`duration_ms`, `ok`). Matching key: `tool_id` if the OTel event carries the tool-use id (unverified, open question 3), else `(name, start time within 2 s)`. An unmatched OTel tool event is stored as span data only.

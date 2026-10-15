@@ -691,6 +691,10 @@ def mount(app: Any, h: Any, admin: Any) -> None:
             rec = record_deploy(h.store, body, who)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
+        from hangar import testresults  # --- testresults: the acceptance checks as a run on the deployed commit
+
+        with contextlib.suppress(Exception):
+            testresults.record_acceptance(h.store, rec)
         h.fleet.audit(who, "deploy.recorded", None, result=rec["result"], image=rec.get("image"))
         return rec
 

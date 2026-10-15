@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="4" failures="2" errors="0" time="0.517000">
+	<testsuite tests="2" failures="0" time="0.010000" name="example.com/app/parse" timestamp="2026-10-15T09:12:03Z">
+		<properties>
+			<property name="go.version" value="go1.25.1 linux/amd64"></property>
+		</properties>
+		<testcase classname="example.com/app/parse" name="TestParse" time="0.000000"></testcase>
+		<testcase classname="example.com/app/parse" name="TestParse/empty" time="0.000000"></testcase>
+	</testsuite>
+	<testsuite tests="2" failures="2" time="0.507000" name="example.com/app/server" timestamp="2026-10-15T09:12:03Z">
+		<testcase classname="example.com/app/server" name="TestServe" time="0.500000">
+			<failure message="Failed" type="">=== RUN   TestServe&#xA;    server_test.go:21: got 500, want 200&#xA;--- FAIL: TestServe (0.50s)&#xA;</failure>
+		</testcase>
+		<testcase classname="example.com/app/server" name="TestServe/timeout" time="0.400000">
+			<failure message="Failed" type="">    server_test.go:30: deadline exceeded</failure>
+		</testcase>
+	</testsuite>
+</testsuites>

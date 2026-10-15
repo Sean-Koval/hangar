@@ -31,6 +31,8 @@ hangar repo set acme/app --land auto_after_approval --approver alice --risk-path
 | `merge_method` | `squash` (default), `merge` or `rebase`, for PRs hangar lands. |
 | `risk_paths` | Globs (`infra/**`) that make a PR high risk in its [review packet](landing.md#6-the-review-packet), on top of `.github/**` and `.hangar/**`. |
 | `require_stale_dismissal` | `false` lets hangar arm auto-merge on a base branch that doesn't dismiss stale approvals on a push. Unset (the default) it refuses ([landing.md](landing.md#3-the-branch-protection-to-enable)). |
+| `verify_reports` | The JUnit, Cobertura or LCOV files `verify` writes, relative to the repo, `**/` for any depth (`--verify-report 'build/**/TEST-*.xml'`, repeated). The repo's `.hangar/environment.yaml` `verify_reports` comes first. Most runners need none: see [jobs §8](jobs.md#where-the-reports-come-from). |
+| `rerun_flaky` | `true`: a check whose every failure is on the repo's [flaky list](jobs.md#flaky-tests) runs once more, and the rerun decides (`--rerun-flaky`). Unset: a failure stands. |
 
 The repo is `owner/repo` for GitHub (any URL form, any case), or the git URL for another host.
 
@@ -98,7 +100,12 @@ With a check on every front door, a red base branch would fail every job's check
 - **Only for a standing check.** A `verify` the job brought itself is its acceptance test, written for the change, and expected to fail on the base.
 - **A green base** changes nothing.
 - **A red base** is reported in the job's events ("base was red: …"), the prompt (which failures already exist, with the output in `BASELINE.txt` next to the job's context) and the PR body (**Base was red**). The in-turn gate is off for the job, because it can't tell the base's failures from new ones. Hangar's check after the turn counts only the failures the change added:
-  - it reads failing test ids from the output of pytest, `go test`, `cargo test`, jest and vitest, and subtracts the base's;
+  - when the check writes test reports ([jobs §8](jobs.md#8-test-results)) and both runs left complete ones, it
+    subtracts the base's failing test ids from the run's, exactly. That isn't possible when a run failed with no failing
+    test (a build error), or when tests the base ran (more than 5, and more than 2% of them) didn't run after the turn:
+    a broken build can hide failures by not running their tests;
+  - otherwise it reads failing test ids from the output of pytest, `go test`, `cargo test`, jest and vitest, and
+    subtracts the base's;
   - no new failures: the check counts as passed, and the PR isn't a draft for it;
   - new failures: they go back to the agent, named, as a verify-fix round;
   - when it can't read the ids on both sides, it can't tell what's new: no verify-fix round, the PR is a draft, and the job ends `succeeded` with reason `base_red` for a person to judge. That includes output cut short (more than 256 KB), more than 500 failing ids on the base, and a runner that stops at its first failures, since the base's failure would stop it before the change's: pytest's `-x`/`--maxfail` (also from `addopts`), `go test -failfast`, jest's and vitest's `--bail`, and `cargo test` or `cargo nextest` without `--no-fail-fast` (cargo stops after the first failing test binary by default).

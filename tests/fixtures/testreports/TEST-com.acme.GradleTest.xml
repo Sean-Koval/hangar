@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.acme.GradleTest" tests="2" skipped="1" failures="0" errors="0" timestamp="2026-10-15T09:12:03" hostname="sbx" time="0.12">
+  <properties/>
+  <testcase name="parsesConfig()" classname="com.acme.GradleTest" time="0.1"/>
+  <testcase name="needsNetwork()" classname="com.acme.GradleTest" time="0.0">
+    <skipped/>
+  </testcase>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

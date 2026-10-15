@@ -54,6 +54,7 @@ from hangar import resident as resident  # --- durable: live and recent jobs in 
 from hangar import restarts as restarts  # --- reconciler: interrupted jobs resume after a restart
 from hangar import secretscan as secretscan  # --- egress: secrets are scanned for before a push
 from hangar import teamcreds as teamcreds  # --- review: only a job's person continues it from a front door
+from hangar import testresults as testresults  # --- testresults: structured results of every check
 from hangar.events import resolve_budget, total_usage, usage_line
 from hangar.fleet import Fleet, FleetError, PoweredDown, _clip_tail  # --- ops: PoweredDown
 from hangar.github import GitHub, GitHubError, parse_repo
@@ -845,6 +846,7 @@ class JobService:
         finish = [
             "Keep the change focused on the task.",
             *([baseline.finish_line(job, ctx)] if job.verify else []),  # --- frontdoor: says if the base was red
+            *([t] if job.verify and (t := testresults.prompt_line(self, job, ctx)) else []),  # --- testresults
             *([f"Commit your work on {branch} with clear messages. Do not push and do not open a "
                "pull request: hangar checks your work and delivers it."] if repo_path else []),
             f"Write a short summary for the people who asked to `{ctx}/RESULT.md`: what you changed, how you "
@@ -961,6 +963,8 @@ class JobService:
         if job.verify and (rounds := await verifyloop.read_rounds(self, job, turn)):  # --- overnight/autofix
             turn.verify_rounds = rounds
             self._event(job, f"the check failed {rounds} time(s) during the turn; each went back to the agent")
+        if job.verify and verifyloop.max_rounds(self.settings, job):  # --- testresults: the gate's reports
+            await testresults.in_turn(self, job, turn)
         tail = _clip_tail(raw) if raw else ""
         if outcome in ("gone", "error") and self.fleet.power.resume_cut_off(self, job):  # --- ops: resumes at power-up
             if not self._sandbox_alive(job):
@@ -1012,12 +1016,13 @@ class JobService:
         if job.verify and repo_path:
             self._event(job, f"verifying: {job.verify}", JobState.VERIFYING)
             with observe.span("job.verify", {"hangar.job.id": job.id}) as sp:  # --- observe
-                res = await self._sh(job, job.verify, timeout=self.settings.job_verify_timeout_seconds)
+                res, tests = await testresults.verify(self, job)  # --- testresults: its reports too; flaky reruns
                 observe.set_attrs(sp, {"hangar.verify.exit_code": res.exit_code})
             job.result.verify_exit_code = res.exit_code
             job.result.verify_tail = self.broker.redact(_clip_tail((res.stdout or "") + (res.stderr or ""))[-4000:])
-            job.result.new_failures = baseline.new_failures(job, (res.stdout or "") + (res.stderr or ""),
-                                                             res.truncated)
+            # --- testresults: by test id where the base and this run both left reports, else from the output
+            out = (res.stdout or "") + (res.stderr or "")
+            job.result.new_failures = testresults.new_failures(self, job, tests, out, res.truncated)
         # --- frontdoor: on a red base only the failures this change added count ("unknown": can't tell them apart)
         verdict = baseline.verdict(job, job.result.verify_exit_code, job.result.new_failures)
         verify_ok = verdict == "pass"
