@@ -624,6 +624,8 @@ class SessionTurn(BaseModel):
     cache_wait_seconds: float | None = None
     # --- interfaces: the digest of the effective harness manifest captured as the turn started (manifest.py)
     manifest: str | None = None
+    harness_digest: str | None = None  # and its two halves (#131): the harness's, the environment's
+    environment_digest: str | None = None
 
 
 class Checkpoint(BaseModel):

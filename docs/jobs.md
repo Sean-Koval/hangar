@@ -422,7 +422,10 @@ hangar experiment export job-1a2b3c4d -o out/  # index.json and each trial's man
 Hangar pins the harness version, the model id and each task's base commit, mounts only the trial's harness, writes
 exactly the variant's skills and instructions, and keeps egress the same for every variant. It records what each
 trial ran with (its [manifest](api/manifest.schema.json)), what it did (its [trace](api/traces.md)) and its
-verification, and runs an optional `grader.command` in a clean sandbox on each trial's patch. It doesn't compare the
+verification, and runs an optional `grader.command` in a clean sandbox on each trial's patch. Two trials of one
+variant should share a configuration; when they don't, the trial's `drift` says which half moved: **harness drift**
+(its manifest's `harness_digest`: instructions, skills, MCP servers, hooks, model, approvals) or **environment drift**
+(`environment_digest`: image, build, egress, resources, isolation). It doesn't compare the
 variants: that is the sister tool's job. The details are in [spec 0014](specs/0014-sister-tool-interfaces.md#4-experiment-jobs-hangarexperimentv1).
 
 ## Settings

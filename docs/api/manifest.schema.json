@@ -9,8 +9,10 @@
                "policy", "warnings"],
   "properties": {
     "schema": {"const": "hangar.manifest/v1"},
-    "digest": {"$ref": "#/$defs/digest", "description": "sha256 over the canonical JSON of everything except digest, config_digest, captured_at and subject."},
-    "config_digest": {"$ref": "#/$defs/digest", "description": "sha256 over the harness configuration alone (harness, model, instructions.global, skills, mcp_servers, permissions, egress, environment.name/image/spec_digest, resources): equal for two trials of one experiment variant, different between variants."},
+    "digest": {"$ref": "#/$defs/digest", "description": "sha256 over the canonical JSON of everything except the four digests, captured_at and subject."},
+    "config_digest": {"$ref": "#/$defs/digest", "description": "sha256 over the harness configuration and its environment together (harness, model, instructions.global, skills, mcp_servers, permissions, egress, environment.name/image/spec_digest, resources): equal for two trials of one experiment variant, different between variants. Kept for compatibility; harness_digest and environment_digest are its two halves."},
+    "harness_digest": {"$ref": "#/$defs/digest", "description": "Optional (absent from manifests stored before it). sha256 over the prefix and binding layer, what a harness author controls: harness.name, harness.locked, model.id, instructions.global.declared.digest, skills.declared[*].{name,digest}, plugins, mcp_servers[*].{name,transport,url,headers,env,command,args}, hooks[*].{event,source,digest}, permissions.approvals. Canonical form in spec 0014 §2."},
+    "environment_digest": {"$ref": "#/$defs/digest", "description": "Optional (absent from manifests stored before it). sha256 over what the sandbox is: environment.name, environment.image, environment.spec_digest, environment.build.id, egress.effective, resources, permissions.uid_split, permissions.isolation. Canonical form in spec 0014 §2."},
     "captured_at": {"type": "number", "description": "Unix time, seconds."},
     "subject": {
       "type": "object",

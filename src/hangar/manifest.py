@@ -7,9 +7,13 @@ digest), its MCP servers (names, transports and where they point, never credenti
 approval and permission mode, egress, the environment and its build, resources, and the turn's budget and policy.
 
 A turn's manifest is captured as the turn starts and stored with it (`<data>/manifests/<session>/<turn>.json`); the
-turn records its digest (`SessionTurn.manifest`). Two digests: `digest` over everything but when and for what it was
-captured, and `config_digest` over the harness configuration alone (no task, repo or prompt), which is what two
-trials of one experiment variant share and two variants don't.
+turn records its digest (`SessionTurn.manifest`). Four digests: `digest` over everything but when and for what it was
+captured; `config_digest` over the harness configuration and its environment together (no task, repo or prompt),
+which is what two trials of one experiment variant share and two variants don't; and its two halves,
+`harness_digest` (what a harness author controls: the prefix and binding layer) and `environment_digest` (what the
+sandbox is: image, build, egress, resources, isolation), so a harness change and an environment rebuild can be told
+apart. The halves are computed by `section_digest` over `HARNESS_SECTIONS` and `ENVIRONMENT_SECTIONS`; spec 0014 §2
+writes the canonical form out so a harness lock (#133) produces the identical value.
 
 What the sandbox actually had (the instruction files' and skills' digests) is read from it by one command as the turn
 starts; what hangar meant it to have comes from the environment spec. Both are recorded: they differ when something
@@ -52,6 +56,17 @@ REPO_FILES = ("AGENTS.md", "CLAUDE.md", ".claude/CLAUDE.md", "GEMINI.md")  # rea
 # The sections config_digest covers: what configures the harness, not the task it was given.
 CONFIG_SECTIONS = ("harness", "model", "instructions.global", "skills", "mcp_servers", "permissions", "egress",
                    "environment.name", "environment.image", "environment.spec_digest", "resources")
+# harness_digest: the prefix and binding layer, everything a harness author controls. Declared skills and
+# instructions, not effective ones: drift is effective != declared. model.id is the concrete id (never a policy).
+# `plugins` is not in the manifest yet (null until it is). `a[*].{x,y}` keeps fields x and y of each item of list a.
+HARNESS_SECTIONS = ("harness.name", "harness.locked", "model.id", "instructions.global.declared.digest",
+                    "skills.declared[*].{name,digest}", "plugins",
+                    "mcp_servers[*].{name,transport,url,headers,env,command,args}", "hooks[*].{event,source,digest}",
+                    "permissions.approvals")
+# environment_digest: what the sandbox is.
+ENVIRONMENT_SECTIONS = ("environment.name", "environment.image", "environment.spec_digest", "environment.build.id",
+                        "egress.effective", "resources", "permissions.uid_split", "permissions.isolation")
+_SECTION = re.compile(r"^(?P<path>[\w.]+?)(?:\[\*\](?:\.\{(?P<fields>[\w,]+)\})?)?$")
 PROVIDERS = {"claude-code": "anthropic", "codex": "openai", "antigravity": "gcp.gemini"}
 TEXT_MAX = 16_000
 PROBE_SECONDS = 20
@@ -100,9 +115,22 @@ def mcp_servers(spec: EnvSpec, harness: str | None) -> list[dict[str, Any]]:
     return out
 
 
+def _dir_digest(path: str, mtime_ns: int = 0) -> tuple[str, int]:
+    """(digest, files) of a skill directory on the control plane, over relative paths and contents. Cached by every
+    file's size and mtime, not the directory's (`mtime_ns`, kept for callers): editing a file in place leaves the
+    directory's mtime alone, and a stale digest would hide a harness change (#131)."""
+    root = Path(path)
+    stats: list[tuple[str, int, int]] = []
+    for f in root.rglob("*"):
+        with contextlib.suppress(OSError):
+            if f.is_file() and not f.is_symlink():
+                st = f.stat()
+                stats.append((f.relative_to(root).as_posix(), st.st_size, st.st_mtime_ns))
+    return _dir_digest_of(path, tuple(sorted(stats)))
+
+
 @functools.lru_cache(maxsize=256)
-def _dir_digest(path: str, mtime_ns: int) -> tuple[str, int]:
-    """(digest, files) of a skill directory on the control plane, over relative paths and contents."""
+def _dir_digest_of(path: str, stats: tuple[tuple[str, int, int], ...]) -> tuple[str, int]:
     h = hashlib.sha256()
     n = 0
     root = Path(path)
@@ -178,12 +206,40 @@ def _get(d: dict[str, Any], dotted: str) -> Any:
     return d
 
 
+def pick(m: dict[str, Any], section: str) -> Any:
+    """One section of a manifest: `a.b` (null when absent), or `a[*].{x,y}` (each item of list `a` with only its
+    fields x and y, a missing one null; null when `a` isn't a list)."""
+    got = _SECTION.match(section)
+    if got is None:
+        raise ValueError(f"bad manifest section {section!r}")
+    v = _get(m, got["path"])
+    if "[*]" not in section:
+        return v
+    if not isinstance(v, list):
+        return None
+    if not got["fields"]:
+        return v
+    fields = got["fields"].split(",")
+    return [{f: x.get(f) if isinstance(x, dict) else None for f in fields} for x in v]
+
+
+def section_digest(m: dict[str, Any], sections: tuple[str, ...]) -> str:
+    """`"sha256:" + hex(sha256(canon({section: pick(m, section)})))`, canon being JSON with sorted keys, no
+    whitespace (spec 0014 §2: a harness lock computes harness_digest the same way)."""
+    return _sha(_canon({k: pick(m, k) for k in sections}))
+
+
+DIGESTS = ("digest", "config_digest", "harness_digest", "environment_digest")
+
+
 def seal(m: dict[str, Any], redact: Any) -> dict[str, Any]:
-    """Redact, then add the two digests (over the redacted document, which is what anyone can see)."""
+    """Redact, then add the digests (over the redacted document, which is what anyone can see)."""
     m = redact(m)
-    body = {k: v for k, v in m.items() if k not in ("digest", "config_digest", "captured_at", "subject")}
+    body = {k: v for k, v in m.items() if k not in (*DIGESTS, "captured_at", "subject")}
     m["digest"] = _sha(_canon(body))
     m["config_digest"] = _sha(_canon({k: _get(m, k) for k in CONFIG_SECTIONS}))
+    m["harness_digest"] = section_digest(m, HARNESS_SECTIONS)
+    m["environment_digest"] = section_digest(m, ENVIRONMENT_SECTIONS)
     return m
 
 
@@ -397,6 +453,7 @@ async def record(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbox
                   prompt=prompt, env=env)
         await asyncio.to_thread(store(svc.settings).put, s.id, n, m)
         turn.manifest = m["digest"]
+        turn.harness_digest, turn.environment_digest = m.get("harness_digest"), m.get("environment_digest")
         svc._save(s)
     except asyncio.CancelledError:
         raise
