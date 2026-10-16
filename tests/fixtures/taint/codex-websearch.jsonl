@@ -1,0 +1,8 @@
+{"type":"thread.started","thread_id":"01a1f3aa-94ab-73a0-9617-837c966aca99"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"/bin/bash -lc 'git status --short'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/bin/bash -lc 'git status --short'","aggregated_output":"","exit_code":0,"status":"completed"}}
+{"type":"item.started","item":{"id":"item_1","type":"web_search","query":"upload retry backoff","status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"web_search","query":"upload retry backoff","status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Searched the web. Done."}}
+{"type":"turn.completed","usage":{"input_tokens":4200,"cached_input_tokens":2048,"cache_write_input_tokens":0,"output_tokens":80,"reasoning_output_tokens":20}}

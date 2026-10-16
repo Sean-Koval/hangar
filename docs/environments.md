@@ -615,6 +615,29 @@ holds no job slot while it waits: a background task drives its stages and keeps 
 `result.data`, so a restart resumes it. A follow-up to it answers whichever of its agents asked a question.
 Cancelling it cancels both agents and removes the validation sandbox.
 
+## MCP servers and trust
+
+An environment's `mcp:` servers are written into each harness's own config at claim ([guide.md](guide.md)). Each
+server can say whether its tool results can carry text nobody you trust wrote:
+
+```yaml
+mcp:
+  github:                         # issue comments, PR bodies: anyone can write them
+    url: https://api.githubcopilot.com/mcp/
+    headers: {Authorization: "Bearer ${GH_TOKEN}"}
+    trust: untrusted              # the default for a url server
+  docs-index:
+    command: docs-mcp             # a local stdio server over your own repo
+    trust: trusted                # the default for a command server
+```
+
+`mcp.<name>.trust` is `trusted` or `untrusted`. Unset, a remote (`url`) server is `untrusted` and a local stdio
+(`command`) server is `trusted`. A call to an untrusted server's tool taints the turn ([security.md](security.md#taint)).
+Mark a stdio server that relays third-party text (Jira, Slack, a mail or web reader) `untrusted`, and a remote one you
+run over your own data `trusted`. Hangar's own `hangar-env` server is trusted; the built-in browser
+(`computer.browser_mcp`) is untrusted; a server the agent adds itself is untrusted. A repo's
+`.hangar/environment.yaml` can't set `mcp:` at all.
+
 ## Settings
 
 | Setting | Default | |

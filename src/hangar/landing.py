@@ -864,6 +864,10 @@ class Landing:
         from hangar import testresults  # --- testresults: counts, new against the base, flaky, coverage
 
         out += testresults.packet_lines(svc, job)
+        from hangar import taint  # --- taint (#129): what untrusted content the agent read
+
+        if line := taint.packet_line(job):
+            out.append(line)
         tier, why = risk(st.files, policy.risk_paths if policy else None)
         out.append(f"- **Risk:** {tier}" + (": touches " + ", ".join(_code(p) for p in why[:8]) if why else ""))
         shown = ", ".join(_code(f) for f in st.files[:15]) + (f" and {len(st.files) - 15} more"
