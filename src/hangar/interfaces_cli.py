@@ -126,7 +126,8 @@ def experiment_export(
     exp_id: str = typer.Argument(...),
     out: Path = typer.Option(..., "-o", "--output", help="Directory for index.json and trials/<key>/*.json"),
 ):
-    """Everything the sister tool reads about an experiment, as files."""
+    """Everything the sister tool reads about an experiment, as files. Superseded by the outbox
+    (HANGAR_OUTBOX_URL, docs/api/outbox.md), which captures every trial's runs as they finish."""
     from hangar import cli
 
     v = cli._call("GET", f"/api/experiments/{exp_id}")

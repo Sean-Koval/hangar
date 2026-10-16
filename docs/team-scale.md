@@ -133,6 +133,15 @@ What remains, by SQLite time on the loop: `get` of one sandbox by id (sessions c
 each, 5k calls a run), `put` of sessions (every state change writes the whole record), and the token lookup in
 `auth.principal`, which decodes every API token on every request (~1 ms; see follow-ups).
 
+**Retention and the export.** Archiving keeps everything; what deletes data is deleting a session (its event log and
+manifests went with it) and testresults' windows (every case after 3 days, runs after 14). With run capture on
+(`HANGAR_OUTBOX_URL`, [outbox.md](api/outbox.md#retention-and-the-export-189)) neither deletes what the outbox hasn't
+exported yet: a deleted session's files wait in `<data>/pending-delete/` until its runs are uploaded (or
+`HANGAR_EXPORT_GRACE_DAYS`, 30, audited `retention.unexported_deleted`), and the test results of failed, abandoned
+or failure-labelled jobs outlive the windows until exported. Months of history then live in the bucket, not on the
+control plane's disk: hangar keeps what it needs to run, the sister tool what it needs to look back. Pending-delete
+data counts toward the data volume; `hangar doctor` reports how much. With the outbox off, retention is as before.
+
 **Provider calls.** At 60 sessions and 12–24 jobs the fake saw ~30–60 `exec`s a second, plus 5–15 file reads and as many writes:
 turn-status long-polls, the activity watch, checkpoints, setup. On GKE each of those is a pods/exec through the API
 server unless hangar-envd answers it, so **envd must be up at team scale** (`HANGAR_ENVD=auto`, the default).

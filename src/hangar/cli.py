@@ -1368,6 +1368,10 @@ _autoinstall.register(env_app)
 from hangar import inbox_cli as _inbox  # noqa: E402
 
 _inbox.register(app)
+# ---------------------------------------------------------------------------- --- outbox (#163, #189): outbox_cli.py
+from hangar import outbox_cli as _outbox  # noqa: E402
+
+_outbox.register(app, session_app)
 
 # ---------------------------------------------------------------------------- workstream steer (steer_cli.py)
 from hangar import steer_cli as _steer  # noqa: E402

@@ -50,6 +50,7 @@ from hangar import experiments as experiments  # --- interfaces: experiment jobs
 from hangar import fairness as fairness  # --- scale
 from hangar import flightrec as flightrec  # --- clouddoctor: a failed or slow job's flight record
 from hangar import intake as intake  # --- intake: trackers (Jira, GitHub Projects) follow their jobs
+from hangar import outbox as outbox  # --- outbox (#163): each turn's run, once checked and delivered
 from hangar import people as people  # --- teamcreds: GitHub senders linked to people
 from hangar import posture as posture  # --- intake posture (#123)
 from hangar import resident as resident  # --- durable: live and recent jobs in memory, the rest in the store
@@ -1042,6 +1043,14 @@ class JobService:
                                     f"{', ' + job.model if job.model else ''}), branch `{job.branch}`.")
 
     async def _finish_turn(self, job: Job, turn: Turn, s) -> None:
+        ob = outbox.of(self.fleet)  # --- outbox (#163): captured here, after its check and delivery
+        ob.defer(turn.run_id)
+        try:
+            await self._finish_turn_steps(job, turn, s)
+        finally:
+            ob.job_turn(self, job, turn, s)
+
+    async def _finish_turn_steps(self, job: Job, turn: Turn, s) -> None:
         st = next((t for t in reversed(s.turns) if t.run_id == turn.run_id), None)
         if st is None:
             raise JobError(f"turn {turn.run_id} is not in session {s.name}")

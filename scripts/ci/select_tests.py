@@ -55,6 +55,7 @@ PATHS: list[tuple[str, list[str] | str]] = [
     ("Dockerfile", []),  # the image build runs on main
     (".dockerignore", []),
     (".gitignore", []),
+    ("deploy/terraform/gke/outbox.tf", ["tests/test_outbox.py"]),  # --- outbox (#163): its write-once IAM
     ("deploy/terraform/*", []),  # the terraform job
     ("deploy/*", ["tests/test_k8s_network.py", "tests/test_sweep_durability.py", "tests/test_up_gke.py",
                   "tests/test_egress.py",  # --- egress: reads the NetworkPolicies too

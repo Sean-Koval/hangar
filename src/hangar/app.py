@@ -24,6 +24,7 @@ from hangar import envbuilds as envbuilds  # --- envbuilds
 from hangar import exchange, observe  # --- observe
 from hangar import ghprojects as ghprojects  # --- intake: registers the GitHub Projects write-back
 from hangar import modelpolicy as modelpolicy  # --- canary
+from hangar import outbox as outbox  # --- outbox (#163): run capture
 from hangar import people as people  # --- teamcreds
 from hangar import redeliver as redeliver  # --- reconciler
 from hangar import teamcreds as teamcreds  # --- teamcreds
@@ -348,6 +349,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         h.rotation.resume()  # --- durable: a key rotation a restart interrupted carries on
         h.retention.start()  # --- scale
         h.ops.start()  # --- clouddoctor
+        outbox.of(h.fleet).start(h.sessions, h.jobs)  # --- outbox (#163): drains while the pools are off too
         modelpolicy.of(h.fleet).start()  # --- canary: providers' model lists, fetched now and kept fresh
         missed = redeliver.start(h)  # --- reconciler: GitHub deliveries that failed while hangar was down
         async with mcp.session_manager.run():
@@ -359,6 +361,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await h.rotation.stop()  # --- durable
         await h.retention.stop()  # --- scale
         await h.ops.stop()  # --- clouddoctor
+        await outbox.of(h.fleet).stop()  # --- outbox (#163)
         await modelpolicy.of(h.fleet).stop()  # --- canary
         if prebuild:
             prebuild.cancel()
@@ -1050,8 +1053,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return sessions.view(sessions.archive(ref, requester=who))
 
     @app.delete("/api/sessions/{ref}")
-    async def session_delete(ref: str, who: str = A):
-        sessions.delete(ref, requester=who)
+    async def session_delete(ref: str, force_now: bool = False, who: str = A):
+        sessions.delete(ref, requester=who, force_now=force_now)  # --- #189: force_now skips waiting for the outbox
         return {"deleted": ref}
 
     # ------------------------------------------------------------------ workstream E: context exchange (spec 0011)
@@ -1152,6 +1155,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     opstatus.mount(app, h, A)
     flightrec.mount(app, h, A, U)
+    outbox.mount(app, h, A)  # --- outbox (#163): GET /api/admin/outbox, retry, backfill
     credhealth.mount(app, h, A)
     credhealth.register_inbox()
     from hangar import jira as jira_intake  # --- automation (#128): Jira intake alerts wait on the admins

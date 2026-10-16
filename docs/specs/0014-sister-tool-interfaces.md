@@ -23,7 +23,9 @@ The rule for what goes into hangar: something belongs here only if it needs the 
 
 Two of the interfaces are read-only views of data hangar keeps anyway. The experiment job is runtime: it starts sandboxes, holds credentials and pins conditions, which only hangar can do.
 
-All three are **versioned** (`hangar.manifest/v1`, `hangar.trace/v1`, `hangar.experiment/v1`). Within a version hangar only adds optional fields, kinds and events; anything removed or renamed is a new version. All three are **owner-scoped** like the records they describe (#88: a member sees their own, an admin everyone's, a `jobs` token the jobs it submitted; anything else answers as missing) and **redacted** with the broker's redaction (`broker.redact`) on the way out. A test seeds a stored secret and checks it appears in no export.
+A fourth interface carries the first two out of hangar: **run capture** (§4a, the outbox, `hangar.run/v1`) writes each finished run's manifest, trace, test results and patch, with a `run.json` summary, once to a bucket the sister tool reads while the cluster sleeps.
+
+All of them are **versioned** (`hangar.manifest/v1`, `hangar.trace/v1`, `hangar.experiment/v1`, `hangar.run/v1`). Within a version hangar only adds optional fields, kinds and events; anything removed or renamed is a new version. All three are **owner-scoped** like the records they describe (#88: a member sees their own, an admin everyone's, a `jobs` token the jobs it submitted; anything else answers as missing) and **redacted** with the broker's redaction (`broker.redact`) on the way out. A test seeds a stored secret and checks it appears in no export.
 
 ## 2. The effective harness manifest (`hangar.manifest/v1`)
 
@@ -103,6 +105,17 @@ grader: {command: "pytest -q tests/hidden", files: {"tests/hidden/test_retry.py"
 **No analysis.** Hangar computes no metric across trials. It does run the experiment's optional external grader command, because that needs a sandbox: after the trial ends, in a clean, sealed sandbox of the same environment (`delivery.sealed`: no credential, no `secrets:`, no cloud token, a fetch-only git grant revoked before the command runs, no `mcp:`, `computer:` or services, and egress `none` with no host at all, not even the harness's; `grader.network: mirror` adds hangar's read-only package mirror), on the pinned base with the trial's patch applied. The grader's own files (the agent never had them) are written outside the repo, to `$HANGAR_HIDDEN_TESTS` (`files_mode: pristine`, the default; `in_repo` keeps the old layout and the grade says `trust: low`), and `hangar-grade pytest` runs them so that nothing the patch adds loads before them ([jobs.md](../jobs.md#grading)). Its exit code, the end of its output, the hidden tests' junit counts, the patch's tamper signals and the JSON it writes to `$HANGAR_GRADE_OUT` are stored with the trial, with the grade's `trust` (#127). Once per task the hidden tests also run on the base (they must fail) and on the task's optional `reference_patch` (it must pass): a task that fails that check is `invalid_task` and its grades say `task_invalid`. Each trial also records `touched_tests` and `contaminated` (the grader's canary, written into every hidden test file, seen in what the trial produced).
 
 **Access.** CLI and REST. On MCP only the resource `hangar://experiments/{id}`: the tool list is at its cap, so no tool and no field were added.
+
+## 4a. Run capture: the outbox (`hangar.run/v1`)
+
+Contract: [docs/api/outbox.md](../api/outbox.md); `run.json` schema: [docs/api/run.schema.json](../api/run.schema.json) (#163, #189). Summary:
+
+- **What.** Every finished run (a session turn; a job turn after hangar's check and the delivery; a best-of-N attempt after its check; an experiment trial's turns) as immutable objects under `v1/runs/{date}/{session_id}.{run_id}/`: `run.json` (written last: the completion marker), `manifest.json` (§2), `trace.otlp.json` (§3, that run only), `tests.json` (its test runs with every case, and their `test.run` / `test.case` events), `grade.json` (trials) and `patch.diff`. Facts that arrive later (PR opened, first review, merged, closed, abandoned) are separate event objects under `v1/jobs/`, never rewrites.
+- **Where.** `HANGAR_OUTBOX_URL`: a GCS bucket (terraform: `run_bucket`) or a local directory for dev and tests.
+- **Write-once and redacted.** Created with `ifGenerationMatch=0` by a service account that can create and nothing else there; every object passes `broker.redact` and secretscan's masking, and one that still holds a secret is withheld, never uploaded.
+- **Never on a turn's path.** Built and staged on a task after the turn, uploaded by a drain loop with backoff (1 minute to 6 hours) through outages and restarts, overnight included.
+- **Hangar pushes, the sister tool owns.** The GCS → Parquet compactor and its tables live in the sister tool (Sean-Koval/flightdeck#5). Hangar owns only the object contract, and does no analysis over it.
+- **Retention waits for it** (#189): a deleted session's event log and manifests, and a failed job's test results, are kept until the outbox exported them.
 
 ## 5. What moved to the sister tool
 

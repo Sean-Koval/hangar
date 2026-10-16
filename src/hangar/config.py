@@ -183,6 +183,12 @@ class Settings(BaseSettings):
     # Where checkpoints live: unset = <data_dir>/sessions; gs://bucket[/prefix] = GCS via Workload Identity
     # (durable, doesn't fill the control plane's disk; terraform output session_bucket).
     session_store: str | None = None
+    # --- outbox (#163, #189): run capture (docs/api/outbox.md). gs://bucket[/prefix], or a local directory for dev
+    # and tests; unset = off. `jobs_only` leaves out sessions not attached to a job. A deleted session's event log
+    # and manifests wait for the export at most export_grace_days, then go (audited).
+    outbox_url: str | None = None
+    outbox_sessions: Literal["all", "jobs_only"] = "all"
+    export_grace_days: float = 30.0
     session_poll_seconds: float = 5.0
     session_turn_timeout_minutes: int = 120
     # --- providers-e2b: on a provider with memory snapshots (hot_resume: E2B, CubeSandbox), a suspended session's
