@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
-from hangar import people
+from hangar import people, plugins
 from hangar.harnesses import HARNESSES, McpServer, pack_tag
 from hangar.models import Session, SessionTurn, now
 
@@ -58,7 +58,8 @@ CONFIG_SECTIONS = ("harness", "model", "instructions.global", "skills", "mcp_ser
                    "environment.name", "environment.image", "environment.spec_digest", "resources")
 # harness_digest: the prefix and binding layer, everything a harness author controls. Declared skills and
 # instructions, not effective ones: drift is effective != declared. model.id is the concrete id (never a policy).
-# `plugins` is not in the manifest yet (null until it is). `a[*].{x,y}` keeps fields x and y of each item of list a.
+# `plugins` (#136): the environment's seed plugins, null without any. `a[*].{x,y}` keeps fields x and y of each item
+# of list a.
 HARNESS_SECTIONS = ("harness.name", "harness.locked", "model.id", "instructions.global.declared.digest",
                     "skills.declared[*].{name,digest}", "plugins",
                     "mcp_servers[*].{name,transport,url,headers,env,command,args}", "hooks[*].{event,source,digest}",
@@ -364,6 +365,7 @@ def build(fleet: Fleet, spec: EnvSpec, harness: str | None, *, s: Session | None
         "instructions": instructions,
         "skills": {"declared": declared_skills(spec, harness), "effective": effective_skills,
                    "dir": f"~/{h.skills_dir}" if h and h.skills_dir else None},
+        "plugins": plugins.manifest(spec, harness),  # --- #136: the read-only seed's
         "mcp_servers": mcp_servers(spec, harness),
         "hooks": _hooks(spec, harness, env or {}),
         "permissions": permissions,
@@ -371,7 +373,8 @@ def build(fleet: Fleet, spec: EnvSpec, harness: str | None, *, s: Session | None
         "environment": environment,
         "resources": resources,
         "policy": policy,
-        "probe": {"ok": probe is not None and not probe.get("error"), "error": (probe or {}).get("error")}
+        "probe": {"ok": probe is not None and not probe.get("error"), "error": (probe or {}).get("error"),
+                  "plugins": (probe or {}).get("plugins")}  # --- #136: the seed plugins the sandbox has
         if turn is not None else None,
         # --- #125: a subscription login in the sandbox (teamcreds), with the turn's own
         "warnings": list(dict.fromkeys([*(turn.warnings if turn is not None else []),
@@ -400,7 +403,7 @@ def _split(sb: Sandbox, run_id: str) -> bool:
 
 
 # ====================================================================== the probe: what the sandbox has
-def probe_script(repo_path: str | None, home: str, harness: str | None) -> str:
+def probe_script(repo_path: str | None, home: str, harness: str | None, spec: EnvSpec | None = None) -> str:
     h = HARNESSES.get(harness or "")
     q = shlex.quote
     lines = ["export LC_ALL=C GIT_OPTIONAL_LOCKS=0",
@@ -420,6 +423,8 @@ def probe_script(repo_path: str | None, home: str, harness: str | None) -> str:
                      "c=$(cd \"$s\" && find . -type f | wc -l); "
                      "g=$(cd \"$s\" && find . -type f -print0 | sort -z | xargs -0r sha256sum | dig); "
                      "printf 'skill\\t%s\\t%s\\t%s\\n' \"$n\" \"$g\" \"$c\"; done")
+    if spec is not None:  # --- #136
+        lines += plugins.probe_lines(spec, harness)
     lines.append("true")
     return "\n".join(lines)
 
@@ -435,6 +440,10 @@ def parse_probe(out: str) -> dict[str, Any]:
                 r["repo"].append({"path": parts[1], "bytes": int(parts[2].strip()), "digest": "sha256:" + parts[3]})
             elif parts[0] == "global" and len(parts) == 3:
                 r["global"] = {"bytes": int(parts[1].strip()), "digest": "sha256:" + parts[2]}
+            elif parts[0] == "plugin" and len(parts) == 4:  # --- #136
+                r.setdefault("plugins", []).append({
+                    "id": parts[1][:200], "present": parts[2] != "-",
+                    "digest": "sha256:" + parts[2] if parts[2] != "-" else None, "files": int(parts[3].strip())})
             elif parts[0] == "skill" and len(parts) == 4:
                 r["skills"].append({"name": parts[1][:100], "digest": "sha256:" + parts[2],
                                     "files": int(parts[3].strip())})
@@ -449,7 +458,11 @@ def start_probe(svc: SessionService, s: Session, sb: Sandbox) -> asyncio.Task[di
     async def run() -> dict[str, Any]:
         home = f"/home/{svc.settings.sandbox_user}"
         try:
-            res = await svc.fleet.exec(sb.id, probe_script(sb.info.get("repo_path"), home, s.harness),
+            try:  # --- #136: the environment's seed plugins too
+                spec: EnvSpec | None = svc.fleet.catalog.get(s.environment)
+            except Exception:  # noqa: BLE001 - no plugins to look for, the rest is read
+                spec = None
+            res = await svc.fleet.exec(sb.id, probe_script(sb.info.get("repo_path"), home, s.harness, spec),
                                        timeout=PROBE_SECONDS, actor=f"session:{s.id}", quiet=True)
         except Exception as e:  # noqa: BLE001 - the manifest says it couldn't look; the turn goes on
             return {"error": f"could not read the sandbox: {str(e)[:200]}"}

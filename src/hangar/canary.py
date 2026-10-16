@@ -39,6 +39,7 @@ from typing import Any
 import httpx
 import yaml
 
+from hangar import plugins
 from hangar.harnesses import (
     HARNESSES,
     LOCK_FILE,
@@ -86,10 +87,17 @@ def load_lock(path: Path = LOCK_FILE) -> dict[str, Any]:
     return yaml.safe_load(path.read_text()) or {}
 
 
+# The oldest release of a harness hangar relies on: a lock (a canary's candidate included) below one is refused.
+FLOORS = {"claude-code": (plugins.MIN_VERSION, "plugin seed directories and syncClaudeAiPlugins (#136)")}
+
+
 def harnesses_for(lock: dict[str, Any]) -> dict[str, Harness]:
     """hangar's harness profiles, pinned to `lock` instead of the checked-in one (validated the same way)."""
     out = {k: v.model_copy(deep=True) for k, v in HARNESSES.items()}
     apply_lock(out, copy.deepcopy(lock))
+    for name, (floor, why) in FLOORS.items():  # --- #136
+        if name in out and version_key(out[name].version) < version_key(floor):
+            raise ValueError(f"{name} {out[name].version} is older than {floor}, which hangar needs for {why}")
     return out
 
 

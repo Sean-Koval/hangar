@@ -36,6 +36,7 @@ from hangar import k8sgc as k8sgc  # --- durable
 from hangar import metrics as metrics  # --- reconciler
 from hangar import modelpolicy as modelpolicy  # --- canary: `model: frontier` resolved to an id
 from hangar import opstatus as opstatus  # --- clouddoctor: the day's failures and credential health in the overview
+from hangar import plugins as plugins  # --- #136: Claude Code plugins from the read-only seed
 from hangar import posture as posture  # --- intake posture (#123): an intake job's egress floor
 from hangar import power as power  # --- ops: the sandbox pools' power schedule
 from hangar import reconciler as reconciler  # --- reconciler
@@ -888,6 +889,7 @@ class Fleet:
                 prelude.append(f'export PATH="{h.prefix}/bin:$PATH{extra}"')
             extra_env.update(h.env)
             extra_env["HANGAR_HARNESS"] = h.name
+            extra_env.update(plugins.env(spec, h.name))  # --- #136: the read-only plugin seed
         for var, cred in ({} if validating else delivery.secrets(self, sb, spec)).items():  # --- least-privilege
             extra_env[var] = self.broker.sandbox_secret(cred)  # --- identity: refuses control-plane credentials
         extra_env.update(await egress.attach(self, prov, sb, spec))  # --- egress: HTTPS_PROXY in a proxied env
@@ -1325,6 +1327,7 @@ class Fleet:
         rdir = isolation.runs_dir(self.settings, split)
         wd = cwd or sb.info.get("repo_path") or self.settings.workspace_dir
         env = {**observe.run_env(self.settings, sb, run_id, hname), **(env or {})}  # --- observe: TRACEPARENT, OTel
+        env.update(plugins.turn_env(spec, hname, env))  # --- #136: hangar's --settings enable the seed's plugins
         exports = (
             f"export HANGAR_PROMPT_FILE={rdir}/{run_id}.prompt HANGAR_RUN_ID={run_id}\n"
             + (f"export HANGAR_MODEL={shlex.quote(model)}\n" if model else "")
