@@ -306,6 +306,12 @@ class Settings(BaseSettings):
     # --- egress2: the gateway holds a push and scans it for secrets before forwarding it (pushscan.py, with
     # HANGAR_SECRET_SCAN). A bigger push is refused in block mode, let through unscanned (audited) in warn mode.
     gateway_scan_max_mb: int = Field(64, ge=1, le=1024)
+    # --- intake posture (#123, posture.py, docs/security.md#intake-posture): jobs from GitHub, GitHub Projects,
+    # Jira, Slack and inbound webhooks (or with an untrusted author or context). enforce: they need the git gateway
+    # (else refused at submit) and their sandboxes get at least `allowlist` egress; warn: they run as before, with a
+    # job event, an audit entry and a review-packet line saying what enforce would do (the one-release transition,
+    # docs/upgrading.md); off: neither.
+    intake_posture: Literal["enforce", "warn", "off"] = "enforce"
     # --- egress: hostname allowlists (egress.py, docs/security.md#egress) ----
     # The mode of environments that don't set `egress.mode`: open (the public internet, as before), allowlist or none.
     egress_default: Literal["open", "allowlist", "none"] = "open"

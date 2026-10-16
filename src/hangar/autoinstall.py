@@ -50,7 +50,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-from hangar import envbuilds, repoenv, supervisor
+from hangar import envbuilds, posture, repoenv, supervisor
 from hangar import testresults as testresults  # --- testresults: test commands leave structured results
 from hangar.models import JOB_TERMINAL, ContextItem, Credential, Job, JobBudget, JobState, Sandbox, now
 from hangar.repopolicy import repo_key
@@ -512,7 +512,7 @@ def _child(jobs: JobService, job: Job, st: State, role: str, instructions: str, 
         provider=job.provider, verify="", deliver=deliver, context=context, keep_minutes=keep,  # type: ignore[arg-type]
         idempotency_key=f"envsetup:{job.id}:{role}", budget=job.budget, job_budget=budget, output_schema=schema,
         verify_in_loop=False, max_verify_rounds=0, autofix="off",
-        labels={PARENT_LABEL: job.id, ROLE_LABEL: role})
+        labels={PARENT_LABEL: job.id, ROLE_LABEL: role, **posture.inherit(job.labels)})  # --- intake posture
     return jobs._submit(req, Caller(job.requester, job.owner, person=job.person), source="env-setup",
                         source_ref=None, untrusted_source=job.untrusted_source)
 
@@ -845,7 +845,8 @@ async def _run_checks(jobs: JobService, job: Job, st: State, s: Job, att: Attemp
             try:
                 sb = await fleet.create(env, name=f"envcheck-{job.id.removeprefix('job-')}", repo=s.repo,
                                         branch=s.branch, credentials=creds, provider=job.provider,
-                                        labels={envbuilds.VALIDATE_LABEL: nonce, PARENT_LABEL: job.id},
+                                        labels={envbuilds.VALIDATE_LABEL: nonce, PARENT_LABEL: job.id,
+                                                **posture.inherit(job.labels)},  # --- intake posture: its floor
                                         ttl_minutes=jobs.settings.env_setup_validate_minutes + 15,
                                         actor=f"hangar:env-setup:{job.id}")
                 break

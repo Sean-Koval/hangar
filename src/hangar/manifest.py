@@ -250,6 +250,8 @@ def build(fleet: Fleet, spec: EnvSpec, harness: str | None, *, s: Session | None
                    "isolation": {k: iso.get(k) for k in ("mode", "split") if k in iso} or None}
     egress: dict[str, Any] = {"declared": spec.egress.model_dump(mode="json") if spec.egress else None,
                               "default": settings.egress_default, "effective": info.get("egress")}
+    if floor := (info.get("egress") or {}).get("floor"):  # --- intake posture (#123): raised for an intake job
+        egress.update({"floor": floor, "floor_reason": (info.get("egress") or {}).get("floor_reason") or "intake"})
     build_info = info.get("env_build")
     environment = {"name": spec.name, "image": sb.image if sb is not None else spec.image,
                    "spec_digest": _spec_digest(spec), "provider": pname, "tier": spec.tier,

@@ -121,7 +121,9 @@
       "properties": {
         "declared": {"type": ["object", "null"]},
         "default": {"type": "string"},
-        "effective": {"type": ["object", "null"], "description": "What the sandbox got: mode, enforced, mirrors."}
+        "effective": {"type": ["object", "null"], "description": "What the sandbox got: mode, enforced, mirrors."},
+        "floor": {"enum": ["allowlist", "none"], "description": "Present when the sandbox's egress was raised above its environment's for an intake-triggered job (HANGAR_INTAKE_POSTURE=enforce)."},
+        "floor_reason": {"type": "string", "description": "Why the floor applies: intake."}
       }
     },
     "environment": {

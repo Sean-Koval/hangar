@@ -36,6 +36,7 @@ from hangar import k8sgc as k8sgc  # --- durable
 from hangar import metrics as metrics  # --- reconciler
 from hangar import modelpolicy as modelpolicy  # --- canary: `model: frontier` resolved to an id
 from hangar import opstatus as opstatus  # --- clouddoctor: the day's failures and credential health in the overview
+from hangar import posture as posture  # --- intake posture (#123): an intake job's egress floor
 from hangar import power as power  # --- ops: the sandbox pools' power schedule
 from hangar import reconciler as reconciler  # --- reconciler
 from hangar import slo as slo  # --- clouddoctor: create times by path, for `hangar status`
@@ -777,8 +778,9 @@ class Fleet:
             stage("starting the sandbox")
             with observe.span("sandbox.start", {"hangar.sandbox.id": sb.id, "hangar.provider": pname}):  # --- observe
                 # image may be a snapshot ref (forks); --- envbuilds: a build's own template on Kubernetes
-                await prov.create(sb, image, experiments.provider_spec(  # --- interfaces: not from a warm pool
-                    envbuilds.EnvBuilds.provider_spec(self._warm(spec), sb), sb))
+                await prov.create(sb, image, posture.provider_spec(  # --- intake posture: the floor's network
+                    self.settings, experiments.provider_spec(  # --- interfaces: not from a warm pool
+                        envbuilds.EnvBuilds.provider_spec(self._warm(spec), sb), sb), sb))
             self.store.put(sb)
             await self._wait_running(prov, sb, stage=stage)
             if _parent:
@@ -810,7 +812,8 @@ class Fleet:
             # --- review(#114): nor from a trial's (it took nothing from the pool, and its spec mounts one pack)
             # --- integration(wave 4): `pick` always answers a Pick (truthy); no build image means the pool's image
             if self._warm(spec).warm_pool and pname in self.providers and _image is None \
-                    and not (build and build.image) and not experiments.selected_packs(sb):
+                    and not (build and build.image) and not experiments.selected_packs(sb) \
+                    and posture.floor_of(sb.labels) is None:  # --- intake posture: it took nothing from the pool
                 asyncio.create_task(self._refill(self._warm(spec), pname, image))
             self.reconciler.disown(sb.id)  # --- reconciler
             return sb
