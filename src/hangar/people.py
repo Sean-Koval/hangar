@@ -239,7 +239,9 @@ class Guard:
     REFS = {"sandbox": "sandbox", "sandboxes": "sandboxes", "source": "source", "session": "session",
             "job": "job", "ref": "ref", "schedule": "schedule"}
     NOT_REFS = {"terminal_open": {"session"}, "terminal_send": {"session"}, "terminal_read": {"session"},
-                "terminal_close": {"session"}, "clone_environment": {"source"}}
+                "terminal_close": {"session"}, "clone_environment": {"source"},
+                # --- approvals (#121): approvals.decide checks these itself (a repo's approvers see its held jobs)
+                "approve_job": {"job"}, "reject_job": {"job"}}
 
     def __init__(self, fleet: Any, sessions: Any = None, jobs: Any = None, triggers: Any = None):
         self.fleet, self.sessions, self.jobs, self.triggers = fleet, sessions, jobs, triggers
