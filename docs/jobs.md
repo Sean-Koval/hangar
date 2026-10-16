@@ -425,6 +425,42 @@ trial ran with (its [manifest](api/manifest.schema.json)), what it did (its [tra
 verification, and runs an optional `grader.command` in a clean sandbox on each trial's patch. It doesn't compare the
 variants: that is the sister tool's job. The details are in [spec 0014](specs/0014-sister-tool-interfaces.md#4-experiment-jobs-hangarexperimentv1).
 
+### Grading
+
+```yaml
+grader:
+  command: hangar-grade pytest -q       # the hidden tests, from their pristine copy
+  files: {"test_retry.py": "..."}       # written to $HANGAR_HIDDEN_TESTS, outside the repo
+  network: none                         # or mirror: hangar's read-only package mirror, for a grader that installs
+  # files_mode: in_repo                 # the old layout (files in the repo); the grade says trust: low
+```
+
+The grader runs agent-written code beside the hidden tests, so its sandbox is sealed: no credential, `secrets:` or
+cloud token, a fetch-only git grant that is revoked before the command runs, none of the environment's `mcp:`,
+`computer:` or services, and egress `none` with no host at all, not even the harness's model API, on the proxy-only
+network whatever the environment's egress says ([security](security.md#graders)). A dependency that isn't in the
+image (the environment's, or its repo build's) can't be fetched: use `network: mirror` or a repo build.
+
+The command runs in the repo with the trial's patch applied, and gets `HANGAR_HIDDEN_TESTS` (the grader's `files`,
+outside the repo; on Docker root-owned, so the trial's code can read them and not change them), `HANGAR_REPO`,
+`HANGAR_GRADE_OUT`, `HANGAR_TRIAL`, `HANGAR_TASK`, `HANGAR_VARIANT` and `HANGAR_EXPERIMENT`.
+
+`hangar-grade pytest [args]` runs the hidden tests so that nothing the patch added loads first: `python -I` (no
+`sitecustomize.py`, `usercustomize.py`, user site or `PYTHON*` variables), `--noconftest`, `-c /dev/null` and
+`addopts` cleared (no repo `conftest.py`, `pytest.ini`, `tox.ini`, `setup.cfg` or `pyproject` settings), no cache, no
+bytecode, and the repo on `sys.path` only once pytest has started (a plugin the patch declares never loads). A
+`conftest.py` among the hidden tests still works (its fixtures and hooks; not options it adds). Its junit counts are
+stored as `grade.hidden_tests`.
+
+Other ecosystems get no safe runner yet; run them from a copy you control and treat the grade as best effort: `jest
+--config "$HANGAR_HIDDEN_TESTS/jest.config.js" --rootDir "$HANGAR_REPO"` with a config of your own, or copy the
+hidden `_test.go` files into a fresh copy of the package before `go test`.
+
+Each grade records `files_mode`, `network`, `runner` (`hangar-grade` or `command`), `trust` (`low` for `in_repo`,
+else `best_effort`: the trial's code can still write `$HANGAR_GRADE_OUT`) and `tamper_signals`: files the patch adds
+or changes that can hook a test run (`conftest.py`, `sitecustomize.py`, `usercustomize.py`, `*.pth`, `pytest.ini`, a
+pytest section in `tox.ini`, `setup.cfg` or `pyproject.toml`). They are signals, not refusals.
+
 ## Settings
 
 | Variable | Default | |
