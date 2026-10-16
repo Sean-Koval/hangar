@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 import hangar.identity as identity  # --- identity
 import hangar.identity_api as identity_api  # --- identity
+from hangar import approvals as approvals  # --- approvals (#121)
 from hangar import drain as drain  # --- reconciler
 from hangar import envbuilds as envbuilds  # --- envbuilds
 from hangar import exchange, observe  # --- observe
@@ -925,18 +926,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ------------------------------------------------------------------ triggers (workstream A)
     triggers = h.triggers
 
-    def admin_caller(caller: Caller) -> Caller:
-        if caller.restricted:
-            raise HTTPException(403, "this needs an admin token")
-        return caller
+    # --- approvals (#121): an admin, or a repo policy approver with their own login token, never on their own job;
+    # the same rule and the same refusal text as MCP approve_job / reject_job (approvals.py)
+    async def approver(request: Request) -> approvals.Approver:
+        p = h.auth.principal(bearer_from_headers(request.headers))
+        if p is None:
+            raise HTTPException(401, "unauthorized", headers={"WWW-Authenticate": "Bearer"})
+        identity.current.set(p)
+        return approvals.from_principal(p, via="rest")
 
     @app.post("/api/jobs/{job_id}/approve")
-    async def job_approve(job_id: str, caller: Caller = J):
-        return jobs.view(triggers.approve(job_id, admin_caller(caller).requester))
+    async def job_approve(job_id: str, who: approvals.Approver = Depends(approver)):
+        return jobs.view(await approvals.decide(jobs, job_id, who, "approve"))
 
     @app.post("/api/jobs/{job_id}/reject")
-    async def job_reject(job_id: str, caller: Caller = J):
-        return jobs.view(triggers.reject(job_id, admin_caller(caller).requester))
+    async def job_reject(job_id: str, who: approvals.Approver = Depends(approver)):
+        return jobs.view(await approvals.decide(jobs, job_id, who, "reject"))
 
     @app.post("/api/hooks/inbound/{source}")
     async def inbound_hook(source: str, request: Request):
@@ -958,7 +963,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/schedules")
     async def schedule_create(body: ScheduleSpec, caller: Caller = J):
-        c = admin_caller(caller)
+        if caller.restricted:
+            raise HTTPException(403, "this needs an admin token")
+        c = caller
         return triggers.view_schedule(triggers.create_schedule(body, owner=c.owner, requester=c.requester))
 
     @app.get("/api/schedules/{ref}")
@@ -1141,6 +1148,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     flightrec.mount(app, h, A, U)
     credhealth.mount(app, h, A)
     credhealth.register_inbox()
+    from hangar import jira as jira_intake  # --- automation (#128): Jira intake alerts wait on the admins
+
+    jira_intake.register_inbox()
     from hangar import clouddoctor  # --- clouddoctor: the Cloud Doctor (docs/doctor.md)
 
     clouddoctor.mount(app, h, A)

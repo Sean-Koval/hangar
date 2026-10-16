@@ -498,6 +498,7 @@ def _turn_span(x: Export, parent: str | None, s: Session, n: int, turn: SessionT
              "hangar.turn.exit_code": turn.exit_code, "hangar.harness": harness,
              "hangar.harness.version": turn.harness_version, "hangar.turn.live": turn.live,
              "hangar.approvals": turn.approval_policy, "hangar.manifest.digest": turn.manifest,
+             "hangar.harness.digest": turn.harness_digest, "hangar.environment.digest": turn.environment_digest,
              **_usage_attrs(u), **(extra or {})}
     if failed:
         attrs["error.type"] = turn.outcome if turn.outcome != "exited" else "agent_exit_code"

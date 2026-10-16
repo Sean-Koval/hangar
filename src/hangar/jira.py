@@ -38,7 +38,7 @@ from hangar import intake
 from hangar.exchange import open_question
 from hangar.github import parse_repo, verify_signature
 from hangar.jobs import NOTIFIERS, JobError, JobService, SubmitJob
-from hangar.models import JOB_TERMINAL, ContextItem, Job, JobState
+from hangar.models import JOB_TERMINAL, AuditEvent, ContextItem, Job, JobState
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -108,6 +108,10 @@ class JiraConfig(BaseModel):
     trigger: JiraTrigger
     statuses: JiraStatuses = Field(default_factory=JiraStatuses)
     max_age_minutes: int = Field(120, ge=5, le=1440)  # Jira retries a failed delivery for about 75 minutes
+    # --- automation (#128): an Automation request starts a job only when the issue's history shows the trigger
+    # transition (or label) within this many minutes of the request arriving; and at most this many per issue a day
+    automation_max_transition_age_minutes: int = Field(10, ge=1, le=1440)
+    automation_max_starts_per_issue_per_day: int = Field(3, ge=1, le=100)
 
     @field_validator("url")
     @classmethod
@@ -287,7 +291,8 @@ class JiraAPI:
 
     async def issue(self, key: str) -> dict[str, Any]:
         return await self._req("GET", f"{self.api}/issue/{key}", params={
-            "fields": "summary,description,labels,components,project,status,reporter,creator,issuetype,priority"})
+            "fields": "summary,description,labels,components,project,status,reporter,creator,issuetype,priority,"
+                      "created"})
 
     async def history(self, key: str) -> list[dict[str, Any]]:
         """--- review: the issue's latest changes (oldest first), each with its `author` and `items`. Cloud pages
@@ -458,9 +463,10 @@ def _account(user: Any, cloud: bool) -> str | None:
 
 
 def mover(histories: list[dict[str, Any]], fields: dict[str, Any], trigger: JiraTrigger) -> dict[str, Any] | None:
-    """--- review: who last moved the issue into the trigger status, or gave it the trigger label, by the issue's
-    own history; for an issue created that way with no such change, its creator. None when nobody did (fail closed:
-    the job then waits for approval)."""
+    """--- review: the change that last moved the issue into the trigger status, or gave it the trigger label, by the
+    issue's own history: the history entry itself (`author`, `created`, `items`), so a caller can tell who and when
+    (#128). For an issue created that way with no such change, an entry made of its creator and creation time. None
+    when nobody did (fail closed: the job then waits for approval, or an Automation request is ignored)."""
     status = (trigger.status or "").casefold()
     for h in sorted((h for h in histories if isinstance(h, dict)), key=lambda h: str(h.get("created") or ""),
                     reverse=True):
@@ -471,12 +477,27 @@ def mover(histories: list[dict[str, Any]], fields: dict[str, Any], trigger: Jira
             if (field == "status" and status and str(item.get("toString") or "").casefold() == status) or (
                     field == "labels" and trigger.label and trigger.label in str(item.get("toString") or "").split()
                     and trigger.label not in str(item.get("fromString") or "").split()):
-                return h.get("author") if isinstance(h.get("author"), dict) else None
+                return {**h, "author": h.get("author") if isinstance(h.get("author"), dict) else None}
     now = str(((fields.get("status") or {}).get("name")) or "").casefold()
     if (status and now == status) or (trigger.label and trigger.label in (fields.get("labels") or [])):
         creator = fields.get("creator")  # not the reporter, which whoever creates an issue may set
-        return creator if isinstance(creator, dict) else None
+        return {"author": creator if isinstance(creator, dict) else None, "created": fields.get("created"),
+                "items": [], "creation": True}
     return None
+
+
+def _jira_time(value: Any) -> float | None:
+    """Epoch seconds from a Jira timestamp (`2026-10-14T09:00:00.000+0000`), or None."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    v = value.strip().replace("Z", "+00:00")
+    if re.search(r"[+-]\d{4}$", v):  # +0000 -> +00:00 (fromisoformat takes both since 3.11; be explicit)
+        v = v[:-2] + ":" + v[-2:]
+    try:
+        t = datetime.fromisoformat(v)
+    except ValueError:
+        return None
+    return t.timestamp() if t.tzinfo is not None else None
 
 
 def _who(user: Any, account: str | None) -> str:
@@ -503,6 +524,96 @@ def _timestamp(value: Any) -> float | None:
         except ValueError:
             return None
     return None
+
+
+def _ago(seconds: float) -> str:
+    s = abs(seconds)
+    if s < 3600:
+        return f"{max(1, round(s / 60))} min"
+    if s < 2 * 86400:
+        return f"{s / 3600:.1f} h"
+    return f"{s / 86400:.0f} days"
+
+
+# ============================================================================ alerts (--- automation, #128)
+ALERT_PREFIX = "jira:alert:"  # kv: what admins see in the inbox, for ALERT_KEEP
+ALERT_KEEP = 7 * 86400
+ALERT_EVERY = 3600  # at most one alert an hour per issue (and one an hour for bad tokens)
+ALERT_MAX = 200
+STARTS_PREFIX = "jira:automation-starts:"  # kv: when Automation started each issue's jobs, the last day of them
+SIGNED_ISSUE_EVENT_KEY = "jira:signed-issue-event"  # kv: when the signed webhook last delivered an issue event
+SIGNED_RECENT_DAYS = 30
+AUTOMATION_USED_KEY = "jira:automation-used"  # kv: when an Automation request last got through the token check
+
+
+def alert(svc: JobService, scope: str, reason: str, **detail: Any) -> bool:
+    """Tell the admins: an inbox item (`kind: alert`) and, when the Slack app is configured, a DM to each admin with
+    a linked Slack account. At most one per `scope` per ALERT_EVERY. True when it went out."""
+    replays = svc.admission.replays
+    if replays.get("jira:alerted", scope) is not None:
+        return False
+    replays.put("jira:alerted", scope, "", ALERT_EVERY)
+    t = time.time()
+    svc.store.kv_set(f"{ALERT_PREFIX}{t:.6f}:{scope}", json.dumps({"at": t, "scope": scope, "reason": reason,
+                                                                   **detail}), durable=True)
+    keys = sorted(svc.store.kv_keys(ALERT_PREFIX))
+    for k in keys[:-ALERT_MAX] if len(keys) > ALERT_MAX else []:
+        svc.store.kv_delete(k)
+    svc.store.audit(AuditEvent(actor="jira:automation", action="jira.alert", target=scope,
+                               detail=svc.broker.redact({"reason": reason, **detail})))
+    svc._spawn(_dm_admins(svc, reason))
+    return True
+
+
+async def _dm_admins(svc: JobService, reason: str) -> None:
+    from hangar import people, slack
+
+    api = slack.client_for(svc)
+    if api is None:
+        return
+    text = (f"hangar security alert (Jira intake): {reason}. If no Automation rule explains it, rotate the token: "
+            "hangar cred add <automation_token_credential> --rotate (docs/intake.md).")
+    try:
+        for p in people.list_people(svc.store):
+            if p.role != "admin":
+                continue
+            for link in p.links:
+                if link.startswith("slack:"):
+                    try:
+                        await api.post(link.rsplit("/", 1)[-1], text)  # a user id as the channel: the app's DM
+                    except slack.SlackError as e:
+                        log.warning("could not DM %s about a Jira alert: %s", p.id, e)
+    finally:
+        await api.close()
+
+
+def inbox_items(svc: Any, p: Any) -> list[dict[str, Any]]:
+    """inbox.SOURCES: Jira intake alerts from the last week wait on the admins."""
+    from hangar.inbox import _item
+
+    if p is not None and p.role != "admin":
+        return []
+    out, t = [], time.time()
+    for k in svc.store.kv_keys(ALERT_PREFIX):
+        try:
+            a = json.loads(svc.store.kv_get(k) or "{}")
+            at = float(a["at"])
+        except (ValueError, KeyError, TypeError):
+            continue
+        if t - at > ALERT_KEEP:
+            svc.store.kv_delete(k)
+            continue
+        out.append(_item("alert", str(a.get("reason") or "Jira intake alert")[:500],
+                         "check the Jira Automation rule; if it doesn't explain this, rotate the token: hangar cred "
+                         "add <automation_token_credential> --rotate", at, issue=a.get("issue")))
+    return out
+
+
+def register_inbox() -> None:
+    from hangar import inbox
+
+    if inbox_items not in inbox.SOURCES:
+        inbox.SOURCES.append(inbox_items)
 
 
 class _Large(NamedTuple):
@@ -573,6 +684,10 @@ class JiraFrontDoor:
             return 503, {"error": "Jira intake is misconfigured"}
         if not ok:
             log.warning("Jira webhook rejected: %s", why)
+            if why == "bad token":  # --- automation (#128): someone has the URL and is guessing, or the rule is stale
+                alert(self.jobs, "bad-token", "a request to /api/hooks/jira carried a wrong X-Hangar-Token (a "
+                                              "guess, or an Automation rule still sending a rotated token)",
+                      client=request.client.host if request.client else None)
             return 401, {"error": "bad signature"}
         try:
             payload = json.loads(body)
@@ -588,7 +703,8 @@ class JiraFrontDoor:
             return 200, {"ignored": "missing or stale timestamp"}
         delivery = (request.headers.get("x-atlassian-webhook-identifier") or "").strip()[:100]
         digest = self.jobs.admission.replays.digest(body)
-        res = await intake.once(self.jobs, "jira", digest, lambda: self.handle(cfg, payload, delivery))
+        signed = request.headers.get("x-hub-signature") is not None
+        res = await intake.once(self.jobs, "jira", digest, lambda: self.handle(cfg, payload, delivery, signed))
         if res is None:
             self.jobs.admission.refused("jira:replay", "jira", "hook.replay", delivery or None)
             return 200, {"ignored": "duplicate delivery"}
@@ -689,8 +805,18 @@ class JiraFrontDoor:
         finally:
             await api.close()
 
-    async def handle(self, cfg: JiraConfig, payload: dict[str, Any], delivery: str = "") -> dict[str, Any]:
+    async def handle(self, cfg: JiraConfig, payload: dict[str, Any], delivery: str = "",
+                     signed: bool = True) -> dict[str, Any]:
         event = str(payload.get("webhookEvent") or "")
+        if not signed and event != "hangar:automation":
+            # --- automation (#128): the token isn't tied to the body, so a token-authenticated request is only ever
+            # an Automation request. Otherwise its holder could send an "issue updated" naming any `user`, or a
+            # "comment created" with `/hangar approve` from a linked teammate.
+            self.jobs.admission.refused("jira:token-event", "jira:automation", "hook.automation.wrong_event", None,
+                                        event=event[:60])
+            alert(self.jobs, "wrong-event", f"a request with the Automation token claimed to be a signed webhook "
+                                            f"event ('{event[:60]}'), which only the admin webhook sends")
+            return {"ignored": "the Automation token only sends hangar:automation requests"}
         if event == "comment_created":
             return await self.on_comment(cfg, payload)
         if event == "hangar:automation":  # an Automation rule: it decided; read the issue as it is now
@@ -705,18 +831,72 @@ class JiraFrontDoor:
                 # --- review: the token proves the request came through hangar's rule, not who acted: anyone who
                 # can edit the rule writes its body (and can send the hidden header elsewhere by changing the
                 # URL). Who moved the issue is read from Jira's own history; the body's `user` is ignored.
-                actor = mover(await api.history(key), (issue.get("fields") or {}), cfg.trigger)
+                change = mover(await api.history(key), (issue.get("fields") or {}), cfg.trigger)
             except (JiraError, httpx.HTTPError) as e:
                 return {"error": f"could not read {key}: {e}"}
             finally:
                 await api.close()
-            return await self.start(cfg, issue, actor, delivery)
+            refused = self._automation_refusal(cfg, key, change)
+            if refused is not None:
+                return refused
+            res = await self.start(cfg, issue, (change or {}).get("author"), delivery)
+            if res.get("ok") and res.get("job"):
+                self._count_start(key)
+            return res
         if event not in ("jira:issue_updated", "jira:issue_created"):
             return {"ignored": f"event '{event[:60]}'"}
         issue = payload.get("issue") if isinstance(payload.get("issue"), dict) else {}
+        # --- automation (#128): the signed webhook carries issue events: hangar doctor checks they arrive
+        self.jobs.store.kv_set(SIGNED_ISSUE_EVENT_KEY, json.dumps(time.time()))
         if not self._triggered(cfg, event, issue, payload.get("changelog")):
             return {"ignored": "not the trigger status or label"}
         return await self.start(cfg, issue, payload.get("user"), delivery)
+
+    # ------------------------------------------------------------------ the Automation fallback (#128)
+    def _automation_refusal(self, cfg: JiraConfig, key: str, change: dict[str, Any] | None) -> dict[str, Any] | None:
+        """--- automation (#128): the token alone doesn't start a job. Whoever holds it could otherwise start one at
+        any time for any issue a trusted person once moved, on team credentials and in that person's name. So the
+        issue's history must show the trigger transition (or label) within `automation_max_transition_age_minutes`
+        of now (Jira's clock may run up to `max_age_minutes` ahead of hangar's), and each issue starts at most
+        `automation_max_starts_per_issue_per_day` jobs a day. None to go on; else the answer, audited (and a stale
+        transition alerts the admins)."""
+        svc, t = self.jobs, self.clock()
+        svc.store.kv_set(AUTOMATION_USED_KEY, json.dumps(time.time()))
+        ref = ref_of(key)
+        author = (change or {}).get("author")
+        account = _account(author, cfg.deployment == "cloud")
+        at = _jira_time((change or {}).get("created"))
+        age = None if at is None else t - at
+        window = cfg.automation_max_transition_age_minutes * 60
+        if age is None or age > window or age < -cfg.max_age_minutes * 60:
+            detail = {"issue": key, "mover": account, "transition_age_seconds": None if age is None else round(age)}
+            svc.admission.refused(f"jira:stale-transition:{key}", "jira:automation",
+                                  "hook.automation.stale_transition", ref, **detail)
+            what = "no trigger transition in its history" if age is None else \
+                f"its last trigger transition was {_ago(age)} ago"
+            alert(svc, f"issue:{key}", f"Jira Automation request for {key} ignored: {what} (the rule fires right "
+                                       "after the transition, so the token may be in someone else's hands)",
+                  issue=key, mover=account, transition_age_seconds=detail["transition_age_seconds"])
+            return {"ignored": "no recent transition"}
+        starts = self._starts(key, t)
+        cap = cfg.automation_max_starts_per_issue_per_day
+        if len(starts) >= cap:
+            svc.admission.refused(f"jira:automation-cap:{key}", "jira:automation", "hook.automation.capped", ref,
+                                  issue=key, mover=account, starts_today=len(starts), cap=cap)
+            return {"ignored": f"{key} already started {len(starts)} job(s) from Automation today (cap {cap})"}
+        return None
+
+    def _starts(self, key: str, t: float) -> list[float]:
+        raw = self.jobs.store.kv_get(f"{STARTS_PREFIX}{key}")
+        try:
+            xs = [float(x) for x in json.loads(raw)] if raw else []
+        except (ValueError, TypeError):
+            xs = []
+        return [x for x in xs if t - x < 86400]
+
+    def _count_start(self, key: str) -> None:
+        t = self.clock()
+        self.jobs.store.kv_set(f"{STARTS_PREFIX}{key}", json.dumps([*self._starts(key, t), t]), durable=True)
 
     @staticmethod
     def _triggered(cfg: JiraConfig, event: str, issue: dict[str, Any], changelog: Any) -> bool:
@@ -839,7 +1019,7 @@ class JiraFrontDoor:
         requester = f"jira:{account}"
         word = (rest.split() or [""])[0].lower()
         if command and word in ("approve", "reject"):
-            return self._decide(job, ref, word, person)
+            return await self._decide(job, ref, word, person, account)
         if job is not None and job.state == JobState.NEEDS_INPUT:
             return self._follow_up(job, rest or "Continue with the task.", requester, ref, person)
         if not command:
@@ -864,13 +1044,16 @@ class JiraFrontDoor:
                 await api.close()
         return await self.start(cfg, issue_now, author, extra=rest)
 
-    def _decide(self, job: Job | None, ref: str, word: str, person: str) -> dict[str, Any]:
-        from hangar.triggers import approve, reject
+    async def _decide(self, job: Job | None, ref: str, word: str, person: str, account: str) -> dict[str, Any]:
+        from hangar import approvals
 
         if job is None or job.state != JobState.AWAITING_APPROVAL:
             return {"ignored": f"no job is waiting for approval on {ref}"}
-        try:
-            (approve if word == "approve" else reject)(self.jobs, job.id, f"jira:{person}")
+        try:  # --- approvals (#121): never the job's own person or requester
+            await approvals.decide(self.jobs, job.id, approvals.from_jira(account, person), word)  # type: ignore[arg-type]
+        except approvals.ApprovalRefused as e:  # audited by decide; say why on the issue
+            self.jobs._spawn(notify(self.jobs, job, ref, f"{person} can't {word} hangar job `{job.id}`: {e}", "note"))
+            return {"ignored": str(e)}
         except JobError as e:
             return {"ignored": str(e)}
         msg = (f"Approved by {person}. Hangar job `{job.id}` is queued." if word == "approve"
@@ -922,10 +1105,50 @@ async def doctor_checks(h: Any, transport: httpx.AsyncBaseTransport | None = Non
                                   "store a current API token (Cloud) or personal access token (Data Center)"))
             finally:
                 await api.close()
+    out += automation_checks(h, cfg, stored)
     for project, p in cfg.projects.items():
         for name, repo in [(project, p.repo), *((f"{project} component {c}", r) for c, r in p.components.items())]:
             ok = bool(h.jobs.repo_envs(_repo_url(repo)))
             out.append(_check(f"jira project {name}", ok, f"-> {repo}" if ok else
                               f"mapped to {repo}, which isn't in HANGAR_GITHUB_REPOS",
                               f"add {repo} to HANGAR_GITHUB_REPOS with its environment, or fix the mapping"))
+    return out
+
+
+def automation_checks(h: Any, cfg: JiraConfig, stored: set[str] | None = None) -> list[dict[str, Any]]:
+    """--- automation (#128): the Automation token is a fallback. Warn when it is older than credhealth.ROTATE_DAYS,
+    and when it is configured while issue events don't come through the signed webhook."""
+    from hangar import credhealth
+    from hangar.doctor import _check
+    from hangar.models import Credential
+
+    name = cfg.automation_token_credential
+    if not name or cfg.deployment != "cloud":
+        return []
+    out: list[dict[str, Any]] = []
+    c = h.store.get(Credential, name)
+    if c is not None:
+        days = credhealth.age_days(c)
+        old = days > credhealth.ROTATE_DAYS
+        out.append(_check("jira automation token age", None if old else True,
+                          f"{name} was stored {days:.0f} days ago" + (f" (over {credhealth.ROTATE_DAYS})" if old
+                                                                      else ""),
+                          f"hangar cred add {name} --rotate, then update the rule's X-Hangar-Token header"))
+    raw = h.store.kv_get(SIGNED_ISSUE_EVENT_KEY)
+    try:
+        signed_at = float(json.loads(raw)) if raw else None
+    except (ValueError, TypeError):
+        signed_at = None
+    recent = signed_at is not None and time.time() - signed_at < SIGNED_RECENT_DAYS * 86400
+    if not cfg.webhook_secret_credential:
+        why = "no webhook_secret_credential: issue events come only through the unsigned Automation fallback"
+    elif not recent:
+        why = (f"the signed webhook delivered no issue event in {SIGNED_RECENT_DAYS} days: issue events seem to come "
+               "only through the unsigned Automation fallback")
+    else:
+        why = ""
+    out.append(_check("jira signed issue events", None if why else True,
+                      why or "issue events arrive through the signed webhook; the Automation token is a fallback",
+                      "send Issue created/updated through the admin webhook with a secret (docs/intake.md), then "
+                      "remove automation_token_credential"))
     return out

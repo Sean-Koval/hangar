@@ -28,13 +28,25 @@ A trusted person then decides:
 | Approve | Reject |
 | --- | --- |
 | `/hangar approve` on the issue | `/hangar reject` on the issue |
-| `POST /api/jobs/{id}/approve` (admin token) | `POST /api/jobs/{id}/reject` |
+| `POST /api/jobs/{id}/approve` | `POST /api/jobs/{id}/reject` |
 | MCP `approve_job` | MCP `reject_job` |
 | `hangar job approve ID` | `hangar job reject ID` |
 
-Approving queues the job and records who approved it (`approval.decided_by` on the job). Rejecting cancels it with reason `rejected`. A job nobody decides on is cancelled after `HANGAR_JOB_APPROVAL_TTL_HOURS` (default 72) with reason `approval_expired`. Waiting jobs survive restarts. `/hangar approve` and `/hangar reject` are always decisions, never instructions.
+#### Who may approve
 
-Every decision is in the audit log: `job.approve`, `job.reject`, `job.approval_expired` (actor `system`), and `job.approve.refused` / `job.reject.refused` when someone untrusted tries.
+One rule decides on every path (`src/hangar/approvals.py`), so MCP and REST give the same answer and the same refusal text:
+
+- **An admin, or one of the repo's approvers.** A person with role `admin`, or a linked person whose GitHub login is in the job repo's policy `approvers` ([repo-policy.md](repo-policy.md), the list landing uses). A repo approver sees that repo's held jobs over MCP and REST, even when they're someone else's.
+- **With a login token.** Over MCP and REST, the token must hold `admin` or `user` (a person's own login; an OAuth grant counts as the login that approved it). An `mcp`-only token, which `hangar connect` writes into client configs, and a `jobs` service token can't approve or reject.
+- **At the front doors, also the door's own trust, for team jobs.** A job nobody in particular asked for (an outsider's `/hangar`, an inbound webhook) can also be decided by anyone the door trusts: at GitHub a linked account or one the repo trusts (author association, `HANGAR_GITHUB_TRUSTED`), at Jira a linked account. A person's own held job, such as one a spent daily cap holds, is only an admin's or a repo approver's to release.
+- **Never your own.** An approval is refused when the approver is the job's person, or when the approver (their MCP or REST identity, the commenting account, or any account linked to them) is the job's requester. That covers a spent daily cap, where the requester would otherwise approve their own job. Rejecting your own job is fine.
+- **Solo installs.** `HANGAR_SELF_APPROVAL=allow_solo` lets the only person approve their own jobs while exactly one person exists (for example, a deployment with only legacy tokens, which all belong to the owner). The job and the audit entry record `self_approved: true`. With a second person, self-approval is refused again. The default is `deny`; `hangar doctor` warns when `deny` is set and only one person exists.
+
+A refused `/hangar approve` gets a comment on the issue that says why.
+
+Approving queues the job and records who approved it on the job's `approval`: `decided_by`, `decided_person`, `self_approved`, and the `rule` that allowed it (`admin`, `repo_approver`, `front_door`, `solo`, or `system` for hangar's own code). Rejecting cancels it with reason `rejected`. A job nobody decides on is cancelled after `HANGAR_JOB_APPROVAL_TTL_HOURS` (default 72) with reason `approval_expired`. Waiting jobs survive restarts. `/hangar approve` and `/hangar reject` are always decisions, never instructions.
+
+Every decision is in the audit log: `job.approve` and `job.reject` (with `decided_person`, `self_approved` and `rule`), `job.approval_expired` (actor `system`), and `job.approve.refused` / `job.reject.refused` when someone who may not decide tries (with why).
 
 Untrusted people's `/hangar` comments on a PR that a job opened are ignored: only trusted people can continue a job. The same goes for answering a job's question: when a job asks for input on an issue (`needs_input`), only a trusted person's `/hangar <answer>` reaches the agent. Anyone else's is ignored and audited (`github.refused`), even when they opened the issue.
 
@@ -150,6 +162,7 @@ The same over REST (`/api/schedules`: `GET`, `POST`, `GET/PATCH/DELETE /{id or n
 | `HANGAR_GITHUB_TRUSTED` | `[]` | Trusted logins and `@org/team`s; unset: owners, members and collaborators |
 | `HANGAR_GITHUB_TEAM_CACHE_SECONDS` | 600 | |
 | `HANGAR_JOB_APPROVAL_TTL_HOURS` | 72 | Unapproved jobs are cancelled after this |
+| `HANGAR_SELF_APPROVAL` | `deny` | `allow_solo`: the only person may approve their own jobs while exactly one person exists ([who may approve](#who-may-approve)) |
 | `HANGAR_INBOUND_WEBHOOKS` | `{}` | See §2 |
 | `HANGAR_INBOUND_MAX_BODY_BYTES` | 1000000 | |
 | `HANGAR_SCHEDULE_POLL_SECONDS` | 10 | Scheduler and approval-expiry loop |

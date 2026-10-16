@@ -67,6 +67,8 @@
           "turns": {"type": "integer"},
           "manifests": {"type": "array", "items": {"type": ["string", "null"]}, "description": "Each agent turn's manifest digest."},
           "config_digest": {"type": ["string", "null"], "description": "The first turn's manifest config_digest: equal across a variant's trials unless drift says otherwise."},
+          "harness_digest": {"type": ["string", "null"], "description": "The first turn's manifest harness_digest (null for trials recorded before it existed)."},
+          "environment_digest": {"type": ["string", "null"], "description": "The first turn's manifest environment_digest (null for trials recorded before it existed)."},
           "verify": {"type": ["object", "null"], "properties": {"command": {"type": ["string", "null"]}, "exit_code": {"type": ["integer", "null"]}, "passed": {"type": ["boolean", "null"]}, "new_failures": {"type": ["array", "null"]}, "tail": {"type": ["string", "null"]}}},
           "tests": {"description": "The trial's parsed test results, when hangar has them."},
           "usage": {"type": ["object", "null"]},
@@ -81,7 +83,7 @@
             "notes": {"type": "array", "items": {"type": "string"}}
           }},
           "stored": {"type": "array", "items": {"enum": ["manifest.json", "trace.json"]}},
-          "drift": {"type": "array", "items": {"type": "string"}},
+          "drift": {"type": "array", "items": {"type": "string"}, "description": "Why this trial's configuration differs from an earlier trial of its variant; each message names the half that drifted (\"harness drift\", \"environment drift\")."},
           "links": {"type": "object", "properties": {"job": {"type": ["string", "null"]}, "manifest": {"type": ["string", "null"]}, "trace": {"type": ["string", "null"]}}}
         }
       }
