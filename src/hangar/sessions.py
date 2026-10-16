@@ -530,12 +530,23 @@ class SessionService:
             self._tainted(s, turn, first)
 
     def _tainted(self, s: Session, turn: SessionTurn, ref: str) -> None:
-        """A session just became tainted (its first source): tell the listeners (its job mirrors it)."""
+        """A session just became tainted (its first source): tell the turn's driver (#130) and the listeners (its
+        job mirrors it)."""
+        if turn.live and turn.approval_policy not in (None, "auto") and turn.run_id and not turn.finished_at:
+            self._spawn(self._taint_driver(s, turn, ref))
         for fn in self.on_taint:
             try:
                 fn(s, turn, ref)
             except Exception:  # noqa: BLE001 - recording taint never breaks a turn
                 log.exception("session %s: taint listener failed", s.id)
+
+    async def _taint_driver(self, s: Session, turn: SessionTurn, ref: str) -> None:
+        """--- taint (#130): the signed `taint` command, so the driver gates pushes, PRs and fetches from now on.
+        Signed like a steer: the agent can't send it, or one that clears it (there is none)."""
+        try:
+            await steering.command(self, s, turn, "taint", ref=ref[:200])
+        except Exception as e:  # noqa: BLE001 - the turn may have ended; the next one starts --tainted
+            log.info("session %s: could not tell the driver it is tainted: %s", s.id, e)
 
     def _set(self, s: Session, state: SessionState, reason: str | None = None) -> None:
         s.state = state

@@ -18,7 +18,12 @@ A turn is tainted when:
   the review packet can say it was read).
 
 Taint is sticky: once a session is tainted, every later turn starts tainted, a fork inherits it, and a job mirrors its
-sessions. It is only ever set, never cleared. Nothing here gates anything: #130 does (push, PR, landing, egress).
+sessions. It is only ever set, never cleared.
+
+The gates (#130) read it: a tainted job's PR opens as a draft labelled `hangar:tainted` (jobs.py), landing needs an
+approver other than the job's own person (landing.qualifies), an egress request needs someone other than its owner
+(envrequests.decide), and in-turn approvals treat pushes, PRs, fetches and MCP writes as risky (driver.taint_sink).
+Each gate decision is audited as `taint.gate`.
 """
 
 from __future__ import annotations
@@ -225,3 +230,35 @@ def packet_line(job: Job) -> str | None:
     srcs = job.taint.get("sources") or []
     shown = ", ".join(describe(x) for x in srcs[:8]) + (f" and {len(srcs) - 8} more" if len(srcs) > 8 else "")
     return f"- **Untrusted content read:** {shown or 'yes'}"
+
+
+# ====================================================================== the gates (#130)
+LABEL = "hangar:tainted"
+
+
+def starts_tainted(s: Session, turn: SessionTurn, job: Job | None) -> bool:
+    """Whether a turn about to start is tainted from its first event (the driver's `--tainted`)."""
+    return tainted(s.taint) or tainted(job) or bool(job_sources(job)) or any(c.untrusted for c in turn.context)
+
+
+def write_tool_patterns(fleet: Any, s: Session) -> list[str]:
+    """The environment's MCP write tools as the harness names them (Claude Code: `mcp__<server>__<tool>`)."""
+    try:
+        spec = fleet.catalog.get(s.environment)
+    except Exception:  # noqa: BLE001 - no environment: no write tools declared
+        return []
+    return [f"mcp__{_norm(name)}__{p}" for name, srv in spec.mcp.items() for p in getattr(srv, "write_tools", [])]
+
+
+def driver_args(fleet: Any, s: Session, turn: SessionTurn, job: Job | None) -> str:
+    """The driver's taint flags for a turn that starts now."""
+    import shlex
+
+    out = ["--tainted"] if starts_tainted(s, turn, job) else []
+    out += [f"--write-tool {shlex.quote(p)}" for p in write_tool_patterns(fleet, s)]
+    return " ".join(out)
+
+
+def audit(fleet: Any, who: str, sink: str, decision: str, target: str | None, **detail: Any) -> None:
+    """One gate decision: `taint.gate` with the sink (pr.open, land, egress, git.push, ...), the decision and who."""
+    fleet.audit(who, "taint.gate", target, sink=sink, decision=decision, **detail)

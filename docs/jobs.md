@@ -452,6 +452,13 @@ variants: that is the sister tool's job. The details are in [spec 0014](specs/00
 | `HANGAR_SLACK_SIGNING_SECRET_CREDENTIAL`, `HANGAR_SLACK_BOT_TOKEN_CREDENTIAL`, `HANGAR_SLACK_CHANNELS`, `HANGAR_SLACK_USERS` | | See [slack.md](slack.md) |
 | `HANGAR_JIRA`, `HANGAR_GITHUB_PROJECTS` | `{}` | See [intake.md](intake.md) |
 
+## Tainted jobs
+
+A job whose agent read untrusted content (its input was untrusted, or it fetched a page, or called an untrusted MCP
+server: [security.md](security.md#taint)) delivers its PR as a **draft**, whatever `deliver` says, labelled
+`hangar:tainted`, and the timeline says so. Landing then needs a reviewer other than the job's own person
+([landing.md](landing.md#tainted-prs)). `deliver: branch` is unchanged: hangar pushes `hangar/<job>` after its checks.
+
 ## Security notes
 
 Issue text, comments and service context are untrusted input to the agent. Today's mitigations:

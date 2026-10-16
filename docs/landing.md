@@ -100,7 +100,16 @@ opened ──▶ open ──approval of the head by an approver or code owner─
 - **Checks.** "Green" means every check the base branch requires (from its protection summary and rulesets) passed on the head: `success`, `neutral` or `skipped`. GitHub saying `mergeable_state: clean` also counts, in case a webhook was missed. A failed check holds landing even when it isn't required: an agent's red PR goes to [auto-fix](jobs.md#7-an-agent-loop-that-finishes-the-job), not to main. With no required checks, GitHub merges as soon as auto-merge is armed, so make CI required (`hangar doctor` warns).
 - **Requests for changes win.** A "changes requested" review from anyone, or a dismissed approval, takes the PR back to open and disarms.
 - **GitHub's record decides.** Review webhooks can arrive late, out of order (hangar redelivers missed ones after a restart) or replayed, so right before arming hangar lists the PR's reviews (`GET /pulls/{n}/reviews`, Pull requests: read): the approver's latest review must still be an approval of the head, and nobody's latest may request changes. A push, dismissal or follow-up that arrives while GitHub is arming is caught after the arm and disarmed; a disarm GitHub refused is tried again after the job's next turn and on restart.
-- **Drafts wait.** A PR hangar opened as a draft (the check failed, or the agent changed the check's own tests) isn't armed until someone marks it ready for review.
+- **Drafts wait.** A PR hangar opened as a draft (the check failed, the agent changed the check's own tests, or it read untrusted content) isn't armed until someone marks it ready for review.
+
+### Tainted PRs
+
+When the job's agent read untrusted content (`hangar:tainted`, [security.md](security.md#taint-gates)), the approval
+that lands it must come from someone other than the job's own person and its requester: a reviewer whose GitHub
+account is linked to the job's person, or who asked for the job, doesn't land it (the job's timeline says why), and
+another approver or code owner does. The rule is `approvals.can_decide(kind="land")`, so
+`HANGAR_SELF_APPROVAL=allow_solo` lets a one-person install land its own. The review packet lists what untrusted
+content was read. Each decision is audited as `taint.gate` (`sink: land`).
 
 Everything that needs GitHub runs in the background, under a per-job lock, so a webhook is answered at once. Hangar's record lives on the job, so a restart loses nothing: approved PRs are evaluated again and merged PRs' sessions ended at startup. Deliveries missed while hangar was down are [redelivered](upgrading.md).
 

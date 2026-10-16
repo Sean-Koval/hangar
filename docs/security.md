@@ -448,7 +448,7 @@ What is **not** covered:
 
 ## Taint
 
-Text hangar's caller didn't write is fenced in the prompt as untrusted ([front doors](#front-doors)). That covers what a job *starts* with. An agent also reads untrusted text *while it runs*: an issue comment through the GitHub MCP server, a web page, a search result. A prompt injection in any of these can steer what it does next. So hangar records, per turn, whether the agent has read untrusted content (`src/hangar/taint.py`). It records only; nothing is gated on it yet (#130 makes `git push`, PR opening, landing and egress approvals after an untrusted read need a human).
+Text hangar's caller didn't write is fenced in the prompt as untrusted ([front doors](#front-doors)). That covers what a job *starts* with. An agent also reads untrusted text *while it runs*: an issue comment through the GitHub MCP server, a web page, a search result. A prompt injection in any of these can steer what it does next. So hangar records, per turn, whether the agent has read untrusted content (`src/hangar/taint.py`). The [gates](#taint-gates) below read it.
 
 **What taints a turn.** Each source is recorded with its kind, the event that read it (`seq`, its position in the session's [event log](api/traces.md#ids); 0 for what the turn started with) and a reference:
 
@@ -462,6 +462,21 @@ Text hangar's caller didn't write is fenced in the prompt as untrusted ([front d
 **Sticky.** A session's taint is set by its first tainted turn and never cleared: every later turn starts tainted (`"inherited": true`), a fork carries its parent's, and a job mirrors its sessions (best-of-N attempts and the judge included). A job whose own input is untrusted is tainted when it is submitted. A turn keeps at most 20 sources.
 
 **Where it shows.** `taint` on turns, sessions and jobs in `get_job` / `get_session` and `GET /api/jobs/{id}`, `GET /api/sessions/{name}`: `{"tainted": true, "first_turn": 1, "first_seq": 41, "sources": [{"kind": "web", "seq": 41, "ref": "example.com", "turn": 1}]}`. The first source adds a `taint: read untrusted content from <ref>` event to the session's and job's event stream and the job's timeline; the trace export carries `hangar.taint` and `hangar.taint.first_seq` on each turn ([traces](api/traces.md#turn)); and the PR's review packet says `Untrusted content read: issue text jira-ABC-12.md (context), web: example.com (seq 41)`.
+
+### Taint gates
+
+Once untrusted content has been read, nothing leaves the sandbox on the agent's word alone (#130):
+
+| Sink | Gate | Untainted |
+| --- | --- | --- |
+| **The PR** ([jobs.md](jobs.md#tainted-jobs)) | Opened as a draft whatever `deliver` says (`pr` becomes `draft_pr`), labelled `hangar:tainted`. `deliver: branch` stays limited to `refs/heads/hangar/**`; job sandboxes still only fetch and hangar pushes after its checks | as before |
+| **Landing** ([landing.md](landing.md#tainted-prs)) | The approving reviewer must not be the job's own person or its requester, through their linked GitHub account: `approvals.can_decide(kind="land")`, the same self-approval rule as every other approval (`HANGAR_SELF_APPROVAL=allow_solo` included). The review packet says so | the job's own person may approve |
+| **Egress requests** | Approving a host for a tainted session or job goes through `approvals.can_decide(kind="egress")`: an admin, or a repo policy approver, never the work's own person. The refusal says who can. Denying is still the owner's | the owner or an admin |
+| **In-turn approvals** ([steering.md](steering.md#taint)) | Under `ask` and `deny-risky`: any `git push`, `gh pr create`, `curl`/`wget`/`nc` to a host (not the sandbox itself) and the environment's MCP write tools (`mcp.<name>.write_tools`) are risky. `deny-risky` denies them "after reading untrusted content"; `ask` asks a person and says why | as before |
+
+Under `approvals: auto` the turn has no approvals to gate: use `deny-risky` for intake jobs (Jira, GitHub issues from outsiders), which are tainted from turn 1. Their PRs are drafts that need a second person to land: that is the intent, the PR is the gate.
+
+The driver learns of the taint at the turn's start (`--tainted`) and, mid-turn, from hangar's signed `taint` command (sent like a steer, the moment the event watcher sees the first untrusted read) or from a web tool call it sees in the harness's own stream. There is no command to clear it, and an unsigned one is refused, so the agent can't untaint itself. Every gate decision is audited as `taint.gate` (`sink`: `pr.open`, `land`, `egress`, `git.push`, `mcp.write`; `decision`; who).
 
 **Gaps.** Taint is read from each harness's stream through the same tool-name table as the trace export. A tool hangar doesn't know is `other` and doesn't taint: a pi extension or a custom tool that fetches pages goes unnoticed, as does a shell command that fetches with anything but `curl`/`wget` (`python -c 'urllib…'`, `git clone` of another repo, `gh api`). Subagents' calls (Claude Code's `Task`) are in the stream and counted. Reading a file the agent itself downloaded earlier is tainted only through the download. Taint is a record for gates and reviewers, not a sandbox.
 

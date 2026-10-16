@@ -147,6 +147,10 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
     split_args = f" {isolation.driver_args(svc.settings, run_id, wd)}" if split else ""
     if hard:  # --- harden: the harness by its path, with hangar's settings and environment
         split_args += f" {hard.driver_args}"
+    from hangar import taint  # --- taint (#130): a turn that starts tainted, and the environment's MCP writes
+
+    if pol != "auto" and (taint_args := taint.driver_args(svc.fleet, s, turn, svc._job(s))):
+        split_args += f" {taint_args}"
     # -I: no PYTHON* variables, user site-packages or modules beside the driver, all of which the agent can write
     command = (f"{f'unset {CLAUDE_ENV}; ' if hard else ''}"  # --- harden: the gate is in hangar's settings file
                f"if python3 -I -c 'import sys; sys.exit(sys.version_info < (3, 8))' 2>/dev/null; then "
@@ -401,9 +405,10 @@ async def kill(svc: SessionService, s: Session, t: SessionTurn) -> None:
 
 
 # ====================================================================== approvals
-def track(turn: SessionTurn, events: list[RunEvent]) -> bool:
+def track(turn: SessionTurn, events: list[RunEvent], on_gate: Any = None) -> bool:
     """Record approval requests and answers from the driver's events on the turn. True if anything changed. Only a
-    live turn's log is the driver's: in a one-shot run's log such a line could come from anything."""
+    live turn's log is the driver's: in a one-shot run's log such a line could come from anything. `on_gate(a)`:
+    called when an approval the taint gate asked for is answered (#130)."""
     if not turn.live:
         return False
     changed = False
@@ -416,16 +421,20 @@ def track(turn: SessionTurn, events: list[RunEvent]) -> bool:
             if a is None:
                 exp = ev.data.get("expires_at")
                 detail = ev.data.get("detail")
+                gate = ev.data.get("taint")  # --- taint (#130)
                 turn.approvals.append(Approval(id=aid, tool=str(ev.data.get("tool") or ""),
                                                detail=detail if isinstance(detail, str) else ev.text.split(": ", 1)[-1],
                                                requested_at=ev.ts,
-                                               expires_at=float(exp) if isinstance(exp, int | float) else None))
+                                               expires_at=float(exp) if isinstance(exp, int | float) else None,
+                                               taint=gate if isinstance(gate, str) else None))
                 changed = True
         elif a is not None and a.status == "pending" and ev.data.get("status") in (
                 "allowed", "allowed_always", "denied", "cancelled"):
             a.status, a.by = ev.data["status"], str(ev.data.get("by") or "hangar")[:100]
             a.message, a.decided_at = ev.data.get("message"), ev.ts
             changed = True
+            if a.taint and on_gate is not None:
+                on_gate(a)
     if len(turn.approvals) > MAX_APPROVALS:
         decided = [a for a in turn.approvals if a.status != "pending"]
         drop = {id(a) for a in decided[: len(turn.approvals) - MAX_APPROVALS]}
@@ -472,7 +481,18 @@ async def answer(svc: SessionService, s: Session, approval_id: str, decision: st
     a.by, a.message, a.decided_at = requester[:100], message, now()
     svc._save(s)
     svc.fleet.audit(requester, "session.approval", s.id, run=t.run_id, approval=a.id, tool=a.tool, decision=decision)
+    if a.taint:  # --- taint (#130)
+        from hangar import taint
+
+        taint.audit(svc.fleet, requester, _sink(a), a.status, s.id, run=t.run_id, approval=a.id, why=a.taint)
     return a
+
+
+def _sink(a: Approval) -> str:
+    """--- taint (#130): the sink an approval the taint gate asked for is about, for the `taint.gate` audit."""
+    why = a.taint or ""
+    return ("git.push" if why.startswith("git push") else "pr.open" if why.startswith("gh pr create")
+            else "mcp.write" if why.startswith("the MCP write tool") else "egress")
 
 
 def recover(svc: SessionService) -> None:

@@ -206,6 +206,8 @@ class Landing:
         self._tokens: AppTokens | None = None
         self._locks: dict[str, asyncio.Lock] = collections.defaultdict(asyncio.Lock)
         self._cache: dict[tuple[str, str, str], tuple[float, Any]] = {}
+        # --- taint (#130): reviewers' GitHub user ids by login, from their reviews (people links are by id)
+        self._login_ids: dict[str, int] = {}
 
     def _bg(self, job: Job, coro: Any) -> None:
         """Landing work off the webhook's request (tracked, cancelled on shutdown); a failure is said on the job."""
@@ -434,6 +436,8 @@ class Landing:
     def _review(self, job: Job, action: Any, review: dict[str, Any], head: str | None) -> dict[str, Any]:
         st = job.landing
         user = _str(_d(review.get("user")).get("login")) or "?"
+        if isinstance(uid := _d(review.get("user")).get("id"), int) and not isinstance(uid, bool):
+            self._login_ids[user.lower()] = uid  # --- taint (#130)
         state = str(review.get("state") or "").lower()
         rid = review.get("id") if isinstance(review.get("id"), int) else None
         if action == "dismissed":
@@ -783,7 +787,39 @@ class Landing:
         return await self._cached("codeowners", repo, base, load)
 
     async def qualifies(self, job: Job, login: str) -> str | None:
-        """Why `login`'s approval lands the PR ("approver", "code owner"), or None."""
+        """Why `login`'s approval lands the PR ("approver", "code owner"), or None. A tainted job (#130) also needs
+        someone other than the job's own person or requester."""
+        if (why := self._taint_refusal(job, login)) is not None:
+            self.svc._event(job, why)
+            return None
+        return await self._qualifies(job, login)
+
+    def _taint_refusal(self, job: Job, login: str) -> str | None:
+        """--- taint (#130): the reason `login` can't land a tainted job's PR, or None. The approver's GitHub account
+        must not be linked to the job's person, nor be (or be linked to whoever is) its requester: approvals.can_decide
+        with kind="land", whose self-approval rule is the one every other approval uses (HANGAR_SELF_APPROVAL
+        allow_solo included)."""
+        from hangar import approvals, people, taint
+
+        if not taint.tainted(job):
+            return None
+        uid = self._login_ids.get(login.lower())
+        person = people.resolve_external(self.svc.store, "github", uid) if uid else None
+        who = approvals.Approver(f"github:{login}", person.id if person else None, "github",
+                                 frozenset({f"github:{login}", f"github:{login.lower()}"}),
+                                 frozenset({login.lower()}), front_door=True)
+        subject = approvals.Subject.of_job(job)._replace(what=f"PR #{job.result.pr_number}")
+        d = approvals.can_decide(self.svc, who, subject, "land")
+        if d.ok or not d.self_approved:  # only the self-approval part is this gate's; landing has its own approvers
+            taint.audit(self.svc.fleet, f"github:{login}", "land", "allowed", job.id, pr=job.result.pr_number,
+                        rule=d.rule if d.ok else None, self_approved=d.self_approved)
+            return None
+        taint.audit(self.svc.fleet, f"github:{login}", "land", "refused", job.id, pr=job.result.pr_number,
+                    person=person.id if person else None)
+        return (f"@{login} approved, but the agent read untrusted content (hangar:tainted) and @{login} is the job's "
+                "own person or requester: another approver must review it before it lands")
+
+    async def _qualifies(self, job: Job, login: str) -> str | None:
         policy = self.svc.policies.get(job.repo)
         if policy and login.lower() in {a.lower() for a in policy.approvers or []}:
             return "approver in the repo policy"

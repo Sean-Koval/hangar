@@ -317,6 +317,8 @@ class EnvRequests:
         r = self.get(rid)  # KeyError for anything this caller may not see
         if r.state != "pending":
             raise RequestError(f"request {rid} was already {r.state} by {r.decided_by}")
+        if approve and r.kind == "egress":
+            self._taint_gate(r, actor)  # --- taint (#130): after an untrusted read, not the owner's own call
         note = self.fleet.broker.redact((note or "").strip()[:MAX_NOTE]) or None  # it's written into the sandbox
         scope = scope or "session"
         if scope == "environment":
@@ -356,6 +358,28 @@ class EnvRequests:
                 self._later.add(task)
                 task.add_done_callback(self._later.discard)
         return r
+
+    def _taint_gate(self, r: EnvRequest, actor: str) -> None:
+        """--- taint (#130): in a tainted session or job, approving an egress host goes through approvals.can_decide
+        (kind="egress"): an admin or a repo policy approver, never the work's own person (HANGAR_SELF_APPROVAL
+        allow_solo aside). The agent may have been told to ask for the host by what it read. Audited `taint.gate`."""
+        from hangar import approvals, identity, taint
+
+        s = self._session(r)
+        job = self.jobs._jobs.get(r.job_id) if self.jobs is not None and r.job_id else None
+        if not (taint.tainted(s) or taint.tainted(job)):
+            return
+        who = approvals.from_principal(identity.current.get(), "rest")
+        if who.via == "system":
+            who = who._replace(actor=actor, identities=frozenset({actor}))
+        asked = {job.requester} if job is not None and job.requester != "system" else set()
+        subject = approvals.Subject(r.owner, frozenset(asked), s.repo if s else (job.repo if job else None),
+                                    f"network access to {r.target} for {r.session}")
+        d = approvals.can_decide(self.fleet, who, subject, "egress")
+        taint.audit(self.fleet, actor, "egress", "allowed" if d.ok else "refused", r.id, host=r.target,
+                    person=who.person, rule=d.rule, self_approved=d.self_approved)
+        if not d.ok:
+            raise approvals.ApprovalRefused(f"{d.why} (the agent read untrusted content before asking)")
 
     async def answer(self, s: Session, rid: str, decision: str, actor: str, note: str | None = None
                      ) -> dict[str, Any]:
