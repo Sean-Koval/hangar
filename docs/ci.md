@@ -146,6 +146,30 @@ scripts/ci/flakes.py --runs 100 --json
 
 A flake still passes the run. Fix it, not the rerun count. Pull requests never rerun.
 
+## Release gate
+
+A P1 release needs a green main. Before tagging one, check both:
+
+1. **The last 10 `ci.yml` runs on main passed.** A run still in progress doesn't count, either way:
+
+   ```bash
+   gh api 'repos/Sean-Koval/hangar/actions/workflows/ci.yml/runs?branch=main&status=completed&per_page=10' \
+     --jq '[.workflow_runs[].conclusion] | (map(select(. == "success")) | length | tostring) + "/10 green"'
+   ```
+
+2. **No test "failed twice" in the last 30 runs.** `scripts/ci/flakes.py --runs 30` prints every rerun test with
+   its `flaked` and `failed twice` counts. A test that failed twice turned a run red. Fix it before releasing (or
+   show that the failure was in a commit that has since been reverted). A test that only flaked doesn't block the
+   release, but open an issue for it.
+
+If either check fails, fix the cause and wait for 10 green runs again. Don't rerun failed jobs to make the count.
+Re-running only repeats the same commit, and it hides the flake from the next check.
+
+The first gate found two flaky tests (#118, #120): the background-process tests in `tests/test_streams.py` attached
+for one fixed second and expected the output to be there. On a loaded runner, the process's first output reached
+hangar later than that, and the attach correctly returned nothing. The tests now attach again from `next` until the
+output arrives, within 10 s.
+
 ## Bisect and repair
 
 When any job on main fails, `scripts/ci/bisect_hook.py` collects three facts:
