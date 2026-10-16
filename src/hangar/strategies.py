@@ -36,6 +36,7 @@ from hangar import delivery as delivery  # --- least-privilege
 from hangar import fairness as fairness  # --- scale
 from hangar import pins as pins  # --- canary
 from hangar import secretscan as secretscan  # --- egress
+from hangar import taint as taint  # --- taint (#129)
 from hangar.events import total_usage
 from hangar.fleet import PoweredDown, _clip_tail
 from hangar.harnesses import Harness
@@ -203,6 +204,7 @@ async def _fork(svc: SessionService, parent: Session, n: int, requester: str, *,
                 turns=[t.model_copy(update={"run_id": None, "event_cursor": None, "usage": None,
                                             "repair_usage": None}, deep=True) for t in parent.turns],
                 needs_input=parent.needs_input, checkpoints=[ck.model_copy(deep=True)])
+            taint.inherit(c, parent)  # --- taint (#129): a fork has read what its parent read
             if child_harness == parent.harness:  # --- canary: the parent's pins, its conversation's CLI version too
                 c.model_policy, c.harness_version = parent.model_policy, parent.harness_version
             else:

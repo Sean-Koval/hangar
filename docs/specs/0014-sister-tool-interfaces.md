@@ -88,7 +88,9 @@ budget: {max_cost_usd: 40}
 grader: {command: "pytest -q tests/hidden", files: {"tests/hidden/test_retry.py": "..."}}
 ```
 
-**Shape.** A `kind: experiment` job (label `hangar.kind: experiment`) takes a task set (prompts with repo refs, or GitHub issues), variants (an environment plus an overlay: `harness[@version]`, `model` (an id or a policy), `approvals` (`auto` or `deny-risky`), `skills`, `instructions` or `instructions_append`), and a trial count. `POST /api/experiments`, `hangar experiment run spec.yaml`.
+**Shape.** A `kind: experiment` job (label `hangar.kind: experiment`) takes a task set (prompts with repo refs, or GitHub issues), variants (an environment plus an overlay: `harness[@version]`, `model` (an id or a policy), `approvals` (`auto` or `deny-risky`), `skills`, `skills_remove`, `instructions` or `instructions_append`), and a trial count. `POST /api/experiments`, `hangar experiment run spec.yaml`.
+
+**The only overlay.** A variant is the one overlay hangar lays on an environment, and it gains no new fields. Its `skills` means what an environment's `skills` means under `extends` (#132): the whole set, `[]` for none. `skills_remove: [name]` drops named skills from that set (else from the environment's), and the trial's manifest declares what remains. Once harness locks exist (#133) a variant shrinks to `{harness: name@sha256, environment}` (#135).
 
 **Runs.** The experiment runs no agent itself. A background runner (no job slot) starts one ordinary job per task × variant × trial (`source: experiment`, `deliver: none`, no auto-fix, the in-turn verify gate off unless asked, since it differs by harness), interleaved so a task's variants run side by side, at most `parallel` at once. They are jobs: each gets the per-trial budget (#85), daily budgets apply, and they queue in the fair queue under the experiment's person (#89). The experiment's own `budget` stops new trials once its trials together spent it. A trial's agent that asks a question is cancelled: nobody is there to answer.
 

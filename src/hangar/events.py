@@ -851,15 +851,24 @@ class Activity:
         return self.log.read(session_id, since=max(0, since), limit=max(1, min(limit, 1000)),
                              tail=max(1, min(tail, 1000)) if tail else None)
 
-    def watch(self, fleet: Any, s: Session, turn: SessionTurn, save: Callable[[], None]) -> TurnWatcher:
-        return TurnWatcher(self, fleet, s, turn, save)
+    def watch(self, fleet: Any, s: Session, turn: SessionTurn, save: Callable[[], None],
+              taint_files: set[str] | None = None, on_taint: Callable[[str], None] | None = None) -> TurnWatcher:
+        return TurnWatcher(self, fleet, s, turn, save, taint_files, on_taint)
 
 
 class TurnWatcher:
     """Follows one running turn's log: events into the session's log, usage onto the turn, budget checks."""
 
-    def __init__(self, activity: Activity, fleet: Any, s: Session, turn: SessionTurn, save: Callable[[], None]):
+    def __init__(self, activity: Activity, fleet: Any, s: Session, turn: SessionTurn, save: Callable[[], None],
+                 taint_files: set[str] | None = None, on_taint: Callable[[str], None] | None = None):
         self.a, self.fleet, self.s, self.turn, self.save = activity, fleet, s, turn, save
+        # --- taint (#129): which MCP servers are untrusted, and the untrusted context files, for taint.observe
+        from hangar import taint  # import cycle
+
+        self.taint_trust = taint.mcp_trust(fleet, s)
+        self.taint_files = taint_files or set()
+        self.on_taint = on_taint
+        self._pending: list[tuple[RunEvent, dict[str, Any]]] = []
         self.parser = Parser(FORMATS.get(turn.harness or s.harness or ""), s.model, activity.prices)
         self.errors = 0
         if turn.event_cursor:  # re-attached after a restart: continue from the saved read position
@@ -894,6 +903,7 @@ class TurnWatcher:
             ev.turn, ev.run_id = self.number, self.turn.run_id or ""
             keep.append(ev)
         if keep:
+            tainting = self._taint(keep)  # --- taint (#129): classified now; their seq is known once appended
             try:
                 self.a.append(self.s.id, keep)
                 if self.s.job_id:
@@ -905,6 +915,8 @@ class TurnWatcher:
                                                   for ev in keep])
             except OSError as e:  # e.g. a full disk: lose the events, not the turn
                 log.warning("session %s: could not record events: %s", self.s.id, e)
+            if tainting:
+                self._taint_seen()
             from hangar.steer import track  # workstream steer: approvals asked and answered (import cycle)
 
             if track(self.turn, keep):
@@ -912,6 +924,38 @@ class TurnWatcher:
             from hangar import cache  # --- overnight/cache: a first response releases the turn's held siblings
 
             cache.watched(self.s.id, keep)
+
+    def _taint(self, evs: list[RunEvent]) -> bool:
+        """--- taint (#129): note which of these events read untrusted content (one lookup per event). Their seq
+        isn't known until they're appended, so _taint_seen records them after. True when any did."""
+        from hangar import taint  # import cycle
+
+        self._pending = [(ev, src) for ev in evs
+                         if (src := taint.classify(ev, self.taint_trust, self.taint_files)) is not None]
+        return bool(self._pending)
+
+    def _taint_seen(self) -> None:
+        """Record what _taint found; on the session's first source, a `taint:` event and the listener."""
+        from hangar import taint  # import cycle
+
+        first = None
+        for ev, src in self._pending:
+            if src is None:
+                continue
+            src["seq"] = ev.seq
+            if taint.mark(self.s, self.turn, self.number, src) and first is None:
+                first = src["ref"]
+        self._pending = []
+        self.save()
+        if first is not None:
+            self._record([RunEvent(kind="progress", text=f"taint: read untrusted content from {first}",
+                                   data={"source": "hangar", "action": "taint", "ref": first[:200]})],
+                         from_log=False)
+            if self.on_taint is not None:
+                try:
+                    self.on_taint(first)
+                except Exception:  # noqa: BLE001 - recording taint never breaks a turn
+                    log.exception("session %s: taint listener failed", self.s.id)
 
     async def poll(self) -> str | None:
         """Read what the log gained since the last poll. Returns why the turn is over budget, or None."""

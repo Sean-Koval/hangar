@@ -459,6 +459,8 @@ def _point(x: Export, sp: dict[str, Any], ev: RunEvent, root: str | None = None)
                                       "hangar.verify.passed": bool(d.get("passed")),
                                       "hangar.verify.exit_code": d.get("exit_code"),
                                       "hangar.verify.round": d.get("round"), "hangar.seq": seq})
+    elif ev.kind == "progress" and d.get("action") == "taint":  # --- taint (#129): the turn's first untrusted read
+        x.event(sp, "taint", ev.ts, {"hangar.kind": "taint", "hangar.taint.ref": d.get("ref"), "hangar.seq": seq})
     elif ev.kind == "progress" and d.get("action") in ("steer", "interrupt"):
         return  # from the turn's own record of steers (who, and whether it was delivered)
     elif ev.kind == "progress":
@@ -499,6 +501,12 @@ def _turn_span(x: Export, parent: str | None, s: Session, n: int, turn: SessionT
              "hangar.harness.version": turn.harness_version, "hangar.turn.live": turn.live,
              "hangar.approvals": turn.approval_policy, "hangar.manifest.digest": turn.manifest,
              "hangar.harness.digest": turn.harness_digest, "hangar.environment.digest": turn.environment_digest,
+             # --- taint (#129): whether the turn read untrusted content, and the first event that did (0: it
+             # started tainted, from its context or an earlier turn)
+             "hangar.taint": bool(turn.taint and turn.taint.get("tainted")),
+             "hangar.taint.first_seq": (turn.taint or {}).get("first_seq") if turn.taint else None,
+             "hangar.taint.sources": [f"{x.get('kind')}:{x.get('ref')}" for x in (turn.taint or {}).get("sources")
+                                      or []] or None,
              **_usage_attrs(u), **(extra or {})}
     if failed:
         attrs["error.type"] = turn.outcome if turn.outcome != "exited" else "agent_exit_code"
@@ -543,6 +551,7 @@ def session_export(svc: SessionService, s: Session, turn: int | None = None) -> 
                       "hangar.kind": "session", "gen_ai.operation.name": "invoke_workflow",
                       "gen_ai.workflow.name": "hangar.session", "hangar.environment": s.environment,
                       "hangar.harness": s.harness, "gen_ai.request.model": s.model,
+                      "hangar.taint": bool(s.taint and s.taint.get("tainted")),  # --- taint (#129)
                       **_usage_attrs(total_usage(s.turns))})
     where = checkout(svc, s)
     for n, t in enumerate(s.turns, 1):
@@ -569,7 +578,8 @@ def job_export(jobs: JobService, job: Job, sessions: list[Session] | None = None
         "hangar.job.strategy": job.strategy, "hangar.environment": job.environment, "hangar.harness": job.harness,
         "gen_ai.request.model": job.model, "hangar.repo": job.repo, "hangar.diff.stat": job.result.diffstat,
         "hangar.diff.files": list(job.result.files) or None, "hangar.diff.deleted": list(job.result.deleted) or None,
-        "hangar.pr.url": job.result.pr_url, **_usage_attrs(usage)},
+        "hangar.pr.url": job.result.pr_url, "hangar.taint": bool(job.taint and job.taint.get("tainted")),  # #129
+        **_usage_attrs(usage)},
         error=(job.reason or "") if job.state.value == "failed" else None)
     pid = root["id"] if root else None
     for s in sorted(sessions, key=lambda z: z.created_at):

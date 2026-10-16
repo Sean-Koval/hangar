@@ -10,8 +10,10 @@ not an analysis.
 **Variants.** An environment plus an overlay: `harness` (optionally `harness@version`, which must be the locked one),
 `model` (a policy is resolved once, when the experiment starts, and every trial gets that concrete id), `approvals`
 (`auto` or `deny-risky`: nobody is there to answer `ask`), `skills` (the full set the agent gets: skills of the
-environment by name, or directories next to the environment's spec by path; `[]` for none) and `instructions` (replace
-the environment's global instructions) or `instructions_append`.
+environment by name, or directories next to the environment's spec by path; `[]` for none; the same replace
+semantics an environment's `skills` has under `extends`), `skills_remove` (names dropped from that set, else from the
+environment's) and `instructions` (replace the environment's global instructions) or `instructions_append`. The
+variant is the only overlay on an environment and gains no new fields: it shrinks to a harness lock reference (#135).
 
 **Isolation (0007 finding 3).** Each trial's sandbox mounts only its own harness's pack (`hangar.packs: selected`; on
 Kubernetes a template of its own, never a warm sandbox of the environment, which mounts them all), gets exactly the
@@ -123,7 +125,11 @@ class SkillRef(BaseModel):
 
 
 class Variant(BaseModel):
-    """An environment plus an overlay. Unset fields are the experiment's (then the environment's)."""
+    """An environment plus an overlay. Unset fields are the experiment's (then the environment's).
+
+    The only overlay on an environment (spec 0014 §4). `skills` has the semantics an environment's `skills` has under
+    `extends` (#132): the whole set, `[]` for none; `skills_remove` drops named ones. It gains no new fields: once
+    harness locks exist (#133) a variant shrinks to `{harness: name@sha256, environment}` (#135)."""
 
     model_config = ConfigDict(extra="forbid")
     environment: str | None = None
@@ -131,6 +137,8 @@ class Variant(BaseModel):
     model: str | None = Field(None, max_length=200)  # an id or a policy (frontier, balanced)
     approvals: Literal["auto", "deny-risky"] | None = None
     skills: list[SkillRef] | None = Field(None, max_length=50)  # the whole set; None: the environment's
+    # drop these by name from the set above (else from the environment's), as an environment's own skills_remove
+    skills_remove: list[str] | None = Field(None, max_length=50)
     instructions: str | None = Field(None, max_length=64_000)  # replaces the environment's global instructions
     instructions_append: str | None = Field(None, max_length=64_000)
 
@@ -452,16 +460,24 @@ async def _begin(jobs: JobService, job: Job, st: State, spec: ExperimentSpec) ->
 def _overlay(env: EnvSpec, v: Variant) -> dict[str, Any]:
     """What a variant's sandboxes get on top of the environment's image: skills (their files, read now, so the
     experiment keeps the version it started with) and instructions."""
-    from hangar.envspec import _contained_path
+    from hangar.envspec import _contained_path, remove_skills, skill_name
     from hangar.jobs import JobError
     from hangar.manifest import _dir_digest
 
     skills: list[dict[str, Any]] | None = None
-    if v.skills is not None:
+    known = {skill_name(s) for s in env.skills}
+    refs = v.skills
+    if v.skills_remove is not None:
+        base = refs if refs is not None else [SkillRef(name=n) for n in (skill_name(s) for s in env.skills) if n]
+        try:
+            refs = remove_skills([r.model_dump() for r in base], v.skills_remove, "variant")
+        except ValueError as e:
+            raise JobError(str(e)) from e
+        refs = [SkillRef.model_validate(r) for r in refs]
+    if refs is not None:
         skills = []
-        known = {s.name or (Path(s.path).name if s.path else None) for s in env.skills}
         total = 0
-        for ref in v.skills:
+        for ref in refs:
             if ref.name:
                 if ref.name not in known:
                     raise JobError(f"skill '{ref.name}' isn't one of environment {env.name}'s "
@@ -1471,16 +1487,30 @@ async def apply_overlay(fleet: Fleet, prov: Any, sb: Sandbox, spec: EnvSpec, har
 
 
 def effective_spec(fleet: Fleet, sb: Sandbox, spec: EnvSpec) -> EnvSpec:
-    """The environment as a trial's variant sees it, for code that reads instructions from the spec rather than the
-    sandox (harden.py's hangar-owned settings for a turn that asks)."""
+    """The environment as a trial's variant sees it, for code that reads instructions or skills from the spec rather
+    than the sandbox (harden.py's hangar-owned settings for a turn that asks; the manifest's declared skills and
+    instructions, so a variant's `skills` and `skills_remove` show as what it declares)."""
+    from hangar.envspec import Skill, skill_name
+
     try:
         o = overlay_for(fleet, sb)
     except Exception:  # noqa: BLE001
         return spec
-    if o is None or o.get("instructions") is None:
+    if o is None:
         return spec
-    return spec.model_copy(update={"agent_config": spec.agent_config.model_copy(
-        update={"instructions": o["instructions"]})})
+    update: dict[str, Any] = {}
+    if o.get("instructions") is not None:
+        update["agent_config"] = spec.agent_config.model_copy(update={"instructions": o["instructions"]})
+    if o.get("skills") is not None:
+        by_name = {skill_name(x): x for x in spec.skills}
+        skills = []
+        for x in o["skills"]:
+            if x.get("source") == "environment" and x["name"] in by_name:
+                skills.append(by_name[x["name"]])
+            elif str(x.get("source") or "").startswith("path:"):
+                skills.append(Skill(path=x["source"][5:], name=x["name"]))
+        update["skills"] = skills
+    return spec.model_copy(update=update) if update else spec
 
 
 async def prepare_trial(jobs: JobService, job: Job, s: Session) -> None:

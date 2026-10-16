@@ -63,6 +63,13 @@ If you decline the form, you aren't asked about that approval again. It stays pe
 
 A client without elicitation sees `pending_approvals` in `wait_for_turn`, `get_session` and `get_job`, and answers with `answer_approval(ref, approval, decision, message)`. To steer or interrupt, use `steer_turn(ref, message, interrupt=false)`, where `ref` is a job id or a session name.
 
+### Taint
+
+Every turn records whether the agent has read untrusted content (a web page, an untrusted MCP server's result, an
+untrusted issue): `taint` on the turn, the session and its job ([security.md](security.md#taint)). It is sticky
+across turns, follow-ups and forks. Approvals don't use it yet: #130 makes `git push`, `gh pr create` and fetches to a
+host after an untrusted read count as risky under `ask` and `deny-risky`.
+
 ## REST
 
 | Route | Body |

@@ -892,6 +892,35 @@ async def test_a_trial_never_resizes_the_environments_warm_pool(fleet, tmp_path,
     assert len(refills) == 1
 
 
+def test_a_variants_skills_remove_shows_in_the_manifests_declared_skills(fleet, world, tmp_path):
+    """#132: Variant.skills_remove drops named skills (from its own set, else the environment's), and the trial's
+    manifest declares exactly what remains."""
+    from hangar.jobs import JobError
+    from hangar.models import Sandbox
+
+    fleet.catalog.dirs.insert(0, world["envs"])
+    fleet.catalog.reload()
+    env = fleet.catalog.get("tenv")
+    o = experiments._overlay(env, experiments.Variant(skills_remove=["beta"]))
+    assert [(s["name"], s["source"]) for s in o["skills"]] == [("alpha", "environment")]
+    with pytest.raises(JobError, match=r"skills_remove names gamma.*known: alpha, beta"):
+        experiments._overlay(env, experiments.Variant(skills_remove=["gamma"]))
+    both = experiments._overlay(env, experiments.Variant(skills=[{"name": "alpha"}, {"name": "beta"}],
+                                                         skills_remove=["alpha"]))
+    assert [s["name"] for s in both["skills"]] == ["beta"]
+    # the trial's sandbox: its manifest's declared skills are the variant's
+    sb = Sandbox(name="t", environment="tenv", provider="docker",
+                 labels={experiments.EXP_LABEL: "job-x", experiments.VARIANT_LABEL: "v", "hangar.job": "job-t"})
+    fleet.store.kv_set(experiments.KV_TRIAL + "job-t", "job-x")
+    fleet.store.kv_set(f"{experiments.KV_OVERLAY}job-x:v", json.dumps(o))
+    m = manifest.build(fleet, env, "tagent", sb=sb)
+    jsonschema.validate(m, SCHEMA)
+    assert [x["name"] for x in m["skills"]["declared"]] == ["alpha"]
+    plain = manifest.build(fleet, env, "tagent")
+    assert {x["name"] for x in plain["skills"]["declared"]} == {"alpha", "beta"}
+    assert m["environment"]["spec_digest"] == plain["environment"]["spec_digest"]  # still the environment's
+
+
 def _digests_of(fleet, tmp_path, **over):
     """The manifest a new sandbox of a small environment would run claude-code with, the environment changed by
     `over` and its one skill's SKILL.md holding `skill` (default: 'Use alpha.')."""
