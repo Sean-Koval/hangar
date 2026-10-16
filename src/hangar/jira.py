@@ -1019,7 +1019,7 @@ class JiraFrontDoor:
         requester = f"jira:{account}"
         word = (rest.split() or [""])[0].lower()
         if command and word in ("approve", "reject"):
-            return self._decide(job, ref, word, person)
+            return await self._decide(job, ref, word, person, account)
         if job is not None and job.state == JobState.NEEDS_INPUT:
             return self._follow_up(job, rest or "Continue with the task.", requester, ref, person)
         if not command:
@@ -1044,13 +1044,16 @@ class JiraFrontDoor:
                 await api.close()
         return await self.start(cfg, issue_now, author, extra=rest)
 
-    def _decide(self, job: Job | None, ref: str, word: str, person: str) -> dict[str, Any]:
-        from hangar.triggers import approve, reject
+    async def _decide(self, job: Job | None, ref: str, word: str, person: str, account: str) -> dict[str, Any]:
+        from hangar import approvals
 
         if job is None or job.state != JobState.AWAITING_APPROVAL:
             return {"ignored": f"no job is waiting for approval on {ref}"}
-        try:
-            (approve if word == "approve" else reject)(self.jobs, job.id, f"jira:{person}")
+        try:  # --- approvals (#121): never the job's own person or requester
+            await approvals.decide(self.jobs, job.id, approvals.from_jira(account, person), word)  # type: ignore[arg-type]
+        except approvals.ApprovalRefused as e:  # audited by decide; say why on the issue
+            self.jobs._spawn(notify(self.jobs, job, ref, f"{person} can't {word} hangar job `{job.id}`: {e}", "note"))
+            return {"ignored": str(e)}
         except JobError as e:
             return {"ignored": str(e)}
         msg = (f"Approved by {person}. Hangar job `{job.id}` is queued." if word == "approve"

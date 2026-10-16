@@ -51,7 +51,7 @@ A job from an account linked to nobody **runs for the team**: team credentials, 
 
 One rule for every front door (GitHub issues and PRs, Slack, Jira, GitHub Projects):
 
-1. **A linked account acts as its person.** It is trusted: its work starts without approval, and it can approve others' work and answer questions. That gives it nothing its person can't already do over MCP, within their caps, budget and visibility.
+1. **A linked account acts as its person.** It is trusted: its work starts without approval, and it can answer questions and approve team jobs held at its front door (an outsider's). That gives it nothing its person can't already do over MCP, within their caps, budget and visibility. Releasing a person's held job (a spent daily cap) takes an admin or one of the repo policy's `approvers`, and nobody approves their own job, at any door ([who may approve](triggers.md#who-may-approve)).
 2. **Only a job's person continues it from a front door.** A person's job runs with their own login, so a follow-up (`/hangar …` on its PR or issue, a Slack thread reply, a Jira comment) or an answer to its question from anyone else is refused, saying whose job it is. An admin continues anyone's job with `hangar job follow-up`. A team job (no person) can be continued by anyone the front door trusts.
 3. **An account linked to nobody acts for the team**, and is trusted only by its source's own rule:
    - GitHub issues and PRs: author association owner, member or collaborator, or `HANGAR_GITHUB_TRUSTED` when set ([triggers.md](triggers.md#1-who-can-start-work-from-github));

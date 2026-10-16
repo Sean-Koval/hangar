@@ -252,6 +252,9 @@ class Settings(BaseSettings):
     github_trusted: list[str] = Field(default_factory=list)
     github_team_cache_seconds: int = 600
     job_approval_ttl_hours: float = 72  # an unapproved job is cancelled after this long
+    # --- approvals (#121): nobody approves their own job. `allow_solo` permits it while exactly one person exists
+    # (a single-person install, legacy tokens only), audited `self_approved: true` (approvals.py)
+    self_approval: Literal["deny", "allow_solo"] = "deny"
     # Signed inbound webhooks at /api/hooks/inbound/<source>: {"sentry": {"secret": "...", ...}} (docs/triggers.md)
     inbound_webhooks: dict[str, dict[str, Any]] = Field(default_factory=dict)
     inbound_max_body_bytes: int = 1_000_000

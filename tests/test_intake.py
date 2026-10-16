@@ -24,6 +24,7 @@ from hangar.frontdoor import ReplayGuard
 from hangar.github import verify_signature
 from hangar.jobs import Caller, JobService, SubmitJob, handle_github
 from hangar.models import Credential, CredentialKind, Job, JobState, Person
+from hangar.triggers import new_approval
 
 FIX = Path(__file__).parent / "fixtures" / "intake"
 SECRET = "jira-webhook-secret-0123456789"
@@ -425,10 +426,35 @@ async def test_jira_unlinked_sender_waits_for_a_linked_approval(door, monkeypatc
     assert "not linked" in res.json()["ignored"] and job.state == JobState.AWAITING_APPROVAL
     comment["comment"]["author"] = {"accountId": DANA, "displayName": "Dana Lee"}
     comment["timestamp"] += 1
+    people.add(svc.store, "dana", "Dana Lee")  # --- approvals (#121): a decider's person must exist
     res = await post(client, comment)
     assert res.json() == {"ok": True, "approved": job.id} and job.state == JobState.QUEUED
+    assert (job.approval.rule, job.approval.decided_person, job.approval.self_approved) == ("front_door", "dana", False)
     assert job.approval.decided_by == "jira:dana"
     await until(lambda: any("Approved by dana" in c for c in fake.jira_comments()), what="approved note")
+
+
+async def test_jira_approval_by_the_jobs_own_person_is_refused(door, monkeypatch):
+    """#121: a linked person's `/hangar approve` on their own held job (a spent daily cap) is refused with a comment
+    that says why, and audited as job.approve.refused; an admin's linked account approves it."""
+    svc, fake, client = door["svc"], door["fake"], door["client"]
+    people.add(svc.store, "dana", "Dana Lee")
+    job = svc.submit(SubmitJob(instructions="x", environment="base", deliver="none"),
+                     Caller(f"jira:{DANA}", f"jira:{DANA}", person="dana"), source="jira",
+                     source_ref=jira.ref_of("ABC-12"), approval=new_approval(svc, f"jira:{DANA}", "budget: cap spent"))
+    comment = fixture("jira_comment_created.json")
+    comment["comment"]["body"] = "/hangar approve"  # by Dana herself
+    res = await post(client, comment)
+    assert "nobody approves their own" in res.json()["ignored"] and job.state == JobState.AWAITING_APPROVAL
+    await until(lambda: any("dana can't approve" in c for c in fake.jira_comments()), what="refusal note")
+    [refused] = [e for e in svc.store.audit_tail(20) if e.action == "job.approve.refused"]
+    assert refused.target == job.id and refused.detail["self_approved"] is True
+    people.add(svc.store, "ada", role="admin")
+    link(monkeypatch, {("jira", DANA): "dana", ("jira", "557058:ada"): "ada"})
+    comment["comment"]["author"] = {"accountId": "557058:ada", "displayName": "Ada"}
+    comment["timestamp"] += 1
+    res = await post(client, comment)
+    assert res.json() == {"ok": True, "approved": job.id} and job.approval.rule == "admin"
 
 
 async def test_jira_comment_rules(door):

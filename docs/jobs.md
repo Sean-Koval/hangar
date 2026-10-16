@@ -101,7 +101,7 @@ hangar job cancel job-3fa2c1d0
 hangar job events job-3fa2c1d0 --follow    # what the agent is doing
 ```
 
-From an MCP client (Claude Code, Codex, …): `submit_job`, `get_job`, `list_jobs`, `follow_up_job`, `cancel_job`, `get_events`, `wait_for_turn(job)` to block with progress notifications until the turn ends, and `approve_job` / `reject_job` for jobs waiting for approval.
+From an MCP client (Claude Code, Codex, …): `submit_job`, `get_job`, `list_jobs`, `follow_up_job`, `cancel_job`, `get_events`, `wait_for_turn(job)` to block with progress notifications until the turn ends, and `approve_job` / `reject_job` for jobs waiting for approval (admins and the repo's policy approvers, with a login token, never on their own job: [who may approve](triggers.md#who-may-approve)).
 
 A `jobs` token can carry a budget cap (`hangar token create svc --scope jobs --max-cost 2`); its jobs never get more.
 
@@ -149,7 +149,7 @@ Then:
 - Hangar comments when it starts and when it finishes, with the summary, verification and PR link. The PR says `Closes #N`.
 - Comment `/hangar <message>` on the PR to continue in the same sandbox and branch.
 
-A `/hangar` comment or label from someone who isn't trusted (by default: not an owner, member or collaborator; or set `HANGAR_GITHUB_TRUSTED`) creates the job in `awaiting_approval`, and it runs only after a trusted `/hangar approve`. See [triggers.md](triggers.md). Only repos in `HANGAR_GITHUB_REPOS` are accepted, and GitHub's redelivery of the same event does not start a second job.
+A `/hangar` comment or label from someone who isn't trusted (by default: not an owner, member or collaborator; or set `HANGAR_GITHUB_TRUSTED`) creates the job in `awaiting_approval`, and it runs only after a trusted `/hangar approve`. A job held by a daily spend cap waits the same way, and only an admin or a repo policy approver other than its own person can release it. See [triggers.md](triggers.md#who-may-approve). Only repos in `HANGAR_GITHUB_REPOS` are accepted, and GitHub's redelivery of the same event does not start a second job.
 
 Jobs can also start from other systems' webhooks and on a schedule: see [triggers.md](triggers.md).
 
