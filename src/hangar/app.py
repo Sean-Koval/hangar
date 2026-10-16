@@ -376,6 +376,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="hangar", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None,
                   openapi_url=None)
     app.state.hangar = h
+    app.state.mcp = mcp  # --- scope parity (#122): tests read its tools and resources
     oauth, rm_url = _setup_oauth(app, h)
     app.state.oauth = oauth
     app.mount("/mcp", MCPAuthMiddleware(mcp_asgi, h.auth, oauth, rm_url))
@@ -458,6 +459,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return Caller(p.name, p.id, restricted=True, callback_secret=p.callback_secret,
                           max_budget=p.max_budget, person=p.person)
         raise HTTPException(403, f"token scopes {p.scopes} do not allow jobs")
+
+    async def admin_job_caller(request: Request) -> Caller:
+        """job_caller for admin tokens only: routes that need the caller's ownership key but refuse `jobs` service
+        tokens (--- scope parity, #122: the refusal is in the dependency, where tests/test_scope_parity.py reads it)."""
+        c = await job_caller(request)
+        if c.restricted:
+            raise HTTPException(403, "this needs an admin token")
+        return c
 
     def owner_filter(c: Caller) -> str | None:
         return c.owner if c.restricted else None
@@ -962,10 +971,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return [triggers.view_schedule(s) for s in triggers.list_schedules()]
 
     @app.post("/api/schedules")
-    async def schedule_create(body: ScheduleSpec, caller: Caller = J):
-        if caller.restricted:
-            raise HTTPException(403, "this needs an admin token")
-        c = caller
+    async def schedule_create(body: ScheduleSpec, c: Caller = Depends(admin_job_caller)):
         return triggers.view_schedule(triggers.create_schedule(body, owner=c.owner, requester=c.requester))
 
     @app.get("/api/schedules/{ref}")

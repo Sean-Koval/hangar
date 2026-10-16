@@ -158,10 +158,13 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
 
     guard = people.Guard(fleet, sessions, jobs, triggers)  # --- identity: members act on their own work only
 
-    def tool(scope: str | None = None):
+    def tool(scope: str | None = None, rule: str | None = None):
         """mcp.tool() that reports expected failures to the client instead of a generic error. The description is
         the docstring without its indentation; hints come from mcp_live.TOOL_HINTS. `scope` (e.g. "admin"): only
-        tokens holding it may call the tool (--- identity)."""
+        tokens holding it may call the tool (--- identity). `rule` names a check the tool makes itself instead
+        (e.g. "approvals.can_decide"). Both are recorded on the registered function as `__hangar_scope__` (default
+        "mcp": any token the MCP endpoint accepts) and `__hangar_guarded__`, which tests/test_scope_parity.py
+        checks against tests/fixtures/scope_matrix.yaml (#122)."""
 
         def deco(fn):
             if scope:  # --- identity
@@ -191,6 +194,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                     except EXPECTED as e:
                         raise ToolError(str(e).strip("'\"")) from e
             wrapped = observe.mcp_tool(fn.__name__, wrapped)  # --- observe: a span and /metrics per call
+            wrapped.__hangar_scope__ = rule or scope or "mcp"  # --- scope parity (#122)
+            wrapped.__hangar_guarded__ = True  # people.guarded above: a member's calls reach their own records only
             return mcp.tool(description=inspect.cleandoc(fn.__doc__ or ""),
                             annotations=live.TOOL_HINTS.get(fn.__name__))(wrapped)
 
@@ -918,14 +923,14 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         after this section still register."""
 
         # --- approvals (#121): who may decide is approvals.can_decide's, the same rule as REST's twins
-        @tool()
+        @tool(rule="approvals.can_decide")
         async def approve_job(job: str) -> live.JobOut:
             """Let a job in state awaiting_approval run; read it with get_job first. Admins and the repo's policy
             approvers only, with a login token, never on their own job."""
             return jobs.view(await approvals.decide(jobs, job, approvals.from_principal(identity.current.get()),
                                                     "approve"))
 
-        @tool()
+        @tool(rule="approvals.can_decide")
         async def reject_job(job: str) -> live.JobOut:
             """Drop a job that is waiting for approval; it is cancelled without running."""
             return jobs.view(await approvals.decide(jobs, job, approvals.from_principal(identity.current.get()),
