@@ -615,6 +615,26 @@ holds no job slot while it waits: a background task drives its stages and keeps 
 `result.data`, so a restart resumes it. A follow-up to it answers whichever of its agents asked a question.
 Cancelling it cancels both agents and removes the validation sandbox.
 
+## Root in the sandbox: `sudo`
+
+An environment spec's `sudo` (admin-set; a repo's own file can't set it) gives the sandbox user passwordless sudo, which
+makes the agent root whenever it likes. It is **`false` by default** (#124). With sudo the agent can rewrite files
+hangar owns (managed harness settings) and the [uid split](steering.md#the-uid-split) protects nothing.
+
+- **Install at build time.** `tools.apt`, mise and `setup` steps run as root in the image build, so the shipped
+  environments (`base`, `bare`, `python` and the rest) need no runtime root. A repo's `install` runs as the sandbox user
+  and should put what it installs inside the repo (`.venv`, `node_modules`).
+- **`sudo: true`** for an environment whose people need root at runtime (`apt-get install` while exploring). Keep
+  it for people's own sessions. On Docker, a job's sandbox runs with `no-new-privileges` under
+  `HANGAR_INTAKE_POSTURE=enforce` ([security.md](security.md#intake-posture)), so sudo fails there even with
+  `sudo: true`, as it always does on GKE (`allowPrivilegeEscalation: false`).
+- **Heavy environments** run dockerd as root, so `heavy: true` (or `tier: heavy`) implies `sudo: true`, and an explicit
+  `sudo: false` beside it is refused. Under `enforce`, an intake job on a heavy environment is refused unless the repo
+  policy sets `allow_heavy_for_intake: true` (`hangar repo set owner/repo --allow-heavy-for-intake`).
+- `hangar doctor` lists the environments with `sudo: true` and whether intake jobs run in them. A sandbox's manifest
+  records `permissions.sudo` and `permissions.no_new_privs`.
+
+
 ## MCP servers and trust
 
 An environment's `mcp:` servers are written into each harness's own config at claim ([guide.md](guide.md)). Each

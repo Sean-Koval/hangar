@@ -206,6 +206,18 @@ def _get(d: dict[str, Any], dotted: str) -> Any:
     return d
 
 
+def _no_new_privs(sb: Sandbox | None, pname: str | None) -> bool | None:
+    """--- #124: whether the sandbox's processes can't gain privileges (sudo fails): GKE pods always
+    (allowPrivilegeEscalation: false), except a heavy one with Docker (privileged in its VM); Docker as recorded at
+    create. None when unknown (no sandbox, another provider)."""
+    if sb is None:
+        return None
+    if pname == "kubernetes":
+        return not (sb.info.get("heavy") or {}).get("docker")
+    v = sb.info.get("no_new_privs")
+    return bool(v) if v is not None else (False if pname == "docker" else None)
+
+
 def pick(m: dict[str, Any], section: str) -> Any:
     """One section of a manifest: `a.b` (null when absent), or `a[*].{x,y}` (each item of list `a` with only its
     fields x and y, a missing one null; null when `a` isn't a list)."""
@@ -308,7 +320,11 @@ def build(fleet: Fleet, spec: EnvSpec, harness: str | None, *, s: Session | None
                    "harness_permission_checks": "off" if approvals == "auto" else "on",
                    "uid_split": split if turn is not None else None,
                    "hardened": bool(split and approvals != "auto") if turn is not None else None,
-                   "isolation": {k: iso.get(k) for k in ("mode", "split") if k in iso} or None}
+                   "isolation": {k: iso.get(k) for k in ("mode", "split") if k in iso} or None,
+                   # --- #124: the environment's sudo, and whether the sandbox ran with no-new-privileges (Docker
+                   # jobs under HANGAR_INTAKE_POSTURE=enforce; GKE pods always, allowPrivilegeEscalation: false)
+                   "sudo": spec.sudo,
+                   "no_new_privs": _no_new_privs(sb, pname)}
     egress: dict[str, Any] = {"declared": spec.egress.model_dump(mode="json") if spec.egress else None,
                               "default": settings.egress_default, "effective": info.get("egress")}
     if floor := (info.get("egress") or {}).get("floor"):  # --- intake posture (#123): raised for an intake job

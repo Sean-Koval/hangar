@@ -22,10 +22,12 @@ settings (harden.py), where the setup found the harness and the managed settings
 
 Only Docker can do this: its exec picks the uid (runc, gVisor and Kata alike), with no setuid binary in the sandbox.
 GKE's sandbox policy runs a pod as one non-root user without capabilities, so there is no second user to switch to;
-E2B is not wired up. A sandbox whose agent can become root (an environment with `sudo: true`, the default) gains
-nothing from it. Everything else runs as before, in one user, with a warning; HANGAR_UID_SPLIT=required makes `ask`
-and `deny-risky` turns fail there instead. Nothing is built into images: the user is added when a sandbox's first turn
-starts, so existing environments get it without a rebuild.
+E2B is not wired up. A sandbox whose agent can become root (an environment that sets `sudo: true`; the default is
+false since #124) gains nothing from it, unless the sandbox runs with no-new-privileges (a job's on Docker under
+HANGAR_INTAKE_POSTURE=enforce, posture.no_new_privs), where sudo fails. Everything else runs as before, in one user,
+with a warning; HANGAR_UID_SPLIT=required makes `ask` and `deny-risky` turns fail there instead.
+Nothing is built into images: the user is added when a sandbox's first turn starts, so existing environments get it
+without a rebuild.
 """
 
 from __future__ import annotations

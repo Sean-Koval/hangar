@@ -138,7 +138,9 @@ async def test_a_live_turn_works_the_same_through_envd(tmp_path, monkeypatch, en
     envs.mkdir()
     (envs / "liveenv.yaml").write_text(
         "name: liveenv\nbase: mirror.gcr.io/library/ubuntu:24.04\nharnesses: [live-claude]\nharness_mode: bake\n"
-        "resources: {cpus: 1, memory_gb: 1}\n")
+        # --- #124: single-user as before (sudo was the default), so the test reads the driver's files as the agent;
+        # the split's own transport is test_e2e_isolation_docker's
+        "sudo: true\nresources: {cpus: 1, memory_gb: 1}\n")
     s = Settings(data_dir=tmp_path / "data", env_dirs=[envs, ROOT / "envs"], reaper_interval_seconds=3600,
                  envd=envd, envd_dir=envd_dir, session_poll_seconds=0.2,
                  extra_ca_bundle=os.environ.get("HANGAR_EXTRA_CA_BUNDLE") or None)

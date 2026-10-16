@@ -283,9 +283,13 @@ class DockerProvider(Provider):
     async def create(self, sandbox: Sandbox, image: str, spec: EnvSpec | None = None) -> None:
         name = f"hangar-{sandbox.id}"
         net = network_for(self.settings, spec)  # --- egress
+        from hangar import posture  # --- #124: a job's sandbox runs with no-new-privileges, set when it starts
+
+        nnp = posture.no_new_privs(self.settings, sandbox)
         # --- envbuilds: a sandbox with services starts cold, attached to their network before it starts
+        # --- #124: so does one that needs no-new-privileges (warm containers were started without it)
         warm = await self._claim_warm(image, net) if spec and spec.warm_pool and not envservices.specs(sandbox) \
-            else None
+            and not nnp else None
         if warm is not None:
             # Labels are immutable in Docker; pool membership is the name prefix + label, so a
             # rename takes the container out of the pool and the store becomes the source of truth.
@@ -300,6 +304,7 @@ class DockerProvider(Provider):
         if warm is not None:
             sandbox.provider_ref = warm.id
             sandbox.info["warm"] = True
+            sandbox.info["no_new_privs"] = False
             sandbox.info["pool_image"] = image
             return
         labels = {LABEL: sandbox.id, "dev.hangar.env": sandbox.environment}
@@ -307,6 +312,9 @@ class DockerProvider(Provider):
         kw = self._run_kwargs(name, image, sandbox.resources, labels, hostname=sandbox.name,
                               packs=spec.packs if spec else None, net=net, egress_ip=ip)
         heavy.docker_kwargs(kw, spec)  # --- heavy: privileged, /var/lib/docker on a volume of its own
+        if nnp:  # --- #124: a job's sandbox: sudo (any setuid program) fails, as it does on GKE
+            kw["security_opt"] = [*(kw.get("security_opt") or []), "no-new-privileges"]
+        sandbox.info["no_new_privs"] = nnp
         try:
             if envservices.specs(sandbox):  # --- envbuilds
                 c = await envservices.docker_run(self, sandbox, kw)

@@ -120,6 +120,9 @@ def repo_set(
                                        "sandboxes (large and xlarge run on the heavy tier)."),
     max_profile: str | None = typer.Option(None, "--max-profile", help="The largest profile a job (label "
                                            "hangar.profile) or the repo's .hangar/environment.yaml may ask for."),
+    allow_heavy_for_intake: bool | None = typer.Option(
+        None, "--allow-heavy-for-intake/--no-allow-heavy-for-intake",
+        help="Let jobs from GitHub, Slack, Jira and webhooks run Docker on the heavy tier for this repo (#124)."),
     as_json: bool = typer.Option(False, "--json"),
 ):
     """Set the repo's defaults; what you don't pass is kept. Jobs that set a field themselves still win.
@@ -135,7 +138,8 @@ def repo_set(
                 ("risk_paths", risk_path or None),
                 ("require_stale_dismissal", require_stale_dismissal),  # --- trust
                 ("verify_reports", verify_report or None), ("rerun_flaky", rerun_flaky),  # --- testresults
-                ("heavy", heavy), ("profile", profile), ("max_profile", max_profile)):  # --- heavy
+                ("heavy", heavy), ("profile", profile), ("max_profile", max_profile),  # --- heavy
+                ("allow_heavy_for_intake", allow_heavy_for_intake)):  # --- #124
         if v is not None:
             body[k] = v
     if egress_mode is not None or egress_allow:  # --- egress
@@ -156,7 +160,7 @@ def repo_unset(repo: str = typer.Argument(...),
                                                              "merge_method, risk_paths, "
                                                              "require_stale_dismissal, verify_reports, "
                                                              "rerun_flaky, heavy, profile, "
-                                                             "max_profile). None: "
+                                                             "max_profile, allow_heavy_for_intake). None: "
                                                              "remove the repo's policy.")):
     """Clear fields of the repo's policy, or remove it."""
     r = _cli()._call("DELETE", "/api/repos/policy", params={"repo": repo, "field": fields or []})

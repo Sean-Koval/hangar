@@ -202,11 +202,13 @@ def prepare(fleet: Fleet, spec: EnvSpec, pname: str, d: Decision) -> EnvSpec:
                              f"({', '.join(allowed)})")
         if why := unsupported(fleet, pname):
             raise HeavyError(why)
-    if d.docker and not spec.sudo:
+    if d.docker and not spec.sudo and "sudo" in spec.model_fields_set:  # --- #124: unset is the default, not a no
         raise HeavyError(f"environment {spec.name} sets sudo: false, and dockerd runs as root inside the sandbox's VM")
     update: dict[str, Any] = {}
     if d.docker and not spec.heavy:
         update["heavy"] = True
+    if d.docker and not spec.sudo:
+        update["sudo"] = True
     if d.profile is not None and d.profile != spec.profile:
         if pname == "e2b":  # its templates are sized when they're built: one per environment
             raise HeavyError(f"on the e2b provider a sandbox has its environment's size; set profile: {d.profile} on "
@@ -225,7 +227,8 @@ def build_spec(fleet: Fleet, spec: EnvSpec, repo: str | None) -> EnvSpec:
         d = decide(fleet, spec, repo)
     except HeavyError:
         return spec
-    return spec.model_copy(update={"heavy": True}) if d.docker and spec.sudo else spec
+    ok = spec.sudo or "sudo" not in spec.model_fields_set  # --- #124: only an explicit sudo: false says no
+    return spec.model_copy(update={"heavy": True, "sudo": True}) if d.docker and ok else spec
 
 
 def variant(fleet: Fleet, spec: EnvSpec) -> bool:

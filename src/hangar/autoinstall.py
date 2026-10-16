@@ -734,6 +734,9 @@ local service's own password (`POSTGRES_PASSWORD: dev`) is a mock: record it und
 - Follow the repo's own tooling and its CI's steps. Don't change application code or tests to make a command pass; \
 when one can't work, say why.
 - Commit your work. Don't push and don't open a pull request: hangar validates and delivers it.
+- You have no root: `sudo` and `apt-get install` don't work in this sandbox (#124). When the repo needs a system \
+package, say which in your result (`note`) for an admin to add to the environment's `tools.apt`; install language \
+packages inside the repo instead.
 
 Finally write your result with `hangar-agent result '<json>'`: for each command its `name`, whether it `works`, \
 the secrets it is `blocked_by`, and a `note`; your `mocks` (the same as the file's); the `secrets_needed`.
