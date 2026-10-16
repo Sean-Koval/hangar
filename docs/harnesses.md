@@ -178,8 +178,9 @@ plugins:
   plugins, and `syncClaudeAiPlugins: false`, so none come from a claude.ai account.
 - **Hardened turns** (`ask`, `deny-risky` in a split sandbox) load them too ([steering.md](steering.md#hangar-owned-harness-settings)).
   The seed's plugins are the only ones: `enabledPlugins` comes from hangar's settings file alone, and
-  `CLAUDE_CODE_PLUGIN_CACHE_DIR` points at a directory of hangar's that the agent can't write, so Claude Code never
-  reads `~/.claude/plugins`. A plugin the environment's own settings enable from anywhere else still doesn't load,
+  `CLAUDE_CODE_PLUGIN_CACHE_DIR` points at a new, unguessable directory each turn (Claude Code creates it as it
+  starts, and must be able to write it), so Claude Code never reads `~/.claude/plugins` and nothing the agent left
+  behind is in it. A plugin the environment's own settings enable from anywhere else still doesn't load,
   and the turn says so.
 - **No updates mid-experiment**, three ways: `DISABLE_AUTOUPDATER=1` is in Claude Code's environment, which also stops
   plugin auto-update; Claude Code forces `autoUpdate` off for seed marketplaces and never writes to the seed

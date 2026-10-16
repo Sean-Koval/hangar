@@ -19,8 +19,11 @@ plugins. Verified with 2.1.296 (tests/test_harden_real_clis.py):
 * `strictKnownMarketplaces` and `disableSideloadFlags` count only in managed settings, not in `--settings` (and
   `disableSideloadFlags` would refuse the hardened turn's own `--mcp-config`). Hangar doesn't write managed settings,
   so a hardened turn shuts the agent's plugins out another way: `--setting-sources ''` (only hangar's
-  `enabledPlugins`) and `CLAUDE_CODE_PLUGIN_CACHE_DIR` on a directory of hangar's that the agent can't write
-  (harden.py), so the agent's `~/.claude/plugins` is never read at all.
+  `enabledPlugins`) and `CLAUDE_CODE_PLUGIN_CACHE_DIR` on a fresh directory per turn (`RUN_CACHE`, harden.py), so
+  the agent's `~/.claude/plugins` is never read at all. Claude Code must be able to write that directory (it records
+  the seed's marketplaces there; with a read-only one, verified as a non-root user, no plugin loads), so it can't be
+  one of hangar's: it is a new, unguessable path Claude Code creates as it starts, which nothing the agent left
+  behind can be in.
 
 Codex has no plugin bundle here: its skills stay in ~/.codex/skills (#139).
 """
@@ -45,6 +48,9 @@ HARNESS = "claude-code"
 # Seed directories and `syncClaudeAiPlugins` need Claude Code 2.1.273 or later (code.claude.com/docs/en/plugins/org);
 # the canary refuses a lock below it (canary.FLOORS).
 MIN_VERSION = "2.1.273"
+# A hardened turn's plugin cache: expanded by bash builtins alone as the harness starts (driver.LAUNCH evaluates the
+# environment, and nothing on the agent's PATH may run before the harness does), so each turn gets a new directory.
+RUN_CACHE = "/tmp/hangar-claude-plugins.$RANDOM$RANDOM$RANDOM.$$"
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 

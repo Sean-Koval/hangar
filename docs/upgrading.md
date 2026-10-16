@@ -18,7 +18,7 @@ Nothing to do: an environment without `plugins:` behaves as before, and its mani
   loaded in every turn, `ask` and `deny-risky` included ([harnesses.md](harnesses.md#plugins)). Plugins the
   environment's `~/.claude/settings.json` enables from anywhere else still don't load in those turns: move them into
   a local marketplace next to the spec and declare them.
-- Hardened Claude Code turns now run with `CLAUDE_CODE_PLUGIN_CACHE_DIR` on a directory of hangar's, so they read
+- Hardened Claude Code turns now run with `CLAUDE_CODE_PLUGIN_CACHE_DIR` on a new directory each turn, so they read
   nothing of `~/.claude/plugins`.
 - An environment whose `~/.claude/settings.json` has `extraKnownMarketplaces` gets `"autoUpdate": false` on each, so
   its image tag changes: prebuild it (`hangar images plan` / `hangar images build`) before the rollout.

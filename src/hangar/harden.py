@@ -19,9 +19,9 @@ sandbox, hangar decides all of that itself:
   CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 brings back the repository's CLAUDE.md and the environment's
   instructions. Skills stay off: their `allowed-tools` are permission rules the agent could write. Plugins load only
   from the environment's read-only seed (plugins.py, #136): `enabledPlugins` names the seed's plugins and nothing
-  else, and CLAUDE_CODE_PLUGIN_CACHE_DIR points at a directory of hangar's (`<run>.plugins`), so Claude Code never
-  reads ~/.claude/plugins, the agent's (review #69: a plugin registered there, with a PreToolUse hook that allows
-  every call, ran in a turn that asks).
+  else, and CLAUDE_CODE_PLUGIN_CACHE_DIR points at a new directory each turn (plugins.RUN_CACHE), so Claude Code
+  never reads ~/.claude/plugins, the agent's (review #69: a plugin registered there, with a PreToolUse hook that
+  allows every call, ran in a turn that asks).
 * **Codex** (0.162.1): `--disable hooks` (a command-line override outranks config.toml) and `approvalsReviewer: user`
   on the thread (the driver). Codex still loads `.rules` files from ~/.codex/rules and the repository's .codex/rules,
   even for an untrusted project, and has no switch to turn them off: a rule can let a command run without asking.
@@ -58,7 +58,7 @@ CODEX_RULES = ("Codex reads command rules from ~/.codex/rules and the repository
                "(docs/steering.md#hangar-owned-harness-settings)")
 # review(#69): Claude Code loads an enabled plugin (its hooks, skills, MCP servers) from what ~/.claude/plugins says,
 # which the agent can write; verified with 2.1.296, a plugin's PreToolUse hook then allows every call. --- #136: so a
-# hardened turn reads no ~/.claude/plugins at all (CLAUDE_CODE_PLUGIN_CACHE_DIR, hangar's), and loads only the seed's.
+# hardened turn reads no ~/.claude/plugins at all (CLAUDE_CODE_PLUGIN_CACHE_DIR, a new one), and loads only the seed's.
 CLAUDE_PLUGINS = ("Claude Code plugins the environment's settings enable outside its plugin seed don't load in a turn "
                   "that asks: they would come from ~/.claude/plugins, which the agent can write; declare them under "
                   "`plugins:` to load them from the read-only seed (docs/harnesses.md#plugins)")
@@ -156,8 +156,8 @@ def plan(fleet: Any, sb: Sandbox, h: Harness, run_id: str, wd: str, env: dict[st
         if foreign:  # review(#69)
             p.warnings.append(CLAUDE_PLUGINS)
         settings.update(plugins.settings(spec, h.name))
-        p.files[f"{run_id}.plugins"] = (None, 0o755)  # hangar's: the agent's ~/.claude/plugins is never read
-        base += f"\nexport CLAUDE_CODE_PLUGIN_CACHE_DIR={shlex.quote(r + '.plugins')}\n" + "".join(
+        # not the agent's ~/.claude/plugins: a new directory, named as the harness starts (unquoted on purpose)
+        base += f"\nexport CLAUDE_CODE_PLUGIN_CACHE_DIR={plugins.RUN_CACHE}\n" + "".join(
             f"export {k}={shlex.quote(v)}\n" for k, v in plugins.env(spec, h.name).items())
         p.files[f"{run_id}.settings.json"] = (json.dumps(settings).encode(), 0o644)
         p.files[f"{run_id}.mcp.json"] = (json.dumps(kept.get("claude_mcp") or {"mcpServers": {}}).encode(), 0o644)

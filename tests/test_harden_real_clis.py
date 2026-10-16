@@ -314,10 +314,11 @@ def _seed(tmp: Path, monkeypatch, spec: EnvSpec) -> Path:
 
 
 def _exports(text: str) -> dict[str, str]:
-    import shlex
-
-    return {k: v for line in text.splitlines() if line.startswith("export ")
-            for k, _, v in [shlex.split(line.removeprefix("export "))[0].partition("=")]}
+    """What the hardened turn's environment file sets, evaluated as driver.LAUNCH evaluates it."""
+    out = subprocess.run(["bash", "-c", 'set -a; eval "$1"; set +a; env -0', "_", text], capture_output=True,
+                         check=True, env={"PATH": os.environ["PATH"]}).stdout.decode()
+    names = {ln.removeprefix("export ").split("=", 1)[0] for ln in text.splitlines() if ln.startswith("export ")}
+    return {k: v for k, _, v in (x.partition("=") for x in out.split("\0") if x) if k in names}
 
 
 def _agent_plugins(home: Path, tmp: Path, ran: Path) -> None:
@@ -376,9 +377,9 @@ def test_claude_seed_plugins_load_and_the_agents_dont(tmp_path, monkeypatch, app
                 (runs / rel).mkdir()
             else:
                 (runs / rel).write_bytes(data)
-        (runs / "run-00000001.plugins").chmod(0o555)  # hangar's user's: the agent can't write it
         env.update(_exports((runs / "run-00000001.agent-env").read_text()))
-        assert env["CLAUDE_CODE_PLUGIN_CACHE_DIR"] == str(runs / "run-00000001.plugins")
+        cache = env["CLAUDE_CODE_PLUGIN_CACHE_DIR"]  # a new directory, not the agent's ~/.claude/plugins
+        assert cache.startswith("/tmp/hangar-claude-plugins.") and not Path(cache).exists()
         argv = [*head, *harden.claude_flags(str(runs / "run-00000001"), str(work), memory=False)]
     try:
         p, lines, _ = _driver(tmp_path, "claude", approvals, argv, work, env)

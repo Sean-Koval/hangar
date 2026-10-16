@@ -140,13 +140,16 @@ def test_a_hardened_turn_loads_the_seeds_plugins_and_reads_no_plugins_of_the_age
     settings = json.loads(p.files["run-0000beef.settings.json"][0])
     assert settings["enabledPlugins"] == {"workflow@team": True} and settings["syncClaudeAiPlugins"] is False
     assert settings["permissions"] == {"allow": ["Bash(make *)"]} and settings["hooks"]["Stop"]  # the gate stays
-    r = f"{isolation.RUNS}/run-0000beef"
-    assert p.files["run-0000beef.plugins"] == (None, 0o755)  # hangar's user's, so the agent can't write it
     env = p.files["run-0000beef.agent-env"][0].decode()
-    assert f"export CLAUDE_CODE_PLUGIN_CACHE_DIR={r}.plugins\n" in env
+    assert f"export CLAUDE_CODE_PLUGIN_CACHE_DIR={plugins.RUN_CACHE}\n" in env  # not ~/.claude/plugins
     assert f"export CLAUDE_CODE_PLUGIN_SEED_DIR={plugins.SEED}\n" in env
     assert "export CLAUDE_CODE_SYNC_PLUGIN_INSTALL=1\n" in env
-    assert "{r}.plugins" in isolation.CLEANUP  # gone with the run
+    # a new directory each turn, named by bash builtins as the harness starts (nothing on the agent's PATH runs)
+    import subprocess
+
+    got = {subprocess.run(["bash", "-c", f"export X={plugins.RUN_CACHE}; printf %s \"$X\""], capture_output=True,
+                          text=True, env={}).stdout for _ in range(3)}
+    assert len(got) == 3 and all(g.startswith("/tmp/hangar-claude-plugins.") for g in got)
 
 
 def test_a_hardened_turn_still_drops_plugins_from_outside_the_seed(tmp_path):
