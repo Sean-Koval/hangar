@@ -4,4 +4,5 @@
 name: hangar-jobs
 extends: hangar
 description: hangar repo for jobs, with model credentials for each harness and the repo-scoped GitHub token for pushing
-credentials: [claude-pro, codex-chatgpt, openrouter, gcp-vertex-agy, github-hangar]
+# API keys only: jobs never use a subscription login (docs/team.md#subscription-logins).
+credentials: [claude-api, codex-api, openrouter, gcp-vertex-agy, github-hangar]

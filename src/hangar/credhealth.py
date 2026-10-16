@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 log = logging.getLogger("hangar.credhealth")
 
 WARN_DAYS = 14
+ROTATE_DAYS = 90  # --- automation (#128): shared tokens with no expiry (the Jira Automation token) are rotated by then
 CLAUDE_TOKEN_DAYS = 365  # `claude setup-token`: "a one-year OAuth token"
 TIMEOUT = 30.0  # per command
 STATUS_MAX_AGE = 3600.0  # `hangar status` rechecks results older than this
@@ -86,6 +87,12 @@ def has_check(c: Credential) -> bool:
     if c.harness == "codex" and c.kind in (CredentialKind.AUTH_FILE, CredentialKind.API_KEY):
         return True
     return c.kind == CredentialKind.GENERIC and (c.file_path or "").endswith("gcp-sa.json")
+
+
+def age_days(c: Credential) -> float:
+    """--- automation (#128): days since the credential's value was last stored (rotated). Storing it again with
+    `hangar cred add` starts the count over."""
+    return max(0.0, (now() - (c.updated_at or c.created_at)) / 86400)
 
 
 # ====================================================================== the checks

@@ -423,6 +423,11 @@ class JobApproval(BaseModel):
     decided_by: str | None = None
     decided_at: float | None = None
     decision: Literal["approved", "rejected", "expired"] | None = None
+    # --- approvals (#121): the deciding person, whether it was their own work (HANGAR_SELF_APPROVAL=allow_solo), and
+    # the rule that let them decide: admin | repo_approver | front_door | solo | system (approvals.can_decide)
+    decided_person: str | None = None
+    self_approved: bool = False
+    rule: str | None = None
 
 
 # --- workstream D: forks/best-of-N
@@ -625,6 +630,8 @@ class SessionTurn(BaseModel):
     cache_wait_seconds: float | None = None
     # --- interfaces: the digest of the effective harness manifest captured as the turn started (manifest.py)
     manifest: str | None = None
+    harness_digest: str | None = None  # and its two halves (#131): the harness's, the environment's
+    environment_digest: str | None = None
     # --- taint (#129): {"tainted": true, "first_seq": n, "sources": [{"kind", "seq", "ref"}...]} once the turn has
     # read untrusted content (first_seq 0: it started tainted, from its context or an earlier turn); None: it hasn't
     taint: dict[str, Any] | None = None
@@ -681,6 +688,7 @@ class Session(BaseModel):
     approvals: ApprovalPolicy | None = None  # --- workstream steer: unset = the environment's, else HANGAR_APPROVALS
     cache: CachePolicy | None = None  # --- overnight/cache: unset = the environment's, else HANGAR_CACHE
     person: str | None = None  # --- identity: the owning person; a job's session has its job's
+    warnings: list[str] = Field(default_factory=list)  # --- #125: e.g. a subscription login in its sandbox
     # --- canary (pins.py): pinned at creation. The policy `model` was resolved from (`model` is then its concrete
     # id), and the locked version of the harness's CLI: a turn on another version hands off instead of resuming.
     model_policy: str | None = None

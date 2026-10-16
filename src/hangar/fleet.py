@@ -36,6 +36,7 @@ from hangar import k8sgc as k8sgc  # --- durable
 from hangar import metrics as metrics  # --- reconciler
 from hangar import modelpolicy as modelpolicy  # --- canary: `model: frontier` resolved to an id
 from hangar import opstatus as opstatus  # --- clouddoctor: the day's failures and credential health in the overview
+from hangar import posture as posture  # --- intake posture (#123): an intake job's egress floor
 from hangar import power as power  # --- ops: the sandbox pools' power schedule
 from hangar import reconciler as reconciler  # --- reconciler
 from hangar import slo as slo  # --- clouddoctor: create times by path, for `hangar status`
@@ -659,6 +660,7 @@ class Fleet:
         push_branch: str | None = None,
         tier: str | None = None,
         person: str | None = None,  # --- identity: the owning person (people.py); picks their own credentials
+        purpose: str | None = None,  # --- #125: automated | interactive (teamcreds.resolve); None: from the labels
     ) -> Sandbox:
         """`progress` gets short plain-language updates while the sandbox starts (image build, waiting for a
         node, cloning...), so callers can show where the time goes. `push_branch` (default: `work_branch`) is
@@ -702,8 +704,12 @@ class Fleet:
         # --- identity: never another person's credential; the person's own one for this harness when they have it
         # --- teamcreds: else the team's (the repo policy's `credentials`), waiting while every login is leased.
         # Nothing awaits from here to broker.acquire, so the free login it picks is still free there.
-        cred_names = await teamcreds.for_sandbox(self, cred_names, person, hname, credentials is not None,
-                                                 repo or (spec.repo.url if spec.repo else None), progress)
+        # --- #125: a job's, a trial's or a grader's sandbox (or a fork of one) is automated: no subscription login
+        use, strict = teamcreds.purpose_of(purpose, labels)
+        resolved = await teamcreds.for_sandbox(self, cred_names, person, hname, credentials is not None,
+                                               repo or (spec.repo.url if spec.repo else None), progress,
+                                               purpose=use, strict=strict)
+        cred_names = resolved.names
         cred_names = delivery.clone_credentials(self, cred_names, labels or {})  # --- least-privilege: builds
         for c in [*cred_names, *spec.secrets.values()]:
             self.broker.get(c)  # fail fast on typos
@@ -728,6 +734,9 @@ class Fleet:
             created_by=actor,
             person=person,  # --- identity
         )
+        if resolved.warnings:  # --- #125: shown on the sandbox, its session, its job and the turn manifests
+            sb.info["credential_warnings"] = list(resolved.warnings)
+            sb.info.setdefault("warnings", []).extend(resolved.warnings)
         if hname:
             sb.info["harness"] = hname
             # --- canary: the environment's model for it, a policy resolved now and pinned for the sandbox's runs
@@ -738,6 +747,9 @@ class Fleet:
         self.reconciler.own(sb.id, "create")  # --- reconciler: this task owns the row until it settles
         self.store.put(sb)
         self.audit(actor, "sandbox.create", sb.id, environment=environment, provider=pname, name=sb.name)
+        if resolved.warnings:
+            self.audit(actor, "sandbox.subscription_login", sb.id, purpose=use, warning=resolved.warnings[0],
+                       credentials=[c for c in cred_names if teamcreds.is_subscription_name(self.store, c)])
         def stage(msg: str) -> None:
             sb.info["stage"] = msg
             reconciler.note_stage(sb, msg)  # --- reconciler: the flight record keeps where it went
@@ -777,8 +789,9 @@ class Fleet:
             stage("starting the sandbox")
             with observe.span("sandbox.start", {"hangar.sandbox.id": sb.id, "hangar.provider": pname}):  # --- observe
                 # image may be a snapshot ref (forks); --- envbuilds: a build's own template on Kubernetes
-                await prov.create(sb, image, experiments.provider_spec(  # --- interfaces: not from a warm pool
-                    envbuilds.EnvBuilds.provider_spec(self._warm(spec), sb), sb))
+                await prov.create(sb, image, posture.provider_spec(  # --- intake posture: the floor's network
+                    self.settings, experiments.provider_spec(  # --- interfaces: not from a warm pool
+                        envbuilds.EnvBuilds.provider_spec(self._warm(spec), sb), sb), sb))
             self.store.put(sb)
             await self._wait_running(prov, sb, stage=stage)
             if _parent:
@@ -810,7 +823,8 @@ class Fleet:
             # --- review(#114): nor from a trial's (it took nothing from the pool, and its spec mounts one pack)
             # --- integration(wave 4): `pick` always answers a Pick (truthy); no build image means the pool's image
             if self._warm(spec).warm_pool and pname in self.providers and _image is None \
-                    and not (build and build.image) and not experiments.selected_packs(sb):
+                    and not (build and build.image) and not experiments.selected_packs(sb) \
+                    and posture.floor_of(sb.labels) is None:  # --- intake posture: it took nothing from the pool
                 asyncio.create_task(self._refill(self._warm(spec), pname, image))
             self.reconciler.disown(sb.id)  # --- reconciler
             return sb

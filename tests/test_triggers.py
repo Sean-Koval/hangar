@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import tests.test_jobs as tj
+from hangar import people
 from hangar.jobs import Caller, JobError, JobService, SubmitJob, handle_github
 from hangar.models import CredentialKind, JobState, ScheduledJob
 from hangar.triggers import (
@@ -204,23 +205,77 @@ async def test_reject_expire_cancel_and_restart(intake, fleet):
 
 
 async def test_approve_over_mcp_and_rest(intake, fleet, settings):
+    """#121: over MCP, approving takes an admin person (or a repo approver) with a login token: not a bare caller,
+    not an `mcp`-only token, not a member, and never on their own job. tests/test_approvals.py has the parity."""
     from mcp import Client
 
+    import hangar.identity as identity
+    from hangar.auth import Principal
     from hangar.mcp_server import build_mcp
 
-    def held() -> str:
+    admin = Principal("ops", "tok-o", ["admin"], person="owner", role="admin")
+    connect = Principal("cc", "tok-c", ["mcp"], person="owner", role="admin")  # what `hangar connect` writes
+    member = Principal("alice-laptop", "tok-a", ["user"], person="alice", role="member")
+    people.add(intake.store, "alice")
+
+    def held(person: str | None = None) -> str:
         return intake.submit(SubmitJob(instructions="x", environment="jobenv", deliver="none"),
-                             Caller("github:rando", "github:rando"), source="github",
+                             Caller("github:rando", "github:rando", person=person), source="github",
                              approval=new_approval(intake, "github:rando", "untrusted")).id
 
-    a, b = held(), held()
+    async def call(c, p, tool, job):
+        tok = identity.current.set(p)
+        try:
+            return await c.call_tool(tool, {"job": job})
+        finally:
+            identity.current.reset(tok)
+
+    a, b, own, mine = held(), held(), held("owner"), held("alice")
     async with Client(build_mcp(fleet, intake, triggers=Triggers(intake))) as c:
-        out = json.loads((await c.call_tool("approve_job", {"job": a})).content[0].text)
-        assert out["state"] == "queued" and out["approval"]["decided_by"] == "mcp"
-        assert json.loads((await c.call_tool("reject_job", {"job": b})).content[0].text)["state"] == "cancelled"
-        err = await c.call_tool("approve_job", {"job": b})
+        for p, job, why in ((connect, a, "login token"), (member, mine, "nobody approves their own"),
+                            (member, a, "no job"), (admin, own, "nobody approves their own")):
+            err = await call(c, p, "approve_job", job)
+            assert err.is_error and why in err.content[0].text, (p.name, err.content[0].text)
+        out = json.loads((await call(c, admin, "approve_job", a)).content[0].text)
+        assert out["state"] == "queued" and out["approval"]["decided_by"] == "ops"
+        assert (out["approval"]["decided_person"], out["approval"]["rule"]) == ("owner", "admin")
+        assert json.loads((await call(c, admin, "reject_job", b)).content[0].text)["state"] == "cancelled"
+        err = await call(c, admin, "approve_job", b)
         assert err.is_error and "not waiting for approval" in err.content[0].text
     assert intake._queue.qsize() == 1
+    acts = [e.action for e in intake.store.audit_tail(50)]
+    assert acts.count("job.approve.refused") == 3  # the hidden job answered "no job", without an audit entry
+
+
+async def test_a_linked_person_cant_approve_their_own_job_from_github(intake, fleet):
+    """#121: `/hangar approve` by the job's own linked person (here: held by their daily cap) is refused with a
+    comment saying why and audited as job.approve.refused; another admin's linked account approves it."""
+    people.add(intake.store, "dana")
+    people.link(intake.store, "dana", "github", "4242")
+    people.add(intake.store, "ada", role="admin")
+    people.link(intake.store, "ada", "github", "1")
+    job = intake.submit(SubmitJob(instructions="x", environment="jobenv", deliver="none"),
+                        Caller("github:dana", "github:dana", person="dana"), source="github",
+                        source_ref="github:o/r#41", approval=new_approval(intake, "github:dana", "budget: cap spent"))
+
+    def approve(login: str, uid: int) -> dict:
+        body = _comment(_issue(41), "/hangar approve", login, "MEMBER")
+        body["comment"]["user"]["id"] = uid
+        return body
+
+    res = await handle_github(intake, "issue_comment", "d-41", approve("dana", 4242))
+    assert "nobody approves their own" in res["ignored"] and job.state == JobState.AWAITING_APPROVAL
+    await asyncio.sleep(0.05)
+    assert any("@dana can't approve" in c and "nobody approves their own" in c for c in intake.hooks.comments())
+    [refused] = [e for e in intake.store.audit_tail(20) if e.action == "job.approve.refused"]
+    assert refused.target == job.id and refused.detail["decided_person"] == "dana" and refused.detail["self_approved"]
+    # a collaborator linked to nobody can't release a person's held work either: that's for admins and approvers
+    assert "only an admin" in (await handle_github(intake, "issue_comment", "d-42",
+                                                   approve("sean", 99)))["ignored"]
+    assert await handle_github(intake, "issue_comment", "d-43", approve("ada-gh", 1)) == {"ok": True,
+                                                                                          "approved": job.id}
+    assert (job.approval.decided_by, job.approval.decided_person, job.approval.rule) == ("github:ada-gh", "ada",
+                                                                                         "admin")
 
 
 def test_approve_rest_routes(settings):

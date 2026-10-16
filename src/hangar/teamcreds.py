@@ -14,6 +14,12 @@
 * **Logins one sandbox holds at a time.** A Codex ChatGPT login rotates its refresh token, so it is leased to one
   sandbox (broker.acquire). Several logins of one kind are a pool: a sandbox takes a free one. When all are in use,
   a job or session waits and says which are busy (HANGAR_LOGIN_WAIT_SECONDS) instead of failing on the first.
+* **Subscription logins are interactive-only** (#125; docs/team.md#subscription-logins). Every resolution has a
+  purpose: `automated` (every job sandbox, whatever its front door, schedules, webhooks, experiment trials and
+  graders, forks of those) or `interactive` (a person's own `create_sandbox`, `new_session`, `run_agent`). Under
+  HANGAR_SUBSCRIPTION_LOGINS=interactive (the default) an automated resolution drops subscription logins from the
+  pool and refuses one named outright; an interactive one keeps it, with a warning. `any` lets jobs use them, with a
+  warning, and `hangar doctor` fails. Experiment trials and graders never get one, whatever the setting.
 """
 
 from __future__ import annotations
@@ -45,6 +51,12 @@ Mode = Literal["person", "team", "person_then_team"]
 MODES: tuple[str, ...] = ("person", "team", "person_then_team")
 DEFAULT_MODE: Mode = "person_then_team"
 MIGRATION_KEY = "teamcreds:migration"
+Purpose = Literal["automated", "interactive"]
+PURPOSES: tuple[str, ...] = ("automated", "interactive")
+PURPOSE_LABEL = "hangar.purpose"  # automated | interactive, on a sandbox whose create names no purpose
+INTERACTIVE_WARNING = "subscription login in a hangar sandbox: personal, interactive use only"
+ANY_WARNING = ("subscription login used by automated work (HANGAR_SUBSCRIPTION_LOGINS=any): the vendors' terms "
+               "don't allow automated use of consumer logins (docs/team.md#subscription-logins)")
 # Consumer sign-ins (`claude setup-token`, a ChatGPT or Google login): one person's, by the vendors' terms.
 SUBSCRIPTION_KINDS = frozenset({CredentialKind.OAUTH_TOKEN, CredentialKind.AUTH_FILE})
 POLL_SECONDS = 5.0  # how often a create waiting for a leased login looks again
@@ -79,6 +91,24 @@ def check_team(name: str, harness: str, kind: CredentialKind) -> None:
             "terms make it one person's (docs/team.md#what-the-vendors-allow). Keep it someone's own (hangar cred "
             f"owner {name} PERSON), and add an API key for the team: hangar cred add NAME --team --harness {harness} "
             "--kind api_key --file key.txt")
+
+
+class SubscriptionRefused(CredentialError):
+    """An automated resolution that would need a subscription login (#125). Its text reaches the job's thread."""
+
+
+def _hint(harness: str) -> str:
+    return (f"add one: hangar cred add NAME --harness {harness} --kind api_key --file key.txt (your own; an admin "
+            "adds --team for work no person owns)")
+
+
+def refusal(harness: str) -> str:
+    return (f"job needs an API-key credential for {harness}; subscription logins are interactive-only "
+            f"(docs/team.md#subscription-logins). {_hint(harness)}")
+
+
+def policy_of(settings: Settings | None) -> str:
+    return getattr(settings, "subscription_logins", "interactive") if settings is not None else "interactive"
 
 
 # ---------------------------------------------------------------------------- the migration
@@ -126,6 +156,7 @@ def mode_for(store: Store, repo: str | None) -> str:
 class Resolved(NamedTuple):
     names: list[str]
     busy: list[str]  # pools whose every login is leased to another sandbox, said plainly
+    warnings: list[str] = []  # --- #125: a subscription login went in (interactive, or HANGAR_SUBSCRIPTION_LOGINS=any)
 
 
 def _pick(chosen: list[Credential]) -> tuple[list[Credential], str | None]:
@@ -151,14 +182,24 @@ def _pick(chosen: list[Credential]) -> tuple[list[Credential], str | None]:
 
 def resolve(store: Store, names: list[str], person: str | None, harness: str | None, explicit: bool,
             is_agent: Callable[[str | None], bool], mode: str = DEFAULT_MODE,
-            settings: Settings | None = None) -> Resolved:
+            settings: Settings | None = None, purpose: Purpose = "interactive", strict: bool = False) -> Resolved:
     """The credentials a sandbox owned by `person` (None: a job no person owns) gets.
 
     `names` is what the caller named (`explicit`: used as named, except that another person's own is refused, or
     left out of a sandbox no one owns) or the environment's list for the selected harness. For the agent harness,
     and for git when the environment lists a git credential, the person's own replace the team's (`mode`); with no
-    own and no team one listed, every team credential for it is the pool."""
+    own and no team one listed, every team credential for it is the pool.
+
+    `purpose` (#125): an `automated` resolution under HANGAR_SUBSCRIPTION_LOGINS=interactive (or `strict`, for
+    experiment trials and graders, whatever the setting) leaves subscription logins out of every pool and refuses one
+    named outright (SubscriptionRefused); when that leaves the agent harness with nothing it raises too."""
     creds = {c.name: c for c in store.list(Credential)}
+    refuse = purpose == "automated" and (strict or policy_of(settings) != "any")
+    if refuse and explicit:
+        named = [n for n in names if n in creds and is_subscription(creds[n])]
+        if named:
+            raise SubscriptionRefused(
+                f"credential '{named[0]}' is a subscription login: " + refusal(creds[named[0]].harness))
     out: list[str] = []
     for n in names:
         c = creds.get(n)
@@ -168,7 +209,11 @@ def resolve(store: Store, names: list[str], person: str | None, harness: str | N
             continue
         out.append(n)
     if explicit:
-        return Resolved(out, [])
+        return Resolved(out, [], _warnings(creds, out, purpose))
+    dropped = False
+    if refuse:
+        dropped = any(n in creds and is_subscription(creds[n]) for n in out)
+        out = [n for n in out if n not in creds or not is_subscription(creds[n])]
     groups = [harness] if harness and is_agent(harness) else []
     if any(creds[n].harness == "git" for n in names if n in creds):
         groups.append("git")
@@ -179,7 +224,12 @@ def resolve(store: Store, names: list[str], person: str | None, harness: str | N
         team = [creds[n] for n in out if n in creds and creds[n].harness == g and creds[n].person is None] or \
             sorted((c for c in creds.values() if c.person is None and c.harness == g
                     and identity.exposure(c, settings) == "sandbox"), key=lambda c: c.name)
+        if refuse:  # --- #125: an API key of the person's, else the team's; never a subscription login
+            dropped = dropped or any(is_subscription(c) for c in (*own, *team))
+            own, team = [c for c in own if not is_subscription(c)], [c for c in team if not is_subscription(c)]
         chosen = own if mode == "person" else team if mode == "team" else (own or team)
+        if refuse and dropped and not chosen and g == harness:
+            raise SubscriptionRefused(refusal(g))
         if not chosen and mode == "person" and g == harness:
             raise CredentialError(
                 "this repo's policy says credentials: person, and "
@@ -192,11 +242,62 @@ def resolve(store: Store, names: list[str], person: str | None, harness: str | N
         keep = {c.name for c in chosen}
         out = [n for n in out if n not in creds or creds[n].harness != g or n in keep] + \
             [c.name for c in chosen if c.name not in out]
-    return Resolved(out, busy)
+    return Resolved(out, busy, _warnings(creds, out, purpose))
+
+
+def purpose_of(purpose: str | None, labels: dict[str, str] | None) -> tuple[Purpose, bool]:
+    """(purpose, strict) for a sandbox create (#125). Named by the caller, else from its labels: a job's (and so a
+    best-of-N attempt's, a follow-up's, a fork's of either), an experiment trial's or a grader's sandbox is
+    automated. Trials and graders are strict: never a subscription login, whatever HANGAR_SUBSCRIPTION_LOGINS says."""
+    from hangar.experiments import EXP_LABEL, GRADER_LABEL
+
+    lb = labels or {}
+    strict = EXP_LABEL in lb or GRADER_LABEL in lb
+    purpose = purpose or lb.get(PURPOSE_LABEL)  # replay and fork sandboxes (part B) label themselves
+    if purpose is not None:
+        if purpose not in PURPOSES:
+            raise ValueError(f"purpose must be one of {', '.join(PURPOSES)}")
+        return ("automated" if strict else purpose), strict  # type: ignore[return-value]
+    return ("automated" if strict or "hangar.job" in lb else "interactive"), strict
+
+
+def is_subscription_name(store: Store, name: str) -> bool:
+    c = store.get(Credential, name)
+    return c is not None and is_subscription(c)
+
+
+def _warnings(creds: dict[str, Credential], names: list[str], purpose: str) -> list[str]:
+    """What a sandbox holding `names` is warned about: a subscription login in it at all (#125)."""
+    if not any(n in creds and is_subscription(creds[n]) for n in names):
+        return []
+    return [INTERACTIVE_WARNING if purpose == "interactive" else ANY_WARNING]
+
+
+def check_job(fleet: Fleet, environment: str, harness: str | None, person: str | None, repo: str | None,
+              strict: bool = False) -> None:
+    """Submit-time dry run of a job's resolution (#125): SubscriptionRefused when its person (or the team) has only
+    subscription logins for the harness, so the refusal shows at once, even while the pools are down. Anything else
+    (a missing environment, a `credentials: person` repo) is left to the claim, as before."""
+    try:
+        spec = fleet.catalog.get(environment)
+        hname = spec.pick_harness(harness)
+    except (KeyError, ValueError):
+        return
+    names = [c for c in dict.fromkeys(spec.credentials)
+             if fleet._cred_harness(c) in (hname, None) or not fleet._is_agent(fleet._cred_harness(c))]
+    try:
+        resolve(fleet.store, names, person, hname, False, fleet._is_agent,
+                mode_for(fleet.store, repo or (spec.repo.url if spec.repo else None)), fleet.settings,
+                purpose="automated", strict=strict)
+    except SubscriptionRefused:
+        raise
+    except CredentialError:
+        return
 
 
 async def for_sandbox(fleet: Fleet, names: list[str], person: str | None, harness: str | None, explicit: bool,
-                      repo: str | None, progress: Callable[[str], None] | None) -> list[str]:
+                      repo: str | None, progress: Callable[[str], None] | None, purpose: Purpose = "interactive",
+                      strict: bool = False) -> Resolved:
     """resolve(), waiting while every login of a pool is leased. Jobs and sessions (they pass `progress`) wait up to
     HANGAR_LOGIN_WAIT_SECONDS and say which logins are busy; a direct create fails at once with the same words.
 
@@ -206,9 +307,10 @@ async def for_sandbox(fleet: Fleet, names: list[str], person: str | None, harnes
     deadline = time.monotonic() + fleet.settings.login_wait_seconds
     said = None
     while True:
-        r = resolve(fleet.store, names, person, harness, explicit, fleet._is_agent, mode, fleet.settings)
+        r = resolve(fleet.store, names, person, harness, explicit, fleet._is_agent, mode, fleet.settings,
+                    purpose=purpose, strict=strict)
         if not r.busy:
-            return r.names
+            return r
         why = "; ".join(r.busy)
         if progress is None or time.monotonic() >= deadline or fleet.closing.is_set():
             raise CredentialError(
@@ -291,6 +393,65 @@ def _check(name: str, status: str, detail: str, fix: str | None = None) -> dict[
     return {"name": name, "status": status, "detail": detail, "fix": None if status == "ok" else fix}
 
 
+def _subscription_check(h: Any, creds: list[Credential]) -> dict[str, Any]:
+    """Automated paths that would get no usable credential with subscription logins interactive-only: mapped repos,
+    webhooks and schedules (with a person or none) per harness, and people whose only logins are subscriptions."""
+    s, store = h.settings, h.store
+    name = "subscription logins"
+    doc = "docs/team.md#subscription-logins"
+    if policy_of(s) == "any":
+        n = sorted(c.name for c in creds if is_subscription(c))
+        return _check(name, "fail", "HANGAR_SUBSCRIPTION_LOGINS=any lets jobs, schedules and webhooks run on "
+                      "subscription logins, which the vendors' terms reserve for one person's own interactive use"
+                      + (f" (stored: {', '.join(n)})" if n else ""),
+                      f"add API keys (hangar cred add NAME --harness HARNESS --kind api_key --file key.txt), then "
+                      f"unset HANGAR_SUBSCRIPTION_LOGINS; {doc}")
+    blocked: list[str] = []
+    sources = [(*x, None) for x in _no_person_sources(h)]
+    for sch in store.list(ScheduledJob):
+        t = sch.template or {}
+        if sch.person is not None and sch.enabled and isinstance(t.get("environment"), str):
+            sources.append((f"schedule {sch.name}", t["environment"], t.get("harness"), t.get("repo"), sch.person))
+    for what, env, wanted, repo, person in sources:
+        try:
+            spec = h.fleet.catalog.get(env)
+            harness = wanted if wanted in spec.agent_harnesses else spec.pick_harness(None)
+        except (KeyError, ValueError):
+            continue
+        if not harness or not h.fleet._is_agent(harness):
+            continue
+        names = [c for c in spec.credentials if h.fleet._cred_harness(c) in (harness, None)
+                 or not h.fleet._is_agent(h.fleet._cred_harness(c))]
+        try:
+            resolve(store, names, person, harness, False, h.fleet._is_agent, mode_for(store, repo), s,
+                    purpose="automated")
+        except SubscriptionRefused:
+            blocked.append(f"{what}: {env} ({harness})")
+        except CredentialError:
+            continue  # the team-credentials check reports it
+    only: list[str] = []
+    by_person: dict[str, dict[str, list[Credential]]] = {}
+    for c in creds:
+        if c.person and HARNESSES.get(c.harness) is not None and HARNESSES[c.harness].agent:
+            by_person.setdefault(c.person, {}).setdefault(c.harness, []).append(c)
+    for person, hs in sorted(by_person.items()):
+        for harness, cs in sorted(hs.items()):
+            if all(is_subscription(c) for c in cs):
+                only.append(f"{person} ({harness}: {', '.join(sorted(c.name for c in cs))})")
+    if not blocked and not only:
+        return _check(name, "ok", "subscription logins are interactive-only, and no job, schedule or webhook "
+                      "depends on one")
+    parts = []
+    if blocked:
+        parts.append("these would find only subscription logins, so their jobs fail: " + "; ".join(blocked))
+    if only:
+        parts.append("these people have only subscription logins, so their jobs (GitHub, Slack, Jira, schedules, "
+                     "submit_job) fail while their sessions work: " + ", ".join(only))
+    return _check(name, "warn", "; ".join(parts),
+                  f"add an API key for each (hangar cred add NAME --harness HARNESS --kind api_key --file key.txt; "
+                  f"--team for work no person owns); {doc}")
+
+
 def doctor_checks(h: Any) -> list[dict[str, Any]]:
     """`hangar doctor`: personal logins still shared, work no person owns that has no team credential, and the
     GitHub, Slack, Jira and GitHub Projects senders who start jobs often but are linked to nobody."""
@@ -357,7 +518,10 @@ def doctor_checks(h: Any) -> list[dict[str, Any]]:
                           if sources else "nothing runs for no one (no mapped repos, webhooks or "
                           "unowned schedules)"))
 
-    # 3. frequent senders linked to nobody
+    # 3. --- #125: subscription logins and automated work
+    out.append(_subscription_check(h, creds))
+
+    # 4. frequent senders linked to nobody
     since = now() - UNLINKED_DAYS * 86400
     seen: Counter[str] = Counter(j.requester for j in h.jobs.touched_since(since, created_at=Ge(since), person=None)
                                  if j.source in ("github", "slack", "jira", "github-projects")  # --- intake
