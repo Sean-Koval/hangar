@@ -659,7 +659,7 @@ def _driver_event(e: dict[str, Any]) -> list[RunEvent]:
     if t == "approval_request" and isinstance(aid, str):
         detail = e.get("detail") if isinstance(e.get("detail"), str) else ""
         data = _small({"id": aid, "tool": e.get("tool"), "status": "pending", "policy": e.get("policy"),
-                       "expires_at": e.get("expires_at")})
+                       "expires_at": e.get("expires_at"), "taint": e.get("taint")})  # --- taint (#130): why it asks
         data["detail"] = detail[:2200]  # whole (driver.shown): the person approving must see all of it
         return [RunEvent(kind="approval_request", text=_clip(f"{e.get('tool') or '?'}: {detail}"), data=data)]
     if t == "approval_resolved" and isinstance(aid, str) and e.get("decision") in _DECIDED:
@@ -673,6 +673,10 @@ def _driver_event(e: dict[str, Any]) -> list[RunEvent]:
         what = "steered" if t == "steer" else "interrupted"
         return [RunEvent(kind="progress", text=_clip(f"{what}: {text}" if text else what),
                          data=_small({"source": "hangar", "action": t, "command": aid}))]
+    if t == "taint":  # --- taint (#130): the driver saw the turn read untrusted content (a web tool)
+        ref = e.get("ref") if isinstance(e.get("ref"), str) else "the driver"
+        return [RunEvent(kind="progress", text=_clip(f"driver: tainted ({ref})"),
+                         data=_small({"source": "hangar", "action": "driver_taint", "ref": ref}))]
     if t == "verify":  # --- overnight/autofix: the driver's verify gate ran the job's check
         ok = e.get("passed") is True
         text = "the job's check passed" if ok else (f"the job's check failed (exit {e.get('exit_code')}); sent back "
@@ -919,11 +923,20 @@ class TurnWatcher:
                 self._taint_seen()
             from hangar.steer import track  # workstream steer: approvals asked and answered (import cycle)
 
-            if track(self.turn, keep):
+            if track(self.turn, keep, on_gate=self._gated):
                 self.save()
             from hangar import cache  # --- overnight/cache: a first response releases the turn's held siblings
 
             cache.watched(self.s.id, keep)
+
+    def _gated(self, a: Any) -> None:
+        """--- taint (#130): an approval the taint gate asked for was answered by the policy or a timeout."""
+        from hangar import taint
+        from hangar.steer import _sink  # import cycle
+
+        with contextlib.suppress(Exception):
+            taint.audit(self.fleet, f"{a.by or 'policy'}", _sink(a), a.status, self.s.id, run=self.turn.run_id,
+                        approval=a.id, why=a.taint)
 
     def _taint(self, evs: list[RunEvent]) -> bool:
         """--- taint (#129): note which of these events read untrusted content (one lookup per event). Their seq

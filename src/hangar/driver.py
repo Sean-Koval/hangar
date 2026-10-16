@@ -14,6 +14,10 @@ one-shot command, so attaching and resuming work as before. Standard library onl
   instead of being lost; one that landed before is still carried out (a late steer continues the turn).
 * Tool approvals follow `--approvals`: `auto` runs without prompts (today's behaviour), `ask` waits for hangar's
   answer and denies after `--approval-timeout` seconds, `deny-risky` answers at once from the rules in `risky()`.
+* Taint (#130): once the turn has read untrusted content (`--tainted` when it starts that way, hangar's signed
+  `taint` command, or a web tool call the driver sees in the stream), pushes, PR opening, fetches to a host and the
+  environment's MCP write tools are risky too (`taint_risky()`): denied under `deny-risky`, flagged to the person
+  under `ask`. Taint can only be set: no command clears it.
 * With `--as` (the uid split, hangar/isolation.py) the driver runs as hangar's own user and starts the harness as the
   agent's, with no capabilities and no_new_privs: the agent can't read the key, change the driver's files, or signal
   or trace it. Approval requests and answers also go to `<ctl>/approvals`, which only hangar's user can write: hangar
@@ -47,7 +51,7 @@ POLL = 0.1  # seconds between looks at the inbox while the harness is quiet
 MAX_COMMAND = 256 * 1024
 MAX_TEXT = 64_000
 DETAIL = 2000  # how much of a tool's input an approval request shows
-OPS = ("steer", "interrupt", "approve")
+OPS = ("steer", "interrupt", "approve", "taint")  # --- taint (#130): set only; nothing clears it
 ENDED = "the turn has ended"  # a command's answer when the harness is gone: hangar takes it as not delivered
 DECISIONS = ("allow", "deny", "allow_always")
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -357,6 +361,74 @@ def risky(tool: str, data: dict, cwd: str) -> str | None:
     return None
 
 
+# --- taint (#130): what needs a person once the turn has read untrusted content (the plan's sinks): a push, a PR, a
+# fetch to a host (data out, or a payload in), and MCP tools the environment marks as writes
+_TAINT_WEB = {"WebFetch", "WebSearch"}  # tools whose use taints the turn, seen in the harness's own stream
+_LOCAL_HOST = re.compile(r"^(localhost|127(\.\d+){3}|0\.0\.0\.0|\[?::1\]?)$", re.I)
+
+
+def _words(seg: str) -> list:
+    try:
+        words = shlex.split(seg)
+    except ValueError:  # a quote opened in another segment (`bash -lc 'a && git push'`): words without quotes
+        words = [w.strip("'\"") for w in seg.split()]
+    while words and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0]):
+        words = words[1:]
+    while words and os.path.basename(words[0]) in ("sudo", "env", "timeout", "time", "nice", "command", "exec"):
+        words = words[1:]
+        while words and (words[0].startswith("-") or re.fullmatch(r"\d+[smh]?|[A-Za-z_]\w*=.*", words[0])):
+            words = words[1:]
+    return words
+
+
+def _host_arg(words: list) -> str | None:
+    """A host a curl, wget or nc command names (not the sandbox itself)."""
+    for w in words[1:]:
+        if w.startswith("-"):
+            continue
+        m = re.match(r"^[a-z][a-z0-9+.-]*://(?:[^/@\s]*@)?(\[[^\]]+\]|[^/:?#\s]+)", w, re.I)
+        host = m.group(1) if m else (w.split("/", 1)[0].split(":", 1)[0] if re.match(
+            r"^[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?::\d+)?(/\S*)?$", w) else None)
+        if host and not _LOCAL_HOST.match(host):
+            return host.lower()
+    return None
+
+
+def taint_sink(tool: str, data: dict, write_tools: list | tuple = (), depth: int = 0) -> str | None:
+    """What a tool call sends out that needs a person after an untrusted read, or None: `git push`, `gh pr create`,
+    `curl`/`wget`/`nc` to a host, an MCP write tool (`write_tools`: fnmatch patterns of tool names)."""
+    import fnmatch
+
+    if any(fnmatch.fnmatchcase(tool, p) for p in write_tools or ()):
+        return f"the MCP write tool {tool}"
+    command = data.get("command")
+    if isinstance(command, list):
+        command = " ".join(str(c) for c in command)
+    if not isinstance(command, str):
+        return None
+    for seg in _SEGMENT.split(command):
+        words = _words(seg.strip())
+        if not words:
+            continue
+        head = os.path.basename(words[0])
+        flag = next((i for i, w in enumerate(words[1:3], 1) if re.fullmatch(r"-[a-z]*c[a-z]*", w)), None)
+        if depth < 3 and head in ("bash", "sh", "zsh", "dash") and flag is not None and len(words) > flag + 1:
+            if (why := taint_sink(tool, {"command": words[flag + 1]}, write_tools, depth + 1)) is not None:
+                return why  # `bash -lc '...'` (how Codex runs every command) looked into
+            continue
+        args = [w for w in words[1:] if not w.startswith("-")]
+        if head == "git":
+            sub = next((w for i, w in enumerate(words[1:], 1) if not w.startswith("-")
+                        and words[i - 1] not in ("-c", "-C")), None)
+            if sub == "push":
+                return "git push"
+        if head == "gh" and args[:2] == ["pr", "create"]:
+            return "gh pr create"
+        if head in ("curl", "wget", "nc", "ncat", "netcat") and (host := _host_arg(words)):
+            return f"{head} to {host}"
+    return None
+
+
 # ====================================================================== approvals and commands
 class Approval:
     def __init__(self, aid: str, key: object, tool: str, answer, expires: float):
@@ -371,6 +443,14 @@ class Driver:
         self.pending: dict = {}
         self.harness: Harness | None = None
         self.unanswered: set = set()  # commands taken whose outcome isn't known yet
+        self.tainted = bool(getattr(args, "tainted", False))  # --- taint (#130): only ever set
+        self.write_tools = list(getattr(args, "write_tool", None) or [])
+
+    def taint(self, ref: str) -> None:
+        """--- taint (#130): the turn has read untrusted content. Never undone."""
+        if not self.tainted:
+            self.tainted = True
+            self.out.event("taint", ref=clip(ref, 200))
 
     def cwd(self) -> str:
         """The turn's working directory: --cwd under the uid split, where the driver doesn't run in it."""
@@ -389,13 +469,18 @@ class Driver:
         policy = self.args.approvals
         what = data.get("command") if isinstance(data.get("command"), str) else data
         expires = time.time() + self.args.approval_timeout
+        # --- taint (#130): after an untrusted read, a push, a PR, a fetch to a host and MCP writes need a person
+        sink = taint_sink(tool, data, self.write_tools) if self.tainted and policy != "auto" else None
+        gate = {"taint": f"{sink}, after reading untrusted content"} if sink else {}
         self._approval("approval_request", id=aid, tool=tool, detail=shown(what), policy=policy,
-                       expires_at=round(expires))
+                       expires_at=round(expires), **gate)
         a = Approval(aid, key, tool, answer, expires)
         if policy == "ask":
             self.pending[aid] = a
             return
         why = risky(tool, data, self.cwd()) if policy == "deny-risky" else None
+        if why is None and sink:
+            why = f"{sink} after reading untrusted content (a person must allow it: approvals=ask)"
         self._answer(a, "deny" if why else "allow", ("Denied by hangar's deny-risky policy: " + why) if why else "",
                      "policy")
 
@@ -446,6 +531,9 @@ class Driver:
             else:
                 self.ctl.ack(cid, True)
 
+        if op == "taint":  # --- taint (#130): signed like every command, so the agent can't set or clear it
+            self.taint(str(args.get("ref") or "hangar"))
+            return done()
         if op == "approve":
             decision = args.get("decision")
             message = args.get("message") or ""
@@ -622,6 +710,10 @@ class Claude(Harness):
         elif t == "result":
             self.results += 1
             self.last = d
+        elif t == "assistant":  # --- taint (#130): a web tool's use taints the turn, whatever hangar sends
+            for c in (d.get("message") or {}).get("content") or []:
+                if isinstance(c, dict) and c.get("type") == "tool_use" and c.get("name") in _TAINT_WEB:
+                    self.drv.taint(f"web:{c.get('name')}")
         elif t == "control_request":
             self._control(d.get("request_id"), d.get("request") or {})
         elif t == "control_cancel_request":
@@ -881,6 +973,8 @@ class Codex(Harness):
             item = p.get("item") or {}
             if item.get("type") == "fileChange":
                 self.files[item.get("id")] = [c.get("path") for c in item.get("changes") or [] if isinstance(c, dict)]
+            if item.get("type") == "webSearch":  # --- taint (#130)
+                self.drv.taint("web:web_search")
             it = exec_item(item)
             if it:
                 self.emit({"type": "item.started" if m == "item/started" else "item.completed", "item": it})
@@ -1096,6 +1190,9 @@ def main(argv: list | None = None) -> int:
     ap.add_argument("--cwd", help="the turn's working directory (default: the current one)")
     ap.add_argument("--base-env", help="with --as: hangar's copy of the agent's ~/.hangar/env, used in its place; "
                                        "read and deleted at start (--- harden)")
+    ap.add_argument("--tainted", action="store_true", help="the turn starts having read untrusted content (#130)")
+    ap.add_argument("--write-tool", action="append", default=[],
+                    help="an MCP tool (fnmatch pattern) that writes: needs a person once tainted (#130)")
     ap.add_argument("command", nargs=argparse.REMAINDER, help="-- the harness command")
     args = ap.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command

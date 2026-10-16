@@ -67,8 +67,17 @@ A client without elicitation sees `pending_approvals` in `wait_for_turn`, `get_s
 
 Every turn records whether the agent has read untrusted content (a web page, an untrusted MCP server's result, an
 untrusted issue): `taint` on the turn, the session and its job ([security.md](security.md#taint)). It is sticky
-across turns, follow-ups and forks. Approvals don't use it yet: #130 makes `git push`, `gh pr create` and fetches to a
-host after an untrusted read count as risky under `ask` and `deny-risky`.
+across turns, follow-ups and forks. Once a turn is tainted, under `ask` and `deny-risky` these count as risky as well:
+
+- any `git push` (`bash -lc '...'` is looked into), and `gh pr create`;
+- `curl`, `wget` or `nc` to a host other than the sandbox itself;
+- the environment's MCP write tools: `mcp.<name>.write_tools`, fnmatch patterns of the server's tool names
+  (`write_tools: ["create_*", "update_*", "merge_*"]`).
+
+`deny-risky` denies them with "after reading untrusted content"; `ask` asks a person, and the request carries `taint`
+(why it asks). `auto` changes nothing. Intake jobs should run under `deny-risky`: they are tainted from turn 1
+([security.md](security.md#taint-gates)). The driver hears of the taint at the turn's start (`--tainted`), from
+hangar's signed `taint` command mid-turn, or from a web tool it sees in the stream; nothing clears it.
 
 ## REST
 

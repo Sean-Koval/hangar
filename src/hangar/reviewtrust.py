@@ -76,7 +76,9 @@ async def why_trusted(svc: JobService, job: Job, user: dict[str, Any], associati
         return why
     if job.person is None and await svc.trust.trusted(login, association if isinstance(association, str) else None):
         return "trusted on GitHub"
-    return await svc.landing.qualifies(job, login)  # the policy's approvers, or a code owner of all it touches
+    # the policy's approvers, or a code owner of all it touches (--- taint, #130: who may ask for a fix round, not who
+    # may land, so not the tainted-landing rule)
+    return await svc.landing._qualifies(job, login)
 
 
 def check_later(svc: JobService, job_id: str, user: dict[str, Any], association: Any,

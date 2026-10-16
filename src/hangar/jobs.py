@@ -1221,7 +1221,11 @@ class JobService:
             if (why := await clouddoctor.after_push(self, job)) is not None:  # again from GitHub, grant revoked
                 raise _DeliveryError(why)
         if job.deliver in ("pr", "draft_pr"):
-            await self._ensure_pr(job, draft=draft or job.deliver == "draft_pr")
+            tainted = taint.tainted(job)  # --- taint (#130): the PR is the gate, so it opens as a draft
+            if tainted and job.deliver == "pr" and not draft:
+                self._event(job, "delivering as a draft PR: the agent read untrusted content (hangar:tainted)")
+                taint.audit(self.fleet, "hangar", "pr.open", "draft", job.id, deliver=job.deliver)
+            await self._ensure_pr(job, draft=draft or job.deliver == "draft_pr" or tainted)
             await self.landing.delivered(job)  # --- landing: a stale approval, the review packet
 
     def _github(self) -> GitHub | None:
@@ -1252,6 +1256,11 @@ class JobService:
             job.result.pr_url, job.result.pr_number = pr.get("html_url"), pr.get("number")
             self.landing.opened(job, pr)  # --- landing
             self._save(job)
+            if taint.tainted(job) and pr.get("number"):  # --- taint (#130): reviewers see it in the PR list
+                try:
+                    await gh.add_labels(repo, int(pr["number"]), [taint.LABEL])
+                except (GitHubError, httpx.HTTPError) as e:
+                    self._event(job, f"could not label PR #{pr['number']} {taint.LABEL}: {e}")
         except (GitHubError, httpx.HTTPError) as e:
             self._event(job, f"branch pushed; opening the PR failed: {e}")
         finally:

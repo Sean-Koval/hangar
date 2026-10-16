@@ -658,6 +658,10 @@ run over your own data `trusted`. Hangar's own `hangar-env` server is trusted; t
 (`computer.browser_mcp`) is untrusted; a server the agent adds itself is untrusted. A repo's
 `.hangar/environment.yaml` can't set `mcp:` at all.
 
+`mcp.<name>.write_tools` lists the server's tools that change something, as fnmatch patterns of its tool names
+(`["create_*", "update_*", "add_*_comment", "merge_pull_request"]`). Once a turn has read untrusted content, a call to
+one needs a person under `ask` and `deny-risky` ([steering.md](steering.md#taint)).
+
 ## Settings
 
 | Setting | Default | |

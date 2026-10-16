@@ -563,6 +563,9 @@ class McpServer(BaseModel):
     # messages). Unset: `untrusted` for a remote (url) server, `trusted` for a local stdio one. A call to an untrusted
     # server's tool taints the turn (docs/security.md#taint).
     trust: Literal["trusted", "untrusted"] | None = None
+    # --- taint (#130): its tools that change something (fnmatch patterns of tool names, e.g. "create_*"). After an
+    # untrusted read, a call to one needs a person under approvals ask and deny-risky.
+    write_tools: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _one_transport(self) -> McpServer:

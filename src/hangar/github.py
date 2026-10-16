@@ -77,6 +77,10 @@ class GitHub:
         return await self._req("POST", f"/repos/{repo}/pulls",
                                json={"head": head, "base": base, "title": title, "body": body, "draft": draft})
 
+    async def add_labels(self, repo: str, number: int, labels: list[str]) -> Any:
+        """--- taint (#130): label an issue or PR (Issues: write, or Pull requests: write for a PR)."""
+        return await self._req("POST", f"/repos/{repo}/issues/{int(number)}/labels", json={"labels": labels})
+
     async def default_branch(self, repo: str) -> str:
         return (await self._req("GET", f"/repos/{repo}"))["default_branch"]
 

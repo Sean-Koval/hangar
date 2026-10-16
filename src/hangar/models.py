@@ -578,6 +578,7 @@ class Approval(BaseModel):
     by: str | None = None  # who answered: a hangar caller, "policy", "timeout" or "harness" (withdrawn)
     message: str | None = None
     decided_at: float | None = None
+    taint: str | None = None  # --- taint (#130): why it needs a person: "git push, after reading untrusted content"
 
 
 class Steer(BaseModel):
