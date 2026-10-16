@@ -236,9 +236,15 @@ def env_mode(settings: Settings, spec: EnvSpec) -> str:
     return (e.mode if e is not None and e.mode else None) or settings.egress_default
 
 
-def proxied(settings: Settings, spec: EnvSpec) -> bool:
-    """Whether the environment's sandboxes go on the proxy-only network."""
-    return env_mode(settings, spec) != "open"
+def floored(mode: str, floor: str | None) -> str:
+    """--- intake posture (#123): the stricter of a mode and a per-sandbox floor (`hangar.egress.floor`)."""
+    return floor if floor in _STRICTNESS and _STRICTNESS[floor] > _STRICTNESS.get(mode, 0) else mode
+
+
+def proxied(settings: Settings, spec: EnvSpec, floor: str | None = None) -> bool:
+    """Whether the environment's sandboxes go on the proxy-only network; with a sandbox's floor (posture.py), whether
+    that sandbox does."""
+    return floored(env_mode(settings, spec), floor) != "open"
 
 
 def _presets_for(e: EgressSpec | None, mode: str) -> list[str]:
@@ -249,13 +255,18 @@ def _presets_for(e: EgressSpec | None, mode: str) -> list[str]:
 
 def resolve(settings: Settings, spec: EnvSpec, repo: EgressSpec | None = None, harness: str | None = None,
             approved: list[dict[str, Any]] | None = None,
-            mcp_trusted: set[tuple[str, int | None]] | None = None) -> Policy:
+            mcp_trusted: set[tuple[str, int | None]] | None = None, floor: str | None = None) -> Policy:
     """The policy for a sandbox of `spec`, under its repo's policy, running `harness`, with approved requests.
     `mcp_trusted` (from `trusted_mcp`) limits which of the spec's remote MCP servers count; None takes them all,
-    for a spec the caller vouches for."""
+    for a spec the caller vouches for. `floor` (--- intake posture, #123: the sandbox's `hangar.egress.floor`) raises
+    the environment's mode for this sandbox, network included; the allowlist is still the environment's presets and
+    hosts and the repo policy's."""
     env = getattr(spec, "egress", None)
-    base = env_mode(settings, spec)
+    base = floored(env_mode(settings, spec), floor)
     mode, notes = base, []
+    if base != env_mode(settings, spec):
+        notes.append(f"egress {base} (intake floor): environment {spec.name} is {env_mode(settings, spec)}, and this "
+                     "sandbox runs an intake-triggered job (docs/security.md#intake-posture)")
     if repo is not None and repo.mode:
         if _STRICTNESS[repo.mode] > _STRICTNESS[base]:
             mode = repo.mode
@@ -379,8 +390,10 @@ def for_sandbox(fleet: Fleet, sb: Sandbox, spec: EnvSpec | None = None) -> Polic
     spec = spec or fleet.catalog.get(sb.environment)
     session = sb.labels.get("hangar.session")
     approved = approvals(fleet.store, environment=sb.environment, session=session)
+    from hangar.posture import floor_of  # --- intake posture (#123)
+
     return resolve(fleet.settings, spec, repo_egress(fleet.store, sb.repo), sb.info.get("harness"), approved,
-                   trusted_mcp(fleet, sb.environment))
+                   trusted_mcp(fleet, sb.environment), floor=floor_of(sb.labels))
 
 
 # ============================================================================ approvals
@@ -456,6 +469,10 @@ async def attach(fleet: Fleet, prov: Provider, sb: Sandbox, spec: EnvSpec) -> di
     environment whose proxy can't be reached from the sandbox doesn't start."""
     pol = for_sandbox(fleet, sb, spec)
     info: dict[str, Any] = {"mode": pol.mode, "enforced": pol.enforced}
+    from hangar.posture import floor_of  # --- intake posture (#123): the floor and why, for the manifest and doctor
+
+    if (floor := floor_of(sb.labels)) is not None:
+        info.update({"floor": floor, "floor_reason": "intake"})
     for n in pol.notes:
         sb.info.setdefault("warnings", []).append(n)
     if not pol.proxied:  # open, or tightened by a repo policy in an open environment (the note says so)

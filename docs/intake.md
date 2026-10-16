@@ -25,6 +25,10 @@ Every front door uses one rule ([team.md](team.md#who-is-trusted) has it in full
 
 The repo must be in `HANGAR_GITHUB_REPOS`, as for every front door, and the repo's [policy](repo-policy.md) sets the job's verify, environment, harness and model.
 
+### Safety
+
+The fence around ticket text is in the prompt; the boundaries are outside it. Under the default `HANGAR_INTAKE_POSTURE=enforce` ([security.md](security.md#intake-posture)) every Jira and GitHub Projects job needs the [git gateway](security.md#git-credential-gateway): without `HANGAR_GATEWAY_URL` (or for a repo whose host the gateway doesn't serve) the job is refused and the reason is posted on the issue. Its sandboxes hold only a fetch-only grant (hangar pushes), and they get at least `allowlist` egress, even in an `open` environment: the environment's presets and hosts, the repo policy's, and the harness's API. Anything else is an egress request a person answers. `warn` runs such jobs as before for one release, with a `posture.warn` event and a line in the review packet.
+
 ## Jira Cloud
 
 ### 1. An account and a token for hangar

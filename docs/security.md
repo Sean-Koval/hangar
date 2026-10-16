@@ -143,7 +143,7 @@ egress:
 
 | Mode | Network | What gets through |
 | --- | --- | --- |
-| `open` (the default, `HANGAR_EGRESS_DEFAULT`) | the public internet directly, as before | everything public |
+| `open` (`HANGAR_EGRESS_DEFAULT`'s default for people's own work; never for an [intake job](#intake-posture) under `enforce`) | the public internet directly, as before | everything public |
 | `allowlist` | only the git gateway and hangar's egress proxy (no DNS) | the harness's own hosts (its model API and login refresh), the environment's remote MCP servers, the presets, `allow`, and hosts an owner approved |
 | `none` | the same | the harness's own hosts, the environment's MCP servers and approved hosts only |
 
@@ -442,7 +442,7 @@ What is **not** covered:
 - **Secrets the sandbox already holds.** The model credential is still injected. Redaction masks stored values and a few common encodings of them in results, artifacts and logs, but not every transformation ([redaction](#redaction)). A grant the agent copies out works from anywhere that reaches the gateway until its sandbox stops.
 - **Secrets a scan doesn't recognize.** Pushes through the gateway are scanned, the agent's own included, but a secret encoded in a way the patterns don't know (or split, compressed, inside a binary file) gets through, as it does past [redaction](#redaction). A direct-mode sandbox pushing with its own token isn't scanned at all.
 - **What else is in the pushed branch.** Review PRs, and keep secrets out of `push`-triggered workflows.
-- **Egress.** Sandboxes in `open` environments (the default) can reach the public internet. In `allowlist` and `none` environments, data can still go *to* an allowed host, in a URL or a body: the harness's own model API with the attacker's key is always allowed, and so are hosts in `allow`, approved hosts, MCP servers and the cloud token exchange. A host on a CDN that doesn't check `Host` against SNI (Fastly, Akamai: [what egress doesn't stop](#what-egress-doesnt-stop)) reaches any other site there. Without the gateway, the `pypi`, `npm` and `go` presets open the registries themselves, which take uploads; the sandbox says so. Which packages a sandbox downloads is a low-bandwidth signal in public download statistics.
+- **Egress.** Sandboxes in `open` environments can reach the public internet, except those of [intake jobs](#intake-posture) under `enforce`, which get at least `allowlist`. In `allowlist` and `none` environments, data can still go *to* an allowed host, in a URL or a body: the harness's own model API with the attacker's key is always allowed, and so are hosts in `allow`, approved hosts, MCP servers and the cloud token exchange. A host on a CDN that doesn't check `Host` against SNI (Fastly, Akamai: [what egress doesn't stop](#what-egress-doesnt-stop)) reaches any other site there. Without the gateway, the `pypi`, `npm` and `go` presets open the registries themselves, which take uploads; the sandbox says so. Which packages a sandbox downloads is a low-bandwidth signal in public download statistics.
 - **Predictable custom branch names.** A session with a custom branch outside `hangar/session/` can be pre-created by another sandbox before the session exists, and a session continues an existing branch. (A job's branch is reserved from the moment the job is submitted.)
 - **E2B command output.** The E2B SDK buffers a command's whole output before hangar sees it, so on E2B a sandbox can still make one of hangar's commands return a very large output.
 - **Idle connections.** The gateway listener has no connection cap (uvicorn's counts idle sockets and would let one sandbox lock out the rest), so many idle connections from one sandbox are bounded only by the process's file limit.
@@ -561,6 +561,24 @@ Work enters hangar through REST, MCP, A2A, GitHub webhooks, Slack, signed inboun
 Text that hangar's caller didn't write is fenced in the prompt as untrusted: issue bodies and comments by untrusted authors, an untrusted person's `/hangar` request, Slack thread context, and everything from an inbound webhook ([triggers.md](triggers.md#untrusted-text-in-the-prompt)).
 
 **Agents in `credential_mode: direct` can reach the GitHub front door.** Without the [git gateway](#git-credential-gateway), a sandbox holds a GitHub token. The account behind it has write access to the repo, so by default (author association) its comments are trusted. An agent can then comment `/hangar approve` on an outsider's job, start new jobs, or continue another job's PR as that account. Use the gateway for GitHub-triggered work, or set `HANGAR_GITHUB_TRUSTED` and leave that account out.
+
+### Intake posture
+
+Text from a ticket, an issue, a Slack thread or a webhook is fenced in the prompt, but a prompt is not a boundary: with open egress and a GitHub token in reach, an injected prompt has a way out and the means to push. `HANGAR_INTAKE_POSTURE` (`posture.py`) makes two boundaries real for every **intake job**: one whose `source` is `github`, `github-projects`, `jira`, `slack` or `webhook`, one with an untrusted author (`untrusted_source`), or one with an untrusted context item. That covers [PR auto-fix](jobs.md#pr-auto-fix) rounds (CI output and review comments are untrusted context; the job becomes an intake job from that turn on) and [agent-led environment setup](environments.md) started from an issue (its child jobs and validation sandbox inherit the labels). A person's own submission over MCP, REST or the CLI is not an intake job.
+
+| `HANGAR_INTAKE_POSTURE` | Git | Egress |
+| --- | --- | --- |
+| `enforce` (the default) | the [git gateway](#git-credential-gateway) must serve the repo's host; otherwise `submit` refuses the job with a message naming `HANGAR_GATEWAY_URL`, which the front door posts to the issue, ticket or thread | at least `allowlist`, even in an `open` environment |
+| `warn` (the one-release transition, [upgrading.md](upgrading.md)) | runs without it | runs as the environment says |
+| `off` | as before | as before |
+
+Under `warn` a job that `enforce` would have changed gets a `posture.warn: …` job event, a `posture.warn` audit entry and an *Intake posture (warn)* line in its [review packet](landing.md).
+
+**The egress floor.** An enforced intake job carries the label `hangar.egress.floor: allowlist`; its session and every sandbox it starts (best-of-N attempts, follow-ups, resumes) carry it too. `egress.resolve` raises the environment's mode to the floor, so the sandbox goes on the proxy-only network (the internal `hangar-egress` network on Docker, the proxied NetworkPolicy and a SandboxTemplate of its own on GKE) and gets the environment's presets and `allow`, the repo policy's hosts, and the harness's API hosts. A repo policy can still tighten it to `none`, never loosen it. A sandbox `info.egress` (and its [manifest](api/manifest.schema.json)'s `egress`) records `floor: allowlist` and `floor_reason: intake`; the review packet says `Egress: allowlist (intake floor)`. A sandbox started before the job became an intake job (an auto-fix round on a person's job), or one parked for hot resume, is checkpointed and replaced before the turn runs.
+
+**Warm pools.** A warm sandbox of an `open` environment is on the open network, so it is never claimed for an intake job: the job cold-starts, 30–60 s more. Where that matters, declare a proxied pool: an environment with `egress: {mode: allowlist}` and `warm_pool:` for intake work (map it in `HANGAR_GITHUB_REPOS`), whose warm sandboxes are proxied already. Hosts outside the allowlist go through [egress requests](#egress-allowlists), answered by a person.
+
+**Where it can't run.** The floor needs hangar's egress proxy: `HANGAR_EGRESS_URL` on GKE, hangar on the Linux Docker host itself (not inside Docker Desktop's VM, and not in the Compose container) on Docker. Elsewhere an enforced intake job in an `open` environment fails to start with a message that says so, rather than run unfenced; use `warn` for local work. `hangar doctor` reports the posture, the gateway, the egress proxy per provider, and each environment mapped for intake work with its effective mode. A job queued while the pools are powered down gets the floor when it claims its sandbox.
 
 ### Signed requests
 
