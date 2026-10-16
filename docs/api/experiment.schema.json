@@ -15,7 +15,7 @@
     "person": {"type": ["string", "null"]},
     "created_at": {"type": "number"},
     "finished_at": {"type": ["number", "null"]},
-    "spec": {"type": "object", "description": "The experiment as submitted (redacted)."},
+    "spec": {"type": "object", "description": "The experiment as submitted (redacted). Its grader's canary (`grader.canary`, generated as HANGAR-CANARY-<uuid4> when the experiment starts if unset; #127) is masked as HANGAR-CANARY-[hidden] here and in every export.", "properties": {"grader": {"type": "object", "properties": {"canary": {"type": "string"}}}}},
     "pins": {
       "type": "object",
       "properties": {
@@ -74,7 +74,10 @@
             "command": {"type": "string"}, "exit_code": {"type": "integer"}, "tail": {"type": "string"}, "data": {}, "error": {"type": "string"}, "applied": {"type": "boolean"}, "seconds": {"type": "number"},
             "files_mode": {"enum": ["pristine", "in_repo"], "description": "Where the grader's files were: outside the repo, at $HANGAR_HIDDEN_TESTS (pristine, the default), or in the repo as before (in_repo). Added within v1 (#126)."},
             "network": {"enum": ["none", "mirror"], "description": "What the sealed grader's sandbox could reach: nothing, or hangar's read-only package mirror. Added within v1 (#126)."},
-            "trust": {"enum": ["isolated", "best_effort", "low"], "description": "How far the grade can be trusted: low for files_mode in_repo; best_effort otherwise in this version (the trial's code could still write $HANGAR_GRADE_OUT). Added within v1 (#126)."},
+            "trust": {"enum": ["isolated", "best_effort", "low"], "description": "How far the grade can be trusted: isolated (the uid split: hangar's user ran the command as the agent and wrote the grade itself, from the pristine copy with hangar-grade), best_effort (no uid split: the trial's code could write $HANGAR_GRADE_OUT), low (files_mode in_repo, or a command that isn't hangar-grade). Added within v1 (#126, #127)."},
+            "isolation": {"type": "string", "description": "split (the uid split ran the grade), else why not. Added within v1 (#127)."},
+            "task_invalid": {"type": "boolean", "description": "The task's hidden tests pass on its base (or its reference patch fails them): the grade can't tell a fix from no fix. Added within v1 (#127)."},
+            "canary_files": {"type": "integer", "description": "How many hidden test files carried the canary (files without comments, such as JSON, don't). Added within v1 (#127)."},
             "runner": {"enum": ["hangar-grade", "command"], "description": "Whether the command used the safe runner (hangar-grade) or ran the tests itself. Added within v1 (#126)."},
             "tamper_signals": {"type": "array", "description": "Files the trial's patch added or changed that can hook a test run before the tests (conftest.py, sitecustomize.py, usercustomize.py, *.pth, pytest settings). Signals, not refusals. Added within v1 (#126).", "items": {"type": "object", "required": ["path", "kind"], "properties": {"path": {"type": "string"}, "kind": {"enum": ["conftest", "sitecustomize", "usercustomize", "pth", "pytest-config"]}}}},
             "hidden_tests": {"type": "object", "description": "The hidden tests' junit counts, when hangar-grade wrote them. Added within v1 (#126).", "properties": {"passed": {"type": "integer"}, "failed": {"type": "integer"}, "error": {"type": ["integer", "string"]}, "skipped": {"type": "integer"}, "total": {"type": "integer"}, "truncated": {"type": "boolean"}}},
@@ -82,10 +85,27 @@
           }},
           "stored": {"type": "array", "items": {"enum": ["manifest.json", "trace.json"]}},
           "drift": {"type": "array", "items": {"type": "string"}},
+          "trust": {"enum": ["isolated", "best_effort", "low", null], "description": "The grade's trust level, at the trial's top level for filtering (null: not graded). Added within v1 (#127)."},
+          "task_invalid": {"type": "boolean", "description": "The task failed its base check (hidden tests pass on base, or the reference patch fails them): leave its trials out of comparisons. Added within v1 (#127)."},
+          "contaminated": {"type": "boolean", "description": "The grader's canary was seen in what the trial produced: the agent had the hidden tests. Added within v1 (#127)."},
+          "contamination": {"type": "array", "items": {"enum": ["patch", "result", "trace", "egress"]}, "description": "Where the canary was seen. Added within v1 (#127)."},
+          "touched_tests": {"type": "array", "items": {"type": "string"}, "description": "Existing test files the trial's work changed, renamed or deleted (the job's own check, else from its patch). Added within v1 (#127)."},
           "links": {"type": "object", "properties": {"job": {"type": ["string", "null"]}, "manifest": {"type": ["string", "null"]}, "trace": {"type": ["string", "null"]}}}
         }
       }
     },
-    "notes": {"type": "array", "items": {"type": "string"}}
+    "notes": {"type": "array", "items": {"type": "string"}},
+    "task_checks": {"type": "object", "description": "Per task, the base-must-fail check, run once per experiment: the hidden tests on the pinned base without a patch (they must fail), and on the task's reference_patch when given (it must pass). Added within v1 (#127).", "additionalProperties": {
+      "type": "object",
+      "properties": {
+        "state": {"enum": ["done"]},
+        "base_sha": {"type": ["string", "null"]},
+        "invalid": {"type": "boolean"},
+        "reason": {"type": "string"},
+        "base": {"type": "object"},
+        "reference": {"type": "object"},
+        "at": {"type": "number"}
+      }
+    }}
   }
 }

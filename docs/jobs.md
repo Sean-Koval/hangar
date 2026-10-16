@@ -433,6 +433,9 @@ grader:
   files: {"test_retry.py": "..."}       # written to $HANGAR_HIDDEN_TESTS, outside the repo
   network: none                         # or mirror: hangar's read-only package mirror, for a grader that installs
   # files_mode: in_repo                 # the old layout (files in the repo); the grade says trust: low
+  # canary: HANGAR-CANARY-...           # generated per experiment if unset; never reuse one
+tasks:
+  - {id: fix-retry, ..., reference_patch: "diff --git ..."}   # optional: a known fix the hidden tests must pass
 ```
 
 The grader runs agent-written code beside the hidden tests, so its sandbox is sealed: no credential, `secrets:` or
@@ -456,10 +459,39 @@ Other ecosystems get no safe runner yet; run them from a copy you control and tr
 --config "$HANGAR_HIDDEN_TESTS/jest.config.js" --rootDir "$HANGAR_REPO"` with a config of your own, or copy the
 hidden `_test.go` files into a fresh copy of the package before `go test`.
 
-Each grade records `files_mode`, `network`, `runner` (`hangar-grade` or `command`), `trust` (`low` for `in_repo`,
-else `best_effort`: the trial's code can still write `$HANGAR_GRADE_OUT`) and `tamper_signals`: files the patch adds
-or changes that can hook a test run (`conftest.py`, `sitecustomize.py`, `usercustomize.py`, `*.pth`, `pytest.ini`, a
-pytest section in `tox.ini`, `setup.cfg` or `pyproject.toml`). They are signals, not refusals.
+Each grade records `files_mode`, `network`, `runner` (`hangar-grade` or `command`) and `tamper_signals`: files the
+patch adds or changes that can hook a test run (`conftest.py`, `sitecustomize.py`, `usercustomize.py`, `*.pth`,
+`pytest.ini`, a pytest section in `tox.ini`, `setup.cfg` or `pyproject.toml`). They are signals, not refusals.
+
+**Who writes the grade.** On Docker, where the sandbox has the [uid split](steering.md#the-uid-split), a wrapper
+running as hangar's own user starts the command as the agent's user (no capabilities, `no_new_privs`) and writes the
+grade itself, in a 0700 directory the agent can't reach: the exit code, the output, `$HANGAR_GRADE_OUT` and the junit
+`hangar-grade` writes come to it through pipes it created (`$HANGAR_GRADE_OUT` is `/proc/self/fd/198`: write it, don't
+look for a file). A sandbox where the agent has `sudo` (the environment's default) can't be split.
+
+**Trust.** Each grade, and each trial in the index, says how far it can be trusted:
+
+| `trust` | When |
+| --- | --- |
+| `isolated` | The uid split, the pristine copy and `hangar-grade` |
+| `best_effort` | No uid split (GKE today, or an environment with `sudo`): the trial's code could write `$HANGAR_GRADE_OUT` |
+| `low` | `files_mode: in_repo`, or a command that isn't `hangar-grade` itself |
+
+Code under test runs inside the test runner's process, so it can still bend the runner while it runs (patch pytest's
+reporting from the module under test). Isolation stops writes to the grade, not lies through the runner. These catch
+what it doesn't:
+
+- **Base must fail.** Once per task per experiment, the hidden tests run on the pinned base without a patch. If they
+  pass there the task can't tell a fix from no fix: `task_checks.<task>.invalid` with `hidden tests pass on base`, and
+  every grade of the task says `task_invalid`. With `reference_patch` they also run on it, and must pass. One grader
+  run per task, not per trial.
+- **Canaries.** Hangar writes the grader's canary as a comment line into every hidden test file that takes comments
+  (`canary_files` counts them). After each trial it looks for it in the trial's patch, its `RESULT.md`, its trace
+  export and the egress proxy's records of its sandbox. A hit makes the trial `contaminated` (with `contamination`
+  saying where), adds a note to the experiment and a `grade.canary_seen` audit entry. The canary is kept only in the
+  experiment's spec, and is masked in every export.
+- **Touched tests.** `touched_tests`: existing test files the trial changed (the job's own check, else from its
+  patch).
 
 ## Settings
 

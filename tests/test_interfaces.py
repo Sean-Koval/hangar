@@ -727,12 +727,25 @@ async def test_an_experiment_of_two_variants_and_two_trials(jobs, world, fleet, 
         assert g["exit_code"] == 0 and g["data"] == {"score": 1, "trial": t["key"]}, g
         assert g["applied"] is True and "the agent never saw this" in g["tail"]
         # --- sealed (#126): pristine hidden tests (outside the repo), no network, and the trust that gives
-        assert g["files_mode"] == "pristine" and g["network"] == "none" and g["trust"] == "best_effort"
-        assert "tamper_signals" not in g
+        assert g["files_mode"] == "pristine" and g["network"] == "none"
+        assert g["trust"] == "low" and g["runner"] == "command"  # #127: a raw command, not hangar-grade
+        assert "tamper_signals" not in g and t["touched_tests"] == [] and t["contaminated"] is False
+        assert g["canary_files"] == 0  # hidden_test.txt takes no comment
+    # --- anti-forgery (#127): the canary was generated, kept in the spec, and never shown
+    canary = experiments.load(jobs.get(exp.id)).spec["grader"]["canary"]
+    assert canary.startswith(experiments.CANARY_PREFIX)
+    assert canary not in json.dumps(v) and v["spec"]["grader"]["canary"] == experiments.CANARY_MASK
+    # this grader passes whatever the patch (it only reads files): the base check says so, once for the task
+    check = v["task_checks"]["look"]
+    assert check["state"] == "done" and check["invalid"] is True and check["reason"] == "hidden tests pass on base"
+    assert all(t["task_invalid"] and t["grade"]["task_invalid"] for t in trials)
+    assert any("invalid_task look" in n for n in v["notes"])
     assert all(len(d) == 1 for d in by_variant.values()) and len(set().union(*by_variant.values())) == 2
     # the grader ran outside the agent's sandbox, and its sandbox is gone
     graders = [sb for sb in fleet.list(include_stopped=True) if sb.labels.get(experiments.GRADER_LABEL) == exp.id]
-    assert len(graders) == 4 and all(sb.id not in {c.sandbox_id for c in children} for sb in graders)
+    # one per trial, and one for the task's base check (#127): run once, not per trial
+    assert len(graders) == 5 and all(sb.id not in {c.sandbox_id for c in children} for sb in graders)
+    assert sum(sb.labels[experiments.TRIAL_LABEL] == "look/base/0" for sb in graders) == 1
     assert all(sb.state.value in ("stopped", "error") for sb in graders)
     # no follow-ups on an experiment
     from hangar.jobs import JobError

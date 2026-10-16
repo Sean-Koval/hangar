@@ -37,9 +37,17 @@ at all (`grader.network: mirror` adds hangar's read-only package mirror), so the
 The grader's files are written outside the repo (`files_mode: pristine`, the default; `in_repo` keeps the old
 behaviour, recorded as `trust: low`), and `hangar-grade pytest` runs them so that nothing the patch adds
 (`conftest.py`, pytest settings, `sitecustomize.py`, a plugin) loads first. Files the patch adds or changes that could
-hook a test run are listed in the grade (`tamper_signals`). The code still runs beside the grader, as the sandbox's
-user: it could write $HANGAR_GRADE_OUT too (#127 takes that file from it). Its exit code, the end of its output,
-the hidden tests' junit counts and `$HANGAR_GRADE_OUT` (JSON) are stored with the trial.
+hook a test run are listed in the grade (`tamper_signals`).
+
+**Grade anti-forgery (#127).** Where the sandbox has the uid split (Docker, isolation.split), a wrapper running as
+hangar's user starts the grader command as the agent (no capabilities, no_new_privs) and owns everything the grade is
+made of: the exit code, the output, `$HANGAR_GRADE_OUT` and the hidden tests' junit reach it through pipes it
+created, and it writes grade.json itself, in a 0700 directory of its own. Each grade says how far it can be trusted:
+`trust: isolated` (the uid split, the pristine copy and `hangar-grade`), `best_effort` (no uid split: GKE) or `low`
+(`files_mode: in_repo`, or a command that isn't `hangar-grade`). Code under test still runs inside the test runner's
+process and can lie through it; the detectors are a base-must-fail check per task (hidden tests that pass on the
+pinned base make the task `invalid_task`, as does a `reference_patch` that fails them), a canary string in every
+hidden test file (seen in a trial's patch, RESULT.md, trace or egress: `contaminated`), and `touched_tests`.
 """
 
 from __future__ import annotations
@@ -88,6 +96,13 @@ GRADE_WORK = "/tmp/hangar-grade"
 # user can't keep them from it: the trial's code could change them, which the grade's trust says)
 GRADER_ROOT = "/var/lib/hangar-grader"
 GRADER_ROOT_SHARED = "/tmp/hangar-grader"
+# --- anti-forgery (#127): the grade's own directory with the uid split, hangar's user's and 0700
+GRADE_DIR = "/var/lib/hangar/grade"
+GRADE_FD, JUNIT_FD = 198, 199  # the pipes $HANGAR_GRADE_OUT and $HANGAR_GRADE_JUNIT name (/proc/self/fd/N)
+MAX_JUNIT = 8 * 1024 * 1024
+MAX_REFERENCE_PATCH = 1024 * 1024
+CANARY_PREFIX = "HANGAR-CANARY-"
+CANARY_MASK = "HANGAR-CANARY-[hidden]"
 TAIL = 4000
 
 
@@ -133,6 +148,8 @@ class Task(BaseModel):
     base_sha: str | None = Field(None, pattern=r"^[0-9a-f]{40}$")
     verify: str | None = Field(None, max_length=2000)
     title: str | None = Field(None, max_length=200)
+    # --- anti-forgery (#127): a known-good patch for the base check: the hidden tests must pass with it
+    reference_patch: str | None = Field(None, max_length=MAX_REFERENCE_PATCH)
 
     @model_validator(mode="after")
     def _what(self) -> Task:
@@ -153,6 +170,9 @@ class Grader(BaseModel):
     files: dict[str, str] = Field(default_factory=dict, max_length=64)  # relative path -> content (hidden tests)
     files_mode: Literal["pristine", "in_repo"] = "pristine"
     network: Literal["none", "mirror"] = "none"
+    # --- anti-forgery (#127): written as a comment into every hidden test file; generated when the experiment
+    # starts if unset (HANGAR-CANARY-<uuid4>). Never reuse one across experiments.
+    canary: str | None = Field(None, min_length=16, max_length=200, pattern=r"^[A-Za-z0-9._:-]+$")
 
     @field_validator("files")
     @classmethod
@@ -222,6 +242,10 @@ class Trial(BaseModel):
     grade: dict[str, Any] | None = None
     stored: list[str] = Field(default_factory=list)  # files kept for it: manifest.json, trace.json
     drift: list[str] = Field(default_factory=list)
+    # --- anti-forgery (#127)
+    touched_tests: list[str] = Field(default_factory=list)  # existing test files its work changed
+    contaminated: bool = False  # the grader's canary was seen in what the trial produced
+    contamination: list[str] = Field(default_factory=list)  # where: patch, result, trace, egress
 
 
 class State(BaseModel):
@@ -232,6 +256,7 @@ class State(BaseModel):
     trials: list[Trial] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
     finished_at: float | None = None
+    task_checks: dict[str, Any] = Field(default_factory=dict)  # --- anti-forgery (#127): the base check, per task
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -357,6 +382,10 @@ async def _run(jobs: JobService, job_id: str) -> None:
             raise _Stop("error", "an experiment job needs its spec: submit it with POST /api/experiments or "
                                  "`hangar experiment run`")
         spec = ExperimentSpec.model_validate(st.spec)
+        if spec.grader is not None and not spec.grader.canary:  # --- anti-forgery (#127): one per experiment
+            spec.grader.canary = new_canary()
+            st.spec.setdefault("grader", {})["canary"] = spec.grader.canary
+            _save(jobs, job, st)
         if st.stage == "start":
             await _begin(jobs, job, st, spec)
         await _loop(jobs, job, st, spec, graders)
@@ -632,6 +661,7 @@ async def _finish_trial(jobs: JobService, job: Job, st: State, spec: ExperimentS
     t.verify = {"command": child.verify, "exit_code": r.verify_exit_code, "passed": (
         r.verify_exit_code == 0 if r.verify_exit_code is not None else None), "new_failures": r.new_failures,
         "baseline_red": r.baseline.red if r.baseline else None, "tail": (r.verify_tail or "")[-TAIL:] or None}
+    t.touched_tests = list(r.touched_tests or [])[:100]  # --- anti-forgery (#127): the job's own check of its tests
     tests = getattr(r, "tests", None)  # the testresults work's TestSummary, when hangar parsed the check's reports
     t.tests = tests.model_dump(mode="json") if isinstance(tests, BaseModel) else tests
     if (u := jobs.usage(child)) is not None:
@@ -729,7 +759,10 @@ esac
 py=${HANGAR_GRADE_PYTHON:-}
 [ -n "$py" ] || py=$(command -v python3 || command -v python) || { echo "hangar-grade: no python" >&2; exit 2; }
 junit=${HANGAR_GRADE_JUNIT:-/tmp/hangar-grade/junit.xml}
-mkdir -p "$(dirname "$junit")" && rm -f "$junit"
+case "$junit" in
+  /proc/self/fd/*|/dev/fd/*) ;;  # hangar's pipe (the uid split): hangar reads it, nothing to clear
+  *) mkdir -p "$(dirname "$junit")" && rm -f "$junit" ;;
+esac
 cd "$HANGAR_HIDDEN_TESTS" || exit 2
 unset PYTEST_ADDOPTS PYTEST_PLUGINS PYTHONSTARTUP PYTHONPATH PYTHONHOME PYTHONSAFEPATH
 export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
@@ -790,6 +823,176 @@ async def _tamper_signals(prov: Any, sb: Any, repo: str, patch: str) -> list[dic
     return hits
 
 
+# --- anti-forgery (#127): run as hangar's own user (the uid split), it starts the grader's command as the agent (no
+# capabilities, no_new_privs: driver.as_agent) and keeps everything the grade is made of out of the agent's reach: the
+# command's output, its exit code, and $HANGAR_GRADE_OUT and $HANGAR_GRADE_JUNIT, which are pipes it created (owned by
+# the agent's uid, so the command reopens them through /proc/self/fd, and only there). It writes grade.json, out
+# and junit.xml into its own 0700 directory. Standard library only: it runs on the sandbox's python3, isolated (-I).
+GRADE_WRAPPER = r'''import ctypes, json, os, pwd, selectors, signal, subprocess, sys, time
+user, home, envf, cwd, timeout, outdir, launch, command = sys.argv[1:9]
+timeout = int(timeout)
+GRADE_FD, JUNIT_FD, TAIL, OUT_MAX, JUNIT_MAX = @CONSTS@
+libc = ctypes.CDLL(None, use_errno=True)
+pw = pwd.getpwnam(user)
+libc.setfsuid(pw.pw_uid)
+libc.setfsgid(pw.pw_gid)
+reads = {}
+try:
+    for name, fd in (("out", GRADE_FD), ("junit", JUNIT_FD)):
+        r, w = os.pipe()
+        if w != fd:
+            os.dup2(w, fd)
+            os.close(w)
+        os.set_inheritable(fd, True)
+        reads[name] = r
+finally:
+    libc.setfsuid(os.getuid())
+    libc.setfsgid(os.getgid())
+owner_ok = os.fstat(GRADE_FD).st_uid == pw.pw_uid
+argv = ["setpriv", "--reuid=%d" % pw.pw_uid, "--regid=%d" % pw.pw_gid, "--init-groups", "--inh-caps=-all",
+        "--ambient-caps=-all", "--no-new-privs", "--", "env", "HOME=" + home, "USER=" + user, "LOGNAME=" + user,
+        "bash", "-c", launch, "hangar-grade", envf, cwd, "bash", "-c", command]
+p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                     pass_fds=(GRADE_FD, JUNIT_FD), start_new_session=True)
+os.close(GRADE_FD)
+os.close(JUNIT_FD)
+caps = {"stdout": TAIL, "stderr": TAIL, "out": OUT_MAX + 1, "junit": JUNIT_MAX + 1}
+bufs = {k: bytearray() for k in caps}
+total = {k: 0 for k in caps}
+sel = selectors.DefaultSelector()
+for name, f in (("stdout", p.stdout.fileno()), ("stderr", p.stderr.fileno()), *reads.items()):
+    os.set_blocking(f, False)
+    sel.register(f, selectors.EVENT_READ, name)
+deadline, timed_out, grace = time.monotonic() + timeout, False, None
+
+
+def kill():
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except OSError:
+        pass
+
+
+while sel.get_map():
+    now = time.monotonic()
+    if not timed_out and now > deadline:
+        timed_out = True
+        kill()
+    if grace is None and p.poll() is not None:
+        grace = now + 3  # what it started keeps a pipe open: a few seconds more, then it goes
+    if grace is not None and now > grace:
+        kill()
+        break
+    for key, _ in sel.select(0.2):
+        name = key.data
+        try:
+            chunk = os.read(key.fd, 65536)
+        except BlockingIOError:
+            continue
+        if not chunk:
+            sel.unregister(key.fd)
+            continue
+        total[name] += len(chunk)
+        b = bufs[name]
+        if name in ("stdout", "stderr"):
+            b += chunk
+            del b[:-caps[name]]
+        elif len(b) < caps[name]:
+            b += chunk[: caps[name] - len(b)]
+try:
+    code = p.wait(timeout=5)
+except subprocess.TimeoutExpired:
+    kill()
+    code = p.wait()
+if timed_out:
+    code = 124
+for name, fname in (("out", "out"), ("junit", "junit.xml")):
+    with open(os.path.join(outdir, fname), "wb") as f:
+        f.write(bytes(bufs[name]))
+status = {"exit_code": code, "timed_out": timed_out, "pipe_owner_ok": owner_ok,
+          "stdout": bufs["stdout"].decode(errors="replace"), "stderr": bufs["stderr"].decode(errors="replace"),
+          "out_bytes": total["out"], "junit_bytes": total["junit"]}
+with open(os.path.join(outdir, "grade.json"), "w") as f:
+    json.dump(status, f)
+print("hangar-grade-wrapper: done", code)
+'''.replace("@CONSTS@", f"{GRADE_FD}, {JUNIT_FD}, {TAIL * 4}, 64_000, {MAX_JUNIT}")
+# Where a canary comment goes: appended to a hidden test file, in the comment syntax of its language
+_HASH = (".py", ".sh", ".bash", ".rb", ".pl", ".r", ".toml", ".yaml", ".yml", ".cfg", ".ini", ".tf", ".ex", ".exs",
+         ".jl", ".nim", ".cr", ".mk", ".cmake", ".ps1", ".coffee", ".el")
+_SLASH = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".go", ".rs", ".java", ".kt", ".kts", ".scala", ".swift",
+          ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".dart", ".php", ".groovy", ".zig", ".v", ".sol", ".proto")
+_DASH = (".sql", ".lua", ".hs", ".elm", ".ada")
+_TAG = (".md", ".html", ".htm", ".xml", ".svg", ".vue")
+
+
+def with_canary(rel: str, content: str, canary: str | None) -> tuple[str, bool]:
+    """The hidden test file with the canary as a comment line at its end, and whether it could carry one (a file
+    without comments, JSON, or one of unknown kind is written as it is)."""
+    if not canary:
+        return content, False
+    low = rel.lower()
+    if low.endswith(_HASH) or low.rsplit("/", 1)[-1] in ("makefile", "dockerfile"):
+        line = f"# {canary}"
+    elif low.endswith(_SLASH):
+        line = f"// {canary}"
+    elif low.endswith(_DASH):
+        line = f"-- {canary}"
+    elif low.endswith(_TAG):
+        line = f"<!-- {canary} -->"
+    else:
+        return content, False
+    return content + ("" if not content or content.endswith("\n") else "\n") + line + "\n", True
+
+
+def new_canary() -> str:
+    import uuid
+
+    return f"{CANARY_PREFIX}{uuid.uuid4()}"
+
+
+def mask_canary(value: Any, canary: str | None) -> Any:
+    """The value with the canary replaced (case-insensitively) wherever it occurs: never in an export."""
+    if not canary:
+        return value
+    pat = re.compile(re.escape(canary), re.I)
+    if isinstance(value, str):
+        return pat.sub(CANARY_MASK, value)
+    if isinstance(value, dict):
+        return {k: mask_canary(v, canary) for k, v in value.items()}
+    if isinstance(value, list):
+        return [mask_canary(v, canary) for v in value]
+    return value
+
+
+def _runner(command: str) -> str:
+    """`hangar-grade` when the command is the safe runner itself (after variable assignments), else `command`."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return "command"
+    first = next((w for w in words if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w)), "")
+    return "hangar-grade" if first == "hangar-grade" else "command"
+
+
+def trust_of(split: bool, files_mode: str, runner: str) -> str:
+    """How far a grade can be trusted: `isolated` with the uid split, the pristine copy and `hangar-grade`; `low`
+    with the hidden tests in the repo or a command of the author's own; `best_effort` without the uid split."""
+    if files_mode == "in_repo" or runner != "hangar-grade":
+        return "low"
+    return "isolated" if split else "best_effort"
+
+
+def passed(grade: dict[str, Any] | None) -> bool | None:
+    """Whether a grade passed: its hidden tests all passed (when it has them), else its exit code was 0; None when
+    it couldn't tell (an error, no exit code)."""
+    if not grade or grade.get("error") or grade.get("exit_code") is None:
+        return None
+    h = grade.get("hidden_tests")
+    if isinstance(h, dict) and isinstance(h.get("total"), int) and h["total"] > 0:
+        return grade["exit_code"] == 0 and not h.get("failed") and not h.get("error")
+    return grade["exit_code"] == 0
+
+
 def grader_root(prov: Any) -> str:
     """Where a grader's hidden tests and `hangar-grade` go. On Docker hangar writes them as root (its exec and
     archive uploads pick the uid), so the sandbox's user reads them and can't change them; elsewhere the sandbox runs
@@ -798,19 +1001,13 @@ def grader_root(prov: Any) -> str:
 
 
 async def _grade(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t: Trial) -> None:
-    """The experiment's grader on this trial's work, in a clean, sealed sandbox: the pinned base, the trial's patch,
-    the grader's own files (outside the repo unless `files_mode: in_repo`). It runs agent-written code beside the
-    hidden tests, so it holds nothing and reaches nothing (GRADER_LABEL: delivery.builds_repo_code, delivery.sealed):
-    the environment's git credentials only tell the gateway which one to fetch with."""
-    from hangar import delivery, exchange
-    from hangar.autoinstall import validation_credentials
+    """The experiment's grader on this trial's work (see _grade_patch), after the task's base check and a scan of
+    what the trial produced for the grader's canary (#127)."""
+    from hangar import exchange
 
-    fleet = jobs.fleet
     g = spec.grader
     assert g is not None
-    t0 = now()
-    grade: dict[str, Any] = {"command": g.command, "at": t0}
-    sb = None
+    grade: dict[str, Any] = {"command": g.command, "at": now()}
     try:
         child = jobs.get(t.job or "")
         s = jobs._session(child)
@@ -822,15 +1019,192 @@ async def _grade(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t:
         except exchange.ExchangeError as e:
             text, base = "", s.base_sha
             grade["patch_error"] = str(e)[:300]
-        grade["patch_bytes"] = len(text.encode())
-        tp = st.pins["tasks"][t.task]
-        env_name = spec.variants[t.variant].environment or spec.environment
+        _touched(spec, t, child, text)
+        await _canary_scan(jobs, job, st, spec, t, child, text)
+        check = await _task_check(jobs, job, st, spec, t.task, t.variant, base)
+        grade = await _grade_patch(jobs, job, st, spec, t.task, t.variant, t.key, base, text, grade)
+        if check.get("invalid"):
+            grade["task_invalid"] = True
+    except asyncio.CancelledError:
+        grade["error"] = "cancelled"
+        raise
+    except Exception as e:  # noqa: BLE001 - the trial keeps everything else
+        grade["error"] = jobs.broker.redact(str(e))[:1000]
+    finally:
+        t.grade, t.state = mask_canary(grade, g.canary), "done"
+        with contextlib.suppress(Exception):
+            _save(jobs, job, st)
+
+
+def _touched(spec: ExperimentSpec, t: Trial, child: Job, patch: str) -> None:
+    """--- anti-forgery (#127): the trial's `touched_tests`: the job's own (with the in-loop check), else the existing
+    test files its patch changes, renames or deletes (strategies.touched_tests, with the task's verify command)."""
+    from hangar.strategies import touched_tests
+
+    if t.touched_tests:
+        return
+    task = next((x for x in spec.tasks if x.id == t.task), None)
+    name_status = []
+    for block in re.split(r"(?m)^(?=diff --git )", patch):
+        m = _DIFF_FILE.match(block)
+        if not m:
+            continue
+        head = block.split("\n@@", 1)[0]
+        if re.search(r"(?m)^new file mode ", head):
+            continue
+        kind = "D" if re.search(r"(?m)^deleted file mode ", head) else "R" if re.search(r"(?m)^rename from ", head) \
+            else "M"
+        name_status.append(f"{kind}\t{m.group(1).strip()}")
+    t.touched_tests = touched_tests(task.verify if task else None, name_status) or \
+        (touched_tests("pytest", name_status) if not (task and task.verify) else [])
+
+
+async def _canary_scan(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t: Trial, child: Job,
+                       patch: str) -> None:
+    """--- anti-forgery (#127): look for the grader's canary in what the trial produced: its patch, its RESULT.md (each
+    turn's summary), its trace export, and the egress proxy's records of its sandbox. A hit means the agent had the
+    hidden tests (a leaked copy in its context, say): the trial is `contaminated`, the experiment gets a note, and the
+    audit log a `grade.canary_seen` entry. The canary itself is never written anywhere."""
+    g = spec.grader
+    canary = g.canary if g else None
+    if not canary:
+        return
+    needle = canary.lower()
+    where: list[str] = []
+    if needle in patch.lower():
+        where.append("patch")
+    summaries = [x.summary for x in child.turns if x.summary] + ([child.result.summary] if child.result.summary
+                                                                  else [])
+    if any(needle in x.lower() for x in summaries):
+        where.append("result")
+    trace = _dir(jobs.settings, job.id, t.key) / "trace.json"
+    with contextlib.suppress(OSError):
+        if "trace.json" in t.stored and await asyncio.to_thread(_file_has, trace, needle):
+            where.append("trace")
+    # the egress proxy records host names (it doesn't terminate TLS): a canary sent out in a name shows there
+    sandboxes = {child.sandbox_id} | {x.id for x in jobs.fleet.list(include_stopped=True,
+                                                                     label=f"hangar.job={child.id}")}
+    since = (t.started_at or child.created_at) - 1
+    for sid in sorted(x for x in sandboxes if x):
+        events = jobs.fleet.store.audit_since(since, ("egress.allow", "egress.deny"), target=sid, limit=2000)
+        if any(needle in json.dumps(e.detail, default=str).lower() for e in events):
+            where.append("egress")
+            break
+    if not where:
+        return
+    t.contaminated, t.contamination = True, where
+    st.notes.append(f"trial {t.key} is contaminated: the grader's canary was seen in its {', '.join(where)} (the "
+                    "agent had the hidden tests); leave it out of comparisons")
+    jobs.fleet.audit(f"experiment:{job.id}", "grade.canary_seen", job.id, trial=t.key, job=child.id, where=where)
+
+
+def _file_has(path: Path, needle: str) -> bool:
+    """Whether a stored file holds `needle` (lower case), read a piece at a time."""
+    tail = ""
+    with path.open(encoding="utf-8", errors="replace") as f:
+        while chunk := f.read(1 << 20):
+            text = tail + chunk.lower()
+            if needle in text:
+                return True
+            tail = text[-len(needle):]
+    return False
+
+
+def _checks(jobs: JobService) -> dict[tuple[str, str], asyncio.Future]:
+    return jobs.__dict__.setdefault("_experiment_task_checks", {})
+
+
+async def _task_check(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, task: str, variant: str,
+                      base: str | None) -> dict[str, Any]:
+    """--- anti-forgery (#127): once per task per experiment, the hidden tests on the pinned base without any patch:
+    if they pass there, the task can't tell a fix from no fix (`invalid_task`), and every grade of it says
+    `task_invalid`. With the task's `reference_patch`, the hidden tests run on it too, and must pass. Trials of a task
+    grading at once wait for one check; it is kept in the index, so a restart doesn't run it again."""
+    if (done := st.task_checks.get(task)) and done.get("state") == "done":
+        return done
+    futs = _checks(jobs)
+    k = (job.id, task)
+    if (f := futs.get(k)) is not None:
+        return await asyncio.shield(f)
+    fut: asyncio.Future = asyncio.get_running_loop().create_future()
+    futs[k] = fut
+    try:
+        out = await _run_task_check(jobs, job, st, spec, task, variant, base)
+        fut.set_result(out)
+        return out
+    except BaseException as e:
+        futs.pop(k, None)
+        if not fut.done():
+            fut.set_exception(e if isinstance(e, Exception) else RuntimeError("cancelled"))
+            fut.exception()  # retrieved: a waiter that went away doesn't make it "never retrieved"
+        raise
+
+
+async def _run_task_check(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, task: str, variant: str,
+                          base: str | None) -> dict[str, Any]:
+    g = spec.grader
+    assert g is not None
+    out: dict[str, Any] = {"state": "done", "base_sha": base, "at": now(), "invalid": False}
+    keep = ("exit_code", "hidden_tests", "error", "trust", "seconds", "applied", "apply_error")
+
+    async def run(key: str, patch: str) -> dict[str, Any]:
+        try:
+            return await _grade_patch(jobs, job, st, spec, task, variant, key, base, patch, tamper=False)
+        except Exception as e:  # noqa: BLE001 - the trials are graded all the same; the check says it didn't run
+            return {"error": jobs.broker.redact(str(e))[:500]}
+
+    on_base = await run(f"{task}/base/0", "")
+    out["base"] = {k: on_base[k] for k in keep if k in on_base}
+    reasons = []
+    if passed(on_base) is True:
+        reasons.append("hidden tests pass on base")
+    t = next(x for x in spec.tasks if x.id == task)
+    if t.reference_patch:
+        ref = await run(f"{task}/reference/0", t.reference_patch)
+        out["reference"] = {k: ref[k] for k in keep if k in ref}
+        ok = passed(ref)
+        if ok is False or ref.get("applied") is False:
+            reasons.append("the reference patch fails the hidden tests" if ref.get("applied") is not False
+                           else "the reference patch doesn't apply to the base")
+    if reasons:
+        out["invalid"], out["reason"] = True, "; ".join(reasons)
+        st.notes.append(f"invalid_task {task}: {out['reason']}; its grades say task_invalid")
+    elif passed(on_base) is None:
+        out["reason"] = "the base check couldn't run: " + str(on_base.get("error") or "no result")[:300]
+    st.task_checks[task] = mask_canary(out, g.canary)
+    with contextlib.suppress(Exception):
+        _save(jobs, job, st)
+    return st.task_checks[task]
+
+
+async def _grade_patch(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, task: str, variant: str,
+                       key: str, base: str | None, text: str, grade: dict[str, Any] | None = None,
+                       tamper: bool = True) -> dict[str, Any]:
+    """The experiment's grader on one patch (a trial's; none, for the base check; the task's reference patch), in a
+    clean, sealed sandbox: the pinned base, the patch, the grader's own files (outside the repo unless
+    `files_mode: in_repo`), each with the canary. It runs agent-written code beside the hidden tests, so it holds
+    nothing and reaches nothing (GRADER_LABEL: delivery.builds_repo_code, delivery.sealed): the environment's git
+    credentials only tell the gateway which one to fetch with. With the uid split the grade is hangar's own
+    (_run_split, #127); without, the command's output and $HANGAR_GRADE_OUT are the sandbox user's."""
+    from hangar import delivery, isolation
+    from hangar.autoinstall import validation_credentials
+
+    fleet = jobs.fleet
+    g = spec.grader
+    assert g is not None
+    t0 = now()
+    grade = grade if grade is not None else {"command": g.command, "at": t0}
+    grade["patch_bytes"] = len(text.encode())
+    sb = None
+    try:
+        tp = st.pins["tasks"][task]
+        env_name = spec.variants[variant].environment or spec.environment
         env = fleet.catalog.get(env_name)
-        labels = {GRADER_LABEL: job.id, TRIAL_LABEL: t.key}
+        labels = {GRADER_LABEL: job.id, TRIAL_LABEL: key}
         if g.network == "mirror":
             labels[delivery.NETWORK_LABEL] = "mirror"
         sb = await fleet.create(env_name, repo=tp.get("repo"), branch=next(
-            (x.base_branch for x in spec.tasks if x.id == t.task), None),
+            (x.base_branch for x in spec.tasks if x.id == task), None),
             credentials=validation_credentials(fleet, env), provider=spec.provider,
             ttl_minutes=max(10, g.timeout_seconds // 60 + 15), person=job.person, actor=f"experiment:{job.id}",
             labels=labels)
@@ -855,13 +1229,14 @@ async def _grade(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t:
             grade["applied"] = res.exit_code == 0
             if res.exit_code != 0:
                 grade["apply_error"] = jobs.broker.redact((res.stderr or res.stdout)[-1000:])
-            elif signals := await _tamper_signals(prov, sb, repo, text):  # --- sealed (#126)
+            elif tamper and (signals := await _tamper_signals(prov, sb, repo, text)):  # --- sealed (#126)
                 grade["tamper_signals"] = signals
+            await fleet.exec(sb.id, f"rm -f {work}/trial.patch", actor=f"experiment:{job.id}", quiet=True)
         # --- sealed (#126): the base and the patch are in; from here the trial's code runs: no host at all (not even
         # the setup's git host), and the sandbox's git grant (its one way to the gateway's upstream) goes
         sb = delivery.lock_sealed(fleet, sb)
         # the hidden tests outside the repo, beside `hangar-grade`; or in the repo (in_repo)
-        root = f"{grader_root(prov)}/{re.sub(r'[^A-Za-z0-9._-]', '_', t.key.replace('/', '__'))}"
+        root = f"{grader_root(prov)}/{re.sub(r'[^A-Za-z0-9._-]', '_', key.replace('/', '__'))}"
         grade["files_mode"] = g.files_mode
         if g.files_mode == "in_repo":
             hidden = repo or fleet.settings.workspace_dir
@@ -870,56 +1245,130 @@ async def _grade(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t:
             await prov.write_file(sb, f"{root}/bin/hangar-grade", GRADE_HELPER.encode(), mode=0o755)
             if not g.files:  # the directory exists even without files: a command can count on it
                 await prov.write_file(sb, f"{hidden}/.hangar-hidden-tests", b"", mode=0o644)
-        for rel, content in g.files.items():
-            await prov.write_file(sb, f"{hidden}/{rel}", content.encode(), mode=0o644)
-        junit = f"{work}/hidden-junit.xml"
-        env_vars = {"HANGAR_GRADE_OUT": GRADE_OUT, "HANGAR_TRIAL": t.key, "HANGAR_TASK": t.task,
-                    "HANGAR_VARIANT": t.variant, "HANGAR_EXPERIMENT": job.id, "HANGAR_HIDDEN_TESTS": hidden,
-                    "HANGAR_REPO": repo or fleet.settings.workspace_dir, "HANGAR_GRADE_JUNIT": junit}
-        path = f"PATH={q(root + '/bin')}:\"$PATH\" " if g.files_mode == "pristine" else ""
-        cmd = path + " ".join(f"{k}={q(v)}" for k, v in env_vars.items()) + \
-            f" timeout {g.timeout_seconds} bash -c " + q(g.command)
-        # how far the grade can be trusted (#127 adds `isolated`): the hidden tests in the repo, where the patch can
-        # change them, are `low`; anything else is `best_effort` until the grade's output is hangar's own
-        grade["trust"] = "low" if g.files_mode == "in_repo" else "best_effort"
-        grade["runner"] = "hangar-grade" if g.files_mode == "pristine" and "hangar-grade" in g.command else "command"
-        res = await fleet.exec(sb.id, cmd, cwd=repo, timeout=g.timeout_seconds + 30, actor=f"experiment:{job.id}")
-        grade["exit_code"] = res.exit_code
-        grade["tail"] = jobs.broker.redact(((res.stdout or "") + (res.stderr or ""))[-TAIL:])
-        if (hidden_tests := await _junit_counts(prov, sb, junit)) is not None:
+        marked = 0
+        for rel, content in g.files.items():  # --- anti-forgery (#127): each with the canary, where it takes one
+            body, ok = with_canary(rel, content, g.canary)
+            marked += ok
+            await prov.write_file(sb, f"{hidden}/{rel}", body.encode(), mode=0o644)
+        if g.files:
+            grade["canary_files"] = marked
+        grade["runner"] = "hangar-grade" if g.files_mode == "pristine" and _runner(g.command) == "hangar-grade" \
+            else "command"
+        env_vars = {"HANGAR_TRIAL": key, "HANGAR_TASK": task, "HANGAR_VARIANT": variant, "HANGAR_EXPERIMENT": job.id,
+                    "HANGAR_HIDDEN_TESTS": hidden, "HANGAR_REPO": repo or fleet.settings.workspace_dir}
+        path = f"{root}/bin" if g.files_mode == "pristine" else None
+        # --- anti-forgery (#127): with the uid split, hangar's user runs the command as the agent and owns the grade
+        split = isolation.supported(prov) and await isolation.ensure(fleet, prov, sb)
+        ran = await _run_split(jobs, prov, sb, g, key, repo, env_vars, path) if split else None
+        if ran is None:
+            if split:
+                grade.setdefault("notes", []).append("the uid split's grade wrapper couldn't run (python3 in the "
+                                                     "image?): graded as the sandbox's user")
+            split = False
+            ran = await _run_shared(jobs, prov, sb, g, repo, env_vars, path, f"experiment:{job.id}")
+        grade["trust"] = trust_of(split, g.files_mode, grade["runner"])
+        grade["isolation"] = "split" if split else (sb.info.get("isolation") or {}).get("why") or "shared"
+        exit_code, tail, raw, junit = ran
+        grade["exit_code"] = exit_code
+        grade["tail"] = jobs.broker.redact(tail[-TAIL:])
+        if (hidden_tests := _junit_counts(junit)) is not None:
             grade["hidden_tests"] = hidden_tests
-        if res.exit_code == 124 and grade["network"] == "none":
+        if exit_code == 124 and grade["network"] == "none":
             grade.setdefault("notes", []).append("the grader timed out with no network: if it fetches a dependency, "
                                                  "that isn't in the image (grader.network: mirror, or a repo build)")
-        raw = await prov.read_file(sb, GRADE_OUT, limit=64_000)
         if raw:
             try:
                 grade["data"] = jobs.broker.redact(json.loads(raw[:64_000]))
             except ValueError:
                 grade["data_error"] = "$HANGAR_GRADE_OUT isn't JSON (or is over 64 KB)"
-    except asyncio.CancelledError:
-        grade["error"] = "cancelled"
-        raise
-    except Exception as e:  # noqa: BLE001 - the trial keeps everything else
-        grade["error"] = jobs.broker.redact(str(e))[:1000]
     finally:
         grade["seconds"] = round(now() - t0, 1)
-        t.grade, t.state = grade, "done"
         if sb is not None:
             with contextlib.suppress(Exception):
                 await fleet.destroy(sb.id, actor=f"experiment:{job.id}")
-        with contextlib.suppress(Exception):
-            _save(jobs, job, st)
+    return grade
 
 
-async def _junit_counts(prov: Any, sb: Any, path: str) -> dict[str, Any] | None:
+async def _run_shared(jobs: JobService, prov: Any, sb: Any, g: Grader, repo: str | None, env_vars: dict[str, str],
+                      path: str | None, actor: str) -> tuple[int, str, bytes | None, bytes | None]:
+    """The grader's command as the sandbox's user (no uid split): its output and files are that user's, as is the
+    code it grades (`trust: best_effort` at most)."""
+    q = shlex.quote
+    junit = f"{GRADE_WORK}/hidden-junit.xml"
+    env = {**env_vars, "HANGAR_GRADE_OUT": GRADE_OUT, "HANGAR_GRADE_JUNIT": junit}
+    cmd = (f"PATH={q(path)}:\"$PATH\" " if path else "") + " ".join(f"{k}={q(v)}" for k, v in env.items()) + \
+        f" timeout {g.timeout_seconds} bash -c " + q(g.command)
+    res = await jobs.fleet.exec(sb.id, cmd, cwd=repo, timeout=g.timeout_seconds + 30, actor=actor)
+    raw = await prov.read_file(sb, GRADE_OUT, limit=64_000)
+    xml = await prov.read_file(sb, junit, limit=MAX_JUNIT)
+    return res.exit_code, (res.stdout or "") + (res.stderr or ""), raw, xml
+
+
+async def _run_split(jobs: JobService, prov: Any, sb: Any, g: Grader, key: str, repo: str | None,
+                     env_vars: dict[str, str], path: str | None) -> tuple[int, str, bytes | None, bytes | None] | None:
+    """--- anti-forgery (#127): the grader's command under GRADE_WRAPPER, as hangar's user, in a 0700 directory of
+    its own (GRADE_DIR/<trial>): the command runs as the agent, and what makes the grade reaches the wrapper through
+    pipes it created. None when the wrapper couldn't run at all (then the caller grades without it)."""
+    from hangar import isolation
+    from hangar.driver import LAUNCH
+    from hangar.providers.docker import SYSTEM_PATH
+
+    q = shlex.quote
+    fleet = jobs.fleet
+    user = fleet.settings.sandbox_user
+    d = f"{GRADE_DIR}/{re.sub(r'[^A-Za-z0-9._-]', '_', key.replace('/', '__'))}-{sb.id}"
+    res = await isolation.sh(prov, sb, f"umask 077 && mkdir -p {q(GRADE_DIR)} && chmod 0700 {q(GRADE_DIR)} && "
+                                       f"rm -rf {q(d)} && mkdir -m 0700 {q(d)}")
+    if res.exit_code != 0:
+        log.warning("grade %s: no grade directory: %s", key, (res.stderr or res.stdout)[-300:])
+        return None
+    env = {**env_vars, "HANGAR_GRADE_OUT": f"/proc/self/fd/{GRADE_FD}",
+           "HANGAR_GRADE_JUNIT": f"/proc/self/fd/{JUNIT_FD}"}
+    exports = "".join(f"export {k}={q(v)}\n" for k, v in env.items())
+    if path:
+        exports += f"export PATH={q(path)}:\"$PATH\"\n"
+    await isolation.put(prov, sb, d, {"wrapper.py": (GRADE_WRAPPER.encode(), 0o600)})
+    try:  # the agent's PATH is the image's (its tools); hangar's side never resolves through it
+        container = await prov._container(sb)
+        image_path = next((e[5:] for e in (container.attrs.get("Config") or {}).get("Env") or []
+                           if e.startswith("PATH=")), SYSTEM_PATH)
+    except Exception:  # noqa: BLE001
+        image_path = SYSTEM_PATH
+    # agent.env must be the agent's to read: the wrapper's directory is 0700, so it goes beside the hidden tests
+    shared = f"{GRADER_ROOT}/{d.rsplit('/', 1)[-1]}.env"
+    await prov.write_file(sb, shared, exports.encode(), mode=0o644)
+    argv = [user, f"/home/{user}", shared, repo or fleet.settings.workspace_dir, str(g.timeout_seconds), d, LAUNCH,
+            g.command]
+    caps = isolation.CAPS
+    cmd = (f"cd {q(isolation.HOME)} && setpriv --reuid={isolation.USER} --regid={isolation.USER} --init-groups "
+           f"--inh-caps={caps} --ambient-caps={caps} -- env HOME={isolation.HOME} USER={isolation.USER} "
+           f"LOGNAME={isolation.USER} PATH={SYSTEM_PATH} HANGAR_AGENT_PATH={q(image_path)} "
+           f"python3 -I {q(d + '/wrapper.py')} " + " ".join(q(a) for a in argv))
+    res = await prov.exec(sb, cmd, timeout=g.timeout_seconds + 60, user="root", cwd="/")
+    raw = await prov.read_file(sb, f"{d}/grade.json", limit=1024 * 1024)
+    if not raw or "hangar-grade-wrapper: done" not in (res.stdout or ""):
+        log.warning("grade %s: the wrapper didn't finish (exit %s): %s", key, res.exit_code,
+                    ((res.stderr or "") + (res.stdout or ""))[-300:])
+        return None
+    try:
+        st = json.loads(raw)
+    except ValueError:
+        return None
+    out = await prov.read_file(sb, f"{d}/out", limit=64_000)
+    junit = await prov.read_file(sb, f"{d}/junit.xml", limit=MAX_JUNIT)
+    tail = str(st.get("stdout") or "") + str(st.get("stderr") or "")
+    if not st.get("pipe_owner_ok", True):
+        tail += "\n[hangar] the grade's pipes weren't the agent's to reopen"
+    return int(st.get("exit_code", -1)), tail, out or None, junit or None
+
+
+def _junit_counts(raw: bytes | None) -> dict[str, Any] | None:
     """The hidden tests' results from the junit `hangar-grade` wrote: counts per outcome."""
     from hangar import testreports
 
-    raw = await prov.read_file(sb, path, limit=8 * 1024 * 1024)
     if not raw:
         return None
-    r = testreports.parse_junit(raw[:8 * 1024 * 1024], "hidden-junit.xml")
+    r = testreports.parse_junit(raw[:MAX_JUNIT], "hidden-junit.xml")
     if r.error:
         return {"error": r.error[:300]}
     counts = {k: 0 for k in ("passed", "failed", "error", "skipped")}
@@ -1053,9 +1502,13 @@ async def prepare_trial(jobs: JobService, job: Job, s: Session) -> None:
 def view(jobs: JobService, job: Job) -> dict[str, Any]:
     """The index: what was pinned, and per trial its job, manifests, verification, grade and stored files."""
     st = load(job)
+    canary = (st.spec.get("grader") or {}).get("canary")
     trials = []
     for t in st.trials:
         d = t.model_dump(mode="json")
+        # --- anti-forgery (#127): what flightdeck filters on, at the trial's top level
+        d["trust"] = (t.grade or {}).get("trust")
+        d["task_invalid"] = bool((st.task_checks.get(t.task) or {}).get("invalid"))
         base = f"/api/experiments/{job.id}/trials/{t.key}"
         d["links"] = {"job": f"/api/jobs/{t.job}" if t.job else None,
                       "manifest": f"{base}/manifest" if "manifest.json" in t.stored else None,
@@ -1064,10 +1517,12 @@ def view(jobs: JobService, job: Job) -> dict[str, Any]:
     counts: dict[str, int] = {}
     for t in st.trials:
         counts[t.state] = counts.get(t.state, 0) + 1
-    return {"schema": SCHEMA, "id": job.id, "name": st.spec.get("name"), "state": job.state.value,
-            "reason": job.reason, "requester": job.requester, "person": job.person, "created_at": job.created_at,
-            "finished_at": st.finished_at, "spec": jobs.broker.redact(st.spec), "pins": jobs.broker.redact(st.pins),
-            "counts": counts, "trials": jobs.broker.redact(trials), "notes": jobs.broker.redact(st.notes)}
+    out = {"schema": SCHEMA, "id": job.id, "name": st.spec.get("name"), "state": job.state.value,
+           "reason": job.reason, "requester": job.requester, "person": job.person, "created_at": job.created_at,
+           "finished_at": st.finished_at, "spec": jobs.broker.redact(st.spec), "pins": jobs.broker.redact(st.pins),
+           "counts": counts, "trials": jobs.broker.redact(trials), "notes": jobs.broker.redact(st.notes),
+           "task_checks": jobs.broker.redact(st.task_checks)}
+    return mask_canary(out, canary)  # --- anti-forgery (#127): the canary never leaves in an export
 
 
 def trial_file(jobs: JobService, job: Job, key: str, name: str) -> dict[str, Any]:
@@ -1078,7 +1533,9 @@ def trial_file(jobs: JobService, job: Job, key: str, name: str) -> dict[str, Any
     if name not in t.stored:
         raise KeyError(f"trial {key} has no {name} (it hasn't finished, or it couldn't be stored)")
     # --- review(#114): redacted again on the way out (a secret stored since the trial ended is masked too)
-    return jobs.broker.redact(json.loads((_dir(jobs.settings, job.id, key) / name).read_text()))
+    # --- anti-forgery (#127): and the grader's canary, which a contaminated trial's trace holds
+    return mask_canary(jobs.broker.redact(json.loads((_dir(jobs.settings, job.id, key) / name).read_text())),
+                       (st.spec.get("grader") or {}).get("canary"))
 
 
 def experiment(jobs: JobService, exp_id: str, owner: str | None = None) -> Job:
