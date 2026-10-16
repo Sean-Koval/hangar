@@ -566,6 +566,7 @@ Text that hangar's caller didn't write is fenced in the prompt as untrusted: iss
 - GitHub (`X-Hub-Signature-256`), Slack (`v0`) and inbound webhooks (per-source HMAC) are verified over the raw body, before anything parses it, and compared in constant time (as bytes, so a malformed header is a 401, not an error).
 - **Replays.** A signed request is identified by what its signature covers, and remembered in the store, so a restart doesn't forget it. GitHub deliveries and inbound webhook deliveries are kept for `HANGAR_WEBHOOK_REPLAY_HOURS` (7 days); a replay with a fresh, unsigned delivery id or timestamp header is still a duplicate and does nothing. Slack events are deduplicated by `event_id`, and slash commands by signature within Slack's five-minute window.
 - A missing secret is reported as "not stored" without naming the credential.
+- **Jira** signs its admin webhook (`X-Hub-Signature`); use it for issue events. Its Automation rules can't sign, so hangar accepts a hidden `X-Hangar-Token` as a fallback. That token only proves who holds it, so an Automation request starts a job only when the issue's own history shows the trigger transition within the last 10 minutes, at most 3 times per issue a day, and only as a `hangar:automation` request. A stale transition, a wrong event or a wrong token alerts the admins (inbox, and a Slack DM), and `hangar doctor` warns on a token older than 90 days and on Automation in use without signed issue events. Rotate it with `hangar cred add <name> --rotate` ([intake.md](intake.md#fallback-an-automation-rule)).
 
 ### Outbound webhooks (SSRF)
 
@@ -594,7 +595,8 @@ Every approval decision (`job.approve`, `job.reject`, `job.approval_expired`, `j
 - `request.rejected`: any 401, 403, 413 or 429 answer, with the client address, method and path;
 - `job.refused`: a submission or follow-up that was refused, with why (`rate_limited`, `too_many_active`, `invalid`, which covers a token's fence) and the caller;
 - `hook.replay`: a duplicate signed delivery;
-- `github.refused`: an untrusted person's attempt to continue a job or answer its question.
+- `github.refused`: an untrusted person's attempt to continue a job or answer its question;
+- `hook.automation.stale_transition`, `hook.automation.capped`, `hook.automation.wrong_event` and `jira.alert`: Jira Automation requests refused, and the alerts they raised ([intake.md](intake.md#fallback-an-automation-rule)).
 
 Refusals are themselves limited to `HANGAR_AUDIT_REJECTIONS_PER_MINUTE` (30) per client address or caller, so a flood can't fill the audit log; the next entry that gets through records how many were dropped (`suppressed_before`).
 

@@ -307,7 +307,9 @@ hangar config set jira '{"url": "https://acme.atlassian.net", "email": "hangar@a
   "statuses": {"started": "In Progress", "needs_input": "Blocked", "delivered": "In Review"}}'
 ```
 
-In Jira, *Settings → System → WebHooks*: URL `https://<your hangar>/api/hooks/jira`, the same secret, events Issue created and updated and Comment created, with JQL `project in (ABC)`. Prefer this signed webhook to an Automation rule. Mapped repos must be in `HANGAR_GITHUB_REPOS`. Then link your teammates' Jira accounts (`hangar person link alice jira <account id>`): an unlinked Jira sender's job always waits for a linked teammate's `/hangar approve`.
+In Jira, *Settings → System → WebHooks*: URL `https://<your hangar>/api/hooks/jira`, the same secret, events Issue created and updated and Comment created, with JQL `project in (ABC)`. Prefer this signed webhook to an Automation rule.
+
+**Already using an Automation rule (#128)?** An Automation request now starts a job only when the issue's history shows the trigger transition within the last 10 minutes (`automation_max_transition_age_minutes`), at most 3 times per issue a day (`automation_max_starts_per_issue_per_day`), and only as `"webhookEvent": "hangar:automation"`: a rule that fires on a schedule or long after the transition, or sends any other event with the token, is now ignored, audited and alerted to admins. `hangar doctor` warns on a token older than 90 days and while issue events don't arrive through the signed webhook. Move issue events to the signed webhook if you can; otherwise rotate the token (`hangar cred add jira-automation --rotate`) and update the rule's header. Mapped repos must be in `HANGAR_GITHUB_REPOS`. Then link your teammates' Jira accounts (`hangar person link alice jira <account id>`): an unlinked Jira sender's job always waits for a linked teammate's `/hangar approve`.
 
 #### 9d. GitHub Projects
 
