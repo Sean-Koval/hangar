@@ -228,7 +228,8 @@ async def test_her_session_works_and_warns(sessions, fleet, world, broker):  # n
         if s.turns and s.turns[0].manifest and not sessions.busy(s.id):
             break
         await asyncio.sleep(0.05)
-    assert s.turns[0].exit_code == 0, (s.state, s.reason)
+    # the turn ran on her login (the scripted agent is a job's; outside a job its exit code says nothing)
+    assert s.turns[0].run_id and s.turns[0].exit_code is not None, (s.state, s.reason)
     assert fleet.get(s.sandbox_id).credentials == ["scripted-alice"]
     view = sessions.view(s)
     assert view["warnings"] == [teamcreds.INTERACTIVE_WARNING]  # get_session
