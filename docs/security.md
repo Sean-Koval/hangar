@@ -571,6 +571,19 @@ Text that hangar's caller didn't write is fenced in the prompt as untrusted: iss
 
 Job callbacks and A2A push notifications go only to public `https` hosts unless the host is in `HANGAR_JOB_CALLBACK_HOSTS`. Just before each send, the name is resolved, every address is checked, and the connection is made to the checked address itself (TLS still verifies the name). A name that re-resolves to `127.0.0.1` or a metadata address between the check and the connection (DNS rebinding) reaches nothing. Redirects aren't followed, and proxy environment variables are ignored for these requests.
 
+### Scopes
+
+Every MCP tool and resource and every REST route is listed, by verb, with the token scope it requires and its owner rule, in [`tests/fixtures/scope_matrix.yaml`](../tests/fixtures/scope_matrix.yaml). `tests/test_scope_parity.py` checks that list against the code on every change to a route or tool module: a tool's scope comes from how `mcp_server.tool()` registered it, and a route's from its FastAPI dependency. A new tool or route fails CI until it has an entry, and the failure prints one to paste. Where one verb's MCP and REST twins differ, the entry has to say why (`exception:`). Every privileged verb whose twins agree (approving and rejecting jobs, `hangar://status`) is also called on both surfaces, as a member, as an admin's `mcp`-only token and as an admin login, and must answer the same way. In short:
+
+| Surface | Scope | Owner rule |
+| --- | --- | --- |
+| MCP tools and resources | any token `/mcp` accepts (admin, `mcp`, `user`, OAuth grants) | own records unless admin (`people.Guard`); `approve_job` / `reject_job` follow [who may approve](triggers.md#who-may-approve); `hangar://status` is admin-only |
+| REST `/api/jobs*`, experiments, manifests | admin, or a `jobs` service token | a `jobs` token's own jobs |
+| REST approve / reject | [who may approve](triggers.md#who-may-approve) | as MCP |
+| REST `/api/me`, tokens, credentials, inbox, env requests, envbuilds, records | admin, or a person's `user` login | own records unless admin |
+| The rest of REST | admin | everything |
+| Webhooks, `/e2b`, the gateway's `/git`, `/pkg`, `/cache`, `/registry` | their own credentials (signatures, `sandboxes` tokens, sandbox grants) | the source's or the sandbox's own |
+
 ### Front-door limits
 
 | Limit | Default | Applies to |

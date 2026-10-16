@@ -1,0 +1,2070 @@
+# REST/MCP scope parity (#122): every MCP tool and resource and every REST route, by verb, with the scope it requires
+# and its owner rule. tests/test_scope_parity.py checks this against what the code enforces; keep it sorted.
+#
+#   server:       hangar | hangar-sandbox (after the MCP split, #140)
+#   mcp:          the tool (null: none)       mcp_resource: hangar://... read paths     rest: "METHOD /path" (or a list)
+#   scope:        what the caller's token needs; {mcp: ..., rest: ...} when the surfaces differ
+#                   admin | user (a person's login) | jobs (service tokens) | mcp (any token /mcp accepts: admin,
+#                   mcp, user, OAuth grants) | sandboxes (E2B) | metrics | approvals.can_decide (approvals.py) |
+#                   signed (a webhook signature) | ticket (single-use, minted by an admin or owner) | grant (a
+#                   sandbox's gateway grant or egress token) | link (a signed URL) | oauth | public
+#   owner:        guard (own records unless admin: people.Guard) | token (a jobs token's own jobs) | admin | any |
+#                 own_grant (OAuth: what the approving token may)
+#   enforced_by:  where a route without an auth dependency checks its caller
+#   exception:    why one verb's MCP and REST twins differ (required when they do)
+#
+# A new tool or route fails the test until it has an entry here; the failure prints a stub to paste.
+
+.get:
+  server: hangar
+  mcp: null
+  rest: GET /
+  scope: public
+  owner: any
+  enforced_by: 'app: the dashboard shell; its API calls carry the token'
+a2a.post:
+  server: hangar
+  mcp: null
+  rest: POST /a2a
+  scope: jobs
+  owner: token
+  enforced_by: 'a2a.A2AServer._caller: job_caller''s rule (admin, or a jobs token fenced to its own)'
+admin.delete_drain:
+  server: hangar
+  mcp: null
+  rest: DELETE /api/admin/drain
+  scope: admin
+  owner: admin
+admin.get_backups:
+  server: hangar
+  mcp: null
+  rest: GET /api/admin/backups
+  scope: admin
+  owner: admin
+admin.get_deploys:
+  server: hangar
+  mcp: null
+  rest: GET /api/admin/deploys
+  scope: admin
+  owner: admin
+admin.get_doctor:
+  server: hangar
+  mcp: null
+  rest: GET /api/admin/doctor
+  scope: admin
+  owner: admin
+admin.get_doctor_findings:
+  server: hangar
+  mcp: null
+  rest: GET /api/admin/doctor/findings/{fid}
+  scope: admin
+  owner: admin
+admin.get_doctor_plan:
+  server: hangar
+  mcp: null
+  rest: GET /api/admin/doctor/plan
+  scope: admin
+  owner: admin
+admin.get_drain:
+  server: hangar
+  mcp: null
+  rest: GET /api/admin/drain
+  scope: admin
+  owner: admin
+admin.get_power:
+  server: hangar
+  mcp: null
+  rest: GET /api/admin/power
+  scope: admin
+  owner: admin
+admin.get_power_hold:
+  server: hangar
+  mcp: null
+  rest: GET /api/admin/power/hold
+  scope: admin
+  owner: admin
+admin.get_power_prepull:
+  server: hangar
+  mcp: null
+  rest: GET /api/admin/power/prepull
+  scope: admin
+  owner: admin
+admin.get_rotate_key:
+  server: hangar
+  mcp: null
+  rest: GET /api/admin/rotate-key
+  scope: admin
+  owner: admin
+admin.post_backup:
+  server: hangar
+  mcp: null
+  rest: POST /api/admin/backup
+  scope: admin
+  owner: admin
+admin.post_deploys:
+  server: hangar
+  mcp: null
+  rest: POST /api/admin/deploys
+  scope: admin
+  owner: admin
+admin.post_deploys_pending:
+  server: hangar
+  mcp: null
+  rest: POST /api/admin/deploys/pending
+  scope: admin
+  owner: admin
+admin.post_doctor_findings_dismiss:
+  server: hangar
+  mcp: null
+  rest: POST /api/admin/doctor/findings/{fid}/dismiss
+  scope: admin
+  owner: admin
+admin.post_doctor_run:
+  server: hangar
+  mcp: null
+  rest: POST /api/admin/doctor/run
+  scope: admin
+  owner: admin
+admin.post_drain:
+  server: hangar
+  mcp: null
+  rest: POST /api/admin/drain
+  scope: admin
+  owner: admin
+admin.post_power_hold:
+  server: hangar
+  mcp: null
+  rest: POST /api/admin/power/hold
+  scope: admin
+  owner: admin
+admin.post_power_release:
+  server: hangar
+  mcp: null
+  rest: POST /api/admin/power/release
+  scope: admin
+  owner: admin
+admin.post_power_state:
+  server: hangar
+  mcp: null
+  rest: POST /api/admin/power/state
+  scope: admin
+  owner: admin
+admin.post_power_up:
+  server: hangar
+  mcp: null
+  rest: POST /api/admin/power/up
+  scope: admin
+  owner: admin
+admin.post_restore:
+  server: hangar
+  mcp: null
+  rest: POST /api/admin/restore
+  scope: admin
+  owner: admin
+admin.post_rotate_key:
+  server: hangar
+  mcp: null
+  rest: POST /api/admin/rotate-key
+  scope: admin
+  owner: admin
+admin.post_rotate_key_retire:
+  server: hangar
+  mcp: null
+  rest: POST /api/admin/rotate-key/retire
+  scope: admin
+  owner: admin
+audit.get:
+  server: hangar
+  mcp: null
+  rest: GET /api/audit
+  scope: admin
+  owner: admin
+authorize.get:
+  server: hangar
+  mcp: null
+  rest: GET /authorize
+  scope: oauth
+  owner: own_grant
+  enforced_by: 'mcp.server.auth: the OAuth 2.1 flow (PKCE); grants act as the approving token'
+authorize.post:
+  server: hangar
+  mcp: null
+  rest: POST /authorize
+  scope: oauth
+  owner: own_grant
+  enforced_by: 'mcp.server.auth: the OAuth 2.1 flow (PKCE); grants act as the approving token'
+builds.get:
+  server: hangar
+  mcp: null
+  rest: GET /api/builds
+  scope: admin
+  owner: admin
+builds.get_stream:
+  server: hangar
+  mcp: null
+  rest: GET /api/builds/{job_id}/stream
+  scope: ticket
+  owner: admin
+  enforced_by: 'app.build_stream: a single-use ticket (POST /api/tickets, admin) or an admin token'
+cache.copy_sccache:
+  server: hangar
+  mcp: null
+  rest: COPY /cache/sccache/{path:path}
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+cache.delete_sccache:
+  server: hangar
+  mcp: null
+  rest: DELETE /cache/sccache/{path:path}
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+cache.get_bazel:
+  server: hangar
+  mcp: null
+  rest: GET /cache/bazel/{part}/{digest}
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+cache.get_deps:
+  server: hangar
+  mcp: null
+  rest: GET /cache/deps/{kind}
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+cache.get_sccache:
+  server: hangar
+  mcp: null
+  rest: GET /cache/sccache/{path:path}
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+cache.get_turbo_v8_artifacts:
+  server: hangar
+  mcp: null
+  rest: GET /cache/turbo/v8/artifacts/{hash}
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+cache.get_turbo_v8_artifacts_status:
+  server: hangar
+  mcp: null
+  rest: GET /cache/turbo/v8/artifacts/status
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+cache.mkcol_sccache:
+  server: hangar
+  mcp: null
+  rest: MKCOL /cache/sccache/{path:path}
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+cache.move_sccache:
+  server: hangar
+  mcp: null
+  rest: MOVE /cache/sccache/{path:path}
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+cache.post_turbo_v8_artifacts:
+  server: hangar
+  mcp: null
+  rest: POST /cache/turbo/v8/artifacts
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+cache.post_turbo_v8_artifacts_events:
+  server: hangar
+  mcp: null
+  rest: POST /cache/turbo/v8/artifacts/events
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+cache.propfind_sccache:
+  server: hangar
+  mcp: null
+  rest: PROPFIND /cache/sccache/{path:path}
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+cache.put_bazel:
+  server: hangar
+  mcp: null
+  rest: PUT /cache/bazel/{part}/{digest}
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+cache.put_deps:
+  server: hangar
+  mcp: null
+  rest: PUT /cache/deps/{kind}
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+cache.put_sccache:
+  server: hangar
+  mcp: null
+  rest: PUT /cache/sccache/{path:path}
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+cache.put_turbo_v8_artifacts:
+  server: hangar
+  mcp: null
+  rest: PUT /cache/turbo/v8/artifacts/{hash}
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+caches.delete:
+  server: hangar
+  mcp: null
+  rest: DELETE /api/caches
+  scope: admin
+  owner: admin
+caches.get:
+  server: hangar
+  mcp: null
+  rest: GET /api/caches
+  scope: admin
+  owner: admin
+cloud.post_rotate:
+  server: hangar
+  mcp: null
+  rest: POST /api/cloud/rotate
+  scope: admin
+  owner: admin
+connect.get:
+  server: hangar
+  mcp: null
+  rest: GET /api/connect
+  scope: user
+  owner: guard
+credential.list:
+  server: hangar
+  mcp: list_credentials
+  rest: GET /api/credentials
+  scope:
+    mcp: mcp
+    rest: user
+  owner: guard
+  exception: 'the REST route takes a person''s `user` login (identity_api.credentials); MCP also takes their `mcp` tokens,
+    with the same filter (people.usable: their own and the team''s)'
+credentials.delete:
+  server: hangar
+  mcp: null
+  rest: DELETE /api/credentials/{name}
+  scope: user
+  owner: guard
+credentials.get_migration:
+  server: hangar
+  mcp: null
+  rest: GET /api/credentials/migration
+  scope: admin
+  owner: admin
+credentials.post:
+  server: hangar
+  mcp: null
+  rest: POST /api/credentials
+  scope: user
+  owner: guard
+credentials.post_check:
+  server: hangar
+  mcp: null
+  rest: POST /api/credentials/check
+  scope: admin
+  owner: admin
+credentials.post_release:
+  server: hangar
+  mcp: null
+  rest: POST /api/credentials/{name}/release
+  scope: admin
+  owner: admin
+credentials.put_exposure:
+  server: hangar
+  mcp: null
+  rest: PUT /api/credentials/{name}/exposure
+  scope: admin
+  owner: admin
+credentials.put_owner:
+  server: hangar
+  mcp: null
+  rest: PUT /api/credentials/{name}/owner
+  scope: admin
+  owner: admin
+doctor.get:
+  server: hangar
+  mcp: null
+  rest: GET /api/doctor
+  scope: admin
+  owner: admin
+e2b.delete:
+  server: hangar
+  mcp: null
+  rest: DELETE /e2b/{path:path}
+  scope: sandboxes
+  owner: token
+  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
+e2b.delete_sandboxes:
+  server: hangar
+  mcp: null
+  rest: DELETE /e2b/sandboxes/{sandbox_id}
+  scope: sandboxes
+  owner: token
+  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
+e2b.get:
+  server: hangar
+  mcp: null
+  rest: GET /e2b/{path:path}
+  scope: sandboxes
+  owner: token
+  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
+e2b.get_health:
+  server: hangar
+  mcp: null
+  rest: GET /e2b/health
+  scope: public
+  owner: any
+  enforced_by: 'e2b_api: liveness only'
+e2b.get_sandboxes:
+  server: hangar
+  mcp: null
+  rest: GET /e2b/sandboxes
+  scope: sandboxes
+  owner: token
+  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
+e2b.get_sandboxes_:
+  server: hangar
+  mcp: null
+  rest: GET /e2b/sandboxes/{sandbox_id}
+  scope: sandboxes
+  owner: token
+  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
+e2b.get_sandboxes_logs:
+  server: hangar
+  mcp: null
+  rest: GET /e2b/sandboxes/{sandbox_id}/logs
+  scope: sandboxes
+  owner: token
+  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
+e2b.get_sandboxes_metrics:
+  server: hangar
+  mcp: null
+  rest: GET /e2b/sandboxes/metrics
+  scope: sandboxes
+  owner: token
+  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
+e2b.get_sandboxes_metrics_:
+  server: hangar
+  mcp: null
+  rest: GET /e2b/sandboxes/{sandbox_id}/metrics
+  scope: sandboxes
+  owner: token
+  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
+e2b.get_templates:
+  server: hangar
+  mcp: null
+  rest: GET /e2b/templates
+  scope: sandboxes
+  owner: token
+  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
+e2b.get_templates_:
+  server: hangar
+  mcp: null
+  rest: GET /e2b/templates/{template_id}
+  scope: sandboxes
+  owner: token
+  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
+e2b.get_v2_sandboxes:
+  server: hangar
+  mcp: null
+  rest: GET /e2b/v2/sandboxes
+  scope: sandboxes
+  owner: token
+  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
+e2b.get_v2_sandboxes_logs:
+  server: hangar
+  mcp: null
+  rest: GET /e2b/v2/sandboxes/{sandbox_id}/logs
+  scope: sandboxes
+  owner: token
+  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
+e2b.get_v2_templates:
+  server: hangar
+  mcp: null
+  rest: GET /e2b/v2/templates
+  scope: sandboxes
+  owner: token
+  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
+e2b.patch:
+  server: hangar
+  mcp: null
+  rest: PATCH /e2b/{path:path}
+  scope: sandboxes
+  owner: token
+  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
+e2b.post:
+  server: hangar
+  mcp: null
+  rest: POST /e2b/{path:path}
+  scope: sandboxes
+  owner: token
+  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
+e2b.post_sandboxes:
+  server: hangar
+  mcp: null
+  rest: POST /e2b/sandboxes
+  scope: sandboxes
+  owner: token
+  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
+e2b.post_sandboxes_connect:
+  server: hangar
+  mcp: null
+  rest: POST /e2b/sandboxes/{sandbox_id}/connect
+  scope: sandboxes
+  owner: token
+  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
+e2b.post_sandboxes_pause:
+  server: hangar
+  mcp: null
+  rest: POST /e2b/sandboxes/{sandbox_id}/pause
+  scope: sandboxes
+  owner: token
+  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
+e2b.post_sandboxes_refreshes:
+  server: hangar
+  mcp: null
+  rest: POST /e2b/sandboxes/{sandbox_id}/refreshes
+  scope: sandboxes
+  owner: token
+  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
+e2b.post_sandboxes_resume:
+  server: hangar
+  mcp: null
+  rest: POST /e2b/sandboxes/{sandbox_id}/resume
+  scope: sandboxes
+  owner: token
+  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
+e2b.post_sandboxes_timeout:
+  server: hangar
+  mcp: null
+  rest: POST /e2b/sandboxes/{sandbox_id}/timeout
+  scope: sandboxes
+  owner: token
+  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
+e2b.post_v2_sandboxes:
+  server: hangar
+  mcp: null
+  rest: POST /e2b/v2/sandboxes
+  scope: sandboxes
+  owner: token
+  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
+e2b.post_v2_sandboxes_connect:
+  server: hangar
+  mcp: null
+  rest: POST /e2b/v2/sandboxes/{sandbox_id}/connect
+  scope: sandboxes
+  owner: token
+  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
+e2b.put:
+  server: hangar
+  mcp: null
+  rest: PUT /e2b/{path:path}
+  scope: sandboxes
+  owner: token
+  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
+egress.delete_approvals:
+  server: hangar
+  mcp: null
+  rest: DELETE /api/egress/approvals
+  scope: admin
+  owner: admin
+egress.get_approvals:
+  server: hangar
+  mcp: null
+  rest: GET /api/egress/approvals
+  scope: admin
+  owner: admin
+egress.get_sandboxes:
+  server: hangar
+  mcp: null
+  rest: GET /api/egress/sandboxes/{ref}
+  scope: admin
+  owner: admin
+env.post_setup:
+  server: hangar
+  mcp: null
+  rest: POST /api/env/setup
+  scope: jobs
+  owner: token
+env_requests.get:
+  server: hangar
+  mcp: null
+  rest: GET /api/env-requests
+  scope: user
+  owner: guard
+env_requests.get_:
+  server: hangar
+  mcp: null
+  rest: GET /api/env-requests/{rid}
+  scope: user
+  owner: guard
+env_requests.post:
+  server: hangar
+  mcp: null
+  rest: POST /api/env-requests/{rid}
+  scope: user
+  owner: guard
+envbuilds.get:
+  server: hangar
+  mcp: null
+  rest: GET /api/envbuilds
+  scope: user
+  owner: guard
+envbuilds.get_:
+  server: hangar
+  mcp: null
+  rest: GET /api/envbuilds/{build_id}
+  scope: user
+  owner: guard
+envbuilds.post:
+  server: hangar
+  mcp: null
+  rest: POST /api/envbuilds
+  scope: user
+  owner: guard
+envbuilds.post_rollback:
+  server: hangar
+  mcp: null
+  rest: POST /api/envbuilds/{build_id}/rollback
+  scope: admin
+  owner: admin
+envbuilds.post_unpin:
+  server: hangar
+  mcp: null
+  rest: POST /api/envbuilds/unpin
+  scope: admin
+  owner: admin
+envbuilds.post_validate:
+  server: hangar
+  mcp: null
+  rest: POST /api/envbuilds/validate
+  scope: user
+  owner: guard
+environment.build:
+  server: hangar
+  mcp: build_environment
+  rest: POST /api/environments/{name}/build
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+environment.clone:
+  server: hangar
+  mcp: clone_environment
+  rest: POST /api/environments/{name}/clone
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+environment.get:
+  server: hangar
+  mcp: describe_environment
+  rest: GET /api/environments/{name}
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+environment.list:
+  server: hangar
+  mcp: list_environments
+  rest: GET /api/environments
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+environment.save:
+  server: hangar
+  mcp: create_environment
+  rest: PUT /api/environments/{name}
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+environment.validate:
+  server: hangar
+  mcp: validate_environment
+  rest: POST /api/environments/validate
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+environments.get_context:
+  server: hangar
+  mcp: null
+  rest: GET /api/environments/{name}/context
+  scope: admin
+  owner: admin
+environments.get_manifest:
+  server: hangar
+  mcp: null
+  rest: GET /api/environments/{name}/manifest
+  scope: user
+  owner: guard
+environments.post_images:
+  server: hangar
+  mcp: null
+  rest: POST /api/environments/{name}/images
+  scope: admin
+  owner: admin
+events.get:
+  server: hangar
+  mcp: get_events
+  mcp_resource:
+  - hangar://sessions/{name}/events{?since}
+  - hangar://jobs/{job_id}/events{?since}
+  rest: GET /api/sessions/{ref}/events
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+events.get_job:
+  server: hangar
+  mcp: null
+  rest: GET /api/jobs/{job_id}/events
+  scope: jobs
+  owner: token
+  note: 'the job side of get_events (MCP''s one tool covers sessions and jobs: see events.get)'
+experiment.get:
+  server: hangar
+  mcp: null
+  mcp_resource: hangar://experiments/{job_id}
+  rest: GET /api/experiments/{exp_id}
+  scope:
+    mcp: mcp
+    rest: jobs
+  owner:
+    mcp: guard
+    rest: token
+  exception: 'by design: REST /api/jobs also serves `jobs` service tokens, fenced to the jobs they submitted (app.job_caller);
+    MCP serves people, fenced to their own by people.Guard. Admins reach every job on both'
+experiments.get_trials_manifest:
+  server: hangar
+  mcp: null
+  rest: GET /api/experiments/{exp_id}/trials/{key:path}/manifest
+  scope: jobs
+  owner: token
+experiments.get_trials_trace:
+  server: hangar
+  mcp: null
+  rest: GET /api/experiments/{exp_id}/trials/{key:path}/trace
+  scope: jobs
+  owner: token
+experiments.post:
+  server: hangar
+  mcp: null
+  rest: POST /api/experiments
+  scope: jobs
+  owner: token
+experiments.post_cancel:
+  server: hangar
+  mcp: null
+  rest: POST /api/experiments/{exp_id}/cancel
+  scope: jobs
+  owner: token
+fleet.overview:
+  server: hangar
+  mcp: fleet_overview
+  rest: GET /api/overview
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+gc.post:
+  server: hangar
+  mcp: null
+  rest: POST /api/gc
+  scope: admin
+  owner: admin
+gh.delete_api:
+  server: hangar
+  mcp: null
+  rest: DELETE /gh/api/{rest:path}
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+gh.get_api:
+  server: hangar
+  mcp: null
+  rest: GET /gh/api/{rest:path}
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+gh.patch_api:
+  server: hangar
+  mcp: null
+  rest: PATCH /gh/api/{rest:path}
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+gh.post_api:
+  server: hangar
+  mcp: null
+  rest: POST /gh/api/{rest:path}
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+gh.put_api:
+  server: hangar
+  mcp: null
+  rest: PUT /gh/api/{rest:path}
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+git.get:
+  server: hangar
+  mcp: null
+  rest: GET /git/{rest:path}
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+git.post:
+  server: hangar
+  mcp: null
+  rest: POST /git/{rest:path}
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+harnesses.get:
+  server: hangar
+  mcp: null
+  rest: GET /api/harnesses
+  scope: admin
+  owner: admin
+harnesses.get_context:
+  server: hangar
+  mcp: null
+  rest: GET /api/harnesses/{harness}/context
+  scope: admin
+  owner: admin
+harnesses.post_images:
+  server: hangar
+  mcp: null
+  rest: POST /api/harnesses/{harness}/images
+  scope: admin
+  owner: admin
+harnesses.post_pack:
+  server: hangar
+  mcp: null
+  rest: POST /api/harnesses/{harness}/pack
+  scope: admin
+  owner: admin
+healthz.get:
+  server: hangar
+  mcp: null
+  rest: GET /healthz
+  scope: public
+  owner: any
+  enforced_by: 'app.healthz: liveness only'
+hooks.post_github:
+  server: hangar
+  mcp: null
+  rest: POST /api/hooks/github
+  scope: signed
+  owner: any
+  enforced_by: 'app.github_hook: X-Hub-Signature-256; who may act is the front door''s (triggers.md)'
+hooks.post_inbound:
+  server: hangar
+  mcp: null
+  rest: POST /api/hooks/inbound/{source}
+  scope: signed
+  owner: any
+  enforced_by: 'triggers.handle_inbound: the source''s HMAC key'
+hooks.post_jira:
+  server: hangar
+  mcp: null
+  rest: POST /api/hooks/jira
+  scope: signed
+  owner: any
+  enforced_by: 'jira.JiraFrontDoor: webhook signature or the Automation token; linked accounts only'
+hooks.post_slack_commands:
+  server: hangar
+  mcp: null
+  rest: POST /api/hooks/slack/commands
+  scope: signed
+  owner: any
+  enforced_by: 'slack: Slack''s v0 signature; who may act is the front door''s'
+hooks.post_slack_events:
+  server: hangar
+  mcp: null
+  rest: POST /api/hooks/slack/events
+  scope: signed
+  owner: any
+  enforced_by: 'slack: Slack''s v0 signature; who may act is the front door''s'
+inbox.get:
+  server: hangar
+  mcp: null
+  mcp_resource: hangar://inbox
+  rest: GET /api/inbox
+  scope:
+    mcp: mcp
+    rest: user
+  owner: guard
+  exception: the REST route takes a person's `user` login (app.person_actor); MCP also takes their `mcp` tokens and OAuth
+    grants. Both are fenced to the person's own records
+job.approve:
+  server: hangar
+  mcp: approve_job
+  rest: POST /api/jobs/{job_id}/approve
+  scope: approvals.can_decide
+  owner: guard
+job.cancel:
+  server: hangar
+  mcp: cancel_job
+  rest: POST /api/jobs/{job_id}/cancel
+  scope:
+    mcp: mcp
+    rest: jobs
+  owner:
+    mcp: guard
+    rest: token
+  exception: 'by design: REST /api/jobs also serves `jobs` service tokens, fenced to the jobs they submitted (app.job_caller);
+    MCP serves people, fenced to their own by people.Guard. Admins reach every job on both'
+job.follow_up:
+  server: hangar
+  mcp: follow_up_job
+  rest: POST /api/jobs/{job_id}/follow-up
+  scope:
+    mcp: mcp
+    rest: jobs
+  owner:
+    mcp: guard
+    rest: token
+  exception: 'by design: REST /api/jobs also serves `jobs` service tokens, fenced to the jobs they submitted (app.job_caller);
+    MCP serves people, fenced to their own by people.Guard. Admins reach every job on both'
+job.get:
+  server: hangar
+  mcp: get_job
+  mcp_resource: hangar://jobs/{job_id}
+  rest: GET /api/jobs/{job_id}
+  scope:
+    mcp: mcp
+    rest: jobs
+  owner:
+    mcp: guard
+    rest: token
+  exception: 'by design: REST /api/jobs also serves `jobs` service tokens, fenced to the jobs they submitted (app.job_caller);
+    MCP serves people, fenced to their own by people.Guard. Admins reach every job on both'
+job.list:
+  server: hangar
+  mcp: list_jobs
+  rest: GET /api/jobs
+  scope:
+    mcp: mcp
+    rest: jobs
+  owner:
+    mcp: guard
+    rest: token
+  exception: 'by design: REST /api/jobs also serves `jobs` service tokens, fenced to the jobs they submitted (app.job_caller);
+    MCP serves people, fenced to their own by people.Guard. Admins reach every job on both'
+job.reject:
+  server: hangar
+  mcp: reject_job
+  rest: POST /api/jobs/{job_id}/reject
+  scope: approvals.can_decide
+  owner: guard
+job.submit:
+  server: hangar
+  mcp: submit_job
+  rest: POST /api/jobs
+  scope:
+    mcp: mcp
+    rest: jobs
+  owner:
+    mcp: guard
+    rest: token
+  exception: 'by design: REST /api/jobs also serves `jobs` service tokens, fenced to the jobs they submitted (app.job_caller);
+    MCP serves people, fenced to their own by people.Guard. Admins reach every job on both'
+jobs.get_approvals:
+  server: hangar
+  mcp: null
+  rest: GET /api/jobs/{job_id}/approvals
+  scope: jobs
+  owner: token
+jobs.get_artifacts:
+  server: hangar
+  mcp: null
+  rest: GET /api/jobs/{job_id}/artifacts
+  scope: jobs
+  owner: token
+jobs.get_artifacts_:
+  server: hangar
+  mcp: null
+  rest: GET /api/jobs/{job_id}/artifacts/{turn}/{path:path}
+  scope: jobs
+  owner: token
+jobs.get_events_stream:
+  server: hangar
+  mcp: null
+  rest: GET /api/jobs/{job_id}/events/stream
+  scope: jobs
+  owner: token
+jobs.get_patch:
+  server: hangar
+  mcp: null
+  rest: GET /api/jobs/{job_id}/patch
+  scope: jobs
+  owner: token
+logins.post:
+  server: hangar
+  mcp: null
+  rest: POST /api/logins
+  scope: admin
+  owner: admin
+logins.post_complete:
+  server: hangar
+  mcp: null
+  rest: POST /api/logins/{login_id}/complete
+  scope: admin
+  owner: admin
+manifest.job:
+  server: hangar
+  mcp: null
+  mcp_resource: hangar://jobs/{job_id}/manifest
+  rest: GET /api/jobs/{job_id}/manifest
+  scope:
+    mcp: mcp
+    rest: jobs
+  owner:
+    mcp: guard
+    rest: token
+  exception: 'by design: REST /api/jobs also serves `jobs` service tokens, fenced to the jobs they submitted (app.job_caller);
+    MCP serves people, fenced to their own by people.Guard. Admins reach every job on both'
+manifest.session:
+  server: hangar
+  mcp: null
+  mcp_resource: hangar://sessions/{name}/manifest
+  rest: GET /api/sessions/{ref}/manifest
+  scope:
+    mcp: mcp
+    rest: user
+  owner: guard
+  exception: the REST route takes a person's `user` login (app.person_actor); MCP also takes their `mcp` tokens and OAuth
+    grants. Both are fenced to the person's own records
+mcp.mount:
+  server: hangar
+  mcp: null
+  rest: MOUNT /mcp
+  scope: mcp
+  owner: guard
+  enforced_by: 'app.MCPAuthMiddleware: admin, mcp and user tokens and OAuth grants; each tool''s own entry'
+me.get:
+  server: hangar
+  mcp: null
+  rest: GET /api/me
+  scope: user
+  owner: guard
+media.get:
+  server: hangar
+  mcp: null
+  rest: GET /api/media/{token}
+  scope: link
+  owner: any
+  enforced_by: 'computer_api.media: the signed, expiring link is the credential (HANGAR_PR_MEDIA_LINKS=signed)'
+metrics.get:
+  server: hangar
+  mcp: null
+  rest: GET /metrics
+  scope: metrics
+  owner: admin
+  enforced_by: 'metrics.metrics_route: an admin or metrics token'
+oauth.delete_clients:
+  server: hangar
+  mcp: null
+  rest: DELETE /api/oauth/clients/{client_id}
+  scope: admin
+  owner: admin
+oauth.get_clients:
+  server: hangar
+  mcp: null
+  rest: GET /api/oauth/clients
+  scope: admin
+  owner: admin
+oauth.get_consent:
+  server: hangar
+  mcp: null
+  rest: GET /oauth/consent
+  scope: user
+  owner: own_grant
+  enforced_by: 'oauth.consent_post: TokenAuth.identify (an admin or user token approves as itself)'
+oauth.post_consent:
+  server: hangar
+  mcp: null
+  rest: POST /oauth/consent
+  scope: user
+  owner: own_grant
+  enforced_by: 'oauth.consent_post: TokenAuth.identify (an admin or user token approves as itself)'
+oidc.get_jwks.json:
+  server: hangar
+  mcp: null
+  rest: GET /oidc/jwks.json
+  scope: public
+  owner: any
+  enforced_by: 'cloudcreds: public signing keys'
+people.delete:
+  server: hangar
+  mcp: null
+  rest: DELETE /api/people/{person_id}
+  scope: admin
+  owner: admin
+people.delete_links:
+  server: hangar
+  mcp: null
+  rest: DELETE /api/people/{person_id}/links
+  scope: admin
+  owner: admin
+people.get:
+  server: hangar
+  mcp: null
+  rest: GET /api/people
+  scope: admin
+  owner: admin
+people.patch:
+  server: hangar
+  mcp: null
+  rest: PATCH /api/people/{person_id}
+  scope: admin
+  owner: admin
+people.post:
+  server: hangar
+  mcp: null
+  rest: POST /api/people
+  scope: admin
+  owner: admin
+people.post_links:
+  server: hangar
+  mcp: null
+  rest: POST /api/people/{person_id}/links
+  scope: admin
+  owner: admin
+people.post_tokens:
+  server: hangar
+  mcp: null
+  rest: POST /api/people/{person_id}/tokens
+  scope: admin
+  owner: admin
+pkg.delete:
+  server: hangar
+  mcp: null
+  rest: DELETE /pkg/{eco}/{rest:path}
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+pkg.get:
+  server: hangar
+  mcp: null
+  rest: GET /pkg/{eco}/{rest:path}
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+pkg.patch:
+  server: hangar
+  mcp: null
+  rest: PATCH /pkg/{eco}/{rest:path}
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+pkg.post:
+  server: hangar
+  mcp: null
+  rest: POST /pkg/{eco}/{rest:path}
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+pkg.put:
+  server: hangar
+  mcp: null
+  rest: PUT /pkg/{eco}/{rest:path}
+  scope: grant
+  owner: any
+  enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+record.job:
+  server: hangar
+  mcp: null
+  mcp_resource: hangar://jobs/{job_id}/record
+  rest: GET /api/jobs/{job_id}/record
+  scope:
+    mcp: mcp
+    rest: user
+  owner: guard
+  exception: the REST route takes a person's `user` login (app.person_actor); MCP also takes their `mcp` tokens and OAuth
+    grants. Both are fenced to the person's own records
+records.get:
+  server: hangar
+  mcp: null
+  rest: GET /api/records
+  scope: admin
+  owner: admin
+records.get_:
+  server: hangar
+  mcp: null
+  rest: GET /api/records/{rid}
+  scope: user
+  owner: guard
+records.get_log:
+  server: hangar
+  mcp: null
+  rest: GET /api/records/{rid}/log
+  scope: user
+  owner: guard
+register.post:
+  server: hangar
+  mcp: null
+  rest: POST /register
+  scope: oauth
+  owner: own_grant
+  enforced_by: 'mcp.server.auth: the OAuth 2.1 flow (PKCE); grants act as the approving token'
+registry.delete_v2:
+  server: hangar
+  mcp: null
+  rest: DELETE /registry/{sid}/{token}/v2/{rest:path}
+  scope: grant
+  owner: any
+  enforced_by: 'regmirror: the sandbox''s egress HMAC token in the path'
+registry.get_v2:
+  server: hangar
+  mcp: null
+  rest: GET /registry/{sid}/{token}/v2/{rest:path}
+  scope: grant
+  owner: any
+  enforced_by: 'regmirror: the sandbox''s egress HMAC token in the path'
+registry.patch_v2:
+  server: hangar
+  mcp: null
+  rest: PATCH /registry/{sid}/{token}/v2/{rest:path}
+  scope: grant
+  owner: any
+  enforced_by: 'regmirror: the sandbox''s egress HMAC token in the path'
+registry.post_v2:
+  server: hangar
+  mcp: null
+  rest: POST /registry/{sid}/{token}/v2/{rest:path}
+  scope: grant
+  owner: any
+  enforced_by: 'regmirror: the sandbox''s egress HMAC token in the path'
+registry.put_v2:
+  server: hangar
+  mcp: null
+  rest: PUT /registry/{sid}/{token}/v2/{rest:path}
+  scope: grant
+  owner: any
+  enforced_by: 'regmirror: the sandbox''s egress HMAC token in the path'
+repos.delete_policy:
+  server: hangar
+  mcp: null
+  rest: DELETE /api/repos/policy
+  scope: admin
+  owner: admin
+repos.get:
+  server: hangar
+  mcp: null
+  rest: GET /api/repos
+  scope: admin
+  owner: admin
+repos.get_policy:
+  server: hangar
+  mcp: null
+  rest: GET /api/repos/policy
+  scope: admin
+  owner: admin
+repos.get_tests_flaky:
+  server: hangar
+  mcp: null
+  rest: GET /api/repos/tests/flaky
+  scope: admin
+  owner: admin
+repos.put_policy:
+  server: hangar
+  mcp: null
+  rest: PUT /api/repos/policy
+  scope: admin
+  owner: admin
+revoke.post:
+  server: hangar
+  mcp: null
+  rest: POST /revoke
+  scope: oauth
+  owner: own_grant
+  enforced_by: 'mcp.server.auth: the OAuth 2.1 flow (PKCE); grants act as the approving token'
+sandbox.agent_status:
+  server: hangar
+  mcp: agent_status
+  rest: GET /api/sandboxes/{ref}/runs/{run_id}
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+sandbox.create:
+  server: hangar
+  mcp: create_sandbox
+  rest: POST /api/sandboxes
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+sandbox.create_many:
+  server: hangar
+  mcp: create_sandboxes
+  rest: null
+  scope: mcp
+  owner: guard
+sandbox.destroy:
+  server: hangar
+  mcp: destroy_sandbox
+  rest: DELETE /api/sandboxes/{ref}
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+sandbox.destroy_many:
+  server: hangar
+  mcp: destroy_sandboxes
+  rest: null
+  scope: mcp
+  owner: guard
+sandbox.exec:
+  server: hangar
+  mcp: exec
+  rest:
+  - POST /api/sandboxes/{ref}/exec
+  - POST /api/sandboxes/{ref}/exec/stream
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+sandbox.extend:
+  server: hangar
+  mcp: extend_sandbox
+  rest: POST /api/sandboxes/{ref}/extend
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+sandbox.fork:
+  server: hangar
+  mcp: fork_sandbox
+  rest:
+  - POST /api/sandboxes/{ref}/fork
+  - POST /api/snapshots/{snap_id}/fork
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+sandbox.get:
+  server: hangar
+  mcp: get_sandbox
+  rest: GET /api/sandboxes/{ref}
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+sandbox.list:
+  server: hangar
+  mcp: list_sandboxes
+  rest: GET /api/sandboxes
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+sandbox.list_files:
+  server: hangar
+  mcp: list_files
+  rest: GET /api/sandboxes/{ref}/files
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+sandbox.pause:
+  server: hangar
+  mcp: pause_sandbox
+  rest: POST /api/sandboxes/{ref}/pause
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+sandbox.process:
+  server: hangar
+  mcp: process
+  rest:
+  - POST /api/sandboxes/{ref}/processes
+  - GET /api/sandboxes/{ref}/processes
+  - GET /api/sandboxes/{ref}/processes/{process_id}
+  - GET /api/sandboxes/{ref}/processes/{process_id}/stream
+  - POST /api/sandboxes/{ref}/processes/{process_id}/input
+  - DELETE /api/sandboxes/{ref}/processes/{process_id}
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+sandbox.read_file:
+  server: hangar
+  mcp: read_file
+  rest: null
+  scope: mcp
+  owner: guard
+sandbox.resume:
+  server: hangar
+  mcp: resume_sandbox
+  rest: POST /api/sandboxes/{ref}/resume
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+sandbox.run_agent:
+  server: hangar
+  mcp: run_agent
+  rest: POST /api/sandboxes/{ref}/agent
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+sandbox.snapshot:
+  server: hangar
+  mcp: snapshot_sandbox
+  rest: POST /api/sandboxes/{ref}/snapshot
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+sandbox.terminal_close:
+  server: hangar
+  mcp: terminal_close
+  rest: null
+  scope: mcp
+  owner: guard
+sandbox.terminal_list:
+  server: hangar
+  mcp: terminal_list
+  rest: GET /api/sandboxes/{ref}/terminals
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+sandbox.terminal_open:
+  server: hangar
+  mcp: terminal_open
+  rest: null
+  scope: mcp
+  owner: guard
+sandbox.terminal_read:
+  server: hangar
+  mcp: terminal_read
+  rest: null
+  scope: mcp
+  owner: guard
+sandbox.terminal_send:
+  server: hangar
+  mcp: terminal_send
+  rest: null
+  scope: mcp
+  owner: guard
+sandbox.watch:
+  server: hangar
+  mcp: null
+  mcp_resource: hangar://sandboxes/{sandbox}/watch{?path,recursive,since}
+  rest: GET /api/sandboxes/{ref}/watch
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+sandbox.write_file:
+  server: hangar
+  mcp: write_file
+  rest: null
+  scope: mcp
+  owner: guard
+sandboxes.get_previews:
+  server: hangar
+  mcp: null
+  rest: GET /api/sandboxes/{ref}/previews
+  scope: user
+  owner: guard
+sandboxes.ws_attach:
+  server: hangar
+  mcp: null
+  rest: WS /api/sandboxes/{ref}/attach
+  scope: ticket
+  owner: admin
+  enforced_by: 'app.attach: a single-use ticket (POST /api/tickets, admin) or an admin token'
+schedule.create:
+  server: hangar
+  mcp: create_schedule
+  rest: POST /api/schedules
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.admin_job_caller);
+    MCP serves every person, and people.Guard keeps a member to their own schedules (docs/security.md#people)'
+schedule.delete:
+  server: hangar
+  mcp: delete_schedule
+  rest: DELETE /api/schedules/{ref}
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+schedule.list:
+  server: hangar
+  mcp: list_schedules
+  rest: GET /api/schedules
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+schedule.run:
+  server: hangar
+  mcp: run_schedule_now
+  rest: POST /api/schedules/{ref}/run
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+schedules.get:
+  server: hangar
+  mcp: null
+  rest: GET /api/schedules/{ref}
+  scope: admin
+  owner: admin
+schedules.patch:
+  server: hangar
+  mcp: null
+  rest: PATCH /api/schedules/{ref}
+  scope: admin
+  owner: admin
+screen.post_tickets:
+  server: hangar
+  mcp: null
+  rest: POST /api/screen/tickets
+  scope: user
+  owner: guard
+screen.ws:
+  server: hangar
+  mcp: null
+  rest: WS /api/screen
+  scope: ticket
+  owner: guard
+  enforced_by: 'computer_api.screen: a one-time screen ticket for the sandbox''s owner (POST /api/screen/tickets)'
+session.artifact:
+  server: hangar
+  mcp: get_artifact
+  mcp_resource: hangar://sessions/{name}/artifacts/{turn}/{+path}
+  rest: GET /api/sessions/{ref}/artifacts/{turn}/{path:path}
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+session.create:
+  server: hangar
+  mcp: new_session
+  rest: POST /api/sessions
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+session.fork:
+  server: hangar
+  mcp: fork_session
+  rest: POST /api/sessions/{ref}/fork
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+session.get:
+  server: hangar
+  mcp: get_session
+  mcp_resource: hangar://sessions/{name}
+  rest: GET /api/sessions/{ref}
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+session.idle:
+  server: hangar
+  mcp: keep_session
+  rest: POST /api/sessions/{ref}/idle
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+session.list:
+  server: hangar
+  mcp: list_sessions
+  rest: GET /api/sessions
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+session.open:
+  server: hangar
+  mcp: open_session
+  rest: POST /api/sessions/{ref}/open
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+session.patch:
+  server: hangar
+  mcp: get_session_patch
+  mcp_resource: hangar://sessions/{name}/patch
+  rest: GET /api/sessions/{ref}/patch
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+session.send:
+  server: hangar
+  mcp: send_to_session
+  rest: POST /api/sessions/{ref}/send
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+session.suspend:
+  server: hangar
+  mcp: suspend_session
+  rest: POST /api/sessions/{ref}/suspend
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+sessions.delete:
+  server: hangar
+  mcp: null
+  rest: DELETE /api/sessions/{ref}
+  scope: admin
+  owner: admin
+sessions.get_approvals:
+  server: hangar
+  mcp: null
+  rest: GET /api/sessions/{ref}/approvals
+  scope: admin
+  owner: admin
+sessions.get_artifacts:
+  server: hangar
+  mcp: null
+  rest: GET /api/sessions/{ref}/artifacts
+  scope: admin
+  owner: admin
+sessions.get_events_stream:
+  server: hangar
+  mcp: null
+  rest: GET /api/sessions/{ref}/events/stream
+  scope: admin
+  owner: admin
+sessions.get_pull:
+  server: hangar
+  mcp: null
+  rest: GET /api/sessions/{ref}/pull
+  scope: admin
+  owner: admin
+sessions.get_pull_:
+  server: hangar
+  mcp: null
+  rest: GET /api/sessions/{ref}/pull/{checkpoint}/{part}
+  scope: admin
+  owner: admin
+sessions.get_tests:
+  server: hangar
+  mcp: null
+  rest: GET /api/sessions/{ref}/tests
+  scope: admin
+  owner: admin
+sessions.post_archive:
+  server: hangar
+  mcp: null
+  rest: POST /api/sessions/{ref}/archive
+  scope: admin
+  owner: admin
+sessions.post_checkpoint:
+  server: hangar
+  mcp: null
+  rest: POST /api/sessions/{ref}/checkpoint
+  scope: admin
+  owner: admin
+settings.delete:
+  server: hangar
+  mcp: null
+  rest: DELETE /api/settings/{key}
+  scope: admin
+  owner: admin
+settings.get:
+  server: hangar
+  mcp: null
+  rest: GET /api/settings
+  scope: admin
+  owner: admin
+settings.get_:
+  server: hangar
+  mcp: null
+  rest: GET /api/settings/{key}
+  scope: admin
+  owner: admin
+settings.put:
+  server: hangar
+  mcp: null
+  rest: PUT /api/settings/{key}
+  scope: admin
+  owner: admin
+setup.post_github:
+  server: hangar
+  mcp: null
+  rest: POST /api/setup/github
+  scope: admin
+  owner: admin
+setup.post_github_webhook:
+  server: hangar
+  mcp: null
+  rest: POST /api/setup/github/webhook
+  scope: admin
+  owner: admin
+setup.post_slack:
+  server: hangar
+  mcp: null
+  rest: POST /api/setup/slack
+  scope: admin
+  owner: admin
+snapshot.list:
+  server: hangar
+  mcp: list_snapshots
+  rest: GET /api/snapshots
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+snapshots.delete:
+  server: hangar
+  mcp: null
+  rest: DELETE /api/snapshots/{snap_id}
+  scope: admin
+  owner: admin
+status.get:
+  server: hangar
+  mcp: null
+  mcp_resource: hangar://status
+  rest: GET /api/status
+  scope: admin
+  owner: admin
+tests.job:
+  server: hangar
+  mcp: null
+  mcp_resource: hangar://jobs/{job_id}/tests
+  rest: GET /api/jobs/{job_id}/tests
+  scope:
+    mcp: mcp
+    rest: jobs
+  owner:
+    mcp: guard
+    rest: token
+  exception: 'by design: REST /api/jobs also serves `jobs` service tokens, fenced to the jobs they submitted (app.job_caller);
+    MCP serves people, fenced to their own by people.Guard. Admins reach every job on both'
+tickets.post:
+  server: hangar
+  mcp: null
+  rest: POST /api/tickets
+  scope: admin
+  owner: admin
+token.post:
+  server: hangar
+  mcp: null
+  rest: POST /token
+  scope: oauth
+  owner: own_grant
+  enforced_by: 'mcp.server.auth: the OAuth 2.1 flow (PKCE); grants act as the approving token'
+tokens.delete:
+  server: hangar
+  mcp: null
+  rest: DELETE /api/tokens/{token_id}
+  scope: user
+  owner: guard
+tokens.get:
+  server: hangar
+  mcp: null
+  rest: GET /api/tokens
+  scope: user
+  owner: guard
+tokens.post:
+  server: hangar
+  mcp: null
+  rest: POST /api/tokens
+  scope: user
+  owner: guard
+trace.job:
+  server: hangar
+  mcp: null
+  mcp_resource: hangar://jobs/{job_id}/trace
+  rest: GET /api/jobs/{job_id}/trace
+  scope:
+    mcp: mcp
+    rest: jobs
+  owner:
+    mcp: guard
+    rest: token
+  exception: 'by design: REST /api/jobs also serves `jobs` service tokens, fenced to the jobs they submitted (app.job_caller);
+    MCP serves people, fenced to their own by people.Guard. Admins reach every job on both'
+trace.session:
+  server: hangar
+  mcp: null
+  mcp_resource: hangar://sessions/{name}/trace
+  rest: GET /api/sessions/{ref}/trace
+  scope:
+    mcp: mcp
+    rest: user
+  owner: guard
+  exception: the REST route takes a person's `user` login (app.person_actor); MCP also takes their `mcp` tokens and OAuth
+    grants. Both are fenced to the person's own records
+turn.answer_approval:
+  server: hangar
+  mcp: answer_approval
+  rest: POST /api/sessions/{ref}/approvals/{approval}
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+turn.answer_approval_job:
+  server: hangar
+  mcp: null
+  rest: POST /api/jobs/{job_id}/approvals/{approval}
+  scope: jobs
+  owner: token
+  note: 'the job side of answer_approval (MCP''s one tool covers sessions and jobs: see turn.answer_approval)'
+turn.steer:
+  server: hangar
+  mcp: steer_turn
+  rest:
+  - POST /api/sessions/{ref}/steer
+  - POST /api/sessions/{ref}/interrupt
+  scope:
+    mcp: mcp
+    rest: admin
+  owner:
+    mcp: guard
+    rest: admin
+  exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
+    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+turn.steer_job:
+  server: hangar
+  mcp: null
+  rest:
+  - POST /api/jobs/{job_id}/steer
+  - POST /api/jobs/{job_id}/interrupt
+  scope: jobs
+  owner: token
+  note: 'the job side of steer_turn (MCP''s one tool covers sessions and jobs: see turn.steer)'
+turn.wait:
+  server: hangar
+  mcp: wait_for_turn
+  rest: null
+  scope: mcp
+  owner: guard
+ui.mount:
+  server: hangar
+  mcp: null
+  rest: MOUNT /ui
+  scope: public
+  owner: any
+  enforced_by: static dashboard files
+usage.get:
+  server: hangar
+  mcp: null
+  rest: GET /api/usage
+  scope: admin
+  owner: admin
+well_known.get_agent_card.json:
+  server: hangar
+  mcp: null
+  rest: GET /.well-known/agent-card.json
+  scope: public
+  owner: any
+  enforced_by: 'a2a.mount: the public agent card (no work, no data)'
+well_known.get_oauth_authorization_server:
+  server: hangar
+  mcp: null
+  rest: GET /.well-known/oauth-authorization-server
+  scope: public
+  owner: any
+  enforced_by: 'oauth: discovery metadata'
+well_known.get_oauth_protected_resource_mcp:
+  server: hangar
+  mcp: null
+  rest: GET /.well-known/oauth-protected-resource/mcp
+  scope: public
+  owner: any
+  enforced_by: 'oauth: discovery metadata'
+well_known.get_openid_configuration:
+  server: hangar
+  mcp: null
+  rest: GET /.well-known/openid-configuration
+  scope: public
+  owner: any
+  enforced_by: 'cloudcreds: public OIDC discovery for workload identity'
