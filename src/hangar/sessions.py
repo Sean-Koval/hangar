@@ -38,9 +38,10 @@ from hangar import pins as pins  # --- canary: the model and the CLI version a s
 from hangar import resident as resident  # --- durable: live and recent sessions in memory, the rest in the store
 from hangar import slo as slo  # --- clouddoctor: turn-start and resume times for `hangar status`
 from hangar import steer as steering  # workstream steer: live turns
+from hangar import taint as taint  # --- taint (#129): whether a turn has read untrusted content
 from hangar.checkpoints import CheckpointStore, make_store
 from hangar.ckpt import CKPT_DIR, CKPT_REF, PACK_READ_LIMIT, PARTS, RESTORE_DIR  # noqa: F401 - re-exported (strategies, exchange)
-from hangar.events import Activity, resolve_budget, total_usage
+from hangar.events import Activity, RunEvent, resolve_budget, total_usage
 from hangar.fleet import Fleet, FleetError, _clip_tail
 from hangar.harnesses import get_harness
 from hangar.models import (
@@ -153,6 +154,10 @@ class SessionService:
         self.on_delete: list[Callable[[Session], None]] = []
         self.on_delete.append(lambda s: manifest.store(self.settings).drop(s.id))  # --- interfaces: its manifests
         self.env_requests: Any = None  # --- computer: envrequests.EnvRequests, wired by the app
+        # --- taint (#129): the job a session carries (wired by JobService), for what the job's input taints; and
+        # listeners called with (session, turn, ref) when a session first becomes tainted (must not raise)
+        self.job_of: Callable[[str], Any] | None = None
+        self.on_taint: list[Callable[[Session, SessionTurn, str], None]] = []
 
     # ================================================================== lifecycle
     async def start(self) -> None:
@@ -497,6 +502,40 @@ class SessionService:
     def _save(self, s: Session) -> None:
         s.updated_at = now()
         self.store.put(s)
+
+    # ------------------------------------------------------------------ --- taint (#129)
+    def _job(self, s: Session) -> Any:
+        if not s.job_id or self.job_of is None:
+            return None
+        try:
+            return self.job_of(s.job_id)
+        except Exception:  # noqa: BLE001 - a job no longer in memory: its sessions carry their own taint
+            return None
+
+    def _untrusted_files(self, s: Session, turn: SessionTurn) -> set[str]:
+        job = self._job(s)
+        return {c.name for c in [*turn.context, *(job.context if job is not None else [])] if c.untrusted}
+
+    def _taint_begin(self, s: Session, turn: SessionTurn) -> None:
+        n = next((i for i, t in enumerate(s.turns, 1) if t is turn), len(s.turns))
+        first = taint.begin(s, turn, n, taint.job_sources(self._job(s)))
+        self._save(s)
+        if first is not None:
+            ev = RunEvent(kind="progress", text=f"taint: read untrusted content from {first}", turn=n,
+                          run_id=turn.run_id or "", data={"source": "hangar", "action": "taint", "ref": first[:200]})
+            with contextlib.suppress(OSError):
+                self.activity.append(s.id, [ev])
+                if s.job_id:
+                    self.activity.append(s.job_id, [ev.model_copy()])
+            self._tainted(s, turn, first)
+
+    def _tainted(self, s: Session, turn: SessionTurn, ref: str) -> None:
+        """A session just became tainted (its first source): tell the listeners (its job mirrors it)."""
+        for fn in self.on_taint:
+            try:
+                fn(s, turn, ref)
+            except Exception:  # noqa: BLE001 - recording taint never breaks a turn
+                log.exception("session %s: taint listener failed", s.id)
 
     def _set(self, s: Session, state: SessionState, reason: str | None = None) -> None:
         s.state = state
@@ -967,6 +1006,7 @@ class SessionService:
             caching.STAGGER.responded(s.id)  # --- overnight/cache: nor will it answer; siblings go ahead
             raise
         turn.run_id, turn.started_at = res["run_id"], now()
+        self._taint_begin(s, turn)  # --- taint (#129): inherited, the turn's context, the job's input
         slo.record("turn_start", turn.started_at - t0 - (turn.cache_wait_seconds or 0))  # --- clouddoctor
         turn.harness_version = res.get("harness_version")  # --- images
         self._spawn(manifest.record(self, s, turn, sb, probe, text, {**(extra_env or {}), **env}))  # --- interfaces
@@ -985,7 +1025,9 @@ class SessionService:
         errors = 0
         outcome = "exited"
         # --- workstream C: collect events and usage from the run log as it grows; stop the turn over budget.
-        watch = self.activity.watch(self.fleet, s, turn, lambda: self._save(s))
+        watch = self.activity.watch(self.fleet, s, turn, lambda: self._save(s),
+                                    taint_files=self._untrusted_files(s, turn),
+                                    on_taint=lambda ref: self._tainted(s, turn, ref))  # --- taint (#129)
         over: str | None = None
         wait = 0.0  # the first look is immediate; later ones wait in the sandbox for the turn to end (perf)
         while True:

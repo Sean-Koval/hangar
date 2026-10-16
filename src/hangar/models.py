@@ -517,6 +517,7 @@ class Job(BaseModel):
     # --- reconciler: times the job resumed on its own after a control-plane restart interrupted it (restarts.py)
     restarts: int = 0
     landing: LandingState = Field(default_factory=LandingState)  # --- landing
+    taint: dict[str, Any] | None = None  # --- taint (#129): its untrusted input, and its sessions' taint (mirrored)
 
 
 # ---------------------------------------------------------------------------- scheduled jobs (workstream A)
@@ -624,6 +625,9 @@ class SessionTurn(BaseModel):
     cache_wait_seconds: float | None = None
     # --- interfaces: the digest of the effective harness manifest captured as the turn started (manifest.py)
     manifest: str | None = None
+    # --- taint (#129): {"tainted": true, "first_seq": n, "sources": [{"kind", "seq", "ref"}...]} once the turn has
+    # read untrusted content (first_seq 0: it started tainted, from its context or an earlier turn); None: it hasn't
+    taint: dict[str, Any] | None = None
 
 
 class Checkpoint(BaseModel):
@@ -681,6 +685,8 @@ class Session(BaseModel):
     # id), and the locked version of the harness's CLI: a turn on another version hands off instead of resuming.
     model_policy: str | None = None
     harness_version: str | None = None
+    # --- taint (#129): sticky; set by the first tainted turn (its number and seq), inherited by forks
+    taint: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------- workstream F: git gateway (spec 0003)

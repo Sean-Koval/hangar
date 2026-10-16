@@ -446,6 +446,25 @@ What is **not** covered:
 - **E2B command output.** The E2B SDK buffers a command's whole output before hangar sees it, so on E2B a sandbox can still make one of hangar's commands return a very large output.
 - **Idle connections.** The gateway listener has no connection cap (uvicorn's counts idle sockets and would let one sandbox lock out the rest), so many idle connections from one sandbox are bounded only by the process's file limit.
 
+## Taint
+
+Text hangar's caller didn't write is fenced in the prompt as untrusted ([front doors](#front-doors)). That covers what a job *starts* with. An agent also reads untrusted text *while it runs*: an issue comment through the GitHub MCP server, a web page, a search result. A prompt injection in any of these can steer what it does next. So hangar records, per turn, whether the agent has read untrusted content (`src/hangar/taint.py`). It records only; nothing is gated on it yet (#130 makes `git push`, PR opening, landing and egress approvals after an untrusted read need a human).
+
+**What taints a turn.** Each source is recorded with its kind, the event that read it (`seq`, its position in the session's [event log](api/traces.md#ids); 0 for what the turn started with) and a reference:
+
+| Kind | When | Reference |
+| --- | --- | --- |
+| `context` | The turn starts with an untrusted context item (issue text from an untrusted author or any Jira issue, Slack thread context, CI logs and review comments in an auto-fix round), or its job's task was written by someone untrusted (`untrusted_source`) | the item, e.g. `issue text jira-ABC-12.md` |
+| `web` | A tool call of kind `web` ([normalized kinds](api/traces.md#normalized-tool-kinds): WebFetch, WebSearch, Codex's `web_search`, Antigravity's `read_url_content`); a shell command that runs `curl` or `wget` on a host other than the sandbox itself | the host, or the tool's name |
+| `mcp` | A call to a tool of an MCP server whose `trust` is `untrusted` ([environments](environments.md#mcp-servers-and-trust)): by default every remote (`url`) server, the built-in browser, and any server hangar didn't configure | the server |
+| `file` | A `Read` of a file hangar wrote from an untrusted context item | the file's name |
+
+**Sticky.** A session's taint is set by its first tainted turn and never cleared: every later turn starts tainted (`"inherited": true`), a fork carries its parent's, and a job mirrors its sessions (best-of-N attempts and the judge included). A job whose own input is untrusted is tainted when it is submitted. A turn keeps at most 20 sources.
+
+**Where it shows.** `taint` on turns, sessions and jobs in `get_job` / `get_session` and `GET /api/jobs/{id}`, `GET /api/sessions/{name}`: `{"tainted": true, "first_turn": 1, "first_seq": 41, "sources": [{"kind": "web", "seq": 41, "ref": "example.com", "turn": 1}]}`. The first source adds a `taint: read untrusted content from <ref>` event to the session's and job's event stream and the job's timeline; the trace export carries `hangar.taint` and `hangar.taint.first_seq` on each turn ([traces](api/traces.md#turn)); and the PR's review packet says `Untrusted content read: issue text jira-ABC-12.md (context), web: example.com (seq 41)`.
+
+**Gaps.** Taint is read from each harness's stream through the same tool-name table as the trace export. A tool hangar doesn't know is `other` and doesn't taint: a pi extension or a custom tool that fetches pages goes unnoticed, as does a shell command that fetches with anything but `curl`/`wget` (`python -c 'urllib…'`, `git clone` of another repo, `gh api`). Subagents' calls (Claude Code's `Task`) are in the stream and counted. Reading a file the agent itself downloaded earlier is tainted only through the download. Taint is a record for gates and reviewers, not a sandbox.
+
 ## The agent's screen and its requests
 
 - **Screens** ([computer-use.md](computer-use.md)): VNC listens on 127.0.0.1 inside the sandbox and is reached only

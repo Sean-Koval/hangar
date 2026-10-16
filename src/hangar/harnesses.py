@@ -559,6 +559,10 @@ class McpServer(BaseModel):
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
     harnesses: list[str] | None = None  # default: every harness
+    # --- taint (#129): whether its tool results can carry text nobody hangar trusts wrote (issue comments, pages,
+    # messages). Unset: `untrusted` for a remote (url) server, `trusted` for a local stdio one. A call to an untrusted
+    # server's tool taints the turn (docs/security.md#taint).
+    trust: Literal["trusted", "untrusted"] | None = None
 
     @model_validator(mode="after")
     def _one_transport(self) -> McpServer:

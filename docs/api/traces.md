@@ -118,6 +118,7 @@ exported in that order. Order across sessions (best-of-N attempts) is by time on
 | `interrupt` | `turn` | `hangar.text`, `hangar.requester`, `hangar.steer.status` |
 | `verify` | `turn` (the in-turn gate) or `job` (hangar's check after the turn) | `hangar.verify.phase` (`in_turn`, `after_turn`), `hangar.verify.passed`, `hangar.verify.exit_code`, `hangar.verify.round`, `hangar.verify.command` (job only), `hangar.verify.new_failures` (job only) |
 | `question` | `turn` | `hangar.text`: the agent asked a person (the job waits for an answer) |
+| `taint` | `turn` | `hangar.taint.ref`, `hangar.seq`: the session first read untrusted content here ([security.md](../security.md#taint)) |
 | `git.commit` | `job` | `vcs.ref.head.revision` (the commit), `hangar.git.subject`. Each commit of the delivered branch, stamped when hangar delivered it (after its check): when the *agent* committed is its shell call with `hangar.shell.ops` `git.commit` |
 | `git.push` | `job` | `vcs.ref.head.name` (the branch), `vcs.ref.head.revision`, `hangar.git.pushed` |
 | `pr.open` | `job` | `hangar.pr.number`, `hangar.pr.url`, `hangar.pr.draft` |
@@ -164,7 +165,11 @@ Hangar: `hangar.turn.number` (1-based, in the session), `hangar.run.id`, `hangar
 `error`, `needs_input`, `interrupted`), `hangar.turn.exit_code`, `hangar.harness`, `hangar.harness.version`,
 `hangar.turn.live`, `hangar.approvals` (`auto`, `ask`, `deny-risky`), `hangar.cost_usd`, `hangar.cost_source`
 (`harness`, `prices`, `mixed`), `hangar.manifest.digest` (the effective harness manifest it ran with: fetch it with
-`GET /api/sessions/{name}/manifest?turn=N`), `hangar.attempt` (best-of-N attempt number, job exports).
+`GET /api/sessions/{name}/manifest?turn=N`), `hangar.attempt` (best-of-N attempt number, job exports),
+`hangar.taint` (whether the turn read untrusted content, or started tainted: [security.md](../security.md#taint)),
+`hangar.taint.first_seq` (the event that first tainted it; `0` when it started tainted, from its context or an earlier
+turn of the session) and `hangar.taint.sources` (`kind:ref`, e.g. `web:example.com`, `mcp:github`,
+`context:issue text jira-ABC-12.md`).
 
 Status: `ERROR` when the outcome is anything but `exited`/`needs_input`/`interrupted` with exit code 0.
 
@@ -203,7 +208,8 @@ answered: a person, `policy`, `timeout` or `harness`), `hangar.approval.message`
 `hangar.cost_usd`), and for jobs `hangar.job.state`, `hangar.job.reason`, `hangar.job.strategy`, `hangar.repo`,
 `hangar.diff.stat` (the delivered diff's stat), `hangar.diff.files` and `hangar.diff.deleted` (its files,
 repo-relative, at most 1,000: what the change touched however it was made, shell commands included),
-`hangar.pr.url`.
+`hangar.pr.url`. Both carry `hangar.taint`: whether any of its turns read untrusted content (a job whose own input is
+untrusted is tainted from the start).
 
 ## Writing behavior specs
 
