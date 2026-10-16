@@ -515,7 +515,9 @@ class EnvCatalog:
         data, src = self._raw[name]
         if parent := data.get("extends"):
             parent_spec = self.get(parent, (*_seen, name))
-            merged = _deep_merge(parent_spec.model_dump(exclude={"source_dir"}), data)
+            # --- #124: a parent's default sudo (false) isn't a "no" its children inherit (heavy implies sudo)
+            skip = {"source_dir"} | ({"sudo"} if "sudo" not in parent_spec.model_fields_set else set())
+            merged = _deep_merge(parent_spec.model_dump(exclude=skip), data)
         else:
             merged = data
         spec = EnvSpec.model_validate(merged)

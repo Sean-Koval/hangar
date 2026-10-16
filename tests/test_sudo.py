@@ -45,6 +45,22 @@ def test_heavy_implies_sudo_unless_told_no():
         EnvSpec(name="x", heavy=True, sudo=False)
 
 
+def test_a_heavy_child_of_a_default_parent_gets_sudo(tmp_path):
+    """`extends` merges the parent's spec: its default sudo (false) must not read as an explicit "no" beside heavy (the
+    acceptance suite's `{"extends": ..., "heavy": true}`), while an explicit sudo: false on the parent still does."""
+    (tmp_path / "p.yaml").write_text("name: p\n")
+    (tmp_path / "h.yaml").write_text("name: h\nextends: p\nheavy: true\n")
+    (tmp_path / "q.yaml").write_text("name: q\nsudo: false\n")
+    (tmp_path / "hq.yaml").write_text("name: hq\nextends: q\nheavy: true\n")
+    (tmp_path / "r.yaml").write_text("name: r\nsudo: true\n")
+    (tmp_path / "rc.yaml").write_text("name: rc\nextends: r\n")
+    cat = EnvCatalog([tmp_path])
+    assert cat.get("h").sudo is True and cat.get("p").sudo is False
+    with pytest.raises(ValueError, match="needs sudo"):
+        cat.get("hq")
+    assert cat.get("rc").sudo is True  # an explicit parent value is inherited
+
+
 def test_shipped_envs_need_no_runtime_root():
     """base, bare, python and the rest install at build time (apt and mise run as root in the Dockerfile); none
     asks for sudo, so none of their images carries the sudoers rule."""
