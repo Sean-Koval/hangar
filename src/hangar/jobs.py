@@ -49,6 +49,7 @@ from hangar import envdoctor as envdoctor  # --- computer
 from hangar import experiments as experiments  # --- interfaces: experiment jobs and their trials
 from hangar import fairness as fairness  # --- scale
 from hangar import flightrec as flightrec  # --- clouddoctor: a failed or slow job's flight record
+from hangar import harness_thaw as harness_thaw  # --- harness locks (#134)
 from hangar import intake as intake  # --- intake: trackers (Jira, GitHub Projects) follow their jobs
 from hangar import people as people  # --- teamcreds: GitHub senders linked to people
 from hangar import posture as posture  # --- intake posture (#123)
@@ -125,6 +126,9 @@ class SubmitJob(BaseModel):
     environment: str | None = None
     harness: str | None = None
     model: str | None = None
+    # --- harness locks (#134): run from a lock in the harness registry (name, name@rN, name@sha256:..., name@stable);
+    # it fixes the harness, model and approvals, and turn 1 is checked against it (harness_thaw.py)
+    harness_lock: str | None = Field(None, max_length=200)
     provider: str | None = None
     verify: str | None = Field(None, max_length=2000)
     deliver: Literal["draft_pr", "pr", "branch", "none"] = "draft_pr"
@@ -425,6 +429,13 @@ class JobService:
             spec.pick_harness(defaults.harness)
         except ValueError as e:
             raise JobError(str(e)) from e
+        thawed = None
+        if req.harness_lock:  # --- harness locks (#134): the lock fixes the harness and model; refused here, not later
+            try:
+                thawed = harness_thaw.pin(self.fleet, req.harness_lock, env, req.harness, req.model)
+            except harness_thaw.ThawError as e:
+                raise JobError(str(e)) from e
+            defaults = defaults._replace(harness=thawed["harness"], model=thawed["model"] or defaults.model)
         try:  # --- #125: a job never runs on a subscription login: say so now, not at the claim. (An experiment's
             # own job starts no sandbox; each trial is checked as it is submitted.)
             if req.labels.get(experiments.KIND_LABEL) != experiments.KIND:
@@ -486,6 +497,7 @@ class JobService:
         job.budget = resolve_budget(jobbudget.merge(req.budget, policy.budget if policy else None, cls=Budget),
                                     self.settings, caller.max_budget if caller.restricted else None)  # --- frontdoor
         job.job_budget = job_budget
+        job.harness_lock = thawed  # --- harness locks (#134)
         if approval is None and (over := jobbudget.over_daily(self, repo, caller.person)):  # --- frontdoor: hold
             from hangar.triggers import new_approval
 
@@ -844,6 +856,9 @@ class JobService:
             base_branch=job.base_branch, branch=job.branch, provider=job.provider, labels=job.labels,
             extra_dirs=[f".hangar/jobs/{job.id}"], idle_minutes=job.keep_minutes,
             person=job.person)  # --- identity
+        if job.harness_lock and not s.harness_lock:  # --- harness locks (#134): turn 1 is checked against it
+            harness_thaw.apply(s, job.harness_lock)
+            self.sessions._save(s)
         job.session_id = s.id
         self._save(job)
         async with self.sessions.hold(s):
@@ -1099,6 +1114,11 @@ class JobService:
             job.result.question = (f"Interrupted by {who}. Follow up with what the agent should do instead "
                                    "(it continues the same conversation), or cancel the job.")
             await exchange.job_needs_input(self, job, turn, s)
+            return
+        if outcome == "failed" and st.outcome_reason == harness_thaw.DRIFT_REASON:  # --- harness locks (#134)
+            self._event(job, harness_thaw.job_line(st), JobState.FAILED, reason=harness_thaw.DRIFT_REASON)
+            await self._keep(job, s)
+            await self._report(job)
             return
         clean = outcome == "exited" and turn.exit_code == 0
         self._event(job, f"agent turn finished: {outcome}"

@@ -844,7 +844,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                    callback_url: str | None = None, budget: dict[str, Any] | None = None,
                    output_schema: dict[str, Any] | None = None, strategy: str = "single", n: int | None = None,
                    judge: bool = False, verify_in_loop: bool | None = None,
-                   autofix: str | None = None) -> live.JobOut:
+                   autofix: str | None = None, harness_lock: str | None = None) -> live.JobOut:
         """Hand a piece of development work to a cloud agent and get on with other things.
 
         Hangar queues the job, starts a sandbox from `environment` (default: the repo's mapped one), writes
@@ -862,13 +862,15 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         It costs n sandboxes and n agent runs; get_job lists every attempt.
 
         `verify_in_loop` (default on): `verify` also runs in the turn and failures go back to the agent.
-        `autofix` (ci,reviews | ci | reviews | off): CI failures and trusted reviews on the PR start follow-up turns."""
+        `autofix` (ci,reviews | ci | reviews | off): CI failures and trusted reviews on the PR start follow-up turns.
+        `harness_lock`: name@rN."""
         req = SubmitJob(instructions=instructions, repo=repo, environment=environment, title=title, harness=harness,
                         model=model, base_branch=base_branch, verify=verify, deliver=deliver,
                         context=[ContextItem.model_validate(c) for c in context or []],
                         timeout_minutes=timeout_minutes, callback_url=callback_url, output_schema=output_schema,
                         budget=Budget.model_validate(budget) if budget else None, strategy=strategy, n=n,
-                        judge=judge, verify_in_loop=verify_in_loop, autofix=autofix)  # --- overnight/autofix
+                        judge=judge, verify_in_loop=verify_in_loop, autofix=autofix,  # --- overnight/autofix
+                        harness_lock=harness_lock)  # --- harness locks (#134)
         who = current_actor.get()
         return jobs.view(jobs.submit(req, Caller(who, who, person=identity.person()), source="mcp"))  # identity
 

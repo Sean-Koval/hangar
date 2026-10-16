@@ -74,6 +74,7 @@ EOF
 | `instructions` | What to do (required, up to 64 KB). |
 | `repo`, `base_branch`, `branch` | The repo to work in; the base defaults to the repo's default branch, and the branch defaults to `hangar/<job>`. A custom branch must be under `hangar/` and must not exist yet: jobs never push to existing branches. |
 | `environment`, `harness`, `model`, `provider` | Where and with what to run. Left out: the repo's [policy](repo-policy.md), then the first environment mapped in `HANGAR_GITHUB_REPOS`. |
+| `harness_lock` | Run from a [harness lock](harness-lock.md#thaw-and-drift) in the registry: `name`, `name@rN`, `name@sha256:…` or `name@stable`. It fixes the harness, model and approvals (a conflicting `harness` or `model` is refused); a lock on another CLI version than `harnesses.lock.yaml` pins is refused at submit. Turn 1 is checked against it: drift is a warning, an event and a review-packet line, or, under `HANGAR_HARNESS_DRIFT=fail`, the job fails with `reason: "harness_drift"` and delivers nothing. |
 | `verify` | The repo's own check. It runs inside the agent's turn, where a failure goes back to the agent ([§7](#7-an-agent-loop-that-finishes-the-job)), and hangar runs it again after the turn. A failing check still delivers, as a draft PR. Left out: the repo's [policy](repo-policy.md), then the environment's `verify:`; `""` means no check. |
 | `verify_in_loop`, `max_verify_rounds` | Whether `verify` also runs inside the turn (default `true`), and how many failures go back to the agent per turn (default 3). See [§7](#7-an-agent-loop-that-finishes-the-job). |
 | `autofix` | What the job's PR reacts to by itself: `ci,reviews` (default), `ci`, `reviews` or `off`. See [§7](#7-an-agent-loop-that-finishes-the-job). |
@@ -525,6 +526,7 @@ what it doesn't:
 | `HANGAR_GITHUB_TRUSTED`, `HANGAR_JOB_APPROVAL_TTL_HOURS`, `HANGAR_INBOUND_WEBHOOKS`, `HANGAR_SCHEDULE_POLL_SECONDS` | | See [triggers.md](triggers.md) |
 | `HANGAR_SLACK_SIGNING_SECRET_CREDENTIAL`, `HANGAR_SLACK_BOT_TOKEN_CREDENTIAL`, `HANGAR_SLACK_CHANNELS`, `HANGAR_SLACK_USERS` | | See [slack.md](slack.md) |
 | `HANGAR_JIRA`, `HANGAR_GITHUB_PROJECTS` | `{}` | See [intake.md](intake.md) |
+| `HANGAR_HARNESS_REPO`, `HANGAR_HARNESS_DRIFT` | unset, `warn` | The harness registry `harness_lock` resolves against, and what turn 1's drift from the lock does (`warn` or `fail`); see [harness-lock.md](harness-lock.md#thaw-and-drift) |
 | `HANGAR_SUBSCRIPTION_LOGINS` | `interactive` | Jobs never use a subscription login (`oauth_token`, `auth_file`): they need an API key. `any` allows them, with a warning, and `hangar doctor` fails. See [team.md](team.md#subscription-logins) |
 
 ## Tainted jobs
