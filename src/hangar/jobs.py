@@ -50,6 +50,7 @@ from hangar import fairness as fairness  # --- scale
 from hangar import flightrec as flightrec  # --- clouddoctor: a failed or slow job's flight record
 from hangar import intake as intake  # --- intake: trackers (Jira, GitHub Projects) follow their jobs
 from hangar import people as people  # --- teamcreds: GitHub senders linked to people
+from hangar import posture as posture  # --- intake posture (#123)
 from hangar import resident as resident  # --- durable: live and recent jobs in memory, the rest in the store
 from hangar import restarts as restarts  # --- reconciler: interrupted jobs resume after a restart
 from hangar import secretscan as secretscan  # --- egress: secrets are scanned for before a push
@@ -421,6 +422,14 @@ class JobService:
             spec.pick_harness(defaults.harness)
         except ValueError as e:
             raise JobError(str(e)) from e
+        try:  # --- #125: a job never runs on a subscription login: say so now, not at the claim. (An experiment's
+            # own job starts no sandbox; each trial is checked as it is submitted.)
+            if req.labels.get(experiments.KIND_LABEL) != experiments.KIND:
+                teamcreds.check_job(self.fleet, env, defaults.harness, caller.person,
+                                    req.repo or (spec.repo.url if spec.repo else None),
+                                    strict=experiments.EXP_LABEL in (req.labels or {}))
+        except teamcreds.SubscriptionRefused as e:
+            raise JobError(str(e)) from e
         attempts = strategies.check_submit(req, self.settings.best_of_n_max)
         job_budget = jobbudget.resolve(req.job_budget, policy, self.settings)  # --- frontdoor
         if why := jobbudget.check_submit(job_budget, attempts, req.judge):
@@ -428,6 +437,11 @@ class JobService:
         repo = req.repo or (spec.repo.url if spec.repo else None)
         if not repo and req.deliver != "none":
             raise JobError("a repo is required unless deliver='none' (none given and the environment has no repo)")
+        # --- intake posture (#123): an intake job needs the gateway (enforce refuses it here, with a message the
+        # front door relays) and gets an egress floor on its sandboxes; warn says so and runs it
+        stance = posture.assess(self.settings, spec, repo, source, untrusted_source, req.context, req.labels)
+        if stance is not None and stance.refused:
+            raise JobError(stance.message())
         job_id = new_id("job")
         branch = req.branch or f"hangar/{job_id}"
         if not _BRANCH_RE.match(branch) or not branch.startswith("hangar/"):
@@ -453,7 +467,8 @@ class JobService:
             harness=defaults.harness, model=defaults.model, provider=req.provider, verify=defaults.verify,
             verify_source=defaults.verify_source, deliver=req.deliver,  # --- frontdoor
             context=context, callback_url=req.callback_url, callback_secret=callback_secret,
-            idempotency_key=req.idempotency_key, labels=req.labels,
+            idempotency_key=req.idempotency_key,
+            labels=posture.mark(req.labels, stance) if stance is not None else req.labels,  # --- intake posture
             timeout_minutes=req.timeout_minutes or self.settings.job_timeout_minutes,
             keep_minutes=req.keep_minutes if req.keep_minutes is not None else self.settings.job_keep_minutes,
             output_schema=output_schema,
@@ -482,6 +497,14 @@ class JobService:
         if defaults.notes:  # --- frontdoor
             self._event(job, f"from the repo policy for {repopolicy.repo_key(repo)}: " + "; ".join(defaults.notes))
         self.fleet.audit(requester, "job.submit", job.id, environment=env, repo=repo, source=source)
+        if stance is not None and stance.posture == "warn" and stance.problems:  # --- intake posture (#123)
+            self._event(job, "posture.warn: " + "; ".join(stance.problems) + " (HANGAR_INTAKE_POSTURE=warn runs it; "
+                        "enforce would " + ("refuse it)" if posture.gateway_problem(self.settings, repo)
+                                            else "give it at least allowlist egress)"))
+            self.fleet.audit(requester, "posture.warn", job.id, source=source, reason=stance.reason,
+                             problems=stance.problems)
+        elif stance is not None and stance.floor:
+            self._event(job, f"intake posture: egress at least {posture.FLOOR} ({stance.reason})")
         if approval is None:
             self._queue.put_nowait(job.id)
         return job
@@ -517,6 +540,7 @@ class JobService:
         if why := jobbudget.exhausted(self, job) or jobbudget.over_daily(self, job.repo, job.person):  # --- frontdoor
             raise JobError(f"job {job.id} can't run another turn: {why}. Submit a new job to continue (branch "
                            f"{job.branch} has the work)")
+        self._posture_follow_up(job, context, requester)  # --- intake posture (#123): an auto-fix round's CI logs
         job.turns.append(Turn(kind="follow_up", message=message, requester=requester, reply_to=reply_to,
                               context=context, output_schema=output_schema))
         job.result.question = None
@@ -525,6 +549,40 @@ class JobService:
         self.fleet.audit(requester, "job.follow_up", job.id, message=message[:300])
         self._queue.put_nowait(job.id)
         return job
+
+    def _posture_follow_up(self, job: Job, context: list[ContextItem], requester: str) -> None:
+        """--- intake posture (#123): a follow-up that brings untrusted context (an auto-fix round: CI output, review
+        comments) makes a person's job an intake job from that turn on: the gateway check, then the egress floor on
+        its session, so the turn runs in a sandbox on the proxy-only network (_process moves it there)."""
+        if posture.is_intake(job) or not any(c.untrusted for c in context):
+            return
+        try:
+            spec = self.fleet.catalog.get(job.environment)
+        except KeyError:
+            return
+        stance = posture.assess(self.settings, spec, job.repo, job.source, job.untrusted_source, context, job.labels)
+        if stance is None:
+            return
+        if stance.refused:
+            raise JobError(stance.message())
+        job.labels = posture.mark(job.labels, stance.with_reason("untrusted-follow-up"))
+        if (s := self._session(job)) is not None:
+            s.labels.update(posture.inherit(job.labels))
+            self.sessions._save(s)
+        if stance.posture == "warn" and stance.problems:
+            self._event(job, "posture.warn: " + "; ".join(stance.problems))
+            self.fleet.audit(requester, "posture.warn", job.id, source=job.source, reason="untrusted-follow-up",
+                             problems=stance.problems)
+
+    async def _posture_move(self, job: Job, s: Any) -> None:
+        """--- intake posture (#123): a live sandbox without the egress floor its job now has goes (checkpointed), so
+        the turn resumes in one that has it."""
+        if posture.floor_of(job.labels) is None or not self._sandbox_alive(job):
+            return
+        sb = self.fleet.get(job.sandbox_id)  # type: ignore[arg-type]
+        if posture.lacks_floor(sb.labels, job.labels):
+            self._event(job, f"intake posture: moving to a sandbox with {posture.floor_of(job.labels)} egress")
+            await self.sessions.release(s, "intake posture: egress floor", checkpoint=True)
 
     def cancel(self, job_id: str, requester: str, owner: str | None = None) -> Job:
         job = self.get(job_id, owner)
@@ -713,6 +771,7 @@ class JobService:
                 if not await self._provision(job):
                     return
                 s = self._session(job)
+            await self._posture_move(job, s)  # --- intake posture (#123)
             async with self.sessions.hold(s):
                 if not self._sandbox_alive(job):
                     # A follow-up after the sandbox was released: resume the job's session from its checkpoint.
@@ -760,6 +819,8 @@ class JobService:
         job.sandbox_id = sb.id
         job.harness = job.harness or sb.info.get("harness")
         job.repo = job.repo or sb.repo
+        for w in sb.info.get("credential_warnings") or []:  # --- #125: HANGAR_SUBSCRIPTION_LOGINS=any
+            self._event(job, f"warning: {w}")
         self._save(job)
         if job.cancel_requested:
             await self._discard_sandbox(job)
@@ -1385,7 +1446,8 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
         if decision := approval_command(extra):
             if is_pr:
                 return {"ignored": "approvals are for jobs waiting on an issue"}
-            return await github_decision(svc, f"github:{repo}#{number}", sender, trusted, decision)
+            return await github_decision(svc, f"github:{repo}#{number}", sender, trusted, decision,
+                                         linked.id if linked else None)  # --- approvals (#121)
         if is_pr and not trusted:
             svc.admission.refused(f"owner:github:{sender}", f"github:{sender}", "github.refused",  # front-door-auth
                                   f"github:{repo}#{number}", why="untrusted follow-up")

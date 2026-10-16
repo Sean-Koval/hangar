@@ -374,7 +374,9 @@ def _turn_attrs(s: Any, turn: Any) -> dict[str, Any]:
             "hangar.environment": s.environment, "hangar.run.id": turn.run_id, "hangar.turn.mode": turn.mode,
             "hangar.harness": harness,
             "hangar.harness.version": getattr(turn, "harness_version", None),  # --- images
-            "hangar.manifest.digest": getattr(turn, "manifest", None)}  # --- interfaces: what it ran with
+            "hangar.manifest.digest": getattr(turn, "manifest", None),  # --- interfaces: what it ran with
+            "hangar.harness.digest": getattr(turn, "harness_digest", None),  # its two halves (#131)
+            "hangar.environment.digest": getattr(turn, "environment_digest", None)}
 
 
 def turn_begin(fn: Callable[..., Any]) -> Callable[..., Any]:

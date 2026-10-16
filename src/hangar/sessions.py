@@ -539,7 +539,9 @@ class SessionService:
             harness=s.harness, ttl_minutes=ttl, labels={**s.labels, "hangar.session": s.id}, provider=s.provider,
             actor=f"session:{s.id}", progress=stage,
             push_branch=s.branch,  # workstream F: the one branch a gateway-mode sandbox may push
-            person=s.person)  # --- identity: the session's person's sandbox, with their credentials
+            person=s.person,  # --- identity: the session's person's sandbox, with their credentials
+            purpose="automated" if s.job_id else "interactive")  # --- #125: a job's session is automated
+        self._credential_warnings(s, sb)
         if s.checkpoints and sb.info.get("repo_path"):
             stage("restoring the last checkpoint")
         note = None
@@ -558,6 +560,20 @@ class SessionService:
             slo.record("resume", now() - t0, "cold")
         self._set(s, SessionState.IDLE, note or ("ready" + (" (restored)" if s.checkpoints else "")))
         return sb
+
+    def _credential_warnings(self, s: Session, sb: Sandbox) -> None:
+        """--- #125: a subscription login went into the session's sandbox: say so once per boot, as an event, and
+        keep it on the session (get_session) and so in its turns' manifests."""
+        warns = list(sb.info.get("credential_warnings") or [])
+        s.warnings = warns
+        if not warns:
+            return
+        from hangar.events import RunEvent
+
+        with contextlib.suppress(Exception):
+            self.activity.append(s.id, [RunEvent(kind="progress", turn=len(s.turns), text=w,
+                                                 data={"source": "hangar", "warning": "subscription_login"})
+                                        for w in warns])
 
     async def _sh(self, sb: Sandbox, cmd: str, timeout: int = 300, cwd: str | None = None):
         # Housekeeping: must not count as activity (or the idle check would keep every session awake forever).

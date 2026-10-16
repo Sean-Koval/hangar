@@ -220,6 +220,9 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
     out += key_checks(h)
     # git gateway (workstream F): reachable, and every GitHub App credential can mint a token
     out += await fleet.gateway.doctor(transport)
+    from hangar import posture  # --- intake posture (#123): gateway, egress proxy, intake environments' modes
+
+    out += posture.doctor_checks(h)
     from hangar import power  # --- ops: the pools' power state, the last deploy, the background loops
 
     out += power.doctor_checks(h)
@@ -229,5 +232,8 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
     from hangar import modelpolicy  # --- integ3 (review #105): jobs with no budget and no daily cap
 
     out += modelpolicy.doctor_checks(h)
+    from hangar import approvals  # --- approvals (#121): a lone person can't approve their own held jobs
+
+    out += approvals.doctor_checks(h)
     await asyncio.sleep(0)
     return out

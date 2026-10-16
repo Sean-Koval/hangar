@@ -51,6 +51,8 @@ When a session or its environment uses `approvals: ask`, the agent waits for a p
 
 A task turns `input_required` with the same form (keys `approve-<id>`).
 
+Those are a turn's tool approvals. Releasing a whole job that waits in `awaiting_approval` is `approve_job` / `reject_job`: admins and the repo's policy approvers only, with a login token (an `mcp`-only `hangar connect` token is refused), never on their own job; the same rule and refusal text as REST ([who may approve](triggers.md#who-may-approve)).
+
 Clients without elicitation see the requests in `pending_approvals` (on `wait_for_turn`, `get_session` and `get_job`) and answer with `answer_approval`. `steer_turn(ref, message)` tells a running agent something mid-turn; `steer_turn(ref, interrupt=true)` stops it. See [steering](steering.md).
 
 ## Long tools as tasks
