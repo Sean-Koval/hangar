@@ -256,6 +256,19 @@ class Trial(BaseModel):
     touched_tests: list[str] = Field(default_factory=list)  # existing test files its work changed
     contaminated: bool = False  # the grader's canary was seen in what the trial produced
     contamination: list[str] = Field(default_factory=list)  # where: patch, result, trace, egress
+    # --- #166: agent | infra_error | cancelled | human (None: unknown, from before). An infra_error trial is
+    # `excluded` from statistics and runs again as a fresh trial with the same key, the next `attempt`, and
+    # `retry_of` naming the excluded trial's job
+    outcome_class: str | None = None
+    infra_reason: str | None = None
+    excluded: bool = False
+    attempt: int = 1
+    retry_of: str | None = None
+
+    @property
+    def ref(self) -> str:
+        """The trial's own name: its key, and the attempt after the first (`look/a/1~2`)."""
+        return self.key if self.attempt <= 1 else f"{self.key}~{self.attempt}"
 
 
 class State(BaseModel):
@@ -267,6 +280,7 @@ class State(BaseModel):
     notes: list[str] = Field(default_factory=list)
     finished_at: float | None = None
     task_checks: dict[str, Any] = Field(default_factory=dict)  # --- anti-forgery (#127): the base check, per task
+    infra_stopped: str | None = None  # --- #166: why no further trial starts: more infra errors than the cap
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -547,7 +561,7 @@ async def _loop(jobs: JobService, job: Job, st: State, spec: ExperimentSpec,
     shown: set[str] = set()
     for t in st.trials:  # a restart while grading: grade again
         if t.state == "grading":
-            graders[t.key] = asyncio.create_task(_grade(jobs, job, st, spec, t))
+            graders[t.ref] = asyncio.create_task(_grade(jobs, job, st, spec, t))
     while True:
         if job.cancel_requested:
             await _cancel(jobs, job, st, graders)
@@ -566,10 +580,15 @@ async def _loop(jobs: JobService, job: Job, st: State, spec: ExperimentSpec,
                                  f"{child.approval.reason if child.approval else 'see the job'}")
             if child.state == JobState.NEEDS_INPUT and child.id not in jobs._active:
                 jobs.cancel(child.id, f"experiment:{job.id}")  # nobody answers an experiment's agents
+            if child.state not in JOB_TERMINAL and not child.cancel_requested and _infra_turn(child) is not None:
+                # --- #166: a restart or the power-down cut its turn off and the job would resume from a checkpoint:
+                # not the conditions the other trials ran under. It ends here and runs again as a fresh trial.
+                with contextlib.suppress(Exception):
+                    jobs.cancel(child.id, f"experiment:{job.id}")
             if child.state in JOB_TERMINAL and child.id not in jobs._active:
                 await _finish_trial(jobs, job, st, spec, t, child)
                 if spec.grader and t.state == "grading":
-                    graders[t.key] = asyncio.create_task(_grade(jobs, job, st, spec, t))
+                    graders[t.ref] = asyncio.create_task(_grade(jobs, job, st, spec, t))
                 changed = True
         for key, task in list(graders.items()):
             if task.done():
@@ -595,7 +614,8 @@ async def _loop(jobs: JobService, job: Job, st: State, spec: ExperimentSpec,
     st.stage, st.finished_at = "done", now()
     counts: dict[str, int] = {}
     for t in st.trials:
-        counts[t.outcome or t.state] = counts.get(t.outcome or t.state, 0) + 1
+        what = "excluded (infra_error)" if t.excluded else t.outcome or t.state  # --- #166
+        counts[what] = counts.get(what, 0) + 1
     job.result.summary = (f"Experiment {spec.name}: " + ", ".join(f"{n} {k}" for k, n in sorted(counts.items()))
                           + ". The trials' manifests, traces and results are in the index (GET "
                           f"/api/experiments/{job.id}).")
@@ -607,6 +627,8 @@ def _stop_starting(jobs: JobService, job: Job, st: State, spec: ExperimentSpec) 
     """Why no further trial may start: the experiment's budget is spent, or the harness lock changed under it."""
     from hangar.harnesses import HARNESSES
 
+    if st.infra_stopped:  # --- #166: more infra errors than the retry cap: a provider outage, usually
+        return st.infra_stopped
     for vname, v in st.pins.get("variants", {}).items():
         h = HARNESSES.get(v["harness"])
         now_v = h.version if h is not None and h.install else None
@@ -653,11 +675,11 @@ def _start_trial(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t:
         context.append(ContextItem(name=f"issue-{task.issue.replace('/', '-').replace('#', '-')}.md",
                                    kind="issue", untrusted=True, content=tp["issue_text"]))
     req = SubmitJob(
-        instructions=instructions, title=f"{spec.name}: {t.key}"[:200], repo=tp.get("repo"),
+        instructions=instructions, title=f"{spec.name}: {t.ref}"[:200], repo=tp.get("repo"),
         base_branch=task.base_branch, environment=v.environment or spec.environment, harness=pin["harness"],
         model=pin["model"], provider=spec.provider, verify=task.verify, deliver="none", context=context,
         keep_minutes=spec.keep_minutes, timeout_minutes=spec.timeout_minutes, budget=spec.trial_budget,
-        job_budget=spec.trial_job_budget, idempotency_key=f"experiment:{job.id}:{t.key}",
+        job_budget=spec.trial_job_budget, idempotency_key=f"experiment:{job.id}:{t.ref}",
         verify_in_loop=spec.verify_in_loop, autofix="off",
         labels={EXP_LABEL: job.id, TRIAL_LABEL: t.key, VARIANT_LABEL: t.variant, PACKS_LABEL: "selected"})
     try:
@@ -675,6 +697,7 @@ async def _finish_trial(jobs: JobService, job: Job, st: State, spec: ExperimentS
     from hangar import manifest, traces
 
     t.outcome, t.reason, t.finished_at = child.state.value, child.reason, now()
+    t.outcome_class, t.infra_reason = trial_class(child)  # --- #166
     r = child.result
     t.verify = {"command": child.verify, "exit_code": r.verify_exit_code, "passed": (
         r.verify_exit_code == 0 if r.verify_exit_code is not None else None), "new_failures": r.new_failures,
@@ -686,7 +709,7 @@ async def _finish_trial(jobs: JobService, job: Job, st: State, spec: ExperimentS
         t.usage = {"cost_usd": u.cost_usd, "tokens": u.tokens, "input_tokens": u.input_tokens,
                    "output_tokens": u.output_tokens, "cache_read_tokens": u.cache_read_tokens, "model": u.model}
     s = jobs._session(child)
-    d = _dir(jobs.settings, job.id, t.key)
+    d = _dir(jobs.settings, job.id, t.ref)
     if s is not None:
         t.session, t.turns = s.name, sum(1 for x in s.turns if x.run_id)
         t.manifests = [x.manifest for x in s.turns if x.run_id]
@@ -706,8 +729,61 @@ async def _finish_trial(jobs: JobService, job: Job, st: State, spec: ExperimentS
             if same and same[0].config_digest != t.config_digest:
                 t.drift.append(drift_message(t, same[0]))
     t.state = "grading" if spec.grader and child.state != JobState.CANCELLED and s is not None else "done"
-    jobs._event(job, f"trial {t.key}: {t.outcome}" + (f" ({t.reason})" if t.reason else "")
+    retry = None
+    if t.outcome_class == "infra_error":  # --- #166: not the agent's result: left out, and run again
+        t.excluded, t.state = True, "done"
+        retry = _retry(jobs, st, spec, t)
+    jobs._event(job, f"trial {t.ref}: {t.outcome}" + (f" ({t.reason})" if t.reason else "")
+                + (f", infra_error/{t.infra_reason}: excluded" if t.excluded else "")
+                + (f", retried as {retry.ref}" if t.excluded and retry is not None else "")
                 + (", grading" if t.state == "grading" else ""))
+
+
+def _infra_turn(child: Job) -> Any:
+    """The child job's first agent turn infrastructure ended (#166), if any."""
+    return next((x for x in child.turns if x.run_id and x.outcome_class == "infra_error"), None)
+
+
+def trial_class(child: Job) -> tuple[str | None, str | None]:
+    """--- #166: a trial's outcome class. Any of its turns cut off by infrastructure makes the whole trial
+    `infra_error`, even if the job resumed and finished: a trial resumed from a checkpoint didn't run under the
+    conditions the others did. Else the job's own class (outcomes.job_class)."""
+    from hangar import outcomes
+
+    if (cut := _infra_turn(child)) is not None:
+        return "infra_error", cut.infra_reason
+    if child.result.outcome_class == "infra_error":
+        return "infra_error", child.result.infra_reason
+    return outcomes.job_class(child)
+
+
+def infra_retry_cap(st: State) -> int:
+    """--- #166: how many infra-error retries the experiment makes in all: 10% of its trials (at least one)."""
+    first = sum(1 for t in st.trials if t.attempt <= 1)
+    return max(1, first // 10)
+
+
+def _retry(jobs: JobService, st: State, spec: ExperimentSpec, t: Trial) -> Trial | None:
+    """--- #166: a fresh trial in place of an infra_error one (same key, the next attempt), at most
+    HANGAR_TRIAL_INFRA_RETRIES times per trial and `infra_retry_cap` times per experiment; past the latter no
+    further trial starts, with a note (many infra errors at once is usually a provider outage)."""
+    if t.attempt > max(0, jobs.settings.trial_infra_retries):
+        st.notes.append(f"trial {t.key}: infra_error ({t.infra_reason}) on all {t.attempt} attempts "
+                        "(HANGAR_TRIAL_INFRA_RETRIES); it has no counted result")
+        return None
+    used = sum(1 for x in st.trials if x.attempt > 1)
+    if used >= infra_retry_cap(st):
+        n = sum(1 for x in st.trials if x.outcome_class == "infra_error")
+        why = (f"{n} trials ended in infra_error (the latest {t.ref}: {t.infra_reason}), and the experiment has used "
+               f"the {infra_retry_cap(st)} retries it gets (10% of its trials): probably a provider or cluster "
+               "outage. No further trial starts; run the experiment again once it is over")
+        if not st.infra_stopped:
+            st.infra_stopped = why
+            st.notes.append(why)
+        return None
+    retry = Trial(key=t.key, task=t.task, variant=t.variant, trial=t.trial, attempt=t.attempt + 1, retry_of=t.job)
+    st.trials.append(retry)
+    return retry
 
 
 def drift_message(t: Trial, other: Trial) -> str:
@@ -1112,7 +1188,7 @@ async def _canary_scan(jobs: JobService, job: Job, st: State, spec: ExperimentSp
                                                                   else [])
     if any(needle in x.lower() for x in summaries):
         where.append("result")
-    trace = _dir(jobs.settings, job.id, t.key) / "trace.json"
+    trace = _dir(jobs.settings, job.id, t.ref) / "trace.json"
     with contextlib.suppress(OSError):
         if "trace.json" in t.stored and await asyncio.to_thread(_file_has, trace, needle):
             where.append("trace")
@@ -1559,9 +1635,10 @@ def view(jobs: JobService, job: Job) -> dict[str, Any]:
         d["trust"] = (t.grade or {}).get("trust")
         d["task_invalid"] = bool((st.task_checks.get(t.task) or {}).get("invalid"))
         base = f"/api/experiments/{job.id}/trials/{t.key}"
+        q = f"?attempt={t.attempt}" if t.attempt > 1 or t.excluded else ""  # --- #166: one of a retry chain
         d["links"] = {"job": f"/api/jobs/{t.job}" if t.job else None,
-                      "manifest": f"{base}/manifest" if "manifest.json" in t.stored else None,
-                      "trace": f"{base}/trace" if "trace.json" in t.stored else None}
+                      "manifest": f"{base}/manifest{q}" if "manifest.json" in t.stored else None,
+                      "trace": f"{base}/trace{q}" if "trace.json" in t.stored else None}
         trials.append(d)
     counts: dict[str, int] = {}
     for t in st.trials:
@@ -1574,16 +1651,19 @@ def view(jobs: JobService, job: Job) -> dict[str, Any]:
     return mask_canary(out, canary)  # --- anti-forgery (#127): the canary never leaves in an export
 
 
-def trial_file(jobs: JobService, job: Job, key: str, name: str) -> dict[str, Any]:
+def trial_file(jobs: JobService, job: Job, key: str, name: str, attempt: int | None = None) -> dict[str, Any]:
+    """A trial's stored file. A retried trial (#166) has several attempts under one key: `attempt` picks one, else
+    the latest (the one that counts)."""
     st = load(job)
-    t = next((x for x in st.trials if x.key == key), None)
+    same = [x for x in st.trials if x.key == key and (attempt is None or x.attempt == attempt)]
+    t = max(same, key=lambda x: x.attempt) if same else None
     if t is None:
-        raise KeyError(f"experiment {job.id} has no trial '{key}'")
+        raise KeyError(f"experiment {job.id} has no trial '{key}'" + (f" attempt {attempt}" if attempt else ""))
     if name not in t.stored:
         raise KeyError(f"trial {key} has no {name} (it hasn't finished, or it couldn't be stored)")
     # --- review(#114): redacted again on the way out (a secret stored since the trial ended is masked too)
     # --- anti-forgery (#127): and the grader's canary, which a contaminated trial's trace holds
-    return mask_canary(jobs.broker.redact(json.loads((_dir(jobs.settings, job.id, key) / name).read_text())),
+    return mask_canary(jobs.broker.redact(json.loads((_dir(jobs.settings, job.id, t.ref) / name).read_text())),
                        (st.spec.get("grader") or {}).get("canary"))
 
 
@@ -1614,12 +1694,12 @@ def mount(app: Any, h: Any, J: Any, owner_filter: Any) -> None:
         return view(h.jobs, job)
 
     @app.get("/api/experiments/{exp_id}/trials/{key:path}/manifest")
-    async def experiment_trial_manifest(exp_id: str, key: str, caller: Any = J):
-        return trial_file(h.jobs, experiment(h.jobs, exp_id, owner_filter(caller)), key, "manifest.json")
+    async def experiment_trial_manifest(exp_id: str, key: str, attempt: int | None = None, caller: Any = J):
+        return trial_file(h.jobs, experiment(h.jobs, exp_id, owner_filter(caller)), key, "manifest.json", attempt)
 
     @app.get("/api/experiments/{exp_id}/trials/{key:path}/trace")
-    async def experiment_trial_trace(exp_id: str, key: str, caller: Any = J):
-        return trial_file(h.jobs, experiment(h.jobs, exp_id, owner_filter(caller)), key, "trace.json")
+    async def experiment_trial_trace(exp_id: str, key: str, attempt: int | None = None, caller: Any = J):
+        return trial_file(h.jobs, experiment(h.jobs, exp_id, owner_filter(caller)), key, "trace.json", attempt)
 
 
 def register(mcp: Any, jobs: Any, guard: Any) -> None:

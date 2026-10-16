@@ -401,6 +401,7 @@ async def _attempt_steps(jobs: JobService, job: Job, a: Attempt) -> None:
             outcome, _ = await svc.end_turn(s, st, timeout_minutes=job.timeout_minutes,
                                             should_cancel=lambda: job.cancel_requested)
             a.outcome, a.exit_code, a.finished_at = outcome, st.exit_code, now()
+            a.outcome_class, a.infra_reason = st.outcome_class, st.infra_reason  # --- #166
             u = total_usage([st])  # --- interactions: from the event stream (every harness), repair run included
             a.cost_usd = u.cost_usd if u else None
             a.summary = st.summary
