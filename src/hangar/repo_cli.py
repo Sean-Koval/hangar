@@ -182,3 +182,34 @@ def repo_list(as_json: bool = typer.Option(False, "--json")):
         typer.echo("No repo policies. Add one with: hangar repo set owner/repo --verify '…'")
     for p in xs:
         typer.echo(_line(p))
+
+
+@repo_app.command("check")
+def repo_check(repo: str = typer.Argument(..., help="owner/repo on GitHub."),
+               as_json: bool = typer.Option(False, "--json")):
+    """Is the repo ready for agent work? Landing, the git gateway, CI and the doors (GitHub, Jira, Slack), each ok,
+    warn or fail with the fix. Exits 1 when anything fails. Read-only (repocheck.py, #155).
+
+    Example:  hangar repo check acme/app"""
+    from hangar.github import parse_repo
+
+    name = repo.strip().removesuffix(".git")
+    if "/" not in name or name.count("/") != 1:
+        name = parse_repo(repo) or ""
+    owner, _, rest = name.partition("/")
+    if not owner or not rest:
+        raise typer.BadParameter("use owner/repo, e.g. acme/app", param_hint="REPO")
+    r = _cli()._call("GET", f"/api/repos/{owner}/{rest}/readiness")
+    if as_json:
+        _cli()._print(r)
+    else:
+        marks = {"ok": ("✓", "green"), "warn": ("!", "yellow"), "fail": ("✗", "red")}
+        typer.echo(f"{r['repo']}:")
+        for c in r["checks"]:
+            mark, color = marks.get(c["status"], ("?", None))
+            typer.secho(f"{mark} {c['check']}: {c['detail']}", fg=color)
+            if c.get("fix"):
+                typer.echo(f"    fix: {c['fix']}")
+        typer.secho(f"\n{r['summary']}" + (f", {r['warnings']} warning(s)" if r.get("warnings") else ""),
+                    fg="green" if r["ready"] else "red")
+    raise typer.Exit(0 if r["ready"] else 1)

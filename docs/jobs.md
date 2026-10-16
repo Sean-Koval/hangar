@@ -28,6 +28,10 @@ hangar doctor --fix                                                         # ap
 - Slack, when configured: its credentials, the bot token, and that each mapped channel's repo is allowed;
 - that checkpoint storage is writable.
 
+For one repo, `hangar repo check acme/app` puts what matters for agent work in one report (the GitHub App, branch
+protection and required checks, the gateway, the environments' credential mode, sudo, egress and logins, and the Jira and
+Slack mappings) and ends with `ready` or `not ready (N failing)`: see [repo-policy.md](repo-policy.md#is-this-repo-ready).
+
 `hangar doctor --fix` offers each fix it can make safely on its own: building an environment, or creating or repairing a repo's webhook (events, JSON, and the stored secret). `--yes` applies them without asking. For the rest it prints the exact command.
 
 ## 1. Give a service a token
