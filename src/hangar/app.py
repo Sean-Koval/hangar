@@ -1154,6 +1154,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     flightrec.mount(app, h, A, U)
     credhealth.mount(app, h, A)
     credhealth.register_inbox()
+    from hangar import jira as jira_intake  # --- automation (#128): Jira intake alerts wait on the admins
+
+    jira_intake.register_inbox()
     from hangar import clouddoctor  # --- clouddoctor: the Cloud Doctor (docs/doctor.md)
 
     clouddoctor.mount(app, h, A)

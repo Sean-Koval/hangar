@@ -52,7 +52,8 @@ class FakeAPIs:
         self.item = fixture("gh_graphql_item.json")
         self.field = fixture("gh_graphql_field.json")
         # --- review: the issue's history (Cloud's changelog, oldest first): who moved it where
-        self.history = [{"id": "1", "created": "2026-10-14T09:00:00.000+0000",
+        # (#128: just before the fixture deliveries' timestamp, so an Automation request finds a recent transition)
+        self.history = [{"id": "1", "created": "2025-10-14T11:06:00.000+0000",
                          "author": {"accountId": DANA, "displayName": "Dana Lee"},
                          "items": [{"field": "status", "fromString": "To Do", "toString": "Ready for agent"}]}]
 
@@ -501,7 +502,7 @@ async def test_jira_automation_body_cant_say_who_acted(door):
     ts = fixture("jira_issue_updated.json")["timestamp"] / 1000
     from datetime import UTC, datetime
 
-    fake.history = [*fake.history, {"id": "2", "created": "2026-10-14T10:00:00.000+0000",
+    fake.history = [*fake.history, {"id": "2", "created": "2025-10-14T11:06:30.000+0000",
                                      "author": {"accountId": "557058:mallory", "displayName": "Mallory"},
                                      "items": [{"field": "status", "fromString": "In Progress",
                                                 "toString": "Ready for agent"}]}]
@@ -517,12 +518,210 @@ async def test_jira_automation_body_cant_say_who_acted(door):
     assert jira.mover([], {"status": {"name": "To Do"}}, jira.JiraTrigger(status="Ready for agent")) is None
     creator = {"accountId": DANA}
     assert jira.mover([], {"status": {"name": "Ready for agent"}, "creator": creator, "reporter": {"accountId": "x"}},
-                      jira.JiraTrigger(status="Ready for agent")) == creator
+                      jira.JiraTrigger(status="Ready for agent"))["author"] == creator
     labeled = [{"created": "1", "author": {"accountId": "a"}, "items": [{"field": "labels", "fromString": "",
                                                                         "toString": "hangar"}]},
                {"created": "2", "author": {"accountId": "b"}, "items": [{"field": "labels", "fromString": "hangar",
                                                                         "toString": "hangar x"}]}]
-    assert jira.mover(labeled, {}, jira.JiraTrigger(label="hangar")) == {"accountId": "a"}
+    assert jira.mover(labeled, {}, jira.JiraTrigger(label="hangar"))["author"] == {"accountId": "a"}
+
+
+def automation(ts: float, key: str = "ABC-12", **extra) -> bytes:
+    from datetime import UTC, datetime
+
+    now = datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%dT%H:%M:%S.0+0000")  # what {{now}} renders
+    return json.dumps({"webhookEvent": "hangar:automation", "timestamp": now, "issue": {"key": key}, **extra}).encode()
+
+
+AUTO = {"X-Hangar-Token": AUTO_TOKEN, "Content-Type": "application/json"}
+
+
+async def test_jira_automation_forged_for_an_old_transition_is_ignored_audited_and_alerted(door):
+    """#128: the token alone doesn't start a job. A request for an issue whose trigger transition was two days ago
+    (anyone holding the token, at any time) is ignored, audited with the mover and the age, and the admins hear."""
+    from hangar import inbox
+    from hangar.auth import Principal
+
+    svc, fake, front = door["svc"], door["fake"], door["front"]
+    fake.history[0]["created"] = "2025-10-12T11:00:00.000+0000"  # two days before the request
+    ts = front.clock()
+    r = await post(door["client"], {}, raw=automation(ts - 60), headers=AUTO)
+    assert r.status_code == 200 and r.json() == {"ignored": "no recent transition"}, r.json()
+    assert not svc._jobs
+    [ev] = [e for e in svc.store.audit_tail() if e.action == "hook.automation.stale_transition"]
+    assert ev.target == "jira:ABC-12" and ev.detail["mover"] == DANA and ev.detail["issue"] == "ABC-12"
+    assert ev.detail["transition_age_seconds"] > 2 * 86400 - 3600
+    jira.register_inbox()
+    admin = Principal(name="t", id="t", role="admin", person="owner", scopes=["admin"])
+    member = Principal(name="m", id="m", role="member", person="dana", scopes=["user"])
+    [item] = [i for i in jira.inbox_items(svc, admin)]
+    assert item["kind"] == "alert" and "ABC-12" in item["reason"] and "2 days" in item["reason"]
+    assert jira.inbox_items(svc, member) == []
+    assert any(i["kind"] == "alert" for i in inbox.items(svc, admin))
+    # one alert per issue per hour: a second forged request is audited, not alerted again
+    r = await post(door["client"], {}, raw=automation(ts - 30), headers=AUTO)
+    assert r.json() == {"ignored": "no recent transition"}
+    assert len(jira.inbox_items(svc, admin)) == 1
+    assert len([e for e in svc.store.audit_tail() if e.action == "hook.automation.stale_transition"]) == 2
+    # nobody in the history at all: the same
+    fake.history = []
+    r = await post(door["client"], {}, raw=automation(ts - 20, "ABC-12"), headers=AUTO)
+    assert r.json() == {"ignored": "no recent transition"} and not svc._jobs
+
+
+async def test_jira_automation_within_ten_minutes_starts_and_skew_is_allowed(door):
+    svc, fake, front = door["svc"], door["fake"], door["front"]
+    from datetime import UTC, datetime
+
+    t = front.clock()
+    fake.history[0]["created"] = datetime.fromtimestamp(t - 9 * 60, UTC).strftime("%Y-%m-%dT%H:%M:%S.000+0000")
+    r = await post(door["client"], {}, raw=automation(t - 5), headers=AUTO)
+    assert r.json().get("ok"), r.json()
+    # Jira's clock a little ahead of hangar's: a transition "in the future" within max_age_minutes still counts
+    t2 = jira.JiraFrontDoor(svc, clock=lambda: t)
+    cfg = jira.load(svc.settings)
+    ahead = {"author": {"accountId": DANA},
+             "created": datetime.fromtimestamp(t + 300, UTC).strftime("%Y-%m-%dT%H:%M:%S.000+0000")}
+    assert t2._automation_refusal(cfg, "ABC-99", ahead) is None
+    far = {**ahead, "created": datetime.fromtimestamp(t + 3 * 3600, UTC).strftime("%Y-%m-%dT%H:%M:%S.000+0000")}
+    assert t2._automation_refusal(cfg, "ABC-99", far) == {"ignored": "no recent transition"}
+    eleven = {**ahead, "created": datetime.fromtimestamp(t - 11 * 60, UTC).strftime("%Y-%m-%dT%H:%M:%S.000+0000")}
+    assert t2._automation_refusal(cfg, "ABC-98", eleven) == {"ignored": "no recent transition"}
+    svc.settings.jira = {**svc.settings.jira, "automation_max_transition_age_minutes": 15}
+    assert t2._automation_refusal(jira.load(svc.settings), "ABC-98", eleven) is None
+
+
+async def test_jira_automation_per_issue_cap_holds_and_is_audited(door):
+    svc, front = door["svc"], door["front"]
+    from datetime import UTC, datetime
+
+    svc.settings.jira = {**svc.settings.jira, "automation_max_starts_per_issue_per_day": 2}
+    cfg = jira.load(svc.settings)
+    t = front.clock()
+    change = {"author": {"accountId": DANA},
+              "created": datetime.fromtimestamp(t - 60, UTC).strftime("%Y-%m-%dT%H:%M:%S.000+0000")}
+    for _ in range(2):
+        assert front._automation_refusal(cfg, "ABC-12", change) is None
+        front._count_start("ABC-12")
+    res = front._automation_refusal(cfg, "ABC-12", change)
+    assert res is not None and "cap 2" in res["ignored"]
+    [ev] = [e for e in svc.store.audit_tail() if e.action == "hook.automation.capped"]
+    assert ev.target == "jira:ABC-12" and ev.detail["starts_today"] == 2 and ev.detail["cap"] == 2
+    # per issue: another issue (a bulk move) isn't held by it
+    assert front._automation_refusal(cfg, "ABC-13", change) is None
+    # a day later the count has rolled off
+    later = jira.JiraFrontDoor(svc, clock=lambda: t + 86400 + 1)
+    change2 = {**change, "created": datetime.fromtimestamp(t + 86400, UTC).strftime("%Y-%m-%dT%H:%M:%S.000+0000")}
+    assert later._automation_refusal(cfg, "ABC-12", change2) is None
+    # end to end: a started job counts
+    svc.store.kv_delete(f"{jira.STARTS_PREFIX}ABC-12")
+    r = await post(door["client"], {}, raw=automation(t - 5), headers=AUTO)
+    assert r.json().get("ok"), r.json()
+    assert len(front._starts("ABC-12", t)) == 1
+
+
+async def test_jira_bad_token_alerts_the_admins_once_an_hour(door, monkeypatch):
+    from hangar import people as people_mod
+    from hangar.auth import Principal
+
+    svc = door["svc"]
+    sent: list[tuple[str, str]] = []
+
+    class FakeSlack:
+        async def post(self, channel, text, thread_ts=None):
+            sent.append((channel, text))
+            return "1"
+
+        async def close(self):
+            pass
+
+    from hangar import slack
+
+    monkeypatch.setattr(slack, "client_for", lambda s: FakeSlack())
+    monkeypatch.setattr(people_mod, "list_people", lambda store: [
+        Person(id="owner", role="admin", links=["slack:T01ABCDEF/U01ADMIN1"]),
+        Person(id="dana", role="member", links=["slack:T01ABCDEF/U01DANA11"])])
+    for _ in range(2):
+        r = await post(door["client"], {}, raw=automation(door["front"].clock()), headers={
+            "X-Hangar-Token": "guess", "Content-Type": "application/json"})
+        assert r.status_code == 401
+    await until(lambda: sent, what="admin DM")
+    await asyncio.sleep(0.05)
+    assert [c for c, _ in sent] == ["U01ADMIN1"] and "X-Hangar-Token" in sent[0][1]
+    admin = Principal(name="t", id="t", role="admin", person="owner", scopes=["admin"])
+    [item] = jira.inbox_items(svc, admin)
+    assert "wrong X-Hangar-Token" in item["reason"]
+
+
+async def test_doctor_warns_on_an_old_automation_token_and_unsigned_issue_events(door):
+    from hangar.models import Credential
+
+    svc = door["svc"]
+    h = type("H", (), {"store": svc.store, "settings": svc.settings})()
+    cfg = jira.load(svc.settings)
+    checks = {c["name"]: c for c in jira.automation_checks(h, cfg)}
+    assert checks["jira automation token age"]["status"] == "ok"
+    # configured with a secret, but no issue event has come through the signed webhook yet
+    assert checks["jira signed issue events"]["status"] == "warn"
+    c = svc.store.get(Credential, "jira-auto")
+    c.updated_at = c.created_at = c.updated_at - 91 * 86400
+    svc.store.put(c)
+    checks = {c["name"]: c for c in jira.automation_checks(h, cfg)}
+    assert checks["jira automation token age"]["status"] == "warn" and "--rotate" in \
+        checks["jira automation token age"]["fix"]
+    # a signed issue event arrives: that warning clears
+    payload = fixture("jira_issue_updated.json")
+    await post(door["client"], payload)
+    checks = {c["name"]: c for c in jira.automation_checks(h, cfg)}
+    assert checks["jira signed issue events"]["status"] == "ok"
+    # no webhook secret at all: issue events can only be the Automation fallback
+    svc.settings.jira = {**svc.settings.jira, "webhook_secret_credential": None}
+    checks = {c["name"]: c for c in jira.automation_checks(h, jira.load(svc.settings))}
+    assert checks["jira signed issue events"]["status"] == "warn" and "no webhook_secret_credential" in \
+        checks["jira signed issue events"]["detail"]
+    # no Automation token: nothing to say
+    svc.settings.jira = {**svc.settings.jira, "webhook_secret_credential": "jira-hook",
+                         "automation_token_credential": None}
+    assert jira.automation_checks(h, jira.load(svc.settings)) == []
+
+
+async def test_jira_automation_token_cant_pose_as_a_webhook_event(door):
+    """#128: the token isn't a signature. With it, a forged "issue updated" naming Dana, or a "comment created" with
+    `/hangar approve` from her, would skip the history check; a token request is only ever hangar:automation."""
+    svc = door["svc"]
+    payload = fixture("jira_issue_updated.json")
+    r = await post(door["client"], {}, raw=json.dumps(payload).encode(), headers=AUTO)
+    assert r.status_code == 200 and "only sends hangar:automation" in r.json()["ignored"] and not svc._jobs
+    comment = fixture("jira_comment_created.json")
+    comment["comment"]["body"] = "/hangar approve"
+    r = await post(door["client"], {}, raw=json.dumps(comment).encode(), headers=AUTO)
+    assert "only sends hangar:automation" in r.json()["ignored"]
+    assert [e for e in svc.store.audit_tail() if e.action == "hook.automation.wrong_event"]
+
+
+def test_cred_add_rotate_prints_the_rule_steps(monkeypatch):
+    from typer.testing import CliRunner
+
+    from hangar import cli
+
+    calls: list[tuple[str, str, dict]] = []
+
+    def fake_call(method, path, **kw):
+        calls.append((method, path, kw))
+        if method == "GET":
+            return [{"name": "jira-auto", "harness": "webhook", "kind": "generic"}]
+        return {"name": "jira-auto", "harness": "webhook", "kind": "generic", "exclusive": False}
+
+    monkeypatch.setattr(cli, "_call", fake_call)
+    monkeypatch.setattr(cli, "_client", lambda: (_ for _ in ()).throw(RuntimeError("offline")))
+    res = CliRunner().invoke(cli.app, ["cred", "add", "jira-auto", "--rotate"])
+    assert res.exit_code == 0, res.output
+    [(_, _, put)] = [c for c in calls if c[0] == "POST"]
+    token = put["json"]["value"]
+    assert len(token) >= 40 and put["json"]["harness"] == "webhook" and put["json"]["kind"] == "generic"
+    assert token in res.output and "X-Hangar-Token" in res.output and "Hidden" in res.output
+    res = CliRunner().invoke(cli.app, ["cred", "add", "nope"])
+    assert res.exit_code == 2
 
 
 async def test_only_the_jobs_person_continues_it_from_jira(door, monkeypatch):

@@ -234,4 +234,6 @@ job. Either way:
 
   The key only lists models. Lists are per account, so use a key from the account the agents run on: an Anthropic key
   without Mythos access never resolves to Mythos. Codex with a ChatGPT login has no API key to list with. Give it an
-  OpenAI key from the same organization, or pin `codex: gpt-6-astra` if you have it.
+  OpenAI key from the same organization, or pin `codex: gpt-6-astra` if you have it. A ChatGPT login is also interactive-only:
+  jobs, schedules and experiments run Codex on an OpenAI API key, or a ChatGPT Enterprise Codex access token stored with
+  `--kind api_key` ([team.md](team.md#subscription-logins)).

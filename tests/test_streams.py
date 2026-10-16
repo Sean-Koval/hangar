@@ -206,6 +206,20 @@ async def test_stream_race_and_metrics(fleet):
 
 
 # ---------------------------------------------------------------------------- background processes
+ATTACH_DEADLINE = 10.0  # how long the tests wait for a background process's output to reach hangar (#120)
+
+
+async def _attach_until(procs, p, want: str, fleet) -> str:
+    """The process's output, attaching again from `next` until it contains `want` or ATTACH_DEADLINE passes. A
+    single fixed window raced the daemon on a loaded CI runner (#118, #120)."""
+    out, since, deadline = "", None, time.monotonic() + ATTACH_DEADLINE
+    while want not in out and time.monotonic() < deadline:
+        async with hub(fleet).open("alice", "process_attach", p.sandbox_id) as st:
+            a = await procs.attach(p, since, 1, st, None)
+        out, since = out + a["output"], a["next"]
+    return out
+
+
 @needs_binary
 async def test_background_processes_over_mcp(envd_fleet):
     fleet = envd_fleet
@@ -224,13 +238,19 @@ async def test_background_processes_over_mcp(envd_fleet):
             async def progress(p_, total, message):
                 got.append(message or "")
 
-            a = text_of(await c.call_tool("process", {"sandbox": sb.id, "action": "attach", "process_id": pid,
-                                                      "wait_seconds": 1}, progress_callback=progress))
-            assert a["output"] == "ready\ngot:one\n" and "".join(got) == a["output"] and a["state"] == "running"
+            # Attach again from `next` until the output is in: on a loaded runner it can take longer than one short
+            # attach for the first bytes to reach hangar (#120), and an attach that sees none is correctly empty.
+            out, a, deadline = "", {"next": None}, time.monotonic() + ATTACH_DEADLINE
+            while out != "ready\ngot:one\n" and time.monotonic() < deadline:
+                a = text_of(await c.call_tool("process", {"sandbox": sb.id, "action": "attach", "process_id": pid,
+                                                          "since": a["next"], "wait_seconds": 1},
+                                              progress_callback=progress))
+                out += a["output"]
+            assert out == "ready\ngot:one\n" and "".join(got) == out and a["state"] == "running"
             text_of(await c.call_tool("process", {"sandbox": sb.id, "action": "input", "process_id": pid,
                                                   "input": "two\n", "eof": True}))
             b = text_of(await c.call_tool("process", {"sandbox": sb.id, "action": "attach", "process_id": pid,
-                                                      "since": a["next"], "wait_seconds": 5}))
+                                                      "since": a["next"], "wait_seconds": 10}))  # ends at exit
             assert b["output"] == "got:two\n" and b["state"] == "exited" and b["exit_code"] == 0
             listed = text_of(await c.call_tool("process", {"sandbox": sb.id}))["processes"]
             assert [x["id"] for x in listed] == [pid]
@@ -261,9 +281,7 @@ async def test_background_process_is_found_again_after_a_restart(envd_fleet):
     assert await again.list("bob", sb.id) == []
     [found] = await again.list("alice", sb.id)
     assert found["id"] == p.id and found["adopted"] and found["state"] == "running"
-    async with hub(fleet).open("alice", "process_attach", sb.id) as st:
-        a = await again.attach(again.procs[p.id], None, 1, st, None)
-    assert "beat" in a["output"]
+    assert "beat" in await _attach_until(again, again.procs[p.id], "beat", fleet)
     # a pause ends hangar's following of it; after the resume it is found again, still running
     await fleet.pause(sb.id)
     await asyncio.sleep(0.2)

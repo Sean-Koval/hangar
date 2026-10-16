@@ -898,6 +898,13 @@ class Landing:
         from hangar import autoinstall  # --- autoinstall: an env setup's PR: what was validated, mocked, missing
 
         out += autoinstall.packet_lines(svc, job)
+        from hangar import posture  # --- intake posture (#123): the egress floor, or what warn let through
+
+        try:
+            pspec = svc.fleet.catalog.get(job.environment)
+        except KeyError:
+            pspec = None
+        out += posture.packet_lines(self.settings, job, pspec)
         if policy and policy.land == "auto_after_approval":
             who = ", ".join(f"@{a}" for a in policy.approvers or []) or "a code owner"
             out.append(f"- **Landing:** an approval from {who}" + (" or a code owner" if policy.approvers else "")
