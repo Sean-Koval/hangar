@@ -1,27 +1,12 @@
 # The harness contract (docs/harnesses.md): the real agent CLIs, at the versions src/hangar/harnesses.lock.yaml pins,
 # driven by hangar's driver offline against scripted model APIs (tests/test_*real_clis.py), plus the protocols the
-# driver speaks with them, which must match the recorded ones (tests/fixtures/protocol). It runs on PRs that touch
-# harness, driver or isolation code, and on every push to main. The CLIs are cached by the lock and the recipes, so a
-# run that finds them takes about a minute. It needs no secrets and never talks to the cluster.
+# driver speaks with them, which must match the recorded ones (tests/fixtures/protocol). It runs the CLIs on PRs that
+# touch harness, driver or isolation code, and on every push to main. Every PR runs the workflow so the required
+# `contract` check always reports: on a PR that touches none of those paths the job is skipped, which counts as
+# passing. The CLIs are cached by the lock and the recipes, so a run that finds them takes about a minute. It needs no secrets and never talks to the cluster.
 name: harness-contract
 on:
   pull_request:
-    paths:
-      - src/hangar/harnesses.py
-      - src/hangar/harnesses.lock.yaml
-      - src/hangar/driver.py
-      - src/hangar/harden.py
-      - src/hangar/isolation.py
-      - src/hangar/verifyloop.py
-      - src/hangar/steer.py
-      - src/hangar/cache.py
-      - src/hangar/events.py
-      - src/hangar/canary.py
-      - tests/test_*real_clis.py
-      - tests/test_cache.py
-      - tests/fixtures/live/**
-      - tests/fixtures/protocol/**
-      - .github/workflows/harness-contract.yml
   push:
     branches: [main]
   workflow_dispatch:
@@ -38,7 +23,28 @@ env:
   UV_COMPILE_BYTECODE: "1"
 
 jobs:
+  # A path filter on the trigger would leave the required `contract` check waiting forever on PRs it skips.
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.paths.outputs.run }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: paths
+        run: |
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          if grep -Eq '^(src/hangar/harnesses\.py|src/hangar/harnesses\.lock\.yaml|src/hangar/driver\.py|src/hangar/harden\.py|src/hangar/isolation\.py|src/hangar/verifyloop\.py|src/hangar/steer\.py|src/hangar/cache\.py|src/hangar/events\.py|src/hangar/canary\.py|tests/test_[^/]*real_clis\.py|tests/test_cache\.py|tests/fixtures/live/.*|tests/fixtures/protocol/.*|\.github/workflows/harness\-contract\.yml)$' <<< "$changed"; then run=true; else run=false; fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "harness contract needed: $run"
+
   contract:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.run == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
