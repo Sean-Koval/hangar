@@ -430,3 +430,70 @@ def test_jobs_with_no_budget_and_no_daily_cap_get_a_doctor_warning(fleet):
     fleet.settings.person_max_usd_per_day = None
     fleet.settings.job_budget_max_cost_usd = 5
     assert modelpolicy.doctor_checks(h)[0]["detail"].endswith("bounded at $5 a job")
+
+
+# ====================================================================== concreteness (#167)
+@pytest.mark.parametrize(("harness", "model", "want"), [
+    # Anthropic: a line with major and minor, or a dated snapshot
+    ("claude-code", "claude-opus-5-5", True), ("claude-code", "claude-fable-5-1", True),
+    ("claude-code", "claude-sonnet-4-20250514", True), ("claude-code", "claude-3-5-sonnet-20241022", True),
+    ("claude-code", "claude-opus-latest", False), ("claude-code", "opus", False), ("claude-code", "sonnet", False),
+    ("claude-code", "haiku", False), ("claude-code", "claude-opus", False), ("claude-code", "fable", False),
+    ("claude-code", "claude-opus-5", False),  # a major alone: not a known shape (it is concrete when listed)
+    # OpenAI: gpt-<version>-<tier>, or a dated snapshot
+    ("codex", "gpt-6-astra", True), ("codex", "gpt-6.1-sol", True), ("codex", "gpt-6-astra-2026-09-03", True),
+    ("codex", "gpt-4o-2024-08-06", True), ("codex", "o3-2025-04-16", True),
+    ("codex", "gpt-5", False), ("codex", "gpt-6.1", False), ("codex", "gpt-4o", False), ("codex", "o3", False),
+    ("codex", "gpt-astra-latest", False), ("codex", "gpt-5-mini", False),
+    # Google: gemini-<version>-<tier>, optionally a preview or revision; agy's thinking level
+    ("gemini", "gemini-3.8-flash", True), ("gemini", "gemini-3.1-pro-preview", True),
+    ("gemini", "gemini-2.5-flash-preview-05-20", True), ("gemini", "gemini-1.5-pro-002", True),
+    ("antigravity", "gemini-3.8-flash-high", True),
+    ("gemini", "gemini-flash-latest", False), ("gemini", "gemini-pro", False), ("gemini", "gemini-3", False),
+    # OpenRouter (pi): the vendor's id with a dotted version; `~…-latest` aliases and the router itself never
+    ("pi", "openrouter/anthropic/claude-opus-5.5", True), ("pi", "openrouter/openai/gpt-6-astra", True),
+    ("pi", "openrouter/google/gemini-3.8-flash", True), ("pi", "anthropic/claude-fable-5.1", True),
+    ("pi", "openrouter/~anthropic/claude-fable-latest", False), ("pi", "~openai/gpt-astra-latest", False),
+    ("pi", "openrouter/auto", False), ("pi", "openrouter/anthropic/claude-opus", False),
+    # neither listed nor of a known shape, a policy, nothing: never concrete
+    ("claude-code", "my-finetune", False), ("claude-code", "balanced", False), ("codex", "frontier@openai", False),
+    ("claude-code", None, False), ("claude-code", "", False),
+])
+def test_is_concrete_by_shape(harness, model, want):
+    assert modelpolicy.is_concrete(harness, model) is want
+
+
+def test_every_seed_is_concrete():
+    for harness, policies in modelpolicy.SEED.items():
+        for model in policies.values():
+            assert modelpolicy.concreteness(harness, model) == (True, "pattern"), (harness, model)
+    for model in modelpolicy.PI_SEED.values():
+        assert modelpolicy.is_concrete("pi", model), model
+
+
+def test_a_listed_id_is_concrete_but_a_listed_alias_never_is():
+    """The provider's list decides for ids of no known shape (`claude-opus-5`, `gpt-5.3-codex`); an alias stays an
+    alias even when a provider lists it (OpenRouter lists `~vendor/…-latest`; OpenAI lists `gpt-5`)."""
+    ant, oai, ors = recorded("anthropic"), recorded("openai"), recorded("openrouter")
+    assert modelpolicy.concreteness("claude-code", "claude-opus-5", ant) == (True, "list")
+    assert modelpolicy.concreteness("codex", "gpt-5.3-codex", oai) == (True, "list")
+    assert modelpolicy.concreteness("codex", "gpt-5.3-codex") == (False, "unknown")
+    assert modelpolicy.concreteness("pi", "openrouter/anthropic/claude-opus-5", ors) == (True, "list")
+    assert modelpolicy.concreteness("pi", "~anthropic/claude-fable-latest", ors) == (False, "alias")
+    assert modelpolicy.concreteness("codex", "gpt-5", [{"id": "gpt-5"}]) == (False, "alias")
+    assert modelpolicy.concreteness("antigravity", "gemini-3.1-pro-high", recorded("google")) == (True, "list")
+    assert modelpolicy.concreteness("claude-code", "claude-opus-4-9", ant) == (True, "pattern")  # unlisted, versioned
+
+
+def test_with_no_list_cached_the_shape_decides_and_says_so(fleet, caplog):
+    r = Resolver(fleet)
+    with caplog.at_level("WARNING", logger="hangar.modelpolicy"):
+        ok, basis, note = r.concreteness("claude-code", "claude-opus-5-5")
+    assert (ok, basis) == (True, "pattern") and "no anthropic model list is cached" in note
+    assert "judged by its shape alone" in caplog.text
+    ok, basis, note = r.concreteness("claude-code", "claude-opus-5")  # unknown without the list: never concrete
+    assert (ok, basis) == (False, "unknown") and note
+    cache(fleet, "anthropic")
+    assert r.concreteness("claude-code", "claude-opus-5") == (True, "list", None)
+    assert r.concreteness("claude-code", "opus")[:2] == (False, "alias")
+    assert r.suggest("claude-code") == {"frontier": "claude-fable-5-1", "balanced": "claude-opus-5-5"}

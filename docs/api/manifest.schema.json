@@ -45,11 +45,12 @@
       "type": "object",
       "required": ["id", "policy", "source", "provider"],
       "properties": {
-        "id": {"type": ["string", "null"], "description": "The concrete model id the harness was given (null: the harness's own default)."},
+        "id": {"type": ["string", "null"], "description": "The model id the harness was given (null: the harness's own default). A policy is always resolved to an id; an id given as it is can still be a floating alias (see concrete)."},
         "policy": {"type": ["string", "null"], "description": "The policy it was resolved from (frontier, balanced), or null when pinned."},
         "source": {"type": ["string", "null"]},
         "provider": {"type": ["string", "null"], "description": "gen_ai.provider.name"},
-        "cache_ttl": {"type": ["string", "null"]}
+        "cache_ttl": {"type": ["string", "null"]},
+        "concrete": {"type": "boolean", "description": "Whether id is a concrete, dated model id the provider can't move between two runs: in the provider's model list or of a known versioned shape, and not a floating alias (*-latest, OpenRouter's ~vendor/..., a bare family name such as opus or gpt-5). False with no id. Runs with concrete false are not pinned and evaluation leaves them out; experiments refuse to start on one. Optional (absent from manifests stored before it). Added within v1 (#167)."}
       }
     },
     "instructions": {
