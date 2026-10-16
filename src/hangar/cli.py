@@ -529,9 +529,10 @@ def cred_ls():
 @cred_app.command("add")
 def cred_add(
     name: str,
-    harness: str = typer.Option(..., help="claude-code | codex | pi | antigravity | git (or any label)"),
-    kind: str = typer.Option(..., help="api_key | oauth_token | auth_file | git_token | ssh_key | generic | "
-                             "github_app (git gateway only)"),
+    harness: str | None = typer.Option(None, help="claude-code | codex | pi | antigravity | git (or any label); "
+                                       "required unless --rotate"),
+    kind: str | None = typer.Option(None, help="api_key | oauth_token | auth_file | git_token | ssh_key | generic | "
+                                    "github_app (git gateway only); required unless --rotate"),
     value: str | None = typer.Option(None, help="Secret value; omit to read from --file or stdin."),
     file: Path | None = typer.Option(None, help="Read the secret from a file (e.g. ~/.codex/auth.json)."),
     env_var: str | None = typer.Option(None, "--env-var", help="Env var to inject as, overriding the harness "
@@ -543,8 +544,17 @@ def cred_add(
                                       "own; a member's are always their own)."),
     team: bool = typer.Option(False, "--team", help="Admins: a team credential, for jobs no person owns and people "
                               "without their own login: an API key, never a subscription login (docs/team.md)."),
+    rotate: bool = typer.Option(False, "--rotate", help="Replace a stored credential's value, keeping its harness and "
+                                "kind. Without --value or --file, a shared token (the Jira Automation token) gets a "
+                                "new random value, and hangar prints what to update where it is used."),
 ):
     """Store a credential. Examples:
+
+      hangar cred add claude-api --harness claude-code --kind api_key --file anthropic-key.txt
+
+      hangar cred add codex-api --harness codex --kind api_key --file openai-key.txt
+
+      Subscription logins, for your own interactive sessions only (jobs refuse them; docs/team.md):
 
       claude setup-token | hangar cred add claude-max --harness claude-code --kind oauth_token
 
@@ -555,7 +565,23 @@ def cred_add(
       hangar cred add gcp-vertex --harness antigravity --kind generic --file sa-key.json
 
       hangar cred add claude-team --team --harness claude-code --kind api_key --file team-key.txt
+
+      hangar cred add jira-automation --rotate
     """
+    generated = False
+    if rotate:
+        cur = next((c for c in _call("GET", "/api/credentials") if c["name"] == name), None)
+        if cur is None:
+            typer.secho(f"no credential '{name}' to rotate; store it first", fg="red", err=True)
+            raise typer.Exit(1)
+        harness, kind = harness or cur["harness"], kind or cur["kind"]
+        if value is None and file is None:
+            import secrets as _secrets
+
+            value, generated = _secrets.token_urlsafe(32), True
+    if not harness or not kind:
+        typer.secho("--harness and --kind are required (or --rotate an existing credential)", fg="red", err=True)
+        raise typer.Exit(2)
     secret = value if value is not None else (file.expanduser().read_text() if file else sys.stdin.read())
     if kind == "oauth_token" and harness == "claude-code":
         import re
@@ -569,6 +595,31 @@ def cred_add(
                                                 **({"team": True} if team else {})})  # --- teamcreds
     typer.secho(f"stored {c['name']} ({c['harness']}/{c['kind']}{', exclusive' if c['exclusive'] else ''}, "
                 f"{c.get('owner') or c.get('person') or 'team'})", fg="green")
+    if rotate:
+        _rotation_steps(name, secret if generated else None)
+
+
+def _rotation_steps(name: str, token: str | None) -> None:
+    """--- automation (#128): where a rotated shared token must be updated. The old value stops working now."""
+    try:
+        with _client() as c:
+            r = c.get("/api/settings/jira")
+        jira_cfg = (r.json().get("value") if r.status_code == 200 else None) or {}
+    except Exception:  # noqa: BLE001 - a member's token can't read settings: print the Jira steps anyway
+        jira_cfg = {}
+    if isinstance(jira_cfg, dict) and jira_cfg.get("automation_token_credential") not in (None, name):
+        typer.echo(f"rotated {name}; update wherever it is used.")
+        return
+    typer.echo("")
+    if token is not None:
+        typer.echo(f"New X-Hangar-Token (shown once):\n\n  {token}\n")
+    typer.echo("The old token stops working now. Update the Jira Automation rule:\n"
+               "  1. Jira: Settings > System > Global automation (or the project's Automation), open the rule that "
+               "sends to /api/hooks/jira.\n"
+               "  2. In its 'Send web request' action, set the X-Hangar-Token header to the new token; keep it "
+               "marked Hidden.\n"
+               "  3. Publish the rule, then move a test issue into the trigger status: its job should start.\n"
+               "Prefer the signed admin webhook for issue events (docs/intake.md); then the token can go.")
 
 
 @cred_app.command("rm")

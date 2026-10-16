@@ -146,30 +146,20 @@ def _github_ref(job: Job) -> str | None:
 
 
 def approve(jobs: JobService, job_id: str, approver: str, owner: str | None = None) -> Job:
-    """Queue a job that was waiting for a trusted person, and record who let it run."""
-    job = jobs.get(job_id, owner)
-    if job.state != JobState.AWAITING_APPROVAL:
-        raise JobError(f"job {job.id} is {job.state}, not waiting for approval")
-    a = job.approval or JobApproval(requested_by=job.requester)
-    job.approval = a.model_copy(update={"decided_by": approver, "decided_at": now(), "decision": "approved"})
-    jobs._event(job, f"approved by {approver}", JobState.QUEUED, reason=None)
-    jobs.fleet.audit(approver, "job.approve", job.id, requested_by=a.requested_by)
-    jobs._queue.put_nowait(job.id)
-    if ref := _github_ref(job):
-        jobs._spawn(jobs._comment(job, ref, f"Approved by {approver}. Hangar job `{job.id}` is queued."))
-    return job
+    """Queue a job that was waiting for a trusted person, as hangar's own code (`approver` names who for the
+    record). Front doors and network callers go through approvals.decide, which checks who may (#121); with a
+    principal set, this does too."""
+    from hangar import approvals
+
+    jobs.get(job_id, owner)
+    return approvals.decide_now(jobs, job_id, approvals.in_process(approver), "approve")
 
 
 def reject(jobs: JobService, job_id: str, approver: str, owner: str | None = None) -> Job:
-    job = jobs.get(job_id, owner)
-    if job.state != JobState.AWAITING_APPROVAL:
-        raise JobError(f"job {job.id} is {job.state}, not waiting for approval")
-    a = job.approval or JobApproval(requested_by=job.requester)
-    job.approval = a.model_copy(update={"decided_by": approver, "decided_at": now(), "decision": "rejected"})
-    _drop(jobs, job, f"rejected by {approver}", "rejected",
-          f"Rejected by {approver}. Hangar job `{job.id}` will not run.")
-    jobs.fleet.audit(approver, "job.reject", job.id, requested_by=a.requested_by)
-    return job
+    from hangar import approvals
+
+    jobs.get(job_id, owner)
+    return approvals.decide_now(jobs, job_id, approvals.in_process(approver), "reject")
 
 
 def expire_approvals(jobs: JobService, t: float | None = None) -> list[Job]:
@@ -205,8 +195,11 @@ def awaiting_comment(jobs: JobService, job: Job, who: str) -> str:
 
 
 async def github_decision(jobs: JobService, ref: str, sender: str, trusted: bool,
-                          decision: Literal["approve", "reject"]) -> dict[str, Any]:
-    """`/hangar approve|reject` on an issue with a job waiting for approval."""
+                          decision: Literal["approve", "reject"], person: str | None = None) -> dict[str, Any]:
+    """`/hangar approve|reject` on an issue with a job waiting for approval. `person`: the one the sender's GitHub
+    user id is linked to. Who may decide is approvals.can_decide's (#121): never the job's own person or requester."""
+    from hangar import approvals
+
     if not trusted:
         jobs.admission.refused(f"owner:github:{sender}", f"github:{sender}", f"job.{decision}.refused", ref,
                                why="not trusted")  # --- front-door-auth: every approval decision is audited
@@ -215,7 +208,10 @@ async def github_decision(jobs: JobService, ref: str, sender: str, trusted: bool
     if job is None:
         return {"ignored": f"no job is waiting for approval on {ref}"}
     try:
-        (approve if decision == "approve" else reject)(jobs, job.id, f"github:{sender}")
+        await approvals.decide(jobs, job.id, approvals.from_github(sender, person, trusted), decision)
+    except approvals.ApprovalRefused as e:  # audited by decide; say why on the issue
+        jobs._spawn(jobs._comment(job, ref, f"@{sender} can't {decision} hangar job `{job.id}`: {e}"))
+        return {"ignored": str(e)}
     except JobError as e:  # decided by someone else in the meantime
         return {"ignored": str(e)}
     return {"ok": True, {"approve": "approved", "reject": "rejected"}[decision]: job.id}

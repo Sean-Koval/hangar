@@ -208,6 +208,8 @@ class Trial(BaseModel):
     turns: int = 0
     manifests: list[str | None] = Field(default_factory=list)  # each turn's manifest digest
     config_digest: str | None = None
+    harness_digest: str | None = None  # the first turn's manifest's two halves of config_digest (None: older)
+    environment_digest: str | None = None
     verify: dict[str, Any] | None = None
     tests: Any = None  # the trial job's test results, when hangar parsed them
     usage: dict[str, Any] | None = None
@@ -653,13 +655,30 @@ async def _finish_trial(jobs: JobService, job: Job, st: State, spec: ExperimentS
             st.notes.append(f"trial {t.key}: its trace and manifest could not be stored ({e})")
         if m:
             t.config_digest = m.get("config_digest")
+            t.harness_digest, t.environment_digest = m.get("harness_digest"), m.get("environment_digest")
             same = [x for x in st.trials if x.variant == t.variant and x.config_digest and x is not t]
             if same and same[0].config_digest != t.config_digest:
-                t.drift.append(f"its harness configuration ({t.config_digest}) differs from trial {same[0].key}'s "
-                               f"({same[0].config_digest}): compare their manifests")
+                t.drift.append(drift_message(t, same[0]))
     t.state = "grading" if spec.grader and child.state != JobState.CANCELLED and s is not None else "done"
     jobs._event(job, f"trial {t.key}: {t.outcome}" + (f" ({t.reason})" if t.reason else "")
                 + (", grading" if t.state == "grading" else ""))
+
+
+def drift_message(t: Trial, other: Trial) -> str:
+    """Why two trials of one variant differ, naming the half that drifted: the harness (instructions, skills, MCP
+    servers, hooks, model, approvals) or the environment (image, build, egress, resources, isolation)."""
+    halves = [name for name, a, b in (("harness", t.harness_digest, other.harness_digest),
+                                      ("environment", t.environment_digest, other.environment_digest))
+              if a and b and a != b]
+    if not halves and not (t.harness_digest and other.harness_digest and t.environment_digest
+                           and other.environment_digest):
+        return (f"its harness configuration ({t.config_digest}) differs from trial {other.key}'s "
+                f"({other.config_digest}): compare their manifests")
+    what = " and ".join(f"{h} drift" for h in halves) or "configuration drift"  # neither half: it's in the rest
+    detail = ", ".join(f"{h}_digest {getattr(t, h + '_digest')} vs {getattr(other, h + '_digest')}" for h in halves)
+    return (f"{what}: its configuration differs from trial {other.key}'s"
+            + (f" ({detail})" if detail else f" ({t.config_digest} vs {other.config_digest})")
+            + ": compare their manifests")
 
 
 def _write(d: Path, files: dict[str, Any]) -> None:
@@ -719,7 +738,7 @@ async def _grade(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t:
             (x.base_branch for x in spec.tasks if x.id == t.task), None),
             credentials=validation_credentials(fleet, env), provider=spec.provider,
             ttl_minutes=max(10, g.timeout_seconds // 60 + 15), person=job.person, actor=f"experiment:{job.id}",
-            labels={GRADER_LABEL: job.id, TRIAL_LABEL: t.key})
+            labels={GRADER_LABEL: job.id, TRIAL_LABEL: t.key}, purpose="automated")  # --- #125: and strict
         _, prov = fleet._running(sb.id)
         q = shlex.quote
         repo = sb.info.get("repo_path")

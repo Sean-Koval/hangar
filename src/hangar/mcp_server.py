@@ -31,6 +31,7 @@ from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
 import hangar.identity as identity  # --- identity
 import hangar.people as people  # --- identity
+from hangar import approvals as approvals  # --- approvals (#121): who may release a held job
 from hangar import computer_api as computer_api  # --- computer
 from hangar import exchange, mcp_steer, mcp_tasks, observe  # mcp_tasks: elicitation; mcp_steer: live turns; --- observe
 from hangar import mcp_deadline as contract  # --- deadlines: the client-deadline contract
@@ -916,16 +917,19 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         """Registered only when triggers are enabled; a function rather than an early return, so tools added
         after this section still register."""
 
+        # --- approvals (#121): who may decide is approvals.can_decide's, the same rule as REST's twins
         @tool()
         async def approve_job(job: str) -> live.JobOut:
-            """Let a job in state awaiting_approval run. Such jobs were started by someone outside the trusted list
-            (e.g. a non-collaborator's /hangar comment); read its instructions and context with get_job first."""
-            return jobs.view(triggers.approve(job, approver=current_actor.get()))
+            """Let a job in state awaiting_approval run; read it with get_job first. Admins and the repo's policy
+            approvers only, with a login token, never on their own job."""
+            return jobs.view(await approvals.decide(jobs, job, approvals.from_principal(identity.current.get()),
+                                                    "approve"))
 
         @tool()
         async def reject_job(job: str) -> live.JobOut:
             """Drop a job that is waiting for approval; it is cancelled without running."""
-            return jobs.view(triggers.reject(job, approver=current_actor.get()))
+            return jobs.view(await approvals.decide(jobs, job, approvals.from_principal(identity.current.get()),
+                                                    "reject"))
 
         @tool()
         async def create_schedule(name: str, cron: str, instructions: str, repo: str | None = None,

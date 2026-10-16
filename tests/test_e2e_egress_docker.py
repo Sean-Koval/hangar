@@ -169,3 +169,45 @@ async def test_a_proxied_sandboxs_preview_port_is_reached_and_its_egress_stays_s
         await fleet.destroy_many(label="e2e-egress")
         await fleet.stop()
         await fleet.gateway.stop()
+
+
+async def test_an_intake_jobs_sandbox_in_an_open_environment_gets_the_allowlist_floor(tmp_path):
+    """--- intake posture (#123): a sandbox carrying the job's `hangar.egress.floor` label, in an `open` environment,
+    starts on the proxy-only network: example.com (not on the list) is refused, pypi.org (the `pypi` preset) answers.
+    An unlabelled sandbox of the same environment still reaches the internet."""
+    from hangar import posture
+    from hangar.app import Hangar
+    from hangar.config import Settings
+    from hangar.providers.docker_net import EGRESS_NAME
+
+    envs = tmp_path / "envs"
+    envs.mkdir()
+    (envs / "open-intake.yaml").write_text(yaml.safe_dump({"name": "open-intake", "extends": "minimal",
+                                                           "egress": {"presets": ["pypi"]}}))
+    s = Settings(data_dir=tmp_path, env_dirs=[ROOT / "envs", envs], reaper_interval_seconds=3600,
+                 intake_posture="enforce", extra_ca_bundle=os.environ.get("HANGAR_EXTRA_CA_BUNDLE") or None)
+    s.snapshot_dir.mkdir(parents=True, exist_ok=True)
+    h = Hangar(s)
+    fleet = h.fleet
+    await fleet.start()
+    try:
+        sb = await fleet.create("open-intake", name="e2e-egress-intake", actor="test",
+                                labels={"e2e-egress": "1", posture.FLOOR_LABEL: "allowlist"})
+        sb = fleet.get(sb.id)
+        prov = fleet.provider("docker")
+        attrs = prov.client.api.inspect_container(sb.provider_ref)
+        assert list(attrs["NetworkSettings"]["Networks"]) == [EGRESS_NAME]
+        assert sb.info["egress"]["mode"] == "allowlist" and sb.info["egress"]["floor"] == "allowlist"
+        r = await fleet.exec(sb.id, "timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' && echo open || echo shut")
+        assert r.stdout.strip() == "shut", r.stdout + r.stderr
+        r = await fleet.exec(sb.id, FETCH + "https://example.com/", timeout=60)
+        assert "403" in r.stdout or "Forbidden" in r.stdout, r.stdout + r.stderr
+        r = await fleet.exec(sb.id, FETCH + "https://pypi.org/simple/six/", timeout=60)
+        assert r.stdout.strip() == "200", r.stdout + r.stderr
+        other = await fleet.create("open-intake", name="e2e-egress-open", labels={"e2e-egress": "1"}, actor="test")
+        attrs = prov.client.api.inspect_container(fleet.get(other.id).provider_ref)
+        assert EGRESS_NAME not in attrs["NetworkSettings"]["Networks"]
+    finally:
+        await fleet.destroy_many(label="e2e-egress")
+        await fleet.stop()
+        await fleet.gateway.stop()

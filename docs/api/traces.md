@@ -164,7 +164,9 @@ Hangar: `hangar.turn.number` (1-based, in the session), `hangar.run.id`, `hangar
 `error`, `needs_input`, `interrupted`), `hangar.turn.exit_code`, `hangar.harness`, `hangar.harness.version`,
 `hangar.turn.live`, `hangar.approvals` (`auto`, `ask`, `deny-risky`), `hangar.cost_usd`, `hangar.cost_source`
 (`harness`, `prices`, `mixed`), `hangar.manifest.digest` (the effective harness manifest it ran with: fetch it with
-`GET /api/sessions/{name}/manifest?turn=N`), `hangar.attempt` (best-of-N attempt number, job exports).
+`GET /api/sessions/{name}/manifest?turn=N`), `hangar.harness.digest` and `hangar.environment.digest` (its
+`harness_digest` and `environment_digest`: a harness change and an environment change apart; unset for turns recorded
+before them), `hangar.attempt` (best-of-N attempt number, job exports).
 
 Status: `ERROR` when the outcome is anything but `exited`/`needs_input`/`interrupted` with exit code 0.
 

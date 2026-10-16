@@ -48,6 +48,8 @@ hangar token create support-tool --scope jobs --callback-secret support-hook-key
 
 ## 2. Submit a job
 
+A job runs on an **API key** for its harness: its person's own, else the team's ([team.md](team.md#whose-login-a-job-uses)). Subscription logins (Claude Pro or Max, a ChatGPT or Google sign-in) are for interactive sessions only; a job that would need one is refused at submit with the `hangar cred add … --kind api_key` command to run ([subscription logins](team.md#subscription-logins)). Cap spend at the vendor (a workspace or project limit on the key) and in hangar (job budgets, daily caps).
+
 ```bash
 curl -sS https://hangar.example.com/api/jobs \
   -H "Authorization: Bearer $HANGAR_JOB_TOKEN" -H 'Content-Type: application/json' -d @- <<'EOF'
@@ -99,7 +101,7 @@ hangar job cancel job-3fa2c1d0
 hangar job events job-3fa2c1d0 --follow    # what the agent is doing
 ```
 
-From an MCP client (Claude Code, Codex, …): `submit_job`, `get_job`, `list_jobs`, `follow_up_job`, `cancel_job`, `get_events`, `wait_for_turn(job)` to block with progress notifications until the turn ends, and `approve_job` / `reject_job` for jobs waiting for approval.
+From an MCP client (Claude Code, Codex, …): `submit_job`, `get_job`, `list_jobs`, `follow_up_job`, `cancel_job`, `get_events`, `wait_for_turn(job)` to block with progress notifications until the turn ends, and `approve_job` / `reject_job` for jobs waiting for approval (admins and the repo's policy approvers, with a login token, never on their own job: [who may approve](triggers.md#who-may-approve)).
 
 A `jobs` token can carry a budget cap (`hangar token create svc --scope jobs --max-cost 2`); its jobs never get more.
 
@@ -147,7 +149,7 @@ Then:
 - Hangar comments when it starts and when it finishes, with the summary, verification and PR link. The PR says `Closes #N`.
 - Comment `/hangar <message>` on the PR to continue in the same sandbox and branch.
 
-A `/hangar` comment or label from someone who isn't trusted (by default: not an owner, member or collaborator; or set `HANGAR_GITHUB_TRUSTED`) creates the job in `awaiting_approval`, and it runs only after a trusted `/hangar approve`. See [triggers.md](triggers.md). Only repos in `HANGAR_GITHUB_REPOS` are accepted, and GitHub's redelivery of the same event does not start a second job.
+A `/hangar` comment or label from someone who isn't trusted (by default: not an owner, member or collaborator; or set `HANGAR_GITHUB_TRUSTED`) creates the job in `awaiting_approval`, and it runs only after a trusted `/hangar approve`. A job held by a daily spend cap waits the same way, and only an admin or a repo policy approver other than its own person can release it. See [triggers.md](triggers.md#who-may-approve). Only repos in `HANGAR_GITHUB_REPOS` are accepted, and GitHub's redelivery of the same event does not start a second job.
 
 Jobs can also start from other systems' webhooks and on a schedule: see [triggers.md](triggers.md).
 
@@ -423,7 +425,10 @@ hangar experiment export job-1a2b3c4d -o out/  # index.json and each trial's man
 Hangar pins the harness version, the model id and each task's base commit, mounts only the trial's harness, writes
 exactly the variant's skills and instructions, and keeps egress the same for every variant. It records what each
 trial ran with (its [manifest](api/manifest.schema.json)), what it did (its [trace](api/traces.md)) and its
-verification, and runs an optional `grader.command` in a clean sandbox on each trial's patch. It doesn't compare the
+verification, and runs an optional `grader.command` in a clean sandbox on each trial's patch. Two trials of one
+variant should share a configuration; when they don't, the trial's `drift` says which half moved: **harness drift**
+(its manifest's `harness_digest`: instructions, skills, MCP servers, hooks, model, approvals) or **environment drift**
+(`environment_digest`: image, build, egress, resources, isolation). It doesn't compare the
 variants: that is the sister tool's job. The details are in [spec 0014](specs/0014-sister-tool-interfaces.md#4-experiment-jobs-hangarexperimentv1).
 
 ## Settings
@@ -452,6 +457,7 @@ variants: that is the sister tool's job. The details are in [spec 0014](specs/00
 | `HANGAR_GITHUB_TRUSTED`, `HANGAR_JOB_APPROVAL_TTL_HOURS`, `HANGAR_INBOUND_WEBHOOKS`, `HANGAR_SCHEDULE_POLL_SECONDS` | | See [triggers.md](triggers.md) |
 | `HANGAR_SLACK_SIGNING_SECRET_CREDENTIAL`, `HANGAR_SLACK_BOT_TOKEN_CREDENTIAL`, `HANGAR_SLACK_CHANNELS`, `HANGAR_SLACK_USERS` | | See [slack.md](slack.md) |
 | `HANGAR_JIRA`, `HANGAR_GITHUB_PROJECTS` | `{}` | See [intake.md](intake.md) |
+| `HANGAR_SUBSCRIPTION_LOGINS` | `interactive` | Jobs never use a subscription login (`oauth_token`, `auth_file`): they need an API key. `any` allows them, with a warning, and `hangar doctor` fails. See [team.md](team.md#subscription-logins) |
 
 ## Security notes
 
@@ -463,6 +469,7 @@ Issue text, comments and service context are untrusted input to the agent. Today
 - secret redaction of everything the agent writes that leaves hangar (summaries, verification output, PR bodies, comments, callbacks);
 - pushes only to new `hangar/` branches, never forced;
 - a prompt that marks context as data;
-- CI output, logs and review comments handed to auto-fix turns are untrusted attachments, fenced in the prompt like an outsider's issue text, and only reviewers the job's person or the repo policy trusts start a turn.
+- CI output, logs and review comments handed to auto-fix turns are untrusted attachments, fenced in the prompt like an outsider's issue text, and only reviewers the job's person or the repo policy trusts start a turn;
+- the [intake posture](security.md#intake-posture) (`HANGAR_INTAKE_POSTURE`, default `enforce`): a job from GitHub, GitHub Projects, Jira, Slack or a webhook, or one with an untrusted author or attachment (an auto-fix round), needs the git gateway (otherwise `submit` refuses it, and the front door posts why) and runs with at least `allowlist` egress, in a cold-started sandbox when its environment is `open`. Jobs a person submits over MCP, REST or the CLI are unaffected. `warn` runs them as before for one release, with a `posture.warn` job event and audit entry.
 
 Known gap: the callback check resolves the host before sending but doesn't pin the address, so DNS rebinding is not fully blocked. Without the [git gateway](security.md#git-credential-gateway) the agent's sandbox holds a git credential, so restrict `HANGAR_GITHUB_REPOS` to repos where a mistaken push to a `hangar/*` branch is acceptable, and keep PR merges human-approved. With `HANGAR_GATEWAY_URL` set, a job's sandbox has no GitHub token and pushes nothing: its grant is fetch-only, and hangar pushes the commit it checked, after verify, the secret scan and the landing checks ([security.md](security.md#jobs-only-fetch-hangar-delivers)).

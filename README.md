@@ -82,26 +82,33 @@ Hangar starts the server, saves your CLI login, builds the default `claude-pytho
 
 Open the **dashboard at [localhost:8787](http://localhost:8787)** to see your fleet, credentials, environments, and live terminals. Local state is stored in `~/.hangar`; the server log is `~/.hangar/server.log`.
 
-### 1. Add an agent login
+### 1. Add an agent API key
 
-Use **Credentials** in the dashboard, or store an existing login from the CLI.
+Use **Credentials** in the dashboard, or store a key from the CLI. Use an API key (an Anthropic Console key, an OpenAI project key, a Claude Team or Enterprise key) and set a spend limit on it in the vendor's console; hangar's own job and daily budgets cap spend inside hangar.
 
-For Claude Code, run this on your host with the Claude CLI installed:
+For Claude Code:
 
 ```bash
-claude setup-token | uv run hangar cred add claude-max --harness claude-code --kind oauth_token
+uv run hangar cred add claude-api --harness claude-code --kind api_key --file anthropic-key.txt
 ```
 
-For Codex, import the auth file from a host where you have already signed in:
+For Codex:
 
 ```bash
-uv run hangar cred add codex-chatgpt --harness codex --kind auth_file --file ~/.codex/auth.json
+uv run hangar cred add codex-api --harness codex --kind api_key --file openai-key.txt
 uv run hangar env build codex-node
 ```
 
-Choose the credential when creating a sandbox, or list its name in your environment's `credentials` field. Storing a login alone does not attach it to every sandbox.
+Choose the credential when creating a sandbox, or list its name in your environment's `credentials` field. Storing a key alone does not attach it to every sandbox.
 
-Codex subscription credentials are leased to one sandbox at a time because their refresh tokens rotate. For concurrent Codex sandboxes, use separate logins or API-key credentials. Parallel agents also share their account's usage limits.
+**Personal interactive sessions** can also use your own subscription login (Claude Pro or Max, a ChatGPT sign-in). Jobs, schedules, webhooks and experiments never do: the vendors' terms reserve consumer logins for one person's own interactive use, so hangar refuses them for automated work and warns in sessions that use one ([subscription logins](docs/team.md#subscription-logins)):
+
+```bash
+claude setup-token | uv run hangar cred add claude-max --harness claude-code --kind oauth_token
+uv run hangar cred add codex-chatgpt --harness codex --kind auth_file --file ~/.codex/auth.json
+```
+
+Codex subscription logins are leased to one sandbox at a time because their refresh tokens rotate. API keys aren't leased.
 
 ### 2. Connect your client
 
@@ -146,7 +153,7 @@ working inside sandboxes.
 
 In your connected MCP client, ask:
 
-> Use Hangar to create a claude-python sandbox for https://github.com/YOUR-USER/YOUR-REPO.git. Use the claude-max credential and a new work branch. Run Claude Code to explain the project structure and how to run its tests. Report the sandbox name and findings.
+> Use Hangar to create a claude-python sandbox for https://github.com/YOUR-USER/YOUR-REPO.git. Use the claude-api credential and a new work branch. Run Claude Code to explain the project structure and how to run its tests. Report the sandbox name and findings.
 
 Replace the repository URL with your own. Start with a public repo, or add a Git credential for private repository access.
 
@@ -157,7 +164,7 @@ uv run hangar sb create claude-python \
   --name first-task \
   --repo https://github.com/YOUR-USER/YOUR-REPO.git \
   --work-branch hangar/first-task \
-  --cred claude-max
+  --cred claude-api
 
 uv run hangar sb agent first-task \
   "Explain the project structure and how to run its tests."
@@ -169,13 +176,13 @@ Open the sandbox in the dashboard to follow the work in its live terminal. When 
 uv run hangar sb rm first-task
 ```
 
-For Codex, use `codex-node` and `--cred codex-chatgpt` instead.
+For Codex, use `codex-node` and `--cred codex-api` instead.
 
 ### Try parallel attempts
 
 Once a single task works, ask your MCP client:
 
-> Create three claude-python sandboxes for my repo, each on its own work branch, using claude-max. Ask each agent to fix the same flaky test, run the project's tests, and report the changes and results. Let me review the attempts before removing the sandboxes.
+> Create three claude-python sandboxes for my repo, each on its own work branch, using claude-api. Ask each agent to fix the same flaky test, run the project's tests, and report the changes and results. Let me review the attempts before removing the sandboxes.
 
 To start from work you have already prepared, use `snapshot_sandbox` and `fork_sandbox`. Snapshot behavior varies by provider; see [limitations](#deployment-and-limits).
 
@@ -190,7 +197,7 @@ name: my-service
 extends: python
 harnesses: [claude-code]
 default_harness: claude-code
-credentials: [claude-max]
+credentials: [claude-api]
 repo:
   url: https://github.com/YOUR-USER/YOUR-REPO.git
   branch: main

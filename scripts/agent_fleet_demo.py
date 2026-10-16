@@ -67,7 +67,7 @@ async def main(cmd, *args):
                         name=n,
                         repo=REPO,
                         work_branch=b,
-                        credentials=["claude-pro", "github-hangar"],
+                        credentials=["claude-api", "github-hangar"],
                         ttl_minutes=180,
                         labels={"run": "gke-e2e"},
                     )
