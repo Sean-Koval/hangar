@@ -404,8 +404,10 @@ async def test_a_grade_runs_from_the_pristine_copy_and_records_its_signals(fleet
     assert g["exit_code"] == 1 and g["data"] == {"rc": 1}, g  # the forging conftest didn't make it pass
     assert g["hidden_tests"]["failed"] == 1 and g["hidden_tests"]["total"] == 1
     graders = [x for x in fleet.list(include_stopped=True) if x.labels.get(experiments.GRADER_LABEL) == exp.id]
-    assert len(graders) == 1 and graders[0].info["sealed"] == {"locked": True}
-    assert fleet.gateway.grants(graders[0].id) == []
+    # the trial's grader, and (#127) the task's base check before it: both sealed and locked
+    assert len(graders) == 2 and all(x.info["sealed"] == {"locked": True} for x in graders)
+    assert all(fleet.gateway.grants(x.id) == [] for x in graders)
+    assert st.task_checks["t"]["invalid"] is False  # the hidden tests fail on the base, as they should
     # in_repo: the hidden tests in the repo (the old layout), so the forging conftest wins, and the grade says how
     # far to trust it
     spec.grader = spec.grader.model_copy(update={"files_mode": "in_repo", "command": f"{py} -m pytest -q -p "
