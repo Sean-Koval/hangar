@@ -112,7 +112,9 @@
         "harness_permission_checks": {"enum": ["on", "off"], "description": "off: approvals=auto runs the harness with its permission prompts off."},
         "uid_split": {"type": ["boolean", "null"]},
         "hardened": {"type": ["boolean", "null"], "description": "hangar owned the harness's settings for the turn (harden.py)."},
-        "isolation": {"type": ["object", "null"]}
+        "isolation": {"type": ["object", "null"]},
+        "sudo": {"type": "boolean", "description": "The environment gives the sandbox user passwordless sudo."},
+        "no_new_privs": {"type": ["boolean", "null"], "description": "The sandbox's processes can't gain privileges (sudo fails): GKE pods, and Docker job sandboxes under HANGAR_INTAKE_POSTURE=enforce."}
       }
     },
     "egress": {

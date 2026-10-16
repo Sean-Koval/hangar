@@ -44,7 +44,8 @@ FIELDS = ("verify", "environment", "harness", "model", "budget", "job_budget", "
           "land", "approvers", "merge_method", "risk_paths",  # --- landing: the last four (landing.py)
           "require_stale_dismissal",  # --- trust
           "verify_reports", "rerun_flaky",  # --- testresults
-          "heavy", "profile", "max_profile")  # --- heavy
+          "heavy", "profile", "max_profile",  # --- heavy
+          "allow_heavy_for_intake")  # --- #124
 _LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")  # a GitHub login
 
 
@@ -102,6 +103,9 @@ class RepoPolicy(BaseModel):
     heavy: HeavyMode | None = None
     profile: Literal["standard", "large", "xlarge"] | None = None
     max_profile: Literal["standard", "large", "xlarge"] | None = None
+    # --- #124: intake-triggered jobs (posture.py) may run Docker on the heavy tier for this repo (privileged in the
+    # sandbox's VM); unset: they are refused under HANGAR_INTAKE_POSTURE=enforce
+    allow_heavy_for_intake: bool | None = None
     updated_at: float = Field(default_factory=now)
     updated_by: str | None = None
 
@@ -297,6 +301,7 @@ class PolicyUpdate(BaseModel):
     heavy: HeavyMode | None = None  # --- heavy
     profile: Literal["standard", "large", "xlarge"] | None = None
     max_profile: Literal["standard", "large", "xlarge"] | None = None
+    allow_heavy_for_intake: bool | None = None  # --- #124
 
     @field_validator("heavy", mode="before")
     @classmethod

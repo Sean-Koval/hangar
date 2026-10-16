@@ -289,7 +289,9 @@ class EnvSpec(BaseModel):
     heavy: bool = False
     # --- heavy: a named size instead of `resources` (models.PROFILES); large and xlarge run on the heavy tier
     profile: Literal["standard", "large", "xlarge"] | None = None
-    sudo: bool = True
+    # --- #124: no passwordless sudo for the sandbox user unless asked (heavy needs it). Off by default: with sudo the
+    # agent is root whenever it likes, which voids the uid split and hangar-owned files (isolation.py, harden.py).
+    sudo: bool = False
     # --- workstream F: git gateway. direct: git credentials are written into the sandbox (the old way).
     # gateway: the sandbox gets a grant for its own branch and pushes through hangar's git gateway; no GitHub
     # token enters it. Unset: direct, except jobs and sessions use the gateway when HANGAR_GATEWAY_URL is set.
@@ -383,7 +385,9 @@ class EnvSpec(BaseModel):
         elif self.heavy and self.tier is not None:
             raise ValueError(f"heavy is its own tier: drop `tier: {self.tier}`, or use `tier: heavy`")
         if self.heavy and not self.sudo:
-            raise ValueError("heavy needs sudo: true (dockerd runs as root inside the sandbox's VM)")
+            if "sudo" in self.model_fields_set:  # --- #124: said false; unset, heavy implies it
+                raise ValueError("heavy needs sudo: true (dockerd runs as root inside the sandbox's VM)")
+            self.sudo = True
         if self.profile is not None:
             self.resources = PROFILES[self.profile].model_copy()
         return self

@@ -209,7 +209,7 @@ async def test_the_agent_cant_reach_the_driver_on_docker(tmp_path, monkeypatch):
     spec = ("base: mirror.gcr.io/library/ubuntu:24.04\nharnesses: [live-claude]\nharness_mode: bake\n"
             "resources: {cpus: 1, memory_gb: 1}\n")
     (envs / "isosplit.yaml").write_text("name: isosplit\nsudo: false\n" + spec)
-    (envs / "isosudo.yaml").write_text("name: isosudo\n" + spec)
+    (envs / "isosudo.yaml").write_text("name: isosudo\nsudo: true\n" + spec)  # --- #124: no longer the default
     envd_dir = Path(os.environ.get("HANGAR_ENVD_DIR") or ROOT / "envd" / "dist")
     s = Settings(data_dir=tmp_path / "data", env_dirs=[envs, ROOT / "envs"], reaper_interval_seconds=3600,
                  envd_dir=envd_dir, session_poll_seconds=0.2,
@@ -357,13 +357,16 @@ async def test_the_setup_stays_single_user_where_the_agent_could_get_back_in(tmp
     from hangar.app import Hangar
     from hangar.config import Settings
 
-    s = Settings(data_dir=tmp_path, env_dirs=[ROOT / "envs"], reaper_interval_seconds=3600,
+    envs = tmp_path / "envs"
+    envs.mkdir()
+    (envs / "minsudo.yaml").write_text("name: minsudo\nextends: minimal\nsudo: true\n")  # --- #124: opt in
+    s = Settings(data_dir=tmp_path, env_dirs=[envs, ROOT / "envs"], reaper_interval_seconds=3600,
                  extra_ca_bundle=os.environ.get("HANGAR_EXTRA_CA_BUNDLE") or None)
     s.snapshot_dir.mkdir(parents=True, exist_ok=True)
     fleet = Hangar(s).fleet
     await fleet.start()
     try:
-        sb = await fleet.create("minimal", name="e2e-iso-tty", labels={"e2e-iso": "1"}, actor="test")  # sudo: true
+        sb = await fleet.create("minsudo", name="e2e-iso-tty", labels={"e2e-iso": "1"}, actor="test")
         sb, prov = fleet._running(sb.id)
 
         async def root(cmd: str) -> None:
@@ -388,6 +391,45 @@ async def test_the_setup_stays_single_user_where_the_agent_could_get_back_in(tmp
         del sb.info["isolation"]
         assert await isolation.ensure(fleet, prov, sb) is False
         assert "/usr/local/bin" in sb.info["isolation"]["why"], sb.info["isolation"]
+    finally:
+        await fleet.destroy_many(label="e2e-iso")
+        await fleet.stop()
+
+
+async def test_a_jobs_sandbox_on_docker_cant_sudo_even_where_the_image_has_it(tmp_path):
+    """--- #124: sudo is off by default (`sudo -n true` fails, and the uid split is effective on a default
+    environment); a job's sandbox under HANGAR_INTAKE_POSTURE=enforce runs with no-new-privileges, so sudo fails even
+    in an environment with `sudo: true`; with the posture off, a person's sandbox there still has it."""
+    from hangar import isolation
+    from hangar.app import Hangar
+    from hangar.config import Settings
+
+    envs = tmp_path / "envs"
+    envs.mkdir()
+    (envs / "minsudo.yaml").write_text("name: minsudo\nextends: minimal\nsudo: true\n")
+    s = Settings(data_dir=tmp_path, env_dirs=[envs, ROOT / "envs"], reaper_interval_seconds=3600,
+                 intake_posture="enforce", extra_ca_bundle=os.environ.get("HANGAR_EXTRA_CA_BUNDLE") or None)
+    s.snapshot_dir.mkdir(parents=True, exist_ok=True)
+    fleet = Hangar(s).fleet
+    await fleet.start()
+    try:
+        plain = await fleet.create("minimal", name="e2e-iso-nosudo", labels={"e2e-iso": "1"}, actor="test")
+        r = await fleet.exec(plain.id, "sudo -n true && echo root || echo refused")
+        assert r.stdout.strip().endswith("refused"), r
+        plain, prov = fleet._running(plain.id)
+        assert await isolation.ensure(fleet, prov, plain) is True, plain.info["isolation"]  # no "gains nothing"
+
+        job = await fleet.create("minsudo", name="e2e-iso-job", labels={"e2e-iso": "1", "hangar.job": "job-e2e"},
+                                 actor="test")
+        attrs = prov.client.api.inspect_container(fleet.get(job.id).provider_ref)
+        assert "no-new-privileges" in (attrs["HostConfig"].get("SecurityOpt") or []), attrs["HostConfig"]
+        r = await fleet.exec(job.id, "sudo -n true 2>&1; echo exit=$?")
+        assert "exit=0" not in r.stdout and "no new privileges" in r.stdout, r
+        assert fleet.get(job.id).info["no_new_privs"] is True
+
+        person = await fleet.create("minsudo", name="e2e-iso-person", labels={"e2e-iso": "1"}, actor="test")
+        r = await fleet.exec(person.id, "sudo -n id -u")
+        assert r.stdout.strip() == "0", r  # a person's own sandbox in a sudo environment: as configured
     finally:
         await fleet.destroy_many(label="e2e-iso")
         await fleet.stop()

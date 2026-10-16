@@ -141,7 +141,7 @@ What the agent can't do then (`tests/test_e2e_isolation_docker.py` checks each f
 The answer is cached in `sb.info.isolation` with a version (`v`). A sandbox set up before the checks changed, for example before the `requiretty` check, is probed again at its next turn.
 
 Nothing is built into images, so existing environments get the split without a rebuild. Everywhere else turns run single-user, as before, and `sb.info.isolation.why` says why:
-- **environments with `sudo: true` (the default).** The agent is root whenever it likes, so a second user would protect nothing. Set `sudo: false` for the split.
+- **environments with `sudo: true`.** The agent is root whenever it likes, so a second user would protect nothing. `sudo` is `false` by default (#124), so default environments get the split. A job's Docker sandbox under `HANGAR_INTAKE_POSTURE=enforce` runs with `no-new-privileges`, so sudo fails there even where the image has it. The split execs as each user with `docker exec --user`, with no setuid binary, so it keeps working there.
 - **Kubernetes.** GKE Sandbox's policy runs each pod as one non-root user with no capabilities and no privilege escalation. No process in the pod can switch users, and a second container wouldn't share the agent's filesystem.
 - **E2B.** Its envd can run commands as another user, but this isn't wired up.
 - **`HANGAR_UID_SPLIT=off`.**

@@ -431,7 +431,9 @@ class JobService:
             raise JobError("a repo is required unless deliver='none' (none given and the environment has no repo)")
         # --- intake posture (#123): an intake job needs the gateway (enforce refuses it here, with a message the
         # front door relays) and gets an egress floor on its sandboxes; warn says so and runs it
-        stance = posture.assess(self.settings, spec, repo, source, untrusted_source, req.context, req.labels)
+        stance = posture.assess(self.settings, spec, repo, source, untrusted_source, req.context, req.labels,
+                                docker=self._runs_docker(spec, repo),  # --- #124: heavy needs the repo's say-so
+                                allow_heavy=bool(policy and policy.allow_heavy_for_intake))
         if stance is not None and stance.refused:
             raise JobError(stance.message())
         job_id = new_id("job")
@@ -542,6 +544,18 @@ class JobService:
         self._queue.put_nowait(job.id)
         return job
 
+    def _runs_docker(self, spec: Any, repo: str | None) -> bool:
+        """--- #124: whether a job's sandboxes would run Docker on the heavy tier (the environment, its repo's policy
+        or the repo's own file)."""
+        if spec.heavy:
+            return True
+        from hangar import heavy
+
+        try:
+            return heavy.decide(self.fleet, spec, repo).docker
+        except Exception:  # noqa: BLE001 - the create refuses what decide can't settle, with the reason
+            return False
+
     def _posture_follow_up(self, job: Job, context: list[ContextItem], requester: str) -> None:
         """--- intake posture (#123): a follow-up that brings untrusted context (an auto-fix round: CI output, review
         comments) makes a person's job an intake job from that turn on: the gateway check, then the egress floor on
@@ -552,7 +566,10 @@ class JobService:
             spec = self.fleet.catalog.get(job.environment)
         except KeyError:
             return
-        stance = posture.assess(self.settings, spec, job.repo, job.source, job.untrusted_source, context, job.labels)
+        policy = self.policies.get(job.repo)
+        stance = posture.assess(self.settings, spec, job.repo, job.source, job.untrusted_source, context, job.labels,
+                                docker=self._runs_docker(spec, job.repo),
+                                allow_heavy=bool(policy and policy.allow_heavy_for_intake))
         if stance is None:
             return
         if stance.refused:

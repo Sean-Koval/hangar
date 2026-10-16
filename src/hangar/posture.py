@@ -121,18 +121,21 @@ class Assessment:
 
     def message(self) -> str:
         fix = ("set HANGAR_GATEWAY_URL (and HANGAR_GATEWAY_UPSTREAMS for the repo's host), or "
-               "HANGAR_INTAKE_POSTURE=warn while you set it up")
+               "HANGAR_INTAKE_POSTURE=warn while you set it up") if any("gateway" in p for p in self.problems) else \
+            "the repo policy's allow_heavy_for_intake, or a non-heavy environment"
         return f"{'; '.join(self.problems)}. Fix: {fix} ({DOC})"
 
 
 def assess(settings: Settings, spec: EnvSpec, repo: str | None, source: str | None, untrusted_source: str | None,
-           context: Iterable[ContextItem] = (), labels: Mapping[str, str] | None = None) -> Assessment | None:
-    """None for a job that isn't an intake job, or with the posture off."""
+           context: Iterable[ContextItem] = (), labels: Mapping[str, str] | None = None,
+           docker: bool = False, allow_heavy: bool | None = None) -> Assessment | None:
+    """None for a job that isn't an intake job, or with the posture off. `docker`: its sandboxes run Docker on the
+    heavy tier; `allow_heavy`: the repo policy's `allow_heavy_for_intake` (#124)."""
     context = list(context)
     p = mode(settings)
     if p == "off" or not is_intake_req(source, untrusted_source, context, labels):
         return None
-    problems = [x for x in (gateway_problem(settings, repo),) if x]
+    problems = [x for x in (gateway_problem(settings, repo), heavy_problem(spec.name, docker, allow_heavy)) if x]
     if p == "warn" and (note := env_note(settings, spec)):
         problems.append(f"{note}, so the sandbox reaches the whole internet (enforce gives it at least allowlist)")
     return Assessment(p, why_intake(source, untrusted_source, context, labels), problems, floor=p == "enforce")
@@ -153,6 +156,29 @@ def lacks_floor(have: Mapping[str, str], want: Mapping[str, str]) -> bool:
 
     w = floor_of(want)
     return w is not None and _STRICTNESS[floor_of(have) or "open"] < _STRICTNESS[w]
+
+
+JOB_LABELS = ("hangar.job", "hangar.experiment.grader")  # a job's session (best-of-N attempts too), a grader
+
+
+def no_new_privs(settings: Settings, sb: Sandbox) -> bool:
+    """--- #124: whether a Docker sandbox runs with `no-new-privileges`, so sudo (or any setuid program) fails there as
+    it does on GKE, even in an environment whose image has sudo: a job's sandbox under `enforce`. With `warn` or `off`
+    jobs run as before. The uid split switches users with `docker exec --user` and setpriv's capabilities, no setuid
+    binary, so it keeps working. A heavy sandbox with Docker is left alone: dockerd runs as root (through sudo) inside
+    its own VM. A repo build's sandbox isn't a job's."""
+    if mode(settings) != "enforce" or (sb.info.get("heavy") or {}).get("docker"):
+        return False
+    return any(k in sb.labels for k in JOB_LABELS)
+
+
+def heavy_problem(spec_name: str, docker: bool, allowed: bool | None) -> str | None:
+    """--- #124: an intake job on a heavy environment (Docker, root inside the sandbox's VM) needs the repo policy's
+    `allow_heavy_for_intake: true`."""
+    if not docker or allowed:
+        return None
+    return (f"environment {spec_name} runs Docker (root inside the sandbox's VM), and intake-triggered jobs don't run "
+            "there unless the repo policy allows it (hangar repo set <repo> --allow-heavy-for-intake)")
 
 
 def inherit(labels: Mapping[str, str]) -> dict[str, str]:
@@ -249,7 +275,23 @@ def doctor_checks(h: Any) -> list[dict[str, Any]]:
         out.append(_check("intake posture: other providers", None, f"{', '.join(others)} can't keep a sandbox off the "
                           "internet: an intake job in an open environment fails to start there",
                           "run intake environments on docker or kubernetes, or give them egress.mode: allowlist"))
-    for name in intake_environments(s):
+    intake = intake_environments(s)
+    sudo = []  # --- #124: environments whose sandbox user has passwordless sudo
+    for name in fleet.catalog.names():
+        try:
+            if fleet.catalog.get(name).sudo:
+                sudo.append(name)
+        except Exception:  # noqa: BLE001 - an environment that doesn't load is reported elsewhere
+            continue
+    if sudo:
+        used = [n for n in sudo if n in intake]
+        nnp = "Docker job sandboxes run with no-new-privileges, so sudo fails there" if p == "enforce" else \
+            "sudo works in their sandboxes"
+        out.append(_check("environments with sudo", None, f"{', '.join(sudo)} set sudo: true"
+                          + (f"; intake jobs run in {', '.join(used)}" if used else "") + f" ({nnp})",
+                          "set sudo: false and install at build time (tools.apt, setup), or keep sudo: true only for "
+                          "people's own sessions (docs/environments.md)"))
+    for name in intake:
         try:
             spec = fleet.catalog.get(name)
         except KeyError:
