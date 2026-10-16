@@ -48,6 +48,8 @@ hangar token create support-tool --scope jobs --callback-secret support-hook-key
 
 ## 2. Submit a job
 
+A job runs on an **API key** for its harness: its person's own, else the team's ([team.md](team.md#whose-login-a-job-uses)). Subscription logins (Claude Pro or Max, a ChatGPT or Google sign-in) are for interactive sessions only; a job that would need one is refused at submit with the `hangar cred add … --kind api_key` command to run ([subscription logins](team.md#subscription-logins)). Cap spend at the vendor (a workspace or project limit on the key) and in hangar (job budgets, daily caps).
+
 ```bash
 curl -sS https://hangar.example.com/api/jobs \
   -H "Authorization: Bearer $HANGAR_JOB_TOKEN" -H 'Content-Type: application/json' -d @- <<'EOF'
@@ -454,6 +456,7 @@ variants: that is the sister tool's job. The details are in [spec 0014](specs/00
 | `HANGAR_GITHUB_TRUSTED`, `HANGAR_JOB_APPROVAL_TTL_HOURS`, `HANGAR_INBOUND_WEBHOOKS`, `HANGAR_SCHEDULE_POLL_SECONDS` | | See [triggers.md](triggers.md) |
 | `HANGAR_SLACK_SIGNING_SECRET_CREDENTIAL`, `HANGAR_SLACK_BOT_TOKEN_CREDENTIAL`, `HANGAR_SLACK_CHANNELS`, `HANGAR_SLACK_USERS` | | See [slack.md](slack.md) |
 | `HANGAR_JIRA`, `HANGAR_GITHUB_PROJECTS` | `{}` | See [intake.md](intake.md) |
+| `HANGAR_SUBSCRIPTION_LOGINS` | `interactive` | Jobs never use a subscription login (`oauth_token`, `auth_file`): they need an API key. `any` allows them, with a warning, and `hangar doctor` fails. See [team.md](team.md#subscription-logins) |
 
 ## Security notes
 

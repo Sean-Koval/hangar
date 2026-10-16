@@ -8,7 +8,7 @@ hangar person link alice github alice-gh                  # 2. her accounts else
 hangar person link alice slack T0123ABCD/U012AB3CD
 hangar cred add claude-team --team --harness claude-code --kind api_key --file team-key.txt   # 3. team credentials
 hangar cred add codex-team --team --harness codex --kind api_key --file openai-key.txt
-#   alice, on her machine: claude setup-token | hangar cred add claude-alice --harness claude-code --kind oauth_token
+#   alice, on her machine: hangar cred add claude-alice --harness claude-code --kind api_key --file key.txt
 hangar doctor                                             # 5. check
 ```
 
@@ -86,11 +86,13 @@ Environments may list team credentials by name as before; a sandbox that runs fo
 
 ## 4. Per-person logins
 
-Each person adds their own:
+Each person adds their own, an API key first: it serves their jobs, schedules and sessions alike.
 
 ```bash
-claude setup-token | hangar cred add claude-alice --harness claude-code --kind oauth_token
-hangar cred add codex-alice --harness codex --kind auth_file --file ~/.codex/auth.json
+hangar cred add claude-alice --harness claude-code --kind api_key --file anthropic-key.txt
+hangar cred add codex-alice --harness codex --kind api_key --file openai-key.txt
+# optional, for her own interactive sessions only (see below):
+claude setup-token | hangar cred add claude-alice-max --harness claude-code --kind oauth_token
 ```
 
 A member's credential is always their own. It goes only into their sandboxes, replacing the team's for that harness, and naming someone else's is refused. An admin stores one for someone with `--person alice`, or moves one with `hangar cred owner NAME alice`.
@@ -99,10 +101,13 @@ A member's credential is always their own. It goes only into their sandboxes, re
 
 | Work | Runs for | Login, by default |
 | --- | --- | --- |
-| MCP, REST, CLI, A2A | the caller's person | theirs, else the team's |
-| A schedule | its person (none for schedules from before people) | theirs, else the team's |
-| GitHub issue or comment, Slack, Jira, GitHub Projects | the linked person, else the team | theirs, else the team's |
+| MCP, REST, CLI, A2A jobs (`submit_job`) | the caller's person | their API key, else the team's |
+| A schedule | its person (none for schedules from before people) | their API key, else the team's |
+| GitHub issue or comment, Slack, Jira, GitHub Projects | the linked person, else the team | their API key, else the team's |
 | Inbound webhooks | the team | the team's |
+| A person's own `new_session`, `create_sandbox`, `run_agent` | the caller's person | theirs (a subscription login too, with a warning), else the team's |
+
+Every job's sandbox is automated work, whatever its front door: best-of-N attempts, follow-ups, autofix rounds, environment-setup jobs, Cloud Doctor jobs, experiment trials and graders, and replay and fork sandboxes of any of them. None gets a [subscription login](#subscription-logins).
 
 A repo's policy can say otherwise:
 
@@ -118,7 +123,27 @@ A job on a `team` repo still runs for its person: their caps, budget and lists. 
 
 A Codex ChatGPT login (`~/.codex/auth.json`) rotates its refresh token as it's used, so hangar leases it to one sandbox at a time and writes the new token back when the sandbox ends. The same holds for the other sign-in files (pi, Gemini). One such login serves one sandbox at once, across everyone who uses it.
 
-A sign-in file is always someone's own, so this is about one person's sandboxes. When a person has several logins of a kind, they form a pool and a sandbox takes a free one. When all are in use, a job or session **waits** and says so in its events: `waiting for a free login (queued): alice's codex logins codex-1, codex-2 (all in use)`. It doesn't name the sandboxes holding them, which may be other people's. It starts when one is released, or fails after `HANGAR_LOGIN_WAIT_SECONDS` (600) with the same words. A sandbox made directly (`create_sandbox`) fails at once instead. A job's sandbox keeps its login while it is kept for follow-ups (`keep_minutes`, 120 by default), so a login stays busy for up to that long after each job; `keep_minutes: 0` releases it when the turn ends (follow-ups still resume from the checkpoint). To run many Codex jobs in parallel, use an OpenAI API key, which has no lease.
+A sign-in file is always someone's own, and only interactive sessions and sandboxes use one ([subscription logins](#subscription-logins); jobs only with `HANGAR_SUBSCRIPTION_LOGINS=any`), so this is about one person's sessions. When a person has several logins of a kind, they form a pool and a sandbox takes a free one. When all are in use, a job or session **waits** and says so in its events: `waiting for a free login (queued): alice's codex logins codex-1, codex-2 (all in use)`. It doesn't name the sandboxes holding them, which may be other people's. It starts when one is released, or fails after `HANGAR_LOGIN_WAIT_SECONDS` (600) with the same words. A sandbox made directly (`create_sandbox`) fails at once instead. A job's sandbox keeps its login while it is kept for follow-ups (`keep_minutes`, 120 by default), so a login stays busy for up to that long after each job; `keep_minutes: 0` releases it when the turn ends (follow-ups still resume from the checkpoint). To run many Codex jobs in parallel, use an OpenAI API key, which has no lease.
+
+## Subscription logins
+
+A subscription login is a credential stored with `--kind oauth_token` or `--kind auth_file`: `claude setup-token` (Claude Pro or Max), a ChatGPT `~/.codex/auth.json`, a Google sign-in for Antigravity, pi's and Gemini's sign-in files. The vendors' terms reserve these for one person's own use, and don't allow automated or headless use ([what the vendors allow](#what-the-vendors-allow)); Anthropic has enforced this against third-party harnesses since April 2026. So hangar uses them only interactively:
+
+- **Jobs, schedules, webhooks, experiments and replays refuse them.** An automated resolution leaves subscription logins out of the pool. A person with only `claude setup-token` gets this, on the ticket or thread that started the job, before any sandbox starts:
+
+  ```
+  job needs an API-key credential for claude-code; subscription logins are interactive-only (docs/team.md#subscription-logins). add one: hangar cred add NAME --harness claude-code --kind api_key --file key.txt (your own; an admin adds --team for work no person owns)
+  ```
+
+  A job that names a subscription login in `credentials` is refused the same way. Their person's API key, or the team's, is used instead when there is one.
+- **Interactive sessions and sandboxes warn.** A person's own `new_session`, `create_sandbox` or `run_agent` still uses their subscription login, and says so: a warning event, `warnings` on `get_session` and the sandbox, and an entry in each turn's manifest `warnings[]`: `subscription login in a hangar sandbox: personal, interactive use only`.
+- **`HANGAR_SUBSCRIPTION_LOGINS`**: `interactive` (the default) as above; `any` lets jobs use them, with a warning on the job and sandbox, and `hangar doctor` fails the **subscription logins** check. Experiment trials and graders never get one, whatever it says.
+- **Spend caps.** Put a workspace spend limit on each API key at the vendor (Anthropic Console workspace limits, OpenAI project limits); hangar can't set those. Hangar's job budgets and daily caps ([jobs.md](jobs.md)) are the cap inside hangar. Use both.
+- **Codex Enterprise access tokens** ("for trusted scripts, schedulers, and private CI runners") are for automation: store one with `--kind api_key` and hangar treats it as an API key.
+- **Antigravity**: a Google sign-in is an `auth_file`, so fleets and jobs use a `GEMINI_API_KEY` credential (`--kind api_key`).
+- The one-at-a-time lease for sign-in files ([below](#codex-logins-one-sandbox-at-a-time)) still applies to interactive sessions.
+
+Credential resolution happens when a job's sandbox is claimed; a submit also runs the same resolution as a dry run, so an obviously missing API key fails the submit at once, even while the pools are down.
 
 ## What the vendors allow
 
@@ -145,6 +170,7 @@ Your logins then never reach a member's sandbox, nor a job no person owns. Make 
 
 - **personal credentials shared**: fails for any subscription login stored as a team credential, and says what the migration did.
 - **team credentials for jobs**: mapped repos (GitHub and Slack), inbound webhooks and schedules without a person whose environment's harness would get no login, and repos whose `credentials: person` policy makes unlinked senders' jobs fail.
+- **subscription logins**: warns for mapped repos, webhooks and schedules whose harness would find only subscription logins, and for people whose only logins for a harness are subscriptions (their jobs fail while their sessions work); fails under `HANGAR_SUBSCRIPTION_LOGINS=any`.
 - **unlinked senders**: GitHub, Slack, Jira and GitHub Projects accounts linked to nobody that started 3 or more jobs in the last 14 days, with the `hangar person link` command for each.
 
 ## REST

@@ -722,7 +722,7 @@ async def _grade(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t:
             (x.base_branch for x in spec.tasks if x.id == t.task), None),
             credentials=validation_credentials(fleet, env), provider=spec.provider,
             ttl_minutes=max(10, g.timeout_seconds // 60 + 15), person=job.person, actor=f"experiment:{job.id}",
-            labels={GRADER_LABEL: job.id, TRIAL_LABEL: t.key})
+            labels={GRADER_LABEL: job.id, TRIAL_LABEL: t.key}, purpose="automated")  # --- #125: and strict
         _, prov = fleet._running(sb.id)
         q = shlex.quote
         repo = sb.info.get("repo_path")

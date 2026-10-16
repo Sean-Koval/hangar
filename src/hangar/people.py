@@ -341,16 +341,19 @@ def claim_environment(store: Store, catalog: Any, data: dict[str, Any]) -> None:
 
 # ---------------------------------------------------------------------------- credentials
 def credentials_for(store: Store, names: list[str], person: str | None, harness: str | None, explicit: bool,
-                    is_agent: Any, mode: str = "person_then_team") -> list[str]:
+                    is_agent: Any, mode: str = "person_then_team", purpose: str = "interactive",
+                    settings: Any = None) -> list[str]:
     """The credentials a sandbox owned by `person` gets (--- teamcreds: teamcreds.resolve, which fleet.create
     calls through teamcreds.for_sandbox so it can wait for a leased login).
 
     `names` is what the caller passed (`explicit`) or the environment's list for the selected harness. Another
     person's credential is refused when named, and dropped from an environment's list. When the person has their
-    own credentials for the sandbox's agent harness, those replace the team's for it."""
+    own credentials for the sandbox's agent harness, those replace the team's for it. An `automated` purpose
+    (#125: jobs, schedules, webhooks, experiments) never gets a subscription login under the default policy."""
     from hangar.teamcreds import resolve
 
-    return resolve(store, names, person, harness, explicit, is_agent, mode).names
+    return resolve(store, names, person, harness, explicit, is_agent, mode, settings,
+                   purpose=purpose).names  # type: ignore[arg-type]
 
 
 def check_secrets(store: Store, secrets: dict[str, str], person: str | None) -> None:

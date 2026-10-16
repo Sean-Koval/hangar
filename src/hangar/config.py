@@ -458,6 +458,11 @@ class Settings(BaseSettings):
     # --- teamcreds: how long a job's or session's sandbox waits for a free login when every login it could use is
     # leased (a Codex ChatGPT login goes into one sandbox at a time); then it fails, saying which are busy
     login_wait_seconds: float = Field(600, ge=0)
+    # --- #125: where a subscription login (`--kind oauth_token` or `auth_file`: Claude Pro/Max, a ChatGPT or Google
+    # sign-in) may go. `interactive`: only a person's own sandboxes and sessions, with a warning; jobs, schedules,
+    # webhooks, experiments and replays need an API key. `any`: jobs may use them too, with a warning, and `hangar
+    # doctor` fails. Experiment trials and graders never get one either way (docs/team.md#subscription-logins).
+    subscription_logins: Literal["interactive", "any"] = "interactive"
     # Stopped and failed sandbox records older than this move to an archive table (retention.py): out of listings
     # and of every scan, still found by id. Archived ones are deleted after sandbox_archive_days (0 = kept).
     sandbox_retention_days: float = 7

@@ -847,7 +847,7 @@ async def _run_checks(jobs: JobService, job: Job, st: State, s: Job, att: Attemp
                                         branch=s.branch, credentials=creds, provider=job.provider,
                                         labels={envbuilds.VALIDATE_LABEL: nonce, PARENT_LABEL: job.id},
                                         ttl_minutes=jobs.settings.env_setup_validate_minutes + 15,
-                                        actor=f"hangar:env-setup:{job.id}")
+                                        actor=f"hangar:env-setup:{job.id}", purpose="automated")  # --- #125
                 break
             except PoweredDown as e:
                 jobs._event(job, f"validation waits: {e}")
