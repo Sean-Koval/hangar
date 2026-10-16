@@ -215,3 +215,91 @@ def test_warm_pool_hours():
 
     with pytest.raises(ValueError):
         EnvSpec(name="z", warm_pool=1, warm_pool_hours="weekdays 9-5")
+
+
+# --- #132: how `extends` merges
+def _cat(tmp_path, **specs):
+    import yaml
+
+    for name, data in specs.items():
+        (tmp_path / f"{name}.yaml").write_text(yaml.safe_dump({"name": name, **data}))
+    for n in ("a", "b", "c"):
+        (tmp_path / "skills" / n).mkdir(parents=True, exist_ok=True)
+        (tmp_path / "skills" / n / "SKILL.md").write_text(f"Use {n}.")
+    return EnvCatalog([tmp_path])
+
+
+PARENT = {"harnesses": ["claude-code"], "skills": [{"path": "skills/a"}, {"path": "skills/b"}],
+          "tools": {"apt": ["jq"], "mise": {"python": "3.12", "node": "22"}},
+          "dependencies": {"pip": ["ruff"], "npm": ["pnpm"]}, "env": {"A": "1", "B": "2"},
+          "credentials": ["x"], "secrets": {"TOKEN": "tok"}}
+
+
+def test_a_child_skills_list_replaces_the_parents(tmp_path):
+    cat = _cat(tmp_path, parent=PARENT, child={"extends": "parent", "skills": [{"path": "skills/a"}]})
+    assert [s.path for s in cat.get("child").skills] == ["skills/a"]
+
+
+def test_skills_remove_drops_inherited_skills_by_name(tmp_path):
+    cat = _cat(tmp_path, parent=PARENT, child={"extends": "parent", "skills_remove": ["b"]},
+               grandchild={"extends": "child"})
+    assert [s.path for s in cat.get("child").skills] == ["skills/a"]
+    assert [s.path for s in cat.get("grandchild").skills] == ["skills/a"]  # removed once; not re-applied
+    assert "skills_remove" not in cat.get("child").model_dump()
+
+
+def test_skills_remove_naming_an_unknown_skill_lists_the_known_ones(tmp_path):
+    cat = _cat(tmp_path, parent=PARENT, child={"extends": "parent", "skills_remove": ["nope"]})
+    with pytest.raises(ValueError, match=r"skills_remove names nope.*known: a, b"):
+        cat.get("child")
+
+
+def test_build_inputs_union_and_other_lists_replace(tmp_path):
+    cat = _cat(tmp_path, parent=PARENT, child={
+        "extends": "parent", "tools": {"apt": ["ripgrep"]}, "dependencies": {"pip": ["pytest"], "npm": ["tsx"]},
+        "credentials": ["y"]})
+    c = cat.get("child")
+    assert c.tools.apt == ["jq", "ripgrep"]  # union: installing more never changes the agent's instructions
+    assert c.dependencies.pip == ["ruff", "pytest"] and c.dependencies.npm == ["pnpm", "tsx"]
+    assert c.credentials == ["y"] and c.harnesses == ["claude-code"]  # replaced; unset: inherited
+    assert [s.path for s in c.skills] == ["skills/a", "skills/b"]  # unset: inherited
+
+
+def test_maps_merge_by_key_and_null_deletes_one(tmp_path):
+    cat = _cat(tmp_path, parent=PARENT, child={
+        "extends": "parent", "env": {"B": None, "C": "3"}, "tools": {"mise": {"node": None, "go": "1.24"}},
+        "secrets": {"TOKEN": None}}, orphan={"env": {"X": None, "Y": "1"}})
+    c = cat.get("child")
+    assert c.env == {"A": "1", "C": "3"}
+    assert c.tools.mise == {"python": "3.12", "go": "1.24"} and c.secrets == {}
+    assert cat.get("orphan").env == {"Y": "1"}
+
+
+def test_shipped_envs_resolve_the_same_under_the_new_rules():
+    """The migration dry-run: no shipped environment's effective skill set (or anything else) changes."""
+    from hangar.envspec import merge_changes
+
+    assert merge_changes(EnvCatalog([Path(__file__).parent.parent / "envs"])) == {}
+
+
+def test_the_migration_dry_run_reports_lost_skills_and_lists_that_differ(tmp_path):
+    from hangar.envspec import merge_changes
+
+    cat = _cat(tmp_path, parent={**PARENT, "ports": [{"port": 3000}]}, child={
+        "extends": "parent", "skills": [{"path": "skills/c"}], "env": {"C": "3"}, "agent_config": {"files": {}}})
+    (tmp_path / "saved").mkdir()
+    changes = merge_changes(cat)
+    assert set(changes) == {"child"}
+    assert "skills lost: a, b" in changes["child"]
+    assert not any(line.startswith("env") for line in changes["child"])  # maps merged before too
+
+
+def test_the_migration_dry_run_reads_saved_environments(tmp_path):
+    from hangar.envspec import merge_changes
+
+    shipped, saved = tmp_path / "shipped", tmp_path / "saved"
+    shipped.mkdir()
+    _cat(shipped, parent=PARENT)
+    cat = EnvCatalog([shipped], save_dir=saved)
+    cat.add({"name": "mine", "extends": "parent", "skills": [{"name": "b", "path": "skills/b"}]})
+    assert merge_changes(EnvCatalog([shipped], save_dir=saved)) == {"mine": ["skills lost: a"]}

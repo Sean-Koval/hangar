@@ -138,7 +138,7 @@ Every tool accepts a sandbox id or name. Relative paths resolve against the sand
 
 ## Environment specs
 
-Specs are YAML files in `envs/`. They can `extend` each other; lists and maps merge, except `harnesses` and `credentials`, which replace the parent's. The full design is [spec 0006](specs/0006-environments-and-harness-packs.md). A repo can describe its own steps in a committed `.hangar/environment.yaml` (`install`, `start`, `terminals`, `verify`): hangar builds it ahead of time and agents start with dependencies installed and dev servers supervised ([environments.md](environments.md)).
+Specs are YAML files in `envs/`. They can `extend` each other: maps merge by key (`null` deletes one), lists replace the parent's (`skills`, `harnesses`, `credentials`, ...) except the additive build inputs `tools.apt` and `dependencies.pip`/`npm`, which union, and `skills_remove: [name]` drops an inherited skill ([how `extends` merges](environments.md#how-extends-merges)). The full design is [spec 0006](specs/0006-environments-and-harness-packs.md). A repo can describe its own steps in a committed `.hangar/environment.yaml` (`install`, `start`, `terminals`, `verify`): hangar builds it ahead of time and agents start with dependencies installed and dev servers supervised ([environments.md](environments.md)).
 
 ```yaml
 name: my-service

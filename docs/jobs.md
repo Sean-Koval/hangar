@@ -406,7 +406,8 @@ tasks:
      repo: https://github.com/Sean-Koval/hangar.git, verify: "uv run pytest -q tests/test_fleet.py"}
 variants:
   control: {}
-  no-skills: {skills: []}
+  no-skills: {skills: []}                 # the whole set, as an environment's `skills` under `extends`
+  no-conventions: {skills_remove: [repo-conventions]}   # the environment's, minus one
   codex: {harness: codex, model: balanced}
 trials: 3
 trial_job_budget: {max_cost_usd: 3}

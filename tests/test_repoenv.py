@@ -215,3 +215,12 @@ def test_read_of_an_invalid_config_reports_it(checkout):
     _git(checkout, "commit", "-qm", "c")
     r = _read(checkout)
     assert r.present and r.config is None and "decided in hangar" in r.error
+
+
+def test_the_repo_file_follows_the_extends_merge_table():
+    """#132: each list field the repo's file may set replaces under `extends` too, so both merge alike."""
+    from hangar.envspec import LIST_MERGE
+
+    lists = [f for f in repoenv.RUNTIME_FIELDS if f in ("terminals", "ports")]
+    assert lists and all(LIST_MERGE[f] == "replace" for f in lists)
+    assert not any(LIST_MERGE.get(f) == "union" for f in repoenv.RUNTIME_FIELDS)

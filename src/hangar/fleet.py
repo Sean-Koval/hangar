@@ -316,7 +316,9 @@ class Fleet:
 
     def clone_environment(self, source: str, name: str, overrides: dict[str, Any] | None = None,
                           actor: str = "system") -> EnvSpec:
-        """New environment that `extends` an existing one, with optional overrides (lists merge, maps merge)."""
+        """New environment that `extends` an existing one, with optional overrides, merged as `extends` merges
+        (envspec.LIST_MERGE): maps merge by key (`null` deletes one), lists replace the source's except the additive
+        build inputs (`tools.apt`, `dependencies.pip`/`npm`), which union; `skills_remove` drops inherited skills."""
         self.catalog.get(source)
         if name in self.catalog.names():
             raise FleetError(f"environment '{name}' already exists")
