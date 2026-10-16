@@ -122,6 +122,7 @@ class SessionOut(_Out):
     turn: dict[str, Any] | None = None  # when it ran as a task: the turn, as wait_for_turn returns it
     cursor: str | None = None  # --- durable: in a listing, where the next page starts after this one
     pending_approvals: list[dict[str, Any]] = []  # workstream steer: answer with answer_approval
+    warnings: list[str] = []  # --- #125: e.g. a subscription login in its sandbox (personal, interactive use only)
 
 
 class ForkOut(_Out):

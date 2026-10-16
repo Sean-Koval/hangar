@@ -512,6 +512,12 @@ def cred_add(
 ):
     """Store a credential. Examples:
 
+      hangar cred add claude-api --harness claude-code --kind api_key --file anthropic-key.txt
+
+      hangar cred add codex-api --harness codex --kind api_key --file openai-key.txt
+
+      Subscription logins, for your own interactive sessions only (jobs refuse them; docs/team.md):
+
       claude setup-token | hangar cred add claude-max --harness claude-code --kind oauth_token
 
       hangar cred add codex-chatgpt --harness codex --kind auth_file --file ~/.codex/auth.json

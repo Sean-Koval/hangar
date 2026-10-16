@@ -294,7 +294,10 @@ def build(fleet: Fleet, spec: EnvSpec, harness: str | None, *, s: Session | None
         "policy": policy,
         "probe": {"ok": probe is not None and not probe.get("error"), "error": (probe or {}).get("error")}
         if turn is not None else None,
-        "warnings": list(turn.warnings) if turn is not None else [],
+        # --- #125: a subscription login in the sandbox (teamcreds), with the turn's own
+        "warnings": list(dict.fromkeys([*(turn.warnings if turn is not None else []),
+                                        *(info.get("credential_warnings") or []),
+                                        *(s.warnings if s is not None else [])])),
     }
     if s is not None:
         m["repo"] = {"url": _url(s.repo) if s.repo and "://" in s.repo else s.repo, "base_branch": s.base_branch,
