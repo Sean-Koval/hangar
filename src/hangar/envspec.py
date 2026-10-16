@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import re
 import shlex
 import tarfile
@@ -450,19 +451,73 @@ def _contained_path(root: Path, rel: str) -> Path:
 
 
 # --------------------------------------------------------------------------- loading
-def _deep_merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
+# How `extends` merges (docs/environments.md "How `extends` merges"). Maps merge by key, a child's `null` deleting
+# a key (MAP_FIELDS); scalars replace; lists follow LIST_MERGE, matched by dotted path as the merge recurses, and
+# anything not listed replaces. A child's list is the whole list: it can drop what its parent had. Build inputs that
+# only install more (apt packages, pip and npm tools) union instead: installing more never changes what the agent is
+# told. `skills_remove: [name, ...]` then drops inherited skills by name without restating the list.
+LIST_MERGE: dict[str, str] = {
+    "skills": "replace", "harnesses": "replace", "credentials": "replace", "terminals": "replace",
+    "ports": "replace",
+    # additive build inputs (installing more never changes the agent's instructions)
+    "tools.apt": "union", "dependencies.pip": "union", "dependencies.npm": "union",
+    # egress hosts add up along a chain, as they always have (tests/test_egress.py); `presets` replaces ([]: none)
+    "egress.allow": "union",
+}  # anything else: replace
+MAP_FIELDS = frozenset({"mcp", "secrets", "env", "files", "agent_config.files", "services", "tools.mise",
+                        "build_secrets"})
+
+
+def _deep_merge(base: dict[str, Any], over: dict[str, Any], path: str = "") -> dict[str, Any]:
+    out = dict(base)
+    for k, v in over.items():
+        key = f"{path}.{k}" if path else k
+        if v is None and path in MAP_FIELDS:
+            out.pop(k, None)  # a child deletes one of its parent's entries
+        elif isinstance(v, dict) and (isinstance(out.get(k), dict) or (key in MAP_FIELDS and out.get(k) is None)):
+            out[k] = _deep_merge(out.get(k) or {}, v, key)
+        elif isinstance(v, list) and isinstance(out.get(k), list) and LIST_MERGE.get(key) == "union":
+            out[k] = list(dict.fromkeys([*out[k], *v]))
+        else:
+            out[k] = v
+    return out
+
+
+def _legacy_merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
+    """The rules before #132 (every list but four appended), kept only for `hangar env migrate-merge`."""
     out = dict(base)
     for k, v in over.items():
         if isinstance(v, dict) and isinstance(out.get(k), dict):
-            out[k] = _deep_merge(out[k], v)
-        # `harnesses` and `credentials` replace the parent's: a child narrows which agents it allows. --- envbuilds:
-        # so do `terminals` and `ports` (a child redefining a terminal replaces the list, rather than repeating it).
+            out[k] = _legacy_merge(out[k], v)
         elif isinstance(v, list) and isinstance(out.get(k), list) and k not in ("credentials", "harnesses",
                                                                                   "terminals", "ports"):
             out[k] = list(dict.fromkeys([*out[k], *v])) if all(isinstance(x, str) for x in v) else [*out[k], *v]
         else:
             out[k] = v
     return out
+
+
+def skill_name(skill: Skill | dict[str, Any]) -> str | None:
+    """The name a skill is installed under: its `name`, else its directory's (as `render` names it)."""
+    d = skill.model_dump() if isinstance(skill, BaseModel) else skill
+    if d.get("name"):
+        return d["name"]
+    if d.get("path"):
+        return Path(d["path"]).name
+    if d.get("git"):
+        url, _, rest = d["git"].partition("#")
+        subdir = rest.partition("@")[0]
+        return Path(subdir).name if subdir else Path(url).stem
+    return None
+
+
+def remove_skills(skills: list[Any], remove: list[str], where: str) -> list[Any]:
+    """`skills` without the named ones. Naming a skill that isn't there is an error that lists the known names."""
+    known = [skill_name(s) for s in skills]
+    if missing := [n for n in remove if n not in known]:
+        raise ValueError(f"{where}: skills_remove names {', '.join(missing)}, which it doesn't have "
+                         f"(known: {', '.join(sorted(n for n in known if n)) or 'none'})")
+    return [s for s, n in zip(skills, known, strict=True) if n not in remove]
 
 
 class EnvCatalog:
@@ -507,19 +562,23 @@ class EnvCatalog:
     def raw(self, name: str) -> dict[str, Any]:
         return self._raw[name][0]
 
-    def get(self, name: str, _seen: tuple[str, ...] = ()) -> EnvSpec:
+    def get(self, name: str, _seen: tuple[str, ...] = (), _merge: Any = _deep_merge) -> EnvSpec:
         if name not in self._raw:
             raise KeyError(f"unknown environment '{name}'. Known: {', '.join(self.names()) or '(none)'}")
         if name in _seen:
             raise ValueError(f"circular extends: {' -> '.join((*_seen, name))}")
         data, src = self._raw[name]
         if parent := data.get("extends"):
-            parent_spec = self.get(parent, (*_seen, name))
+            parent_spec = self.get(parent, (*_seen, name), _merge=_merge)
             # --- #124: a parent's default sudo (false) isn't a "no" its children inherit (heavy implies sudo)
             skip = {"source_dir"} | ({"sudo"} if "sudo" not in parent_spec.model_fields_set else set())
-            merged = _deep_merge(parent_spec.model_dump(exclude=skip), data)
+            merged = _merge(parent_spec.model_dump(exclude=skip), data)
         else:
-            merged = data
+            merged = _merge({}, data)  # a `null` map entry with no parent to delete from is simply left out
+        if (remove := merged.pop("skills_remove", None)) is not None:  # never inherited: applied here, then gone
+            if not isinstance(remove, list) or not all(isinstance(x, str) for x in remove):
+                raise ValueError(f"environment {name}: skills_remove is a list of skill names")
+            merged["skills"] = remove_skills(merged.get("skills") or [], remove, f"environment {name}")
         spec = EnvSpec.model_validate(merged)
         spec.source_dir = src
         return spec
@@ -771,6 +830,54 @@ def image_tag(spec: EnvSpec, ctx: BuildContext, prefix: str, registry: str | Non
     if registry:
         repo = f"{registry.rstrip('/')}/{spec.name}"
     return f"{repo}:{ctx.digest}"
+
+
+def merge_changes(catalog: EnvCatalog) -> dict[str, list[str]]:
+    """What resolving each environment under the #132 rules changes against the rules before (`hangar env
+    migrate-merge --dry-run`): per environment, the skills it loses or gains and the other fields that differ.
+    Environments that resolve the same are left out; one that no longer resolves says why."""
+    out: dict[str, list[str]] = {}
+    for name in catalog.names():
+        try:
+            old = catalog.get(name, _merge=_legacy_merge)
+        except Exception:  # noqa: BLE001 - it didn't resolve before either: nothing changes
+            continue
+        try:
+            new = catalog.get(name)
+        except Exception as e:  # noqa: BLE001
+            out[name] = [f"no longer resolves: {e}"]
+            continue
+        lines: list[str] = []
+        before, after = [skill_name(x) for x in old.skills], [skill_name(x) for x in new.skills]
+        if lost := [n for n in before if n not in after]:
+            lines.append(f"skills lost: {', '.join(str(n) for n in lost)}")
+        if gained := [n for n in after if n not in before]:
+            lines.append(f"skills gained: {', '.join(str(n) for n in gained)}")
+        a, b = old.model_dump(mode="json", exclude={"skills"}), new.model_dump(mode="json", exclude={"skills"})
+        for path in _diff(a, b):
+            lines.append(f"{path}: {_short(_at(a, path))} -> {_short(_at(b, path))}")
+        if old.skills != new.skills and not lost and not gained:
+            lines.append("skills: same names, different entries")
+        if lines:
+            out[name] = lines
+    return out
+
+
+def _diff(a: Any, b: Any, path: str = "") -> list[str]:
+    if isinstance(a, dict) and isinstance(b, dict):
+        return [p for k in sorted(set(a) | set(b)) for p in _diff(a.get(k), b.get(k), f"{path}.{k}" if path else k)]
+    return [] if a == b else [path]
+
+
+def _at(d: Any, path: str) -> Any:
+    for part in path.split("."):
+        d = d.get(part) if isinstance(d, dict) else None
+    return d
+
+
+def _short(v: Any) -> str:
+    text = json.dumps(v, default=str)
+    return text if len(text) <= 120 else text[:117] + "..."
 
 
 __all__ = ["EnvSpec", "EnvCatalog", "BuildContext", "render", "image_tag", "repo_dirname", "HARNESSES"]

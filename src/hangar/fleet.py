@@ -317,7 +317,9 @@ class Fleet:
 
     def clone_environment(self, source: str, name: str, overrides: dict[str, Any] | None = None,
                           actor: str = "system") -> EnvSpec:
-        """New environment that `extends` an existing one, with optional overrides (lists merge, maps merge)."""
+        """New environment that `extends` an existing one, with optional overrides, merged as `extends` merges
+        (envspec.LIST_MERGE): maps merge by key (`null` deletes one), lists replace the source's except the additive
+        build inputs (`tools.apt`, `dependencies.pip`/`npm`), which union; `skills_remove` drops inherited skills."""
         self.catalog.get(source)
         if name in self.catalog.names():
             raise FleetError(f"environment '{name}' already exists")
@@ -766,8 +768,13 @@ class Fleet:
             build = None if _image or _skip_repo else await envbuilds.of(self).pick(spec, pname, hname, sb, stage)
             image = _image or (build.image if build else None) or \
                 await self._ensure_image(spec, pname, actor, hname, stage=stage)
-            if not _image:  # --- envbuilds: the services it starts with (Kubernetes sidecars, Docker containers)
+            # --- envbuilds: the services it starts with (Kubernetes sidecars, Docker containers); --- sealed (#126):
+            # none for a grader
+            if not _image and not delivery.sealed(sb):
                 envservices.prepare(self, spec, sb, build.build.config if build and build.build else None)
+            # --- sealed (#126): the image is the environment's (or its repo build's); from here on a grader's spec has
+            # egress none, no mcp:, computer:, services, secrets: or cloud, and no warm pool (delivery.seal)
+            spec = delivery.seal(spec, sb)
             sb.image = image
             pack_started, last_stage = time.monotonic(), 0.0
 
@@ -789,9 +796,9 @@ class Fleet:
             stage("starting the sandbox")
             with observe.span("sandbox.start", {"hangar.sandbox.id": sb.id, "hangar.provider": pname}):  # --- observe
                 # image may be a snapshot ref (forks); --- envbuilds: a build's own template on Kubernetes
-                await prov.create(sb, image, posture.provider_spec(  # --- intake posture: the floor's network
+                await prov.create(sb, image, delivery.provider_spec(posture.provider_spec(  # --- sealed; intake posture
                     self.settings, experiments.provider_spec(  # --- interfaces: not from a warm pool
-                        envbuilds.EnvBuilds.provider_spec(self._warm(spec), sb), sb), sb))
+                        envbuilds.EnvBuilds.provider_spec(self._warm(spec), sb), sb), sb), sb))
             self.store.put(sb)
             await self._wait_running(prov, sb, stage=stage)
             if _parent:
@@ -809,7 +816,9 @@ class Fleet:
                 await self._setup_repo(prov, sb, spec, work_branch, stage=stage)
                 await buildcache.of(self).restore(prov, sb, stage)  # --- caches: in the background; agent: "warming"
                 # --- envbuilds: the repo's config: the supervisor, the agent's instructions, a rebuild if behind
-                await envbuilds.of(self).after_setup(prov, sb, spec, hname, stage)
+                # --- sealed (#126): a grader starts nothing the repo declares
+                if not delivery.sealed(sb):
+                    await envbuilds.of(self).after_setup(prov, sb, spec, hname, stage)
                 # integration (#93 + #94): the doctor's status file carries what the repo's config just added
                 # (services, programs, setup failures, the build), not only what the claim knew
                 await envdoctor.write_status(prov, sb, f"/home/{self.settings.sandbox_user}",
@@ -823,7 +832,7 @@ class Fleet:
             # --- review(#114): nor from a trial's (it took nothing from the pool, and its spec mounts one pack)
             # --- integration(wave 4): `pick` always answers a Pick (truthy); no build image means the pool's image
             if self._warm(spec).warm_pool and pname in self.providers and _image is None \
-                    and not (build and build.image) and not experiments.selected_packs(sb) \
+                    and not (build and build.image) and not experiments.selected_packs(sb) and not delivery.sealed(sb) \
                     and posture.floor_of(sb.labels) is None:  # --- intake posture: it took nothing from the pool
                 asyncio.create_task(self._refill(self._warm(spec), pname, image))
             self.reconciler.disown(sb.id)  # --- reconciler
@@ -884,8 +893,11 @@ class Fleet:
         extra_env.update(await egress.attach(self, prov, sb, spec))  # --- egress: HTTPS_PROXY in a proxied env
         if not validating:  # --- review #102
             extra_env.update(await self.cloud.attach(prov, sb, spec))  # --- egress: cloud OIDC tokens, no stored keys
-        extra_env.update(ghapi.sandbox_env(self.settings, sb))  # --- egress2: the read-only GitHub API (gateway)
-        extra_env.update(await buildcache.of(self).attach(prov, sb, spec))  # --- caches: sccache, Bazel, turbo, deps
+        if delivery.sealed(sb):  # --- sealed (#126): no GitHub API and no build caches: nothing to carry data out on
+            self.gateway.issued.pop(sb.id, None)
+        else:
+            extra_env.update(ghapi.sandbox_env(self.settings, sb))  # --- egress2: the read-only GitHub API (gateway)
+            extra_env.update(await buildcache.of(self).attach(prov, sb, spec))  # --- caches: sccache, Bazel, turbo
         # workstream E: the `hangar-agent` helper (context exchange), installed per sandbox: no image rebuild
         await exchange.install_helper(prov, sb, f"/home/{self.settings.sandbox_user}")
         await supervisor.install(prov, sb, f"/home/{self.settings.sandbox_user}")  # --- envbuilds: `hangar-agent svc`
@@ -899,6 +911,8 @@ class Fleet:
             await self._merge_json(prov, sb, f"{home}/{rel}", patch)
         servers = {n: s for n, s in spec.mcp.items() if s.harnesses is None or h.name in s.harnesses}
         servers.update(envdoctor.builtin_mcp(spec, self.settings, home))  # --- computer: hangar-env, browser
+        if delivery.sealed(sb):  # --- sealed (#126): a grader runs no agent; no MCP server is configured in it
+            servers = {}
         resolved = {}
         for n, srv in servers.items():
             missing: set[str] = set()

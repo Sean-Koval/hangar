@@ -266,6 +266,11 @@ def build(fleet: Fleet, spec: EnvSpec, harness: str | None, *, s: Session | None
     from hangar.steer import policy as approval_policy
 
     settings = fleet.settings
+    env_spec = spec  # the environment's identity stays the environment's
+    if sb is not None:  # an experiment trial's variant: the skills and instructions it declares (#132)
+        from hangar import experiments
+
+        spec = experiments.effective_spec(fleet, sb, spec)
     h = HARNESSES.get(harness or "")
     info = sb.info if sb is not None else {}
     # model: the session's pinned id; else the environment's, resolved as a new sandbox would be
@@ -326,7 +331,7 @@ def build(fleet: Fleet, spec: EnvSpec, harness: str | None, *, s: Session | None
         egress.update({"floor": floor, "floor_reason": (info.get("egress") or {}).get("floor_reason") or "intake"})
     build_info = info.get("env_build")
     environment = {"name": spec.name, "image": sb.image if sb is not None else spec.image,
-                   "spec_digest": _spec_digest(spec), "provider": pname, "tier": spec.tier,
+                   "spec_digest": _spec_digest(env_spec), "provider": pname, "tier": spec.tier,
                    "runtime_class": spec.runtime_class if spec.runtime_class is not None else settings.k8s_runtime_class
                    if pname == "kubernetes" else None,
                    "build": {k: build_info.get(k) for k in ("version", "id", "commit", "config_digest", "fallback",

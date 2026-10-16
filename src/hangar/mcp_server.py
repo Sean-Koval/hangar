@@ -229,9 +229,9 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
     def create_environment(spec: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
         """Save a new or updated environment. dry_run=True only checks it: resolves `extends`, validates,
         lists warnings (missing credentials, deprecated harnesses) and returns the Dockerfile. To clone one,
-        extend it: {"name": "api-codex", "extends": "api", "harnesses": ["codex"]} (lists and maps merge with the
-        source's; scalars, `harnesses` and `credentials` replace). Defaults to extend: bare, python, node, go,
-        polyglot. Then build_environment.
+        extend it: {"name": "api-codex", "extends": "api", "harnesses": ["codex"]} (maps merge, lists replace
+        except tools.apt and dependencies.pip/npm; skills_remove drops a skill). Defaults to extend: bare, python,
+        node, go, polyglot. Then build_environment.
 
         Spec fields: name, description, extends, base | image (prebuilt), tools {apt, mise, script},
         harnesses [claude-code, codex, pi, antigravity, git], default_harness, harness_mode (auto|pack|bake),

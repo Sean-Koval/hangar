@@ -10,8 +10,10 @@ not an analysis.
 **Variants.** An environment plus an overlay: `harness` (optionally `harness@version`, which must be the locked one),
 `model` (a policy is resolved once, when the experiment starts, and every trial gets that concrete id), `approvals`
 (`auto` or `deny-risky`: nobody is there to answer `ask`), `skills` (the full set the agent gets: skills of the
-environment by name, or directories next to the environment's spec by path; `[]` for none) and `instructions` (replace
-the environment's global instructions) or `instructions_append`.
+environment by name, or directories next to the environment's spec by path; `[]` for none; the same replace
+semantics an environment's `skills` has under `extends`), `skills_remove` (names dropped from that set, else from the
+environment's) and `instructions` (replace the environment's global instructions) or `instructions_append`. The
+variant is the only overlay on an environment and gains no new fields: it shrinks to a harness lock reference (#135).
 
 **Isolation (0007 finding 3).** Each trial's sandbox mounts only its own harness's pack (`hangar.packs: selected`; on
 Kubernetes a template of its own, never a warm sandbox of the environment, which mounts them all), gets exactly the
@@ -30,11 +32,16 @@ queue in the fair job queue under the experiment's person (#89). The experiment'
 trials once its trials together have spent it; `parallel` caps how many run at once.
 
 **Grading.** `grader.command` runs outside the agent's sandbox: in a clean sandbox of the same environment, on the
-pinned base with the trial's patch applied, after the trial ended. It runs the trial's agent-written code, so its
-sandbox holds what a repo build's does: no credential, no `secrets:`, no cloud token, a fetch-only grant
-(delivery.builds_repo_code). The agent never had the grader's files, but the code it wrote runs beside the grader:
-a grade is only as trustworthy as the grader's own checks (that code can write $HANGAR_GRADE_OUT too). Its exit
-code, the end of its output and `$HANGAR_GRADE_OUT` (JSON) are stored with the trial.
+pinned base with the trial's patch applied, after the trial ended. It runs the trial's agent-written code beside the
+hidden tests, so its sandbox is sealed (delivery.sealed, --- sealed #126): no credential, no `secrets:`, no cloud
+token, a fetch-only grant, none of the environment's `mcp:`, `computer:` or services, and egress `none` with no host
+at all (`grader.network: mirror` adds hangar's read-only package mirror), so the code can't send the tests anywhere.
+The grader's files are written outside the repo (`files_mode: pristine`, the default; `in_repo` keeps the old
+behaviour, recorded as `trust: low`), and `hangar-grade pytest` runs them so that nothing the patch adds
+(`conftest.py`, pytest settings, `sitecustomize.py`, a plugin) loads first. Files the patch adds or changes that could
+hook a test run are listed in the grade (`tamper_signals`). The code still runs beside the grader, as the sandbox's
+user: it could write $HANGAR_GRADE_OUT too (#127 takes that file from it). Its exit code, the end of its output,
+the hidden tests' junit counts and `$HANGAR_GRADE_OUT` (JSON) are stored with the trial.
 """
 
 from __future__ import annotations
@@ -77,6 +84,12 @@ NAME = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$"
 MAX_SKILL_BYTES = 1024 * 1024  # a variant's skills, all files together
 MAX_GRADER_FILES = 1024 * 1024
 GRADE_OUT = "/tmp/hangar-grade/out.json"
+GRADE_WORK = "/tmp/hangar-grade"
+# --- sealed (#126): where a grader's hidden tests and `hangar-grade` go, outside the repo: root-owned on Docker (whose
+# exec picks the uid; hangar's own user's with the uid split), else under /tmp (a provider whose sandbox runs as one
+# user can't keep them from it: the trial's code could change them, which the grade's trust says)
+GRADER_ROOT = "/var/lib/hangar-grader"
+GRADER_ROOT_SHARED = "/tmp/hangar-grader"
 TAIL = 4000
 
 
@@ -97,7 +110,11 @@ class SkillRef(BaseModel):
 
 
 class Variant(BaseModel):
-    """An environment plus an overlay. Unset fields are the experiment's (then the environment's)."""
+    """An environment plus an overlay. Unset fields are the experiment's (then the environment's).
+
+    The only overlay on an environment (spec 0014 §4). `skills` has the semantics an environment's `skills` has under
+    `extends` (#132): the whole set, `[]` for none; `skills_remove` drops named ones. It gains no new fields: once
+    harness locks exist (#133) a variant shrinks to `{harness: name@sha256, environment}` (#135)."""
 
     model_config = ConfigDict(extra="forbid")
     environment: str | None = None
@@ -105,6 +122,8 @@ class Variant(BaseModel):
     model: str | None = Field(None, max_length=200)  # an id or a policy (frontier, balanced)
     approvals: Literal["auto", "deny-risky"] | None = None
     skills: list[SkillRef] | None = Field(None, max_length=50)  # the whole set; None: the environment's
+    # drop these by name from the set above (else from the environment's), as an environment's own skills_remove
+    skills_remove: list[str] | None = Field(None, max_length=50)
     instructions: str | None = Field(None, max_length=64_000)  # replaces the environment's global instructions
     instructions_append: str | None = Field(None, max_length=64_000)
 
@@ -131,12 +150,17 @@ class Task(BaseModel):
 
 
 class Grader(BaseModel):
-    """A command run outside the agent's sandbox after each trial: in a clean sandbox, on the trial's patch."""
+    """A command run outside the agent's sandbox after each trial: in a clean, sealed sandbox, on the trial's
+    patch. `files` (the hidden tests) go to `$HANGAR_HIDDEN_TESTS`, outside the repo (`files_mode: pristine`), or
+    into the repo as before (`in_repo`, recorded as `trust: low`). `network`: `none` (nothing), or `mirror` (hangar's
+    read-only package mirror, when it is on, for a grader that installs packages)."""
 
     model_config = ConfigDict(extra="forbid")
     command: str = Field(min_length=1, max_length=4000)
     timeout_seconds: int = Field(900, ge=30, le=3600)
-    files: dict[str, str] = Field(default_factory=dict, max_length=64)  # repo-relative path -> content (hidden tests)
+    files: dict[str, str] = Field(default_factory=dict, max_length=64)  # relative path -> content (hidden tests)
+    files_mode: Literal["pristine", "in_repo"] = "pristine"
+    network: Literal["none", "mirror"] = "none"
 
     @field_validator("files")
     @classmethod
@@ -144,8 +168,8 @@ class Grader(BaseModel):
         if sum(len(x.encode()) for x in v.values()) > MAX_GRADER_FILES:
             raise ValueError("grader files are limited to 1 MB in all")
         for p in v:
-            if p.startswith("/") or ".." in Path(p).parts or "\0" in p or not p.strip():
-                raise ValueError(f"grader file '{p[:60]}' must be a path relative to the repo, without '..'")
+            if p.startswith("/") or any(x in ("..", ".", "") for x in p.split("/")) or "\0" in p or not p.strip():
+                raise ValueError(f"grader file '{p[:60]}' must be a relative path, without '..'")
         return v
 
 
@@ -407,16 +431,24 @@ async def _begin(jobs: JobService, job: Job, st: State, spec: ExperimentSpec) ->
 def _overlay(env: EnvSpec, v: Variant) -> dict[str, Any]:
     """What a variant's sandboxes get on top of the environment's image: skills (their files, read now, so the
     experiment keeps the version it started with) and instructions."""
-    from hangar.envspec import _contained_path
+    from hangar.envspec import _contained_path, remove_skills, skill_name
     from hangar.jobs import JobError
     from hangar.manifest import _dir_digest
 
     skills: list[dict[str, Any]] | None = None
-    if v.skills is not None:
+    known = {skill_name(s) for s in env.skills}
+    refs = v.skills
+    if v.skills_remove is not None:
+        base = refs if refs is not None else [SkillRef(name=n) for n in (skill_name(s) for s in env.skills) if n]
+        try:
+            refs = remove_skills([r.model_dump() for r in base], v.skills_remove, "variant")
+        except ValueError as e:
+            raise JobError(str(e)) from e
+        refs = [SkillRef.model_validate(r) for r in refs]
+    if refs is not None:
         skills = []
-        known = {s.name or (Path(s.path).name if s.path else None) for s in env.skills}
         total = 0
-        for ref in v.skills:
+        for ref in refs:
             if ref.name:
                 if ref.name not in known:
                     raise JobError(f"skill '{ref.name}' isn't one of environment {env.name}'s "
@@ -690,11 +722,122 @@ async def _cancel(jobs: JobService, job: Job, st: State, graders: dict[str, asyn
 
 
 # ====================================================================== grading
+# --- sealed (#126): `hangar-grade`, written into each grader's sandbox (outside the repo, where the trial's code can't
+# change it on Docker). The repo's directory joins sys.path only once pytest has started, after its plugins are
+# loaded, so a plugin the patch declares (a *.dist-info entry point) never loads; the hidden tests' own conftest.py is
+# registered then too (its fixtures and collection hooks work; an option it adds doesn't).
+GRADE_RUNNER = r'''import importlib.util, os, sys
+repo, tests, junit = sys.argv[1:4]
+import pytest
+
+
+class HangarGrade:
+    @pytest.hookimpl(tryfirst=True)
+    def pytest_sessionstart(self, session):
+        sys.path.insert(0, repo)
+        conftest = os.path.join(tests, "conftest.py")
+        if os.path.isfile(conftest):
+            spec = importlib.util.spec_from_file_location("hangar_hidden_conftest", conftest)
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = mod
+            spec.loader.exec_module(mod)
+            session.config.pluginmanager.register(mod, "hangar-hidden-conftest")
+
+
+raise SystemExit(pytest.main(["--noconftest", "-p", "no:cacheprovider", "-c", os.devnull, "--rootdir", tests,
+                              "-o", "addopts=", "--junitxml=" + junit, *sys.argv[4:], tests],
+                             plugins=[HangarGrade()]))
+'''
+GRADE_HELPER = r"""#!/bin/sh
+# hangar-grade: run an experiment's hidden tests from their pristine copy (written by hangar; docs/jobs.md#grading).
+#   hangar-grade pytest [PYTEST ARGS...]   the tests in $HANGAR_HIDDEN_TESTS against the code in $HANGAR_REPO
+# Nothing the repo carries loads first: no conftest.py (--noconftest), no pytest settings (-c /dev/null, addopts
+# cleared), no sitecustomize.py, usercustomize.py or user site (python -I), no plugin it declares, no cache, no
+# bytecode. Junit goes to $HANGAR_GRADE_JUNIT, which hangar reads back. Only Python (pytest) in this version.
+set -u
+case "${1:-}" in
+  pytest) shift ;;
+  *) echo "usage: hangar-grade pytest [pytest args...]" >&2; exit 2 ;;
+esac
+[ -d "${HANGAR_HIDDEN_TESTS:-}" ] || { echo "hangar-grade: \$HANGAR_HIDDEN_TESTS is not a directory" >&2; exit 2; }
+[ -d "${HANGAR_REPO:-}" ] || { echo "hangar-grade: \$HANGAR_REPO is not a directory" >&2; exit 2; }
+py=${HANGAR_GRADE_PYTHON:-}
+[ -n "$py" ] || py=$(command -v python3 || command -v python) || { echo "hangar-grade: no python" >&2; exit 2; }
+junit=${HANGAR_GRADE_JUNIT:-/tmp/hangar-grade/junit.xml}
+mkdir -p "$(dirname "$junit")" && rm -f "$junit"
+cd "$HANGAR_HIDDEN_TESTS" || exit 2
+unset PYTEST_ADDOPTS PYTEST_PLUGINS PYTHONSTARTUP PYTHONPATH PYTHONHOME PYTHONSAFEPATH
+export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
+exec "$py" -I -B -c "$(cat <<'HANGAR_PY'
+@RUNNER@HANGAR_PY
+)" "$HANGAR_REPO" "$HANGAR_HIDDEN_TESTS" "$junit" "$@"
+""".replace("@RUNNER@", GRADE_RUNNER)
+# Files that can hook a Python test run before (or around) the tests: by name, and config files by their section
+TAMPER_NAMES = {"conftest.py": "conftest", "sitecustomize.py": "sitecustomize", "usercustomize.py": "usercustomize",
+                "pytest.ini": "pytest-config", ".pytest.ini": "pytest-config", "pytest.toml": "pytest-config"}
+TAMPER_SECTIONS = {"tox.ini": re.compile(r"^\[(pytest|tool:pytest)\]", re.M),
+                   "setup.cfg": re.compile(r"^\[tool:pytest\]", re.M),
+                   "pyproject.toml": re.compile(r"^\[tool\.pytest(\.ini_options)?\]", re.M)}
+_DIFF_FILE = re.compile(r"^diff --git a/(.+?) b/(.+)$", re.M)
+
+
+def patch_files(patch: str) -> list[str]:
+    """The paths a patch adds or changes (not those it deletes), in order."""
+    out: list[str] = []
+    for block in re.split(r"(?m)^(?=diff --git )", patch):
+        m = _DIFF_FILE.match(block)
+        if not m or re.search(r"(?m)^deleted file mode ", block.split("\n@@", 1)[0]):
+            continue
+        path = m.group(2).strip().strip('"')
+        if path not in out:
+            out.append(path)
+    return out
+
+
+def tamper_candidates(patch: str) -> tuple[list[dict[str, str]], list[str]]:
+    """The patch's files that can hook a test run by their name alone, and the config files whose content decides
+    it (tox.ini, setup.cfg, pyproject.toml: only with a pytest section)."""
+    hits: list[dict[str, str]] = []
+    configs: list[str] = []
+    for path in patch_files(patch):
+        name = path.rsplit("/", 1)[-1]
+        if name in TAMPER_NAMES:
+            hits.append({"path": path, "kind": TAMPER_NAMES[name]})
+        elif name.endswith(".pth"):
+            hits.append({"path": path, "kind": "pth"})
+        elif name in TAMPER_SECTIONS:
+            configs.append(path)
+    return hits, configs
+
+
+def tamper_config(path: str, content: str) -> dict[str, str] | None:
+    pat = TAMPER_SECTIONS.get(path.rsplit("/", 1)[-1])
+    return {"path": path, "kind": "pytest-config"} if pat is not None and pat.search(content) else None
+
+
+async def _tamper_signals(prov: Any, sb: Any, repo: str, patch: str) -> list[dict[str, str]]:
+    """Signals, not refusals: the patch's added or changed files that can load before, or around, the tests."""
+    hits, configs = tamper_candidates(patch)
+    for path in configs:
+        raw = await prov.read_file(sb, f"{repo}/{path}", limit=256 * 1024)
+        if raw and (hit := tamper_config(path, raw[:256 * 1024].decode(errors="replace"))):
+            hits.append(hit)
+    return hits
+
+
+def grader_root(prov: Any) -> str:
+    """Where a grader's hidden tests and `hangar-grade` go. On Docker hangar writes them as root (its exec and
+    archive uploads pick the uid), so the sandbox's user reads them and can't change them; elsewhere the sandbox runs
+    as one user, and they go to /tmp."""
+    return GRADER_ROOT if getattr(prov, "name", "") == "docker" else GRADER_ROOT_SHARED
+
+
 async def _grade(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t: Trial) -> None:
-    """The experiment's grader on this trial's work, in a clean sandbox: the pinned base, the trial's patch, the
-    grader's own files. It runs agent-written code, so it holds nothing (GRADER_LABEL, delivery.builds_repo_code):
+    """The experiment's grader on this trial's work, in a clean, sealed sandbox: the pinned base, the trial's patch,
+    the grader's own files (outside the repo unless `files_mode: in_repo`). It runs agent-written code beside the
+    hidden tests, so it holds nothing and reaches nothing (GRADER_LABEL: delivery.builds_repo_code, delivery.sealed):
     the environment's git credentials only tell the gateway which one to fetch with."""
-    from hangar import exchange
+    from hangar import delivery, exchange
     from hangar.autoinstall import validation_credentials
 
     fleet = jobs.fleet
@@ -718,15 +861,21 @@ async def _grade(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t:
         tp = st.pins["tasks"][t.task]
         env_name = spec.variants[t.variant].environment or spec.environment
         env = fleet.catalog.get(env_name)
+        labels = {GRADER_LABEL: job.id, TRIAL_LABEL: t.key}
+        if g.network == "mirror":
+            labels[delivery.NETWORK_LABEL] = "mirror"
         sb = await fleet.create(env_name, repo=tp.get("repo"), branch=next(
             (x.base_branch for x in spec.tasks if x.id == t.task), None),
             credentials=validation_credentials(fleet, env), provider=spec.provider,
             ttl_minutes=max(10, g.timeout_seconds // 60 + 15), person=job.person, actor=f"experiment:{job.id}",
-            labels={GRADER_LABEL: job.id, TRIAL_LABEL: t.key}, purpose="automated")  # --- #125: and strict
+            labels=labels, purpose="automated")  # --- #125: and strict
         _, prov = fleet._running(sb.id)
+        sb = fleet.get(sb.id)
+        eg = sb.info.get("egress") or {}
+        grade["network"] = "mirror" if eg.get("mirrors") else "none"  # what the sandbox got (sealed: none)
         q = shlex.quote
         repo = sb.info.get("repo_path")
-        work = "/tmp/hangar-grade"
+        work = GRADE_WORK
         await fleet.exec(sb.id, f"mkdir -p {work}", actor=f"experiment:{job.id}", quiet=True)
         if repo and base:
             res = await fleet.exec(sb.id, f"(git cat-file -e {q(base)}^{{commit}} 2>/dev/null || git fetch -q origin "
@@ -741,15 +890,42 @@ async def _grade(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t:
             grade["applied"] = res.exit_code == 0
             if res.exit_code != 0:
                 grade["apply_error"] = jobs.broker.redact((res.stderr or res.stdout)[-1000:])
+            elif signals := await _tamper_signals(prov, sb, repo, text):  # --- sealed (#126)
+                grade["tamper_signals"] = signals
+        # --- sealed (#126): the base and the patch are in; from here the trial's code runs: no host at all (not even
+        # the setup's git host), and the sandbox's git grant (its one way to the gateway's upstream) goes
+        sb = delivery.lock_sealed(fleet, sb)
+        # the hidden tests outside the repo, beside `hangar-grade`; or in the repo (in_repo)
+        root = f"{grader_root(prov)}/{re.sub(r'[^A-Za-z0-9._-]', '_', t.key.replace('/', '__'))}"
+        grade["files_mode"] = g.files_mode
+        if g.files_mode == "in_repo":
+            hidden = repo or fleet.settings.workspace_dir
+        else:
+            hidden = f"{root}/tests"
+            await prov.write_file(sb, f"{root}/bin/hangar-grade", GRADE_HELPER.encode(), mode=0o755)
+            if not g.files:  # the directory exists even without files: a command can count on it
+                await prov.write_file(sb, f"{hidden}/.hangar-hidden-tests", b"", mode=0o644)
         for rel, content in g.files.items():
-            await prov.write_file(sb, f"{repo or fleet.settings.workspace_dir}/{rel}", content.encode(), mode=0o644)
+            await prov.write_file(sb, f"{hidden}/{rel}", content.encode(), mode=0o644)
+        junit = f"{work}/hidden-junit.xml"
         env_vars = {"HANGAR_GRADE_OUT": GRADE_OUT, "HANGAR_TRIAL": t.key, "HANGAR_TASK": t.task,
-                    "HANGAR_VARIANT": t.variant, "HANGAR_EXPERIMENT": job.id}
-        cmd = " ".join(f"{k}={q(v)}" for k, v in env_vars.items()) + f" timeout {g.timeout_seconds} bash -c " \
-            + q(g.command)
+                    "HANGAR_VARIANT": t.variant, "HANGAR_EXPERIMENT": job.id, "HANGAR_HIDDEN_TESTS": hidden,
+                    "HANGAR_REPO": repo or fleet.settings.workspace_dir, "HANGAR_GRADE_JUNIT": junit}
+        path = f"PATH={q(root + '/bin')}:\"$PATH\" " if g.files_mode == "pristine" else ""
+        cmd = path + " ".join(f"{k}={q(v)}" for k, v in env_vars.items()) + \
+            f" timeout {g.timeout_seconds} bash -c " + q(g.command)
+        # how far the grade can be trusted (#127 adds `isolated`): the hidden tests in the repo, where the patch can
+        # change them, are `low`; anything else is `best_effort` until the grade's output is hangar's own
+        grade["trust"] = "low" if g.files_mode == "in_repo" else "best_effort"
+        grade["runner"] = "hangar-grade" if g.files_mode == "pristine" and "hangar-grade" in g.command else "command"
         res = await fleet.exec(sb.id, cmd, cwd=repo, timeout=g.timeout_seconds + 30, actor=f"experiment:{job.id}")
         grade["exit_code"] = res.exit_code
         grade["tail"] = jobs.broker.redact(((res.stdout or "") + (res.stderr or ""))[-TAIL:])
+        if (hidden_tests := await _junit_counts(prov, sb, junit)) is not None:
+            grade["hidden_tests"] = hidden_tests
+        if res.exit_code == 124 and grade["network"] == "none":
+            grade.setdefault("notes", []).append("the grader timed out with no network: if it fetches a dependency, "
+                                                 "that isn't in the image (grader.network: mirror, or a repo build)")
         raw = await prov.read_file(sb, GRADE_OUT, limit=64_000)
         if raw:
             try:
@@ -769,6 +945,22 @@ async def _grade(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t:
                 await fleet.destroy(sb.id, actor=f"experiment:{job.id}")
         with contextlib.suppress(Exception):
             _save(jobs, job, st)
+
+
+async def _junit_counts(prov: Any, sb: Any, path: str) -> dict[str, Any] | None:
+    """The hidden tests' results from the junit `hangar-grade` wrote: counts per outcome."""
+    from hangar import testreports
+
+    raw = await prov.read_file(sb, path, limit=8 * 1024 * 1024)
+    if not raw:
+        return None
+    r = testreports.parse_junit(raw[:8 * 1024 * 1024], "hidden-junit.xml")
+    if r.error:
+        return {"error": r.error[:300]}
+    counts = {k: 0 for k in ("passed", "failed", "error", "skipped")}
+    for c in r.cases:
+        counts[c.outcome] += 1
+    return {**counts, "total": len(r.cases), "truncated": r.truncated}
 
 
 # ====================================================================== a trial's sandbox (fleet.create)
@@ -846,16 +1038,30 @@ async def apply_overlay(fleet: Fleet, prov: Any, sb: Sandbox, spec: EnvSpec, har
 
 
 def effective_spec(fleet: Fleet, sb: Sandbox, spec: EnvSpec) -> EnvSpec:
-    """The environment as a trial's variant sees it, for code that reads instructions from the spec rather than the
-    sandox (harden.py's hangar-owned settings for a turn that asks)."""
+    """The environment as a trial's variant sees it, for code that reads instructions or skills from the spec rather
+    than the sandbox (harden.py's hangar-owned settings for a turn that asks; the manifest's declared skills and
+    instructions, so a variant's `skills` and `skills_remove` show as what it declares)."""
+    from hangar.envspec import Skill, skill_name
+
     try:
         o = overlay_for(fleet, sb)
     except Exception:  # noqa: BLE001
         return spec
-    if o is None or o.get("instructions") is None:
+    if o is None:
         return spec
-    return spec.model_copy(update={"agent_config": spec.agent_config.model_copy(
-        update={"instructions": o["instructions"]})})
+    update: dict[str, Any] = {}
+    if o.get("instructions") is not None:
+        update["agent_config"] = spec.agent_config.model_copy(update={"instructions": o["instructions"]})
+    if o.get("skills") is not None:
+        by_name = {skill_name(x): x for x in spec.skills}
+        skills = []
+        for x in o["skills"]:
+            if x.get("source") == "environment" and x["name"] in by_name:
+                skills.append(by_name[x["name"]])
+            elif str(x.get("source") or "").startswith("path:"):
+                skills.append(Skill(path=x["source"][5:], name=x["name"]))
+        update["skills"] = skills
+    return spec.model_copy(update=update) if update else spec
 
 
 async def prepare_trial(jobs: JobService, job: Job, s: Session) -> None:

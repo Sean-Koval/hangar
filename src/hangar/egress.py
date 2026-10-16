@@ -23,6 +23,7 @@ the TLS SNI (or the HTTP Host) against it, and connects only to public addresses
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
 import ipaddress
@@ -255,12 +256,35 @@ def _presets_for(e: EgressSpec | None, mode: str) -> list[str]:
 
 def resolve(settings: Settings, spec: EnvSpec, repo: EgressSpec | None = None, harness: str | None = None,
             approved: list[dict[str, Any]] | None = None,
-            mcp_trusted: set[tuple[str, int | None]] | None = None, floor: str | None = None) -> Policy:
+            mcp_trusted: set[tuple[str, int | None]] | None = None, sealed: bool = False,
+            mirror: bool = False, setup_hosts: tuple[str, ...] = (), floor: str | None = None) -> Policy:
     """The policy for a sandbox of `spec`, under its repo's policy, running `harness`, with approved requests.
     `mcp_trusted` (from `trusted_mcp`) limits which of the spec's remote MCP servers count; None takes them all,
     for a spec the caller vouches for. `floor` (--- intake posture, #123: the sandbox's `hangar.egress.floor`) raises
     the environment's mode for this sandbox, network included; the allowlist is still the environment's presets and
-    hosts and the repo policy's."""
+    hosts and the repo policy's.
+
+    --- sealed (#126): `sealed` is a grader's (delivery.sealed): mode `none` with nothing at all on the list, not
+    even the harness's hosts (`none` normally keeps them: an agent must reach its model, and a grader runs no agent),
+    the MCP servers' or the cloud's, and no approval, whatever the environment and the repo policy say. Always on the
+    proxy-only network. `mirror` (`Grader.network: mirror`) adds hangar's read-only package mirror when it is on.
+    `setup_hosts`: the repo's git host while the sandbox is set up without the git gateway, before any of the code it
+    grades runs (for_sandbox; delivery.lock_sealed ends it)."""
+    if sealed:
+        from hangar.pkgmirror import available
+
+        notes: list[str] = []
+        sealed_mirrors: tuple[str, ...] = ()
+        if mirror and available(settings):
+            sealed_mirrors = MIRRORED
+        elif mirror:
+            notes.append("network: mirror asks for hangar's read-only package mirror, which is off "
+                         "(HANGAR_GATEWAY_URL and HANGAR_PACKAGE_MIRROR): this sandbox reaches nothing")
+        rules = []
+        for h in setup_hosts:
+            with contextlib.suppress(EgressError):
+                rules.append(Rule(normalize_host(h), False, None, "sealed-setup"))
+        return Policy("none", tuple(rules), True, tuple(notes), sealed_mirrors)
     env = getattr(spec, "egress", None)
     base = floored(env_mode(settings, spec), floor)
     mode, notes = base, []
@@ -388,6 +412,11 @@ def for_sandbox(fleet: Fleet, sb: Sandbox, spec: EnvSpec | None = None) -> Polic
     """The policy in force for a sandbox now: its environment, its repo's policy, approvals for its session and
     environment."""
     spec = spec or fleet.catalog.get(sb.environment)
+    from hangar import delivery
+
+    if delivery.sealed(sb):  # --- sealed (#126): nothing of the environment's, the repo's or approvals
+        return resolve(fleet.settings, spec, sealed=True, mirror=delivery.sealed_mirror(sb),
+                       setup_hosts=delivery.sealed_setup_hosts(sb))
     session = sb.labels.get("hangar.session")
     approved = approvals(fleet.store, environment=sb.environment, session=session)
     from hangar.posture import floor_of  # --- intake posture (#123)

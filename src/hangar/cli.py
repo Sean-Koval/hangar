@@ -240,6 +240,40 @@ def env_render(name: str, env_dir: Path = typer.Option(Path("envs"), "--dir")):
     typer.echo(render(spec).dockerfile)
 
 
+@env_app.command("migrate-merge")
+def env_migrate_merge(
+    dry_run: bool = typer.Option(True, "--dry-run", help="Report only (the only mode: nothing is rewritten)."),
+    env_dir: list[Path] | None = typer.Option(None, "--env-dir", help="Environment specs (default: HANGAR_ENV_DIRS, "
+                                              "else ./envs). Repeatable."),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help="Read saved environments from <data>/envs "
+                                         "(default: HANGAR_DATA_DIR)."),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """Which environments resolve differently under the #132 `extends` rules (component lists replace; apt, pip and
+    npm union; skills_remove). Local: reads the shipped and saved specs, needs no running hangar. Run it before
+    upgrading; an environment that changes rebuilds to a new image tag (docs/upgrading.md)."""
+    from hangar.config import Settings
+    from hangar.envspec import EnvCatalog, merge_changes
+
+    over: dict = {}
+    if env_dir:
+        over["env_dirs"] = env_dir
+    if data_dir:
+        over["data_dir"] = data_dir
+    settings = Settings(**over)
+    changes = merge_changes(EnvCatalog(settings.env_dirs, save_dir=settings.saved_env_dir))
+    if as_json:
+        _print(changes)
+        return
+    if not changes:
+        typer.echo("no environment resolves differently under the new merge rules")
+        return
+    for name, lines in changes.items():
+        typer.secho(name, bold=True)
+        for line in lines:
+            typer.echo(f"  {line}")
+
+
 @env_app.command("build")
 def env_build(name: str, provider: str | None = None, force: bool = False):
     """Build an environment image (streams the build log)."""

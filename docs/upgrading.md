@@ -2,10 +2,32 @@
 
 Two guides, newest first:
 
+- [**The `extends` merge rules**](#the-extends-merge-rules-132) (#132): run one dry run before upgrading.
 - [**This release**](#upgrading-to-the-team-release-75117) (#75–#117): one ordered procedure for everything since the overnight stack. Wave 1 (#75–#90): one hangar for a team of six at ~60 sessions, people and per-person credentials, front-door defaults and job budgets, the reconciler, the MCP deadline contract, and images built before anyone waits. Wave 2 (#91–#100): team credentials and linked accounts, Jira and GitHub Projects intake, egress allowlists, secret scanning and short-lived cloud credentials, a computer for every agent, environments that live with the repo, an approval that lands the PR, the always-on control plane and gated deploys. Wave 3 (#101–#110): review-round trust and the stale-approval gate, egress closed further (no ECH, read-only package mirrors, pushes scanned in the gateway), history out of memory, a rotatable vault key, repo builds that pass on less, the operator console and the Cloud Doctor, the harness canary and `frontier` models, agent-led environment setup, and the acceptance suite for all of it; then least privilege for jobs and builds, CI/CD setup and the infra states (#111–#113). Wave 4 (#114–#117): heavy development environments (Docker inside a VM of the sandbox's own on the heavy tier, deny by default for a repo's own request, and bigger resource profiles), warm dependency and compile caches, structured test results from every check, and the sister tool's three interfaces (harness manifests, trace export, experiment jobs).
 - [**The overnight stack**](#upgrading-from-before-the-overnight-stack-4869) (#48–#69), for a hangar older than that. Do its backup and read its defaults first, then follow this release's procedure: its prebuild also covers the overnight guide's "republish the Codex pack" step.
 
 Both are written for the GKE install from [gke.md](gke.md): one zonal cluster, gVisor sandboxes, the control plane with SQLite on the `hangar-data` PVC, checkpoints in the session bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / `power.sh`. [CHANGELOG.md](../CHANGELOG.md) lists what each adds.
+
+## The `extends` merge rules (#132)
+
+`extends` used to append every list except `harnesses`, `credentials`, `terminals` and `ports`, so a child could
+never drop a parent's skill. Now component lists (`skills` and every list not named here) replace the parent's,
+the additive build inputs (`tools.apt`, `dependencies.pip`/`npm`) union, maps still merge by key (`null` now
+deletes a key), and `skills_remove` drops inherited skills ([environments.md](environments.md#how-extends-merges)).
+Experiment variants gain `skills_remove` too.
+
+Before you upgrade, run the dry run against the checkout you'll deploy and your data volume (it reads the shipped
+specs and the saved ones in `<data>/envs`, and needs no running hangar):
+
+```bash
+uv run hangar env migrate-merge --dry-run --data-dir /path/to/hangar-data   # or with HANGAR_DATA_DIR set
+```
+
+It names each environment that resolves differently: skills lost or gained, and other fields that change (a
+child's `skills: [x]` now means only `x`; `harnesses`, `credentials`, `terminals` and `ports` already replaced). No
+shipped environment changes. For each one it names, either restate the parent's entries in the
+child's list or switch to `skills_remove`. An environment whose resolved spec changes gets a new image tag:
+prebuild with `hangar images plan` / `hangar images build` before the rollout, as in step 3 below.
 
 ## Upgrading to the team release (#75–#117)
 

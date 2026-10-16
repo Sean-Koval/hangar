@@ -37,6 +37,7 @@ from hangar import (  # strategies: workstream D; --- observe; steer: live turns
     scratch,  # --- frontdoor
     steer,
     strategies,
+    taint,  # --- taint (#129)
     verifyloop,
 )
 from hangar import autoinstall as autoinstall  # --- autoinstall: agent-led environment setup jobs
@@ -213,6 +214,8 @@ class JobService:
         self.landing = landing.Landing(self)  # --- landing: PR state, the App identity, approval lands the PR
         if sessions is not None:  # --- overnight/sweep: a deleted session's usage stays on its job
             sessions.on_delete.append(self._session_deleted)
+            sessions.job_of = self._jobs.get  # --- taint (#129): a job's input taints its sessions' turns
+            sessions.on_taint.append(self._session_tainted)  # and the job mirrors its sessions
 
     # ================================================================== lifecycle
     async def start(self) -> None:
@@ -488,6 +491,7 @@ class JobService:
 
             approval = job.approval = new_approval(self, requester, f"budget: {over}")
         job.strategy, job.n, job.judge = req.strategy, attempts, req.judge  # workstream D
+        taint.seed_job(job)  # --- taint (#129): untrusted task text or context: tainted from turn 1
         job.verify_in_loop, job.max_verify_rounds, job.autofix = req.verify_in_loop, req.max_verify_rounds, fix_mode
         self._jobs[job.id] = job
         best = f" (best of {attempts})" if req.strategy == "best_of_n" else ""
@@ -645,6 +649,17 @@ class JobService:
         # --- overnight/sweep: plus the sessions deleted since (a deleted attempt's spend was dropped before)
         gone = [Turn(usage=u) for sid, u in job.deleted_session_usage.items() if sid not in live]
         return total_usage(turns + gone) if turns or gone else total_usage(job.turns)
+
+    def _session_tainted(self, s: Session, turn: Any, ref: str) -> None:
+        """--- taint (#129): one of the job's sessions read untrusted content: the job mirrors it."""
+        job = self._jobs.get(s.job_id or "")
+        if job is None:
+            return
+        first = taint.sync_job(job, self.sessions.of_job(job.id) if self.sessions is not None else [s])
+        if first is not None:
+            self._event(job, f"taint: read untrusted content from {first}")
+        else:
+            self._save(job)
 
     def _session_deleted(self, s: Session) -> None:
         """Keep what a session that carried a job used, since usage() reads it from the session's turns."""
