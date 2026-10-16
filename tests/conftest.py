@@ -40,6 +40,14 @@ def _no_host_docker(monkeypatch):
         monkeypatch.setenv("DOCKER_HOST", "unix:///nonexistent/hangar-unit-tests-use-no-docker.sock")
 
 
+@pytest.fixture(autouse=True)
+def _intake_posture_off(monkeypatch):
+    """--- intake posture (#123): enforce, the default, needs the git gateway and an egress proxy, which the fake
+    provider and most tests (and e2e suites) don't set up. Tests about the posture pass `intake_posture` to Settings
+    themselves (test_posture.py, test_e2e_egress_docker.py)."""
+    monkeypatch.setenv("HANGAR_INTAKE_POSTURE", "off")
+
+
 _run_root: Path | None = None
 
 

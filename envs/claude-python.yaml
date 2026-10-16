@@ -6,5 +6,5 @@ dependencies:
   pip: [ruff, pytest, pre-commit]
 skills:
   - path: skills/repo-conventions
-credentials: []          # e.g. [claude-max, github]
+credentials: []          # e.g. [claude-api, github] (API keys; a subscription login is interactive-only)
 warm_pool: 1             # keep one sandbox pre-started for instant claims

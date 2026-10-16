@@ -623,7 +623,8 @@ class EnvBuilds:
         creds = [c for c in spec.credentials if not f._is_agent(f._cred_harness(c))]
         sb = await f.create(b.environment, name=f"build-{b.id.removeprefix('bld-')}", repo=b.repo_url, branch=branch,
                             credentials=creds, provider=pname, labels={LABEL: b.id},
-                            ttl_minutes=self.settings.env_build_timeout_minutes + 15, actor=f"hangar:build:{b.id}")
+                            ttl_minutes=self.settings.env_build_timeout_minutes + 15, actor=f"hangar:build:{b.id}",
+                            purpose="automated")  # --- #125
         path = b.path = sb.info.get("repo_path")
         if not path:
             raise EnvBuildError("the build's sandbox has no checkout")

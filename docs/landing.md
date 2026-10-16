@@ -164,6 +164,7 @@ One list per person, newest first, from the records hangar keeps:
 | `question` | a job in `needs_input`, or a session's open question | answer with a follow-up or `send_to_session` |
 | `approval` | a job waiting for approval (an untrusted trigger, a spend cap); a turn waiting on a tool approval; requests other modules add (egress, secrets) | approve or deny |
 | `failed` | a job that failed in the last 7 days and has no open PR | read why, then follow up or resubmit |
+| `alert` | admins only: a front door saw use that a real sender wouldn't make, such as a Jira Automation token used for an issue nobody just moved ([intake.md](intake.md#fallback-an-automation-rule)); kept 7 days | check the rule, rotate the token if it doesn't explain it |
 
 It is per person, as everything is since [people](security.md#people): a member sees items for their own jobs and sessions. An admin sees their own, plus work nobody in particular owns (jobs from GitHub issues, Slack and inbound webhooks). Read it:
 

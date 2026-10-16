@@ -500,6 +500,7 @@ def _turn_span(x: Export, parent: str | None, s: Session, n: int, turn: SessionT
              "hangar.turn.exit_code": turn.exit_code, "hangar.harness": harness,
              "hangar.harness.version": turn.harness_version, "hangar.turn.live": turn.live,
              "hangar.approvals": turn.approval_policy, "hangar.manifest.digest": turn.manifest,
+             "hangar.harness.digest": turn.harness_digest, "hangar.environment.digest": turn.environment_digest,
              # --- taint (#129): whether the turn read untrusted content, and the first event that did (0: it
              # started tainted, from its context or an earlier turn)
              "hangar.taint": bool(turn.taint and turn.taint.get("tainted")),

@@ -309,6 +309,12 @@ class Settings(BaseSettings):
     # --- egress2: the gateway holds a push and scans it for secrets before forwarding it (pushscan.py, with
     # HANGAR_SECRET_SCAN). A bigger push is refused in block mode, let through unscanned (audited) in warn mode.
     gateway_scan_max_mb: int = Field(64, ge=1, le=1024)
+    # --- intake posture (#123, posture.py, docs/security.md#intake-posture): jobs from GitHub, GitHub Projects,
+    # Jira, Slack and inbound webhooks (or with an untrusted author or context). enforce: they need the git gateway
+    # (else refused at submit) and their sandboxes get at least `allowlist` egress; warn: they run as before, with a
+    # job event, an audit entry and a review-packet line saying what enforce would do (the one-release transition,
+    # docs/upgrading.md); off: neither.
+    intake_posture: Literal["enforce", "warn", "off"] = "enforce"
     # --- egress: hostname allowlists (egress.py, docs/security.md#egress) ----
     # The mode of environments that don't set `egress.mode`: open (the public internet, as before), allowlist or none.
     egress_default: Literal["open", "allowlist", "none"] = "open"
@@ -461,6 +467,11 @@ class Settings(BaseSettings):
     # --- teamcreds: how long a job's or session's sandbox waits for a free login when every login it could use is
     # leased (a Codex ChatGPT login goes into one sandbox at a time); then it fails, saying which are busy
     login_wait_seconds: float = Field(600, ge=0)
+    # --- #125: where a subscription login (`--kind oauth_token` or `auth_file`: Claude Pro/Max, a ChatGPT or Google
+    # sign-in) may go. `interactive`: only a person's own sandboxes and sessions, with a warning; jobs, schedules,
+    # webhooks, experiments and replays need an API key. `any`: jobs may use them too, with a warning, and `hangar
+    # doctor` fails. Experiment trials and graders never get one either way (docs/team.md#subscription-logins).
+    subscription_logins: Literal["interactive", "any"] = "interactive"
     # Stopped and failed sandbox records older than this move to an archive table (retention.py): out of listings
     # and of every scan, still found by id. Archived ones are deleted after sandbox_archive_days (0 = kept).
     sandbox_retention_days: float = 7
