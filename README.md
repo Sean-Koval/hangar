@@ -232,6 +232,8 @@ Run these from the Hangar checkout:
 | Run a command in a sandbox | `uv run hangar sb exec first-task "git status"` |
 | Check client connections | `uv run hangar connect --list` |
 | Inspect settings and their sources | `uv run hangar config list` |
+| Freeze a good turn into a harness directory ([harness locks](docs/harness-lock.md)) | `uv run hangar harness freeze job-1a2b3c4d --turn 1 --out ../harnesses/team-default` |
+| Check a harness directory against its lock | `uv run hangar harness check ../harnesses/team-default` |
 | Check setup | `uv run hangar doctor` |
 | Stop the local server | `uv run hangar down` |
 

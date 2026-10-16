@@ -1356,6 +1356,11 @@ from hangar.repo_cli import repo_app as _repo_app  # noqa: E402
 
 app.add_typer(_repo_app, name="repo")
 
+# ---------------------------------------------------------------------------- harness locks (harness_cli.py, #133)
+from hangar.harness_cli import harness_app as _harness_app  # noqa: E402
+
+app.add_typer(_harness_app, name="harness")
+
 # ---------------------------------------------------------------------------- envbuilds: repo builds (envbuilds_cli.py)
 from hangar import envbuilds_cli as _envbuilds  # noqa: E402
 

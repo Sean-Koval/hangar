@@ -869,6 +869,18 @@ git.post:
   scope: grant
   owner: any
   enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+harness.job:
+  server: hangar
+  mcp: null
+  rest: GET /api/jobs/{job_id}/harness
+  scope: jobs
+  owner: token
+harness.session:
+  server: hangar
+  mcp: null
+  rest: GET /api/sessions/{ref}/harness
+  scope: user
+  owner: guard
 harnesses.get:
   server: hangar
   mcp: null

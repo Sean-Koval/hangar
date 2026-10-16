@@ -1165,6 +1165,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import experiments, manifest
 
     manifest.mount(app, h, U, J, owner_filter)  # sessions and environments: a member sees their own
+    from hangar import harness_lock  # --- harness locks (#133): GET /api/{sessions,jobs}/.../harness
+
+    harness_lock.mount(app, h, U, J, owner_filter)
     experiments.mount(app, h, J, owner_filter)
     from hangar import testresults  # --- testresults: GET /api/jobs/{id}/tests, the sessions', flaky lists, status
 
