@@ -33,8 +33,8 @@ The same control plane runs on your laptop (Docker), on a single VM (Docker + gV
 - **Fast, concurrent sandboxes.** Warm pools keep sandboxes pre-started. Claiming one, cloning the repo and checking out a fresh work branch took about 0.6s in testing, and four in parallel took about 1.2s.
 - **Clone two ways.** Rebuild from the spec, or snapshot a live sandbox and fork it into up to 20 copies with the same files, installed deps and repo state.
 - **Logins for Claude Code, Codex, pi and Antigravity.**
-  - Both API keys and subscription logins are supported.
-  - Subscription logins run inside a short-lived sandbox, and you finish them in the dashboard terminal.
+  - API keys (Anthropic Console, OpenAI project, Claude Team or Enterprise keys) work everywhere: sessions, sandboxes, jobs, schedules, webhooks and experiments.
+  - Subscription logins (Claude Pro or Max, a ChatGPT or Google sign-in) are for a person's own interactive sessions and sandboxes only, with a warning; jobs and other automated work refuse them ([team.md](team.md#subscription-logins)). A sign-in runs inside a short-lived sandbox, and you finish it in the dashboard terminal.
   - Credentials are encrypted at rest and injected into `~/.hangar/env` or their usual files at claim time.
   - Codex's rotating refresh token is *leased* to one sandbox at a time and written back when that sandbox stops, so sandboxes never log each other out.
 - **Terminals that agents and humans share.** MCP clients drive persistent tmux sessions (`terminal_send` / `terminal_read`). From the dashboard you can attach to the same session and watch, or type along.
@@ -81,8 +81,8 @@ Then:
 
 1. **Add credentials.** Use the dashboard at http://localhost:8787 (under **Credentials**), or:
    ```bash
-   claude setup-token | uv run hangar cred add claude-max --harness claude-code --kind oauth_token
-   uv run hangar cred add codex-chatgpt --harness codex --kind auth_file --file ~/.codex/auth.json
+   uv run hangar cred add claude-api --harness claude-code --kind api_key --file anthropic-key.txt
+   uv run hangar cred add codex-api --harness codex --kind api_key --file openai-key.txt
    uv run hangar cred add gh --harness git --kind git_token --value "$(gh auth token)"
    ```
 2. **Connect an MCP client**, if `hangar up` didn't. Run `uv run hangar connect claude-code` (or `codex`, `cursor`, `vscode`, `gemini`, `claude-desktop`). It adds hangar to the client's own config file, next to your other servers, with a fresh token that can reach `/mcp` and nothing else. `hangar connect --list` shows what's connected. Details are in [docs/clients.md](clients.md).
@@ -117,10 +117,10 @@ hangar person ls                              # owner is the admin your existing
 # alice, on her laptop:
 hangar login https://hangar.example           # paste the token
 hangar connect claude-code                    # an mcp token of her own
-claude setup-token | hangar cred add claude-alice --harness claude-code --kind oauth_token
+hangar cred add claude-alice --harness claude-code --kind api_key --file key.txt
 ```
 
-Members see and act on their own sandboxes, sessions and jobs; admins on everyone's. Alice's sessions use her Claude login; teammates without one of their own use the environment's shared credential. `hangar cred owner NAME PERSON|shared` hands a credential to someone or back to the team, and `hangar person rm` revokes someone's tokens. See [security.md](security.md#people).
+Members see and act on their own sandboxes, sessions and jobs; admins on everyone's. Alice's sessions and jobs use her own key; teammates without one of their own use the environment's shared credential. `hangar cred owner NAME PERSON|shared` hands a credential to someone or back to the team, and `hangar person rm` revokes someone's tokens. See [security.md](security.md#people).
 
 ## MCP tools
 
@@ -167,7 +167,7 @@ repo:
   branch: main
   setup: uv sync                   # after clone
   bake: false                      # true = clone + setup at build time, for instant claims
-credentials: [claude-max, codex-chatgpt, gh]  # each sandbox gets its harness's ones, plus non-agent ones (git)
+credentials: [claude-api, codex-api, gh]  # each sandbox gets its harness's ones, plus non-agent ones (git)
 secrets: { SENTRY_TOKEN: sentry }  # env var <- credential, injected at claim
 mcp:                               # written in each harness's own config format at claim
   sentry: { url: "https://mcp.sentry.dev/mcp", headers: { Authorization: "Bearer ${SENTRY_TOKEN}" } }
@@ -225,10 +225,10 @@ Everything is set through `HANGAR_*` settings (see `src/hangar/config.py`), whic
   - **Docker provider:** end to end in CI.
   - **Kubernetes provider:** end to end over MCP against the real Agent Sandbox v1.0.6 controller on kind, with the runc runtime. This covered builds pushed to a registry, claims, exec, 300 KB file writes, terminals, TTL extension, forks and teardown.
   - **Kata microVMs (Docker provider):** end to end on WSL2. Each sandbox is a VM with its own kernel; it starts in about 2 s, and 4 start in parallel in 2.2 s. See [docs/local-microvms.md](local-microvms.md).
-  - **GKE with the Agent Sandbox add-on and gVisor:** end to end, with the control plane in the cluster behind a Google-managed certificate. A remote MCP client created two sandboxes from the warm pool over HTTPS in 3.1 s. Each had the repo cloned on its own branch, a Claude Code subscription token and a fine-grained GitHub token. Claude Code ran headless in both, made a change with tests, and opened a PR that passed CI ([#13](https://github.com/Sean-Koval/hangar/pull/13), [#14](https://github.com/Sean-Koval/hangar/pull/14)). `scripts/agent_fleet_demo.py` reproduces the run.
+  - **GKE with the Agent Sandbox add-on and gVisor:** end to end, with the control plane in the cluster behind a Google-managed certificate. A remote MCP client created two sandboxes from the warm pool over HTTPS in 3.1 s. Each had the repo cloned on its own branch, a Claude Code token and a fine-grained GitHub token (that run predates [subscription logins being interactive-only](team.md#subscription-logins); fleets use API keys). Claude Code ran headless in both, made a change with tests, and opened a PR that passed CI ([#13](https://github.com/Sean-Koval/hangar/pull/13), [#14](https://github.com/Sean-Koval/hangar/pull/14)). `scripts/agent_fleet_demo.py` reproduces the run.
   - **Not yet run live:** Kata on GKE (the add-on only admits `gvisor` and `microvm`; see [docs/gke.md](gke.md)), Pod snapshots and E2B. They're covered by unit tests against fake APIs.
 - **Antigravity (`agy`) subscription login** stores OAuth in the OS keyring, which headless containers may lack. Use a `GEMINI_API_KEY` credential for fleets.
-- **Concurrent sandboxes share one subscription's limits.** Parallel Claude Code agents on a single Pro login hit the plan's limits quickly. Mix in API-key credentials for wide fan-out.
+- **Spend caps live in two places.** Set a workspace spend limit on each API key in the vendor's console (Anthropic Console, OpenAI project limits); hangar's job and daily budgets cap spend inside hangar.
 - **The control plane is a single replica** with SQLite state, which is right for a personal or team instance.
 
 ## Development

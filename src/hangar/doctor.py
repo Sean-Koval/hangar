@@ -232,5 +232,8 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
     from hangar import modelpolicy  # --- integ3 (review #105): jobs with no budget and no daily cap
 
     out += modelpolicy.doctor_checks(h)
+    from hangar import approvals  # --- approvals (#121): a lone person can't approve their own held jobs
+
+    out += approvals.doctor_checks(h)
     await asyncio.sleep(0)
     return out

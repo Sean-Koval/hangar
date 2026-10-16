@@ -14,6 +14,7 @@ Hangar exists to run untrusted, model-generated code. The design assumes any san
 
 - **Delivery.** Secrets are written into a running sandbox at claim time, to `~/.hangar/env` (mode 0600) or to the harness's own file. Sandbox images never contain them.
 - **Forks.** A fork scrubs inherited secret files before re-injecting only the credentials it was granted.
+- **Subscription logins are interactive-only.** An `oauth_token` or `auth_file` credential (Claude Pro or Max, a ChatGPT or Google sign-in) goes only into sandboxes and sessions a person starts for themselves, with a warning on the session, the sandbox and each turn's manifest. Every job's sandbox (every front door, best-of-N attempts, follow-ups, autofix, environment setup, the Cloud Doctor), schedules, webhooks, experiment trials and graders, and replay and fork sandboxes of them refuse one and use an API key: the vendors' terms don't allow automated use of consumer logins. `HANGAR_SUBSCRIPTION_LOGINS=any` relaxes this for jobs (warned, and `hangar doctor` fails), never for trials and graders. Spend limits on API keys are set at the vendor; hangar's budgets cap spend inside hangar ([team.md](team.md#subscription-logins)).
 - **Exclusive credentials** are ones with rotating refresh tokens, like a Codex ChatGPT login. Each is leased to one sandbox. When that sandbox stops, the possibly rotated file is copied back into the vault.
 - **Snapshots** of a running sandbox (Docker `commit`) may contain secrets that were present at snapshot time. They stay in the local image store and are never pushed.
 - **Control-plane credentials never enter a sandbox.** Some credentials exist only for hangar itself: webhook signing keys (`webhook` credentials, the GitHub webhook secret, inbound webhook keys), the Slack bot token and signing secret, GitHub App keys, and the GitHub tokens hangar calls GitHub with (`HANGAR_GITHUB_TOKEN_CREDENTIAL`, `HANGAR_GATEWAY_CREDENTIAL`, `HANGAR_GITHUB_APP_CREDENTIAL`). Hangar refuses to put them in a sandbox by any path: an environment's `secrets:` (refused when the environment is saved, and again when a sandbox starts), an attached credential's env var or file, and so MCP config resolution, which only sees what those wrote. With the webhook secret anyone could forge trusted GitHub deliveries. `hangar cred ls` marks them `control-plane`. To share the control plane's GitHub token with direct-mode sandboxes on purpose, an admin runs `hangar cred exposure <name> sandbox`; signing keys, bot tokens and App keys can't be shared.
@@ -60,7 +61,7 @@ The control plane's own GitHub calls don't go through the gateway: it opens and 
    ```yaml
    name: api
    credential_mode: gateway   # or: direct
-   credentials: [claude-max, github-app]
+   credentials: [claude-api, github-app]
    repo: {url: https://github.com/me/api.git}
    ```
 
@@ -526,7 +527,7 @@ One hangar serves a team: run one per team rather than splitting one between tea
 | Tokens | mint for anyone, within that person's role | their own: `user` (their login), `mcp` (what `hangar connect` mints), `jobs` |
 | REST | everything | `/api/me`, `/api/connect`, their tokens and credentials; jobs through a `jobs` token |
 
-- **A person's own credential** (their Claude or Codex login) goes only into their sandboxes. A sandbox for someone who has their own credential for its harness uses it in place of the team's; anyone else gets the team's. Naming another person's credential is refused. A repo's policy can require one or the other (`credentials: person | team | person_then_team`).
+- **A person's own credential** (their API key, or their Claude or Codex login for interactive use) goes only into their sandboxes. A sandbox for someone who has their own credential for its harness uses it in place of the team's; anyone else gets the team's. Naming another person's credential is refused. A repo's policy can require one or the other (`credentials: person | team | person_then_team`).
 - **Team credentials** are added by an admin on purpose (`hangar cred add --team`); an admin's credential without `--team` is their own. Jobs no person owns use them: webhooks, schedules without a person, and GitHub and Slack senders linked to nobody. They are API keys, or other credentials the vendor's terms allow for automation: a subscription login (Claude Pro or Max, ChatGPT) is refused as a team credential, since the vendors' terms make it one person's and Claude Code's forbid routing requests through a Pro or Max login on behalf of others ([team.md](team.md#what-the-vendors-allow)).
 - **Ownership is recorded** as `person` on sandboxes, snapshots, sessions, jobs and schedules. A job's session and sandbox, a fork and a best-of-N attempt are their source's person's. Work from a GitHub, Slack or Jira account an admin linked to a person (`hangar person link`, by ids that don't change hands: a GitHub user id, a Slack workspace and user id, a Jira account id) is that person's: their caps, their budget, their lists. A linked account acts as its person, so it is trusted at every front door, and only it continues that person's jobs there ([team.md](team.md#who-is-trusted)). Work from anyone linked to nobody, and from inbound webhooks, has no person, so only admins see it; the front door's own rule decides whether it waits for approval.
 - **Existing installs keep working, and the owner's logins stay the owner's.** Tokens minted before people, the server's admin token and the bootstrap token belong to `owner`, an admin. Records made before have no person, so they are the admins'. Credentials stored before people become the owner's own on the first start, once (`hangar cred migration` shows which), so your Claude or Codex login never reaches a member's sandbox or a job no person owns; control-plane ones stay the control plane's. Add team credentials for everyone else ([team.md](team.md)).
@@ -551,7 +552,7 @@ Work enters hangar through REST, MCP, A2A, GitHub webhooks, Slack, signed inboun
 | Front door | Who can start or steer work | Fence |
 | --- | --- | --- |
 | REST, A2A | An admin token: anything. A `jobs` token: its own jobs only (another token's job id or A2A `contextId`/`taskId` is "not found") | `jobs` tokens: repos in `HANGAR_GITHUB_REPOS` and their environments, no provider choice, their `max_budget` |
-| MCP | Admin tokens, and people's `user` and `mcp` tokens; an OAuth grant acts as the token that approved it | A member's tokens reach only their own work ([People](#people)); `mcp` tokens can't set `secrets`, `image`, `base`, `runtime_class` or `credential_mode: direct` on an environment, or call admin-only tools |
+| MCP | Admin tokens, and people's `user` and `mcp` tokens; an OAuth grant acts as the token that approved it | A member's tokens reach only their own work ([People](#people)); `mcp` tokens can't set `secrets`, `image`, `base`, `runtime_class` or `credential_mode: direct` on an environment, call admin-only tools, or approve jobs |
 | GitHub | Linked accounts and trusted people ([triggers.md](triggers.md#1-who-can-start-work-from-github)); anyone else's trigger waits for approval, and their comments can't continue a job or answer its question. A person's job is continued only by that person's linked account | mapped repos, their environments |
 | Slack | Linked accounts; members of your workspace in a mapped channel (or `HANGAR_SLACK_USERS`); Slack Connect guests from other organizations only when listed. A person's job is continued only by them | like a `jobs` token |
 | Inbound webhooks | Whoever holds the source's HMAC key | the source's configured repo and environment |
@@ -584,6 +585,7 @@ Under `warn` a job that `enforce` would have changed gets a `posture.warn: …` 
 - GitHub (`X-Hub-Signature-256`), Slack (`v0`) and inbound webhooks (per-source HMAC) are verified over the raw body, before anything parses it, and compared in constant time (as bytes, so a malformed header is a 401, not an error).
 - **Replays.** A signed request is identified by what its signature covers, and remembered in the store, so a restart doesn't forget it. GitHub deliveries and inbound webhook deliveries are kept for `HANGAR_WEBHOOK_REPLAY_HOURS` (7 days); a replay with a fresh, unsigned delivery id or timestamp header is still a duplicate and does nothing. Slack events are deduplicated by `event_id`, and slash commands by signature within Slack's five-minute window.
 - A missing secret is reported as "not stored" without naming the credential.
+- **Jira** signs its admin webhook (`X-Hub-Signature`); use it for issue events. Its Automation rules can't sign, so hangar accepts a hidden `X-Hangar-Token` as a fallback. That token only proves who holds it, so an Automation request starts a job only when the issue's own history shows the trigger transition within the last 10 minutes, at most 3 times per issue a day, and only as a `hangar:automation` request. A stale transition, a wrong event or a wrong token alerts the admins (inbox, and a Slack DM), and `hangar doctor` warns on a token older than 90 days and on Automation in use without signed issue events. Rotate it with `hangar cred add <name> --rotate` ([intake.md](intake.md#fallback-an-automation-rule)).
 
 ### Outbound webhooks (SSRF)
 
@@ -607,12 +609,13 @@ Bodies are capped before the route runs, because FastAPI parses a JSON body befo
 
 ### Audit
 
-Every approval decision (`job.approve`, `job.reject`, `job.approval_expired`, `job.approve.refused`) and every refused request is in the audit log (`GET /api/audit`, the dashboard's audit view):
+Every approval decision (`job.approve`, `job.reject`, `job.approval_expired`, `job.approve.refused`, `job.reject.refused`) and every refused request is in the audit log (`GET /api/audit`, the dashboard's audit view). One rule decides approvals on every path, MCP, REST, GitHub and Jira: an admin or a repo policy approver, with a login token over MCP and REST, never on their own job ([who may approve](triggers.md#who-may-approve)). Each decision records the deciding person, whether it was a self-approval (`HANGAR_SELF_APPROVAL=allow_solo`) and the rule that allowed it:
 
 - `request.rejected`: any 401, 403, 413 or 429 answer, with the client address, method and path;
 - `job.refused`: a submission or follow-up that was refused, with why (`rate_limited`, `too_many_active`, `invalid`, which covers a token's fence) and the caller;
 - `hook.replay`: a duplicate signed delivery;
-- `github.refused`: an untrusted person's attempt to continue a job or answer its question.
+- `github.refused`: an untrusted person's attempt to continue a job or answer its question;
+- `hook.automation.stale_transition`, `hook.automation.capped`, `hook.automation.wrong_event` and `jira.alert`: Jira Automation requests refused, and the alerts they raised ([intake.md](intake.md#fallback-an-automation-rule)).
 
 Refusals are themselves limited to `HANGAR_AUDIT_REJECTIONS_PER_MINUTE` (30) per client address or caller, so a flood can't fill the audit log; the next entry that gets through records how many were dropped (`suppressed_before`).
 

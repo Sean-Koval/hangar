@@ -712,6 +712,7 @@ async def test_an_experiment_of_two_variants_and_two_trials(jobs, world, fleet, 
         m = experiments.trial_file(jobs, exp, t["key"], "manifest.json")
         jsonschema.validate(m, SCHEMA)
         assert m["digest"] == t["manifests"][0] and m["subject"]["job"] == t["job"]
+        assert t["harness_digest"] == m["harness_digest"] and t["environment_digest"] == m["environment_digest"]
         _no_secret(m)
         tr = experiments.trial_file(jobs, exp, t["key"], "trace.json")
         _check_otlp(tr)
@@ -861,3 +862,66 @@ async def test_a_trial_never_resizes_the_environments_warm_pool(fleet, tmp_path,
     await fleet.create("warmenv")  # everything else refills as before
     await asyncio.sleep(0)
     assert len(refills) == 1
+
+
+def _digests_of(fleet, tmp_path, **over):
+    """The manifest a new sandbox of a small environment would run claude-code with, the environment changed by
+    `over` and its one skill's SKILL.md holding `skill` (default: 'Use alpha.')."""
+    from hangar.envspec import EnvSpec
+
+    skill = tmp_path / "skills" / "alpha"
+    skill.mkdir(parents=True, exist_ok=True)
+    (skill / "SKILL.md").write_text(over.pop("skill", "Use alpha."))
+    spec = EnvSpec.model_validate({"name": "digests", "harnesses": ["claude-code"],
+                                   "skills": [{"path": "skills/alpha"}],
+                                   "egress": {"mode": "allowlist", "allow": ["a.example"]}, **over})
+    spec.source_dir = tmp_path
+    m = manifest.build(fleet, spec, "claude-code")
+    jsonschema.validate(m, SCHEMA)
+    return m
+
+
+def test_harness_and_environment_digests_split_config_digest(fleet, tmp_path):
+    """#131: the two halves of config_digest. An egress change is the environment's; a skill's content the
+    harness's."""
+    base = _digests_of(fleet, tmp_path)
+    assert base["harness_digest"].startswith("sha256:") and base["environment_digest"].startswith("sha256:")
+    wider = _digests_of(fleet, tmp_path, egress={"mode": "allowlist", "allow": ["a.example", "b.example"]})
+    assert wider["harness_digest"] == base["harness_digest"]
+    assert wider["environment_digest"] != base["environment_digest"]
+    assert wider["config_digest"] != base["config_digest"]
+    edited = _digests_of(fleet, tmp_path, skill="Use alpha, carefully.")
+    assert edited["harness_digest"] != base["harness_digest"]
+    assert edited["environment_digest"] == base["environment_digest"]
+    # the canonical form spec 0014 §2 writes out, so a harness lock (#133) produces the same value
+    import hashlib
+
+    picked = {k: manifest.pick(base, k) for k in manifest.HARNESS_SECTIONS}
+    assert picked["skills.declared[*].{name,digest}"] == [
+        {"name": "alpha", "digest": base["skills"]["declared"][0]["digest"]}]
+    canon = json.dumps(picked, sort_keys=True, separators=(",", ":"))
+    assert base["harness_digest"] == "sha256:" + hashlib.sha256(canon.encode()).hexdigest()
+
+
+def test_manifests_stored_before_the_two_digests_still_validate(fleet, tmp_path):
+    """Older stored manifests lack harness_digest and environment_digest; the schema keeps them optional."""
+    m = _digests_of(fleet, tmp_path)
+    old = {k: v for k, v in m.items() if k not in ("harness_digest", "environment_digest")}
+    jsonschema.validate(old, SCHEMA)
+    assert "harness_digest" not in SCHEMA["required"] and "environment_digest" not in SCHEMA["required"]
+
+
+def test_a_drift_message_names_the_half_that_drifted():
+    def trial(key, cfg, h, e):
+        return experiments.Trial(key=key, task="t", variant="a", trial=1, config_digest=cfg, harness_digest=h,
+                                 environment_digest=e)
+
+    first = trial("t/a/1", "sha256:c1", "sha256:h1", "sha256:e1")
+    assert experiments.drift_message(trial("t/a/2", "sha256:c2", "sha256:h1", "sha256:e2"), first).startswith(
+        "environment drift:")
+    assert experiments.drift_message(trial("t/a/2", "sha256:c2", "sha256:h2", "sha256:e1"), first).startswith(
+        "harness drift:")
+    both = experiments.drift_message(trial("t/a/2", "sha256:c2", "sha256:h2", "sha256:e2"), first)
+    assert both.startswith("harness drift and environment drift:")
+    older = experiments.drift_message(trial("t/a/2", "sha256:c2", None, None), first)  # a trial from before #131
+    assert "differs from trial t/a/1" in older

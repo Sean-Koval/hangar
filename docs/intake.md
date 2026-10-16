@@ -74,15 +74,16 @@ hangar config set jira '{
 | `trigger.status`, `trigger.label` | An issue moved to this status, or given this label (or created with either), starts a job |
 | `statuses` | The status to move the issue to at each stage, by name. Leave out any you don't want. The transition into it must exist from where the issue is; if it doesn't, hangar notes that on the job and leaves the status alone |
 | `max_age_minutes` | How old a delivery's `timestamp` may be (120) |
+| `automation_max_transition_age_minutes`, `automation_max_starts_per_issue_per_day` | The [Automation fallback](#fallback-an-automation-rule) only: how recent the issue's trigger transition must be (10), and how many jobs one issue may start a day (3) |
 
 A stage's status can't be the trigger status: hangar would move the issue back into the trigger and start the job again. `hangar doctor` checks the configuration, that the credentials are stored, that the token works (`GET /myself`) and that every mapped repo is allowlisted.
 
-### Or: an Automation rule
+### Fallback: an Automation rule
 
-If you'd rather decide in a rule (for example, only for bugs with a priority), use Automation instead of the webhook's issue events. Keep the webhook for **Comment created** so answers and approvals still reach hangar.
+**Use the signed webhook above for issue events.** It signs the whole body with its secret, so nothing in a delivery can be forged. An Automation rule's **Send web request** can't sign anything, so it is only a fallback, for a team that needs a rule's conditions (for example, only bugs with a priority) and can't express them in the webhook's JQL. Keep the webhook for **Comment created** either way: answers and approvals come only through it.
 
-1. Store a random token: `hangar cred add jira-automation --harness webhook --kind generic`, and set `"automation_token_credential": "jira-automation"` in the configuration.
-2. Create a rule with your trigger and conditions, then the action **Send web request**:
+1. Store a random token: `hangar cred add jira-automation --harness webhook --kind generic --value "$(openssl rand -base64 32)"`, and set `"automation_token_credential": "jira-automation"` in the configuration.
+2. Create a **global** rule (project admins can edit project-scoped rules) with your trigger and conditions, then the action **Send web request**:
    - **URL:** `https://<your hangar>/api/hooks/jira`, method `POST`
    - **Headers:** `X-Hangar-Token` with the token, marked **Hidden**; `Content-Type: application/json`
    - **Web request body:** Custom data:
@@ -91,7 +92,21 @@ If you'd rather decide in a rule (for example, only for bugs with a priority), u
       "issue": {"key": "{{issue.key}}"}}
      ```
 
-Automation doesn't sign requests, so the hidden token stands in for the signature. It only proves the request came through a rule that holds it: it isn't tied to the body, and anyone who can edit the rule can change its body, or its URL and with it where the header goes. So hangar trusts nothing in the body but the issue key and the timestamp. It reads the issue through the API, and the job belongs to whoever the issue's history says moved it into the trigger status or gave it the trigger label (a `user` in the body is ignored). Prefer the webhook with a secret, which signs the whole body, and rotate the token (`hangar cred add jira-automation …` again, then the rule's header) when someone who could edit the rule leaves. Project admins can edit project-scoped rules, so keep the rule global.
+The hidden token stands in for a signature, but it only proves the request came from someone who holds it. It isn't tied to the body, the body's `{{now}}` is whatever the sender writes, and anyone who can edit the rule can change its body, or its URL and with it where the header goes. So hangar checks the request against Jira itself:
+
+- **Only the issue key and timestamp are read.** Hangar reads the issue through the API. The job belongs to whoever the issue's history says moved it into the trigger status or gave it the trigger label (or its creator, when it was created that way); a `user` in the body is ignored.
+- **The issue must have just been moved.** That change must be at most `automation_max_transition_age_minutes` (10) old when the request arrives, allowing `max_age_minutes` of clock skew the other way. A rule fires right after the transition, so an older one means someone is replaying the token for an issue a teammate moved long ago. Hangar answers `200 {"ignored": "no recent transition"}`, audits `hook.automation.stale_transition` (the issue, who moved it and how long ago) and alerts the admins.
+- **At most `automation_max_starts_per_issue_per_day` (3) jobs per issue a day** start this way. Each issue has its own count, so moving a whole sprint at once isn't held up. Refusals are audited as `hook.automation.capped`.
+- **The token only sends `hangar:automation` requests.** A token-authenticated body posing as a webhook event (`jira:issue_updated`, `comment_created`) is ignored, audited (`hook.automation.wrong_event`) and alerted.
+- **Alerts.** A stale transition, a wrong event or a wrong token raises an `alert` in the admins' [inbox](landing.md#7-the-inbox-what-needs-you) and, with the [Slack app](slack.md) configured, a DM to each admin with a linked Slack account. There is at most one alert an hour per issue (and one an hour for wrong tokens); every refusal is still audited.
+
+**Rotate the token** every 90 days, and whenever someone who could edit the rule leaves:
+
+```bash
+hangar cred add jira-automation --rotate    # a new random token, shown once, and the rule's steps
+```
+
+The old token stops working at once. In the rule's **Send web request** action, set the `X-Hangar-Token` header to the new value (still Hidden), publish, and move a test issue. `hangar doctor` warns when the token is more than 90 days old, and while `automation_token_credential` is set but issue events don't arrive through the signed webhook (no `webhook_secret_credential`, or no signed issue event in 30 days). `automation_max_transition_age_minutes` and `automation_max_starts_per_issue_per_day` go in `HANGAR_JIRA` beside `max_age_minutes`.
 
 ### Talking to the job from the issue
 
@@ -146,7 +161,7 @@ When an item moves to the trigger column, hangar reads the item and its issue in
 
 ## How deliveries are handled
 
-- **Authentic.** Jira's signature (or the Automation token) and GitHub's signature are checked in constant time before anything is parsed. Jira's payload `timestamp` sits inside the signed body and must be recent (`max_age_minutes`).
+- **Authentic.** Jira's signature (or the Automation token) and GitHub's signature are checked in constant time before anything is parsed. Jira's payload `timestamp` sits inside the signed body and must be recent (`max_age_minutes`). The Automation token signs nothing, so an Automation request also needs a recent trigger transition in the issue's own history, and is capped per issue ([above](#fallback-an-automation-rule)).
 - **Within 1 MB.** A Jira delivery larger than 1 MB (in practice, a very long description) isn't taken: hangar answers `413`. One that is authentic and fresh is audited (`jira.too_large`, with its size and delivery id), and if its issue is in the trigger status or has the trigger label, hangar comments on the issue once a day that the description is too large to start a job from. Jira doesn't retry a `413`, so shorten the description (attach long logs as files) and move the issue again.
 - **Once.** Each delivery is claimed (by the digest of its signed body) before it's handled and marked done after. A retry of one that was handled is acknowledged and dropped, and a replay can't pass as new by changing an unsigned header. One that failed half way, or hit a rate limit, runs again on the sender's retry. Jira treats only `200` as delivered, so hangar answers `200` for everything handled or ignored, `429` when rate limited and `503` when misconfigured, which Jira retries.
 - **One job per ticket.** A ticket with an unfinished job doesn't start a second.

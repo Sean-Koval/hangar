@@ -422,6 +422,14 @@ class JobService:
             spec.pick_harness(defaults.harness)
         except ValueError as e:
             raise JobError(str(e)) from e
+        try:  # --- #125: a job never runs on a subscription login: say so now, not at the claim. (An experiment's
+            # own job starts no sandbox; each trial is checked as it is submitted.)
+            if req.labels.get(experiments.KIND_LABEL) != experiments.KIND:
+                teamcreds.check_job(self.fleet, env, defaults.harness, caller.person,
+                                    req.repo or (spec.repo.url if spec.repo else None),
+                                    strict=experiments.EXP_LABEL in (req.labels or {}))
+        except teamcreds.SubscriptionRefused as e:
+            raise JobError(str(e)) from e
         attempts = strategies.check_submit(req, self.settings.best_of_n_max)
         job_budget = jobbudget.resolve(req.job_budget, policy, self.settings)  # --- frontdoor
         if why := jobbudget.check_submit(job_budget, attempts, req.judge):
@@ -828,6 +836,8 @@ class JobService:
         job.sandbox_id = sb.id
         job.harness = job.harness or sb.info.get("harness")
         job.repo = job.repo or sb.repo
+        for w in sb.info.get("credential_warnings") or []:  # --- #125: HANGAR_SUBSCRIPTION_LOGINS=any
+            self._event(job, f"warning: {w}")
         self._save(job)
         if job.cancel_requested:
             await self._discard_sandbox(job)
@@ -1453,7 +1463,8 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
         if decision := approval_command(extra):
             if is_pr:
                 return {"ignored": "approvals are for jobs waiting on an issue"}
-            return await github_decision(svc, f"github:{repo}#{number}", sender, trusted, decision)
+            return await github_decision(svc, f"github:{repo}#{number}", sender, trusted, decision,
+                                         linked.id if linked else None)  # --- approvals (#121)
         if is_pr and not trusted:
             svc.admission.refused(f"owner:github:{sender}", f"github:{sender}", "github.refused",  # front-door-auth
                                   f"github:{repo}#{number}", why="untrusted follow-up")

@@ -12,7 +12,7 @@ repo:
 verify: bash scripts/ci/verify.sh
 skills:
   - path: skills/repo-conventions
-credentials: []            # e.g. [claude-pro, codex-chatgpt, openrouter, github-hangar]; filtered per harness
+credentials: []            # e.g. [claude-api, codex-api, openrouter, github-hangar]; filtered per harness
 # MCP servers are written in each harness's own config format when a sandbox is claimed.
 # ${VAR} references resolve against env injected into the sandbox (credentials and `secrets`).
 mcp:
