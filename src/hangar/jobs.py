@@ -1385,7 +1385,8 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
         if decision := approval_command(extra):
             if is_pr:
                 return {"ignored": "approvals are for jobs waiting on an issue"}
-            return await github_decision(svc, f"github:{repo}#{number}", sender, trusted, decision)
+            return await github_decision(svc, f"github:{repo}#{number}", sender, trusted, decision,
+                                         linked.id if linked else None)  # --- approvals (#121)
         if is_pr and not trusted:
             svc.admission.refused(f"owner:github:{sender}", f"github:{sender}", "github.refused",  # front-door-auth
                                   f"github:{repo}#{number}", why="untrusted follow-up")

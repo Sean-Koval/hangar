@@ -423,6 +423,11 @@ class JobApproval(BaseModel):
     decided_by: str | None = None
     decided_at: float | None = None
     decision: Literal["approved", "rejected", "expired"] | None = None
+    # --- approvals (#121): the deciding person, whether it was their own work (HANGAR_SELF_APPROVAL=allow_solo), and
+    # the rule that let them decide: admin | repo_approver | front_door | solo | system (approvals.can_decide)
+    decided_person: str | None = None
+    self_approved: bool = False
+    rule: str | None = None
 
 
 # --- workstream D: forks/best-of-N

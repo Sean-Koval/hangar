@@ -551,7 +551,7 @@ Work enters hangar through REST, MCP, A2A, GitHub webhooks, Slack, signed inboun
 | Front door | Who can start or steer work | Fence |
 | --- | --- | --- |
 | REST, A2A | An admin token: anything. A `jobs` token: its own jobs only (another token's job id or A2A `contextId`/`taskId` is "not found") | `jobs` tokens: repos in `HANGAR_GITHUB_REPOS` and their environments, no provider choice, their `max_budget` |
-| MCP | Admin tokens, and people's `user` and `mcp` tokens; an OAuth grant acts as the token that approved it | A member's tokens reach only their own work ([People](#people)); `mcp` tokens can't set `secrets`, `image`, `base`, `runtime_class` or `credential_mode: direct` on an environment, or call admin-only tools |
+| MCP | Admin tokens, and people's `user` and `mcp` tokens; an OAuth grant acts as the token that approved it | A member's tokens reach only their own work ([People](#people)); `mcp` tokens can't set `secrets`, `image`, `base`, `runtime_class` or `credential_mode: direct` on an environment, call admin-only tools, or approve jobs |
 | GitHub | Linked accounts and trusted people ([triggers.md](triggers.md#1-who-can-start-work-from-github)); anyone else's trigger waits for approval, and their comments can't continue a job or answer its question. A person's job is continued only by that person's linked account | mapped repos, their environments |
 | Slack | Linked accounts; members of your workspace in a mapped channel (or `HANGAR_SLACK_USERS`); Slack Connect guests from other organizations only when listed. A person's job is continued only by them | like a `jobs` token |
 | Inbound webhooks | Whoever holds the source's HMAC key | the source's configured repo and environment |
@@ -589,7 +589,7 @@ Bodies are capped before the route runs, because FastAPI parses a JSON body befo
 
 ### Audit
 
-Every approval decision (`job.approve`, `job.reject`, `job.approval_expired`, `job.approve.refused`) and every refused request is in the audit log (`GET /api/audit`, the dashboard's audit view):
+Every approval decision (`job.approve`, `job.reject`, `job.approval_expired`, `job.approve.refused`, `job.reject.refused`) and every refused request is in the audit log (`GET /api/audit`, the dashboard's audit view). One rule decides approvals on every path, MCP, REST, GitHub and Jira: an admin or a repo policy approver, with a login token over MCP and REST, never on their own job ([who may approve](triggers.md#who-may-approve)). Each decision records the deciding person, whether it was a self-approval (`HANGAR_SELF_APPROVAL=allow_solo`) and the rule that allowed it:
 
 - `request.rejected`: any 401, 403, 413 or 429 answer, with the client address, method and path;
 - `job.refused`: a submission or follow-up that was refused, with why (`rate_limited`, `too_many_active`, `invalid`, which covers a token's fence) and the caller;
