@@ -13,6 +13,11 @@
   grant for their clone and nothing else: no credential (without the gateway, not even git's), no `secrets:`, no
   cloud tokens; a build's mapped build secrets reach its install command alone (envbuilds._install).
 
+* **Sealed** (an experiment's grader; part B adds replays and forks): it runs agent-written code against material that
+  must not leave (hidden tests). It holds what a build holds, and on top of that egress `none` with *no* harness, MCP
+  or cloud host (only hangar's read-only package mirror with `network: mirror`), always on the proxy-only network, and
+  none of the environment's `mcp:`, `computer:` or services (`seal`, egress.resolve(sealed=True)).
+
 Without the gateway a job's sandbox holds the environment's git token (credential_mode: direct), which hangar can't
 narrow; landing refuses to land such a job, and `hangar doctor` says so.
 """
@@ -33,12 +38,75 @@ if TYPE_CHECKING:
 
 DELIVERY_MINUTES = 10  # a delivery grant's life: one push of at most HANGAR_GATEWAY_MAX_PUSH_MB
 GRADER_LABEL = "hangar.experiment.grader"  # --- review(#114): experiments.GRADER_LABEL; it runs a trial's code
+# --- sealed (#126): the labels of sandboxes that get the sealed profile. Part B adds its replay and fork labels here.
+SEALED_LABELS = (GRADER_LABEL,)
+NETWORK_LABEL = "hangar.sealed.network"  # "mirror": a sealed sandbox may read hangar's package mirror; else nothing
 
 
 def builds_repo_code(sb: Sandbox) -> bool:
     """A repo build's sandbox or env setup's validation: it runs the repo's `install`, and holds nothing for it.
     --- review(#114): so does an experiment's grader, which runs the trial's agent-written patch."""
     return BUILD_LABEL in sb.labels or VALIDATE_LABEL in sb.labels or GRADER_LABEL in sb.labels
+
+
+def sealed(sb: Sandbox) -> bool:
+    """--- sealed (#126): a sandbox that runs agent-written code beside material that must not leave it (an
+    experiment's grader and its hidden tests). A label only ever takes away from its own sandbox, so anyone setting
+    it gains nothing."""
+    return any(k in sb.labels for k in SEALED_LABELS)
+
+
+def sealed_mirror(sb: Sandbox) -> bool:
+    """A sealed sandbox that may read hangar's read-only package mirror (`Grader.network: mirror`)."""
+    return sealed(sb) and sb.labels.get(NETWORK_LABEL) == "mirror"
+
+
+def sealed_setup_hosts(sb: Sandbox) -> tuple[str, ...]:
+    """The hosts a sealed sandbox reaches while it is set up: its repo's git host, when it clones without the git
+    gateway (through the gateway it needs no host), until `lock_sealed`. Before that only hangar's commands ran in it
+    (the clone, the base checkout, `git apply`), none of the code it grades."""
+    from urllib.parse import urlsplit
+
+    if not sealed(sb) or (sb.info.get("sealed") or {}).get("locked") or not sb.repo:
+        return ()
+    if (sb.info.get("git") or {}).get("mode") == "gateway":
+        return ()
+    u = urlsplit(sb.repo)
+    return (u.hostname,) if u.scheme in ("https", "http") and u.hostname else ()
+
+
+def lock_sealed(fleet: Fleet, sb: Sandbox) -> Sandbox:
+    """Before a sealed sandbox runs the code it grades: no host at all from now on (the setup's git host goes), its
+    git grant revoked (and the GitHub API and caches behind it), the egress proxy's cached policy dropped. Saved
+    before it returns, so a failure leaves the grade erroring, not the sandbox open."""
+    sb = fleet.get(sb.id)
+    sb.info["sealed"] = {**(sb.info.get("sealed") or {}), "locked": True}
+    fleet.store.put(sb)
+    fleet.gateway.revoke(sb.id)
+    fleet.egress.invalidate(sb.id)
+    return sb
+
+
+def seal(spec: EnvSpec, sb: Sandbox) -> EnvSpec:
+    """The environment as a sealed sandbox gets it: egress `none` (egress.for_sandbox resolves it with
+    sealed=True: no harness, MCP or cloud host), no `mcp:`, no `computer:`, no services, no `secrets:`, no cloud
+    identity, and never from (or refilling) the warm pool. Called after the image is resolved, so the image is the
+    environment's own (built, or its repo build's). Anything not sealed is returned as it is."""
+    if not sealed(sb):
+        return spec
+    from hangar.egress import EgressSpec
+
+    return spec.model_copy(update={
+        "egress": EgressSpec(mode="none", presets=[], allow=[]), "mcp": {}, "computer": None, "services": {},
+        "secrets": {}, "cloud": None, "warm_pool": 0, "warm_pool_hours": None})
+
+
+def provider_spec(spec: EnvSpec, sb: Sandbox) -> EnvSpec:
+    """A sealed sandbox's spec as its provider gets it: a name of its own, so on Kubernetes it has a SandboxTemplate
+    of its own (the environment's would flip to the proxied network and back)."""
+    if not sealed(sb):
+        return spec
+    return spec.model_copy(update={"name": f"{spec.name[:40]}-sealed"[:63], "warm_pool": 0, "warm_pool_hours": None})
 
 
 def clone_credentials(fleet: Fleet, names: list[str], labels: dict[str, str]) -> list[str]:

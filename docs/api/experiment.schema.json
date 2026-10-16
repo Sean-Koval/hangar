@@ -72,7 +72,16 @@
           "verify": {"type": ["object", "null"], "properties": {"command": {"type": ["string", "null"]}, "exit_code": {"type": ["integer", "null"]}, "passed": {"type": ["boolean", "null"]}, "new_failures": {"type": ["array", "null"]}, "tail": {"type": ["string", "null"]}}},
           "tests": {"description": "The trial's parsed test results, when hangar has them."},
           "usage": {"type": ["object", "null"]},
-          "grade": {"type": ["object", "null"], "properties": {"command": {"type": "string"}, "exit_code": {"type": "integer"}, "tail": {"type": "string"}, "data": {}, "error": {"type": "string"}, "applied": {"type": "boolean"}, "seconds": {"type": "number"}}},
+          "grade": {"type": ["object", "null"], "properties": {
+            "command": {"type": "string"}, "exit_code": {"type": "integer"}, "tail": {"type": "string"}, "data": {}, "error": {"type": "string"}, "applied": {"type": "boolean"}, "seconds": {"type": "number"},
+            "files_mode": {"enum": ["pristine", "in_repo"], "description": "Where the grader's files were: outside the repo, at $HANGAR_HIDDEN_TESTS (pristine, the default), or in the repo as before (in_repo). Added within v1 (#126)."},
+            "network": {"enum": ["none", "mirror"], "description": "What the sealed grader's sandbox could reach: nothing, or hangar's read-only package mirror. Added within v1 (#126)."},
+            "trust": {"enum": ["isolated", "best_effort", "low"], "description": "How far the grade can be trusted: low for files_mode in_repo; best_effort otherwise in this version (the trial's code could still write $HANGAR_GRADE_OUT). Added within v1 (#126)."},
+            "runner": {"enum": ["hangar-grade", "command"], "description": "Whether the command used the safe runner (hangar-grade) or ran the tests itself. Added within v1 (#126)."},
+            "tamper_signals": {"type": "array", "description": "Files the trial's patch added or changed that can hook a test run before the tests (conftest.py, sitecustomize.py, usercustomize.py, *.pth, pytest settings). Signals, not refusals. Added within v1 (#126).", "items": {"type": "object", "required": ["path", "kind"], "properties": {"path": {"type": "string"}, "kind": {"enum": ["conftest", "sitecustomize", "usercustomize", "pth", "pytest-config"]}}}},
+            "hidden_tests": {"type": "object", "description": "The hidden tests' junit counts, when hangar-grade wrote them. Added within v1 (#126).", "properties": {"passed": {"type": "integer"}, "failed": {"type": "integer"}, "error": {"type": ["integer", "string"]}, "skipped": {"type": "integer"}, "total": {"type": "integer"}, "truncated": {"type": "boolean"}}},
+            "notes": {"type": "array", "items": {"type": "string"}}
+          }},
           "stored": {"type": "array", "items": {"enum": ["manifest.json", "trace.json"]}},
           "drift": {"type": "array", "items": {"type": "string"}, "description": "Why this trial's configuration differs from an earlier trial of its variant; each message names the half that drifted (\"harness drift\", \"environment drift\")."},
           "links": {"type": "object", "properties": {"job": {"type": ["string", "null"]}, "manifest": {"type": ["string", "null"]}, "trace": {"type": ["string", "null"]}}}

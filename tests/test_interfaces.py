@@ -133,6 +133,12 @@ async def jobs(fleet, world, settings, store, broker, monkeypatch):
             (d / "SKILL.md").write_text(f"baked {name}\n")
 
     monkeypatch.setattr(fake, "create", create_with_baked_skills)
+    from hangar import egress
+
+    async def proxy_url(fleet_, prov, sb):  # --- sealed (#126): a grader is always proxied; the fake has no network
+        return "http://127.0.0.1:9"
+
+    monkeypatch.setattr(egress, "_proxy_url", proxy_url)
     sessions = SessionService(fleet, Vault(store, b"0" * 43 + b"="))
     await sessions.start()
     svc = JobService(fleet, sessions, transport=httpx.MockTransport(Hooks()))
@@ -673,7 +679,8 @@ async def test_an_experiment_of_two_variants_and_two_trials(jobs, world, fleet, 
                                     "instructions_append": "Prefer small diffs."},
                      "none": {"skills": [], "instructions": "Only these instructions."}},
         "trials": 2, "parallel": 4, "keep_minutes": 5,
-        "grader": {"command": "cat seen.txt hidden_test.txt; test -f hidden_test.txt && "
+        "grader": {"command": "cat seen.txt \"$HANGAR_HIDDEN_TESTS/hidden_test.txt\"; test ! -e hidden_test.txt && "
+                              "test \"$HANGAR_REPO\" = \"$PWD\" && test -f \"$HANGAR_HIDDEN_TESTS/hidden_test.txt\" && "
                               "printf '{\"score\": 1, \"trial\": \"%s\"}' \"$HANGAR_TRIAL\" > \"$HANGAR_GRADE_OUT\"",
                    "files": {"hidden_test.txt": "the agent never saw this\n"}, "timeout_seconds": 60}})
     exp = experiments.submit(jobs, spec, Caller("alice", "tok-a", person="alice"))
@@ -720,6 +727,9 @@ async def test_an_experiment_of_two_variants_and_two_trials(jobs, world, fleet, 
         g = t["grade"]
         assert g["exit_code"] == 0 and g["data"] == {"score": 1, "trial": t["key"]}, g
         assert g["applied"] is True and "the agent never saw this" in g["tail"]
+        # --- sealed (#126): pristine hidden tests (outside the repo), no network, and the trust that gives
+        assert g["files_mode"] == "pristine" and g["network"] == "none" and g["trust"] == "best_effort"
+        assert "tamper_signals" not in g
     assert all(len(d) == 1 for d in by_variant.values()) and len(set().union(*by_variant.values())) == 2
     # the grader ran outside the agent's sandbox, and its sandbox is gone
     graders = [sb for sb in fleet.list(include_stopped=True) if sb.labels.get(experiments.GRADER_LABEL) == exp.id]
@@ -823,7 +833,12 @@ async def test_the_graders_sandbox_holds_nothing_the_trials_code_could_take(flee
         return await real(prov, sb, spec)
 
     monkeypatch.setattr(fleet.cloud, "attach", attach)
-    from hangar import delivery
+    from hangar import delivery, egress
+
+    async def proxy_url(fleet_, prov, sb):  # --- sealed (#126): a grader is always proxied; the fake has no network
+        return "http://127.0.0.1:9"
+
+    monkeypatch.setattr(egress, "_proxy_url", proxy_url)
 
     assert delivery.GRADER_LABEL == experiments.GRADER_LABEL
     labels = {experiments.GRADER_LABEL: "job-exp", experiments.TRIAL_LABEL: "t/a/1"}
