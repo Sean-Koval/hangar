@@ -17,6 +17,35 @@ code:
 - **The heavy tier**: Docker inside a VM of the sandbox's own, Compose stacks under the supervisor, and bigger
   resource profiles, for repos that test with `docker compose` or Testcontainers ([below](#the-heavy-tier)).
 
+## How `extends` merges
+
+An environment spec can `extends` another (the shipped `envs/*.yaml`, a saved one, or `hangar env` /
+`create_environment` cloning one). The child is laid over the parent field by field:
+
+| Field kind | Rule | Fields |
+| --- | --- | --- |
+| Scalars | the child's value replaces | `image`, `model`, `verify`, `install`, `resources.cpus`, ... |
+| Maps | merge by key; the child's key wins; `KEY: null` deletes the parent's key | `mcp`, `secrets`, `env`, `files`, `agent_config.files`, `services`, `tools.mise`, `build_secrets` |
+| Component lists | the child's list **replaces** the parent's (`[]` empties it) | `skills`, `harnesses`, `credentials`, `terminals`, `ports`, and every list not named below |
+| Additive build inputs | **union** with the parent's, in order, without duplicates | `tools.apt`, `dependencies.pip`, `dependencies.npm`; and `egress.allow` (hosts add up along a chain, as before) |
+
+Installing one more package never changes what the agent is told, so build inputs add up. What shapes the agent's
+behaviour (skills, harnesses, credentials) is the child's to state whole. To drop one inherited skill without
+restating the rest, name it in `skills_remove`:
+
+```yaml
+name: python-no-conventions
+extends: claude-python
+skills_remove: [repo-conventions]   # by the skill's name (its `name`, else its directory's)
+```
+
+`skills_remove` applies once, to the merged list, and is not inherited. Naming a skill the environment doesn't have
+is an error that lists the names it has. The table is `envspec.LIST_MERGE`. A repo's `.hangar/environment.yaml`
+follows it too: each field it sets replaces the environment's (every list it may set replaces under `extends` as
+well). An experiment variant's `skills` and `skills_remove` have the same meaning ([jobs.md](jobs.md#9-experiments)).
+Before #132 every list except `harnesses`, `credentials`, `terminals` and `ports` was appended. `hangar env
+migrate-merge --dry-run` lists which environments resolve differently ([upgrading.md](upgrading.md#the-extends-merge-rules-132)).
+
 ## The file
 
 ```yaml

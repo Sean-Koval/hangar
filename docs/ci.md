@@ -41,7 +41,8 @@ There are no reruns before the merge: a test that fails, fails the PR.
 - **Test helper modules** count as part of the tests that import them. For example, many files import
   `tests/test_jobs.py` for its fixtures.
 - **Tests that read every module's source** (they build `"src" / "hangar"`, like `test_sweep_caps.py`) run for any
-  hangar change.
+  hangar change. That includes `test_scope_parity.py`, so a change to `mcp_server.py`, `app.py` or any module that
+  mounts routes runs the REST/MCP scope check ([security.md](security.md#scopes)).
 - **Non-Python paths** map to the tests that read them, through a table in the script: `envs/`, `envd/`,
   `scripts/acceptance/`, `deploy/` and `docs/gke.md`. Docs, `*.md`, the Dockerfile and terraform select no tests.
 - **The whole suite runs** for any of these:

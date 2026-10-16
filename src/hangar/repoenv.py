@@ -216,6 +216,8 @@ def apply(spec: EnvSpec, cfg: RepoEnvironment | None) -> EnvSpec:
     environment's). The repo policy's `verify` sits between them; jobs resolve that (repopolicy.resolve)."""
     if cfg is None:
         return spec
+    # #132: the same table `extends` uses (envspec.LIST_MERGE): every list the file may set replaces there too
+    # (tests/test_repoenv.py keeps them in step); `services` replaces whole, as envservices reads it.
     update = {f: getattr(cfg, f) for f in RUNTIME_FIELDS if getattr(cfg, f) is not None}
     if not update:
         return spec
