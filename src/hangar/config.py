@@ -327,8 +327,13 @@ class Settings(BaseSettings):
     # --- harness locks (#134, harness_thaw.py, docs/harness-lock.md): the harness registry, a checkout of the team
     # harness repo (harnesses/<name>/harness.lock, channels.yaml) that `harness_lock: name@rN` resolves against; and
     # what turn 1's drift from the lock does: warn (a warning, an event, a review-packet line) or fail (the turn stops).
+    # #138 (harness_repo.py): harness_repo is a local directory, or a git URL with an optional #ref, which hangar keeps
+    # a checkout of, refreshed every harness_repo_refresh_seconds and on a GitHub push webhook. default_harness (e.g.
+    # team-default@stable) is the lock intake jobs run from when they name no harness, model or lock; off when unset.
     harness_repo: str | None = None
     harness_drift: Literal["warn", "fail"] = "warn"
+    harness_repo_refresh_seconds: int = 600
+    default_harness: str | None = None
     # The egress proxy's port. On GKE it listens on HANGAR_EGRESS_HOST (default HANGAR_GATEWAY_HOST, then HANGAR_HOST)
     # when HANGAR_EGRESS_URL is set; on Docker on the egress network's gateway address, when a sandbox needs it.
     egress_port: int = 3128

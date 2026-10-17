@@ -238,5 +238,8 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
     from hangar import outbox  # --- outbox (#163, #189): a backlog, withheld objects, retention held for export
 
     out += outbox.doctor_checks(h)
+    from hangar import harness_repo  # --- #138: the team harness repo: reachable, last refresh, channels
+
+    out += harness_repo.doctor_checks(h)
     await asyncio.sleep(0)
     return out

@@ -911,6 +911,18 @@ harness_locks.get_outdated:
   rest: GET /api/harness-locks/{ref}/outdated
   scope: user
   owner: guard
+harness_locks.list:
+  server: hangar
+  mcp: null
+  rest: GET /api/harness-locks
+  scope: user
+  owner: guard
+harness_locks.refresh:
+  server: hangar
+  mcp: null
+  rest: POST /api/harness-locks/refresh
+  scope: admin
+  owner: admin
 harnesses.get:
   server: hangar
   mcp: null

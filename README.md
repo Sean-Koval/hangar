@@ -221,6 +221,8 @@ uv run hangar env build my-service
 
 Ask your client to create a sandbox from `my-service`. It will use the configured repo and credential. `warm_pool: 1` keeps one sandbox pre-started for faster claims.
 
+To share one harness (instructions, skills, Claude Code plugins) across a team, freeze it from a good run into a harness repo and run from it by name: see [harness locks](docs/harness-lock.md#the-team-harness-repo).
+
 Built-in foundations include `bare`, `python`, `node`, `go`, and `polyglot`. Use [the environment reference](docs/guide.md#environment-specs) for additional tools, skills, secrets, MCP servers, and multiple agent choices.
 
 ## Everyday commands

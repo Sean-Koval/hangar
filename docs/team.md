@@ -166,11 +166,20 @@ hangar cred migration
 
 Your logins then never reach a member's sandbox, nor a job no person owns. Make the ones the team may share the team's (`hangar cred owner gh-pat team`, for an API key or token), add team API keys, and link your own GitHub login (`hangar person link owner github <login>`) so your issues keep running with your login. `GET /api/credentials/migration` returns the same record.
 
+## A shared harness
+
+The team's harness (its instructions, skills and Claude Code plugins) lives in a harness repo of its own, frozen from a
+run that went well, and hangar runs from it by name: `harness_lock: team-default@stable` on a job or session, and for
+intake jobs by default with `HANGAR_DEFAULT_HARNESS=team-default@stable`. Set `HANGAR_HARNESS_REPO` to the repo's
+URL; see [the team harness repo](harness-lock.md#the-team-harness-repo).
+
 ## Check it: `hangar doctor`
 
 - **personal credentials shared**: fails for any subscription login stored as a team credential, and says what the migration did.
 - **team credentials for jobs**: mapped repos (GitHub and Slack), inbound webhooks and schedules without a person whose environment's harness would get no login, and repos whose `credentials: person` policy makes unlinked senders' jobs fail.
 - **subscription logins**: warns for mapped repos, webhooks and schedules whose harness would find only subscription logins, and for people whose only logins for a harness are subscriptions (their jobs fail while their sessions work); fails under `HANGAR_SUBSCRIPTION_LOGINS=any`.
+- **harness repo**: when `HANGAR_HARNESS_REPO` is set, whether it is reachable, when it was last refreshed, and
+  whether every channel resolves.
 - **unlinked senders**: GitHub, Slack, Jira and GitHub Projects accounts linked to nobody that started 3 or more jobs in the last 14 days, with the `hangar person link` command for each.
 
 ## REST

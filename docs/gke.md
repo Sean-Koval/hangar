@@ -49,6 +49,12 @@ kubectl apply -k deploy/k8s
 
 Point your domain's A record at `terraform output static_ip`. The managed certificate provisions in about 15 minutes.
 
+To run jobs from the team's harness repo, add to `deploy/k8s/config.yaml`
+`HANGAR_HARNESS_REPO: https://github.com/<org>/<team-harnesses>#main` (read with the GitHub App; install it on that
+repo with Contents: read) and, to make it intake jobs' default, `HANGAR_DEFAULT_HARNESS: team-default@stable`. The
+control plane keeps the checkout on its disk and refreshes it every 10 minutes
+([harness-lock.md](harness-lock.md#the-team-harness-repo)).
+
 ### Run capture bucket
 
 Terraform also creates `<project>-hangar-runs` (`enable_run_bucket`, default on; `deploy/terraform/gke/outbox.tf`) for
