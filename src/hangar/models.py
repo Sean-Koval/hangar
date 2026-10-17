@@ -444,6 +444,15 @@ class LandingState(BaseModel):
     push_mode: str | None = None  # gateway | direct: whether the sandbox held a GitHub token
     note: str | None = None  # why it isn't landing yet
     ended: bool = False  # merged or closed: the session took its final checkpoint and let the sandbox go
+    # --- self-approval (#160): the hangar people linked to the repo policy's approvers (job's own person aside),
+    # resolved at delivery; and whether the requester's own approval was refused, so the PR needs one of them
+    approver_people: list[str] = Field(default_factory=list)
+    needs_second: bool = False
+    # --- AI review (#161): the independent first-pass review of the PR's head: {job, harness, model, head_sha,
+    # verdict (approve | comment | blocking; None while pending; "error" when it produced none), findings, summary,
+    # independent, at, review_id, url, source (hangar | check:<name>)}; and when the last one was asked for
+    ai_review: dict[str, Any] | None = None
+    ai_review_requested_at: float | None = None
 
 
 class JobApproval(BaseModel):
@@ -503,7 +512,9 @@ class Job(BaseModel):
     source: Literal["api", "mcp", "cli", "github", "webhook", "schedule", "slack", "a2a",
                     "jira", "github-projects",
                     "env-setup",
-                    "experiment"] = "api"  # --- intake; --- autoinstall: env setup's jobs; --- interfaces: trials
+                    "experiment",
+                    "review"] = "api"  # --- intake; --- autoinstall: env setup's jobs; --- interfaces: trials;
+    # --- AI review (#161): `review` is an independent first-pass review of an agent PR (aireview.py)
     source_ref: str | None = None  # e.g. "github:owner/repo#12"
     requester: str = "system"
     owner: str | None = None  # token id ("tok-…"), "admin", or "github:<login>"; jobs-scoped tokens see only theirs
@@ -558,6 +569,7 @@ class Job(BaseModel):
     landing: LandingState = Field(default_factory=LandingState)  # --- landing
     taint: dict[str, Any] | None = None  # --- taint (#129): its untrusted input, and its sessions' taint (mirrored)
     harness_lock: dict[str, Any] | None = None  # --- harness locks (#134): the lock it runs from (harness_thaw.pin)
+    force_admitted_by: str | None = None  # --- review capacity (#159): an admin let it past the open-PR cap
 
 
 # ---------------------------------------------------------------------------- scheduled jobs (workstream A)

@@ -995,6 +995,12 @@ inbox.get:
   owner: guard
   exception: the REST route takes a person's `user` login (app.person_actor); MCP also takes their `mcp` tokens and OAuth
     grants. Both are fenced to the person's own records
+job.admit:
+  server: hangar
+  mcp: null
+  rest: POST /api/jobs/{job_id}/admit
+  scope: admin
+  owner: admin
 job.approve:
   server: hangar
   mcp: approve_job
@@ -1382,6 +1388,12 @@ repos.put_policy:
   server: hangar
   mcp: null
   rest: PUT /api/repos/policy
+  scope: admin
+  owner: admin
+review_capacity.get:
+  server: hangar
+  mcp: null
+  rest: GET /api/review-capacity
   scope: admin
   owner: admin
 revoke.post:
