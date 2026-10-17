@@ -205,6 +205,15 @@ class Person(BaseModel):
     # --- teamcreds: their accounts elsewhere ("github:octocat", "slack:U012AB3CD", "jira:<account id>",
     # "email:a@b.co"): jobs from those senders run for this person (people.resolve_external)
     links: list[str] = Field(default_factory=list)
+    # --- inbox delivery (#157, #158; inbox_notify.py): what reaches them in a Slack DM. `notify`: off, questions
+    # (their own agents' questions and approvals, at once) or all (admins: also the team's, nobody's in particular);
+    # `quiet`: "HH:MM-HH:MM" in `tz` when nothing but an expiring approval is sent; `digest`: local times of the
+    # twice-daily digest (empty: none), weekdays unless `digest_weekends`
+    notify: Literal["off", "questions", "all"] = "questions"
+    quiet: str | None = None
+    tz: str = "America/New_York"
+    digest: list[str] = Field(default_factory=lambda: ["10:15", "16:00"])
+    digest_weekends: bool = False
 
 
 class AuditEvent(BaseModel):

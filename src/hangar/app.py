@@ -24,6 +24,7 @@ from hangar import envbuilds as envbuilds  # --- envbuilds
 from hangar import exchange, observe  # --- observe
 from hangar import fairness as fairness  # --- review capacity (#159)
 from hangar import ghprojects as ghprojects  # --- intake: registers the GitHub Projects write-back
+from hangar import inbox_notify as inbox_notify  # --- inbox delivery (#157, #158)
 from hangar import modelpolicy as modelpolicy  # --- canary
 from hangar import outbox as outbox  # --- outbox (#163): run capture
 from hangar import people as people  # --- teamcreds
@@ -350,6 +351,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         h.rotation.resume()  # --- durable: a key rotation a restart interrupted carries on
         h.retention.start()  # --- scale
         h.ops.start()  # --- clouddoctor
+        inbox_notify.of(h.jobs).start()  # --- inbox delivery (#157): DMs for questions and approvals
         outbox.of(h.fleet).start(h.sessions, h.jobs)  # --- outbox (#163): drains while the pools are off too
         modelpolicy.of(h.fleet).start()  # --- canary: providers' model lists, fetched now and kept fresh
         missed = redeliver.start(h)  # --- reconciler: GitHub deliveries that failed while hangar was down
@@ -362,6 +364,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await h.rotation.stop()  # --- durable
         await h.retention.stop()  # --- scale
         await h.ops.stop()  # --- clouddoctor
+        await inbox_notify.of(h.jobs).stop()  # --- inbox delivery (#157)
         await outbox.of(h.fleet).stop()  # --- outbox (#163)
         await modelpolicy.of(h.fleet).stop()  # --- canary
         if prebuild:
@@ -1142,6 +1145,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import inbox  # --- landing: GET /api/inbox, what needs the caller
 
     inbox.mount(app, h, U)
+    inbox_notify.mount(app, h, U)  # --- inbox delivery (#157, #158): PUT /api/people/{id}/delivery
+    inbox_notify.register(h)  # the digests ride the ops loop
     from hangar import backup  # --- overnight/sweep: database backups (hangar admin)
 
     backup.mount(app, h, A)

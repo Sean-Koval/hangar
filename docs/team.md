@@ -166,11 +166,35 @@ hangar cred migration
 
 Your logins then never reach a member's sandbox, nor a job no person owns. Make the ones the team may share the team's (`hangar cred owner gh-pat team`, for an API key or token), add team API keys, and link your own GitHub login (`hangar person link owner github <login>`) so your issues keep running with your login. `GET /api/credentials/migration` returns the same record.
 
+## Inbox delivery: DMs and the digest
+
+What needs someone ([the inbox](landing.md#7-the-inbox-what-needs-you)) reaches them in Slack through their linked Slack account: a DM for each new agent question or approval, and a digest at 10:15 and 16:00 on weekdays. Someone without a linked Slack account gets nothing, and `hangar doctor` lists them under "inbox not delivered". The Slack app needs the `im:write` scope ([slack.md](slack.md#inbox-dms)).
+
+```bash
+hangar person set alice --dm questions          # the default: her own agents' questions and approvals, at once
+hangar person set alice --dm off                # no DMs and no digest (the inbox itself is unchanged)
+hangar person set sean --dm all                 # an admin who also wants the team's (GitHub, Slack, webhook jobs)
+hangar person set alice --tz Europe/Berlin --digest 09:30,16:00   # local times; --digest "" turns it off
+hangar person set alice --digest-weekends       # the digest on Saturdays and Sundays too
+hangar person set alice --quiet 20:00-08:00     # hold DMs in this window of her day; --quiet "" clears it
+```
+
+| Setting | Default | |
+| --- | --- | --- |
+| `--dm` | `questions` | `off`, `questions` (their own work), or `all` (admins: also the work nobody in particular owns, so not every admin is paged for every team question) |
+| `--tz` | `America/New_York` | IANA time zone for the digest and the quiet window |
+| `--digest` | `10:15,16:00` | Local digest times (up to 6); empty for none |
+| `--digest-weekends` | off | Weekends are skipped unless set |
+| `--quiet` | none | `HH:MM-HH:MM` in their time zone. DMs wait until it ends, except an approval that would expire first |
+
+Anyone may change their own settings; admins anyone's (`PUT /api/people/{id}/delivery`).
+
 ## Check it: `hangar doctor`
 
 - **personal credentials shared**: fails for any subscription login stored as a team credential, and says what the migration did.
 - **team credentials for jobs**: mapped repos (GitHub and Slack), inbound webhooks and schedules without a person whose environment's harness would get no login, and repos whose `credentials: person` policy makes unlinked senders' jobs fail.
 - **subscription logins**: warns for mapped repos, webhooks and schedules whose harness would find only subscription logins, and for people whose only logins for a harness are subscriptions (their jobs fail while their sessions work); fails under `HANGAR_SUBSCRIPTION_LOGINS=any`.
+- **inbox delivery**: with the Slack app configured, warns for people who get DMs (`--dm` isn't `off`) but have no linked Slack account: "inbox not delivered".
 - **unlinked senders**: GitHub, Slack, Jira and GitHub Projects accounts linked to nobody that started 3 or more jobs in the last 14 days, with the `hangar person link` command for each.
 
 ## REST
@@ -182,4 +206,5 @@ Your logins then never reach a member's sandbox, nor a job no person owns. Make 
 | `GET /api/credentials/migration` | The migration's record (admins). |
 | `POST /api/people/{id}/links` | `{"source": "github", "id": "alice-gh"}` (admins). A GitHub login is looked up and stored as its user id (`looked_up` in the answer); `"id": "583231"` skips the lookup. Slack ids are `T…/U…`. |
 | `DELETE /api/people/{id}/links?source=github&id=alice-gh` | Unlinks it (admins). |
-| `GET /api/people` | Each person with their `links`. |
+| `GET /api/people` | Each person with their `links` and inbox delivery settings (`notify`, `tz`, `digest`, `digest_weekends`, `quiet`). |
+| `PUT /api/people/{id}/delivery` | `{"dm": "off", "tz": "Europe/Berlin", "digest": ["09:30"], "digest_weekends": false, "quiet": "20:00-08:00"}`, any subset: the person themselves, or an admin. |

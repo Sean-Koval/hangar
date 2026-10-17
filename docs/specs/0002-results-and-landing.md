@@ -1,6 +1,6 @@
 # 0002: Run results, verification, fan-out grading and the land step
 
-Status: proposed · Date: 2026-10-12 · Author: hangar maintainers
+Status: partly built, in another shape (2026-10-15): verification with the repo's own check (0009, #82) and landing on approval through a GitHub App (#96, #101; [landing.md](../landing.md)). Was: proposed. · Date: 2026-10-12 · Author: hangar maintainers
 
 > Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins.
 

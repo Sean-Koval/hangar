@@ -27,7 +27,6 @@ from hangar.a2a import (
     task_state,
 )
 from hangar.auth import TokenAuth
-from hangar.jobs import SubmitJob
 from hangar.models import JobEvent, JobState
 from hangar.vault import Vault
 from tests.test_jobs import DONE, _gh_settings, _until, jobs, sessions, world  # noqa: F401 - fixtures
@@ -318,9 +317,8 @@ async def test_parts_metadata_and_errors(a2a):
         assert err["code"] == -32602, (m, err)
     err = (await rpc(h, "SendMessage", {"message": msg("x"), "metadata": {**a2a.meta, "timeoutMinutes": "soon"}}))
     assert "timeout_minutes" in err["error"]["message"]
-    if "output_schema" not in SubmitJob.model_fields:  # structured results arrive with workstream E
-        err = (await rpc(h, "SendMessage", {"message": msg("x"), "metadata": {**a2a.meta, "outputSchema": {}}}))
-        assert "output_schema" in err["error"]["message"]
+    err = (await rpc(h, "SendMessage", {"message": msg("x"), "metadata": {**a2a.meta, "outputSchema": {"type": 5}}}))
+    assert err["error"]["code"] == -32602 and "output_schema" in err["error"]["message"]  # checked at submit
     a2a.server.settings.a2a_max_request_bytes = 1000
     big = await h.post("/a2a", json={"jsonrpc": "2.0", "id": 1, "method": "GetTask", "params": {"id": "x" * 2000}})
     assert big.status_code == 413
@@ -356,6 +354,32 @@ async def test_parts_metadata_and_errors(a2a):
     await _until(a2a.jobs, q.id, DONE)
     listed = (await rpc(h, "ListTasks", {"contextId": q.id, "includeArtifacts": True}))["result"]
     assert [t["id"] for t in listed["tasks"]] == [q.id] and "artifacts" in listed["tasks"][0]
+
+
+async def test_a_schema_on_the_text_part_returns_a_structured_result(a2a):
+    """Spec §6.8: a schema on the text part asks for JSON back; the agent's valid result.json is an artifact."""
+    schema = {"type": "object", "required": ["test"], "additionalProperties": False,
+              "properties": {"test": {"type": "string"}, "flaky": {"type": "boolean"}}}
+    agent = a2a.world["root"] / "agent.sh"
+    agent.write_text(agent.read_text().replace(
+        "  fail) exit 3 ;;",
+        "  result) hangar-agent result '{\"test\": \"test_sync\", \"flaky\": true}'\n"
+        "      echo \"Found it\" > \"$HANGAR_JOB_DIR/RESULT.md\" ;;\n  fail) exit 3 ;;"))
+    a2a.world["mode"].write_text("result")
+    m = {**msg("Which test is flaky?"), "parts": [{"text": "Which test is flaky?", "metadata": {"schema": schema}}]}
+    res = await rpc(a2a.http, "SendMessage", {"message": m, "metadata": {**a2a.meta, "deliver": "none"},
+                                              "configuration": {"returnImmediately": True}})
+    job = a2a.jobs.get(res["result"]["task"]["id"])
+    assert job.output_schema == schema
+    job = await _until(a2a.jobs, job.id, DONE)
+    assert job.state == JobState.SUCCEEDED, [e.message for e in job.events]
+    assert job.result.data == {"test": "test_sync", "flaky": True} and job.result.result_error is None
+    got = (await rpc(a2a.http, "GetTask", {"id": job.id}))["result"]
+    assert got["status"]["state"] == COMPLETED
+    arts = {a["name"]: a for a in got["artifacts"]}
+    assert arts["Structured result"]["parts"] == [{"data": {"test": "test_sync", "flaky": True},
+                                                   "mediaType": "application/json"}]
+    assert arts["Summary"]["parts"][0]["text"] == "Found it"
 
 
 def test_job_states_map_to_task_states_including_ones_still_to_come():
