@@ -1,6 +1,6 @@
 # 0015: The governance decision point
 
-Status: proposed (spike #171; client skeleton and contract tests built) · Date: 2026-10-16 · Builds on: 0002 (landing), 0011 (triggers and approvals), 0014 (manifest digests), #121 (one approval rule), #123 (intake posture), #129/#130 (taint and its gates) · Counterparts: [governed-agent-workspace](https://github.com/Sean-Koval/governed-agent-workspace) #13 (decision API), #14 (passports), #16 (correlation), #17 (webhooks), #18 (receipts), #19 (approver ≠ requester), #20 (reconciliation), #22 (per-run stop)
+Status: partly built (2026-10-17): the contract, the client skeleton and contract tests (spike #171, #208); the workspace side is proposed. · Date: 2026-10-16 · Builds on: 0002 (landing), 0011 (triggers and approvals), 0014 (manifest digests), #121 (one approval rule), #123 (intake posture), #129/#130 (taint and its gates) · Counterparts: [governed-agent-workspace](https://github.com/Sean-Koval/governed-agent-workspace) #13 (decision API), #14 (passports), #16 (correlation), #17 (webhooks), #18 (receipts), #19 (approver ≠ requester), #20 (reconciliation), #22 (per-run stop)
 
 > Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins.
 
