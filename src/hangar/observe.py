@@ -465,7 +465,10 @@ def _end_turn(sp: Any, s: Any, turn: Any, outcome: str, err: BaseException | Non
 
 
 def _turn_result(sp: Any, s: Any, turn: Any, outcome: str, err: BaseException | None, usage: Any) -> None:
-    attrs = {**_turn_attrs(s, turn), "hangar.turn.outcome": outcome, "hangar.turn.exit_code": turn.exit_code}
+    attrs = {**_turn_attrs(s, turn), "hangar.turn.outcome": outcome, "hangar.turn.exit_code": turn.exit_code,
+             # --- #166: agent | infra_error | cancelled | human, and what infrastructure did
+             "hangar.outcome.class": getattr(turn, "outcome_class", None),
+             "hangar.outcome.infra_reason": getattr(turn, "infra_reason", None)}
     if usage is not None:
         attrs |= {
             # semconv: input_tokens includes cached tokens; hangar's excludes them

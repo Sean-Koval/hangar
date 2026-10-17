@@ -35,6 +35,7 @@ from hangar import hot_resume as hot_resume  # --- providers-e2b
 from hangar import keys as keys  # --- durable
 from hangar import manifest as manifest  # --- interfaces: the effective harness manifest of each turn
 from hangar import metrics as metrics  # --- reconciler
+from hangar import outcomes as outcomes  # --- #166: agent or infrastructure
 from hangar import pins as pins  # --- canary: the model and the CLI version a session is pinned to
 from hangar import resident as resident  # --- durable: live and recent sessions in memory, the rest in the store
 from hangar import slo as slo  # --- clouddoctor: turn-start and resume times for `hangar status`
@@ -1115,6 +1116,9 @@ class SessionService:
             watch.note("error", f"stopped: over budget ({over})", reason="over_budget")
         if outcome == "gone":
             await watch.finish(alive=False)
+            gone_sb = self.fleet.store.get(Sandbox, s.sandbox_id) if s.sandbox_id else None  # --- #166: why it went
+            outcomes.mark(turn, *outcomes.classify_turn(outcome, turn.exit_code, harness=turn.harness,
+                                                         **outcomes.gone_context(self.fleet, gone_sb)))
             s.sandbox_id = None if not self._alive(s.sandbox_id or "") else s.sandbox_id
             self._set(s, SessionState.SUSPENDED if s.checkpoints else SessionState.FAILED,
                       "the sandbox went away during the turn")
@@ -1145,6 +1149,7 @@ class SessionService:
         await watch.finish()  # workstream C: whatever the last polls missed
         # workstream E: result, question (-> needs_input), artifacts; before the checkpoint so it has them all
         outcome = await exchange.after_turn(self, s, turn, outcome)
+        outcomes.mark(turn, *outcomes.classify_turn(outcome, turn.exit_code, raw=raw, harness=turn.harness))  # #166
         if self.env_requests is not None:  # --- computer: the last requests, and screenshots/demos as events
             await self.env_requests.scan(s, turn)
         computer.note_media(self, s, turn)

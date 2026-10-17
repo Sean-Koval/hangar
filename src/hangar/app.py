@@ -1122,6 +1122,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import repopolicy  # --- frontdoor: per-repo policy (hangar repo)
 
     repopolicy.mount(app, h, A)
+    from hangar import repocheck  # --- #155: GET /api/repos/{owner}/{repo}/readiness (hangar repo check)
+
+    repocheck.mount(app, h, A)
     envbuilds.mount(app, h, A, U)  # --- envbuilds: repo builds (hangar env builds) and config checks
     from hangar import autoinstall  # --- autoinstall: POST /api/env/setup (hangar env setup)
 

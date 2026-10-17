@@ -579,6 +579,9 @@ class Settings(BaseSettings):
     trace_live_tools: bool = False
     experiment_max_trials: int = Field(200, ge=1, le=2000)  # task x variant x trial in one experiment
     experiment_parallel: int = Field(8, ge=1, le=64)  # trials running at once, when the experiment doesn't say
+    # --- #166: an infra_error trial (preempted, powered down, rate-limited, ...) runs again as a fresh trial, at most
+    # this many times; the experiment's retries together stop at 10% of its trials (a provider outage, usually)
+    trial_infra_retries: int = Field(2, ge=0, le=10)
 
     @property
     def backup_interval_hours(self) -> float:

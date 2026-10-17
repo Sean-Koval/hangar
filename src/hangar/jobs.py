@@ -51,6 +51,7 @@ from hangar import fairness as fairness  # --- scale
 from hangar import flightrec as flightrec  # --- clouddoctor: a failed or slow job's flight record
 from hangar import harness_thaw as harness_thaw  # --- harness locks (#134)
 from hangar import intake as intake  # --- intake: trackers (Jira, GitHub Projects) follow their jobs
+from hangar import outcomes as outcomes  # --- #166: agent or infrastructure
 from hangar import people as people  # --- teamcreds: GitHub senders linked to people
 from hangar import posture as posture  # --- intake posture (#123)
 from hangar import resident as resident  # --- durable: live and recent jobs in memory, the rest in the store
@@ -779,6 +780,11 @@ class JobService:
             job.state = state
         if reason is not False:
             job.reason = reason
+        if state is not None and not experiments.is_experiment(job):  # --- #166: the final outcome's class
+            if state in JOB_TERMINAL:
+                outcomes.mark(job.result, *outcomes.job_class(job))
+            elif job.result.outcome_class:
+                outcomes.mark(job.result, None)  # running again (a follow-up, a resume): decided when it ends
         job.events.append(JobEvent(state=job.state.value, message=self.broker.redact(message)[:2000]))
         del job.events[:-MAX_EVENTS]
         self._save(job)
@@ -820,7 +826,13 @@ class JobService:
                 if not self._sandbox_alive(job):
                     # A follow-up after the sandbox was released: resume the job's session from its checkpoint.
                     self._event(job, "resuming the job's session from its last checkpoint", JobState.PROVISIONING)
-                    sb = await self.sessions.ensure_sandbox(s, progress=self._progress(job))
+                    try:
+                        sb = await self.sessions.ensure_sandbox(s, progress=self._progress(job))
+                    except PoweredDown:
+                        raise
+                    except Exception:
+                        outcomes.mark(job.result, "infra_error", "checkpoint")  # --- #166: the restore failed
+                        raise
                     job.sandbox_id = sb.id
                     self._save(job)
                     self._event(job, f"sandbox {sb.name} ready (restored) on branch {job.branch}")
@@ -862,7 +874,13 @@ class JobService:
         job.session_id = s.id
         self._save(job)
         async with self.sessions.hold(s):
-            sb = await self.sessions.ensure_sandbox(s, progress=self._progress(job))
+            try:
+                sb = await self.sessions.ensure_sandbox(s, progress=self._progress(job))
+            except PoweredDown:
+                raise
+            except Exception:
+                outcomes.mark(job.result, "infra_error", "sandbox_create")  # --- #166: no agent ran
+                raise
         job.sandbox_id = sb.id
         job.harness = job.harness or sb.info.get("harness")
         job.repo = job.repo or sb.repo
@@ -1067,6 +1085,7 @@ class JobService:
         turn.finished_at = now()
         turn.exit_code = st.exit_code
         turn.usage, turn.outcome, turn.outcome_reason = total_usage([st]), st.outcome, st.outcome_reason
+        turn.outcome_class, turn.infra_reason = st.outcome_class, st.infra_reason  # --- #166
         exchange.record_job_turn(job, turn, st)  # workstream E: result, question, artifacts
         if job.verify and (rounds := await verifyloop.read_rounds(self, job, turn)):  # --- overnight/autofix
             turn.verify_rounds = rounds
