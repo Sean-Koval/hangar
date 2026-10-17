@@ -31,6 +31,7 @@ from hangar.models import (
     Credential,
     Job,
     JobState,
+    ModelGrant,
     Person,
     Sandbox,
     SandboxGrant,
@@ -62,12 +63,14 @@ _TABLES: dict[type[BaseModel], tuple[str, str]] = {
     DoctorFinding: ("doctor_findings", "id"),  # --- clouddoctor
     TestRun: ("test_runs", "id"),  # --- testresults
     OutboxItem: ("outbox", "key"),  # --- outbox (#163)
+    ModelGrant: ("model_grants", "id"),  # --- #177: the model gateway
     PinSet: ("pin_sets", "id"),  # --- #178
     CacheEntry: ("trial_cache", "key"),  # --- #180
 }
 # --- review(perf): access control must not roll back on a node crash (a revoked token coming back), so these
 # commits, and the secrets table's, sync the WAL like synchronous=FULL; everything else stays on NORMAL.
-_DURABLE: frozenset[type[BaseModel]] = frozenset({ApiToken, Credential, SandboxGrant, Person})  # --- identity: Person
+# --- identity: Person; --- #177: ModelGrant
+_DURABLE: frozenset[type[BaseModel]] = frozenset({ApiToken, Credential, SandboxGrant, Person, ModelGrant})
 # --- scale: top-level fields records are looked up by, each with an index on its JSON value (an expression index:
 # no new column, no rewrite of existing rows). list_where/count_where on these never scan the table.
 _INDEXED: dict[type[BaseModel], tuple[str, ...]] = {

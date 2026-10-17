@@ -303,6 +303,10 @@ class EnvSpec(BaseModel):
     # gateway: the sandbox gets a grant for its own branch and pushes through hangar's git gateway; no GitHub
     # token enters it. Unset: direct, except jobs and sessions use the gateway when HANGAR_GATEWAY_URL is set.
     credential_mode: Literal["direct", "gateway"] | None = None
+    # --- #177: `record` sends the harness's model API calls through hangar's model gateway (modelgw.py): the API key
+    # stays in the control plane and every request and response is kept as a hash-chained, redacted tape. API keys
+    # only (claude-code, codex); a subscription login is refused. Unset or `off`: the harness calls its provider.
+    model_gateway: Literal["off", "record"] | None = None
     # --- workstream steer: how agents' tool permission prompts are answered in this environment's sessions and
     # jobs (auto | ask | deny-risky; docs/steering.md). Unset: HANGAR_APPROVALS.
     approvals: Literal["auto", "ask", "deny-risky"] | None = None

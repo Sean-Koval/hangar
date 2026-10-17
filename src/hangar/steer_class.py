@@ -12,7 +12,7 @@ rewards a harness that ignores people, so each steer can say what it was, and fl
   click them: slack.py's interactions route); in Slack and Jira, a reply starting `fix:` / `correction:`,
   `redirect:` or `info:` (classified on arrival, the prefix stripped); in Jira, `/hangar class correction|redirect|
   info` classifies the sender's last unclassified follow-up; over REST, `POST /api/jobs/{id}/turns/{n}/class` and
-  `POST /api/sessions/{ref}/steers/{id}/class`. No MCP tool: the tool list is at its cap.
+  `POST /api/sessions/{ref}/steers/{id}/class`. No MCP tool.
 * **Defaults.** An answer to the agent's question (`needs_input`) is `new_info`: the agent asked. Steers and
   interrupts over REST or MCP, and follow-ups nobody classified, stay `unclassified`; the weekly metrics show that
   share. Classification is self-reported and optional.

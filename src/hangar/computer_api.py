@@ -8,7 +8,7 @@ REST:
 * `GET /api/media/{token}`: one artifact, behind a signed, expiring link (for PR bodies), only while
   `HANGAR_PR_MEDIA_LINKS=signed` (off by default: turning it off revokes every link already posted).
 
-MCP adds no tools (claude.ai caches tool lists, and the listing is at its cap): screens are opened with
+MCP adds no tools (claude.ai caches tool lists): screens are opened with
 `hangar screen` or REST, and requests are `pending_approvals` answered with `answer_approval`. Here are the
 helpers `wait_for_turn` uses to put an agent's pending request to the person following the work (an elicitation).
 """

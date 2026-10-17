@@ -1,6 +1,6 @@
 # Connecting MCP clients
 
-Hangar serves MCP over streamable HTTP at `<public_url>/mcp`. What clients get beyond tool calls (tasks, elicitation, typed results, subscriptions, prompts) is in [mcp.md](mcp.md). The quick way to connect a client:
+Hangar serves MCP over streamable HTTP as two servers: `hangar` at `<public_url>/mcp` (jobs, sessions, schedules, discovery) and `hangar-sandbox` at `<public_url>/mcp/sandbox` (sandboxes, commands, files, terminals; [mcp.md](mcp.md#two-servers)). What clients get beyond tool calls (tasks, elicitation, typed results, subscriptions, prompts) is in [mcp.md](mcp.md). The quick way to connect a client:
 
 ```bash
 hangar connect claude-code      # or codex, cursor, vscode, gemini, claude-desktop
@@ -11,6 +11,7 @@ hangar connect --list           # each client, its config file, and whether hang
 
 - `--print` shows the entry (with a new token) and writes nothing. Use it to configure another machine.
 - `--auth oauth` writes the URL without a token. The client then signs in through hangar's OAuth server. This works for Claude Code, Codex, Cursor and Gemini CLI, and needs an https (or localhost) `HANGAR_PUBLIC_URL`. Cursor's sign-in redirects (`cursor://anysphere.cursor-mcp/oauth/callback`, and `http://localhost:8787/callback` in newer versions) are in the default `HANGAR_OAUTH_REDIRECT_HOSTS`; if you changed that list, `hangar connect cursor --auth oauth` prints the one command that adds the app scheme back (see [security.md](security.md#oauth-connectors)).
+- `--with-sandbox` / `--no-sandbox`: also write `hangar-sandbox` (`<name>-sandbox`, `/mcp/sandbox`, the same token). On by default for Claude Code and Codex, which drive sandboxes themselves; off for the others. In claude.ai, ChatGPT or Claude Desktop's connectors, add `<public_url>/mcp/sandbox` as a second connector if you want the sandbox tools.
 - `--name` sets the server name (default `hangar`), and `--config PATH` writes another file, for example a VS Code Insiders profile.
 
 Files are replaced atomically. A new file is created with mode 600. An existing one keeps its owner's permissions but loses group and other access, since it now holds a token, and a symlinked file (dotfiles) is written through the link. If a file isn't plain JSON (VS Code and Gemini allow comments) or the TOML can't be edited safely, hangar leaves it alone and prints the entry for you to paste.
@@ -79,7 +80,7 @@ The app then gets an access token (valid for 1 hour) and a refresh token (valid 
 
 Under the hood:
 
-- Discovery: `/.well-known/oauth-protected-resource/mcp` and `/.well-known/oauth-authorization-server`
+- Discovery: `/.well-known/oauth-protected-resource/mcp` (and `.../mcp/sandbox` for the sandbox server, with the same authorization server: a grant for either works on both) and `/.well-known/oauth-authorization-server`
 - Endpoints: `/register` (RFC 7591), `/authorize` (PKCE S256 only), `/token`, `/revoke`
 - `/mcp` returns `401` with a `resource_metadata` pointer, so clients find all of the above on their own.
 

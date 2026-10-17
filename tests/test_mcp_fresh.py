@@ -73,18 +73,36 @@ def test_retired_names_are_the_hidden_tools():
 
 async def test_over_mcp(fleet, svc, jobs, store):
     mcp = build_mcp(fleet, jobs, svc)
+    sbx = build_mcp(fleet, jobs, svc, surface="sandbox")
+    assert mcp.fresh.version != sbx.fresh.version  # --- #140: each server hashes its own tools
+    async with Client(sbx) as c:
+        assert c.server_info.name == "hangar-sandbox" and c.server_info.version == sbx.fresh.version
+        await c.list_tools()
+        res = await c.call_tool("list_sandboxes", {})
+        assert not [b for b in res.content if "connector" in b.text]  # a fresh list: nothing added
+        # an old name, only on lists from before it was merged: it works, and says the list is old
+        res = await c.call_tool("validate_environment", {"spec": {"name": "x", "extends": "xenv"}})
+        assert not res.is_error and "validate_environment is an old name for create_environment" \
+            in res.content[-1].text
+        # a work tool asked of the sandbox server says where it is
+        res = await c.call_tool("submit_job", {"instructions": "x"})
+        assert res.is_error and "submit_job is on the hangar server" in res.content[0].text
     async with Client(mcp) as c:
         assert c.server_info.version == mcp.fresh.version and "+tools." in c.server_info.version
         await c.list_tools()
-        res = await c.call_tool("list_sandboxes", {})
+        res = await c.call_tool("list_jobs", {})
         assert not [b for b in res.content if "connector" in b.text]  # a fresh list: nothing added
         # a tool this server doesn't have (a list from a server that did, or a guess)
         res = await c.call_tool("destroy_everything", {})
         assert res.is_error and "no tool named 'destroy_everything'" in res.content[0].text
         assert "remove the hangar connector and add it again" in res.content[0].text
-        # an old name, only on lists from before it was merged: it works, and says the list is old
+        # --- #140: a tool that moved to hangar-sandbox still answers here, with the note, once an hour per tool
+        res = await c.call_tool("list_sandboxes", {})
+        assert not res.is_error and "list_sandboxes moved to the hangar-sandbox server" in res.content[-1].text
+        res = await c.call_tool("list_sandboxes", {})
+        assert not [b for b in res.content if "moved" in b.text]
         res = await c.call_tool("validate_environment", {"spec": {"name": "x", "extends": "xenv"}})
-        assert not res.is_error and "validate_environment is an old name for create_environment" \
+        assert not res.is_error and "validate_environment moved to the hangar-sandbox server" \
             in res.content[-1].text
     # a client that listed an older surface and kept it
     old = mcp_fresh.surface_hash(OLD)
@@ -93,7 +111,7 @@ async def test_over_mcp(fleet, svc, jobs, store):
     try:
         store.kv_set_json("mcp:listed:claude-app", {"hash": old, "at": 0})
         async with Client(build_mcp(fleet, jobs, svc)) as c:
-            res = await c.call_tool("list_sandboxes", {})
+            res = await c.call_tool("list_sessions", {})
             assert sc(res) == [] and "this client's list of them is older" in res.content[-1].text
             assert re.search(r"lacks \d+ tools, e.g. fleet_overview", res.content[-1].text)
             res = await c.call_tool("get_job", {"job": "job-00000000"})  # an error carries it too, once an hour

@@ -152,8 +152,9 @@ class MCPPathMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] == "http" and scope.get("path") == "/mcp":
-            scope = dict(scope, path="/mcp/", raw_path=b"/mcp/")
+        if scope["type"] == "http" and scope.get("path") in ("/mcp", "/mcp/sandbox"):  # --- #140: both servers
+            path = scope["path"] + "/"
+            scope = dict(scope, path=path, raw_path=path.encode())
         await self.app(scope, receive, send)
 
 
@@ -289,6 +290,10 @@ def _setup_oauth(app: FastAPI, h: Hangar):
             resource_url=AnyHttpUrl(f"{base}/mcp"), authorization_servers=[AnyHttpUrl(base)],
             scopes_supported=["hangar"], resource_name="hangar",
         )
+        routes += create_protected_resource_routes(  # --- #140: the sandbox server, same authorization server
+            resource_url=AnyHttpUrl(f"{base}/mcp/sandbox"), authorization_servers=[AnyHttpUrl(base)],
+            scopes_supported=["hangar"], resource_name="hangar-sandbox",
+        )
     except Exception as e:  # noqa: BLE001 - e.g. a non-https public URL
         log.warning("OAuth disabled: %s (set HANGAR_PUBLIC_URL to an https URL to enable it)", e)
         return None, None
@@ -316,6 +321,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     stateless = h.settings.mcp_stateless_http
     mcp = build_mcp(h.fleet, h.jobs, h.sessions, triggers=h.triggers, legacy_sessions=not stateless)
     mcp_asgi = mcp.streamable_http_app(streamable_http_path="/", stateless_http=stateless, host="0.0.0.0")
+    # --- #140: the raw drive tools on a server of their own, /mcp/sandbox
+    mcp_sb = build_mcp(h.fleet, h.jobs, h.sessions, triggers=h.triggers, legacy_sessions=not stateless,
+                       surface="sandbox")
+    mcp_sb_asgi = mcp_sb.streamable_http_app(streamable_http_path="/", stateless_http=stateless, host="0.0.0.0")
+    h.mcp_servers = {"/mcp": mcp, "/mcp/sandbox": mcp_sb}  # --- #140: the doctor lists both
     a2a = A2AServer(h.jobs, h.auth, h.vault, h.settings) if h.settings.a2a_enabled else None  # workstream G
 
     @contextlib.asynccontextmanager
@@ -361,7 +371,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         modelpolicy.of(h.fleet).start()  # --- canary: providers' model lists, fetched now and kept fresh
         harness_repo.of(h.fleet).start()  # --- #138: the team harness repo's checkout, kept fresh
         missed = redeliver.start(h)  # --- reconciler: GitHub deliveries that failed while hangar was down
-        async with mcp.session_manager.run():
+        async with mcp.session_manager.run(), mcp_sb.session_manager.run():  # --- #140: both servers
             yield
         h.fleet.closing.set()
         restore_signals()
@@ -392,8 +402,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                   openapi_url=None)
     app.state.hangar = h
     app.state.mcp = mcp  # --- scope parity (#122): tests read its tools and resources
+    app.state.mcp_sandbox = mcp_sb  # --- #140
     oauth, rm_url = _setup_oauth(app, h)
     app.state.oauth = oauth
+    # --- #140: first, so /mcp's mount doesn't take /mcp/sandbox; its own protected-resource metadata (RFC 9728)
+    app.mount("/mcp/sandbox", MCPAuthMiddleware(mcp_sb_asgi, h.auth, oauth,
+                                                rm_url + "/sandbox" if rm_url else None))
     app.mount("/mcp", MCPAuthMiddleware(mcp_asgi, h.auth, oauth, rm_url))
     app.add_middleware(MCPPathMiddleware)
     # --- front-door-auth: body caps before anything parses a body, and an audit entry for refused requests
@@ -519,6 +533,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         url = h.settings.public_url.rstrip("/") + "/mcp"
         return {
             "mcp_url": url,
+            "mcp_sandbox_url": url + "/sandbox",  # --- #140: hangar-sandbox, the raw drive tools
             "codex_config_toml": (
                 f'[mcp_servers.hangar]\nurl = "{url}"\nbearer_token_env_var = "HANGAR_TOKEN"\n'
                 "tool_timeout_sec = 900\n"
