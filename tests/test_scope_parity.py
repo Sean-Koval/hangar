@@ -100,7 +100,7 @@ def routes(app) -> dict[str, tuple[str | None, str | None, str]]:
                 for m in methods:
                     out[f"{m} {prefix}{r.path}"] = (scope, owner, r.endpoint.__module__)
             elif isinstance(r, Mount):
-                if r.path in ("/mcp", "/ui"):
+                if r.path in ("/mcp", "/mcp/sandbox", "/ui"):  # --- #140: two MCP servers
                     out[f"MOUNT {r.path}"] = (None, None, "hangar.app")
                 elif hasattr(r.app, "routes"):
                     walk(r.app.routes, prefix + r.path)
@@ -147,9 +147,11 @@ def world(tmp_path_factory):
                  reaper_interval_seconds=3600)
     s.snapshot_dir.mkdir(parents=True, exist_ok=True)
     app = build_app(s)
-    server = app.state.mcp
-    return {"app": app, "tools": tools(server), "resources": resources(server), "routes": routes(app),
-            "matrix": load_matrix(), "settings": s}
+    server, drive = app.state.mcp, app.state.mcp_sandbox  # --- #140
+    listed = {t.name: "hangar" for t in server.listing()} | {t.name: "hangar-sandbox" for t in drive.listing()}
+    return {"app": app, "tools": tools(server) | tools(drive), "resources": resources(server) | resources(drive),
+            "routes": routes(app), "matrix": load_matrix(), "settings": s, "listed": listed,
+            "drive_tools": tools(drive)}
 
 
 # ====================================================================== (a) the matrix covers what exists
@@ -189,6 +191,19 @@ def test_every_tool_is_in_the_matrix_with_the_scope_it_enforces(world):
     gone = sorted(set(by_tool) - set(world["tools"]))
     problems += [f"{by_tool[t][0]}: tool {t} no longer exists; remove it from the matrix" for t in gone]
     assert not problems, "\n\n".join(problems)
+
+
+def test_each_tool_is_listed_on_the_server_the_matrix_says(world):
+    """--- #140: `server:` is where a tool is listed (hidden names: their sibling's server), and a tool registered on
+    both servers is a moved one, listed only on hangar-sandbox."""
+    problems = []
+    for verb, e in world["matrix"].items():
+        for t in _list(e.get("mcp")):
+            where = world["listed"].get(t) or ("hangar-sandbox" if t in world["drive_tools"] else "hangar")
+            if e["server"] != where:
+                problems.append(f"{verb}: tool {t} is on {where}, the matrix says {e['server']}")
+    assert not problems, "\n".join(problems)
+    assert not set(world["listed"]) - set(world["tools"])
 
 
 def test_every_resource_is_in_the_matrix(world):

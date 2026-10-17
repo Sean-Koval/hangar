@@ -33,6 +33,8 @@ NOTE_EVERY_SECONDS = 3600
 RETIRED = {"validate_environment": "create_environment(dry_run=true)", "clone_environment": "create_environment",
            "destroy_sandboxes": "destroy_sandbox"}
 REFRESH = "To refresh it, remove the hangar connector and add it again."
+MOVED_HELP = ("`hangar connect claude-code` (or codex) adds both servers, hangar (/mcp) and hangar-sandbox "
+              "(/mcp/sandbox); in claude.ai add <hangar URL>/mcp/sandbox as a second connector.")
 _SURFACE, _FIRST, _LISTED = "mcp:surface:", "mcp:surface-first", "mcp:listed:"
 
 
@@ -59,10 +61,18 @@ def _shape(tools: list[types.Tool]) -> dict[str, list[str]]:
 class Freshness:
     """Per-caller record of the tool surface last listed, and the note for callers on an older one."""
 
-    def __init__(self, store: Any, tools: list[types.Tool], retired: dict[str, str], caller: Callable[[], str]):
+    def __init__(self, store: Any, tools: list[types.Tool], retired: dict[str, str], caller: Callable[[], str],
+                 moved: dict[str, str] | None = None, elsewhere: dict[str, str] | None = None, ns: str = ""):
+        """--- #140: `moved` (tool -> the server it is listed on now) are callable here, hidden, with a note;
+        `elsewhere` (tool -> server) names tools another server has, for the unknown-tool error. `ns` keeps each
+        server's per-caller records apart (`""` for `hangar`, so its records from before the split still count)."""
         self.store = store
         self.caller = caller
         self.retired = retired  # still-callable old name -> the tool that replaced it
+        self.moved = moved or {}
+        self.elsewhere = elsewhere or {}
+        self._first_key, self._listed_key = (_FIRST, _LISTED) if not ns else (f"mcp:{ns}:surface-first",
+                                                                            f"mcp:{ns}:listed:")
         self.hash = surface_hash(tools)
         self.version = server_version(self.hash)
         self.shape = _shape(tools)
@@ -71,27 +81,45 @@ class Freshness:
             rec = {"first_seen": time.time(), "tools": self.shape}
             store.kv_set_json(_SURFACE + self.hash, rec)
         self.since = float(rec["first_seen"])
-        self.first = store.kv_get(_FIRST)
+        self.first = store.kv_get(self._first_key)
         if self.first is None:
-            store.kv_set(_FIRST, self.hash)
+            store.kv_set(self._first_key, self.hash)
             self.first = self.hash
         self._surfaces: dict[str, dict[str, list[str]] | None] = {self.hash: self.shape}
         self._listed: dict[str, str | None] = {}  # caller -> hash last listed (None: no record)
         self._noted: dict[str, float] = {}  # caller -> monotonic time of its last note
+        self._moved_noted: dict[tuple[str, str], float] = {}  # --- #140: (caller, tool) -> its last moved note
 
     def listed(self) -> None:
         """tools/list: this caller now has the current surface."""
         who = self.caller()
         if self._last(who) != self.hash:
-            self.store.kv_set_json(_LISTED + who, {"hash": self.hash, "at": time.time()})
+            self.store.kv_set_json(self._listed_key + who, {"hash": self.hash, "at": time.time()})
         self._listed[who] = self.hash
 
     def unknown(self, name: str) -> str:
+        if server := self.elsewhere.get(name):  # --- #140
+            return (f"{name} is on the {server} server, not this one. Add it as its own connector "
+                    f"(`hangar connect <client>` writes both). " + MOVED_HELP)
         return (f"Hangar has no tool named '{name}'. If this client lists it, its list of hangar tools is out of "
                 "date. " + REFRESH)
 
+    def moved_note(self, name: str) -> str | None:
+        """--- #140: the note on a call of a tool that moved to another server, once an hour per caller and tool."""
+        server = self.moved.get(name)
+        if server is None:
+            return None
+        key, t = (self.caller(), name), time.monotonic()
+        if t - self._moved_noted.get(key, -NOTE_EVERY_SECONDS) < NOTE_EVERY_SECONDS:
+            return None
+        self._moved_noted[key] = t
+        return (f"Note: {name} moved to the {server} server; re-add the connector to get it there. It still answers "
+                "here for one release. " + MOVED_HELP)
+
     def note(self, name: str) -> str | None:
         """The stale-list line for a call of `name`, or None (fresh, unknown, or already told this hour)."""
+        if name in self.moved:  # --- #140
+            return self.moved_note(name)
         who, t = self.caller(), time.monotonic()
         if t - self._noted.get(who, -NOTE_EVERY_SECONDS) < NOTE_EVERY_SECONDS:
             return None
@@ -104,7 +132,7 @@ class Freshness:
 
     def _last(self, who: str) -> str | None:
         if who not in self._listed:
-            rec = self.store.kv_get_json(_LISTED + who)
+            rec = self.store.kv_get_json(self._listed_key + who)
             self._listed[who] = rec.get("hash") if isinstance(rec, dict) else None
         return self._listed[who]
 
