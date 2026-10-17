@@ -1197,6 +1197,20 @@ metrics.get_weekly:
   rest: GET /api/metrics/weekly
   scope: user
   owner: guard
+model.get:
+  server: hangar
+  mcp: null
+  rest: GET /model/{provider}/{rest:path}
+  scope: grant
+  owner: any
+  enforced_by: 'modelgw: the sandbox''s model gateway bearer (hgm_...), for its one provider, while it runs'
+model.post:
+  server: hangar
+  mcp: null
+  rest: POST /model/{provider}/{rest:path}
+  scope: grant
+  owner: any
+  enforced_by: 'modelgw: the sandbox''s model gateway bearer (hgm_...), for its one provider, while it runs'
 oauth.delete_clients:
   server: hangar
   mcp: null

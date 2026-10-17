@@ -1143,6 +1143,7 @@ class SessionService:
                       "the sandbox went away during the turn")
             turn.outcome = outcome  # workstream E
             flightrec.of(self.fleet).turn_ended(self, s, turn, outcome, "")  # --- clouddoctor
+            await self._close_tape(s, turn)  # --- #177
             outbox.of(self.fleet).session_turn(self, s, turn)  # --- outbox (#163): off the turn's path
             return outcome, ""
         if outcome in ("cancelled", "timed_out", "error", "over_budget", "failed"):
@@ -1190,8 +1191,22 @@ class SessionService:
             self._set(s, SessionState.SUSPENDED, f"turn {len(s.turns)} finished; sandbox released")
         # --- clouddoctor: the session is idle: a failed or slow turn's record (its log is read and sealed off-turn)
         flightrec.of(self.fleet).turn_ended(self, s, turn, outcome, raw)
+        await self._close_tape(s, turn)  # --- #177: the model gateway's tape of this turn, to the outbox
         outbox.of(self.fleet).session_turn(self, s, turn)  # --- outbox (#163): off the turn's path
         return outcome, raw
+
+    async def _close_tape(self, s: Session, turn: SessionTurn) -> None:
+        """--- #177: a turn of a `model_gateway: record` sandbox ends: its tape gets its final index (modelgw.py)."""
+        from hangar import modelgw
+
+        gw = modelgw.of(self.fleet)
+        if not gw.tapes and not gw._pending:
+            return
+        try:
+            job = self.job_of(s.job_id) if s.job_id and self.job_of is not None else None
+            await gw.turn_ended(s, turn, job)
+        except Exception:  # noqa: BLE001 - a tape never fails the turn
+            log.exception("session %s: could not close the model gateway tape", s.id)
 
     async def _turn_status(self, s: Session, turn: SessionTurn, wait: float, watch: Any) -> dict[str, Any]:
         """The run's status after waiting up to `wait` seconds in the sandbox for it to finish (or, before its first
