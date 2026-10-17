@@ -1,0 +1,53 @@
+# The front page's assets (README, docs/index.md): re-render the recording, the web UI screenshots, the inbox and the
+# diagram with docs/assets/front/make.py against the demo hangar, check each one is produced and small enough, check
+# the committed diagram SVG is current, and keep the fresh renders as an artifact to compare with or commit.
+name: front-page
+on:
+  pull_request:
+    paths:
+      - docs/assets/front/**
+      - src/hangar/ui/**
+      - docs/stylesheets/airframe.css
+      - .github/workflows/front-page.yml
+  push:
+    branches: [main]
+    paths:
+      - docs/assets/front/**
+      - src/hangar/ui/**
+      - docs/stylesheets/airframe.css
+  schedule:
+    - cron: "17 6 * * 1"  # weekly: the UI and the CLI change without touching these paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --all-extras --locked
+      - name: tmux (scripted agent turns run in it)
+        run: command -v tmux >/dev/null || { sudo apt-get update -q && sudo apt-get install -yq tmux; }
+      - name: Chromium for Playwright
+        run: uv run --with playwright==1.56.0 playwright install --with-deps chromium
+      - name: The committed diagram is what diagram.py draws
+        run: |
+          python3 docs/assets/front/diagram.py
+          git diff --exit-code -- docs/assets/front/hangar-suite.svg
+      - name: Render every asset (fails if one is missing or over 3 MB)
+        run: >
+          uv run --with playwright==1.56.0 --with asciinema==2.4.0 --with imageio-ffmpeg==0.6.0
+          python docs/assets/front/make.py --out "$RUNNER_TEMP/front"
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: front-page-assets
+          path: ${{ runner.temp }}/front
+          if-no-files-found: ignore
