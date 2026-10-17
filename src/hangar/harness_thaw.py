@@ -5,10 +5,17 @@ turn 1 that what the sandbox had matches it.
   the team harness repo (`HANGAR_HARNESS_REPO`; `harnesses/<name>/harness.lock`, channels in `channels.yaml`). A
   revision or digest that isn't the current one is looked up in the checkout's git history.
 * **Claim.** The lock's CLI version must be the one `harnesses.lock.yaml` pins, or the claim is refused; the model is
-  pinned to the lock's concrete id and the approval mode to its binding. The environment provides the files (#136's
-  read-only prefix layer will mount them from the lock); thaw checks that it provides the lock's.
-* **Verify turn 1.** After the turn's manifest is recorded: the lock's skills against the sandbox's effective skill
-  digests (`tree`), its instructions file against the declared one, and its `harness_digest` against the manifest's.
+  pinned to the lock's concrete id and the approval mode to its binding. The lock's directory is copied out of the
+  registry into hangar's data directory (`materialize`: content-addressed, so a later edit to the registry never
+  changes a claimed lock) and checked against the lock.
+* **Mount (#221).** The sandbox gets the lock's files, not the image's: its instructions file, exactly its skills, and
+  its plugins as the Claude Code seed (`mount_files`), root's and read-only to the agent. Everything that reads the
+  environment's prefix layer (the manifest, the probe, hangar's Claude Code settings, a hardened turn) reads the lock's
+  instead (`effective_spec`); the binding layer (MCP servers, hooks, approvals) is still the environment's, rendered at
+  claim.
+* **Verify turn 1.** After the turn's manifest is recorded: the lock's skills and plugins against the sandbox's
+  effective digests (`tree`), its instructions file and plugins against the declared ones, and its `harness_digest`
+  against the manifest's.
   A mismatch is drift: `SessionTurn.drift`, a `harness.drift` event, a warning and a review-packet line; under
   `HANGAR_HARNESS_DRIFT=fail` the turn stops (`failed`, reason `harness_drift`). Later turns aren't checked: what the
   agent changes is its behaviour, not drift.
@@ -18,9 +25,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
+import hashlib
 import logging
+import os
 import re
+import shlex
+import shutil
 import subprocess
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -30,9 +43,10 @@ import yaml
 from hangar import harness_lock
 
 if TYPE_CHECKING:
+    from hangar.envspec import EnvSpec
     from hangar.fleet import Fleet
     from hangar.jobs import JobService
-    from hangar.models import Job, Session, SessionTurn
+    from hangar.models import Job, Sandbox, Session, SessionTurn
     from hangar.sessions import SessionService
 
 log = logging.getLogger("hangar.harness_thaw")
@@ -44,6 +58,9 @@ DRIFT_REASON = "harness_drift"
 HANGAR_SKILLS = {"hangar-environment", "verify-ui"}  # hangar writes these itself (supervisor.py, computer.py)
 _REF = re.compile(r"^(?P<name>[a-z0-9][a-z0-9._-]{0,62})(?:@(?P<at>[A-Za-z0-9:._-]{1,80}))?$")
 VERIFY_WAIT_SECONDS = 40  # how long a finished turn 1 waits for its verification under HANGAR_HARNESS_DRIFT=fail
+LOCKS_DIR = "harness-locks"  # under the data directory: claimed locks' files, one directory per content
+INFO = "thawed"  # sb.info: the lock a sandbox's prefix layer was mounted from
+MOUNT_SECONDS = 300
 
 
 class ThawError(ValueError):
@@ -161,9 +178,10 @@ def pin(fleet: Fleet, ref: str, environment: str, harness: str | None = None, mo
         raise ThawError(f"{ref} pins {h} {lock['runtime'].get('version') or '(no version)'}, but this hangar runs "
                         f"{h} {locked or '(baked into the image)'} (harnesses.lock.yaml): re-freeze the harness from a "
                         f"turn on {locked}, or bump the lock's runtime.version and check it again")
-    if plugins := [c["id"] for c in lock["components"] if c["id"].startswith("plugin:")]:
-        raise ThawError(f"{ref} enables {', '.join(plugins)}: plugins mount through the Claude Code seed dir (#136), "
-                        "which this hangar doesn't have yet")
+    from hangar import plugins as plugins_mod
+
+    if (pl := [c["id"] for c in lock["components"] if c["id"].startswith("plugin:")]) and h != plugins_mod.HARNESS:
+        raise ThawError(f"{ref} enables {', '.join(pl)}, but plugins load only in {plugins_mod.HARNESS}")
     lock_model = (lock.get("model") or {}).get("id")
     if model and lock_model and model != lock_model:
         raise ThawError(f"{ref} pins model {lock_model}; drop model={model} (the model is part of the harness)")
@@ -176,10 +194,249 @@ def pin(fleet: Fleet, ref: str, environment: str, harness: str | None = None, mo
     if missing := [x["name"] for x in lock["binding"].get("mcp") or [] if x.get("name") not in have]:
         raise ThawError(f"{ref} binds MCP server(s) {', '.join(missing)}, which environment {environment} doesn't "
                         "define (credentials and endpoints live in the environment)")
+    d, stale = materialize(fleet.settings, r)
+    if stale and fleet.settings.harness_drift == "fail":
+        raise ThawError(f"{ref}: the registry's files differ from the lock ({'; '.join(stale[:5])}); fix the harness "
+                        "directory (`hangar harness check`) or re-freeze it (HANGAR_HARNESS_DRIFT=fail)")
     return {"ref": ref, "name": r.name, "revision": lock["revision"], "digest": r.digest, "harness": h,
             "version": locked, "model": lock_model, "approvals": lock_appr, "commit": r.commit,
-            "components": [{k: c[k] for k in ("id", "digest", "tree") if c.get(k) is not None}
+            "dir": d.name, "stale": stale,
+            "components": [{k: c[k] for k in ("id", "digest", "tree", "enabled") if c.get(k) is not None}
                            for c in lock["components"]]}
+
+
+# ====================================================================== the lock's files, out of the registry
+def _needed(lock: dict[str, Any]) -> list[str]:
+    """The paths of a lock's directory a claim needs: its components' and their marketplaces' entries."""
+    out = [c["path"] for c in lock["components"] if c.get("path")]
+    for c in lock["components"]:
+        if c["id"].startswith("plugin:"):
+            out.append(f"plugins/{harness_lock.plugin_ref(c['id'])['marketplace']}/.claude-plugin/marketplace.json")
+    return out
+
+
+def _registry_files(root: Path, r: Resolved) -> dict[str, bytes]:
+    """{path relative to the harness directory: content} of the files a claim needs, from the checkout's working tree
+    (the current lock) or the registry commit the lock was found in."""
+    base = Path(r.path).parent.as_posix()
+    want = _needed(r.lock)
+
+    def needed(rel: str) -> bool:
+        return any(rel == p or rel.startswith(p + "/") for p in want)
+
+    out: dict[str, bytes] = {}
+    if r.commit is None:
+        hdir = root / base
+        for p in want:
+            t = hdir / p
+            if t.is_dir() and not t.is_symlink():
+                out.update({f"{p}/{k}": v for k, v in harness_lock.read_dir(t).items()})
+            elif t.is_file() and not t.is_symlink():
+                out[p] = t.read_bytes()
+        return out
+    listing = _git(root, "ls-tree", "-r", "-z", "--name-only", r.commit, "--", base + "/") or ""
+    for full in listing.split("\0"):
+        rel = full[len(base) + 1:] if full.startswith(base + "/") else None
+        if not rel or not needed(rel) or not harness_lock.safe_path(rel):
+            continue
+        try:
+            p = subprocess.run(["git", "-C", str(root), "show", f"{r.commit}:{full}"], capture_output=True, timeout=20)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if p.returncode == 0:
+            out[rel] = p.stdout
+    return out
+
+
+def materialize(settings: Any, r: Resolved) -> tuple[Path, list[str]]:
+    """Copy a resolved lock's files out of the registry into `<data>/harness-locks/<digest>-<content>/` (written
+    once, never changed: a claim keeps what it was given whatever happens to the registry), with the resolved
+    `harness.lock`. Returns the directory and what `harness_lock.check` finds wrong with it (empty: the files are
+    the lock's; else they were edited without re-freezing, and a thaw reports the difference as drift)."""
+    files = _registry_files(registry(settings), r)
+    content = hashlib.sha256(harness_lock.files_digest(files).encode()).hexdigest()[:16]
+    dest = Path(settings.data_dir) / LOCKS_DIR / f"{r.digest.removeprefix('sha256:')[:32]}-{content}"
+    if not (dest / harness_lock.LOCK_FILE).is_file():
+        tmp = dest.parent / f".{dest.name}.{uuid.uuid4().hex[:8]}"
+        try:
+            harness_lock.write(tmp, r.lock, files)
+            try:
+                os.rename(tmp, dest)
+            except OSError:  # another claim wrote the same content first
+                if not (dest / harness_lock.LOCK_FILE).is_file():
+                    raise
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    res = harness_lock.check(dest)
+    return dest, list(res["problems"])
+
+
+def lock_dir(settings: Any, p: dict[str, Any]) -> Path | None:
+    """A claimed lock's files (None for a pin from before #221, which mounts nothing)."""
+    name = p.get("dir")
+    if not isinstance(name, str) or not re.fullmatch(r"[0-9a-f]{32}-[0-9a-f]{16}", name):
+        return None
+    d = Path(settings.data_dir) / LOCKS_DIR / name
+    return d if (d / harness_lock.LOCK_FILE).is_file() else None
+
+
+@functools.lru_cache(maxsize=64)
+def _load(d: str) -> dict[str, Any]:
+    return harness_lock.load(Path(d))  # immutable once written: cached by path
+
+
+# ====================================================================== the prefix layer, from the lock (#221)
+def mounted(fleet: Fleet, sb: Sandbox | None) -> tuple[Path, dict[str, Any]] | None:
+    """(directory, lock) when the sandbox's prefix layer comes from a lock."""
+    p = (sb.info.get(INFO) if sb is not None else None) or None
+    d = lock_dir(fleet.settings, p) if isinstance(p, dict) else None
+    if d is None:
+        return None
+    try:
+        return d, _load(str(d))
+    except ValueError:
+        return None
+
+
+def effective_spec(fleet: Fleet, sb: Sandbox | None, spec: EnvSpec) -> EnvSpec:
+    """The environment as a sandbox mounted from a lock has it: the lock's instructions, exactly its skills (a
+    reference, such as hangar's own or a pinned git skill, stays the environment's of that name) and its plugins, read
+    from the lock's directory. MCP servers, hooks, credentials and the rest stay the environment's. Code that reads
+    the prefix layer from the spec (the manifest, the probe, hangar's Claude Code settings, a hardened turn) goes
+    through this; the environment's identity (`spec_digest`) doesn't."""
+    from hangar.envspec import Skill, skill_name
+    from hangar.plugins import Plugin
+
+    got = mounted(fleet, sb)
+    if got is None:
+        return spec
+    d, lock = got
+    comps = lock["components"]
+    guide = next((c for c in comps if c["id"].startswith("guide:")), None)
+    text = (d / guide["path"]).read_text() if guide and guide.get("path") else None
+    by_name = {skill_name(x): x for x in spec.skills}
+    skills = []
+    for c in comps:
+        if not c["id"].startswith("skill:"):
+            continue
+        name = c["id"][6:]
+        if c.get("path"):
+            skills.append(Skill(path=c["path"], name=name))
+        elif name in by_name:
+            skills.append(by_name[name])
+    pl = [Plugin(path=f"plugins/{ref['marketplace']}", name=ref["name"], marketplace=ref["marketplace"],
+                 enabled=c.get("enabled", True))
+          for c in comps if c["id"].startswith("plugin:") and (ref := harness_lock.plugin_ref(c["id"]))]
+    return spec.model_copy(update={"source_dir": d, "skills": skills, "plugins": pl,
+                                   "agent_config": spec.agent_config.model_copy(update={"instructions": text})})
+
+
+async def mount_files(fleet: Fleet, prov: Any, sb: Sandbox, harness: str | None) -> None:
+    """From fleet.create, after the environment's own setup: write the lock's files into the sandbox. Exactly the
+    lock's skills (the environment's others removed; hangar's own stay), its instructions file, and for Claude Code
+    its plugins as the seed (`plugins.SEED`, replacing the image's, installed with the sandbox's Claude Code as the
+    image build does). Skills and the seed are root's and read-only to the agent; the instructions file follows in
+    `seal`, once hangar has added its environment notes. Raises when the sandbox can't be given the lock."""
+    from hangar import plugins as plugins_mod
+    from hangar.harnesses import HARNESSES
+
+    got = mounted(fleet, sb)
+    h = HARNESSES.get(harness or "")
+    if got is None or h is None:
+        return
+    d, lock = got
+    comps = lock["components"]
+    home = f"/home/{fleet.settings.sandbox_user}"
+    q = shlex.quote
+    lock_skills = [c for c in comps if c["id"].startswith("skill:")]
+    root_cmds: list[str] = []
+    if h.skills_dir:
+        sroot = f"{home}/{h.skills_dir}"
+        keep = {c["id"][6:] for c in lock_skills} | HANGAR_SKILLS
+        res = await prov.exec(sb, f"mkdir -p {q(sroot)} && cd {q(sroot)} && for d in */; do "
+                                  "[ -d \"$d\" ] && printf '%s\\0' \"${d%/}\"; done; true", timeout=60)
+        if res.exit_code != 0:
+            raise RuntimeError(f"could not read the sandbox's skills: {res.stderr[-300:]}")
+        drop = sorted(x for x in res.stdout.split("\0") if x and x not in keep)
+        drop += [c["id"][6:] for c in lock_skills if c.get("path") and c["id"][6:] not in drop]
+        if drop:
+            res = await prov.exec(sb, f"cd {q(sroot)} && rm -rf -- {' '.join(q(x) for x in drop)}", timeout=60)
+            if res.exit_code != 0:
+                raise RuntimeError(f"could not remove the environment's skills: {res.stderr[-300:]}")
+        for c in lock_skills:
+            if not c.get("path"):
+                continue
+            dst = f"{sroot}/{c['id'][6:]}"
+            for rel, data in harness_lock.read_dir(d / c["path"]).items():
+                await prov.write_file(sb, f"{dst}/{rel}", data, mode=0o644)
+            root_cmds.append(_read_only(dst))
+    guide = next((c for c in comps if c["id"].startswith("guide:")), None)
+    if h.instructions_file:
+        path = f"{home}/{h.instructions_file}"
+        if guide and guide.get("path"):
+            await prov.write_file(sb, path, (d / guide["path"]).read_bytes(), mode=0o644)
+        else:  # the lock has none: neither does the turn
+            await prov.exec(sb, f"rm -f -- {q(path)}", timeout=30)
+    pl = [c for c in comps if c["id"].startswith("plugin:")]
+    if pl and h.name == plugins_mod.HARNESS:
+        root_cmds.append(await _seed(prov, sb, d, pl, h))
+    if root_cmds:
+        res = await prov.exec(sb, "set -eu\n" + "\n".join(root_cmds), timeout=MOUNT_SECONDS, user="root", cwd="/")
+        if res.exit_code != 0:
+            raise RuntimeError(f"could not mount harness lock {lock['name']}@r{lock['revision']}: "
+                               f"{(res.stderr or res.stdout)[-400:]}")
+
+
+def _read_only(path: str) -> str:
+    q = shlex.quote(path)
+    return f'if [ "$(id -u)" = 0 ]; then chown -R 0:0 {q}; fi; chmod -R a-w,a+rX {q}'
+
+
+async def _seed(prov: Any, sb: Sandbox, d: Path, pl: list[dict[str, Any]], h: Any) -> str:
+    """Stage the lock's marketplaces in the sandbox and return the root shell that makes them the seed."""
+    from hangar import plugins as plugins_mod
+
+    q = shlex.quote
+    stage = f"/tmp/hangar-thaw-{uuid.uuid4().hex}"
+    mkts: list[str] = []
+    for c in pl:
+        mkt = harness_lock.plugin_ref(c["id"])["marketplace"]
+        if mkt not in mkts:
+            mkts.append(mkt)
+    for mkt in mkts:
+        for rel, data in harness_lock.read_dir(d / "plugins" / mkt).items():
+            await prov.write_file(sb, f"{stage}/{mkt}/{rel}", data, mode=0o644)
+    seed = plugins_mod.SEED
+    claude = f"{h.prefix}/bin/claude" if h.install else "claude"
+    lines = [f"rm -rf {seed}", f"mkdir -p {seed}/marketplaces"]
+    lines += [f"cp -R {q(f'{stage}/{mkt}')} {q(f'{seed}/marketplaces/{mkt}')}" for mkt in mkts]
+    lines.append(f"rm -rf {q(stage)}")
+    lines += plugins_mod.seed_commands(claude, mkts, [harness_lock._cname(c["id"]) for c in pl],
+                                       f"/tmp/hangar-thaw-home-{uuid.uuid4().hex[:12]}")
+    return "\n".join(lines)
+
+
+async def seal(fleet: Fleet, prov: Any, sb: Sandbox, harness: str | None) -> None:
+    """From fleet.create, once hangar has written its environment notes into the instructions file: that file too
+    becomes root's and read-only to the agent."""
+    from hangar.harnesses import HARNESSES
+
+    h = HARNESSES.get(harness or "")
+    got = mounted(fleet, sb)
+    if got is None or h is None or not h.instructions_file:
+        return
+    path = f"/home/{fleet.settings.sandbox_user}/{h.instructions_file}"
+    res = await prov.exec(sb, f"if [ -e {shlex.quote(path)} ]; then {_read_only(path)}; fi", timeout=60, user="root",
+                          cwd="/")
+    if res.exit_code != 0:
+        raise RuntimeError(f"could not make the instructions file read-only: {(res.stderr or res.stdout)[-300:]}")
+
+
+def info(p: dict[str, Any] | None) -> dict[str, Any] | None:
+    """What fleet.create records on a sandbox mounted from a claimed lock (sb.info["thawed"])."""
+    if not p or not p.get("dir"):
+        return None
+    return {k: p.get(k) for k in ("name", "revision", "digest", "dir")}
 
 
 def apply(s: Session, p: dict[str, Any]) -> None:
@@ -214,6 +471,18 @@ def drift(p: dict[str, Any], m: dict[str, Any], turn: SessionTurn | None = None)
                 out.append({"component": f"skill:{name}", "lock": c["tree"], "effective": eff.get(name)})
         for name in sorted(set(eff) - set(skills) - HANGAR_SKILLS - {None}):
             out.append({"component": f"skill:{name}", "lock": None, "effective": eff[name]})
+    lock_pl = {c["id"][7:]: c for c in comps if c["id"].startswith("plugin:")}
+    decl_pl = {f"{x.get('name')}@{x.get('marketplace')}": x for x in m.get("plugins") or [] if isinstance(x, dict)}
+    for pid in sorted(set(lock_pl) | set(decl_pl)):  # what hangar loaded, against the lock
+        lk, de = lock_pl.get(pid) or {}, decl_pl.get(pid) or {}
+        if lk.get("digest") != de.get("digest") or bool(lk.get("enabled", True)) != bool(de.get("enabled", True)):
+            out.append({"component": f"plugin:{pid}", "lock": lk.get("digest"), "effective": de.get("digest")})
+    if probe_ok and lock_pl and m.get("harness", {}).get("name") == "claude-code":
+        seen = {x.get("id"): x for x in (m.get("probe") or {}).get("plugins") or [] if isinstance(x, dict)}
+        for pid, c in lock_pl.items():  # what the sandbox's seed has, against the lock
+            got = (seen.get(pid) or {}).get("digest")
+            if c.get("tree") and got != c["tree"] and not any(x["component"] == f"plugin:{pid}" for x in out):
+                out.append({"component": f"plugin:{pid}", "lock": c["tree"], "effective": got})
     guide = next((c for c in comps if c["id"].startswith("guide:")), None)
     declared = (((m.get("instructions") or {}).get("global") or {}).get("declared") or {}).get("digest")
     if (guide or {}).get("digest") != declared:
