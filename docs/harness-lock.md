@@ -163,6 +163,10 @@ replaces it); a job fails with that reason and delivers nothing. The default, `w
 before its check has run waits for it (up to 40 s) under `fail`. Only turn 1 is checked: what the agent changes later
 is its behaviour, not drift. Writable state (`~/.claude.json`, plugin caches) is never digested.
 
+**In the PR.** A job's PR body and the commit hangar lands end with `Harness-Digest:` (and `Harness-Lock:
+team-default@r14` for a thawed job) as git trailers, and its review packet shows the short digest and the lock
+([jobs.md](jobs.md#the-pull-request), #137).
+
 **Upstream drift.** `hangar harness outdated NAME` (`GET /api/harness-locks/{ref}/outdated`) reports a lock's CLI
 version against `harnesses.lock.yaml`, and each `path:` skill against its source in the environments that declare
 it. It changes nothing; exit 1 when something is outdated.

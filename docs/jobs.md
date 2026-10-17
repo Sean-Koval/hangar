@@ -185,6 +185,30 @@ The same happens on its own after a control-plane restart (a deploy) that took t
 - **Take over:** work in the sandbox yourself. Your commits go out with the next follow-up's delivery.
 - After a turn the sandbox stays up while anyone is using it, and at least `keep_minutes` (default 120). Then it is checkpointed and released.
 
+### The pull request
+
+The PR body is the agent's summary, then what hangar knows: the verification, files left out, the check's own tests
+the agent changed, best-of-N's attempts, screenshots, the job line (`hangar job … · requested by … · environment /
+harness / model`), usage and `Closes #N` for an issue's job. It ends with **git trailers** (#137), so "which harness
+wrote this PR" can be reviewed, read by a script and joined to merged-PR outcomes:
+
+```
+Hangar-Job: job-1a2b3c4d
+Harness-Digest: sha256:…
+Environment-Digest: sha256:…
+Harness-Lock: team-default@r14
+```
+
+`Harness-Digest` and `Environment-Digest` are the latest turn's `harness_digest` and `environment_digest` from its
+[manifest](specs/0014-sister-tool-interfaces.md#2-the-effective-harness-manifest-hangarmanifestv1); `Harness-Lock`
+appears only for a job [thawed from a lock](harness-lock.md#thaw-and-drift). When the job's turns ran with different
+harness digests, each one gets a line, in the order it first ran with the latest turn's last, followed by the turns
+it covers (`Harness-Digest: sha256:… (turns 1-2)`). A turn recorded before digests existed adds nothing: no trailer
+is printed without a value. `git interpret-trailers --parse` reads them from the body (hangar separates its part
+from the summary with `___`, since git takes a `---` line for the end of a message; a summary that has its own `---`
+line needs `--no-divider`). The body goes through the [secret scan](security.md#secret-scanning) like everything hangar posts. When
+hangar [lands the PR](landing.md#4-how-a-pr-lands), the merge commit's message ends with the same trailers.
+
 ## 6. Forks and best-of-N
 
 For work where one try often misses (a flaky test, a tricky bug, an ambiguous refactor), ask for several attempts and keep the best:
