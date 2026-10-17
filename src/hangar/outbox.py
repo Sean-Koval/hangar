@@ -955,9 +955,9 @@ class Outbox:
 
 def failure(job: Job) -> bool:
     """A job whose runs retention keeps until exported: failed, cancelled (abandoned), its PR closed unmerged, or
-    labelled as a failure (#169: a `hangar.failure` label until FailureLabel records exist)."""
+    labelled in the harness review (#169, `job.failure_label`)."""
     return (job.state in (JobState.FAILED, JobState.CANCELLED) or job.landing.pr_state == "closed"
-            or "hangar.failure" in job.labels)
+            or job.failure_label is not None)
 
 
 _TERMINAL = {"succeeded", "failed", "cancelled"}

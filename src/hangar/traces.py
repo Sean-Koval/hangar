@@ -20,7 +20,7 @@ import re
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
 
-from hangar import testresults
+from hangar import harness_review, testresults
 from hangar.events import RunEvent, total_usage
 from hangar.models import Job, Session, SessionTurn, Usage, now
 
@@ -589,7 +589,7 @@ def job_export(jobs: JobService, job: Job, sessions: list[Session] | None = None
         "gen_ai.request.model": job.model, "hangar.repo": job.repo, "hangar.diff.stat": job.result.diffstat,
         "hangar.diff.files": list(job.result.files) or None, "hangar.diff.deleted": list(job.result.deleted) or None,
         "hangar.pr.url": job.result.pr_url, "hangar.taint": bool(job.taint and job.taint.get("tainted")),  # #129
-        **_usage_attrs(usage)},
+        **harness_review.trace_attrs(job), **_usage_attrs(usage)},  # --- #169: hangar.failure.*
         error=(job.reason or "") if job.state.value == "failed" else None)
     pid = root["id"] if root else None
     for s in sorted(sessions, key=lambda z: z.created_at):

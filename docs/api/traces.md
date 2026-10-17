@@ -232,6 +232,12 @@ repo-relative, at most 1,000: what the change touched however it was made, shell
 `hangar.pr.url`. Both carry `hangar.taint`: whether any of its turns read untrusted content (a job whose own input is
 untrusted is tainted from the start).
 
+A job labelled in the Friday harness review ([runbook](../runbooks/harness-review.md), #169, added within
+`hangar.trace/v1`) also carries `hangar.failure.category` (`env`, `tooling`, `instructions`, `skill`, `model`,
+`ticket`, `flaky`, `other`), `hangar.failure.fix` (`agents_md`, `skill`, `env`, `ticket_template`, `none`),
+`hangar.failure.seq` (the `hangar.seq` of the first failure), `hangar.failure.turn`, `hangar.failure.session_id`,
+`hangar.failure.note`, `hangar.failure.candidate_task`, `hangar.failure.labelled_by` and `hangar.failure.at`.
+
 ## Writing behavior specs
 
 Each of these reads the export alone (tests: `tests/test_interfaces.py::_behavior`):

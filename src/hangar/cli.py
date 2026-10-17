@@ -1383,6 +1383,11 @@ from hangar import metrics_cli as _metrics  # noqa: E402
 
 _metrics.register(app)
 
+# ---------------------------------------------------------------------------- --- #169: review_cli.py
+from hangar import review_cli as _review  # noqa: E402
+
+_review.register(app)
+
 # ---------------------------------------------------------------------------- workstream steer (steer_cli.py)
 from hangar import steer_cli as _steer  # noqa: E402
 
