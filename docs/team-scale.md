@@ -2,6 +2,8 @@
 
 One control plane for a team: **6 engineers, each with up to ~10 sessions at once (~60 sandboxes), plus jobs.** This
 page covers what keeps that responsive and fair, how to size GKE for it, and what it costs.
+To onboard the team itself (people, credentials, and each repo's App, branch protection, policy and doors), follow
+[the onboarding runbook](runbooks/onboarding.md).
 
 ## What holds it up
 
