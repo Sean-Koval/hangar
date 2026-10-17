@@ -8,6 +8,8 @@ Hangar manages sandboxes for Claude Code, Codex, pi, and Antigravity. Each sandb
 
 Start on a laptop with Docker. The same control plane also supports Kubernetes and E2B.
 
+Documentation site: **[sean-koval.github.io/hangar](https://sean-koval.github.io/hangar/)**
+
 [Quick start](#quick-start) · [First task](#run-your-first-task) · [Environments](#create-your-own-environment) · [Documentation](#documentation)
 
 ## How it works
