@@ -451,6 +451,17 @@ def test_rest_freeze_is_owner_scoped_and_the_cli_writes_the_directory(settings, 
         (out / "AGENTS.md").write_text("changed by hand\n")
         r = runner.invoke(cli.app, ["harness", "check", str(out)])
         assert r.exit_code == 1 and "guide:AGENTS.md" in r.output
+        # --- #251: freezing over a directory with edits its lock doesn't record is refused, and nothing is touched
+        (out / "skills/alpha/local.md").write_text("an uncommitted note\n")
+        r = runner.invoke(cli.app, ["harness", "freeze", "alices", "--out", str(out)])
+        assert r.exit_code == 1 and "doesn't match its own harness.lock" in r.output
+        assert "guide:AGENTS.md" in r.output and "--force" in r.output
+        assert (out / "AGENTS.md").read_text() == "changed by hand\n" and (out / "skills/alpha/local.md").exists()
+        r = runner.invoke(cli.app, ["harness", "freeze", "alices", "--out", str(out), "--force"])
+        assert r.exit_code == 0, r.output
+        assert "warning: overwriting (--force): guide:AGENTS.md" in r.output
+        assert harness_lock.check(out)["ok"] and not (out / "skills/alpha/local.md").exists()
+        assert harness_lock.overwrite_problems(out) == [] and harness_lock.overwrite_problems(tmp_path / "new") == []
         # a gap is reported, not written
         (skillenv / "skills/alpha/SKILL.md").write_text("edited since\n")
         r = runner.invoke(cli.app, ["harness", "freeze", "alices", "--out", str(tmp_path / "other")])

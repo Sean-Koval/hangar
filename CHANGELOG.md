@@ -53,7 +53,7 @@ Six engineers on three repos: planned work comes in through Jira, the inbox reac
 
 **Internal:** `hangar/supervisor.py` is now `hangar/svc_control.py`, the control-plane half of the service supervisor (`hangar-agent svc`), paired with `svc_agent.py`; no behaviour change and no shim, since nothing outside the tree imports it. Specs 0001 and 0004 keep "supervisor" for the run supervisor they describe (#144).
 
-**Fixes:** `hangar doctor` no longer fails a fresh laptop install on the intake posture: without the git gateway it warns until an intake front door is configured, then fails naming those doors, with one fix command (#236, PR #247).
+**Fixes:** `hangar doctor` no longer fails a fresh laptop install on the intake posture: without the git gateway it warns until an intake front door is configured, then fails naming those doors, with one fix command (#236, PR #247). `hangar harness freeze --out DIR` checks a directory that already holds a lock against it first, and refuses to overwrite uncommitted edits there unless `--force` (#251).
 
 ### The safe release (P1, #120–#132; [docs/upgrading.md](docs/upgrading.md#the-safe-release-120132))
 

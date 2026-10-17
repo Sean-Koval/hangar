@@ -121,6 +121,9 @@ It **fails, naming each gap**, when content can't be recovered:
 Skills in the sandbox that the turn didn't declare (hangar's own `hangar-environment`, or one added there) are not
 frozen, with a warning. Freezing into a directory that already has a lock keeps its name (unless `--name` is given),
 replaces only the paths the old and new lock manage, and keeps the revision when nothing changed or bumps it by one.
+Before it writes, it checks that directory against its own lock (as `hangar harness check` does): a file edited by
+hand, a missing component or a skill directory the lock doesn't pin would be lost, so freeze refuses, listing them,
+until you commit or revert them; `--force` overwrites anyway, with a warning per change (#251).
 Freeze writes files only: it never commits; open the PR to the harness repo yourself.
 
 A member can freeze only their own sessions and jobs; an admin, anyone's; a `jobs` token, the jobs it submitted. A
