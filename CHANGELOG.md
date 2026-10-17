@@ -54,6 +54,8 @@ Six engineers on three repos: planned work comes in through Jira, the inbox reac
 
 **Internal:** `hangar/supervisor.py` is now `hangar/svc_control.py`, the control-plane half of the service supervisor (`hangar-agent svc`), paired with `svc_agent.py`; no behaviour change and no shim, since nothing outside the tree imports it. Specs 0001 and 0004 keep "supervisor" for the run supervisor they describe (#144).
 
+**Experiment variants are harness locks** (#135). A variant can be `{harness_lock: name@sha256:…, environment}`: every trial is claimed from the lock (#134), the pins record each variant's `harness_lock`, `harness_revision` and `harness_digest`, and a trial whose turn-1 `harness_digest` isn't its lock's is flagged `drift`. A lock beside an overlay field is a 422. The overlay fields (`harness`, `model`, `approvals`, `skills`, `skills_remove`, `instructions`, `instructions_append`) still work but are deprecated: each variant using them adds a note to the experiment, the schema marks them `deprecated`, and they go in the release after flightdeck v0's first report. `hangar experiment freeze-variants EXP --out DIR` freezes each overlay variant from a completed trial and prints the equivalent locked spec ([jobs.md](docs/jobs.md#9-experiments)).
+
 **Fixes:** `hangar doctor` no longer fails a fresh laptop install on the intake posture: without the git gateway it warns until an intake front door is configured, then fails naming those doors, with one fix command (#236, PR #247). `hangar harness freeze --out DIR` checks a directory that already holds a lock against it first, and refuses to overwrite uncommitted edits there unless `--force` (#251).
 
 ### The safe release (P1, #120–#132; [docs/upgrading.md](docs/upgrading.md#the-safe-release-120132))
