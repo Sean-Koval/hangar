@@ -7,7 +7,7 @@ costs more. Agents and hangar make many of these calls (`exec`, `read_file`, `wr
 sandbox and sends those calls to it over HTTP. E2B sandboxes already have their own daemon (E2B's `envd`), which
 hangar-envd is modeled on.
 
-- **Code:** the Rust crate in [`envd/`](../envd) (the daemon) and `src/hangar/envd.py` (hangar's side).
+- **Code:** the Rust crate in [`envd/`](https://github.com/Sean-Koval/hangar/tree/main/envd) (the daemon) and `src/hangar/envd.py` (hangar's side).
 - **Size:** a 2.7 MB static binary (x86_64, musl, LTO, stripped; aarch64 is 2.3 MB). It idles at about 2 MB RSS and
   peaked at 6 MB during the benchmark below.
 - **Protocol:** E2B envd's: Connect RPC `process.Process` and `filesystem.Filesystem` (JSON or binary proto, over
@@ -75,7 +75,7 @@ runc's), and `agent_status` long-polls to stop holding API-server connections an
      reach the daemon there, and uses `docker exec`. Pointing `HANGAR_DOCKER_NETWORK` at a network shared with the
      control plane makes the daemon reachable, and lets sandboxes reach each other and the control plane
      (`hangar doctor` warns).
-   - Kubernetes: the pod IP. [`deploy/k8s/envd-network.yaml`](../deploy/k8s/envd-network.yaml) lets hangar's pods,
+   - Kubernetes: the pod IP. [`deploy/k8s/envd-network.yaml`](https://github.com/Sean-Koval/hangar/blob/main/deploy/k8s/envd-network.yaml) lets hangar's pods,
      and only them, reach port 49983; everything else stays denied by `sandbox-network.yaml`.
 5. **Falling back.** The provider's own path is used whenever the daemon can't be: no binary for the sandbox's CPU,
    no reachable address, a start that failed (then not retried for 5 minutes), `exec` as another user (the daemon is

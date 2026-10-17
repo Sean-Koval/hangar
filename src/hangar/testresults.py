@@ -81,7 +81,9 @@ IN_TURN_MAX = 10
 KV_FLAKY = "testresults:flaky:"
 FILE = "TEST-RESULTS.json"
 ACCEPTANCE_REPO = "hangar:acceptance"  # the deploy checks' runs: not a repo agents work in
-TRUSTED = frozenset({"base", "verify", "rerun", "attempt", "autoinstall", "acceptance"})
+# --- #164: `grader`, an experiment's hidden tests in the grader's sealed sandbox: trusted only when the grade's own
+# `trust` is `isolated` (the uid split, the pristine copy and `hangar-grade`); recorded untrusted otherwise
+TRUSTED = frozenset({"base", "verify", "rerun", "attempt", "autoinstall", "acceptance", "grader"})
 # The usual report paths, as `find -path` patterns (where * also crosses /), relative to the checkout
 DEFAULT_GLOBS = ("*/TEST-*.xml",  # Maven surefire and failsafe, Gradle, Ant
                  "*/*junit*.xml",  # nextest (target/nextest/<profile>/junit.xml), jest-junit, vitest, gotestsum
@@ -111,7 +113,7 @@ class TestRun(BaseModel):
     __test__ = False  # not a pytest class
     id: str = Field(default_factory=run_id)
     at: float = Field(default_factory=now)
-    kind: str  # base | verify | rerun | attempt | in_turn | autoinstall | acceptance
+    kind: str  # base | verify | rerun | attempt | in_turn | autoinstall | acceptance | grader
     trusted: bool = True  # hangar ran it; in_turn: the agent's sandbox did, while the agent worked
     repo: str | None = None  # repo_key
     environment: str | None = None
@@ -119,6 +121,7 @@ class TestRun(BaseModel):
     session_id: str | None = None
     turn: int | None = None
     attempt: int | None = None
+    agent_run_id: str | None = None  # --- #164: the agent run (hangar.run.id) it checked; unset for older runs
     person: str | None = None
     sha: str | None = None  # HEAD when it ran
     tree: str | None = None  # the working tree's content (uncommitted changes included)
@@ -343,13 +346,16 @@ def record(store: Any, *, results: testreports.Results, kind: str, redact: Calla
            tree: str | None = None, sha: str | None = None, repo: str | None = None, environment: str | None = None,
            job_id: str | None = None, session_id: str | None = None, turn: int | None = None,
            attempt: int | None = None, person: str | None = None, command: str | None = None,
-           exit_code: int | None = None, files: list[str] | None = None, run_id: str | None = None) -> TestRun:
+           exit_code: int | None = None, files: list[str] | None = None, run_id: str | None = None,
+           agent_run_id: str | None = None, trusted: bool | None = None) -> TestRun:
+    """`trusted=False` records a run of a trusted kind as untrusted (a grade below `trust: isolated`)."""
     from hangar.repopolicy import repo_key
 
     _redact_ids(results, redact)
     counts = results.counts()
     failing = sorted(results.failing(), key=lambda c: c.id)
-    run = TestRun(kind=kind, trusted=kind in TRUSTED, repo=repo if repo == ACCEPTANCE_REPO else repo_key(repo),
+    run = TestRun(kind=kind, trusted=kind in TRUSTED and trusted is not False, agent_run_id=agent_run_id,
+                  repo=repo if repo == ACCEPTANCE_REPO else repo_key(repo),
                   environment=environment, job_id=job_id, session_id=session_id, turn=turn, attempt=attempt,
                   person=person, sha=sha, tree=tree, command=redact(command)[:500] if command else None,
                   exit_code=exit_code, complete=results.complete, counts=counts, n_failing=len(failing),
@@ -364,7 +370,7 @@ def record(store: Any, *, results: testreports.Results, kind: str, redact: Calla
     found = _detect_flaky(store, run, results) if run.trusted else {}
     run.flaky = sorted(found)[:FAILING_KEPT]
     store.put(run)
-    if found and run.repo:
+    if found and run.repo and kind != "grader":  # hidden tests never reach the repo's list (TEST-RESULTS.json)
         _note_flaky(store, run, found)
     _maybe_prune(store)
     return run
@@ -507,9 +513,10 @@ def _dir(settings: Any, rid: str) -> str:
 
 
 async def run_check(svc: JobService, job: Job, kind: str, *, sandbox_id: str | None = None,
-                    session_id: str | None = None, turn: int | None = None,
-                    attempt: int | None = None) -> tuple[ExecResult, TestRun | None]:
-    """The job's `verify` in its sandbox (or an attempt's), as hangar has always run it, and its results."""
+                    session_id: str | None = None, turn: int | None = None, attempt: int | None = None,
+                    agent_run_id: str | None = None) -> tuple[ExecResult, TestRun | None]:
+    """The job's `verify` in its sandbox (or an attempt's), as hangar has always run it, and its results.
+    `agent_run_id`: the agent run it checks (the job turn's own, by default)."""
     sbid = sandbox_id or job.sandbox_id or ""
     timeout = svc.settings.job_verify_timeout_seconds
     actor = f"job:{job.id}"
@@ -534,7 +541,9 @@ async def run_check(svc: JobService, job: Job, kind: str, *, sandbox_id: str | N
     run = record(svc.store, results=got.results, kind=kind, redact=svc.broker.redact, tree=got.tree, sha=got.head,
                  repo=job.repo, environment=job.environment, job_id=job.id,
                  session_id=session_id or job.session_id, turn=turn, attempt=attempt, person=job.person,
-                 command=job.verify, exit_code=res.exit_code, files=got.files, run_id=rid)
+                 command=job.verify, exit_code=res.exit_code, files=got.files, run_id=rid,
+                 agent_run_id=agent_run_id or (job.turns[turn - 1].run_id if turn and 0 < turn <= len(job.turns)
+                                               and attempt is None else None))
     export_otel(run)
     return res, run
 
@@ -758,7 +767,8 @@ async def in_turn(svc: JobService, job: Job, turn: Turn) -> None:
             code = 0 if m and m.group(1) == "pass" else int(m.group(2)) if m and m.group(2) else None
         run = record(svc.store, results=got.results, kind="in_turn", redact=svc.broker.redact, repo=job.repo,
                      environment=job.environment, job_id=job.id, session_id=job.session_id, turn=len(job.turns),
-                     person=job.person, command=job.verify, exit_code=code, files=got.files)
+                     person=job.person, command=job.verify, exit_code=code, files=got.files,
+                     agent_run_id=turn.run_id)
         last = (run, n)
     with contextlib.suppress(Exception):  # read: the next turn's checks start counting from 0 again
         await svc.fleet.exec(sbid, f"rm -rf {shlex.quote(root)}", timeout=30, actor=f"job:{job.id}", quiet=True)
@@ -808,6 +818,13 @@ def prompt_line(svc: JobService, job: Job, ctx: str) -> str | None:
 
 
 # ====================================================================== traces (hangar.trace/v1)
+def counted(run: TestRun) -> bool:
+    """--- #164: whether a run counts as evidence that tests ran (`hangar.test.run.counted`, the field behavior
+    predicates use): hangar ran it in a way the agent can't forge (`trusted`), it ran at least one test (a
+    `pytest --collect-only` or a runner that found nothing has total 0) and every report was read (`complete`)."""
+    return bool(run.trusted and run.counts.get("total", 0) > 0 and run.complete)
+
+
 def _suite_status(code: int | None) -> str:
     return {0: "success", None: "aborted", 124: "timed_out", 137: "timed_out"}.get(code, "failure")  # type: ignore
 
@@ -824,6 +841,7 @@ def trace_events(run: TestRun, limit: int = OTEL_CASES) -> list[dict[str, Any]]:
         "hangar.kind": "test.run", "test.suite.name": run.command or run.kind,
         "test.suite.run.status": _suite_status(run.exit_code), "hangar.test.run.id": run.id,
         "hangar.test.run.kind": run.kind, "hangar.test.run.trusted": run.trusted,
+        "hangar.test.run.counted": counted(run), "hangar.run.id": run.agent_run_id,
         "hangar.test.exit_code": run.exit_code, "hangar.test.total": run.counts.get("total", 0),
         "hangar.test.passed": run.counts.get("passed", 0), "hangar.test.failed": run.counts.get("failed", 0),
         "hangar.test.errors": run.counts.get("error", 0), "hangar.test.skipped": run.counts.get("skipped", 0),
@@ -857,6 +875,46 @@ def add_to_export(x: Any, sp: Any, store: Any, job: Job) -> None:
     if b is not None and b.tests and all(r.id != b.tests for r in runs) and (base := store.get(TestRun, b.tests)):
         runs.append(base)
     for r in sorted(runs, key=lambda r: r.at):
+        for e in trace_events(r):
+            x.event(sp, e["name"], e["time"], e["attributes"])
+
+
+def turn_runs(store: Any, s: Any, n: int) -> list[TestRun]:
+    """--- #164: the test runs of a session's turn `n`, oldest first: those recorded with its run id, else (runs
+    recorded before `agent_run_id`) a session's own by turn number, a job's by the job turn or attempt that ran as
+    this run. The base check belongs to no turn."""
+    from hangar.models import Job
+
+    if not 1 <= n <= len(s.turns):
+        return []
+    turn = s.turns[n - 1]
+    jobs: dict[str, Any] = {}
+    out = []
+    for r in runs_of(store, session_id=s.id):
+        if r.agent_run_id:
+            ok = bool(turn.run_id) and r.agent_run_id == turn.run_id
+        elif r.job_id is None:
+            ok = r.turn == n
+        elif r.kind == "base" or not turn.run_id:
+            ok = False
+        else:
+            job = jobs[r.job_id] if r.job_id in jobs else jobs.setdefault(r.job_id, store.get(Job, r.job_id))
+            if job is None:
+                ok = False
+            elif r.attempt is not None:
+                ok = any(a.index == r.attempt and a.run_id == turn.run_id for a in job.attempts)
+            else:
+                jn = r.turn or 0
+                ok = 0 < jn <= len(job.turns) and job.turns[jn - 1].run_id == turn.run_id
+        if ok:
+            out.append(r)
+    return sorted(out, key=lambda r: r.at)
+
+
+def add_to_turn(x: Any, sp: Any, runs: list[TestRun]) -> None:
+    """For the session export (traces.session_export): a turn's runs as events on its `turn` span, as
+    add_to_export puts a job's on the `job` span. In-turn runs stay `hangar.test.run.trusted: false`."""
+    for r in runs:
         for e in trace_events(r):
             x.event(sp, e["name"], e["time"], e["attributes"])
 
@@ -930,6 +988,7 @@ def status_section(fleet: Any, sessions: Any, jobs: Any) -> dict[str, Any]:
 # ====================================================================== REST and the resource
 def view(run: TestRun, cases: bool = False) -> dict[str, Any]:
     d = run.model_dump(mode="json", exclude={"cases"})
+    d["counted"] = counted(run)
     d["cases_kept"] = run.cases is not None
     if cases:
         d["cases"] = decode(run)
@@ -937,8 +996,9 @@ def view(run: TestRun, cases: bool = False) -> dict[str, Any]:
 
 
 def brief(run: TestRun) -> dict[str, Any]:
-    return run.model_dump(mode="json", include={"id", "at", "kind", "trusted", "turn", "attempt", "exit_code",
-                                                "complete", "counts", "n_failing", "flaky", "coverage", "sha"})
+    return {**run.model_dump(mode="json", include={"id", "at", "kind", "trusted", "turn", "attempt", "exit_code",
+                                                   "complete", "counts", "n_failing", "flaky", "coverage", "sha"}),
+            "counted": counted(run)}
 
 
 def runs_of(store: Any, *, job_id: str | None = None, session_id: str | None = None) -> list[TestRun]:

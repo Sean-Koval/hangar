@@ -1,6 +1,6 @@
 # 0001: Agent runs (liveness, structured status, resume, ready-to-test sandboxes)
 
-Status: draft. Date: 2026-10-12. Author: hangar agent session, for review.
+Status: superseded (2026-10-15): the `Run` model by jobs, sessions and turns ([0009](0009-jobs-and-the-factory-front-door.md), [0010](0010-sessions.md)); liveness by the reconciler (#84) and the event watcher; see decisions 1 and 13 in [the index](README.md). Was: draft. · Date: 2026-10-12. Author: hangar agent session, for review.
 
 > Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins.
 
