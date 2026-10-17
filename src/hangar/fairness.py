@@ -210,7 +210,7 @@ def bucket_of(job: Job) -> str:
     team (`team:<owner/repo>`)."""
     from hangar.repopolicy import repo_key
 
-    return person_of(job.requester, job.person) or f"team:{repo_key(job.repo) or '?'}"
+    return job.person or person_of(job.requester) or f"team:{repo_key(job.repo) or '?'}"
 
 
 def counts_as_open(job: Job) -> bool:
@@ -349,7 +349,8 @@ def awaiting(svc: JobService, person: str | None = None) -> list[Job]:
 def capacity_view(svc: JobService, person: str) -> dict[str, int]:
     """For a digest (#158) or a front door: a person's open agent PRs, their cap, and their jobs held for it."""
     probe = Job(title="", instructions="", environment="", person=person, requester=person)
-    return {"open_agent_prs": open_agent_prs(svc, person), "cap": pr_cap(svc, probe),
+    live = sum(1 for j in list(svc._jobs.values()) if person in svc.review_load.buckets(svc, j))  # counted afresh
+    return {"open_agent_prs": live, "cap": pr_cap(svc, probe),
             "awaiting_capacity": len(awaiting(svc, person))}
 
 
