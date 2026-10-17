@@ -26,6 +26,7 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel, Field
 
+from hangar import adr as adr  # --- #170: `@hangar adr` jobs: their check, path guard and labels
 from hangar import aireview as aireview  # --- AI review (#161)
 from hangar import (  # strategies: workstream D; --- observe; steer: live turns; --- overnight/autofix
     autofix,
@@ -1203,6 +1204,11 @@ class JobService:
             # --- testresults: by test id where the base and this run both left reports, else from the output
             out = (res.stdout or "") + (res.stderr or "")
             job.result.new_failures = testresults.new_failures(self, job, tests, out, res.truncated)
+        if repo_path and adr.is_adr(job) and (bad := await adr.verify(self, job)):  # --- #170: hangar's ADR check
+            job.result.verify_exit_code = 1
+            job.result.verify_tail = self.broker.redact("hangar's ADR check failed:\n" + "\n".join(bad))[-4000:]
+            job.result.new_failures = bad[:20]  # counts on a red base too
+            self._event(job, "ADR check failed: " + "; ".join(bad)[:1500])
         # --- frontdoor: on a red base only the failures this change added count ("unknown": can't tell them apart)
         verdict = baseline.verdict(job, job.result.verify_exit_code, job.result.new_failures)
         verify_ok = verdict == "pass"
@@ -1312,6 +1318,10 @@ class JobService:
             if tainted and job.deliver == "pr" and not draft:
                 self._event(job, "delivering as a draft PR: the agent read untrusted content (hangar:tainted)")
                 taint.audit(self.fleet, "hangar", "pr.open", "draft", job.id, deliver=job.deliver)
+            if adr.is_adr(job) and (out := adr.outside(job)):  # --- #170: the path guard
+                self._event(job, f"the ADR change touches files outside {adr.DECISIONS}/ ({', '.join(out[:5])}); "
+                                 "opening the PR as a draft")
+                draft = True
             await self._ensure_pr(job, draft=draft or job.deliver == "draft_pr" or tainted)
             await self.landing.delivered(job)  # --- landing: a stale approval, the review packet
 
@@ -1348,6 +1358,8 @@ class JobService:
                     await gh.add_labels(repo, int(pr["number"]), [taint.LABEL])
                 except (GitHubError, httpx.HTTPError) as e:
                     self._event(job, f"could not label PR #{pr['number']} {taint.LABEL}: {e}")
+            if adr.is_adr(job) and pr.get("number"):  # --- #170: agent-drafted, adr
+                await adr.label_pr(self, gh, repo, int(pr["number"]), job)
         except (GitHubError, httpx.HTTPError) as e:
             self._event(job, f"branch pushed; opening the PR failed: {e}")
         finally:
@@ -1371,6 +1383,7 @@ class JobService:
             lines += ["", strategies.attempts_table(job), ""]
         lines += computer.pr_lines(self, job)  # --- computer: screenshots and recorded demos
         lines += clouddoctor.pr_lines(self, job)  # --- clouddoctor: a doctor fix names its evidence
+        lines += adr.pr_lines(job)  # --- #170: the thread it was drafted from
         lines.append(f"hangar job `{job.id}` · requested by {job.requester} via {job.source} · "
                      f"{job.environment} / {job.harness}" + (f" / {job.model}" if job.model else ""))
         if usage := self.usage(job):  # workstream C
