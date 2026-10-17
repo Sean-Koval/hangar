@@ -2,12 +2,30 @@
 
 Guides, newest first:
 
+- [**The repo-conventions hand-off**](#the-repo-conventions-hand-off-143) (#143): prebuild the images that bake the
+  skill in.
 - [**Claude Code plugins from a seed**](#claude-code-plugins-from-a-seed-136) (#136): nothing to do unless you want plugins.
-- [**The `extends` merge rules**](#the-extends-merge-rules-132) (#132): run one dry run before upgrading.
+- [**The safe release**](#the-safe-release-120132) (#120–#132): secure defaults for intake jobs, API keys for
+  automated work, one approval rule, sealed graders, taint gates, new manifest fields and the `extends` merge rules.
+  One ordered procedure, ending with `hangar doctor`.
+- [**The `extends` merge rules**](#the-extends-merge-rules-132) (#132): run one dry run before upgrading (step 3 of
+  the safe release).
 - [**This release**](#upgrading-to-the-team-release-75117) (#75–#117): one ordered procedure for everything since the overnight stack. Wave 1 (#75–#90): one hangar for a team of six at ~60 sessions, people and per-person credentials, front-door defaults and job budgets, the reconciler, the MCP deadline contract, and images built before anyone waits. Wave 2 (#91–#100): team credentials and linked accounts, Jira and GitHub Projects intake, egress allowlists, secret scanning and short-lived cloud credentials, a computer for every agent, environments that live with the repo, an approval that lands the PR, the always-on control plane and gated deploys. Wave 3 (#101–#110): review-round trust and the stale-approval gate, egress closed further (no ECH, read-only package mirrors, pushes scanned in the gateway), history out of memory, a rotatable vault key, repo builds that pass on less, the operator console and the Cloud Doctor, the harness canary and `frontier` models, agent-led environment setup, and the acceptance suite for all of it; then least privilege for jobs and builds, CI/CD setup and the infra states (#111–#113). Wave 4 (#114–#117): heavy development environments (Docker inside a VM of the sandbox's own on the heavy tier, deny by default for a repo's own request, and bigger resource profiles), warm dependency and compile caches, structured test results from every check, and the sister tool's three interfaces (harness manifests, trace export, experiment jobs).
 - [**The overnight stack**](#upgrading-from-before-the-overnight-stack-4869) (#48–#69), for a hangar older than that. Do its backup and read its defaults first, then follow this release's procedure: its prebuild also covers the overnight guide's "republish the Codex pack" step.
 
 Both are written for the GKE install from [gke.md](gke.md): one zonal cluster, gVisor sandboxes, the control plane with SQLite on the `hangar-data` PVC, checkpoints in the session bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / `power.sh`. [CHANGELOG.md](../CHANGELOG.md) lists what each adds.
+
+## The repo-conventions hand-off (#143)
+
+The `repo-conventions` skill told the agent to put its hand-off summary in its final message, while the job prompt
+asks for `RESULT.md` in the job's directory. Its step 5 now says the same as the prompt: `hangar-agent done
+"<summary>"` or the task's `RESULT.md` path, never the repo, and the final message only when the task names neither.
+
+The skill is baked into the images of `claude-python`, `codex-node`, `polyglot` and `hangar` (and any environment that
+lists it), so their image tags change once, as they did for #82: prebuild with `hangar images plan` / `hangar images
+build` before the rollout. Their manifests' `harness_digest` changes too (the skill is part of the harness), so a
+harness lock frozen from one of them before this release reports drift when thawed there
+([harness locks](harness-lock.md)): freeze it again after the rollout.
 
 ## Claude Code plugins from a seed (#136)
 
@@ -23,6 +41,134 @@ Nothing to do: an environment without `plugins:` behaves as before, and its mani
 - An environment whose `~/.claude/settings.json` has `extraKnownMarketplaces` gets `"autoUpdate": false` on each, so
   its image tag changes: prebuild it (`hangar images plan` / `hangar images build`) before the rollout.
 - The canary refuses a Claude Code lock older than 2.1.273 (seed directories need it; the lock is 2.1.296).
+
+## The safe release (#120–#132)
+
+The release that makes hangar safe to hand to a second engineer. Intake jobs (from GitHub, GitHub Projects, Jira,
+Slack and inbound webhooks) get boundaries that hold even when a prompt injection steers the agent; automated work
+runs on API keys; every approval path follows one rule; experiment graders run sealed; a turn that read untrusted
+content can't push, land or open egress on the agent's word; manifests gain the harness and environment digests;
+and `extends` lists replace instead of append.
+
+**Timeline (the owner's decision, 2026-10-17).** The security changes #123–#125 warn for one release, then enforce:
+
+- **This release** ships them enforcing by default, with a switch back to warn for each, so you can upgrade before
+  the gateway, the egress proxy and everyone's API keys are in place: `HANGAR_INTAKE_POSTURE=warn` (#123, and the
+  intake side of #124) and `HANGAR_SUBSCRIPTION_LOGINS=any` (#125). Under a warn switch the work runs as before and
+  says so: a `posture.warn` event, an audit entry and a review-packet line, or a warning on the sandbox, session and
+  turn manifest; `hangar doctor` reports it.
+- **The next release** enforces: those two switches go, and intake jobs without the gateway, and jobs with only a
+  subscription login, are refused. Turn the switches off (unset them) as soon as the procedure below is done, and
+  before you upgrade again.
+
+`sudo: false` (#124) is the default for environments with no warn switch: an environment that needs root at runtime
+for people's own sessions sets `sudo: true` (not used for intake jobs under `enforce`).
+
+```bash
+hangar cred add claude-team --team --harness claude-code --kind api_key --file key.txt   # 1. API keys first
+hangar config set HANGAR_GATEWAY_URL http://hangar-gateway.hangar.svc:8788               # 2. the gateway and
+hangar config set HANGAR_EGRESS_URL http://hangar-gateway.hangar.svc:3128                #    the egress proxy
+uv run hangar env migrate-merge --dry-run --data-dir /path/to/hangar-data                # 3. the merge dry run
+uv run hangar images plan && uv run hangar images build --registry "$REG"                # 4. prebuild images
+bash deploy/gke/up.sh                                                                    # 5. 01:00–09:50 ET
+hangar doctor                                                                            # 6. all green
+```
+
+### What you configure
+
+`hangar config set NAME VALUE` keeps a setting in hangar's database; `hangar-site` wins over it.
+
+| Setting | Values (default first) | What it does | Step |
+| --- | --- | --- | --- |
+| API-key credentials: a person's own (`hangar cred add NAME --harness H --kind api_key`) or the team's (`--team`) | — | **Required** for every job, schedule, webhook, experiment and replay: they never use a subscription login (`oauth_token`, `auth_file`) | [1](#1-add-api-key-credentials) |
+| `HANGAR_SUBSCRIPTION_LOGINS` | `interactive`, `any` | `interactive`: subscription logins only in a person's own sessions and sandboxes, with a warning. `any`: jobs use them too, with a warning, and `hangar doctor` fails. **This release only** (#125). Trials and graders never get one | [1](#1-add-api-key-credentials) |
+| `HANGAR_GATEWAY_URL` | unset | The git gateway: job sandboxes fetch only and hangar pushes. **Required** for intake jobs under `enforce` (#123); also needed for build caches and private repo builds. `deploy/k8s/config.yaml` sets it on GKE | [2](#2-turn-on-the-gateway-and-the-egress-proxy) |
+| `HANGAR_EGRESS_URL` | unset | The egress proxy that `allowlist` and `none` environments, and intake jobs' sandboxes, go through. **Required** on GKE for intake jobs' allowlist floor. `deploy/k8s/config.yaml` sets it | [2](#2-turn-on-the-gateway-and-the-egress-proxy) |
+| `HANGAR_INTAKE_POSTURE` | `enforce`, `warn`, `off` | `enforce`: intake jobs need the gateway (refused at submit, with a message on the issue, ticket or thread, without it), their sandboxes get at least `allowlist` egress and cold-start, and on Docker run with `no-new-privileges`; an intake job on a heavy environment needs the repo policy's `allow_heavy_for_intake`. `warn`: they run as before, with a `posture.warn` event. **`warn` is for this release only** (#123, #124). `off` is not recommended ([security.md](security.md#intake-posture)) | [2](#2-turn-on-the-gateway-and-the-egress-proxy) |
+| `HANGAR_SELF_APPROVAL` | `deny`, `allow_solo` | `deny`: nobody approves their own job, landing or egress request. `allow_solo` lets a self-approval through while exactly one person exists (audited `self_approved: true`) (#121) | [6](#6-hangar-doctor) |
+| `sudo:` on an environment | `false` | `false`: the agent isn't root, and on Docker the [uid split](steering.md#the-uid-split) applies. Set `true` only for an environment whose people need runtime root (#124) | [4](#4-prebuild-images) |
+
+### What changes for people
+
+| Who | Before → now | What to do |
+| --- | --- | --- |
+| **Someone with only a subscription login** (Claude Pro or Max, ChatGPT, Google) | their jobs ran on it → a job fails before it starts, with the `hangar cred add … --kind api_key` command on its ticket or thread; their sessions and sandboxes keep it, with a warning (#125) | add an API key with a spend cap in the vendor's console (step 1) |
+| **Approvers** | `approve_job` over MCP took any token of an admin, and nothing checked approver ≠ requester → MCP, REST (`hangar job approve`), GitHub and Jira `/hangar approve` all use one rule: an admin, or a linked person in the repo policy's `approvers`, over MCP and REST with a login token only (not the `mcp` token `hangar connect` writes), and **never your own job** (#121) | approve from `hangar job approve` or a login (OAuth) connection; a team of one sets `HANGAR_SELF_APPROVAL=allow_solo` |
+| **Whoever files an issue, ticket or Slack request** | intake jobs ran with the environment's git token and open egress → they fetch only, egress is at least `allowlist`, the sandbox cold-starts (30–60 s), and on Docker sudo fails (#123, #124) | a host the job needs: add it to the environment or the repo policy (`egress.allow`, presets) |
+| **Reviewers of agent PRs** | → a turn that read untrusted content (issue text from an outsider, any Jira issue, a web page, an untrusted MCP server) is tainted for good: its PR opens as a **draft** labelled `hangar:tainted`, a **second person** (not the job's own, nor its requester) must approve it to land, and egress requests for it need an admin or a repo approver (#129, #130) | use `approvals: deny-risky` for intake jobs ([security.md](security.md#taint-gates)) |
+| **People with saved environments** | `EnvSpec.sudo` was `true` → `false`; a runtime `apt-get` fails (#124). `extends` appended lists → component lists (`skills` among them) replace the parent's; `skills_remove` drops inherited ones (#132) | move installs to `tools.apt`, or `sudo: true`; act on step 3's report |
+| **Experiment authors** | graders ran with the environment's network and credentials, hidden tests inside the repo → graders are sealed (egress `none`, no credential, fetch-only, git grant revoked before the patch runs), hidden tests run from a pristine copy, hangar owns the grade on Docker, hidden tests that pass on the base make the task `invalid_task`, and canaries flag `contaminated` trials (#126, #127) | a grader that needs packages sets `grader.network: mirror`; `files_mode: in_repo` keeps the old layout at `trust: low` ([jobs.md](jobs.md#grading)) |
+| **Jira admins using an Automation rule** | the static token started a job any time → only within 10 minutes of the trigger transition, at most 3 a day per issue; wrong-event and bad-token requests alert the admins (#128) | prefer the signed webhook; rotate with `hangar cred add NAME --rotate` ([intake.md](intake.md#fallback-an-automation-rule)) |
+| **The sister tool, reading manifests** | `config_digest` only → `harness_digest` and `environment_digest` too, optional and additive in `hangar.manifest/v1` (#131) | nothing |
+
+### 1. Add API-key credentials
+
+Before anything else, so no job is left with only a subscription login. A team key for work no person owns, and one
+for each person who submits jobs (or let them fall back to the team's, the repo policy's `credentials:` mode).
+Set a spend limit on each key in the vendor's console; hangar's own budgets ([step 8 of the team release](#8-budgets-then-job-concurrency)) cap spend inside hangar.
+
+```bash
+hangar cred add claude-team --team --harness claude-code --kind api_key --file anthropic-key.txt
+hangar cred add codex-team --team --harness codex --kind api_key --file openai-key.txt
+hangar cred ls                       # kind and owner of each: who still holds only an oauth_token or auth_file
+```
+
+Only if some people can't have a key by the rollout: `hangar config set HANGAR_SUBSCRIPTION_LOGINS any` for this
+release ([team.md](team.md#subscription-logins)), and unset it once they do.
+
+### 2. Turn on the gateway and the egress proxy
+
+On GKE both are in `deploy/k8s/config.yaml` (`HANGAR_GATEWAY_URL`, `HANGAR_EGRESS_URL`,
+`HANGAR_INTAKE_POSTURE=enforce`); check that your `hangar-site` doesn't override them. On Docker, set the gateway
+([security.md](security.md#turning-it-on); on a laptop `http://host.docker.internal:8788`) and the proxy as in
+[step 10a of the team release](#10a-egress-allowlists). Without them on the day, set
+`HANGAR_INTAKE_POSTURE=warn` for this release, and unset it when they work.
+
+### 3. Run the merge dry run
+
+```bash
+uv run hangar env migrate-merge --dry-run --data-dir /path/to/hangar-data
+```
+
+It names each saved environment that resolves differently under the new `extends` rules
+([the merge rules](#the-extends-merge-rules-132)). Fix each one before the rollout.
+
+### 4. Prebuild images
+
+`sudo: false` changes every environment's image tag (#124), and an environment changed in step 3 gets a new one too.
+Build them before anyone waits on a first sandbox:
+
+```bash
+uv run hangar images plan                           # what will build
+uv run hangar images build --registry "$REG"        # or let the images workflow build them in CI
+```
+
+### 5. Deploy in the power-down window
+
+On GKE roll out between 01:00 and 09:50 ET, while the sandbox pools are powered down and the control plane is up
+([team-scale.md](team-scale.md#applying-it)): no running sandbox is cut off, and events wait in the queue.
+
+```bash
+bash deploy/gke/up.sh
+```
+
+On Docker: `uv run hangar down`, update the checkout, `uv run hangar up`.
+
+### 6. `hangar doctor`
+
+```bash
+hangar doctor
+```
+
+All green means: the intake posture is `enforce` with the gateway and the egress proxy reachable, no
+`HANGAR_SUBSCRIPTION_LOGINS=any`, a team credential for work no person owns, and approvals possible (with one person and
+`HANGAR_SELF_APPROVAL=deny`, doctor warns that nobody can approve that person's work: add a second person, or
+`allow_solo`). It lists the environments with `sudo: true` and whether intake jobs use them. Then start one intake
+job (a `hangar`-labelled issue, or a Jira ticket) and check its timeline: `Egress: allowlist (intake floor)` in the
+review packet, and no `posture.warn` event.
+
+Rolling back: as for [the team release](#rolling-back-this-release), redeploy the image you recorded. A warn
+switch is the lighter way back for one control: `HANGAR_INTAKE_POSTURE=warn` or `HANGAR_SUBSCRIPTION_LOGINS=any`.
 
 ## The `extends` merge rules (#132)
 

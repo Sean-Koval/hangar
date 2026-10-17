@@ -108,6 +108,8 @@ Settings you change with `hangar setup` or `hangar config set` are stored in han
 
 ## A team on one hangar
 
+To put a team on hangar step by step (2 engineers on 1 repo, then 6 on 3), follow [the onboarding runbook](runbooks/onboarding.md); it ends with `hangar repo check` green for each repo.
+
 An admin adds people; each gets a login token, connects their own clients and stores their own agent login:
 
 ```sh
@@ -120,7 +122,7 @@ hangar connect claude-code                    # an mcp token of her own
 hangar cred add claude-alice --harness claude-code --kind api_key --file key.txt
 ```
 
-Members see and act on their own sandboxes, sessions and jobs; admins on everyone's. Alice's sessions and jobs use her own key; teammates without one of their own use the environment's shared credential. `hangar cred owner NAME PERSON|shared` hands a credential to someone or back to the team, and `hangar person rm` revokes someone's tokens. See [security.md](security.md#people).
+Members see and act on their own sandboxes, sessions and jobs; admins on everyone's. Alice's sessions and jobs use her own API key; teammates without one of their own use a team API key (`hangar cred add NAME --team --kind api_key`). Jobs and other automated work never use a subscription login ([team.md](team.md#subscription-logins)). A job that waits for approval is approved by an admin or a repo policy approver, from `hangar job approve` or a login connection, never by its own person or requester ([upgrading.md](upgrading.md#the-safe-release-120132)). `hangar cred owner NAME PERSON|team` hands a credential to someone or back to the team, and `hangar person rm` revokes someone's tokens. See [security.md](security.md#people).
 
 ## MCP tools
 

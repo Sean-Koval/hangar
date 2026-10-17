@@ -94,7 +94,7 @@
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
     color-scheme: light;
-    --af-canvas: #FFFFFF; --af-surface: #F7F7F7; --af-raised: #FFFFFF; --af-overlay: #FFFFFF; --af-selected: #EBEBEB;
+    --af-canvas: #FFFFFF; --af-surface: #F8F8F7; --af-raised: #F1F1F0; --af-overlay: #FFFFFF; --af-selected: #E8E8E7;
     --af-line-subtle: #EDEDED; --af-line: #E0E0E0; --af-line-strong: #858585; --af-rule: #C9C9C9;
     --af-fg: #000000; --af-fg-muted: #4D4D4D; --af-fg-subtle: #6B6B6B; --af-fg-dim: #A3A3A3;
     --af-brand: #FFC400; --af-brand-hover: #FFD23F; --af-on-brand: #111213; --af-brand-text: #7A5F00; --af-brand-line: #7A5F00; --af-brand-wash: rgba(255, 196, 0, .16); --af-focus: #7A5F00;
@@ -107,7 +107,7 @@
 :root[data-theme="light"],
 [data-md-color-scheme="default"] {
   color-scheme: light;
-  --af-canvas: #FFFFFF; --af-surface: #F7F7F7; --af-raised: #FFFFFF; --af-overlay: #FFFFFF; --af-selected: #EBEBEB;
+  --af-canvas: #FFFFFF; --af-surface: #F8F8F7; --af-raised: #F1F1F0; --af-overlay: #FFFFFF; --af-selected: #E8E8E7;
   --af-line-subtle: #EDEDED; --af-line: #E0E0E0; --af-line-strong: #858585; --af-rule: #C9C9C9;
   --af-fg: #000000; --af-fg-muted: #4D4D4D; --af-fg-subtle: #6B6B6B; --af-fg-dim: #A3A3A3;
   --af-brand: #FFC400; --af-brand-hover: #FFD23F; --af-on-brand: #111213; --af-brand-text: #7A5F00; --af-brand-line: #7A5F00; --af-brand-wash: rgba(255, 196, 0, .16); --af-focus: #7A5F00;
