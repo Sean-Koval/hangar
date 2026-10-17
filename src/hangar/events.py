@@ -677,6 +677,9 @@ def _driver_event(e: dict[str, Any]) -> list[RunEvent]:
         ref = e.get("ref") if isinstance(e.get("ref"), str) else "the driver"
         return [RunEvent(kind="progress", text=_clip(f"driver: tainted ({ref})"),
                          data=_small({"source": "hangar", "action": "driver_taint", "ref": ref}))]
+    if t == "tree":  # --- #165: the working tree's git tree id after a tool, or at the turn's start or end
+        return tree_events(e.get("tree"), tool_id=e.get("tool_use_id"), phase=e.get("phase"), ms=e.get("ms"),
+                           skipped=e.get("skipped"))
     if t == "verify":  # --- overnight/autofix: the driver's verify gate ran the job's check
         ok = e.get("passed") is True
         text = "the job's check passed" if ok else (f"the job's check failed (exit {e.get('exit_code')}); sent back "
@@ -685,6 +688,28 @@ def _driver_event(e: dict[str, Any]) -> list[RunEvent]:
                          data=_small({"source": "hangar", "action": "verify", "passed": ok,
                                       "exit_code": e.get("exit_code"), "round": e.get("round")}))]
     return []
+
+
+_TREE = re.compile(r"^[0-9a-f]{40,64}$")
+
+
+def tree_events(tree: Any, *, tool_id: Any = None, phase: Any = None, ms: Any = None, skipped: Any = None,
+                source: str = "hangar") -> list[RunEvent]:
+    """--- #165: a `progress` event with action `tree`: {tree, id (the tool call), phase (start | end), ms} or
+    {skipped: slow | error, ...}. Whether it can be trusted is stamped where it is recorded (TurnWatcher)."""
+    phase = phase if phase in ("start", "end") else None
+    tid = str(tool_id)[:200] if isinstance(tool_id, str | int) and not phase else None
+    ms = ms if isinstance(ms, int) and not isinstance(ms, bool) else None
+    if isinstance(skipped, str) and skipped:
+        return [RunEvent(kind="progress", text=_clip(f"tree hashing stopped ({skipped[:40]})"),
+                         data=_small({"source": source, "action": "tree", "skipped": skipped[:40], "phase": phase,
+                                      "id": tid, "ms": ms}))]
+    if not isinstance(tree, str) or not _TREE.match(tree):
+        return []
+    where = f"at the turn's {phase}" if phase else "after a tool"
+    return [RunEvent(kind="progress", text=f"tree {tree[:12]} {where}",
+                     data=_small({"source": source, "action": "tree", "tree": tree, "phase": phase, "id": tid,
+                                  "ms": ms}))]
 
 
 def _claude_1h(u: dict[str, Any]) -> int:
@@ -900,6 +925,9 @@ class TurnWatcher:
     def _record(self, evs: list[RunEvent], from_log: bool = True) -> None:
         if self.split and from_log:  # --- harden: anything in the log may be the agent's; see _approvals
             evs = [ev for ev in evs if ev.kind != "approval_request"]
+        for ev in evs:  # --- #165: only a split run's log is out of the agent's reach (and hangar's own exec's trees)
+            if ev.kind == "progress" and ev.data.get("action") == "tree":
+                ev.data["trusted"] = self.split
         keep = []
         for ev in evs:
             if ev.off is not None and ev.off <= self.floor:

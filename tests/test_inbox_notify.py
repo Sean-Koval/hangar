@@ -461,3 +461,19 @@ async def test_digest_tick_sends_through_slack_and_honours_dm_off(svc, fake):
         set_delivery(svc.store, "alice", dm="off")
         assert await digest_tick(_h(svc), at + 6 * 3600) == {"root": "empty"}
     assert len(fake.to("UALICE")) == 1 and json.loads(svc.store.kv_get("digest:last:root") or "0")
+
+
+async def test_the_digest_lists_closed_agent_prs_without_an_abandon_reason(svc, fake, fleet, monkeypatch):
+    """--- #168: the inbox's `abandon` items (weekly.inbox_source) reach the digest."""
+    from hangar import inbox, weekly
+
+    monkeypatch.setattr(inbox, "SOURCES", [*inbox.SOURCES, weekly.inbox_source])
+    j = _job(svc, "alice", JobState.SUCCEEDED, title="closed")
+    j.result.pr_number, j.result.pr_url = 21, "https://github.com/o/r/pull/21"
+    j.landing.pr_state, j.landing.closed_at = "closed", now() - 600
+    svc.store.put(j)
+    text = await digest(svc, people.get(svc.store, "alice"), t=now())
+    assert text is not None and "Closed without a reason" in text and "/hangar abandon" in text
+    j.landing.abandon_reason = "superseded"
+    svc.store.put(j)
+    assert "Closed without a reason" not in (await digest(svc, people.get(svc.store, "alice"), t=now()) or "")

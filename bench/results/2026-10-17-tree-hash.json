@@ -1,0 +1,43 @@
+{
+  "meta": {
+    "bench": "tree_hash",
+    "git": "6dc8a39",
+    "started": "2026-10-17T14:52:02",
+    "seconds": 3.2,
+    "host": "vm",
+    "cpus": 2,
+    "python": "3.12.14",
+    "edits": 50
+  },
+  "metrics": {
+    "tree_first": {
+      "n": 1,
+      "p50_ms": 150.48,
+      "p95_ms": 150.48,
+      "mean_ms": 150.48,
+      "min_ms": 150.48,
+      "max_ms": 150.48
+    },
+    "tree_per_edit": {
+      "n": 50,
+      "p50_ms": 23.78,
+      "p95_ms": 94.31,
+      "mean_ms": 35.65,
+      "min_ms": 10.55,
+      "max_ms": 223.87
+    },
+    "tree_unchanged": {
+      "n": 50,
+      "p50_ms": 21.73,
+      "p95_ms": 52.43,
+      "mean_ms": 23.92,
+      "min_ms": 9.65,
+      "max_ms": 71.64
+    }
+  },
+  "notes": {
+    "repo_files": 592,
+    "lines": 50,
+    "skipped": null
+  }
+}

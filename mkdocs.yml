@@ -70,6 +70,7 @@ nav:
       - Using MCP: mcp.md
       - Team setup: team.md
       - Onboarding a team (runbook): runbooks/onboarding.md
+      - The Friday harness review (runbook): runbooks/harness-review.md
   - Guides:
       - Work:
           - Jobs: jobs.md
@@ -93,6 +94,7 @@ nav:
       - Usage and insight:
           - Activity, usage and budgets: activity.md
           - Observability: observability.md
+          - Weekly adoption metrics: metrics.md
   - Reference:
       - Security model: security.md
       - E2B-compatible API: e2b.md
