@@ -204,6 +204,80 @@ def pick(harness: str, models: list[dict[str, Any]], policy: str, vendor: str | 
     return None
 
 
+# ====================================================================== concreteness (#167)
+# A pin set is reproducible only if its model id is concrete: one the provider can't move between two trials. Floating
+# aliases (`*-latest`, OpenRouter's `~vendor/...`, bare family names) never are, even when a provider lists them.
+_LINES = "|".join(ANTHROPIC_LINES)
+_BARE = re.compile(rf"(?:claude-)?(?:{_LINES})|claude|gpt|gemini|o\d+(?:-(?:mini|pro))?|gpt-\d+(?:\.\d+)?o?"
+                   r"(?:-(?:mini|nano|pro|turbo))?|gemini-(?:\d+(?:\.\d+)?|pro|flash|flash-lite)|auto|default")
+_DATED = re.compile(r".+-(?:\d{4}-\d{2}-\d{2}|20\d{6})")  # a snapshot: gpt-*-YYYY-MM-DD, claude-*-YYYYMMDD
+_CONCRETE = (
+    # Anthropic: a line with a major and minor version (claude-opus-5-5; OpenRouter's claude-opus-5.5), or dated
+    re.compile(rf"claude-(?:{_LINES})-\d+[.-]\d+(?:-20\d{{6}})?"),
+    re.compile(rf"claude-\d+(?:[.-]\d+)?-(?:{_LINES})-20\d{{6}}|claude-(?:{_LINES})-\d+-20\d{{6}}"),
+    # OpenAI: gpt-<version>-<tier>, the ids hangar ranks (gpt-6-astra, gpt-6.1-sol)
+    re.compile(r"gpt-\d+(?:\.\d+)?-(?:astra|sol|terra|luna)"),
+    # Google: gemini-<version>-<tier>, optionally a preview or a numbered revision; agy adds a thinking level
+    re.compile(r"gemini-\d+(?:\.\d+)?-(?:pro|flash|flash-lite)(?:-preview(?:-\d{2}-\d{2})?|-\d{3})?"
+               r"(?:-(?:low|medium|high))?"),
+)
+
+
+def _bare_id(model: str) -> str:
+    """The id without OpenRouter's `openrouter/` and `<vendor>/` prefixes or a `:variant` suffix."""
+    mid = model.strip().removeprefix("openrouter/")
+    return mid.rsplit("/", 1)[-1].partition(":")[0]
+
+
+def _floating(model: str) -> bool:
+    parts = model.strip().lower().split("/")
+    if any(p.startswith("~") for p in parts) or parts[-1].partition(":")[2] == "latest":
+        return True
+    mid = _bare_id(model.lower())
+    return mid == "latest" or mid.endswith("-latest") or "-latest-" in mid or bool(_BARE.fullmatch(mid))
+
+
+def _listed(harness: str | None, model: str, models: list[dict[str, Any]]) -> bool:
+    ids = {str(m.get("id") or "") for m in models}
+    mid = model.strip()
+    if harness == "pi" or mid.startswith("openrouter/"):
+        mid = mid.removeprefix("openrouter/")
+    if mid in ids:
+        return True
+    if harness == "antigravity":  # agy's id: the Gemini id without "-preview", plus a thinking level
+        base = re.sub(r"-(?:low|medium|high)$", "", mid)
+        return base in ids or f"{base}-preview" in ids
+    return False
+
+
+def concreteness(harness: str | None, model: str | None,
+                 models: list[dict[str, Any]] | None = None) -> tuple[bool, str]:
+    """(concrete, basis). basis: `list` (in the provider's cached model list), `pattern` (a known dated or versioned
+    shape), or why not: `none` (no id: the harness's own default), `policy` (not resolved yet), `alias` (a floating
+    alias: `*-latest`, `~vendor/...`, a bare family name such as `opus` or `gpt-5`) or `unknown` (neither listed nor
+    of a known shape: never treated as concrete). `models`: the provider's list (None: no list cached)."""
+    if not model or not model.strip():
+        return False, "none"
+    if is_policy(model):
+        return False, "policy"
+    if _floating(model):
+        return False, "alias"
+    if models and _listed(harness, model, models):
+        return True, "list"
+    mid = _bare_id(model)
+    if _DATED.fullmatch(mid) or any(p.fullmatch(mid) for p in _CONCRETE):
+        return True, "pattern"
+    return False, "unknown"
+
+
+def is_concrete(harness: str | None, model: str | None, models: list[dict[str, Any]] | None = None) -> bool:
+    """Whether `model` is a concrete, dated id for `harness`: one a provider can't move between two trials. True when
+    it is in the provider's model list (`models`, Resolver.cached) or of a known versioned shape (`claude-opus-5-5`,
+    `gpt-6-astra`, `gpt-*-YYYY-MM-DD`, `gemini-3.8-flash`); false for `*-latest`, `~…` (OpenRouter's aliases), bare
+    family names (`opus`, `sonnet`, `haiku`, `gpt-5`), a policy and an unknown id."""
+    return concreteness(harness, model, models)[0]
+
+
 # ====================================================================== the lists
 def _normalize(provider: str, doc: dict[str, Any]) -> list[dict[str, Any]]:
     """Only what ranking needs: a provider's list, in its own order."""
@@ -402,6 +476,31 @@ class Resolver:
 
     def concrete(self, harness: str | None, value: str | None) -> str | None:
         return self.resolve(harness, value).model
+
+    def concreteness(self, harness: str | None, model: str | None) -> tuple[bool, str, str | None]:
+        """#167: (concrete, basis, note) for a resolved id, against the provider's cached list. With no list cached
+        (no list credential, or not fetched yet) only the id's shape decides, and the note says so (logged too): an
+        id that is neither listed nor of a known shape is never treated as concrete."""
+        provider = PROVIDER.get(harness or "")
+        got = self.cached(provider) if provider else None
+        ok, basis = concreteness(harness, model, got["models"] if got else None)
+        note = None
+        if got is None and model and basis in ("pattern", "unknown"):
+            shape = "a known versioned id" if ok else "not one hangar recognizes"
+            note = (f"no {provider or 'provider'} model list is cached for {harness or 'this harness'}, so whether "
+                    f"`{model}` is concrete was judged by its shape alone ({shape})")
+            log.warning("%s", note)
+        return ok, basis, note
+
+    def suggest(self, harness: str | None) -> dict[str, str]:
+        """#167: the concrete ids the policies resolve to now for `harness` (nothing recorded or refreshed), to name
+        in place of a floating alias."""
+        out: dict[str, str] = {}
+        for policy in POLICIES:
+            r = self.resolve(harness, policy, record=False)
+            if r.model and is_concrete(harness, r.model):
+                out[policy] = r.model
+        return out
 
     def view(self, harness: str | None, value: str | None) -> dict[str, Any]:
         """--- review #105: what `value` resolves to now, for list_environments and `hangar env list`, with its

@@ -10,3 +10,4 @@ dist/
 deploy/terraform/**/.terraform/
 deploy/terraform/**/*.tfstate*
 deploy/terraform/**/terraform.tfvars
+site/

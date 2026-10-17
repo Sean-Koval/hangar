@@ -266,6 +266,15 @@ class JobEvent(BaseModel):
     message: str = ""
 
 
+# --- #166: what an outcome says about the agent. `agent`: the agent's own result (success or failure, counted);
+# `infra_error`: infrastructure ended it (infra_reason says what), auto-retried for trials and left out of statistics;
+# `cancelled`: someone or something stopped it; `human`: a person stepped in (an interrupt, a question). None: unknown
+# (a record from before #166), never read as `agent`. outcomes.py classifies.
+OutcomeClass = Literal["agent", "infra_error", "cancelled", "human"]
+InfraReason = Literal["preempted", "power_down", "rate_limited", "provider_5xx", "sandbox_create", "checkpoint",
+                      "control_plane_restart"]
+
+
 class Turn(BaseModel):
     kind: Literal["initial", "follow_up"] = "initial"
     message: str | None = None  # follow-up text
@@ -280,6 +289,8 @@ class Turn(BaseModel):
     usage: Usage | None = None  # workstream C
     outcome: str | None = None  # exited | timed_out | cancelled | over_budget | gone | error | needs_input
     outcome_reason: str | None = None
+    outcome_class: OutcomeClass | None = None  # --- #166
+    infra_reason: InfraReason | None = None
     # --- workstream E: context exchange
     context: list[ContextItem] = Field(default_factory=list)  # attachments (contents dropped once it starts)
     output_schema: dict[str, Any] | None = None
@@ -367,6 +378,9 @@ class JobResult(BaseModel):
     new_failures: list[str] | None = None
     dropped_files: list[str] = Field(default_factory=list)  # agent scratch files kept out of the PR (scratch.py)
     tests: TestSummary | None = None  # --- testresults: the last check's structured results
+    # --- #166: the class of the job's final outcome (set as it ends): infra_error jobs are left out of yield
+    outcome_class: OutcomeClass | None = None
+    infra_reason: InfraReason | None = None
 
 
 # --- overnight/autofix: the PR auto-fix loop's memory, per job (autofix.py)
@@ -442,6 +456,8 @@ class Attempt(BaseModel):
     state: Literal["pending", "running", "verifying", "waiting", "done"] = "pending"
     restarts: int = 0  # --- trust: times it resumed from its checkpoint (restarts.resume_attempt)
     outcome: str | None = None  # exited | timed_out | cancelled | gone | error
+    outcome_class: OutcomeClass | None = None  # --- #166
+    infra_reason: InfraReason | None = None
     run_id: str | None = None
     exit_code: int | None = None
     verify_exit_code: int | None = None
@@ -608,6 +624,8 @@ class SessionTurn(BaseModel):
     usage: Usage | None = None  # workstream C: live while the turn runs, final after
     outcome: str | None = None  # exited | timed_out | cancelled | over_budget | gone | error | needs_input
     outcome_reason: str | None = None
+    outcome_class: OutcomeClass | None = None  # --- #166
+    infra_reason: InfraReason | None = None
     event_cursor: dict[str, Any] | None = None  # where event collection is in the run log (restart-safe)
     # --- workstream E: context exchange
     context: list[ContextItem] = Field(default_factory=list)  # attachments (contents dropped once it starts)

@@ -171,7 +171,11 @@ before them), `hangar.attempt` (best-of-N attempt number, job exports),
 `hangar.taint` (whether the turn read untrusted content, or started tainted: [security.md](../security.md#taint)),
 `hangar.taint.first_seq` (the event that first tainted it; `0` when it started tainted, from its context or an earlier
 turn of the session) and `hangar.taint.sources` (`kind:ref`, e.g. `web:example.com`, `mcp:github`,
-`context:issue text jira-ABC-12.md`).
+`context:issue text jira-ABC-12.md`), `hangar.outcome.class` (`agent`, `infra_error`, `cancelled`, `human`: whether
+the outcome is the agent's or infrastructure's, [jobs.md](../jobs.md#outcome-classes); unset for turns recorded before
+#166, which means unknown, not `agent`) and `hangar.outcome.infra_reason` (`preempted`, `power_down`, `rate_limited`,
+`provider_5xx`, `sandbox_create`, `checkpoint`, `control_plane_restart`; only with `infra_error`). Both are on the live
+span sent to the collector too. Leave `infra_error` turns out of yield and comparisons.
 
 Status: `ERROR` when the outcome is anything but `exited`/`needs_input`/`interrupted` with exit code 0.
 

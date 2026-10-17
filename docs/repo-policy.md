@@ -12,6 +12,7 @@ hangar repo unset acme/app model    # clear one field
 hangar repo unset acme/app          # remove the policy
 hangar repo set acme/app --job-max-cost 5 --job-max-turns 12 --max-usd-per-day 60
 hangar repo set acme/app --land auto_after_approval --approver alice --risk-path 'infra/**'   # docs/landing.md
+hangar repo check acme/app          # is it ready for agent work? (below)
 ```
 
 | Field | What it sets |
@@ -70,8 +71,48 @@ Admin tokens only. The repo is a query or body field, because git URLs carry sla
 | `GET /api/repos/policy?repo=acme/app` | One policy. |
 | `PUT /api/repos/policy` | `{"repo": "acme/app", "verify": "pytest -q"}`: sets the fields sent and keeps the rest; a field sent as `null` is cleared. A policy no job could run with is refused: an unknown environment, an environment the allowlist doesn't have for the repo, or a harness the environment doesn't enable. |
 | `DELETE /api/repos/policy?repo=acme/app[&field=verify]` | Clears the fields named, or removes the policy. |
+| `GET /api/repos/{owner}/{repo}/readiness` | The [readiness report](#is-this-repo-ready) for a GitHub repo, the same object `hangar repo check --json` prints. |
 
 Policies are stored in hangar's database, written durably like `hangar config` settings, and apply to the next job without a restart. Every change is audited (`repo.policy.set`, `.unset`, `.delete`).
+
+## Is this repo ready?
+
+`hangar repo check acme/app` answers with one report whether a repo is ready for agent work: landing, the git gateway,
+CI and the doors (GitHub, Jira, Slack). Each check is `ok`, `warn` or `fail` with the command or setting that fixes
+it, and the last line says `ready` or `not ready (N failing)`. It exits 1 when anything fails; warnings don't. `--json`
+prints the object `GET /api/repos/{owner}/{repo}/readiness` returns (admin tokens):
+`{repo, ready, failing, warnings, summary, checks: [{check, status, detail, fix}]}`.
+
+| Check | `ok` when | Not ok |
+| --- | --- | --- |
+| `allowlist` | the repo is in `HANGAR_GITHUB_REPOS` | fail |
+| `github app` | the GitHub App ([landing.md](landing.md)) mints an installation token for the repo | fail when it can't (not installed); warn when no App is configured |
+| `github access` | the App, else the control token, reads the repo | fail |
+| `github webhook` | the repo's webhook sends hangar the events it handles, as JSON | fail; warn when the webhooks can't be listed |
+| `trigger label` | the label `HANGAR_GITHUB_TRIGGER_LABEL` (`hangar`) exists | warn (a `/hangar` comment still starts work) |
+| `repo policy`, `verify` | there is a policy, and a check (the policy's or the environment's `verify`) | fail |
+| `landing` | `land` is set; with `auto_after_approval`, there are `approvers` or a CODEOWNERS file | warn when unset; fail when nobody's approval could land a PR |
+| `daily cap` | `max_usd_per_day` is set | warn |
+| `required checks` | the base branch requires status checks | fail |
+| `classic branch protection` | hangar could read it | warn: it needs Administration: read, which the App doesn't have by design; the rulesets (`GET /rules/branches/{b}`) are read instead |
+| `stale approvals` | the base branch dismisses stale approvals on a push | fail (hangar won't arm auto-merge); warn when the policy opts out |
+| `review rules` | it requires an approving review and approval of the most recent push | warn |
+| `auto-merge` | (shown when it fails) the repo allows auto-merge, for a policy that lands on approval | fail |
+| `intake posture` | `HANGAR_INTAKE_POSTURE=enforce` ([security.md](security.md#intake-posture)) | warn for `warn`, fail for `off` |
+| `git gateway` | the gateway serves the repo's host and answers | fail when it doesn't serve the repo; warn when the control plane can't reach it |
+| `credential mode ENV` | each environment the repo's jobs run in resolves to `credential_mode: gateway` | fail when its sandboxes would hold a GitHub token; warn for `direct` while the gateway serves the repo (jobs still fetch through it, people's sessions don't) |
+| `sudo ENV` | `sudo: false` | warn under `enforce` (Docker job sandboxes run with no-new-privileges), else fail |
+| `heavy ENV` | (shown for Docker on the heavy tier) the policy's `allow_heavy_for_intake` | fail under `enforce`: intake jobs are refused |
+| `egress ENV` | an egress mode other than `open` | warn under `enforce` (intake jobs get the allowlist floor, other jobs run open), else fail |
+| `credentials ENV` | the agent login a job no person owns would use is an API key | fail for a subscription login (`oauth_token`, `auth_file`) or none ([team.md](team.md#subscription-logins)) |
+| `jira`, `jira transitions KEY` | a Jira project maps to the repo, and its workflow has the trigger status and the `started`, `needs_input`, `delivered` and `failed` statuses | fail for a status the workflow lacks; warn for no project or an unset stage; ok when Jira intake is off |
+| `slack` | informational: the channels that start jobs on the repo | warn when Slack is on and no channel maps to it |
+
+The environments are the policy's, those `HANGAR_GITHUB_REPOS` lists for the repo, and any a Jira project mapped to it
+names. Nothing is written to GitHub, Jira or Slack: every call is a read, except the App's installation-token mint,
+which writes nothing on the repo. GitHub's answers are kept for 5 minutes (landing's cache), so running it again doesn't
+spend rate limit, and it needs only the control plane: it works while the sandbox pools are powered down. It fixes
+nothing itself; `hangar doctor` covers the checks across every repo, and `hangar doctor --fix` applies the safe ones.
 
 ## Budgets
 

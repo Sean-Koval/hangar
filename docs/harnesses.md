@@ -258,6 +258,23 @@ job. Either way:
   budget; `hangar env list` shows the same for each environment's harnesses;
 - ask for `frontier` where the last bit of capability matters more than the price.
 
+### Concrete ids and floating aliases
+
+A pinned id is only reproducible if the provider can't move what it means. Hangar calls an id **concrete** when it is
+in the provider's cached model list or has a known versioned shape (`claude-opus-5-5`, `claude-sonnet-4-20250514`,
+`gpt-6-astra`, `gpt-*-YYYY-MM-DD`, `gemini-3.8-flash`, `openrouter/anthropic/claude-opus-5.5`), and a **floating
+alias** when it is `*-latest`, one of OpenRouter's `~vendor/…` aliases (or `openrouter/auto`), or a bare family name
+(`opus`, `sonnet`, `haiku`, `gpt-5`, `gemini-pro`), even when a provider lists it. An id that is neither listed nor of
+a known shape is never treated as concrete. With no list cached (no list credential, or not fetched yet), only the
+shape decides and hangar says so (`modelpolicy.is_concrete`; every built-in id above is of a known shape).
+
+- **Experiments refuse aliases.** An experiment (and the trials API, #178) won't start when a variant's model, after
+  its policy is resolved, isn't concrete; the error names the alias and the ids `balanced` and `frontier` resolve to
+  now. A policy is fine: it is resolved once, at the start, and every trial gets that id
+  ([jobs.md](jobs.md#9-experiments)).
+- **Jobs and sessions keep working with aliases**, but their manifests record `model.concrete: false` (the outbox's `run.json`, #163, carries it as
+  `pinned: false`), so evaluation leaves them out.
+
 ### Pinned, cached, and what happens when a list can't be had
 
 - **Pinned at creation.** A sandbox resolves its environment's model when it is created (`get_sandbox` → `model`),

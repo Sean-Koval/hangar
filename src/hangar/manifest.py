@@ -281,6 +281,8 @@ def build(fleet: Fleet, spec: EnvSpec, harness: str | None, *, s: Session | None
         r = modelpolicy.of(fleet).resolve(harness, spec.model_for(harness), record=False)
         model = {"id": r.model, "policy": r.policy, "source": r.source}
     model["provider"] = PROVIDERS.get(harness or "")
+    # --- #167: false for a floating alias (`opus`, `*-latest`) or no id: evaluation leaves such runs out
+    model["concrete"] = modelpolicy.of(fleet).concreteness(harness, model["id"])[0]
     model["cache_ttl"] = turn.cache_ttl if turn is not None else None
     pname = (sb.provider if sb is not None else None) or (s.provider if s is not None else None) \
         or settings.default_provider
