@@ -662,8 +662,10 @@ def test_the_workflows_read_what_the_script_sets_at_the_level_it_sets_them():
             steps = job.get("steps", [])
             auth = [s for s in steps if str(s.get("uses", "")).startswith("google-github-actions/auth@")]
             calls_images = job.get("uses") == "./.github/workflows/images.yml"
+            # GitHub Pages' deploy-pages proves the run to Pages with an OIDC token too (docs.yml)
+            pages = any(str(s.get("uses", "")).startswith("actions/deploy-pages@") for s in steps)
             wants = (job.get("permissions") or {}).get("id-token") == "write"
-            assert wants == bool(auth or calls_images), f"{wf.name}:{name}"
+            assert wants == bool(auth or calls_images or pages), f"{wf.name}:{name}"
             for s in auth:
                 assert "audience" not in s.get("with", {}), f"{wf.name}:{name}: the provider accepts its own name"
             if wf.name.startswith("harness-canary"):

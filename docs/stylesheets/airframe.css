@@ -1,0 +1,117 @@
+/*
+  Airframe tokens: the shared design system for hangar, flightdeck, the governed workspace,
+  ai-dlc and Spaceport. This file is the swappable "flavor": every site, the deck and the
+  diagrams read these custom properties and nothing else, so restyling the suite means
+  replacing this one file.
+
+  Current flavor: "Night Panel" from the Airframe Lab (saved 2026-10-17 as "latest"):
+  black cockpit canvas, signal-yellow accent, Archivo Expanded display, Red Hat Text body,
+  DM Mono for ids and labels, tonal cards, 2px radius, quiet status colors.
+  The design is still being narrowed; keep token names stable and change values only.
+
+  Contract (do not rename): theme ids `dark` / `light` on [data-theme]; token names below;
+  class roots `af-*`. The brand accent is never a status color.
+*/
+
+/* Dark is the default look. The docs sites pick dark with data-md-color-scheme="slate". */
+:root,
+[data-md-color-scheme="slate"] {
+  color-scheme: dark;
+
+  /* surfaces */
+  --af-canvas: #000000;
+  --af-surface: #0A0A0A;
+  --af-raised: #141414;
+  --af-overlay: #1C1C1C;
+  --af-selected: #1F1F1F;
+
+  /* lines (refined: softened toward the raised surface) */
+  --af-line-subtle: #161616;
+  --af-line: #1F1F1F;
+  --af-line-strong: #6B6B6B;
+  --af-rule: #3A3A3A;
+
+  /* ink */
+  --af-fg: #FFFFFF;
+  --af-fg-muted: #A6A6A6;
+  --af-fg-subtle: #8A8A8A;
+  --af-fg-dim: #5C5C5C;
+
+  /* brand: signal yellow */
+  --af-brand: #FFC400;
+  --af-brand-hover: #FFD23F;
+  --af-on-brand: #111213;
+  --af-brand-text: #FFC400;
+  --af-brand-line: #FFC400;
+  --af-brand-wash: rgba(255, 196, 0, .12);
+  --af-focus: #FFC400;
+
+  /* status, quiet mode: only approval and failure light up */
+  --af-st-run: #C7C7C7;
+  --af-st-queue: #8A8A8A;
+  --af-st-appr: #FFB224;
+  --af-st-fail: #FF4D4D;
+  --af-st-deny: #D93036;
+  --af-st-off: #6B6B6B;
+
+  /* product hues: logo tiles, docs headers and a 2px nav marker only */
+  --af-p-hangar: #EE8F63;
+  --af-p-flightdeck: #D98CD2;
+  --af-p-workspace: #C5A93B;
+  --af-p-aidlc: #69C27E;
+  --af-p-spaceport: #B199F4;
+
+  /* terminal and code */
+  --af-term-bg: #0A0A0A;
+  --af-term-fg: #E6E7E3;
+  --af-code-k: #FFFFFF;
+  --af-code-f: #D9D9D9;
+  --af-code-s: #A6A6A6;
+  --af-code-n: #CCCCCC;
+  --af-code-c: #808080;
+
+  /* texture */
+  --af-dot: #262626;
+
+  /* type */
+  --af-f-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --af-display-stretch: 125%;
+  --af-display-weight: 700;
+  --af-display-track: -0.01em;
+  --af-f-sans: "Red Hat Text", "Helvetica Neue", Arial, sans-serif;
+  --af-f-mono: "DM Mono", ui-monospace, Menlo, Consolas, monospace;
+  --af-label-track: .08em;
+
+  /* shape and rhythm */
+  --af-r-ctl: 2px;
+  --af-r-card: 4px;
+  --af-r-chip: 2px;
+  --af-row-h: 32px;
+  --af-pad: 16px;
+  --af-gap: 12px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --af-canvas: #FFFFFF; --af-surface: #F7F7F7; --af-raised: #FFFFFF; --af-overlay: #FFFFFF; --af-selected: #EBEBEB;
+    --af-line-subtle: #EDEDED; --af-line: #E0E0E0; --af-line-strong: #858585; --af-rule: #C9C9C9;
+    --af-fg: #000000; --af-fg-muted: #4D4D4D; --af-fg-subtle: #6B6B6B; --af-fg-dim: #A3A3A3;
+    --af-brand: #FFC400; --af-brand-hover: #FFD23F; --af-on-brand: #111213; --af-brand-text: #7A5F00; --af-brand-line: #7A5F00; --af-brand-wash: rgba(255, 196, 0, .16); --af-focus: #7A5F00;
+    --af-st-run: #3A3A3A; --af-st-queue: #6B6B6B; --af-st-appr: #9A5B00; --af-st-fail: #C42B2B; --af-st-deny: #C42B2B; --af-st-off: #858585;
+    --af-p-hangar: #A44C1D; --af-p-flightdeck: #914A8C; --af-p-workspace: #816600; --af-p-aidlc: #1D7D3E; --af-p-spaceport: #6F57AB;
+    --af-dot: #E0E0E0;
+  }
+}
+/* the docs sites switch theme with data-md-color-scheme on <body> */
+:root[data-theme="light"],
+[data-md-color-scheme="default"] {
+  color-scheme: light;
+  --af-canvas: #FFFFFF; --af-surface: #F7F7F7; --af-raised: #FFFFFF; --af-overlay: #FFFFFF; --af-selected: #EBEBEB;
+  --af-line-subtle: #EDEDED; --af-line: #E0E0E0; --af-line-strong: #858585; --af-rule: #C9C9C9;
+  --af-fg: #000000; --af-fg-muted: #4D4D4D; --af-fg-subtle: #6B6B6B; --af-fg-dim: #A3A3A3;
+  --af-brand: #FFC400; --af-brand-hover: #FFD23F; --af-on-brand: #111213; --af-brand-text: #7A5F00; --af-brand-line: #7A5F00; --af-brand-wash: rgba(255, 196, 0, .16); --af-focus: #7A5F00;
+  --af-st-run: #3A3A3A; --af-st-queue: #6B6B6B; --af-st-appr: #9A5B00; --af-st-fail: #C42B2B; --af-st-deny: #C42B2B; --af-st-off: #858585;
+  --af-p-hangar: #A44C1D; --af-p-flightdeck: #914A8C; --af-p-workspace: #816600; --af-p-aidlc: #1D7D3E; --af-p-spaceport: #6F57AB;
+  --af-dot: #E0E0E0;
+}
