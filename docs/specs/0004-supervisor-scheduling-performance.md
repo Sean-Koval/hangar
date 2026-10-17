@@ -1,6 +1,6 @@
 # 0004: Supervisor, work distribution and sandbox performance
 
-Status: draft. Date: 2026-10-12. Author: hangar agent session, for review.
+Status: deferred (2026-10-15): the supervisor, planner and scheduler v2 are not scheduled; fair-share job slots shipped instead (#89). Was: draft. · Date: 2026-10-12. Author: hangar agent session, for review.
 
 > Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins. Builds on [0001](0001-agent-runs.md) (runs, events, queue), [0002](0002-results-and-landing.md) (results, fan-out, landing) and [0003](0003-sandbox-security.md) (grants, scopes). Spec 0005 (traces and decisions) is being written in parallel; section 5.9 states what this spec assumes from it.
 

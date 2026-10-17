@@ -185,6 +185,9 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
     from hangar.slack import doctor_checks as slack_checks
 
     out += await slack_checks(h, transport)
+    from hangar.inbox_notify import doctor_checks as inbox_checks  # --- inbox delivery (#157)
+
+    out += inbox_checks(h)
     from hangar.jira import doctor_checks as jira_checks  # --- intake
 
     out += await jira_checks(h, transport)

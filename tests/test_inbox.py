@@ -136,6 +136,13 @@ async def test_the_inbox_is_a_resource_not_a_tool(fleet, svc):
         assert not [t for t in (await c.list_tools()).tools if "inbox" in t.name]
         got = json.loads((await c.read_resource("hangar://inbox")).contents[0].text)
         assert got["counts"] == {"review": 1} and got["items"][0]["pr"] == "https://github.com/o/r/pull/7"
+        # #157: a stable id and native links, beside the fields the inbox always had
+        x = got["items"][0]
+        assert x["id"].startswith("inb-") and x["links"]["pr"] == "https://github.com/o/r/pull/7"
+        assert set(x["links"]) == {"pr", "ticket", "thread", "job"} and x["job"] in x["links"]["job"]
+        assert {"kind", "reason", "action", "since", "job", "title", "repo", "pr"} <= set(x)
+        again = json.loads((await c.read_resource("hangar://inbox")).contents[0].text)
+        assert again["items"][0]["id"] == x["id"]
 
 
 def test_rest_and_cli(settings, monkeypatch):

@@ -80,7 +80,7 @@ The launch post's "durable execution … via an event log and snapshotting", "se
 
 ## 8. Provider design: `providers/ax.py`
 
-Hangar's `Provider` interface ([`providers/base.py`](../../src/hangar/providers/base.py)) is small on purpose: "everything above this layer … is built on `exec`, `read_file` and `write_file`". Here is how each method would map onto AX:
+Hangar's `Provider` interface ([`providers/base.py`](https://github.com/Sean-Koval/hangar/blob/main/src/hangar/providers/base.py)) is small on purpose: "everything above this layer … is built on `exec`, `read_file` and `write_file`". Here is how each method would map onto AX:
 
 | `Provider` method | On AX | Notes |
 | --- | --- | --- |
@@ -107,7 +107,7 @@ Hangar's `Provider` interface ([`providers/base.py`](../../src/hangar/providers/
 
 **What it would buy:**
 - **Density:** Substrate's multiplexing of idle actors onto shared workers ("30x+ oversubscription" in the [demo](https://github.com/agent-substrate/substrate#demo)). Coding sessions are idle most of the time, waiting on the model or on a human, which is exactly the pattern it targets. Hangar today pins a pod per live sandbox and releases it only on suspend.
-- **Start time:** golden-snapshot restores instead of a pod start. Hangar's cold path is node scale-up (2–4 min on GKE) plus an image pull ([config](../../src/hangar/config.py)); warm pools hide it only for prebuilt environments.
+- **Start time:** golden-snapshot restores instead of a pod start. Hangar's cold path is node scale-up (2–4 min on GKE) plus an image pull ([config](https://github.com/Sean-Koval/hangar/blob/main/src/hangar/config.py)); warm pools hide it only for prebuilt environments.
 - **Hot suspend:** only via Substrate `MEMORY` fidelity, which AX doesn't expose today.
 
 **Why Substrate directly is the better target.** `providers/substrate.py` would use the same guest services for exec and files. It would create Actors from an `ActorTemplate` per environment image, with `preferredFidelity: MEMORY`. It would suspend and resume through `ateapi`, and so get *hot* resume. The router already "resumes suspended Actors on demand", which fits sessions. There would be no AX server, no Redis and no workspace bootstrap to carry. Hangar stays the orchestrator, and AX remains what it is: a peer we talk to over A2A.

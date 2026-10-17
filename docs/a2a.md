@@ -51,7 +51,24 @@ A message turns into a job like this:
 | `messageId` | Idempotency key: resending a message returns the same task |
 | `contextId` you choose | Kept on the job (label `a2a.context`), so later messages in that context find it |
 
-With no `repo`, hangar uses `HANGAR_A2A_DEFAULT_REPO`, and then the environment's repo. Limits are the jobs limits: 64 KB of instructions, 50 context items and 2 MB of context, plus 100 parts and `HANGAR_A2A_MAX_REQUEST_BYTES` per request. `output_schema` is rejected with a clear error until structured results land (spec 0011 §2, workstream E).
+With no `repo`, hangar uses `HANGAR_A2A_DEFAULT_REPO`, and then the environment's repo. Limits are the jobs limits: 64 KB of instructions, 50 context items and 2 MB of context, plus 100 parts and `HANGAR_A2A_MAX_REQUEST_BYTES` per request. 
+
+### Structured results
+
+To get JSON back, give the task a JSON Schema: `output_schema` in the metadata, or `metadata.schema` on a text part (the spec's §6.8 way; the metadata wins when both are set). It is the jobs `output_schema` ([context exchange](context-exchange.md)):
+
+- **Checked at submit.** It must be a JSON Schema object, valid for its draft, and at most 64 KB; otherwise `SendMessage` answers `InvalidParamsError` (-32602) saying which, and no task starts.
+- **The agent writes the result** with `hangar-agent result '<json>'` (or into `out/result.json`), and hangar validates it after the turn (up to 1 MB, `HANGAR_EXCHANGE_MAX_RESULT_KB`).
+- **A result that is missing or doesn't match** (an invalid JSON file, or up to five schema violations, each with its path) gets one repair run in the same conversation, asking for the result alone. If that still fails, the task finishes without it: no `Structured result` artifact, and the job's `result_error` (`get_job`, `GET /api/jobs/{id}`) says what was wrong.
+- **A valid result** comes back as the `Structured result` artifact (below), and in the job's `result.data` for MCP, REST and callbacks.
+
+```json
+{"message": {"role": "ROLE_USER", "messageId": "m-1",
+             "parts": [{"text": "Which test is flaky, and why?",
+                        "metadata": {"schema": {"type": "object", "required": ["test"],
+                                                "properties": {"test": {"type": "string"}, "cause": {"type": "string"}}}}}]},
+ "metadata": {"hangar": {"repo": "acme/app"}}}
+```
 
 `SendMessage` blocks until the task finishes or needs input, as the spec asks, for up to `HANGAR_A2A_MAX_WAIT_SECONDS` (30 minutes), and then returns the task as it stands. Coding jobs take minutes, so prefer `SendStreamingMessage`, push notifications, or `configuration.returnImmediately: true` (0.3: `blocking: false`) and polling with `GetTask`.
 
@@ -81,7 +98,7 @@ What comes back on a task:
   - `Summary`: the agent's `RESULT.md` (secrets redacted);
   - `Pull request` (or `Branch` if no PR was opened): a text part with the link, and a data part with `prUrl`, `prNumber`, `branch`, `baseBranch`, `headSha`, `commits` and `verifyExitCode`;
   - `Diffstat`;
-  - `Structured result`: a data part, once structured results exist.
+  - `Structured result`: the agent's result as a data part (`mediaType: application/json`), when the task asked for one with a schema and the result matched it ([structured results](#structured-results)).
 - **History:** what was asked (the instructions, then each follow-up) and each turn's summary. Use `historyLength` to trim it.
 - **`metadata.hangar`:** the job id, state, reason, repo, branch, environment, harness, model and number of turns.
 

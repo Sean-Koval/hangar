@@ -4,6 +4,20 @@ Claude Code, Codex, Cursor, VS Code and other agents are hangar's main users. Th
 
 Hangar speaks every protocol revision its SDK does: the `initialize`-handshake revisions up to **2025-11-25**, and the stateless **2026-07-28** revision (no handshake, capabilities on every request). One endpoint, `<public_url>/mcp`, serves both; each request is routed by its `MCP-Protocol-Version` header.
 
+## The tools
+
+| Area | Tools |
+| --- | --- |
+| Discover | `fleet_overview`, `list_environments`, `describe_environment`, `create_environment` (`dry_run` validates; `extends` clones), `build_environment`, `list_credentials` |
+| Lifecycle | `create_sandbox`, `create_sandboxes` (N in parallel), `list_sandboxes`, `get_sandbox`, `destroy_sandbox` (one, several or by label), `pause_sandbox`, `resume_sandbox`, `extend_sandbox` |
+| Commands and files | `exec`, `read_file`, `write_file`, `list_files` |
+| Terminals | `terminal_open`, `terminal_send` (supports `wait_for` regex), `terminal_read`, `terminal_list`, `terminal_close` |
+| Agents | `run_agent`, `agent_status` |
+| Clone | `snapshot_sandbox`, `list_snapshots`, `fork_sandbox` |
+| Jobs and sessions | `submit_job`, `get_job`, `list_jobs`, `follow_up_job`, `cancel_job`, `new_session`, `send_to_session`, `fork_session`, `wait_for_turn`, `get_events`, `get_artifact`, `get_session_patch`, ... |
+
+Every tool accepts a sandbox id or name. Relative paths resolve against the sandbox's repo checkout, falling back to `/workspace`. Tools carry read-only/destructive hints and typed results; long work can run as MCP tasks, agents' questions reach you as elicitations, and jobs and sessions are subscribable resources.
+
 ## Which client gets what
 
 | Feature | 2026-07-28 clients | 2025-era clients |
