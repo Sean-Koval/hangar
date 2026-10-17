@@ -70,6 +70,10 @@ CLIENTS: dict[str, Client] = {c.name: c for c in (
 )}
 
 
+# --- #140: clients that drive sandboxes themselves get the hangar-sandbox server too by default
+SANDBOX_BY_DEFAULT = frozenset({"claude-code", "codex"})
+
+
 def get(name: str) -> Client:
     if name not in CLIENTS:
         raise ClientConfigError(f"unknown client '{name}'; choose from {', '.join(CLIENTS)}")

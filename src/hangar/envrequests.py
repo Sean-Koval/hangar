@@ -16,7 +16,7 @@ over a limit aren't even read.
 
 MCP clients see pending requests in `pending_approvals` (get_session, get_job, wait_for_turn) and answer them with
 `answer_approval` (allow | deny) or through the elicitation `wait_for_turn` puts to them. They get no tool of their
-own: claude.ai caches tool lists, and the listing is at its cap.
+own (claude.ai caches tool lists).
 """
 
 from __future__ import annotations

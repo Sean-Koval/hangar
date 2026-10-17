@@ -588,7 +588,13 @@ class Gateway:
                       middleware=[Middleware(_InflightLimit, gateway=self)]),
                 *self.github.routes(), *(self.mirror.routes() if self.settings.package_mirror else []),  # --- egress2
                 *(self.registry.routes() if self.settings.heavy_mirror else []),  # --- heavy
-                *self._cache_routes()]  # --- caches
+                *self._cache_routes(),  # --- caches
+                *self._model_routes()]  # --- #177: the model gateway, /model/{provider}/...
+
+    def _model_routes(self) -> list[Route]:
+        from hangar import modelgw
+
+        return modelgw.of(self.fleet).routes()
 
     def _cache_routes(self) -> list[Route]:  # --- caches: /cache (buildcache.py)
         from hangar import buildcache
@@ -629,12 +635,18 @@ class Gateway:
     def revoke(self, sandbox_id: str, audit: bool = True) -> None:
         gone = self.grants(sandbox_id)
         self.issued.pop(sandbox_id, None)  # --- caches
+        from hangar import modelgw
+
+        modelgw.of(self.fleet).revoke(sandbox_id)  # --- #177: the model gateway's bearer goes with the git grant
         for g in gone:
             self.store.delete(SandboxGrant, g.id)
         if gone and audit:
             self.fleet.audit("gateway", "gateway.revoke", sandbox_id)
 
     def extend(self, sb: Sandbox) -> None:
+        from hangar import modelgw
+
+        modelgw.of(self.fleet).extend(sb)  # --- #177
         for g in self.grants(sb.id):
             if g.pins:  # --- least-privilege: a delivery grant keeps its own few minutes
                 continue

@@ -2024,7 +2024,7 @@ def mount(app: Any, h: Any, J: Any, owner_filter: Any) -> None:
 
 
 def register(mcp: Any, jobs: Any, guard: Any) -> None:
-    """hangar://experiments/<id>: the index, as a resource (no new tools: the tool list is at its cap)."""
+    """hangar://experiments/<id>: the index, as a resource."""
     if jobs is None:
         return
     from mcp.server.mcpserver.exceptions import ResourceError

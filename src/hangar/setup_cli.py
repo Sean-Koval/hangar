@@ -107,8 +107,12 @@ def _check_cursor_redirect(cli) -> None:
 
 
 def connect_client(client: str, auth: str = "token", name: str = "hangar", config: Path | None = None,
-                   print_only: bool = False) -> None:
+                   print_only: bool = False, with_sandbox: bool | None = None) -> None:
+    """--- #140: writes `name` (the work server, /mcp) and, with `with_sandbox` (default: on for Claude Code and
+    Codex), `<name>-sandbox` (/mcp/sandbox, the raw drive tools) with the same token."""
     cli = _cli()
+    if with_sandbox is None:
+        with_sandbox = client in mcp_clients.SANDBOX_BY_DEFAULT
     try:
         c = mcp_clients.get(client)
         path = config.expanduser() if config else mcp_clients.config_path(client)
@@ -118,6 +122,10 @@ def connect_client(client: str, auth: str = "token", name: str = "hangar", confi
         raise _fail(f"--name '{name}' must be letters, digits, '-' or '_'", 2)
     info = cli._call("GET", "/api/connect")
     url = info["mcp_url"]
+    sb_url = info.get("mcp_sandbox_url") or url.rstrip("/") + "/sandbox"  # --- #140
+    sb_name = f"{name}-sandbox"
+    if with_sandbox and not mcp_clients.NAME_RE.match(sb_name):
+        raise _fail(f"--name '{name}' is too long for its sandbox entry ('{sb_name}')", 2)
     token = tok_id = None
     if auth == "oauth":
         if not c.oauth:
@@ -141,23 +149,30 @@ def connect_client(client: str, auth: str = "token", name: str = "hangar", confi
         e = mcp_clients.entry(client, url, token)
         typer.secho(f"# {c.title}: {path}", fg="cyan")
         typer.echo(mcp_clients.render(client, name, e))
+        if with_sandbox:  # --- #140
+            typer.echo(mcp_clients.render(client, sb_name, mcp_clients.entry(client, sb_url, token)))
         if tok_id:
             typer.secho(f"\nThis holds a new token ({tok_id}, scope mcp); revoke it with `hangar token revoke "
                         f"{tok_id}` if you don't use it.", fg="yellow", err=True)
         return
-    header_file = None
-    if client == "claude-desktop" and token:
-        header_file = cli._config_path().parent / "mcp-headers" / f"claude-desktop-{name}.txt"
-        mcp_clients.write_private(header_file, f"# hangar MCP token for Claude Desktop ({url})\n"
-                                               f"Authorization: Bearer {token}\n")
-        header_file.parent.chmod(0o700)
-    e = mcp_clients.entry(client, url, token, header_file)
-    try:
-        how = mcp_clients.write(client, path, name, e)
-    except (ClientConfigError, OSError) as err:
-        typer.secho(f"{err}\nAdd this to {path} by hand:\n", fg="yellow", err=True)
-        typer.echo(mcp_clients.render(client, name, e))
-        raise typer.Exit(1) from err
+    servers = [(name, url)] + ([(sb_name, sb_url)] if with_sandbox else [])  # --- #140: both servers
+    hows = []
+    for server, server_url in servers:
+        header_file = None
+        if client == "claude-desktop" and token:
+            header_file = cli._config_path().parent / "mcp-headers" / f"claude-desktop-{server}.txt"
+            mcp_clients.write_private(header_file, f"# hangar MCP token for Claude Desktop ({server_url})\n"
+                                                   f"Authorization: Bearer {token}\n")
+            header_file.parent.chmod(0o700)
+        e = mcp_clients.entry(client, server_url, token, header_file)
+        try:
+            hows.append(mcp_clients.write(client, path, server, e))
+        except (ClientConfigError, OSError) as err:
+            typer.secho(f"{err}\nAdd this to {path} by hand:\n", fg="yellow", err=True)
+            for n, u in servers:
+                typer.echo(mcp_clients.render(client, n, mcp_clients.entry(client, u, token)))
+            raise typer.Exit(1) from err
+    how = hows[0]
     # The entry now holds the new token (or none, for OAuth): retire the ones it held before.
     for t in cli._call("GET", "/api/tokens"):
         if t["name"] == _label(client, name, path) and t["id"] != tok_id:
@@ -165,6 +180,11 @@ def connect_client(client: str, auth: str = "token", name: str = "hangar", confi
     shown = str(path).replace(str(Path.home()), "~", 1)
     typer.secho(f"{how} '{name}' in {shown} ({c.title}) -> {url}" + (f" with token {tok_id} (scope mcp)"
                                                                     if tok_id else " (OAuth)"), fg="green")
+    if with_sandbox:  # --- #140
+        typer.secho(f"{hows[1]} '{sb_name}' -> {sb_url} (the sandbox tools; --no-sandbox leaves it out)", fg="green")
+    else:
+        typer.echo(f"The sandbox tools (create_sandbox, exec, ...) are a second server, {sb_url}: add it with "
+                   f"`hangar connect {client} --with-sandbox`.")
     if auth == "oauth":
         typer.echo("Sign in: " + c.login.format(name=name) + ", then approve on hangar's page with your hangar login "
                    "token (the one `hangar login` took).")  # --- identity
@@ -179,6 +199,9 @@ def connect(
                              "in itself; claude-code, codex, cursor, gemini; needs an https or localhost hangar)."),
     name: str = typer.Option("hangar", "--name", help="Server name in the client's config."),
     config: Path | None = typer.Option(None, "--config", help="Write this file instead of the client's default."),
+    with_sandbox: bool | None = typer.Option(None, "--with-sandbox/--no-sandbox", help="Also add the hangar-sandbox "
+                                             "server (/mcp/sandbox: create_sandbox, exec, files, terminals) as "
+                                             "<name>-sandbox. Default: on for claude-code and codex, off otherwise."),
 ):
     """Add this hangar to an MCP client's config, keeping the other servers there.
 
@@ -189,7 +212,7 @@ def connect(
         if not client and not list_:
             typer.echo("\nConnect one with: hangar connect <client>")
         return
-    connect_client(client, auth, name, config, print_only)
+    connect_client(client, auth, name, config, print_only, with_sandbox)
 
 
 # ============================================================================ hangar up / down
