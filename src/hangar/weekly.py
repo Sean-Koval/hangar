@@ -219,7 +219,7 @@ def agent_jobs(store: Any, since: float, repo: str | None = None, person: str | 
     want = repo_key(repo) if repo else None
     out = []
     for j in store.list_where(Job, archived=True, updated_at=Ge(since)):
-        if j.source in ("experiment", "review") or experiments.EXP_LABEL in j.labels:
+        if j.source in ("experiment", "review", "shadow") or experiments.EXP_LABEL in j.labels:
             continue
         if (want and repo_key(j.repo) != want) or (person and j.person != person):
             continue

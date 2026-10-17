@@ -1876,7 +1876,8 @@ async def prepare_trial(jobs: JobService, job: Job, s: Session) -> None:
     from hangar.jobs import JobError
 
     exp, key = job.labels.get(EXP_LABEL), job.labels.get(TRIAL_LABEL)
-    if not exp or not key or job.source != "experiment" or jobs.fleet.store.kv_get(KV_TRIAL + job.id) != exp:
+    if not exp or not key or job.source not in ("experiment", "shadow") \
+            or jobs.fleet.store.kv_get(KV_TRIAL + job.id) != exp:  # --- #183: a shadow trial is a trial too
         return
     parent = jobs._jobs.get(exp)
     st = load(parent) if parent is not None else None
