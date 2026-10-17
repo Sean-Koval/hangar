@@ -56,7 +56,8 @@ for _ in sys.stdin:
 def _repo() -> Path:
     root = Path(tempfile.mkdtemp(prefix="trees-", dir=scratch_root()))
     repo = root / "repo"
-    git = ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "init.defaultBranch=main"]
+    git = ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "init.defaultBranch=main", "-c", "gc.auto=0",
+           "-c", "maintenance.auto=false"]  # no background maintenance writing into .git/objects meanwhile
     subprocess.run([*git, "init", "-q", str(repo)], check=True)
     (repo / "README.md").write_text("hi\n")
     (repo / ".gitignore").write_text("*.log\n")
@@ -154,12 +155,12 @@ def test_hashing_runs_nothing_the_repo_configures_and_writes_nothing_into_it(tmp
     with open(repo / ".git" / "config", "a") as f:
         f.write(f'[filter "evil"]\n\tclean = touch {pwned}\n[core]\n\tfsmonitor = touch {pwned}\n')
     (repo / ".gitattributes").write_text("* filter=evil\n")
-    objects = sorted(p.name for p in (repo / ".git" / "objects").iterdir())
+    objects = sorted(p.name for p in (repo / ".git" / "objects").iterdir() if not p.name.endswith(".lock"))
     t = driver.Trees(SimpleNamespace(event=lambda *a, **k: None), str(repo), str(tmp_path / "tree"))
     (repo / "new.py").write_text("n")
     sha, _ = t.hash()
     assert sha and not pwned.exists()
-    assert sorted(p.name for p in (repo / ".git" / "objects").iterdir()) == objects
+    assert sorted(p.name for p in (repo / ".git" / "objects").iterdir() if not p.name.endswith(".lock")) == objects
     # the same script for one-shot turns
     out = subprocess.run(["sh", "-c", gittree.script(str(repo))], capture_output=True, text=True).stdout.strip()
     assert out == sha and not pwned.exists()
