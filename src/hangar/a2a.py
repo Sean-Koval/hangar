@@ -36,7 +36,7 @@ from pydantic import BaseModel, ValidationError
 
 from hangar.auth import TokenAuth, bearer_from_headers
 from hangar.config import Settings
-from hangar.exchange import open_question
+from hangar.exchange import ExchangeError, open_question
 from hangar.jobs import Caller, JobError, JobNotFound, JobService, SubmitJob, _internal
 from hangar.models import ContextItem, Job, new_id
 from hangar.vault import Vault
@@ -441,7 +441,7 @@ class A2AServer:
             return e
         if isinstance(e, JobNotFound):
             return _not_found("task")
-        if isinstance(e, JobError):
+        if isinstance(e, JobError | ExchangeError):  # ExchangeError: a bad output_schema or context item (#143)
             return _invalid(str(e))
         if isinstance(e, ValidationError):
             return _invalid("; ".join(f"{'.'.join(map(str, x['loc'])) or 'request'}: {x['msg']}"
