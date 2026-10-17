@@ -1,6 +1,6 @@
 # 0003: Sandbox security (git proxy, egress allowlists, token scopes)
 
-Status: draft. Date: 2026-10-12.
+Status: partly built (2026-10-15): branch protection, the git credential gateway (#44), egress allowlists (#97, #107) and token scopes in another shape (#122); the model-API proxy isn't scheduled. Was: draft. · Date: 2026-10-12.
 
 > Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins.
 
