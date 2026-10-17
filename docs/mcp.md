@@ -21,6 +21,12 @@ What the major clients support today, from their own sources (October 2026):
 - **VS Code** (`src/vs/workbench/contrib/mcp`): 2025-11-25, elicitation, `structuredContent`, `resource_link`, `resources/subscribe`, and the *experimental 2025-11-25 tasks* (`tasks/result`). Those tasks were removed from the core spec in 2026-07-28 and from the Python SDK v2 hangar runs on, so VS Code gets plain calls.
 - **Cursor**: not verified (closed source); the official extension matrix lists MCP Apps only.
 
+## Running from a harness lock
+
+`submit_job` takes `harness_lock` (`name@rN`, `name@sha256:…`, `name@stable`) to run a job from a
+[harness lock](harness-lock.md#thaw-and-drift); sessions are thawed with `hangar harness thaw` or `harness_lock` on
+`POST /api/sessions` (the tool listing is at its size cap, #140).
+
 ## Waiting for work, and answering the agent
 
 `wait_for_turn(ref)` waits for a job's or session's current turn (up to 10 minutes per call) and sends progress notifications while it runs. It returns the turn: `outcome`, `summary`, the structured `result`, `artifacts` (as `resource_link` blocks too), the PR for a job.

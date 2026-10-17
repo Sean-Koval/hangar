@@ -99,3 +99,54 @@ def freeze(
         for p in res["problems"]:
             typer.secho(p, fg="red", err=True)
         raise typer.Exit(1)
+
+
+@harness_app.command("thaw")
+def thaw(
+    ref: str = typer.Argument(..., help="A lock in the harness registry: NAME, NAME@rN, NAME@sha256:... or "
+                                        "NAME@<channel>."),
+    message: str | None = typer.Argument(None, help="First thing to ask the agent (optional)."),
+    env: str | None = typer.Option(None, "--env", "-e", help="Environment to run it in (it provides the files, "
+                                                            "MCP endpoints and credentials)."),
+    session: str | None = typer.Option(None, "--session", help="Session name (default: NAME-<4 hex>)."),
+    repo: str | None = typer.Option(None, help="Git URL (default: the environment's repo)."),
+    wait: bool = typer.Option(False, "--wait", "-w", help="Follow it until the agent finishes."),
+):
+    """Start a session from a harness lock: the lock's CLI version (refused if harnesses.lock.yaml pins another),
+    model and approvals; turn 1 is checked against it and drift reported (HANGAR_HARNESS_DRIFT=fail stops it).
+    Jobs take `harness_lock` on submit (REST, MCP)."""
+    import secrets
+
+    from hangar import cli
+
+    name = session or f"{ref.partition('@')[0][:50]}-{secrets.token_hex(2)}"
+    x = cli._call("POST", "/api/sessions", json={"name": name, "message": message, "environment": env, "repo": repo,
+                                                  "harness_lock": ref})
+    lock = x.get("harness_lock") or {}
+    typer.secho(f"{x['name']} ({x['id']}) {x['state']} from {lock.get('name', ref)}@r{lock.get('revision', '?')} "
+                f"({lock.get('digest', '?')})", fg="green")
+    if wait and message:
+        cli._print_summary(cli._wait_session(x["id"]))
+
+
+@harness_app.command("outdated")
+def outdated(
+    ref: str = typer.Argument(..., help="A lock in the harness registry (NAME, NAME@rN, ...)."),
+    as_json: bool = typer.Option(False, "--json", help="Print the result as JSON."),
+):
+    """Report how a lock lags upstream: its CLI version against harnesses.lock.yaml, and each skill against its
+    source in the environments that declare it. Report only; exit 1 when something is outdated."""
+    from hangar import cli
+
+    r = cli._call("GET", f"/api/harness-locks/{ref}/outdated")
+    if as_json:
+        typer.echo(json.dumps(r, indent=2))
+    else:
+        rt = r["runtime"]
+        typer.echo(f"{r['name']} r{r['revision']} ({r['digest']})")
+        typer.echo(f"  runtime {rt['harness']}: lock {rt['lock']}, hangar {rt['current']}"
+                   + ("  OUTDATED: re-freeze on the new version" if rt["outdated"] else ""))
+        for c in r["components"]:
+            typer.echo(f"  {c['id']}: {c['status']}" + (f" ({c['source']})" if c.get("source") else ""))
+    if r.get("outdated"):
+        raise typer.Exit(1)

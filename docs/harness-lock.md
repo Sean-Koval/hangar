@@ -12,6 +12,8 @@ the lock is a frozen observation of a turn's [manifest](specs/0014-sister-tool-i
 | Write one | `hangar harness freeze <session or job> [--turn N] --out DIR [--name NAME]` |
 | Check one | `hangar harness check DIR` (or `hangar harness freeze --check DIR`); exit 1 on a mismatch |
 | REST | `GET /api/sessions/{name}/harness?turn=N&name=NAME`, `GET /api/jobs/{id}/harness?turn=N&name=NAME` |
+| Run from one | `hangar harness thaw NAME@rN --env ENV [--session NAME]`; `harness_lock` on a job or session ([below](#thaw-and-drift)) |
+| Upstream drift | `hangar harness outdated NAME` (report only) |
 
 ## A harness directory
 
@@ -116,3 +118,59 @@ turn they can't see answers as missing.
 also fails on a directory under `skills/` or `plugins/`, or a file under `native/`, that the lock doesn't pin, so
 nothing ships unpinned. Other files in the directory (a README, CI config) are ignored. Use it as the harness repo's
 CI check (#138).
+
+## Thaw and drift
+
+A session or job can run *from* a lock: `hangar harness thaw team-default@r14 --env python "..."`, or
+`harness_lock: "team-default@r14"` on `POST /api/jobs`, `POST /api/sessions` or MCP `submit_job`.
+
+**The registry.** `HANGAR_HARNESS_REPO` is a checkout of the team harness repo (#138): locks at
+`harnesses/<name>/harness.lock` (or `<name>/harness.lock`), channels in `channels.yaml`
+(`{team-default: {stable: "sha256:..."}}`). A reference is `name` (the current lock), `name@rN`, `name@sha256:...` or
+`name@<channel>`; a revision or digest that isn't the checkout's current one is found in its git history.
+`GET /api/harness-locks/{ref}` shows what a reference resolves to.
+
+**The claim** is refused, with what to do, when:
+
+- the lock's `runtime.version` isn't the CLI version `harnesses.lock.yaml` pins ("re-freeze the harness from a turn
+  on 2.1.296, or bump the lock's runtime.version");
+- the environment can't run the lock's harness, or doesn't define an MCP server the lock binds (endpoints and
+  credentials live in the environment);
+- the request names another `harness`, `model` or `approvals` than the lock's;
+- the lock enables a plugin: plugins mount through the Claude Code seed dir (#136).
+
+Otherwise the session (a job's too) is pinned to the lock's harness, concrete model and approval mode, and records
+the lock (`harness_lock` on the session and job). The environment provides the files: until #136's read-only prefix
+layer mounts them from the lock, thaw runs the environment's image and *checks* that it has the lock's files.
+
+**Turn 1** is compared with the lock once its manifest is recorded:
+
+| Compared | Lock | Turn 1 |
+| --- | --- | --- |
+| each skill | its `tree` digest | the sandbox's effective skill digest (`skills.effective`); a skill the sandbox has and the lock doesn't is drift too, except hangar's own (`hangar-environment`, `verify-ui`) |
+| the instructions file | the `guide:` digest | the declared one (`instructions.global.declared.digest`: hangar splices its environment notes into the sandbox's copy, so that copy isn't compared byte for byte) |
+| the CLI | `runtime.version` | the version the sandbox's CLI reported |
+| everything else | its `harness_digest` | the manifest's `harness_digest` (model, MCP servers, hooks, approvals) |
+
+The manifest carries `harness.lock: {name, revision, digest}`. Its `harness_digest` is still computed from the
+turn's own sections: equal to the lock's when nothing drifted, else what actually ran.
+
+**Drift** is recorded as `SessionTurn.drift: [{component, lock, effective}]` (`[]`: matched; `null`: not checked),
+a `harness.drift` event in the session's events (`data.drift`, `data.action`), a warning on the turn, and a line in
+the job's review packet (`**Harness:** team-default@r14 …: **drift** on turn 1 (skill:review)`). Under
+`HANGAR_HARNESS_DRIFT=fail` turn 1 stops: outcome `failed`, reason `harness_drift` (part B's `infra_error` outcome
+replaces it); a job fails with that reason and delivers nothing. The default, `warn`, carries on. A turn that ends
+before its check has run waits for it (up to 40 s) under `fail`. Only turn 1 is checked: what the agent changes later
+is its behaviour, not drift. Writable state (`~/.claude.json`, plugin caches) is never digested.
+
+**Upstream drift.** `hangar harness outdated NAME` (`GET /api/harness-locks/{ref}/outdated`) reports a lock's CLI
+version against `harnesses.lock.yaml`, and each `path:` skill against its source in the environments that declare
+it. It changes nothing; exit 1 when something is outdated.
+
+| Variable | Default | |
+| --- | --- | --- |
+| `HANGAR_HARNESS_REPO` | unset | The harness registry: a checkout of the team harness repo (#138 adds fetching it) |
+| `HANGAR_HARNESS_DRIFT` | `warn` | What turn 1's drift from its lock does: `warn` or `fail` |
+
+Not yet: experiment variants by lock (#135), mounting a lock's files read-only (#136), warm pools per prefix-layer
+digest (a thawed session takes a sandbox like any other).

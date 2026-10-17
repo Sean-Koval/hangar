@@ -318,6 +318,11 @@ class Settings(BaseSettings):
     # --- egress: hostname allowlists (egress.py, docs/security.md#egress) ----
     # The mode of environments that don't set `egress.mode`: open (the public internet, as before), allowlist or none.
     egress_default: Literal["open", "allowlist", "none"] = "open"
+    # --- harness locks (#134, harness_thaw.py, docs/harness-lock.md): the harness registry, a checkout of the team
+    # harness repo (harnesses/<name>/harness.lock, channels.yaml) that `harness_lock: name@rN` resolves against; and
+    # what turn 1's drift from the lock does: warn (a warning, an event, a review-packet line) or fail (the turn stops).
+    harness_repo: str | None = None
+    harness_drift: Literal["warn", "fail"] = "warn"
     # The egress proxy's port. On GKE it listens on HANGAR_EGRESS_HOST (default HANGAR_GATEWAY_HOST, then HANGAR_HOST)
     # when HANGAR_EGRESS_URL is set; on Docker on the egress network's gateway address, when a sandbox needs it.
     egress_port: int = 3128

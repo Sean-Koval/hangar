@@ -881,6 +881,18 @@ harness.session:
   rest: GET /api/sessions/{ref}/harness
   scope: user
   owner: guard
+harness_locks.get:
+  server: hangar
+  mcp: null
+  rest: GET /api/harness-locks/{ref}
+  scope: user
+  owner: guard
+harness_locks.get_outdated:
+  server: hangar
+  mcp: null
+  rest: GET /api/harness-locks/{ref}/outdated
+  scope: user
+  owner: guard
 harnesses.get:
   server: hangar
   mcp: null
