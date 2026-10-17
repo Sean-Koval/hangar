@@ -5,6 +5,10 @@ knowing hangar's internals: the sister tool's trace timelines and behavior specs
 Phoenix. This page is the contract. It is versioned: a change that removes or renames anything below is a new version
 (`hangar.trace/v2`); adding a kind, an attribute or an event is not.
 
+**Canonical.** OTLP on the OpenTelemetry GenAI conventions is hangar's canonical trajectory format: what it stores
+and exports for every run. Other formats (ATIF, Harbor's) are adapters in flightdeck, built on this export; hangar
+emits no ATIF ([spec decision 16](../specs/README.md#cross-spec-decisions)).
+
 The boundary and the other two interfaces (the effective harness manifest and experiments) are in
 [spec 0014](../specs/0014-sister-tool-interfaces.md).
 

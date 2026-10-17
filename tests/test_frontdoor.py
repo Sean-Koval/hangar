@@ -280,7 +280,14 @@ def test_rest_and_cli(settings, monkeypatch):
 # ====================================================================== B8: no stray HANDOFF.md
 def test_repo_conventions_no_longer_asks_for_handoff_md():
     text = (ROOT / "envs/skills/repo-conventions/SKILL.md").read_text()
-    assert "HANDOFF.md`" not in text.replace("(`HANDOFF.md`", "") and "final message" in text
+    assert "HANDOFF.md`" not in text.replace("(`HANDOFF.md`", "")
+    # #143: the skill sends the summary where the job prompt asks for it (RESULT.md, or hangar-agent done, which
+    # writes $HANGAR_IO/RESULT.md), never into the repo; the final message only when the task names neither
+    hand_off = text[text.index("**Hand off**"):]
+    assert "hangar-agent done" in hand_off and "`RESULT.md` path your task names" in hand_off
+    assert "never into the repo" in hand_off
+    jobs_src = (ROOT / "src/hangar/jobs.py").read_text()
+    assert "/RESULT.md`: what you changed" in jobs_src  # the job prompt's own line
 
 
 async def test_agent_scratch_files_stay_out_of_the_pr(jobs, repo):  # noqa: F811
