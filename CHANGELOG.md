@@ -45,6 +45,8 @@ Six engineers on three repos: planned work comes in through Jira, the inbox reac
 - **The Friday harness review** (#169, PR #243). `hangar review queue|label|status` labels the first failure of failed and abandoned jobs, up to 20 candidate tasks. Labels are exported as outbox `label` events ([runbook](docs/runbooks/harness-review.md)).
 - **The governance decision point** (#171, PR #208). Spec 0015 defines how hangar will ask the governed workspace for its approvals; `governance.py` is a client skeleton with contract tests, not wired in yet.
 
+**Internal:** `hangar/supervisor.py` is now `hangar/svc_control.py`, the control-plane half of the service supervisor (`hangar-agent svc`), paired with `svc_agent.py`; no behaviour change and no shim, since nothing outside the tree imports it. Specs 0001 and 0004 keep "supervisor" for the run supervisor they describe (#144).
+
 **Fixes:** `hangar doctor` no longer fails a fresh laptop install on the intake posture: without the git gateway it warns until an intake front door is configured, then fails naming those doors, with one fix command (#236, PR #247).
 
 ### The safe release (P1, #120–#132; [docs/upgrading.md](docs/upgrading.md#the-safe-release-120132))

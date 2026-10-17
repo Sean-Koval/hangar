@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hangar import envbuilds, envservices, repoenv, supervisor
+from hangar import envbuilds, envservices, repoenv, svc_control
 from hangar.config import Settings
 from hangar.envbuilds import KV_SEEN, Seen
 from hangar.envspec import EnvSpec, Service
@@ -258,8 +258,8 @@ def test_the_supervisor_and_the_agent_learn_the_services():
     eff = EnvSpec(name="e", services={"postgres": PG})
     sb = _sb(services=[{"name": "postgres", "kind": "service", "host": "postgres", "port": 5432,
                         "check": "pg_isready -h postgres"}])
-    m = supervisor.manifest(sb, eff, "/workspace/r")
+    m = svc_control.manifest(sb, eff, "/workspace/r")
     assert m["services"] == [{"name": "postgres", "host": "postgres", "port": 5432, "ready": "pg_isready -h postgres"}]
-    text = supervisor.instructions(sb, eff, "/workspace/r")
+    text = svc_control.instructions(sb, eff, "/workspace/r")
     assert "`postgres` at `postgres:5432`" in text
     assert Service.model_validate(PG).volumes == ["/var/lib/pg/data"]

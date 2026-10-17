@@ -1,6 +1,6 @@
 """hangar-svc: the in-sandbox supervisor behind `hangar-agent svc` (--- envbuilds; docs/environments.md).
 
-Installed per sandbox at ~/.hangar/bin/hangar-svc (hangar.supervisor) and run as the sandbox's own user. It is
+Installed per sandbox at ~/.hangar/bin/hangar-svc (hangar.svc_control) and run as the sandbox's own user. It is
 standalone: the standard library of any python3 the image contract allows (3.8 and later), nothing from hangar.
 
 A small daemon keeps the environment's processes up so the agent doesn't have to: it waits for the services (Postgres,
