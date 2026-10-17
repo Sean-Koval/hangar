@@ -27,6 +27,23 @@ A fourth interface carries the first two out of hangar: **run capture** (§4a, t
 
 All of them are **versioned** (`hangar.manifest/v1`, `hangar.trace/v1`, `hangar.experiment/v1`, `hangar.run/v1`). Within a version hangar only adds optional fields, kinds and events; anything removed or renamed is a new version. All three are **owner-scoped** like the records they describe (#88: a member sees their own, an admin everyone's, a `jobs` token the jobs it submitted; anything else answers as missing) and **redacted** with the broker's redaction (`broker.redact`) on the way out. A test seeds a stored secret and checks it appears in no export.
 
+### What stays in hangar and why
+
+Hangar computes no metric across trials (decision 17). The code that looks like analysis but stays, because each piece drives a runtime decision or records a per-run fact (#147 audit, main `5c0319d`):
+
+| What stays | Where | Why it is runtime, not analysis | Flightdeck counterpart |
+| --- | --- | --- | --- |
+| The `drift` flag | `experiments.py` (`drift_message`, set where trials of a variant are indexed) | A pinning integrity check: trials of one variant whose `config_digest` differ weren't run under the same conditions. No statistic | Compares harness and environment digests across experiments and over time |
+| Trial-state counts in the experiment index | `experiments.py` (`view`) | An ops view of one experiment's progress (queued, running, done) | Pass rates, effect sizes and reports over the trials |
+| The repo flaky list | `testresults.py` (`_detect_flaky`, `_note_flaky`, `flaky`, `vouched`) | Drives behaviour: `rerun_flaky`, a baseline that excuses known flakes, the review packet's lines | Flake rates over time, from the outbox's `tests.json` and `test.case` events |
+| Per-run test counts and `status_section` | `testresults.py` | Facts about one run (`total`, `failed`, `counted`) and an ops view in `hangar status` | Aggregates across runs, repos and harnesses |
+| Model ranking | `modelpolicy.py` (`rank_*`, `pick`, `concreteness`) | Resolves `frontier` / `balanced` to a concrete id from provider lists, at runtime | Comparing models' outcomes |
+| `describe` and `spend_guard` | `modelpolicy.py` | Packet text and a doctor check on budgets | Cost reporting across runs |
+| Admission counts (`awaiting_capacity`, fair-share slots) | `jobs.py`, `fairness.py` | Counting for a runtime decision | None |
+| Weekly metrics and the standup line (#168) | `weekly.py` | Flightdeck's definitions computed from hangar's own store with counts, rates and percentiles only, so the standup line works without flightdeck | The same definitions over the outbox's Parquet, with intervals and history ([metrics.md](../metrics.md)) |
+
+**The guard.** `tests/test_boundary.py` fails when a module under `src/hangar/` imports `scipy`, `numpy`, `pandas`, `statistics`, `duckdb` or `pyarrow`, or defines a function named like an estimator (`bootstrap`, `wilson`, `pass_at`, `pass_hat`, `effect_size`, `confidence`), and its message points here. Counting is allowed. Exceptions are explicit allowlist entries with a reason (today: `auth.ensure_bootstrap`, the first admin's login token; and an empty placeholder for `pyarrow` in case part B's Parquet compactor lives in hangar rather than flightdeck#5). A new exception adds a row to this table.
+
 ## 2. The effective harness manifest (`hangar.manifest/v1`)
 
 The exact configuration an agent ran with. Schema: [docs/api/manifest.schema.json](../api/manifest.schema.json), validated in the tests.
@@ -123,7 +140,7 @@ Contract: [docs/api/outbox.md](../api/outbox.md); `run.json` schema: [docs/api/r
 
 ## 5. What moved to the sister tool
 
-From 0007: the paired analysis and effect sizes (§5.4 rule 4), saturated-task flagging (rule 5), `experiment_report` and its dashboard and doc export, the label taxonomy and labeler cascade (§5.5), process mining and routing on labels, team-learning miners and proposals (§5.6, M8 and M10). From 0005: the evaluation and insights milestones (M9–M10) that read traces. Hangar keeps 0007's runtime parts: policy enforcement, the MCP gateway, budgets, `run_experiment` as the experiment job kind, and the cost gate (budgets).
+From 0007: the paired analysis and effect sizes (§5.4 rule 4), saturated-task flagging (rule 5), `experiment_report` and its dashboard and doc export, the label taxonomy and labeler cascade (§5.5), process mining and routing on labels, team-learning miners and proposals (§5.6, M8 and M10). From 0005: the evaluation and insights milestones (M9–M10) that read traces. Hangar keeps 0007's runtime parts: policy enforcement, the MCP gateway, budgets, `run_experiment` as the experiment job kind, and the cost gate (budgets). Flake rates over time, pass rates and any other aggregate over runs are flightdeck's too, computed from the outbox (§4a); the per-run facts and the runtime decisions that look like analysis stay, as listed in §1's table, and `tests/test_boundary.py` keeps new analysis out.
 
 ## 6. Security
 

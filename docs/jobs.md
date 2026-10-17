@@ -595,6 +595,15 @@ retries of one experiment stop at 10% of its trials (at least one); past that no
 since that many at once usually means a provider or cluster outage. In the index, the highest `attempt` of a key is
 the one that counts; `GET /api/experiments/{id}/trials/{key}/manifest?attempt=N` (and `.../trace`) reads another one.
 
+### The eval queue
+
+Trials are `queue_class: eval` jobs ([team-scale.md](team-scale.md#the-eval-queue-class)): they start only in the eval
+window (`HANGAR_EVAL_WINDOW`, `20:00-00:15` New York time), behind every interactive job, in at most half the job slots,
+and under the provider's token budget (`HANGAR_EVAL_TPM_BUDGET`). An experiment submitted at 14:00 starts its trials at
+20:00; meanwhile they show `reason: eval_window`. `parallel` still caps the trials one experiment has submitted at once.
+At the power-down drain, running trials are cancelled as `infra_error` / `power_down` and retried in the next window
+(above); those retries don't count towards the 10% cap, since the power-down is scheduled, not an outage.
+
 ## Failure labels
 
 In the Friday harness review ([runbook](runbooks/harness-review.md), #169), the team labels where failed and abandoned
@@ -649,6 +658,11 @@ as `hangar.outcome.class` and `hangar.outcome.infra_reason` ([traces.md](api/tra
 | `HANGAR_BUDGET_DAY_TIMEZONE` | `UTC` | The IANA zone whose midnight starts a day for daily spend caps, e.g. `America/New_York` |
 | `HANGAR_PERSON_MAX_USD_PER_DAY` | unset | What one person's sessions and jobs may spend in a day before their new jobs wait for approval; see [repo-policy.md](repo-policy.md#budgets) |
 | `HANGAR_TRIAL_INFRA_RETRIES` | 2 | How often an experiment trial that ended in `infra_error` runs again; an experiment's retries together stop at 10% of its trials ([§9](#infrastructure-errors-are-retried-and-left-out)) |
+| `HANGAR_EVAL_WINDOW` | `20:00-00:15` | When eval jobs (experiment trials) may start, `HH:MM-HH:MM` (may cross midnight) or `always` ([§9](#the-eval-queue)) |
+| `HANGAR_EVAL_TZ` | `America/New_York` | The eval window's time zone |
+| `HANGAR_EVAL_MAX_RUNNING` | 0 (half the job slots) | Eval jobs running at once |
+| `HANGAR_EVAL_TPM_BUDGET` | unset (no cap) | Tokens per minute eval admission keeps each provider under: `400000` or `anthropic=400000,openai=300000` |
+| `HANGAR_EVAL_TPM_PER_TRIAL` | 20000 | One trial's tokens per minute until recent eval turns on that provider give a median |
 | `HANGAR_BEST_OF_N_MAX` | 8 | Most attempts per best-of-N job |
 | `HANGAR_BEST_OF_N_PUSH_ATTEMPTS` | false | Also push attempts that weren't delivered |
 | `HANGAR_BEST_OF_N_JUDGE_TIMEOUT_MINUTES` | 15 | The judge turn's limit |

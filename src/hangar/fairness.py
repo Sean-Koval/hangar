@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import contextlib
 import itertools
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
@@ -130,10 +131,13 @@ class FairJobQueue:
     `admit` (optional) is asked about each job that could run; False leaves it waiting in its place (`hold_new`)."""
 
     def __init__(self, person: Callable[[str], str], cap: Callable[[], int],
-                 admit: Callable[[str], bool] | None = None):
+                 admit: Callable[[str], bool] | None = None, rank: Callable[[str], int] | None = None,
+                 recheck: float | None = None):
         self._person = person
         self._cap = cap
         self._admit = admit
+        self._rank = rank  # --- #181: a lower rank always goes first (interactive 0, eval 1: evalqueue.py)
+        self._recheck = recheck  # --- #181: seconds between looks with nothing changed (time-based admission)
         self._seq = itertools.count()
         self._waiting: list[tuple[int, str]] = []
         self._running: collections.Counter[str] = collections.Counter()
@@ -163,13 +167,13 @@ class FairJobQueue:
     def _pick(self) -> tuple[str, str] | None:
         """(job id, person) of the job to run next, taken off the queue; None while everyone waiting is capped."""
         cap = self._cap()
-        best: tuple[int, int, int] | None = None  # (their running jobs, arrival, index)
+        best: tuple[int, int, int, int] | None = None  # (rank, their running jobs, arrival, index)
         people: dict[str, str] = {}
         for i, (seq, job_id) in enumerate(self._waiting):
             who = people[job_id] = self._person(job_id)
             if cap > 0 and who and self._running[who] >= cap:
                 continue
-            key = (self._running[who] if who else 0, seq, i)
+            key = (self._rank(job_id) if self._rank else 0, self._running[who] if who else 0, seq, i)
             if best is not None and key >= best:
                 continue
             if self._admit is not None and not self._admit(job_id):  # --- review capacity (#159)
@@ -178,7 +182,7 @@ class FairJobQueue:
                 best = key
         if best is None:
             return None
-        _, job_id = self._waiting.pop(best[2])
+        _, job_id = self._waiting.pop(best[3])
         return job_id, people[job_id]
 
     async def get(self) -> str:
@@ -190,7 +194,11 @@ class FairJobQueue:
                 self._held[asyncio.current_task()] = who
                 return job_id
             self._changed.clear()
-            await self._changed.wait()
+            if self._recheck:
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(self._changed.wait(), self._recheck)
+            else:
+                await self._changed.wait()
 
     def task_done(self) -> None:
         who = self._held.pop(asyncio.current_task(), None)
