@@ -2,6 +2,8 @@
 
 Guides, newest first:
 
+- [**The repo-conventions hand-off**](#the-repo-conventions-hand-off-143) (#143): prebuild the images that bake the
+  skill in.
 - [**Claude Code plugins from a seed**](#claude-code-plugins-from-a-seed-136) (#136): nothing to do unless you want plugins.
 - [**The safe release**](#the-safe-release-120132) (#120–#132): secure defaults for intake jobs, API keys for
   automated work, one approval rule, sealed graders, taint gates, new manifest fields and the `extends` merge rules.
@@ -12,6 +14,18 @@ Guides, newest first:
 - [**The overnight stack**](#upgrading-from-before-the-overnight-stack-4869) (#48–#69), for a hangar older than that. Do its backup and read its defaults first, then follow this release's procedure: its prebuild also covers the overnight guide's "republish the Codex pack" step.
 
 Both are written for the GKE install from [gke.md](gke.md): one zonal cluster, gVisor sandboxes, the control plane with SQLite on the `hangar-data` PVC, checkpoints in the session bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / `power.sh`. [CHANGELOG.md](../CHANGELOG.md) lists what each adds.
+
+## The repo-conventions hand-off (#143)
+
+The `repo-conventions` skill told the agent to put its hand-off summary in its final message, while the job prompt
+asks for `RESULT.md` in the job's directory. Its step 5 now says the same as the prompt: `hangar-agent done
+"<summary>"` or the task's `RESULT.md` path, never the repo, and the final message only when the task names neither.
+
+The skill is baked into the images of `claude-python`, `codex-node`, `polyglot` and `hangar` (and any environment that
+lists it), so their image tags change once, as they did for #82: prebuild with `hangar images plan` / `hangar images
+build` before the rollout. Their manifests' `harness_digest` changes too (the skill is part of the harness), so a
+harness lock frozen from one of them before this release reports drift when thawed there
+([harness locks](harness-lock.md)): freeze it again after the rollout.
 
 ## Claude Code plugins from a seed (#136)
 
