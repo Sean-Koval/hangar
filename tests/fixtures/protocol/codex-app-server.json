@@ -501,6 +501,7 @@
    "thread/prediction/updated",
    "thread/project/updated",
    "thread/queue/changed",
+   "thread/readState/changed",
    "thread/realtime/closed",
    "thread/realtime/error",
    "thread/realtime/item/completed",
@@ -4279,6 +4280,9 @@
     },
     "output": {
      "$ref": "FunctionCallOutputBody"
+    },
+    "retain": {
+     "type": "boolean"
     }
    },
    "required": [
