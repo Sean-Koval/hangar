@@ -444,6 +444,19 @@ class LandingState(BaseModel):
     # independent, at, review_id, url, source (hangar | check:<name>)}; and when the last one was asked for
     ai_review: dict[str, Any] | None = None
     ai_review_requested_at: float | None = None
+    # --- #168: weekly metrics (weekly.py, docs/metrics.md)
+    opened_at: float | None = None  # hangar opened (or found) the PR
+    ready_at: float | None = None  # opened non-draft, or marked ready for review: review wait starts here
+    first_review_at: float | None = None  # the first review a human submitted (any state; never a bot's)
+    first_review_by: str | None = None
+    merge_commit_sha: str | None = None  # what the merge put on the base branch (a squash's own commit)
+    abandon_reason: str | None = None  # closed unmerged: weekly.ABANDON_REASONS
+    abandon_by: str | None = None
+    abandon_at: float | None = None
+    reverted_at: float | None = None  # a `Revert "…"` / `This reverts commit` of merge_commit_sha on the branch
+    revert_sha: str | None = None
+    fix_forward_pr: int | None = None  # a later merged PR whose body says `Fixes-forward: #<this PR>`
+    fix_forward_at: float | None = None
 
 
 class JobApproval(BaseModel):
@@ -494,6 +507,23 @@ class Attempt(BaseModel):
     error: str | None = None
     started_at: float | None = None
     finished_at: float | None = None
+
+
+class FailureLabel(BaseModel):
+    """--- #169: where a failed or abandoned job first went wrong, and what would fix it (harness_review.py). One per
+    job: relabelling replaces it (audited `review.relabel`)."""
+
+    id: str = Field(default_factory=lambda: new_id("fl"))
+    job_id: str
+    session_id: str | None = None
+    turn: int | None = None
+    seq: int | None = None  # hangar.seq of the first failure in the session's event log
+    category: Literal["env", "tooling", "instructions", "skill", "model", "ticket", "flaky", "other"]
+    note: str = ""
+    fix: Literal["agents_md", "skill", "env", "ticket_template", "none"] = "none"
+    candidate_task: bool = False  # flightdeck turns it into a regression task
+    labelled_by: str
+    at: float = Field(default_factory=now)
 
 
 class Job(BaseModel):
@@ -561,6 +591,7 @@ class Job(BaseModel):
     taint: dict[str, Any] | None = None  # --- taint (#129): its untrusted input, and its sessions' taint (mirrored)
     harness_lock: dict[str, Any] | None = None  # --- harness locks (#134): the lock it runs from (harness_thaw.pin)
     force_admitted_by: str | None = None  # --- review capacity (#159): an admin let it past the open-PR cap
+    failure_label: FailureLabel | None = None  # --- #169: the Friday harness review's label (harness_review.py)
 
 
 # ---------------------------------------------------------------------------- scheduled jobs (workstream A)

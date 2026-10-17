@@ -40,6 +40,7 @@ from hangar import (  # strategies: workstream D; --- observe; steer: live turns
     strategies,
     taint,  # --- taint (#129)
     verifyloop,
+    weekly,  # --- #168: `/hangar abandon <reason>` on an agent PR
 )
 from hangar import autoinstall as autoinstall  # --- autoinstall: agent-led environment setup jobs
 from hangar import clouddoctor as clouddoctor  # --- clouddoctor: its own jobs report back; its fixes are fenced
@@ -1559,6 +1560,11 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
                        if parse_repo(j.repo) == parse_repo(pr_repo)), key=lambda j: j.created_at, default=None)
             if job is None:
                 return {"ignored": "PR was not opened by a hangar job"}
+            if (reason := weekly.parse_abandon(extra)) is not None:  # --- #168: why the PR was abandoned
+                if why := weekly.set_abandon(svc, job, reason, f"github:{sender}", "comment"):
+                    await svc._comment(job, f"github:{repo}#{number}", why)
+                    return {"ignored": why}
+                return {"ok": True, "abandon_reason": job.landing.abandon_reason}
             try:
                 svc.follow_up(job.id, extra or "Continue with the task.", requester=f"github:{sender}",
                               reply_to=f"github:{repo}#{number}", front_door=True,  # --- review
