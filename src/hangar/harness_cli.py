@@ -48,12 +48,15 @@ def freeze(
     name: str | None = typer.Option(None, "--name", help="The harness's name (default: the lock already in --out, "
                                                          "else the environment's name)."),
     check_dir: Path | None = typer.Option(None, "--check", help="Instead: check this directory against its lock."),
+    force: bool = typer.Option(False, "--force", help="Overwrite --out even when it doesn't match its own lock "
+                                                      "(edits there are lost)."),
     as_json: bool = typer.Option(False, "--json", help="Print the result as JSON."),
 ):
     """Freeze a turn into a harness directory: the instructions file, skills/<name>/, native/<runtime>/ and
     harness.lock, whose harness_digest equals the turn's. Fails, naming the gap, when content can't be recovered
     (a skill the sandbox had changed, truncated instructions, a source edited since). Writes files only: open the
-    PR to the harness repo yourself."""
+    PR to the harness repo yourself. An --out that already holds a lock is checked against it first: a directory
+    with edits the lock doesn't record is refused unless --force, since freezing replaces its component paths."""
     from hangar import cli, harness_lock
 
     if check_dir is not None:
@@ -67,6 +70,16 @@ def freeze(
         except ValueError as e:
             typer.secho(f"{e}; fix or remove it first", fg="red", err=True)
             raise typer.Exit(1) from None
+        if (drift := harness_lock.overwrite_problems(out)) and not force:  # --- #251: never lose uncommitted edits
+            typer.secho(f"{out} doesn't match its own harness.lock, so freezing into it would lose those changes:",
+                        fg="red", err=True)
+            for p in drift:
+                typer.secho(f"  - {p}", fg="red", err=True)
+            typer.secho("commit or revert them (`hangar harness check` shows them), or pass --force to overwrite",
+                        fg="red", err=True)
+            raise typer.Exit(1)
+        for p in drift:
+            typer.secho(f"warning: overwriting (--force): {p}", fg="yellow", err=True)
     params: dict = {k: v for k, v in (("turn", turn), ("name", name or (prev or {}).get("name"))) if v}
     path = f"/api/jobs/{ref}/harness" if _JOB.match(ref) else f"/api/sessions/{ref}/harness"
     with cli._client() as c:

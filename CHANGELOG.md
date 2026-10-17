@@ -47,7 +47,7 @@ Six engineers on three repos: planned work comes in through Jira, the inbox reac
 
 **Internal:** the analysis boundary is written down and guarded (#147). Spec 0014 §1 gains a "What stays in hangar and why" table (the drift flag, the flaky list, per-run test counts, model ranking, admission counts and the weekly metrics, each with its flightdeck counterpart), and `tests/test_boundary.py` fails when `src/hangar/` imports a statistics library (`scipy`, `numpy`, `pandas`, `statistics`, `duckdb`, `pyarrow`) or defines an estimator-named function, pointing at the spec.
 
-**Fixes:** `hangar doctor` no longer fails a fresh laptop install on the intake posture: without the git gateway it warns until an intake front door is configured, then fails naming those doors, with one fix command (#236, PR #247).
+**Fixes:** `hangar doctor` no longer fails a fresh laptop install on the intake posture: without the git gateway it warns until an intake front door is configured, then fails naming those doors, with one fix command (#236, PR #247). `hangar harness freeze --out DIR` checks a directory that already holds a lock against it first, and refuses to overwrite uncommitted edits there unless `--force` (#251).
 
 ### The safe release (P1, #120–#132; [docs/upgrading.md](docs/upgrading.md#the-safe-release-120132))
 
