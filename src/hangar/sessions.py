@@ -1043,6 +1043,11 @@ class SessionService:
             caching.STAGGER.responded(s.id)
             raise
         probe = manifest.start_probe(self, s, sb)  # --- interfaces: the instructions and skills the turn will see
+        # The probe must read the sandbox before the agent can change it, or a skill the agent edits in this turn
+        # shows up as what the turn started with (and freezing that turn is refused). Wait briefly; a slow probe
+        # goes on in the background and the manifest says what it could read.
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(asyncio.shield(probe), manifest.PROBE_WAIT_SECONDS)
         try:
             io_env = await exchange.prepare_turn(self, s, turn, sb)  # workstream E: HANGAR_IO, attachments, local work
             text = prompt if prompt is not None else self._prompt(s, turn, turn.mode)  # --- interfaces: kept
