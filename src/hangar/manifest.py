@@ -640,7 +640,7 @@ def mount(app: Any, h: Any, U: Any, J: Any, owner_filter: Any) -> None:
 
 
 def register(mcp: Any, sessions: Any, jobs: Any, guard: Any) -> None:
-    """Resources, not tools (the tool list is at its cap): hangar://sessions/<name>/manifest and .../trace,
+    """Resources, not tools: hangar://sessions/<name>/manifest and .../trace,
     hangar://jobs/<id>/manifest and .../trace."""
     from mcp.server.mcpserver.exceptions import ResourceError
 

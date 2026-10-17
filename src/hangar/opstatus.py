@@ -1,7 +1,7 @@
 """The operator console (--- clouddoctor): `hangar status`, `GET /api/status` and the `hangar://status` resource.
 
 One admin-only view of what an operator otherwise needs kubectl for (observability review P3, merged into one
-console in round 2), as a resource rather than a tool, since the MCP tool list is at its cap:
+console in round 2), as a resource rather than a tool:
 
 * power: the sandbox pools' state, and the last deploy (power.py);
 * loops: each background loop's last pass and failures (metrics.loop_tick);

@@ -52,11 +52,17 @@ agent inside the sandbox are independent choices.
 | Ongoing work that should preserve conversation and repo state | `new_session`, then `send_to_session` |
 | Continue an existing job or session | `get_job` / `get_session`, then follow up on that record |
 | Compare multiple solutions | `submit_job(strategy="best_of_n", n=...)`, or `fork_session` after the current turn ends |
-| Explicit low-level workspace or terminal control | `create_sandbox` and the sandbox tools |
+| Explicit low-level workspace or terminal control | `create_sandbox` and the sandbox tools, on the `hangar-sandbox` server (`/mcp/sandbox`) |
 
 Use one attempt by default. Each parallel attempt uses its own sandbox and agent
 budget; a judge can incur additional work. Use the requested count and scope.
 Jobs and sessions already provision sandboxes; do not create an extra one first.
+
+Hangar is two MCP servers: `hangar` (`/mcp`) has the work tools (jobs,
+sessions, schedules, discovery) and `hangar-sandbox` (`/mcp/sandbox`) the raw
+sandbox tools. If a sandbox tool answers with a note that it moved, it still
+works; tell the user to re-add the connector (`hangar connect <client>` writes
+both servers for Claude Code and Codex).
 
 For a ticket, prepare a handoff (the text you pass as `instructions`, not a
 file) with: **ticket ID/title and source URL; problem; acceptance criteria; repo

@@ -672,7 +672,7 @@ envbuilds.post_validate:
   scope: user
   owner: guard
 environment.build:
-  server: hangar
+  server: hangar-sandbox
   mcp: build_environment
   rest: POST /api/environments/{name}/build
   scope:
@@ -684,7 +684,7 @@ environment.build:
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
     every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
 environment.clone:
-  server: hangar
+  server: hangar-sandbox
   mcp: clone_environment
   rest: POST /api/environments/{name}/clone
   scope:
@@ -720,7 +720,7 @@ environment.list:
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
     every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
 environment.save:
-  server: hangar
+  server: hangar-sandbox
   mcp: create_environment
   rest: PUT /api/environments/{name}
   scope:
@@ -732,7 +732,7 @@ environment.save:
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
     every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
 environment.validate:
-  server: hangar
+  server: hangar-sandbox
   mcp: validate_environment
   rest: POST /api/environments/validate
   scope:
@@ -1165,6 +1165,13 @@ mcp.mount:
   scope: mcp
   owner: guard
   enforced_by: 'app.MCPAuthMiddleware: admin, mcp and user tokens and OAuth grants; each tool''s own entry'
+mcp.mount_sandbox:
+  server: hangar-sandbox
+  mcp: null
+  rest: MOUNT /mcp/sandbox
+  scope: mcp
+  owner: guard
+  enforced_by: 'app.MCPAuthMiddleware (#140): the same tokens and grants as /mcp; each tool''s own entry'
 me.get:
   server: hangar
   mcp: null
@@ -1446,7 +1453,7 @@ revoke.post:
   owner: own_grant
   enforced_by: 'mcp.server.auth: the OAuth 2.1 flow (PKCE); grants act as the approving token'
 sandbox.agent_status:
-  server: hangar
+  server: hangar-sandbox
   mcp: agent_status
   rest: GET /api/sandboxes/{ref}/runs/{run_id}
   scope:
@@ -1458,7 +1465,7 @@ sandbox.agent_status:
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
     every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
 sandbox.create:
-  server: hangar
+  server: hangar-sandbox
   mcp: create_sandbox
   rest: POST /api/sandboxes
   scope:
@@ -1470,13 +1477,13 @@ sandbox.create:
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
     every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
 sandbox.create_many:
-  server: hangar
+  server: hangar-sandbox
   mcp: create_sandboxes
   rest: null
   scope: mcp
   owner: guard
 sandbox.destroy:
-  server: hangar
+  server: hangar-sandbox
   mcp: destroy_sandbox
   rest: DELETE /api/sandboxes/{ref}
   scope:
@@ -1488,13 +1495,13 @@ sandbox.destroy:
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
     every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
 sandbox.destroy_many:
-  server: hangar
+  server: hangar-sandbox
   mcp: destroy_sandboxes
   rest: null
   scope: mcp
   owner: guard
 sandbox.exec:
-  server: hangar
+  server: hangar-sandbox
   mcp: exec
   rest:
   - POST /api/sandboxes/{ref}/exec
@@ -1508,7 +1515,7 @@ sandbox.exec:
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
     every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
 sandbox.extend:
-  server: hangar
+  server: hangar-sandbox
   mcp: extend_sandbox
   rest: POST /api/sandboxes/{ref}/extend
   scope:
@@ -1520,7 +1527,7 @@ sandbox.extend:
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
     every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
 sandbox.fork:
-  server: hangar
+  server: hangar-sandbox
   mcp: fork_sandbox
   rest:
   - POST /api/sandboxes/{ref}/fork
@@ -1534,7 +1541,7 @@ sandbox.fork:
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
     every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
 sandbox.get:
-  server: hangar
+  server: hangar-sandbox
   mcp: get_sandbox
   rest: GET /api/sandboxes/{ref}
   scope:
@@ -1546,7 +1553,7 @@ sandbox.get:
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
     every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
 sandbox.list:
-  server: hangar
+  server: hangar-sandbox
   mcp: list_sandboxes
   rest: GET /api/sandboxes
   scope:
@@ -1558,7 +1565,7 @@ sandbox.list:
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
     every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
 sandbox.list_files:
-  server: hangar
+  server: hangar-sandbox
   mcp: list_files
   rest: GET /api/sandboxes/{ref}/files
   scope:
@@ -1570,7 +1577,7 @@ sandbox.list_files:
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
     every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
 sandbox.pause:
-  server: hangar
+  server: hangar-sandbox
   mcp: pause_sandbox
   rest: POST /api/sandboxes/{ref}/pause
   scope:
@@ -1582,7 +1589,7 @@ sandbox.pause:
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
     every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
 sandbox.process:
-  server: hangar
+  server: hangar-sandbox
   mcp: process
   rest:
   - POST /api/sandboxes/{ref}/processes
@@ -1600,13 +1607,13 @@ sandbox.process:
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
     every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
 sandbox.read_file:
-  server: hangar
+  server: hangar-sandbox
   mcp: read_file
   rest: null
   scope: mcp
   owner: guard
 sandbox.resume:
-  server: hangar
+  server: hangar-sandbox
   mcp: resume_sandbox
   rest: POST /api/sandboxes/{ref}/resume
   scope:
@@ -1618,7 +1625,7 @@ sandbox.resume:
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
     every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
 sandbox.run_agent:
-  server: hangar
+  server: hangar-sandbox
   mcp: run_agent
   rest: POST /api/sandboxes/{ref}/agent
   scope:
@@ -1630,7 +1637,7 @@ sandbox.run_agent:
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
     every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
 sandbox.snapshot:
-  server: hangar
+  server: hangar-sandbox
   mcp: snapshot_sandbox
   rest: POST /api/sandboxes/{ref}/snapshot
   scope:
@@ -1642,13 +1649,13 @@ sandbox.snapshot:
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
     every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
 sandbox.terminal_close:
-  server: hangar
+  server: hangar-sandbox
   mcp: terminal_close
   rest: null
   scope: mcp
   owner: guard
 sandbox.terminal_list:
-  server: hangar
+  server: hangar-sandbox
   mcp: terminal_list
   rest: GET /api/sandboxes/{ref}/terminals
   scope:
@@ -1660,19 +1667,19 @@ sandbox.terminal_list:
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
     every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
 sandbox.terminal_open:
-  server: hangar
+  server: hangar-sandbox
   mcp: terminal_open
   rest: null
   scope: mcp
   owner: guard
 sandbox.terminal_read:
-  server: hangar
+  server: hangar-sandbox
   mcp: terminal_read
   rest: null
   scope: mcp
   owner: guard
 sandbox.terminal_send:
-  server: hangar
+  server: hangar-sandbox
   mcp: terminal_send
   rest: null
   scope: mcp
@@ -1691,7 +1698,7 @@ sandbox.watch:
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
     every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
 sandbox.write_file:
-  server: hangar
+  server: hangar-sandbox
   mcp: write_file
   rest: null
   scope: mcp
@@ -1857,7 +1864,7 @@ session.list:
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
     every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
 session.open:
-  server: hangar
+  server: hangar-sandbox
   mcp: open_session
   rest: POST /api/sessions/{ref}/open
   scope:
@@ -2002,7 +2009,7 @@ setup.post_slack:
   scope: admin
   owner: admin
 snapshot.list:
-  server: hangar
+  server: hangar-sandbox
   mcp: list_snapshots
   rest: GET /api/snapshots
   scope:
@@ -2190,6 +2197,13 @@ well_known.get_oauth_protected_resource_mcp:
   scope: public
   owner: any
   enforced_by: 'oauth: discovery metadata'
+well_known.get_oauth_protected_resource_mcp_sandbox:
+  server: hangar-sandbox
+  mcp: null
+  rest: GET /.well-known/oauth-protected-resource/mcp/sandbox
+  scope: public
+  owner: any
+  enforced_by: 'oauth: discovery metadata (#140: the sandbox server, same authorization server)'
 well_known.get_openid_configuration:
   server: hangar
   mcp: null
