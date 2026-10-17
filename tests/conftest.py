@@ -48,6 +48,12 @@ def _intake_posture_off(monkeypatch):
     monkeypatch.setenv("HANGAR_INTAKE_POSTURE", "off")
 
 
+@pytest.fixture(autouse=True)
+def _eval_window_always(monkeypatch):
+    """--- #181: experiment trials wait for the eval window (20:00-00:15 New York by default); tests run them
+    whenever they run. Tests about the window pass `eval_window` to Settings (test_eval_queue.py)."""
+    monkeypatch.setenv("HANGAR_EVAL_WINDOW", "always")
+
 _run_root: Path | None = None
 
 
