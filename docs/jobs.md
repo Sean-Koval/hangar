@@ -452,10 +452,8 @@ tasks:
   - {id: fix-retry, instructions: "Make the reaper retry a failed destroy.",
      repo: https://github.com/Sean-Koval/hangar.git, verify: "uv run pytest -q tests/test_fleet.py"}
 variants:
-  control: {}
-  no-skills: {skills: []}                 # the whole set, as an environment's `skills` under `extends`
-  no-conventions: {skills_remove: [repo-conventions]}   # the environment's, minus one
-  codex: {harness: codex, model: balanced}
+  team: {harness_lock: "team-default@sha256:5f0c…"}     # a harness lock, by digest (#135)
+  team-codex: {harness_lock: "team-codex@sha256:9a41…", environment: hangar-codex}
 trials: 3
 trial_job_budget: {max_cost_usd: 3}
 budget: {max_cost_usd: 40}
@@ -467,6 +465,28 @@ hangar experiment get job-1a2b3c4d             # the index: pins, and per trial 
 hangar experiment export job-1a2b3c4d -o out/  # index.json and each trial's manifest.json and trace.json
 ```
 
+**Variants are harness locks.** A variant is `{harness_lock: name@sha256:…, environment}`: a lock in the harness
+registry ([harness-lock.md](harness-lock.md)), named by digest so nothing can move it between two trials. Every trial
+is claimed from it as `hangar harness thaw` claims a job: the lock's CLI version (refused at submit when
+`harnesses.lock.yaml` pins another), its concrete model and approvals, and its instructions, skills and plugins
+mounted read-only. `pins.variants.<name>.harness_digest` is the lock's digest, and each trial's turn-1
+`harness_digest` must equal it: a mismatch is **harness drift** on the trial. A variant with `harness_lock` takes no
+overlay field (`harness`, `model`, `approvals`, `skills`, `skills_remove`, `instructions`, `instructions_append`):
+mixing them is a 422. The experiment's own `harness` and `model` defaults don't apply to it.
+
+**The overlay is deprecated.** Variants written as an overlay still run (`{}`, `{skills: []}`,
+`{skills_remove: [repo-conventions]}`, `{harness: codex, model: balanced}`, `instructions_append`, ...), with a note
+per variant in the experiment's `notes`; the fields are marked `deprecated` in
+[experiment.schema.json](api/experiment.schema.json) and go in the release after flightdeck v0 ships its first
+report. Their `pins.variants.<name>.harness_digest` is the first finished trial's. To move an experiment over:
+
+```bash
+hangar experiment freeze-variants job-1a2b3c4d --out ~/team-harness/harnesses -o locked.yaml
+# freezes each overlay variant from a completed trial's turn 1 into harnesses/<experiment>-<variant>/
+# (as `hangar harness freeze`), and writes the same spec with harness_lock variants; commit the directories
+# to the harness registry (HANGAR_HARNESS_REPO), then `hangar experiment run locked.yaml`
+```
+
 **Concrete model ids only.** A variant's model must be a concrete, dated id once its policy is resolved: a floating
 alias (`claude-opus-latest`, `opus`, `sonnet`, `gpt-5`, OpenRouter's `~…-latest`) can change what it means between two
 trials, so the experiment is refused at submit (and again when it starts), naming the alias and the concrete ids the
@@ -476,8 +496,9 @@ resolved once and every trial gets that id, recorded in `pins.variants.<name>.mo
 shape decided, and the experiment's notes say so). Ordinary jobs still accept aliases; their manifests say
 `model.concrete: false` ([harnesses.md](harnesses.md#concrete-ids-and-floating-aliases)).
 
-Hangar pins the harness version, the model id and each task's base commit, mounts only the trial's harness, writes
-exactly the variant's skills and instructions, and keeps egress the same for every variant. It records what each
+Hangar pins the harness version, the model id and each task's base commit, mounts only the trial's harness, gives it
+exactly the variant's skills and instructions (the lock's, or the overlay's), and keeps egress the same for every
+variant. It records what each
 trial ran with (its [manifest](api/manifest.schema.json)), what it did (its [trace](api/traces.md)) and its
 verification, and runs an optional `grader.command` in a clean sandbox on each trial's patch. Two trials of one
 variant should share a configuration; when they don't, the trial's `drift` says which half moved: **harness drift**
@@ -574,6 +595,15 @@ retries of one experiment stop at 10% of its trials (at least one); past that no
 since that many at once usually means a provider or cluster outage. In the index, the highest `attempt` of a key is
 the one that counts; `GET /api/experiments/{id}/trials/{key}/manifest?attempt=N` (and `.../trace`) reads another one.
 
+### The eval queue
+
+Trials are `queue_class: eval` jobs ([team-scale.md](team-scale.md#the-eval-queue-class)): they start only in the eval
+window (`HANGAR_EVAL_WINDOW`, `20:00-00:15` New York time), behind every interactive job, in at most half the job slots,
+and under the provider's token budget (`HANGAR_EVAL_TPM_BUDGET`). An experiment submitted at 14:00 starts its trials at
+20:00; meanwhile they show `reason: eval_window`. `parallel` still caps the trials one experiment has submitted at once.
+At the power-down drain, running trials are cancelled as `infra_error` / `power_down` and retried in the next window
+(above); those retries don't count towards the 10% cap, since the power-down is scheduled, not an outage.
+
 ## Failure labels
 
 In the Friday harness review ([runbook](runbooks/harness-review.md), #169), the team labels where failed and abandoned
@@ -628,6 +658,11 @@ as `hangar.outcome.class` and `hangar.outcome.infra_reason` ([traces.md](api/tra
 | `HANGAR_BUDGET_DAY_TIMEZONE` | `UTC` | The IANA zone whose midnight starts a day for daily spend caps, e.g. `America/New_York` |
 | `HANGAR_PERSON_MAX_USD_PER_DAY` | unset | What one person's sessions and jobs may spend in a day before their new jobs wait for approval; see [repo-policy.md](repo-policy.md#budgets) |
 | `HANGAR_TRIAL_INFRA_RETRIES` | 2 | How often an experiment trial that ended in `infra_error` runs again; an experiment's retries together stop at 10% of its trials ([§9](#infrastructure-errors-are-retried-and-left-out)) |
+| `HANGAR_EVAL_WINDOW` | `20:00-00:15` | When eval jobs (experiment trials) may start, `HH:MM-HH:MM` (may cross midnight) or `always` ([§9](#the-eval-queue)) |
+| `HANGAR_EVAL_TZ` | `America/New_York` | The eval window's time zone |
+| `HANGAR_EVAL_MAX_RUNNING` | 0 (half the job slots) | Eval jobs running at once |
+| `HANGAR_EVAL_TPM_BUDGET` | unset (no cap) | Tokens per minute eval admission keeps each provider under: `400000` or `anthropic=400000,openai=300000` |
+| `HANGAR_EVAL_TPM_PER_TRIAL` | 20000 | One trial's tokens per minute until recent eval turns on that provider give a median |
 | `HANGAR_BEST_OF_N_MAX` | 8 | Most attempts per best-of-N job |
 | `HANGAR_BEST_OF_N_PUSH_ATTEMPTS` | false | Also push attempts that weren't delivered |
 | `HANGAR_BEST_OF_N_JUDGE_TIMEOUT_MINUTES` | 15 | The judge turn's limit |

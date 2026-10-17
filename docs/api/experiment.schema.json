@@ -15,7 +15,21 @@
     "person": {"type": ["string", "null"]},
     "created_at": {"type": "number"},
     "finished_at": {"type": ["number", "null"]},
-    "spec": {"type": "object", "description": "The experiment as submitted (redacted). Its grader's canary (`grader.canary`, generated as HANGAR-CANARY-<uuid4> when the experiment starts if unset; #127) is masked as HANGAR-CANARY-[hidden] here and in every export.", "properties": {"grader": {"type": "object", "properties": {"canary": {"type": "string"}}}}},
+    "spec": {"type": "object", "description": "The experiment as submitted (redacted). Its grader's canary (`grader.canary`, generated as HANGAR-CANARY-<uuid4> when the experiment starts if unset; #127) is masked as HANGAR-CANARY-[hidden] here and in every export.", "properties": {
+      "variants": {"type": "object", "description": "Each variant: `{harness_lock, environment}` (#135), or the deprecated overlay.", "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "environment": {"type": ["string", "null"]},
+          "harness_lock": {"type": ["string", "null"], "pattern": "^[a-z0-9][a-z0-9._-]{0,62}@sha256:[0-9a-f]{64}$", "description": "A lock in the harness registry, by digest. Every trial is claimed from it (hangar harness thaw) and its turn 1 checked against it. Excludes every overlay field (422 otherwise). Added within v1 (#135)."},
+          "harness": {"type": ["string", "null"], "deprecated": true, "description": "Overlay (deprecated, #135): harness[@version]. Removed in the release after flightdeck v0's first report; use harness_lock."},
+          "model": {"type": ["string", "null"], "deprecated": true, "description": "Overlay (deprecated, #135): a concrete id or a policy."},
+          "approvals": {"enum": ["auto", "deny-risky", null], "deprecated": true, "description": "Overlay (deprecated, #135)."},
+          "skills": {"type": ["array", "null"], "deprecated": true, "description": "Overlay (deprecated, #135): the whole skill set, [] for none."},
+          "skills_remove": {"type": ["array", "null"], "deprecated": true, "description": "Overlay (deprecated, #135)."},
+          "instructions": {"type": ["string", "null"], "deprecated": true, "description": "Overlay (deprecated, #135)."},
+          "instructions_append": {"type": ["string", "null"], "deprecated": true, "description": "Overlay (deprecated, #135)."}
+        }
+      }},"grader": {"type": "object", "properties": {"canary": {"type": "string"}}}}},
     "pins": {
       "type": "object",
       "properties": {
@@ -29,10 +43,14 @@
             "model": {"type": ["string", "null"], "description": "The concrete model id every trial got (a policy is resolved once, at the start)."},
             "model_policy": {"type": ["string", "null"]},
             "model_concrete": {"type": ["boolean", "null"], "description": "The pinned model is a concrete, dated id (an experiment refuses to start otherwise); null when the harness has no model list and runs its own default. Added within v1 (#167)."},
-            "model_concrete_basis": {"enum": ["list", "pattern", "none"], "description": "Why it counts as concrete: in the provider's cached model list (list), or, with no list cached, by its versioned shape alone (pattern; a note says so); none with no id. Added within v1 (#167)."},
+            "model_concrete_basis": {"enum": ["list", "pattern", "none", "harness_lock"], "description": "Why it counts as concrete: in the provider's cached model list (list), or, with no list cached, by its versioned shape alone (pattern; a note says so); none with no id; harness_lock when the variant's lock pins it (the lock only records concrete ids). Added within v1 (#167, #135)."},
+            "model_source": {"type": ["string", "null"], "description": "Where the model came from: what the model resolver reports, or harness_lock for a lock variant."},
+            "harness_lock": {"type": ["string", "null"], "description": "The variant's harness lock (name@sha256:...), when it runs from one. Added within v1 (#135)."},
+            "harness_revision": {"type": ["integer", "null"], "description": "That lock's revision. Added within v1 (#135)."},
+            "harness_digest": {"type": ["string", "null"], "description": "The harness every trial of the variant runs: its lock's digest, which each trial's turn 1 must match (a mismatch is drift); for an overlay variant, its first finished trial's turn-1 harness_digest (null until then). Flightdeck pin sets reference it. Added within v1 (#135)."},
             "approvals": {"type": "string"},
             "skills": {"type": ["array", "null"], "description": "The variant's whole skill set (null: the environment's)."},
-            "instructions": {"type": ["string", "null"], "description": "The digest of the instructions the variant writes, when it has an overlay."}
+            "instructions": {"type": ["string", "null"], "description": "The digest of the instructions the variant writes, when it has an overlay (null for a harness_lock variant: the lock's instructions file is mounted)."}
           }
         }},
         "tasks": {"type": "object", "additionalProperties": {

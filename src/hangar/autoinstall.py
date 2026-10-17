@@ -50,7 +50,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-from hangar import envbuilds, posture, repoenv, supervisor
+from hangar import envbuilds, posture, repoenv, svc_control
 from hangar import testresults as testresults  # --- testresults: test commands leave structured results
 from hangar.models import JOB_TERMINAL, ContextItem, Credential, Job, JobBudget, JobState, Sandbox, now
 from hangar.repopolicy import repo_key
@@ -914,7 +914,7 @@ async def _run_checks(jobs: JobService, job: Job, st: State, s: Job, att: Attemp
         home = f"/home/{jobs.settings.sandbox_user}"
         t0 = now()
         att.services = Check(name="services", kind="start", command="hangar-agent svc wait", core=True)
-        why = await supervisor.start(prov, sb, jobs.settings, eff, path)
+        why = await svc_control.start(prov, sb, jobs.settings, eff, path)
         if why is None:
             res = await prov.exec(sb, f"python3 {home}/.hangar/bin/hangar-svc wait --timeout {WAIT_FOR_SERVICES}",
                                   timeout=WAIT_FOR_SERVICES + 30, cwd=path)

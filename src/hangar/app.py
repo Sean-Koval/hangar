@@ -21,6 +21,7 @@ import hangar.identity_api as identity_api  # --- identity
 from hangar import approvals as approvals  # --- approvals (#121)
 from hangar import drain as drain  # --- reconciler
 from hangar import envbuilds as envbuilds  # --- envbuilds
+from hangar import evalqueue as evalqueue  # --- #181: the eval queue class
 from hangar import exchange, observe  # --- observe
 from hangar import fairness as fairness  # --- review capacity (#159)
 from hangar import ghprojects as ghprojects  # --- intake: registers the GitHub Projects write-back
@@ -1142,6 +1143,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     repopolicy.mount(app, h, A)
     fairness.mount(app, h, A)  # --- review capacity (#159): POST /api/jobs/{id}/admit, GET /api/review-capacity
+    evalqueue.mount(app, h, A)  # --- #181: GET /api/admin/eval-queue, POST /api/jobs/{id}/priority
     from hangar import repocheck  # --- #155: GET /api/repos/{owner}/{repo}/readiness (hangar repo check)
 
     repocheck.mount(app, h, A)
