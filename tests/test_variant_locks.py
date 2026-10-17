@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import json
 import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -152,6 +153,15 @@ async def test_freeze_variants_round_trips_the_semver_smoke_experiment(jobs, wor
     for k in refs:
         assert harness_lock.check(reg / "harnesses" / f"semver-smoke-{k}")["ok"]
     th._commit(reg, "semver-smoke locks")
+    # --- #251: run again over a directory with an edit its lock doesn't record: refused, the edit kept
+    edited = reg / "harnesses" / "semver-smoke-env-default" / harness_lock.LOCK_FILE
+    guide = next(p for p in edited.parent.rglob("*.md"))
+    guide.write_text(guide.read_text() + "a local edit\n")
+    again_cli = CliRunner().invoke(cli.app, ["experiment", "freeze-variants", exp.id, "--out", str(reg / "harnesses"),
+                                             "-o", str(tmp_path / "again.yaml")])
+    assert again_cli.exit_code == 1 and "doesn't match its own harness.lock" in again_cli.output
+    assert guide.read_text().endswith("a local edit\n")
+    subprocess.run(["git", "-C", str(reg), "checkout", "--", "."], check=True)  # back to the committed locks
 
     # the printed spec runs, and each locked variant reproduces its overlay trial's harness
     again = experiments.submit(jobs, experiments.ExperimentSpec.model_validate(locked), Caller("svc", "svc"))

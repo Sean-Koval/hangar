@@ -153,10 +153,13 @@ def experiment_freeze_variants(
                                                 "(<out>/<experiment>-<variant>/): the harness repo's harnesses/."),
     spec_out: Path | None = typer.Option(None, "-o", "--output", help="Write the locked spec here instead of "
                                                                       "printing it."),
+    force: bool = typer.Option(False, "--force", help="Overwrite a harness directory that doesn't match its own lock "
+                                                      "(edits there are lost)."),
 ):
     """Freeze each overlay variant from a completed trial (turn 1, `hangar harness freeze`) into a harness
     directory, and print the equivalent spec with `harness_lock: name@sha256:...` variants (#135). Commit the
-    directories to the harness registry (HANGAR_HARNESS_REPO) before running the printed spec."""
+    directories to the harness registry (HANGAR_HARNESS_REPO) before running the printed spec. Like `hangar harness
+    freeze`, it refuses to overwrite a directory with edits its lock doesn't record unless --force (#251)."""
     from hangar import cli, experiments, harness_lock
 
     v = cli._call("GET", f"/api/experiments/{exp_id}")
@@ -171,6 +174,12 @@ def experiment_freeze_variants(
         name = experiments.lock_name(spec.get("name") or exp_id, vname)
         d = cli._call("GET", f"/api/jobs/{t['job']}/harness", params={"turn": 1, "name": name})
         root = out / name
+        if (drift := harness_lock.overwrite_problems(root)) and not force:  # --- #251
+            typer.secho(f"{root} doesn't match its own harness.lock, so freezing into it would lose those changes "
+                        "(commit or revert them, or pass --force):", fg="red", err=True)
+            for p in drift:
+                typer.secho(f"  - {p}", fg="red", err=True)
+            raise typer.Exit(1)
         prev = harness_lock.load(root) if (root / harness_lock.LOCK_FILE).exists() else None
         lock, files = harness_lock.unwire(d)
         lock["revision"] = harness_lock.next_revision(prev, lock)
