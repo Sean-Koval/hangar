@@ -28,6 +28,8 @@
             "harness_version": {"type": ["string", "null"], "description": "The locked version every trial ran."},
             "model": {"type": ["string", "null"], "description": "The concrete model id every trial got (a policy is resolved once, at the start)."},
             "model_policy": {"type": ["string", "null"]},
+            "model_concrete": {"type": ["boolean", "null"], "description": "The pinned model is a concrete, dated id (an experiment refuses to start otherwise); null when the harness has no model list and runs its own default. Added within v1 (#167)."},
+            "model_concrete_basis": {"enum": ["list", "pattern", "none"], "description": "Why it counts as concrete: in the provider's cached model list (list), or, with no list cached, by its versioned shape alone (pattern; a note says so); none with no id. Added within v1 (#167)."},
             "approvals": {"type": "string"},
             "skills": {"type": ["array", "null"], "description": "The variant's whole skill set (null: the environment's)."},
             "instructions": {"type": ["string", "null"], "description": "The digest of the instructions the variant writes, when it has an overlay."}

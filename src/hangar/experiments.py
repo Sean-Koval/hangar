@@ -310,7 +310,8 @@ def submit(jobs: JobService, spec: ExperimentSpec, caller: Any, source: str = "a
         raise JobError("egress is fixed per experiment, and these environments differ in it: "
                        + "; ".join(f"{k}: {v}" for k, v in egress.items()))
     for vname, v in spec.variants.items():
-        _variant_harness(jobs.fleet, spec, vname, v)  # an unknown or unlocked harness version fails now
+        harness, _ = _variant_harness(jobs.fleet, spec, vname, v)  # an unknown or unlocked harness version fails now
+        _variant_model(jobs.fleet, spec, vname, v, harness, record=False)  # #167: a floating alias fails now
     req = SubmitJob(instructions=f"Experiment {spec.name}: {len(spec.tasks)} task(s) x {len(spec.variants)} "
                                  f"variant(s) x {spec.trials} trial(s).", title=f"experiment: {spec.name}"[:200],
                     environment=spec.environment, deliver="none", labels={KIND_LABEL: KIND},
@@ -350,6 +351,37 @@ def _variant_harness(fleet: Fleet, spec: ExperimentSpec, vname: str, v: Variant)
         raise JobError(f"variant {vname}: {harness}@{version} isn't what hangar runs: its lock pins "
                        f"{locked or 'no version'} (harnesses.lock.yaml); trials run the locked version only")
     return harness, locked
+
+
+def _variant_model(fleet: Fleet, spec: ExperimentSpec, vname: str, v: Variant, harness: str,
+                   record: bool = True) -> tuple[Any, dict[str, Any]]:
+    """#167: the variant's model, resolved (a policy to the id it names now), and refused unless that id is concrete:
+    a floating alias (`claude-opus-latest`, `opus`, `gpt-5`, OpenRouter's `~…`) can move between two trials. Returns
+    the resolution and what the pins record about it (`model_concrete`, `model_concrete_basis`, a note). A harness
+    with no model list (nothing to pin: it runs its own default) passes, recorded as `model_concrete: null`."""
+    from hangar import modelpolicy, pins
+    from hangar.jobs import JobError
+
+    env = fleet.catalog.get(v.environment or spec.environment)
+    value = v.model or spec.model or env.model_for(harness) or pins.JOB_DEFAULT
+    resolver = modelpolicy.of(fleet)
+    r = resolver.resolve(harness, value, record=record)
+    if r.model is None and harness not in modelpolicy.PROVIDER and modelpolicy.is_policy(value):
+        return r, {"model_concrete": None, "model_concrete_basis": "none",
+                   "note": f"variant {vname}: {harness} has no model list, so no model id is pinned (its own default)"}
+    ok, basis, note = resolver.concreteness(harness, r.model)
+    if not ok:
+        got = resolver.suggest(harness)
+        hint = "; ".join(f"`{p}` resolves to `{m}` now" for p, m in got.items())
+        what = {"alias": "a floating alias the provider can move between two trials",
+                "none": "no model id (the harness's own default, which can change)",
+                "unknown": "not a model id hangar can tell is concrete (not in the provider's model list, nor of a "
+                           "known versioned shape)"}.get(basis, "not a concrete id")
+        raise JobError(f"variant {vname}: model `{r.model or value}` is {what}: an experiment pins concrete, dated "
+                       "model ids so every trial runs the same model. Pin one"
+                       + (f" ({hint}), or name the policy itself, which the experiment resolves once at its start"
+                          if hint else " (such as `claude-opus-5-5`)") + (f". {note}" if note else ""))
+    return r, {"model_concrete": True, "model_concrete_basis": basis, "note": note}
 
 
 # ====================================================================== the runner
@@ -417,19 +449,23 @@ async def _run(jobs: JobService, job_id: str) -> None:
 async def _begin(jobs: JobService, job: Job, st: State, spec: ExperimentSpec) -> None:
     """Pin what every trial runs with, and lay the trials out interleaved: for each round of trials, each task's
     variants side by side."""
-    from hangar import modelpolicy, pins
+    from hangar.jobs import JobError
 
     fleet = jobs.fleet
     variants: dict[str, Any] = {}
     for vname, v in spec.variants.items():
         harness, locked = _variant_harness(fleet, spec, vname, v)
         env = fleet.catalog.get(v.environment or spec.environment)
-        value = v.model or spec.model or env.model_for(harness) or pins.JOB_DEFAULT
-        r = modelpolicy.of(fleet).resolve(harness, value)
+        try:  # #167: checked at submit too; the lists may have moved since
+            r, concrete = _variant_model(fleet, spec, vname, v, harness)
+        except JobError as e:
+            raise _Stop("model_not_pinned", str(e)) from e
+        if note := concrete.pop("note", None):
+            st.notes.append(note)
         overlay = _overlay(env, v)
         fleet.store.kv_set(f"{KV_OVERLAY}{job.id}:{vname}", json.dumps(overlay))
         variants[vname] = {"environment": env.name, "harness": harness, "harness_version": locked,
-                           "model": r.model, "model_policy": r.policy, "model_source": r.source,
+                           "model": r.model, "model_policy": r.policy, "model_source": r.source, **concrete,
                            "approvals": v.approvals or env.approvals or jobs.settings.approvals,
                            "skills": [{"name": s["name"], "digest": s.get("digest"), "source": s["source"]}
                                       for s in overlay["skills"]] if overlay["skills"] is not None else None,

@@ -426,6 +426,15 @@ hangar experiment get job-1a2b3c4d             # the index: pins, and per trial 
 hangar experiment export job-1a2b3c4d -o out/  # index.json and each trial's manifest.json and trace.json
 ```
 
+**Concrete model ids only.** A variant's model must be a concrete, dated id once its policy is resolved: a floating
+alias (`claude-opus-latest`, `opus`, `sonnet`, `gpt-5`, OpenRouter's `~…-latest`) can change what it means between two
+trials, so the experiment is refused at submit (and again when it starts), naming the alias and the concrete ids the
+policies resolve to now. An environment's own alias counts too. `model: balanced` (or `frontier`) is fine: it is
+resolved once and every trial gets that id, recorded in `pins.variants.<name>.model` with `model_concrete` and
+`model_concrete_basis` (`list`: in the provider's cached model list; `pattern`: no list was cached, so its versioned
+shape decided, and the experiment's notes say so). Ordinary jobs still accept aliases; their manifests say
+`model.concrete: false` ([harnesses.md](harnesses.md#concrete-ids-and-floating-aliases)).
+
 Hangar pins the harness version, the model id and each task's base commit, mounts only the trial's harness, writes
 exactly the variant's skills and instructions, and keeps egress the same for every variant. It records what each
 trial ran with (its [manifest](api/manifest.schema.json)), what it did (its [trace](api/traces.md)) and its
