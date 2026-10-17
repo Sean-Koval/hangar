@@ -13,11 +13,11 @@ from pathlib import Path
 import pytest
 
 from hangar import docker_agent as da
-from hangar import supervisor, svc_agent
+from hangar import svc_agent, svc_control
 from hangar.envspec import EnvSpec
 from hangar.models import Sandbox
 
-from .test_supervisor import home, manifest, prog, status, svc, until  # noqa: F401 - the `home` fixture
+from .test_svc_control import home, manifest, prog, status, svc, until  # noqa: F401 - the `home` fixture
 
 FAKE_DOCKER = r'''#!/usr/bin/env python3
 """A stand-in for `docker compose`: up (ready after a moment, stopped by SIGTERM), config --services, ps."""
@@ -119,13 +119,13 @@ def test_stack_readiness():
 def test_the_manifest_carries_compose_only_where_there_is_docker():
     eff = EnvSpec(name="e", heavy=True, services={"deps": "compose.yml", "pg": {"image": "postgres:17", "port": 1}})
     sb = Sandbox(name="s", environment="e", provider="kubernetes")
-    assert supervisor.manifest(sb, eff, "/w")["compose"] == []
+    assert svc_control.manifest(sb, eff, "/w")["compose"] == []
     sb.info["heavy"] = {"docker": True}
-    m = supervisor.manifest(sb, eff, "/w")
+    m = svc_control.manifest(sb, eff, "/w")
     assert m["compose"] == [{"name": "deps", "file": "compose.yml", "port": None, "ready": None, "env": {}}]
-    kinds = {x["name"]: x["kind"] for x in supervisor.programs_info(eff, sb)}
+    kinds = {x["name"]: x["kind"] for x in svc_control.programs_info(eff, sb)}
     assert kinds == {"deps": "compose"}
-    text = supervisor.instructions(sb, eff, "/w")
+    text = svc_control.instructions(sb, eff, "/w")
     assert "`deps` (`docker compose -p deps -f compose.yml`)" in text
 
 
@@ -143,7 +143,7 @@ async def test_compose_without_docker_is_a_setup_failure():
 
     eff = EnvSpec(name="e", services={"deps": "compose.yml"})
     sb = Sandbox(name="s", environment="e", provider="kubernetes")
-    assert await supervisor.start(Prov(), sb, Settings(), eff, "/w") is None
+    assert await svc_control.start(Prov(), sb, Settings(), eff, "/w") is None
     assert "Compose stacks need Docker" in sb.info["setup_failures"][0]["message"]
 
 
