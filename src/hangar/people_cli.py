@@ -80,6 +80,31 @@ def person_unlink(person_id: str, source: str, external_id: str):
     typer.echo(f"{p['id']}: {', '.join(p['links']) or 'no linked accounts'}")
 
 
+# --- inbox delivery (#157, #158)
+@person_app.command("set")
+def person_set(person_id: str,
+               dm: str | None = typer.Option(None, "--dm", help="off | questions (their own agents' questions and "
+                                                                  "approvals, at once) | all (admins: the team's "
+                                                                  "too)."),
+               quiet: str | None = typer.Option(None, "--quiet", help="Hold DMs in this window of their day, e.g. "
+                                                                        "20:00-08:00 (\"\" clears it). Approvals "
+                                                                        "that would expire meanwhile still go."),
+               tz: str | None = typer.Option(None, "--tz", help="Their IANA time zone, e.g. America/New_York."),
+               digest: str | None = typer.Option(None, "--digest", help="Local digest times, e.g. 10:15,16:00 "
+                                                                          "(\"\" turns the digest off)."),
+               digest_weekends: bool | None = typer.Option(None, "--digest-weekends/--no-digest-weekends",
+                                                           help="Send the digest on Saturdays and Sundays too.")):
+    """How the inbox reaches someone in Slack: a DM for each agent question or approval, and a digest twice a day.
+    Anyone may change their own; admins anyone's.
+
+    Example:  hangar person set alice --dm questions --tz Europe/Berlin --digest 09:30,16:00 --quiet 19:00-08:00"""
+    body = {"dm": dm, "quiet": quiet, "tz": tz, "digest_weekends": digest_weekends,
+            "digest": None if digest is None else [x.strip() for x in digest.split(",") if x.strip()]}
+    p = _cli()._call("PUT", f"/api/people/{person_id}/delivery", json={k: v for k, v in body.items() if v is not None})
+    typer.echo(f"{p['id']}: dm={p['notify']} tz={p['tz']} digest={','.join(p['digest']) or 'off'}"
+               f"{' (weekends too)' if p['digest_weekends'] else ''} quiet={p.get('quiet') or 'none'}")
+
+
 @person_app.command("rm")
 def person_rm(person_id: str):
     """Remove someone and revoke their tokens. Their sandboxes, sessions and jobs stay (admins see them); their

@@ -13,6 +13,13 @@ identity.
 Two digests per skill: `digest`, the manifest's declared form (`manifest._dir_digest`: relative paths and contents),
 and `tree`, what the sandbox probe reports for the same files (`skills.effective`), so a turn's effective skills can be
 compared with a lock without the source (drift, #134).
+
+Plugins (#221): a Claude Code seed plugin is `plugin:<name>@<marketplace>`, its directory at
+`plugins/<marketplace>/<its source>` and its marketplace entry in
+`plugins/<marketplace>/.claude-plugin/marketplace.json`, which lists exactly the lock's plugins of that marketplace, so
+`plugins/<marketplace>` is a directory marketplace Claude Code installs from. Its `digest` is the manifest's
+(`plugins.content_digest`: the entry and the directory), its `tree` what the probe reports for the directory
+(`probe.plugins`).
 """
 
 from __future__ import annotations
@@ -106,13 +113,39 @@ def _cname(cid: str) -> str:
     return cid.partition(":")[2]
 
 
+def plugin_ref(cid: str) -> dict[str, str]:
+    """`plugin:<name>@<marketplace>` -> {name, marketplace}."""
+    name, _, mkt = _cname(cid).rpartition("@")
+    return {"name": name, "marketplace": mkt}
+
+
+def plugin_digest(entry: dict[str, Any], files: dict[str, bytes]) -> str:
+    """A plugin's digest as the manifest computes it (plugins.content_digest), from its entry and its files."""
+    from hangar.plugins import content_digest
+
+    return content_digest(entry, files_digest(files))
+
+
+def marketplace_entries(root: Path, mkt: str) -> dict[str, Any] | None:
+    """{plugin name: entry} of `plugins/<mkt>/.claude-plugin/marketplace.json` under a harness directory; None when
+    it can't be read or names another marketplace."""
+    try:
+        data = json.loads((root / "plugins" / mkt / ".claude-plugin" / "marketplace.json").read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("name") != mkt or not isinstance(data.get("plugins"), list):
+        return None
+    return {e["name"]: e for e in data["plugins"] if isinstance(e, dict) and isinstance(e.get("name"), str)}
+
+
 def identity(lock: dict[str, Any]) -> dict[str, Any]:
     """The lock projected onto `manifest.HARNESS_SECTIONS`: {section: value}, as `manifest.section_digest` picks
     them from a manifest. Only what identifies the harness: no name, revision, paths or provenance."""
     runtime, model, binding = lock.get("runtime") or {}, lock.get("model") or {}, lock.get("binding") or {}
     comps = lock.get("components") or []
     guide = next((c for c in comps if _kind(c.get("id", "")) == "guide"), None)
-    plugins = [c for c in comps if _kind(c.get("id", "")) == "plugin"]
+    plugins = [plugin_ref(c["id"]) | {"digest": c.get("digest"), "enabled": c.get("enabled", True)}
+               for c in comps if _kind(c.get("id", "")) == "plugin"]
     mcp = []
     for x in binding.get("mcp") or []:
         d = {"name": x.get("name"), "transport": x.get("transport")}
@@ -126,9 +159,7 @@ def identity(lock: dict[str, Any]) -> dict[str, Any]:
         "instructions.global.declared.digest": guide.get("digest") if guide else None,
         "skills.declared[*].{name,digest}": [{"name": _cname(c["id"]), "digest": c.get("digest")}
                                              for c in comps if _kind(c.get("id", "")) == "skill"],
-        # the manifest has no `plugins` yet (#136): null until then; freeze refuses a turn that lists any
-        "plugins": [{"name": _cname(c["id"]), "digest": c.get("digest"), "enabled": c.get("enabled", True)}
-                    for c in plugins] or None,
+        "plugins[*].{name,marketplace,digest,enabled}": plugins or None,  # null without any, as the manifest's
         "mcp_servers[*].{name,transport,url,headers,env,command,args}": mcp,
         "hooks[*].{event,source,digest}": [{"event": x.get("event"), "source": x.get("source"),
                                            "digest": x.get("digest")} for x in binding.get("hooks") or []],
@@ -173,6 +204,7 @@ def load(path: Path) -> dict[str, Any]:
 _NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ID = re.compile(r"^(guide|skill|plugin|native):\S{1,200}$")
+_PLUGIN_ID = re.compile(r"^plugin:[A-Za-z0-9][A-Za-z0-9._-]{0,99}@[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 
 
 def safe_path(p: Any) -> bool:
@@ -233,8 +265,16 @@ def problems(lock: Any) -> list[str]:
                 seen_paths.append(c["path"])
         elif d is not None:
             out.append(f"{where}: a component with a digest needs its path")
-        if c.get("tree") is not None and (_kind(c["id"]) != "skill" or not _DIGEST.match(str(c["tree"]))):
-            out.append(f"{where}.tree: sha256:<64 hex>, skills only")
+        if c.get("tree") is not None and (_kind(c["id"]) not in ("skill", "plugin")
+                                          or not _DIGEST.match(str(c["tree"]))):
+            out.append(f"{where}.tree: sha256:<64 hex>, skills and plugins only")
+        if _kind(c["id"]) == "plugin":
+            if not _PLUGIN_ID.match(c["id"]):
+                out.append(f"{where}: plugin:<name>@<marketplace>")
+            elif c.get("path") is not None and safe_path(c["path"]):
+                mkt = f"plugins/{plugin_ref(c['id'])['marketplace']}"
+                if c["path"] != mkt and not c["path"].startswith(mkt + "/"):
+                    out.append(f"{where}.path: under {mkt}/ (its marketplace's directory)")
         if "enabled" in c and not isinstance(c["enabled"], bool):
             out.append(f"{where}.enabled: true or false")
     if sum(1 for x in seen_ids if _kind(x) == "guide") > 1:
@@ -287,7 +327,16 @@ def check(root: Path) -> dict[str, Any]:
                 errs.append(f"{c['id']}: {c['path']}/ is missing")
                 continue
             files = read_dir(target)
-            got = files_digest(files)
+            if kind == "plugin":
+                ref = plugin_ref(c["id"])
+                entry = (marketplace_entries(root, ref["marketplace"]) or {}).get(ref["name"])
+                if entry is None:
+                    errs.append(f"{c['id']}: plugins/{ref['marketplace']}/.claude-plugin/marketplace.json has no "
+                                f"entry for {ref['name']}")
+                    continue
+                got = plugin_digest(entry, files)
+            else:
+                got = files_digest(files)
             if got != c["digest"]:
                 errs.append(f"{c['id']}: {c['path']}/ has {got}, the lock says {c['digest']}")
             elif c.get("tree") and tree_digest(files) != c["tree"]:
@@ -300,17 +349,51 @@ def check(root: Path) -> dict[str, Any]:
             if got != c["digest"]:
                 errs.append(f"{c['id']}: {c['path']} has {got}, the lock says {c['digest']}")
     paths = {c["path"] for c in lock["components"] if c.get("path")}
-    for sub in ("skills", "plugins"):  # a directory the lock doesn't pin would be shipped unpinned
-        if (root / sub).is_dir():
-            for d in sorted((root / sub).iterdir()):
-                if f"{sub}/{d.name}" not in paths:
-                    errs.append(f"{sub}/{d.name} is not in the lock")
+    if (root / "skills").is_dir():  # a directory the lock doesn't pin would be shipped unpinned
+        for d in sorted((root / "skills").iterdir()):
+            if f"skills/{d.name}" not in paths:
+                errs.append(f"skills/{d.name} is not in the lock")
+    errs += _unpinned_plugins(root, lock)
     if (root / "native").is_dir():
         for f in sorted((root / "native").rglob("*")):
             if f.is_file() and f.relative_to(root).as_posix() not in paths:
                 errs.append(f"{f.relative_to(root).as_posix()} is not in the lock")
     return {"ok": not errs, "digest": harness_digest(lock), "name": lock["name"], "revision": lock["revision"],
             "problems": errs, "components": len(lock["components"])}
+
+
+def _unpinned_plugins(root: Path, lock: dict[str, Any]) -> list[str]:
+    """`plugins/`: each directory a marketplace of the lock's plugins, holding only their directories and a
+    marketplace.json that lists exactly them (anything else would be installed unpinned)."""
+    if not (root / "plugins").is_dir():
+        return []
+    errs = []
+    by_mkt: dict[str, dict[str, str]] = {}
+    for c in lock["components"]:
+        if _kind(c["id"]) == "plugin" and c.get("path"):
+            ref = plugin_ref(c["id"])
+            by_mkt.setdefault(ref["marketplace"], {})[ref["name"]] = c["path"]
+    for d in sorted((root / "plugins").iterdir()):
+        mine = by_mkt.get(d.name)
+        if mine is None:
+            errs.append(f"plugins/{d.name} is not in the lock")
+            continue
+        if f"plugins/{d.name}" in mine.values():
+            continue  # the plugin is the marketplace's root directory: its whole content is pinned
+        for x in sorted(d.iterdir()):
+            rel = f"plugins/{d.name}/{x.name}"
+            if x.name != ".claude-plugin" and not any(p == rel or p.startswith(rel + "/") for p in mine.values()):
+                errs.append(f"{rel} is not in the lock")
+        for f in sorted((d / ".claude-plugin").rglob("*")) if (d / ".claude-plugin").is_dir() else []:
+            if f.is_file() and f.name != "marketplace.json":
+                errs.append(f"{f.relative_to(root).as_posix()} is not in the lock")
+        entries = marketplace_entries(root, d.name)
+        if entries is None:
+            errs.append(f"plugins/{d.name}/.claude-plugin/marketplace.json is missing or isn't marketplace {d.name}")
+        elif extra := sorted(set(entries) - set(mine)):
+            errs.append(f"plugins/{d.name}/.claude-plugin/marketplace.json lists {', '.join(extra)}, which the lock "
+                        "doesn't pin")
+    return errs
 
 
 # ====================================================================== writing a frozen harness
@@ -346,12 +429,19 @@ def write(root: Path, lock: dict[str, Any], files: dict[str, bytes], prev: dict[
     for c in lock["components"]:
         if c.get("path"):
             stale.add(c["path"])
+    for c in [*((prev or {}).get("components") or []), *lock["components"]]:  # their marketplaces' entries too
+        if _kind(str(c.get("id"))) == "plugin" and _PLUGIN_ID.match(str(c.get("id"))):
+            stale.add(f"plugins/{plugin_ref(c['id'])['marketplace']}/.claude-plugin")
     for rel in sorted(stale):
         p = inside(rel)
         if p.is_dir() and not p.is_symlink():
             shutil.rmtree(p)
         elif p.exists() or p.is_symlink():
             p.unlink()
+    if (root / "plugins").is_dir():  # a marketplace the lock no longer has leaves no empty directory behind
+        for d in sorted((root / "plugins").rglob("*"), key=lambda x: len(x.parts), reverse=True):
+            if d.is_dir() and not d.is_symlink() and not any(d.iterdir()):
+                d.rmdir()
     for rel, data in sorted(files.items()):
         p = inside(rel)
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -519,9 +609,8 @@ def freeze(fleet: Fleet, m: dict[str, Any], spec: EnvSpec, *, name: str | None =
         warnings.append("the turn's sandbox wasn't read at turn start, so freeze couldn't check that the skills it "
                         "had were the declared ones")
 
-    # --- plugins: not in the manifest until #136
-    if m.get("plugins"):
-        gaps.append("plugins: freezing plugin content arrives with the Claude Code prefix layer (#136)")
+    # --- plugins (#221): each seed plugin's directory and marketplace entry, from the environment's marketplace
+    comps += _freeze_plugins(m, spec, redact, files, gaps, warnings)
 
     # --- native config fragments: the environment's config files under the harness's own directory
     root = _config_root(h)
@@ -597,6 +686,73 @@ def freeze(fleet: Fleet, m: dict[str, Any], spec: EnvSpec, *, name: str | None =
     if m.get("harness_digest") and d != m["harness_digest"]:  # same canonical form: a mismatch is a hangar bug
         raise FreezeError([f"the frozen lock's harness_digest {d} differs from the turn's {m['harness_digest']}"])
     return {"lock": lock, "digest": d, "files": files, "warnings": warnings}
+
+
+def _freeze_plugins(m: dict[str, Any], spec: EnvSpec, redact: Any, files: dict[str, bytes], gaps: list[str],
+                    warnings: list[str]) -> list[dict[str, Any]]:
+    """The `plugin:` components of a turn's seed plugins, their files added to `files` under
+    `plugins/<marketplace>/`, with a marketplace.json per marketplace listing exactly the frozen plugins."""
+    from hangar import plugins as plugins_mod
+
+    comps: list[dict[str, Any]] = []
+    mkts: dict[str, dict[str, Any]] = {}
+    seen = {x.get("id"): x for x in (m.get("probe") or {}).get("plugins") or [] if isinstance(x, dict)}
+    for pl in m.get("plugins") or []:
+        pname, mkt, want = pl.get("name"), pl.get("marketplace"), pl.get("digest")
+        cid = f"plugin:{pname}@{mkt}"
+        if pl.get("error") or not want or not _PLUGIN_ID.match(cid):
+            gaps.append(f"{cid}: the turn recorded no digest for it ({pl.get('error') or 'unreadable'})")
+            continue
+        decl = next((p for p in spec.plugins if p.name == pname and p.marketplace in (None, mkt)), None)
+        try:
+            r = plugins_mod.resolved(spec, decl) if decl is not None else None
+        except ValueError as e:
+            r, why = None, str(e)
+        else:
+            why = f"environment {spec.name} no longer declares it"
+        if r is None or r["marketplace"] != mkt:
+            gaps.append(f"{cid}: {why}")
+            continue
+        if r["dir"] is None:
+            gaps.append(f"{cid}: its marketplace entry fetches it from elsewhere at build; only a plugin with a "
+                        "relative (./) source in a directory marketplace can be frozen")
+            continue
+        got = read_dir(r["dir"]) if r["dir"].is_dir() else {}
+        if plugin_digest(r["entry"], got) != want:
+            gaps.append(f"{cid}: its marketplace changed since the turn (declared {want}, now "
+                        f"{plugin_digest(r['entry'], got)})")
+            continue
+        rel = r["dir"].resolve().relative_to(r["root"].resolve()).as_posix()
+        path = f"plugins/{mkt}" + ("" if rel == "." else f"/{rel}")
+        mk = mkts.setdefault(mkt, {"owner": (plugins_mod._marketplace(r["root"]) or {}).get("owner"),
+                                   "entries": [], "root": False})
+        if not safe_path(path) or mk["root"] or (rel == "." and mk["entries"]):
+            gaps.append(f"{cid}: {path} is not a usable directory (a marketplace whose root is a plugin holds only it)")
+            continue
+        mk["root"] = rel == "."
+        mk["entries"].append(r["entry"])
+        tree = tree_digest(got)
+        eff = seen.get(f"{pname}@{mkt}")
+        if eff is not None and not eff.get("present"):
+            warnings.append(f"{cid}: the sandbox's seed didn't have it (an image built before it was added); the lock "
+                            "pins the declared files")
+        elif eff is not None and eff.get("digest") != tree:
+            warnings.append(f"{cid}: the sandbox's seed copy differed from the declared files; the lock pins the "
+                            "declared files")
+        for frel, data in got.items():
+            if len(data) > MAX_FILE_BYTES:
+                gaps.append(f"{cid}: {frel} is larger than {MAX_FILE_BYTES // 1_000_000} MB")
+            _text_ok(redact, f"{path}/{frel}", data, gaps)
+            files[f"{path}/{frel}"] = data
+        comps.append({"id": cid, "digest": want, "tree": tree, "path": path, "enabled": bool(pl.get("enabled", True))})
+    for mkt, mk in mkts.items():
+        if mk["root"]:
+            continue  # the plugin's own directory carries the marketplace's marketplace.json
+        doc = {"name": mkt, "owner": mk["owner"] or {"name": mkt}, "plugins": mk["entries"]}
+        data = (json.dumps(doc, indent=2) + "\n").encode()
+        _text_ok(redact, f"plugins/{mkt}/.claude-plugin/marketplace.json", data, gaps)
+        files[f"plugins/{mkt}/.claude-plugin/marketplace.json"] = data
+    return comps
 
 
 def _default_name(env: str | None) -> str:
