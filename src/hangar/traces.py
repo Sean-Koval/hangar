@@ -498,6 +498,7 @@ def _turn_span(x: Export, parent: str | None, s: Session, n: int, turn: SessionT
              "gen_ai.conversation.id": turn.conversation, "hangar.turn.number": n, "hangar.run.id": turn.run_id,
              "hangar.session.id": s.id, "hangar.turn.mode": turn.mode, "hangar.turn.outcome": turn.outcome,
              "hangar.turn.exit_code": turn.exit_code, "hangar.harness": harness,
+             "hangar.outcome.class": turn.outcome_class, "hangar.outcome.infra_reason": turn.infra_reason,  # #166
              "hangar.harness.version": turn.harness_version, "hangar.turn.live": turn.live,
              "hangar.approvals": turn.approval_policy, "hangar.manifest.digest": turn.manifest,
              "hangar.harness.digest": turn.harness_digest, "hangar.environment.digest": turn.environment_digest,
