@@ -38,7 +38,8 @@
         "locked": {"type": ["string", "null"], "description": "The version harnesses.lock.yaml pins (the session's, pinned at its creation)."},
         "pack": {"type": ["string", "null"], "description": "The pack image mounted (a digest reference where the registry gives one)."},
         "mode": {"enum": ["pack", "bake", "image"]},
-        "live": {"type": ["boolean", "null"], "description": "The turn ran under hangar's driver (steer, interrupt, approvals)."}
+        "live": {"type": ["boolean", "null"], "description": "The turn ran under hangar's driver (steer, interrupt, approvals)."},
+        "lock": {"type": "object", "required": ["name", "revision", "digest"], "properties": {"name": {"type": "string"}, "revision": {"type": "integer"}, "digest": {"$ref": "#/$defs/digest"}}, "description": "Optional (#134), present only then: the harness lock the session was thawed from. harness_digest equals its digest unless the turn drifted from it (docs/harness-lock.md)."}
       }
     },
     "model": {

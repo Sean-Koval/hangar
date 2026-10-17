@@ -293,6 +293,10 @@ def build(fleet: Fleet, spec: EnvSpec, harness: str | None, *, s: Session | None
                  "locked": (s.harness_version if s is not None else None) or locked,
                  "pack": pack, "mode": "pack" if pack else ("bake" if h is not None and h.install else "image"),
                  "live": turn.live if turn is not None else None}
+    if s is not None and s.harness_lock:  # --- harness locks (#134): the lock it was thawed from (only then)
+        from hangar import harness_thaw
+
+        harness_d["lock"] = harness_thaw.manifest_section(s)
     # instructions
     glob: dict[str, Any] = {"path": f"~/{h.instructions_file}" if h and h.instructions_file else None,
                             "declared": None, "effective": None}
@@ -482,6 +486,10 @@ async def record(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbox
         await asyncio.to_thread(store(svc.settings).put, s.id, n, m)
         turn.manifest = m["digest"]
         turn.harness_digest, turn.environment_digest = m.get("harness_digest"), m.get("environment_digest")
+        if s.harness_lock:  # --- harness locks (#134): turn 1 against the lock it was thawed from
+            from hangar import harness_thaw
+
+            harness_thaw.verify(svc, s, turn, n, m)
         svc._save(s)
     except asyncio.CancelledError:
         raise

@@ -14,6 +14,10 @@ anyone, and how each one gets "the latest strong model" without a stale default.
 
 None of these talk to the cluster, so they all work while it is powered down.
 
+This page is about the agent CLIs themselves. A *harness* in the sense of what an agent runs with (its instructions, skills,
+config fragments, MCP servers and hooks, pinned by digest) is a harness directory with a `harness.lock`: see
+[Harness locks](harness-lock.md). Its `runtime.version` is the CLI version locked here.
+
 ## The lock
 
 `src/hangar/harnesses.lock.yaml` pins every harness hangar installs: an exact version, plus the vendor's checksums where the

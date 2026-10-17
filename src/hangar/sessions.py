@@ -30,6 +30,7 @@ from hangar import ckpt, exchange, isolation, observe  # --- observe, isolation
 from hangar import computer as computer  # --- computer
 from hangar import fairness as fairness  # --- scale
 from hangar import flightrec as flightrec  # --- clouddoctor: failed and slow turns leave a record
+from hangar import harness_thaw as harness_thaw  # --- harness locks (#134): thawed sessions, turn 1's drift
 from hangar import hot_resume as hot_resume  # --- providers-e2b
 from hangar import keys as keys  # --- durable
 from hangar import manifest as manifest  # --- interfaces: the effective harness manifest of each turn
@@ -95,6 +96,7 @@ class NewSession(BaseModel):
     output_schema: dict[str, Any] | None = None
     approvals: ApprovalPolicy | None = None  # workstream steer: auto | ask | deny-risky (default: the environment's)
     cache: CachePolicy | None = None  # --- overnight/cache: auto | 5m | 1h | off (default: the environment's)
+    harness_lock: str | None = Field(None, max_length=200)  # --- harness locks (#134): name, name@rN, name@sha256:...
 
 
 def extract_summary(harness: str | None, log_text: str) -> str | None:
@@ -303,6 +305,12 @@ class SessionService:
             raise SessionError(str(e).strip("'\"")) from e
         if not harness:
             raise SessionError(f"environment '{env}' has no agent harness")
+        thawed = None
+        if req.harness_lock:  # --- harness locks (#134): the lock fixes the harness, model and approvals
+            try:
+                thawed = harness_thaw.pin(self.fleet, req.harness_lock, env, req.harness, req.model, req.approvals)
+            except harness_thaw.ThawError as e:
+                raise SessionError(str(e)) from e
         branch = req.branch or f"hangar/session/{req.name}"
         if not _BRANCH_RE.match(branch) or (req.base_branch and req.base_branch == branch):
             raise SessionError(f"invalid branch '{branch}'")
@@ -320,6 +328,8 @@ class SessionService:
                                   else self.settings.session_idle_minutes),
                     person=person)  # --- identity
         s.budget = resolve_budget(req.budget, self.settings)
+        if thawed is not None:  # --- harness locks (#134)
+            harness_thaw.apply(s, thawed)
         caching.pin_model(self, s)  # --- overnight/cache
         pins.pin(self, s)  # --- canary: a policy becomes a concrete id; the CLI version
         self._sessions[s.id] = s
@@ -341,6 +351,9 @@ class SessionService:
         if s.state == SessionState.ARCHIVED:
             raise SessionError(f"session {s.name} is archived")
         live = bool(s.sandbox_id and self._alive(s.sandbox_id))
+        if harness and harness != s.harness and s.harness_lock:  # --- harness locks (#134)
+            raise SessionError(f"session {s.name} runs harness lock {s.harness_lock['ref']} ({s.harness}); "
+                               "start another session to run another harness")
         if harness and harness != s.harness and (live or self.busy(s.id)):
             raise SessionError(f"session {s.name} is running {s.harness}; suspend it before switching to {harness}")
         if harness and harness != s.harness:
@@ -1085,13 +1098,20 @@ class SessionService:
             if over := await watch.poll():  # workstream C
                 outcome = "over_budget"
                 break
+            if harness_thaw.stops(self, s, turn):  # --- harness locks (#134): HANGAR_HARNESS_DRIFT=fail
+                outcome = "failed"
+                break
             if self.env_requests is not None:  # --- computer: what the agent asks its owner for, while it works
                 await self.env_requests.tick(s, turn)
+        if outcome == "exited" and await harness_thaw.stops_after(self, s, turn):  # --- harness locks (#134)
+            outcome = "failed"
         turn.finished_at = now()
         if outcome == "exited" and turn.exit_code == 130:  # --- workstream steer: stopped by an interrupt
             outcome = "interrupted"
         steering.forget(self, turn.run_id if turn.live else None)
         turn.outcome, turn.outcome_reason = outcome, over  # workstream C
+        if outcome == "failed":  # --- harness locks (#134): until part B's infra_error outcome
+            turn.outcome_reason = harness_thaw.DRIFT_REASON
         if over:
             watch.note("error", f"stopped: over budget ({over})", reason="over_budget")
         if outcome == "gone":
@@ -1105,7 +1125,7 @@ class SessionService:
             turn.outcome = outcome  # workstream E
             flightrec.of(self.fleet).turn_ended(self, s, turn, outcome, "")  # --- clouddoctor
             return outcome, ""
-        if outcome in ("cancelled", "timed_out", "error", "over_budget"):
+        if outcome in ("cancelled", "timed_out", "error", "over_budget", "failed"):
             # Never leave an agent running that nobody is watching (it would keep working, and spending).
             with contextlib.suppress(Exception):
                 ksb, kprov = self.fleet._running(s.sandbox_id or "")

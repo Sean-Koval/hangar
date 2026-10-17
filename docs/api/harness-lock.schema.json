@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Sean-Koval/hangar/docs/api/harness-lock.schema.json",
+  "title": "hangar.harness-lock/v1",
+  "description": "A harness lock (docs/harness-lock.md, spec 0014 §2): the native files of a harness directory pinned by content digest, the CLI version, the concrete model, and the binding layer (names, never values). YAML on disk (harness.lock); identity is harness_digest, the lock projected onto hangar.manifest/v1's harness sections and digested in spec 0014 §2's canonical form. name, revision, paths and provenance are not identity.",
+  "type": "object",
+  "required": ["schema", "name", "revision", "runtime", "model", "components", "binding", "plugins", "remote"],
+  "additionalProperties": false,
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "path": {"type": "string", "pattern": "^(?!/)(?!.*(^|/)\\.{1,2}(/|$))(?!.*//)[^\\\\\\u0000]+$", "description": "Relative to the harness directory; no '..', no absolute paths."},
+    "component": {
+      "type": "object",
+      "required": ["id", "digest"],
+      "additionalProperties": false,
+      "if": {"properties": {"digest": {"type": "null"}}},
+      "then": {"required": ["source"], "not": {"required": ["path"]}, "description": "A reference: its source, no path."},
+      "else": {"required": ["path"]},
+      "properties": {
+        "id": {"type": "string", "pattern": "^(guide|skill|plugin|native):\\S{1,200}$", "description": "kind:name. guide:<file> (the harness's global instructions file), skill:<name>, plugin:<name>@<marketplace>, native:<runtime>/<path>."},
+        "digest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}], "description": "A file's: sha256 of its bytes. A directory's (skill, plugin): manifest._dir_digest, i.e. sha256 over, for each file in path order, its relative path, a NUL and the raw sha256 of its content. Equal to the manifest's declared digest. null only for a reference (source, no path): a pinned git skill, hangar's own verify-ui."},
+        "path": {"$ref": "#/$defs/path"},
+        "tree": {"$ref": "#/$defs/digest", "description": "Skills: what the sandbox probe reports for these files (manifest skills.effective[].digest), so drift can be checked without the source (#134)."},
+        "source": {"type": "string", "description": "Where it came from (provenance, not identity): path:<env-relative path>, git:<url>, hangar:computer."},
+        "enabled": {"type": "boolean", "description": "Plugins: whether it is enabled (default true)."}
+      }
+    }
+  },
+  "properties": {
+    "schema": {"const": "hangar.harness-lock/v1"},
+    "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,62}$"},
+    "revision": {"type": "integer", "minimum": 1, "description": "Monotonic; freeze bumps it when anything but the name changes. Not identity."},
+    "runtime": {
+      "type": "object",
+      "required": ["harness", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "harness": {"type": "string", "minLength": 1},
+        "version": {"type": ["string", "null"], "description": "The CLI version from harnesses.lock.yaml (manifest harness.locked)."},
+        "pack": {"type": ["string", "null"], "description": "The pack image the turn ran (provenance)."}
+      }
+    },
+    "model": {
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": ["string", "null"], "description": "The resolved concrete model id; the only model field in identity."},
+        "policy": {"type": ["string", "null"], "description": "The policy it was resolved from (frontier, balanced): never identity."}
+      }
+    },
+    "components": {"type": "array", "items": {"$ref": "#/$defs/component"}, "description": "In order: the guide, then skills in the order the turn declared them, then native fragments."},
+    "binding": {
+      "type": "object",
+      "description": "Rendered at claim. Names, never values: credentials stay in the environment.",
+      "additionalProperties": false,
+      "properties": {
+        "mcp": {"type": "array", "items": {
+          "type": "object",
+          "required": ["name", "transport"],
+          "additionalProperties": false,
+          "properties": {
+            "name": {"type": "string"},
+            "transport": {"enum": ["http", "stdio"]},
+            "endpoint": {"type": "string", "description": "http: the URL without user info, query or fragment."},
+            "header_names": {"type": "array", "items": {"type": "string"}},
+            "command": {"type": ["string", "null"]},
+            "args": {"type": "array", "items": {"type": "string"}},
+            "env_names": {"type": "array", "items": {"type": "string"}},
+            "source": {"type": "string", "description": "Who adds it when not the environment (computer)."}
+          }
+        }},
+        "hooks": {"type": "array", "items": {
+          "type": "object",
+          "required": ["event", "source"],
+          "additionalProperties": false,
+          "properties": {"event": {"type": "string"}, "source": {"type": "string"}, "digest": {"$ref": "#/$defs/digest"}}
+        }},
+        "permissions": {"type": "object", "additionalProperties": false,
+                        "properties": {"approvals": {"type": ["string", "null"], "description": "auto | ask | deny-risky"}}}
+      }
+    },
+    "plugins": {"type": "object", "required": ["autoUpdate"], "additionalProperties": false,
+                "properties": {"autoUpdate": {"const": false, "description": "Always false: freeze refuses true."}}},
+    "remote": {"type": "array", "description": "Vendor-loop agents: {id, version}.", "items": {
+      "type": "object", "required": ["id"], "additionalProperties": false,
+      "properties": {"id": {"type": "string"}, "version": {"type": ["string", "null"]}}
+    }}
+  }
+}
