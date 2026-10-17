@@ -26,7 +26,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from hangar import metrics, powerhold
+from hangar import metrics, outcomes, powerhold
 from hangar.config import Settings
 from hangar.models import JobState, Sandbox
 from hangar.store import Store
@@ -283,11 +283,13 @@ class Power:
         if not self.off or not self.affects(job.provider):
             return False
         why = "the sandbox pools powered down"
-        if not restarts.resume(svc, job, why=why, message=POWERED_DOWN):
+        if not restarts.resume(svc, job, why=why, message=POWERED_DOWN, infra="power_down"):
             return False
         cut = [t for t in job.turns if t.run_id and t.outcome in ("gone", "error")]
         if cut and not cut[-1].outcome_reason:
             cut[-1].outcome_reason = why
+        if cut:  # --- #166: the power-down cut it off, whatever the turn made of it
+            outcomes.mark(cut[-1], "infra_error", "power_down")
         svc._event(job, f"waiting: {self.status_line()}", reason=WAITING)
         self._hold(svc, job.id)
         return True

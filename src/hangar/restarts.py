@@ -16,7 +16,7 @@ import asyncio
 import contextlib
 from typing import TYPE_CHECKING
 
-from hangar import strategies
+from hangar import outcomes, strategies
 from hangar.models import Attempt, Job, JobState, Session, SessionState, SessionTurn, Turn, now
 
 if TYPE_CHECKING:
@@ -73,10 +73,12 @@ async def lost_while_provisioning(svc: JobService, job: Job) -> bool:
     return False
 
 
-def resume(svc: JobService, job: Job, why: str = "the control plane restarted", message: str = CONTINUE) -> bool:
+def resume(svc: JobService, job: Job, why: str = "the control plane restarted", message: str = CONTINUE,
+           infra: str = "control_plane_restart") -> bool:
     """A job whose sandbox is gone after the restart: queue it to resume its session from the last checkpoint. False
     when there is no checkpoint to resume from, or it has used up its restarts. --- ops: `why` and `message` for a
-    sandbox the nightly power-down took away while hangar stayed up (power.py)."""
+    sandbox the nightly power-down took away while hangar stayed up (power.py). --- #166: the cut-off turn is
+    `infra_error` with `infra` as its reason (`control_plane_restart`, `power_down`)."""
     s = svc._session(job)
     if s is None or not svc.sessions.resumable(s) or not _left(svc, job):
         return False
@@ -86,9 +88,11 @@ def resume(svc: JobService, job: Job, why: str = "the control plane restarted", 
         if last.finished_at is None:
             last.finished_at = now()
             last.outcome, last.outcome_reason = "gone", why
+            outcomes.mark(last, "infra_error", infra)  # --- #166
             for st in s.turns:  # the session's record of that turn ends too, so nothing waits on it
                 if st.run_id == last.run_id and st.finished_at is None:
                     st.finished_at, st.outcome, st.outcome_reason = now(), "gone", why
+                    outcomes.mark(st, "infra_error", infra)
             svc.sessions._save(s)
         job.turns.append(Turn(kind="follow_up", message=message, requester="hangar", reply_to=last.reply_to,
                               trigger="restart"))
@@ -97,7 +101,8 @@ def resume(svc: JobService, job: Job, why: str = "the control plane restarted", 
     return True
 
 
-def resume_attempt(svc: JobService, job: Job, a: Attempt, s: Session, why: str, message: str) -> bool:
+def resume_attempt(svc: JobService, job: Job, a: Attempt, s: Session, why: str, message: str,
+                   infra: str = "power_down") -> bool:
     """--- trust: a best-of-N attempt whose sandbox went away mid-turn (#95: the nightly power-down) resumes its own
     session from its last checkpoint, the way `resume` does a job's: its cut-off turn ends `gone`, a turn that tells
     the agent to carry on is queued on the session, and the attempt waits (`waiting`) to run again. At most
@@ -110,9 +115,10 @@ def resume_attempt(svc: JobService, job: Job, a: Attempt, s: Session, why: str, 
         if st.run_id == a.run_id:
             st.finished_at = st.finished_at or now()
             st.outcome, st.outcome_reason = "gone", why
+            outcomes.mark(st, "infra_error", infra)  # --- #166
     s.turns.append(SessionTurn(message=message, requester="hangar"))
     svc.sessions._save(s)
-    a.run_id = a.outcome = a.exit_code = a.finished_at = a.error = None
+    a.run_id = a.outcome = a.exit_code = a.finished_at = a.error = a.outcome_class = a.infra_reason = None
     a.state = "waiting"
     svc._event(job, f"attempt {a.index}: {why} and its sandbox is gone; it resumes from its last checkpoint "
                     f"(restart {a.restarts} of {svc.settings.job_restart_resumes})")

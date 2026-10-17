@@ -1329,6 +1329,12 @@ repos.get_policy:
   rest: GET /api/repos/policy
   scope: admin
   owner: admin
+repos.get_readiness:
+  server: hangar
+  mcp: null
+  rest: "GET /api/repos/{owner}/{repo}/readiness"
+  scope: admin
+  owner: admin
 repos.get_tests_flaky:
   server: hangar
   mcp: null

@@ -28,6 +28,8 @@
             "harness_version": {"type": ["string", "null"], "description": "The locked version every trial ran."},
             "model": {"type": ["string", "null"], "description": "The concrete model id every trial got (a policy is resolved once, at the start)."},
             "model_policy": {"type": ["string", "null"]},
+            "model_concrete": {"type": ["boolean", "null"], "description": "The pinned model is a concrete, dated id (an experiment refuses to start otherwise); null when the harness has no model list and runs its own default. Added within v1 (#167)."},
+            "model_concrete_basis": {"enum": ["list", "pattern", "none"], "description": "Why it counts as concrete: in the provider's cached model list (list), or, with no list cached, by its versioned shape alone (pattern; a note says so); none with no id. Added within v1 (#167)."},
             "approvals": {"type": "string"},
             "skills": {"type": ["array", "null"], "description": "The variant's whole skill set (null: the environment's)."},
             "instructions": {"type": ["string", "null"], "description": "The digest of the instructions the variant writes, when it has an overlay."}
@@ -92,6 +94,11 @@
           "contaminated": {"type": "boolean", "description": "The grader's canary was seen in what the trial produced: the agent had the hidden tests. Added within v1 (#127)."},
           "contamination": {"type": "array", "items": {"enum": ["patch", "result", "trace", "egress"]}, "description": "Where the canary was seen. Added within v1 (#127)."},
           "touched_tests": {"type": "array", "items": {"type": "string"}, "description": "Existing test files the trial's work changed, renamed or deleted (the job's own check, else from its patch). Added within v1 (#127)."},
+          "outcome_class": {"enum": ["agent", "infra_error", "cancelled", "human", null], "description": "What the trial's outcome says about the agent: agent (its own result, counted), infra_error (infrastructure ended it: see infra_reason; excluded and retried), cancelled, human (a person stepped in). null: unknown (recorded before #166), never to be read as agent. Any turn infrastructure cut off makes the whole trial infra_error, even if its job resumed. Added within v1 (#166)."},
+          "infra_reason": {"enum": ["preempted", "power_down", "rate_limited", "provider_5xx", "sandbox_create", "checkpoint", "control_plane_restart", null], "description": "What infrastructure did, when outcome_class is infra_error. Added within v1 (#166)."},
+          "excluded": {"type": "boolean", "description": "Leave this trial out of statistics: it ended in infra_error. Its retry, if any, is the next attempt under the same key. Added within v1 (#166)."},
+          "attempt": {"type": "integer", "minimum": 1, "description": "1 for the trial as laid out; 2 and up for its retries after infra errors (at most HANGAR_TRIAL_INFRA_RETRIES, and 10% of the experiment's trials in all). Several trials can share a key: the highest attempt is the one that counts. Added within v1 (#166)."},
+          "retry_of": {"type": ["string", "null"], "description": "The job id of the excluded trial this one retries; with attempt, the retry chain. Added within v1 (#166)."},
           "links": {"type": "object", "properties": {"job": {"type": ["string", "null"]}, "manifest": {"type": ["string", "null"]}, "trace": {"type": ["string", "null"]}}}
         }
       }

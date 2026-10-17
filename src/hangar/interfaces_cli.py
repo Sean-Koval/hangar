@@ -85,8 +85,10 @@ def _print_index(v: dict) -> None:
     for t in v.get("trials") or []:
         verify = (t.get("verify") or {}).get("passed")
         grade = (t.get("grade") or {}).get("exit_code")
-        typer.echo(f"  {t['key']:40} {t['state']:9} {t.get('outcome') or '':10} verify={verify} "
-                   f"grade={grade} {t.get('job') or ''}" + ("  DRIFT" if t.get("drift") else ""))
+        ref = t["key"] + (f"~{t['attempt']}" if (t.get("attempt") or 1) > 1 else "")  # --- #166: a retry
+        typer.echo(f"  {ref:40} {t['state']:9} {t.get('outcome') or '':10} verify={verify} "
+                   f"grade={grade} {t.get('job') or ''}" + ("  DRIFT" if t.get("drift") else "")
+                   + (f"  EXCLUDED (infra_error/{t.get('infra_reason')})" if t.get("excluded") else ""))
     for n in v.get("notes") or []:
         typer.secho(f"  note: {n}", fg="yellow")
 
@@ -135,7 +137,8 @@ def experiment_export(
     (out / "index.json").write_text(json.dumps(v, indent=1, default=str))
     n = 0
     for t in v.get("trials") or []:
-        d = out / "trials" / t["key"].replace("/", "__")
+        d = out / "trials" / (t["key"].replace("/", "__") + (f"~{t['attempt']}" if (t.get("attempt") or 1) > 1
+                                                              else ""))
         for name, link in (t.get("links") or {}).items():
             if name in ("manifest", "trace") and link:
                 d.mkdir(parents=True, exist_ok=True)
