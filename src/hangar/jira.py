@@ -34,7 +34,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from hangar import autoinstall as autoinstall  # --- autoinstall: an issue labelled for an env setup
-from hangar import intake
+from hangar import (
+    intake,
+    steer_class,  # --- #162
+)
 from hangar.exchange import open_question
 from hangar.github import parse_repo, verify_signature
 from hangar.jobs import NOTIFIERS, JobError, JobService, SubmitJob
@@ -1020,6 +1023,8 @@ class JiraFrontDoor:
         word = (rest.split() or [""])[0].lower()
         if command and word in ("approve", "reject"):
             return await self._decide(job, ref, word, person, account)
+        if command and word == "class":  # --- #162: what the sender's last follow-up was
+            return self._classify(ref, rest.split()[1:], requester)
         if job is not None and job.state == JobState.NEEDS_INPUT:
             return self._follow_up(job, rest or "Continue with the task.", requester, ref, person)
         if not command:
@@ -1063,14 +1068,42 @@ class JiraFrontDoor:
 
     def _follow_up(self, job: Job, text: str, requester: str, ref: str, person: str) -> dict[str, Any]:
         svc = self.jobs
+        cls, text = steer_class.split_prefix(text)  # --- #162: `fix:` / `redirect:` / `info:` classify on arrival
         try:  # integration: the front door's check is #91's, in one place: only a job's person continues it here
-            svc.follow_up(job.id, text, requester=requester, reply_to=ref, front_door=True, sender_person=person)
+            svc.follow_up(job.id, text or "Continue with the task.", requester=requester, reply_to=ref,
+                          front_door=True, sender_person=person, steer_class=cls)
         except JobError as e:
             svc._spawn(notify(svc, job, ref, f"Can't continue `{job.id}`: {e}", "note"))
             return {"ignored": str(e)}
+        t = job.turns[-1]
+        said = (f"Classified as {steer_class.LABELS[t.steer_class].lower()}." if t.steer_class != "unclassified"
+                else "Was it a correction, a redirect or new info? Comment `/hangar class correction`, "
+                     "`/hangar class redirect` or `/hangar class info`, or start your next comment with `fix:`, "
+                     "`redirect:` or `info:`.")
         svc._spawn(notify(svc, job, ref, f"Continuing hangar job `{job.id}` with your comment. I'll comment here "
-                                         "when it's done.", "note"))
+                                         f"when it's done. {said}", "note"))
         return {"ok": True, "follow_up": job.id}
+
+    def _classify(self, ref: str, words: list[str], requester: str) -> dict[str, Any]:
+        """--- #162: `/hangar class correction|redirect|info` classifies the sender's last unclassified follow-up."""
+        svc = self.jobs
+        cls = steer_class.parse(words[0] if words else "")
+        job = intake.latest_job(svc, ref)
+        if job is None:
+            return {"ignored": f"no job for {ref}"}
+        if cls is None:
+            svc._spawn(notify(svc, job, ref, "Usage: `/hangar class correction`, `/hangar class redirect` or "
+                                             "`/hangar class info`.", "note"))
+            return {"ignored": "no class given"}
+        n = steer_class.last_unclassified(job, requester)
+        if n is None:
+            svc._spawn(notify(svc, job, ref, f"None of your follow-ups on `{job.id}` is waiting to be classified.",
+                              "note"))
+            return {"ignored": "nothing to classify"}
+        steer_class.classify_turn(svc, job, n, cls, requester, sender=requester)
+        svc._spawn(notify(svc, job, ref, f"Classified your follow-up (turn {n} of `{job.id}`) as "
+                                         f"{steer_class.LABELS[cls].lower()}.", "note"))
+        return {"ok": True, "classified": job.id, "turn": n, "class": cls}
 
 
 # ============================================================================ hangar doctor

@@ -437,7 +437,10 @@ class Outbox:
         m = manifest.store(self.settings).get(s.id, n)
         if m is not None:
             files["manifest.json"] = m
-        trace = traces.session_export(svc, s, turn=n)
+        from hangar.steer_class import turn_attrs  # --- #162: a follow-up's steer class on its span
+
+        jt = job.turns[job_turn - 1] if job is not None and job_turn and job_turn <= len(job.turns) else None
+        trace = traces.session_export(svc, s, turn=n, extra=turn_attrs(jt) or None)
         files["trace.otlp.json"] = trace
         runs = self._test_runs(s, n, job, job_turn, attempt)
         if runs:

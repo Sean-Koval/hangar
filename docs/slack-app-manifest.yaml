@@ -30,6 +30,9 @@ settings:
       - app_mention
       - message.channels
       - message.groups
+  interactivity:           # the steer-class buttons under hangar's "Continuing…" replies (docs/slack.md)
+    is_enabled: true
+    request_url: https://hangar.example.com/api/hooks/slack/interactions
   org_deploy_enabled: false
   socket_mode_enabled: false
   token_rotation_enabled: false

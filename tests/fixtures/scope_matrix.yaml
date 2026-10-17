@@ -977,6 +977,13 @@ hooks.post_slack_events:
   scope: signed
   owner: any
   enforced_by: 'slack: Slack''s v0 signature; who may act is the front door''s'
+hooks.post_slack_interactions:
+  server: hangar
+  mcp: null
+  rest: POST /api/hooks/slack/interactions
+  scope: signed
+  owner: any
+  enforced_by: 'slack: Slack''s v0 signature and replay guard; only a follow-up''s sender classifies it (#162)'
 inbox.get:
   server: hangar
   mcp: null
@@ -2046,6 +2053,20 @@ turn.answer_approval_job:
   scope: jobs
   owner: token
   note: 'the job side of answer_approval (MCP''s one tool covers sessions and jobs: see turn.answer_approval)'
+turn.classify:
+  server: hangar
+  mcp: null
+  rest: POST /api/sessions/{ref}/steers/{steer_id}/class
+  scope: admin
+  owner: admin
+  note: 'no MCP tool: the tool list is at its cap (#162)'
+turn.classify_job:
+  server: hangar
+  mcp: null
+  rest: POST /api/jobs/{job_id}/turns/{n}/class
+  scope: jobs
+  owner: token
+  note: 'the job side of turn.classify (#162)'
 turn.steer:
   server: hangar
   mcp: steer_turn

@@ -532,7 +532,10 @@ class JobService:
     def follow_up(self, job_id: str, message: str, requester: str, owner: str | None = None,
                   reply_to: str | None = None, context: list[ContextItem] | None = None,
                   output_schema: dict[str, Any] | None = None,
-                  front_door: bool = False, sender_person: str | None = None) -> Job:
+                  front_door: bool = False, sender_person: str | None = None,
+                  steer_class: str | None = None) -> Job:
+        """`steer_class` (#162): what the follow-up is, when its sender said (a `fix:` prefix); an answer to the
+        agent's question is `new_info` unless they said otherwise."""
         job = self.get(job_id, owner)
         # --- review: from a front door (GitHub, Slack, Jira; `sender_person` is the sender's linked person): a
         # person's job runs with their own login, so only they continue it there (teamcreds.may_continue)
@@ -561,8 +564,15 @@ class JobService:
             raise JobError(f"job {job.id} can't run another turn: {why}. Submit a new job to continue (branch "
                            f"{job.branch} has the work)")
         self._posture_follow_up(job, context, requester)  # --- intake posture (#123): an auto-fix round's CI logs
+        answer = job.state == JobState.NEEDS_INPUT
         job.turns.append(Turn(kind="follow_up", message=message, requester=requester, reply_to=reply_to,
                               context=context, output_schema=output_schema))
+        if steer_class is not None or answer:  # --- #162
+            from hangar import steer_class as classes
+
+            classes.mark(job.turns[-1], steer_class or "new_info", requester if steer_class else "hangar")
+            classes.record(self.sessions, s, job.turns[-1].steer_class, len(job.turns),
+                           job.turns[-1].classified_by or requester, job=job.id)
         job.result.question = None
         job.cancel_requested = False
         self._event(job, f"follow-up from {requester}", JobState.QUEUED, reason=None)

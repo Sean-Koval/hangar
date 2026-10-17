@@ -113,6 +113,7 @@ The old token stops working at once. In the rule's **Send web request** action, 
 - **Answer a question:** any comment from the job's person while it waits on one (for a team job, from any linked teammate).
 - **Approve or reject:** `/hangar approve`, `/hangar reject`.
 - **Continue after it's done:** `/hangar <what to do next>`, from the job's person. It resumes the same session and branch.
+- **Say what a follow-up was** ([steering.md](steering.md#classifying-steers)): start it with `fix:` (a correction), `redirect:` (the task changed) or `info:` (something it didn't know), as in `/hangar fix: use the v2 client`; or afterwards comment `/hangar class correction`, `/hangar class redirect` or `/hangar class info` to classify your last unclassified one. Hangar's "Continuing…" comment lists these. An answer to the agent's question counts as new information unless you say otherwise.
 - **Start one by hand:** `/hangar <instructions>` on an issue with no job.
 
 Hangar's own comments start with `[hangar]` and are never read as replies.

@@ -79,6 +79,25 @@ across turns, follow-ups and forks. Once a turn is tainted, under `ask` and `den
 ([security.md](security.md#taint-gates)). The driver hears of the taint at the turn's start (`--tainted`), from
 hangar's signed `taint` command mid-turn, or from a web tool it sees in the stream; nothing clears it.
 
+## Classifying steers
+
+A steer is not always the agent's fault. The person may have changed the task, or remembered something the ticket never said. So that a harness is judged only on the interventions it made necessary, each steer, interrupt and job follow-up carries a class (#162):
+
+| Class | Meaning |
+| --- | --- |
+| `correction` | the agent got it wrong |
+| `redirect` | the person changed the scope or the approach |
+| `new_info` | the person added something the task didn't say. An answer to the agent's own question (`needs_input`) is this by default: the agent asked |
+| `unclassified` | nobody said (the default for everything else, including steers and interrupts sent over REST or MCP) |
+
+Say which:
+- **Slack:** click *Correction*, *Redirect* or *New info* under hangar's "Continuing…" reply to your thread message. Only the person who sent the reply can classify it; anyone else's click gets a private refusal ([slack.md](slack.md#classifying-a-reply)).
+- **Slack and Jira:** start the reply with `fix:` (or `correction:`), `redirect:` or `info:`. It is classified on arrival and the prefix is stripped from what the agent gets.
+- **Jira:** `/hangar class correction|redirect|info` classifies your last unclassified follow-up on the issue ([intake.md](intake.md#talking-to-the-job-from-the-issue)).
+- **REST:** `POST /api/jobs/{job_id}/turns/{n}/class` (the job's submitter, or admin; `n` is the 1-based index in the job's `turns`) and `POST /api/sessions/{ref}/steers/{steer_id}/class` (admin), body `{"class": "correction"}`. There is no MCP tool: the tool list is at its cap.
+
+The class, `classified_by` and `classified_at` are on the turn or steer record. Each classification is a `steer.classified` progress event in the session's activity, and the [trace export](api/traces.md) puts `hangar.steer.class` on steer and interrupt events (with `hangar.seq`, their place in the event log) and on follow-up turn spans; the run records in the outbox carry it. It is self-reported and optional: the weekly metrics show the unclassified share.
+
 ## REST
 
 | Route | Body |
@@ -88,7 +107,7 @@ hangar's signed `taint` command mid-turn, or from a web tool it sees in the stre
 | `GET /api/sessions/{ref}/approvals` | the running turn's policy, pending and recent approvals |
 | `POST /api/sessions/{ref}/approvals/{id}` | `{"decision": "allow" \| "deny" \| "allow_always", "message": "..."}` |
 
-The same four routes exist under `/api/jobs/{job_id}/…` for the job's submitter (a `jobs`-scoped token) and for admins. The session routes are admin only.
+The same four routes exist under `/api/jobs/{job_id}/…` for the job's submitter (a `jobs`-scoped token) and for admins. The session routes are admin only. Classifying: `POST /api/sessions/{ref}/steers/{id}/class` and `POST /api/jobs/{job_id}/turns/{n}/class` with `{"class": "correction" | "redirect" | "new_info"}` ([above](#classifying-steers)).
 
 ## How it works
 
