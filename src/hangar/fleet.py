@@ -43,7 +43,7 @@ from hangar import posture as posture  # --- intake posture (#123): an intake jo
 from hangar import power as power  # --- ops: the sandbox pools' power schedule
 from hangar import reconciler as reconciler  # --- reconciler
 from hangar import slo as slo  # --- clouddoctor: create times by path, for `hangar status`
-from hangar import supervisor as supervisor  # --- envbuilds
+from hangar import svc_control as svc_control  # --- envbuilds: the service supervisor (`hangar-agent svc`)
 from hangar import teamcreds as teamcreds  # --- teamcreds
 from hangar.broker import AUTH_FILE_LIMIT, Broker, CredentialError
 from hangar.config import Settings
@@ -912,7 +912,7 @@ class Fleet:
             extra_env.update(await buildcache.of(self).attach(prov, sb, spec))  # --- caches: sccache, Bazel, turbo
         # workstream E: the `hangar-agent` helper (context exchange), installed per sandbox: no image rebuild
         await exchange.install_helper(prov, sb, f"/home/{self.settings.sandbox_user}")
-        await supervisor.install(prov, sb, f"/home/{self.settings.sandbox_user}")  # --- envbuilds: `hangar-agent svc`
+        await svc_control.install(prov, sb, f"/home/{self.settings.sandbox_user}")  # --- envbuilds: `hangar-agent svc`
         prelude.append(exchange.PATH_LINE)
         await envdoctor.install(self, prov, sb, spec, h, extra_env)  # --- computer: hangar-env, the display, status
         env = await self.broker.inject(sb, prov, creds, extra_env=extra_env, prelude=prelude)

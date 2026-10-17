@@ -1,5 +1,7 @@
-"""The supervisor's control-plane side (--- envbuilds): installs `hangar-svc` (svc_agent.py) in a sandbox, writes what
-it supervises, starts it, and tells the agent about its environment.
+"""The service supervisor's control-plane side (--- envbuilds): installs `hangar-svc` (svc_agent.py, the in-sandbox
+half behind `hangar-agent svc`) in a sandbox, writes what it supervises, starts it, and tells the agent about its
+environment. Named for its pair, svc_agent.py; it was `hangar/supervisor.py` until #144, and is unrelated to the run
+supervisor of specs 0001 and 0004 (superseded and deferred, docs/specs/README.md).
 
 Why a script and not hangar-envd. The supervisor runs the agent's own processes (dev servers, watchers), as the
 agent's user, and the agent drives it (`hangar-agent svc restart web`). hangar-envd is hangar's authenticated transport

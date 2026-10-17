@@ -10,11 +10,11 @@ about itself, in a file committed next to its code:
   to keep up, and which check proves a change works.
 - **Versioned builds**: hangar runs `install` ahead of time, in the background, and keeps the result as an image.
   Sandboxes for the repo start from it, with everything installed.
-- **The supervisor** (`hangar-agent svc`): one command for the agent to see, start, restart and read the logs of the
+- **The service supervisor** (`hangar-agent svc`): one command for the agent to see, start, restart and read the logs of the
   environment's processes. A process that exits is restarted, so the agent doesn't have to look after it.
 - **Services** (Postgres, Redis...) declared as images, run beside the sandbox and reachable at their name.
 - **Preview ports**: the sandbox's owner opens a declared port in their browser, through hangar, never publicly.
-- **The heavy tier**: Docker inside a VM of the sandbox's own, Compose stacks under the supervisor, and bigger
+- **The heavy tier**: Docker inside a VM of the sandbox's own, Compose stacks under the service supervisor, and bigger
   resource profiles, for repos that test with `docker compose` or Testcontainers ([below](#the-heavy-tier)).
 
 
@@ -277,7 +277,7 @@ and sccache, Bazel and Turborepo come pointed at hangar's remote caches.
 
 Docker inside a gVisor sandbox is limited, so a service never runs inside the sandbox. It runs next to it, with the
 same isolation, and goes away with it. The sandbox reaches it at its name: `postgres:5432` above. (On the heavy tier a
-service can also be a Compose stack that runs inside the sandbox: [Compose stacks](#compose-stacks-under-the-supervisor).)
+service can also be a Compose stack that runs inside the sandbox: [Compose stacks](#compose-stacks-under-the-service-supervisor).)
 
 - **Kubernetes:** a sidecar container in the sandbox's pod. It shares the pod's network (127.0.0.1, and its name
   through the pod's `hostAliases`), its runtime class, and its hardening: uid 1000, no capabilities, no privilege
@@ -312,7 +312,7 @@ The services are decided before the sandbox starts: those of the build it starts
 default branch was last seen, else the environment's. A service added in a commit starts with the next sandbox, and
 the agent is told so. A sandbox with services of its own starts cold: on Kubernetes it gets a SandboxTemplate per set of
 services (or per build), and on Docker a warm container can't join a network. Services that the environment itself
-declares are part of its own template and warm pool. The supervisor waits for the services to answer before it runs
+declares are part of its own template and warm pool. The service supervisor (`hangar-agent svc`) waits for the services to answer before it runs
 `start`, and `hangar-agent svc status` shows them. Forks don't get services yet. E2B doesn't run them, and its
 sandboxes get a setup failure saying so.
 
@@ -351,7 +351,7 @@ proxy drops hangar's credentials, but it can't tell the app's own cookies from o
 `preview.example.com`, cookies your SSO or intranet set for `example.com` would reach the agent's app. A domain of its
 own (as `githubusercontent.com` is GitHub's) also keeps the agent's pages from being same-site with your other apps.
 
-## The supervisor: `hangar-agent svc`
+## The service supervisor: `hangar-agent svc`
 
 ```console
 $ hangar-agent svc status
@@ -391,6 +391,11 @@ in the [image contract](specs/0006-environments-and-harness-packs.md)), installe
 `hangar-agent`, with no image rebuild. It holds nothing secret. Its socket and state live in `~/.hangar/svc` (0700).
 Under the [uid split](steering.md#the-uid-split) it stays the agent's: hangar's own user never runs it, and it never
 reaches hangar's runs.
+
+In the source, the in-sandbox half is `svc_agent.py` and the control-plane half (install, manifest, the agent's
+instructions) is `svc_control.py`, named `supervisor.py` before #144. Neither is the run supervisor of specs
+[0001](specs/0001-agent-runs.md) and [0004](specs/0004-supervisor-scheduling-performance.md), which are superseded
+and deferred.
 
 ## The heavy tier
 
@@ -514,7 +519,7 @@ dockerd's pulls go through the sandbox's egress policy like everything else:
 In an allowlist sandbox, containers and builds get the egress proxy too (`~/.docker/config.json`'s `proxies`, by
 address: they can't resolve hangar's names).
 
-### Compose stacks under the supervisor
+### Compose stacks under the service supervisor
 
 A `services:` entry with `compose: FILE` (relative to the checkout) is a Compose stack: the supervisor runs `docker
 compose -p NAME -f FILE up` in the foreground, so the containers' output is its log (`hangar-agent svc logs NAME`) and
