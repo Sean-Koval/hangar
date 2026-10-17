@@ -227,6 +227,14 @@ async def hostile(tmp_path, body: bytes = b"", headers: str | None = None, respo
     fake = FakeDaemon(body, *([headers] if headers else []), token=e.token(sb), respond=respond)
     await fake.__aenter__()
     e.port = fake.port
+
+    async def running_already(sb: Sandbox, token: str) -> None:
+        """#245: the fake daemon is listening already, so there is nothing to install. The first probe has a 0.5 s
+        connect timeout, which a busy CI runner's stalled event loop overran (the fake saw a connection closed before
+        any request); `install` then ran the empty binary, failed, and marked the daemon down. Doing nothing here
+        lets `_connect` probe again, as it does after a real install."""
+
+    e.install = running_already  # type: ignore[method-assign]
     assert await e.ready(sb) is not None
     return e, sb, fake
 
