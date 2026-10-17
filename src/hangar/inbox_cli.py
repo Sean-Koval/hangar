@@ -25,6 +25,9 @@ def inbox(as_json: bool = typer.Option(False, "--json")):
         what = x.get("job") or x.get("session") or ""
         typer.secho(f"{_ICON.get(x['kind'], x['kind']):3} {what:16} {when:>4}  {x['reason']}", bold=True)
         typer.echo(f"{'':26}{x['action']}")
+        ls = x.get("links") or {}  # #157: where to act on it
+        if link := next((ls[k] for k in ("thread", "ticket", "pr", "job") if ls.get(k)), None):
+            typer.echo(f"{'':26}{link}")
 
 
 def register(app: typer.Typer) -> None:

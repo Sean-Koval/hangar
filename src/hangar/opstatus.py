@@ -45,6 +45,8 @@ SECTIONS = ("power", "loops", "harnesses", "builds", "failures", "egress", "requ
             "nightly", "log", "models")  # --- integ3: + models (review #105)
 # More of the nightly pass: fn(h, by) -> a JSON-able summary. The credential checks are the first.
 NIGHTLY: list[tuple[str, Callable[[Any, str], Awaitable[Any]]]] = []
+# More of every minute's pass: fn(h) (the inbox digests, #158). Runs while the sandbox pools are powered down too.
+MINUTELY: list[Callable[[Any], Awaitable[Any]]] = []
 # More status sections: name -> fn(fleet, sessions, jobs) -> JSON-able (the Cloud Doctor's).
 EXTRA: dict[str, Callable[[Any, Any, Any], Any]] = {}
 
@@ -289,6 +291,13 @@ class Ops:
                 log.info("deleted %d flight record(s) older than %d days", n, flightrec.RETENTION_DAYS)
         if self.due(now()) is not None and (self._nightly is None or self._nightly.done()):
             self._nightly = asyncio.create_task(self.nightly("schedule"))
+        for fn in MINUTELY:
+            try:
+                await fn(h)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - one failing doesn't stop the others
+                log.exception("ops minute step %s failed", getattr(fn, "__name__", fn))
 
     async def nightly(self, by: str) -> dict[str, Any]:
         """The credential checks, then each NIGHTLY step, one after another; one failing doesn't stop the rest."""

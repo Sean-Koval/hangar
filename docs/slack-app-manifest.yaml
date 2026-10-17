@@ -23,6 +23,7 @@ oauth_config:
       - app_mentions:read   # @hangar <instructions>
       - channels:history    # replies in a job's thread (public channels), and a thread as context
       - groups:history      # the same in private channels
+      - im:write            # inbox delivery: a DM for an agent's question or approval, and the daily digests
 settings:
   event_subscriptions:
     request_url: https://hangar.example.com/api/hooks/slack/events
