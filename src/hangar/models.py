@@ -214,6 +214,8 @@ class Person(BaseModel):
     tz: str = "America/New_York"
     digest: list[str] = Field(default_factory=lambda: ["10:15", "16:00"])
     digest_weekends: bool = False
+    # --- #182: their own monthly eval cap in USD (None: HANGAR_EVAL_AUTHOR_CAP_USD_MONTH); an admin sets it
+    eval_cap_usd_month: float | None = None
 
 
 class AuditEvent(BaseModel):

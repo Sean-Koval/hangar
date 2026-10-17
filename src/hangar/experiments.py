@@ -356,6 +356,9 @@ def submit(jobs: JobService, spec: ExperimentSpec, caller: Any, source: str = "a
     if len(set(egress.values())) > 1:
         raise JobError("egress is fixed per experiment, and these environments differ in it: "
                        + "; ".join(f"{k}: {v}" for k, v in egress.items()))
+    from hangar import evalbudget  # --- #182: projected over the team's or the author's monthly eval budget: refused
+
+    evalbudget.experiment_gate(jobs, spec, caller)
     for vname, v in spec.variants.items():
         if v.harness_lock:  # --- #135: a lock that can't be claimed in the variant's environment fails now
             _variant_lock(jobs.fleet, spec, vname, v)
@@ -779,6 +782,10 @@ def _stop_starting(jobs: JobService, job: Job, st: State, spec: ExperimentSpec) 
 
     if st.infra_stopped:  # --- #166: more infra errors than the retry cap: a provider outage, usually
         return st.infra_stopped
+    from hangar import evalbudget  # --- #182: running trials finish; no new one once the month's budget is spent
+
+    if why := evalbudget.spent_reason(jobs, evalbudget.author_of(job)):
+        return why
     for vname, v in st.pins.get("variants", {}).items():
         h = HARNESSES.get(v["harness"])
         now_v = h.version if h is not None and h.install else None

@@ -1208,6 +1208,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import trialcache  # --- #180: the trial cache's invalidation and its sentinel
 
     trialcache.mount(app, h, J, A)
+    from hangar import evalbudget  # --- #182: the team's monthly eval budget
+
+    evalbudget.mount(app, h, U, A)
     from hangar import testresults  # --- testresults: GET /api/jobs/{id}/tests, the sessions', flaky lists, status
 
     testresults.mount(app, h, J, A)

@@ -1367,6 +1367,11 @@ from hangar.repo_cli import repo_app as _repo_app  # noqa: E402
 
 app.add_typer(_repo_app, name="repo")
 
+# ---------------------------------------------------------------------------- #182: the eval budget (eval_cli.py)
+from hangar.eval_cli import eval_app as _eval_app  # noqa: E402
+
+app.add_typer(_eval_app, name="eval")
+
 # ---------------------------------------------------------------------------- harness locks (harness_cli.py, #133)
 from hangar.harness_cli import harness_app as _harness_app  # noqa: E402
 

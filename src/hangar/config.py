@@ -619,6 +619,9 @@ class Settings(BaseSettings):
     # this cron (in HANGAR_EVAL_TZ: the eval window) bypassing the cache, written to v1/sentinel/{date}.json. []: off
     trial_sentinel: list[dict[str, Any]] = Field(default_factory=list)
     trial_sentinel_schedule: str = "0 20 * * *"
+    # --- #182: monthly eval spend (evalbudget.py), per calendar month UTC: the team's (0: off) and each author's
+    eval_budget_usd_month: float = Field(1500.0, ge=0)
+    eval_author_cap_usd_month: float = Field(400.0, ge=0)
 
     @property
     def backup_interval_hours(self) -> float:
