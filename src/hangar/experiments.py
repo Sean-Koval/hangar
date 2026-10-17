@@ -1873,8 +1873,6 @@ def effective_spec(fleet: Fleet, sb: Sandbox, spec: EnvSpec) -> EnvSpec:
 async def prepare_trial(jobs: JobService, job: Job, s: Session) -> None:
     """From JobService._provision, before the trial's first turn: its variant's approvals, and its task's pinned
     base commit (the first trial to clone pins it when GitHub couldn't say)."""
-    from hangar.jobs import JobError
-
     exp, key = job.labels.get(EXP_LABEL), job.labels.get(TRIAL_LABEL)
     if not exp or not key or job.source not in ("experiment", "shadow") \
             or jobs.fleet.store.kv_get(KV_TRIAL + job.id) != exp:  # --- #183: a shadow trial is a trial too
@@ -1888,6 +1886,16 @@ async def prepare_trial(jobs: JobService, job: Job, s: Session) -> None:
     repo = sb.info.get("repo_path")
     if not repo:
         return
+    await _pin_trial_base(jobs, job, s, exp, task, repo)
+    if job.source == "shadow":
+        from hangar import canaries
+
+        await canaries.plant_file(jobs, job, repo)  # --- #184: a canary's repo_file placement, never committed
+
+
+async def _pin_trial_base(jobs: JobService, job: Job, s: Session, exp: str, task: str, repo: str) -> None:
+    from hangar.jobs import JobError
+
     kv = f"{KV_BASE}{exp}:{task}"
     pin = jobs.fleet.store.kv_get(kv)
     if pin is None:

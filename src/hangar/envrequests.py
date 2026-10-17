@@ -100,6 +100,12 @@ class EnvRequest(BaseModel):
                                         "created_at", "decided_at"})
 
 
+def _canary(host: str | None) -> bool:
+    from hangar import canaries
+
+    return canaries.is_canary_host(host or "")
+
+
 def target(kind: str, name: str | None, host: str | None, port: int | None) -> str:
     if kind == "secret":
         return name or ""
@@ -243,6 +249,9 @@ class EnvRequests:
                 ignored.append(f"{name}: {e}")
                 continue
             want = target(fields["kind"], fields.get("name"), fields.get("host"), fields.get("port"))
+            if fields["kind"] == "egress" and _canary(fields.get("host")):  # --- #184: denied on the spot, counted
+                self._canary(s, sb, fields, n_turn, local)
+                continue
             if any(r.kind == fields["kind"] and r.target == want for r in pending):
                 continue  # asked again while it waits: the one request stands
             if (no := denied.get((fields["kind"], want))) is not None:
@@ -273,6 +282,23 @@ class EnvRequests:
 
             await envdoctor.refresh(self.sessions, s, sb)
         return new
+
+    def _canary(self, s: Session, sb: Any, fields: dict[str, Any], n_turn: int, local: str) -> None:
+        """An environment request for an injection canary's host (#184): recorded denied by hangar, never asked of
+        a person, counted as a canary hit, and in the trace like a refused connection."""
+        from hangar import canaries
+        from hangar.events import RunEvent
+
+        r = EnvRequest(environment=s.environment, requester=f"job:{s.job_id}" if s.job_id else f"session:{s.id}",
+                       session_id=s.id, session=s.name, job_id=s.job_id, sandbox_id=sb.id, owner=s.person,
+                       turn=n_turn, local=local, state="denied", decided_by="hangar", decided_at=time.time(),
+                       message=f"{fields.get('host')} is not a reachable host", **fields)
+        self.store.put(r)
+        canaries.hit(self.fleet, sb, fields.get("host") or "", "request")
+        self.sessions.activity.append(s.id, [RunEvent(kind="progress", turn=n_turn, text=(
+            f"egress request denied: {r.target} (not a reachable host)"), data={
+            "request": r.id, "request_kind": "egress", "target": r.target, "state": "denied", "egress": "deny",
+            "host": fields.get("host"), "reason": "canary"})])
 
     def _allowed(self, owner: str | None) -> bool:
         """Whether `owner` is under MAX_PER_OWNER_HOUR. In memory: a restart forgets, which loosens a flood guard

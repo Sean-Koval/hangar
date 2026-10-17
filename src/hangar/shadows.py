@@ -142,14 +142,22 @@ def start(svc: JobService, job: Job) -> dict[str, Any]:
         body = _resolve_now(svc, sp.harness, job.environment, {tid: task})
     p = pinsets.put(svc.fleet, body, "hangar:shadow")
     context = [c.model_copy() for c in job.context if c.kind not in ("patch", "bundle")]
+    from hangar import canaries
+
+    plan = canaries.choose(sp, context)  # --- #184: an injection canary in the shadow's own copy, maybe
     req = pinsets.TrialsRequest(
         pin_set=p.id, n=1, source="shadow", shadow_of=job.id, author=sp.owner or "shadow",
         task=experiments.Task(id=tid, instructions=job.instructions, repo=job.repo, base_branch=job.base_branch,
                               base_sha=job.result.base_sha, verify=job.verify, context=context or None,
                               title=job.title[:200]),
         budget=JobBudget(max_cost_usd=sp.budget_usd), name=f"shadow of {job.id}")
+    if plan is not None:
+        req.reuse = None  # a canary shadow is never served from the trial cache
     # the team's credentials only: a shadow runs for no person, so never with someone's own login
-    return pinsets.start_trials(svc, req, Caller("hangar:shadow", "shadow"), untrusted_source=job.untrusted_source)
+    out = pinsets.start_trials(svc, req, Caller("hangar:shadow", "shadow"), untrusted_source=job.untrusted_source)
+    if plan is not None and out.get("experiment"):
+        canaries.remember(svc, out["experiment"], plan, job.id, p.body().get("harness_digest"))
+    return out
 
 
 def _resolve_now(svc: JobService, lock: str, environment: str, tasks: dict[str, Any]) -> Any:

@@ -30,6 +30,7 @@ v1/runs/{date}/{session_id}.{run_id}/run.json          hangar.run/v1, written la
                                      trace.otlp.json   hangar.trace/v1 of this run only (the turn and its children)
                                      tests.json        hangar.tests/v1: the turn's test runs (when tests ran)
                                      grade.json        experiment trials, once the grader has run
+                                     canary.json       canary shadows (#184): the canary and whether it was obeyed
                                      patch.diff        the turn's diff against the commit it started on
 v1/jobs/{date}/{job_id}/events/{ts_ms}-{kind}.json     hangar.job_event/v1
 v1/tapes/...                                           reserved for tapes (#177), expired after 30 days
@@ -111,6 +112,11 @@ human review, reverts and abandon reasons (#168, [metrics.md](../metrics.md)).
   `applied`, `seconds`, `trust`, `hidden_tests`, `data` from `$HANGAR_GRADE_OUT`, ...) with `experiment_id`,
   `trial_key`, `job_id`, `session_id` and `run_id`. `test_run` names the grader's `grader` TestRun and `tests` holds
   it in `tests.json`'s shape (`runs` with every case, `events`), trusted only for `trust: isolated` (#164).
+- **`canary.json`** (`hangar.canary/v1`, #184): a canary shadow's injection canary
+  ([security.md](../security.md#injection-canaries)): `token`, `placement`, `template_id`, `expected_signals`,
+  `signals` (each signal and whether hangar saw it), `obeyed`, `experiment_id`, `shadow_of`, `harness_digest`,
+  `job_id`, `session_id`, `run_id`. Staged as the shadow's turn ends, before its `run.json`, and not listed in
+  `objects`.
 - **`patch.diff`**: the run's work against the commit the turn started on (`start_sha`): commits, uncommitted
   changes and untracked files (as `get_session_patch` computes it), read from the sandbox as the turn ends. Changes
   left uncommitted by an earlier turn appear again. Absent when the sandbox was gone.
