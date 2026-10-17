@@ -166,6 +166,13 @@ hangar cred migration
 
 Your logins then never reach a member's sandbox, nor a job no person owns. Make the ones the team may share the team's (`hangar cred owner gh-pat team`, for an API key or token), add team API keys, and link your own GitHub login (`hangar person link owner github <login>`) so your issues keep running with your login. `GET /api/credentials/migration` returns the same record.
 
+## A shared harness
+
+The team's harness (its instructions, skills and Claude Code plugins) lives in a harness repo of its own, frozen from a
+run that went well, and hangar runs from it by name: `harness_lock: team-default@stable` on a job or session, and for
+intake jobs by default with `HANGAR_DEFAULT_HARNESS=team-default@stable`. Set `HANGAR_HARNESS_REPO` to the repo's
+URL; see [the team harness repo](harness-lock.md#the-team-harness-repo).
+
 ## Inbox delivery: DMs and the digest
 
 What needs someone ([the inbox](landing.md#7-the-inbox-what-needs-you)) reaches them in Slack through their linked Slack account: a DM for each new agent question or approval, and a digest at 10:15 and 16:00 on weekdays. Someone without a linked Slack account gets nothing, and `hangar doctor` lists them under "inbox not delivered". The Slack app needs the `im:write` scope ([slack.md](slack.md#inbox-dms)).
@@ -194,6 +201,8 @@ Anyone may change their own settings; admins anyone's (`PUT /api/people/{id}/del
 - **personal credentials shared**: fails for any subscription login stored as a team credential, and says what the migration did.
 - **team credentials for jobs**: mapped repos (GitHub and Slack), inbound webhooks and schedules without a person whose environment's harness would get no login, and repos whose `credentials: person` policy makes unlinked senders' jobs fail.
 - **subscription logins**: warns for mapped repos, webhooks and schedules whose harness would find only subscription logins, and for people whose only logins for a harness are subscriptions (their jobs fail while their sessions work); fails under `HANGAR_SUBSCRIPTION_LOGINS=any`.
+- **harness repo**: when `HANGAR_HARNESS_REPO` is set, whether it is reachable, when it was last refreshed, and
+  whether every channel resolves.
 - **inbox delivery**: with the Slack app configured, warns for people who get DMs (`--dm` isn't `off`) but have no linked Slack account: "inbox not delivered".
 - **unlinked senders**: GitHub, Slack, Jira and GitHub Projects accounts linked to nobody that started 3 or more jobs in the last 14 days, with the `hangar person link` command for each.
 

@@ -24,6 +24,7 @@ from hangar import envbuilds as envbuilds  # --- envbuilds
 from hangar import exchange, observe  # --- observe
 from hangar import fairness as fairness  # --- review capacity (#159)
 from hangar import ghprojects as ghprojects  # --- intake: registers the GitHub Projects write-back
+from hangar import harness_repo as harness_repo  # --- #138: the team harness repo
 from hangar import harness_review as harness_review  # --- #169: the Friday harness review
 from hangar import inbox_notify as inbox_notify  # --- inbox delivery (#157, #158)
 from hangar import modelpolicy as modelpolicy  # --- canary
@@ -357,6 +358,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         outbox.of(h.fleet).start(h.sessions, h.jobs)  # --- outbox (#163): drains while the pools are off too
         weekly.of(h.jobs).start()  # --- #168: the nightly revert pass and the standup line
         modelpolicy.of(h.fleet).start()  # --- canary: providers' model lists, fetched now and kept fresh
+        harness_repo.of(h.fleet).start()  # --- #138: the team harness repo's checkout, kept fresh
         missed = redeliver.start(h)  # --- reconciler: GitHub deliveries that failed while hangar was down
         async with mcp.session_manager.run():
             yield
@@ -371,6 +373,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await outbox.of(h.fleet).stop()  # --- outbox (#163)
         await weekly.of(h.jobs).stop()  # --- #168
         await modelpolicy.of(h.fleet).stop()  # --- canary
+        await harness_repo.of(h.fleet).stop()  # --- #138
         if prebuild:
             prebuild.cancel()
         await h.triggers.stop()
@@ -1193,9 +1196,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import harness_lock  # --- harness locks (#133): GET /api/{sessions,jobs}/.../harness
 
     harness_lock.mount(app, h, U, J, owner_filter)
-    from hangar import harness_thaw  # --- harness locks (#134): GET /api/harness-locks/{ref}[/outdated]
+    from hangar import harness_thaw  # --- harness locks (#134): GET /api/harness-locks/{ref}[/outdated]; #138
 
-    harness_thaw.mount(app, h, U)
+    harness_thaw.mount(app, h, U, A)
     experiments.mount(app, h, J, owner_filter)
     from hangar import testresults  # --- testresults: GET /api/jobs/{id}/tests, the sessions', flaky lists, status
 

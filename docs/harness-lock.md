@@ -139,7 +139,7 @@ CI check (#138).
 A session or job can run *from* a lock: `hangar harness thaw team-default@r14 --env python "..."`, or
 `harness_lock: "team-default@r14"` on `POST /api/jobs`, `POST /api/sessions` or MCP `submit_job`.
 
-**The registry.** `HANGAR_HARNESS_REPO` is a checkout of the team harness repo (#138): locks at
+**The registry.** `HANGAR_HARNESS_REPO` is the team harness repo ([below](#the-team-harness-repo)): locks at
 `harnesses/<name>/harness.lock` (or `<name>/harness.lock`), channels in `channels.yaml`
 (`{team-default: {stable: "sha256:..."}}`). A reference is `name` (the current lock), `name@rN`, `name@sha256:...` or
 `name@<channel>`; a revision or digest that isn't the checkout's current one is found in its git history.
@@ -212,8 +212,54 @@ it. It changes nothing; exit 1 when something is outdated.
 
 | Variable | Default | |
 | --- | --- | --- |
-| `HANGAR_HARNESS_REPO` | unset | The harness registry: a checkout of the team harness repo (#138 adds fetching it) |
+| `HANGAR_HARNESS_REPO` | unset | The harness registry: a local checkout, or a git URL with an optional `#ref` ([below](#the-team-harness-repo)) |
+| `HANGAR_HARNESS_REPO_REFRESH_SECONDS` | `600` | How often hangar fetches a URL registry (also on a GitHub `push` webhook) |
+| `HANGAR_DEFAULT_HARNESS` | unset | The lock intake jobs run from when they name none, e.g. `team-default@stable` |
 | `HANGAR_HARNESS_DRIFT` | `warn` | What turn 1's drift from its lock does: `warn` or `fail` |
+
+## The team harness repo
+
+Locks live in a git repo of their own, not in hangar (#138): a harness change is a content change the team reviews
+there, on its own cadence and `CODEOWNERS`, without a hangar release. Hangar and flightdeck read it; neither owns it.
+Where it lives is the owner's choice (a team's real harness may be internal to its employer); a public example is
+built separately in agent-factory (agent-factory#4).
+
+```
+team-harnesses/
+  harnesses/team-default/{harness.lock, CLAUDE.md, skills/*/SKILL.md, plugins/<marketplace>/..., native/...}
+  channels.yaml                 # {team-default: {stable: sha256:..., canary: sha256:...}}; moved only by promotion PRs
+  .github/workflows/check.yml   # `hangar harness check` on every harness directory
+  CODEOWNERS                    # channels.yaml: two reviewers (approver != author, with branch protection)
+```
+
+**Pointing hangar at it.** `HANGAR_HARNESS_REPO` is either a local directory (a checkout you keep current yourself)
+or a git URL with an optional `#ref` (a branch, tag or commit; default: the repo's default branch), for example
+`https://github.com/acme/team-harnesses#main`. For a URL, hangar keeps a full checkout of its own under
+`<data>/harness-repo/` on the control plane (full history, so `name@rN` and older digests resolve) and fetches it at
+startup, every `HANGAR_HARNESS_REPO_REFRESH_SECONDS` (10 minutes) and at once when GitHub sends a `push` webhook for
+that repo (add the `push` event to the App's or repo's webhook; otherwise the 10-minute refresh picks it up). A
+private repo is read with the control plane's git credential (`HANGAR_GATEWAY_CREDENTIAL`, else the GitHub App with
+`contents: read`), never a sandbox token; the token reaches git through its environment, not its command line or the
+checkout's config. A failed fetch keeps the last good checkout. The control plane stays up when the sandbox pools
+are powered down, so refreshes go on overnight. `POST /api/harness-locks/refresh` (admin) fetches it now.
+
+**Listing.** `GET /api/harness-locks` lists each harness with its current revision and digest, and each channel's
+digest and the revision it resolves to, plus the registry's state (source, commit, last refresh, error).
+
+**`hangar doctor`** reports the repo: reachable (with the commit and the last successful refresh, or the error and
+the fix), and whether every channel in `channels.yaml` resolves to a lock. It fails when `HANGAR_DEFAULT_HARNESS` is
+set without a repo, or names a harness the repo doesn't have.
+
+**The default for intake jobs.** `HANGAR_DEFAULT_HARNESS=team-default@stable` (off by default) makes intake jobs
+(from GitHub, GitHub Projects, Jira, Slack and inbound webhooks) run from that lock when they name no harness, model
+or lock of their own, with an event saying which revision. A default that can't be claimed (the repo unreachable,
+the environment unable to run the lock) never blocks intake: the job runs as before, with a warning event. Jobs from
+the API, MCP and CLI are unchanged; they pass `harness_lock` themselves.
+
+**Bootstrapping `team-default`.** Pick a job that went well (green verify, merged PR), then
+`hangar harness freeze <job> --out harnesses/team-default --name team-default`, set `stable` in `channels.yaml` to
+the digest `hangar harness check` prints, and open the PR to the harness repo. Thaw it once on a real ticket
+(`harness_lock: team-default@stable`) and record that turn 1 had no drift.
 
 Not yet: experiment variants by lock (#135), warm pools per prefix-layer digest (a thawed session takes a sandbox like
 any other and mounts the lock into it), mounting native fragments from the lock (they still come from the

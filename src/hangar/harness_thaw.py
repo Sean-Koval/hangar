@@ -2,7 +2,8 @@
 turn 1 that what the sandbox had matches it.
 
 * **Resolve.** `name`, `name@rN`, `name@sha256:...` or `name@<channel>` against the harness registry: a checkout of
-  the team harness repo (`HANGAR_HARNESS_REPO`; `harnesses/<name>/harness.lock`, channels in `channels.yaml`). A
+  the team harness repo (`HANGAR_HARNESS_REPO`, a directory or a git URL hangar keeps a checkout of: harness_repo.py,
+  #138; `harnesses/<name>/harness.lock`, channels in `channels.yaml`). A
   revision or digest that isn't the current one is looked up in the checkout's git history.
 * **Claim.** The lock's CLI version must be the one `harnesses.lock.yaml` pins, or the claim is refused; the model is
   pinned to the lock's concrete id and the approval mode to its binding. The lock's directory is copied out of the
@@ -79,14 +80,11 @@ class Resolved:
 
 # ====================================================================== resolve
 def registry(settings: Any) -> Path:
-    raw = getattr(settings, "harness_repo", None)
-    if not raw:
-        raise ThawError("no harness registry: set HANGAR_HARNESS_REPO to a checkout of the team harness repo "
-                        "(harnesses/<name>/harness.lock)")
-    root = Path(str(raw)).expanduser()
-    if not root.is_dir():
-        raise ThawError(f"HANGAR_HARNESS_REPO {root} is not a directory (a checkout of the team harness repo)")
-    return root
+    """The registry's directory: HANGAR_HARNESS_REPO as a local checkout, or hangar's own checkout of it as a git URL
+    (#138, harness_repo.py)."""
+    from hangar import harness_repo
+
+    return harness_repo.root(settings)
 
 
 def _git(root: Path, *args: str) -> str | None:
@@ -615,9 +613,10 @@ def outdated(fleet: Fleet, ref: str) -> dict[str, Any]:
 
 
 # ====================================================================== REST
-def mount(app: Any, h: Any, U: Any) -> None:
-    """GET /api/harness-locks/{ref} (a lock resolved from the registry, with its harness_digest) and
-    GET /api/harness-locks/{ref}/outdated. Team content: any person's login reads them."""
+def mount(app: Any, h: Any, U: Any, A: Any) -> None:
+    """GET /api/harness-locks/{ref} (a lock resolved from the registry, with its harness_digest),
+    GET /api/harness-locks/{ref}/outdated and GET /api/harness-locks (every harness and channel, #138). Team content:
+    any person's login reads them. POST /api/harness-locks/refresh (admin) fetches a URL registry now."""
     from fastapi.responses import JSONResponse
 
     @app.get("/api/harness-locks/{ref}")
@@ -628,6 +627,21 @@ def mount(app: Any, h: Any, U: Any) -> None:
             return JSONResponse({"error": str(e)}, status_code=404)
         return {"ref": ref, "name": r.name, "harness_digest": r.digest, "path": r.path, "commit": r.commit,
                 "lock": r.lock}
+
+    @app.get("/api/harness-locks")
+    async def list_harnesses(_: str = U):  # --- #138: the team harness repo's harnesses, revisions and channels
+        from hangar import harness_repo
+
+        try:
+            return harness_repo.listing(h.settings)
+        except ThawError as e:
+            return JSONResponse({"error": str(e), "registry": harness_repo.status(h.settings)}, status_code=404)
+
+    @app.post("/api/harness-locks/refresh")
+    async def refresh_harnesses(_: str = A):  # --- #138: fetch the harness repo now (admin)
+        from hangar import harness_repo
+
+        return await harness_repo.of(h.fleet).refresh()
 
     @app.get("/api/harness-locks/{ref}/outdated")
     async def get_outdated(ref: str, _: str = U):

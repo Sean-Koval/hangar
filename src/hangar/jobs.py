@@ -439,6 +439,16 @@ class JobService:
         except ValueError as e:
             raise JobError(str(e)) from e
         thawed = None
+        lock_note = None
+        from hangar import harness_repo  # --- #138: HANGAR_DEFAULT_HARNESS for intake jobs that name none
+
+        if default_lock := harness_repo.default_for(self.settings, source, req.harness, req.model, req.harness_lock):
+            try:
+                thawed = harness_thaw.pin(self.fleet, default_lock, env)
+                defaults = defaults._replace(harness=thawed["harness"], model=thawed["model"] or defaults.model)
+                lock_note = f"runs harness {default_lock} (HANGAR_DEFAULT_HARNESS) at r{thawed['revision']}"
+            except harness_thaw.ThawError as e:  # never block intake on the registry: run as before, and say so
+                lock_note = f"warning: HANGAR_DEFAULT_HARNESS={default_lock} not used: {e}"
         if req.harness_lock:  # --- harness locks (#134): the lock fixes the harness and model; refused here, not later
             try:
                 thawed = harness_thaw.pin(self.fleet, req.harness_lock, env, req.harness, req.model)
@@ -523,6 +533,8 @@ class JobService:
             self._event(job, f"queued by {requester} via {source}{best}")
         if defaults.notes:  # --- frontdoor
             self._event(job, f"from the repo policy for {repopolicy.repo_key(repo)}: " + "; ".join(defaults.notes))
+        if lock_note:  # --- #138
+            self._event(job, lock_note)
         self.fleet.audit(requester, "job.submit", job.id, environment=env, repo=repo, source=source)
         if stance is not None and stance.posture == "warn" and stance.problems:  # --- intake posture (#123)
             self._event(job, "posture.warn: " + "; ".join(stance.problems) + " (HANGAR_INTAKE_POSTURE=warn runs it; "
@@ -1523,6 +1535,11 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
 
         return await ghprojects.handle(svc, delivery, payload)
     repo = (payload.get("repository") or {}).get("full_name") or ""
+    if event == "push":  # --- #138: a push to the team harness repo refreshes hangar's checkout of it now
+        from hangar import harness_repo
+
+        return {"ok": True, "harness_repo": "refreshing"} if harness_repo.of(svc.fleet).on_push(repo) else \
+            {"ignored": "push: not the harness repo"}
     envs = svc.repo_envs(f"https://github.com/{repo}") if repo else []
     if not envs:
         return {"ignored": f"repo '{repo}' is not in HANGAR_GITHUB_REPOS"}
