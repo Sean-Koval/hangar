@@ -227,7 +227,8 @@ async def test_landing_doesnt_arm_on_the_jobs_own_person_and_does_on_another_app
 
 
 async def test_an_untainted_job_lands_on_its_own_persons_approval_as_before(svc, gh):
-    lands(svc, approvers=["alice"])
+    """With `self_approval: any` (#160); the default needs a second reviewer for a normal-risk PR (test_landing)."""
+    lands(svc, approvers=["alice"], self_approval="any")
     link_github(svc, "alice", 1294)
     job = pr_job(svc, person="alice")
     await green(svc)

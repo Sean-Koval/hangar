@@ -6,7 +6,10 @@ after a person approves. GitHub's branch protection stays the gate; hangar only 
 * **Identity.** With HANGAR_GITHUB_APP_CREDENTIAL set, hangar opens agent PRs, writes their comments and lands them
   as the App. Its installation tokens are minted per repo with `contents: write` and `pull_requests: write` and
   nothing else (no `workflows`, no `administration`), and never leave the control plane. The PR's author is then
-  the App, so the person who asked for the work can approve it (GitHub refuses an author's own approval).
+  the App, so GitHub lets the person who asked for the work approve it (it refuses an author's own approval). Whether
+  that approval lands the PR is the self-approval rule's call (#160, `self_approval` in the repo policy): by default
+  only for a low-risk PR (docs and tests) with an independent AI review of the approved head; otherwise a second
+  reviewer must approve. It applies only to untainted PRs: a tainted one always needs someone else (#130).
 * **State.** `pull_request`, `pull_request_review`, `check_run`, `check_suite` and `status` webhooks keep
   `job.landing` current: open, approved, merged or closed; the head and its checks; when the required checks went
   green and when the PR merged.
@@ -18,7 +21,8 @@ after a person approves. GitHub's branch protection stays the gate; hangar only 
   auto-merge is never armed while an agent can push.
 * **The end.** A merged or closed PR ends the job's session: a final checkpoint, then the sandbox goes.
 * **The packet.** One comment on each agent PR, from the job record: verification, cost, harness and model,
-  files, risk tier, and links to the session and recorded demos. It is edited, not reposted, as the PR changes.
+  files, risk tier, the AI review (#161, aireview.py), who may land it, and links to the session and recorded demos.
+  It is edited, not reposted, as the PR changes.
 """
 
 from __future__ import annotations
@@ -36,7 +40,7 @@ from urllib.parse import quote
 
 import httpx
 
-from hangar import baseline
+from hangar import aireview, baseline
 from hangar import modelpolicy as modelpolicy  # --- review #105
 from hangar.events import DEFAULT_PRICES, usage_line
 from hangar.gateway import AppTokens
@@ -209,6 +213,9 @@ class Landing:
         self._cache: dict[tuple[str, str, str], tuple[float, Any]] = {}
         # --- taint (#130): reviewers' GitHub user ids by login, from their reviews (people links are by id)
         self._login_ids: dict[str, int] = {}
+        self._ai_due: dict[str, str] = {}  # --- AI review (#161): job id -> the head a review is due for
+        # --- self-approval (#160): the requester's approval a missing AI review held: job id -> (login, sha, review)
+        self._held: dict[str, tuple[str, str, int | None]] = {}
 
     def _bg(self, job: Job, coro: Any) -> None:
         """Landing work off the webhook's request (tracked, cancelled on shutdown); a failure is said on the job."""
@@ -290,7 +297,9 @@ class Landing:
         policy = self.svc.policies.get(job.repo)
         st.risk = risk(st.files, policy.risk_paths if policy else None)[0]
         self.pushed(job, job.result.head_sha, "hangar pushed")
+        await self.resolve_approvers(job, policy)  # --- self-approval (#160), review capacity (#159)
         await self.post_packet(job)
+        aireview.request(self.svc, job, "hangar pushed")  # --- AI review (#161)
 
     async def turn_starting(self, job: Job) -> None:
         """Before any agent turn on the job: no auto-merge stays armed while an agent can push. Refuses the turn
@@ -313,9 +322,10 @@ class Landing:
             self._bg(job, self.evaluate(job))
 
     def restore(self) -> None:
-        """After a restart: finish ending sessions, and land what was approved."""
+        """After a restart: finish ending sessions, and land what was approved; AI reviews pick up (#161)."""
         for job in list(self.svc._jobs.values()):
             self.idle(job)
+        aireview.restore(self.svc)
 
     def pushed(self, job: Job, sha: str | None, why: str) -> None:
         """A new head on the PR: its checks start over, and an approval of an earlier commit no longer counts."""
@@ -329,6 +339,8 @@ class Landing:
             self.svc._event(job, f"{why} ({_short(sha)}) after @{st.approved_by}'s approval of "
                                  f"{_short(st.approved_sha)}: that approval doesn't cover it; it needs a new review")
             self._unapprove(st)
+        if (held := self._held.get(job.id)) is not None and held[1] != sha:
+            self._held.pop(job.id, None)  # --- self-approval (#160): it was of an older head
         if st.armed_sha and st.armed_sha != sha:
             self._bg(job, self._disarm_locked(job, f"{why} after it was armed"))
         self.svc._save(job)
@@ -383,6 +395,7 @@ class Landing:
         if got[0] in st.checks or len(st.checks) < MAX_CHECKS:
             st.checks[got[0]] = got[1]
         self.svc._save(job)
+        aireview.record_check(self.svc, job, got[0], got[1], sha)  # --- AI review (#161): `check:<name>`
         if got[1] in OK and st.ci_green_sha != sha:
             self._bg(job, self._green(job, sha))
         return {"ok": True, "landing": job.id, "check": got[0], "value": got[1]}
@@ -422,8 +435,13 @@ class Landing:
             st.pr_state = "approved" if st.approved_sha and st.approved_sha == (head or st.head_sha) else "open"
         elif action == "synchronize":
             self.pushed(job, head, "a push to the branch")
+            aireview.request(self.svc, job, "a push to the branch")  # --- AI review (#161): debounced
         elif action in ("ready_for_review", "converted_to_draft") and st.pr_state == "approved":
             self._bg(job, self.evaluate(job))
+        if action == "ready_for_review":  # --- AI review (#161): drafts (tainted PRs open as drafts) wait for this
+            if head and not st.head_sha:
+                st.head_sha = head
+            aireview.request(self.svc, job, "ready for review")
         elif action == "auto_merge_disabled" and st.armed_sha:
             st.armed_sha = st.armed_at = None
             self.svc._event(job, "auto-merge was turned off on GitHub")
@@ -487,6 +505,12 @@ class Landing:
                 self.svc._event(job, f"@{user} approved {_short(sha)}, but isn't in the repo policy's approvers or "
                                      "a code owner of what it touches: it doesn't land the PR")
                 return
+            if auto and (refusal := self._self_approval(job, user, sha)) is not None:  # --- self-approval (#160)
+                self._refuse_self(job, user, sha, rid, refusal)
+                return
+            self._held.pop(job.id, None)
+            if st.needs_second and not self._is_own(job, user):
+                st.needs_second = False
             st.approved_by, st.approved_sha, st.approved_at, st.review_id = user, sha, now(), rid
             st.pr_state = "approved"
             self.svc._event(job, f"approved by @{user} ({why}) on {_short(sha)}")
@@ -832,6 +856,158 @@ class Landing:
         return (f"@{login} approved, but the agent read untrusted content (hangar:tainted) and @{login} is the job's "
                 "own person or requester: another approver must review it before it lands")
 
+    # ------------------------------------------------------------------ self-approval (#160)
+    def _person_of_login(self, login: str) -> str | None:
+        """The hangar person a GitHub login's account is linked to, by its numeric user id (never the login: a
+        renamed login can be registered by anyone). Known from the account's reviews, or `resolve_approvers`."""
+        from hangar import people
+
+        uid = self._login_ids.get(login.lower())
+        p = people.resolve_external(self.svc.store, "github", uid) if uid else None
+        return p.id if p else None
+
+    def _is_own(self, job: Job, login: str) -> bool:
+        return bool(job.person) and self._person_of_login(login) == job.person
+
+    def _self_approval(self, job: Job, login: str, sha: str) -> str | None:
+        """Why the job's own person's approval doesn't land its PR, or None (it does, or it isn't theirs).
+
+        Precisely: it applies to a person's job (team jobs, with no person, are unchanged) when the approving GitHub
+        account (by numeric id) is linked to that person. It runs after the taint gate (#130), which has already
+        refused the person's own approval of a tainted PR whatever this rule says, so it can only refuse more, never
+        allow what that gate refused. The repo policy's `self_approval`: `any` lands it as before; `never` doesn't;
+        `low_risk_with_ai_review` (the default) lands it only when the PR is low risk (docs and tests only) and an
+        independent AI review (#161) of the approved head isn't blocking. HANGAR_SELF_APPROVAL=allow_solo lets it
+        through while exactly one person exists, as for every other approval (there is no second reviewer)."""
+        from hangar import people
+        from hangar.repopolicy import DEFAULT_SELF_APPROVAL
+
+        if not self._is_own(job, login):
+            return None
+        policy = self.svc.policies.get(job.repo)
+        rule = (policy.self_approval if policy else None) or DEFAULT_SELF_APPROVAL
+        st = job.landing
+        if rule == "any":
+            return None
+        if getattr(self.settings, "self_approval", "deny") == "allow_solo" and \
+                len(people.list_people(self.svc.store)) == 1:
+            return None
+        if rule == "never":
+            why = "the repo policy's self_approval is never"
+        elif st.risk != "low":
+            why = f"risk {st.risk or 'unknown'}"
+        elif aireview.counts_for(st, sha):
+            return None
+        else:
+            r = st.ai_review or {}
+            if r.get("head_sha") == sha and r.get("verdict") == "blocking":
+                why = "the AI review of this commit is blocking"
+            elif r.get("head_sha") == sha and r.get("verdict") in ("approve", "comment") and not r.get("independent"):
+                why = "the AI review of this commit ran on the author's own harness"
+            else:
+                why = f"low risk, but no independent AI review of {_short(sha)} yet"
+        return f"self-approval doesn't land this PR ({why}): it needs a second reviewer"
+
+    def _refuse_self(self, job: Job, login: str, sha: str, rid: int | None, why: str) -> None:
+        st = job.landing
+        st.needs_second = True
+        if st.pr_state == "approved" and st.approved_by and st.approved_by.lower() == login.lower():
+            self._unapprove(st)
+        if "no independent AI review" in why:  # an AI review on its way may still let this approval count
+            self._held[job.id] = (login, sha, rid)
+        self.svc._event(job, f"@{login}'s approval of {_short(sha)}: {why}")
+        self._note(job, why)
+        self.svc.fleet.audit(f"github:{login}", "landing.self_approval", job.id, pr=job.result.pr_number, sha=sha,
+                             decision="refused", why=why, risk=st.risk)
+        self.svc._save(job)
+
+    async def retry_held_approval(self, job: Job) -> None:
+        """An AI review was recorded: a requester's approval that waited for it is looked at again."""
+        held = self._held.get(job.id)
+        if held is None or held[1] != (job.landing.head_sha or job.result.head_sha):
+            return
+        await self._approved(job, *held)
+
+    def needs_second_reviewer(self, job: Job) -> bool:
+        """Whether the PR needs someone other than the job's own person to land it (#160, #130): what review
+        capacity (#159) counts against the repo's approvers."""
+        from hangar import taint
+        from hangar.repopolicy import DEFAULT_SELF_APPROVAL
+
+        st = job.landing
+        if not job.person:
+            return False
+        if taint.tainted(job) or st.needs_second:
+            return True
+        policy = self.svc.policies.get(job.repo)
+        if policy is None or policy.land != "auto_after_approval":
+            return False
+        rule = policy.self_approval or DEFAULT_SELF_APPROVAL
+        if rule == "any":
+            return False
+        return rule == "never" or st.risk != "low" or not aireview.counts_for(st, st.head_sha or job.result.head_sha)
+
+    async def resolve_approvers(self, job: Job, policy: RepoPolicy | None) -> None:
+        """The hangar people linked to the repo policy's approvers (other than the job's own person): who a second
+        review falls to. Logins are looked up for their numeric ids (`GET /users/{login}`, cached)."""
+        from hangar import people
+
+        st = job.landing
+        if not job.person or policy is None or not policy.approvers:
+            return
+        found: list[str] = []
+        gh = None
+        try:
+            for login in policy.approvers[:20]:
+                uid = self._login_ids.get(login.lower())
+                if uid is None:
+                    if gh is None:
+                        gh = self.svc._github() or await self.client(parse_repo(job.repo))
+                    if gh is None:
+                        break
+                    with contextlib.suppress(GitHubError, httpx.HTTPError):
+                        user = _d(await gh._req("GET", f"/users/{quote(login)}"))
+                        if isinstance(user.get("id"), int) and not isinstance(user.get("id"), bool):
+                            uid = self._login_ids[login.lower()] = user["id"]
+                p = people.resolve_external(self.svc.store, "github", uid) if uid else None
+                if p is not None and p.id != job.person and p.id not in found:
+                    found.append(p.id)
+        finally:
+            if gh is not None:
+                await gh.close()
+        if found != st.approver_people:
+            st.approver_people = found
+            self.svc._save(job)
+
+    def landing_rule(self, job: Job, policy: RepoPolicy | None) -> str:
+        """The packet's "Landing rule" line: who may land it, and why."""
+        from hangar import taint
+        from hangar.repopolicy import DEFAULT_SELF_APPROVAL
+
+        if policy is None or policy.land != "auto_after_approval":
+            return "- **Landing rule:** merged by hand on GitHub (the repo policy's `land` is manual)"
+        if not job.person:
+            return "- **Landing rule:** any approver or code owner (a team job: nobody's own work)" + \
+                (", other than whoever asked for it (it read untrusted content)" if taint.tainted(job) else "")
+        if taint.tainted(job):
+            return ("- **Landing rule:** an approver other than the job's own person: the agent read untrusted "
+                    "content, so its requester can't be the reviewer")
+        rule = policy.self_approval or DEFAULT_SELF_APPROVAL
+        st = job.landing
+        if rule == "any":
+            return "- **Landing rule:** any approver, the job's own person included (`self_approval: any`)"
+        if rule == "never":
+            return "- **Landing rule:** a second reviewer: the job's own person can't be its only approver " \
+                   "(`self_approval: never`)"
+        if st.risk != "low":
+            return (f"- **Landing rule:** a second reviewer: risk {st.risk or 'unknown'}, and only a low-risk PR "
+                    "(docs and tests) with an independent AI review may land on its requester's approval")
+        if aireview.counts_for(st, st.head_sha or job.result.head_sha):
+            return ("- **Landing rule:** the job's own person may approve it alone: low risk, and an independent AI "
+                    "review of this head isn't blocking")
+        return ("- **Landing rule:** low risk: the job's own person may approve it alone once an independent AI "
+                "review of this head isn't blocking; until then, a second reviewer")
+
     async def _qualifies(self, job: Job, login: str) -> str | None:
         policy = self.svc.policies.get(job.repo)
         if policy and login.lower() in {a.lower() for a in policy.approvers or []}:
@@ -972,6 +1148,11 @@ class Landing:
         except KeyError:
             pspec = None
         out += posture.packet_lines(self.settings, job, pspec)
+        if line := aireview.packet_line(job):  # --- AI review (#161)
+            out.append(line)
+        elif aireview.wanted(svc, job) is not None:
+            out.append("- **AI review:** pending")
+        out.append(self.landing_rule(job, policy))  # --- self-approval (#160)
         if policy and policy.land == "auto_after_approval":
             who = ", ".join(f"@{a}" for a in policy.approvers or []) or "a code owner"
             out.append(f"- **Landing:** an approval from {who}" + (" or a code owner" if policy.approvers else "")

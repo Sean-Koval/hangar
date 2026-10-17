@@ -61,6 +61,8 @@ class GH:
         self.reviews: list[dict] = []  # GitHub's own record of the PR's reviews, oldest first
         self.on_arm = None  # called while GitHub arms auto-merge: what happens on GitHub meanwhile
         self.disarm_fails = 0  # how many disable calls GitHub refuses
+        self.users: dict[str, int] = {}  # --- self-approval (#160): GET /users/{login} -> its numeric id
+        self.reviews_posted: list[dict] = []  # --- AI review (#161): POST /pulls/7/reviews bodies
 
     def __call__(self, r: httpx.Request) -> httpx.Response:
         self.calls.append(r)
@@ -89,6 +91,8 @@ class GH:
                 return httpx.Response(502, json={"message": "Server Error"})
             self.armed = None
             return httpx.Response(200, json=g["disable_auto_merge"])
+        if p == "/repos/o/r/pulls/7" and m == "GET" and r.headers.get("accept") == "application/vnd.github.diff":
+            return httpx.Response(200, text="diff --git a/src/app.py b/src/app.py\n+print('hi')\n")
         if p == "/repos/o/r/pulls/7" and m == "GET":
             return httpx.Response(200, json={
                 "number": 7, "state": self.state, "merged": self.merged_sha is not None, "node_id": NODE,
@@ -108,6 +112,15 @@ class GH:
                 {"filename": f, "status": "modified"} if isinstance(f, str) else
                 {"filename": f[0], "previous_filename": f[1], "status": "renamed"}
                 for f in self.files[(page - 1) * per:page * per]])
+        if p.startswith("/users/") and p[len("/users/"):] in self.users:
+            login = p[len("/users/"):]
+            return httpx.Response(200, json={"login": login, "id": self.users[login], "type": "User"})
+        if p == "/repos/o/r/pulls/7/reviews" and m == "POST":
+            self.reviews_posted.append(body)
+            if any(c.get("line") == 999 for c in body.get("comments") or []):  # a line outside the diff
+                return httpx.Response(422, json={"message": "Unprocessable Entity"})
+            return httpx.Response(200, json={"id": 555 + len(self.reviews_posted),
+                                             "html_url": "https://github.com/o/r/pull/7#pullrequestreview-555"})
         if p == "/repos/o/r/pulls/7/reviews":
             per, page = int(r.url.params.get("per_page", 30)), int(r.url.params.get("page", 1))
             return httpx.Response(200, json=self.reviews[(page - 1) * per:page * per])

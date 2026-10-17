@@ -184,7 +184,7 @@ def items(svc: JobService, p: Principal | None = None) -> list[dict[str, Any]]:
             out.append(_item("approval", f"job waits for approval: {why}", f"hangar job approve {j.id} (or reject)",
                              j.updated_at, expires_at=j.approval.expires_at if j.approval else None, **ref))
         elif j.state == JobState.FAILED and j.updated_at > now() - FAILED_DAYS * 86400 and not pr_open and \
-                st.pr_state not in ("merged", "closed"):
+                st.pr_state not in ("merged", "closed") and j.source != "review":  # --- #161: the packet says so
             out.append(_item("failed", f"job failed ({j.reason or 'error'})",
                              f"hangar job get {j.id}; then follow up or submit it again", j.updated_at, **ref))
         if pr_open and j.id not in svc._active and j.state in (JobState.SUCCEEDED, JobState.FAILED):
@@ -197,6 +197,19 @@ def items(svc: JobService, p: Principal | None = None) -> list[dict[str, Any]]:
         elif r.pr_number and st.pr_state == "approved" and not st.armed_sha and st.note:
             out.append(_item("review", f"PR #{r.pr_number} is approved but not landing: {st.note}",
                              f"merge it, or fix what holds it: {r.pr_url}", st.approved_at or j.updated_at, **ref))
+    # --- self-approval (#160): a PR its requester's own approval doesn't land waits on the repo's approvers (the
+    # people linked to them; admins when none is linked)
+    for j in svc._jobs.values():
+        st, r = j.landing, j.result
+        if not (st.needs_second and r.pr_number and st.pr_state == "open" and not st.ended):
+            continue
+        if p is not None and not (p.person in st.approver_people if st.approver_people else p.role == "admin"):
+            continue
+        if p is not None and p.person == j.person:
+            continue
+        out.append(_item("review", f"PR #{r.pr_number} needs a second reviewer: {j.person}'s own approval doesn't "
+                                   f"land it" + (f" ({st.note})" if st.note else ""), f"review and approve {r.pr_url}",
+                         j.updated_at, risk=st.risk, job=j.id, title=j.title, repo=j.repo, pr=r.pr_url))
     # --- durable: a live turn's approvals are in memory; an open question can be anywhere
     sessions = [*svc.sessions._sessions.values(), *svc.sessions.where(needs_input=NOT_NULL)] \
         if svc.sessions is not None else []
