@@ -34,16 +34,16 @@ STYLE = """
   .af-d .edge-plan { fill: none; stroke: var(--af-fg-subtle, #8A8A8A); stroke-width: 1.25; stroke-dasharray: 5 4; }
   .af-d .elabel { font: 400 11.5px "Red Hat Text", "Helvetica Neue", Arial, sans-serif; fill: var(--af-fg-subtle, #8A8A8A); }
   .af-d .arrowhead { fill: var(--af-fg-subtle, #8A8A8A); }
-  .af-d .dot { fill: var(--af-dot, #262626); }
+  .af-d .dot { fill: var(--af-dot-field, #262626); }
 </style>
 """
 
 PRODUCT = {
-    "hangar": "var(--af-p-hangar, #EE8F63)",
-    "flightdeck": "var(--af-p-flightdeck, #D98CD2)",
-    "workspace": "var(--af-p-workspace, #C5A93B)",
-    "aidlc": "var(--af-p-aidlc, #69C27E)",
-    "spaceport": "var(--af-p-spaceport, #B199F4)",
+    "hangar": "var(--af-product-hangar, #EE8F63)",
+    "flightdeck": "var(--af-product-flightdeck, #D98CD2)",
+    "workspace": "var(--af-product-tower, #C5A93B)",
+    "aidlc": "var(--af-product-aidlc, #69C27E)",
+    "spaceport": "var(--af-product-spaceport, #B199F4)",
 }
 
 

@@ -1,13 +1,13 @@
 @import url("https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=DM+Mono:wght@400;500&family=Red+Hat+Text:ital,wght@0,400..700;1,400..700&display=swap");
 
 /*
-  Airframe for the docs sites (Zensical / Material for MkDocs).
-  Load after airframe.css. It maps the theme's --md-* variables onto Airframe tokens and adds
+  Airframe for the docs sites (Zensical / Material for MkDocs). Hand-written; lives in
+  Sean-Koval/agent-factory theme/ next to the generated airframe.css. Load after airframe.css. It maps the theme's --md-* variables onto Airframe tokens and adds
   the few Airframe details a docs page needs: display type for headings, mono uppercase
   labels, a 2px product marker under the header, tonal blocks instead of boxed cards.
 
   Each site sets its own product hue once, e.g. in docs/stylesheets/product.css:
-    :root { --af-product: var(--af-p-hangar); }
+    :root { --af-product: var(--af-product-hangar); }
 */
 
 :root { --af-product: var(--af-brand); }
@@ -42,22 +42,22 @@
   --md-typeset-kbd-color: var(--af-raised);
   --md-typeset-kbd-border-color: var(--af-line-strong);
 
-  --md-code-fg-color: var(--af-term-fg);
-  --md-code-bg-color: var(--af-term-bg);
+  --md-code-fg-color: var(--af-terminal-fg);
+  --md-code-bg-color: var(--af-terminal-bg);
   --md-code-hl-color: var(--af-brand-wash);
   --md-code-hl-color--light: var(--af-brand-wash);
-  --md-code-hl-keyword-color: var(--af-code-k);
-  --md-code-hl-function-color: var(--af-code-f);
-  --md-code-hl-string-color: var(--af-code-s);
-  --md-code-hl-number-color: var(--af-code-n);
-  --md-code-hl-constant-color: var(--af-code-n);
-  --md-code-hl-special-color: var(--af-code-n);
-  --md-code-hl-name-color: var(--af-term-fg);
-  --md-code-hl-variable-color: var(--af-term-fg);
-  --md-code-hl-operator-color: var(--af-code-c);
-  --md-code-hl-punctuation-color: var(--af-code-c);
-  --md-code-hl-comment-color: var(--af-code-c);
-  --md-code-hl-generic-color: var(--af-code-c);
+  --md-code-hl-keyword-color: var(--af-code-keyword);
+  --md-code-hl-function-color: var(--af-code-function);
+  --md-code-hl-string-color: var(--af-code-string);
+  --md-code-hl-number-color: var(--af-code-number);
+  --md-code-hl-constant-color: var(--af-code-number);
+  --md-code-hl-special-color: var(--af-code-number);
+  --md-code-hl-name-color: var(--af-terminal-fg);
+  --md-code-hl-variable-color: var(--af-terminal-fg);
+  --md-code-hl-operator-color: var(--af-code-comment);
+  --md-code-hl-punctuation-color: var(--af-code-comment);
+  --md-code-hl-comment-color: var(--af-code-comment);
+  --md-code-hl-generic-color: var(--af-code-comment);
 
   --md-footer-bg-color: var(--af-surface);
   --md-footer-bg-color--dark: var(--af-canvas);
@@ -68,19 +68,22 @@
   --md-admonition-bg-color: var(--af-surface);
   --md-admonition-fg-color: var(--af-fg);
 
-  --md-mermaid-font-family: var(--af-f-sans);
+  --md-mermaid-font-family: var(--af-font-sans);
   --md-mermaid-edge-color: var(--af-fg-subtle);
   --md-mermaid-node-bg-color: var(--af-raised);
   --md-mermaid-node-fg-color: var(--af-fg);
   --md-mermaid-label-bg-color: var(--af-canvas);
   --md-mermaid-label-fg-color: var(--af-fg-muted);
 
-  --md-text-font-family: var(--af-f-sans);
-  --md-code-font-family: var(--af-f-mono);
+  --md-text-font-family: var(--af-font-sans);
+  --md-code-font-family: var(--af-font-mono);
   --md-shadow-z1: none;
   --md-shadow-z2: none;
   --md-shadow-z3: 0 0 0 1px var(--af-line);
 }
+
+/* the theme's dark palette sets the link color per primary color, one step more specific than above */
+[data-md-color-scheme][data-md-color-primary] { --md-typeset-a-color: var(--af-fg); }
 
 body { background: var(--af-canvas); }
 .md-typeset { font-feature-settings: "kern"; }
@@ -88,19 +91,19 @@ body { background: var(--af-canvas); }
 /* header and tabs: flat, with the product's 2px marker */
 .md-header, .md-tabs { background: var(--af-canvas); color: var(--af-fg); box-shadow: none; }
 .md-header { border-bottom: 1px solid var(--af-line); }
-.md-header__title { font-family: var(--af-f-display); font-stretch: var(--af-display-stretch); font-weight: var(--af-display-weight); letter-spacing: var(--af-display-track); }
+.md-header__title { font-family: var(--af-font-display); font-stretch: var(--af-display-stretch); font-weight: var(--af-display-weight); letter-spacing: var(--af-display-track); }
 .md-tabs { border-bottom: 1px solid var(--af-line); }
-.md-tabs__link { font-family: var(--af-f-mono); font-size: .62rem; letter-spacing: var(--af-label-track); text-transform: uppercase; opacity: 1; color: var(--af-fg-muted); }
+.md-tabs__link { font-family: var(--af-font-mono); font-size: .62rem; letter-spacing: var(--af-label-track); text-transform: uppercase; opacity: 1; color: var(--af-fg-muted); }
 .md-tabs__link--active, .md-tabs__link:hover { color: var(--af-fg); }
 .md-tabs__item--active { box-shadow: inset 0 -2px 0 var(--af-product); }
 .md-header::after { content: ""; position: absolute; left: 0; bottom: -1px; width: 48px; height: 2px; background: var(--af-product); }
 
 /* headings: Archivo Expanded for the page title, quieter below */
-.md-typeset h1, .md-typeset h2 { font-family: var(--af-f-display); font-stretch: var(--af-display-stretch); font-weight: var(--af-display-weight); letter-spacing: var(--af-display-track); color: var(--af-fg); text-wrap: balance; }
+.md-typeset h1, .md-typeset h2 { font-family: var(--af-font-display); font-stretch: var(--af-display-stretch); font-weight: var(--af-display-weight); letter-spacing: var(--af-display-track); color: var(--af-fg); text-wrap: balance; }
 .md-typeset h1 { font-size: 1.9em; line-height: 1.08; margin-bottom: .9em; }
 .md-typeset h2 { font-size: 1.25em; line-height: 1.2; border-top: 1px solid var(--af-rule); padding-top: 1.1em; margin-top: 2em; }
 .md-typeset h3 { font-weight: 600; letter-spacing: 0; }
-.md-typeset h4, .md-typeset h5, .md-typeset h6 { font-family: var(--af-f-mono); text-transform: uppercase; letter-spacing: var(--af-label-track); font-size: .7rem; color: var(--af-fg-subtle); }
+.md-typeset h4, .md-typeset h5, .md-typeset h6 { font-family: var(--af-font-mono); text-transform: uppercase; letter-spacing: var(--af-label-track); font-size: .7rem; color: var(--af-fg-subtle); }
 
 /* links: plain ink, a brand underline */
 .md-typeset a { text-decoration: underline; text-decoration-color: var(--af-brand-line); text-underline-offset: .2em; text-decoration-thickness: 1px; }
@@ -108,56 +111,56 @@ body { background: var(--af-canvas); }
 .md-typeset a.headerlink, .md-typeset .md-button { text-decoration: none; }
 
 /* buttons */
-.md-typeset .md-button { border-radius: var(--af-r-ctl); border: 1px solid var(--af-line-strong); color: var(--af-fg); font-family: var(--af-f-mono); font-size: .64rem; letter-spacing: .06em; text-transform: uppercase; padding: .55em 1.2em; }
+.md-typeset .md-button { border-radius: var(--af-radius-control); border: 1px solid var(--af-line-strong); color: var(--af-fg); font-family: var(--af-font-mono); font-size: .64rem; letter-spacing: .06em; text-transform: uppercase; padding: .55em 1.2em; }
 .md-typeset .md-button--primary { background: var(--af-brand); border-color: var(--af-brand); color: var(--af-on-brand); }
 .md-typeset .md-button:hover { border-color: var(--af-fg); background: transparent; color: var(--af-fg); }
 .md-typeset .md-button--primary:hover { background: var(--af-brand-hover); border-color: var(--af-brand-hover); color: var(--af-on-brand); }
 
 /* code: terminal blocks, mono ids inline */
-.md-typeset pre > code { border-radius: var(--af-r-card); }
-.md-typeset code { border-radius: var(--af-r-chip); font-size: .82em; }
+.md-typeset pre > code { border-radius: var(--af-radius-card); }
+.md-typeset code { border-radius: var(--af-radius-control); font-size: .82em; }
 .md-typeset :not(pre) > code { background: var(--af-raised); color: var(--af-fg); padding: .1em .35em; }
 
-/* tables: tonal header, mono uppercase labels, row rules only */
-.md-typeset table:not([class]) { border: 0; border-radius: var(--af-r-card); background: var(--af-canvas); font-size: .74rem; box-shadow: none; }
-.md-typeset table:not([class]) th { background: var(--af-raised); color: var(--af-fg-subtle); font-family: var(--af-f-mono); font-weight: 500; font-size: .6rem; letter-spacing: var(--af-label-track); text-transform: uppercase; border-bottom: 2px solid var(--af-canvas); }
+/* tables: open header (no fill), mono uppercase labels, a hairline under the header, row rules only */
+.md-typeset table:not([class]) { border: 0; border-radius: 0; background: transparent; font-size: .74rem; box-shadow: none; }
+.md-typeset table:not([class]) th { background: transparent; color: var(--af-fg-subtle); font-family: var(--af-font-mono); font-weight: 500; font-size: .6rem; letter-spacing: var(--af-label-track); text-transform: uppercase; border-bottom: 1px solid var(--af-line); }
 .md-typeset table:not([class]) td { border-top: 1px solid var(--af-line-subtle); }
 .md-typeset table:not([class]) tr:hover { background: var(--af-selected); box-shadow: none; }
 
 /* admonitions: tonal blocks with a status-colored start mark, never the brand */
-.md-typeset .admonition, .md-typeset details { border: 0; border-radius: var(--af-r-card); background: var(--af-surface); box-shadow: inset 2px 0 0 var(--af-fg-subtle); font-size: .74rem; }
-.md-typeset .admonition-title, .md-typeset summary { background: transparent !important; font-family: var(--af-f-mono); font-size: .62rem; letter-spacing: var(--af-label-track); text-transform: uppercase; color: var(--af-fg-muted); }
+.md-typeset .admonition, .md-typeset details { border: 0; border-radius: var(--af-radius-card); background: var(--af-surface); box-shadow: inset 2px 0 0 var(--af-fg-subtle); font-size: .74rem; }
+.md-typeset .admonition-title, .md-typeset summary { background: transparent !important; font-family: var(--af-font-mono); font-size: .62rem; letter-spacing: var(--af-label-track); text-transform: uppercase; color: var(--af-fg-muted); }
 .md-typeset .admonition-title::before, .md-typeset summary::before { background-color: var(--af-fg-subtle) !important; }
-.md-typeset .admonition.warning, .md-typeset details.warning { box-shadow: inset 2px 0 0 var(--af-st-appr); }
-.md-typeset .admonition.danger, .md-typeset details.danger { box-shadow: inset 2px 0 0 var(--af-st-fail); }
+.md-typeset .admonition.warning, .md-typeset details.warning { box-shadow: inset 2px 0 0 var(--af-status-approval); }
+.md-typeset .admonition.danger, .md-typeset details.danger { box-shadow: inset 2px 0 0 var(--af-status-failed); }
 
 /* navigation: mono section labels, a brand mark on the current page */
-.md-nav__title { font-family: var(--af-f-mono); text-transform: uppercase; letter-spacing: var(--af-label-track); font-size: .6rem; color: var(--af-fg-subtle); box-shadow: none !important; background: transparent !important; }
+.md-nav__title { font-family: var(--af-font-mono); text-transform: uppercase; letter-spacing: var(--af-label-track); font-size: .6rem; color: var(--af-fg-subtle); box-shadow: none !important; background: transparent !important; }
 .md-nav__link--active { color: var(--af-fg) !important; font-weight: 600; }
 .md-nav__item .md-nav__link--active { box-shadow: inset 2px 0 0 var(--af-product); padding-left: .5em; }
-.md-search__form { border-radius: var(--af-r-ctl); background: var(--af-raised); }
+.md-search__form { border-radius: var(--af-radius-control); background: var(--af-raised); }
 
 /* images and diagrams sit on the canvas, never in boxed cards */
-.md-typeset img { border-radius: var(--af-r-card); }
+.md-typeset img { border-radius: var(--af-radius-card); }
 .af-figure { margin: 1.5em 0; }
 .af-figure img { width: 100%; display: block; }
-.af-figure figcaption { font-family: var(--af-f-mono); font-size: .6rem; letter-spacing: var(--af-label-track); text-transform: uppercase; color: var(--af-fg-subtle); margin-top: .6em; }
+.af-figure figcaption { font-family: var(--af-font-mono); font-size: .6rem; letter-spacing: var(--af-label-track); text-transform: uppercase; color: var(--af-fg-subtle); margin-top: .6em; }
 
 /* the home page hero: one strong line, a mono label, a dot field */
 .af-hero { position: relative; padding: 2.4rem 0 1.6rem; margin-bottom: 1rem; }
-.af-hero::after { content: ""; position: absolute; inset: 0 0 0 55%; background: radial-gradient(circle, var(--af-dot) 1.1px, transparent 1.6px) 0 0 / 8px 8px; pointer-events: none; z-index: 0; }
+.af-hero::after { content: ""; position: absolute; inset: 0 0 0 55%; background: radial-gradient(circle, var(--af-dot-field) 1.1px, transparent 1.6px) 0 0 / 8px 8px; pointer-events: none; z-index: 0; }
 .af-hero > * { position: relative; z-index: 1; }
-.af-eyebrow { font-family: var(--af-f-mono); font-size: .62rem; letter-spacing: var(--af-label-track); text-transform: uppercase; color: var(--af-fg-subtle); display: inline-flex; align-items: center; gap: .6em; }
+.af-eyebrow { font-family: var(--af-font-mono); font-size: .62rem; letter-spacing: var(--af-label-track); text-transform: uppercase; color: var(--af-fg-subtle); display: inline-flex; align-items: center; gap: .6em; }
 .af-eyebrow::before { content: ""; width: 14px; height: 1px; background: var(--af-brand-line); }
 .md-typeset .af-hero h1 { font-size: 2.6em; margin: .4em 0 .5em; max-width: 18ch; }
 .af-lede { color: var(--af-fg-muted); font-size: .95rem; max-width: 52ch; }
 
 /* tool tiles on the suite home page */
 .af-tools { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 2px; background: var(--af-canvas); margin: 1.5em 0; }
-.af-tool { background: var(--af-raised); padding: var(--af-pad); display: flex; flex-direction: column; gap: .4em; min-width: 0; text-decoration: none !important; color: var(--af-fg) !important; border-top: 2px solid var(--af-tool, var(--af-line)); }
+.af-tool { background: var(--af-raised); padding: var(--af-space-16); display: flex; flex-direction: column; gap: .4em; min-width: 0; text-decoration: none !important; color: var(--af-fg) !important; border-top: 2px solid var(--af-tool, var(--af-line)); }
 .af-tool:hover { background: var(--af-selected); }
-.af-tool b { font-family: var(--af-f-display); font-stretch: var(--af-display-stretch); font-weight: 700; font-size: .9rem; }
-.af-tool small { font-family: var(--af-f-mono); font-size: .58rem; letter-spacing: var(--af-label-track); text-transform: uppercase; color: var(--af-fg-subtle); }
+.af-tool b { font-family: var(--af-font-display); font-stretch: var(--af-display-stretch); font-weight: 700; font-size: .9rem; }
+.af-tool small { font-family: var(--af-font-mono); font-size: .58rem; letter-spacing: var(--af-label-track); text-transform: uppercase; color: var(--af-fg-subtle); }
 .af-tool span { color: var(--af-fg-muted); font-size: .72rem; line-height: 1.5; }
 
 /* footer: on the canvas, separated by a rule */
