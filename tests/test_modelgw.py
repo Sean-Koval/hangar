@@ -397,3 +397,21 @@ async def test_a_real_claude_code_turn_through_the_gateway(live, gw, fleet, stor
     assert SEEDED.encode() not in raw
     size = len(gzip.compress(raw))
     assert size < 300 * 1024, f"tape is {size // 1024} KB gzipped"
+
+
+async def test_the_gateway_counts_each_call_for_the_eval_queue_and_the_turn_is_not_counted_again(gw, fleet, store):
+    from hangar import evalqueue
+    from hangar.models import Usage
+
+    _upstream(fleet)
+    sb, s, turn = _session(store)
+    sb.info["model_gateway"] = {"mode": "record", "provider": "anthropic", "credential": "anthropic-key"}
+    store.put(sb)
+    await _turn(gw, fleet, gw.mint(sb, "anthropic", "anthropic-key"), calls=2)
+    m = evalqueue.meter(fleet)
+    exact = (101 + 21) + (102 + 22)  # each call's input and output, as it completed
+    assert m.rate("anthropic", evalqueue.clock()) == pytest.approx(exact)
+    assert evalqueue.gateway_counted(fleet, s)
+    turn.usage, turn.finished_at = Usage(input_tokens=203, output_tokens=43), time.time()
+    evalqueue.turn_ended(fleet, s, turn, None)  # the turn's own usage: already counted call by call
+    assert m.rate("anthropic", evalqueue.clock()) == pytest.approx(exact)
