@@ -295,7 +295,8 @@ async def test_an_approvers_approval_and_green_checks_arm_auto_merge_for_that_co
     await green(svc)
     assert gh.enables() == [HEAD] and gh.armed == HEAD and job.landing.armed_sha == HEAD
     arm = next(g for g in gh.graphql if "enable" in g["query"])
-    assert arm["variables"] == {"id": NODE, "sha": HEAD, "method": "SQUASH"}  # expectedHeadOid: this commit only
+    assert {k: v for k, v in arm["variables"].items() if k != "body"} == {"id": NODE, "sha": HEAD, "method": "SQUASH"}
+    assert arm["variables"]["body"].endswith(f"Hangar-Job: {job.id}")  # --- #137: the merged commit's trailers
     assert job.landing.pr_state == "approved" and job.landing.approved_by == "alice"
     assert any(a.action == "landing.arm" for a in svc.store.audit_tail(20))
 

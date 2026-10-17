@@ -67,9 +67,10 @@ MAX_FILES = 300
 MAX_CHECKS = 100
 IDLE_WAIT_SECONDS = 600  # how long ending a session waits for a running turn to stop
 STALE = "“dismiss stale approvals when new commits are pushed”"  # --- trust: what arming needs of the base branch
-_ARM = ("mutation($id: ID!, $sha: GitObjectID!, $method: PullRequestMergeMethod!) {"
-        " enablePullRequestAutoMerge(input: {pullRequestId: $id, expectedHeadOid: $sha, mergeMethod: $method})"
-        " { pullRequest { number } } }")
+# --- #137: `commitBody` ends with the job's trailers (Harness-Digest: ...), so the merged commit carries them
+_ARM = ("mutation($id: ID!, $sha: GitObjectID!, $method: PullRequestMergeMethod!, $body: String) {"
+        " enablePullRequestAutoMerge(input: {pullRequestId: $id, expectedHeadOid: $sha, mergeMethod: $method,"
+        " commitBody: $body}) { pullRequest { number } } }")
 _DISARM = "mutation($id: ID!) { disablePullRequestAutoMerge(input: {pullRequestId: $id}) { pullRequest { number } } }"
 
 
@@ -585,14 +586,17 @@ class Landing:
         approved_by = st.approved_by  # a push while GitHub answers clears it
         if not st.node_id:
             raise LandingError("the PR has no node id")
+        body = self.commit_body(job) if method != "rebase" else None  # --- #137: a rebase keeps the commits
         try:
-            await gh.graphql(_ARM, {"id": st.node_id, "sha": sha, "method": method.upper()})
+            await gh.graphql(_ARM, {"id": st.node_id, "sha": sha, "method": method.upper(), "body": body})
         except GitHubError as e:
             if "clean status" not in str(e).lower():
                 return self._note(job, f"GitHub didn't arm auto-merge: {str(e).removeprefix('GitHub GraphQL: ')}")
             # Already mergeable, so GitHub won't arm auto-merge: merge it now, only if the head is the approved one.
             try:
-                await gh._req("PUT", f"/repos/{repo}/pulls/{number}/merge", json={"sha": sha, "merge_method": method})
+                await gh._req("PUT", f"/repos/{repo}/pulls/{number}/merge", json={
+                    "sha": sha, "merge_method": method,
+                    **({"commit_message": body} if body else {})})  # --- #137: ends with the trailers
             except GitHubError as m:
                 if " 409 " in str(m):  # `sha` no longer the head: someone pushed after the approval
                     self._unapprove(st)
@@ -614,6 +618,15 @@ class Landing:
         if st.head_sha != sha or st.approved_sha != sha or job.id in svc._active or \
                 (job.state not in JOB_TERMINAL and job.state != JobState.NEEDS_INPUT):
             await self._disarm(job, "the PR moved, its approval went, or an agent turn was queued while arming")
+
+    def commit_body(self, job: Job) -> str:
+        """The merge commit's message body (#137): the agent's summary, then the job's trailers (`Hangar-Job`,
+        `Harness-Digest`, ...), redacted. GitHub uses it for a squash or merge commit; a rebase keeps the commits
+        as they are, so the trailers stay in the PR body alone."""
+        from hangar import trailers
+
+        summary = (job.result.summary or "").strip()
+        return self.svc.broker.redact((summary + trailers.block(self.svc, job)).strip())
 
     async def _review_gone(self, gh: GitHub, repo: str, number: int, st: LandingState) -> str | None:
         """Why the approval hangar holds no longer stands on GitHub, or None. Review webhooks can come late, out of
@@ -1104,8 +1117,18 @@ class Landing:
         model = modelpolicy.describe(getattr(s, "model", None) or job.model, getattr(s, "model_policy", None),
                                      {**DEFAULT_PRICES, **{k.lower(): v for k, v in
                                                            (self.settings.model_prices or {}).items()}})
+        from hangar import trailers  # --- #137: the harness digest(s) and lock it ran with, linking to the manifest
+
+        tv = trailers.values(svc, job)
+        harness = ""
+        if tv["harness"]:
+            url = f"{self.settings.public_url.rstrip('/')}/api/jobs/{job.id}/manifest"
+            many = len(tv["harness"]) > 1
+            shown = [f"[`{trailers.short(d)}`]({url})" + (f" ({trailers.ranges(ns)})" if many else "")
+                     for d, ns in tv["harness"]]
+            harness = " · harness " + ", ".join(shown) + (f" (lock `{tv['lock']}`)" if tv["lock"] else "")
         out.append(f"- **Agent:** {job.harness or 'default harness'}" + (f" {version}" if version else "")
-                   + f" · model {model} · environment `{job.environment}`")
+                   + f" · model {model} · environment `{job.environment}`" + harness)
         if s:
             out.append(f"- **Session:** `{s.name}`: `hangar session pull {s.name}` checks it out locally; reply "
                        "`/hangar <message>` here to have the agent continue")
