@@ -45,7 +45,8 @@ FIELDS = ("verify", "environment", "harness", "model", "budget", "job_budget", "
           "require_stale_dismissal",  # --- trust
           "verify_reports", "rerun_flaky",  # --- testresults
           "heavy", "profile", "max_profile",  # --- heavy
-          "allow_heavy_for_intake")  # --- #124
+          "allow_heavy_for_intake",  # --- #124
+          "verify_allowed")  # --- #156
 _LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")  # a GitHub login
 
 
@@ -106,6 +107,9 @@ class RepoPolicy(BaseModel):
     # --- #124: intake-triggered jobs (posture.py) may run Docker on the heavy tier for this repo (privileged in the
     # sandbox's VM); unset: they are refused under HANGAR_INTAKE_POSTURE=enforce
     allow_heavy_for_intake: bool | None = None
+    # --- #156: globs a ticket's own verify command must match to become its job's `verify` (`make test*`,
+    # `pytest tests/*`); otherwise the agent gets it only as a suggestion (intake.apply_ticket)
+    verify_allowed: list[str] | None = Field(None, max_length=50)
     updated_at: float = Field(default_factory=now)
     updated_by: str | None = None
 
@@ -122,6 +126,17 @@ class RepoPolicy(BaseModel):
         out = [x.strip().removeprefix("@") for x in v if x.strip()]
         if bad := [x for x in out if not _LOGIN.match(x)]:
             raise ValueError(f"not GitHub logins: {', '.join(bad[:5])}")
+        return out
+
+    @field_validator("verify_allowed")
+    @classmethod
+    def _allowed(cls, v: list[str] | None) -> list[str] | None:  # --- #156
+        if v is None:
+            return None
+        out = [x.strip() for x in v if x.strip()]
+        if bad := [x for x in out if "\n" in x or len(x) > 200 or x in ("*", "**")]:
+            raise ValueError(f"verify_allowed globs must be one line, at most 200 characters, and narrower than "
+                             f"'*': {', '.join(bad[:3])}")
         return out
 
     @field_validator("verify_reports")
@@ -302,6 +317,7 @@ class PolicyUpdate(BaseModel):
     profile: Literal["standard", "large", "xlarge"] | None = None
     max_profile: Literal["standard", "large", "xlarge"] | None = None
     allow_heavy_for_intake: bool | None = None  # --- #124
+    verify_allowed: list[str] | None = None  # --- #156
 
     @field_validator("heavy", mode="before")
     @classmethod

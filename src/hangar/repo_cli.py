@@ -123,6 +123,9 @@ def repo_set(
     allow_heavy_for_intake: bool | None = typer.Option(
         None, "--allow-heavy-for-intake/--no-allow-heavy-for-intake",
         help="Let jobs from GitHub, Slack, Jira and webhooks run Docker on the heavy tier for this repo (#124)."),
+    verify_allowed: list[str] = typer.Option([], "--verify-allowed", help="A glob a ticket's own verify command "
+                                             "may match to become its job's check, e.g. 'make test*' (repeat it). "
+                                             "Replaces the list."),  # --- #156
     as_json: bool = typer.Option(False, "--json"),
 ):
     """Set the repo's defaults; what you don't pass is kept. Jobs that set a field themselves still win.
@@ -139,7 +142,8 @@ def repo_set(
                 ("require_stale_dismissal", require_stale_dismissal),  # --- trust
                 ("verify_reports", verify_report or None), ("rerun_flaky", rerun_flaky),  # --- testresults
                 ("heavy", heavy), ("profile", profile), ("max_profile", max_profile),  # --- heavy
-                ("allow_heavy_for_intake", allow_heavy_for_intake)):  # --- #124
+                ("allow_heavy_for_intake", allow_heavy_for_intake),  # --- #124
+                ("verify_allowed", verify_allowed or None)):  # --- #156
         if v is not None:
             body[k] = v
     if egress_mode is not None or egress_allow:  # --- egress
@@ -160,7 +164,8 @@ def repo_unset(repo: str = typer.Argument(...),
                                                              "merge_method, risk_paths, "
                                                              "require_stale_dismissal, verify_reports, "
                                                              "rerun_flaky, heavy, profile, "
-                                                             "max_profile, allow_heavy_for_intake). None: "
+                                                             "max_profile, allow_heavy_for_intake, "
+                                                             "verify_allowed). None: "
                                                              "remove the repo's policy.")):
     """Clear fields of the repo's policy, or remove it."""
     r = _cli()._call("DELETE", "/api/repos/policy", params={"repo": repo, "field": fields or []})

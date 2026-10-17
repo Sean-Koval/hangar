@@ -1621,6 +1621,9 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
                             **autoinstall.kind_labels(svc.settings, [  # --- autoinstall: labelled for an env setup
                                 *(lb.get("name", "") for lb in issue.get("labels") or []),
                                 (payload.get("label") or {}).get("name", "")])})
+    from hangar import intake  # --- #156: the ticket's acceptance criteria and suggested check
+
+    intake.apply_ticket(svc, req, str(issue.get("body") or ""), f"{repo}#{number}")
     if (busy := running()) is not None:  # another delivery got here while we fetched comments
         return {"ignored": f"job {busy.id} is already working on {ref}"}
     approval = None if trusted else new_approval(
@@ -1649,5 +1652,6 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
         return {"ok": True, "job": job.id, "awaiting_approval": True}
     # Acknowledge right away: provisioning (and a first image build) can take minutes before the agent starts.
     svc._spawn(svc._comment(job, ref, f"Queued as hangar job `{job.id}` in `{job.environment}`. I'll comment here "
-                                      "when the agent starts and again with the result."))
+                                      "when the agent starts and again with the result."
+                                      + intake.queued_notes(svc, job, "github")))  # --- #156
     return {"ok": True, "job": job.id}

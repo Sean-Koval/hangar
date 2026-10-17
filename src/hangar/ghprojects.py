@@ -355,6 +355,7 @@ async def _submit(svc: JobService, delivery: str | None, board: Board, key: str,
                 **autoinstall.kind_labels(svc.settings, [  # --- autoinstall: an env setup
                     str(n.get("name")) for n in ((issue.get("labels") or {}).get("nodes")) or [] if n])})
     requester = f"github:{login or 'unknown'}"
+    intake.apply_ticket(svc, req, str(issue.get("body") or ""), f"{repo}#{number}")  # --- #156
     res = intake.submit(svc, req, source="github-projects", ref=ref, requester=requester, person=person,
                         trusted=trusted, who=login or "someone", restricted=False)
     job = svc._jobs.get(res.get("job") or "")
@@ -371,6 +372,7 @@ async def _submit(svc: JobService, delivery: str | None, board: Board, key: str,
             note = held_message(job)
         else:
             note = (f"Queued as hangar job `{job.id}` in `{job.environment}` (moved to {board.trigger} on the "
-                    "project board). I'll comment here when the agent starts and again with the result.")
+                    "project board). I'll comment here when the agent starts and again with the result."
+                    + intake.queued_notes(svc, job, "github"))  # --- #156
         svc._spawn(svc._comment(job, ref, note))
     return res
