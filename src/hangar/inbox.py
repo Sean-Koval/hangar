@@ -167,7 +167,8 @@ def items(svc: JobService, p: Principal | None = None) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     # --- durable: unfinished jobs and PRs on their way are in memory; recent failures are asked of the store
     failed = svc.where(state=JobState.FAILED, updated_at=Ge(now() - FAILED_DAYS * 86400))
-    jobs = [j for j in {x.id: x for x in [*svc._jobs.values(), *failed]}.values() if yours(j.person, p)]
+    jobs = [j for j in {x.id: x for x in [*svc._jobs.values(), *failed]}.values() if yours(j.person, p)
+            and j.source != "shadow"]  # --- #183: a shadow never reaches anyone's inbox
     job_sessions: set[str] = set()
     for j in jobs:
         st, r = j.landing, j.result

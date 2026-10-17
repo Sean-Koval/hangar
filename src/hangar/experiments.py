@@ -83,6 +83,7 @@ KIND = "experiment"
 EXP_LABEL = "hangar.experiment"  # on a trial's job, session and sandboxes: the experiment's job id
 TRIAL_LABEL = "hangar.experiment.trial"  # the trial's key: <task>/<variant>/<n>
 PIN_CHECKED_LABEL = "hangar.experiment.pin-checked"  # --- #178: its turn 1 was checked against its pin set
+AUTHOR_LABEL = "hangar.eval.author"  # --- #183: whose eval budget a trial counts against, when not its person's
 VARIANT_LABEL = "hangar.experiment.variant"
 GRADER_LABEL = "hangar.experiment.grader"  # on a grader's sandbox
 PACKS_LABEL = "hangar.packs"  # "selected": mount only the sandbox's own harness's pack
@@ -182,6 +183,8 @@ class Task(BaseModel):
     title: str | None = Field(None, max_length=200)
     # --- anti-forgery (#127): a known-good patch for the base check: the hidden tests must pass with it
     reference_patch: str | None = Field(None, max_length=MAX_REFERENCE_PATCH)
+    # --- #183: context items the agent gets with the task (a shadow's: the real job's, untrusted ones fenced)
+    context: list[ContextItem] | None = Field(None, max_length=20)
 
     @model_validator(mode="after")
     def _what(self) -> Task:
@@ -242,6 +245,9 @@ class ExperimentSpec(BaseModel):
     # (a sentinel's don't: it compares against what the cache holds)
     task_digests: dict[str, str] | None = None
     cache_record: bool = True
+    # --- #183: a shadow's real job, and whose eval budget its trials count against (the harness owner)
+    shadow_of: str | None = Field(None, max_length=40)
+    author: str | None = Field(None, max_length=100)
 
     @field_validator("variants")
     @classmethod
@@ -341,7 +347,8 @@ def _dir(settings: Any, exp: str, key: str | None = None) -> Path:
 
 
 # ====================================================================== submitting
-def submit(jobs: JobService, spec: ExperimentSpec, caller: Any, source: str = "api") -> Job:
+def submit(jobs: JobService, spec: ExperimentSpec, caller: Any, source: str = "api",
+           untrusted_source: str | None = None) -> Job:
     """The experiment's job (`hangar.kind: experiment`), checked now so a bad spec fails here, not in the runner."""
     from hangar.jobs import JobError, SubmitJob
 
@@ -367,9 +374,11 @@ def submit(jobs: JobService, spec: ExperimentSpec, caller: Any, source: str = "a
         _variant_model(jobs.fleet, spec, vname, v, harness, record=False)  # #167: a floating alias fails now
     req = SubmitJob(instructions=f"Experiment {spec.name}: {len(spec.tasks)} task(s) x {len(spec.variants)} "
                                  f"variant(s) x {spec.trials} trial(s).", title=f"experiment: {spec.name}"[:200],
-                    environment=spec.environment, deliver="none", labels={KIND_LABEL: KIND},
+                    environment=spec.environment, deliver="none",
+                    labels={KIND_LABEL: KIND, **({"hangar.shadow_of": spec.shadow_of} if spec.shadow_of else {})},
                     job_budget=spec.budget, verify="", autofix="off")
-    job = jobs.submit(req, caller, source=source)
+    # --- #183: a shadow of an untrusted real job is untrusted too (its trials inherit it)
+    job = jobs.submit(req, caller, source=source, untrusted_source=untrusted_source)
     if job.result.data is None:  # not an idempotent repeat; nothing awaits between submit and here
         st = State(spec=spec.model_dump(mode="json", exclude_none=True), notes=deprecation_notes(spec))
         _save(jobs, job, st)
@@ -831,6 +840,14 @@ def _start_trial(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t:
     if tp.get("issue_text"):
         context.append(ContextItem(name=f"issue-{task.issue.replace('/', '-').replace('#', '-')}.md",
                                    kind="issue", untrusted=True, content=tp["issue_text"]))
+    context += [c.model_copy() for c in task.context or []]  # --- #183
+    labels = {EXP_LABEL: job.id, TRIAL_LABEL: t.key, VARIANT_LABEL: t.variant, PACKS_LABEL: "selected"}
+    if spec.shadow_of:  # --- #183: a shadow: egress none, linked to its real job, nothing delivered anywhere
+        from hangar import posture, shadows
+
+        labels |= {shadows.SHADOW_OF: spec.shadow_of, posture.FLOOR_LABEL: "none"}
+    if spec.author:
+        labels[AUTHOR_LABEL] = spec.author
     req = SubmitJob(
         instructions=instructions, title=f"{spec.name}: {t.ref}"[:200], repo=tp.get("repo"),
         base_branch=task.base_branch, environment=v.environment or spec.environment, harness=pin["harness"],
@@ -839,9 +856,10 @@ def _start_trial(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t:
         keep_minutes=spec.keep_minutes, timeout_minutes=spec.timeout_minutes, budget=spec.trial_budget,
         job_budget=spec.trial_job_budget, idempotency_key=f"experiment:{job.id}:{t.ref}",
         verify_in_loop=spec.verify_in_loop, autofix="off", queue_class="eval",  # --- #181
-        labels={EXP_LABEL: job.id, TRIAL_LABEL: t.key, VARIANT_LABEL: t.variant, PACKS_LABEL: "selected"})
+        labels=labels)
     try:
-        child = jobs._submit(req, Caller(job.requester, job.owner, person=job.person), source="experiment",
+        child = jobs._submit(req, Caller(job.requester, job.owner, person=job.person),
+                             source="shadow" if spec.source == "shadow" else "experiment",  # --- #183
                              untrusted_source=job.untrusted_source)
     except JobError as e:
         t.state, t.outcome, t.reason, t.finished_at = "done", "failed", f"could not start: {e}", now()

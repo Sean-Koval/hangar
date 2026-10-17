@@ -62,6 +62,7 @@ from hangar import posture as posture  # --- intake posture (#123)
 from hangar import resident as resident  # --- durable: live and recent jobs in memory, the rest in the store
 from hangar import restarts as restarts  # --- reconciler: interrupted jobs resume after a restart
 from hangar import secretscan as secretscan  # --- egress: secrets are scanned for before a push
+from hangar import shadows as shadows  # --- #183: shadow runs of sampled real jobs
 from hangar import teamcreds as teamcreds  # --- review: only a job's person continues it from a front door
 from hangar import testresults as testresults  # --- testresults: structured results of every check
 from hangar.events import resolve_budget, total_usage, usage_line
@@ -85,7 +86,7 @@ from hangar.models import (
     now,
 )
 from hangar.sessions import SessionService
-from hangar.store import NOT_NULL, Ge  # --- durable
+from hangar.store import NOT_NULL, Ge, Not  # --- durable; #183: Not
 
 log = logging.getLogger("hangar.jobs")
 
@@ -374,13 +375,15 @@ class JobService:
         return [j for j, _ in self.page(state, owner, limit, person, cursor, reason)[0]]
 
     def page(self, state: str | None = None, owner: str | None = None, limit: int = 50, person: str | None = None,
-             cursor: str | None = None, reason: str | None = None) -> tuple[list[tuple[Job, str]], str | None]:
+             cursor: str | None = None, reason: str | None = None,
+             source: str | None = None) -> tuple[list[tuple[Job, str]], str | None]:
         """--- durable: jobs newest first, from the store's indexes (archived ones too), filtered there: a person's
         own or a token's (`owner`) are all of theirs, however many the team has. Each job comes with its cursor
         (pass it back for the page after it); then the next page's cursor, None at the end."""
         limit = max(1, min(limit, 500))
         fields = {k: v for k, v in (("state", state), ("owner", owner), ("person", person),
                                     ("reason", reason)) if v is not None}  # --- #159: reason=awaiting_capacity
+        fields["source"] = source if source is not None else Not("shadow")  # --- #183: shadows only when asked for
         rows = self.store.page(Job, limit + 1, resident.after(cursor), archived=True, **fields)
         marks = [resident.cursor(at, r.id) for r, at in rows[:limit]]  # --- review: SQLite's reading of the time
         jobs = self._jobs.adopt([r for r, _ in rows[:limit]])
@@ -553,6 +556,7 @@ class JobService:
                              problems=stance.problems)
         elif stance is not None and stance.floor:
             self._event(job, f"intake posture: egress at least {posture.FLOOR} ({stance.reason})")
+        shadows.at_submit(self, job, policy, source)  # --- #183: sample it for a shadow (repo policy `shadow`)
         if approval is None:
             self._queue.put_nowait(job.id)
         return job
@@ -947,6 +951,7 @@ class JobService:
                 await self._report(job)
                 return False
             job.result.base_sha = s.base_sha
+            shadows.after_provision(self, job)  # --- #183: a sampled real job's shadow, at the base it started on
             # Commits need an identity; keep whatever the environment configured.
             await self._sh(job, "git config user.email >/dev/null || git config user.email hangar@localhost; "
                                 f"git config user.name >/dev/null || git config user.name {q('hangar')}")

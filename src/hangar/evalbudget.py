@@ -48,9 +48,10 @@ def month_name(t: float | None = None) -> str:
 
 def author_of(job: Job) -> str:
     """Whose eval spend a job counts as: its person, else who asked for it."""
+    from hangar.experiments import AUTHOR_LABEL
     from hangar.fairness import person_of
 
-    return job.person or person_of(job.requester) or job.requester or "unknown"
+    return job.labels.get(AUTHOR_LABEL) or job.person or person_of(job.requester) or job.requester or "unknown"
 
 
 def _usd(x: float) -> str:
