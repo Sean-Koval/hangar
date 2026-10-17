@@ -29,7 +29,9 @@
           "instructions": {"type": ["string", "null"], "deprecated": true, "description": "Overlay (deprecated, #135)."},
           "instructions_append": {"type": ["string", "null"], "deprecated": true, "description": "Overlay (deprecated, #135)."}
         }
-      }},"grader": {"type": "object", "properties": {"canary": {"type": "string"}}}}},
+      }},"grader": {"type": "object", "properties": {"canary": {"type": "string"}}},
+      "pin_sets": {"type": ["object", "null"], "additionalProperties": {"type": "string"}, "description": "Variant -> pin set id, for trials started with POST /api/trials (#178)."},
+      "source": {"enum": ["experiment", "shadow"], "description": "Who asked for the trials (#178; shadow: #183)."}}},
     "pins": {
       "type": "object",
       "properties": {
@@ -50,7 +52,8 @@
             "harness_digest": {"type": ["string", "null"], "description": "The harness every trial of the variant runs: its lock's digest, which each trial's turn 1 must match (a mismatch is drift); for an overlay variant, its first finished trial's turn-1 harness_digest (null until then). Flightdeck pin sets reference it. Added within v1 (#135)."},
             "approvals": {"type": "string"},
             "skills": {"type": ["array", "null"], "description": "The variant's whole skill set (null: the environment's)."},
-            "instructions": {"type": ["string", "null"], "description": "The digest of the instructions the variant writes, when it has an overlay (null for a harness_lock variant: the lock's instructions file is mounted)."}
+            "instructions": {"type": ["string", "null"], "description": "The digest of the instructions the variant writes, when it has an overlay (null for a harness_lock variant: the lock's instructions file is mounted)."},
+            "pin_set": {"type": ["string", "null"], "pattern": "^pin-[0-9a-f]{16}$", "description": "The variant's pin set (docs/api/trials.md): what its trials run against, immutable and content-addressed. A trials request names it; otherwise the experiment records one at its start. Added within v1 (#178)."}
           }
         }},
         "tasks": {"type": "object", "additionalProperties": {
@@ -113,7 +116,8 @@
           "contamination": {"type": "array", "items": {"enum": ["patch", "result", "trace", "egress"]}, "description": "Where the canary was seen. Added within v1 (#127)."},
           "touched_tests": {"type": "array", "items": {"type": "string"}, "description": "Existing test files the trial's work changed, renamed or deleted (the job's own check, else from its patch). Added within v1 (#127)."},
           "outcome_class": {"enum": ["agent", "infra_error", "cancelled", "human", null], "description": "What the trial's outcome says about the agent: agent (its own result, counted), infra_error (infrastructure ended it: see infra_reason; excluded and retried), cancelled, human (a person stepped in). null: unknown (recorded before #166), never to be read as agent. Any turn infrastructure cut off makes the whole trial infra_error, even if its job resumed. Added within v1 (#166)."},
-          "infra_reason": {"enum": ["preempted", "power_down", "rate_limited", "provider_5xx", "sandbox_create", "checkpoint", "control_plane_restart", null], "description": "What infrastructure did, when outcome_class is infra_error. Added within v1 (#166)."},
+          "infra_reason": {"enum": ["preempted", "power_down", "rate_limited", "provider_5xx", "sandbox_create", "checkpoint", "control_plane_restart", "drift", null], "description": "What infrastructure did, when outcome_class is infra_error. Added within v1 (#166). drift (#178): its turn 1 didn't run its pin set; excluded and not retried."},
+          "pin_set": {"type": ["string", "null"], "pattern": "^pin-[0-9a-f]{16}$", "description": "The pin set the trial ran against (GET /api/pinsets/{id}). Added within v1 (#178)."},
           "excluded": {"type": "boolean", "description": "Leave this trial out of statistics: it ended in infra_error. Its retry, if any, is the next attempt under the same key. Added within v1 (#166)."},
           "attempt": {"type": "integer", "minimum": 1, "description": "1 for the trial as laid out; 2 and up for its retries after infra errors (at most HANGAR_TRIAL_INFRA_RETRIES, and 10% of the experiment's trials in all). Several trials can share a key: the highest attempt is the one that counts. Added within v1 (#166)."},
           "retry_of": {"type": ["string", "null"], "description": "The job id of the excluded trial this one retries; with attempt, the retry chain. Added within v1 (#166)."},

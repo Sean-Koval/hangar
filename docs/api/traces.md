@@ -192,7 +192,7 @@ turn of the session) and `hangar.taint.sources` (`kind:ref`, e.g. `web:example.c
 `context:issue text jira-ABC-12.md`), `hangar.outcome.class` (`agent`, `infra_error`, `cancelled`, `human`: whether
 the outcome is the agent's or infrastructure's, [jobs.md](../jobs.md#outcome-classes); unset for turns recorded before
 #166, which means unknown, not `agent`) and `hangar.outcome.infra_reason` (`preempted`, `power_down`, `rate_limited`,
-`provider_5xx`, `sandbox_create`, `checkpoint`, `control_plane_restart`; only with `infra_error`). Both are on the live
+`provider_5xx`, `sandbox_create`, `checkpoint`, `control_plane_restart`, `drift` (#178); only with `infra_error`). Both are on the live
 span sent to the collector too. Leave `infra_error` turns out of yield and comparisons.
 
 Repo state (#165, added within `hangar.trace/v1`): `hangar.git.tree.start` and `hangar.git.tree.end` (the working

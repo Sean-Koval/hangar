@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
 CLASSES = ("agent", "infra_error", "cancelled", "human")
 INFRA_REASONS = ("preempted", "power_down", "rate_limited", "provider_5xx", "sandbox_create", "checkpoint",
-                 "control_plane_restart")
+                 "control_plane_restart", "drift")  # --- #178: drift: a trial's turn 1 didn't run its pin set
 # How a harness reports a provider error it gave up on: Claude Code's result (`API Error: 529 {..."overloaded_error"
 # ...}`), Codex's `turn.failed` (`exceeded retry limit, last status: 429 Too Many Requests`), pi's and agy's errors.
 _RATE = re.compile(r"\b429\b|rate[_ -]?limit|too many requests|resource[_ ]exhausted", re.I)

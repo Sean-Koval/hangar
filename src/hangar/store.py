@@ -40,6 +40,7 @@ from hangar.models import (
     Snapshot,
 )
 from hangar.outbox import OutboxItem  # --- outbox (#163): objects on their way to the run capture bucket
+from hangar.pinsets import PinSet  # --- #178: immutable, content-addressed pin sets
 from hangar.testresults import TestRun  # --- testresults: each run of a check, as its test reports had it
 
 T = TypeVar("T", bound=BaseModel)
@@ -60,6 +61,7 @@ _TABLES: dict[type[BaseModel], tuple[str, str]] = {
     DoctorFinding: ("doctor_findings", "id"),  # --- clouddoctor
     TestRun: ("test_runs", "id"),  # --- testresults
     OutboxItem: ("outbox", "key"),  # --- outbox (#163)
+    PinSet: ("pin_sets", "id"),  # --- #178
 }
 # --- review(perf): access control must not roll back on a node crash (a revoked token coming back), so these
 # commits, and the secrets table's, sync the WAL like synchronous=FULL; everything else stays on NORMAL.
@@ -132,6 +134,11 @@ class Store:
         self._db.execute("PRAGMA busy_timeout=5000")
         for table, _ in _TABLES.values():
             self._db.execute(f"CREATE TABLE IF NOT EXISTS {table} (key TEXT PRIMARY KEY, data TEXT NOT NULL)")
+        # --- #178: a pin set never changes and never goes: the database refuses, whatever the code tries
+        self._db.execute("CREATE TRIGGER IF NOT EXISTS pin_sets_immutable BEFORE UPDATE ON pin_sets "
+                         "WHEN old.data IS NOT new.data BEGIN SELECT RAISE(ABORT, 'pin sets are immutable'); END")
+        self._db.execute("CREATE TRIGGER IF NOT EXISTS pin_sets_kept BEFORE DELETE ON pin_sets "
+                         "BEGIN SELECT RAISE(ABORT, 'pin sets are immutable'); END")
         self._db.execute("CREATE TABLE IF NOT EXISTS secrets (name TEXT PRIMARY KEY, blob BLOB NOT NULL)")
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, data TEXT)"

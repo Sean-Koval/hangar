@@ -91,6 +91,8 @@ Test results: the `testresults` work stores parsed results on jobs; the export c
 
 ## 4. Experiment jobs (`hangar.experiment/v1`)
 
+**The seam is the trial (#178).** Hangar runs trials against immutable pin sets (`hangar.pinset/v1`: harness lock and digest, environment digests, concrete model, each task's base commit, grader and egress digests; content-addressed, never changed) and reports each one's outcome, class and manifests; flightdeck owns the sampling policy. `POST /api/pinsets` (`/resolve` proposes one from what hangar runs now), `POST /api/trials {pin_set, task, n, budget}`, `GET /api/trials/{id}` ([docs/api/trials.md](../api/trials.md)). A trial whose turn-1 manifest doesn't carry its pin set's digests is `infra_error` / `drift`, excluded and not retried. The experiment job below is the batch wrapper: it records a pin set per variant, and a trials request is served by an experiment of one variant, the pin set.
+
 The slice of [0007 §5.4](0007-experiments-policy-and-team-learning.md#54-experiments-ab-testing-with-environments) hangar must own: isolation and pinning need the sandbox lifecycle and credentials. Index schema: [docs/api/experiment.schema.json](../api/experiment.schema.json).
 
 ```yaml

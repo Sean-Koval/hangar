@@ -82,6 +82,7 @@ KIND_LABEL = "hangar.kind"
 KIND = "experiment"
 EXP_LABEL = "hangar.experiment"  # on a trial's job, session and sandboxes: the experiment's job id
 TRIAL_LABEL = "hangar.experiment.trial"  # the trial's key: <task>/<variant>/<n>
+PIN_CHECKED_LABEL = "hangar.experiment.pin-checked"  # --- #178: its turn 1 was checked against its pin set
 VARIANT_LABEL = "hangar.experiment.variant"
 GRADER_LABEL = "hangar.experiment.grader"  # on a grader's sandbox
 PACKS_LABEL = "hangar.packs"  # "selected": mount only the sandbox's own harness's pack
@@ -234,6 +235,9 @@ class ExperimentSpec(BaseModel):
     verify_in_loop: bool = False  # the in-turn gate differs by harness; off unless asked for
     keep_minutes: int = Field(30, ge=0, le=1440)
     grader: Grader | None = None
+    # --- #178: a variant's pin set (POST /api/trials makes one variant per pin set); unset, _begin records one
+    pin_sets: dict[str, str] | None = None
+    source: Literal["experiment", "shadow"] = "experiment"  # --- #178: who asked for the trials (#183: shadow)
 
     @field_validator("variants")
     @classmethod
@@ -287,6 +291,7 @@ class Trial(BaseModel):
     excluded: bool = False
     attempt: int = 1
     retry_of: str | None = None
+    pin_set: str | None = None  # --- #178: what it ran against (pinsets.py)
 
     @property
     def ref(self) -> str:
@@ -514,6 +519,7 @@ async def _begin(jobs: JobService, job: Job, st: State, spec: ExperimentSpec) ->
 
     fleet = jobs.fleet
     variants: dict[str, Any] = {}
+    overlays: dict[str, Any] = {}  # --- #178: an overlay variant's, for its pin set's overlay_digest
     for vname, v in spec.variants.items():
         if v.harness_lock:  # --- #135: everything the variant runs with comes from the lock
             try:
@@ -540,7 +546,7 @@ async def _begin(jobs: JobService, job: Job, st: State, spec: ExperimentSpec) ->
             raise _Stop("model_not_pinned", str(e)) from e
         if note := concrete.pop("note", None):
             st.notes.append(note)
-        overlay = _overlay(env, v)
+        overlay = overlays[vname] = _overlay(env, v)
         fleet.store.kv_set(f"{KV_OVERLAY}{job.id}:{vname}", json.dumps(overlay))
         variants[vname] = {"environment": env.name, "harness": harness, "harness_version": locked,
                            "model": r.model, "model_policy": r.policy, "model_source": r.source, **concrete,
@@ -561,6 +567,7 @@ async def _begin(jobs: JobService, job: Job, st: State, spec: ExperimentSpec) ->
         tasks[t.id] = {"repo": repo, "base_branch": t.base_branch, "base_sha": pinned,
                        "issue": t.issue, "issue_text": issue_text}
     # --- review(#114): egress too: an approved egress request widens an environment mid-experiment
+    _pin_sets(jobs, job, st, spec, variants, tasks, overlays)  # --- #178
     st.pins = {"variants": variants, "tasks": tasks, "egress": _egress(fleet, spec), "pinned_at": now()}
     st.trials = [Trial(key=f"{t.id}/{vname}/{i}", task=t.id, variant=vname, trial=i)
                  for i in range(1, spec.trials + 1) for t in spec.tasks for vname in spec.variants]
@@ -570,6 +577,37 @@ async def _begin(jobs: JobService, job: Job, st: State, spec: ExperimentSpec) ->
                      f"{spec.parallel or jobs.settings.experiment_parallel} at once; pinned "
                      + "; ".join(f"{k}: {v['harness']}@{v['harness_version'] or '?'} on {v['model'] or 'its default'}"
                                  for k, v in variants.items()), JobState.RUNNING, reason=None)
+
+
+def _pin_sets(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, variants: dict[str, Any],
+              tasks: dict[str, Any], overlays: dict[str, Any]) -> None:
+    """--- #178: each variant's pin set. A trials request names it (`spec.pin_sets`): what the lock claims now must be
+    what it pinned. Otherwise the variant's pins become one (the same content gives the same pin set)."""
+    from hangar import pinsets
+
+    for vname, vp in variants.items():
+        want = (spec.pin_sets or {}).get(vname)
+        if want:
+            try:
+                p = pinsets.get(jobs.fleet, want)
+            except KeyError as e:
+                raise _Stop("pin_set", str(e).strip("'\"")) from e
+            if p.harness_digest and vp.get("harness_digest") != p.harness_digest:
+                raise _Stop("pin_set", f"variant {vname}: the lock claims {vp.get('harness_digest')}, but pin set "
+                                       f"{p.id} pinned {p.harness_digest}")
+            if p.harness_version != vp.get("harness_version"):
+                raise _Stop("pin_set", f"pin set {p.id} ran {p.harness} {p.harness_version or '(no version)'}, and "
+                                       f"this hangar runs {vp.get('harness_version') or '(none)'}: its pack can't be "
+                                       "claimed any more; resolve a new pin set on what hangar runs now")
+            for tid, t in tasks.items():
+                pinned = p.tasks.get(tid)
+                if pinned is not None and pinned.base_sha and t.get("base_sha") != pinned.base_sha:
+                    raise _Stop("pin_set", f"task {tid}: base {t.get('base_sha')} isn't pin set {p.id}'s "
+                                           f"{pinned.base_sha}")
+        else:
+            env = vp.get("environment") or spec.environment
+            p = pinsets.experiment_pin(jobs, job, vname, vp, tasks, env, spec.grader, overlays.get(vname))
+        vp["pin_set"] = p.id
 
 
 def _overlay(env: EnvSpec, v: Variant) -> dict[str, Any]:
@@ -681,6 +719,8 @@ async def _loop(jobs: JobService, job: Job, st: State, spec: ExperimentSpec,
                                  f"{child.approval.reason if child.approval else 'see the job'}")
             if child.state == JobState.NEEDS_INPUT and child.id not in jobs._active:
                 jobs.cancel(child.id, f"experiment:{job.id}")  # nobody answers an experiment's agents
+            if child.state not in JOB_TERMINAL and not child.cancel_requested and t.pin_set:
+                _check_pin(jobs, job, t, child)  # --- #178: turn 1 against the pin set; drift ends it
             if child.state not in JOB_TERMINAL and not child.cancel_requested and _infra_turn(child) is not None:
                 # --- #166: a restart or the power-down cut its turn off and the job would resume from a checkpoint:
                 # not the conditions the other trials ran under. It ends here and runs again as a fresh trial.
@@ -792,6 +832,7 @@ def _start_trial(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t:
         return
     jobs.fleet.store.kv_set(KV_TRIAL + child.id, job.id)  # before it can start: nothing awaits in between
     t.job, t.state, t.started_at = child.id, "running", now()
+    t.pin_set = pin.get("pin_set")  # --- #178
 
 
 async def _finish_trial(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t: Trial, child: Job) -> None:
@@ -839,13 +880,43 @@ async def _finish_trial(jobs: JobService, job: Job, st: State, spec: ExperimentS
                 vp["harness_digest"] = t.harness_digest  # an overlay variant's digest, as its first trial ran it
     t.state = "grading" if spec.grader and child.state != JobState.CANCELLED and s is not None else "done"
     retry = None
-    if t.outcome_class == "infra_error":  # --- #166: not the agent's result: left out, and run again
+    if t.outcome_class == "infra_error" and t.infra_reason == "drift":  # --- #178: not what was pinned; not again
+        t.excluded, t.state = True, "done"
+        st.notes.append(f"trial {t.ref}: its turn 1 didn't run pin set {t.pin_set} (drift): excluded, not retried")
+    elif t.outcome_class == "infra_error":  # --- #166: not the agent's result: left out, and run again
         t.excluded, t.state = True, "done"
         retry = _retry(jobs, st, spec, t)
     jobs._event(job, f"trial {t.ref}: {t.outcome}" + (f" ({t.reason})" if t.reason else "")
                 + (f", infra_error/{t.infra_reason}: excluded" if t.excluded else "")
                 + (f", retried as {retry.ref}" if t.excluded and retry is not None else "")
                 + (", grading" if t.state == "grading" else ""))
+
+
+def _check_pin(jobs: JobService, job: Job, t: Trial, child: Job) -> None:
+    """--- #178: once the trial's turn 1 has its manifest, its digests must be the pin set's. A trial that drifted is
+    cancelled as `infra_error` / `drift`: not run further, and not retried."""
+    from hangar import manifest, pinsets
+
+    s = jobs._session(child)
+    first = next((x for x in s.turns if x.run_id), None) if s is not None else None
+    if first is None or not first.harness_digest or child.labels.get(PIN_CHECKED_LABEL):
+        return
+    child.labels[PIN_CHECKED_LABEL] = "1"
+    try:
+        p = pinsets.get(jobs.fleet, t.pin_set or "")
+    except KeyError:
+        return
+    m = manifest.store(jobs.settings).get(s.id, s.turns.index(first) + 1) or {}
+    found = pinsets.drift(p, first.harness_digest, first.environment_digest,
+                          (m.get("environment") or {}).get("spec_digest"))
+    if not found:
+        jobs._save(child)
+        return
+    t.drift.extend(f"pin set {p.id}: {d}" for d in found)
+    child.infra_cut = pinsets.DRIFT
+    jobs._event(child, "drift from pin set " + p.id + ": " + "; ".join(found))
+    with contextlib.suppress(Exception):
+        jobs.cancel(child.id, f"experiment:{job.id}")
 
 
 def _infra_turn(child: Job) -> Any:

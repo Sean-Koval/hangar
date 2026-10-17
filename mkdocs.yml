@@ -101,6 +101,7 @@ nav:
       - hangar-envd: envd.md
       - Trace export (hangar.trace/v1): api/traces.md
       - Run capture (hangar.run/v1): api/outbox.md
+      - Trials and pin sets (hangar.pinset/v1): api/trials.md
       - CI: ci.md
   - Design:
       - specs/README.md

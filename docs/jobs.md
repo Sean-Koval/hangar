@@ -444,6 +444,14 @@ An experiment runs the same tasks under several configurations, each several tim
 compare them. It is a job of kind `experiment`; each trial is an ordinary job of its own (`source: experiment`,
 `deliver: none`).
 
+**Trials and pin sets (#178).** The unit underneath is the trial against an immutable **pin set**: the harness lock and
+its digest, the environment's digests, the concrete model, each task's base commit, the grader's digest and the egress
+policy, content-addressed (`pin-<hash>`) and never changed. `POST /api/trials {pin_set, task, n, budget}` runs n trials
+of one task against one pin set, and a trial whose turn 1 didn't run what was pinned ends as `infra_error` / `drift`
+(not retried). Flightdeck decides how many trials to run; the batch experiment below is a convenience on top
+(`trials` and `parallel` are its wrapper fields), and it records a pin set per variant (`pins.variants.<name>.pin_set`,
+and on each trial). [api/trials.md](api/trials.md) has the API.
+
 ```yaml
 # skills-ab.yaml
 name: skills-ab
@@ -628,7 +636,7 @@ Every agent turn, best-of-N attempt, experiment trial and job (`result.outcome_c
 | Class | Means | Counted |
 | --- | --- | --- |
 | `agent` | the agent's own result, success or failure (an agent that exits 1 after editing files; one that crashed its own sandbox) | yes |
-| `infra_error` | infrastructure ended it; `infra_reason` says what: `preempted`, `power_down`, `rate_limited`, `provider_5xx`, `sandbox_create`, `checkpoint` (a restore failed), `control_plane_restart` | no: trials are retried ([§9](#infrastructure-errors-are-retried-and-left-out)); weekly yield leaves such jobs out |
+| `infra_error` | infrastructure ended it; `infra_reason` says what: `preempted`, `power_down`, `rate_limited`, `provider_5xx`, `sandbox_create`, `checkpoint` (a restore failed), `control_plane_restart`, `drift` (a trial's turn 1 didn't run its pin set, #178) | no: trials are retried ([§9](#infrastructure-errors-are-retried-and-left-out)); weekly yield leaves such jobs out |
 | `cancelled` | someone (or an experiment) stopped it | no |
 | `human` | a person stepped in: an interrupt, or the agent asked a question | no (a job that then finishes is `agent`) |
 
