@@ -30,6 +30,7 @@ from hangar import ckpt, exchange, isolation, observe  # --- observe, isolation
 from hangar import computer as computer  # --- computer
 from hangar import fairness as fairness  # --- scale
 from hangar import flightrec as flightrec  # --- clouddoctor: failed and slow turns leave a record
+from hangar import gittree as gittree  # --- #165: a one-shot turn's start and end trees
 from hangar import harness_thaw as harness_thaw  # --- harness locks (#134): thawed sessions, turn 1's drift
 from hangar import hot_resume as hot_resume  # --- providers-e2b
 from hangar import keys as keys  # --- durable
@@ -613,7 +614,8 @@ class SessionService:
             actor=f"session:{s.id}", progress=stage,
             push_branch=s.branch,  # workstream F: the one branch a gateway-mode sandbox may push
             person=s.person,  # --- identity: the session's person's sandbox, with their credentials
-            purpose="automated" if s.job_id else "interactive")  # --- #125: a job's session is automated
+            purpose="automated" if s.job_id else "interactive",  # --- #125: a job's session is automated
+            harness_lock=s.harness_lock)  # --- #221: its prefix layer mounted from the lock it was thawed from
         self._credential_warnings(s, sb)
         if s.checkpoints and sb.info.get("repo_path"):
             stage("restoring the last checkpoint")
@@ -1042,6 +1044,8 @@ class SessionService:
         except BaseException:
             caching.STAGGER.responded(s.id)
             raise
+        if not turn.live:  # --- #165: a one-shot turn has no driver to hash its trees: its start tree, here
+            await gittree.oneshot(self, s, turn, sb, run_id, "start")
         probe = manifest.start_probe(self, s, sb)  # --- interfaces: the instructions and skills the turn will see
         # The probe must read the sandbox before the agent can change it, or a skill the agent edits in this turn
         # shows up as what the turn started with (and freezing that turn is refused). Wait briefly; a slow probe
@@ -1167,6 +1171,9 @@ class SessionService:
         # workstream E: result, question (-> needs_input), artifacts; before the checkpoint so it has them all
         outcome = await exchange.after_turn(self, s, turn, outcome)
         outcomes.mark(turn, *outcomes.classify_turn(outcome, turn.exit_code, raw=raw, harness=turn.harness))  # #166
+        if not turn.live and s.sandbox_id and self._alive(s.sandbox_id):  # --- #165: and its end tree
+            await gittree.oneshot(self, s, turn, self.fleet.get(s.sandbox_id), turn.run_id, "end")
+            self._save(s)
         if self.env_requests is not None:  # --- computer: the last requests, and screenshots/demos as events
             await self.env_requests.scan(s, turn)
         computer.note_media(self, s, turn)

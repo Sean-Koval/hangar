@@ -1,4 +1,4 @@
-"""The "needs you" inbox (--- landing): everything waiting on one person, in one list.
+"""The "needs you" inbox (--- landing): everything waiting on one person, in one list, delivered to them.
 
 What waits on a human used to be spread over GitHub comments, Slack threads and MCP elicitations. The inbox gathers
 it from the records hangar already keeps, per person (#88: your own work; admins also get the work nobody in
@@ -10,12 +10,19 @@ particular owns, such as jobs from GitHub issues and Slack):
   whatever other modules add through `SOURCES` (egress and secret requests);
 * `failed`: a job failed in the last week.
 
-It is read, not acted on: each item says what to do and with which command. MCP clients read `hangar://inbox` (and
-can subscribe: it changes when a job or session does), the CLI runs `hangar inbox`, REST serves `GET /api/inbox`.
+Each item says what to do and with which command, carries a stable `id` (the same wait is the same item however
+often the inbox is read) and `links` to the native object the action happens on: the PR, the ticket (Jira or a
+GitHub issue), the Slack thread, the job on the dashboard (#157).
+
+Delivery (inbox_notify.py): a `question` or `approval` reaches its person in a Slack DM within a minute, once per
+item; everything else waits for their twice-daily digest (#158). `review` items are never sent one by one: GitHub's
+review queue stays the place for them. MCP clients read `hangar://inbox` (and can subscribe: it changes when a job
+or session does), the CLI runs `hangar inbox`, REST serves `GET /api/inbox`.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -40,9 +47,97 @@ def yours(person: str | None, p: Principal | None) -> bool:
     return person == p.person if person is not None else p.role == "admin"
 
 
+def item_id(kind: str, ref: dict[str, Any], reason: str = "") -> str:
+    """#157: a stable digest of what an item waits on: its kind, the job, session or request (or other record) it is
+    about, and the approval it is or the question it asks. Reading the inbox again gives the same id; a new question
+    on the same job, or another approval in the same turn, a new one."""
+    what = next((f"{k}={ref[k]}" for k in ("request", "job", "session", "issue", "credential", "pr")
+                 if ref.get(k) is not None), "")
+    extra = str(ref.get("approval") or "")
+    if not extra and kind in ("question", "alert"):
+        extra = hashlib.sha256(reason.encode()).hexdigest()[:16]
+    if not what and not extra:  # an item only its text tells apart
+        extra = hashlib.sha256(reason.encode()).hexdigest()[:16]
+    return "inb-" + hashlib.sha256(f"{kind}|{what}|{extra}".encode()).hexdigest()[:16]
+
+
 def _item(kind: str, reason: str, action: str, since: float, **ref: Any) -> dict[str, Any]:
-    return {"kind": kind, "reason": reason, "action": action, "since": since,
-            **{k: v for k, v in ref.items() if v is not None}}
+    ref = {k: v for k, v in ref.items() if v is not None}
+    return {"kind": kind, "reason": reason, "action": action, "since": since, **ref,
+            "id": item_id(kind, ref, reason)}
+
+
+# ====================================================================== native links (#157)
+LINKS = ("pr", "ticket", "thread", "job")
+PERMALINK_PREFIX = "slack:permalink:"  # kv: chat.getPermalink's answer per thread (inbox_notify fills it)
+
+
+def thread_of(job: Any) -> str | None:
+    """The Slack thread a job talks in (`slack:<channel>:<ts>`): where it started, or where its last turn reports."""
+    refs = [job.source_ref, *(t.reply_to for t in reversed(job.turns))]
+    return next((r for r in refs if isinstance(r, str) and r.startswith("slack:")), None)
+
+
+def thread_url(store: Any, ref: str | None) -> str | None:
+    """A Slack thread's permalink: Slack's own (chat.getPermalink, cached by the notifier), else the archive URL Slack
+    redirects to the workspace's."""
+    from hangar.slack import parse_ref
+
+    where = parse_ref(ref or "")
+    if where is None:
+        return None
+    if cached := store.kv_get(PERMALINK_PREFIX + ref):
+        return cached
+    return f"https://slack.com/archives/{where[0]}/p{where[1].replace('.', '')}"
+
+
+def ticket_url(svc: JobService, job: Any) -> str | None:
+    """The ticket a job came from: a Jira issue (`intake.tracker` `jira:ABC-12` -> `<jira url>/browse/ABC-12`) or a
+    GitHub issue (a `github:owner/repo#N` source, or an issue a Projects item carries)."""
+    import re
+
+    from hangar.github import parse_repo
+    from hangar.intake import TRACKER
+
+    labels = job.labels or {}
+    tracker = labels.get(TRACKER) or ""
+    key = labels.get("jira.issue") or (tracker.split(":", 1)[1] if tracker.startswith("jira:") else "")
+    if key and re.match(r"^[A-Z][A-Z0-9_]{0,49}-[1-9][0-9]{0,9}$", key):
+        base = str((svc.settings.jira or {}).get("url") or "").rstrip("/")
+        return f"{base}/browse/{key}" if base.startswith("https://") else None
+    m = re.match(r"^github:([\w.-]+/[\w.-]+)#([1-9][0-9]{0,9})$", job.source_ref or "")
+    if m:
+        return f"https://github.com/{m.group(1)}/issues/{m.group(2)}"
+    number, repo = labels.get("github.issue"), parse_repo(job.repo) if job.repo else None
+    if number and str(number).isdigit() and repo:
+        return f"https://github.com/{repo}/issues/{number}"
+    return None
+
+
+def job_url(svc: JobService, job_id: str | None) -> str | None:
+    """The job on the dashboard."""
+    return f"{svc.settings.public_url.rstrip('/')}/#jobs?job={job_id}" if job_id else None
+
+
+def links(svc: JobService, item: dict[str, Any]) -> dict[str, str | None]:
+    """`links` of an item: {pr, ticket, thread, job}, each the native URL or None."""
+    job = svc._jobs.get(item["job"]) if item.get("job") else None
+    if job is None and item.get("job"):
+        try:
+            job = svc.get(item["job"])
+        except Exception:  # noqa: BLE001 - gone: the item keeps its other links
+            job = None
+    pr = item.get("pr") or (job.result.pr_url if job is not None else None)
+    return {"pr": pr if isinstance(pr, str) and pr.startswith("https://") else None,
+            "ticket": ticket_url(svc, job) if job is not None else None,
+            "thread": thread_url(svc.store, thread_of(job)) if job is not None else None,
+            "job": job_url(svc, item.get("job"))}
+
+
+def native(item: dict[str, Any]) -> str | None:
+    """Where an item is answered: the conversation it was asked in, the ticket, the PR, else the job."""
+    ls = item.get("links") or {}
+    return next((ls[k] for k in ("thread", "ticket", "pr", "job") if ls.get(k)), None)
 
 
 def env_requests(svc: JobService, p: Principal | None) -> list[dict[str, Any]]:
@@ -87,9 +182,9 @@ def items(svc: JobService, p: Principal | None = None) -> list[dict[str, Any]]:
         elif j.state == JobState.AWAITING_APPROVAL:
             why = (j.approval.reason if j.approval else "") or "it waits for a trusted person"
             out.append(_item("approval", f"job waits for approval: {why}", f"hangar job approve {j.id} (or reject)",
-                             j.updated_at, **ref))
+                             j.updated_at, expires_at=j.approval.expires_at if j.approval else None, **ref))
         elif j.state == JobState.FAILED and j.updated_at > now() - FAILED_DAYS * 86400 and not pr_open and \
-                st.pr_state not in ("merged", "closed"):
+                st.pr_state not in ("merged", "closed") and j.source != "review":  # --- #161: the packet says so
             out.append(_item("failed", f"job failed ({j.reason or 'error'})",
                              f"hangar job get {j.id}; then follow up or submit it again", j.updated_at, **ref))
         if pr_open and j.id not in svc._active and j.state in (JobState.SUCCEEDED, JobState.FAILED):
@@ -102,6 +197,19 @@ def items(svc: JobService, p: Principal | None = None) -> list[dict[str, Any]]:
         elif r.pr_number and st.pr_state == "approved" and not st.armed_sha and st.note:
             out.append(_item("review", f"PR #{r.pr_number} is approved but not landing: {st.note}",
                              f"merge it, or fix what holds it: {r.pr_url}", st.approved_at or j.updated_at, **ref))
+    # --- self-approval (#160): a PR its requester's own approval doesn't land waits on the repo's approvers (the
+    # people linked to them; admins when none is linked)
+    for j in svc._jobs.values():
+        st, r = j.landing, j.result
+        if not (st.needs_second and r.pr_number and st.pr_state == "open" and not st.ended):
+            continue
+        if p is not None and not (p.person in st.approver_people if st.approver_people else p.role == "admin"):
+            continue
+        if p is not None and p.person == j.person:
+            continue
+        out.append(_item("review", f"PR #{r.pr_number} needs a second reviewer: {j.person}'s own approval doesn't "
+                                   f"land it" + (f" ({st.note})" if st.note else ""), f"review and approve {r.pr_url}",
+                         j.updated_at, risk=st.risk, job=j.id, title=j.title, repo=j.repo, pr=r.pr_url))
     # --- durable: a live turn's approvals are in memory; an open question can be anywhere
     sessions = [*svc.sessions._sessions.values(), *svc.sessions.where(needs_input=NOT_NULL)] \
         if svc.sessions is not None else []
@@ -115,14 +223,18 @@ def items(svc: JobService, p: Principal | None = None) -> list[dict[str, Any]]:
         for a in steer.pending(s):
             out.append(_item("approval", f"the agent wants to run {a.tool}: {a.detail[:300]}",
                              f"hangar session approvals {s.name} --allow {a.id} | --deny {a.id}", a.requested_at,
-                             session=s.name, job=s.job_id, expires_at=a.expires_at))
+                             session=s.name, job=s.job_id, expires_at=a.expires_at, approval=a.id))
         if s.needs_input and not s.job_id and s.id not in job_sessions:
             out.append(_item("question", f"the agent asks: {s.needs_input[:500]}",
                              f"hangar session send {s.name} '<your answer>'", s.last_active_at, session=s.name))
     for source in SOURCES:
         out += source(svc, p)
     out.sort(key=lambda i: i.get("since") or 0, reverse=True)
-    return out[:MAX_ITEMS]
+    out = out[:MAX_ITEMS]
+    for x in out:  # #157: a source's items too
+        x.setdefault("id", item_id(x["kind"], x, str(x.get("reason") or "")))
+        x["links"] = links(svc, x)
+    return out
 
 
 def summary(xs: list[dict[str, Any]]) -> dict[str, int]:

@@ -105,9 +105,15 @@ What every job on the repo gets, whichever door it came through ([repo-policy.md
 ```bash
 hangar repo set acme/app --land auto_after_approval --approver alice --approver bob \
   --risk-path 'infra/**' --risk-path '**/migrations/**' \
-  --verify "uv run pytest -q" --max-usd-per-day 60
+  --verify "uv run pytest -q" --max-usd-per-day 60 \
+  --ai-review hangar --self-approval low_risk_with_ai_review
 hangar repo get acme/app
 ```
+
+**The review rule.** The person who asked for the work may be its PR's only approver only for a low-risk PR (docs and
+tests) with an independent AI review of the approved head ([self-approval](../landing.md#self-approval-who-may-be-the-only-approver));
+anything else, and every tainted PR (every Jira-door job), needs a second reviewer from `--approver`. `--ai-review
+hangar` has a different harness from the author's review every agent PR first ([AI review](../landing.md#6a-ai-first-pass-review)).
 
 ### 6. Doors
 
@@ -141,7 +147,9 @@ Each engineer:
 
 1. moves 2 tickets to **Ready for agent** (or labels 2 issues `hangar`);
 2. reviews the agent PRs at the 10:00 triage (`hangar inbox`), and approves one that is ready: hangar lands it once
-   the required checks pass;
+   the required checks pass (a teammate's PR as its second reviewer; their own only when it is low risk with an AI
+   review). Past 5 open agent PRs awaiting them, their new jobs wait as `awaiting_capacity`
+   ([review capacity](../team-scale.md#review-capacity)): reviewing is what frees them;
 3. answers one agent question in its thread or ticket (`/hangar <answer>`, a thread reply, a Jira comment).
 
 ## Phase 2: 6 engineers, 3 repos (weeks 3–4)
@@ -150,9 +158,10 @@ Each engineer:
 2. The per-repo checklist (4–7) for repos 2 and 3, each ending with `hangar repo check` green and its hours recorded.
 3. Then turn on, as each lands:
    - inbox DMs for questions and approvals, and the per-person digest at 10:15 and 16:00 (#157, #158);
-   - review-aware admission: new jobs wait as `awaiting_capacity` past N open agent PRs per reviewer (#159);
-   - the self-approval rule for low-risk packets with an independent AI review, and that AI first-pass review on
-     every agent PR (#160, #161);
+   - review-aware admission: new jobs wait as `awaiting_capacity` past N open agent PRs per reviewer (#159; on by
+     default at 5, `HANGAR_PERSON_MAX_OPEN_AGENT_PRS`, [team-scale.md](../team-scale.md#review-capacity));
+   - the self-approval rule for low-risk packets with an independent AI review (#160; the default), and the AI
+     first-pass review on every agent PR (#161; `hangar repo set <repo> --ai-review hangar`);
    - run capture: `HANGAR_OUTBOX_URL` ([observability.md, run capture](../observability.md#run-capture)).
 4. The weekly adoption metrics start counting active delegators (#168).
 
@@ -160,11 +169,13 @@ Each engineer:
 
 | When | What | Where |
 | --- | --- | --- |
-| 10:00–10:20 | Triage: each engineer clears their inbox (PRs to review, questions, approvals, failed jobs) | `hangar inbox` ([landing.md §7](../landing.md#7-the-inbox-what-needs-you)) |
+| Any time | An agent's question or approval reaches its person in a Slack DM within a minute, linked to the thread, ticket or PR to answer in | [landing.md, delivery](../landing.md#delivery-it-comes-to-you); `hangar person set <id> --dm …` |
+| 10:00–10:20 | Triage: each engineer clears their inbox (PRs to review, questions, approvals, failed jobs). The 10:15 Slack digest lists it, questions first; reviews are a count and a link to GitHub's review queue | `hangar inbox` ([landing.md §7](../landing.md#7-the-inbox-what-needs-you)) |
 | 10:20 | Standup, with the bot's line at 10:18 ET: yesterday's merged and abandoned agent PRs (by reason), review wait p50, top failure; Mondays, last week's summary | `HANGAR_STANDUP_CHANNEL` ([metrics.md](../metrics.md#the-standup-line)) |
+| 16:00 | The afternoon digest catches what came in since | Slack DM ([team.md](../team.md#inbox-delivery-dms-and-the-digest)) |
 | Friday, 30 min | Harness review: label the first failure on failed or abandoned jobs, until 20 candidate tasks | `hangar review queue` ([harness-review.md](harness-review.md)) |
 
-Sandboxes power on at 09:50 ET, so work queued overnight starts before triage.
+Sandboxes power on at 09:50 ET, so work queued overnight starts before triage. The digests and DMs come from the control plane, which stays up while the pools are off; a 10:15 digest sent before power-up finished says "sandboxes not up yet". Each engineer needs their Slack account linked (`hangar person link <id> slack T…/U…`); `hangar doctor` lists anyone the inbox can't reach.
 
 ## Rollback
 

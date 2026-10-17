@@ -93,6 +93,8 @@ EOF
 
 `context` can also carry your local work in progress: `patch` (uncommitted changes) and `bundle` (unpushed commits) items, applied before the agent starts. `hangar job submit --from-local` builds them from the current checkout. See [context exchange](context-exchange.md).
 
+**States and reasons.** A job is `queued`, `awaiting_approval`, `provisioning`, `running`, `needs_input`, then `succeeded`, `failed` or `cancelled`. `reason` says more: why it ended (`verify_failed`, `over_budget`, …) or why a queued job waits: `powered_down` (the sandbox pools are off for the night) or `awaiting_capacity` (its person already has `HANGAR_PERSON_MAX_OPEN_AGENT_PRS` agent PRs awaiting review; only a job's first turn waits, see [review capacity](team-scale.md#review-capacity)). `GET /api/jobs?reason=awaiting_capacity` and `hangar job list --reason awaiting_capacity` list the held ones; an admin lets one through with `hangar job admit <id>`. `source` says which door it came through (`api`, `mcp`, `cli`, `github`, `slack`, `jira`, `schedule`, …); `review` is an [AI first-pass review](landing.md#6a-ai-first-pass-review) of an agent PR, which delivers nothing and never waits for review capacity.
+
 Then poll `GET /api/jobs/{id}`, or wait for the callback. The job view carries `state`, the `events` timeline, `result` (commits, diffstat, `pr_url`, verification exit code and output tail, the agent's summary), `usage` (tokens and USD), `sandbox_id` and `terminal_session`. `GET /api/jobs/{id}/events?since=` streams what the agent is doing (messages, commands, file changes, errors), in the same shape for every harness.
 
 From the CLI:
@@ -182,8 +184,33 @@ The same happens on its own after a control-plane restart (a deploy) that took t
 
 - **Watch:** attach to the job's sandbox terminal from the dashboard, or with `hangar sb attach <sandbox_id>` (the run is tmux session `terminal_session`).
 - **Steer:** follow up from the API, MCP, CLI or a PR comment. Each follow-up is a new agent turn with your message and the previous summary, on the same branch. The PR updates in place. While a Claude Code or Codex turn runs, you can also steer or interrupt it, and answer its tool approvals when its environment uses `approvals: ask` (`POST /api/jobs/{id}/steer`, `/interrupt`, `/approvals`; MCP `steer_turn`, `answer_approval`; see [steering](steering.md)). An interrupt with a message carries on with it; without one, the job pauses in `needs_input` until you follow up or cancel, and nothing is delivered.
+- **The summary:** the prompt asks the agent for a short summary in `RESULT.md` in the job's directory (`hangar-agent done "<summary>"` writes it there too), never in the repo; the [`repo-conventions` skill](https://github.com/Sean-Koval/hangar/blob/main/envs/skills/repo-conventions/SKILL.md) says the same. It becomes the turn's summary, the PR's and the A2A `Summary` artifact. An agent that writes none still leaves a summary: the job's is then the end of the agent's output (its last 3,000 characters, redacted), which normally holds its final message. A `RESULT.md` left at the repo root instead is dropped from the PR ([scratch files](repo-policy.md#agent-scratch-files)).
 - **Take over:** work in the sandbox yourself. Your commits go out with the next follow-up's delivery.
 - After a turn the sandbox stays up while anyone is using it, and at least `keep_minutes` (default 120). Then it is checkpointed and released.
+
+### The pull request
+
+The PR body is the agent's summary, then what hangar knows: the verification, files left out, the check's own tests
+the agent changed, best-of-N's attempts, screenshots, the job line (`hangar job … · requested by … · environment /
+harness / model`), usage and `Closes #N` for an issue's job. It ends with **git trailers** (#137), so "which harness
+wrote this PR" can be reviewed, read by a script and joined to merged-PR outcomes:
+
+```
+Hangar-Job: job-1a2b3c4d
+Harness-Digest: sha256:…
+Environment-Digest: sha256:…
+Harness-Lock: team-default@r14
+```
+
+`Harness-Digest` and `Environment-Digest` are the latest turn's `harness_digest` and `environment_digest` from its
+[manifest](specs/0014-sister-tool-interfaces.md#2-the-effective-harness-manifest-hangarmanifestv1); `Harness-Lock`
+appears only for a job [thawed from a lock](harness-lock.md#thaw-and-drift). When the job's turns ran with different
+harness digests, each one gets a line, in the order it first ran with the latest turn's last, followed by the turns
+it covers (`Harness-Digest: sha256:… (turns 1-2)`). A turn recorded before digests existed adds nothing: no trailer
+is printed without a value. `git interpret-trailers --parse` reads them from the body (hangar separates its part
+from the summary with `___`, since git takes a `---` line for the end of a message; a summary that has its own `---`
+line needs `--no-divider`). The body goes through the [secret scan](security.md#secret-scanning) like everything hangar posts. When
+hangar [lands the PR](landing.md#4-how-a-pr-lands), the merge commit's message ends with the same trailers.
 
 ## 6. Forks and best-of-N
 
@@ -587,6 +614,7 @@ as `hangar.outcome.class` and `hangar.outcome.infra_reason` ([traces.md](api/tra
 | --- | --- | --- |
 | `HANGAR_JOB_CONCURRENCY` | 0 (auto) | Jobs provisioning or running at once. Auto: 4 on Docker, else `HANGAR_MAX_SANDBOXES` / 5 between 4 and 8 ([team-scale.md](team-scale.md)) |
 | `HANGAR_PERSON_MAX_RUNNING_JOBS` | 0 (half the slots, at least 4) | Jobs one person runs at once; the queue serves whoever has the fewest running first |
+| `HANGAR_PERSON_MAX_OPEN_AGENT_PRS` | 5 (0 = off) | Open agent PRs awaiting a person before their new jobs wait as `awaiting_capacity`; see [team-scale.md](team-scale.md#review-capacity) |
 | `HANGAR_JOB_TIMEOUT_MINUTES` | 60 | Per agent turn |
 | `HANGAR_JOB_KEEP_MINUTES` | 120 | Sandbox kept after a turn |
 | `HANGAR_JOB_VERIFY_TIMEOUT_SECONDS` | 1800 | |

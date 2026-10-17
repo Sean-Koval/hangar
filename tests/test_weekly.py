@@ -298,7 +298,8 @@ async def test_the_standup_line_posts_once_per_weekday_at_1018_et(fleet, setting
     settings.standup_channel = "C0STANDUP"
     assert await weekly.post_standup(svc, at(14, 10.2)) is None  # 10:12, before 10:18
     line = await weekly.post_standup(svc, at(14, 10.3))  # Wednesday 10:18
-    assert line.startswith("Yesterday: 1 agent PRs merged, 0 abandoned, review wait p50 2.0 h")
+    assert line.startswith("Yesterday: 1 agent PRs merged, 0 abandoned, review wait p50 2.0 h, 0 jobs held for review "
+                           "capacity")
     assert "top failure: none" in line
     assert await weekly.post_standup(svc, at(14, 11)) is None  # once a day
     assert len(posts) == 1 and posts[0]["channel"] == "C0STANDUP" and posts[0]["text"] == line

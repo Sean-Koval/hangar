@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -49,7 +50,9 @@ async def jobs(fleet, world, settings, store):
             dst = fake.boxes[sandbox.provider_ref] / "home/agent/.tagent/skills" / name
             shutil.copytree(world["envs"] / "skills" / name, dst, dirs_exist_ok=True)
         for rel, text in world["tamper"].items():  # a skill file changed in the image after the freeze
-            (fake.boxes[sandbox.provider_ref] / "home/agent/.tagent/skills" / rel).write_text(text)
+            f = fake.boxes[sandbox.provider_ref] / "home/agent/.tagent/skills" / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(text)
 
     fake.create = create_with_baked_skills
     sessions = SessionService(fleet, Vault(store, b"0" * 43 + b"="))
@@ -91,7 +94,7 @@ async def _frozen_registry(jobs, world) -> tuple[Path, str]:
     return reg, b["digest"]
 
 
-async def test_thaw_matches_drifts_and_fails(jobs, world, settings):
+async def test_thaw_mounts_the_lock_drifts_and_fails(jobs, world, settings, monkeypatch):
     reg, digest = await _frozen_registry(jobs, world)
 
     # --- thawed from its own lock: turn 1's harness_digest is the lock's, no drift
@@ -110,32 +113,76 @@ async def test_thaw_matches_drifts_and_fails(jobs, world, settings):
     assert s.turns[0].drift == []
     assert harness_thaw.packet_line(jobs, job).endswith("turn 1 matched the lock")
 
-    # --- a skill file changed in the image after the freeze: turn 1 reports drift naming it, and goes on (warn)
-    world["tamper"] = {"alpha/SKILL.md": "Use alpha, but differently.\n"}
+    # --- a skill file changed in the image after the freeze, and an extra skill the image bakes: the sandbox runs
+    # the lock's files (mounted from it, #221), so there is no drift; the mounted skills are read-only to the agent
+    world["tamper"] = {"alpha/SKILL.md": "Use alpha, but differently.\n", "gamma/SKILL.md": "Use gamma.\n"}
     job = await _run(jobs, world, harness_lock="team@r1")
     assert job.state == JobState.SUCCEEDED, [e.message for e in job.events]
-    s = await _recorded(jobs, job, 1)
-    for _ in range(100):
-        if s.turns[0].drift is not None:
-            break
-        await asyncio.sleep(0.05)
+    s = await _settled(jobs, job)
+    assert s.turns[0].drift == [] and manifest.for_job(jobs, job, 1)["harness_digest"] == digest
+    box = _box(jobs, job)
+    skills = box / "home/agent/.tagent/skills"
+    assert sorted(p.name for p in skills.iterdir()) == ["alpha", "beta"]  # exactly the lock's
+    if os.geteuid() != 0:  # root (a dev container) writes through a read-only mode; the agent in a sandbox isn't
+        assert (skills / "alpha/SKILL.md").read_bytes() == (reg / "harnesses/team/skills/alpha/SKILL.md").read_bytes()
+    assert (skills / "beta/ref/notes.md").read_bytes() == (reg / "harnesses/team/skills/beta/ref/notes.md").read_bytes()
+    assert (box / "home/agent/.tagent/AGENTS.md").read_text().startswith("Run the tests first.")
+    for f in (skills / "alpha/SKILL.md", skills / "alpha", box / "home/agent/.tagent/AGENTS.md"):
+        assert not f.stat().st_mode & 0o222, f  # the agent's edit of alpha (agent.sh) couldn't land
+    assert job.harness_lock["stale"] == [] and jobs.fleet.get(job.sandbox_id).info["thawed"]["digest"] == digest
+
+    # --- the registry's skill edited without re-freezing (a stale thaw): the lock's digest is what was asked, what
+    # ran differs, and turn 1 reports it as drift (warn: it goes on)
+    world["tamper"] = {}
+    (reg / "harnesses/team/skills/alpha/SKILL.md").write_text("Use alpha, edited in the registry.\n")
+    job = await _run(jobs, world, harness_lock="team")
+    assert job.state == JobState.SUCCEEDED, [e.message for e in job.events]
+    assert any("skill:alpha" in x for x in job.harness_lock["stale"])
+    s = await _settled(jobs, job)
     t = s.turns[0]
-    assert [d["component"] for d in t.drift] == ["skill:alpha"], t.drift
+    assert [d["component"] for d in t.drift] == ["skill:alpha", "harness_digest"], t.drift
     assert t.drift[0]["lock"] and t.drift[0]["effective"] and t.drift[0]["lock"] != t.drift[0]["effective"]
     assert any("harness drift from team@r1: skill:alpha" in w for w in t.warnings)
     ev = [e for e in jobs.sessions.activity.read(s.id, 0, 1000, False)
           if e.data.get("event") == harness_thaw.DRIFT_EVENT]
     assert len(ev) == 1 and ev[0].data["action"] == "warn" and ev[0].data["drift"] == t.drift
     assert "**drift** on turn 1 (skill:alpha)" in harness_thaw.packet_line(jobs, job)
-    assert manifest.for_job(jobs, job, 1)["harness_digest"] == digest  # declared: the image changed, not the harness
+    assert manifest.for_job(jobs, job, 1)["harness_digest"] != digest  # what ran, not what was asked
 
-    # --- HANGAR_HARNESS_DRIFT=fail stops the turn: failed, harness_drift; nothing delivered
+    # --- HANGAR_HARNESS_DRIFT=fail: a stale registry is refused at claim; drift found on turn 1 (the sandbox changed
+    # after the lock was mounted) stops the turn: failed, harness_drift; nothing delivered
     settings.harness_drift = "fail"
+    with pytest.raises(JobError, match="the registry's files differ from the lock"):
+        jobs.submit(SubmitJob(instructions="x", repo=world["url"], environment="lockenv", deliver="none",
+                              harness_lock="team"), Caller("svc", "svc"))
+    subprocess.run([*GIT, "-C", str(reg), "checkout", "--", "."], check=True)
+    mount = harness_thaw.mount_files
+
+    async def mount_then_change(fleet, prov, sb, harness):
+        await mount(fleet, prov, sb, harness)
+        await prov.exec(sb, "chmod u+w ~/.tagent/skills/alpha ~/.tagent/skills/alpha/SKILL.md && "
+                            "echo changed >> ~/.tagent/skills/alpha/SKILL.md")
+
+    monkeypatch.setattr(harness_thaw, "mount_files", mount_then_change)
     job = await _run(jobs, world, harness_lock="team")
     assert job.state == JobState.FAILED and job.reason == harness_thaw.DRIFT_REASON, [e.message for e in job.events]
     s = jobs._session(job)
     assert s.turns[0].outcome == "failed" and s.turns[0].outcome_reason == harness_thaw.DRIFT_REASON
     assert any("drifted from its harness lock (skill:alpha)" in e.message for e in job.events)
+
+
+def _box(jobs, job) -> Path:
+    fake = jobs.fleet.providers["docker"]
+    return fake.boxes[jobs.fleet.get(job.sandbox_id).provider_ref]
+
+
+async def _settled(jobs, job):
+    s = await _recorded(jobs, job, 1)
+    for _ in range(100):
+        if s.turns[0].drift is not None:
+            break
+        await asyncio.sleep(0.05)
+    return s
 
 
 async def test_claims_are_refused_with_what_to_do(jobs, world, settings):

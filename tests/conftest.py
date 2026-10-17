@@ -227,6 +227,8 @@ class FakeProvider(Provider):
         for tmp in self.root.glob("*/tmp"):
             subprocess.run(["tmux", "kill-server"], capture_output=True, timeout=10,
                            env={"TMUX_TMPDIR": str(tmp), "PATH": "/usr/bin:/bin:/usr/local/bin"})
+        if self.root.exists():  # a harness lock's mounted files are read-only (#221)
+            subprocess.run(["chmod", "-R", "u+w", str(self.root)], capture_output=True, timeout=30)
         shutil.rmtree(self.root, ignore_errors=True)
 
 

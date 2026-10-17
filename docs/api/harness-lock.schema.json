@@ -18,9 +18,9 @@
       "else": {"required": ["path"]},
       "properties": {
         "id": {"type": "string", "pattern": "^(guide|skill|plugin|native):\\S{1,200}$", "description": "kind:name. guide:<file> (the harness's global instructions file), skill:<name>, plugin:<name>@<marketplace>, native:<runtime>/<path>."},
-        "digest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}], "description": "A file's: sha256 of its bytes. A directory's (skill, plugin): manifest._dir_digest, i.e. sha256 over, for each file in path order, its relative path, a NUL and the raw sha256 of its content. Equal to the manifest's declared digest. null only for a reference (source, no path): a pinned git skill, hangar's own verify-ui."},
+        "digest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}], "description": "A file's: sha256 of its bytes. A skill's directory: manifest._dir_digest, i.e. sha256 over, for each file in path order, its relative path, a NUL and the raw sha256 of its content. A plugin's: plugins.content_digest, sha256 over its marketplace entry (canonical JSON), a newline and its directory's _dir_digest (#221). Equal to the manifest's declared digest. null only for a reference (source, no path): a pinned git skill, hangar's own verify-ui."},
         "path": {"$ref": "#/$defs/path"},
-        "tree": {"$ref": "#/$defs/digest", "description": "Skills: what the sandbox probe reports for these files (manifest skills.effective[].digest), so drift can be checked without the source (#134)."},
+        "tree": {"$ref": "#/$defs/digest", "description": "Skills and plugins: what the sandbox probe reports for these files (manifest skills.effective[].digest, probe.plugins[].digest), so drift can be checked without the source (#134, #221)."},
         "source": {"type": "string", "description": "Where it came from (provenance, not identity): path:<env-relative path>, git:<url>, hangar:computer."},
         "enabled": {"type": "boolean", "description": "Plugins: whether it is enabled (default true)."}
       }

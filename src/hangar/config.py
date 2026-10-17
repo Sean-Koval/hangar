@@ -216,6 +216,8 @@ class Settings(BaseSettings):
     # minted per repo with contents and pull_requests write only), and it pushes for gateway sandboxes that have no
     # git credential of their own. The token above still comments on issues (docs/landing.md).
     github_app_credential: str | None = None
+    # --- inbox digest (#158): the App's slug, so the digest's review link lists only agent PRs (author:app/<slug>)
+    github_app_slug: str | None = None
     # Vault credential holding the webhook secret; the webhook route is off until this is set.
     github_webhook_secret_credential: str | None = None
     # Repos that may trigger jobs, mapped to the environment to run them in: {"owner/repo": "env"}.
@@ -480,6 +482,11 @@ class Settings(BaseSettings):
     person_max_sessions: int = 15  # live sessions (each holds a sandbox); suspended ones don't count
     person_max_sandboxes: int = 20  # sandboxes started directly (MCP, REST, the E2B API); sessions' are above
     person_max_running_jobs: int = 0  # jobs running at once; 0 = half the job slots, at least 4. Others' jobs go first
+    # --- review capacity (#159): a person's new jobs wait (reason awaiting_capacity) while this many agent PRs await
+    # their review; 0 = off. A repo policy's `max_open_agent_prs` overrides it for that repo's jobs, and
+    # `person_max_open_agent_prs_overrides` ({person: n}) for one person (fairness.ReviewLoad)
+    person_max_open_agent_prs: int = Field(5, ge=0)
+    person_max_open_agent_prs_overrides: dict[str, int] = Field(default_factory=dict)
     # --- teamcreds: how long a job's or session's sandbox waits for a free login when every login it could use is
     # leased (a Codex ChatGPT login goes into one sandbox at a time); then it fails, saying which are busy
     login_wait_seconds: float = Field(600, ge=0)

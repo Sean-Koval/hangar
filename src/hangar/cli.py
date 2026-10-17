@@ -767,14 +767,25 @@ def job_submit(
 
 
 @job_app.command("list")
-def job_list(state: str | None = None, limit: int = 20, as_json: bool = typer.Option(False, "--json")):
-    jobs = _call("GET", "/api/jobs", params={"state": state, "limit": limit} if state else {"limit": limit})
+def job_list(state: str | None = None, limit: int = 20, as_json: bool = typer.Option(False, "--json"),
+             reason: str | None = typer.Option(None, "--reason", help="Only jobs with this reason, e.g. "
+                                               "awaiting_capacity (held for review capacity).")):
+    params = {k: v for k, v in (("state", state), ("limit", limit), ("reason", reason)) if v is not None}
+    jobs = _call("GET", "/api/jobs", params=params)
     if as_json:
         return _print(jobs)
     if not jobs:
-        typer.echo("No jobs" + (f" in state '{state}'" if state else "") + ".")
+        typer.echo("No jobs" + (f" in state '{state}'" if state else "") + (f" with reason '{reason}'" if reason
+                                                                             else "") + ".")
     for j in jobs:
         typer.echo(_job_line(j))
+
+
+@job_app.command("admit")
+def job_admit(job_id: str):
+    """--- review capacity (#159): let a queued job past the open-agent-PR cap (admin)."""
+    j = _call("POST", f"/api/jobs/{job_id}/admit")
+    typer.echo(f"{j['id']} admitted; it runs when a job slot is free")
 
 
 @job_app.command("get")
@@ -851,7 +862,7 @@ def _k(n: int) -> str:
 @app.command("usage")
 def usage_report(
     by: str = typer.Option("day", "--by", help="day | model | environment | requester | repo | harness | session | "
-                                                 "job | cache_ttl"),
+                                                 "job | cache_ttl | source"),
     since: str = typer.Option("30d", help="7d, 12h, an ISO date, or epoch seconds."),
     limit: int = typer.Option(50, help="Rows to show (the most expensive first, except by day)."),
     cache: bool = typer.Option(False, "--cache", help="Prompt-cache columns: the share of prompt tokens read from the "

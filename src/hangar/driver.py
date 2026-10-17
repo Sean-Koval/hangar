@@ -24,6 +24,12 @@ one-shot command, so attaching and resuming work as before. Standard library onl
   reads a split turn's approvals from there, not from the log the harness writes into (--- harden). `--base-env`
   replaces the agent's ~/.hangar/env with hangar's own copy (hangar/harden.py).
 
+* Trees (#165): at the turn's start and end, and after each edit or shell tool result, the driver writes the working
+  tree's git tree id as a `hangar.tree` line (only when it changed since the last one): `git add -A` and
+  `git write-tree` into a scratch index and object store in its private `<ctl>/tree/`, under a git directory of its
+  own (the agent's `.git/config`, hooks, filters and fsmonitor never run; its objects are read as alternates). A hash
+  over TREE_SLOW seconds stops hashing for the turn (`skipped: "slow"`).
+
 Exit status: the harness's own, 1 when its last turn failed, 130 after an interrupt that brought no new message.
 """
 
@@ -55,6 +61,10 @@ OPS = ("steer", "interrupt", "approve", "taint")  # --- taint (#130): set only; 
 ENDED = "the turn has ended"  # a command's answer when the harness is gone: hangar takes it as not delivered
 DECISIONS = ("allow", "deny", "allow_always")
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+TREE_SLOW = 2.0  # --- #165: seconds; one hash slower than this stops hashing for the turn
+TREE_TIMEOUT = 30.0  # a git that hangs is killed
+TREE_TOOLS = {"Bash", "BashOutput", "Write", "Edit", "MultiEdit", "NotebookEdit"}  # Claude Code's edit and shell tools
+_SHA = re.compile(r"^[0-9a-f]{40,64}$")
 
 
 def canonical(obj: object) -> bytes:
@@ -93,6 +103,110 @@ class Out:
         line = json.dumps({"type": "hangar." + kind, "ts": round(time.time(), 3), **data}, ensure_ascii=False)
         self.line(line)
         return line
+
+
+# ====================================================================== trees (--- #165)
+class Trees:
+    """The working tree's git tree id at points of the turn, as `hangar.tree` lines in the run log.
+
+    It never touches the agent's repository: a git directory of its own (`<ctl>/tree/git`, made here, with no
+    config but what it sets), the checkout as its work tree, a scratch index seeded once from the repo's (so `add -A`
+    rehashes only what changed), new objects in its own store, the repo's objects read as alternates. So the agent's
+    `.git/config` (filters, fsmonitor, hooks) runs nothing as hangar's user under the uid split, and nothing is
+    written into its `.git`. `.gitignore` files in the work tree are honoured. Ids match `git write-tree` of the same
+    content in the repo itself (barring content-changing config there: autocrlf, filters)."""
+
+    def __init__(self, out: Out, cwd: str, private_dir: str | None):
+        self.out, self.cwd, self.dir = out, cwd, private_dir
+        self.repo: str | None = None
+        self.objects: str | None = None
+        self.last: str | None = None
+        self.off: str | None = None  # why hashing stopped: "slow", "error", "no repo"
+        self.ready = False
+
+    def _git(self, *args: str, env: dict | None = None) -> subprocess.CompletedProcess:
+        base = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        return subprocess.run(["git", "-c", "safe.directory=*", "-c", "core.fsmonitor=false",
+                               "-c", "core.hooksPath=/dev/null", *args], capture_output=True, text=True,
+                              timeout=TREE_TIMEOUT, env={**base, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0",
+                                                         "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+                                                         **(env or {})})
+
+    def _setup(self) -> bool:
+        self.ready = True
+        if not self.dir or shutil.which("git") is None:
+            self.off = "no git"
+            return False
+        try:
+            top = self._git("-C", self.cwd, "rev-parse", "--show-toplevel", "--git-common-dir")
+            lines = top.stdout.splitlines()
+            if top.returncode != 0 or len(lines) < 2:
+                self.off = "no repo"
+                return False
+            self.repo = lines[0]
+            common = lines[1] if os.path.isabs(lines[1]) else os.path.join(self.cwd, lines[1])
+            self.objects = os.path.join(os.path.realpath(common), "objects")
+            git = os.path.join(self.dir, "git")
+            os.makedirs(os.path.join(git, "objects"), mode=0o700, exist_ok=True)
+            if not os.path.exists(os.path.join(git, "HEAD")):
+                r = self._git("init", "-q", env={"GIT_DIR": git})
+                if r.returncode != 0:
+                    self.off = "error"
+                    return False
+            index = os.path.join(self.dir, "index")
+            idx = os.path.join(os.path.realpath(common), "index")
+            if os.path.isfile(idx) and not os.path.exists(index):
+                with contextlib.suppress(OSError):
+                    shutil.copyfile(idx, index)
+        except (OSError, subprocess.SubprocessError):
+            self.off = "error"
+            return False
+        return True
+
+    def hash(self) -> tuple:
+        """(tree id or None, milliseconds)."""
+        if not self.ready and not self._setup():
+            return None, 0
+        if self.off:
+            return None, 0
+        assert self.dir and self.repo and self.objects
+        env = {"GIT_DIR": os.path.join(self.dir, "git"), "GIT_WORK_TREE": self.repo,
+               "GIT_INDEX_FILE": os.path.join(self.dir, "index"), "GIT_OBJECT_DIRECTORY":
+               os.path.join(self.dir, "git", "objects"), "GIT_ALTERNATE_OBJECT_DIRECTORIES": self.objects}
+        t0 = time.monotonic()
+        try:
+            add = self._git("-C", self.repo, "add", "-A", env=env)
+            tree = self._git("-C", self.repo, "write-tree", env=env) if add.returncode == 0 else add
+        except (OSError, subprocess.SubprocessError):
+            return None, int((time.monotonic() - t0) * 1000)
+        ms = int((time.monotonic() - t0) * 1000)
+        sha = tree.stdout.strip()
+        return (sha if tree.returncode == 0 and _SHA.match(sha) else None), ms
+
+    def point(self, phase: str | None = None, tool_use_id: object = None) -> None:
+        """A tree after a tool result (`tool_use_id`; only when it changed), or at the turn's `start` or `end`."""
+        if self.off:
+            return
+        sha, ms = self.hash()
+        if self.off:
+            if phase == "start" and self.off != "no repo":
+                self.out.event("tree", phase=phase, skipped=self.off)
+            return
+        if sha is None:
+            return
+        if ms > TREE_SLOW * 1000:
+            self.off = "slow"
+            self.out.event("tree", **({"phase": phase} if phase else {"tool_use_id": tool_use_id}), skipped="slow",
+                           ms=ms)
+            return
+        if phase is None and sha == self.last:
+            return
+        self.last = sha
+        self.out.event("tree", **({"phase": phase} if phase else {"tool_use_id": tool_use_id}), tree=sha, ms=ms)
+
+    def close(self) -> None:
+        if self.dir:
+            shutil.rmtree(self.dir, ignore_errors=True)
 
 
 # ====================================================================== the agent's user (--- isolation)
@@ -445,6 +559,8 @@ class Driver:
         self.unanswered: set = set()  # commands taken whose outcome isn't known yet
         self.tainted = bool(getattr(args, "tainted", False))  # --- taint (#130): only ever set
         self.write_tools = list(getattr(args, "write_tool", None) or [])
+        ctl_dir = getattr(args, "ctl", None)
+        self.trees = Trees(out, self.cwd(), os.path.join(ctl_dir, "tree") if ctl_dir else None)  # --- #165
 
     def taint(self, ref: str) -> None:
         """--- taint (#130): the turn has read untrusted content. Never undone."""
@@ -686,6 +802,7 @@ class Claude(Harness):
         self.last: dict = {}  # the last result
         self.interrupts: dict = {}  # our interrupt request id -> (follow-up text, done)
         self.n = 0
+        self.tools: dict = {}  # --- #165: tool_use id -> tool name, for the tree after its result
 
     def start(self, prompt: str) -> None:
         self.user(prompt)
@@ -714,6 +831,16 @@ class Claude(Harness):
             for c in (d.get("message") or {}).get("content") or []:
                 if isinstance(c, dict) and c.get("type") == "tool_use" and c.get("name") in _TAINT_WEB:
                     self.drv.taint(f"web:{c.get('name')}")
+                if isinstance(c, dict) and c.get("type") == "tool_use" and c.get("id"):  # --- #165
+                    self.__dict__.setdefault("tools", {})[str(c["id"])] = str(c.get("name") or "")
+        elif t == "user":  # --- #165: after an edit or shell tool's result, the tree it left
+            content = (d.get("message") or {}).get("content")
+            for c in content if isinstance(content, list) else []:
+                if isinstance(c, dict) and c.get("type") == "tool_result":
+                    tid = str(c.get("tool_use_id") or "")
+                    trees = getattr(self.drv, "trees", None)
+                    if self.__dict__.get("tools", {}).pop(tid, None) in TREE_TOOLS and trees is not None:
+                        trees.point(tool_use_id=tid)
         elif t == "control_request":
             self._control(d.get("request_id"), d.get("request") or {})
         elif t == "control_cancel_request":
@@ -978,6 +1105,9 @@ class Codex(Harness):
             it = exec_item(item)
             if it:
                 self.emit({"type": "item.started" if m == "item/started" else "item.completed", "item": it})
+            trees = getattr(self.drv, "trees", None)
+            if m == "item/completed" and item.get("type") in ("commandExecution", "fileChange") and trees:  # #165
+                trees.point(tool_use_id=item.get("id"))
         elif m == "thread/tokenUsage/updated":
             u = p.get("tokenUsage") or {}
             total, last = u.get("total"), u.get("last") or {}
@@ -1236,6 +1366,7 @@ def main(argv: list | None = None) -> int:
     for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         signal.signal(sig, stop)
     gate = Gate.load(out, args)  # --- overnight/autofix
+    drv.trees.point("start")  # --- #165: the harness is up but has no prompt yet: nothing has changed the tree
     h.start(prompt)
     alive = True
     while alive:
@@ -1264,7 +1395,10 @@ def main(argv: list | None = None) -> int:
         drv.ended()
     drv.drop_all()
     ctl.finish()
-    return h.status(h.finish())
+    code = h.finish()
+    drv.trees.point("end")  # --- #165
+    drv.trees.close()
+    return h.status(code)
 
 
 if __name__ == "__main__":

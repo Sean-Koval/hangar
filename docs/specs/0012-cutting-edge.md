@@ -4,7 +4,7 @@ Status: partly built (2026-10-15): items 1, 3–7 and 15 shipped; the rest isn't
 
 The goal is for hangar to be the best way to run coding agents on your own infrastructure, and to give MCP clients cloud sandboxes, with easy setup and current methods. This spec compares hangar with the cloud coding agents and sandbox platforms as of October 2026. It names what to adopt, in what order, and how to tell whether each change worked.
 
-Every external claim carries a source tag such as [S12], resolved in §10. Claims I could not check against a primary source are marked *unverified*, and §9 lists them. Numbers marked *measured* come from experiments on this machine (§4.3), whose scripts are in [`docs/research/0012/`](../research/0012/).
+Every external claim carries a source tag such as [S12], resolved in §10. Claims I could not check against a primary source are marked *unverified*, and §9 lists them. Numbers marked *measured* come from experiments on this machine (§4.3), whose scripts are in [`docs/research/0012/`](https://github.com/Sean-Koval/hangar/tree/main/docs/research/0012).
 
 ## 1. Summary: the decisions
 

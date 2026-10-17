@@ -72,7 +72,7 @@ hangar metrics standup              # the line as it would be posted now
 Set `HANGAR_STANDUP_CHANNEL` to a Slack channel id (the bot, `HANGAR_SLACK_BOT_TOKEN_CREDENTIAL`, must be in it). Hangar then posts once per weekday at `HANGAR_STANDUP_TIME` (default `10:18`) in `HANGAR_STANDUP_TIMEZONE` (default `America/New_York`). It posts from the control plane, so the line goes out even when the pools are late. A line not posted by 13:00 is skipped for the day. The line looks like this:
 
 ```
-Yesterday: 14 agent PRs merged, 3 abandoned (2 flaky_env, 1 unlabelled), review wait p50 2.1 h, top failure: verify_failed
+Yesterday: 14 agent PRs merged, 3 abandoned (2 flaky_env, 1 unlabelled), review wait p50 2.1 h, 5 jobs held for review capacity, top failure: verify_failed
 ```
 
-On Mondays the line covers last week (UTC) instead and adds yield and active delegators. When review-aware admission (#159) holds jobs, the line adds "N jobs held for review capacity". Unset the channel to stop the line.
+On Mondays the line covers last week (UTC) instead and adds yield and active delegators. The line also says how many new jobs review-aware admission (#159) holds for review capacity. Unset the channel to stop the line.

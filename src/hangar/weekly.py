@@ -324,11 +324,13 @@ def weekly(svc: JobService, week: str | None = None, repo: str | None = None,
 
 # ====================================================================== the standup line
 def _held(svc: JobService) -> int | None:
-    """--- #159: jobs held for review capacity, when hangar has that state."""
-    state = getattr(JobState, "AWAITING_CAPACITY", None)
-    if state is None:
+    """--- #159: new jobs held for review capacity (queued, reason `awaiting_capacity`)."""
+    from hangar import fairness
+
+    reason = getattr(fairness, "AWAITING", None)
+    if reason is None:
         return None
-    return svc.store.count_where(Job, state=state.value)
+    return sum(1 for j in svc.store.list_where(Job, state=JobState.QUEUED.value) if j.reason == reason)
 
 
 def _top_failure(svc: JobService, lo: float, hi: float) -> str | None:

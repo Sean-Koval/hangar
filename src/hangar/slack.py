@@ -24,6 +24,7 @@ import httpx
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from hangar import fairness as fairness  # --- review capacity (#159)
 from hangar import people, redeliver  # --- teamcreds: linked Slack users; --- trust: commit after handle
 from hangar.exchange import open_question
 from hangar.github import parse_repo
@@ -152,6 +153,7 @@ class SlackAPI:
     def __init__(self, token: str, api_url: str = "https://slack.com/api",
                  transport: httpx.AsyncBaseTransport | None = None):
         self._fast = transport is not None  # tests: don't sleep between retries
+        self.scopes: set[str] | None = None  # the token's scopes, from the last answer's X-OAuth-Scopes (doctor)
         self._client = httpx.AsyncClient(base_url=api_url.rstrip("/"), transport=transport, timeout=15,
                                          headers={"Authorization": f"Bearer {token}", "User-Agent": "hangar"})
 
@@ -176,6 +178,8 @@ class SlackAPI:
                 err = f"HTTP {r.status_code}"
                 await self._sleep(_retry_after(r, 2 ** attempt))
                 continue
+            if (granted := r.headers.get("x-oauth-scopes")) is not None:
+                self.scopes = {x.strip() for x in granted.split(",") if x.strip()}
             try:
                 body = r.json()
             except ValueError as e:
@@ -201,6 +205,20 @@ class SlackAPI:
 
     async def auth_test(self) -> dict[str, Any]:
         return await self.call("auth.test")
+
+    async def open_dm(self, user: str) -> str:
+        """--- inbox delivery (#157): the app's DM channel with a user (conversations.open, needs `im:write`)."""
+        res = await self.call("conversations.open", users=user, return_im=False)
+        channel = str((res.get("channel") or {}).get("id") or "")
+        if not _ID.match(channel):
+            raise SlackError("Slack conversations.open: no channel id")
+        return channel
+
+    async def permalink(self, channel: str, ts: str) -> str | None:
+        """A message's permalink (chat.getPermalink), or None."""
+        res = await self.call("chat.getPermalink", channel=channel, message_ts=ts)
+        url = str(res.get("permalink") or "")
+        return url if _PR_URL.match(url) else None
 
 
 def _retry_after(r: httpx.Response, default: float) -> float:
@@ -642,7 +660,8 @@ class SlackFrontDoor:
             return
         await self._say(api, channel, thread_ts,
                         f"Queued as hangar job `{job.id}` in `{escape(job.environment)}`. I'll reply in this thread "
-                        "when the agent starts and when it's done.")
+                        "when the agent starts and when it's done."
+                        + escape(fairness.queued_note(self.jobs, job)))  # --- review capacity (#159)
 
     async def _follow_up(self, api: SlackAPI, team: str, channel: str, thread_ts: str, user: str, job_id: str,
                          text: str, user_team: str | None = None) -> None:
@@ -708,6 +727,11 @@ async def doctor_checks(h, transport: httpx.AsyncBaseTransport | None = None) ->
                 me = await api.auth_test()
                 out.append(_check("slack api", True, f"bot token works: {me.get('user', '?')} in "
                                                      f"{me.get('team', me.get('team_id', '?'))}"))
+                if api.scopes is not None and "im:write" not in api.scopes:  # --- inbox delivery (#157)
+                    out.append(_check("slack dm scope", None, "the bot token lacks im:write, so inbox questions, "
+                                      "approvals and digests can't be sent as DMs",
+                                      "add im:write to the app's bot scopes (docs/slack-app-manifest.yaml) and "
+                                      "reinstall it"))
             except SlackError as e:
                 out.append(_check("slack api", False, f"bot token rejected: {e}",
                                   "reinstall the app and store its Bot User OAuth Token (xoxb-…)"))

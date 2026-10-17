@@ -988,6 +988,12 @@ inbox.get:
   owner: guard
   exception: the REST route takes a person's `user` login (app.person_actor); MCP also takes their `mcp` tokens and OAuth
     grants. Both are fenced to the person's own records
+job.admit:
+  server: hangar
+  mcp: null
+  rest: POST /api/jobs/{job_id}/admit
+  scope: admin
+  owner: admin
 job.approve:
   server: hangar
   mcp: approve_job
@@ -1006,6 +1012,12 @@ job.cancel:
     rest: token
   exception: 'by design: REST /api/jobs also serves `jobs` service tokens, fenced to the jobs they submitted (app.job_caller);
     MCP serves people, fenced to their own by people.Guard. Admins reach every job on both'
+job.failure_label:
+  server: hangar
+  mcp: null
+  rest: POST /api/jobs/{job_id}/failure-label
+  scope: user
+  owner: guard
 job.follow_up:
   server: hangar
   mcp: follow_up_job
@@ -1154,6 +1166,18 @@ metrics.get:
   scope: metrics
   owner: admin
   enforced_by: 'metrics.metrics_route: an admin or metrics token'
+metrics.get_standup:
+  server: hangar
+  mcp: null
+  rest: GET /api/metrics/standup
+  scope: user
+  owner: guard
+metrics.get_weekly:
+  server: hangar
+  mcp: null
+  rest: GET /api/metrics/weekly
+  scope: user
+  owner: guard
 oauth.delete_clients:
   server: hangar
   mcp: null
@@ -1229,6 +1253,12 @@ people.post_tokens:
   rest: POST /api/people/{person_id}/tokens
   scope: admin
   owner: admin
+people.put_delivery:
+  server: hangar
+  mcp: null
+  rest: PUT /api/people/{person_id}/delivery
+  scope: user
+  owner: guard
 pkg.delete:
   server: hangar
   mcp: null
@@ -1369,6 +1399,24 @@ repos.put_policy:
   server: hangar
   mcp: null
   rest: PUT /api/repos/policy
+  scope: admin
+  owner: admin
+review.get_queue:
+  server: hangar
+  mcp: null
+  rest: GET /api/review/queue
+  scope: user
+  owner: guard
+review.get_status:
+  server: hangar
+  mcp: null
+  rest: GET /api/review/status
+  scope: user
+  owner: guard
+review_capacity.get:
+  server: hangar
+  mcp: null
+  rest: GET /api/review-capacity
   scope: admin
   owner: admin
 revoke.post:

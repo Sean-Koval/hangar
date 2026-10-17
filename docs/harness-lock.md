@@ -22,6 +22,9 @@ team-default/
   harness.lock
   CLAUDE.md                        # the harness's global instructions file (AGENTS.md for Codex)
   skills/review/SKILL.md           # one directory per skill
+  plugins/team/                    # a Claude Code directory marketplace (#221)
+    .claude-plugin/marketplace.json  # lists exactly the lock's plugins of this marketplace
+    workflow/...                   # one directory per plugin, at its marketplace entry's source
   native/claude-code/settings.json # config fragments under the harness's own directory (~/.claude, ~/.codex)
 ```
 
@@ -35,6 +38,7 @@ components:
   - {id: "guide:CLAUDE.md", digest: "sha256:...", path: CLAUDE.md}
   - {id: "skill:review", digest: "sha256:...", tree: "sha256:...", path: skills/review, source: "path:skills/review"}
   - {id: "skill:verify-ui", digest: null, source: "hangar:computer"}          # a reference: no files
+  - {id: "plugin:workflow@team", digest: "sha256:...", tree: "sha256:...", path: plugins/team/workflow, enabled: true}
   - {id: "native:claude-code/settings.json", digest: "sha256:...", path: native/claude-code/settings.json}
 binding:                        # rendered at claim; names, never values
   mcp: [{name: github, transport: http, endpoint: "https://api.githubcopilot.com/mcp/", header_names: [Authorization]}]
@@ -44,12 +48,19 @@ plugins: {autoUpdate: false}    # always false
 remote: []                      # vendor-loop agents: [{id, version}]
 ```
 
-- **Components** are listed in order: the guide, the skills in the order the turn declared them, then native
-  fragments. A file's `digest` is the SHA-256 of its bytes; a directory's is the manifest's declared skill digest
+- **Components** are listed in order: the guide, the skills in the order the turn declared them, the plugins in the
+  order the environment declared them, then native fragments. A file's `digest` is the SHA-256 of its bytes; a directory's is the manifest's declared skill digest
   (for each file in path order: its relative path, a NUL, the raw SHA-256 of its content). A skill also carries
   `tree`, the digest the sandbox probe reports for the same files (the manifest's `skills.effective`), so a turn's
   effective skills can be compared with the lock without the source. A component with `digest: null` is a reference
   (a pinned git skill, hangar's `verify-ui`): it has a `source` and no files.
+- **Plugins** (#221) are Claude Code seed plugins ([harnesses.md](harnesses.md#plugins)): `plugin:<name>@<marketplace>`,
+  the plugin's directory at `plugins/<marketplace>/<its entry's source>`, and its marketplace entry in
+  `plugins/<marketplace>/.claude-plugin/marketplace.json`, so `plugins/<marketplace>` is a directory marketplace
+  Claude Code installs from. `digest` is the manifest's (the entry as canonical JSON, a newline, the directory's
+  digest), `tree` what the probe reports for the directory, `enabled` whether hangar's settings enable it (an
+  installed, disabled plugin is pinned too). Only a plugin with a relative (`./`) source can be frozen: one its
+  marketplace fetches from elsewhere at build has no files to pin.
 - **The binding layer** holds names only, as the manifest does: MCP endpoints without query or user info, header and
   env variable *names*, hook sources, the approval mode. Credentials stay in the environment.
 - **Not in a lock:** the task repo's own `AGENTS.md` / `CLAUDE.md` (task context; the manifest keeps it under
@@ -68,7 +79,7 @@ form (`harness_lock.identity`, `manifest.section_digest`):
 | `model.id` | `model.id` |
 | `instructions.global.declared.digest` | the `guide:` component's digest (null without one) |
 | `skills.declared[*].{name,digest}` | the `skill:` components, in order |
-| `plugins` | the `plugin:` components (null without any; the manifest lists plugins once #136 lands) |
+| `plugins[*].{name,marketplace,digest,enabled}` | the `plugin:` components, in order (null without any) |
 | `mcp_servers[*].{name,transport,url,headers,env,command,args}` | `binding.mcp` (`endpoint`, `header_names`, `env_names`) |
 | `hooks[*].{event,source,digest}` | `binding.hooks` |
 | `permissions.approvals` | `binding.permissions.approvals` |
@@ -91,6 +102,9 @@ checks it hashes to what the turn declared:
   redacted, from the experiment overlay or the environment, if either still has the declared digest;
 - each skill from an experiment trial's stored files (the experiment read them when it started), else the
   environment's skill path;
+- each plugin from the environment's marketplace directory (its entry and its directory must still have the turn's
+  digest); a seed whose copy differed at turn start (an image built before the plugin changed) is a warning: the
+  lock pins the declared files;
 - native fragments from the environment's config files under the harness's own directory (`agent_config.files` and
   `files`); a settings file's hooks digest must still match the turn's. Claude Code and Codex are supported; pi and
   Antigravity are frozen best effort, with a warning.
@@ -100,7 +114,7 @@ It **fails, naming each gap**, when content can't be recovered:
 - a skill whose copy in the sandbox at turn start differed from its declared source (changed in the sandbox, for
   example by the agent in an earlier turn): freeze a turn from before the change;
 - instructions truncated or redacted in the manifest with no source left that has the declared digest;
-- a source edited or removed since the turn, an unpinned git skill, a plugin (until #136);
+- a source edited or removed since the turn, an unpinned git skill, a plugin its marketplace fetches from elsewhere;
 - any file the broker's redaction would change: it holds a stored secret, and a secret never goes into a harness
   repo.
 
@@ -114,9 +128,10 @@ turn they can't see answers as missing.
 
 ## Checking a directory
 
-`hangar harness check DIR` validates the lock and recomputes every component's digest (and each skill's `tree`). It
-also fails on a directory under `skills/` or `plugins/`, or a file under `native/`, that the lock doesn't pin, so
-nothing ships unpinned. Other files in the directory (a README, CI config) are ignored. Use it as the harness repo's
+`hangar harness check DIR` validates the lock and recomputes every component's digest (and each skill's and plugin's
+`tree`). It also fails on what the lock doesn't pin, so nothing ships unpinned: a directory under `skills/`, a file
+under `native/`, a marketplace under `plugins/` none of the lock's plugins comes from, a directory in one that isn't a
+locked plugin's, or a marketplace entry for a plugin the lock doesn't have. Other files in the directory (a README, CI config) are ignored. Use it as the harness repo's
 CI check (#138).
 
 ## Thaw and drift
@@ -137,23 +152,47 @@ A session or job can run *from* a lock: `hangar harness thaw team-default@r14 --
 - the environment can't run the lock's harness, or doesn't define an MCP server the lock binds (endpoints and
   credentials live in the environment);
 - the request names another `harness`, `model` or `approvals` than the lock's;
-- the lock enables a plugin: plugins mount through the Claude Code seed dir (#136).
+- the lock has plugins and isn't a Claude Code harness;
+- under `HANGAR_HARNESS_DRIFT=fail`, the registry's files differ from the lock (edited without re-freezing).
 
 Otherwise the session (a job's too) is pinned to the lock's harness, concrete model and approval mode, and records
-the lock (`harness_lock` on the session and job). The environment provides the files: until #136's read-only prefix
-layer mounts them from the lock, thaw runs the environment's image and *checks* that it has the lock's files.
+the lock (`harness_lock` on the session and job). The lock's directory is copied out of the registry into
+`<data>/harness-locks/<digest>-<content>/`: written once and never changed, so a claimed lock keeps its files whatever
+happens to the registry later (a session that resumes days later mounts the same files).
+
+**The mount** (#221). The sandbox runs the lock's files, not the image's:
+
+- **Instructions:** the lock's guide is written to the harness's global instructions file (removed when the lock has
+  none); hangar then splices its environment notes into it, as for every turn, and the file becomes root's and
+  read-only to the agent.
+- **Skills:** exactly the lock's (the image's others are removed; hangar's own `hangar-environment` and `verify-ui`
+  stay), each directory root's and read-only to the agent. A reference (a pinned git skill) stays the image's copy.
+- **Plugins** (Claude Code): the lock's marketplaces replace the image's seed at `/opt/hangar/claude-seed`, installed
+  there with the sandbox's own Claude Code as the image build installs them (`claude plugin marketplace add` /
+  `install`), root's and read-only. `CLAUDE_CODE_PLUGIN_SEED_DIR` and hangar's `--settings` (`enabledPlugins`) then
+  name the lock's plugins, so an environment that declares no plugins still runs them.
+
+Everything that reads the environment's prefix layer (the manifest's declared skills, instructions and plugins, the
+probe, hangar's Claude Code settings, a hardened turn's settings) reads the lock's instead; the binding layer (MCP
+servers, hooks, approvals) and the environment's identity (`environment.spec_digest`, `environment_digest`) stay the
+environment's. The agent's sudo (an environment's `sudo: true`) can still change root's files: read-only means the
+agent's own user can't.
 
 **Turn 1** is compared with the lock once its manifest is recorded:
 
 | Compared | Lock | Turn 1 |
 | --- | --- | --- |
 | each skill | its `tree` digest | the sandbox's effective skill digest (`skills.effective`); a skill the sandbox has and the lock doesn't is drift too, except hangar's own (`hangar-environment`, `verify-ui`) |
+| each plugin | its `digest`, `enabled` and `tree` | the manifest's declared plugin (read from the mounted lock) and what the probe found in the seed (`probe.plugins`) |
 | the instructions file | the `guide:` digest | the declared one (`instructions.global.declared.digest`: hangar splices its environment notes into the sandbox's copy, so that copy isn't compared byte for byte) |
 | the CLI | `runtime.version` | the version the sandbox's CLI reported |
 | everything else | its `harness_digest` | the manifest's `harness_digest` (model, MCP servers, hooks, approvals) |
 
 The manifest carries `harness.lock: {name, revision, digest}`. Its `harness_digest` is still computed from the
-turn's own sections: equal to the lock's when nothing drifted, else what actually ran.
+turn's own sections: equal to the lock's when nothing drifted, else what actually ran. Since the files are mounted
+from the lock, drift means the lock's own files were stale (the registry edited without re-freezing: the claim
+records what `harness check` found in `harness_lock.stale`, and turn 1 names each component and `harness_digest`), or
+the sandbox changed them between the mount and turn 1, or a binding (an MCP server, a hook) differs.
 
 **Drift** is recorded as `SessionTurn.drift: [{component, lock, effective}]` (`[]`: matched; `null`: not checked),
 a `harness.drift` event in the session's events (`data.drift`, `data.action`), a warning on the turn, and a line in
@@ -162,6 +201,10 @@ the job's review packet (`**Harness:** team-default@r14 …: **drift** on turn 1
 replaces it); a job fails with that reason and delivers nothing. The default, `warn`, carries on. A turn that ends
 before its check has run waits for it (up to 40 s) under `fail`. Only turn 1 is checked: what the agent changes later
 is its behaviour, not drift. Writable state (`~/.claude.json`, plugin caches) is never digested.
+
+**In the PR.** A job's PR body and the commit hangar lands end with `Harness-Digest:` (and `Harness-Lock:
+team-default@r14` for a thawed job) as git trailers, and its review packet shows the short digest and the lock
+([jobs.md](jobs.md#the-pull-request), #137).
 
 **Upstream drift.** `hangar harness outdated NAME` (`GET /api/harness-locks/{ref}/outdated`) reports a lock's CLI
 version against `harnesses.lock.yaml`, and each `path:` skill against its source in the environments that declare
@@ -172,5 +215,6 @@ it. It changes nothing; exit 1 when something is outdated.
 | `HANGAR_HARNESS_REPO` | unset | The harness registry: a checkout of the team harness repo (#138 adds fetching it) |
 | `HANGAR_HARNESS_DRIFT` | `warn` | What turn 1's drift from its lock does: `warn` or `fail` |
 
-Not yet: experiment variants by lock (#135), mounting a lock's files read-only (#136), warm pools per prefix-layer
-digest (a thawed session takes a sandbox like any other).
+Not yet: experiment variants by lock (#135), warm pools per prefix-layer digest (a thawed session takes a sandbox like
+any other and mounts the lock into it), mounting native fragments from the lock (they still come from the
+environment's `agent_config.files`; their hooks are compared through `harness_digest`).

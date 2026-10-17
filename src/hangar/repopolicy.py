@@ -45,11 +45,17 @@ FIELDS = ("verify", "environment", "harness", "model", "budget", "job_budget", "
           "require_stale_dismissal",  # --- trust
           "verify_reports", "rerun_flaky",  # --- testresults
           "heavy", "profile", "max_profile",  # --- heavy
-          "allow_heavy_for_intake")  # --- #124
+          "allow_heavy_for_intake",  # --- #124
+          "max_open_agent_prs",  # --- review capacity (#159)
+          "self_approval",  # --- self-approval (#160)
+          "ai_review", "ai_review_harness", "ai_review_model", "ai_review_budget_usd")  # --- AI review (#161)
 _LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")  # a GitHub login
 
 
 HeavyMode = Literal["on", "allow", "deny"]  # --- heavy: a repo policy's `heavy`
+SelfApproval = Literal["never", "low_risk_with_ai_review", "any"]  # --- self-approval (#160)
+DEFAULT_SELF_APPROVAL = "low_risk_with_ai_review"
+_AI_REVIEW = re.compile(r"^(hangar|off|check:[^\r\n]{1,100})$")  # --- AI review (#161)
 
 
 def _heavy_mode(v: Any) -> Any:
@@ -106,6 +112,20 @@ class RepoPolicy(BaseModel):
     # --- #124: intake-triggered jobs (posture.py) may run Docker on the heavy tier for this repo (privileged in the
     # sandbox's VM); unset: they are refused under HANGAR_INTAKE_POSTURE=enforce
     allow_heavy_for_intake: bool | None = None
+    # --- review capacity (#159): open agent PRs awaiting a person before their new jobs on this repo wait (0 = off);
+    # unset: HANGAR_PERSON_MAX_OPEN_AGENT_PRS
+    max_open_agent_prs: int | None = Field(None, ge=0, le=1000)
+    # --- self-approval (#160): whether the job's own person may be the only approver of its PR. `never`; the
+    # default `low_risk_with_ai_review` (risk low and an independent AI review of the approved head that isn't
+    # blocking); `any` (as before). It never loosens the taint gate (#130): a tainted PR always needs someone else.
+    self_approval: SelfApproval | None = None
+    # --- AI review (#161): a first-pass review of every agent PR: by a hangar job on another harness (`hangar`), by
+    # an org review bot's check run or status (`check:<name>`), or `off` (unset). The reviewing harness and model
+    # (unset: the other of claude-code and codex; `frontier`), and the most one review may spend (default $1.50)
+    ai_review: str | None = Field(None, max_length=120)
+    ai_review_harness: str | None = None
+    ai_review_model: str | None = Field(None, max_length=200)
+    ai_review_budget_usd: float | None = Field(None, gt=0, le=100)
     updated_at: float = Field(default_factory=now)
     updated_by: str | None = None
 
@@ -113,6 +133,20 @@ class RepoPolicy(BaseModel):
     @classmethod
     def _heavy(cls, v: Any) -> Any:  # --- integration(wave 4): the booleans #117 stored read as on and deny
         return _heavy_mode(v)
+
+    @field_validator("ai_review")
+    @classmethod
+    def _ai_review(cls, v: str | None) -> str | None:  # --- AI review (#161)
+        if v is not None and not _AI_REVIEW.match(v.strip()):
+            raise ValueError("ai_review is hangar, off or check:<check run or status name>")
+        return v.strip() if v is not None else None
+
+    @field_validator("ai_review_harness")
+    @classmethod
+    def _ai_review_harness(cls, v: str | None) -> str | None:
+        if v and not get_harness(v).agent:
+            raise ValueError(f"'{v}' is not an agent harness")
+        return v
 
     @field_validator("approvers")
     @classmethod
@@ -302,6 +336,12 @@ class PolicyUpdate(BaseModel):
     profile: Literal["standard", "large", "xlarge"] | None = None
     max_profile: Literal["standard", "large", "xlarge"] | None = None
     allow_heavy_for_intake: bool | None = None  # --- #124
+    max_open_agent_prs: int | None = Field(None, ge=0, le=1000)  # --- review capacity (#159)
+    self_approval: SelfApproval | None = None  # --- self-approval (#160)
+    ai_review: str | None = Field(None, max_length=120)  # --- AI review (#161)
+    ai_review_harness: str | None = None
+    ai_review_model: str | None = Field(None, max_length=200)
+    ai_review_budget_usd: float | None = Field(None, gt=0, le=100)
 
     @field_validator("heavy", mode="before")
     @classmethod
