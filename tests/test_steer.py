@@ -339,6 +339,18 @@ async def test_forged_commands_are_refused(svc, live):
 
 
 # ---------------------------------------------------------------------------- review: races, tampering, jobs
+async def conversation_saved(svc: SessionService, s, message: str, timeout: float = 20.0) -> None:
+    """Wait until the scripted Claude has started a turn on `message`: it appends the message to its conversation
+    file under ~/.claude/projects (tests/fixtures/live/fake_claude.py) when the turn starts."""
+    box = svc.fleet.providers["docker"].boxes[s.sandbox_id]
+    want = json.dumps({"user": message})[:-2]  # the prompt goes on after the message
+    for _ in range(int(timeout / 0.05)):
+        if any(want in f.read_text(errors="replace") for f in (box / "home/agent/.claude/projects").glob("*/*.jsonl")):
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"the harness never started a turn on {message!r}")
+
+
 def driver_proc(svc: SessionService, s, t) -> int:
     """The pid of the turn's driver (by its --ctl argument)."""
     want = str(inbox(svc, s, t).parent).encode()
@@ -403,6 +415,10 @@ async def test_a_steer_that_meets_a_harness_that_just_exited_starts_the_next_tur
     new(svc, live, "exits", "SLOW work")
     s = await running(svc, "exits")
     t = s.turns[0]
+    # #245: the driver makes its inbox before it starts the harness, so `running` can return before the harness has
+    # taken the first message. Killed then, it never saved a conversation, and the next turn (rightly) hands off
+    # instead of resuming. Wait until it has, as the test means a harness that exits mid-turn.
+    await conversation_saved(svc, s, "SLOW work")
     pid = driver_proc(svc, s, t)
     harness = int(subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True).stdout.split()[0])
     os.kill(pid, signal.SIGSTOP)
