@@ -177,6 +177,14 @@ the outcome is the agent's or infrastructure's, [jobs.md](../jobs.md#outcome-cla
 `provider_5xx`, `sandbox_create`, `checkpoint`, `control_plane_restart`; only with `infra_error`). Both are on the live
 span sent to the collector too. Leave `infra_error` turns out of yield and comparisons.
 
+Repo state (#165, added within `hangar.trace/v1`): `hangar.git.tree.start` and `hangar.git.tree.end` (the working
+tree's git tree id, uncommitted and untracked changes included, `.gitignore` honoured, when the turn started and
+ended: what `git add -A && git write-tree` through a scratch index gives on that checkpoint),
+`hangar.git.tree.skipped` (`slow`: one hash took over 2 s and hashing stopped for the turn) and
+`hangar.git.tree.trusted` (false when any of the turn's trees was recorded where the agent could have forged it: a
+driver without the [uid split](../steering.md#the-uid-split), or a one-shot turn's exec). Unset for turns recorded
+before #165 and for turns outside a git checkout ([steering.md](../steering.md#trees)).
+
 Status: `ERROR` when the outcome is anything but `exited`/`needs_input`/`interrupted` with exit code 0.
 
 ### `tool.call`
@@ -192,8 +200,10 @@ clipped, redacted), `hangar.tool.output` (the start of the result; clipped, reda
 `hangar.seq` and `hangar.seq.end`, `hangar.file.path` and `hangar.file.repo_path` (edit and read; a Codex
 `apply_patch` naming several files has only `hangar.file.path`: its `file.change` events have one each),
 `hangar.shell.ops` (shell), `hangar.mcp.server` and `hangar.mcp.tool` (mcp), `hangar.tool.incomplete=true`
-when the turn ended before the result (the span then ends with the turn). Status `ERROR` with
-`error.type=tool_error` when the tool failed.
+when the turn ended before the result (the span then ends with the turn), and `hangar.git.tree` with
+`hangar.git.tree.trusted` (#165, added within v1): the working tree's git tree id the call left, on `edit` and
+`shell` calls of a live turn that changed the tree (absent when the tree didn't change: a step's state is then the
+last tree before it, or the turn's start tree). Status `ERROR` with `error.type=tool_error` when the tool failed.
 
 ### `subagent`
 

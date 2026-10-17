@@ -354,6 +354,7 @@ def turn_children(x: Export, parent: str | None, key: str, turn: SessionTurn, ha
     end = turn.finished_at or now()
     open_: dict[str, RunEvent] = {}
     conv = turn.conversation
+    trees = {str(ev.data["id"]): ev for ev in events if _tree(ev) and ev.data.get("id") and ev.data.get("tree")}
     asked: dict[str, int] = {}  # approval id -> the seq of its request in the log (when the log has it)
     for ev in events:
         if ev.kind in ("tool_call", "command"):
@@ -362,7 +363,7 @@ def turn_children(x: Export, parent: str | None, key: str, turn: SessionTurn, ha
         elif ev.kind == "tool_result":
             tid = str(ev.data.get("id") or "")
             start = open_.pop(tid, None)
-            _tool_span(x, parent, key, harness, conv, start, ev, end, root)
+            _tool_span(x, parent, key, harness, conv, start, ev, end, root, trees.get(tid))
         elif ev.kind == "approval_request" and ev.data.get("status") == "pending" and ev.seq:
             asked.setdefault(str(ev.data.get("id")), ev.seq)
         elif turn_span is not None:
@@ -385,8 +386,28 @@ def turn_children(x: Export, parent: str | None, key: str, turn: SessionTurn, ha
         x.event(turn_span, "question", end, {"hangar.kind": "question", "hangar.text": turn.question[:TEXT]})
 
 
+def _tree(ev: RunEvent) -> bool:
+    return ev.kind == "progress" and ev.data.get("action") == "tree"
+
+
+def tree_attrs(events: list[RunEvent]) -> dict[str, Any]:
+    """--- #165: the turn's `hangar.git.tree.start` / `.end` (the driver's, or hangar's exec for a one-shot turn),
+    `hangar.git.tree.skipped` when hashing stopped, and `hangar.git.tree.trusted` (false when any of them came from
+    where the agent could write: no uid split)."""
+    tr = [ev for ev in events if _tree(ev)]
+    if not tr:
+        return {}
+    start = next((ev.data.get("tree") for ev in tr if ev.data.get("phase") == "start" and ev.data.get("tree")), None)
+    end = next((ev.data.get("tree") for ev in reversed(tr) if ev.data.get("phase") == "end" and ev.data.get("tree")),
+               None)
+    skipped = next((ev.data.get("skipped") for ev in tr if ev.data.get("skipped")), None)
+    return {"hangar.git.tree.start": start, "hangar.git.tree.end": end, "hangar.git.tree.skipped": skipped,
+            "hangar.git.tree.trusted": all(ev.data.get("trusted") is True for ev in tr)}
+
+
 def _tool_span(x: Export, parent: str | None, key: str, harness: str | None, conv: str | None,
-               start: RunEvent | None, result: RunEvent | None, turn_end: float, root: str | None = None) -> None:
+               start: RunEvent | None, result: RunEvent | None, turn_end: float, root: str | None = None,
+               tree: RunEvent | None = None) -> None:
     first = start or result
     if first is None:
         return
@@ -432,6 +453,9 @@ def _tool_span(x: Export, parent: str | None, key: str, harness: str | None, con
         attrs["hangar.tool.incomplete"] = True
     if ok is False:
         attrs["error.type"] = "tool_error"
+    if tree is not None:  # --- #165: the working tree this call left, when it changed it
+        attrs["hangar.git.tree"] = tree.data.get("tree")
+        attrs["hangar.git.tree.trusted"] = tree.data.get("trusted") is True
     x.span(f"{key}/tool/{tid}", f"execute_tool {name} {suffix}" if suffix else f"execute_tool {name}", t0, t1,
            attrs, parent=parent, error="" if ok is False else None)
 
@@ -463,6 +487,8 @@ def _point(x: Export, sp: dict[str, Any], ev: RunEvent, root: str | None = None)
         x.event(sp, "taint", ev.ts, {"hangar.kind": "taint", "hangar.taint.ref": d.get("ref"), "hangar.seq": seq})
     elif ev.kind == "progress" and d.get("action") in ("steer", "interrupt"):
         return  # from the turn's own record of steers (who, and whether it was delivered)
+    elif ev.kind == "progress" and d.get("action") == "tree":
+        return  # --- #165: attributes of the tool call and the turn (hangar.git.tree*)
     elif ev.kind == "progress":
         x.event(sp, "progress", ev.ts, {"hangar.kind": "progress", "hangar.text": ev.text[:TEXT],
                                         "hangar.source": d.get("source"), "hangar.seq": seq})
@@ -508,7 +534,7 @@ def _turn_span(x: Export, parent: str | None, s: Session, n: int, turn: SessionT
              "hangar.taint.first_seq": (turn.taint or {}).get("first_seq") if turn.taint else None,
              "hangar.taint.sources": [f"{x.get('kind')}:{x.get('ref')}" for x in (turn.taint or {}).get("sources")
                                       or []] or None,
-             **_usage_attrs(u), **(extra or {})}
+             **tree_attrs(events), **_usage_attrs(u), **(extra or {})}
     if failed:
         attrs["error.type"] = turn.outcome if turn.outcome != "exited" else "agent_exit_code"
     sp = x.span(key, f"invoke_agent {harness or ''}".rstrip(), turn.started_at, turn.finished_at or now(), attrs,
