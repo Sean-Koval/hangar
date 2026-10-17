@@ -1241,6 +1241,12 @@ people.post_tokens:
   rest: POST /api/people/{person_id}/tokens
   scope: admin
   owner: admin
+people.put_delivery:
+  server: hangar
+  mcp: null
+  rest: PUT /api/people/{person_id}/delivery
+  scope: user
+  owner: guard
 pkg.delete:
   server: hangar
   mcp: null
