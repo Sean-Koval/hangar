@@ -118,6 +118,7 @@ nav:
       - Acceptance on the cluster: acceptance.md
       - Upgrading: upgrading.md
       - Team scale: team-scale.md
+      - Onboarding a team: runbooks/onboarding.md
       - The Cloud Doctor: doctor.md
       - MicroVM tier (E2B, CubeSandbox): microvm.md
       - Local microVMs: local-microvms.md

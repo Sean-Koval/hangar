@@ -292,8 +292,8 @@ The webhook needs the `pull_request_review`, `check_run`, `check_suite` and `sta
 
 Every check hangar runs leaves structured results, not just an exit code and the end of its output: the check on
 the base commit, the check after each turn (and its [flaky rerun](#flaky-tests)), best-of-N attempts, agent-led
-setup's validation, and the checks the [in-turn gate](#the-verify-gate-inside-the-turn) runs for the agent. The deploy
-acceptance checks are recorded the same way. The design is in `src/hangar/testresults.py`; the one report parser is
+setup's validation, the checks the [in-turn gate](#the-verify-gate-inside-the-turn) runs for the agent, and an
+experiment's [grader](#grading) (kind `grader`). The deploy acceptance checks are recorded the same way. The design is in `src/hangar/testresults.py`; the one report parser is
 `src/hangar/testreports.py`.
 
 ### Where the reports come from
@@ -338,7 +338,16 @@ are kept.
 A **test run** per run of a check: the counts (passed, failed, error, skipped), the first 200 failures with their
 messages, every case's outcome keyed by test id (compressed, up to 20,000, kept 3 days, and a base check's 14), the
 coverage totals, and the commit and tree it ran on. Runs are kept 14 days. A test id is `classname::name`, as the
-runner wrote it (`tests.test_math::test_div[0-1]`, `example.com/app/server::TestServe/timeout`).
+runner wrote it (`tests.test_math::test_div[0-1]`, `example.com/app/server::TestServe/timeout`). Each run records the
+agent run it checked (`agent_run_id`, `hangar.run.id`), so a session's trace puts it on that turn.
+
+**Trusted and counted.** A run is `trusted` when hangar ran it where the agent can't forge it: the base check, the
+check after each turn and its rerun, attempts, setup's validation, the acceptance checks, and a grader whose grade is
+`trust: isolated`. The in-turn gate's runs are not (the agent's own sandbox wrote them while it worked), nor a grader
+run below `isolated`. A run is `counted` when it is trusted, ran at least one test (`total > 0`: `pytest
+--collect-only`, or a runner that found nothing, ran none) and every report was read (`complete`). Anything that
+asks "did the tests run" (flightdeck's behavior predicates, a review) reads `counted`, never the exit code or
+`trusted` alone ([traces.md](api/traces.md#test-results)).
 
 On a red base, the failures the change adds are the after-turn run's failing ids minus the base run's, exactly,
 whenever both left complete reports ([repo-policy.md](repo-policy.md#the-check-on-the-base-commit)). The text of the
@@ -396,8 +405,10 @@ development) alongside:
   are counted, not listed.
 
 With tracing on ([observability.md](observability.md)) they go on the span that ran the check (`job.verify`, the
-job's provisioning for the base). `GET /api/jobs/{id}/tests?format=otel` serves them as data, and
-`testresults.add_to_export` puts them on a job export's `job` span.
+job's provisioning for the base). `GET /api/jobs/{id}/tests?format=otel` serves them as data,
+`testresults.add_to_export` puts them on a job export's `job` span, and a session's export puts each turn's runs (the
+in-turn gate's, the check after it, an attempt's) on that turn's span. Every `test.run` carries
+`hangar.test.run.trusted` and `hangar.test.run.counted`.
 
 ## 9. Experiments
 
@@ -475,6 +486,15 @@ outside the repo; on Docker root-owned, so the trial's code can read them and no
 bytecode, and the repo on `sys.path` only once pytest has started (a plugin the patch declares never loads). A
 `conftest.py` among the hidden tests still works (its fixtures and hooks; not options it adds). Its junit counts are
 stored as `grade.hidden_tests`.
+
+**The grader's test run** (#164). The junit `$HANGAR_GRADE_JUNIT` receives (what `hangar-grade` writes; another
+command can write JUnit XML there too) is recorded as a [test run](#8-test-results) of kind `grader` on the trial's
+job, through the same parser and size caps as the check after a turn: it shows in `GET /api/jobs/{trial job}/tests`,
+the trial's stored trace (`GET /api/experiments/{id}/trials/{key}/trace`, rewritten once graded) and the outbox's
+`grade.json`, and `grade.test_run` names it. A grader that writes no report gets a run from its exit code alone,
+`complete: false`. It is `trusted` only when the grade is `trust: isolated`; below that the code under test could
+have written the report. Hidden test ids and messages pass the broker's redaction and the canary mask, and never
+reach the repo's flaky list (which the agent reads in `TEST-RESULTS.json`).
 
 Other ecosystems get no safe runner yet; run them from a copy you control and treat the grade as best effort: `jest
 --config "$HANGAR_HIDDEN_TESTS/jest.config.js" --rootDir "$HANGAR_REPO"` with a config of your own, or copy the
