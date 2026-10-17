@@ -63,7 +63,7 @@ TESTS_SCHEMA = "hangar.tests/v1"
 SCHEMA_FILE = "docs/api/run.schema.json"
 PREFIX = "v1"
 SOURCES = ("job", "session", "experiment", "shadow")
-EVENT_KINDS = ("pr.open", "review.first", "pr.merge", "pr.close", "revert", "abandon", "label")
+EVENT_KINDS = ("pr.open", "pr.ready", "review.first", "pr.merge", "pr.close", "revert", "abandon", "label")
 BACKOFF_MIN = 60.0
 BACKOFF_MAX = 6 * 3600.0
 WARN_PENDING = 1000
@@ -690,8 +690,13 @@ class Outbox:
         if r.pr_url:
             opened = next((e.ts for e in job.events if r.pr_url in (e.message or "")), None)
             out.append(("pr.open", opened, {"draft": land.draft}, "pr.open"))
+        if land.ready_at:  # --- #168: review wait starts here
+            out.append(("pr.ready", land.ready_at, {}, "pr.ready"))
         if land.approved_at:
-            out.append(("review.first", land.approved_at, {"by": land.approved_by, "sha": land.approved_sha},
+            out.append(("review.first", land.approved_at, {"by": land.approved_by, "sha": land.approved_sha,
+                                                           # --- #168: the first human review, any state
+                                                           "first_review_at": land.first_review_at,
+                                                           "first_review_by": land.first_review_by},
                         "review.first"))
         if land.merged_at:
             out.append(("pr.merge", land.merged_at, {"by": land.merged_by,

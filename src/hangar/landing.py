@@ -36,7 +36,7 @@ from urllib.parse import quote
 
 import httpx
 
-from hangar import baseline
+from hangar import baseline, reviewtrust, weekly
 from hangar import modelpolicy as modelpolicy  # --- review #105
 from hangar.events import DEFAULT_PRICES, usage_line
 from hangar.gateway import AppTokens
@@ -271,6 +271,9 @@ class Landing:
         st.draft = bool(pr.get("draft"))
         if st.pr_state is None or (st.pr_state == "closed" and pr.get("state") == "open"):
             st.pr_state = "open"
+        st.opened_at = st.opened_at or _ts(pr.get("created_at")) or now()  # --- #168: weekly metrics
+        if not st.draft and st.ready_at is None:
+            st.ready_at = now()
 
     async def delivered(self, job: Job) -> None:
         """After hangar pushed to the job's PR: what it touches, an approval the push made stale, the packet."""
@@ -395,6 +398,7 @@ class Landing:
                 st.pr_state = "merged"
                 st.merged_at = _ts(pr.get("merged_at")) or now()
                 st.merged_by = _str(_d(pr.get("merged_by")).get("login"))
+                st.merge_commit_sha = _str(pr.get("merge_commit_sha")) or st.merge_commit_sha  # --- #168: reverts
                 st.armed_sha = None
                 took = ""
                 if st.ci_green_at and st.ci_green_sha and st.ci_green_sha == head:
@@ -416,6 +420,12 @@ class Landing:
             else:
                 self.idle(job)
             return {"ok": True, "landing": job.id, "pr_state": st.pr_state}
+        if action in ("opened", "ready_for_review", "reopened") and not st.draft and st.ready_at is None:
+            st.ready_at = now()  # --- #168: review wait starts here
+        if action == "labeled" and (reason := weekly.label_reason(_d(payload.get("label")).get("name"))) is not None:
+            who = _str(_d(payload.get("sender")).get("login")) or "?"
+            if why := weekly.set_abandon(self.svc, job, reason, f"github:{who}", "label"):  # --- #168
+                self.svc._event(job, f"label {weekly.ABANDON_LABEL}{reason[:40]}: {why}")
         if action == "reopened":
             st.closed_at, st.ended = None, False
             st.pr_state = "approved" if st.approved_sha and st.approved_sha == (head or st.head_sha) else "open"
@@ -450,6 +460,10 @@ class Landing:
             return {"ok": True, "landing": job.id, "pr_state": st.pr_state}
         if action != "submitted":
             return {"ignored": f"review {action}"}
+        if st.first_review_at is None and not reviewtrust.is_bot(_d(review.get("user"))):  # --- #168
+            st.first_review_at = _ts(review.get("submitted_at")) or now()
+            st.first_review_by = user
+            self.svc._save(job)
         if state == "changes_requested":
             if st.approved_sha:
                 self.svc._event(job, f"@{user} requested changes after @{st.approved_by}'s approval: not landing")

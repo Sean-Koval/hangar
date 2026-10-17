@@ -28,6 +28,7 @@ from hangar import outbox as outbox  # --- outbox (#163): run capture
 from hangar import people as people  # --- teamcreds
 from hangar import redeliver as redeliver  # --- reconciler
 from hangar import teamcreds as teamcreds  # --- teamcreds
+from hangar import weekly as weekly  # --- #168: weekly adoption metrics and the standup line
 from hangar.a2a import A2AServer
 from hangar.auth import SCOPES, TokenAuth, bearer_from_headers
 from hangar.broker import Broker, CredentialError
@@ -350,6 +351,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         h.retention.start()  # --- scale
         h.ops.start()  # --- clouddoctor
         outbox.of(h.fleet).start(h.sessions, h.jobs)  # --- outbox (#163): drains while the pools are off too
+        weekly.of(h.jobs).start()  # --- #168: the nightly revert pass and the standup line
         modelpolicy.of(h.fleet).start()  # --- canary: providers' model lists, fetched now and kept fresh
         missed = redeliver.start(h)  # --- reconciler: GitHub deliveries that failed while hangar was down
         async with mcp.session_manager.run():
@@ -362,6 +364,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await h.retention.stop()  # --- scale
         await h.ops.stop()  # --- clouddoctor
         await outbox.of(h.fleet).stop()  # --- outbox (#163)
+        await weekly.of(h.jobs).stop()  # --- #168
         await modelpolicy.of(h.fleet).stop()  # --- canary
         if prebuild:
             prebuild.cancel()
@@ -1159,6 +1162,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     opstatus.mount(app, h, A)
     flightrec.mount(app, h, A, U)
     outbox.mount(app, h, A)  # --- outbox (#163): GET /api/admin/outbox, retry, backfill
+    weekly.mount(app, h, U)  # --- #168: GET /api/metrics/weekly, /api/metrics/standup
     credhealth.mount(app, h, A)
     credhealth.register_inbox()
     from hangar import jira as jira_intake  # --- automation (#128): Jira intake alerts wait on the admins

@@ -128,8 +128,15 @@ Everything that needs GitHub runs in the background, under a per-job lock, so a 
 | `green_to_merge_seconds` | from `ci_green_at` to `merged_at`, when the merged head is the one that went green |
 | `files`, `risk` | what the PR touches, and its tier |
 | `note` | why it isn't landing yet |
+| `opened_at`, `ready_at` | when hangar opened the PR; when it was opened non-draft or marked ready (#168) |
+| `first_review_at`, `first_review_by` | the first review a human submitted, any state; bots, the App's AI review included, never count (#168) |
+| `merge_commit_sha` | what the merge put on the base branch: reverts of a squash merge are matched against it (#168) |
+| `abandon_reason`, `abandon_by`, `abandon_at` | why a PR closed unmerged was abandoned (below) |
+| `reverted_at`, `revert_sha`, `fix_forward_pr`, `fix_forward_at` | a revert of it on the default branch, or a PR that fixed it forward, found by the nightly pass ([metrics.md](metrics.md)) |
 
-The audit log has `landing.approved`, `landing.arm`, `landing.disarm`, `landing.merge` and `landing.merged`.
+**Abandon reasons** (#168). When you close an agent PR without merging it, say why: comment `/hangar abandon <reason>` on it (a trusted person), or add the label `agent-abandon:<reason>`. The reason is one of `wrong_approach`, `bad_ticket`, `flaky_env`, `too_big`, `superseded` or `other`; anything else is refused with the list. The inbox lists closed agent PRs without one. The weekly abandon rate counts them by reason ([metrics.md](metrics.md)).
+
+The audit log has `landing.approved`, `landing.arm`, `landing.disarm`, `landing.merge`, `landing.merged` and `landing.abandon_reason`.
 
 **The end of the session.** A merged or closed PR ends the job's session: it takes a final checkpoint, then the sandbox is released (a paused hot-resume sandbox too). A turn still running when the PR closes is stopped first. A job still waiting on a question is cancelled, because nobody needs the answer any more. If the checkpoint fails, the sandbox stays until it idles out, so no work is lost.
 

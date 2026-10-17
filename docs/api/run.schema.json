@@ -117,7 +117,7 @@
       "required": ["schema", "kind", "ts", "job_id", "source", "data"],
       "properties": {
         "schema": {"const": "hangar.job_event/v1"},
-        "kind": {"enum": ["pr.open", "review.first", "pr.merge", "pr.close", "revert", "abandon", "label"]},
+        "kind": {"enum": ["pr.open", "pr.ready", "review.first", "pr.merge", "pr.close", "revert", "abandon", "label"]},
         "ts": {"type": "number"},
         "job_id": {"type": "string"},
         "job_source": {"type": ["string", "null"]},
@@ -129,7 +129,7 @@
         "run_ids": {"type": "array", "items": {"type": "string"}},
         "pr": {"type": ["object", "null"]},
         "untrusted": {"type": "boolean"},
-        "data": {"type": "object", "description": "Per kind: pr.open {draft}; review.first {by, sha}; pr.merge {by, green_to_merge_seconds}; pr.close {}; abandon {reason}."}
+        "data": {"type": "object", "description": "Per kind: pr.open {draft}; pr.ready {} (#168); review.first {by, sha, first_review_at, first_review_by (#168)}; pr.merge {by, green_to_merge_seconds}; pr.close {}; abandon {reason, by?, via?}; revert {sha} (#168)."}
       }
     },
     "tests": {

@@ -89,6 +89,7 @@ nav:
       - Usage and insight:
           - Activity, usage and budgets: activity.md
           - Observability: observability.md
+          - Weekly adoption metrics: metrics.md
   - Reference:
       - Security model: security.md
       - E2B-compatible API: e2b.md

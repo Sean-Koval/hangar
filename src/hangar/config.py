@@ -292,6 +292,11 @@ class Settings(BaseSettings):
     # Slack user ids allowed to start and steer jobs (empty: anyone in a mapped channel).
     slack_users: list[str] = Field(default_factory=list)
     slack_api_url: str = "https://slack.com/api"
+    # --- #168: the standup line (weekly.py, docs/metrics.md): a Slack channel id it posts to on weekdays at
+    # standup_time in standup_timezone (also the zone weekly metrics' weeks and days are in). Unset: no line.
+    standup_channel: str | None = None
+    standup_time: str = "10:18"
+    standup_timezone: str = "America/New_York"
     # --- workstream F: git gateway (spec 0003, docs/security.md) -------------
     # URL sandboxes use to reach the gateway, e.g. http://hangar-gateway.hangar.svc:8788 on GKE or
     # http://host.docker.internal:8788 on Docker. Unset = no gateway; environments asking for it fail to start.

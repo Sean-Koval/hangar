@@ -161,7 +161,7 @@ Each engineer:
 | When | What | Where |
 | --- | --- | --- |
 | 10:00–10:20 | Triage: each engineer clears their inbox (PRs to review, questions, approvals, failed jobs) | `hangar inbox` ([landing.md §7](../landing.md#7-the-inbox-what-needs-you)) |
-| 10:20 | Standup, with the bot's line: yesterday's merged agent PRs, open ones and who they wait on | #168 |
+| 10:20 | Standup, with the bot's line at 10:18 ET: yesterday's merged and abandoned agent PRs (by reason), review wait p50, top failure; Mondays, last week's summary | `HANGAR_STANDUP_CHANNEL` ([metrics.md](../metrics.md#the-standup-line)) |
 | Friday, 30 min | Harness review: label the first failure on failed or abandoned jobs, at most 20 | #169 |
 
 Sandboxes power on at 09:50 ET, so work queued overnight starts before triage.

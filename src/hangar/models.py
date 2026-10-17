@@ -426,6 +426,19 @@ class LandingState(BaseModel):
     push_mode: str | None = None  # gateway | direct: whether the sandbox held a GitHub token
     note: str | None = None  # why it isn't landing yet
     ended: bool = False  # merged or closed: the session took its final checkpoint and let the sandbox go
+    # --- #168: weekly metrics (weekly.py, docs/metrics.md)
+    opened_at: float | None = None  # hangar opened (or found) the PR
+    ready_at: float | None = None  # opened non-draft, or marked ready for review: review wait starts here
+    first_review_at: float | None = None  # the first review a human submitted (any state; never a bot's)
+    first_review_by: str | None = None
+    merge_commit_sha: str | None = None  # what the merge put on the base branch (a squash's own commit)
+    abandon_reason: str | None = None  # closed unmerged: weekly.ABANDON_REASONS
+    abandon_by: str | None = None
+    abandon_at: float | None = None
+    reverted_at: float | None = None  # a `Revert "…"` / `This reverts commit` of merge_commit_sha on the branch
+    revert_sha: str | None = None
+    fix_forward_pr: int | None = None  # a later merged PR whose body says `Fixes-forward: #<this PR>`
+    fix_forward_at: float | None = None
 
 
 class JobApproval(BaseModel):

@@ -47,6 +47,16 @@ class GitHubError(RuntimeError):
     pass
 
 
+def _iso_ts(iso: str) -> float:
+    """An ISO 8601 time GitHub gives, as Unix seconds (0 when it isn't one)."""
+    from datetime import datetime
+
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError):
+        return 0.0
+
+
 class GitHub:
     def __init__(self, token: str, api_url: str = "https://api.github.com",
                  transport: httpx.AsyncBaseTransport | None = None):
@@ -152,6 +162,39 @@ class GitHub:
     async def redeliver(self, repo: str, hook_id: int, delivery_id: int, org: bool = False) -> None:  # --- reconciler
         await self._req("POST", f"/{'orgs' if org else 'repos'}/{repo}/hooks/{int(hook_id)}/deliveries/"
                                 f"{int(delivery_id)}/attempts")
+
+    async def merged_pulls(self, repo: str, since: float, pages: int = 10) -> list[dict[str, Any]]:
+        """--- #168: PRs merged since `since` (Unix seconds), anyone's, newest updated first, paged (100 a page)."""
+        out: list[dict[str, Any]] = []
+        for page in range(1, pages + 1):
+            got = await self._req("GET", f"/repos/{repo}/pulls", params={
+                "state": "closed", "sort": "updated", "direction": "desc", "per_page": 100, "page": page})
+            if not isinstance(got, list) or not got:
+                break
+            out += [p for p in got if isinstance(p, dict) and p.get("merged_at")]
+            last = got[-1].get("updated_at") if isinstance(got[-1], dict) else None
+            if len(got) < 100 or (isinstance(last, str) and _iso_ts(last) < since):
+                break
+        return [p for p in out if _iso_ts(p["merged_at"]) >= since]
+
+    async def commits_since(self, repo: str, since: float, branch: str | None = None,
+                            pages: int = 10) -> list[dict[str, Any]]:
+        """--- #168: commits on `branch` (the default branch) since `since`, paged."""
+        from datetime import UTC, datetime
+
+        params: dict[str, Any] = {"since": datetime.fromtimestamp(since, UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                  "per_page": 100}
+        if branch:
+            params["sha"] = branch
+        out: list[dict[str, Any]] = []
+        for page in range(1, pages + 1):
+            got = await self._req("GET", f"/repos/{repo}/commits", params={**params, "page": page})
+            if not isinstance(got, list) or not got:
+                break
+            out += [c for c in got if isinstance(c, dict)]
+            if len(got) < 100:
+                break
+        return out
 
     async def issue_comments(self, repo: str, number: int, limit: int = 20) -> list[dict[str, Any]]:
         out = await self._req("GET", f"/repos/{repo}/issues/{number}/comments", params={"per_page": 100})
