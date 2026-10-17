@@ -108,6 +108,8 @@ Settings you change with `hangar setup` or `hangar config set` are stored in han
 
 ## A team on one hangar
 
+To put a team on hangar step by step (2 engineers on 1 repo, then 6 on 3), follow [the onboarding runbook](runbooks/onboarding.md); it ends with `hangar repo check` green for each repo.
+
 An admin adds people; each gets a login token, connects their own clients and stores their own agent login:
 
 ```sh
