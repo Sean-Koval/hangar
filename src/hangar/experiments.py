@@ -1606,7 +1606,7 @@ async def apply_overlay(fleet: Fleet, prov: Any, sb: Sandbox, spec: EnvSpec, har
     """Write the variant's skills and instructions into a trial's sandbox: exactly the skills it declares (the
     environment's others are removed; hangar's own `verify-ui` stays with a computer), and its instructions.
     After this, a repo with a `.hangar/environment.yaml` or a build gets hangar's environment section spliced into
-    the instructions and its `hangar-environment` skill (supervisor.tell_agent), alike for every variant on the
+    the instructions and its `hangar-environment` skill (svc_control.tell_agent), alike for every variant on the
     environment; the manifest's effective skills and instructions digest show them."""
     from hangar.harnesses import HARNESSES
 

@@ -26,7 +26,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from hangar import buildcache, cachestore, envbuilds, gateway, opstatus, supervisor
+from hangar import buildcache, cachestore, envbuilds, gateway, opstatus, svc_control
 from hangar.cachestore import CacheError, CacheStore, Index
 from hangar.checkpoints import LocalStore
 from hangar.models import CredentialKind, Sandbox, SandboxState, Session
@@ -508,7 +508,7 @@ async def test_a_build_saves_the_repos_caches_and_the_next_sandbox_restores_them
     assert sb.info["caches"]["state"] == "warming"
     lines = "\n".join(buildcache.agent_lines(sb))
     assert "hangar-cache wait" in lines and "private layer" in lines
-    block = supervisor.instructions(sb, w.spec, "/workspace/app")
+    block = svc_control.instructions(sb, w.spec, "/workspace/app")
     assert "being restored in the background" in block
     assert await _warm(box) == "warm"
     assert (box / "home/agent/.npm/_cacache/pkg").read_text() == "tarball bytes"
