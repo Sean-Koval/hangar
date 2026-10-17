@@ -100,9 +100,8 @@ tasks:
   - {id: fix-retry, instructions: "Make the reaper retry a failed destroy.", repo: https://github.com/Sean-Koval/hangar.git, verify: "uv run pytest -q tests/test_fleet.py"}
   - {id: issue-412, issue: "Sean-Koval/hangar#412"}          # its text reaches the agent as untrusted context
 variants:
-  control: {}
-  with-conventions: {skills: [{name: repo-conventions}]}       # the whole set: [] means none
-  codex: {harness: codex@0.162.1, model: balanced}             # must be the locked version
+  team: {harness_lock: "team-default@sha256:5f0c…"}             # a harness lock by digest (#135)
+  team-codex: {harness_lock: "team-codex@sha256:9a41…", environment: hangar-codex}
 trials: 3
 parallel: 6
 trial_job_budget: {max_cost_usd: 3}
@@ -110,9 +109,11 @@ budget: {max_cost_usd: 40}
 grader: {command: "pytest -q tests/hidden", files: {"tests/hidden/test_retry.py": "..."}}
 ```
 
-**Shape.** A `kind: experiment` job (label `hangar.kind: experiment`) takes a task set (prompts with repo refs, or GitHub issues), variants (an environment plus an overlay: `harness[@version]`, `model` (an id or a policy), `approvals` (`auto` or `deny-risky`), `skills`, `skills_remove`, `instructions` or `instructions_append`), and a trial count. `POST /api/experiments`, `hangar experiment run spec.yaml`.
+**Shape.** A `kind: experiment` job (label `hangar.kind: experiment`) takes a task set (prompts with repo refs, or GitHub issues), variants (`{harness_lock: name@sha256:…, environment}`, or the deprecated overlay below), and a trial count. `POST /api/experiments`, `hangar experiment run spec.yaml`.
 
-**The only overlay.** A variant is the one overlay hangar lays on an environment, and it gains no new fields. Its `skills` means what an environment's `skills` means under `extends` (#132): the whole set, `[]` for none. `skills_remove: [name]` drops named skills from that set (else from the environment's), and the trial's manifest declares what remains. Once harness locks exist (#133) a variant shrinks to `{harness: name@sha256, environment}` (#135).
+**Variants are locks (#135).** A variant names a harness lock by digest (#133) and, optionally, the environment it runs in. Every trial is claimed from the lock through the thaw path (#134): its CLI version, concrete model and approvals pinned, its instructions, skills and plugins mounted read-only. The pins record `harness_lock`, `harness_revision` and `harness_digest` per variant, and a trial whose turn-1 `harness_digest` differs from its variant's lock is flagged `drift` ("harness drift"). That leaves one definition language, the lock, and lets flightdeck pin sets reference a harness digest directly. A variant with `harness_lock` takes no overlay field (a 422 naming the field).
+
+**The overlay, deprecated.** The old variant is an environment plus an overlay: `harness[@version]`, `model` (an id or a policy), `approvals` (`auto` or `deny-risky`), `skills`, `skills_remove`, `instructions` or `instructions_append`. Its `skills` means what an environment's `skills` means under `extends` (#132): the whole set, `[]` for none; `skills_remove: [name]` drops named skills from that set (else from the environment's), and the trial's manifest declares what remains. These fields are marked `deprecated` in the schema, each variant using them adds a note to the experiment, and an overlay variant's pinned `harness_digest` is its first finished trial's. `hangar experiment freeze-variants EXP --out DIR` freezes each overlay variant from a completed trial's turn 1 and prints the equivalent spec with `harness_lock` variants. The fields, `SkillRef`, the stored overlay and its tests are removed in the release after flightdeck v0 ships its first report; until then the overlay's mechanism (skills written at sandbox create) stays.
 
 **Runs.** The experiment runs no agent itself. A background runner (no job slot) starts one ordinary job per task × variant × trial (`source: experiment`, `deliver: none`, no auto-fix, the in-turn verify gate off unless asked, since it differs by harness), interleaved so a task's variants run side by side, at most `parallel` at once. They are jobs: each gets the per-trial budget (#85), daily budgets apply, and they queue in the fair queue under the experiment's person (#89). The experiment's own `budget` stops new trials once its trials together spent it. A trial's agent that asks a question is cancelled: nobody is there to answer.
 
