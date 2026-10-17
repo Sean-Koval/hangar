@@ -582,7 +582,7 @@ def of(fleet: Fleet) -> BuildCaches:
 
 
 def agent_lines(sb: Sandbox) -> list[str]:
-    """For the "Your environment" block of the agent's instructions (supervisor.instructions)."""
+    """For the "Your environment" block of the agent's instructions (svc_control.instructions)."""
     c = sb.info.get("caches") or {}
     if c.get("state") not in ("warming", "configured"):
         return []

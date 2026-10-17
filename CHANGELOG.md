@@ -51,6 +51,8 @@ Six engineers on three repos: planned work comes in through Jira, the inbox reac
 
 **Internal:** the analysis boundary is written down and guarded (#147). Spec 0014 §1 gains a "What stays in hangar and why" table (the drift flag, the flaky list, per-run test counts, model ranking, admission counts and the weekly metrics, each with its flightdeck counterpart), and `tests/test_boundary.py` fails when `src/hangar/` imports a statistics library (`scipy`, `numpy`, `pandas`, `statistics`, `duckdb`, `pyarrow`) or defines an estimator-named function, pointing at the spec.
 
+**Internal:** `hangar/supervisor.py` is now `hangar/svc_control.py`, the control-plane half of the service supervisor (`hangar-agent svc`), paired with `svc_agent.py`; no behaviour change and no shim, since nothing outside the tree imports it. Specs 0001 and 0004 keep "supervisor" for the run supervisor they describe (#144).
+
 **Fixes:** `hangar doctor` no longer fails a fresh laptop install on the intake posture: without the git gateway it warns until an intake front door is configured, then fails naming those doors, with one fix command (#236, PR #247).
 
 ### The safe release (P1, #120–#132; [docs/upgrading.md](docs/upgrading.md#the-safe-release-120132))

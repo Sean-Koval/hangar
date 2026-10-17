@@ -56,7 +56,7 @@ HARNESSES_DIR = "harnesses"
 CHANNELS_FILE = "channels.yaml"
 DRIFT_EVENT = "harness.drift"
 DRIFT_REASON = "harness_drift"
-HANGAR_SKILLS = {"hangar-environment", "verify-ui"}  # hangar writes these itself (supervisor.py, computer.py)
+HANGAR_SKILLS = {"hangar-environment", "verify-ui"}  # hangar writes these itself (svc_control.py, computer.py)
 _REF = re.compile(r"^(?P<name>[a-z0-9][a-z0-9._-]{0,62})(?:@(?P<at>[A-Za-z0-9:._-]{1,80}))?$")
 VERIFY_WAIT_SECONDS = 40  # how long a finished turn 1 waits for its verification under HANGAR_HARNESS_DRIFT=fail
 LOCKS_DIR = "harness-locks"  # under the data directory: claimed locks' files, one directory per content
