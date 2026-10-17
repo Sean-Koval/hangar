@@ -73,6 +73,40 @@ Someone who never reviews blocks only their own new work; an admin can raise the
 (`HANGAR_PERSON_MAX_OPEN_AGENT_PRS_OVERRIDES`) or admit one job. Attention-priced scheduling (#185) may later replace
 the fixed cap.
 
+## The eval queue class
+
+Experiment trials spend the same provider rate limits (tokens per minute) as people's interactive work, and the
+01:00 power-down kills whatever is in flight, so evals run in the evening and never ahead of a person. Every job has a
+`queue_class`: `interactive` (the default; AI reviews too) or `eval` (experiment trials, and any job submitted with
+`queue_class: eval`). An eval job starts only when all of these hold:
+
+- **The eval window is open**: `HANGAR_EVAL_WINDOW` (`20:00-00:15`) in `HANGAR_EVAL_TZ` (`America/New_York`); the end
+  may be past midnight, `always` turns the window off. No new trial starts after 00:15, so most finish before the
+  power-down. An admin lifts the window for one job with `POST /api/jobs/{id}/priority` (`{"priority": "now"}`).
+- **No interactive job is waiting**: the queue always picks interactive jobs first, then the fairest eval job.
+- **There is an eval slot**: at most `HANGAR_EVAL_MAX_RUNNING` eval jobs run at once (0, the default: half the job
+  slots), so the rest are always there for people.
+- **The provider has room**: with `HANGAR_EVAL_TPM_BUDGET` set (`400000` for every provider, or
+  `anthropic=400000,openai=300000`), a trial starts only while the provider's observed rate plus a typical trial's
+  stays within it. The observed rate is a rolling 60 seconds per provider (the harness's vendor): running turns count
+  their live usage spread over the time they have run, finished turns the share of theirs that falls in the last
+  minute. A typical trial is the median tokens per minute of recent eval turns on that provider, else
+  `HANGAR_EVAL_TPM_PER_TRIAL` (20000). Turn-end usage lags: sandboxes that record through the
+  [model gateway](model-gateway.md) are counted call by call as each completes instead.
+
+A held eval job stays `queued` in its place; its `reason` says why (`eval_window`, `eval_slots`, `eval_tpm`) with an
+event (`waiting: eval jobs start inside the eval window (20:00-00:15 America/New_York); next at 20:00 EDT`). The queue
+looks again every 15 seconds, so the window opening or the rate dropping starts it without an event.
+
+**Seeing it**: `GET /api/admin/eval-queue` (admin) shows the window, the eval jobs running and waiting, and per
+provider the observed rate, the per-trial estimate and the budget. Metrics: `hangar_eval_window_open`,
+`hangar_eval_observed_tpm{provider}`, `hangar_eval_tpm_budget{provider}` and `hangar_eval_jobs_waiting{reason}`.
+
+**Power-down**: a drain (`power.sh down`, [gke.md](gke.md#6-sandbox-nodes-off-at-night-optional)) cancels running
+trials rather than checkpointing them, marks them `infra_error` / `power_down` ([jobs.md](jobs.md#the-eval-queue)),
+and the experiment queues a fresh attempt; like every queued eval job it waits for the next window, not for the 10:00
+power-up. When people work late, evals wait: that starvation is accepted.
+
 ## Measured: the team load test
 
 `scripts/bench/team_load.py` runs the real app on the fake provider (sandboxes are local directories; agents are

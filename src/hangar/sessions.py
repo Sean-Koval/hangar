@@ -1143,6 +1143,7 @@ class SessionService:
                       "the sandbox went away during the turn")
             turn.outcome = outcome  # workstream E
             flightrec.of(self.fleet).turn_ended(self, s, turn, outcome, "")  # --- clouddoctor
+            self._eval_turn(s, turn)  # --- #181
             await self._close_tape(s, turn)  # --- #177
             outbox.of(self.fleet).session_turn(self, s, turn)  # --- outbox (#163): off the turn's path
             return outcome, ""
@@ -1191,6 +1192,16 @@ class SessionService:
             self._set(s, SessionState.SUSPENDED, f"turn {len(s.turns)} finished; sandbox released")
         # --- clouddoctor: the session is idle: a failed or slow turn's record (its log is read and sealed off-turn)
         flightrec.of(self.fleet).turn_ended(self, s, turn, outcome, raw)
+        self._eval_turn(s, turn)  # --- #181: the provider's token rate, for the eval queue
+        outbox.of(self.fleet).session_turn(self, s, turn)  # --- outbox (#163): off the turn's path
+        return outcome, raw
+
+    def _eval_turn(self, s: Session, turn: SessionTurn) -> None:
+        """--- #181: a turn's usage counts towards its provider's token rate (evalqueue.Meter)."""
+        from hangar import evalqueue
+
+        job = self.job_of(s.job_id) if s.job_id and self.job_of is not None else None
+        evalqueue.turn_ended(self.fleet, s, turn, job)
         await self._close_tape(s, turn)  # --- #177: the model gateway's tape of this turn, to the outbox
         outbox.of(self.fleet).session_turn(self, s, turn)  # --- outbox (#163): off the turn's path
         return outcome, raw

@@ -609,6 +609,16 @@ class Settings(BaseSettings):
     # --- #166: an infra_error trial (preempted, powered down, rate-limited, ...) runs again as a fresh trial, at most
     # this many times; the experiment's retries together stop at 10% of its trials (a provider outage, usually)
     trial_infra_retries: int = Field(2, ge=0, le=10)
+    # --- #181: the eval queue class (evalqueue.py, docs/team-scale.md). Eval jobs (experiment trials) start only
+    # inside this window ("HH:MM-HH:MM" in eval_tz, may cross midnight; "always" for no window), never ahead of an
+    # interactive job, at most eval_max_running at once (0: half the job slots), and only while the provider's
+    # observed token rate leaves room for one more under its budget ("400000", or "anthropic=400000,openai=300000";
+    # unset: no cap). eval_tpm_per_trial is the estimate before any eval turn of that provider has finished.
+    eval_window: str = "20:00-00:15"
+    eval_tz: str = "America/New_York"
+    eval_max_running: int = Field(0, ge=0, le=64)
+    eval_tpm_budget: str | None = None
+    eval_tpm_per_trial: int = Field(20000, ge=0)
 
     @property
     def backup_interval_hours(self) -> float:

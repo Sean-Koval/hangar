@@ -601,6 +601,12 @@ class Job(BaseModel):
     harness_lock: dict[str, Any] | None = None  # --- harness locks (#134): the lock it runs from (harness_thaw.pin)
     force_admitted_by: str | None = None  # --- review capacity (#159): an admin let it past the open-PR cap
     failure_label: FailureLabel | None = None  # --- #169: the Friday harness review's label (harness_review.py)
+    # --- #181: the eval queue class (evalqueue.py): `eval` jobs (experiment trials) start only in the eval window,
+    # behind interactive work and under the token budget; `priority: now` (an admin's) lifts the window for one job.
+    # `infra_cut`: an infrastructure reason hangar ended it for on purpose (`power_down`), its outcome class then
+    queue_class: Literal["interactive", "eval"] = "interactive"
+    priority: Literal["now"] | None = None
+    infra_cut: str | None = None
 
 
 # ---------------------------------------------------------------------------- scheduled jobs (workstream A)

@@ -34,6 +34,7 @@ class Drain:
         self.svc = svc
         self.until = 0.0
         self.held: list[str] = []  # job ids that came off the queue while draining
+        self.cut: list[str] = []  # --- #181: trials the drain cancelled (evalqueue.EvalQueue.power_down)
         self._timer: asyncio.Task | None = None
 
     @property
@@ -53,6 +54,9 @@ class Drain:
 
     def begin(self, minutes: float) -> None:
         self.until = time.time() + max(1.0, min(float(minutes), MAX_MINUTES)) * 60
+        evalq = getattr(self.svc, "evalq", None)
+        if evalq is not None:  # --- #181: running trials end now, as infra_error/power_down, and run again tonight
+            self.cut = evalq.power_down()
         if self._timer is not None:
             self._timer.cancel()
         self._timer = asyncio.get_running_loop().create_task(self._expire())
@@ -89,6 +93,7 @@ class Drain:
             "until": self.until if self.on else None,
             "held_jobs": list(self.held),
             "running_jobs": sorted(self.svc._active),
+            "cancelled_trials": list(self.cut),  # --- #181
             "creating": flight["create"],
             "destroying": flight["destroy"],
             "sessions": {

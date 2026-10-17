@@ -528,10 +528,22 @@ class ModelGateway:
                  "resp": resp, "resp_hash": digest(resp), "prev_hash": tape.head, "at": now(),
                  "usage": usage_of(tape.provider, resp)}
         tape.write(entry)
+        self._meter(tape.provider, entry["usage"])
         tape.head = digest(entry)
         tape.recent = [*tape.recent, (tape.seq, req)][-RECENT:]
         tape.dir.mkdir(parents=True, exist_ok=True)
         (tape.dir / "index.json").write_text(json.dumps(self._index(tape, None), indent=1, sort_keys=True))
+
+    def _meter(self, provider: str, usage: dict[str, Any] | None) -> None:
+        """--- #181: an exact count for the eval queue's token rate, as the call completes (turn-end usage lags)."""
+        from hangar import evalqueue
+
+        if not usage:
+            return
+        n = sum(int(usage.get(k) or 0) for k in ("input_tokens", "output_tokens", "cache_creation_input_tokens"))
+        if n:
+            t = evalqueue.clock()
+            evalqueue.meter(self.fleet).note(provider, n, t, t)
 
     def _index(self, tape: RunTape, untrusted: tuple[bool, list[str]] | None) -> dict[str, Any]:
         d: dict[str, Any] = {
