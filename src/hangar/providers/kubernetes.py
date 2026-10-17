@@ -271,6 +271,9 @@ class KubernetesProvider(Provider):
             if rc == "gvisor" and s.k8s_gke_node_selector:
                 pod["nodeSelector"] = {"sandbox.gke.io/runtime": "gvisor"}
                 pod["tolerations"] = [{"key": "sandbox.gke.io/runtime", "operator": "Equal", "value": "gvisor",
+                                       "effect": "NoSchedule"},
+                                      # --- #186: the overnight lane's node (power.LANE_TOLERATION)
+                                      {"key": "hangar.dev/lane", "operator": "Equal", "value": "overnight",
                                        "effect": "NoSchedule"}]
             elif rc.startswith("kata") and s.k8s_gke_node_selector:
                 # Matches the nested-virt pool created by deploy/terraform/gke (enable_kata_pool).

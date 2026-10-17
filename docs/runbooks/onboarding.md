@@ -164,6 +164,10 @@ Each engineer:
      first-pass review on every agent PR (#161; `hangar repo set <repo> --ai-review hangar`);
    - run capture: `HANGAR_OUTBOX_URL` ([observability.md, run capture](../observability.md#run-capture)).
 4. The weekly adoption metrics start counting active delegators (#168).
+5. Once the last 14 days' agent PR yield is at least 60% (`hangar metrics weekly`), consider the overnight lane: one Spot
+   node 01:00–10:00 (~$88 a month) so evening tickets of the repos set to `overnight: true` are PRs by the 10:00 triage
+   ([gke.md, the overnight lane](../gke.md#the-overnight-lane)). Below 60% it only adds to the morning's review queue,
+   and `hangar power overnight on` refuses.
 
 ## The daily loop
 

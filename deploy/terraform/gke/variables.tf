@@ -42,6 +42,18 @@ variable "sandbox_spot" {
   default     = true
 }
 
+variable "enable_overnight_lane" {
+  description = "Adds the sandboxes-overnight pool: one Spot gVisor node power.sh keeps up 01:00-10:00 while the overnight lane is on (hangar power overnight on), for overnight repos' intake jobs and evals (~$88/month; docs/gke.md section 6)."
+  type        = bool
+  default     = false
+}
+
+variable "overnight_machine_type" {
+  description = "The overnight lane's node: an n2d-standard-16 holds 14 standard sandboxes (HANGAR_OVERNIGHT_LANE_SANDBOXES)."
+  type        = string
+  default     = "n2d-standard-16"
+}
+
 variable "enable_kata_pool" {
   description = "Adds an Intel N2 Ubuntu pool with nested virtualization for Kata (real microVM) sandboxes."
   type        = bool

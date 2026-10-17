@@ -16,6 +16,11 @@
 #                                     # the scheduled power-ups and power-downs skip until then; the pools stay as
 #                                     # they are. DATE: 2026-10-22 (that day's 00:00) or 2026-10-22T09:00, local time
 #   bash deploy/gke/power.sh release  # end a hold: the schedule runs again from its next time
+#   bash deploy/gke/power.sh overnight on [--force] | off
+#                                     # the overnight lane (#186; terraform enable_overnight_lane): while on, `down`
+#                                     # leaves one Spot node of the sandboxes-overnight pool up and tells hangar
+#                                     # `night`; `up` scales it back to 0 once the other pools are ready. On asks
+#                                     # hangar, which refuses below 60% agent PR yield without --force (audited)
 #   bash deploy/gke/power.sh status   # pools, nodes, the hold, and what hangar thinks
 #   bash deploy/gke/power.sh state    # one JSON line, read-only (only reads the cluster's labels): deploy.yml's
 #                                     # check. {"summary": "up" | "down" | "starting" | "held" | "off", ...}
@@ -39,14 +44,16 @@
 set -euo pipefail
 ACTION=${1:-status}
 [ $# -gt 0 ] && shift
-DAYS="" UNTIL=""
+DAYS="" UNTIL="" FORCE=false LANE_ARG=""
 while [ $# -gt 0 ]; do
   case $1 in
+    on|off) [ "$ACTION" = overnight ] || { echo "unknown option: $1" >&2; exit 2; }; LANE_ARG=$1 ;;
+    --force) FORCE=true ;;
     --days) DAYS=${2:?--days needs a number of days}; shift ;;
     --days=*) DAYS=${1#--days=} ;;
     --until) UNTIL=${2:?--until needs a date}; shift ;;
     --until=*) UNTIL=${1#--until=} ;;
-    *) echo "unknown option: $1 (usage: $0 up|down|off|hold|release|status|state)" >&2; exit 2 ;;
+    *) echo "unknown option: $1 (usage: $0 up|down|off|hold|release|overnight|status|state)" >&2; exit 2 ;;
   esac
   shift
 done
@@ -54,6 +61,7 @@ NS=${NAMESPACE:-hangar}
 POOLS_RE=${POWER_POOLS:-^sandboxes-}
 SCHEDULED=${POWER_SCHEDULED:-0}
 HOLD=hangar-power-hold HOLD_SET=hangar-power-hold-set OFF=hangar-power-off STARTING=hangar-power-starting
+LANE_POOL=${POWER_OVERNIGHT_POOL:-sandboxes-overnight} LANE_LABEL=hangar-power-overnight  # --- #186
 
 if [ -z "${PROJECT:-}" ] || [ -z "${ZONE:-}" ] || [ -z "${CLUSTER:-}" ]; then
   cd "$(dirname "$0")/../.."
@@ -72,7 +80,7 @@ import json, os, re, sys
 from datetime import datetime
 
 SPECIAL = {"hangar-power-hold", "hangar-power-hold-set", "hangar-power-off", "hangar-power-starting",
-           "hangar-power-lock"}
+           "hangar-power-lock", "hangar-power-overnight"}
 STARTING_GRACE = 3600  # an `up` that never finished: its starting mark counts for this long
 MAX_DAYS = 90
 
@@ -227,7 +235,8 @@ drop_label() {  # KEY: only when it's there
 
 label_key() { echo "hangar-power-$(tr -c 'a-z0-9_\n-' '-' <<<"$1" | cut -c1-50)"; }
 pools() { gcloud container node-pools list --cluster "$CLUSTER" "${G[@]}" --format='value(name)'; }
-powered() { grep -Eq -- "$POOLS_RE" <<<"$1"; }
+# the pools `down` powers: POWER_POOLS, except the overnight lane's (#186), which `down` and `up` handle themselves
+powered() { [ "$1" != "$LANE_POOL" ] && grep -Eq -- "$POOLS_RE" <<<"$1"; }
 pool_size() {  # a pool's node count now: the target size of its instance groups. A failed read stops the run: a
   # fixed-size pool's count is what `up` brings it back to, and none saved would leave it at 0 nodes for good
   local n=0 urls url s
@@ -307,6 +316,27 @@ req = urllib.request.Request("http://127.0.0.1:8787" + path, method=method, data
 with urllib.request.urlopen(req, timeout=300) as r:
     sys.stdout.write(r.read().decode())
 PY
+}
+
+# ---------------------------------------------------------------- --- #186: the overnight lane
+lane_pool() { pools | grep -qxF -- "$LANE_POOL"; }
+lane_wanted() {  # the pool exists, and the lane is on: hangar's record when it answers (copied to the label), else the label
+  lane_pool || return 1
+  local on=""
+  LABELS=$(labels)
+  if kube && hangar_ready; then
+    on=$(hangar_api GET /api/admin/power 2>/dev/null |
+      python3 -c 'import json,sys; print("on" if (json.load(sys.stdin)["power"].get("overnight") or {}).get("on") else "")' \
+      2>/dev/null) || on=$(py label "$LABELS" "$LANE_LABEL")
+    if [ "$on" = on ]; then set_labels "$LANE_LABEL=on"; else drop_label "$LANE_LABEL"; fi
+  else
+    on=$(py label "$LABELS" "$LANE_LABEL")
+  fi
+  [ "$on" = on ]
+}
+lane_nodes() {  # N: the lane's pool to N nodes (a fixed-size pool: the autoscaler never adds a second)
+  gcloud container clusters resize "$CLUSTER" "${G[@]}" --node-pool "$LANE_POOL" --num-nodes "$1" --quiet >/dev/null
+  log "$LANE_POOL: $1 node(s)"
 }
 
 state_body() {  # STATE [PREPULL_JSON]: what hangar is told; POWER_* come from the scheduled job's environment
@@ -449,11 +479,12 @@ if sys.argv[1] == "1":
 PY
 }
 
+DOWN_STATE=down  # --- #186: `night` when the overnight lane stays up
 quiesce() {  # [HOLD_UNTIL SET_AT]: tell hangar the sandboxes are going (and the hold), then drain and suspend
   local told=0
   if kube && hangar_ready; then
-    log "telling hangar the sandboxes are powering down"
-    if hangar_api POST /api/admin/power/state "$(state_body down)" >/dev/null; then told=1
+    log "telling hangar the sandboxes are powering down ($DOWN_STATE)"
+    if hangar_api POST /api/admin/power/state "$(state_body "$DOWN_STATE")" >/dev/null; then told=1
     else echo "could not tell hangar (older hangar?); its drain still holds jobs for an hour"; fi
     if [ -n "${1:-}" ]; then tell_hold "$1" "$2"; fi
     log "suspending sessions"; suspend_sessions "$told"
@@ -635,9 +666,14 @@ down)
   if [ -n "$(py is_off "$LABELS" "$POOLS_RE")" ]; then
     log "the cluster is off (power.sh off): nothing to power down"; exit 0
   fi
+  if lane_wanted; then DOWN_STATE=night; fi
   quiesce
   touch_lock
   pools_to_zero sandbox
+  if [ "$DOWN_STATE" = night ]; then
+    lane_nodes 1
+    log "night: the overnight lane's node stays up for overnight repos' jobs and evals"
+  fi
   log "down; hangar stays up. Bring the sandboxes back with: bash deploy/gke/power.sh up (or hangar power up)"
   ;;
 off)
@@ -653,6 +689,7 @@ off)
   quiesce "$until" "$now"
   touch_lock
   pools_to_zero sandbox
+  if lane_pool; then lane_nodes 0; fi  # --- #186: off is off, the lane too
   touch_lock
   if [ "$(hangar_replicas)" != 0 ]; then
     log "stopping hangar (its data stays on the hangar-data volume)"
@@ -747,8 +784,26 @@ print("   queued jobs starting:", len(r.get("released_jobs") or []))
 print("   warm pools for the day:", ", ".join(f"{k}={v}" for k, v in sorted((r.get("warm_pools") or {}).items())) or "none")
 ' || echo "could not tell hangar; it finds out on its own (an hour after the ready time), or run: hangar power up"
   drop_label "$OFF"; drop_label "$STARTING"
+  # --- #186: the other pools are ready and hangar knows: the overnight node goes (its jobs resume from checkpoints)
+  if lane_pool && [ "$(pool_size "$LANE_POOL")" -gt 0 ]; then lane_nodes 0; fi
   log "up"
   catch_up
+  ;;
+overnight)
+  [ -n "$LANE_ARG" ] || die "usage: $0 overnight on [--force] | off"
+  lane_pool || die "there is no $LANE_POOL node pool: set enable_overnight_lane = true in deploy/terraform/gke and apply"
+  kube && hangar_ready || die "turning the lane on or off goes through hangar (the yield gate), which isn't reachable"
+  hangar_api POST /api/admin/power/overnight "{\"on\": $([ "$LANE_ARG" = on ] && echo true || echo false), \"force\": $FORCE}" |
+    python3 -c 'import json,sys; r = json.load(sys.stdin); print("   overnight lane", "on" if r["on"] else "off",
+    "(forced)" if r.get("forced") else "")' || die "hangar refused (hangar power overnight on says why; below the yield gate it takes --force)"
+  if [ "$LANE_ARG" = on ]; then
+    set_labels "$LANE_LABEL=on"
+    log "the next power-down leaves one $LANE_POOL node up"
+  else
+    LABELS=$(labels)
+    drop_label "$LANE_LABEL"
+    if [ "$(pool_size "$LANE_POOL")" -gt 0 ]; then lane_nodes 0; fi
+  fi
   ;;
 status)
   gcloud container node-pools list --cluster "$CLUSTER" "${G[@]}" \
@@ -763,5 +818,5 @@ status)
 state)
   py summary "$(labels)" "$POOLS_RE" "$(date +%s)"
   ;;
-*) echo "usage: $0 up|down|off|hold|release|status|state" >&2; exit 2 ;;
+*) echo "usage: $0 up|down|off|hold|release|overnight|status|state" >&2; exit 2 ;;
 esac

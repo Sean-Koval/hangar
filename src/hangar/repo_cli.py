@@ -147,6 +147,8 @@ def repo_set(
     verify_allowed: list[str] = typer.Option([], "--verify-allowed", help="A glob a ticket's own verify command "
                                              "may match to become its job's check, e.g. 'make test*' (repeat it). "
                                              "Replaces the list."),  # --- #156
+    overnight: bool | None = typer.Option(None, "--overnight/--no-overnight", help="Its intake jobs run at night "
+                                          "in the overnight lane (#186; hangar power overnight on)."),
     as_json: bool = typer.Option(False, "--json"),
 ):
     """Set the repo's defaults; what you don't pass is kept. Jobs that set a field themselves still win.
@@ -167,7 +169,8 @@ def repo_set(
                 ("max_open_agent_prs", max_open_agent_prs), ("self_approval", self_approval),  # --- #159, #160
                 ("ai_review", ai_review), ("ai_review_harness", ai_review_harness),  # --- #161
                 ("ai_review_model", ai_review_model), ("ai_review_budget_usd", ai_review_budget),
-                ("verify_allowed", verify_allowed or None)):  # --- #156
+                ("verify_allowed", verify_allowed or None),  # --- #156
+                ("overnight", overnight)):  # --- #186
         if v is not None:
             body[k] = v
     if egress_mode is not None or egress_allow:  # --- egress
@@ -191,7 +194,8 @@ def repo_unset(repo: str = typer.Argument(...),
                                                              "max_profile, allow_heavy_for_intake, "
                                                              "max_open_agent_prs, self_approval, ai_review, "
                                                              "ai_review_harness, ai_review_model, "
-                                                             "ai_review_budget_usd, verify_allowed). None: "
+                                                             "ai_review_budget_usd, verify_allowed, "
+                                                             "overnight). None: "
                                                              "remove the repo's policy.")):
     """Clear fields of the repo's policy, or remove it."""
     r = _cli()._call("DELETE", "/api/repos/policy", params={"repo": repo, "field": fields or []})

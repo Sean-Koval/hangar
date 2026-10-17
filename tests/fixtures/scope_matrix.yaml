@@ -161,6 +161,12 @@ admin.post_power_hold:
   rest: POST /api/admin/power/hold
   scope: admin
   owner: admin
+admin.post_power_overnight:
+  server: hangar
+  mcp: null
+  rest: POST /api/admin/power/overnight
+  scope: admin
+  owner: admin
 admin.post_power_release:
   server: hangar
   mcp: null
