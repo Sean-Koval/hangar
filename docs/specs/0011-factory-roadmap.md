@@ -1,6 +1,6 @@
 # 0011 The factory roadmap: trust, context exchange, throughput
 
-Status: in progress (7 parallel workstreams) · Date: 2026-10-13 · Builds on: 0003 (gateway), 0007 (budgets, parsers), 0008 (swarm), 0009 (jobs), 0010 (sessions)
+Status: built (2026-10-15): workstreams #40–#46. · Date: 2026-10-13 · Builds on: 0003 (gateway), 0007 (budgets, parsers), 0008 (swarm), 0009 (jobs), 0010 (sessions)
 
 Jobs (0009) and sessions (0010) are live: work arrives from GitHub, REST and MCP, runs in a resumable session on our own cluster, and comes back as a PR. This spec picks the next slice of the earlier specs that turns that into a factory other systems can safely hand work to, and adds the piece none of them covered well: **how context moves in and out of an agent session**, for MCP clients above all.
 

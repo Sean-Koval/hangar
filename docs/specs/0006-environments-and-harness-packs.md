@@ -1,6 +1,6 @@
 # 0006: Environments and harness packs
 
-Status: M1–M3 implemented in this PR; M4–M7 planned. Date: 2026-10-12.
+Status: built (2026-10-15): M1–M3 (#22); M4–M7 not scheduled. · Date: 2026-10-12.
 
 > Part of a set. Ownership, cross-spec decisions and the build order are in [docs/specs/README.md](README.md) (decision 14).
 

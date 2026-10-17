@@ -1,6 +1,6 @@
 # 0005: Session traces and a decision model for run classification
 
-Status: draft · Date: 2026-10-12 · Builds on: 0001 (run events), 0002 (verification, approvals), 0003 (gateway, egress) · Consumed by: 0004 (supervisor)
+Status: deferred (2026-10-15): the `DecisionService` and Decision-1 are not scheduled; trace export moved to [0014](0014-sister-tool-interfaces.md), and evaluation to flightdeck. Was: draft. · Date: 2026-10-12 · Builds on: 0001 (run events), 0002 (verification, approvals), 0003 (gateway, egress) · Consumed by: 0004 (supervisor)
 
 > Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins.
 
