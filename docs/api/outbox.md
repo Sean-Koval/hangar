@@ -32,7 +32,8 @@ v1/runs/{date}/{session_id}.{run_id}/run.json          hangar.run/v1, written la
                                      grade.json        experiment trials, once the grader has run
                                      patch.diff        the turn's diff against the commit it started on
 v1/jobs/{date}/{job_id}/events/{ts_ms}-{kind}.json     hangar.job_event/v1
-v1/tapes/...                                           reserved for tapes (#177), expired after 30 days
+v1/tapes/{date}/{session_id}.{run_id}/tape/{seq}.json  hangar.tape/v1 entries (#177), expired after 30 days
+                                          tape/index.json
 ```
 
 - `{date}` is the UTC date (`YYYY-MM-DD`) the run finished, or the event happened.
@@ -115,6 +116,27 @@ human review, reverts and abandon reasons (#168, [metrics.md](../metrics.md)).
   changes and untracked files (as `get_session_patch` computes it), read from the sandbox as the turn ends. Changes
   left uncommitted by an earlier turn appear again. Absent when the sandbox was gone.
 
+## Tapes
+
+Runs in a `model_gateway: record` environment ([model-gateway.md](../model-gateway.md)) also leave a tape of their
+model calls, staged when the turn ends under `v1/tapes/` (a lifecycle rule can only match a name's prefix, so tapes
+live apart from their run and the bucket deletes them after `run_tape_days`, 30). `{date}` is the day the turn
+finished; the run key is the run's.
+
+- **`tape/{seq:05d}.json`**, one per model call, in order: `seq` (from 1), `req_hash`, `req_delta`, `resp`,
+  `resp_hash`, `prev_hash`, `at` (epoch seconds) and `usage` (the provider's, from the final events). `req_delta` is
+  `{"full": request}` or `{"base": seq, "append": [...], "set": {...}, "unset": [...], "outer": {...}}`: the
+  messages (or input items) the request adds to entry `base`. A request is `{method, path, headers, body}`; `resp`
+  is `{status, headers, sse: [{event, data}]}` for a stream or `{status, headers, body}`, plus `truncated: true`
+  when it wasn't kept whole. Both are normalized and redacted before hashing.
+- **`tape/index.json`**: `schema` (`hangar.tape/v1`), `run`, `session_id`, `run_id`, `sandbox_id`, `provider`,
+  `model`, `harness`, `manifest` (the turn's manifest digest), `harness_digest`, `entries`, `genesis`, `head`,
+  `started_at`, `finished_at`, `untrusted` and `untrusted_reasons`.
+- **Checking one**: hashes are SHA-256 over canonical JSON (sorted keys, `,` and `:` separators, UTF-8). Rebuild each
+  request from its delta, check `req_hash` and `resp_hash`, check that `prev_hash` is the previous entry's hash
+  (`genesis` for the first, `sha256("hangar.tape/v1\n" + run)`), and that the last entry's hash is `head`
+  (`hangar.modelgw.validate` does it).
+
 ## Job events (`hangar.job_event/v1`)
 
 Facts about a job that arrive after its runs, each its own immutable object, never a rewrite of `run.json`.
@@ -188,5 +210,5 @@ then have the sister tool recompact the affected dates (flightdeck: `flightdeck 
 
 ## Out of scope
 
-The GCS → Parquet compactor (flightdeck, Sean-Koval/flightdeck#5); tapes (#177); exporting anywhere other than GCS or
-a local directory.
+The GCS → Parquet compactor (flightdeck, Sean-Koval/flightdeck#5); replaying tapes (#179); exporting anywhere other
+than GCS or a local directory.

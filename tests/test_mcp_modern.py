@@ -101,17 +101,56 @@ async def new_asking_session(c: Client, name: str) -> None:
 
 
 # ---------------------------------------------------------------------------- tools/list: hints, schemas, size
-async def test_tool_listing_has_hints_slim_schemas_and_typed_results(fleet, svc, jobs):
+def _model_view(tools) -> str:
+    return json.dumps([{"name": t.name, "description": t.description, "inputSchema": t.input_schema}
+                       for t in tools], separators=(",", ":"))
+
+
+# --- #140: one budget per server, measured on the model-visible listing (name, description, input schema). The single
+# server's cap was 24,700 bytes: 31,157 before the mcp-modern workstream slimmed it, then +0.65 KB for exec(stream) and
+# the process tool (review #68 trimmed their descriptions and kept the cap just over what they needed), and features
+# went to resources instead of tools because the list was at its cap. The split gives each server room again, and
+# each budget must keep 15% headroom so the next tool doesn't force another trim.
+BUDGETS = {mcp_live.WORK: 14_000, mcp_live.SANDBOX: 16_000}
+HEADROOM = 0.15
+
+
+async def _listing(fleet, svc, jobs, surface: str):
     from unittest.mock import MagicMock
 
-    mcp = build_mcp(fleet, jobs, svc, triggers=MagicMock())
+    mcp = build_mcp(fleet, jobs, svc, triggers=MagicMock(), surface=surface)
     async with Client(mcp) as c:
         tools = (await c.list_tools()).tools
         again = (await c.list_tools()).tools
+    assert [t.name for t in tools] == [t.name for t in again]  # deterministic order (clients cache listings)
+    return mcp, tools
+
+
+async def test_each_server_lists_its_own_tools_within_its_budget(fleet, svc, jobs):
+    work_mcp, work = await _listing(fleet, svc, jobs, "work")
+    drive_mcp, drive = await _listing(fleet, svc, jobs, "sandbox")
+    names = {mcp_live.WORK: [t.name for t in work], mcp_live.SANDBOX: [t.name for t in drive]}
+    both = set(names[mcp_live.WORK]) & set(names[mcp_live.SANDBOX])
+    assert not both, f"listed on both servers: {sorted(both)}"
+    for server, listed in names.items():  # every tool is listed on the server mcp_live.server_of says, only there
+        assert all(mcp_live.server_of(n) == server for n in listed), (server, listed)
+        missing = [n for n in listed if n not in mcp_live.TOOL_HINTS]
+        assert not missing, f"add these tools to TOOL_HINTS in mcp_live.py: {missing}"
+    every = {t.name for t in work_mcp._tool_manager.list_tools()} - mcp_live.HIDDEN_TOOLS
+    assert every == set(names[mcp_live.WORK]) | set(names[mcp_live.SANDBOX])  # hangar still answers all of them
+    assert work_mcp.moved == frozenset(n for n in mcp_live.SANDBOX_TOOLS
+                                       if n in {t.name for t in work_mcp._tool_manager.list_tools()})
+    assert not ({t.name for t in drive_mcp._tool_manager.list_tools()} & set(names[mcp_live.WORK]))
+    for server, tools in ((mcp_live.WORK, work), (mcp_live.SANDBOX, drive)):
+        size, cap = len(_model_view(tools)), BUDGETS[server]
+        assert size < cap * (1 - HEADROOM), f"{server}: {size} bytes; the budget is {cap} with 15% headroom"
+
+
+async def test_tool_listing_has_hints_slim_schemas_and_typed_results(fleet, svc, jobs):
+    _, work = await _listing(fleet, svc, jobs, "work")
+    _, drive = await _listing(fleet, svc, jobs, "sandbox")
+    tools = [*work, *drive]
     names = [t.name for t in tools]
-    assert names == [t.name for t in again]  # deterministic order (clients cache listings)
-    missing = [n for n in names if n not in mcp_live.TOOL_HINTS]
-    assert not missing, f"add these tools to TOOL_HINTS in mcp_live.py: {missing}"
     by = {t.name: t for t in tools}
     for n in ("get_job", "list_sessions", "get_events", "read_file", "get_session_patch"):
         assert by[n].annotations.read_only_hint is True, n
@@ -129,11 +168,6 @@ async def test_tool_listing_has_hints_slim_schemas_and_typed_results(fleet, svc,
     raw = json.dumps([t.model_dump(by_alias=True, exclude_none=True, mode="json") for t in tools])
     assert '"title": "' not in json.dumps([t.input_schema for t in tools])  # pydantic titles stripped
     assert "\n        " not in raw  # docstring indentation stripped from descriptions
-    model_view = json.dumps([{"name": t.name, "description": t.description, "inputSchema": t.input_schema}
-                             for t in tools], separators=(",", ":"))
-    # was 31,157 bytes before this workstream; --- stream: +0.65 KB for exec(stream) and the process tool (review
-    # #68: their descriptions trimmed, and the cap kept just over what they need)
-    assert len(model_view) < 24_700, len(model_view)
     # optional arguments are plain types (nullable still accepted by the tool)
     assert by["submit_job"].input_schema["properties"]["repo"] == {"type": "string"}
 

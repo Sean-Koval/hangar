@@ -1053,7 +1053,7 @@ def mount(app: Any, h: Any, job_caller: Any, admin: Any) -> None:
 
 
 def register(mcp: Any, jobs: Any, guard: Any) -> None:
-    """`hangar://jobs/<id>/tests`: a resource, not a tool (the tool list is at its cap)."""
+    """`hangar://jobs/<id>/tests`: a resource, not a tool."""
     if jobs is None:
         return
 

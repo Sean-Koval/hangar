@@ -2,19 +2,36 @@
 
 Claude Code, Codex, Cursor, VS Code and other agents are hangar's main users. This page covers what hangar's MCP server gives them beyond plain tool calls, and how each piece looks on the wire. To connect a client, see [clients.md](clients.md).
 
-Hangar speaks every protocol revision its SDK does: the `initialize`-handshake revisions up to **2025-11-25**, and the stateless **2026-07-28** revision (no handshake, capabilities on every request). One endpoint, `<public_url>/mcp`, serves both; each request is routed by its `MCP-Protocol-Version` header.
+Hangar speaks every protocol revision its SDK does: the `initialize`-handshake revisions up to **2025-11-25**, and the stateless **2026-07-28** revision (no handshake, capabilities on every request). Each endpoint serves both; each request is routed by its `MCP-Protocol-Version` header.
+
+## Two servers
+
+Hangar's tools are split across two MCP servers (#140), so a client that only hands off work doesn't pay, on every turn, for the tools that drive sandboxes by hand:
+
+| Server | Endpoint | For | Tools |
+| --- | --- | --- | --- |
+| `hangar` | `<public_url>/mcp` | callers who delegate work | jobs, sessions, schedules, discovery (below) |
+| `hangar-sandbox` | `<public_url>/mcp/sandbox` | callers who drive sandboxes themselves | sandboxes, commands, files, terminals, agents in a sandbox, snapshots, building environments |
+
+Both take the same tokens and OAuth grants (`mcp`, `user` and admin tokens), each has its own `serverInfo` (name and version hash) and its own protected-resource metadata, and resources and prompts stay on the server whose tools they serve: jobs' and sessions' resources and the workflow prompts on `hangar`, `hangar://sandboxes/<id>/watch` on both. `hangar connect claude-code` (and `codex`) writes both entries, `hangar` and `hangar-sandbox`; other clients get `hangar` only unless you pass `--with-sandbox` ([clients.md](clients.md)). `hangar doctor` checks both endpoints.
+
+**Moving clients over.** For one release the sandbox tools also stay callable on `/mcp`, hidden from its list. A call there works and carries a note, once an hour per tool: *"exec moved to the hangar-sandbox server; re-add the connector to get it there."* Clients that cache tool lists (the claude.ai apps never refresh them) keep calling the old names until the connector is re-added, and the note says so. The sandbox server answers a work tool's name with where it lives.
+
+**Budgets.** Each server's model-visible listing (names, descriptions and input schemas) has a byte budget, `hangar` 14,000 and `hangar-sandbox` 16,000, and must keep 15% headroom under it (`tests/test_mcp_modern.py`); the single server's old 24,700-byte cap is gone.
 
 ## The tools
 
-| Area | Tools |
-| --- | --- |
-| Discover | `fleet_overview`, `list_environments`, `describe_environment`, `create_environment` (`dry_run` validates; `extends` clones), `build_environment`, `list_credentials` |
-| Lifecycle | `create_sandbox`, `create_sandboxes` (N in parallel), `list_sandboxes`, `get_sandbox`, `destroy_sandbox` (one, several or by label), `pause_sandbox`, `resume_sandbox`, `extend_sandbox` |
-| Commands and files | `exec`, `read_file`, `write_file`, `list_files` |
-| Terminals | `terminal_open`, `terminal_send` (supports `wait_for` regex), `terminal_read`, `terminal_list`, `terminal_close` |
-| Agents | `run_agent`, `agent_status` |
-| Clone | `snapshot_sandbox`, `list_snapshots`, `fork_sandbox` |
-| Jobs and sessions | `submit_job`, `get_job`, `list_jobs`, `follow_up_job`, `cancel_job`, `new_session`, `send_to_session`, `fork_session`, `wait_for_turn`, `get_events`, `get_artifact`, `get_session_patch`, ... |
+| Server | Area | Tools |
+| --- | --- | --- |
+| `hangar` | Discover | `fleet_overview`, `list_environments`, `describe_environment`, `list_credentials` |
+| `hangar` | Jobs | `submit_job`, `get_job`, `list_jobs`, `follow_up_job`, `cancel_job`, `approve_job`, `reject_job`, `get_events` |
+| `hangar` | Sessions | `new_session`, `list_sessions`, `get_session`, `send_to_session`, `fork_session`, `keep_session`, `suspend_session`, `wait_for_turn`, `get_artifact`, `get_session_patch`, `steer_turn`, `answer_approval` |
+| `hangar` | Schedules | `create_schedule`, `list_schedules`, `delete_schedule`, `run_schedule_now` |
+| `hangar-sandbox` | Lifecycle | `create_sandbox`, `create_sandboxes` (N in parallel), `list_sandboxes`, `get_sandbox`, `destroy_sandbox` (one, several or by label), `pause_sandbox`, `resume_sandbox`, `extend_sandbox` |
+| `hangar-sandbox` | Commands and files | `exec`, `process` (background commands), `read_file`, `write_file`, `list_files` |
+| `hangar-sandbox` | Terminals | `terminal_open`, `terminal_send` (supports `wait_for` regex), `terminal_read`, `terminal_list`, `terminal_close` |
+| `hangar-sandbox` | Agents | `run_agent`, `agent_status`, `open_session` (a session's sandbox, to work in by hand) |
+| `hangar-sandbox` | Clone and build | `snapshot_sandbox`, `list_snapshots`, `fork_sandbox`, `create_environment` (`dry_run` validates; `extends` clones), `build_environment` |
 
 Every tool accepts a sandbox id or name. Relative paths resolve against the sandbox's repo checkout, falling back to `/workspace`. Tools carry read-only/destructive hints and typed results; long work can run as MCP tasks, agents' questions reach you as elicitations, and jobs and sessions are subscribable resources.
 

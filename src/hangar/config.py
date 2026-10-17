@@ -307,6 +307,10 @@ class Settings(BaseSettings):
     # control plane. 0 = serve /git on the main port instead.
     gateway_port: int = 8788
     gateway_host: str | None = None  # bind address; default HANGAR_HOST
+    # --- #177: the model gateway (modelgw.py) on the same port, /model/{provider}/...: where it sends each provider's
+    # calls ({"anthropic": "https://api.anthropic.com"}; unset: the provider's own API), and how long local tapes stay
+    model_gateway_upstreams: dict[str, str] = Field(default_factory=dict)
+    model_tape_days: int = Field(30, ge=1, le=365)
     # Sessions use the gateway when it is configured, unless their environment says credential_mode: direct.
     # --- least-privilege: jobs, repo builds and env-setup validation always do, fetch-only (delivery.py), whatever
     # this or credential_mode say, wherever the gateway serves the repo's host.
