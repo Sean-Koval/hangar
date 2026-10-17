@@ -216,6 +216,8 @@ class Settings(BaseSettings):
     # minted per repo with contents and pull_requests write only), and it pushes for gateway sandboxes that have no
     # git credential of their own. The token above still comments on issues (docs/landing.md).
     github_app_credential: str | None = None
+    # --- inbox digest (#158): the App's slug, so the digest's review link lists only agent PRs (author:app/<slug>)
+    github_app_slug: str | None = None
     # Vault credential holding the webhook secret; the webhook route is off until this is set.
     github_webhook_secret_credential: str | None = None
     # Repos that may trigger jobs, mapped to the environment to run them in: {"owner/repo": "env"}.

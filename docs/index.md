@@ -145,7 +145,7 @@ resources:
 warm_pool: 1
 ```
 
-Replace the repo URL, branch and setup command with your project's values, then build it with `uv run hangar env build my-service`. Ask your client to create a sandbox from `my-service`; it uses the configured repo and credential. `warm_pool: 1` keeps one sandbox pre-started for faster claims. Built-in foundations include `bare`, `python`, `node`, `go` and `polyglot`; [the environment reference](guide.md#environment-specs) covers tools, skills, secrets, MCP servers and multiple agent choices.
+Replace the repo URL, branch and setup command with your project's values, then build it with `uv run hangar env build my-service`. Ask your client to create a sandbox from `my-service`; it uses the configured repo and credential. `warm_pool: 1` keeps one sandbox pre-started for faster claims. Built-in foundations include `bare`, `python`, `node`, `go` and `polyglot`; [environments](environments.md) covers tools, skills, secrets, MCP servers and multiple agent choices.
 
 ### Everyday commands
 
@@ -186,7 +186,8 @@ For an existing deployment, read [the upgrade guide](upgrading.md) before updati
 
 | If you want to | Read |
 | --- | --- |
-| The full reference: features, environment specs, configuration, operations | [Overview and reference](guide.md) |
+| Production, configuration, known limits | [Getting started](guide.md) · [Concepts](concepts.md) |
+| Onboard a team step by step | [Onboarding runbook](runbooks/onboarding.md) |
 | Connect Codex, Claude Code or another client | [Connecting clients](clients.md) · [Using MCP](mcp.md) |
 | Hand work to cloud agents | [Jobs](jobs.md) · [Sessions](sessions.md) · [Context exchange](context-exchange.md) · [Landing](landing.md) |
 | Messages, interrupts, approvals and live events | [Steering](steering.md) · [Streaming](streaming.md) |

@@ -51,7 +51,7 @@ Open the dashboard at [localhost:8787](http://localhost:8787) and ask your MCP c
 
 To look around first without Docker or a key, run the demo hangar the recording uses: `uv run python docs/assets/front/demo.py`, then `uv run python docs/assets/front/demo.py ticket` in another terminal.
 
-The [getting started guide](https://sean-koval.github.io/hangar/#first-task) walks through a first task, parallel attempts, your own environment and everyday commands.
+The [docs home page](https://sean-koval.github.io/hangar/#first-task) walks through a first task, parallel attempts, your own environment and everyday commands.
 
 ## Features
 
@@ -70,13 +70,14 @@ The [getting started guide](https://sean-koval.github.io/hangar/#first-task) wal
 
 | Topic | Guide |
 | --- | --- |
-| First task, environments, everyday commands, deployment and limits | [Getting started](https://sean-koval.github.io/hangar/#first-task) · [Full reference](docs/guide.md) |
+| First task, everyday commands, deployment and limits | [Front page walkthrough](https://sean-koval.github.io/hangar/#first-task) · [Getting started](docs/guide.md) · [Concepts](docs/concepts.md) |
+| Environments and onboarding a team | [Environments](docs/environments.md) · [Onboarding runbook](docs/runbooks/onboarding.md) |
 | Clients, OAuth and MCP tools | [Connecting clients](docs/clients.md) · [Using MCP](docs/mcp.md) |
 | Jobs, sessions, steering, landing | [Jobs](docs/jobs.md) · [Sessions](docs/sessions.md) · [Steering](docs/steering.md) · [Landing](docs/landing.md) |
 | A team on one hangar, and GKE | [Team setup](docs/team.md) · [Running on GKE](docs/gke.md) · [Upgrading](docs/upgrading.md) |
 | Security and design decisions | [Security model](docs/security.md) · [Specs](docs/specs/README.md) |
 | Release history | [Changelog](CHANGELOG.md) |
 
-**Developing hangar:** `uv sync --all-extras && uv run pytest -n 8 && uv run ruff check src tests`; see [the development reference](docs/guide.md#development) and [CI](docs/ci.md). The front page's recording, screenshots and diagram are rendered by [`docs/assets/front/make.py`](docs/assets/front/make.py) ([how](docs/assets/README.md)).
+**Developing hangar:** `uv sync --all-extras && uv run pytest -n 8 && uv run ruff check src tests`; see [development](docs/guide.md#development) and [CI](docs/ci.md). The front page's recording, screenshots and diagram are rendered by [`docs/assets/front/make.py`](docs/assets/front/make.py) ([how](docs/assets/README.md)).
 
 Licensed under [Apache 2.0](LICENSE).
