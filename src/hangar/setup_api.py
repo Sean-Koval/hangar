@@ -512,7 +512,8 @@ async def setup_slack(h, app, body: SlackSetup, who: str) -> dict[str, Any]:
         _step(steps, "public url", None,
               f"Slack can't reach {base} ({far}); set HANGAR_PUBLIC_URL to a public https URL")
     return {"ok": all(x["status"] != "fail" for x in steps), "steps": h.broker.redact(steps),
-            "urls": {"commands": f"{base}/api/hooks/slack/commands", "events": f"{base}/api/hooks/slack/events"}}
+            "urls": {"commands": f"{base}/api/hooks/slack/commands", "events": f"{base}/api/hooks/slack/events",
+                     "interactions": f"{base}/api/hooks/slack/interactions"}}
 
 
 # ============================================================================ routes

@@ -260,6 +260,20 @@ def _check_text(text: str | None, required: bool) -> str | None:
 
 
 # ====================================================================== steer
+def received(svc: SessionService, s: Session, st: Steer) -> None:
+    """--- #162: a steer's or interrupt's own event in the session's activity log, so its trace event carries
+    `hangar.seq` (its place among the turn's events) beside its class (steer_class.py)."""
+    t = s.turns[-1] if s.turns else None
+    try:
+        [ev] = svc.activity.append(s.id, [RunEvent(
+            kind="progress", turn=len(s.turns), run_id=(t.run_id or "") if t else "",
+            text=f"{st.kind} from {st.requester or 'someone'}",
+            data={"source": "hangar", "action": f"{st.kind}.received", "ref": st.id})])
+        st.seq = ev.seq or None
+    except Exception:  # noqa: BLE001 - the steer itself must not fail over its record
+        log.warning("session %s: could not record %s %s in the activity log", s.id, st.kind, st.id, exc_info=True)
+
+
 async def steer(svc: SessionService, s: Session, text: str, requester: str) -> Steer:
     """Fold a message into the running turn and wait until the agent has it."""
     text = _check_text(text, True) or ""
@@ -269,6 +283,7 @@ async def steer(svc: SessionService, s: Session, text: str, requester: str) -> S
                       "wait for it, or interrupt it")
     st = Steer(text=text, requester=requester)
     t.steers.append(st)
+    received(svc, s, st)
     svc._save(s)
     try:
         ack = await command(svc, s, t, "steer", text=text)
@@ -305,6 +320,7 @@ def steer_later(svc: SessionService, s: Session, text: str, requester: str) -> S
     t = s.turns[-1]
     st = Steer(text=text, requester=requester)
     t.steers.append(st)
+    received(svc, s, st)
     svc._save(s)
     svc.fleet.audit(requester, "session.steer", s.id, run=t.run_id, message=text[:300])
     _later(svc, s, st)
@@ -391,6 +407,7 @@ async def interrupt(svc: SessionService, s: Session, requester: str, text: str |
         await kill(svc, s, t)
         st.status = "queued" if text else "delivered"
     t.steers.append(st)
+    received(svc, s, st)
     svc._save(s)
     svc.fleet.audit(requester, "session.interrupt", s.id, run=t.run_id, message=(text or "")[:300])
     if st.status == "queued" and not s.job_id:  # the run was stopped: its message starts the next turn

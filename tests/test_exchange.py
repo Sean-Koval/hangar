@@ -394,6 +394,8 @@ async def test_job_question_github_comment_and_answer_resume_across_a_restart(jo
         done = await _until(again, job.id, {JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED})
         assert done.state == JobState.SUCCEEDED, [e.message for e in done.events]
         assert done.turns[1].summary == "Went with B" and done.result.question is None
+        # --- #162: an answer to the agent's question is new information by default (the agent asked)
+        assert (done.turns[1].steer_class, done.turns[1].classified_by) == ("new_info", "hangar")
         assert len(done.result.commits) == 2  # the work from before the question was kept
         s = again.sessions.get(done.session_id)
         assert s.turns[1].mode == "resume"  # same conversation
