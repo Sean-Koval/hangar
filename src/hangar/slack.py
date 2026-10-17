@@ -24,6 +24,7 @@ import httpx
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from hangar import fairness as fairness  # --- review capacity (#159)
 from hangar import people, redeliver  # --- teamcreds: linked Slack users; --- trust: commit after handle
 from hangar.exchange import open_question
 from hangar.github import parse_repo
@@ -642,7 +643,8 @@ class SlackFrontDoor:
             return
         await self._say(api, channel, thread_ts,
                         f"Queued as hangar job `{job.id}` in `{escape(job.environment)}`. I'll reply in this thread "
-                        "when the agent starts and when it's done.")
+                        "when the agent starts and when it's done."
+                        + escape(fairness.queued_note(self.jobs, job)))  # --- review capacity (#159)
 
     async def _follow_up(self, api: SlackAPI, team: str, channel: str, thread_ts: str, user: str, job_id: str,
                          text: str, user_team: str | None = None) -> None:

@@ -93,6 +93,8 @@ EOF
 
 `context` can also carry your local work in progress: `patch` (uncommitted changes) and `bundle` (unpushed commits) items, applied before the agent starts. `hangar job submit --from-local` builds them from the current checkout. See [context exchange](context-exchange.md).
 
+**States and reasons.** A job is `queued`, `awaiting_approval`, `provisioning`, `running`, `needs_input`, then `succeeded`, `failed` or `cancelled`. `reason` says more: why it ended (`verify_failed`, `over_budget`, …) or why a queued job waits: `powered_down` (the sandbox pools are off for the night) or `awaiting_capacity` (its person already has `HANGAR_PERSON_MAX_OPEN_AGENT_PRS` agent PRs awaiting review; only a job's first turn waits, see [review capacity](team-scale.md#review-capacity)). `GET /api/jobs?reason=awaiting_capacity` and `hangar job list --reason awaiting_capacity` list the held ones; an admin lets one through with `hangar job admit <id>`. `source` says which door it came through (`api`, `mcp`, `cli`, `github`, `slack`, `jira`, `schedule`, …); `review` is an [AI first-pass review](landing.md#6a-ai-first-pass-review) of an agent PR, which delivers nothing and never waits for review capacity.
+
 Then poll `GET /api/jobs/{id}`, or wait for the callback. The job view carries `state`, the `events` timeline, `result` (commits, diffstat, `pr_url`, verification exit code and output tail, the agent's summary), `usage` (tokens and USD), `sandbox_id` and `terminal_session`. `GET /api/jobs/{id}/events?since=` streams what the agent is doing (messages, commands, file changes, errors), in the same shape for every harness.
 
 From the CLI:
@@ -551,6 +553,7 @@ as `hangar.outcome.class` and `hangar.outcome.infra_reason` ([traces.md](api/tra
 | --- | --- | --- |
 | `HANGAR_JOB_CONCURRENCY` | 0 (auto) | Jobs provisioning or running at once. Auto: 4 on Docker, else `HANGAR_MAX_SANDBOXES` / 5 between 4 and 8 ([team-scale.md](team-scale.md)) |
 | `HANGAR_PERSON_MAX_RUNNING_JOBS` | 0 (half the slots, at least 4) | Jobs one person runs at once; the queue serves whoever has the fewest running first |
+| `HANGAR_PERSON_MAX_OPEN_AGENT_PRS` | 5 (0 = off) | Open agent PRs awaiting a person before their new jobs wait as `awaiting_capacity`; see [team-scale.md](team-scale.md#review-capacity) |
 | `HANGAR_JOB_TIMEOUT_MINUTES` | 60 | Per agent turn |
 | `HANGAR_JOB_KEEP_MINUTES` | 120 | Sandbox kept after a turn |
 | `HANGAR_JOB_VERIFY_TIMEOUT_SECONDS` | 1800 | |
