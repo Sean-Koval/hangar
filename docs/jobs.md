@@ -591,6 +591,13 @@ what it doesn't:
 - **Touched tests.** `touched_tests`: existing test files the trial changed (the job's own check, else from its
   patch).
 
+### The monthly eval budget
+
+Trials count against the team's monthly eval budget and their author's cap (`HANGAR_EVAL_BUDGET_USD_MONTH`, 1500;
+`HANGAR_EVAL_AUTHOR_CAP_USD_MONTH`, 400). An experiment projected over what is left is refused at submit with the
+numbers. Once a budget is spent, running trials finish but no new trial starts. `hangar eval budget` shows the month
+([repo-policy.md](repo-policy.md#the-eval-budget)).
+
 ### Infrastructure errors are retried and left out
 
 A trial that infrastructure ended (its node was preempted, the 01:00 power-down took its sandbox, the provider

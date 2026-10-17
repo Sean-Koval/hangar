@@ -102,6 +102,9 @@ looks again every 15 seconds, so the window opening or the rate dropping starts 
 provider the observed rate, the per-trial estimate and the budget. Metrics: `hangar_eval_window_open`,
 `hangar_eval_observed_tpm{provider}`, `hangar_eval_tpm_budget{provider}` and `hangar_eval_jobs_waiting{reason}`.
 
+**Monthly budget**: eval spend has a team budget per calendar month and a cap per author (#182,
+[repo-policy.md](repo-policy.md#the-eval-budget)); the eval queue decides when trials run, the budget whether more may.
+
 **Power-down**: a drain (`power.sh down`, [gke.md](gke.md#6-sandbox-nodes-off-at-night-optional)) cancels running
 trials rather than checkpointing them, marks them `infra_error` / `power_down` ([jobs.md](jobs.md#the-eval-queue)),
 and the experiment queues a fresh attempt; like every queued eval job it waits for the next window, not for the 10:00

@@ -144,6 +144,28 @@ For each field the order is the job, then the repo's policy, then the settings.
 
 **A daily cap per person** (`HANGAR_PERSON_MAX_USD_PER_DAY`, unset by default) works the same way for the jobs a person submits. It counts what all of that person's sessions and jobs spent that day, whichever of their tokens or connectors started them (the person hangar records on each; see [security.md](security.md#people)). Jobs nobody in particular asked for, such as GitHub- and Slack-triggered ones, have no person yet and count only against their repo's cap.
 
+### The eval budget
+
+Evals run on API keys with dollar caps, so eval spend has a monthly budget of its own, across experiments and trials
+(#182):
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `HANGAR_EVAL_BUDGET_USD_MONTH` | 1500 | The team's eval spend per calendar month (UTC); 0 turns the eval budget off |
+| `HANGAR_EVAL_AUTHOR_CAP_USD_MONTH` | 400 | Each author's share; `hangar person set alice --eval-cap 600` (an admin) gives one person their own |
+
+- **What counts.** Eval jobs (`queue_class: eval`: experiment trials, the trials API's, shadows) created this month,
+  by their author: the experiment's person, else who asked for it. Every session that carried a trial counts, deleted
+  ones too. Cached trial results ([api/trials.md](api/trials.md#the-cache)) start no job and cost nothing.
+- **The gate.** An experiment, or a `POST /api/trials`, whose projected cost exceeds what the team or the author has
+  left is refused, with the spent and remaining numbers. The projection is trials × each task's p50 cost, taken from
+  the cached trials of the same key, else from the trial job budget's `max_cost_usd`. A task with neither projects $0,
+  and the message says so.
+- **No kills.** Trials already running finish, even past the budget (each trial's job budget is the hard stop), but
+  once the team's or the author's budget is spent no new trial starts: they show `skipped` with the reason.
+- **Seeing it.** `hangar eval budget` (`GET /api/eval/budget`) shows the month, the team's budget, what's spent and
+  left, and each author's cap and spend.
+
 ## The check on the base commit
 
 With a check on every front door, a red base branch would fail every job's check. The agent would spend its verify-fix rounds on failures it didn't cause, best-of-N would rank every attempt as failing, and every PR would go out as a draft. So hangar runs a job's **standing check**, the one from the repo's policy or the environment, once on the base commit before the agent starts:

@@ -93,11 +93,21 @@ def person_set(person_id: str,
                digest: str | None = typer.Option(None, "--digest", help="Local digest times, e.g. 10:15,16:00 "
                                                                           "(\"\" turns the digest off)."),
                digest_weekends: bool | None = typer.Option(None, "--digest-weekends/--no-digest-weekends",
-                                                           help="Send the digest on Saturdays and Sundays too.")):
+                                                           help="Send the digest on Saturdays and Sundays too."),
+               eval_cap: str | None = typer.Option(None, "--eval-cap", help="Admins: their monthly eval cap in USD "
+                                                                             "(\"\" for the default, "
+                                                                             "HANGAR_EVAL_AUTHOR_CAP_USD_MONTH).")):
     """How the inbox reaches someone in Slack: a DM for each agent question or approval, and a digest twice a day.
     Anyone may change their own; admins anyone's.
 
     Example:  hangar person set alice --dm questions --tz Europe/Berlin --digest 09:30,16:00 --quiet 19:00-08:00"""
+    if eval_cap is not None:  # --- #182: an admin's call, apart from the person's own delivery settings
+        r = _cli()._call("PUT", f"/api/people/{person_id}/eval-cap",
+                         json={"usd": float(eval_cap) if eval_cap.strip() else None})
+        cap = r["eval_cap_usd_month"]
+        typer.echo(f"{r['id']}: eval cap {'the default' if cap is None else f'${cap:,.2f}'} a month")
+        if all(v is None for v in (dm, quiet, tz, digest, digest_weekends)):
+            return
     body = {"dm": dm, "quiet": quiet, "tz": tz, "digest_weekends": digest_weekends,
             "digest": None if digest is None else [x.strip() for x in digest.split(",") if x.strip()]}
     p = _cli()._call("PUT", f"/api/people/{person_id}/delivery", json={k: v for k, v in body.items() if v is not None})
