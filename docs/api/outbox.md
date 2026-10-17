@@ -91,8 +91,9 @@ Schema: [run.schema.json](run.schema.json) (validated in CI against real runs). 
 | `truncated` | the trace hit the export's 20,000-item cap ([traces.md](traces.md#limits)) |
 | `objects`, `withheld`, `expects` | above |
 
-PR review data (time to review, reverts, the share of agent-authored PRs) is not here: flightdeck reads it from GitHub
-into its own `prs` table (Sean-Koval/flightdeck#6). The lifecycle facts hangar knows are job events.
+PR review data is not in `run.json`. Flightdeck reads the share of agent-authored PRs from GitHub into its own `prs`
+table (Sean-Koval/flightdeck#6). The lifecycle facts hangar knows are job events: the PR ready for review, its first
+human review, reverts and abandon reasons (#168, [metrics.md](../metrics.md)).
 
 ## The other objects
 
@@ -123,11 +124,12 @@ Schema: `$defs.job_event`. Every event has `kind`, `ts`, `job_id`, `job_source`,
 | `kind` | When | `data` |
 | --- | --- | --- |
 | `pr.open` | the job's PR exists | `{draft}` |
-| `review.first` | the first approval that counts (landing) | `{by, sha}` |
+| `review.first` | the first approval that counts (landing) | `{by, sha, first_review_at, first_review_by}`: the last two are the first human review in any state (#168, added within v1) |
 | `pr.merge` | merged | `{by, green_to_merge_seconds}` |
 | `pr.close` | closed without merging (each close) | `{}` |
-| `abandon` | the job was cancelled | `{reason}` |
-| `revert` | reserved: hangar doesn't detect reverts yet | |
+| `abandon` | the job was cancelled; or an abandon reason was set on its closed PR (#168) | `{reason}`; for a PR's reason `{reason, by, via, pr: "closed"}` |
+| `pr.ready` | the PR was opened non-draft or marked ready (#168): review wait starts here | `{}` |
+| `revert` | the nightly pass found a commit on the default branch reverting the PR's merge commit (#168, [metrics.md](../metrics.md)) | `{sha}` |
 | `label` | reserved: failure labels (#169) | |
 
 Hangar scans jobs changed in the last minute for new facts and writes each once.

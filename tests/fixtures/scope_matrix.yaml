@@ -1160,6 +1160,18 @@ metrics.get:
   scope: metrics
   owner: admin
   enforced_by: 'metrics.metrics_route: an admin or metrics token'
+metrics.get_standup:
+  server: hangar
+  mcp: null
+  rest: GET /api/metrics/standup
+  scope: user
+  owner: guard
+metrics.get_weekly:
+  server: hangar
+  mcp: null
+  rest: GET /api/metrics/weekly
+  scope: user
+  owner: guard
 oauth.delete_clients:
   server: hangar
   mcp: null

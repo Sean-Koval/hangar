@@ -1389,6 +1389,11 @@ from hangar import outbox_cli as _outbox  # noqa: E402
 
 _outbox.register(app, session_app)
 
+# ---------------------------------------------------------------------------- --- #168: metrics_cli.py
+from hangar import metrics_cli as _metrics  # noqa: E402
+
+_metrics.register(app)
+
 # ---------------------------------------------------------------------------- workstream steer (steer_cli.py)
 from hangar import steer_cli as _steer  # noqa: E402
 

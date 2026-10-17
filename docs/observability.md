@@ -152,6 +152,9 @@ sum(increase(hangar_cost_uncached_usd_total[1d])) - sum(increase(hangar_cost_usd
 
 ## Cost and usage
 
+Weekly adoption numbers (yield, agent share, review wait, cost per merged PR, ...) and the morning standup line:
+[metrics.md](metrics.md), `hangar metrics weekly`.
+
 ```
 GET /api/usage?group_by=day|model|environment|requester|repo|harness|session|job|cache_ttl&since=7d&limit=50  (admin)
 ```
