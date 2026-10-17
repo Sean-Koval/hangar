@@ -105,9 +105,15 @@ What every job on the repo gets, whichever door it came through ([repo-policy.md
 ```bash
 hangar repo set acme/app --land auto_after_approval --approver alice --approver bob \
   --risk-path 'infra/**' --risk-path '**/migrations/**' \
-  --verify "uv run pytest -q" --max-usd-per-day 60
+  --verify "uv run pytest -q" --max-usd-per-day 60 \
+  --ai-review hangar --self-approval low_risk_with_ai_review
 hangar repo get acme/app
 ```
+
+**The review rule.** The person who asked for the work may be its PR's only approver only for a low-risk PR (docs and
+tests) with an independent AI review of the approved head ([self-approval](../landing.md#self-approval-who-may-be-the-only-approver));
+anything else, and every tainted PR (every Jira-door job), needs a second reviewer from `--approver`. `--ai-review
+hangar` has a different harness from the author's review every agent PR first ([AI review](../landing.md#6a-ai-first-pass-review)).
 
 ### 6. Doors
 
@@ -141,7 +147,9 @@ Each engineer:
 
 1. moves 2 tickets to **Ready for agent** (or labels 2 issues `hangar`);
 2. reviews the agent PRs at the 10:00 triage (`hangar inbox`), and approves one that is ready: hangar lands it once
-   the required checks pass;
+   the required checks pass (a teammate's PR as its second reviewer; their own only when it is low risk with an AI
+   review). Past 5 open agent PRs awaiting them, their new jobs wait as `awaiting_capacity`
+   ([review capacity](../team-scale.md#review-capacity)): reviewing is what frees them;
 3. answers one agent question in its thread or ticket (`/hangar <answer>`, a thread reply, a Jira comment).
 
 ## Phase 2: 6 engineers, 3 repos (weeks 3–4)
@@ -150,9 +158,10 @@ Each engineer:
 2. The per-repo checklist (4–7) for repos 2 and 3, each ending with `hangar repo check` green and its hours recorded.
 3. Then turn on, as each lands:
    - inbox DMs for questions and approvals, and the per-person digest at 10:15 and 16:00 (#157, #158);
-   - review-aware admission: new jobs wait as `awaiting_capacity` past N open agent PRs per reviewer (#159);
-   - the self-approval rule for low-risk packets with an independent AI review, and that AI first-pass review on
-     every agent PR (#160, #161);
+   - review-aware admission: new jobs wait as `awaiting_capacity` past N open agent PRs per reviewer (#159; on by
+     default at 5, `HANGAR_PERSON_MAX_OPEN_AGENT_PRS`, [team-scale.md](../team-scale.md#review-capacity));
+   - the self-approval rule for low-risk packets with an independent AI review (#160; the default), and the AI
+     first-pass review on every agent PR (#161; `hangar repo set <repo> --ai-review hangar`);
    - run capture: `HANGAR_OUTBOX_URL` ([observability.md, run capture](../observability.md#run-capture)).
 4. The weekly adoption metrics start counting active delegators (#168).
 

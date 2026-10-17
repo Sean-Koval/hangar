@@ -12,6 +12,7 @@ hangar repo unset acme/app model    # clear one field
 hangar repo unset acme/app          # remove the policy
 hangar repo set acme/app --job-max-cost 5 --job-max-turns 12 --max-usd-per-day 60
 hangar repo set acme/app --land auto_after_approval --approver alice --risk-path 'infra/**'   # docs/landing.md
+hangar repo set acme/app --ai-review hangar --self-approval low_risk_with_ai_review       # AI review, self-approval
 hangar repo check acme/app          # is it ready for agent work? (below)
 ```
 
@@ -37,6 +38,12 @@ hangar repo check acme/app          # is it ready for agent work? (below)
 | `heavy` | Docker on the [heavy tier](environments.md#the-heavy-tier), **deny by default**. `on`: the repo's sandboxes run on it, with Docker inside (`--heavy on`). `allow`: the repo's `.hangar/environment.yaml` may ask for it (`heavy: true` or `tier: heavy`), and the request is honored (`--heavy allow`). `deny`, or unset: a request in the repo's file isn't honored; the sandbox runs on the default tier, and the agent's instructions and `hangar-agent env doctor` say Docker isn't enabled for the repo and give this command. A heavy environment (an admin's `heavy: true`) has Docker whatever this says. `true` and `false`, sent by an older client, mean `on` and `deny`. |
 | `profile` | `standard`, `large` or `xlarge`: the size of the repo's sandboxes ([profiles](environments.md#what-decides)). Large and xlarge run on the heavy tier. |
 | `max_profile` | The largest profile a job (label `hangar.profile`, `hangar job submit --profile`) or the repo's file may ask for. Unset: no more than `profile` or the environment's own. |
+| `self_approval` | Whether the job's own person may be its PR's only approver ([landing.md](landing.md#self-approval-who-may-be-the-only-approver)): `low_risk_with_ai_review` (unset: the default; a low-risk PR with an independent AI review of the approved head), `never`, or `any` (`--self-approval`). It never loosens the taint gate: a tainted PR always needs someone other than its person. |
+| `ai_review` | The [AI first-pass review](landing.md#6a-ai-first-pass-review) of the repo's agent PRs: `hangar` (a review job on a different harness from the author's), `check:<name>` (an org review bot's check run or status on the head) or `off` (unset) (`--ai-review`). |
+| `ai_review_harness` | The reviewing harness. Unset: codex for a claude-code PR, else claude-code (`--ai-review-harness`). |
+| `ai_review_model` | The reviewer's model or policy. Unset: `frontier`, resolved to a concrete id when the review is submitted (`--ai-review-model`). |
+| `ai_review_budget_usd` | What one review job may spend. Unset: $1.50 (`--ai-review-budget`). |
+| `max_open_agent_prs` | [Review capacity](team-scale.md#review-capacity): open agent PRs awaiting a person before their new jobs on this repo wait as `awaiting_capacity`; `0` turns it off. Unset: `HANGAR_PERSON_MAX_OPEN_AGENT_PRS` (5) (`--max-open-agent-prs`). |
 | `verify_allowed` | Globs (`make test*`, `pytest tests/*`) a ticket's own *Verify command* ([agent tickets](intake.md#agent-tickets)) must match to become that job's `verify` (`--verify-allowed`, repeated). Unset: a ticket's command is only ever a suggestion to the agent, and the job's check stays the policy's or the environment's. A matched command is the job's own check (`verify_source: job`), so the [base check](#the-check-on-the-base-commit) is skipped for it, as for any acceptance test a job brings. `*` alone is refused. |
 
 The repo is `owner/repo` for GitHub (any URL form, any case), or the git URL for another host.

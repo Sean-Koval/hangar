@@ -26,6 +26,7 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel, Field
 
+from hangar import aireview as aireview  # --- AI review (#161)
 from hangar import (  # strategies: workstream D; --- observe; steer: live turns; --- overnight/autofix
     autofix,
     baseline,  # --- frontdoor
@@ -200,7 +201,9 @@ class JobService:
         self._jobs: resident.Resident[Job] = resident.Resident(self.store, Job, self._pinned,
                                                                lambda: self.settings.resident_minutes * 60)
         # --- scale: fair between people (the fewest running first, each capped), not first come first served
-        self._queue: Any = fairness.FairJobQueue(self._person, lambda: fairness.job_cap(self.settings))
+        self._queue: Any = fairness.FairJobQueue(self._person, lambda: fairness.job_cap(self.settings),
+                                                 lambda jid: not fairness.hold_new(self, jid))  # --- #159
+        self.review_load = fairness.ReviewLoad()  # --- review capacity (#159): open agent PRs per reviewer
         self._workers: list[asyncio.Task] = []
         self._active: set[str] = set()
         self._background: set[asyncio.Task] = set()
@@ -226,6 +229,7 @@ class JobService:
     # ================================================================== lifecycle
     async def start(self) -> None:
         self._jobs.adopt(self._load())  # --- durable: not every job ever
+        self.review_load.recount(self)  # --- review capacity (#159)
         interrupted: list[Job] = []
         resumed: list[str] = []  # --- reconciler: interrupted jobs that go back to the queue, a few at a time
         for job in sorted(self._jobs.values(), key=lambda j: j.created_at):
@@ -305,6 +309,7 @@ class JobService:
                     continue
                 if self.fleet.power.hold(self, job_id):  # --- ops: the sandbox pools are off; queued again at power-up
                     continue
+                fairness.admitted(self, job_id)  # --- review capacity (#159)
                 await self._process(job_id)
             except asyncio.CancelledError:
                 raise
@@ -356,16 +361,17 @@ class JobService:
         return job
 
     def list(self, state: str | None = None, owner: str | None = None, limit: int = 50, person: str | None = None,
-             cursor: str | None = None) -> list[Job]:
-        return [j for j, _ in self.page(state, owner, limit, person, cursor)[0]]
+             cursor: str | None = None, reason: str | None = None) -> list[Job]:
+        return [j for j, _ in self.page(state, owner, limit, person, cursor, reason)[0]]
 
     def page(self, state: str | None = None, owner: str | None = None, limit: int = 50, person: str | None = None,
-             cursor: str | None = None) -> tuple[list[tuple[Job, str]], str | None]:
+             cursor: str | None = None, reason: str | None = None) -> tuple[list[tuple[Job, str]], str | None]:
         """--- durable: jobs newest first, from the store's indexes (archived ones too), filtered there: a person's
         own or a token's (`owner`) are all of theirs, however many the team has. Each job comes with its cursor
         (pass it back for the page after it); then the next page's cursor, None at the end."""
         limit = max(1, min(limit, 500))
-        fields = {k: v for k, v in (("state", state), ("owner", owner), ("person", person)) if v is not None}
+        fields = {k: v for k, v in (("state", state), ("owner", owner), ("person", person),
+                                    ("reason", reason)) if v is not None}  # --- #159: reason=awaiting_capacity
         rows = self.store.page(Job, limit + 1, resident.after(cursor), archived=True, **fields)
         marks = [resident.cursor(at, r.id) for r, at in rows[:limit]]  # --- review: SQLite's reading of the time
         jobs = self._jobs.adopt([r for r, _ in rows[:limit]])
@@ -775,6 +781,8 @@ class JobService:
     def _save(self, job: Job) -> None:
         job.updated_at = now()
         self.store.put(job)
+        if self.review_load.update(self, job):  # --- review capacity (#159): a PR merged or closed frees a slot
+            getattr(self._queue, "wake", lambda: None)()
 
     def _event(self, job: Job, message: str, state: JobState | None = None, reason: str | None | bool = False) -> None:
         if state is not None:
@@ -1315,7 +1323,8 @@ class JobService:
             await gh.close()
 
     def _pr_body(self, job: Job) -> str:
-        lines = [job.result.summary or "_The agent left no summary._", "", "---"]
+        # `___`, not `---`: git reads a `---` line as the end of a message, and the trailers below must parse (#137)
+        lines = [job.result.summary or "_The agent left no summary._", "", "___"]
         if job.verify:
             ok = "passed" if job.result.verify_exit_code == 0 else f"failed (exit {job.result.verify_exit_code})"
             lines.append(f"Verification `{job.verify}`: **{ok}**")
@@ -1338,7 +1347,9 @@ class JobService:
         m = re.match(r"^github:([^#]+)#(\d+)$", job.source_ref or "")
         if m and parse_repo(job.repo) == m.group(1) and job.labels.get("github.kind") == "issue":
             lines.append(f"Closes #{m.group(2)}")
-        return "\n".join(lines)
+        from hangar import trailers  # --- #137: Hangar-Job, Harness-Digest, ... as git trailers, last
+
+        return "\n".join(lines) + trailers.block(self, job)
 
     async def _keep(self, job: Job, s) -> None:
         """Keep the sandbox for follow-ups and take-over while it's in use, and at least `keep_minutes`; then the
@@ -1358,6 +1369,7 @@ class JobService:
     async def _report(self, job: Job) -> None:
         flightrec.of(self.fleet).job_done(self, job)  # --- clouddoctor: written on a task of its own
         clouddoctor.job_done(self, job)  # --- clouddoctor: a root-cause or fix job of the Cloud Doctor's
+        aireview.job_done(self, job)  # --- AI review (#161): a review job's verdict goes on the PR it reviewed
         self._spawn(self._callback(job, "job.finished"))
         turn = job.turns[-1] if job.turns else None
         if turn and turn.reply_to:
@@ -1653,5 +1665,6 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
     # Acknowledge right away: provisioning (and a first image build) can take minutes before the agent starts.
     svc._spawn(svc._comment(job, ref, f"Queued as hangar job `{job.id}` in `{job.environment}`. I'll comment here "
                                       "when the agent starts and again with the result."
+                                      + fairness.queued_note(svc, job)  # --- review capacity (#159)
                                       + intake.queued_notes(svc, job, "github")))  # --- #156
     return {"ok": True, "job": job.id}

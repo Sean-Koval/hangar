@@ -70,6 +70,13 @@ def _line(p: dict) -> str:
                                  None: "deny (default)"}.get(p.get("heavy"), str(p.get("heavy")))
                     + (f", profile {p['profile']}" if p.get("profile") else "")
                     + (f", up to {p['max_profile']}" if p.get("max_profile") else ""))
+    if p.get("max_open_agent_prs") is not None:  # --- review capacity (#159)
+        bits.append(f"open agent PRs per person: {p['max_open_agent_prs'] or 'no cap'}")
+    if p.get("self_approval"):  # --- self-approval (#160)
+        bits.append(f"self-approval: {p['self_approval']}")
+    if p.get("ai_review") and p["ai_review"] != "off":  # --- AI review (#161)
+        bits.append(f"AI review: {p['ai_review']}" + (f" ({p['ai_review_harness']})" if p.get("ai_review_harness")
+                                                     else ""))
     return f"{p['repo']:40} " + "  ".join(bits)
 
 
@@ -123,6 +130,20 @@ def repo_set(
     allow_heavy_for_intake: bool | None = typer.Option(
         None, "--allow-heavy-for-intake/--no-allow-heavy-for-intake",
         help="Let jobs from GitHub, Slack, Jira and webhooks run Docker on the heavy tier for this repo (#124)."),
+    max_open_agent_prs: int | None = typer.Option(None, "--max-open-agent-prs", help="Open agent PRs awaiting a "
+                                                  "person before their new jobs here wait (0 = off; #159)."),
+    self_approval: str | None = typer.Option(None, "--self-approval", help="May the job's own person be its PR's "
+                                             "only approver: never, low_risk_with_ai_review (the default) or any "
+                                             "(#160). A tainted PR always needs someone else."),
+    ai_review: str | None = typer.Option(None, "--ai-review", help="First-pass review of agent PRs: hangar (a job "
+                                         "on another harness), check:<name> (an org review bot's check) or off "
+                                         "(#161)."),
+    ai_review_harness: str | None = typer.Option(None, "--ai-review-harness", help="The reviewing harness (default: "
+                                                 "codex for a claude-code PR, else claude-code)."),
+    ai_review_model: str | None = typer.Option(None, "--ai-review-model", help="The reviewer's model or policy "
+                                               "(default frontier)."),
+    ai_review_budget: float | None = typer.Option(None, "--ai-review-budget", help="USD one AI review may spend "
+                                                  "(default 1.50)."),
     verify_allowed: list[str] = typer.Option([], "--verify-allowed", help="A glob a ticket's own verify command "
                                              "may match to become its job's check, e.g. 'make test*' (repeat it). "
                                              "Replaces the list."),  # --- #156
@@ -143,6 +164,9 @@ def repo_set(
                 ("verify_reports", verify_report or None), ("rerun_flaky", rerun_flaky),  # --- testresults
                 ("heavy", heavy), ("profile", profile), ("max_profile", max_profile),  # --- heavy
                 ("allow_heavy_for_intake", allow_heavy_for_intake),  # --- #124
+                ("max_open_agent_prs", max_open_agent_prs), ("self_approval", self_approval),  # --- #159, #160
+                ("ai_review", ai_review), ("ai_review_harness", ai_review_harness),  # --- #161
+                ("ai_review_model", ai_review_model), ("ai_review_budget_usd", ai_review_budget),
                 ("verify_allowed", verify_allowed or None)):  # --- #156
         if v is not None:
             body[k] = v
@@ -165,7 +189,9 @@ def repo_unset(repo: str = typer.Argument(...),
                                                              "require_stale_dismissal, verify_reports, "
                                                              "rerun_flaky, heavy, profile, "
                                                              "max_profile, allow_heavy_for_intake, "
-                                                             "verify_allowed). None: "
+                                                             "max_open_agent_prs, self_approval, ai_review, "
+                                                             "ai_review_harness, ai_review_model, "
+                                                             "ai_review_budget_usd, verify_allowed). None: "
                                                              "remove the repo's policy.")):
     """Clear fields of the repo's policy, or remove it."""
     r = _cli()._call("DELETE", "/api/repos/policy", params={"repo": repo, "field": fields or []})

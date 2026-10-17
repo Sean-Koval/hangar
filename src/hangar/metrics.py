@@ -126,6 +126,10 @@ class Metrics:
                                      registry=r)
         # --- outbox (#163): run capture objects not uploaded yet (an outage shows as a growing number)
         self.outbox_pending = Gauge("hangar_outbox_pending", "Outbox objects waiting to be uploaded", registry=r)
+        # --- review capacity (#159): new jobs held while their person has too many agent PRs awaiting review (no
+        # person label: labels stay bounded)
+        self.awaiting_capacity = Gauge("hangar_jobs_awaiting_capacity", "Queued jobs held for review capacity",
+                                       registry=r)
         self._lag_task: asyncio.Task | None = None
         # --- durable: jobs and sessions by state, counted by the store in a worker thread (state_counts)
         self._counts: dict[str, dict[tuple, int]] = {}
@@ -176,6 +180,10 @@ class Metrics:
         from hangar.outbox import OutboxItem  # --- outbox (#163): one indexed count
 
         self.outbox_pending.set(h.store.count_where(OutboxItem, state="pending"))
+        if (jobs := getattr(h, "jobs", None)) is not None:  # --- review capacity (#159): in memory, no query
+            from hangar.fairness import awaiting
+
+            self.awaiting_capacity.set(len(awaiting(jobs)))
         pool = getattr(asyncio.get_running_loop(), "_default_executor", None)
         if pool is not None and hasattr(pool, "_work_queue"):
             self.io_queue.set(pool._work_queue.qsize())
