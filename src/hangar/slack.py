@@ -63,7 +63,8 @@ HELP = (
     "• `/hangar repo=owner/repo env=NAME harness=NAME model=NAME <instructions>`: choose where and how it runs\n"
     "• `/hangar status JOB`: where a job is\n"
     "• Reply in a job's thread to follow up once the agent's turn is done. Start the reply with `fix:`, "
-    "`redirect:` or `info:` to say whether it corrects the agent, changes the task or adds what it didn't know."
+    "`redirect:` or `info:` to say whether it corrects the agent, changes the task or adds what it didn't know.\n"
+    "• `@hangar adr [title]` in a thread: draft an ADR from the thread as a PR (`docs/decisions/`)"
 )
 
 
@@ -616,6 +617,8 @@ class SlackFrontDoor:
                 await self._say(api, channel, reply_in, refusal)
             elif mention and word.lower() == "status":
                 await self._say(api, channel, reply_in, self._status(rest))
+            elif mention and word.lower() == "adr":  # --- #170: the thread, drafted into an ADR PR
+                await self._adr(api, team, channel, user, ts, thread_ts, rest, bots, user_team)
             elif job_id:
                 await self._follow_up(api, team, channel, str(thread_ts), user, job_id, text, user_team)
             else:
@@ -657,6 +660,43 @@ class SlackFrontDoor:
         return [ContextItem(name="slack-thread.md", kind="text", untrusted=True,
                             content="# Slack thread the request was made in\n\n" + "\n\n".join(parts))]
 
+    async def _adr(self, api: SlackAPI, team: str, channel: str, user: str, ts: str, thread_ts: str | None,
+                   title: str, bots: set[str], user_team: str | None) -> None:
+        """--- #170: `@hangar adr [title]` in a thread: a job that drafts docs/decisions/NNNN-<slug>.md from the
+        thread (untrusted, redacted), egress none, delivered as an agent-drafted PR (adr.py)."""
+        from hangar import adr
+
+        reply_in = thread_ts or ts
+        if not thread_ts or thread_ts == ts:
+            await self._say(api, channel, reply_in, "`@hangar adr [title]` drafts an ADR from a thread: mention me "
+                                                    "in a reply in the thread where the decision was made.")
+            return
+        try:
+            plan = self._plan(channel, f"adr {title}")
+        except _Refused as e:
+            await self._say(api, channel, reply_in, str(e))
+            return
+        if await adr.repo_ready(self.jobs, plan.repo) is False:
+            await self._say(api, channel, reply_in,
+                            f"{escape(_repo_name(plan.repo))} has no `{adr.DECISIONS}/` directory, so hangar won't "
+                            "draft ADRs into it. A team opts in by adding the directory and an ADR template "
+                            f"(hangar's `{adr.TEMPLATE_DOC}` is a starting point).")
+            return
+        context = adr.redacted(self.jobs, await self._thread_context(api, channel, thread_ts, ts, bots))
+        if not context:
+            await self._say(api, channel, reply_in, "There's nothing in this thread for an ADR yet.")
+            return
+        digest = adr.context_digest(context)
+        try:
+            permalink = await api.permalink(channel, thread_ts)
+        except SlackError:
+            permalink = None
+        req = SubmitJob(instructions=adr.instructions(title, permalink, digest), title=adr.title(title),
+                        repo=plan.repo, environment=plan.env, deliver="pr", verify=adr.VERIFY, context=context,
+                        idempotency_key=f"slack:{channel}:{ts}",
+                        labels=adr.labels(channel, thread_ts, user, permalink, digest))
+        await self._submit(api, team, channel, reply_in, user, plan, context, key=None, user_team=user_team, req=req)
+
     # ------------------------------------------------------------------ actions
     async def _say(self, api: SlackAPI, channel: str, thread_ts: str, text: str) -> None:
         try:
@@ -665,13 +705,14 @@ class SlackFrontDoor:
             log.warning("could not post to Slack thread %s: %s", thread_ref(channel, thread_ts), e)
 
     async def _submit(self, api: SlackAPI, team: str, channel: str, thread_ts: str, user: str, plan: _Plan,
-                      context: list[ContextItem], key: str | None, user_team: str | None = None) -> None:
+                      context: list[ContextItem], key: str | None, user_team: str | None = None,
+                      req: SubmitJob | None = None) -> None:
         ref = thread_ref(channel, thread_ts)
         requester = f"slack:{team}/{user}"
         try:
-            req = SubmitJob(instructions=plan.instructions, repo=plan.repo, environment=plan.env,
-                            harness=plan.harness, model=plan.model, context=context, idempotency_key=key,
-                            labels={"slack.channel": channel, "slack.thread": thread_ts, "slack.user": user})
+            req = req or SubmitJob(instructions=plan.instructions, repo=plan.repo, environment=plan.env,
+                                   harness=plan.harness, model=plan.model, context=context, idempotency_key=key,
+                                   labels={"slack.channel": channel, "slack.thread": thread_ts, "slack.user": user})
             # Restricted like a `jobs` token: mapped repos and environments only, no provider choice.
             person = self._person(team, user, user_team)  # --- teamcreds: theirs if linked
             job = self.jobs.submit(req, Caller(requester, requester, restricted=True, person=person),

@@ -298,11 +298,24 @@ class Landing:
             if res.exit_code == 0:
                 st.files = [x for x in res.stdout.splitlines() if x.strip()][:MAX_FILES]
         policy = self.svc.policies.get(job.repo)
-        st.risk = risk(st.files, policy.risk_paths if policy else None)[0]
+        from hangar import adr  # --- #170: removing an existing ADR's `checks:` lines is high risk
+
+        with contextlib.suppress(Exception):
+            st.checks_loosened = await adr.loosened_checks(self.svc, job, st.files)
+        st.risk = self.tier(job, policy)[0]
         self.pushed(job, job.result.head_sha, "hangar pushed")
         await self.resolve_approvers(job, policy)  # --- self-approval (#160), review capacity (#159)
         await self.post_packet(job)
         aireview.request(self.svc, job, "hangar pushed")  # --- AI review (#161)
+
+    def tier(self, job: Job, policy: RepoPolicy | None) -> tuple[str, list[str]]:
+        """The PR's risk tier and the paths that made it high: `risk` over its files, and high when it removes or
+        changes a line of an existing ADR's `checks:` block (#170)."""
+        st = job.landing
+        tier, why = risk(st.files, policy.risk_paths if policy else None)
+        if st.checks_loosened:
+            return "high", [*why, *(p for p in st.checks_loosened if p not in why)]
+        return tier, why
 
     async def turn_starting(self, job: Job) -> None:
         """Before any agent turn on the job: no auto-merge stays armed while an agent can push. Refuses the turn
@@ -850,9 +863,10 @@ class Landing:
         must not be linked to the job's person, nor be (or be linked to whoever is) its requester: approvals.can_decide
         with kind="land", whose self-approval rule is the one every other approval uses (HANGAR_SELF_APPROVAL
         allow_solo included)."""
-        from hangar import approvals, people, taint
+        from hangar import adr, approvals, people, taint
 
-        if not taint.tainted(job):
+        drafted = adr.agent_drafted(job) and not taint.tainted(job)  # --- #170: the same rule, for its own reason
+        if not taint.tainted(job) and not drafted:
             return None
         uid = self._login_ids.get(login.lower())
         person = people.resolve_external(self.svc.store, "github", uid) if uid else None
@@ -867,6 +881,9 @@ class Landing:
             return None
         taint.audit(self.svc.fleet, f"github:{login}", "land", "refused", job.id, pr=job.result.pr_number,
                     person=person.id if person else None)
+        if drafted:
+            return (f"@{login} approved, but this is an agent-drafted ADR and @{login} is the job's own person or "
+                    "requester: another approver must review it before it lands")
         return (f"@{login} approved, but the agent read untrusted content (hangar:tainted) and @{login} is the job's "
                 "own person or requester: another approver must review it before it lands")
 
@@ -945,13 +962,13 @@ class Landing:
     def needs_second_reviewer(self, job: Job) -> bool:
         """Whether the PR needs someone other than the job's own person to land it (#160, #130): what review
         capacity (#159) counts against the repo's approvers."""
-        from hangar import taint
+        from hangar import adr, taint
         from hangar.repopolicy import DEFAULT_SELF_APPROVAL
 
         st = job.landing
         if not job.person:
             return False
-        if taint.tainted(job) or st.needs_second:
+        if taint.tainted(job) or adr.agent_drafted(job) or st.needs_second:  # --- #170: agent-drafted too
             return True
         policy = self.svc.policies.get(job.repo)
         if policy is None or policy.land != "auto_after_approval":
@@ -1000,6 +1017,11 @@ class Landing:
 
         if policy is None or policy.land != "auto_after_approval":
             return "- **Landing rule:** merged by hand on GitHub (the repo policy's `land` is manual)"
+        from hangar import adr
+
+        if adr.agent_drafted(job) and not taint.tainted(job):  # --- #170
+            return ("- **Landing rule:** an approver other than whoever asked for it: an agent-drafted ADR never lands "
+                    "on its requester's approval, whatever `self_approval` says")
         if not job.person:
             return "- **Landing rule:** any approver or code owner (a team job: nobody's own work)" + \
                 (", other than whoever asked for it (it read untrusted content)" if taint.tainted(job) else "")
@@ -1111,8 +1133,15 @@ class Landing:
 
         if line := harness_thaw.packet_line(svc, job):
             out.append(line)
-        tier, why = risk(st.files, policy.risk_paths if policy else None)
+        tier, why = self.tier(job, policy)
         out.append(f"- **Risk:** {tier}" + (": touches " + ", ".join(_code(p) for p in why[:8]) if why else ""))
+        if st.checks_loosened:  # --- #170
+            out.append("  - removes or changes `checks:` lines of "
+                       + ", ".join(_code(p) for p in st.checks_loosened[:8])
+                       + ": loosening a decision's checks takes a second person")
+        from hangar import adr  # --- #170: an agent-drafted ADR: provenance, the path guard, numbering
+
+        out += adr.packet_lines(svc, job)
         shown = ", ".join(_code(f) for f in st.files[:15]) + (f" and {len(st.files) - 15} more"
                                                                 if len(st.files) > 15 else "")
         stat = r.diffstat.splitlines()[-1].strip() if r.diffstat else ""

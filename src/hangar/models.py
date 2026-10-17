@@ -441,6 +441,7 @@ class LandingState(BaseModel):
     packet_comment_id: int | None = None  # the review packet: one comment, edited as the PR changes
     files: list[str] = Field(default_factory=list)  # paths the PR touches (capped)
     risk: str | None = None  # high | normal | low
+    checks_loosened: list[str] = Field(default_factory=list)  # --- #170: ADRs whose `checks:` lines it removes
     push_mode: str | None = None  # gateway | direct: whether the sandbox held a GitHub token
     note: str | None = None  # why it isn't landing yet
     ended: bool = False  # merged or closed: the session took its final checkpoint and let the sandbox go
