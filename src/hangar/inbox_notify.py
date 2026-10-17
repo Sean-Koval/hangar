@@ -432,7 +432,6 @@ def review_url(login: str, slug: str | None) -> str:
 
 async def digest(svc: JobService, p: Person, since: float | None = None, t: float | None = None) -> str | None:
     """The digest's text for a person, or None when there is nothing in it (an empty digest isn't sent)."""
-    from hangar.models import JobState
     from hangar.slack import escape
 
     t = t if t is not None else time.time()
@@ -489,11 +488,10 @@ async def digest(svc: JobService, p: Person, since: float | None = None, t: floa
         lines.append(f"{reviews} agent PR{'s' if reviews != 1 else ''} await{'' if reviews != 1 else 's'} your "
                      f"review{where}")
     # footer: open agent PRs against the review-capacity cap (#159, when configured) and jobs held for capacity
-    open_prs = sum(1 for j in svc._jobs.values() if j.person == p.id and j.result.pr_number
-                   and j.landing.pr_state == "open")
-    cap = getattr(svc.settings, "review_capacity", None)
-    held = sum(1 for j in svc._jobs.values() if j.person == p.id and j.state == JobState.QUEUED
-               and (j.reason or "") == "awaiting_capacity")
+    from hangar import fairness  # --- review capacity (#159): the same counts admission uses
+
+    view = fairness.capacity_view(svc, p.id)
+    open_prs, cap, held = view["open_agent_prs"], view["cap"], view["awaiting_capacity"]
     foot = f"Open agent PRs: {open_prs}" + (f" of {cap}" if isinstance(cap, int) and cap > 0 else "")
     if held:
         foot += f"; {held} job{'s' if held != 1 else ''} held for review capacity"

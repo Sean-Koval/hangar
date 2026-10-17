@@ -114,6 +114,36 @@ The turn still runs in tmux, so `hangar sb attach` and the run log work as befor
 
 **The job's check.** For a job with `verify`, the driver runs the check whenever a Codex turn completes. If it fails, the driver sends the output back into the same conversation as the next message, up to `max_verify_rounds` times. It doesn't do this after an interrupt that brought no message. Claude Code gets the same check as a Stop hook instead. See [jobs §7](jobs.md#7-an-agent-loop-that-finishes-the-job). Under [the uid split](#the-uid-split) the check is the repo's own code, so the driver runs it as the agent, like the harness, never as hangar's user.
 
+### Trees
+
+The driver records the repo state at each step (#165), so a fork from any step can be rebuilt and checked (#179).
+At the turn's start and end, and after each edit or shell tool's result (Claude Code's `Write`, `Edit`, `MultiEdit`,
+`NotebookEdit`, `Bash`, `BashOutput`; Codex's `fileChange` and `commandExecution` items), it hashes the working tree
+and writes a `{"type": "hangar.tree", "tool_use_id" | "phase": "start" | "end", "tree": <sha>, "ms": <elapsed>}` line into the run log.
+After a tool, the line is written only when the tree changed since the last one, so reads and commands that change
+nothing leave no line. The event parser turns each into a `progress` event with action `tree`, and the trace export
+into `hangar.git.tree` on the tool call and `hangar.git.tree.start` / `.end` on the turn
+([traces.md](api/traces.md#tool-call)).
+
+- **How.** `git add -A` and `git write-tree` (which honour `.gitignore`), with a git directory, a scratch index (seeded
+  once from the repo's, so each hash rehashes only what changed) and an object store of the driver's own in
+  `<ctl>/tree/`, deleted when the turn ends, and the repo's objects read as alternates. Nothing is written to the
+  agent's `.git`, and its config (filters, `core.fsmonitor`, hooks) runs nothing, which matters under the uid split,
+  where the driver is hangar's user. The ids are the ones `git write-tree` gives for the same content in the repo
+  itself, unless the repo's config changes content on the way in (`core.autocrlf`, a clean filter).
+- **When.** A tree is read when the tool's result reaches the driver. Parallel tool calls that finish together can
+  share a tree.
+- **Cost.** About 24 ms per edit at p50 on this repo's own checkout (`scripts/bench/tree_hash.py`,
+  `bench/results/2026-10-17-tree-hash.json`, a shared 2-vCPU VM). One hash slower than 2 s stops hashing for the turn,
+  recorded as `skipped: "slow"` (`hangar.git.tree.skipped` on the turn). Large untracked files that `.gitignore`
+  doesn't cover cost what they cost to hash: that is what trips the limit.
+- **Trust.** Under [the uid split](#the-uid-split) the run log is hangar's, so the lines are trusted. Without it the
+  agent shares the driver's user and could append a forged `hangar.tree` line: those trees are recorded with
+  `trusted: false` (`hangar.git.tree.trusted`), and #179 checks trees again when it replays a prefix.
+- **One-shot turns** (no driver: a harness without a structured mode, or no `python3` in the sandbox) record the start
+  and end trees only, through an exec as the sandbox's user at the turn's start and end, kept on the turn record
+  (`git_trees`, not in its event log), always `trusted: false`.
+
 `HANGAR_LIVE_TURNS=false` turns all of this off: every turn runs one-shot, as before.
 
 ## The uid split

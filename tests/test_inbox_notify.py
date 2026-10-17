@@ -432,7 +432,7 @@ async def test_digest_content(svc, fake, fleet, settings):
     assert "pull/11" not in text and "pull/12" not in text and "pr 11" not in text  # never itemized
     assert "3 agent PRs await your review: <https://github.com/pulls?q=is:open+is:pr+review-requested:octocat" \
            "+author:app/acme-hangar>" in text
-    assert "Open agent PRs: 3" in text
+    assert "Open agent PRs: 4 of 5" in text  # --- #159: approved-but-not-landing counts; the default cap is 5
     assert "Sandboxes not up yet" not in text
     # failures from before the last digest aren't repeated
     assert "verify_failed" not in (await digest(svc, p, since=t - 60, t=t) or "")

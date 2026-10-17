@@ -25,6 +25,7 @@ To onboard the team itself (people, credentials, and each repo's App, branch pro
 | `HANGAR_PERSON_MAX_SESSIONS` | 15 | Live sessions per person (each holds a sandbox); new, resumed (`send`/`open`) and forked ones count. Suspended ones don't |
 | `HANGAR_PERSON_MAX_SANDBOXES` | 20 | Sandboxes a person starts directly (MCP, REST, the E2B API). Sessions' and jobs' own sandboxes are capped by the two caps around this one |
 | `HANGAR_PERSON_MAX_RUNNING_JOBS` | 0 = half the job slots, at least 4 | Jobs one person runs at once. Queued jobs past it wait while others' run |
+| `HANGAR_PERSON_MAX_OPEN_AGENT_PRS` | 5 (0 = off) | Open agent PRs awaiting a person before their new jobs wait as `awaiting_capacity` ([review capacity](#review-capacity)). A repo policy's `max_open_agent_prs` overrides it for that repo's jobs; `HANGAR_PERSON_MAX_OPEN_AGENT_PRS_OVERRIDES` (`{"alice": 8}`) raises or lowers it for one person |
 | `HANGAR_SANDBOX_RETENTION_DAYS` / `HANGAR_SANDBOX_ARCHIVE_DAYS` | 7 / 180 | When settled records move to the archive, and when archived ones are deleted (0 = never) |
 | `HANGAR_WORKSPACE_TRANSFER_MB` | 1024 | Workspace archives in the control plane's memory at once (read at startup) |
 | `HANGAR_K8S_CPU_REQUEST_FRACTION` | 0.5 | Share of an environment's `cpus` a sandbox pod requests; the limit stays `cpus`. 1 = Guaranteed QoS, as before |
@@ -40,6 +41,37 @@ yet and are capped per GitHub login or Slack user.
 
 The caps sit beside the per-caller limits that already exist: `HANGAR_JOB_MAX_ACTIVE_PER_OWNER` (unfinished jobs per
 caller, 10), the job rate limits, and `HANGAR_E2B_MAX_SANDBOXES_PER_OWNER`.
+
+## Review capacity
+
+With ~60 sessions, review is the bottleneck, not compute: every Jira-door job is tainted (its ticket text is
+untrusted), so its PR needs a second human ([landing.md](landing.md#tainted-prs)). Past
+`HANGAR_PERSON_MAX_OPEN_AGENT_PRS` (5) open agent PRs awaiting a person, that person's **new** jobs wait in the queue:
+their state stays `queued` (clients keep working) and their `reason` is `awaiting_capacity`, with an event saying why
+("waiting: alice has 5 agent PRs awaiting review (the cap is 5); …"). Everyone else's jobs start meanwhile.
+
+- **Who a PR waits on**: the job's person (they review their own delegated PR). When the
+  [self-approval rule](landing.md#self-approval-who-may-be-the-only-approver) needs a second reviewer (a tainted PR, a
+  normal- or high-risk one, `self_approval: never`), the PR also counts for the people linked to the repo policy's
+  `approvers`. Team jobs (no person) count against `team:<owner/repo>`, capped at N × the number of policy approvers.
+- **What counts**: agent PRs that are `open` or `approved` and not ended. Approved PRs that can't land (a failed
+  check, `land: manual`) still need the person, so they count. The counts follow every landing event and are counted
+  again at startup; held jobs keep their reason across a restart.
+- **What never waits**: follow-ups, auto-fix and verify-fix turns on existing jobs (they shrink the queue), experiment
+  trials, [AI review](landing.md#6a-ai-first-pass-review) jobs, and a job an admin admitted
+  (`hangar job admit <id>`, `POST /api/jobs/{id}/admit`).
+- **Waking**: a PR merging or closing wakes the queue at once, so the held job starts within one queue tick.
+- **Seeing it**: `hangar job list --reason awaiting_capacity` (`GET /api/jobs?reason=awaiting_capacity`);
+  `GET /api/review-capacity` (admin) lists open agent PRs per reviewer and the held jobs; the gauge
+  `hangar_jobs_awaiting_capacity` (no person label: labels stay bounded); and the GitHub, Slack and Jira "queued"
+  replies say the job waits on review capacity and link the person's review queue on GitHub. `fairness.capacity_view`
+  gives a digest the counts.
+- **Power-down**: a job held for capacity stays in the queue; one held by the power-down shows `powered_down`, and
+  capacity is checked again at power-up.
+
+Someone who never reviews blocks only their own new work; an admin can raise their cap
+(`HANGAR_PERSON_MAX_OPEN_AGENT_PRS_OVERRIDES`) or admit one job. Attention-priced scheduling (#185) may later replace
+the fixed cap.
 
 ## Measured: the team load test
 
