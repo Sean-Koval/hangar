@@ -24,6 +24,7 @@ makes claims near-instant for big repos.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import json
@@ -37,11 +38,13 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from hangar import computer as _computer  # --- computer
+from hangar import plugins as _plugins  # --- #136
 from hangar.cloudcreds import CloudSpec  # --- egress
 from hangar.computer import ComputerSpec  # --- computer
 from hangar.egress import EgressSpec  # --- egress
 from hangar.harnesses import HARNESSES, McpServer, get_harness, pack_script, pack_stage
 from hangar.models import PROFILES, Resources
+from hangar.plugins import Plugin  # --- #136: Claude Code plugins, from a read-only seed
 
 DEFAULT_BASE = "ubuntu:24.04"
 # --- heavy: what a heavy environment's image copies Docker from (HANGAR_HEAVY_DOCKER_IMAGE), and the packages
@@ -269,6 +272,9 @@ class EnvSpec(BaseModel):
     secrets: dict[str, str] = Field(default_factory=dict)  # ENV_VAR -> credential name, injected at claim
     dependencies: Dependencies = Field(default_factory=Dependencies)
     skills: list[Skill] = Field(default_factory=list)
+    # --- #136: Claude Code plugins, each `{path: <marketplace dir>, name, marketplace?, enabled?}`, installed at build
+    # into the image's read-only seed (plugins.SEED) and enabled by hangar's own settings (docs/harnesses.md#plugins)
+    plugins: list[Plugin] = Field(default_factory=list)
     agent_config: AgentConfig = Field(default_factory=AgentConfig)
     files: dict[str, str] = Field(default_factory=dict)  # absolute paths or relative to $HOME
     env: dict[str, str] = Field(default_factory=dict)  # non-secret env baked into the image
@@ -391,6 +397,15 @@ class EnvSpec(BaseModel):
             self.sudo = True
         if self.profile is not None:
             self.resources = PROFILES[self.profile].model_copy()
+        return self
+
+    @model_validator(mode="after")
+    def _plugins(self) -> EnvSpec:  # --- #136
+        if self.plugins and "claude-code" not in self.harnesses:
+            raise ValueError("plugins are Claude Code's: add claude-code to harnesses")
+        if self.plugins and self.image:
+            raise ValueError("plugins are installed when the image is built: a prebuilt `image:` can't get them "
+                             "(use `base:` instead)")
         return self
 
     @model_validator(mode="after")
@@ -647,6 +662,14 @@ def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace",
     for h in baked:  # build stages must precede the final stage
         files[f"packs/{h.name}.sh"] = pack_script(h).encode()
         df.append(pack_stage(h))
+    if spec.plugins:  # --- #136: the seed is built with the locked Claude Code, in the pack's own build stage
+        claude = get_harness(_plugins.HARNESS)
+        if claude.name not in {h.name for h in baked}:
+            files[f"packs/{claude.name}.sh"] = pack_script(claude).encode()
+            df.append(pack_stage(claude))
+        stage, seed_files = _plugins.build(spec, f"{claude.prefix}/bin/claude")
+        files.update(seed_files)
+        df.append(stage)
     if spec.heavy:  # --- heavy: static binaries, so an Alpine-based image's Docker runs on any base
         df.append(f"FROM {docker_image or DOCKER_IMAGE} AS hangar-docker")
     df += [
@@ -709,6 +732,9 @@ def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace",
     # 3. baked harnesses (fallback for providers that can't mount packs): same prefix and layout as a pack
     for h in baked:
         df.append(f"# harness: {h.name}\nCOPY --from=pack-{h.name} {h.prefix} {h.prefix}")
+    if spec.plugins:  # --- #136: root's and read-only, out of the agent's reach
+        df.append(f"# claude code plugin seed\nCOPY --chown=root:root --from=hangar-claude-seed {_plugins.SEED} "
+                  f"{_plugins.SEED}")
 
     # 4. dependencies
     dep_steps: list[str] = []
@@ -758,6 +784,11 @@ def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace",
             git_skill_steps.append(f"rm -rf {tmp}")
 
     def stage_text(dest: str, content: str) -> None:
+        if dest.endswith("/.claude/settings.json"):  # --- #136: no marketplace auto-update in a sandbox
+            with contextlib.suppress(ValueError):
+                loaded = json.loads(content)
+                if (pinned := _plugins.pin_marketplaces(loaded)) is not loaded:
+                    content = json.dumps(pinned, indent=2)
         ctx = "files/" + hashlib.sha1(dest.encode()).hexdigest()[:12] + "-" + Path(dest).name
         files[ctx] = content.encode()
         staged[ctx] = dest

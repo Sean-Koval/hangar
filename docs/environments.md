@@ -99,7 +99,7 @@ The same check is `POST /api/envbuilds/validate {"content": ..., "repo": ...}`. 
 The file is untrusted: anyone who can push to the repo writes it. It is parsed strictly: unknown fields are refused,
 YAML aliases are refused, and it must be under 64 KiB. It can set only the fields above. Everything an admin decides
 stays in hangar: the image and base (`image`, `base`), secrets and credentials (`secrets`, `credentials`), MCP
-servers, `runtime_class`, resources, `sudo`, and the git credential mode. A file that names one of these is refused,
+servers, Claude Code `plugins`, `runtime_class`, resources, `sudo`, and the git credential mode. A file that names one of these is refused,
 and the message says it's decided in hangar. Secrets stay in hangar, by name. `heavy`, `tier: heavy` and `profile`
 are requests that the repo's policy bounds ([the heavy tier](#what-decides)); Docker is off unless an admin allows it
 for the repo (`hangar repo set owner/repo --heavy allow`), and no other tier can be asked for.
@@ -634,6 +634,20 @@ hangar owns (managed harness settings) and the [uid split](steering.md#the-uid-s
 - `hangar doctor` lists the environments with `sudo: true` and whether intake jobs run in them. A sandbox's manifest
   records `permissions.sudo` and `permissions.no_new_privs`.
 
+
+## Claude Code plugins
+
+An environment's `plugins:` list names Claude Code plugins from local marketplace directories next to its spec.
+The image build installs them with the locked Claude Code into a read-only seed at `/opt/hangar/claude-seed`
+(root's, out of the agent's reach), and hangar's own settings enable exactly those, in every turn, hardened ones
+included. Only an admin's environment can declare them (not a repo's file), a prebuilt `image:` can't have them, and
+changing a plugin rebuilds the image. The details, and what the manifest records: [harnesses.md](harnesses.md#plugins).
+
+```yaml
+harnesses: [claude-code]
+plugins:
+  - {path: plugins/team, name: workflow}   # .claude-plugin/marketplace.json in plugins/team
+```
 
 ## MCP servers and trust
 

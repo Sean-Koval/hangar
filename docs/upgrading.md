@@ -1,12 +1,28 @@
 # Upgrading a running hangar
 
-Two guides, newest first:
+Guides, newest first:
 
+- [**Claude Code plugins from a seed**](#claude-code-plugins-from-a-seed-136) (#136): nothing to do unless you want plugins.
 - [**The `extends` merge rules**](#the-extends-merge-rules-132) (#132): run one dry run before upgrading.
 - [**This release**](#upgrading-to-the-team-release-75117) (#75–#117): one ordered procedure for everything since the overnight stack. Wave 1 (#75–#90): one hangar for a team of six at ~60 sessions, people and per-person credentials, front-door defaults and job budgets, the reconciler, the MCP deadline contract, and images built before anyone waits. Wave 2 (#91–#100): team credentials and linked accounts, Jira and GitHub Projects intake, egress allowlists, secret scanning and short-lived cloud credentials, a computer for every agent, environments that live with the repo, an approval that lands the PR, the always-on control plane and gated deploys. Wave 3 (#101–#110): review-round trust and the stale-approval gate, egress closed further (no ECH, read-only package mirrors, pushes scanned in the gateway), history out of memory, a rotatable vault key, repo builds that pass on less, the operator console and the Cloud Doctor, the harness canary and `frontier` models, agent-led environment setup, and the acceptance suite for all of it; then least privilege for jobs and builds, CI/CD setup and the infra states (#111–#113). Wave 4 (#114–#117): heavy development environments (Docker inside a VM of the sandbox's own on the heavy tier, deny by default for a repo's own request, and bigger resource profiles), warm dependency and compile caches, structured test results from every check, and the sister tool's three interfaces (harness manifests, trace export, experiment jobs).
 - [**The overnight stack**](#upgrading-from-before-the-overnight-stack-4869) (#48–#69), for a hangar older than that. Do its backup and read its defaults first, then follow this release's procedure: its prebuild also covers the overnight guide's "republish the Codex pack" step.
 
 Both are written for the GKE install from [gke.md](gke.md): one zonal cluster, gVisor sandboxes, the control plane with SQLite on the `hangar-data` PVC, checkpoints in the session bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / `power.sh`. [CHANGELOG.md](../CHANGELOG.md) lists what each adds.
+
+## Claude Code plugins from a seed (#136)
+
+Nothing to do: an environment without `plugins:` behaves as before, and its manifests keep their digests
+(`plugins` is `null`). What changes:
+
+- An environment can declare Claude Code plugins (`plugins:`), installed into a read-only seed in its image and
+  loaded in every turn, `ask` and `deny-risky` included ([harnesses.md](harnesses.md#plugins)). Plugins the
+  environment's `~/.claude/settings.json` enables from anywhere else still don't load in those turns: move them into
+  a local marketplace next to the spec and declare them.
+- Hardened Claude Code turns now run with `CLAUDE_CODE_PLUGIN_CACHE_DIR` on a new directory each turn, so they read
+  nothing of `~/.claude/plugins`.
+- An environment whose `~/.claude/settings.json` has `extraKnownMarketplaces` gets `"autoUpdate": false` on each, so
+  its image tag changes: prebuild it (`hangar images plan` / `hangar images build`) before the rollout.
+- The canary refuses a Claude Code lock older than 2.1.273 (seed directories need it; the lock is 2.1.296).
 
 ## The `extends` merge rules (#132)
 

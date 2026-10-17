@@ -153,6 +153,58 @@ turn carries a warning, the session's activity shows it, and `session.harness_ve
 already running keeps its pack, so its session resumes as before. Sandboxes that bake the harness into the image don't
 record `harness_lock`, so for them nothing changes.
 
+## Plugins
+
+Claude Code plugins (skills, hooks, agents and MCP servers bundled with a manifest) are part of a harness's **prefix
+layer**: they shape what the model is told, so they must not change under an experiment or come from anything the
+agent can write. An environment declares them, and each image carries them in a read-only **seed directory**
+(`src/hangar/plugins.py`, #136). Codex has no equivalent here: its skills stay in `~/.codex/skills` (#139).
+
+```yaml
+# envs/team.yaml
+harnesses: [claude-code]
+plugins:
+  - path: plugins/team          # a marketplace directory (.claude-plugin/marketplace.json), next to this file
+    name: workflow              # a plugin in it
+    # marketplace: team         # read from its marketplace.json when left out
+    # enabled: false            # installed in the seed, not loaded
+```
+
+- **The build.** The image build installs them with the locked Claude Code, in the pack's own build stage
+  (`claude plugin marketplace add` and `claude plugin install` with `CLAUDE_CODE_PLUGIN_CACHE_DIR=/opt/hangar/claude-seed`),
+  and copies the seed into the image, root's and not writable by the sandbox user. Each marketplace sits at
+  `/opt/hangar/claude-seed/marketplaces/<name>`: Claude Code skips a seed marketplace it can't find there (a
+  `directory` marketplace is otherwise recorded where it was added from), and loads its plugins in place. A plugin's
+  content is a build input, so changing it rebuilds the image. A prebuilt `image:` can't have plugins.
+- **The run.** At claim, `CLAUDE_CODE_PLUGIN_SEED_DIR=/opt/hangar/claude-seed` and `CLAUDE_CODE_SYNC_PLUGIN_INSTALL=1`
+  (so turn 1 doesn't race the install) join the harness's environment. Every run adds hangar's own settings to
+  `--settings` (`HANGAR_CLAUDE_SETTINGS`), never to `~/.claude/settings.json`: `enabledPlugins` for exactly the declared
+  plugins, and `syncClaudeAiPlugins: false`, so none come from a claude.ai account.
+- **Hardened turns** (`ask`, `deny-risky` in a split sandbox) load them too ([steering.md](steering.md#hangar-owned-harness-settings)).
+  The seed's plugins are the only ones: `enabledPlugins` comes from hangar's settings file alone, and
+  `CLAUDE_CODE_PLUGIN_CACHE_DIR` points at a new, unguessable directory each turn (Claude Code creates it as it
+  starts, and must be able to write it), so Claude Code never reads `~/.claude/plugins` and nothing the agent left
+  behind is in it. A plugin the environment's own settings enable from anywhere else still doesn't load,
+  and the turn says so.
+- **No updates mid-experiment**, three ways: `DISABLE_AUTOUPDATER=1` is in Claude Code's environment, which also stops
+  plugin auto-update; Claude Code forces `autoUpdate` off for seed marketplaces and never writes to the seed
+  (`claude plugin marketplace update` or `remove` on one fails, naming the seed); and any `extraKnownMarketplaces`
+  entry in an environment's `~/.claude/settings.json` gets `"autoUpdate": false` in the image.
+- **Identity.** The manifest's `plugins` section lists each declared plugin: `name`, `marketplace`, `version`, the
+  `path` it loads from under the seed, a `digest` of its marketplace entry and directory as declared, `enabled`,
+  `effective` (whether hangar's settings load it for that harness, hardened turns included) and `source: seed`. It is
+  part of `harness_digest`, so a plugin's change is a harness change; Claude Code's writable caches in `~/.claude`
+  are not inputs. A turn's probe also records whether each plugin's directory is in the sandbox
+  (`probe.plugins`), which tells an image built before the plugin was added.
+
+What Claude Code does with the seed was verified with 2.1.296 (`tests/test_harden_real_clis.py`: the seed plugin's
+skill and hook load in `auto` and `deny-risky` turns with their path under the seed, an agent-written plugin with a
+permissive `PreToolUse` hook doesn't load in the hardened turn, and the seed marketplace can't be updated or removed).
+Two plugin policy keys don't help here: `strictKnownMarketplaces` and `disableSideloadFlags` count only in managed
+settings, not in `--settings` (and `disableSideloadFlags` would refuse the hardened turn's own `--mcp-config`); hangar
+writes no managed settings, which would replace the image's. Seed directories and `syncClaudeAiPlugins` need Claude
+Code 2.1.273 or later: the canary refuses a lock below that floor (`canary.FLOORS`).
+
 ## Models: the latest strong model per provider
 
 A `model:` value is either a pinned id (`claude-opus-5-5`, `gpt-6.1-sol`), passed through as it is, or a **policy**:

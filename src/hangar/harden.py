@@ -17,8 +17,11 @@ sandbox, hangar decides all of that itself:
   with the job's verify gate added; `--strict-mcp-config --mcp-config` the environment's MCP servers as rendered when
   the sandbox was set up. Without setting sources Claude Code also skips CLAUDE.md files and skills: `--add-dir` with
   CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 brings back the repository's CLAUDE.md and the environment's
-  instructions. Skills stay off: their `allowed-tools` are permission rules the agent could write. So do plugins,
-  even ones the environment enables: Claude Code finds them through ~/.claude/plugins, the agent's.
+  instructions. Skills stay off: their `allowed-tools` are permission rules the agent could write. Plugins load only
+  from the environment's read-only seed (plugins.py, #136): `enabledPlugins` names the seed's plugins and nothing
+  else, and CLAUDE_CODE_PLUGIN_CACHE_DIR points at a new directory each turn (plugins.RUN_CACHE), so Claude Code
+  never reads ~/.claude/plugins, the agent's (review #69: a plugin registered there, with a PreToolUse hook that
+  allows every call, ran in a turn that asks).
 * **Codex** (0.162.1): `--disable hooks` (a command-line override outranks config.toml) and `approvalsReviewer: user`
   on the thread (the driver). Codex still loads `.rules` files from ~/.codex/rules and the repository's .codex/rules,
   even for an untrusted project, and has no switch to turn them off: a rule can let a command run without asking.
@@ -37,7 +40,7 @@ import shlex
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from hangar import isolation
+from hangar import isolation, plugins
 from hangar.envspec import _resolve_home_path
 from hangar.harnesses import mcp_config
 from hangar.verifyloop import CLAUDE_ENV
@@ -54,10 +57,11 @@ CODEX_RULES = ("Codex reads command rules from ~/.codex/rules and the repository
                "an MCP server whose tools are set to `approve`, can let a call run without asking "
                "(docs/steering.md#hangar-owned-harness-settings)")
 # review(#69): Claude Code loads an enabled plugin (its hooks, skills, MCP servers) from what ~/.claude/plugins says,
-# which the agent can write; verified with 2.1.296, a plugin's PreToolUse hook then allows every call
-PLUGIN_KEYS = ("enabledPlugins", "extraKnownMarketplaces")
-CLAUDE_PLUGINS = ("the environment's Claude Code plugins don't load in a turn that asks: Claude Code reads them from "
-                  "~/.claude/plugins, which the agent can write (docs/steering.md#hangar-owned-harness-settings)")
+# which the agent can write; verified with 2.1.296, a plugin's PreToolUse hook then allows every call. --- #136: so a
+# hardened turn reads no ~/.claude/plugins at all (CLAUDE_CODE_PLUGIN_CACHE_DIR, a new one), and loads only the seed's.
+CLAUDE_PLUGINS = ("Claude Code plugins the environment's settings enable outside its plugin seed don't load in a turn "
+                  "that asks: they would come from ~/.claude/plugins, which the agent can write; declare them under "
+                  "`plugins:` to load them from the read-only seed (docs/harnesses.md#plugins)")
 
 
 @dataclass
@@ -145,8 +149,16 @@ def plan(fleet: Any, sb: Sandbox, h: Harness, run_id: str, wd: str, env: dict[st
 
         spec = experiments.effective_spec(fleet, sb, spec)
         settings = claude_settings(spec, fleet.settings.sandbox_user, env.get(CLAUDE_ENV))
-        if [k for k in PLUGIN_KEYS if settings.pop(k, None)]:  # review(#69)
+        seeded = plugins.enabled(spec, h.name)  # --- #136: what the read-only seed has
+        wanted = settings.pop("enabledPlugins", None)
+        foreign = bool(settings.pop("extraKnownMarketplaces", None)) or (isinstance(wanted, dict) and any(
+            on and k not in seeded for k, on in wanted.items()))
+        if foreign:  # review(#69)
             p.warnings.append(CLAUDE_PLUGINS)
+        settings.update(plugins.settings(spec, h.name))
+        # not the agent's ~/.claude/plugins: a new directory, named as the harness starts (unquoted on purpose)
+        base += f"\nexport CLAUDE_CODE_PLUGIN_CACHE_DIR={plugins.RUN_CACHE}\n" + "".join(
+            f"export {k}={shlex.quote(v)}\n" for k, v in plugins.env(spec, h.name).items())
         p.files[f"{run_id}.settings.json"] = (json.dumps(settings).encode(), 0o644)
         p.files[f"{run_id}.mcp.json"] = (json.dumps(kept.get("claude_mcp") or {"mcpServers": {}}).encode(), 0o644)
         memory = bool(spec.agent_config.instructions)

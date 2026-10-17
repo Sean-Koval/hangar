@@ -88,6 +88,17 @@
         "effective": {"oneOf": [{"type": "null"}, {"type": "array", "items": {"type": "object", "required": ["name", "digest", "files"], "properties": {"name": {"type": "string"}, "digest": {"$ref": "#/$defs/digest"}, "files": {"type": "integer"}}}}], "description": "The skill directories in the sandbox as the turn started (null: not read)."}
       }
     },
+    "plugins": {"description": "Optional (absent from manifests stored before it). Claude Code plugins from the environment's read-only seed (#136; docs/harnesses.md#plugins); null when it declares none. Part of harness_digest.",
+      "oneOf": [{"type": "null"}, {"type": "array", "items": {"type": "object",
+        "required": ["name", "marketplace", "version", "path", "digest", "enabled", "source"],
+        "properties": {
+          "name": {"type": "string"}, "marketplace": {"type": ["string", "null"]}, "version": {"type": ["string", "null"]},
+          "path": {"type": ["string", "null"], "description": "Where Claude Code loads it from in the sandbox, under the seed (/opt/hangar/claude-seed)."},
+          "digest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}], "description": "sha256 over its marketplace entry and its directory as declared (the control plane's copy); Claude Code's writable caches are not inputs."},
+          "files": {"type": ["integer", "null"]},
+          "enabled": {"type": "boolean"},
+          "effective": {"type": "boolean", "description": "Whether hangar's settings load it for this harness, hardened (ask, deny-risky) turns included."},
+          "source": {"const": "seed"}, "error": {"type": "string"}}}}]},
     "mcp_servers": {
       "type": "array",
       "items": {
@@ -163,7 +174,11 @@
       }
     },
     "repo": {"type": "object", "properties": {"url": {"type": ["string", "null"]}, "base_branch": {"type": ["string", "null"]}, "base_sha": {"type": ["string", "null"]}, "branch": {"type": ["string", "null"]}}},
-    "probe": {"type": ["object", "null"], "properties": {"ok": {"type": "boolean"}, "error": {"type": ["string", "null"]}}},
+    "probe": {"type": ["object", "null"], "properties": {"ok": {"type": "boolean"}, "error": {"type": ["string", "null"]},
+      "plugins": {"description": "The declared seed plugins' directories in the sandbox as the turn started (#136; null: none declared, or not read).",
+        "oneOf": [{"type": "null"}, {"type": "array", "items": {"type": "object", "required": ["id", "present"], "properties": {
+          "id": {"type": "string"}, "present": {"type": "boolean"}, "digest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]},
+          "files": {"type": "integer"}}}}]}}},
     "warnings": {"type": "array", "items": {"type": "string"}}
   },
   "$defs": {
