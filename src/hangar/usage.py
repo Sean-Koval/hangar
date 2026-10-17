@@ -17,7 +17,8 @@ from hangar.events import total_usage
 from hangar.github import parse_repo
 
 GROUPS = ("day", "model", "environment", "requester", "repo", "harness",
-          "session", "job", "cache_ttl")  # --- overnight/cache: per session and job, and by the TTL turns asked for
+          "session", "job", "cache_ttl",  # --- overnight/cache: per session and job, and by the TTL turns asked for
+          "source")  # --- AI review (#161): what started the job (api, jira, review, ...); "session" for none
 DEFAULT_DAYS = 30
 MAX_ROWS = 200
 _REL = re.compile(r"^(\d{1,5})([dhm])$")
@@ -91,14 +92,16 @@ def _turns(sessions: Any, jobs: Any, since: float = 0.0) -> list[dict[str, Any]]
                         "outcome": t.outcome, "reason": t.outcome_reason, "model": s.model,
                         "harness": t.harness or s.harness, "environment": s.environment, "repo": s.repo,
                         "requester": t.requester or (job.requester if job else s.owner),
-                        "session": s.name, "job": s.job_id, "cache_ttl": t.cache_ttl})
+                        "session": s.name, "job": s.job_id, "cache_ttl": t.cache_ttl,
+                        "source": job.source if job else ("job" if s.job_id else "session")})
     for job in job_map.values():
         # integrate (#57): a session deleted since keeps its total on the job (Job.deleted_session_usage), not its
         # turns, so it counts on the day the job was created, as no turns
         gone = [u for sid, u in job.deleted_session_usage.items() if not sessions.exists(sid)]
         out += [{"ts": job.created_at, "usage": u, "outcome": None, "reason": None, "model": job.model,
                  "harness": job.harness, "environment": job.environment, "repo": job.repo,
-                 "requester": job.requester, "session": None, "job": job.id, "turns": 0, "cache_ttl": None}
+                 "requester": job.requester, "session": None, "job": job.id, "turns": 0, "cache_ttl": None,
+                 "source": job.source}
                 for u in gone]
         if job.id in carried or gone:  # else: a job from before sessions carried it, with its own turn records
             continue
@@ -109,7 +112,7 @@ def _turns(sessions: Any, jobs: Any, since: float = 0.0) -> list[dict[str, Any]]
                         "outcome": t.outcome, "reason": t.outcome_reason, "model": job.model, "harness": job.harness,
                         "environment": job.environment, "repo": job.repo,
                         "requester": t.requester or job.requester, "session": None, "job": job.id,
-                        "cache_ttl": None})
+                        "cache_ttl": None, "source": job.source})
     return out
 
 
@@ -163,7 +166,7 @@ def aggregate(sessions: Any, jobs: Any, group_by: str = "day", since: float | No
 
 
 def mount(app: Any, h: Any, admin: Any) -> None:
-    """GET /api/usage?group_by=day|model|environment|requester|repo|harness|session|job|cache_ttl&since=7d&limit=50
+    """GET /api/usage?group_by=day|model|...|cache_ttl|source&since=7d&limit=50
     (admin)."""
     from fastapi import HTTPException
 
