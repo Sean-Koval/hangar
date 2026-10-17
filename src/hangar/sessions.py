@@ -35,6 +35,7 @@ from hangar import hot_resume as hot_resume  # --- providers-e2b
 from hangar import keys as keys  # --- durable
 from hangar import manifest as manifest  # --- interfaces: the effective harness manifest of each turn
 from hangar import metrics as metrics  # --- reconciler
+from hangar import outbox as outbox  # --- outbox (#163, #189): run capture; retention waits for it
 from hangar import outcomes as outcomes  # --- #166: agent or infrastructure
 from hangar import pins as pins  # --- canary: the model and the CLI version a session is pinned to
 from hangar import resident as resident  # --- durable: live and recent sessions in memory, the rest in the store
@@ -155,7 +156,6 @@ class SessionService:
         self.activity = Activity(self.settings, fleet.broker.redact)  # workstream C: events, usage, budgets
         # --- overnight/sweep: called with a session just before it is deleted (jobs keep its usage); must not raise
         self.on_delete: list[Callable[[Session], None]] = []
-        self.on_delete.append(lambda s: manifest.store(self.settings).drop(s.id))  # --- interfaces: its manifests
         self.env_requests: Any = None  # --- computer: envrequests.EnvRequests, wired by the app
         # --- taint (#129): the job a session carries (wired by JobService), for what the job's input taints; and
         # listeners called with (session, turn, ref) when a session first becomes tainted (must not raise)
@@ -452,16 +452,25 @@ class SessionService:
         self.fleet.audit(requester, "session.archive", s.id)
         return s
 
-    def delete(self, ref: str, requester: str) -> None:
+    def delete(self, ref: str, requester: str, force_now: bool = False) -> None:
+        """--- #189: its manifests and event log go once the outbox exported its runs (pending-delete until then);
+        `force_now` (admins: personal-data deletion) drops them now, audited."""
         s = self.archive(ref, requester)
         for fn in self.on_delete:  # --- overnight/sweep
             try:
                 fn(s)
             except Exception:  # noqa: BLE001 - a listener must never block a delete
                 log.exception("session delete listener failed")
+        try:
+            outbox.of(self.fleet).retire_session(s, self, requester, force_now=force_now)
+        except Exception:  # noqa: BLE001 - never keep a deleted session's record over its files
+            log.exception("session %s: could not hand its files to retention; deleting them", s.id)
+            manifest.store(self.settings).drop(s.id)
+            self.activity.log.drop(s.id)
+        if force_now:
+            self.fleet.audit(requester, "session.delete_now", s.id)
         self.store.delete(Session, s.id)
         self._sessions.pop(s.id, None)
-        self.activity.log.drop(s.id)
 
     def events(self, ref: str, since: int = 0, limit: int = 200, tail: int | None = None) -> list[dict[str, Any]]:
         """The session's activity events (every turn), oldest first: after `since`, or the last `tail`."""
@@ -1119,11 +1128,13 @@ class SessionService:
             gone_sb = self.fleet.store.get(Sandbox, s.sandbox_id) if s.sandbox_id else None  # --- #166: why it went
             outcomes.mark(turn, *outcomes.classify_turn(outcome, turn.exit_code, harness=turn.harness,
                                                          **outcomes.gone_context(self.fleet, gone_sb)))
+            outbox.of(self.fleet).turn_ended(self, s, turn, outcome)  # --- outbox (#163): after the class is set
             s.sandbox_id = None if not self._alive(s.sandbox_id or "") else s.sandbox_id
             self._set(s, SessionState.SUSPENDED if s.checkpoints else SessionState.FAILED,
                       "the sandbox went away during the turn")
             turn.outcome = outcome  # workstream E
             flightrec.of(self.fleet).turn_ended(self, s, turn, outcome, "")  # --- clouddoctor
+            outbox.of(self.fleet).session_turn(self, s, turn)  # --- outbox (#163): off the turn's path
             return outcome, ""
         if outcome in ("cancelled", "timed_out", "error", "over_budget", "failed"):
             # Never leave an agent running that nobody is watching (it would keep working, and spending).
@@ -1131,6 +1142,7 @@ class SessionService:
                 ksb, kprov = self.fleet._running(s.sandbox_id or "")
                 await isolation.kill(kprov, ksb, self.settings, turn.run_id or "")  # --- isolation: where it runs
             turn.exit_code = turn.exit_code if turn.exit_code is not None else -1
+        outbox.of(self.fleet).turn_ended(self, s, turn, outcome)  # --- outbox (#163): reads its patch meanwhile
         raw = ""
         try:
             sb = self.fleet.get(s.sandbox_id)
@@ -1166,6 +1178,7 @@ class SessionService:
             self._set(s, SessionState.SUSPENDED, f"turn {len(s.turns)} finished; sandbox released")
         # --- clouddoctor: the session is idle: a failed or slow turn's record (its log is read and sealed off-turn)
         flightrec.of(self.fleet).turn_ended(self, s, turn, outcome, raw)
+        outbox.of(self.fleet).session_turn(self, s, turn)  # --- outbox (#163): off the turn's path
         return outcome, raw
 
     async def _turn_status(self, s: Session, turn: SessionTurn, wait: float, watch: Any) -> dict[str, Any]:

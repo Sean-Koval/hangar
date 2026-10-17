@@ -16,7 +16,8 @@ that the in-turn gate makes for the agent, leaves its test reports (testreports.
   (`POST /api/admin/deploys`).
 * **What is kept.** One TestRun per run: counts, the first FAILING_KEPT failures with their messages (redacted),
   every case's outcome keyed by test id (compressed; dropped after CASES_DAYS, a base's after RETENTION_DAYS), the
-  coverage totals and the commit and tree it ran on. Runs go after RETENTION_DAYS.
+  coverage totals and the commit and tree it ran on. Runs go after RETENTION_DAYS (--- #189: a failed or abandoned
+  job's runs and cases stay until the outbox exported them, outbox.py).
 * **Red bases, exactly.** When the base check and the check after the turn both left complete reports, the new
   failures are the failing test ids minus the base's, not a guess from the output's text (baseline.py keeps that
   for checks without reports). A run that failed with no failing test (a build error), or from which tests the base
@@ -469,12 +470,15 @@ def _maybe_prune(store: Any) -> None:
 def prune(store: Any, t: float | None = None) -> int:
     """Runs past RETENTION_DAYS go; past CASES_DAYS they keep their counts and failures, not every case (a red
     base's stay whole: jobs on it subtract from them while its baseline is cached)."""
+    from hangar import outbox  # --- #189: a failed or abandoned job's runs wait for the outbox's export
+
     t = t or now()
-    old = store.list_range(TestRun, "at", 0.0, hi=t - RETENTION_DAYS * 86400, limit=2000)
+    keep = outbox.RETAIN or (lambda r: False)
+    old = [r for r in store.list_range(TestRun, "at", 0.0, hi=t - RETENTION_DAYS * 86400, limit=2000) if not keep(r)]
     for r in old:
         store.delete(TestRun, r.id)
     for r in store.list_range(TestRun, "at", 0.0, hi=t - CASES_DAYS * 86400, limit=2000):
-        if r.cases and r.kind != "base":
+        if r.cases and r.kind != "base" and not keep(r):
             r.cases = None
             store.put(r)
     return len(old)

@@ -279,6 +279,30 @@ hangar admin records show fr-9a1b2c3d --log
 
 REST: `GET /api/records?hours=24&cause=…` (admins), `GET /api/records/{id}` and `GET /api/records/{id}/log` (admins, or the record's person), `GET /api/jobs/{id}/record`. MCP: the resource `hangar://jobs/<id>/record`, for whoever may see the job.
 
+## Run capture
+
+Traces and metrics show the fleet now; run capture keeps every run for later. With `HANGAR_OUTBOX_URL` set (a GCS
+bucket on GKE, `terraform output run_bucket`; a local directory in dev), every finished run is written once as
+immutable objects: `run.json` (`hangar.run/v1`: who, what, the harness and environment digests, outcome, usage,
+verify, steers, the untrusted flag), the turn's manifest, its trace export, its test results and its patch, under
+`v1/runs/{date}/{session_id}.{run_id}/`, plus job events (PR opened, first review, merged, closed, abandoned) under
+`v1/jobs/`. The sister tool reads them into its own tables while the sandbox pools sleep. The contract (layout,
+schema, redaction, write-once IAM, deletion requests) is [docs/api/outbox.md](api/outbox.md).
+
+Nothing of it is on a turn's path: the objects are built and redacted on a task after the turn and staged on the data
+volume with a queue record each, and a drain loop uploads them, retrying with backoff (1 minute to 6 hours) through an
+outage and across restarts. The control plane stays up overnight, so the queue drains while the pools are off.
+
+| Where | What |
+| --- | --- |
+| `hangar outbox status` (`GET /api/admin/outbox`) | pending, done and withheld objects, the oldest pending one, the last error |
+| `hangar outbox retry` / `backfill --since 7d` | upload now after an outage; capture runs that have nothing queued |
+| `hangar_outbox_pending` | objects waiting to be uploaded: alert when it keeps growing |
+| `hangar doctor` | warns past 1,000 pending objects or a day of age, lists withheld objects (they still held a secret after redaction, so they are never uploaded), and the bytes deleted sessions hold until their export |
+
+Retention waits for the export: a deleted session's event log and manifests, and a failed job's test results, stay
+until the outbox has uploaded its runs (at most `HANGAR_EXPORT_GRACE_DAYS`, 30; [outbox.md](api/outbox.md#retention-and-the-export-189)).
+
 ## Credential health
 
 Each agent credential is checked without calling a model:
@@ -352,3 +376,6 @@ The endpoint, scopes, collector install and roles were checked against Google's 
 | `HANGAR_TRACE_LIVE_TOOLS` | `false` | With tracing on, also send each turn's tool, subagent and approval spans ([above](#each-tool-call-and-traces-as-files)) |
 | `HANGAR_DOCTOR_SCHEDULE` | `30 0 * * *` | When the [nightly pass](#the-nightly-pass) runs (credential checks, the Cloud Doctor); `off` turns it off |
 | `HANGAR_DOCTOR_TIME_ZONE` | the power schedule's | The schedule's IANA time zone (UTC when there's no power schedule) |
+| `HANGAR_OUTBOX_URL` | unset | [Run capture](#run-capture): `gs://bucket[/prefix]` or a local directory ([outbox.md](api/outbox.md)) |
+| `HANGAR_OUTBOX_SESSIONS` | `all` | `jobs_only` leaves out sessions not attached to a job |
+| `HANGAR_EXPORT_GRACE_DAYS` | `30` | How long a deleted session's event log and manifests wait for their export |

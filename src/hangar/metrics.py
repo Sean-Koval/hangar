@@ -124,6 +124,8 @@ class Metrics:
                                "(Unix time)", ["loop"], registry=r)
         self.loop_failures = Counter("hangar_loop_failures", "Background loop passes that raised", ["loop"],
                                      registry=r)
+        # --- outbox (#163): run capture objects not uploaded yet (an outage shows as a growing number)
+        self.outbox_pending = Gauge("hangar_outbox_pending", "Outbox objects waiting to be uploaded", registry=r)
         self._lag_task: asyncio.Task | None = None
         # --- durable: jobs and sessions by state, counted by the store in a worker thread (state_counts)
         self._counts: dict[str, dict[tuple, int]] = {}
@@ -171,6 +173,9 @@ class Metrics:
         self.jobs.clear()
         for (state, reason), n in counts.get("jobs", {}).items():
             self.jobs.labels(str(state), self.label("reason", reason) if reason else "").set(n)
+        from hangar.outbox import OutboxItem  # --- outbox (#163): one indexed count
+
+        self.outbox_pending.set(h.store.count_where(OutboxItem, state="pending"))
         pool = getattr(asyncio.get_running_loop(), "_default_executor", None)
         if pool is not None and hasattr(pool, "_work_queue"):
             self.io_queue.set(pool._work_queue.qsize())
