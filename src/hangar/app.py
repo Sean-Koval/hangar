@@ -22,6 +22,7 @@ from hangar import approvals as approvals  # --- approvals (#121)
 from hangar import drain as drain  # --- reconciler
 from hangar import envbuilds as envbuilds  # --- envbuilds
 from hangar import exchange, observe  # --- observe
+from hangar import fairness as fairness  # --- review capacity (#159)
 from hangar import ghprojects as ghprojects  # --- intake: registers the GitHub Projects write-back
 from hangar import harness_repo as harness_repo  # --- #138: the team harness repo
 from hangar import inbox_notify as inbox_notify  # --- inbox delivery (#157, #158)
@@ -871,10 +872,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return jobs.view(jobs.submit(body, caller, source="api"))
 
     @app.get("/api/jobs")
-    async def job_list(state: str | None = None, limit: int = 50, cursor: str | None = None, caller: Caller = J):
-        # --- durable: a page, each job with its `cursor`; X-Next-Cursor when there are more
+    async def job_list(state: str | None = None, limit: int = 50, cursor: str | None = None,
+                       reason: str | None = None, caller: Caller = J):
+        # --- durable: a page, each job with its `cursor`; X-Next-Cursor when there are more. --- #159: `reason`
+        # (awaiting_capacity: new jobs held for review capacity)
         page, nxt = jobs.page(state=state, owner=owner_filter(caller), limit=limit, person=people.scope(),
-                              cursor=cursor)
+                              cursor=cursor, reason=reason)
         return FastJSON([{**jobs.view(j), "cursor": c} for j, c in page],
                         headers={"X-Next-Cursor": nxt} if nxt else None)
 
@@ -1131,6 +1134,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import repopolicy  # --- frontdoor: per-repo policy (hangar repo)
 
     repopolicy.mount(app, h, A)
+    fairness.mount(app, h, A)  # --- review capacity (#159): POST /api/jobs/{id}/admit, GET /api/review-capacity
     from hangar import repocheck  # --- #155: GET /api/repos/{owner}/{repo}/readiness (hangar repo check)
 
     repocheck.mount(app, h, A)

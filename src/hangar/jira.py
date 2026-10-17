@@ -34,6 +34,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from hangar import autoinstall as autoinstall  # --- autoinstall: an issue labelled for an env setup
+from hangar import fairness as fairness  # --- review capacity (#159)
 from hangar import intake
 from hangar.exchange import open_question
 from hangar.github import parse_repo, verify_signature
@@ -985,7 +986,8 @@ class JiraFrontDoor:
                 note = held_message(job)
             else:
                 note = (f"Queued as hangar job `{job.id}` in `{job.environment}` on {parse_repo(url) or url}. "
-                        "I'll comment here when the agent starts and again with the result.")
+                        "I'll comment here when the agent starts and again with the result."
+                        + fairness.queued_note(svc, job))  # --- review capacity (#159)
             svc._spawn(notify(svc, job, ref, note, "note"))
         return res
 
