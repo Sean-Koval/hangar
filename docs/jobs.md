@@ -671,6 +671,8 @@ as `hangar.outcome.class` and `hangar.outcome.infra_reason` ([traces.md](api/tra
 | `HANGAR_EVAL_MAX_RUNNING` | 0 (half the job slots) | Eval jobs running at once |
 | `HANGAR_EVAL_TPM_BUDGET` | unset (no cap) | Tokens per minute eval admission keeps each provider under: `400000` or `anthropic=400000,openai=300000` |
 | `HANGAR_EVAL_TPM_PER_TRIAL` | 20000 | One trial's tokens per minute until recent eval turns on that provider give a median |
+| `HANGAR_TRIAL_SENTINEL` | `[]` (off) | Up to 5 `{pin_set, task, n, grader?, budget}` the trial cache's drift sentinel re-runs, bypassing the cache ([api/trials.md](api/trials.md#the-cache)) |
+| `HANGAR_TRIAL_SENTINEL_SCHEDULE` | `0 20 * * *` | When it runs, in `HANGAR_EVAL_TZ` |
 | `HANGAR_BEST_OF_N_MAX` | 8 | Most attempts per best-of-N job |
 | `HANGAR_BEST_OF_N_PUSH_ATTEMPTS` | false | Also push attempts that weren't delivered |
 | `HANGAR_BEST_OF_N_JUDGE_TIMEOUT_MINUTES` | 15 | The judge turn's limit |
