@@ -249,13 +249,13 @@ def test_freeze_names_what_it_cannot_recover(fleet, skillenv):
     (skillenv / "skills/alpha/SKILL.md").write_text("Use alpha, differently.\n")
     with pytest.raises(harness_lock.FreezeError, match=r"skill:alpha: its source skills/alpha changed since the turn"):
         harness_lock.freeze(fleet, m, spec, name="team")
-    # not a turn; plugins (#136); a bad name
+    # not a turn; a plugin without a digest; a bad name
     m, spec = _turn_manifest(fleet, skillenv)
     with pytest.raises(harness_lock.FreezeError, match="a turn's captured manifest"):
         harness_lock.freeze(fleet, {**m, "subject": {**m["subject"], "kind": "session"}}, spec, name="team")
     (skillenv / "skills/alpha/SKILL.md").write_text("Use alpha.\n")
     m, spec = _turn_manifest(fleet, skillenv)
-    with pytest.raises(harness_lock.FreezeError, match=r"plugins: .*#136"):
+    with pytest.raises(harness_lock.FreezeError, match=r"plugin:p@None: the turn recorded no digest"):
         harness_lock.freeze(fleet, {**m, "plugins": [{"name": "p"}]}, spec, name="team")
     with pytest.raises(harness_lock.FreezeError, match="name 'Bad Name'"):
         harness_lock.freeze(fleet, m, spec, name="Bad Name")
