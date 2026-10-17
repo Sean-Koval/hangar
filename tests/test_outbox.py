@@ -123,6 +123,7 @@ async def test_a_job_turn_lands_whole_valid_and_redacted(ob, jobs, world, settin
     tests = json.loads(objs[f"{prefix}/tests.json"])
     jsonschema.validate(tests, _def("tests"))
     assert tests["runs"][0]["kind"] == "verify" and tests["runs"][0]["trusted"] is True
+    assert tests["runs"][0]["counted"] is True  # --- #164: what predicates use, as the trace has it
     assert tests["runs"][0]["cases"] == {"t::ok": "passed", "t::bad": "failed"}  # every case, not only failures
     assert [e["name"] for e in tests["events"]] == ["test.run", "test.case"]
     patch = objs[f"{prefix}/patch.diff"].decode()
@@ -357,11 +358,22 @@ def test_an_experiment_trial_is_source_experiment_pinned_with_its_grade(fleet, s
     assert rec["experiment"] == {"id": exp.id, "trial_key": "fix-bug/b/2", "task": "fix-bug", "variant": "b",
                                  "trial": 2, "graded": True}
     assert rec["expects"] == ["grade.json"] and rec["job_source"] == "experiment"
+    run = experiments.record_grader_run(SimpleNamespace(fleet=fleet, broker=fleet.broker), child,
+                                        experiments.Grader(command="hangar-grade pytest"),
+                                        {"exit_code": 0, "trust": "isolated"},
+                                        b'<testsuite><testcase classname="t" name="ok"/></testsuite>')
     trial = SimpleNamespace(job=child.id, key="fix-bug/b/2",
-                            grade={"command": "hangar-grade pytest", "exit_code": 0, "applied": True})
+                            grade={"command": "hangar-grade pytest", "exit_code": 0, "applied": True,
+                                   "test_run": run.id})
     o.trial_graded(SimpleNamespace(store=store, sessions=svc), exp, trial)
-    grade = store.get(OutboxItem, f"{outbox.run_prefix(s.id, t.run_id, t.finished_at)}grade.json")
+    key = f"{outbox.run_prefix(s.id, t.run_id, t.finished_at)}grade.json"
+    grade = store.get(OutboxItem, key)
     assert grade is not None and grade.state == "pending" and grade.job_id == child.id
+    # --- #164: grade.json links the grader's TestRun and carries it as tests.json carries a turn's
+    doc = json.loads(gzip.decompress(o._blob(key).read_bytes()))
+    assert doc["test_run"] == run.id and doc["tests"]["runs"][0]["kind"] == "grader"
+    assert doc["tests"]["runs"][0]["counted"] is True and doc["tests"]["runs"][0]["cases"] == {"t::ok": "passed"}
+    assert doc["tests"]["events"][0]["name"] == "test.run"
 
 
 # ====================================================================== job events

@@ -13,6 +13,7 @@ the job's timeline and result). Every string is redacted again on the way out, w
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import logging
 import re
@@ -327,7 +328,6 @@ def read_events(activity: Any, sid: str, run_id: str | None = None, limit: int =
     """A session's recorded events (only `run_id`'s, when given), oldest first: the last `limit` of them. One pass
     over its log files (paging with `since` would rescan them from the start for every page)."""
     import collections
-    import contextlib
 
     out: collections.deque[RunEvent] = collections.deque(maxlen=limit)
     needle = run_id.encode() if run_id else None
@@ -487,7 +487,8 @@ def checkout(svc: Any, s: Session) -> str | None:
 
 
 def _turn_span(x: Export, parent: str | None, s: Session, n: int, turn: SessionTurn, events: list[RunEvent],
-               extra: dict[str, Any] | None = None, root: str | None = None) -> dict[str, Any] | None:
+               extra: dict[str, Any] | None = None, root: str | None = None,
+               store: Any = None) -> dict[str, Any] | None:
     key = turn.run_id or f"{s.id}/turn/{n}"
     harness = turn.harness or s.harness
     u = total_usage([turn])
@@ -515,6 +516,9 @@ def _turn_span(x: Export, parent: str | None, s: Session, n: int, turn: SessionT
                 parent=parent, error=(turn.outcome_reason or turn.outcome or "") if failed else None)
     if sp is not None:
         turn_children(x, sp["id"], key, turn, harness, events, sp, root)
+        if store is not None:  # --- #164: the turn's test runs (a session export; a job's are on its `job` span)
+            with contextlib.suppress(Exception):
+                testresults.add_to_turn(x, sp, testresults.turn_runs(store, s, n))
     return sp
 
 
@@ -542,7 +546,7 @@ def session_export(svc: SessionService, s: Session, turn: int | None = None) -> 
             raise KeyError(f"session {s.name} has no turn {turn} (it has {len(s.turns)})")
         t = s.turns[turn - 1]
         evs = read_events(svc.activity, s.id, run_id=t.run_id) if t.run_id else []
-        _turn_span(x, None, s, turn, t, evs, root=checkout(svc, s))
+        _turn_span(x, None, s, turn, t, evs, root=checkout(svc, s), store=_store(svc))
         return x.request(resource)
     grouped = _by_turn(read_events(svc.activity, s.id))
     started = [t for t in s.turns if t.started_at]
@@ -555,10 +559,15 @@ def session_export(svc: SessionService, s: Session, turn: int | None = None) -> 
                       "hangar.taint": bool(s.taint and s.taint.get("tainted")),  # --- taint (#129)
                       **_usage_attrs(total_usage(s.turns))})
     where = checkout(svc, s)
+    store = _store(svc)
     for n, t in enumerate(s.turns, 1):
         if t.started_at:
-            _turn_span(x, root["id"] if root else None, s, n, t, _events_of(grouped, n, t), root=where)
+            _turn_span(x, root["id"] if root else None, s, n, t, _events_of(grouped, n, t), root=where, store=store)
     return x.request(resource)
+
+
+def _store(svc: Any) -> Any:
+    return getattr(svc, "store", None) or getattr(getattr(svc, "fleet", None), "store", None)
 
 
 def job_export(jobs: JobService, job: Job, sessions: list[Session] | None = None,
