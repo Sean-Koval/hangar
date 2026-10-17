@@ -124,15 +124,26 @@ class SkillRef(BaseModel):
         return self
 
 
-class Variant(BaseModel):
-    """An environment plus an overlay. Unset fields are the experiment's (then the environment's).
+# --- #135: the overlay fields, deprecated now that a variant can name a harness lock. Removal is scheduled for the
+# release after flightdeck v0 ships its first report (then SkillRef, these fields, _overlay and KV_OVERLAY go).
+OVERLAY_FIELDS = ("harness", "model", "approvals", "skills", "skills_remove", "instructions", "instructions_append")
+LOCK_REF = r"^[a-z0-9][a-z0-9._-]{0,62}@sha256:[0-9a-f]{64}$"
 
-    The only overlay on an environment (spec 0014 §4). `skills` has the semantics an environment's `skills` has under
-    `extends` (#132): the whole set, `[]` for none; `skills_remove` drops named ones. It gains no new fields: once
-    harness locks exist (#133) a variant shrinks to `{harness: name@sha256, environment}` (#135)."""
+
+class Variant(BaseModel):
+    """An environment plus a harness: `{harness_lock: name@sha256:..., environment}` (#135), or the deprecated overlay.
+
+    `harness_lock` names a lock in the harness registry by its digest (a channel or revision could move between two
+    trials); every trial is claimed from it (#134) and its turn 1 checked against it. It excludes the overlay fields:
+    the lock already fixes the harness, its CLI version, the concrete model, approvals, skills and instructions.
+
+    The overlay (deprecated, spec 0014 §4) is the experiment's (then the environment's) unset fields plus: `skills`
+    with the semantics an environment's `skills` has under `extends` (#132), the whole set, `[]` for none;
+    `skills_remove` drops named ones. `hangar experiment freeze-variants EXP` turns an overlay experiment into locks."""
 
     model_config = ConfigDict(extra="forbid")
     environment: str | None = None
+    harness_lock: str | None = Field(None, max_length=200, pattern=LOCK_REF)  # --- #135: name@sha256:<digest>
     harness: str | None = Field(None, max_length=80)  # "codex" or "codex@0.162.1" (must be the locked version)
     model: str | None = Field(None, max_length=200)  # an id or a policy (frontier, balanced)
     approvals: Literal["auto", "deny-risky"] | None = None
@@ -141,6 +152,18 @@ class Variant(BaseModel):
     skills_remove: list[str] | None = Field(None, max_length=50)
     instructions: str | None = Field(None, max_length=64_000)  # replaces the environment's global instructions
     instructions_append: str | None = Field(None, max_length=64_000)
+
+    @model_validator(mode="after")
+    def _lock_or_overlay(self) -> Variant:
+        if self.harness_lock and (mixed := self.overlay_fields()):
+            raise ValueError(f"a variant with `harness_lock` takes no overlay fields ({', '.join(mixed)}): the lock "
+                             "fixes the harness, model, approvals, skills and instructions. Keep `harness_lock` and "
+                             "`environment`, or freeze a new lock with the change (`hangar harness freeze`)")
+        return self
+
+    def overlay_fields(self) -> list[str]:
+        """The deprecated overlay fields this variant sets."""
+        return [f for f in OVERLAY_FIELDS if getattr(self, f) is not None]
 
 
 class Task(BaseModel):
@@ -324,6 +347,9 @@ def submit(jobs: JobService, spec: ExperimentSpec, caller: Any, source: str = "a
         raise JobError("egress is fixed per experiment, and these environments differ in it: "
                        + "; ".join(f"{k}: {v}" for k, v in egress.items()))
     for vname, v in spec.variants.items():
+        if v.harness_lock:  # --- #135: a lock that can't be claimed in the variant's environment fails now
+            _variant_lock(jobs.fleet, spec, vname, v)
+            continue
         harness, _ = _variant_harness(jobs.fleet, spec, vname, v)  # an unknown or unlocked harness version fails now
         _variant_model(jobs.fleet, spec, vname, v, harness, record=False)  # #167: a floating alias fails now
     req = SubmitJob(instructions=f"Experiment {spec.name}: {len(spec.tasks)} task(s) x {len(spec.variants)} "
@@ -332,9 +358,30 @@ def submit(jobs: JobService, spec: ExperimentSpec, caller: Any, source: str = "a
                     job_budget=spec.budget, verify="", autofix="off")
     job = jobs.submit(req, caller, source=source)
     if job.result.data is None:  # not an idempotent repeat; nothing awaits between submit and here
-        st = State(spec=spec.model_dump(mode="json", exclude_none=True))
+        st = State(spec=spec.model_dump(mode="json", exclude_none=True), notes=deprecation_notes(spec))
         _save(jobs, job, st)
     return job
+
+
+def deprecation_notes(spec: ExperimentSpec) -> list[str]:
+    """--- #135: a note per variant that uses the deprecated overlay instead of a harness lock."""
+    return [f"variant {vname}: the overlay fields ({', '.join(fields)}) are deprecated and will be removed in the "
+            "release after flightdeck v0's first report; pin a harness lock instead (`harness_lock: name@sha256:...`; "
+            f"`hangar experiment freeze-variants` prints one from a finished trial)"
+            for vname, v in spec.variants.items() if (fields := v.overlay_fields())]
+
+
+def _variant_lock(fleet: Fleet, spec: ExperimentSpec, vname: str, v: Variant) -> dict[str, Any]:
+    """--- #135: the variant's harness lock, claimed in its environment (harness_thaw.pin: the CLI version must be the
+    one hangar runs, the environment must bind its MCP servers). The experiment's own `harness`/`model` defaults
+    don't apply to a lock variant: the lock fixes both."""
+    from hangar import harness_thaw
+    from hangar.jobs import JobError
+
+    try:
+        return harness_thaw.pin(fleet, v.harness_lock or "", v.environment or spec.environment)
+    except harness_thaw.ThawError as e:
+        raise JobError(f"variant {vname}: {e}") from e
 
 
 def _egress(fleet: Fleet, spec: ExperimentSpec) -> dict[str, str]:
@@ -468,6 +515,23 @@ async def _begin(jobs: JobService, job: Job, st: State, spec: ExperimentSpec) ->
     fleet = jobs.fleet
     variants: dict[str, Any] = {}
     for vname, v in spec.variants.items():
+        if v.harness_lock:  # --- #135: everything the variant runs with comes from the lock
+            try:
+                lk = _variant_lock(fleet, spec, vname, v)
+            except JobError as e:
+                raise _Stop("harness_lock", str(e)) from e
+            env = fleet.catalog.get(v.environment or spec.environment)
+            # no overlay: the claim mounts the lock's instructions, skills and plugins (harness_thaw.mount_files)
+            fleet.store.kv_set(f"{KV_OVERLAY}{job.id}:{vname}", json.dumps({"skills": None, "instructions": None}))
+            variants[vname] = {"environment": env.name, "harness": lk["harness"], "harness_version": lk["version"],
+                               "model": lk["model"], "model_policy": None, "model_source": "harness_lock",
+                               "model_concrete": True if lk["model"] else None,
+                               "model_concrete_basis": "harness_lock" if lk["model"] else "none",
+                               "approvals": lk["approvals"] or env.approvals or jobs.settings.approvals,
+                               "skills": None, "instructions": None,
+                               "harness_lock": v.harness_lock, "harness_revision": lk["revision"],
+                               "harness_digest": lk["digest"]}
+            continue
         harness, locked = _variant_harness(fleet, spec, vname, v)
         env = fleet.catalog.get(v.environment or spec.environment)
         try:  # #167: checked at submit too; the lists may have moved since
@@ -483,7 +547,8 @@ async def _begin(jobs: JobService, job: Job, st: State, spec: ExperimentSpec) ->
                            "approvals": v.approvals or env.approvals or jobs.settings.approvals,
                            "skills": [{"name": s["name"], "digest": s.get("digest"), "source": s["source"]}
                                       for s in overlay["skills"]] if overlay["skills"] is not None else None,
-                           "instructions": overlay.get("instructions_digest")}
+                           "instructions": overlay.get("instructions_digest"),
+                           "harness_digest": None}  # --- #135: an overlay's, from its first trial's turn 1
     tasks: dict[str, Any] = {}
     for t in spec.tasks:
         env = fleet.catalog.get(spec.environment)
@@ -713,10 +778,11 @@ def _start_trial(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t:
     req = SubmitJob(
         instructions=instructions, title=f"{spec.name}: {t.ref}"[:200], repo=tp.get("repo"),
         base_branch=task.base_branch, environment=v.environment or spec.environment, harness=pin["harness"],
-        model=pin["model"], provider=spec.provider, verify=task.verify, deliver="none", context=context,
+        model=pin["model"], harness_lock=pin.get("harness_lock"),  # --- #135: claimed from the variant's lock
+        provider=spec.provider, verify=task.verify, deliver="none", context=context,
         keep_minutes=spec.keep_minutes, timeout_minutes=spec.timeout_minutes, budget=spec.trial_budget,
         job_budget=spec.trial_job_budget, idempotency_key=f"experiment:{job.id}:{t.ref}",
-        verify_in_loop=spec.verify_in_loop, autofix="off",
+        verify_in_loop=spec.verify_in_loop, autofix="off", queue_class="eval",  # --- #181
         labels={EXP_LABEL: job.id, TRIAL_LABEL: t.key, VARIANT_LABEL: t.variant, PACKS_LABEL: "selected"})
     try:
         child = jobs._submit(req, Caller(job.requester, job.owner, person=job.person), source="experiment",
@@ -764,6 +830,13 @@ async def _finish_trial(jobs: JobService, job: Job, st: State, spec: ExperimentS
             same = [x for x in st.trials if x.variant == t.variant and x.config_digest and x is not t]
             if same and same[0].config_digest != t.config_digest:
                 t.drift.append(drift_message(t, same[0]))
+            vp = st.pins.get("variants", {}).get(t.variant) or {}
+            if vp.get("harness_lock"):  # --- #135: turn 1 must have run exactly the variant's lock
+                if t.harness_digest != vp.get("harness_digest"):
+                    t.drift.append(f"harness drift: turn 1's harness_digest {t.harness_digest} isn't the variant's "
+                                   f"lock {vp.get('harness_lock')}")
+            elif t.harness_digest and not vp.get("harness_digest") and vp:
+                vp["harness_digest"] = t.harness_digest  # an overlay variant's digest, as its first trial ran it
     t.state = "grading" if spec.grader and child.state != JobState.CANCELLED and s is not None else "done"
     retry = None
     if t.outcome_class == "infra_error":  # --- #166: not the agent's result: left out, and run again
@@ -786,6 +859,8 @@ def trial_class(child: Job) -> tuple[str | None, str | None]:
     conditions the others did. Else the job's own class (outcomes.job_class)."""
     from hangar import outcomes
 
+    if child.infra_cut:  # --- #181: hangar ended it on purpose (the power-down)
+        return "infra_error", child.infra_cut
     if (cut := _infra_turn(child)) is not None:
         return "infra_error", cut.infra_reason
     if child.result.outcome_class == "infra_error":
@@ -807,8 +882,10 @@ def _retry(jobs: JobService, st: State, spec: ExperimentSpec, t: Trial) -> Trial
         st.notes.append(f"trial {t.key}: infra_error ({t.infra_reason}) on all {t.attempt} attempts "
                         "(HANGAR_TRIAL_INFRA_RETRIES); it has no counted result")
         return None
-    used = sum(1 for x in st.trials if x.attempt > 1)
-    if used >= infra_retry_cap(st):
+    # --- #181: the scheduled power-down isn't an outage: its retries don't count towards the experiment's cap
+    cut = {x.job for x in st.trials if x.infra_reason == "power_down" and x.job}
+    used = sum(1 for x in st.trials if x.attempt > 1 and x.retry_of not in cut)
+    if t.infra_reason != "power_down" and used >= infra_retry_cap(st):
         n = sum(1 for x in st.trials if x.outcome_class == "infra_error")
         why = (f"{n} trials ended in infra_error (the latest {t.ref}: {t.infra_reason}), and the experiment has used "
                f"the {infra_retry_cap(st)} retries it gets (10% of its trials): probably a provider or cluster "
@@ -1602,7 +1679,7 @@ async def apply_overlay(fleet: Fleet, prov: Any, sb: Sandbox, spec: EnvSpec, har
     """Write the variant's skills and instructions into a trial's sandbox: exactly the skills it declares (the
     environment's others are removed; hangar's own `verify-ui` stays with a computer), and its instructions.
     After this, a repo with a `.hangar/environment.yaml` or a build gets hangar's environment section spliced into
-    the instructions and its `hangar-environment` skill (supervisor.tell_agent), alike for every variant on the
+    the instructions and its `hangar-environment` skill (svc_control.tell_agent), alike for every variant on the
     environment; the manifest's effective skills and instructions digest show them."""
     from hangar.harnesses import HARNESSES
 
@@ -1724,6 +1801,37 @@ def view(jobs: JobService, job: Job) -> dict[str, Any]:
            "counts": counts, "trials": jobs.broker.redact(trials), "notes": jobs.broker.redact(st.notes),
            "task_checks": jobs.broker.redact(st.task_checks)}
     return mask_canary(out, canary)  # --- anti-forgery (#127): the canary never leaves in an export
+
+
+# ====================================================================== #135: overlays -> locks
+def lock_name(experiment: str, variant: str) -> str:
+    """The harness name `freeze-variants` gives a variant's lock: `<experiment>-<variant>`, as a lock name allows."""
+    n = re.sub(r"-{2,}", "-", re.sub(r"[^a-z0-9._-]+", "-", f"{experiment}-{variant}".lower())).strip("-._")
+    return (n or "variant")[:63].rstrip("-._")
+
+
+def freeze_source(index: dict[str, Any], variant: str) -> dict[str, Any] | None:
+    """The trial a variant's lock is frozen from: a completed one (succeeded, counted, with a captured turn 1),
+    else any finished trial with a captured turn 1; None when the variant has none yet."""
+    done = [t for t in index.get("trials") or [] if t.get("variant") == variant and t.get("job")
+            and t.get("state") in ("done", "grading") and not t.get("excluded") and (t.get("manifests") or [None])[0]]
+    return next((t for t in done if t.get("outcome") == "succeeded"), done[0] if done else None)
+
+
+def locked_spec(spec: dict[str, Any], locks: dict[str, str]) -> dict[str, Any]:
+    """The experiment spec with each variant in `locks` as `{harness_lock, environment}`: what `freeze-variants`
+    prints. The experiment-level `harness`/`model` defaults go once every variant is locked (a lock fixes both);
+    the grader's canary goes too (a new experiment gets a new one)."""
+    out = json.loads(json.dumps(spec))
+    for vname, ref in locks.items():
+        env = (out.get("variants", {}).get(vname) or {}).get("environment")
+        out["variants"][vname] = {"harness_lock": ref, **({"environment": env} if env else {})}
+    if all((v or {}).get("harness_lock") for v in out.get("variants", {}).values()):
+        out.pop("harness", None)
+        out.pop("model", None)
+    if isinstance(out.get("grader"), dict):
+        out["grader"].pop("canary", None)
+    return out
 
 
 def trial_file(jobs: JobService, job: Job, key: str, name: str, attempt: int | None = None) -> dict[str, Any]:

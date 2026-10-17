@@ -1,5 +1,5 @@
-"""--- envbuilds: the in-sandbox supervisor (`hangar-agent svc`, svc_agent.py), run for real with a scratch $HOME,
-and its control-plane side (supervisor.py): the manifest, the agent's instructions and the helper's dispatch."""
+"""--- envbuilds: the in-sandbox service supervisor (`hangar-agent svc`, svc_agent.py), run for real with a scratch
+$HOME, and its control-plane side (svc_control.py): the manifest, the agent's instructions and the helper's dispatch."""
 
 from __future__ import annotations
 
@@ -15,13 +15,13 @@ from pathlib import Path
 
 import pytest
 
-from hangar import exchange, supervisor
+from hangar import exchange, svc_control
 from hangar.envspec import EnvSpec
 from hangar.models import Sandbox
 
 from .conftest import free_port, scratch_root
 
-SCRIPT = Path(supervisor.__file__).parent / "svc_agent.py"
+SCRIPT = Path(svc_control.__file__).parent / "svc_agent.py"
 
 
 @pytest.fixture
@@ -206,7 +206,7 @@ def test_hangar_agent_dispatches_svc_outside_a_turn(home):
     bin_ = home / ".hangar/bin"
     bin_.mkdir(parents=True)
     (bin_ / "hangar-agent").write_text(exchange.HELPER)
-    (bin_ / "hangar-svc").write_bytes(supervisor.SCRIPT)
+    (bin_ / "hangar-svc").write_bytes(svc_control.SCRIPT)
     env = {"HOME": str(home), "PATH": f"{bin_}:{os.environ['PATH']}"}  # no HANGAR_IO
     r = subprocess.run(["sh", str(bin_ / "hangar-agent"), "svc", "--help"], capture_output=True, text=True, env=env)
     assert r.returncode == 0 and "hangar-agent svc COMMAND" in r.stdout
@@ -226,12 +226,12 @@ def test_manifest_and_info_entries():
                   ports=[{"port": 3000, "name": "web"}])
     sb = _sb(services=[{"name": "db", "kind": "service", "host": "db", "port": 5432, "check": None},
                        {"name": "old", "kind": "terminal", "port": 1}])
-    m = supervisor.manifest(sb, eff, "/workspace/app")
+    m = svc_control.manifest(sb, eff, "/workspace/app")
     assert m["repo"] == "/workspace/app" and m["start"] == "./seed"
     assert m["terminals"][0] == {"name": "web", "command": "npm run dev", "env": {}, "port": 3000,
                                  "ready": "curl -fs localhost:3000", "autostart": True, "restart": "always"}
     assert m["services"] == [{"name": "db", "host": "db", "port": 5432, "ready": None}]
-    info = supervisor.programs_info(eff)
+    info = svc_control.programs_info(eff)
     assert {"name": "web", "kind": "terminal", "port": 3000, "check": "curl -fs localhost:3000"} in info
     assert {"name": "web", "kind": "port", "port": 3000, "check": None} in info
 
@@ -240,22 +240,22 @@ def test_instructions_warn_on_the_base_image_and_splice_is_idempotent():
     eff = EnvSpec(name="e", install="uv sync", terminals=[{"name": "web", "command": "x", "port": 3000}])
     sb = _sb(env_build={"fallback": True, "reason": "the repo has no build yet"},
              setup_failures=[{"ts": 1, "step": "config", "message": "bad field"}])
-    block = supervisor.instructions(sb, eff, "/workspace/app")
+    block = svc_control.instructions(sb, eff, "/workspace/app")
     assert "Warning: this sandbox runs the environment's base image" in block
     assert "cd /workspace/app && uv sync" in block and "hangar-agent svc restart --all" in block
     assert "config: bad field" in block
     own = "You are working inside a disposable hangar sandbox.\n"
-    once = supervisor.splice(own, block)
-    twice = supervisor.splice(once, supervisor.instructions(_sb(env_build={"version": "v3", "commit": "abc"}),
+    once = svc_control.splice(own, block)
+    twice = svc_control.splice(once, svc_control.instructions(_sb(env_build={"version": "v3", "commit": "abc"}),
                                                             eff, "/workspace/app"))
-    assert twice.startswith(own) and twice.count(supervisor.BLOCK_START) == 1
+    assert twice.startswith(own) and twice.count(svc_control.BLOCK_START) == 1
     assert "build v3" in twice and "Warning" not in twice
 
 
 def test_skill_has_frontmatter():
-    head = supervisor.SKILL.split("---")[1]
+    head = svc_control.SKILL.split("---")[1]
     assert "name: hangar-environment" in head and "description:" in head
-    assert "hangar-agent svc" in supervisor.SKILL
+    assert "hangar-agent svc" in svc_control.SKILL
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="no_new_privs is Linux's")

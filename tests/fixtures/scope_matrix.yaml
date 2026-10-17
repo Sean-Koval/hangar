@@ -71,6 +71,12 @@ admin.get_drain:
   rest: GET /api/admin/drain
   scope: admin
   owner: admin
+admin.get_eval_queue:
+  server: hangar
+  mcp: null
+  rest: GET /api/admin/eval-queue
+  scope: admin
+  owner: admin
 admin.get_outbox:
   server: hangar
   mcp: null
@@ -1074,6 +1080,12 @@ job.list:
     rest: token
   exception: 'by design: REST /api/jobs also serves `jobs` service tokens, fenced to the jobs they submitted (app.job_caller);
     MCP serves people, fenced to their own by people.Guard. Admins reach every job on both'
+job.priority:
+  server: hangar
+  mcp: null
+  rest: POST /api/jobs/{job_id}/priority
+  scope: admin
+  owner: admin
 job.reject:
   server: hangar
   mcp: reject_job

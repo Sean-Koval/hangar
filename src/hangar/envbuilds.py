@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, Field, ValidationError
 
 from hangar import buildcache as buildcache  # --- caches
-from hangar import repoenv, supervisor
+from hangar import repoenv, svc_control
 from hangar.envspec import BuildContext, EnvSpec
 from hangar.models import Sandbox, new_id, now
 from hangar.repopolicy import repo_key
@@ -446,10 +446,10 @@ class EnvBuilds:
             self.failure(sb, "services", f"{', '.join(late)}: not in the repo's config when this sandbox started (new, "
                          "or only on this branch); services start with the next sandbox")
         programs = bool(eff.start or eff.terminals or eff.services or eff.ports)
-        if programs and (why := await supervisor.start(prov, sb, self.settings, eff, path)):
+        if programs and (why := await svc_control.start(prov, sb, self.settings, eff, path)):
             self.failure(sb, "supervisor", why)
         if info is not None or programs or read.present:
-            await supervisor.tell_agent(prov, sb, self.settings, harness, eff, path)
+            await svc_control.tell_agent(prov, sb, self.settings, harness, eff, path)
         if stage and info:
             stage(_event(info, eff))
         self.store.put(sb)

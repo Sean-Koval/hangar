@@ -1,0 +1,16 @@
+# The semver smoke experiment (evals/semver) as an overlay spec, for #135's freeze-variants round trip. The tests
+# point `repo` at a scratch repo and run it on the scripted agent; the task text is evals/semver/task.md's opening.
+name: semver-smoke
+environment: lockenv
+tasks:
+  - id: semver
+    instructions: "Implement semver.py: parse, compare and range-match semantic versions as node-semver 7 does."
+    repo: REPO
+variants:
+  alpha-only:
+    skills: [{path: skills/alpha}]
+    instructions_append: "Prefer small diffs."
+  env-default: {}
+trials: 1
+parallel: 2
+keep_minutes: 5

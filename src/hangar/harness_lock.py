@@ -309,6 +309,16 @@ def validate(lock: Any) -> None:
 
 
 # ====================================================================== check
+def overwrite_problems(root: Path) -> list[str]:
+    """Why writing a freeze into `root` would lose work (#251): the directory's own `check` against the lock it holds
+    (a file edited by hand, a component missing, a skill directory the lock doesn't pin). `write` replaces component
+    paths whole and drops the old lock's other components, so uncommitted edits there would go. Empty when `root`
+    holds no lock yet, or matches it."""
+    if not (root / LOCK_FILE).exists():
+        return []
+    return list(check(root)["problems"] or [])
+
+
 def check(root: Path) -> dict[str, Any]:
     """Recompute every component's digest in a harness directory against its lock (`hangar harness check`; CI in
     the team harness repo). `ok` is false with `problems` naming each mismatch."""

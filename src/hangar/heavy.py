@@ -516,10 +516,10 @@ Works as is: Docker is at /var/run/docker.sock and published ports answer on loc
 
 
 async def tell_agent(prov: Provider, sb: Sandbox, settings: Settings, harness: str | None) -> None:
-    """The Docker section in the harness's instructions file and the hangar-docker skill (supervisor.tell_agent does
+    """The Docker section in the harness's instructions file and the hangar-docker skill (svc_control.tell_agent does
     the same for the environment section)."""
     from hangar.harnesses import HARNESSES
-    from hangar.supervisor import INSTRUCTIONS_MAX
+    from hangar.svc_control import INSTRUCTIONS_MAX
 
     h = HARNESSES.get(harness or "")
     if h is None:

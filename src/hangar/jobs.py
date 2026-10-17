@@ -48,6 +48,7 @@ from hangar import computer as computer  # --- computer
 from hangar import delivery as delivery  # --- least-privilege: hangar pushes a job's work
 from hangar import envbuilds as envbuilds  # --- envbuilds
 from hangar import envdoctor as envdoctor  # --- computer
+from hangar import evalqueue as evalqueue  # --- #181: the eval queue class
 from hangar import experiments as experiments  # --- interfaces: experiment jobs and their trials
 from hangar import fairness as fairness  # --- scale
 from hangar import flightrec as flightrec  # --- clouddoctor: a failed or slow job's flight record
@@ -154,6 +155,8 @@ class SubmitJob(BaseModel):
     verify_in_loop: bool | None = None  # default HANGAR_VERIFY_IN_LOOP (on)
     max_verify_rounds: int | None = Field(None, ge=0, le=10)  # default HANGAR_MAX_VERIFY_ROUNDS (3)
     autofix: str | None = Field(None, max_length=40)  # "ci,reviews" (default) | "ci" | "reviews" | "off"
+    # --- #181: `eval` waits for the eval window and the token budget, behind interactive work (evalqueue.py)
+    queue_class: Literal["interactive", "eval"] | None = None
 
 
 def _safe_name(name: str, taken: set[str]) -> str:
@@ -202,8 +205,11 @@ class JobService:
         self._jobs: resident.Resident[Job] = resident.Resident(self.store, Job, self._pinned,
                                                                lambda: self.settings.resident_minutes * 60)
         # --- scale: fair between people (the fewest running first, each capped), not first come first served
-        self._queue: Any = fairness.FairJobQueue(self._person, lambda: fairness.job_cap(self.settings),
-                                                 lambda jid: not fairness.hold_new(self, jid))  # --- #159
+        self.evalq = evalqueue.EvalQueue(self)  # --- #181: eval jobs wait for their window, behind interactive work
+        self._queue: Any = fairness.FairJobQueue(
+            self._person, lambda: fairness.job_cap(self.settings),
+            lambda jid: not fairness.hold_new(self, jid) and self.evalq.admit(jid),  # --- #159, #181
+            rank=self.evalq.rank, recheck=evalqueue.RECHECK_SECONDS)
         self.review_load = fairness.ReviewLoad()  # --- review capacity (#159): open agent PRs per reviewer
         self._workers: list[asyncio.Task] = []
         self._active: set[str] = set()
@@ -311,6 +317,7 @@ class JobService:
                 if self.fleet.power.hold(self, job_id):  # --- ops: the sandbox pools are off; queued again at power-up
                     continue
                 fairness.admitted(self, job_id)  # --- review capacity (#159)
+                self.evalq.admitted(job_id)  # --- #181
                 await self._process(job_id)
             except asyncio.CancelledError:
                 raise
@@ -512,6 +519,7 @@ class JobService:
                         else None)],
             approval=approval, untrusted_source=untrusted_source,
             person=caller.person,  # --- identity
+            queue_class=req.queue_class or "interactive",  # --- #181
         )
         job.budget = resolve_budget(jobbudget.merge(req.budget, policy.budget if policy else None, cls=Budget),
                                     self.settings, caller.max_budget if caller.restricted else None)  # --- frontdoor
