@@ -206,10 +206,11 @@ def test_the_doctor_reports_the_posture(fleet):
     s = fleet.settings
     s.intake_posture = "enforce"
     s.github_repos = {"o/r": "plain"}
+    s.github_webhook_secret_credential = "gh-hook"
     h = SimpleNamespace(settings=s, fleet=fleet)
     checks = {c["name"]: c for c in posture.doctor_checks(h)}
-    assert checks["intake posture: gateway"]["status"] == "fail" and "refused" in checks["intake posture: gateway"][
-        "detail"]
+    assert checks["intake posture: gateway"]["status"] == "fail" and "job from GitHub is refused" in checks[
+        "intake posture: gateway"]["detail"]
     assert checks["intake environment plain"]["detail"] == "egress open; intake jobs get allowlist (intake floor)"
     s.gateway_url = GW
     s.intake_posture = "warn"
@@ -218,3 +219,35 @@ def test_the_doctor_reports_the_posture(fleet):
     assert checks["intake environment plain"]["status"] == "warn"
     s.intake_posture = "off"
     assert posture.doctor_checks(h)[0]["status"] == "warn"
+
+
+def test_a_fresh_laptop_without_intake_doors_is_not_a_doctor_failure(fleet, monkeypatch):
+    """--- #236: `hangar up` on a fresh machine: enforce, no gateway, and no front door that could send an intake job.
+    Nothing is refused, so the doctor warns (with the one command that turns the gateway on) instead of failing; the
+    first door configured makes it a failure that names that door."""
+    s = fleet.settings
+    s.intake_posture, s.gateway_url, s.gateway_host = "enforce", None, None
+    s.github_repos, s.github_webhook_secret_credential, s.slack_signing_secret_credential = {}, None, None
+    s.jira, s.github_projects, s.inbound_webhooks = {}, {}, {}
+    monkeypatch.setattr("sys.platform", "linux")
+    h = SimpleNamespace(settings=s, fleet=fleet)
+    gw = {c["name"]: c for c in posture.doctor_checks(h)}["intake posture: gateway"]
+    assert gw["status"] == "warn" and "nothing is refused yet" in gw["detail"]
+    assert gw["fix"].startswith("hangar config set HANGAR_GATEWAY_URL http://host.docker.internal:8788 && "
+                                "hangar config set HANGAR_GATEWAY_HOST 172.17.0.1")
+    assert "HANGAR_INTAKE_POSTURE" not in gw["fix"]  # one fix, not a weaker posture
+    for field, value, door in (("slack_signing_secret_credential", "slack-sig", "Slack"),
+                               ("inbound_webhooks", {"sentry": {"secret": "x"}}, "inbound webhooks"),
+                               ("jira", {"url": "https://acme.atlassian.net"}, "Jira")):
+        setattr(s, field, value)
+        gw = {c["name"]: c for c in posture.doctor_checks(h)}["intake posture: gateway"]
+        assert gw["status"] == "fail" and door in gw["detail"] and "HANGAR_GATEWAY_URL" in gw["fix"]
+    # the posture itself is unchanged: an intake job is still refused without the gateway
+    spec = fleet.catalog.get("plain")
+    assert posture.assess(s, spec, REPO, "github", None).refused
+    monkeypatch.setattr("sys.platform", "darwin")
+    s.inbound_webhooks = s.jira = {}
+    s.slack_signing_secret_credential = None
+    assert "HANGAR_GATEWAY_HOST" not in posture.gateway_fix(s, fleet)
+    s.gateway_url = GW
+    assert {c["name"]: c for c in posture.doctor_checks(h)}["intake posture: gateway"]["status"] == "ok"
