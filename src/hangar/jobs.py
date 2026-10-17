@@ -1335,7 +1335,8 @@ class JobService:
             await gh.close()
 
     def _pr_body(self, job: Job) -> str:
-        lines = [job.result.summary or "_The agent left no summary._", "", "---"]
+        # `___`, not `---`: git reads a `---` line as the end of a message, and the trailers below must parse (#137)
+        lines = [job.result.summary or "_The agent left no summary._", "", "___"]
         if job.verify:
             ok = "passed" if job.result.verify_exit_code == 0 else f"failed (exit {job.result.verify_exit_code})"
             lines.append(f"Verification `{job.verify}`: **{ok}**")
@@ -1358,7 +1359,9 @@ class JobService:
         m = re.match(r"^github:([^#]+)#(\d+)$", job.source_ref or "")
         if m and parse_repo(job.repo) == m.group(1) and job.labels.get("github.kind") == "issue":
             lines.append(f"Closes #{m.group(2)}")
-        return "\n".join(lines)
+        from hangar import trailers  # --- #137: Hangar-Job, Harness-Digest, ... as git trailers, last
+
+        return "\n".join(lines) + trailers.block(self, job)
 
     async def _keep(self, job: Job, s) -> None:
         """Keep the sandbox for follow-ups and take-over while it's in use, and at least `keep_minutes`; then the

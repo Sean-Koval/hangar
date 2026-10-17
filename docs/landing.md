@@ -105,6 +105,12 @@ opened ──▶ open ──approval of the head by an approver or code owner─
 - **Checks.** "Green" means every check the base branch requires (from its protection summary and rulesets) passed on the head: `success`, `neutral` or `skipped`. GitHub saying `mergeable_state: clean` also counts, in case a webhook was missed. A failed check holds landing even when it isn't required: an agent's red PR goes to [auto-fix](jobs.md#7-an-agent-loop-that-finishes-the-job), not to main. With no required checks, GitHub merges as soon as auto-merge is armed, so make CI required (`hangar doctor` warns).
 - **Requests for changes win.** A "changes requested" review from anyone, or a dismissed approval, takes the PR back to open and disarms.
 - **GitHub's record decides.** Review webhooks can arrive late, out of order (hangar redelivers missed ones after a restart) or replayed, so right before arming hangar lists the PR's reviews (`GET /pulls/{n}/reviews`, Pull requests: read): the approver's latest review must still be an approval of the head, and nobody's latest may request changes. A push, dismissal or follow-up that arrives while GitHub is arming is caught after the arm and disarmed; a disarm GitHub refused is tried again after the job's next turn and on restart.
+- **The merge commit says which harness wrote it** (#137). The message hangar gives GitHub is the agent's summary
+  followed by the job's [trailers](jobs.md#the-pull-request) (`Hangar-Job`, `Harness-Digest`, `Environment-Digest`,
+  `Harness-Lock`): `commitBody` when it arms auto-merge, `commit_message` when it merges an already mergeable PR, so
+  the merged commit carries them whichever way it lands. That holds for the `squash` and `merge` methods; `rebase`
+  keeps the agent's commits as they are, so the trailers are in the PR body only. A metric that reads them from the
+  PR body through the API doesn't depend on the method.
 - **Drafts wait.** A PR hangar opened as a draft (the check failed, the agent changed the check's own tests, or it read untrusted content) isn't armed until someone marks it ready for review.
 
 ### Tainted PRs
@@ -171,7 +177,9 @@ Hangar writes one comment on each agent PR when it delivers, and edits it on eve
 - **Risk**: `high` when a path matches `.github/**`, `.hangar/**` (the repo's environment, which runs in every build and sandbox) or the policy's `risk_paths`, `low` for docs and tests only, `normal` otherwise;
 - **Files** touched, with the diffstat;
 - **Cost**: tokens and dollars so far, the job budget, and the agent turns;
-- **Agent**: harness and the version its pack installed, model, environment;
+- **Agent**: harness and the version its pack installed, model, environment, and the harness it ran with: the short
+  `harness_digest` (`sha256:abcd1234…`, linking to `/api/jobs/{id}/manifest`) and the lock it was thawed from, if any
+  (each distinct digest with its turns when they differed);
 - **Session**: its name, and how to pull it locally or continue it (`/hangar <message>`);
 - **Recorded demos**: links to video and GIF artifacts the agent handed back;
 - **AI review**: the verdict, who reviewed (harness and model, or the bot's check), the head it reviewed, the number of findings and a link to the review; "pending" until it is in (a PR delivered during a power-down is reviewed after power-up);
@@ -230,6 +238,6 @@ Other modules add kinds of request through `inbox.SOURCES`: a function from the 
 ## References (checked October 2026)
 
 - GitHub REST: [Pulls](https://docs.github.com/en/rest/pulls/pulls) (merge with `sha`: 409 when the head moved; `auto_merge`, `mergeable_state`), [Branches](https://docs.github.com/en/rest/branches/branches), [Branch protection](https://docs.github.com/en/rest/branches/branch-protection) (`dismiss_stale_reviews`, `require_last_push_approval`), [Rules for a branch](https://docs.github.com/en/rest/repos/rules) (`dismiss_stale_reviews_on_push`, `require_last_push_approval`, `required_status_checks`), [Permissions required for GitHub Apps](https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps).
-- GitHub GraphQL: `enablePullRequestAutoMerge` (`pullRequestId`, `expectedHeadOid`, `mergeMethod`) and `disablePullRequestAutoMerge` ([mutations](https://docs.github.com/en/graphql/reference/pulls)). There is no REST route for enabling auto-merge on a PR.
+- GitHub GraphQL: `enablePullRequestAutoMerge` (`pullRequestId`, `expectedHeadOid`, `mergeMethod`, `commitBody`) and `disablePullRequestAutoMerge` ([mutations](https://docs.github.com/en/graphql/reference/pulls)). There is no REST route for enabling auto-merge on a PR.
 - [Automatically merging a pull request](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/automatically-merging-a-pull-request): people with write access enable it; it is disabled when someone *without* write access pushes, which is why hangar disarms on every push itself.
 - [Webhook events and payloads](https://docs.github.com/en/webhooks/webhook-events-and-payloads): the permission each event needs for an App, and the `pull_request` actions (`closed` with `merged`, `synchronize`, `auto_merge_enabled`, `auto_merge_disabled`, `ready_for_review`, …).
