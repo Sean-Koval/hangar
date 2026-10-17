@@ -1169,7 +1169,7 @@ async def _grade(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t:
         _touched(spec, t, child, text)
         await _canary_scan(jobs, job, st, spec, t, child, text)
         check = await _task_check(jobs, job, st, spec, t.task, t.variant, base)
-        grade = await _grade_patch(jobs, job, st, spec, t.task, t.variant, t.key, base, text, grade)
+        grade = await _grade_patch(jobs, job, st, spec, t.task, t.variant, t.key, base, text, grade, trial=child)
         if check.get("invalid"):
             grade["task_invalid"] = True
     except asyncio.CancelledError:
@@ -1181,6 +1181,12 @@ async def _grade(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t:
         t.grade, t.state = mask_canary(grade, g.canary), "done"
         with contextlib.suppress(Exception):
             _save(jobs, job, st)
+        if grade.get("test_run") and "trace.json" in t.stored:  # --- #164: the stored trace gets the grader's run
+            with contextlib.suppress(Exception):
+                from hangar import traces
+
+                export = mask_canary(await traces.export_job(jobs, jobs.get(t.job or "")), g.canary)
+                await asyncio.to_thread(_write, _dir(jobs.settings, job.id, t.ref), {"trace.json": export})
         from hangar import outbox  # --- outbox (#163): grade.json under the trial's last run
 
         outbox.of(jobs.fleet).trial_graded(jobs, job, t)
@@ -1329,7 +1335,7 @@ async def _run_task_check(jobs: JobService, job: Job, st: State, spec: Experimen
 
 async def _grade_patch(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, task: str, variant: str,
                        key: str, base: str | None, text: str, grade: dict[str, Any] | None = None,
-                       tamper: bool = True) -> dict[str, Any]:
+                       tamper: bool = True, trial: Job | None = None) -> dict[str, Any]:
     """The experiment's grader on one patch (a trial's; none, for the base check; the task's reference patch), in a
     clean, sealed sandbox: the pinned base, the patch, the grader's own files (outside the repo unless
     `files_mode: in_repo`), each with the canary. It runs agent-written code beside the hidden tests, so it holds
@@ -1431,6 +1437,9 @@ async def _grade_patch(jobs: JobService, job: Job, st: State, spec: ExperimentSp
                 grade["data"] = jobs.broker.redact(json.loads(raw[:64_000]))
             except ValueError:
                 grade["data_error"] = "$HANGAR_GRADE_OUT isn't JSON (or is over 64 KB)"
+        if trial is not None:  # --- #164: the hidden tests' results as a `grader` TestRun of the trial's job
+            with contextlib.suppress(Exception):
+                grade["test_run"] = record_grader_run(jobs, trial, g, grade, junit).id
     finally:
         grade["seconds"] = round(now() - t0, 1)
         if sb is not None:
@@ -1510,6 +1519,33 @@ async def _run_split(jobs: JobService, prov: Any, sb: Any, g: Grader, key: str, 
     if not st.get("pipe_owner_ok", True):
         tail += "\n[hangar] the grade's pipes weren't the agent's to reopen"
     return int(st.get("exit_code", -1)), tail, out or None, junit or None
+
+
+def record_grader_run(jobs: JobService, trial: Job, g: Grader, grade: dict[str, Any], junit: bytes | None) -> Any:
+    """--- #164: a trial's grade as a `grader` TestRun (testresults.record, the store the verify runs use): the junit
+    `$HANGAR_GRADE_JUNIT` received (what `hangar-grade` writes), read through testreports' size caps; with no report,
+    a run from the exit code alone, `complete: false`. Trusted only with `trust: isolated`: below it, the code under
+    test could have written the report. Its tests are the hidden tests: their ids and messages pass through the broker
+    and the canary mask, and never reach the repo's flaky list. On the trial's job, its last agent turn."""
+    from hangar import testreports, testresults
+
+    results = testreports.Results()
+    if junit:
+        rep = testreports.parse(junit[:MAX_JUNIT], "hidden-junit.xml")
+        results = testreports.merge([rep])
+    else:
+        results.complete = False
+        results.errors.append("the grader wrote no report to $HANGAR_GRADE_JUNIT: its exit code only")
+
+    def redact(text: str) -> str:
+        return mask_canary(jobs.broker.redact(text), g.canary)
+
+    last = next((x.run_id for x in reversed(trial.turns) if x.run_id), None)
+    return testresults.record(jobs.fleet.store, results=results, kind="grader", redact=redact, repo=trial.repo,
+                              environment=trial.environment, job_id=trial.id, session_id=trial.session_id,
+                              turn=len(trial.turns) or None, person=trial.person, command=g.command,
+                              exit_code=grade.get("exit_code"), agent_run_id=last,
+                              trusted=grade.get("trust") == "isolated")
 
 
 def _junit_counts(raw: bytes | None) -> dict[str, Any] | None:
