@@ -1172,6 +1172,7 @@ class SessionService:
         outcomes.mark(turn, *outcomes.classify_turn(outcome, turn.exit_code, raw=raw, harness=turn.harness))  # #166
         if not turn.live and s.sandbox_id and self._alive(s.sandbox_id):  # --- #165: and its end tree
             await gittree.oneshot(self, s, turn, self.fleet.get(s.sandbox_id), turn.run_id, "end")
+            self._save(s)
         if self.env_requests is not None:  # --- computer: the last requests, and screenshots/demos as events
             await self.env_requests.scan(s, turn)
         computer.note_media(self, s, turn)

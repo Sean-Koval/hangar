@@ -189,14 +189,12 @@ def test_driver_tree_lines_become_events():
 
 async def test_one_shot_turns_record_start_and_end_trees_by_exec(tmp_path):
     repo = _repo()
-    appended: list = []
 
     async def exec_(sbid, cmd, **kw):
         r = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True)
         return ExecResult(exit_code=r.returncode, stdout=r.stdout, stderr=r.stderr)
 
-    svc = SimpleNamespace(fleet=SimpleNamespace(exec=exec_),
-                          activity=SimpleNamespace(append=lambda sid, evs: appended.extend(evs)))
+    svc = SimpleNamespace(fleet=SimpleNamespace(exec=exec_))
     turn = SessionTurn(message="go")
     s = Session(name="s", environment="py", turns=[turn])
     sb = SimpleNamespace(id="sb-1", info={"repo_path": str(repo)})
@@ -204,7 +202,9 @@ async def test_one_shot_turns_record_start_and_end_trees_by_exec(tmp_path):
     (repo / "z.py").write_text("z")
     b = await gittree.oneshot(svc, s, turn, sb, "run-00000001", "end")
     assert a and b and a != b and b == _by_hand(repo)
-    assert [e.data["phase"] for e in appended] == ["start", "end"]
-    assert all(e.data["trusted"] is False and e.run_id == "run-00000001" and e.turn == 1 for e in appended)
+    assert turn.git_trees == {"start": a, "end": b, "trusted": False}  # on the turn: the event log is unchanged
+    attrs = traces.tree_attrs([], turn)
+    assert attrs["hangar.git.tree.start"] == a and attrs["hangar.git.tree.end"] == b
+    assert attrs["hangar.git.tree.trusted"] is False
     live = SessionTurn(message="go", live=True)  # the driver hashes a live turn's trees itself
-    assert await gittree.oneshot(svc, s, live, sb, "run-00000002", "start") is None
+    assert await gittree.oneshot(svc, s, live, sb, "run-00000002", "start") is None and live.git_trees is None

@@ -390,13 +390,16 @@ def _tree(ev: RunEvent) -> bool:
     return ev.kind == "progress" and ev.data.get("action") == "tree"
 
 
-def tree_attrs(events: list[RunEvent]) -> dict[str, Any]:
+def tree_attrs(events: list[RunEvent], turn: SessionTurn | None = None) -> dict[str, Any]:
     """--- #165: the turn's `hangar.git.tree.start` / `.end` (the driver's, or hangar's exec for a one-shot turn),
     `hangar.git.tree.skipped` when hashing stopped, and `hangar.git.tree.trusted` (false when any of them came from
     where the agent could write: no uid split)."""
     tr = [ev for ev in events if _tree(ev)]
     if not tr:
-        return {}
+        g = (turn.git_trees if turn is not None else None) or {}  # a one-shot turn's (gittree.oneshot)
+        return {"hangar.git.tree.start": g.get("start"), "hangar.git.tree.end": g.get("end"),
+                "hangar.git.tree.skipped": g.get("skipped"),
+                "hangar.git.tree.trusted": g.get("trusted") is True} if g else {}
     start = next((ev.data.get("tree") for ev in tr if ev.data.get("phase") == "start" and ev.data.get("tree")), None)
     end = next((ev.data.get("tree") for ev in reversed(tr) if ev.data.get("phase") == "end" and ev.data.get("tree")),
                None)
@@ -535,7 +538,7 @@ def _turn_span(x: Export, parent: str | None, s: Session, n: int, turn: SessionT
              "hangar.taint.first_seq": (turn.taint or {}).get("first_seq") if turn.taint else None,
              "hangar.taint.sources": [f"{x.get('kind')}:{x.get('ref')}" for x in (turn.taint or {}).get("sources")
                                       or []] or None,
-             **tree_attrs(events), **_usage_attrs(u), **(extra or {})}
+             **tree_attrs(events, turn), **_usage_attrs(u), **(extra or {})}
     if failed:
         attrs["error.type"] = turn.outcome if turn.outcome != "exited" else "agent_exit_code"
     sp = x.span(key, f"invoke_agent {harness or ''}".rstrip(), turn.started_at, turn.finished_at or now(), attrs,

@@ -832,14 +832,15 @@ class Claude(Harness):
                 if isinstance(c, dict) and c.get("type") == "tool_use" and c.get("name") in _TAINT_WEB:
                     self.drv.taint(f"web:{c.get('name')}")
                 if isinstance(c, dict) and c.get("type") == "tool_use" and c.get("id"):  # --- #165
-                    self.tools[str(c["id"])] = str(c.get("name") or "")
+                    self.__dict__.setdefault("tools", {})[str(c["id"])] = str(c.get("name") or "")
         elif t == "user":  # --- #165: after an edit or shell tool's result, the tree it left
             content = (d.get("message") or {}).get("content")
             for c in content if isinstance(content, list) else []:
                 if isinstance(c, dict) and c.get("type") == "tool_result":
                     tid = str(c.get("tool_use_id") or "")
-                    if self.tools.pop(tid, None) in TREE_TOOLS:
-                        self.drv.trees.point(tool_use_id=tid)
+                    trees = getattr(self.drv, "trees", None)
+                    if self.__dict__.get("tools", {}).pop(tid, None) in TREE_TOOLS and trees is not None:
+                        trees.point(tool_use_id=tid)
         elif t == "control_request":
             self._control(d.get("request_id"), d.get("request") or {})
         elif t == "control_cancel_request":
@@ -1104,8 +1105,9 @@ class Codex(Harness):
             it = exec_item(item)
             if it:
                 self.emit({"type": "item.started" if m == "item/started" else "item.completed", "item": it})
-            if m == "item/completed" and item.get("type") in ("commandExecution", "fileChange"):  # --- #165
-                self.drv.trees.point(tool_use_id=item.get("id"))
+            trees = getattr(self.drv, "trees", None)
+            if m == "item/completed" and item.get("type") in ("commandExecution", "fileChange") and trees:  # #165
+                trees.point(tool_use_id=item.get("id"))
         elif m == "thread/tokenUsage/updated":
             u = p.get("tokenUsage") or {}
             total, last = u.get("total"), u.get("last") or {}

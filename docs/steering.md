@@ -141,7 +141,8 @@ into `hangar.git.tree` on the tool call and `hangar.git.tree.start` / `.end` on 
   agent shares the driver's user and could append a forged `hangar.tree` line: those trees are recorded with
   `trusted: false` (`hangar.git.tree.trusted`), and #179 checks trees again when it replays a prefix.
 - **One-shot turns** (no driver: a harness without a structured mode, or no `python3` in the sandbox) record the start
-  and end trees only, through an exec as the sandbox's user at the turn's start and end, always `trusted: false`.
+  and end trees only, through an exec as the sandbox's user at the turn's start and end, kept on the turn record
+  (`git_trees`, not in its event log), always `trusted: false`.
 
 `HANGAR_LIVE_TURNS=false` turns all of this off: every turn runs one-shot, as before.
 

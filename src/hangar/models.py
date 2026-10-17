@@ -640,6 +640,9 @@ class SessionTurn(BaseModel):
     repair_run_id: str | None = None  # the one extra run that asked for a missing or invalid result
     repair_usage: Usage | None = None  # --- interactions: what that run used (part of the turn's total)
     # --- workstream steer: a live turn runs under hangar's driver (steer, interrupt, approvals)
+    # --- #165: a one-shot turn's start and end trees (gittree.oneshot): {start, end, skipped, trusted}. A live
+    # turn's are `tree` events in its log, from the driver.
+    git_trees: dict[str, Any] | None = None
     live: bool = False
     approval_policy: ApprovalPolicy | None = None
     approvals: list[Approval] = Field(default_factory=list)
