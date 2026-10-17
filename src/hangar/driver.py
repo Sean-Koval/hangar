@@ -1354,7 +1354,6 @@ def main(argv: list | None = None) -> int:
         prompt = f.read()
     out, ctl = Out(), Control(args.ctl)
     drv = Driver(args, out, ctl)
-    drv.trees.point("start")  # --- #165: before the harness can change anything
     h: Harness = (Claude if args.harness == "claude" else Codex)(drv, command)
     drv.harness = h
 
@@ -1367,6 +1366,7 @@ def main(argv: list | None = None) -> int:
     for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         signal.signal(sig, stop)
     gate = Gate.load(out, args)  # --- overnight/autofix
+    drv.trees.point("start")  # --- #165: the harness is up but has no prompt yet: nothing has changed the tree
     h.start(prompt)
     alive = True
     while alive:
