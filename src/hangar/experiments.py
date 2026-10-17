@@ -716,7 +716,7 @@ def _start_trial(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t:
         model=pin["model"], provider=spec.provider, verify=task.verify, deliver="none", context=context,
         keep_minutes=spec.keep_minutes, timeout_minutes=spec.timeout_minutes, budget=spec.trial_budget,
         job_budget=spec.trial_job_budget, idempotency_key=f"experiment:{job.id}:{t.ref}",
-        verify_in_loop=spec.verify_in_loop, autofix="off",
+        verify_in_loop=spec.verify_in_loop, autofix="off", queue_class="eval",  # --- #181
         labels={EXP_LABEL: job.id, TRIAL_LABEL: t.key, VARIANT_LABEL: t.variant, PACKS_LABEL: "selected"})
     try:
         child = jobs._submit(req, Caller(job.requester, job.owner, person=job.person), source="experiment",
@@ -786,6 +786,8 @@ def trial_class(child: Job) -> tuple[str | None, str | None]:
     conditions the others did. Else the job's own class (outcomes.job_class)."""
     from hangar import outcomes
 
+    if child.infra_cut:  # --- #181: hangar ended it on purpose (the power-down)
+        return "infra_error", child.infra_cut
     if (cut := _infra_turn(child)) is not None:
         return "infra_error", cut.infra_reason
     if child.result.outcome_class == "infra_error":
@@ -807,8 +809,10 @@ def _retry(jobs: JobService, st: State, spec: ExperimentSpec, t: Trial) -> Trial
         st.notes.append(f"trial {t.key}: infra_error ({t.infra_reason}) on all {t.attempt} attempts "
                         "(HANGAR_TRIAL_INFRA_RETRIES); it has no counted result")
         return None
-    used = sum(1 for x in st.trials if x.attempt > 1)
-    if used >= infra_retry_cap(st):
+    # --- #181: the scheduled power-down isn't an outage: its retries don't count towards the experiment's cap
+    cut = {x.job for x in st.trials if x.infra_reason == "power_down" and x.job}
+    used = sum(1 for x in st.trials if x.attempt > 1 and x.retry_of not in cut)
+    if t.infra_reason != "power_down" and used >= infra_retry_cap(st):
         n = sum(1 for x in st.trials if x.outcome_class == "infra_error")
         why = (f"{n} trials ended in infra_error (the latest {t.ref}: {t.infra_reason}), and the experiment has used "
                f"the {infra_retry_cap(st)} retries it gets (10% of its trials): probably a provider or cluster "

@@ -130,6 +130,14 @@ class Metrics:
         # person label: labels stay bounded)
         self.awaiting_capacity = Gauge("hangar_jobs_awaiting_capacity", "Queued jobs held for review capacity",
                                        registry=r)
+        # --- #181: the eval queue: each provider's observed token rate and the eval budget; eval jobs held, by why
+        self.eval_tpm = Gauge("hangar_eval_observed_tpm", "Tokens per minute observed per provider (rolling 60 s)",
+                              ["provider"], registry=r)
+        self.eval_budget = Gauge("hangar_eval_tpm_budget", "HANGAR_EVAL_TPM_BUDGET per provider", ["provider"],
+                                 registry=r)
+        self.eval_waiting = Gauge("hangar_eval_jobs_waiting", "Queued eval jobs held by the eval queue, by reason",
+                                  ["reason"], registry=r)
+        self.eval_window = Gauge("hangar_eval_window_open", "1 while the eval window is open", registry=r)
         self._lag_task: asyncio.Task | None = None
         # --- durable: jobs and sessions by state, counted by the store in a worker thread (state_counts)
         self._counts: dict[str, dict[tuple, int]] = {}
@@ -184,11 +192,26 @@ class Metrics:
             from hangar.fairness import awaiting
 
             self.awaiting_capacity.set(len(awaiting(jobs)))
+            if (evalq := getattr(jobs, "evalq", None)) is not None:  # --- #181
+                self._eval(evalq)
         pool = getattr(asyncio.get_running_loop(), "_default_executor", None)
         if pool is not None and hasattr(pool, "_work_queue"):
             self.io_queue.set(pool._work_queue.qsize())
             self.io_threads.set(len(pool._threads))
             self.io_max.set(pool._max_workers)
+
+    def _eval(self, evalq: Any) -> None:
+        st = evalq.status()
+        self.eval_window.set(1 if st["open"] else 0)
+        self.eval_tpm.clear()
+        self.eval_budget.clear()
+        for p, v in st["tpm"].items():
+            self.eval_tpm.labels(self.label("provider", p)).set(v["observed"])
+            if v["budget"] is not None:
+                self.eval_budget.labels(self.label("provider", p)).set(v["budget"])
+        self.eval_waiting.clear()
+        for reason in ("eval_window", "eval_slots", "eval_tpm"):
+            self.eval_waiting.labels(reason).set(sum(1 for w in st["waiting"] if w["reason"] == reason))
 
     def render(self) -> bytes:
         from prometheus_client import generate_latest
