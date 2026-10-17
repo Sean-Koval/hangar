@@ -1,10 +1,16 @@
 # Intake: Jira and GitHub Projects
 
-Work reaches hangar where the team already tracks it. Moving a Jira issue to a status (or giving it a label), or moving an issue to a column on a GitHub Projects board, starts a job on the mapped repo. Hangar keeps the ticket in step as the job runs:
+Work reaches hangar where the team already tracks it. The doors:
+
+- **Jira "Ready for agent"**, the default for planned work: moving an issue to that status in a mapped project starts a job (`hangar setup jira` sets it up). A label works too, as an alternative.
+- **A GitHub label or Projects column**, for repo-local chores: the `hangar` label on an issue, or the *Ready for agent* column on a board.
+- **`@hangar` in Slack**, for unplanned work: kept as it is, and not extended beyond `@hangar adr` ([slack.md](slack.md)).
+
+Write tickets from the [agent ticket template](#agent-tickets). Hangar keeps the ticket in step as the job runs:
 
 | Stage | Jira | GitHub Projects |
 | --- | --- | --- |
-| Queued | a comment saying which job and environment | a comment on the issue |
+| Queued | a comment saying which job and environment, when it starts if the sandbox pools are powered down (01:00-10:00), and a hint when the ticket has no acceptance criteria | a comment on the issue, the same way |
 | Agent started | a comment with a link to the job in hangar; the `started` transition | the `started` column |
 | The agent asks a question | the question as a comment; the `needs_input` transition. A linked teammate's next comment answers it, and the agent picks up where it left off | the question on the issue; the `needs_input` column. `/hangar <answer>` on the issue answers it |
 | Delivered | the outcome with the PR, which is also added as a remote link; the `delivered` transition | the outcome on the issue (the PR says `Closes #N`); the `delivered` column |
@@ -50,6 +56,18 @@ Jira signs each delivery with the secret (`X-Hub-Signature: sha256=<hex HMAC-SHA
 
 ### 3. The configuration
 
+The wizard stores the credentials and writes `HANGAR_JIRA` with the defaults: an issue moved to **Ready for agent** starts a job, and hangar moves it to *In Progress*, *Blocked*, *In Review* or *To Do* as the job goes.
+
+```bash
+hangar setup jira --url https://acme.atlassian.net --email hangar@acme.com --project ABC=acme/api \
+  --token-file jira-token --webhook-secret-file jira-webhook-secret
+#   --trigger-status "Agent ready"     another status
+#   --trigger-label hangar             a label instead (pass both for either)
+#   --status started="Doing"           another status for a stage; --no-statuses leaves the status alone
+```
+
+Run again, it keeps what you don't pass: an existing configuration keeps its trigger and statuses. Create the *Ready for agent* status in the project's workflow first (hangar doesn't create statuses or workflows), with transitions into the stage statuses. The same as a setting:
+
 ```bash
 hangar config set jira '{
   "url": "https://acme.atlassian.net",
@@ -60,10 +78,12 @@ hangar config set jira '{
     "ABC": {"repo": "acme/api"},
     "WEB": {"repo": "acme/web", "components": {"Docs": "acme/docs"}}
   },
-  "trigger": {"status": "Ready for agent", "label": "hangar"},
+  "trigger": {"status": "Ready for agent"},
   "statuses": {"started": "In Progress", "needs_input": "Blocked", "delivered": "In Review", "failed": "To Do"}
 }'
 ```
+
+Alternatively, a label starts jobs: `"trigger": {"label": "hangar"}`, or `{"status": "Ready for agent", "label": "hangar"}` for either. A status is the better door for planned work: it is where the ticket sits on the board, and moving it is a decision someone made.
 
 | Field | Meaning |
 | --- | --- |
@@ -76,7 +96,7 @@ hangar config set jira '{
 | `max_age_minutes` | How old a delivery's `timestamp` may be (120) |
 | `automation_max_transition_age_minutes`, `automation_max_starts_per_issue_per_day` | The [Automation fallback](#fallback-an-automation-rule) only: how recent the issue's trigger transition must be (10), and how many jobs one issue may start a day (3) |
 
-A stage's status can't be the trigger status: hangar would move the issue back into the trigger and start the job again. `hangar doctor` checks the configuration, that the credentials are stored, that the token works (`GET /myself`) and that every mapped repo is allowlisted.
+A stage's status can't be the trigger status: hangar would move the issue back into the trigger and start the job again. `hangar doctor` checks the configuration, that the credentials are stored, that the token works (`GET /myself`) and that every mapped repo is allowlisted, and shows the trigger (`jira trigger`).
 
 ### Fallback: an Automation rule
 
@@ -159,6 +179,19 @@ hangar config set github_projects '{
 The key is `org/project-number` (from the board's URL, `github.com/orgs/acme/projects/7`). `trigger` is the column that starts a job. `status_field` names the single-select field the columns are, if it isn't `Status`. `repos` limits which repos' issues count; empty means any repo in `HANGAR_GITHUB_REPOS`. `statuses` names the column for each stage. Draft items and pull requests on the board are ignored.
 
 When an item moves to the trigger column, hangar reads the item and its issue in one query. It starts the job only if the item is still in that column, so a delivery that arrives late for an item that has moved on does nothing. From then on the job is the issue's job: the comments, `/hangar approve`, `/hangar <answer>` and `Closes #N` work exactly as for a [GitHub issue](jobs.md#4-trigger-from-github).
+
+## Agent tickets
+
+As the work moves to writing tickets an agent can finish, the ticket's shape is the tool. Two templates ship with hangar:
+
+- [`docs/templates/jira-agent-ticket.md`](templates/jira-agent-ticket.md): a Jira description template (paste it, or make it the project's description template);
+- [`docs/templates/github-issue-agent-task.yml`](templates/github-issue-agent-task.yml): a GitHub issue form (copy it to `.github/ISSUE_TEMPLATE/agent-task.yml`; it labels the issue `hangar`, so opening one starts a job).
+
+Both have *Goal*, *Acceptance criteria* (a checklist), *Verify command*, *Out of scope* and *Touches risk paths? (y/n)*. Hangar reads two of them by heading, for Jira, GitHub issues and GitHub Projects alike: Markdown headings, Jira wiki (`h2.`), Jira Cloud's editor (headings and action items), a GitHub issue form's output, or a bold line. Only the first 50 KB of a description is read.
+
+- **Acceptance criteria** go to the agent as their own context file, `acceptance.md`, **fenced as untrusted**: anyone with Edit Issues can rewrite them, so they describe what done looks like and never override the task. Their count is the job's `intake.acceptance` label, for the weekly metrics.
+- **The verify command is a suggestion.** The agent is told it may run it in its turn. It becomes the job's `verify` only when it matches a glob in the repo policy's [`verify_allowed`](repo-policy.md) (`make test*`, `pytest tests/*`), which repo admins own; otherwise hangar's check stays the policy's or the environment's (`verify_source`). Even matched, it runs as the agent's user inside the sandbox.
+- **No criteria, still a job.** A ticket without them starts anyway, and the queued comment adds: "No acceptance criteria found; add them for better results (template: …)", once per job. It is counted as `intake.acceptance = 0`.
 
 ## How deliveries are handled
 

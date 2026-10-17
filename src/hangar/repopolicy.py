@@ -48,7 +48,8 @@ FIELDS = ("verify", "environment", "harness", "model", "budget", "job_budget", "
           "allow_heavy_for_intake",  # --- #124
           "max_open_agent_prs",  # --- review capacity (#159)
           "self_approval",  # --- self-approval (#160)
-          "ai_review", "ai_review_harness", "ai_review_model", "ai_review_budget_usd")  # --- AI review (#161)
+          "ai_review", "ai_review_harness", "ai_review_model", "ai_review_budget_usd",  # --- AI review (#161)
+          "verify_allowed")  # --- #156
 _LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")  # a GitHub login
 
 
@@ -126,6 +127,9 @@ class RepoPolicy(BaseModel):
     ai_review_harness: str | None = None
     ai_review_model: str | None = Field(None, max_length=200)
     ai_review_budget_usd: float | None = Field(None, gt=0, le=100)
+    # --- #156: globs a ticket's own verify command must match to become its job's `verify` (`make test*`,
+    # `pytest tests/*`); otherwise the agent gets it only as a suggestion (intake.apply_ticket)
+    verify_allowed: list[str] | None = Field(None, max_length=50)
     updated_at: float = Field(default_factory=now)
     updated_by: str | None = None
 
@@ -156,6 +160,17 @@ class RepoPolicy(BaseModel):
         out = [x.strip().removeprefix("@") for x in v if x.strip()]
         if bad := [x for x in out if not _LOGIN.match(x)]:
             raise ValueError(f"not GitHub logins: {', '.join(bad[:5])}")
+        return out
+
+    @field_validator("verify_allowed")
+    @classmethod
+    def _allowed(cls, v: list[str] | None) -> list[str] | None:  # --- #156
+        if v is None:
+            return None
+        out = [x.strip() for x in v if x.strip()]
+        if bad := [x for x in out if "\n" in x or len(x) > 200 or x in ("*", "**")]:
+            raise ValueError(f"verify_allowed globs must be one line, at most 200 characters, and narrower than "
+                             f"'*': {', '.join(bad[:3])}")
         return out
 
     @field_validator("verify_reports")
@@ -342,6 +357,7 @@ class PolicyUpdate(BaseModel):
     ai_review_harness: str | None = None
     ai_review_model: str | None = Field(None, max_length=200)
     ai_review_budget_usd: float | None = Field(None, gt=0, le=100)
+    verify_allowed: list[str] | None = None  # --- #156
 
     @field_validator("heavy", mode="before")
     @classmethod

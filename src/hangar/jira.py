@@ -186,7 +186,8 @@ def adf_text(node: Any) -> str:
         a = node.get("attrs") or {}
         return str(a.get("text") or a.get("shortName") or a.get("url") or "")
     inner = adf_text(node.get("content"))
-    return inner + "\n\n" if t in ("paragraph", "heading", "blockquote", "codeBlock", "listItem") else inner
+    return inner + "\n\n" if t in ("paragraph", "heading", "blockquote", "codeBlock", "listItem",
+                                   "taskItem") else inner  # --- #156: a checklist item is a line of its own
 
 
 _INLINE = re.compile(r"`([^`\n]+)`|(https?://[^\s<>()\"']+)")
@@ -974,6 +975,7 @@ class JiraFrontDoor:
                         labels={"jira.issue": key, "jira.project": project, intake.TRACKER: ref,
                                 **autoinstall.kind_labels(svc.settings, [  # --- autoinstall: an env setup
                                     str(x) for x in fields.get("labels") or []])})
+        intake.apply_ticket(svc, req, description, key)  # --- #156: acceptance criteria and a suggested check
         res = intake.submit(svc, req, source="jira", ref=ref, requester=requester, person=person,
                             trusted=person is not None, who=who)
         job = svc._jobs.get(res.get("job") or "")
@@ -990,7 +992,8 @@ class JiraFrontDoor:
             else:
                 note = (f"Queued as hangar job `{job.id}` in `{job.environment}` on {parse_repo(url) or url}. "
                         "I'll comment here when the agent starts and again with the result."
-                        + fairness.queued_note(svc, job))  # --- review capacity (#159)
+                        + fairness.queued_note(svc, job)  # --- review capacity (#159)
+                        + intake.queued_notes(svc, job, "jira"))  # --- #156
             svc._spawn(notify(svc, job, ref, note, "note"))
         return res
 
@@ -1141,6 +1144,9 @@ async def doctor_checks(h: Any, transport: httpx.AsyncBaseTransport | None = Non
             finally:
                 await api.close()
     out += automation_checks(h, cfg, stored)
+    door = " or ".join(f"{k} '{v}'" for k, v in (("status", cfg.trigger.status), ("label", cfg.trigger.label)) if v)
+    stages = ", ".join(f"{k} -> {v}" for k, v in cfg.statuses.model_dump().items() if v) or "the status is left alone"
+    out.append(_check("jira trigger", True, f"an issue reaching {door} starts a job; {stages}"))  # --- #156
     for project, p in cfg.projects.items():
         for name, repo in [(project, p.repo), *((f"{project} component {c}", r) for c, r in p.components.items())]:
             ok = bool(h.jobs.repo_envs(_repo_url(repo)))
