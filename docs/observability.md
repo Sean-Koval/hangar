@@ -222,7 +222,7 @@ cloud doctor: 2 open finding(s); last run 9h ago (done)
 
 | Section | What it holds | Source |
 | --- | --- | --- |
-| `power`, `last_deploy` | the sandbox pools' state and when they're back; the last deploy.yml result | [power.py](../src/hangar/power.py) |
+| `power`, `last_deploy` | the sandbox pools' state and when they're back; the last deploy.yml result | [power.py](https://github.com/Sean-Koval/hangar/blob/main/src/hangar/power.py) |
 | `loops` | each background loop's last pass, interval and failures (`ops` is the console's own) | `hangar_loop_last_tick_timestamp` |
 | `harnesses` | each agent CLI's locked version and the version each provider's pack installed; `behind` names providers whose pack differs | `harnesses.lock.yaml`, pack builds |
 | `builds` | environment images, harness packs and repo builds running now, with how long | the fleet, [envbuilds](environments.md) |
@@ -230,8 +230,8 @@ cloud doctor: 2 open finding(s); last run 9h ago (done)
 | `egress_denies` | the last 24 hours' denies by host: count (suppressed ones included), sandboxes, environments | the audit log |
 | `requests` | secret and egress requests agents filed that wait for an answer | [env requests](computer-use.md) |
 | `slo` | p50/p95 over 24 hours against the targets below | in memory, saved every minute |
-| `credentials` | [credential health](#credential-health): counts, what needs renewing, pools | [credhealth.py](../src/hangar/credhealth.py) |
-| `models` | what jobs run on by default (`balanced`, the id it resolves to and its list price), the job budget and daily cap that bound it, and the repos whose policy caps them; `NO job budget or daily cap` until one is set, which `hangar doctor` also warns about (`model spend`) | [modelpolicy.py](../src/hangar/modelpolicy.py) |
+| `credentials` | [credential health](#credential-health): counts, what needs renewing, pools | [credhealth.py](https://github.com/Sean-Koval/hangar/blob/main/src/hangar/credhealth.py) |
+| `models` | what jobs run on by default (`balanced`, the id it resolves to and its list price), the job budget and daily cap that bound it, and the repos whose policy caps them; `NO job budget or daily cap` until one is set, which `hangar doctor` also warns about (`model spend`) | [modelpolicy.py](https://github.com/Sean-Koval/hangar/blob/main/src/hangar/modelpolicy.py) |
 | `nightly`, `doctor` | the nightly pass and the [Cloud Doctor](doctor.md)'s last run and open findings | |
 | `log` | the last 50 warnings and errors hangar logged | in memory |
 

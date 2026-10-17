@@ -76,7 +76,9 @@ $("#signout").addEventListener("click", () => { store.token = ""; showGate(); })
 
 /* ------------------------------------------------------------------ routing */
 function route() {
-  const v = (location.hash || "#fleet").slice(1);
+  const [v, q] = (location.hash || "#fleet").slice(1).split("?");
+  const linked = new URLSearchParams(q || "").get("job");  // #jobs?job=<id>: the inbox's links (#157)
+  if (v === "jobs" && linked) state.selectedJob = linked;
   state.view = ["jobs", "sessions", "fleet", "environments", "credentials", "snapshots", "connect", "activity", "usage"].includes(v) ? v : "fleet";
   $$(".view").forEach((s) => (s.hidden = s.id !== `view-${state.view}`));
   $$(".rail a[data-view]").forEach((a) => a.classList.toggle("active", a.dataset.view === state.view));

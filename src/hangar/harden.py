@@ -148,6 +148,9 @@ def plan(fleet: Any, sb: Sandbox, h: Harness, run_id: str, wd: str, env: dict[st
         from hangar import experiments  # --- interfaces: a trial's variant may replace the instructions
 
         spec = experiments.effective_spec(fleet, sb, spec)
+        from hangar import harness_thaw  # --- #221: or the harness lock it was mounted from
+
+        spec = harness_thaw.effective_spec(fleet, sb, spec)
         settings = claude_settings(spec, fleet.settings.sandbox_user, env.get(CLAUDE_ENV))
         seeded = plugins.enabled(spec, h.name)  # --- #136: what the read-only seed has
         wanted = settings.pop("enabledPlugins", None)

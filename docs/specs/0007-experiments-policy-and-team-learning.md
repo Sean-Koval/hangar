@@ -1,6 +1,6 @@
 # 0007: Experiments, enforced policy, MCP gateway and team learning
 
-Status: draft · Date: 2026-10-12 · Builds on: 0003 (gateway, egress), 0004 (performance, supervisor), 0005 (traces, decisions, evals), 0006 (environments, harness packs) · Evidence: the semver harness eval of 2026-10-12 (`evals/semver/`, PR #28)
+Status: deferred (2026-10-15): the MCP gateway, the `policy:` block and labels are not scheduled; experiments shipped in [0014](0014-sister-tool-interfaces.md)'s shape (#114); §5.4–5.6 moved to flightdeck (decision 17). Was: draft. · Date: 2026-10-12 · Builds on: 0003 (gateway, egress), 0004 (performance, supervisor), 0005 (traces, decisions, evals), 0006 (environments, harness packs) · Evidence: the semver harness eval of 2026-10-12 (`evals/semver/`, PR #28)
 
 > Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins.
 
@@ -121,6 +121,8 @@ The resolved policy, with defaults filled in and the hash of each part, is store
 
 ### 5.4 Experiments (A/B testing with environments)
 
+> **Moved to flightdeck (2026-10-15, decision 17).** Hangar keeps the experiment job kind it built ([0014 §4](0014-sister-tool-interfaces.md#4-experiment-jobs-hangarexperimentv1)); analysis, reports and graded-task formats are flightdeck's. Kept for history.
+
 **Variant.** A base environment plus an overlay, with everything pinned. The variant id is the hash of the resolved spec, image digest, pack digests, harness version, model id and thinking level, policy hash and instructions/skills hashes.
 
 ```yaml
@@ -153,6 +155,8 @@ Rules, extending 0005 §5.8:
 **As built ([0014 §4](0014-sister-tool-interfaces.md#4-experiment-jobs-hangarexperimentv1)):** `run_experiment` is a `kind: experiment` job (`POST /api/experiments`, `hangar experiment run`; on MCP a resource only, the tool list being at its cap). It implements rules 1–3 and 6 as runtime: only the overlay differs (each trial mounts only its harness's pack and exactly its variant's skills and instructions; egress is fixed per experiment; the manifests' `config_digest` flags drift), grading runs outside the agent's reach (an external grader command in a clean sandbox, on the trial's patch), trials are interleaved and concurrent, and budgets bound the spend. Its output is an index of trials, `hangar.experiment/v1`. Rules 4 and 5 (paired analysis, effect sizes, saturated tasks) and `experiment_report` are the sister tool's.
 
 ### 5.5 Traces, labels and lifecycle links
+
+> **Moved to flightdeck (2026-10-15, decision 17).** Hangar keeps the stream parsers (`src/hangar/events.py`) and the trace export (`hangar.trace/v1`, [0014 §3](0014-sister-tool-interfaces.md#3-trace-export-hangartracev1)); labels and lifecycle analysis are flightdeck's. Kept for history.
 
 **One span schema** across harnesses: 0005's `run_events` and `traces.db`, with OpenTelemetry GenAI-style attribute names (`gen_ai.request.model`, `gen_ai.usage.*`).
 
@@ -197,6 +201,8 @@ Agreement per labeler versus the gold set (Cohen's κ, calibration curves) is sh
 - **Environment-fix and instruction suggestions:** 0005 §5.8, now with labels as evidence ("dependency-fight in 6 of 9 runs on env X").
 
 ### 5.6 Team learning: capturing how we work
+
+> **Moved to flightdeck (2026-10-15, decision 17).** Team learning is flightdeck's, over hangar's interfaces. Kept for history.
 
 The idea: practices that work are observed in traces and outcomes, proposed as code, tested in experiments, and adopted by review.
 
@@ -245,7 +251,7 @@ Sizes: S ≤ 1 day, M ≈ 2–3 days, L ≈ 4–6 days.
 | M3 | `policy:` block, schema and resolution, stored on runs; `packs: selected`; budgets in the run watcher | M | 0001 M2 |
 | M4 | Harness permission rendering for four harnesses; model allowlist | M | M3 |
 | M5 | MCP gateway sidecar (Docker MCP gateway or own), credentials out of the sandbox, tool allowlists, `mcp.call` spans; E2B native mapping | L | M3, 0003 M2 |
-| M6 | Parsers for Codex, pi and Antigravity into `run_events` (from `evals/semver/spans.py`) | M | 0001 M3 |
+| M6 | Parsers for Codex, pi and Antigravity into `run_events` (from `evals/semver/spans.py`). **Built in another shape: `src/hangar/events.py` parses Claude Code, Codex, pi and Antigravity streams (`Parser`, `FORMATS`); `evals/semver/spans.py` is no longer the starting point and moves to flightdeck (#145).** | M | 0001 M3 |
 | M7 | `run_experiment`: variants and overlays, pinning, interleaving, grader injection ~~, paired report~~; absorbs 0005 M10. **Built as the experiment job kind (0014); the paired report moved to the sister tool.** | L | M1, M3, M6 |
 | M8 | Label taxonomy, rules and Decision-1 cascade, gold-set labeling UI, κ dashboard. **Moved to the sister tool (0014), on hangar's trace export.** | L | 0005 M4–M5, M6 |
 | M9 | Lifecycle links: ticket and objective refs, outcome back-propagation (merge, review rounds, revert) | M | 0002 M2 |

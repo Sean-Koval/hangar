@@ -337,6 +337,8 @@ class Outbox:
 
     def trial_graded(self, jobs: JobService, experiment: Job, t: Any) -> None:
         """experiments._grade: the trial's grade, under its job's last run (it may arrive after run.json)."""
+        from hangar import testresults, traces
+
         try:
             if not self.enabled or not t.job or t.grade is None:
                 return
@@ -349,6 +351,12 @@ class Outbox:
             prefix = run_prefix(child.session_id, run.run_id, (st.finished_at or st.started_at) if st else None)
             grade = {"schema": "hangar.grade/v1", "experiment_id": experiment.id, "trial_key": t.key,
                      "job_id": child.id, "session_id": child.session_id, "run_id": run.run_id, **t.grade}
+            if (tr := self.store.get(testresults.TestRun, t.grade.get("test_run") or "")) is not None:
+                # --- #164: the grader's TestRun, as tests.json carries a turn's (`counted` included)
+                grade["tests"] = {"runs": [testresults.view(tr, cases=True)],
+                                  "events": [{"name": e["name"], "timeUnixNano": traces._ns(e["time"]),
+                                              "attributes": traces._attrs(e["attributes"])}
+                                             for e in testresults.trace_events(tr, limit=testresults.FAILING_KEPT)]}
             self._stage(run_key(child.session_id, run.run_id), prefix, {"grade.json": grade},
                         session_id=child.session_id, run_id=run.run_id, job_id=child.id)
             self._kick()
@@ -469,7 +477,7 @@ class Outbox:
         if job is not None and job_turn is not None:
             return [r for r in testresults.runs_of(self.store, job_id=job.id)
                     if r.turn == job_turn and r.attempt is None and r.kind in ("verify", "rerun", "in_turn")]
-        return [r for r in testresults.runs_of(self.store, session_id=s.id) if r.turn == n and r.job_id is None]
+        return testresults.turn_runs(self.store, s, n)  # --- #164: by the run's id (older runs: the turn's number)
 
     def run_record(self, s: Session, n: int, *, job: Job | None, job_turn: int | None, attempt: Attempt | None,
                    manifest_doc: dict[str, Any] | None, runs: list[Any], patch: dict[str, Any] | None,

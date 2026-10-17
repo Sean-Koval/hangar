@@ -104,10 +104,12 @@ into its own `prs` table (Sean-Koval/flightdeck#6). The lifecycle facts hangar k
   ([jobs.md](../jobs.md#8-test-results)) with `cases`, every case's outcome by test id (not only the failures);
   `events` are their `test.run` and `test.case` span events in OTLP/JSON span-event form (`name`, `timeUnixNano`,
   `attributes` as OTLP key-values), exactly what `GET /api/jobs/{id}/tests?format=otel` describes, so a trace
-  flattener reads them unchanged.
+  flattener reads them unchanged. Each run has `counted` ([traces.md](traces.md#test-results): the field predicates
+  use) and `agent_run_id`; a session turn's runs are those recorded with its run id (#164).
 - **`grade.json`** (`hangar.grade/v1`): the trial's grade as the experiment index has it (`command`, `exit_code`,
   `applied`, `seconds`, `trust`, `hidden_tests`, `data` from `$HANGAR_GRADE_OUT`, ...) with `experiment_id`,
-  `trial_key`, `job_id`, `session_id` and `run_id`.
+  `trial_key`, `job_id`, `session_id` and `run_id`. `test_run` names the grader's `grader` TestRun and `tests` holds
+  it in `tests.json`'s shape (`runs` with every case, `events`), trusted only for `trust: isolated` (#164).
 - **`patch.diff`**: the run's work against the commit the turn started on (`start_sha`): commits, uncommitted
   changes and untracked files (as `get_session_patch` computes it), read from the sandbox as the turn ends. Changes
   left uncommitted by an earlier turn appear again. Absent when the sandbox was gone.

@@ -47,7 +47,8 @@ hangar setup slack --manifest slack-app.yaml
 4. **Check the setup** with `hangar doctor`. It checks:
    - that both credentials are stored;
    - that the bot token works (`auth.test`);
-   - that every mapped channel points at a repo in `HANGAR_GITHUB_REPOS`.
+   - that every mapped channel points at a repo in `HANGAR_GITHUB_REPOS`;
+   - that the bot token has `im:write`, for [inbox DMs](#inbox-dms), and who has no linked Slack account to get them.
 
 ## Settings
 
@@ -82,6 +83,10 @@ Under hangar's "Continuing hangar job …" answer to a thread reply, three butto
 - Only the person who sent the reply can classify it. Anyone else's click gets a private ("only you can see this") refusal.
 - Buttons come only on the acknowledgement of a person's reply, never on hangar's own status posts.
 - Clicks arrive at `POST /api/hooks/slack/interactions` (the manifest's *Interactivity* request URL). They are verified like events and commands: the signing secret, the 5-minute timestamp window, the body size cap, and a replay guard (a second copy of a signed click is ignored). An app created before this needs *Interactivity & Shortcuts* turned on with that URL.
+
+## Inbox DMs
+
+Hangar also DMs people what needs them ([the inbox](landing.md#delivery-it-comes-to-you)): each new question or approval of their agents at once, and a digest at 10:15 and 16:00. It opens the DM with `conversations.open` and posts with `chat.postMessage`, so the app needs the **`im:write`** bot scope (in the [manifest](slack-app-manifest.yaml); an app installed before it needs the scope added and a reinstall). `hangar doctor` warns when the bot token lacks it. A DM goes to a person's linked Slack account (`hangar person link <id> slack T…/U…`); settings per person are `hangar person set <id> --dm off|questions|all --tz … --digest … --quiet …` ([team.md](team.md#inbox-delivery-dms-and-the-digest)). DM text is escaped and redacted like thread posts, and links to the thread, ticket or PR where the answer is given; there are no buttons in it.
 
 ## Security notes
 

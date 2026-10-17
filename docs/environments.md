@@ -1,10 +1,10 @@
-# Environments that live with the repo
+# Environments: the spec, and what the repo says about itself
 
 An agent is only as good as the computer it gets. When the dependencies aren't installed, the database isn't up or
 the dev server died an hour ago, the output just gets weaker, and people blame the model. Hangar's environment specs
-(`envs/*.yaml`, [spec 0006](specs/0006-environments-and-harness-packs.md)) describe the machine: the image, the
-harnesses, the credentials. This page covers what the **repo** says about itself, in a file committed next to its
-code:
+(`envs/*.yaml`, [spec 0006](specs/0006-environments-and-harness-packs.md); [the reference below](#environment-specs))
+describe the machine: the image, the harnesses, the credentials. The rest of this page covers what the **repo** says
+about itself, in a file committed next to its code:
 
 - **`.hangar/environment.yaml`**: how to install the repo's dependencies, what to start, which long-running processes
   to keep up, and which check proves a change works.
@@ -16,6 +16,48 @@ code:
 - **Preview ports**: the sandbox's owner opens a declared port in their browser, through hangar, never publicly.
 - **The heavy tier**: Docker inside a VM of the sandbox's own, Compose stacks under the supervisor, and bigger
   resource profiles, for repos that test with `docker compose` or Testcontainers ([below](#the-heavy-tier)).
+
+
+## Environment specs
+
+Specs are YAML files in `envs/`. They can `extend` each other: maps merge by key (`null` deletes one), lists replace the parent's (`skills`, `harnesses`, `credentials`, ...) except the additive build inputs `tools.apt` and `dependencies.pip`/`npm`, which union, and `skills_remove: [name]` drops an inherited skill ([how `extends` merges](#how-extends-merges)). The full design is [spec 0006](specs/0006-environments-and-harness-packs.md). A repo can describe its own steps in a committed `.hangar/environment.yaml` (`install`, `start`, `terminals`, `verify`): hangar builds it ahead of time and agents start with dependencies installed and dev servers supervised ([below](#the-file)).
+
+```yaml
+name: my-service
+extends: python                    # bare + Python 3.12/uv/ruff/pytest; bare = Ubuntu + git/gh/tmux/rg
+harnesses: [claude-code, codex]    # agents this env allows: claude-code, codex, pi, antigravity
+default_harness: claude-code
+model: { claude-code: frontier, codex: balanced }  # per harness, or one: a policy or a pinned id (harnesses.md)
+tools:
+  apt: [postgresql-client]
+  mise: { go: "1.23" }
+dependencies:
+  pip: [ruff, pytest]              # installed with `uv tool install`
+  npm: [pnpm]
+  script: |                        # runs as the sandbox user
+    curl -fsSL https://example.com/install.sh | bash
+skills:
+  - path: skills/repo-conventions  # copied into ~/.claude/skills and ~/.codex/skills
+  - git: https://github.com/org/skills#review@main
+agent_config:
+  instructions: |                  # written to each allowed harness's global instructions file
+    Run `make test` before you finish.
+files:
+  .config/foo/config.toml: "key = 1"
+repo:
+  url: https://github.com/me/my-service.git
+  branch: main
+  setup: uv sync                   # after clone
+  bake: false                      # true = clone + setup at build time, for instant claims
+credentials: [claude-api, codex-api, gh]  # each sandbox gets its harness's ones, plus non-agent ones (git)
+secrets: { SENTRY_TOKEN: sentry }  # env var <- credential, injected at claim
+mcp:                               # written in each harness's own config format at claim
+  sentry: { url: "https://mcp.sentry.dev/mcp", headers: { Authorization: "Bearer ${SENTRY_TOKEN}" } }
+resources: { cpus: 4, memory_gb: 8 }
+warm_pool: 2                       # keep two pre-started
+```
+
+`hangar env render my-service` prints the generated Dockerfile. `hangar pack render codex` prints a harness pack's build, and `hangar pack publish claude-code codex pi antigravity` builds and pushes packs from your machine when the server has no builder.
 
 ## How `extends` merges
 
@@ -651,7 +693,7 @@ plugins:
 
 ## MCP servers and trust
 
-An environment's `mcp:` servers are written into each harness's own config at claim ([guide.md](guide.md)). Each
+An environment's `mcp:` servers are written into each harness's own config at claim ([environment specs](#environment-specs)). Each
 server can say whether its tool results can carry text nobody you trust wrote:
 
 ```yaml

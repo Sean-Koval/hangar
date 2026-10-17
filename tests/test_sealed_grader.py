@@ -403,6 +403,13 @@ async def test_a_grade_runs_from_the_pristine_copy_and_records_its_signals(fleet
     assert g["tamper_signals"] == [{"path": "conftest.py", "kind": "conftest"}]
     assert g["exit_code"] == 1 and g["data"] == {"rc": 1}, g  # the forging conftest didn't make it pass
     assert g["hidden_tests"]["failed"] == 1 and g["hidden_tests"]["total"] == 1
+    # --- #164: the hidden tests as a `grader` TestRun of the trial's job, linked from the grade; not trusted below
+    # `trust: isolated` (no uid split here)
+    from hangar import testresults
+
+    run = fleet.store.get(testresults.TestRun, g["test_run"])
+    assert run.kind == "grader" and run.job_id == child.id and run.counts["total"] == 1 and run.n_failing == 1
+    assert run.trusted is False and testresults.counted(run) is False
     graders = [x for x in fleet.list(include_stopped=True) if x.labels.get(experiments.GRADER_LABEL) == exp.id]
     # the trial's grader, and (#127) the task's base check before it: both sealed and locked
     assert len(graders) == 2 and all(x.info["sealed"] == {"locked": True} for x in graders)

@@ -193,9 +193,13 @@ plugins:
 - **Identity.** The manifest's `plugins` section lists each declared plugin: `name`, `marketplace`, `version`, the
   `path` it loads from under the seed, a `digest` of its marketplace entry and directory as declared, `enabled`,
   `effective` (whether hangar's settings load it for that harness, hardened turns included) and `source: seed`. It is
-  part of `harness_digest`, so a plugin's change is a harness change; Claude Code's writable caches in `~/.claude`
-  are not inputs. A turn's probe also records whether each plugin's directory is in the sandbox
-  (`probe.plugins`), which tells an image built before the plugin was added.
+  part of `harness_digest` (by `{name, marketplace, digest, enabled}`: not its path or version), so a plugin's change
+  is a harness change; Claude Code's writable caches in `~/.claude` are not inputs. A turn's probe also records
+  whether each plugin's directory is in the sandbox (`probe.plugins`), which tells an image built before the plugin
+  was added.
+- **Locks** (#221). A harness lock pins each plugin as `plugin:<name>@<marketplace>` with its files, and a session
+  or job thawed from the lock gets them as the seed at claim instead of the image's, so an environment without the
+  plugin runs it ([harness-lock.md](harness-lock.md#thaw-and-drift)).
 
 What Claude Code does with the seed was verified with 2.1.296 (`tests/test_harden_real_clis.py`: the seed plugin's
 skill and hook load in `auto` and `deny-risky` turns with their path under the seed, an agent-written plugin with a

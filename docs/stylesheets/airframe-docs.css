@@ -159,3 +159,14 @@ body { background: var(--af-canvas); }
 .af-tool b { font-family: var(--af-f-display); font-stretch: var(--af-display-stretch); font-weight: 700; font-size: .9rem; }
 .af-tool small { font-family: var(--af-f-mono); font-size: .58rem; letter-spacing: var(--af-label-track); text-transform: uppercase; color: var(--af-fg-subtle); }
 .af-tool span { color: var(--af-fg-muted); font-size: .72rem; line-height: 1.5; }
+
+/* footer: on the canvas, separated by a rule */
+.md-footer, .md-footer-meta { background: var(--af-canvas); }
+.md-footer-meta { border-top: 1px solid var(--af-line); }
+.md-copyright, .md-footer-meta a { color: var(--af-fg-subtle); }
+
+/* figures: full column width (the theme otherwise shrinks figures to fit their content) */
+.md-typeset figure.af-figure { width: 100%; max-width: 100%; display: block; }
+.md-typeset figure.af-figure > svg, .md-typeset figure.af-figure > img { width: 100%; height: auto; display: block; }
+.md-typeset figure.af-figure figcaption { font-style: normal; max-width: none; }
+.md-typeset figure.af-figure figcaption a { color: var(--af-fg-muted); }

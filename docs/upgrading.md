@@ -2,6 +2,8 @@
 
 Guides, newest first:
 
+- [**The repo-conventions hand-off**](#the-repo-conventions-hand-off-143) (#143): prebuild the images that bake the
+  skill in.
 - [**Claude Code plugins from a seed**](#claude-code-plugins-from-a-seed-136) (#136): nothing to do unless you want plugins.
 - [**The safe release**](#the-safe-release-120132) (#120–#132): secure defaults for intake jobs, API keys for
   automated work, one approval rule, sealed graders, taint gates, new manifest fields and the `extends` merge rules.
@@ -11,7 +13,19 @@ Guides, newest first:
 - [**This release**](#upgrading-to-the-team-release-75117) (#75–#117): one ordered procedure for everything since the overnight stack. Wave 1 (#75–#90): one hangar for a team of six at ~60 sessions, people and per-person credentials, front-door defaults and job budgets, the reconciler, the MCP deadline contract, and images built before anyone waits. Wave 2 (#91–#100): team credentials and linked accounts, Jira and GitHub Projects intake, egress allowlists, secret scanning and short-lived cloud credentials, a computer for every agent, environments that live with the repo, an approval that lands the PR, the always-on control plane and gated deploys. Wave 3 (#101–#110): review-round trust and the stale-approval gate, egress closed further (no ECH, read-only package mirrors, pushes scanned in the gateway), history out of memory, a rotatable vault key, repo builds that pass on less, the operator console and the Cloud Doctor, the harness canary and `frontier` models, agent-led environment setup, and the acceptance suite for all of it; then least privilege for jobs and builds, CI/CD setup and the infra states (#111–#113). Wave 4 (#114–#117): heavy development environments (Docker inside a VM of the sandbox's own on the heavy tier, deny by default for a repo's own request, and bigger resource profiles), warm dependency and compile caches, structured test results from every check, and the sister tool's three interfaces (harness manifests, trace export, experiment jobs).
 - [**The overnight stack**](#upgrading-from-before-the-overnight-stack-4869) (#48–#69), for a hangar older than that. Do its backup and read its defaults first, then follow this release's procedure: its prebuild also covers the overnight guide's "republish the Codex pack" step.
 
-Both are written for the GKE install from [gke.md](gke.md): one zonal cluster, gVisor sandboxes, the control plane with SQLite on the `hangar-data` PVC, checkpoints in the session bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / `power.sh`. [CHANGELOG.md](../CHANGELOG.md) lists what each adds.
+Both are written for the GKE install from [gke.md](gke.md): one zonal cluster, gVisor sandboxes, the control plane with SQLite on the `hangar-data` PVC, checkpoints in the session bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / `power.sh`. [CHANGELOG.md](https://github.com/Sean-Koval/hangar/blob/main/CHANGELOG.md) lists what each adds.
+
+## The repo-conventions hand-off (#143)
+
+The `repo-conventions` skill told the agent to put its hand-off summary in its final message, while the job prompt
+asks for `RESULT.md` in the job's directory. Its step 5 now says the same as the prompt: `hangar-agent done
+"<summary>"` or the task's `RESULT.md` path, never the repo, and the final message only when the task names neither.
+
+The skill is baked into the images of `claude-python`, `codex-node`, `polyglot` and `hangar` (and any environment that
+lists it), so their image tags change once, as they did for #82: prebuild with `hangar images plan` / `hangar images
+build` before the rollout. Their manifests' `harness_digest` changes too (the skill is part of the harness), so a
+harness lock frozen from one of them before this release reports drift when thawed there
+([harness locks](harness-lock.md)): freeze it again after the rollout.
 
 ## Claude Code plugins from a seed (#136)
 
@@ -776,7 +790,7 @@ The deploy needs `get`, `list`, `watch` and `patch` on the `hangar` Deployment (
 
 ## Upgrading from before the overnight stack (#48–#69)
 
-This guide takes a hangar that runs the version before the overnight stack (main at `2e3e0a3`, "Merge pull request #43") to the top of the stack, PRs #48–#69. From there, continue with [this release](#upgrading-to-the-team-release-75117). It is written for the GKE install from [gke.md](gke.md): one zonal cluster, gVisor sandboxes, the control plane with SQLite on the `hangar-data` PVC, checkpoints in the session bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / `power.sh`. [CHANGELOG.md](../CHANGELOG.md) lists what the stack adds.
+This guide takes a hangar that runs the version before the overnight stack (main at `2e3e0a3`, "Merge pull request #43") to the top of the stack, PRs #48–#69. From there, continue with [this release](#upgrading-to-the-team-release-75117). It is written for the GKE install from [gke.md](gke.md): one zonal cluster, gVisor sandboxes, the control plane with SQLite on the `hangar-data` PVC, checkpoints in the session bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / `power.sh`. [CHANGELOG.md](https://github.com/Sean-Koval/hangar/blob/main/CHANGELOG.md) lists what the stack adds.
 
 Checkpoints are in the bucket only if `hangar-site` names it, as terraform's comment on the bucket says to. Check before you start; a few things below differ when it prints nothing:
 

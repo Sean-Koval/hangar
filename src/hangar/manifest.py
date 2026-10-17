@@ -58,10 +58,11 @@ CONFIG_SECTIONS = ("harness", "model", "instructions.global", "skills", "mcp_ser
                    "environment.name", "environment.image", "environment.spec_digest", "resources")
 # harness_digest: the prefix and binding layer, everything a harness author controls. Declared skills and
 # instructions, not effective ones: drift is effective != declared. model.id is the concrete id (never a policy).
-# `plugins` (#136): the environment's seed plugins, null without any. `a[*].{x,y}` keeps fields x and y of each item
-# of list a.
+# `plugins` (#136): the environment's seed plugins, null without any; only what identifies each (#221: not its path
+# or version, so a harness lock's plugin, mounted from the lock, has the same identity). `a[*].{x,y}` keeps fields x
+# and y of each item of list a.
 HARNESS_SECTIONS = ("harness.name", "harness.locked", "model.id", "instructions.global.declared.digest",
-                    "skills.declared[*].{name,digest}", "plugins",
+                    "skills.declared[*].{name,digest}", "plugins[*].{name,marketplace,digest,enabled}",
                     "mcp_servers[*].{name,transport,url,headers,env,command,args}", "hooks[*].{event,source,digest}",
                     "permissions.approvals")
 # environment_digest: what the sandbox is.
@@ -273,6 +274,9 @@ def build(fleet: Fleet, spec: EnvSpec, harness: str | None, *, s: Session | None
         from hangar import experiments
 
         spec = experiments.effective_spec(fleet, sb, spec)
+        from hangar import harness_thaw  # --- #221: or the harness lock it was mounted from
+
+        spec = harness_thaw.effective_spec(fleet, sb, spec)
     h = HARNESSES.get(harness or "")
     info = sb.info if sb is not None else {}
     # model: the session's pinned id; else the environment's, resolved as a new sandbox would be
@@ -465,8 +469,10 @@ def start_probe(svc: SessionService, s: Session, sb: Sandbox) -> asyncio.Task[di
     async def run() -> dict[str, Any]:
         home = f"/home/{svc.settings.sandbox_user}"
         try:
-            try:  # --- #136: the environment's seed plugins too
-                spec: EnvSpec | None = svc.fleet.catalog.get(s.environment)
+            try:  # --- #136: the environment's seed plugins too (#221: or the harness lock's it was mounted from)
+                from hangar import harness_thaw
+
+                spec: EnvSpec | None = harness_thaw.effective_spec(svc.fleet, sb, svc.fleet.catalog.get(s.environment))
             except Exception:  # noqa: BLE001 - no plugins to look for, the rest is read
                 spec = None
             res = await svc.fleet.exec(sb.id, probe_script(sb.info.get("repo_path"), home, s.harness, spec),
