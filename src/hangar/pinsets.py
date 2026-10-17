@@ -250,6 +250,9 @@ class TrialsRequest(BaseModel):
     # --- #180: reuse cached trials of the same key when it has at least min_trials counted ones
     reuse: Reuse | None = None
     task_digest: str | None = Field(None, max_length=100)  # flightdeck's own; default computed (trialcache)
+    # --- #183: a shadow's real job, and the eval author (the harness owner) its trials count against
+    shadow_of: str | None = Field(None, max_length=40)
+    author: str | None = Field(None, max_length=100)
 
     @field_validator("task")
     @classmethod
@@ -273,7 +276,8 @@ class TrialsRequest(BaseModel):
         return Budget.model_validate(v) if v is not None else None
 
 
-def start_trials(jobs: JobService, req: TrialsRequest, caller: Any, sentinel: bool = False) -> dict[str, Any]:
+def start_trials(jobs: JobService, req: TrialsRequest, caller: Any, sentinel: bool = False,
+                 untrusted_source: str | None = None) -> dict[str, Any]:
     """The trials of `req`, as an experiment job whose one variant is the pin set (it runs, grades, retries and drift-
     checks them). Returns {"trial_ids", "cached", "experiment", "pin_set", "cache_parts"}. --- #180: with `reuse`,
     cached trials of the same key stand in for new ones; `sentinel` runs bypass the cache both ways."""
@@ -313,10 +317,12 @@ def start_trials(jobs: JobService, req: TrialsRequest, caller: Any, sentinel: bo
         return out
     try:
         spec = _trials_spec(experiments, req, p, task, tp, vname).model_copy(update={
-            "trials": need, "task_digests": {task.id: td}, "cache_record": not sentinel})
+            "trials": need, "task_digests": {task.id: td}, "cache_record": not sentinel,
+            "shadow_of": req.shadow_of, "author": req.author})
     except ValidationError as e:
         raise JobError(str(e)) from e
-    job = experiments.submit(jobs, spec, caller, source="api")
+    job = experiments.submit(jobs, spec, caller, source="shadow" if req.source == "shadow" else "api",
+                             untrusted_source=untrusted_source)
     out["experiment"] = job.id
     out["trial_ids"] += [f"{job.id}.{i}" for i in range(1, need + 1)]
     return out

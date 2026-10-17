@@ -21,7 +21,7 @@ import re
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from hangar import modelpolicy as modelpolicy  # --- canary
 from hangar.egress import EgressSpec  # --- egress
@@ -49,7 +49,8 @@ FIELDS = ("verify", "environment", "harness", "model", "budget", "job_budget", "
           "max_open_agent_prs",  # --- review capacity (#159)
           "self_approval",  # --- self-approval (#160)
           "ai_review", "ai_review_harness", "ai_review_model", "ai_review_budget_usd",  # --- AI review (#161)
-          "verify_allowed")  # --- #156
+          "verify_allowed",  # --- #156
+          "shadow")  # --- #183
 _LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")  # a GitHub login
 
 
@@ -66,6 +67,28 @@ def _heavy_mode(v: Any) -> Any:
 
 class PolicyError(ValueError):
     pass
+
+
+class ShadowPolicy(BaseModel):
+    """--- #183: shadow runs of this repo's real intake jobs (shadows.py): a candidate harness, as a pin set or a lock
+    by digest, on a sampled share `p` of the jobs from `sources`, at the base each job started on, delivering nothing.
+    `owner`: the harness owner, whose monthly eval cap its shadows count against (#182). `budget_usd`: each shadow's
+    job budget."""
+
+    model_config = ConfigDict(extra="forbid")
+    pin_set: str | None = Field(None, pattern=r"^pin-[0-9a-f]{16}$")
+    harness: str | None = Field(None, pattern=r"^[a-z0-9][a-z0-9._-]{0,62}@sha256:[0-9a-f]{64}$")
+    p: float = Field(0.0, ge=0.0, le=1.0)
+    sources: list[Literal["jira", "github", "slack", "github-projects"]] = Field(
+        default_factory=lambda: ["jira", "github", "slack"], max_length=4)
+    owner: str | None = Field(None, max_length=100)
+    budget_usd: float = Field(5.0, gt=0, le=200)
+
+    @model_validator(mode="after")
+    def _one(self) -> ShadowPolicy:
+        if bool(self.pin_set) == bool(self.harness):
+            raise ValueError("shadow: give one of `pin_set` or `harness` (name@sha256:...)")
+        return self
 
 
 class RepoPolicy(BaseModel):
@@ -130,6 +153,7 @@ class RepoPolicy(BaseModel):
     # --- #156: globs a ticket's own verify command must match to become its job's `verify` (`make test*`,
     # `pytest tests/*`); otherwise the agent gets it only as a suggestion (intake.apply_ticket)
     verify_allowed: list[str] | None = Field(None, max_length=50)
+    shadow: ShadowPolicy | None = None  # --- #183: shadow runs of sampled intake jobs (default: none)
     updated_at: float = Field(default_factory=now)
     updated_by: str | None = None
 
@@ -358,6 +382,7 @@ class PolicyUpdate(BaseModel):
     ai_review_model: str | None = Field(None, max_length=200)
     ai_review_budget_usd: float | None = Field(None, gt=0, le=100)
     verify_allowed: list[str] | None = None  # --- #156
+    shadow: ShadowPolicy | None = None  # --- #183
 
     @field_validator("heavy", mode="before")
     @classmethod
@@ -385,6 +410,11 @@ def update(svc: JobService, body: PolicyUpdate, actor: str) -> RepoPolicy:
     except ValueError as e:  # pydantic's ValidationError included
         raise PolicyError(_why(e)) from e
     _check(svc, policy)
+    if "shadow" in sent and policy.shadow is not None and policy.shadow.p > 0:  # --- #183: only with review to spare
+        from hangar import shadows
+
+        if why := shadows.paused(svc):
+            raise PolicyError(f"shadows can't be turned on now: {why}")
     svc.policies.put(policy)
     svc.fleet.audit(actor, "repo.policy.set", key, fields=sorted(sent))
     return policy
