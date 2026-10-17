@@ -43,6 +43,7 @@ from hangar.models import (
 from hangar.outbox import OutboxItem  # --- outbox (#163): objects on their way to the run capture bucket
 from hangar.pinsets import PinSet  # --- #178: immutable, content-addressed pin sets
 from hangar.testresults import TestRun  # --- testresults: each run of a check, as its test reports had it
+from hangar.trialcache import CacheEntry  # --- #180: the trial-result cache
 
 T = TypeVar("T", bound=BaseModel)
 log = logging.getLogger("hangar.store")
@@ -64,6 +65,7 @@ _TABLES: dict[type[BaseModel], tuple[str, str]] = {
     OutboxItem: ("outbox", "key"),  # --- outbox (#163)
     ModelGrant: ("model_grants", "id"),  # --- #177: the model gateway
     PinSet: ("pin_sets", "id"),  # --- #178
+    CacheEntry: ("trial_cache", "key"),  # --- #180
 }
 # --- review(perf): access control must not roll back on a node crash (a revoked token coming back), so these
 # commits, and the secrets table's, sync the WAL like synchronous=FULL; everything else stays on NORMAL.

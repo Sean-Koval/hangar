@@ -31,7 +31,9 @@
         }
       }},"grader": {"type": "object", "properties": {"canary": {"type": "string"}}},
       "pin_sets": {"type": ["object", "null"], "additionalProperties": {"type": "string"}, "description": "Variant -> pin set id, for trials started with POST /api/trials (#178)."},
-      "source": {"enum": ["experiment", "shadow"], "description": "Who asked for the trials (#178; shadow: #183)."}}},
+      "source": {"enum": ["experiment", "shadow"], "description": "Who asked for the trials (#178; shadow: #183)."},
+      "task_digests": {"type": ["object", "null"], "additionalProperties": {"type": "string"}, "description": "Task id -> flightdeck's task digest for the trial cache (#180)."},
+      "cache_record": {"type": "boolean", "description": "Whether finished trials fill the trial cache (false for a sentinel run, #180)."}}},
     "pins": {
       "type": "object",
       "properties": {
@@ -62,7 +64,8 @@
             "repo": {"type": ["string", "null"]},
             "base_branch": {"type": ["string", "null"]},
             "base_sha": {"type": ["string", "null"], "description": "Pinned at the start from GitHub, else by the first trial's clone (then every trial checks it out)."},
-            "issue": {"type": ["string", "null"]}
+            "issue": {"type": ["string", "null"]},
+            "task_digest": {"type": ["string", "null"], "description": "The task's identity for the trial cache: sha256 of its canonical definition (instructions or issue, verify, repo, reference patch, hidden tests by digest, environment), or flightdeck's own. Added within v1 (#180)."}
           }
         }},
         "egress": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Each environment's egress policy at the start (canonical JSON); a change stops new trials."},
@@ -118,6 +121,7 @@
           "outcome_class": {"enum": ["agent", "infra_error", "cancelled", "human", null], "description": "What the trial's outcome says about the agent: agent (its own result, counted), infra_error (infrastructure ended it: see infra_reason; excluded and retried), cancelled, human (a person stepped in). null: unknown (recorded before #166), never to be read as agent. Any turn infrastructure cut off makes the whole trial infra_error, even if its job resumed. Added within v1 (#166)."},
           "infra_reason": {"enum": ["preempted", "power_down", "rate_limited", "provider_5xx", "sandbox_create", "checkpoint", "control_plane_restart", "drift", null], "description": "What infrastructure did, when outcome_class is infra_error. Added within v1 (#166). drift (#178): its turn 1 didn't run its pin set; excluded and not retried."},
           "pin_set": {"type": ["string", "null"], "pattern": "^pin-[0-9a-f]{16}$", "description": "The pin set the trial ran against (GET /api/pinsets/{id}). Added within v1 (#178)."},
+          "cached": {"type": "boolean", "description": "The trial is in the trial cache under its pin set and task (a counted trial of a fully pinned key). Added within v1 (#180)."},
           "excluded": {"type": "boolean", "description": "Leave this trial out of statistics: it ended in infra_error. Its retry, if any, is the next attempt under the same key. Added within v1 (#166)."},
           "attempt": {"type": "integer", "minimum": 1, "description": "1 for the trial as laid out; 2 and up for its retries after infra errors (at most HANGAR_TRIAL_INFRA_RETRIES, and 10% of the experiment's trials in all). Several trials can share a key: the highest attempt is the one that counts. Added within v1 (#166)."},
           "retry_of": {"type": ["string", "null"], "description": "The job id of the excluded trial this one retries; with attempt, the retry chain. Added within v1 (#166)."},

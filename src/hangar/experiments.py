@@ -238,6 +238,10 @@ class ExperimentSpec(BaseModel):
     # --- #178: a variant's pin set (POST /api/trials makes one variant per pin set); unset, _begin records one
     pin_sets: dict[str, str] | None = None
     source: Literal["experiment", "shadow"] = "experiment"  # --- #178: who asked for the trials (#183: shadow)
+    # --- #180: the trial cache. Flightdeck's task digests (else computed), and whether finished trials fill it
+    # (a sentinel's don't: it compares against what the cache holds)
+    task_digests: dict[str, str] | None = None
+    cache_record: bool = True
 
     @field_validator("variants")
     @classmethod
@@ -292,6 +296,7 @@ class Trial(BaseModel):
     attempt: int = 1
     retry_of: str | None = None
     pin_set: str | None = None  # --- #178: what it ran against (pinsets.py)
+    cached: bool = False  # --- #180: it is in the trial cache (trialcache.py)
 
     @property
     def ref(self) -> str:
@@ -564,8 +569,12 @@ async def _begin(jobs: JobService, job: Job, st: State, spec: ExperimentSpec) ->
         if pinned:
             fleet.store.kv_set(f"{KV_BASE}{job.id}:{t.id}", pinned)
         issue_text = await _issue_text(jobs, t.issue) if t.issue else None
+        from hangar import trialcache  # --- #180: the task's identity for the trial cache
+
         tasks[t.id] = {"repo": repo, "base_branch": t.base_branch, "base_sha": pinned,
-                       "issue": t.issue, "issue_text": issue_text}
+                       "issue": t.issue, "issue_text": issue_text,
+                       "task_digest": (spec.task_digests or {}).get(t.id)
+                       or trialcache.task_digest(t, spec.environment, spec.grader)}
     # --- review(#114): egress too: an approved egress request widens an environment mid-experiment
     _pin_sets(jobs, job, st, spec, variants, tasks, overlays)  # --- #178
     st.pins = {"variants": variants, "tasks": tasks, "egress": _egress(fleet, spec), "pinned_at": now()}
@@ -880,6 +889,7 @@ async def _finish_trial(jobs: JobService, job: Job, st: State, spec: ExperimentS
                 vp["harness_digest"] = t.harness_digest  # an overlay variant's digest, as its first trial ran it
     t.state = "grading" if spec.grader and child.state != JobState.CANCELLED and s is not None else "done"
     retry = None
+    _cache(jobs, job, st, spec, t)  # --- #180: a counted trial of a pinned key fills the cache
     if t.outcome_class == "infra_error" and t.infra_reason == "drift":  # --- #178: not what was pinned; not again
         t.excluded, t.state = True, "done"
         st.notes.append(f"trial {t.ref}: its turn 1 didn't run pin set {t.pin_set} (drift): excluded, not retried")
@@ -890,6 +900,29 @@ async def _finish_trial(jobs: JobService, job: Job, st: State, spec: ExperimentS
                 + (f", infra_error/{t.infra_reason}: excluded" if t.excluded else "")
                 + (f", retried as {retry.ref}" if t.excluded and retry is not None else "")
                 + (", grading" if t.state == "grading" else ""))
+
+
+def trial_id(job: Job, st: State, t: Trial) -> str:
+    """--- #180: a trial's id for GET /api/trials: `<experiment>.<n>` when the experiment has one task and one variant
+    (a trials request), else `<experiment>~<task>~<variant>~<n>`."""
+    if len({x.task for x in st.trials}) == 1 and len({x.variant for x in st.trials}) == 1:
+        return f"{job.id}.{t.trial}"
+    return f"{job.id}~{t.task}~{t.variant}~{t.trial}"
+
+
+def _cache(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t: Trial) -> None:
+    from hangar import pinsets, trialcache
+
+    if not t.pin_set or not spec.cache_record:
+        return
+    try:
+        p = pinsets.get(jobs.fleet, t.pin_set)
+    except KeyError:
+        return
+    td = (st.pins.get("tasks", {}).get(t.task) or {}).get("task_digest")
+    if td and trialcache.record(jobs.store, trialcache.parts_for(p, t.task, td), trial_id(job, st, t), t.job,
+                                t.outcome, t.outcome_class):
+        t.cached = True
 
 
 def _check_pin(jobs: JobService, job: Job, t: Trial, child: Job) -> None:

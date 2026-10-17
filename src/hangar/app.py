@@ -1220,6 +1220,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import pinsets  # --- #178: pin sets and trials, the seam with flightdeck
 
     pinsets.mount(app, h, J, owner_filter)
+    from hangar import trialcache  # --- #180: the trial cache's invalidation and its sentinel
+
+    trialcache.mount(app, h, J, A)
     from hangar import testresults  # --- testresults: GET /api/jobs/{id}/tests, the sessions', flaky lists, status
 
     testresults.mount(app, h, J, A)

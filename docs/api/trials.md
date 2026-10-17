@@ -68,6 +68,8 @@ curl -s $HANGAR/api/trials/job-1a2b3c4d.2 -H "Authorization: Bearer $TOKEN"
 | `turn_budget`, `timeout_minutes` | Optional: each agent turn's budget, and its timeout |
 | `grader` | Optional, as an experiment's grader. Its digest must be the pin set's `grader_digest` |
 | `variant`, `name` | Labels: the variant's name in the index (default: the pin set's id), the experiment's name |
+| `reuse` | `{min_trials: k}`: use cached trials of the same key when it has at least k ([the cache](#the-cache)) |
+| `task_digest` | Flightdeck's own task digest for the cache key (default: computed from the task) |
 
 **How they run.** Hangar makes one experiment job for the request, whose only variant is the pin set
 (`{harness_lock}`). Its trials run as experiment trials do:
@@ -97,6 +99,47 @@ claimed by digest from the registry's history. If hangar no longer runs the lock
 
 The experiment index (`GET /api/experiments/{experiment}`) has the rest, with the pin set id on the variant's pins and
 on every trial.
+
+## The cache
+
+Tokens cost about 500 times a trial's compute, so a nightly suite on an unchanged harness should cost only a small
+sentinel. A trial's result is determined by its inputs, and the cache keys on exactly those:
+
+```
+key = sha256(harness_digest, environment, task_digest, model_id, base_sha, grader_digest)
+```
+
+`environment` is the pin set's `environment_digest`, else its `environment_spec_digest`. `task_digest` is the sha256 of
+the task's canonical definition: instructions or issue, verify command, repo and branch, reference patch, the grader's
+hidden tests by digest, and the environment. Its id doesn't count, and flightdeck may pass its own `task_digest`.
+
+Every counted trial (`outcome_class: agent`, success or failure) of a fully pinned key is added when it finishes. Infra
+errors, cancelled trials and drift never count, and an overlay experiment's trials don't either, because their pin set
+has no harness digest. The index marks a cached trial `cached: true`.
+
+With `reuse: {min_trials: k}`, a request whose key already has at least k counted trials gets up to n of them back in
+`cached` (and in `trial_ids`), and only the rest start. When all n are cached, no experiment is made (`experiment:
+null`). With fewer than k cached, or no `reuse`, all n run. Every response carries `cache_key` and `cache_parts`.
+Cached trials cost nothing against the eval budget (#182).
+
+**Invalidation.** `POST /api/trials/cache/invalidate {"model_id": ...}` or `{"harness_digest": ...}` drops the
+matching entries and returns `{"dropped": n}`. The trials themselves stay: their records and outbox objects are
+immutable.
+
+**The drift sentinel.** A provider can change what a dated model id does without hangar seeing it, so a sentinel
+re-runs a few configured tasks *bypassing* the cache: it neither reads cached trials nor adds its own. Configure up to
+5 tasks with `HANGAR_TRIAL_SENTINEL`:
+
+```json
+[{"pin_set": "pin-...", "task": {"id": "fix-retry", "instructions": "...", "verify": "..."}, "n": 2,
+  "budget": {"max_cost_usd": 5}}]
+```
+
+It runs on `HANGAR_TRIAL_SENTINEL_SCHEDULE` (`0 20 * * *` in `HANGAR_EVAL_TZ`, so its trials start in the eval window).
+An admin can also start a run with `POST /api/trials/sentinel/run`. When its trials have finished, it writes
+`v1/sentinel/{date}.json` (`hangar.sentinel/v1`) to the outbox, and to `<data>/sentinel/`. Per task the file has the
+key and its parts, what the sentinel's trials did (counted trials, outcomes, verify passes, exclusions) and what the
+cache holds for the same key. Flightdeck decides whether the difference is significant, and invalidates.
 
 ## Experiments on top
 

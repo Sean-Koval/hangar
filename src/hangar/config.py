@@ -619,6 +619,10 @@ class Settings(BaseSettings):
     eval_max_running: int = Field(0, ge=0, le=64)
     eval_tpm_budget: str | None = None
     eval_tpm_per_trial: int = Field(20000, ge=0)
+    # --- #180: the trial cache's drift sentinel (trialcache.py): up to 5 {pin_set, task, n, grader?, budget} run on
+    # this cron (in HANGAR_EVAL_TZ: the eval window) bypassing the cache, written to v1/sentinel/{date}.json. []: off
+    trial_sentinel: list[dict[str, Any]] = Field(default_factory=list)
+    trial_sentinel_schedule: str = "0 20 * * *"
 
     @property
     def backup_interval_hours(self) -> float:

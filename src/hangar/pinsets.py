@@ -40,7 +40,9 @@ if TYPE_CHECKING:
 
 SCHEMA = "hangar.pinset/v1"
 ID = re.compile(r"^pin-[0-9a-f]{16}$")
-TRIAL_ID = re.compile(r"^(?P<exp>job-[0-9a-f]{8})\.(?P<n>\d{1,3})$")
+# `<experiment>.<n>` for a trials request (one task, one variant); `<experiment>~<task>~<variant>~<n>` for any trial
+TRIAL_ID = re.compile(r"^(?P<exp>job-[0-9a-f]{8})"
+                      r"(?:\.(?P<n>\d{1,3})|~(?P<task>[^~]+)~(?P<variant>[^~]+)~(?P<k>\d{1,3}))$")
 DRIFT = "drift"
 SHA = r"^[0-9a-f]{40}$"
 
@@ -226,6 +228,11 @@ def drift(p: PinSet, harness_digest: str | None, environment_digest: str | None,
 
 
 # ====================================================================== trials
+class Reuse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    min_trials: int = Field(1, ge=1, le=20)
+
+
 class TrialsRequest(BaseModel):
     """`POST /api/trials`: n trials of one task against one pin set."""
 
@@ -240,6 +247,9 @@ class TrialsRequest(BaseModel):
     grader: Any = None  # experiments.Grader; its digest must be the pin set's
     timeout_minutes: int | None = Field(None, ge=1, le=720)
     name: str | None = Field(None, max_length=100)
+    # --- #180: reuse cached trials of the same key when it has at least min_trials counted ones
+    reuse: Reuse | None = None
+    task_digest: str | None = Field(None, max_length=100)  # flightdeck's own; default computed (trialcache)
 
     @field_validator("task")
     @classmethod
@@ -263,10 +273,11 @@ class TrialsRequest(BaseModel):
         return Budget.model_validate(v) if v is not None else None
 
 
-def start_trials(jobs: JobService, req: TrialsRequest, caller: Any) -> dict[str, Any]:
+def start_trials(jobs: JobService, req: TrialsRequest, caller: Any, sentinel: bool = False) -> dict[str, Any]:
     """The trials of `req`, as an experiment job whose one variant is the pin set (it runs, grades, retries and drift-
-    checks them). Returns {"trial_ids", "experiment", "pin_set"}."""
-    from hangar import experiments
+    checks them). Returns {"trial_ids", "cached", "experiment", "pin_set", "cache_parts"}. --- #180: with `reuse`,
+    cached trials of the same key stand in for new ones; `sentinel` runs bypass the cache both ways."""
+    from hangar import experiments, trialcache
     from hangar.jobs import JobError
 
     try:
@@ -288,12 +299,27 @@ def start_trials(jobs: JobService, req: TrialsRequest, caller: Any) -> dict[str,
     vname = req.variant or p.id
     from pydantic import ValidationError
 
+    td = req.task_digest or trialcache.task_digest(task, p.environment, req.grader)
+    parts = trialcache.parts_for(p, task.id, td)
+    cached = []
+    if req.reuse is not None and not sentinel:
+        have = trialcache.lookup(jobs.store, parts)
+        if len(have) >= req.reuse.min_trials:
+            cached = [x["trial_id"] for x in have[:req.n]]
+    need = req.n - len(cached)
+    out = {"experiment": None, "pin_set": p.id, "trial_ids": list(cached), "cached": list(cached),
+           "cache_key": trialcache.key_of(parts), "cache_parts": parts}
+    if need <= 0:
+        return out
     try:
-        spec = _trials_spec(experiments, req, p, task, tp, vname)
+        spec = _trials_spec(experiments, req, p, task, tp, vname).model_copy(update={
+            "trials": need, "task_digests": {task.id: td}, "cache_record": not sentinel})
     except ValidationError as e:
         raise JobError(str(e)) from e
     job = experiments.submit(jobs, spec, caller, source="api")
-    return {"experiment": job.id, "pin_set": p.id, "trial_ids": [f"{job.id}.{i}" for i in range(1, req.n + 1)]}
+    out["experiment"] = job.id
+    out["trial_ids"] += [f"{job.id}.{i}" for i in range(1, need + 1)]
+    return out
 
 
 def _trials_spec(experiments: Any, req: TrialsRequest, p: PinSet, task: Any, tp: TaskPin, vname: str) -> Any:
@@ -316,8 +342,10 @@ def trial_view(jobs: JobService, trial_id: str, owner: str | None = None) -> dic
         raise KeyError(f"no trial '{trial_id}'")
     job = experiments.experiment(jobs, m["exp"], owner)
     st = experiments.load(job)
-    n = int(m["n"])
-    mine = [t for t in st.trials if t.trial == n]
+    if m["n"]:
+        mine = [t for t in st.trials if t.trial == int(m["n"])]
+    else:
+        mine = [t for t in st.trials if (t.task, t.variant, t.trial) == (m["task"], m["variant"], int(m["k"]))]
     if not mine:
         raise KeyError(f"no trial '{trial_id}'")
     t = max(mine, key=lambda x: x.attempt)
