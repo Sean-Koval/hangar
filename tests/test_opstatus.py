@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
@@ -164,7 +166,7 @@ async def test_the_nightly_pass_runs_once_per_slot(settings, store, fleet, monke
     settings.doctor_schedule = "30 0 * * *"
     settings.doctor_time_zone = "America/New_York"
     ops = opstatus.Ops(h)
-    t = now()
+    t = _ny(2026, 6, 15, 12, 0)  # pinned to noon New York time: the slot is 00:30, so now() flaked before it (#205)
     assert ops.due(t) is None  # the first look only remembers the latest slot
     assert ops.due(t + 3600) is None
     assert ops.due(t + 86400 + 60) is not None  # a day later a new slot has passed
@@ -186,6 +188,26 @@ async def test_the_nightly_pass_runs_once_per_slot(settings, store, fleet, monke
     assert ran == ["test"] and rec["steps"]["fine"] == {"ok": True} and "step broke" in rec["steps"]["boom"]["error"]
     assert rec["steps"]["credentials"] == {"checked": 0}
     assert store.kv_get_json(opstatus.NIGHTLY_KEY)["by"] == "test"
+
+
+def _ny(year: int, month: int, day: int, hour: int, minute: int) -> float:
+    return datetime(year, month, day, hour, minute, tzinfo=ZoneInfo("America/New_York")).timestamp()
+
+
+def test_the_nightly_slot_boundary_is_the_0030_new_york_slot(settings, store, fleet):
+    """15 minutes before the 00:30 slot nothing is due; once 00:30 New York time passes the slot is due exactly once."""
+    h = type("H", (), {"settings": settings, "store": store, "fleet": fleet, "sessions": None})()
+    settings.doctor_schedule = "30 0 * * *"
+    settings.doctor_time_zone = "America/New_York"
+    ops = opstatus.Ops(h)
+    t = _ny(2026, 6, 15, 0, 15)
+    assert ops.due(t) is None  # remembers the 00:30 slot of the day before
+    assert ops.due(t + 10 * 60) is None  # 00:25, still before the slot
+    slot = _ny(2026, 6, 15, 0, 30)
+    assert ops.due(slot - 1) is None
+    assert ops.due(slot) == slot  # 00:30 exactly
+    assert ops.due(slot + 60) is None  # once per slot
+    assert ops.due(t + 3600) is None  # 01:15, same slot
 
 
 def test_the_ring_masks_token_formats_hangar_never_stored(broker):

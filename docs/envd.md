@@ -148,7 +148,10 @@ The daemon runs inside a sandbox that runs untrusted code, so the trust boundary
 - **Connections.** Anything that can reach the port can connect (on Docker's default bridge, or any network created
   without `enable_icc=false`, that includes other sandboxes), so the daemon holds at most 1,024 connections and 512 from one address, and closes a connection that
   sends no request, or doesn't finish its headers, for 75 s (longer than hangar keeps idle connections, 30 s). At the
-  total cap it stops accepting until one closes. A panic unwinds the one request it happened in.
+  total cap it stops accepting until one closes. A refused HTTP/1.1 request has up to 64 KiB of its body read and
+  dropped (never buffered) for at most 0.5 s before the 401, so the connection stays usable and a client still writing
+  the body sees the 401 rather than a broken pipe; a larger or slower body gets the 401 with `Connection: close`.
+  A panic unwinds the one request it happened in.
 
 ## E2B compatibility
 
