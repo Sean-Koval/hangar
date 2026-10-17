@@ -441,6 +441,7 @@ class LandingState(BaseModel):
     packet_comment_id: int | None = None  # the review packet: one comment, edited as the PR changes
     files: list[str] = Field(default_factory=list)  # paths the PR touches (capped)
     risk: str | None = None  # high | normal | low
+    checks_loosened: list[str] = Field(default_factory=list)  # --- #170: ADRs whose `checks:` lines it removes
     push_mode: str | None = None  # gateway | direct: whether the sandbox held a GitHub token
     note: str | None = None  # why it isn't landing yet
     ended: bool = False  # merged or closed: the session took its final checkpoint and let the sandbox go
@@ -811,5 +812,18 @@ class SandboxGrant(BaseModel):
     credential: str  # vault credential (git_token or github_app) the gateway uses upstream
     # --- least-privilege: a delivery grant (delivery.py) pushes exactly these commits: {ref: commit id}
     pins: dict[str, str] = Field(default_factory=dict)
+    created_at: float = Field(default_factory=now)
+    expires_at: float | None = None
+
+
+class ModelGrant(BaseModel):
+    """--- #177: what one sandbox may do through the model gateway (modelgw.py): call one provider's API, which the
+    gateway reaches with the vault's API key. The sandbox holds only the `hgm_` bearer, useless anywhere else."""
+
+    id: str = Field(default_factory=lambda: new_id("mgt"))
+    sandbox_id: str
+    token_hash: str  # sha256 of "hgm_<random>"
+    provider: str  # anthropic | openai
+    credential: str  # the vault's api_key credential the gateway sends upstream
     created_at: float = Field(default_factory=now)
     expires_at: float | None = None

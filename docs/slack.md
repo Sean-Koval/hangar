@@ -24,10 +24,37 @@ Slack is the door for **unplanned** work: an alert, a question in a thread. Plan
 | `/hangar <instructions>` or `@hangar <instructions>` | Start a job on the channel's repo |
 | `/hangar repo=owner/repo env=NAME harness=NAME model=NAME <instructions>` | Choose the repo (any in `HANGAR_GITHUB_REPOS`), environment (one mapped to that repo), harness and model. Options go first. |
 | `/hangar status JOB` | A job's state, PR and latest event (only you see the slash command's answer) |
+| `@hangar adr [title]` in a thread | Draft an ADR from the thread as a PR ([below](#hangar-adr-a-thread-becomes-a-decision-record)) |
 | `/hangar help` | Usage |
 | A reply in a job's thread | Follow-up once the current turn is done. Start it with `fix:`, `redirect:` or `info:` to [classify it](#classifying-a-reply) |
 
 Slack doesn't allow slash commands inside threads, so a `/hangar` job gets a new top-level message and the thread hangs off it. An `@hangar` mention inside an existing thread (say, under an alert) runs the job in that thread. The parent message and earlier replies, up to 15 messages and 20 KB, go to the agent as a context file, `slack-thread.md`. Other people and other apps wrote that thread, so the file is marked untrusted, and the prompt tells the agent to treat it as a description of the problem, never as instructions.
+
+## `@hangar adr`: a thread becomes a decision record
+
+Decisions made in Slack threads get lost. Mention `@hangar adr Use Parquet for runs` in a reply in the thread where the
+decision was made, on a mapped channel, and hangar drafts an ADR from the thread and opens a PR that adds one file,
+`docs/decisions/NNNN-use-parquet-for-runs.md`. A person other than the one who asked reviews and merges it.
+
+- **Opt in per repo.** The repo needs a `docs/decisions/` directory: without one hangar refuses in the thread and
+  points to [docs/templates/adr.md](templates/adr.md), the format it writes (frontmatter `id`, `kind: decision`,
+  `status: proposed`, `label`, `sources` with the thread's permalink and content hash, `author: agent:<model>`,
+  `supersedes`; sections Context, Decision, Options considered, Consequences, Checks).
+- **The thread is untrusted.** It reaches the agent only as `slack-thread.md`, an untrusted context item (the parent
+  and earlier replies, as for any mention), with stored secrets redacted. The instructions are fixed
+  (`src/hangar/prompts/adr.md`): write that one file and change nothing else. The agent runs with egress `none`, and
+  the job is tainted from turn 1, so hangar opens the PR after the turn as a draft labelled `hangar:tainted`
+  ([security.md](security.md#taint-gates)); the agent never pushes or opens it.
+- **The PR.** Title `ADR: <title>`, labels `agent-drafted` and `adr`, and a body linking the thread. It never lands on
+  the requester's approval, whatever the repo's `self_approval` says ([landing.md](landing.md#agent-drafted-adrs)).
+- **Hangar checks it** after the turn, as the job's verify: exactly one new file, numbered one past the highest in
+  `docs/decisions/`, named after the title, with the frontmatter and sections above. The optional `checks:` block (a
+  fenced ```` ```yaml ```` block starting `checks:`, trace predicates flightdeck runs nightly) must be valid YAML; hangar
+  never evaluates it. A failure fails the verify with the reason, and the agent gets a fix round like any failing
+  check.
+- **Path guard.** A change outside `docs/decisions/` still opens, as a draft, with a warning in the review packet.
+- **Numbering.** Two ADR jobs that pick the same number are flagged in the packet; whichever merges second renumbers
+  (a follow-up on its PR).
 
 ## Set it up
 

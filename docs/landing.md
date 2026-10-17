@@ -122,6 +122,18 @@ another approver or code owner does. The rule is `approvals.can_decide(kind="lan
 `HANGAR_SELF_APPROVAL=allow_solo` lets a one-person install land its own. The review packet lists what untrusted
 content was read. Each decision is audited as `taint.gate` (`sink: land`).
 
+### Agent-drafted ADRs
+
+A PR from [`@hangar adr`](slack.md#hangar-adr-a-thread-becomes-a-decision-record) (labels `agent-drafted` and `adr`)
+follows the tainted-PR rule even if nothing tainted it: the job's own person and its requester can't be the approval
+that lands it, whatever `self_approval` says (`any` included); another approver or code owner can. The packet's
+Landing rule line says so, and an ADR line gives the thread, the content hash, a warning when the PR touches files
+outside `docs/decisions/`, and any other open ADR job that took the same number.
+
+**Loosening a decision's checks is high risk.** For any PR, not only these: removing or changing a line inside an
+existing ADR's `checks:` block (or deleting the ADR) makes the packet's risk `high`, naming the file, so the
+self-approval rule needs a second reviewer. Adding a check doesn't.
+
 ### Self-approval: who may be the only approver
 
 The job's own person (their GitHub account, matched by its numeric user id through `hangar person link`, never by
@@ -181,7 +193,7 @@ To use the **App's webhook** instead of per-repo hooks, point it at `https://<ha
 Hangar writes one comment on each agent PR when it delivers, and edits it on every later push, rather than posting again. It is built from the job record, so it works for any repo without a CI job:
 
 - **Verification**: the command and its result, "base was red" when the [check on the base](repo-policy.md#the-check-on-the-base-commit) failed, and whether the agent changed the check's own tests;
-- **Risk**: `high` when a path matches `.github/**`, `.hangar/**` (the repo's environment, which runs in every build and sandbox) or the policy's `risk_paths`, `low` for docs and tests only, `normal` otherwise;
+- **Risk**: `high` when a path matches `.github/**`, `.hangar/**` (the repo's environment, which runs in every build and sandbox) or the policy's `risk_paths`, or when the PR removes or changes a line of an existing ADR's `checks:` block ([above](#agent-drafted-adrs)), `low` for docs and tests only, `normal` otherwise;
 - **Files** touched, with the diffstat;
 - **Cost**: tokens and dollars so far, the job budget, and the agent turns;
 - **Agent**: harness and the version its pack installed, model, environment, and the harness it ran with: the short
