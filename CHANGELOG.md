@@ -49,6 +49,8 @@ Six engineers on three repos: planned work comes in through Jira, the inbox reac
 - **The Friday harness review** (#169, PR #243). `hangar review queue|label|status` labels the first failure of failed and abandoned jobs, up to 20 candidate tasks. Labels are exported as outbox `label` events ([runbook](docs/runbooks/harness-review.md)).
 - **The governance decision point** (#171, PR #208). Spec 0015 defines how hangar will ask the governed workspace for its approvals; `governance.py` is a client skeleton with contract tests, not wired in yet.
 
+**Internal:** the analysis boundary is written down and guarded (#147). Spec 0014 §1 gains a "What stays in hangar and why" table (the drift flag, the flaky list, per-run test counts, model ranking, admission counts and the weekly metrics, each with its flightdeck counterpart), and `tests/test_boundary.py` fails when `src/hangar/` imports a statistics library (`scipy`, `numpy`, `pandas`, `statistics`, `duckdb`, `pyarrow`) or defines an estimator-named function, pointing at the spec.
+
 **Fixes:** `hangar doctor` no longer fails a fresh laptop install on the intake posture: without the git gateway it warns until an intake front door is configured, then fails naming those doors, with one fix command (#236, PR #247).
 
 ### The safe release (P1, #120–#132; [docs/upgrading.md](docs/upgrading.md#the-safe-release-120132))
