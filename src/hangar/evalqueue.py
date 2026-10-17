@@ -29,7 +29,6 @@ from __future__ import annotations
 import collections
 import datetime as dt
 import re
-import statistics
 import time
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
@@ -162,8 +161,12 @@ class Meter:
             self._trial[provider].append(tokens * 60.0 / max(seconds, RATE_WINDOW))
 
     def p50(self, provider: str) -> float | None:
-        q = self._trial.get(provider)
-        return statistics.median(q) if q else None
+        """The median eval turn's tokens per minute (an admission estimate, a runtime decision: no analysis)."""
+        q = sorted(self._trial.get(provider) or ())
+        if not q:
+            return None
+        mid = len(q) // 2
+        return q[mid] if len(q) % 2 else (q[mid - 1] + q[mid]) / 2
 
     @staticmethod
     def _part(tokens: int, start: float, end: float, at: float) -> float:
