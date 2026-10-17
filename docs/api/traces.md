@@ -126,15 +126,26 @@ exported in that order. Order across sessions (best-of-N attempts) is by time on
 | `pr.merge` | `job` | `hangar.pr.number`, `hangar.pr.merged_by` |
 | `job.state` | `job` | `hangar.job.state`, `hangar.text`: each entry of the job's timeline |
 
-**Test results** (the `testresults` work: structured results of every check hangar runs), as events on `job`:
+### Test results
+
+Structured results of every check hangar runs, as events on `job` in a job export, and on each `turn` in a session
+export (the runs that checked that turn: the in-turn gate's, hangar's check after it, an attempt's; the base check
+belongs to no turn):
 
 | Name | Attributes |
 | --- | --- |
-| `test.run` | One run of a check: `test.suite.name` (the command), `test.suite.run.status` (`success`, `failure`, `timed_out`, `aborted`), `hangar.test.run.id`, `hangar.test.run.kind` (`base`, `verify`, `rerun`, `attempt`, `in_turn`...), `hangar.test.run.trusted` (false for the agent's own in-turn runs), `hangar.test.exit_code`, `hangar.test.total`, `.passed`, `.failed`, `.errors`, `.skipped`, `hangar.test.complete`, `hangar.test.flaky` (how many), `hangar.test.coverage.line_rate`, `hangar.test.attempt`, `vcs.ref.head.revision` |
+| `test.run` | One run of a check: `test.suite.name` (the command), `test.suite.run.status` (`success`, `failure`, `timed_out`, `aborted`), `hangar.test.run.id`, `hangar.test.run.kind` (`base`, `verify`, `rerun`, `attempt`, `in_turn`, `autoinstall`, `acceptance`, `grader`), `hangar.test.run.trusted` (false for the agent's own in-turn runs, and a grader's below `trust: isolated`), `hangar.test.run.counted` (below), `hangar.run.id` (the agent run it checked, when known), `hangar.test.exit_code`, `hangar.test.total`, `.passed`, `.failed`, `.errors`, `.skipped`, `hangar.test.complete`, `hangar.test.flaky` (how many), `hangar.test.coverage.line_rate`, `hangar.test.attempt`, `vcs.ref.head.revision` |
 | `test.case` | A failing or flaky test: `test.case.name` (its id), `test.case.result.status` (`pass`, `fail`), `hangar.test.outcome`, `hangar.test.flaky`, `hangar.test.message` (clipped, redacted), `hangar.test.run.id` |
 
 `test.suite.*` and `test.case.*` are OpenTelemetry's test semantic conventions (core registry, Development). Passing
 tests are counted on `test.run`, not listed. `GET /api/jobs/{id}/tests?format=otel` returns the same events.
+
+**`hangar.test.run.counted`** = `hangar.test.run.trusted` and `hangar.test.total > 0` and `hangar.test.complete`.
+**Behavior predicates must use it** to decide that tests ran: an untrusted run is the agent's word, a run with no
+tests (`pytest --collect-only`, a runner that found nothing) proves nothing, and an incomplete report (a runner run
+twice into one file, a report over the size cap) can hide failures. `counted`, `hangar.run.id` and the `grader` kind
+were added within `hangar.trace/v1` (#164); exports made before them lack the attributes, which a reader treats as
+not counted. The `TestRun` records in the outbox's `tests.json` and `grade.json` carry the same `counted`.
 
 ## Attributes
 
@@ -224,6 +235,7 @@ Each of these reads the export alone (tests: `tests/test_interfaces.py::_behavio
 | Spec | From the export |
 | --- | --- |
 | Tests run before the commit | the least `hangar.seq` of a `tool.call` whose `hangar.shell.ops` has `test` is below the least with `git.commit` (in a job, hangar's own `verify` event always precedes its `git.commit` events) |
+| The change was tested | a `test.run` with `hangar.test.run.counted=true` (never `trusted` or the exit code alone) |
 | No edits outside `src/` | every `file.change` has a `hangar.file.repo_path` under `src/`, and every `hangar.diff.files` entry is |
 | Asked before deleting | every `tool.call` with `delete` in `hangar.shell.ops` (or a `file.change` with `hangar.file.op=delete`) has an `approval` with `delete` in its ops, `allowed`, and a lower `hangar.seq`; or, in a job, a `question` event ended an earlier turn |
 | Plan, edit, test, PR | the first `plan` tool call, `edit` tool call, `test` op and `pr.open` op (or the job's `pr.open` event) are in that `hangar.seq` order |
