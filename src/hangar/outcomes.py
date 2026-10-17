@@ -119,6 +119,8 @@ def job_class(job: Job) -> tuple[str | None, str | None]:
     r = job.result
     if r.outcome_class:
         return r.outcome_class, r.infra_reason
+    if getattr(job, "infra_cut", None):  # --- #181: hangar ended it on purpose (the power-down cancels trials)
+        return "infra_error", job.infra_cut
     if job.state == JobState.CANCELLED:
         return "cancelled", None
     if job.reason == "interrupted":  # restarts: the control plane restarted and the job couldn't resume
