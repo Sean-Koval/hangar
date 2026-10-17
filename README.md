@@ -260,6 +260,7 @@ For an existing deployment, read [the upgrade guide](docs/upgrading.md) before u
 | Topic | Guide |
 | --- | --- |
 | Delegating tasks and tickets from an agent | [Hangar skill](skills/hangar/SKILL.md) |
+| Onboarding a team, step by step | [Onboarding runbook](docs/runbooks/onboarding.md) |
 | Client configuration and OAuth | [Connecting clients](docs/clients.md) |
 | MCP tools, prompts, and waiting for work | [Using MCP](docs/mcp.md) |
 | Jobs, verification, and draft PRs | [Jobs](docs/jobs.md) |
