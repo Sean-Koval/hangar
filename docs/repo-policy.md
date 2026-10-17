@@ -44,6 +44,7 @@ hangar repo check acme/app          # is it ready for agent work? (below)
 | `ai_review_model` | The reviewer's model or policy. Unset: `frontier`, resolved to a concrete id when the review is submitted (`--ai-review-model`). |
 | `ai_review_budget_usd` | What one review job may spend. Unset: $1.50 (`--ai-review-budget`). |
 | `max_open_agent_prs` | [Review capacity](team-scale.md#review-capacity): open agent PRs awaiting a person before their new jobs on this repo wait as `awaiting_capacity`; `0` turns it off. Unset: `HANGAR_PERSON_MAX_OPEN_AGENT_PRS` (5) (`--max-open-agent-prs`). |
+| `verify_allowed` | Globs (`make test*`, `pytest tests/*`) a ticket's own *Verify command* ([agent tickets](intake.md#agent-tickets)) must match to become that job's `verify` (`--verify-allowed`, repeated). Unset: a ticket's command is only ever a suggestion to the agent, and the job's check stays the policy's or the environment's. A matched command is the job's own check (`verify_source: job`), so the [base check](#the-check-on-the-base-commit) is skipped for it, as for any acceptance test a job brings. `*` alone is refused. |
 
 The repo is `owner/repo` for GitHub (any URL form, any case), or the git URL for another host.
 

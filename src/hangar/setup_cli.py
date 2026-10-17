@@ -574,6 +574,118 @@ def setup_slack(
                 f"({urls.get('events')}), then /invite @hangar in each mapped channel.", fg="green")
 
 
+# --- #156: Jira intake. "Ready for agent" is the default door for planned work.
+JIRA_TRIGGER = "Ready for agent"
+JIRA_STATUSES = {"started": "In Progress", "needs_input": "Blocked", "delivered": "In Review", "failed": "To Do"}
+
+
+@setup_app.command("jira")
+def setup_jira(
+    url: str | None = typer.Option(None, "--url", help="https://acme.atlassian.net, or a Data Center base URL."),
+    deployment: str | None = typer.Option(None, "--deployment", help="cloud (default) or server (Data Center)."),
+    email: str | None = typer.Option(None, "--email", help="Cloud: the account the API token belongs to."),
+    project: list[str] = typer.Option([], "--project", help="PROJECT=owner/repo (repeatable), e.g. ABC=acme/app."),
+    trigger_status: str | None = typer.Option(None, "--trigger-status", help=f"Moving an issue to this status "
+                                              f"starts a job (default: \"{JIRA_TRIGGER}\")."),
+    trigger_label: str | None = typer.Option(None, "--trigger-label", help="Giving an issue this label starts a "
+                                             "job too (an alternative, or in addition)."),
+    status: list[str] = typer.Option([], "--status", help="STAGE=Status to move the issue to: started, "
+                                     "needs_input, delivered, failed (repeatable; default In Progress, Blocked, In "
+                                     "Review, To Do)."),
+    no_statuses: bool = typer.Option(False, "--no-statuses", help="Leave the issue's status alone at every stage."),
+    token_file: Path | None = typer.Option(None, "--token-file", help="The API token (Cloud) or personal access "
+                                           "token (Data Center)."),
+    webhook_secret_file: Path | None = typer.Option(None, "--webhook-secret-file", help="The admin webhook's "
+                                                    "secret (recommended: issue events signed)."),
+    automation_token_file: Path | None = typer.Option(None, "--automation-token-file", help="The X-Hangar-Token "
+                                                      "an Automation rule sends (the fallback; docs/intake.md)."),
+    non_interactive: bool = typer.Option(False, "--non-interactive", help="Never prompt (for scripts)."),
+):
+    """Connect Jira intake: credentials, projects, and the trigger. Moving an issue to "Ready for agent" starts a job
+    unless you choose another status or a label; hangar moves it to In Progress, Blocked, In Review or To Do as the
+    job goes, unless told otherwise. An existing HANGAR_JIRA keeps its trigger and statuses unless you pass new ones.
+
+      hangar setup jira --url https://acme.atlassian.net --email hangar@acme.com --project ABC=acme/app \\
+        --token-file jira-token --webhook-secret-file jira-hook-secret
+    """
+    from hangar.jira import JiraConfig
+
+    cli = _cli()
+    interactive = not non_interactive and sys.stdin.isatty()
+    try:
+        cur = cli._call("GET", "/api/settings/HANGAR_JIRA").get("value") or {}
+    except typer.Exit:
+        cur = {}
+    cur = cur if isinstance(cur, dict) else {}
+    url = url or cur.get("url") or (typer.prompt("Jira URL (https://acme.atlassian.net)").strip() if interactive
+                                    else None)
+    if not url:
+        raise _fail("--url is required", 2)
+    deployment = deployment or cur.get("deployment") or "cloud"
+    if deployment == "cloud":
+        email = email or cur.get("email") or (typer.prompt("Email of the account the API token belongs to").strip()
+                                              if interactive else None)
+    projects = dict(cur.get("projects") or {})
+    for x in project:
+        key, _, repo = x.partition("=")
+        if not repo:
+            raise _fail(f"--project {x}: use PROJECT=owner/repo", 2)
+        projects[key.strip().upper()] = {**projects.get(key.strip().upper(), {}), "repo": repo.strip()}
+    if interactive and not projects:
+        key = typer.prompt("Jira project key to take work from (like ABC)").strip().upper()
+        projects[key] = {"repo": typer.prompt(f"Repo for {key} (owner/repo)").strip()}
+    if trigger_status or trigger_label:
+        trigger = {k: v for k, v in (("status", trigger_status), ("label", trigger_label)) if v}
+    else:
+        trigger = cur.get("trigger") or {"status": JIRA_TRIGGER}
+    if no_statuses:
+        statuses: dict = {}
+    elif status:
+        statuses = dict(cur.get("statuses") or {})
+        for x in status:
+            stage, _, name = x.partition("=")
+            if stage.strip() not in JIRA_STATUSES or not name.strip():
+                raise _fail(f"--status {x}: use STAGE=Status with STAGE one of {', '.join(JIRA_STATUSES)}", 2)
+            statuses[stage.strip()] = name.strip()
+    else:
+        statuses = cur.get("statuses") if "statuses" in cur else dict(JIRA_STATUSES)
+    names = {"token_credential": cur.get("token_credential") or "jira-api",
+             "webhook_secret_credential": cur.get("webhook_secret_credential"),
+             "automation_token_credential": cur.get("automation_token_credential")}
+    secrets_ = {}
+    token = _secret("Jira API token", token_file, False, interactive, True)
+    if token:
+        secrets_["token_credential"] = token
+    hook = _secret("Webhook secret (Enter to skip)", webhook_secret_file, False, interactive, True)
+    if hook:
+        names["webhook_secret_credential"] = names["webhook_secret_credential"] or "jira-hook"
+        secrets_["webhook_secret_credential"] = hook
+    if automation_token_file:
+        names["automation_token_credential"] = names["automation_token_credential"] or "jira-auto"
+        secrets_["automation_token_credential"] = _secret("", automation_token_file, False, False, False)
+    if not (names["webhook_secret_credential"] or names["automation_token_credential"]):
+        names["webhook_secret_credential"] = "jira-hook"  # the signed webhook is the one to set up
+    cfg = {**{k: v for k, v in cur.items() if k not in ("trigger", "statuses")}, "url": url,
+           "deployment": deployment, **({"email": email} if email else {}), "projects": projects,
+           "trigger": trigger, "statuses": statuses, **{k: v for k, v in names.items() if v}}
+    try:
+        JiraConfig.model_validate(cfg)
+    except ValueError as e:
+        raise _fail(f"that Jira configuration isn't valid: {e}", 2) from e
+    for field, value in secrets_.items():
+        if value:
+            cli._call("POST", "/api/credentials", json={"name": names[field], "harness": "webhook",
+                                                         "kind": "generic", "value": value, "team": True})
+            typer.secho(f"✓ stored {names[field]}", fg="green")
+    d = cli._call("PUT", "/api/settings/HANGAR_JIRA", json={"value": json.dumps(cfg)})
+    typer.secho(f"✓ saved HANGAR_JIRA [{d.get('source', 'stored')}]", fg="green")
+    _setting_notes(d)
+    door = " or ".join(f"{k} \"{v}\"" for k, v in trigger.items())
+    typer.secho(f"\nJira is connected: an issue moved to {door} in {', '.join(sorted(projects))} starts a job. "
+                "Write tickets from docs/templates/jira-agent-ticket.md (acceptance criteria and a verify command), "
+                "then run `hangar doctor`.", fg="green")
+
+
 # ============================================================================ hangar config
 def _setting_line(d: dict) -> str:
     v = json.dumps(d["value"]) if not isinstance(d["value"], str) else d["value"]

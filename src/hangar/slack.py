@@ -25,7 +25,11 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from hangar import fairness as fairness  # --- review capacity (#159)
-from hangar import people, redeliver  # --- teamcreds: linked Slack users; --- trust: commit after handle
+from hangar import (  # --- teamcreds: linked Slack users; --- trust: commit after handle
+    people,
+    redeliver,
+    steer_class,  # --- #162: classifying follow-ups
+)
 from hangar.exchange import open_question
 from hangar.github import parse_repo
 from hangar.jobs import NOTIFIERS, Caller, JobError, JobNotFound, JobService, SubmitJob
@@ -58,7 +62,8 @@ HELP = (
     "• `/hangar <instructions>` (or `@hangar <instructions>`): start a job\n"
     "• `/hangar repo=owner/repo env=NAME harness=NAME model=NAME <instructions>`: choose where and how it runs\n"
     "• `/hangar status JOB`: where a job is\n"
-    "• Reply in a job's thread to follow up once the agent's turn is done."
+    "• Reply in a job's thread to follow up once the agent's turn is done. Start the reply with `fix:`, "
+    "`redirect:` or `info:` to say whether it corrects the agent, changes the task or adds what it didn't know."
 )
 
 
@@ -193,9 +198,11 @@ class SlackAPI:
             return body
         raise SlackError(f"Slack {method}: {err} (gave up after 3 attempts)")
 
-    async def post(self, channel: str, text: str, thread_ts: str | None = None) -> str:
+    async def post(self, channel: str, text: str, thread_ts: str | None = None,
+                   blocks: list[dict[str, Any]] | None = None) -> str:
         res = await self.call("chat.postMessage", channel=channel, text=_clip(text), thread_ts=thread_ts,
-                              unfurl_links=False, unfurl_media=False)
+                              unfurl_links=False, unfurl_media=False,
+                              blocks=json.dumps(blocks) if blocks else None)
         return str(res.get("ts") or "")
 
     async def thread(self, channel: str, ts: str, before: str, limit: int) -> list[dict[str, Any]]:
@@ -351,6 +358,25 @@ class SlackFrontDoor:
             if payload.get("type") == "url_verification":
                 return JSONResponse({"challenge": str(payload.get("challenge") or "")[:500]})
             return JSONResponse(self.event(payload, request.headers.get("x-slack-retry-num")))
+
+        @app.post("/api/hooks/slack/interactions")
+        async def slack_interactions(request: Request):
+            """--- #162: block actions (the steer-class buttons), verified and replay-guarded like commands."""
+            body = await self._verified(request)
+            replays = self.jobs.admission.replays
+            digest = replays.digest(request.headers.get("x-slack-signature", "").encode())
+            if replays.get("slack:interaction", digest) is not None:
+                self.jobs.admission.refused("slack:replay", "slack", "hook.replay", "/api/hooks/slack/interactions")
+                return JSONResponse({"ignored": "replay"}, status_code=200)
+            replays.put("slack:interaction", digest, "", 2 * MAX_AGE_SECONDS)
+            form = dict(parse_qsl(body.decode(errors="replace"), keep_blank_values=True))
+            try:
+                payload = json.loads(form.get("payload") or "")
+            except ValueError as e:
+                raise HTTPException(400, "payload is not JSON") from e
+            if not isinstance(payload, dict):
+                raise HTTPException(400, "payload is not a JSON object")
+            return JSONResponse(self.interaction(payload))
 
     async def _verified(self, request: Request) -> bytes:
         name = self.settings.slack_signing_secret_credential
@@ -514,7 +540,8 @@ class SlackFrontDoor:
             return
         try:
             async with httpx.AsyncClient(transport=self.jobs.transport, timeout=10, follow_redirects=False) as c:
-                await c.post(response_url, json={"response_type": "ephemeral", "text": text})
+                await c.post(response_url, json={"response_type": "ephemeral", "replace_original": False,
+                                                 "text": text})
         except httpx.HTTPError as e:
             log.warning("could not answer a Slack command via response_url: %s", type(e).__name__)
 
@@ -665,18 +692,70 @@ class SlackFrontDoor:
 
     async def _follow_up(self, api: SlackAPI, team: str, channel: str, thread_ts: str, user: str, job_id: str,
                          text: str, user_team: str | None = None) -> None:
+        cls, text = steer_class.split_prefix(text)  # --- #162: `fix:` / `redirect:` / `info:` classify on arrival
         try:
             job = self.jobs.follow_up(job_id, text.strip() or "Continue with the task.",
                                       requester=f"slack:{team}/{user}", reply_to=thread_ref(channel, thread_ts),
-                                      front_door=True, sender_person=self._person(team, user, user_team))  # review
+                                      front_door=True, sender_person=self._person(team, user, user_team),  # review
+                                      steer_class=cls)
         except JobNotFound:
             await self._say(api, channel, thread_ts, f"Job `{job_id}` no longer exists; start a new one.")
             return
         except JobError as e:
             await self._say(api, channel, thread_ts, f"Can't continue yet: {escape(str(e))}")
             return
-        await self._say(api, channel, thread_ts, f"Continuing hangar job `{job.id}` with your reply. I'll post here "
-                                                 "when it's done.")
+        ack = f"Continuing hangar job `{job.id}` with your reply. I'll post here when it's done."
+        turn = job.turns[-1]
+        if turn.steer_class != "unclassified":
+            await self._say(api, channel, thread_ts, f"{ack}\nClassified as *{steer_class.LABELS[turn.steer_class]}*.")
+            return
+        # --- #162: one click says what the reply was (only its sender's click counts)
+        value = f"{job.id}|{len(job.turns)}"
+        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": ack}},
+                  {"type": "context", "elements": [{"type": "mrkdwn", "text": "Was your reply a correction, a "
+                                                    "redirect or new info? (Or start a reply with `fix:`, "
+                                                    "`redirect:` or `info:`.)"}]},
+                  {"type": "actions", "block_id": "hangar_steer_class", "elements": [
+                      {"type": "button", "action_id": f"hangar_class_{c}", "value": f"{value}|{c}",
+                       "text": {"type": "plain_text", "text": label}}
+                      for c, label in steer_class.LABELS.items()]}]
+        try:
+            await api.post(channel, self.jobs.broker.redact(ack), thread_ts=thread_ts, blocks=blocks)
+        except SlackError as e:
+            log.warning("could not post to Slack thread %s: %s", thread_ref(channel, thread_ts), e)
+
+    # ------------------------------------------------------------------ interactions (#162)
+    def interaction(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """A click on a steer-class button: classify the follow-up it was posted for, if the clicker sent it.
+        Answered at once; the clicker hears the outcome privately through the action's response_url."""
+        if payload.get("type") != "block_actions":
+            return {"ignored": f"interaction {str(payload.get('type'))[:40]}"}
+        user = payload.get("user") if isinstance(payload.get("user"), dict) else {}
+        team = str((payload.get("team") or {}).get("id") or user.get("team_id") or "")
+        uid = str(user.get("id") or "")
+        actions = [a for a in payload.get("actions") or [] if isinstance(a, dict)
+                   and str(a.get("action_id") or "").startswith("hangar_class_")]
+        response_url = str(payload.get("response_url") or "")
+        if not (_ID.match(team) and _ID.match(uid)) or not actions:
+            return {"ignored": "not a steer-class click"}
+        job_id, _, rest = str(actions[0].get("value") or "").partition("|")
+        n, _, cls = rest.partition("|")
+        if not n.isdigit() or cls not in steer_class.LABELS:
+            return {"ignored": "malformed button value"}
+        by = f"slack:{team}/{uid}"
+        senders = {by, *([f"slack:{user['team_id']}/{uid}"] if _ID.match(str(user.get("team_id") or "")) else [])}
+        try:
+            job = self.jobs.get(job_id)
+            t = steer_class.follow_up_turn(job, int(n))
+            if t.requester not in senders:
+                raise steer_class.ClassifyError("only the person who sent that reply can classify it")
+            steer_class.classify_turn(self.jobs, job, int(n), cls, by)
+        except (JobNotFound, KeyError, steer_class.ClassifyError) as e:
+            self.jobs._spawn(self._respond(response_url, f"Not classified: {escape(str(e).strip(chr(39)))}"))
+            return {"ignored": str(e)[:200]}
+        self.jobs._spawn(self._respond(response_url, f"Classified your reply as *{steer_class.LABELS[cls]}*. "
+                                                     "Thanks: only corrections count against the agent."))
+        return {"ok": True, "class": cls}
 
     @staticmethod
     async def _guard(coro) -> None:

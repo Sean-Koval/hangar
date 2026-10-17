@@ -118,8 +118,9 @@ exported in that order. Order across sessions (best-of-N attempts) is by time on
 | `progress` | `turn` | `hangar.text`, `hangar.source` (`harness` or `hangar`) |
 | `error` | `turn` | `hangar.text`, `hangar.fatal` |
 | `file.change` | `turn` | `hangar.file.path` (as the harness gave it: often absolute), `hangar.file.repo_path` (relative to the repo's checkout; absent when the file is outside it), `hangar.file.in_repo`, `hangar.file.op` (`write`, `create`, `update`, `add`, `delete`...), `gen_ai.tool.name`. One per file an edit tool changed; a shell command's writes are not here (see `hangar.diff.files` and `hangar.shell.ops`) |
-| `steer` | `turn` | `hangar.text`, `hangar.requester`, `hangar.steer.status` |
-| `interrupt` | `turn` | `hangar.text`, `hangar.requester`, `hangar.steer.status` |
+| `steer` | `turn` | `hangar.text`, `hangar.requester`, `hangar.steer.status`, `hangar.steer.id`, `hangar.steer.class` (`correction`, `redirect`, `new_info`, or `unclassified`: [steering.md](../steering.md#classifying-steers)), `hangar.steer.classified_by`, `hangar.seq` (its place in the session's event log; unset for steers recorded before #162) |
+| `interrupt` | `turn` | as `steer` |
+| `steer.classified` | `turn` | `hangar.steer.class`, `hangar.steer.ref` (the steer's id, or the job's follow-up turn number), `hangar.steer.classified_by`, `hangar.seq`: someone said what a steer or follow-up was |
 | `verify` | `turn` (the in-turn gate) or `job` (hangar's check after the turn) | `hangar.verify.phase` (`in_turn`, `after_turn`), `hangar.verify.passed`, `hangar.verify.exit_code`, `hangar.verify.round`, `hangar.verify.command` (job only), `hangar.verify.new_failures` (job only) |
 | `question` | `turn` | `hangar.text`: the agent asked a person (the job waits for an answer) |
 | `taint` | `turn` | `hangar.taint.ref`, `hangar.seq`: the session first read untrusted content here ([security.md](../security.md#taint)) |
@@ -182,7 +183,9 @@ Hangar: `hangar.turn.number` (1-based, in the session), `hangar.run.id`, `hangar
 (`harness`, `prices`, `mixed`), `hangar.manifest.digest` (the effective harness manifest it ran with: fetch it with
 `GET /api/sessions/{name}/manifest?turn=N`), `hangar.harness.digest` and `hangar.environment.digest` (its
 `harness_digest` and `environment_digest`: a harness change and an environment change apart; unset for turns recorded
-before them), `hangar.attempt` (best-of-N attempt number, job exports),
+before them), `hangar.attempt` (best-of-N attempt number, job exports), `hangar.steer.class` and
+`hangar.steer.classified_by` (a job's follow-up turn started by a person: what the follow-up was, `unclassified` when
+nobody said; not on the first turn or on turns hangar started itself, such as verify-fix and auto-fix rounds),
 `hangar.taint` (whether the turn read untrusted content, or started tainted: [security.md](../security.md#taint)),
 `hangar.taint.first_seq` (the event that first tainted it; `0` when it started tainted, from its context or an earlier
 turn of the session) and `hangar.taint.sources` (`kind:ref`, e.g. `web:example.com`, `mcp:github`,
@@ -241,6 +244,12 @@ answered: a person, `policy`, `timeout` or `harness`), `hangar.approval.message`
 repo-relative, at most 1,000: what the change touched however it was made, shell commands included),
 `hangar.pr.url`. Both carry `hangar.taint`: whether any of its turns read untrusted content (a job whose own input is
 untrusted is tainted from the start).
+
+A job labelled in the Friday harness review ([runbook](../runbooks/harness-review.md), #169, added within
+`hangar.trace/v1`) also carries `hangar.failure.category` (`env`, `tooling`, `instructions`, `skill`, `model`,
+`ticket`, `flaky`, `other`), `hangar.failure.fix` (`agents_md`, `skill`, `env`, `ticket_template`, `none`),
+`hangar.failure.seq` (the `hangar.seq` of the first failure), `hangar.failure.turn`, `hangar.failure.session_id`,
+`hangar.failure.note`, `hangar.failure.candidate_task`, `hangar.failure.labelled_by` and `hangar.failure.at`.
 
 ## Writing behavior specs
 

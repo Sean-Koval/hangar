@@ -40,6 +40,7 @@ from hangar import (  # strategies: workstream D; --- observe; steer: live turns
     strategies,
     taint,  # --- taint (#129)
     verifyloop,
+    weekly,  # --- #168: `/hangar abandon <reason>` on an agent PR
 )
 from hangar import autoinstall as autoinstall  # --- autoinstall: agent-led environment setup jobs
 from hangar import clouddoctor as clouddoctor  # --- clouddoctor: its own jobs report back; its fixes are fenced
@@ -550,7 +551,10 @@ class JobService:
     def follow_up(self, job_id: str, message: str, requester: str, owner: str | None = None,
                   reply_to: str | None = None, context: list[ContextItem] | None = None,
                   output_schema: dict[str, Any] | None = None,
-                  front_door: bool = False, sender_person: str | None = None) -> Job:
+                  front_door: bool = False, sender_person: str | None = None,
+                  steer_class: str | None = None) -> Job:
+        """`steer_class` (#162): what the follow-up is, when its sender said (a `fix:` prefix); an answer to the
+        agent's question is `new_info` unless they said otherwise."""
         job = self.get(job_id, owner)
         # --- review: from a front door (GitHub, Slack, Jira; `sender_person` is the sender's linked person): a
         # person's job runs with their own login, so only they continue it there (teamcreds.may_continue)
@@ -579,8 +583,15 @@ class JobService:
             raise JobError(f"job {job.id} can't run another turn: {why}. Submit a new job to continue (branch "
                            f"{job.branch} has the work)")
         self._posture_follow_up(job, context, requester)  # --- intake posture (#123): an auto-fix round's CI logs
+        answer = job.state == JobState.NEEDS_INPUT
         job.turns.append(Turn(kind="follow_up", message=message, requester=requester, reply_to=reply_to,
                               context=context, output_schema=output_schema))
+        if steer_class is not None or answer:  # --- #162
+            from hangar import steer_class as classes
+
+            classes.mark(job.turns[-1], steer_class or "new_info", requester if steer_class else "hangar")
+            classes.record(self.sessions, s, job.turns[-1].steer_class, len(job.turns),
+                           job.turns[-1].classified_by or requester, job=job.id)
         job.result.question = None
         job.cancel_requested = False
         self._event(job, f"follow-up from {requester}", JobState.QUEUED, reason=None)
@@ -1576,6 +1587,11 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
                        if parse_repo(j.repo) == parse_repo(pr_repo)), key=lambda j: j.created_at, default=None)
             if job is None:
                 return {"ignored": "PR was not opened by a hangar job"}
+            if (reason := weekly.parse_abandon(extra)) is not None:  # --- #168: why the PR was abandoned
+                if why := weekly.set_abandon(svc, job, reason, f"github:{sender}", "comment"):
+                    await svc._comment(job, f"github:{repo}#{number}", why)
+                    return {"ignored": why}
+                return {"ok": True, "abandon_reason": job.landing.abandon_reason}
             try:
                 svc.follow_up(job.id, extra or "Continue with the task.", requester=f"github:{sender}",
                               reply_to=f"github:{repo}#{number}", front_door=True,  # --- review
@@ -1650,6 +1666,9 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
                             **autoinstall.kind_labels(svc.settings, [  # --- autoinstall: labelled for an env setup
                                 *(lb.get("name", "") for lb in issue.get("labels") or []),
                                 (payload.get("label") or {}).get("name", "")])})
+    from hangar import intake  # --- #156: the ticket's acceptance criteria and suggested check
+
+    intake.apply_ticket(svc, req, str(issue.get("body") or ""), f"{repo}#{number}")
     if (busy := running()) is not None:  # another delivery got here while we fetched comments
         return {"ignored": f"job {busy.id} is already working on {ref}"}
     approval = None if trusted else new_approval(
@@ -1679,5 +1698,6 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
     # Acknowledge right away: provisioning (and a first image build) can take minutes before the agent starts.
     svc._spawn(svc._comment(job, ref, f"Queued as hangar job `{job.id}` in `{job.environment}`. I'll comment here "
                                       "when the agent starts and again with the result."
-                                      + fairness.queued_note(svc, job)))  # --- review capacity (#159)
+                                      + fairness.queued_note(svc, job)  # --- review capacity (#159)
+                                      + intake.queued_notes(svc, job, "github")))  # --- #156
     return {"ok": True, "job": job.id}

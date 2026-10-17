@@ -168,7 +168,9 @@ Jobs from every front door get the repo's defaults (`verify`, environment, harne
 
 ## 4b. Trigger from Jira or GitHub Projects
 
-An issue moved to a configured status (or given a label) in a mapped Jira project, or an issue moved to a configured column on a GitHub Projects board, starts a job. Hangar comments on the issue when the agent starts, asks its questions there (a comment answers), and moves the ticket's status as the job goes. Setup is in [intake.md](intake.md).
+Planned work comes in through Jira: moving an issue to **Ready for agent** in a mapped project is the default door (`hangar setup jira`), and a configured label works too. Repo-local chores come in through a GitHub label (`hangar`) or a GitHub Projects column of the same name. Hangar comments on the issue when it queues the job (saying when it starts if the sandbox pools are powered down), when the agent starts, asks its questions there (a comment answers), and moves the ticket's status as the job goes. Setup is in [intake.md](intake.md).
+
+Write the ticket from the [agent ticket template](intake.md#agent-tickets): *Goal*, *Acceptance criteria*, *Verify command*, *Out of scope*, *Touches risk paths?*. Hangar hands the criteria to the agent as untrusted `acceptance.md` and counts them (`intake.acceptance`); the ticket's verify command is a suggestion unless the repo policy's `verify_allowed` matches it. A ticket without criteria still starts, and the queued comment says to add them.
 
 ## 5. Work with the agent
 
@@ -571,6 +573,22 @@ restart or at power-up) is ended instead: a resumed trial didn't run under the s
 retries of one experiment stop at 10% of its trials (at least one); past that no further trial starts, with a note,
 since that many at once usually means a provider or cluster outage. In the index, the highest `attempt` of a key is
 the one that counts; `GET /api/experiments/{id}/trials/{key}/manifest?attempt=N` (and `.../trace`) reads another one.
+
+## Failure labels
+
+In the Friday harness review ([runbook](runbooks/harness-review.md), #169), the team labels where failed and abandoned
+jobs first went wrong:
+
+```sh
+hangar review queue [--since 7d]
+hangar review label <job> --seq N --category env --fix env --note "…" [--task]
+hangar review status
+```
+
+`GET /api/review/queue`, `POST /api/jobs/{id}/failure-label` and `GET /api/review/status` are the REST equivalents.
+A job has one `failure_label` (`seq`, `category`, `fix`, `note`, `candidate_task`, `labelled_by`, `at`), shown on
+the job view and the trace (`hangar.failure.*`). Relabelling replaces it and is audited. Each label is also a `label`
+job event in the outbox for flightdeck, and a labelled job's runs are kept until exported.
 
 ## Outcome classes
 

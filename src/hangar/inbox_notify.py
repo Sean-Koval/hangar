@@ -440,6 +440,7 @@ async def digest(svc: JobService, p: Person, since: float | None = None, t: floa
     questions = sorted((x for x in xs if x["kind"] == "question"), key=lambda x: x.get("since") or 0)
     approvals = sorted((x for x in xs if x["kind"] == "approval"), key=lambda x: x.get("since") or 0)
     failed = [x for x in xs if x["kind"] == "failed" and (x.get("since") or 0) > since]
+    abandoned = [x for x in xs if x["kind"] == "abandon"]  # --- #168: closed agent PRs without a reason
     landing, reviews = [], 0
     for x in xs:
         if x["kind"] != "review":
@@ -449,7 +450,7 @@ async def digest(svc: JobService, p: Person, since: float | None = None, t: floa
             landing.append((x, job))
         else:
             reviews += 1
-    if not (questions or approvals or failed or landing or reviews):
+    if not (questions or approvals or failed or landing or reviews or abandoned):
         return None
 
     def link(x: dict[str, Any]) -> str:
@@ -468,6 +469,8 @@ async def digest(svc: JobService, p: Person, since: float | None = None, t: floa
     for x, job in landing:
         rows.append(("Approved but not landing", f"{_what(x)}: {escape(job.landing.note or 'not landing')}"
                                                  f"{link(x)}"))
+    for x in abandoned:
+        rows.append(("Closed without a reason", f"{escape(str(x['reason']))}: {escape(str(x['action']))}"))
     lines = ["*hangar digest*"]
     if svc.fleet.power.off:  # the control plane is up; the pools may not be yet
         lines.append(f"_Sandboxes not up yet: {escape(svc.fleet.power.status_line())}._")

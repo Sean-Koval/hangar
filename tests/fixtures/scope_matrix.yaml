@@ -989,6 +989,13 @@ hooks.post_slack_events:
   scope: signed
   owner: any
   enforced_by: 'slack: Slack''s v0 signature; who may act is the front door''s'
+hooks.post_slack_interactions:
+  server: hangar
+  mcp: null
+  rest: POST /api/hooks/slack/interactions
+  scope: signed
+  owner: any
+  enforced_by: 'slack: Slack''s v0 signature and replay guard; only a follow-up''s sender classifies it (#162)'
 inbox.get:
   server: hangar
   mcp: null
@@ -1024,6 +1031,12 @@ job.cancel:
     rest: token
   exception: 'by design: REST /api/jobs also serves `jobs` service tokens, fenced to the jobs they submitted (app.job_caller);
     MCP serves people, fenced to their own by people.Guard. Admins reach every job on both'
+job.failure_label:
+  server: hangar
+  mcp: null
+  rest: POST /api/jobs/{job_id}/failure-label
+  scope: user
+  owner: guard
 job.follow_up:
   server: hangar
   mcp: follow_up_job
@@ -1172,6 +1185,18 @@ metrics.get:
   scope: metrics
   owner: admin
   enforced_by: 'metrics.metrics_route: an admin or metrics token'
+metrics.get_standup:
+  server: hangar
+  mcp: null
+  rest: GET /api/metrics/standup
+  scope: user
+  owner: guard
+metrics.get_weekly:
+  server: hangar
+  mcp: null
+  rest: GET /api/metrics/weekly
+  scope: user
+  owner: guard
 oauth.delete_clients:
   server: hangar
   mcp: null
@@ -1395,6 +1420,18 @@ repos.put_policy:
   rest: PUT /api/repos/policy
   scope: admin
   owner: admin
+review.get_queue:
+  server: hangar
+  mcp: null
+  rest: GET /api/review/queue
+  scope: user
+  owner: guard
+review.get_status:
+  server: hangar
+  mcp: null
+  rest: GET /api/review/status
+  scope: user
+  owner: guard
 review_capacity.get:
   server: hangar
   mcp: null
@@ -2076,6 +2113,20 @@ turn.answer_approval_job:
   scope: jobs
   owner: token
   note: 'the job side of answer_approval (MCP''s one tool covers sessions and jobs: see turn.answer_approval)'
+turn.classify:
+  server: hangar
+  mcp: null
+  rest: POST /api/sessions/{ref}/steers/{steer_id}/class
+  scope: admin
+  owner: admin
+  note: 'no MCP tool: the tool list is at its cap (#162)'
+turn.classify_job:
+  server: hangar
+  mcp: null
+  rest: POST /api/jobs/{job_id}/turns/{n}/class
+  scope: jobs
+  owner: token
+  note: 'the job side of turn.classify (#162)'
 turn.steer:
   server: hangar
   mcp: steer_turn

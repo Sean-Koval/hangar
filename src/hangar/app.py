@@ -25,12 +25,14 @@ from hangar import exchange, observe  # --- observe
 from hangar import fairness as fairness  # --- review capacity (#159)
 from hangar import ghprojects as ghprojects  # --- intake: registers the GitHub Projects write-back
 from hangar import harness_repo as harness_repo  # --- #138: the team harness repo
+from hangar import harness_review as harness_review  # --- #169: the Friday harness review
 from hangar import inbox_notify as inbox_notify  # --- inbox delivery (#157, #158)
 from hangar import modelpolicy as modelpolicy  # --- canary
 from hangar import outbox as outbox  # --- outbox (#163): run capture
 from hangar import people as people  # --- teamcreds
 from hangar import redeliver as redeliver  # --- reconciler
 from hangar import teamcreds as teamcreds  # --- teamcreds
+from hangar import weekly as weekly  # --- #168: weekly adoption metrics and the standup line
 from hangar.a2a import A2AServer
 from hangar.auth import SCOPES, TokenAuth, bearer_from_headers
 from hangar.broker import Broker, CredentialError
@@ -354,6 +356,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         h.ops.start()  # --- clouddoctor
         inbox_notify.of(h.jobs).start()  # --- inbox delivery (#157): DMs for questions and approvals
         outbox.of(h.fleet).start(h.sessions, h.jobs)  # --- outbox (#163): drains while the pools are off too
+        weekly.of(h.jobs).start()  # --- #168: the nightly revert pass and the standup line
         modelpolicy.of(h.fleet).start()  # --- canary: providers' model lists, fetched now and kept fresh
         harness_repo.of(h.fleet).start()  # --- #138: the team harness repo's checkout, kept fresh
         missed = redeliver.start(h)  # --- reconciler: GitHub deliveries that failed while hangar was down
@@ -368,6 +371,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await h.ops.stop()  # --- clouddoctor
         await inbox_notify.of(h.jobs).stop()  # --- inbox delivery (#157)
         await outbox.of(h.fleet).stop()  # --- outbox (#163)
+        await weekly.of(h.jobs).stop()  # --- #168
         await modelpolicy.of(h.fleet).stop()  # --- canary
         await harness_repo.of(h.fleet).stop()  # --- #138
         if prebuild:
@@ -1117,6 +1121,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import steer_api
 
     steer_api.mount(app, h, A, J, _job_session)
+    from hangar import steer_class  # --- #162: classify follow-ups and steers (correction, redirect, new_info)
+
+    steer_class.mount(app, h, A, J, _job_session)
     # --- stream: exec output, background processes, file watches and events as Server-Sent Events
     from hangar import stream_api
 
@@ -1171,6 +1178,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     opstatus.mount(app, h, A)
     flightrec.mount(app, h, A, U)
     outbox.mount(app, h, A)  # --- outbox (#163): GET /api/admin/outbox, retry, backfill
+    weekly.mount(app, h, U)  # --- #168: GET /api/metrics/weekly, /api/metrics/standup
+    harness_review.mount(app, h, U)  # --- #169: the Friday harness review's queue and labels
     credhealth.mount(app, h, A)
     credhealth.register_inbox()
     from hangar import jira as jira_intake  # --- automation (#128): Jira intake alerts wait on the admins

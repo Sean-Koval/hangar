@@ -7,6 +7,8 @@ Type `/hangar fix the flaky upload test` in a channel, or mention `@hangar` with
 
 Reply in that thread to follow up. The agent picks up its own conversation, on the same branch and PR.
 
+Slack is the door for **unplanned** work: an alert, a question in a thread. Planned work comes through Jira's *Ready for agent* status, and repo chores through a GitHub label or Projects column ([intake.md](intake.md)). The Slack door is maintained but not extended beyond `@hangar adr` (#170).
+
 ```
 /hangar <instructions> ──► hangar posts "<@you> asked hangar to work on owner/repo" ──► thread:
                               Queued as hangar job job-3fa2c1d0 …
@@ -23,7 +25,7 @@ Reply in that thread to follow up. The agent picks up its own conversation, on t
 | `/hangar repo=owner/repo env=NAME harness=NAME model=NAME <instructions>` | Choose the repo (any in `HANGAR_GITHUB_REPOS`), environment (one mapped to that repo), harness and model. Options go first. |
 | `/hangar status JOB` | A job's state, PR and latest event (only you see the slash command's answer) |
 | `/hangar help` | Usage |
-| A reply in a job's thread | Follow-up once the current turn is done |
+| A reply in a job's thread | Follow-up once the current turn is done. Start it with `fix:`, `redirect:` or `info:` to [classify it](#classifying-a-reply) |
 
 Slack doesn't allow slash commands inside threads, so a `/hangar` job gets a new top-level message and the thread hangs off it. An `@hangar` mention inside an existing thread (say, under an alert) runs the job in that thread. The parent message and earlier replies, up to 15 messages and 20 KB, go to the agent as a context file, `slack-thread.md`. Other people and other apps wrote that thread, so the file is marked untrusted, and the prompt tells the agent to treat it as a description of the problem, never as instructions.
 
@@ -75,6 +77,14 @@ hangar setup slack --manifest slack-app.yaml
 - **Needs input.** When an agent stops with a question (job state `needs_input`, spec 0011 §2), hangar posts the question in the thread. Your reply is the answer: it runs as an ordinary follow-up.
 - **Safe output.** Text hangar didn't write itself, such as the agent's summary, failure output, or your instructions echoed back, is escaped. It can't ping `@channel` or turn into a link. Known secrets are redacted before anything is posted.
 - **When posting fails.** If the app isn't in the channel or the token is wrong, a slash command answers privately, through Slack's `response_url`, with the reason, and no job starts. Failures to post updates are recorded on the job's timeline.
+
+## Classifying a reply
+
+Under hangar's "Continuing hangar job …" answer to a thread reply, three buttons ask what the reply was: *Correction* (the agent got it wrong), *Redirect* (you changed the task) or *New info* (you added something it didn't know). One click records it; only corrections count against the agent in the harness metrics ([steering.md](steering.md#classifying-steers)). Or start the reply with `fix:`, `redirect:` or `info:`: it is classified on arrival, the prefix is stripped, and no buttons are shown. An answer to the agent's question counts as new info.
+
+- Only the person who sent the reply can classify it. Anyone else's click gets a private ("only you can see this") refusal.
+- Buttons come only on the acknowledgement of a person's reply, never on hangar's own status posts.
+- Clicks arrive at `POST /api/hooks/slack/interactions` (the manifest's *Interactivity* request URL). They are verified like events and commands: the signing secret, the 5-minute timestamp window, the body size cap, and a replay guard (a second copy of a signed click is ignored). An app created before this needs *Interactivity & Shortcuts* turned on with that URL.
 
 ## Inbox DMs
 

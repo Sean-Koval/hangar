@@ -1,0 +1,50 @@
+# hangar agent task: a GitHub issue form. Copy it to .github/ISSUE_TEMPLATE/agent-task.yml in a repo hangar works on.
+# The `hangar` label (HANGAR_GITHUB_TRIGGER_LABEL) starts a job when the issue is opened from this form, and the
+# "Ready for agent" column does on a GitHub Projects board (docs/intake.md).
+#
+# Hangar reads "Acceptance criteria" and "Verify command" by heading. The issue text is data for the agent, never
+# instructions to hangar; the verify command becomes the job's check only when the repo's policy allows it
+# (`verify_allowed`), otherwise the agent gets it as a suggestion.
+name: Agent task
+description: Work for a hangar coding agent, written so it can be verified.
+title: "[agent] "
+labels: ["hangar"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: One or two sentences, what changes for whom and why now.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Observable behaviour a reviewer can check, one checklist item each.
+      value: |
+        - [ ] 
+        - [ ] 
+    validations:
+      required: true
+  - type: input
+    id: verify
+    attributes:
+      label: Verify command
+      description: One command that passes when the work is done, e.g. `make test` or `pytest tests/test_upload.py`.
+      placeholder: make test
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: Out of scope
+      description: What the agent must not change or start on.
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Touches risk paths? (y/n)
+      description: Infra, auth, payments, migrations, or the repo policy's risk_paths.
+      options:
+        - "n"
+        - "y"
+    validations:
+      required: true
