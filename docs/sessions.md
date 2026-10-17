@@ -216,6 +216,16 @@ A session that waits on a person for over 55 minutes could refresh its 1-hour en
 
 pi has warming built in (`cacheWarming`, `streaming` by default), but its `idle` mode needs a pi process that outlives the turn. Hangar's `pi -p` turns exit when they finish. Revisit when a CLI offers a refresh command, or when hangar keeps one long-lived CLI process per session.
 
+## Thawed from a harness lock
+
+`hangar harness thaw team-default@r14 --env python "fix the flaky test"` (or `harness_lock` on `POST
+/api/sessions`) starts a session from a [harness lock](harness-lock.md#thaw-and-drift): the lock's harness, its
+concrete model and its approval mode, on the CLI version `harnesses.lock.yaml` pins (a lock on another version is
+refused, with what to do). Its turn 1 is checked against the lock; `SessionTurn.drift` lists what differed (`[]`:
+nothing), with a `harness.drift` event and a warning on the turn. Under `HANGAR_HARNESS_DRIFT=fail` turn 1 stops with
+outcome `failed`, reason `harness_drift`. Later turns aren't checked: what the agent changes is its behaviour. A
+thawed session can't switch harness; start another session for another lock.
+
 ## Settings
 
 | Variable | Default | |
@@ -228,6 +238,7 @@ pi has warming built in (`cacheWarming`, `streaming` by default), but its `idle`
 | `HANGAR_SESSION_KEEP_CHECKPOINTS` | 5 | Per session |
 | `HANGAR_SESSION_MAX_UNTRACKED_MB` / `_MAX_PART_MB` | 20 / 100 | Larger parts are skipped with a warning |
 | `HANGAR_SESSION_TURN_TIMEOUT_MINUTES` | 120 | |
+| `HANGAR_HARNESS_REPO`, `HANGAR_HARNESS_DRIFT` | unset, `warn` | Sessions thawed from a harness lock (below) |
 | `HANGAR_SESSION_STORE` | data volume | `gs://bucket[/prefix]` for durable checkpoints on GKE (terraform output `session_bucket`) |
 
 ## Cost and speed

@@ -539,6 +539,7 @@ class Job(BaseModel):
     restarts: int = 0
     landing: LandingState = Field(default_factory=LandingState)  # --- landing
     taint: dict[str, Any] | None = None  # --- taint (#129): its untrusted input, and its sessions' taint (mirrored)
+    harness_lock: dict[str, Any] | None = None  # --- harness locks (#134): the lock it runs from (harness_thaw.pin)
 
 
 # ---------------------------------------------------------------------------- scheduled jobs (workstream A)
@@ -654,6 +655,9 @@ class SessionTurn(BaseModel):
     # --- taint (#129): {"tainted": true, "first_seq": n, "sources": [{"kind", "seq", "ref"}...]} once the turn has
     # read untrusted content (first_seq 0: it started tainted, from its context or an earlier turn); None: it hasn't
     taint: dict[str, Any] | None = None
+    # --- harness locks (#134): turn 1 of a session thawed from a lock, compared with it: [] matched,
+    # [{"component", "lock", "effective"}] drifted; None: not checked (not turn 1, no lock, or not yet)
+    drift: list[dict[str, Any]] | None = None
 
 
 class Checkpoint(BaseModel):
@@ -714,6 +718,9 @@ class Session(BaseModel):
     harness_version: str | None = None
     # --- taint (#129): sticky; set by the first tainted turn (its number and seq), inherited by forks
     taint: dict[str, Any] | None = None
+    # --- harness locks (#134): the lock it was thawed from, as claimed (harness_thaw.pin: ref, name, revision,
+    # digest, harness, version, model, approvals, components)
+    harness_lock: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------- workstream F: git gateway (spec 0003)

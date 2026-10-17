@@ -183,6 +183,12 @@ class Settings(BaseSettings):
     # Where checkpoints live: unset = <data_dir>/sessions; gs://bucket[/prefix] = GCS via Workload Identity
     # (durable, doesn't fill the control plane's disk; terraform output session_bucket).
     session_store: str | None = None
+    # --- outbox (#163, #189): run capture (docs/api/outbox.md). gs://bucket[/prefix], or a local directory for dev
+    # and tests; unset = off. `jobs_only` leaves out sessions not attached to a job. A deleted session's event log
+    # and manifests wait for the export at most export_grace_days, then go (audited).
+    outbox_url: str | None = None
+    outbox_sessions: Literal["all", "jobs_only"] = "all"
+    export_grace_days: float = 30.0
     session_poll_seconds: float = 5.0
     session_turn_timeout_minutes: int = 120
     # --- providers-e2b: on a provider with memory snapshots (hot_resume: E2B, CubeSandbox), a suspended session's
@@ -318,6 +324,11 @@ class Settings(BaseSettings):
     # --- egress: hostname allowlists (egress.py, docs/security.md#egress) ----
     # The mode of environments that don't set `egress.mode`: open (the public internet, as before), allowlist or none.
     egress_default: Literal["open", "allowlist", "none"] = "open"
+    # --- harness locks (#134, harness_thaw.py, docs/harness-lock.md): the harness registry, a checkout of the team
+    # harness repo (harnesses/<name>/harness.lock, channels.yaml) that `harness_lock: name@rN` resolves against; and
+    # what turn 1's drift from the lock does: warn (a warning, an event, a review-packet line) or fail (the turn stops).
+    harness_repo: str | None = None
+    harness_drift: Literal["warn", "fail"] = "warn"
     # The egress proxy's port. On GKE it listens on HANGAR_EGRESS_HOST (default HANGAR_GATEWAY_HOST, then HANGAR_HOST)
     # when HANGAR_EGRESS_URL is set; on Docker on the egress network's gateway address, when a sandbox needs it.
     egress_port: int = 3128

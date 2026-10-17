@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Sean-Koval/hangar/blob/main/docs/api/run.schema.json",
+  "title": "hangar.run/v1: one captured run",
+  "description": "The run.json object the outbox writes for every finished agent run (a session turn, a job turn after its check and delivery, a best-of-N attempt after its check, an experiment trial's turn), at v1/runs/{date}/{session_id}.{run_id}/run.json, last of its run's objects. Additions within v1 are new optional properties; anything removed or renamed is a new schema version. Every string has passed through hangar's secret redaction. Contract: docs/api/outbox.md. $defs also holds the shapes of the other objects the outbox writes (job_event, tests).",
+  "type": "object",
+  "required": ["schema", "source", "run_id", "session_id", "turn", "started_at", "finished_at", "pinned",
+               "untrusted", "objects", "withheld", "captured_at"],
+  "properties": {
+    "schema": {"const": "hangar.run/v1"},
+    "source": {"enum": ["job", "session", "experiment", "shadow"], "description": "experiment: a trial of an experiment job; job: any other job's turn (its own, a best-of-N attempt, the judge); session: a session not carrying a job; shadow: reserved (#183)."},
+    "run_id": {"type": "string", "pattern": "^run-", "description": "The turn's run id: hangar.run.id in the trace, subject.run_id in the manifest. Unique only together with session_id."},
+    "session_id": {"type": "string"},
+    "session_name": {"type": ["string", "null"]},
+    "turn": {"type": "integer", "minimum": 1, "description": "The turn's number in its session (hangar.turn.number, the manifest's subject.turn)."},
+    "job_id": {"type": ["string", "null"]},
+    "job_source": {"type": ["string", "null"], "description": "Where the job came from: api, mcp, cli, github, webhook, schedule, slack, a2a, jira, github-projects, env-setup, experiment."},
+    "job_turn": {"type": ["integer", "null"], "minimum": 1, "description": "The turn's number in its job's turns (null for attempts, the judge and sessions)."},
+    "attempt": {"type": ["integer", "null"], "minimum": 1, "description": "The best-of-N attempt's index."},
+    "person": {"type": ["string", "null"]},
+    "repo": {"type": ["string", "null"]},
+    "environment": {"type": ["string", "null"]},
+    "base_sha": {"type": ["string", "null"], "description": "The session's base commit."},
+    "start_sha": {"type": ["string", "null"], "description": "HEAD when the turn started (the manifest's instructions.repo.commit): patch.diff is against it."},
+    "head_sha": {"type": ["string", "null"], "description": "HEAD when the turn ended (the delivered head for a job's last turn)."},
+    "harness": {"type": ["string", "null"]},
+    "harness_version": {"type": ["string", "null"]},
+    "model": {"type": ["string", "null"]},
+    "harness_digest": {"type": ["string", "null"]},
+    "environment_digest": {"type": ["string", "null"]},
+    "config_digest": {"type": ["string", "null"]},
+    "manifest_digest": {"type": ["string", "null"], "description": "The digest of manifest.json (SessionTurn.manifest)."},
+    "pinned": {"type": "boolean", "description": "Ran under a pinned configuration (an experiment variant's pins). Interactive sessions and ordinary jobs: false."},
+    "pin_set": {"type": ["string", "null"], "description": "<experiment id>/<variant> when pinned."},
+    "experiment": {
+      "type": ["object", "null"],
+      "properties": {
+        "id": {"type": ["string", "null"]},
+        "trial_key": {"type": ["string", "null"], "description": "<task>/<variant>/<n>"},
+        "task": {"type": ["string", "null"]},
+        "variant": {"type": ["string", "null"]},
+        "trial": {"type": ["integer", "null"]},
+        "graded": {"type": "boolean", "description": "The experiment has a grader: grade.json follows (possibly after run.json)."}
+      }
+    },
+    "outcome": {"type": ["string", "null"], "description": "exited | timed_out | cancelled | over_budget | gone | error | needs_input | interrupted"},
+    "outcome_reason": {"type": ["string", "null"]},
+    "outcome_class": {"type": ["string", "null"], "description": "agent | infra_error | cancelled | human (#166); null until hangar classifies outcomes. Null means unknown, never agent."},
+    "infra_reason": {"type": ["string", "null"]},
+    "exit_code": {"type": ["integer", "null"]},
+    "job_state": {"type": ["string", "null"], "description": "The job's state when the run was captured."},
+    "job_reason": {"type": ["string", "null"]},
+    "started_at": {"type": ["number", "null"], "description": "Unix time, seconds."},
+    "finished_at": {"type": ["number", "null"]},
+    "usage": {
+      "type": ["object", "null"],
+      "properties": {
+        "input_tokens": {"type": "integer"},
+        "output_tokens": {"type": "integer"},
+        "cache_read_tokens": {"type": "integer"},
+        "cache_write_tokens": {"type": "integer"},
+        "cost_usd": {"type": ["number", "null"]},
+        "cost_source": {"type": ["string", "null"]},
+        "model": {"type": ["string", "null"]}
+      }
+    },
+    "verify": {
+      "type": ["object", "null"],
+      "description": "The check hangar ran after the turn (trusted). Null for session turns.",
+      "properties": {
+        "command": {"type": ["string", "null"]},
+        "exit_code": {"type": ["integer", "null"]},
+        "passed": {"type": ["boolean", "null"]},
+        "new_failures": {"type": ["array", "null"], "items": {"type": "string"}},
+        "rounds": {"type": ["integer", "null"], "description": "Times the in-turn gate sent a failing check back to the agent."},
+        "trusted": {"type": "boolean"}
+      }
+    },
+    "tests": {"type": "array", "items": {"type": "string"}, "description": "Ids of the TestRuns in tests.json."},
+    "steers": {
+      "type": "object",
+      "required": ["n", "by_class"],
+      "properties": {
+        "n": {"type": "integer", "minimum": 0},
+        "by_class": {"type": "object", "additionalProperties": {"type": "integer"}, "description": "correction | redirect | new_info counts (#162); empty until steers are classified."}
+      }
+    },
+    "approvals": {"type": "integer", "minimum": 0},
+    "questions": {"type": "integer", "minimum": 0, "description": "Questions the agent asked (needs_input)."},
+    "labels": {"type": "object", "additionalProperties": {"type": "string"}},
+    "traceparent": {"type": ["string", "null"], "description": "W3C traceparent of the turn's live invoke_agent span, when tracing was on."},
+    "untrusted": {"type": "boolean", "description": "The job's task text came from someone outside the trusted list (Job.untrusted_source)."},
+    "tainted": {"type": "boolean", "description": "The turn read untrusted content (#129)."},
+    "shadow_of": {"type": ["string", "null"], "description": "Reserved (#183)."},
+    "pr": {"type": ["object", "null"], "properties": {"url": {"type": ["string", "null"]}, "number": {"type": ["integer", "null"]}}},
+    "diff_files": {"type": ["array", "null"], "items": {"type": "string"}, "description": "Repo-relative paths the run changed (the delivered change's for a job's last turn, else patch.diff's), at most 1,000."},
+    "patch": {
+      "type": ["object", "null"],
+      "properties": {
+        "base": {"type": ["string", "null"]},
+        "bytes": {"type": "integer"},
+        "truncated": {"type": "boolean", "description": "patch.diff stops at HANGAR_EXCHANGE_MAX_PATCH_MB."}
+      }
+    },
+    "truncated": {"type": "boolean", "description": "trace.otlp.json hit the export's 20,000-item cap (hangar.export.truncated)."},
+    "objects": {"type": "array", "items": {"enum": ["manifest.json", "trace.otlp.json", "tests.json", "grade.json", "patch.diff"]}, "description": "The run's other objects, uploaded before this one."},
+    "withheld": {"type": "array", "items": {"type": "string"}, "description": "Objects never uploaded because they still held a secret after redaction."},
+    "expects": {"type": "array", "items": {"type": "string"}, "description": "Objects that arrive after run.json (grade.json for a graded trial)."},
+    "hangar_version": {"type": ["string", "null"]},
+    "captured_at": {"type": "number"}
+  },
+  "$defs": {
+    "job_event": {
+      "title": "hangar.job_event/v1",
+      "description": "v1/jobs/{date}/{job_id}/events/{ts_ms}-{kind}.json: a fact about a job that arrives after its runs. Immutable; one object per fact. {date} is the event's UTC date.",
+      "type": "object",
+      "required": ["schema", "kind", "ts", "job_id", "source", "data"],
+      "properties": {
+        "schema": {"const": "hangar.job_event/v1"},
+        "kind": {"enum": ["pr.open", "review.first", "pr.merge", "pr.close", "revert", "abandon", "label"]},
+        "ts": {"type": "number"},
+        "job_id": {"type": "string"},
+        "job_source": {"type": ["string", "null"]},
+        "source": {"enum": ["job", "experiment", "shadow"]},
+        "repo": {"type": ["string", "null"]},
+        "person": {"type": ["string", "null"]},
+        "environment": {"type": ["string", "null"]},
+        "session_id": {"type": ["string", "null"]},
+        "run_ids": {"type": "array", "items": {"type": "string"}},
+        "pr": {"type": ["object", "null"]},
+        "untrusted": {"type": "boolean"},
+        "data": {"type": "object", "description": "Per kind: pr.open {draft}; review.first {by, sha}; pr.merge {by, green_to_merge_seconds}; pr.close {}; abandon {reason}."}
+      }
+    },
+    "tests": {
+      "title": "hangar.tests/v1",
+      "description": "tests.json: the TestRuns of the run's turn (verify, its flaky rerun and the in-turn gate's runs for a job turn; the attempt's check for an attempt), each with every case's outcome, and their test.run / test.case span events in OTLP/JSON span-event form (docs/api/traces.md).",
+      "type": "object",
+      "required": ["schema", "run_id", "session_id", "runs", "events"],
+      "properties": {
+        "schema": {"const": "hangar.tests/v1"},
+        "run_id": {"type": "string"},
+        "session_id": {"type": "string"},
+        "job_id": {"type": ["string", "null"]},
+        "turn": {"type": "integer"},
+        "runs": {"type": "array", "items": {"type": "object", "required": ["id", "kind", "trusted", "counts"],
+                                            "properties": {"cases": {"type": ["object", "null"], "additionalProperties": {"type": "string"}}}}},
+        "events": {"type": "array", "items": {"type": "object", "required": ["name", "timeUnixNano", "attributes"],
+                                              "properties": {"name": {"enum": ["test.run", "test.case"]},
+                                                             "timeUnixNano": {"type": "string", "pattern": "^[0-9]+$"},
+                                                             "attributes": {"type": "array"}}}}
+      }
+    }
+  }
+}

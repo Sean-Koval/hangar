@@ -179,6 +179,20 @@ class GCSStore:
                                 headers={"Content-Type": "application/octet-stream"}, timeout=300)
         r.raise_for_status()
 
+    async def put_once(self, key: str, data: bytes, content_type: str = "application/octet-stream",
+                       content_encoding: str | None = None) -> bool:
+        """--- outbox (#163): create `key` only if it doesn't exist (ifGenerationMatch=0). True: created; False: it
+        was already there (412), which a write-once upload counts as done. Never overwrites."""
+        params = {"uploadType": "media", "name": self._name(key), "ifGenerationMatch": "0"}
+        if content_encoding:
+            params["contentEncoding"] = content_encoding
+        r = await self._request(self._client(), "POST", f"{self.API}/upload/storage/v1/b/{self.bucket}/o",
+                                params=params, content=data, headers={"Content-Type": content_type}, timeout=300)
+        if r.status_code == 412:
+            return False
+        r.raise_for_status()
+        return True
+
     async def get(self, key: str) -> bytes | None:
         r = await self._request(self._client(), "GET",
                                 f"{self.API}/storage/v1/b/{self.bucket}/o/{quote(self._name(key), safe='')}",

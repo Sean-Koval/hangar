@@ -235,5 +235,8 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
     from hangar import approvals  # --- approvals (#121): a lone person can't approve their own held jobs
 
     out += approvals.doctor_checks(h)
+    from hangar import outbox  # --- outbox (#163, #189): a backlog, withheld objects, retention held for export
+
+    out += outbox.doctor_checks(h)
     await asyncio.sleep(0)
     return out

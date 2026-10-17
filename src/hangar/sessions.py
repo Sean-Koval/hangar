@@ -30,10 +30,12 @@ from hangar import ckpt, exchange, isolation, observe  # --- observe, isolation
 from hangar import computer as computer  # --- computer
 from hangar import fairness as fairness  # --- scale
 from hangar import flightrec as flightrec  # --- clouddoctor: failed and slow turns leave a record
+from hangar import harness_thaw as harness_thaw  # --- harness locks (#134): thawed sessions, turn 1's drift
 from hangar import hot_resume as hot_resume  # --- providers-e2b
 from hangar import keys as keys  # --- durable
 from hangar import manifest as manifest  # --- interfaces: the effective harness manifest of each turn
 from hangar import metrics as metrics  # --- reconciler
+from hangar import outbox as outbox  # --- outbox (#163, #189): run capture; retention waits for it
 from hangar import outcomes as outcomes  # --- #166: agent or infrastructure
 from hangar import pins as pins  # --- canary: the model and the CLI version a session is pinned to
 from hangar import resident as resident  # --- durable: live and recent sessions in memory, the rest in the store
@@ -95,6 +97,7 @@ class NewSession(BaseModel):
     output_schema: dict[str, Any] | None = None
     approvals: ApprovalPolicy | None = None  # workstream steer: auto | ask | deny-risky (default: the environment's)
     cache: CachePolicy | None = None  # --- overnight/cache: auto | 5m | 1h | off (default: the environment's)
+    harness_lock: str | None = Field(None, max_length=200)  # --- harness locks (#134): name, name@rN, name@sha256:...
 
 
 def extract_summary(harness: str | None, log_text: str) -> str | None:
@@ -153,7 +156,6 @@ class SessionService:
         self.activity = Activity(self.settings, fleet.broker.redact)  # workstream C: events, usage, budgets
         # --- overnight/sweep: called with a session just before it is deleted (jobs keep its usage); must not raise
         self.on_delete: list[Callable[[Session], None]] = []
-        self.on_delete.append(lambda s: manifest.store(self.settings).drop(s.id))  # --- interfaces: its manifests
         self.env_requests: Any = None  # --- computer: envrequests.EnvRequests, wired by the app
         # --- taint (#129): the job a session carries (wired by JobService), for what the job's input taints; and
         # listeners called with (session, turn, ref) when a session first becomes tainted (must not raise)
@@ -303,6 +305,12 @@ class SessionService:
             raise SessionError(str(e).strip("'\"")) from e
         if not harness:
             raise SessionError(f"environment '{env}' has no agent harness")
+        thawed = None
+        if req.harness_lock:  # --- harness locks (#134): the lock fixes the harness, model and approvals
+            try:
+                thawed = harness_thaw.pin(self.fleet, req.harness_lock, env, req.harness, req.model, req.approvals)
+            except harness_thaw.ThawError as e:
+                raise SessionError(str(e)) from e
         branch = req.branch or f"hangar/session/{req.name}"
         if not _BRANCH_RE.match(branch) or (req.base_branch and req.base_branch == branch):
             raise SessionError(f"invalid branch '{branch}'")
@@ -320,6 +328,8 @@ class SessionService:
                                   else self.settings.session_idle_minutes),
                     person=person)  # --- identity
         s.budget = resolve_budget(req.budget, self.settings)
+        if thawed is not None:  # --- harness locks (#134)
+            harness_thaw.apply(s, thawed)
         caching.pin_model(self, s)  # --- overnight/cache
         pins.pin(self, s)  # --- canary: a policy becomes a concrete id; the CLI version
         self._sessions[s.id] = s
@@ -341,6 +351,9 @@ class SessionService:
         if s.state == SessionState.ARCHIVED:
             raise SessionError(f"session {s.name} is archived")
         live = bool(s.sandbox_id and self._alive(s.sandbox_id))
+        if harness and harness != s.harness and s.harness_lock:  # --- harness locks (#134)
+            raise SessionError(f"session {s.name} runs harness lock {s.harness_lock['ref']} ({s.harness}); "
+                               "start another session to run another harness")
         if harness and harness != s.harness and (live or self.busy(s.id)):
             raise SessionError(f"session {s.name} is running {s.harness}; suspend it before switching to {harness}")
         if harness and harness != s.harness:
@@ -439,16 +452,25 @@ class SessionService:
         self.fleet.audit(requester, "session.archive", s.id)
         return s
 
-    def delete(self, ref: str, requester: str) -> None:
+    def delete(self, ref: str, requester: str, force_now: bool = False) -> None:
+        """--- #189: its manifests and event log go once the outbox exported its runs (pending-delete until then);
+        `force_now` (admins: personal-data deletion) drops them now, audited."""
         s = self.archive(ref, requester)
         for fn in self.on_delete:  # --- overnight/sweep
             try:
                 fn(s)
             except Exception:  # noqa: BLE001 - a listener must never block a delete
                 log.exception("session delete listener failed")
+        try:
+            outbox.of(self.fleet).retire_session(s, self, requester, force_now=force_now)
+        except Exception:  # noqa: BLE001 - never keep a deleted session's record over its files
+            log.exception("session %s: could not hand its files to retention; deleting them", s.id)
+            manifest.store(self.settings).drop(s.id)
+            self.activity.log.drop(s.id)
+        if force_now:
+            self.fleet.audit(requester, "session.delete_now", s.id)
         self.store.delete(Session, s.id)
         self._sessions.pop(s.id, None)
-        self.activity.log.drop(s.id)
 
     def events(self, ref: str, since: int = 0, limit: int = 200, tail: int | None = None) -> list[dict[str, Any]]:
         """The session's activity events (every turn), oldest first: after `since`, or the last `tail`."""
@@ -1085,13 +1107,20 @@ class SessionService:
             if over := await watch.poll():  # workstream C
                 outcome = "over_budget"
                 break
+            if harness_thaw.stops(self, s, turn):  # --- harness locks (#134): HANGAR_HARNESS_DRIFT=fail
+                outcome = "failed"
+                break
             if self.env_requests is not None:  # --- computer: what the agent asks its owner for, while it works
                 await self.env_requests.tick(s, turn)
+        if outcome == "exited" and await harness_thaw.stops_after(self, s, turn):  # --- harness locks (#134)
+            outcome = "failed"
         turn.finished_at = now()
         if outcome == "exited" and turn.exit_code == 130:  # --- workstream steer: stopped by an interrupt
             outcome = "interrupted"
         steering.forget(self, turn.run_id if turn.live else None)
         turn.outcome, turn.outcome_reason = outcome, over  # workstream C
+        if outcome == "failed":  # --- harness locks (#134): until part B's infra_error outcome
+            turn.outcome_reason = harness_thaw.DRIFT_REASON
         if over:
             watch.note("error", f"stopped: over budget ({over})", reason="over_budget")
         if outcome == "gone":
@@ -1099,18 +1128,21 @@ class SessionService:
             gone_sb = self.fleet.store.get(Sandbox, s.sandbox_id) if s.sandbox_id else None  # --- #166: why it went
             outcomes.mark(turn, *outcomes.classify_turn(outcome, turn.exit_code, harness=turn.harness,
                                                          **outcomes.gone_context(self.fleet, gone_sb)))
+            outbox.of(self.fleet).turn_ended(self, s, turn, outcome)  # --- outbox (#163): after the class is set
             s.sandbox_id = None if not self._alive(s.sandbox_id or "") else s.sandbox_id
             self._set(s, SessionState.SUSPENDED if s.checkpoints else SessionState.FAILED,
                       "the sandbox went away during the turn")
             turn.outcome = outcome  # workstream E
             flightrec.of(self.fleet).turn_ended(self, s, turn, outcome, "")  # --- clouddoctor
+            outbox.of(self.fleet).session_turn(self, s, turn)  # --- outbox (#163): off the turn's path
             return outcome, ""
-        if outcome in ("cancelled", "timed_out", "error", "over_budget"):
+        if outcome in ("cancelled", "timed_out", "error", "over_budget", "failed"):
             # Never leave an agent running that nobody is watching (it would keep working, and spending).
             with contextlib.suppress(Exception):
                 ksb, kprov = self.fleet._running(s.sandbox_id or "")
                 await isolation.kill(kprov, ksb, self.settings, turn.run_id or "")  # --- isolation: where it runs
             turn.exit_code = turn.exit_code if turn.exit_code is not None else -1
+        outbox.of(self.fleet).turn_ended(self, s, turn, outcome)  # --- outbox (#163): reads its patch meanwhile
         raw = ""
         try:
             sb = self.fleet.get(s.sandbox_id)
@@ -1146,6 +1178,7 @@ class SessionService:
             self._set(s, SessionState.SUSPENDED, f"turn {len(s.turns)} finished; sandbox released")
         # --- clouddoctor: the session is idle: a failed or slow turn's record (its log is read and sealed off-turn)
         flightrec.of(self.fleet).turn_ended(self, s, turn, outcome, raw)
+        outbox.of(self.fleet).session_turn(self, s, turn)  # --- outbox (#163): off the turn's path
         return outcome, raw
 
     async def _turn_status(self, s: Session, turn: SessionTurn, wait: float, watch: Any) -> dict[str, Any]:

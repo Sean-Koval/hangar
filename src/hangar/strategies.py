@@ -34,6 +34,7 @@ from hangar import (  # --- overnight/cache; verifyloop: --- overnight/autofix
 )
 from hangar import delivery as delivery  # --- least-privilege
 from hangar import fairness as fairness  # --- scale
+from hangar import outbox as outbox  # --- outbox (#163): attempts are captured once checked
 from hangar import pins as pins  # --- canary
 from hangar import secretscan as secretscan  # --- egress
 from hangar import taint as taint  # --- taint (#129)
@@ -347,6 +348,7 @@ async def _run_attempt(jobs: JobService, job: Job, a: Attempt) -> None:
     if a.state != "waiting":  # --- trust
         a.state = "done"
     jobs._save(job)
+    outbox.of(jobs.fleet).attempt_done(jobs, job, a)  # --- outbox (#163)
 
 
 async def _attempt_steps(jobs: JobService, job: Job, a: Attempt) -> None:
@@ -398,6 +400,7 @@ async def _attempt_steps(jobs: JobService, job: Job, a: Attempt) -> None:
         if st is None:
             raise SessionError(f"turn {a.run_id} is not in session {s.name}")
         if a.outcome is None:
+            outbox.of(jobs.fleet).defer(a.run_id)  # --- outbox (#163): captured once checked (_run_attempt)
             outcome, _ = await svc.end_turn(s, st, timeout_minutes=job.timeout_minutes,
                                             should_cancel=lambda: job.cancel_requested)
             a.outcome, a.exit_code, a.finished_at = outcome, st.exit_code, now()

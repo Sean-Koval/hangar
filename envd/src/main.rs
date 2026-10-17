@@ -48,6 +48,41 @@ fn denied(why: &str) -> Response {
     (StatusCode::UNAUTHORIZED, [("content-type", "application/json")], body.to_string()).into_response()
 }
 
+/// How much of a denied HTTP/1.1 request's body is read and thrown away (never buffered), and for how long, before
+/// the 401 goes out.
+const DENIED_DRAIN_MAX: usize = 64 * 1024;
+const DENIED_DRAIN_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Denies `req` without leaving its body unread on an HTTP/1.1 connection. Answering before the body is read makes
+/// hyper close the connection without saying so: a client still writing the body gets a broken pipe instead of the
+/// 401, and one that already sent it keeps the dead connection in its pool and fails its next request (#207). A
+/// small body (a Connect RPC, a JSON call) is read and dropped so the connection stays usable; past
+/// `DENIED_DRAIN_MAX` bytes or `DENIED_DRAIN_WAIT` the 401 says `connection: close` instead, so a stranger can neither
+/// hold the answer back with a stalled body nor make the daemon read a large one. HTTP/2 needs neither: an unread
+/// stream is reset on its own and the connection lives on.
+async fn deny(req: Request, why: &str) -> Response {
+    use futures::StreamExt;
+    let mut resp = denied(why);
+    if req.version() > axum::http::Version::HTTP_11 {
+        return resp;
+    }
+    let drain = async {
+        let mut body = req.into_body().into_data_stream();
+        let mut n = 0usize;
+        while let Some(chunk) = body.next().await {
+            n += chunk.map_err(|_| ())?.len();
+            if n > DENIED_DRAIN_MAX {
+                return Err(());
+            }
+        }
+        Ok(())
+    };
+    if !matches!(tokio::time::timeout(DENIED_DRAIN_WAIT, drain).await, Ok(Ok(()))) {
+        resp.headers_mut().insert(axum::http::header::CONNECTION, axum::http::HeaderValue::from_static("close"));
+    }
+    resp
+}
+
 /// A lock that a panic elsewhere (which unwinds one request, not the daemon) doesn't leave poisoned for everyone.
 pub fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -62,7 +97,7 @@ async fn require_auth(State(app): State<Arc<App>>, req: Request, next: Next) -> 
     let pq = req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/");
     let signed = match app.auth.check(token, sig, req.method().as_str(), pq) {
         auth::Check::Token => return next.run(req).await,
-        auth::Check::Denied(why) => return denied(why),
+        auth::Check::Denied(why) => return deny(req, why).await,
         auth::Check::Signed(s) => s,
     };
     let proof = app.auth.proof(&signed.mac);
@@ -73,7 +108,7 @@ async fn require_auth(State(app): State<Arc<App>>, req: Request, next: Next) -> 
             req.extensions_mut().insert(signed); // the upload handler checks the body as it streams to disk
             next.run(req).await
         }
-        auth::SignedBody::Chunked => denied("only uploads can be signed chunked"),
+        auth::SignedBody::Chunked => deny(req, "only uploads can be signed chunked").await,
         auth::SignedBody::Sha256(want) => {
             let (parts, body) = req.into_parts();
             match axum::body::to_bytes(body, auth::MAX_SIGNED_BODY).await {

@@ -39,6 +39,7 @@ from hangar.models import (
     Session,
     Snapshot,
 )
+from hangar.outbox import OutboxItem  # --- outbox (#163): objects on their way to the run capture bucket
 from hangar.testresults import TestRun  # --- testresults: each run of a check, as its test reports had it
 
 T = TypeVar("T", bound=BaseModel)
@@ -58,6 +59,7 @@ _TABLES: dict[type[BaseModel], tuple[str, str]] = {
     FlightRecord: ("flight_records", "id"),  # --- clouddoctor
     DoctorFinding: ("doctor_findings", "id"),  # --- clouddoctor
     TestRun: ("test_runs", "id"),  # --- testresults
+    OutboxItem: ("outbox", "key"),  # --- outbox (#163)
 }
 # --- review(perf): access control must not roll back on a node crash (a revoked token coming back), so these
 # commits, and the secrets table's, sync the WAL like synchronous=FULL; everything else stays on NORMAL.
@@ -72,6 +74,7 @@ _INDEXED: dict[type[BaseModel], tuple[str, ...]] = {
     FlightRecord: ("at", "job_id"),  # --- clouddoctor: `at` serves list_range
     DoctorFinding: ("state", "signature"),  # --- clouddoctor
     TestRun: ("at", "job_id", "session_id", "tree"),  # --- testresults: `at` serves list_range
+    OutboxItem: ("state", "run", "session_id"),  # --- outbox (#163)
 }
 # The states in which a record holds, or is about to hold, resources (list_active). Sandbox: fleet.ACTIVE.
 _ACTIVE: dict[type[BaseModel], frozenset[str]] = {

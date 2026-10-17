@@ -427,7 +427,8 @@ async fn stopping_a_process_stops_its_children() {
                     if cmd == b"sleep\x00300\x00" && !stat.contains(") Z ") {
                         let (_, list) = c.unary("process.Process/List", json!({})).await;
                         let ppid: u64 = stat.rsplit(')').next().unwrap().split_whitespace().nth(1).unwrap().parse().unwrap();
-                        if list["processes"].as_array().unwrap().iter().any(|p| p["tag"] == tag && p["pid"] == ppid) {
+                        // An empty list is left out of the JSON: a stray `sleep 300` can turn up before ours has started.
+                        if list["processes"].as_array().into_iter().flatten().any(|p| p["tag"] == tag && p["pid"] == ppid) {
                             child = pid;
                         }
                     }
@@ -506,4 +507,49 @@ async fn a_forged_request_is_refused_before_its_body() {
         let resp = resp.expect("the daemon waited for an unauthenticated body").unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{path}");
     }
+}
+
+/// A refused HTTP/1.1 request leaves the connection in a state the client can trust (#207): a small body is read so
+/// the client neither hits a broken pipe writing it nor reuses a connection the daemon silently closed, and a body
+/// too large to read is answered with `connection: close`.
+#[tokio::test]
+async fn a_refused_http1_request_does_not_leave_a_dead_connection() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let d = tempfile::tempdir().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (app, _) = crate::router(cfg(d.path(), 4));
+    tokio::spawn(crate::server::serve(listener, app, crate::server::LIMITS, std::future::pending(), Duration::ZERO));
+
+    async fn head(c: &mut tokio::net::TcpStream) -> String {
+        let mut got = Vec::new();
+        let mut b = [0u8; 4096];
+        while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = tokio::time::timeout(Duration::from_secs(5), c.read(&mut b)).await.unwrap().unwrap();
+            assert!(n > 0, "closed before answering: {}", String::from_utf8_lossy(&got));
+            got.extend_from_slice(&b[..n]);
+        }
+        String::from_utf8_lossy(&got).to_lowercase()
+    }
+
+    let start = |len: usize| {
+        format!("POST /process.Process/Start HTTP/1.1\r\nhost: x\r\nx-access-token: wrong\r\n\
+                 content-type: application/connect+json\r\ncontent-length: {len}\r\n\r\n")
+    };
+    // The body arrives after the headers, as a client writing them separately sends it.
+    let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+    c.write_all(start(4096).as_bytes()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    c.write_all(&[b'x'; 4096]).await.expect("the body could be written");
+    let h = head(&mut c).await;
+    assert!(h.starts_with("http/1.1 401") && !h.contains("connection: close"), "{h}");
+    c.write_all(b"GET /health HTTP/1.1\r\nhost: x\r\n\r\n").await.unwrap();
+    assert!(head(&mut c).await.starts_with("http/1.1 204"), "the connection is usable after the 401");
+
+    // Too large to read for a stranger: refused without reading it, and the client is told not to reuse the connection.
+    let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+    c.write_all(start(10 << 20).as_bytes()).await.unwrap();
+    c.write_all(&[b'x'; 128 << 10]).await.unwrap();
+    let h = head(&mut c).await;
+    assert!(h.starts_with("http/1.1 401") && h.contains("connection: close"), "{h}");
 }

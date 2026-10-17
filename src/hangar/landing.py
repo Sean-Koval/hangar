@@ -904,6 +904,10 @@ class Landing:
 
         if line := taint.packet_line(job):
             out.append(line)
+        from hangar import harness_thaw  # --- harness locks (#134): the lock it ran from, turn 1's drift
+
+        if line := harness_thaw.packet_line(svc, job):
+            out.append(line)
         tier, why = risk(st.files, policy.risk_paths if policy else None)
         out.append(f"- **Risk:** {tier}" + (": touches " + ", ".join(_code(p) for p in why[:8]) if why else ""))
         shown = ", ".join(_code(f) for f in st.files[:15]) + (f" and {len(st.files) - 15} more"

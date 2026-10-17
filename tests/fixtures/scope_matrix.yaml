@@ -71,6 +71,12 @@ admin.get_drain:
   rest: GET /api/admin/drain
   scope: admin
   owner: admin
+admin.get_outbox:
+  server: hangar
+  mcp: null
+  rest: GET /api/admin/outbox
+  scope: admin
+  owner: admin
 admin.get_power:
   server: hangar
   mcp: null
@@ -129,6 +135,18 @@ admin.post_drain:
   server: hangar
   mcp: null
   rest: POST /api/admin/drain
+  scope: admin
+  owner: admin
+admin.post_outbox_backfill:
+  server: hangar
+  mcp: null
+  rest: POST /api/admin/outbox/backfill
+  scope: admin
+  owner: admin
+admin.post_outbox_retry:
+  server: hangar
+  mcp: null
+  rest: POST /api/admin/outbox/retry
   scope: admin
   owner: admin
 admin.post_power_hold:
@@ -869,6 +887,30 @@ git.post:
   scope: grant
   owner: any
   enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+harness.job:
+  server: hangar
+  mcp: null
+  rest: GET /api/jobs/{job_id}/harness
+  scope: jobs
+  owner: token
+harness.session:
+  server: hangar
+  mcp: null
+  rest: GET /api/sessions/{ref}/harness
+  scope: user
+  owner: guard
+harness_locks.get:
+  server: hangar
+  mcp: null
+  rest: GET /api/harness-locks/{ref}
+  scope: user
+  owner: guard
+harness_locks.get_outdated:
+  server: hangar
+  mcp: null
+  rest: GET /api/harness-locks/{ref}/outdated
+  scope: user
+  owner: guard
 harnesses.get:
   server: hangar
   mcp: null

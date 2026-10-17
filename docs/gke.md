@@ -49,6 +49,19 @@ kubectl apply -k deploy/k8s
 
 Point your domain's A record at `terraform output static_ip`. The managed certificate provisions in about 15 minutes.
 
+### Run capture bucket
+
+Terraform also creates `<project>-hangar-runs` (`enable_run_bucket`, default on; `deploy/terraform/gke/outbox.tf`) for
+run capture ([docs/api/outbox.md](api/outbox.md)). Set `HANGAR_OUTBOX_URL` in the `hangar-site` config map to
+`terraform output -raw run_bucket` (the commented line in `deploy/k8s/config.yaml`). The bucket has uniform access
+and no public access; hangar's service account gets `roles/storage.objectCreator` on it only, and an IAM deny policy
+(`hangar-runs-write-once`, matching the bucket's `hangar-write-once=runs` tag) takes `objects.delete` and
+`objects.update` away from it, because its project-wide `roles/storage.admin` (Cloud Build's staging bucket) would
+otherwise allow them: hangar can create runs, never delete or overwrite one. Applying the deny policy needs
+`roles/iam.denyAdmin` on the project. Readers, such as the sister tool's compactor, go in `run_bucket_readers` and get
+`roles/storage.objectViewer`. Objects under `v1/tapes/` expire after `run_tape_days` (30). Deleting a run for a
+deletion request takes an admin's own credentials ([outbox.md](api/outbox.md#retention-and-the-export-189)).
+
 ## 2a. Log in, connect and configure
 
 ```bash

@@ -1181,6 +1181,9 @@ async def _grade(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t:
         t.grade, t.state = mask_canary(grade, g.canary), "done"
         with contextlib.suppress(Exception):
             _save(jobs, job, st)
+        from hangar import outbox  # --- outbox (#163): grade.json under the trial's last run
+
+        outbox.of(jobs.fleet).trial_graded(jobs, job, t)
 
 
 def _touched(spec: ExperimentSpec, t: Trial, child: Job, patch: str) -> None:
