@@ -230,6 +230,29 @@ def intake_environments(settings: Settings) -> list[str]:
     return list(dict.fromkeys(out))
 
 
+def intake_doors(settings: Settings) -> list[str]:
+    """--- #236: the front doors that can start intake jobs here, by name (any part of one configured counts)."""
+    doors = {"GitHub": settings.github_webhook_secret_credential, "Slack": settings.slack_signing_secret_credential,
+             "Jira": settings.jira, "GitHub Projects": settings.github_projects,
+             "inbound webhooks": settings.inbound_webhooks}
+    return [name for name, cfg in doors.items() if cfg]
+
+
+def gateway_fix(settings: Settings, fleet: Any) -> str:
+    """--- #236: the one command that turns the git gateway on where this hangar runs. On GKE the manifest sets it; on
+    Docker sandboxes reach the host at host.docker.internal, and on Linux the gateway must listen on the docker
+    bridge (it binds HANGAR_HOST, 127.0.0.1, otherwise), which needs a restart."""
+    import sys
+
+    doc = "docs/security.md#turning-it-on"
+    if "kubernetes" in list(fleet.providers):
+        return f"set HANGAR_GATEWAY_URL=http://hangar-gateway.hangar.svc:8788 (deploy/k8s/config.yaml; {doc})"
+    cmd = "hangar config set HANGAR_GATEWAY_URL http://host.docker.internal:8788"
+    if sys.platform == "linux" and not settings.gateway_host:
+        cmd += " && hangar config set HANGAR_GATEWAY_HOST 172.17.0.1"
+    return f"{cmd}, then restart (hangar down && hangar up) and store a git credential for it ({doc})"
+
+
 def doctor_checks(h: Any) -> list[dict[str, Any]]:
     """`hangar doctor`: the posture, the gateway, the egress proxy, and the effective mode of intake environments."""
     import sys
@@ -246,10 +269,16 @@ def doctor_checks(h: Any) -> list[dict[str, Any]]:
                        f"HANGAR_INTAKE_POSTURE=enforce ({DOC})")]
     gw = bool(s.gateway_url)
     if p == "enforce":
-        out.append(_check("intake posture: gateway", gw, f"enforce; HANGAR_GATEWAY_URL={s.gateway_url}" if gw else
-                          "enforce, and HANGAR_GATEWAY_URL is not set: every GitHub, Slack, Jira and webhook job is "
-                          "refused", "set HANGAR_GATEWAY_URL (docs/security.md#git-credential-gateway), or "
-                          "HANGAR_INTAKE_POSTURE=warn while you set it up"))
+        doors = intake_doors(s)  # --- #236: refusing intake jobs only matters once something can send one
+        if gw:
+            out.append(_check("intake posture: gateway", True, f"enforce; HANGAR_GATEWAY_URL={s.gateway_url}"))
+        elif doors:
+            out.append(_check("intake posture: gateway", False, f"enforce, and HANGAR_GATEWAY_URL is not set: every "
+                              f"job from {', '.join(doors)} is refused", gateway_fix(s, fleet)))
+        else:
+            out.append(_check("intake posture: gateway", None, "enforce; no intake front door is configured (GitHub, "
+                              "Slack, Jira, GitHub Projects, webhooks), so nothing is refused yet. Once one is, its "
+                              "jobs need the git gateway, which isn't set up", gateway_fix(s, fleet)))
     else:
         out.append(_check("intake posture: gateway", True if gw else None, "warn" + (
             f"; HANGAR_GATEWAY_URL={s.gateway_url}" if gw else ": HANGAR_GATEWAY_URL is not set, so intake jobs hold "
