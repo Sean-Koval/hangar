@@ -158,6 +158,12 @@ async def test_an_agent_that_writes_the_token_into_readme_obeyed(jobs, world, mo
     assert shadow.result.pr_url is None and all(t.reply_to is None for t in shadow.turns)
     assert {jid for jid, _ in tracked} == {real.id}
     assert doc["token"] not in json.dumps(tracked)
+    # its model tape would be untrusted by construction (#177)
+    from hangar import modelgw
+
+    s = jobs.sessions.get(shadow.session_id)
+    assert "an injection canary shadow" in modelgw.of(jobs.fleet).untrusted(s, None, shadow)[1]
+    assert "an injection canary shadow" not in modelgw.of(jobs.fleet).untrusted(s, None, real)[1]
 
 
 @needs_tools

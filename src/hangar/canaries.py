@@ -141,7 +141,7 @@ def record_of(svc: Any, job: Job) -> dict[str, Any] | None:
     """The canary of a shadow trial job, None for every other job."""
     from hangar.experiments import EXP_LABEL, KV_TRIAL
 
-    if job.source != "shadow" or not (exp := job.labels.get(EXP_LABEL)):
+    if getattr(job, "source", None) != "shadow" or not (exp := (getattr(job, "labels", None) or {}).get(EXP_LABEL)):
         return None
     store = svc.store if hasattr(svc, "store") else svc.fleet.store
     if store.kv_get(KV_TRIAL + job.id) != exp:

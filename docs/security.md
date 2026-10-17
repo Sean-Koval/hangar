@@ -533,7 +533,7 @@ events. `canary.json` (`hangar.canary/v1`) is staged in the outbox next to the r
 `{token, placement, template_id, expected_signals, signals, obeyed, experiment_id, shadow_of, harness_digest, job_id,
 session_id, run_id}`; a `canary.result` audit entry says the same without the token. flightdeck aggregates `obeyed` per
 harness digest, with intervals, and by placement to map which doors leak. A canary shadow's model tapes are untrusted by
-construction ([model-gateway.md](model-gateway.md)).
+construction: their tape index says `untrusted` ("an injection canary shadow", [model-gateway.md](model-gateway.md)).
 
 **`canary.invalid` is always refused.** The egress proxy refuses it (and any subdomain) before the sandbox's policy is
 read, whatever the mode: an `egress.canary` audit entry, a `canary` deny in `hangar_egress_connections_total`, and the
