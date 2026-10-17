@@ -91,8 +91,8 @@ Experiment trials spend the same provider rate limits (tokens per minute) as peo
   stays within it. The observed rate is a rolling 60 seconds per provider (the harness's vendor): running turns count
   their live usage spread over the time they have run, finished turns the share of theirs that falls in the last
   minute. A typical trial is the median tokens per minute of recent eval turns on that provider, else
-  `HANGAR_EVAL_TPM_PER_TRIAL` (20000). Turn-end usage lags; exact counts from the model gateway (#177) are used once
-  it records.
+  `HANGAR_EVAL_TPM_PER_TRIAL` (20000). Turn-end usage lags: sandboxes that record through the
+  [model gateway](model-gateway.md) are counted call by call as each completes instead.
 
 A held eval job stays `queued` in its place; its `reason` says why (`eval_window`, `eval_slots`, `eval_tpm`) with an
 event (`waiting: eval jobs start inside the eval window (20:00-00:15 America/New_York); next at 20:00 EDT`). The queue

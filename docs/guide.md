@@ -31,7 +31,7 @@ Then:
    uv run hangar cred add codex-api --harness codex --kind api_key --file openai-key.txt
    uv run hangar cred add gh --harness git --kind git_token --value "$(gh auth token)"
    ```
-2. **Connect an MCP client**, if `hangar up` didn't. Run `uv run hangar connect claude-code` (or `codex`, `cursor`, `vscode`, `gemini`, `claude-desktop`). It adds hangar to the client's own config file, next to your other servers, with a fresh token that can reach `/mcp` and nothing else. `hangar connect --list` shows what's connected. Details are in [docs/clients.md](clients.md).
+2. **Connect an MCP client**, if `hangar up` didn't. Run `uv run hangar connect claude-code` (or `codex`, `cursor`, `vscode`, `gemini`, `claude-desktop`). It adds hangar to the client's own config file, next to your other servers, with a fresh token that can reach the MCP endpoints and nothing else: `hangar` (`/mcp`: jobs, sessions, schedules) and, for Claude Code and Codex, `hangar-sandbox` (`/mcp/sandbox`: create_sandbox, exec, files, terminals; [the two servers](mcp.md#two-servers)). `hangar connect --list` shows what's connected. Details are in [docs/clients.md](clients.md).
 3. **Ask your client to do something.** For example: *"Create 3 claude-python sandboxes on github.com/me/api, each on its own branch, and run the agent in each on 'make the flaky test in tests/test_sync.py deterministic'. Report which attempt passes."*
 4. **Optional: take work from GitHub.** `uv run hangar setup github` asks for a repo and a token and stores them. It then registers the repo's webhook and sends a test delivery. GitHub can't reach `localhost`, so on a laptop pass `--webhook-url` with a tunnel URL. See [docs/jobs.md](jobs.md#4-trigger-from-github).
 

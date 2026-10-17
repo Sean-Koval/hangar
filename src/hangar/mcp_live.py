@@ -231,6 +231,8 @@ def _slim(schema: Any, inputs: bool) -> Any:
     for k, v in schema.items():
         if (k == "title" and isinstance(v, str)) or (k == "default" and not inputs):
             continue
+        if k == "additionalProperties" and v is True and inputs:  # --- #140: JSON Schema's default; bytes only
+            continue
         if k in ("properties", "$defs", "definitions") and isinstance(v, dict):
             out[k] = {name: _slim(s, inputs) for name, s in v.items()}
         elif k in ("items", "additionalProperties", "anyOf", "oneOf", "allOf", "not", "prefixItems"):
@@ -252,6 +254,26 @@ def _slim(schema: Any, inputs: bool) -> Any:
 # workflows that use them keep working, but not listed, so models only see the merged tools.
 HIDDEN_TOOLS = frozenset({"validate_environment", "clone_environment", "destroy_sandboxes"})
 
+# --- #140: two MCP servers. `hangar` (/mcp) serves the work tools (jobs, sessions, schedules, discovery): what
+# callers who delegate work need. `hangar-sandbox` (/mcp/sandbox) serves the raw drive tools: sandboxes, what runs
+# in them, snapshots and building environments. A hidden name follows its sibling. For one release the sandbox tools
+# also stay callable on /mcp, hidden, with a note saying where they moved (mcp_fresh).
+WORK, SANDBOX = "hangar", "hangar-sandbox"
+SANDBOX_TOOLS = frozenset({
+    "create_sandbox", "create_sandboxes", "list_sandboxes", "get_sandbox", "destroy_sandbox", "pause_sandbox",
+    "resume_sandbox", "extend_sandbox",
+    "exec", "process", "read_file", "write_file", "list_files", "terminal_open", "terminal_send", "terminal_read",
+    "terminal_list", "terminal_close", "run_agent", "agent_status",
+    "snapshot_sandbox", "list_snapshots", "fork_sandbox", "open_session", "create_environment", "build_environment",
+    "validate_environment", "clone_environment", "destroy_sandboxes",  # hidden, with their siblings
+})
+PATHS = {WORK: "/mcp", SANDBOX: "/mcp/sandbox"}
+
+
+def server_of(tool: str) -> str:
+    """The server a tool is listed on."""
+    return SANDBOX if tool in SANDBOX_TOOLS else WORK
+
 
 class HangarMCP(MCPServer):
     """MCPServer with compact tool listings (the order stays the registration order, so listings are stable) and
@@ -259,6 +281,7 @@ class HangarMCP(MCPServer):
 
     recent: Any = None  # () -> list[types.Resource], set by build_mcp
     fresh: Any = None  # --- deadlines: mcp_fresh.Freshness, set by build_mcp once every tool is registered
+    moved: frozenset[str] = frozenset()  # --- #140: callable here but listed on the other server
 
     def listing(self) -> list[types.Tool]:
         """tools/list as clients get it (--- deadlines: synchronous, so build_mcp can hash it for serverInfo)."""
@@ -266,7 +289,7 @@ class HangarMCP(MCPServer):
                            input_schema=_slim(i.parameters, True),
                            output_schema=_slim(i.output_schema, False) if i.output_schema else None,
                            annotations=i.annotations, icons=i.icons, _meta=i.meta)
-                for i in self._tool_manager.list_tools() if i.name not in HIDDEN_TOOLS]
+                for i in self._tool_manager.list_tools() if i.name not in HIDDEN_TOOLS and i.name not in self.moved]
 
     async def list_tools(self) -> list[types.Tool]:
         if self.fresh is not None:

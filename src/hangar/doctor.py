@@ -8,6 +8,7 @@ doesn't exist or isn't built, checkpoint storage that isn't writable, sandboxes 
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import httpx
@@ -244,5 +245,31 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
     from hangar import harness_repo  # --- #138: the team harness repo: reachable, last refresh, channels
 
     out += harness_repo.doctor_checks(h)
+    out += mcp_checks(h)  # --- #140: both MCP servers
     await asyncio.sleep(0)
+    return out
+
+
+def mcp_checks(h) -> list[dict[str, Any]]:
+    """--- #140: each MCP endpoint is mounted and lists its tools, within its budget (tests/test_mcp_modern.py)."""
+    from hangar import mcp_live
+
+    servers = getattr(h, "mcp_servers", None)
+    if not servers:
+        return []
+    out = []
+    base = h.settings.public_url.rstrip("/")
+    for path, name in ((mcp_live.PATHS[mcp_live.WORK], mcp_live.WORK), (mcp_live.PATHS[mcp_live.SANDBOX],
+                                                                        mcp_live.SANDBOX)):
+        srv = servers.get(path)
+        if srv is None:
+            out.append(_check(f"mcp {name}", False, f"{base}{path} isn't served", "upgrade or restart hangar"))
+            continue
+        tools = srv.listing()
+        size = len(json.dumps([{"name": t.name, "description": t.description, "inputSchema": t.input_schema}
+                               for t in tools], separators=(",", ":")))
+        detail = f"{base}{path}: {len(tools)} tools, {size:,} bytes listed"
+        if name == mcp_live.SANDBOX:
+            detail += " (`hangar connect <client> --with-sandbox` adds it to a client)"
+        out.append(_check(f"mcp {name}", bool(tools), detail, "the server lists no tools: check hangar's log"))
     return out

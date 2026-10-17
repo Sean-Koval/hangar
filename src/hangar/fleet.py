@@ -35,6 +35,7 @@ from hangar import harness_thaw as harness_thaw  # --- #221: a claimed harness l
 from hangar import heavy as heavy  # --- heavy
 from hangar import k8sgc as k8sgc  # --- durable
 from hangar import metrics as metrics  # --- reconciler
+from hangar import modelgw as modelgw  # --- #177: the model gateway
 from hangar import modelpolicy as modelpolicy  # --- canary: `model: frontier` resolved to an id
 from hangar import opstatus as opstatus  # --- clouddoctor: the day's failures and credential health in the overview
 from hangar import plugins as plugins  # --- #136: Claude Code plugins from the read-only seed
@@ -810,6 +811,7 @@ class Fleet:
                 await self._scrub_inherited_secrets(prov, sb)
             # workstream F: in gateway mode this mints the grant and drops git secrets before anything is injected
             creds = await self.gateway.attach(prov, sb, spec, creds, push_branch or work_branch, _parent)
+            creds = modelgw.of(self).attach(sb, spec, hname, creds)  # --- #177: the API key stays in the control plane
             # --- #221: a sandbox mounted from a harness lock gets the lock's prefix layer, not the image's
             await self._apply_session(prov, sb, harness_thaw.effective_spec(self, sb, spec), hname, creds)
             await experiments.apply_overlay(self, prov, sb, spec, hname)  # --- interfaces: a variant's skills
@@ -906,6 +908,7 @@ class Fleet:
             self.gateway.issued.pop(sb.id, None)
         else:
             extra_env.update(ghapi.sandbox_env(self.settings, sb))  # --- egress2: the read-only GitHub API (gateway)
+            extra_env.update(modelgw.of(self).sandbox_env(sb))  # --- #177: the model gateway's URL and bearer
             extra_env.update(await buildcache.of(self).attach(prov, sb, spec))  # --- caches: sccache, Bazel, turbo
         # workstream E: the `hangar-agent` helper (context exchange), installed per sandbox: no image rebuild
         await exchange.install_helper(prov, sb, f"/home/{self.settings.sandbox_user}")
