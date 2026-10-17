@@ -1,6 +1,6 @@
 # 0014: The sister tool's interfaces
 
-Status: built (PR #114) · Date: 2026-10-15 · Builds on: 0005 (traces), 0006 (environments and packs), 0007 (experiments), #83/#105 (the harness lock, model pins), #85 (budgets), #88 (people), #89 (fairness), #93 (environment builds), #97 (egress), #59/#69 (approvals)
+Status: built (#114; the outbox, #163). · Date: 2026-10-15 · Builds on: 0005 (traces), 0006 (environments and packs), 0007 (experiments), #83/#105 (the harness lock, model pins), #85 (budgets), #88 (people), #89 (fairness), #93 (environment builds), #97 (egress), #59/#69 (approvals)
 
 > Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins.
 
@@ -62,7 +62,7 @@ Canonical form, for both: build an object whose keys are the section strings exa
 
 ## 3. Trace export (`hangar.trace/v1`)
 
-Contract: [docs/api/traces.md](../api/traces.md). Summary:
+Contract: [docs/api/traces.md](../api/traces.md). This is hangar's canonical per-run trajectory format, stored and exported; ATIF and other trajectory formats are import and export adapters in flightdeck, and hangar emits none ([decision 16](README.md#cross-spec-decisions)). Summary:
 
 - **Format.** OTLP/JSON (`ExportTraceServiceRequest`, opentelemetry-proto 1.11.1), per run (one turn), per session and per job. `GET /api/sessions/{name}/trace?turn=N`, `GET /api/jobs/{id}/trace`, `hangar trace export`, `hangar://sessions/{name}/trace`, `hangar://jobs/{id}/trace`. It POSTs as is to a collector's `/v1/traces`.
 - **Conventions.** The OpenTelemetry GenAI semantic conventions, which moved in 2026 from the core repository to [semantic-conventions-genai](https://github.com/open-telemetry/semantic-conventions-genai). Pinned: its registry at `f3c6d0c9bb66ebd474668a3a0be25c61226f02c2` (2026-10-14; no release tags yet), schema `gen-ai-dev/1.42.0-dev`, on core semantic conventions 1.44.0. **Status: development** for every GenAI span and attribute used. Agents are `invoke_agent` spans, tools `execute_tool`, sessions and jobs `invoke_workflow`; usage follows the convention that `gen_ai.usage.input_tokens` includes cached tokens. The rest is under `hangar.*`.

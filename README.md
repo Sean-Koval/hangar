@@ -103,14 +103,7 @@ uv run hangar env build codex-node
 
 Choose the credential when creating a sandbox, or list its name in your environment's `credentials` field. Storing a key alone does not attach it to every sandbox.
 
-**Personal interactive sessions** can also use your own subscription login (Claude Pro or Max, a ChatGPT sign-in). Jobs, schedules, webhooks and experiments never do: the vendors' terms reserve consumer logins for one person's own interactive use, so hangar refuses them for automated work and warns in sessions that use one ([subscription logins](docs/team.md#subscription-logins)):
-
-```bash
-claude setup-token | uv run hangar cred add claude-max --harness claude-code --kind oauth_token
-uv run hangar cred add codex-chatgpt --harness codex --kind auth_file --file ~/.codex/auth.json
-```
-
-Codex subscription logins are leased to one sandbox at a time because their refresh tokens rotate. API keys aren't leased.
+Jobs, schedules, webhooks and experiments run on API keys only. A personal subscription login (Claude Pro or Max, a ChatGPT sign-in) is for your own interactive sessions, with a warning: see [subscription logins](docs/team.md#subscription-logins).
 
 ### 2. Connect your client
 
@@ -255,6 +248,8 @@ For remote instances, run `uv run hangar login https://YOUR-HANGAR-HOST` once; f
 
 Hangar uses a single control-plane replica with SQLite state. Kubernetes forks copy workspace files; do not assume they preserve process memory. E2B, Pod snapshots, and Kata on GKE have not yet been validated live in the existing project reference. See [the full limitations](docs/guide.md#known-limits) and [security model](docs/security.md).
 
+**Security posture.** Hangar treats every sandbox as hostile. A job from an intake door (a GitHub issue, Jira, GitHub Projects, Slack, an inbound webhook) can fetch its repo but never push: hangar pushes the commit it verified, through the git gateway. Its network is an egress allowlist (its environment's and repo policy's hosts and its model API), the agent has no sudo, and automated work never uses a subscription login. Once an agent has read untrusted content, its PR opens as a draft and a second person, not the requester, must approve it to land. See [the security model](docs/security.md) and [the safe-release upgrade](docs/upgrading.md#the-safe-release-120132).
+
 For an existing deployment, read [the upgrade guide](docs/upgrading.md) before updating. To deploy from GitHub Actions with your approval instead of from a laptop, see [deploying from CI/CD](docs/cicd.md).
 
 ## Documentation
@@ -262,6 +257,7 @@ For an existing deployment, read [the upgrade guide](docs/upgrading.md) before u
 | Topic | Guide |
 | --- | --- |
 | Delegating tasks and tickets from an agent | [Hangar skill](skills/hangar/SKILL.md) |
+| Onboarding a team, step by step | [Onboarding runbook](docs/runbooks/onboarding.md) |
 | Client configuration and OAuth | [Connecting clients](docs/clients.md) |
 | MCP tools, prompts, and waiting for work | [Using MCP](docs/mcp.md) |
 | Jobs, verification, and draft PRs | [Jobs](docs/jobs.md) |

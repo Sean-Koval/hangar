@@ -440,7 +440,7 @@ async def _inspect(jobs: JobService, job: Job, a: Attempt, s: Session) -> None:
         from hangar import testresults  # --- testresults: the attempt's reports, and its failures by test id
 
         res, tests = await testresults.run_check(jobs, job, "attempt", sandbox_id=sb.id, session_id=s.id,
-                                                 attempt=a.index)
+                                                 attempt=a.index, agent_run_id=a.run_id)
         a.verify_exit_code = res.exit_code
         a.verify_tail = red(_clip_tail((res.stdout or "") + (res.stderr or ""))[-2000:])
         a.new_failures = testresults.new_failures(jobs, job, tests, (res.stdout or "") + (res.stderr or ""),

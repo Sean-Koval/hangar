@@ -58,9 +58,10 @@ Use one attempt by default. Each parallel attempt uses its own sandbox and agent
 budget; a judge can incur additional work. Use the requested count and scope.
 Jobs and sessions already provision sandboxes; do not create an extra one first.
 
-For a ticket, prepare a handoff with: **ticket ID/title and source URL; problem;
-acceptance criteria; repo and relevant base branch; constraints; verification
-command; requested deliverable**. Attach necessary logs or files through
+For a ticket, prepare a handoff (the text you pass as `instructions`, not a
+file) with: **ticket ID/title and source URL; problem; acceptance criteria; repo
+and relevant base branch; constraints; verification command; requested
+deliverable**. Attach necessary logs or files through
 `context`. Keep secrets out of the handoff.
 
 Read [the call examples](references/workflows.md) for supported argument shapes.
