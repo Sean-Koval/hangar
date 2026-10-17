@@ -96,6 +96,25 @@ get_session_patch. The prompts hand_off_to_cloud, best_of_n and pick_up_session 
 """
 
 
+# --- #140: the second server's own instructions
+SANDBOX_INSTRUCTIONS = """\
+Hangar's sandbox tools: drive cloud sandboxes yourself. create_sandbox (or fork_sandbox from a snapshot), then exec,
+process (background commands), read_file / write_file / list_files, terminal_* for interactive programs, and
+run_agent / agent_status to start a coding agent inside one. snapshot_sandbox keeps its state; destroy_sandbox ends
+it. create_environment and build_environment define and build what sandboxes start from.
+
+To hand work off instead (an agent runs, hangar verifies it and opens a PR), use the `hangar` server's submit_job,
+new_session and wait_for_turn: the work tools live there, not here.
+"""
+# What the `hangar` server lists, for hangar-sandbox's "that tool is on the other server" error
+WORK_TOOL_NAMES = frozenset({
+    "fleet_overview", "list_environments", "describe_environment", "list_credentials", "new_session", "list_sessions",
+    "get_session", "send_to_session", "keep_session", "suspend_session", "fork_session", "wait_for_turn",
+    "get_artifact", "get_session_patch", "steer_turn", "answer_approval", "submit_job", "get_job", "list_jobs",
+    "follow_up_job", "cancel_job", "get_events", "approve_job", "reject_job", "create_schedule", "list_schedules",
+    "delete_schedule", "run_schedule_now"})
+
+
 def _sb(s: Sandbox) -> dict[str, Any]:
     return {
         "id": s.id, "name": s.name, "state": s.state.value, "environment": s.environment, "provider": s.provider,
@@ -143,14 +162,21 @@ ICON = Icon(src="data:image/svg+xml;base64," + base64.b64encode(
 
 
 def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionService | None = None,
-              triggers: Triggers | None = None, legacy_sessions: bool = True) -> MCPServer:
+              triggers: Triggers | None = None, legacy_sessions: bool = True, surface: str = "work") -> MCPServer:
     """`legacy_sessions`: pre-2026 clients keep a session (stateful streamable HTTP), so hangar can ask them
-    questions mid-call and tell them about resources they subscribed to."""
+    questions mid-call and tell them about resources they subscribed to. `surface` (#140): `work` builds `hangar`
+    (/mcp: jobs, sessions, schedules, discovery; the sandbox tools callable but hidden for one release), `sandbox`
+    builds `hangar-sandbox` (/mcp/sandbox: the raw drive tools, mcp_live.SANDBOX_TOOLS)."""
+    if surface not in ("work", "sandbox"):
+        raise ValueError(f"surface must be work or sandbox, not {surface!r}")
+    drive = surface == "sandbox"
     # --- workstream mcp-modern: tasks extension, change notifications, compact listings
     bus = InMemorySubscriptionBus()
     feed = live.ChangeFeed(bus)
+    # --- #140: on both servers: jobs' and sessions' long tools on `hangar`, run_agent on `hangar-sandbox`
     tasks = mcp_tasks.Tasks(fleet.store, fleet, sessions, jobs, current_actor.get) if sessions is not None else None
-    mcp = live.HangarMCP("hangar", title="Hangar", instructions=INSTRUCTIONS, version="", icons=[ICON],
+    mcp = live.HangarMCP(live.SANDBOX if drive else live.WORK, title="Hangar sandboxes" if drive else "Hangar",
+                         instructions=SANDBOX_INSTRUCTIONS if drive else INSTRUCTIONS, version="", icons=[ICON],
                          website_url="https://github.com/Sean-Koval/hangar", subscriptions=bus,
                          extensions=[mcp_tasks.TasksExtension(tasks)] if tasks else None,
                          # a question put to you in wait_for_turn may wait this long for your answer
@@ -167,6 +193,11 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         checks against tests/fixtures/scope_matrix.yaml (#122)."""
 
         def deco(fn):
+            home = live.server_of(fn.__name__)  # --- #140: which server lists it
+            if drive and home != live.SANDBOX:
+                return fn  # a work tool: not on hangar-sandbox at all
+            if not drive and home == live.SANDBOX:
+                mcp.moved = mcp.moved | {fn.__name__}  # on hangar for one release: callable, hidden, with a note
             if scope:  # --- identity
                 fn = identity.scoped(fn, scope)
             fn = people.guarded(fn, guard)  # --- identity
@@ -556,13 +587,10 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                               context: list[dict[str, Any]] | None = None,
                               output_schema: dict[str, Any] | None = None,
                               approvals: str | None = None, cache: str | None = None) -> live.SessionOut:
-            """Start a resumable stream of work: a sandbox of `environment` on branch hangar/session/<name>. With
-            `message`, the agent starts on it right away. The conversation and repo state are checkpointed after
-            every turn and when the session idles, so it can be picked up days later with send_to_session or
-            open_session. `context`: attachments for the first turn, as for submit_job (your local work too:
-            "patch", "bundle"). `output_schema`: JSON Schema for a structured result. `budget` caps each agent
-            turn, as for submit_job. `approvals`: ask (you approve tool calls) | deny-risky | auto. `cache`:
-            prompt-cache TTL auto | 5m | 1h | off. Then call wait_for_turn(name)."""
+            """Start a resumable stream of work: a sandbox of `environment` on branch hangar/session/<name>; with
+            `message` the agent starts at once. Checkpointed after every turn and when idle, so send_to_session
+            picks it up days later. `context`, `output_schema`, `budget`: as for submit_job. `approvals`: ask |
+            deny-risky | auto. `cache`: auto | 5m | 1h | off. Then wait_for_turn(name)."""
             who = current_actor.get()
             req = NewSession(name=name, environment=environment, repo=repo, message=message, harness=harness,
                              model=model, base_branch=base_branch, idle_minutes=idle_minutes,
@@ -599,19 +627,17 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         async def send_to_session(session: str, message: str, context: list[dict[str, Any]] | None = None,
                                   output_schema: dict[str, Any] | None = None,
                                   model: str | None = None) -> live.SessionOut:
-            """Continue a session: the agent resumes its own conversation (full earlier context) in the session's
-            sandbox (booted and restored first if suspended). If the agent asked a question
-            (needs_input), the message answers it. `context` and `output_schema` as for new_session. `model`:
-            switch model (costs one uncached turn). Then call wait_for_turn(session)."""
+            """Continue a session: the agent resumes its conversation in its sandbox (restored if suspended); the
+            message answers its question if it asked one. `context`, `output_schema` as for new_session. `model`:
+            switch model (one uncached turn). Then wait_for_turn(session)."""
             return sessions.view(sessions.send(session, message, requester=current_actor.get(),
                                                context=[ContextItem.model_validate(c) for c in context or []],
                                                output_schema=output_schema, model=model))
 
         @tool()
         async def keep_session(session: str, idle_minutes: int) -> live.SessionOut:
-            """How long the session may sit idle before it checkpoints and releases its sandbox (0 = stay up
-            until suspended by hand). Work through hangar, open terminals and running turns all count as
-            activity, so a session you're using never suspends under you."""
+            """How long the session may idle before it checkpoints and releases its sandbox (0: until suspended
+            by hand). Running turns, open terminals and hangar calls count as activity."""
             return sessions.view(sessions.set_idle(session, idle_minutes, requester=current_actor.get()))
 
         @tool()
@@ -622,11 +648,9 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         @tool()
         async def fork_session(session: str, n: int = 2, message: str | None = None, harness: str | None = None,
                                names: list[str] | None = None) -> live.ForkOut:
-            """Branch a session into `n` new sessions to try different directions from the same point. Each gets
-            the session's commits, uncommitted changes and untracked files (its latest checkpoint), its own branch
-            (<branch>-fork-<i>) and sandbox, and the agent's conversation forked so far (they diverge from here).
-            With `message`, every fork starts on it at once; otherwise use send_to_session on each. Each fork is
-            a sandbox while it runs."""
+            """Branch a session into `n` sessions from its latest checkpoint: each gets its work, its own branch
+            (<branch>-fork-<i>) and sandbox, and the conversation so far. With `message` every fork starts on it;
+            else send_to_session each."""
             # --- deadlines: the parent's checkpoint and the copies run on their own task; a cancel half-way would
             # leave forks without their checkpoint
             task = _detach(_fork_session(sessions, session, n, requester=current_actor.get(), harness=harness,
@@ -643,12 +667,10 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         @tool()
         async def wait_for_turn(ref: str, ctx: Context,
                                 timeout_seconds: int = 150) -> live.TurnOut | InputRequiredResult:
-            """Wait (up to `timeout_seconds`, max 150) for a job's or session's current agent turn to end, with
-            progress notifications while it runs. Returns the turn: `done`, `outcome`, `summary`, `result` (the
-            structured result), `result_error`, `artifacts` (read with get_artifact) and `question` when the agent
-            needs input. Hangar puts the question to you as an elicitation if your client supports it, sends your
-            answer and keeps waiting (`elicitation` says what happened); otherwise answer with follow_up_job or
-            send_to_session. `ref`: a job id or a session name. If `done` is false, call it again."""
+            """Wait (up to `timeout_seconds`, max 150) for a job's or session's turn (`ref`: job id or session name)
+            to end, with progress. Returns `done`, `outcome`, `summary`, `result`, `result_error`, `artifacts`
+            (get_artifact) and the agent's `question`, which hangar asks you as an elicitation if it can (else
+            answer with follow_up_job or send_to_session). If `done` is false, call it again."""
             return await _wait_for_turn(ref, ctx, timeout_seconds)
 
         async def _wait_for_turn(ref: str, ctx: Context, timeout_seconds: int) -> CallToolResult | InputRequiredResult:
@@ -771,9 +793,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
 
         @tool()
         async def get_artifact(ref: str, turn: int, path: str, max_bytes: int | None = None) -> dict[str, Any]:
-            """Read a file the agent handed back (listed on the turn's `artifacts`). `ref`: a job id or a session
-            name. Text comes back inline, binary as base64, either capped at `max_bytes` (default and max 512 KB;
-            `truncated` says if it was cut). The REST API serves whole files."""
+            """Read a file the agent handed back (the turn's `artifacts`; `ref`: job id or session name): text
+            inline, binary as base64, at most `max_bytes` (512 KB; `truncated` if cut)."""
             s, _ = exchange.resolve(sessions, jobs, ref)
             a, data = await exchange.read_artifact(sessions, s, turn, path)
             cap = sessions.settings.exchange_inline_artifact_kb * 1024
@@ -781,18 +802,18 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
 
         @tool()
         async def get_session_patch(ref: str, max_bytes: int = 200_000) -> dict[str, Any]:
-            """The session's (or job's) work as one patch against its base branch: commits, uncommitted changes
-            and new files, ready for `git apply`. Live from the sandbox if it is up, else from the last checkpoint.
-            `files` lists what changed; `truncated` says if the patch was cut at `max_bytes` (the whole patch is
-            the resource hangar://sessions/<name>/patch)."""
+            """A session's (or job's) work as one patch against its base branch, for `git apply`: live from the
+            sandbox, else the last checkpoint. `files` lists what changed; `truncated`: cut at `max_bytes` (the
+            whole patch: hangar://sessions/<name>/patch)."""
             s, _ = exchange.resolve(sessions, jobs, ref)
             p = await exchange.session_patch(sessions, s, max_bytes)
             res = mcp_tasks.tool_result(p, None, [])  # workstream mcp-modern: link the full patch
             res.content.append(live.patch_link(s.name, p))
             return res
 
-        @mcp.resource("hangar://sessions/{name}/artifacts/{turn}/{+path}", name="session-artifact",
-                      description="A file an agent handed back in a session turn (see get_session).")
+        @(_noop if drive else mcp.resource(  # --- #140: resources stay on the server whose tools they serve
+            "hangar://sessions/{name}/artifacts/{turn}/{+path}", name="session-artifact",
+            description="A file an agent handed back in a session turn (see get_session)."))
         async def artifact_resource(name: str, turn: str, path: str) -> str | bytes:
             if not turn.isdigit():
                 raise ValueError("turn must be a number")
@@ -808,26 +829,9 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             EnvRequests(fleet, sessions, jobs)
 
         # --- workstream mcp-modern: jobs and sessions as resources clients can follow, and workflow prompts
-        live.register_resources(mcp, sessions, jobs, guard)  # --- identity: guard
-        from hangar import inbox  # --- landing: hangar://inbox, what needs the caller (a resource, not a tool)
-
-        inbox.register(mcp, jobs)
-        from hangar import flightrec, opstatus  # --- clouddoctor: hangar://status (admins), job flight records
-
-        opstatus.register(mcp, fleet, sessions, jobs)
-        flightrec.register(mcp, jobs, guard)
-        from hangar import experiments, manifest  # --- interfaces: manifests, traces, experiments as resources
-
-        manifest.register(mcp, sessions, jobs, guard)
-        experiments.register(mcp, jobs, guard)
-        from hangar import testresults  # --- testresults: hangar://jobs/<id>/tests (a resource, not a tool)
-
-        testresults.register(mcp, jobs, guard)
-        mcp.recent = lambda: live.recent_resources(sessions, jobs)
-        live.register_prompts(mcp, sessions)
-        fleet.store.on_put.append(feed.on_put)
-        if legacy_sessions:
-            feed.install_legacy(mcp)
+        # --- #140: on `hangar` only: they serve its tools
+        if not drive:
+            _work_resources(mcp, fleet, sessions, jobs, guard, feed, legacy_sessions)
 
     # --- stream: background processes, file watches, events to subscribers as they are recorded
     register_streams(mcp, tool, fleet, sessions, jobs, feed, current_actor.get)
@@ -845,25 +849,15 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                    output_schema: dict[str, Any] | None = None, strategy: str = "single", n: int | None = None,
                    judge: bool = False, verify_in_loop: bool | None = None,
                    autofix: str | None = None, harness_lock: str | None = None) -> live.JobOut:
-        """Hand a piece of development work to a cloud agent and get on with other things.
-
-        Hangar queues the job, starts a sandbox from `environment` (default: the repo's mapped one), writes
-        `context` next to the repo, runs the agent, runs `verify` (the repo's own check, e.g. "pytest -q"),
-        commits anything left, pushes branch hangar/<job> and opens a PR (`deliver`: draft_pr | pr | branch |
-        none). `context` items: {"name": "trace.txt", "content": "...", "kind": "log"},
-        {"name": "spec", "kind": "url", "url": "https://..."}, or your local work: {"kind": "patch"} and
-        {"kind": "bundle", "base_commit": ...}. `output_schema`: JSON Schema for a structured result
-        (get_job's result.data). `budget` caps each agent turn ({"max_minutes": 30, "max_tokens": 2000000,
-        "max_cost_usd": 5}); a turn over it stops and its work is delivered as a draft.
-        Returns the job; then wait_for_turn(job id), or poll get_job (with usage) or get_events.
-
-        `strategy="best_of_n"` with `n` (2-8) runs n attempts in parallel sandboxes, verifies each, and delivers
-        the best (passing verify first; then `judge=True` asks an agent to compare them, else the smallest diff).
-        It costs n sandboxes and n agent runs; get_job lists every attempt.
-
-        `verify_in_loop` (default on): `verify` also runs in the turn and failures go back to the agent.
-        `autofix` (ci,reviews | ci | reviews | off): CI failures and trusted reviews on the PR start follow-up turns.
-        `harness_lock`: name@rN."""
+        """Hand development work to a cloud agent. Hangar starts a sandbox of `environment` (default: the repo's),
+        runs the agent, then `verify` (e.g. "pytest -q"), pushes hangar/<job> and opens a PR (`deliver`: draft_pr |
+        pr | branch | none). `context` items: {"name", "content", "kind": "log"}, {"kind": "url", "url"}, your
+        local work {"kind": "patch"} or {"kind": "bundle", "base_commit"}. `output_schema`: JSON Schema for
+        result.data. `budget` caps each turn ({"max_minutes", "max_tokens", "max_cost_usd"}); over it, the work
+        is delivered as a draft. Then wait_for_turn(job id).
+        `strategy="best_of_n"`, `n` 2-8: parallel attempts, the best delivered (`judge=True`: an agent compares).
+        `verify_in_loop` (default on): failures go back to the agent in the turn. `autofix` (ci,reviews | ci |
+        reviews | off): PR CI failures and trusted reviews start follow-ups. `harness_lock`: name@rN."""
         req = SubmitJob(instructions=instructions, repo=repo, environment=environment, title=title, harness=harness,
                         model=model, base_branch=base_branch, verify=verify, deliver=deliver,
                         context=[ContextItem.model_validate(c) for c in context or []],
@@ -890,9 +884,9 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
     @tool()
     async def follow_up_job(job: str, message: str, context: list[dict[str, Any]] | None = None,
                             output_schema: dict[str, Any] | None = None) -> live.JobOut:
-        """Continue a finished job, or answer a job that needs input: the agent picks up `message` in its own
-        conversation on the same branch, then hangar verifies and delivers again (the PR updates). `context` and
-        `output_schema` as for submit_job (the job's schema applies when omitted)."""
+        """Continue a finished job, or answer one that needs input: the agent takes `message` in its conversation
+        on the same branch, then hangar verifies and delivers again (the PR updates). `context`, `output_schema`
+        as for submit_job."""
         return jobs.view(jobs.follow_up(job, message, requester=current_actor.get(),
                                         context=[ContextItem.model_validate(c) for c in context or []],
                                         output_schema=output_schema))
@@ -905,10 +899,9 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
     @tool()
     async def get_events(job: str | None = None, session: str | None = None, since: int = 0,
                          limit: int = 100) -> live.EventsOut:
-        """What the agent is doing, as one event stream for every harness: message, tool_call, tool_result,
-        command, file_change, error, usage and progress events, oldest first. Use it for the step-by-step detail
-        (wait_for_turn gives the outcome). Pass a job or a session; poll with `since` = the returned `next` to get
-        only new events, or subscribe to hangar://sessions/<name>/events."""
+        """A job's or session's agent events, oldest first, one shape for every harness (message, tool_call,
+        tool_result, command, file_change, error, usage, progress). Poll with `since` = the returned `next`, or
+        subscribe to hangar://sessions/<name>/events."""
         if bool(job) == bool(session):
             raise ValueError("pass exactly one of job or session")
         if job:
@@ -944,9 +937,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                                   harness: str | None = None, model: str | None = None, verify: str | None = None,
                                   deliver: str = "draft_pr", context: list[dict[str, Any]] | None = None,
                                   allow_overlap: bool = False, enabled: bool = True) -> dict[str, Any]:
-            """Submit the same job on a schedule. `cron` has 5 fields (minute hour day-of-month month day-of-week,
-            e.g. "0 9 * * 1-5" for 9:00 on weekdays) in `timezone` (IANA, e.g. "Europe/Berlin"). The job fields are
-            those of submit_job. A run is skipped while the previous one is still going unless allow_overlap."""
+            """Submit the same job on a schedule: `cron` (5 fields, e.g. "0 9 * * 1-5") in `timezone` (IANA). Job
+            fields as for submit_job. A run is skipped while the last one runs unless allow_overlap."""
             job = {k: v for k, v in dict(instructions=instructions, repo=repo, environment=environment, title=title,
                                          harness=harness, model=model, verify=verify, deliver=deliver,
                                          context=context).items() if v is not None}
@@ -977,9 +969,50 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
     return _identify(mcp, fleet)
 
 
+def _noop(fn):
+    return fn
+
+
+def _work_resources(mcp: live.HangarMCP, fleet: Fleet, sessions: SessionService, jobs: JobService | None,
+                    guard: Any, feed: Any, legacy_sessions: bool) -> None:
+    """Jobs and sessions as resources clients can follow, the workflow prompts and change notifications: on the
+    `hangar` server, whose tools they serve (#140)."""
+    live.register_resources(mcp, sessions, jobs, guard)  # --- identity: guard
+    from hangar import inbox  # --- landing: hangar://inbox, what needs the caller (a resource, not a tool)
+
+    inbox.register(mcp, jobs)
+    from hangar import flightrec, opstatus  # --- clouddoctor: hangar://status (admins), job flight records
+
+    opstatus.register(mcp, fleet, sessions, jobs)
+    flightrec.register(mcp, jobs, guard)
+    from hangar import experiments, manifest  # --- interfaces: manifests, traces, experiments as resources
+
+    manifest.register(mcp, sessions, jobs, guard)
+    experiments.register(mcp, jobs, guard)
+    from hangar import testresults  # --- testresults: hangar://jobs/<id>/tests (a resource, not a tool)
+
+    testresults.register(mcp, jobs, guard)
+    mcp.recent = lambda: live.recent_resources(sessions, jobs)
+    live.register_prompts(mcp, sessions)
+    fleet.store.on_put.append(feed.on_put)
+    if legacy_sessions:
+        feed.install_legacy(mcp)
+
+
 def _identify(mcp: live.HangarMCP, fleet: Fleet) -> live.HangarMCP:
     """--- deadlines: once every tool is registered, serverInfo.version names the package and the tool surface
-    (`0.1.0+tools.<hash>`), and calls from clients on an older surface get told to refresh (mcp_fresh)."""
-    mcp.fresh = fresh.Freshness(fleet.store, mcp.listing(), fresh.RETIRED, current_actor.get)
+    (`0.1.0+tools.<hash>`), and calls from clients on an older surface get told to refresh (mcp_fresh). --- #140:
+    each server hashes its own listing; `hangar` notes calls of tools that moved, and `hangar-sandbox` says where a
+    work tool is."""
+    drive = mcp.name == live.SANDBOX
+    if drive:
+        names = {t.name for t in mcp._tool_manager.list_tools()}  # noqa: SLF001
+        retired = {k: v for k, v in fresh.RETIRED.items() if k in names}
+        mcp.fresh = fresh.Freshness(fleet.store, mcp.listing(), retired, current_actor.get, ns="sandbox",
+                                    elsewhere={n: live.WORK for n in WORK_TOOL_NAMES})
+    else:
+        retired = {k: v for k, v in fresh.RETIRED.items() if k not in mcp.moved}
+        mcp.fresh = fresh.Freshness(fleet.store, mcp.listing(), retired, current_actor.get,
+                                    moved={n: live.SANDBOX for n in mcp.moved})
     mcp._lowlevel_server.version = mcp.fresh.version  # noqa: SLF001 - the SDK takes it only in the constructor
     return mcp

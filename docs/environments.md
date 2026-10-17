@@ -55,7 +55,12 @@ mcp:                               # written in each harness's own config format
   sentry: { url: "https://mcp.sentry.dev/mcp", headers: { Authorization: "Bearer ${SENTRY_TOKEN}" } }
 resources: { cpus: 4, memory_gb: 8 }
 warm_pool: 2                       # keep two pre-started
+model_gateway: record              # model calls through hangar: the API key stays out, calls become tapes
 ```
+
+`model_gateway: record` sends Claude Code's and Codex's model calls through hangar's [model gateway](model-gateway.md):
+the sandbox gets the gateway's URL and a per-sandbox bearer instead of the API key, and each run's calls are kept as a
+tape. It needs `HANGAR_GATEWAY_URL` and an API key (subscription logins are refused).
 
 `hangar env render my-service` prints the generated Dockerfile. `hangar pack render codex` prints a harness pack's build, and `hangar pack publish claude-code codex pi antigravity` builds and pushes packs from your machine when the server has no builder.
 

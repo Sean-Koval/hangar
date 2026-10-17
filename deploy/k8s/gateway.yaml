@@ -1,7 +1,8 @@
 # Git credential gateway and egress proxy (docs/security.md, spec 0003). Sandboxes push and fetch through the control
 # plane on its own port, 8788, so the GitHub token never enters a sandbox; sandboxes of an `allowlist`/`none`
 # environment reach the internet only through the egress proxy on 3128. Enable them with HANGAR_GATEWAY_URL and
-# HANGAR_EGRESS_URL in config.yaml.
+# HANGAR_EGRESS_URL in config.yaml. The same port serves the model gateway (#177, docs/model-gateway.md) under
+# /model/{provider}/ for environments with `model_gateway: record`: no new port or policy.
 #
 # Both ports are cluster-internal: the Ingress only routes to the main port (8787), and only sandboxes need to reach
 # this Service.

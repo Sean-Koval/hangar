@@ -816,3 +816,16 @@ class SandboxGrant(BaseModel):
     pins: dict[str, str] = Field(default_factory=dict)
     created_at: float = Field(default_factory=now)
     expires_at: float | None = None
+
+
+class ModelGrant(BaseModel):
+    """--- #177: what one sandbox may do through the model gateway (modelgw.py): call one provider's API, which the
+    gateway reaches with the vault's API key. The sandbox holds only the `hgm_` bearer, useless anywhere else."""
+
+    id: str = Field(default_factory=lambda: new_id("mgt"))
+    sandbox_id: str
+    token_hash: str  # sha256 of "hgm_<random>"
+    provider: str  # anthropic | openai
+    credential: str  # the vault's api_key credential the gateway sends upstream
+    created_at: float = Field(default_factory=now)
+    expires_at: float | None = None

@@ -552,7 +552,7 @@ def mount(app: Any, h: Any, admin: Any, person: Any) -> None:
 
 
 def register(mcp: Any, jobs: Any, guard: Any) -> None:
-    """`hangar://jobs/<id>/record`: a resource, not a tool (the tool list is at its cap)."""
+    """`hangar://jobs/<id>/record`: a resource, not a tool."""
     if jobs is None:
         return
     import json

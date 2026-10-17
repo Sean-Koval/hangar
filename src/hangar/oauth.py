@@ -131,7 +131,8 @@ class HangarOAuthProvider:
         """RFC 8707: a client may only ask for a token for hangar's own MCP endpoint (or hangar itself)."""
         if not resource:
             return True
-        return resource.rstrip("/") in (self.public_url, f"{self.public_url}/mcp")
+        # --- #140: the sandbox server shares the authorization server, so a grant for either resource works on both
+        return resource.rstrip("/") in (self.public_url, f"{self.public_url}/mcp", f"{self.public_url}/mcp/sandbox")
 
     def sweep(self) -> None:
         """Drop expired requests/codes/tokens and never-approved clients older than a day."""

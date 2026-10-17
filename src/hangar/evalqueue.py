@@ -15,8 +15,9 @@ power-down kills whatever is in flight. So every job has a `queue_class`:
 
 **Observed rate.** A rolling 60 seconds per provider (the harness's vendor: claude-code -> anthropic, codex ->
 openai): turns still running count their live usage spread over the time they have run, finished turns the part of
-their usage that falls in the last minute, and exact counts (`Meter.note` with start == end, from the model gateway
-once #177 lands) count in full. Turn-end usage lags; the gateway's counts don't.
+their usage that falls in the last minute, and exact counts (`Meter.note` with start == end: the model gateway's, #177,
+call by call) count in full. Turn-end usage lags; the gateway's counts don't, so a recording sandbox's turns aren't
+counted again.
 
 **Power-down.** On a drain (POST /api/admin/drain, `power.sh down`) running trials are cancelled, not checkpointed:
 a trial resumed the next morning would not have run under the conditions the others did. Each is marked
@@ -194,6 +195,15 @@ def meter(fleet: Fleet) -> Meter:
     return m
 
 
+def gateway_counted(fleet: Fleet, s: Any) -> bool:
+    """--- #177: the session's sandbox records through the model gateway, which counts each call exactly as it
+    completes (modelgw); its turns' usage must not be counted again."""
+    from hangar.models import Sandbox
+
+    sb = fleet.store.get(Sandbox, s.sandbox_id) if getattr(s, "sandbox_id", None) else None
+    return bool(sb is not None and (sb.info.get("model_gateway") or {}).get("mode") == "record")
+
+
 def turn_ended(fleet: Fleet, s: Any, turn: Any, job: Job | None) -> None:
     """A session's turn ended: its usage counts towards its provider's rate, and an eval job's towards the
     per-trial estimate. Never raises: accounting must not fail a turn."""
@@ -204,7 +214,8 @@ def turn_ended(fleet: Fleet, s: Any, turn: Any, job: Job | None) -> None:
         end = turn.finished_at or clock()
         provider = provider_of(turn.harness or s.harness)
         m = meter(fleet)
-        m.note(provider, u.tokens, turn.started_at, end)
+        if not gateway_counted(fleet, s):  # --- #177: the gateway counted its calls already
+            m.note(provider, u.tokens, turn.started_at, end)
         if job is not None and job.queue_class == EVAL:
             m.note_trial(provider, u.tokens, end - turn.started_at)
     except Exception:  # noqa: BLE001
@@ -250,6 +261,8 @@ class EvalQueue:
         for s in list(sessions._sessions.values()) if sessions is not None else []:
             t = s.turns[-1] if s.turns else None
             if t is None or t.finished_at or not t.started_at or t.usage is None or not t.usage.tokens:
+                continue
+            if gateway_counted(self.svc.fleet, s):  # --- #177: counted call by call by the model gateway
                 continue
             if provider_of(t.harness or s.harness) == provider:
                 out.append((t.usage.tokens, t.started_at))

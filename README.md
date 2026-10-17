@@ -47,6 +47,8 @@ uv run hangar cred add claude-api --harness claude-code --kind api_key --file an
 uv run hangar doctor    # every check passes, or names its fix
 ```
 
+`hangar up` connects your MCP clients (`hangar connect <client>` does it later): `hangar` (`/mcp`) hands work off as jobs and sessions, and `hangar-sandbox` (`/mcp/sandbox`, added for Claude Code and Codex) drives sandboxes by hand ([two servers](docs/mcp.md#two-servers)).
+
 Open the dashboard at [localhost:8787](http://localhost:8787) and ask your MCP client: *"Use hangar to fix the failing test in https://github.com/YOU/REPO and open a draft PR."* Use an API key with a spend limit; subscription logins are for your own interactive sessions only ([why](docs/team.md#subscription-logins)).
 
 To look around first without Docker or a key, run the demo hangar the recording uses: `uv run python docs/assets/front/demo.py`, then `uv run python docs/assets/front/demo.py ticket` in another terminal.
