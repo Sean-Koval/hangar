@@ -187,6 +187,21 @@ def _files(root: Path) -> list[Path]:
         root.resolve()))
 
 
+def seed_commands(claude: str, marketplaces: list[str], installs: list[str], home: str) -> list[str]:
+    """Shell that turns `<seed>/marketplaces/<name>/` (each already in place) into Claude Code's seed: each
+    marketplace added from there and the plugins installed, with Claude Code at `claude` and a throwaway `home`; the
+    seed then root's (when run as root) and read-only to everyone else. The image build's seed stage and a thawed
+    harness lock's claim (harness_thaw.mount, #221) run the same commands."""
+    q = shlex.quote
+    lines = [f"export HOME={home} CLAUDE_CODE_PLUGIN_CACHE_DIR={SEED} DISABLE_AUTOUPDATER=1 "
+             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", 'mkdir -p "$HOME"']
+    lines += [f"{q(claude)} plugin marketplace add {q(f'{SEED}/marketplaces/{mkt}')}" for mkt in marketplaces]
+    lines += [f"{q(claude)} plugin install {q(i)}" for i in installs]
+    lines += [f"test -f {SEED}/known_marketplaces.json", 'rm -rf "$HOME"',
+              f'if [ "$(id -u)" = 0 ]; then chown -R root:root {SEED}; fi', f"chmod -R u+rwX,go+rX,go-w {SEED}"]
+    return lines
+
+
 def build(spec: EnvSpec, claude: str) -> tuple[str, dict[str, bytes]]:
     """(Dockerfile stage `hangar-claude-seed`, its build-context files): each marketplace copied to
     `<seed>/marketplaces/<name>`, added from there and its declared plugins installed, with Claude Code at `claude`
@@ -200,19 +215,12 @@ def build(spec: EnvSpec, claude: str) -> tuple[str, dict[str, bytes]]:
             raise ValueError(f"plugins: marketplace '{r['marketplace']}' comes from two directories")
         if r["id"] not in installs:
             installs.append(r["id"])
-    q = shlex.quote
-    lines = ["#!/bin/bash", "set -euxo pipefail",
-             f"export HOME=/tmp/seed-home CLAUDE_CODE_PLUGIN_CACHE_DIR={SEED} DISABLE_AUTOUPDATER=1 "
-             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", 'mkdir -p "$HOME"']
     copies: list[str] = []
     for mkt, root in roots.items():
         for f in _files(root):
             files[f"plugins/{mkt}/{f.relative_to(root).as_posix()}"] = f.read_bytes()
         copies.append(f"COPY plugins/{mkt}/ {SEED}/marketplaces/{mkt}/")
-        lines.append(f"{q(claude)} plugin marketplace add {q(f'{SEED}/marketplaces/{mkt}')}")
-    lines += [f"{q(claude)} plugin install {q(i)}" for i in installs]
-    lines += [f"test -f {SEED}/known_marketplaces.json", 'rm -rf "$HOME"',
-              f'if [ "$(id -u)" = 0 ]; then chown -R root:root {SEED}; fi', f"chmod -R u+rwX,go+rX,go-w {SEED}"]
+    lines = ["#!/bin/bash", "set -euxo pipefail", *seed_commands(claude, list(roots), installs, "/tmp/seed-home")]
     files["plugins/seed.sh"] = ("\n".join(lines) + "\n").encode()
     stage = (f"FROM pack-{HARNESS} AS hangar-claude-seed\n" + "\n".join(copies) + "\n"
              "COPY plugins/seed.sh /tmp/seed.sh\nRUN bash /tmp/seed.sh\n")
@@ -229,8 +237,14 @@ def _digest(r: dict[str, Any]) -> tuple[str | None, int | None]:
     if not d.is_dir():
         return None, None
     dig, n = _dir_digest(str(d.resolve()))
-    entry = json.dumps(r["entry"], sort_keys=True, separators=(",", ":"))
-    return "sha256:" + hashlib.sha256(f"{entry}\n{dig}".encode()).hexdigest(), n
+    return content_digest(r["entry"], dig), n
+
+
+def content_digest(entry: dict[str, Any], dir_digest: str) -> str:
+    """A plugin's digest from its marketplace entry and its directory's `_dir_digest` (a harness lock recomputes it
+    the same way from its files, #221)."""
+    e = json.dumps(entry, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(f"{e}\n{dir_digest}".encode()).hexdigest()
 
 
 def manifest(spec: EnvSpec, harness: str | None) -> list[dict[str, Any]] | None:

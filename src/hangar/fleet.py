@@ -31,6 +31,7 @@ from hangar import exchange, harden, images, isolation, observe  # --- observe, 
 from hangar import experiments as experiments  # --- interfaces: experiment trials (packs, overlays)
 from hangar import fairness as fairness  # --- scale
 from hangar import ghapi as ghapi  # --- egress2
+from hangar import harness_thaw as harness_thaw  # --- #221: a claimed harness lock's prefix layer
 from hangar import heavy as heavy  # --- heavy
 from hangar import k8sgc as k8sgc  # --- durable
 from hangar import metrics as metrics  # --- reconciler
@@ -664,6 +665,7 @@ class Fleet:
         tier: str | None = None,
         person: str | None = None,  # --- identity: the owning person (people.py); picks their own credentials
         purpose: str | None = None,  # --- #125: automated | interactive (teamcreds.resolve); None: from the labels
+        harness_lock: dict[str, Any] | None = None,  # --- #221: a claimed lock (harness_thaw.pin) the files come from
     ) -> Sandbox:
         """`progress` gets short plain-language updates while the sandbox starts (image build, waiting for a
         node, cloning...), so callers can show where the time goes. `push_branch` (default: `work_branch`) is
@@ -740,6 +742,8 @@ class Fleet:
         if resolved.warnings:  # --- #125: shown on the sandbox, its session, its job and the turn manifests
             sb.info["credential_warnings"] = list(resolved.warnings)
             sb.info.setdefault("warnings", []).extend(resolved.warnings)
+        if thawed := harness_thaw.info(harness_lock):  # --- #221: the prefix layer is mounted from the lock
+            sb.info[harness_thaw.INFO] = thawed
         if hname:
             sb.info["harness"] = hname
             # --- canary: the environment's model for it, a policy resolved now and pinned for the sandbox's runs
@@ -806,8 +810,10 @@ class Fleet:
                 await self._scrub_inherited_secrets(prov, sb)
             # workstream F: in gateway mode this mints the grant and drops git secrets before anything is injected
             creds = await self.gateway.attach(prov, sb, spec, creds, push_branch or work_branch, _parent)
-            await self._apply_session(prov, sb, spec, hname, creds)
+            # --- #221: a sandbox mounted from a harness lock gets the lock's prefix layer, not the image's
+            await self._apply_session(prov, sb, harness_thaw.effective_spec(self, sb, spec), hname, creds)
             await experiments.apply_overlay(self, prov, sb, spec, hname)  # --- interfaces: a variant's skills
+            await harness_thaw.mount_files(self, prov, sb, hname)
             await heavy.start(self, prov, sb, spec)  # --- heavy: dockerd in the sandbox's VM, before its services
             if _restore_workspace:
                 await self._restore_workspace(prov, sb, _restore_workspace)
@@ -824,6 +830,7 @@ class Fleet:
                 # (services, programs, setup failures, the build), not only what the claim knew
                 await envdoctor.write_status(prov, sb, f"/home/{self.settings.sandbox_user}",
                                              envdoctor.build_status(self.settings, sb, spec, fleet=self))
+            await harness_thaw.seal(self, prov, sb, hname)  # --- #221: after hangar's notes, the instructions too
             sb.info.pop("stage", None)
             sb.state = SandboxState.RUNNING
             sb.error = None
@@ -1327,7 +1334,7 @@ class Fleet:
         rdir = isolation.runs_dir(self.settings, split)
         wd = cwd or sb.info.get("repo_path") or self.settings.workspace_dir
         env = {**observe.run_env(self.settings, sb, run_id, hname), **(env or {})}  # --- observe: TRACEPARENT, OTel
-        env.update(plugins.turn_env(spec, hname, env))  # --- #136: hangar's --settings enable the seed's plugins
+        env.update(plugins.turn_env(harness_thaw.effective_spec(self, sb, spec), hname, env))  # --- #136; #221
         exports = (
             f"export HANGAR_PROMPT_FILE={rdir}/{run_id}.prompt HANGAR_RUN_ID={run_id}\n"
             + (f"export HANGAR_MODEL={shlex.quote(model)}\n" if model else "")

@@ -7,7 +7,7 @@ An agent's PR used to need three things from a person: read it, approve it, then
 - **A push after the approval needs a new review.** Hangar disarms before any agent turn starts on the job, and GitHub dismisses the stale approval.
 - **Hangar knows when work lands.** Each job records its PR's state (`open`, `approved`, `merged`, `closed`), when it merged, and how long it took from green checks to merged. A merged or closed PR ends the job's session.
 - **Each agent PR gets a review packet**: a comment with the verification, cost, harness and model, files touched, risk and links.
-- **One inbox** lists what needs you: `hangar://inbox`, `hangar inbox`, `GET /api/inbox`.
+- **One inbox** lists what needs you: `hangar://inbox`, `hangar inbox`, `GET /api/inbox`, and reaches you in Slack: a DM for each question or approval, and a digest twice a day.
 
 ## 1. The GitHub App
 
@@ -33,6 +33,7 @@ An agent's PR used to need three things from a person: read it, approve it, then
      '{app_id: $id, private_key: $key}' | hangar cred add github-app --harness git --kind github_app
    rm ~/Downloads/hangar-agents.*.private-key.pem
    hangar config set HANGAR_GITHUB_APP_CREDENTIAL github-app
+   hangar config set HANGAR_GITHUB_APP_SLUG hangar-agents   # optional: the digest's review link lists only its PRs
    ```
 
 **Don't put the App on a bypass list.** Leave it out of "Allow specified actors to bypass required pull requests" and out of every ruleset's bypass list. The App can merge (that is what `Contents: write` allows), and branch protection is what makes a merge wait for a person.
@@ -178,7 +179,19 @@ It is per person, as everything is since [people](security.md#people): a member 
 
 - MCP: the resource `hangar://inbox` (not a tool, so it adds nothing to the tool list). Subscribe to it to hear when it changes; it changes with any job or session.
 - CLI: `hangar inbox` (`--json` for the raw list).
-- REST: `GET /api/inbox` with an admin token or a person's `user` token: `{"person", "counts": {"review": 2, …}, "items": [{"kind", "reason", "action", "since", "job", "pr", …}]}`.
+- REST: `GET /api/inbox` with an admin token or a person's `user` token: `{"person", "counts": {"review": 2, …}, "items": [{"id", "kind", "reason", "action", "since", "job", "pr", "links", …}]}`.
+
+Each item carries a stable `id` (a digest of its kind, the job, session or request, and the approval or question: reading the inbox again gives the same id) and `links` to the native object where you act on it: `{"pr", "ticket", "thread", "job"}`. `ticket` is the Jira issue (`<HANGAR_JIRA url>/browse/ABC-12`) or the GitHub issue the job came from; `thread` the Slack thread it talks in (Slack's own permalink once hangar has fetched it with `chat.getPermalink`); `job` the job on the dashboard (`<HANGAR_PUBLIC_URL>/#jobs?job=<id>`).
+
+### Delivery: it comes to you
+
+Nobody runs `hangar inbox` to find out an agent is blocked on them, so hangar sends it, in Slack, to each person with a linked Slack account ([team.md](team.md#inbox-delivery-dms-and-the-digest)):
+
+- **At once: questions and approvals.** A new `question` or `approval` item goes to its person in a DM within a minute: the reason, "Answer here: <link>" (the Slack thread, the Jira issue, the PR, else the job), and the CLI fallback. There are no buttons: the answer is given where it's recorded with your identity. A burst (five approvals in ten seconds) is one DM, and an item is sent once (hangar remembers it for 7 days).
+- **Twice a day: the digest**, at 10:15 and 16:00 in your time zone on weekdays: questions oldest first with their age, approvals with their expiry, jobs that failed since the last digest, approved PRs that aren't landing and why; then one line, "N agent PRs await your review", linking GitHub's review-request queue (reviews are never listed one by one: GitHub stays the review queue), and a footer with your open agent PRs (against the review-capacity cap, when set) and jobs held for it. At most 20 items, then "and N more: hangar inbox". An empty digest isn't sent. It runs on the control plane, which stays up while the sandbox pools are powered down (01:00-10:00), so the 10:15 digest goes out even when power-up is late; it then says "sandboxes not up yet". A restart never sends a slot twice; a slot missed while hangar was down goes out on recovery if it is under 2 hours late.
+- **Not sent:** `failed` items wait for the digest, and `review` items stay in GitHub. Work nobody in particular owns (GitHub, Slack and webhook jobs) goes only to admins who chose `--dm all`.
+
+The digest's review link needs your GitHub login: hangar looks it up from your linked GitHub user id (`GET /user/{id}`, cached), and with `HANGAR_GITHUB_APP_SLUG` set narrows it to the App's PRs (`author:app/<slug>`). Without a GitHub token the line has no link.
 
 Other modules add kinds of request through `inbox.SOURCES`: a function from the job service and the caller to items, which decides what that caller may see.
 
