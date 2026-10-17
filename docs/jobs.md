@@ -28,6 +28,10 @@ hangar doctor --fix                                                         # ap
 - Slack, when configured: its credentials, the bot token, and that each mapped channel's repo is allowed;
 - that checkpoint storage is writable.
 
+For one repo, `hangar repo check acme/app` puts what matters for agent work in one report (the GitHub App, branch
+protection and required checks, the gateway, the environments' credential mode, sudo, egress and logins, and the Jira and
+Slack mappings) and ends with `ready` or `not ready (N failing)`: see [repo-policy.md](repo-policy.md#is-this-repo-ready).
+
 `hangar doctor --fix` offers each fix it can make safely on its own: building an environment, or creating or repairing a repo's webhook (events, JSON, and the stored secret). `--yes` applies them without asking. For the rest it prints the exact command.
 
 ## 1. Give a service a token
@@ -422,6 +426,15 @@ hangar experiment get job-1a2b3c4d             # the index: pins, and per trial 
 hangar experiment export job-1a2b3c4d -o out/  # index.json and each trial's manifest.json and trace.json
 ```
 
+**Concrete model ids only.** A variant's model must be a concrete, dated id once its policy is resolved: a floating
+alias (`claude-opus-latest`, `opus`, `sonnet`, `gpt-5`, OpenRouter's `~…-latest`) can change what it means between two
+trials, so the experiment is refused at submit (and again when it starts), naming the alias and the concrete ids the
+policies resolve to now. An environment's own alias counts too. `model: balanced` (or `frontier`) is fine: it is
+resolved once and every trial gets that id, recorded in `pins.variants.<name>.model` with `model_concrete` and
+`model_concrete_basis` (`list`: in the provider's cached model list; `pattern`: no list was cached, so its versioned
+shape decided, and the experiment's notes say so). Ordinary jobs still accept aliases; their manifests say
+`model.concrete: false` ([harnesses.md](harnesses.md#concrete-ids-and-floating-aliases)).
+
 Hangar pins the harness version, the model id and each task's base commit, mounts only the trial's harness, writes
 exactly the variant's skills and instructions, and keeps egress the same for every variant. It records what each
 trial ran with (its [manifest](api/manifest.schema.json)), what it did (its [trace](api/traces.md)) and its
@@ -499,6 +512,38 @@ what it doesn't:
 - **Touched tests.** `touched_tests`: existing test files the trial changed (the job's own check, else from its
   patch).
 
+### Infrastructure errors are retried and left out
+
+A trial that infrastructure ended (its node was preempted, the 01:00 power-down took its sandbox, the provider
+rate-limited it past its harness's retries or answered 5xx, its sandbox couldn't be created, a control-plane restart
+cut its turn off) is `outcome_class: infra_error` with an `infra_reason` ([outcome classes](#outcome-classes)). It is
+`excluded`, and runs again as a fresh trial with the same `key`, the next `attempt` and `retry_of` naming the excluded
+trial's job, at most `HANGAR_TRIAL_INFRA_RETRIES` (2) times. A trial whose job would resume from a checkpoint (after a
+restart or at power-up) is ended instead: a resumed trial didn't run under the same conditions as the others. The
+retries of one experiment stop at 10% of its trials (at least one); past that no further trial starts, with a note,
+since that many at once usually means a provider or cluster outage. In the index, the highest `attempt` of a key is
+the one that counts; `GET /api/experiments/{id}/trials/{key}/manifest?attempt=N` (and `.../trace`) reads another one.
+
+## Outcome classes
+
+Every agent turn, best-of-N attempt, experiment trial and job (`result.outcome_class`, set as it ends) carries an
+`outcome_class` beside its outcome, so infrastructure trouble and agent failure no longer look alike:
+
+| Class | Means | Counted |
+| --- | --- | --- |
+| `agent` | the agent's own result, success or failure (an agent that exits 1 after editing files; one that crashed its own sandbox) | yes |
+| `infra_error` | infrastructure ended it; `infra_reason` says what: `preempted`, `power_down`, `rate_limited`, `provider_5xx`, `sandbox_create`, `checkpoint` (a restore failed), `control_plane_restart` | no: trials are retried ([§9](#infrastructure-errors-are-retried-and-left-out)); weekly yield leaves such jobs out |
+| `cancelled` | someone (or an experiment) stopped it | no |
+| `human` | a person stepped in: an interrupt, or the agent asked a question | no (a job that then finishes is `agent`) |
+
+Records from before this have no class: unknown, never `agent`. Hangar errs towards `agent`: a turn is `infra_error`
+only on a recorded node event (the reconciler's `pod_replaced`: node repair, scale-down, preemption), the power-down,
+a control-plane restart, a failed sandbox create or checkpoint restore, or the harness's own error report of a
+provider error (HTTP 429 after its retries, a 5xx, `overloaded_error`) on a run that failed. What a tool printed never
+counts, and a sandbox that died with no such record (a fork bomb, the agent's process killed for memory) stays
+`agent`. Jobs aren't retried beyond today's restart and power-down resume; the class is recorded. Turn spans carry it
+as `hangar.outcome.class` and `hangar.outcome.infra_reason` ([traces.md](api/traces.md#turn)).
+
 ## Settings
 
 | Variable | Default | |
@@ -515,6 +560,7 @@ what it doesn't:
 | `HANGAR_JOB_BUDGET_MAX_COST_USD` / `_MAX_TOKENS` / `_MAX_TURNS` | unset | Default budget for a whole job; see [repo-policy.md](repo-policy.md#budgets) |
 | `HANGAR_BUDGET_DAY_TIMEZONE` | `UTC` | The IANA zone whose midnight starts a day for daily spend caps, e.g. `America/New_York` |
 | `HANGAR_PERSON_MAX_USD_PER_DAY` | unset | What one person's sessions and jobs may spend in a day before their new jobs wait for approval; see [repo-policy.md](repo-policy.md#budgets) |
+| `HANGAR_TRIAL_INFRA_RETRIES` | 2 | How often an experiment trial that ended in `infra_error` runs again; an experiment's retries together stop at 10% of its trials ([§9](#infrastructure-errors-are-retried-and-left-out)) |
 | `HANGAR_BEST_OF_N_MAX` | 8 | Most attempts per best-of-N job |
 | `HANGAR_BEST_OF_N_PUSH_ATTEMPTS` | false | Also push attempts that weren't delivered |
 | `HANGAR_BEST_OF_N_JUDGE_TIMEOUT_MINUTES` | 15 | The judge turn's limit |

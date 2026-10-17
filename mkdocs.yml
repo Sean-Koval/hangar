@@ -1,0 +1,123 @@
+site_name: hangar
+site_description: A control plane for isolated, cloneable coding-agent sandboxes.
+site_url: https://sean-koval.github.io/hangar/
+repo_url: https://github.com/Sean-Koval/hangar
+repo_name: Sean-Koval/hangar
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  font: false
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - search.suggest
+    - content.code.copy
+    - toc.follow
+  palette:
+    - scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Light
+    - scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Dark
+
+extra_css:
+  - stylesheets/airframe.css
+  - stylesheets/airframe-docs.css
+  - stylesheets/product.css
+
+copyright: Part of the <a href="https://sean-koval.github.io/agent-factory/">agent factory</a>
+
+extra:
+  social:
+    - icon: material/factory
+      link: https://sean-koval.github.io/agent-factory/
+      name: Part of the agent factory
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.details
+  - pymdownx.snippets
+
+# Benchmark scripts kept next to a research note; not pages.
+exclude_docs: |
+  research/0012/
+
+# Curated from the README's documentation table and docs/specs/README.md.
+nav:
+  - Home: index.md
+  - Get started:
+      - Overview and quick start: guide.md
+      - Connecting clients: clients.md
+      - Using MCP: mcp.md
+      - Team setup: team.md
+  - Guides:
+      - Work:
+          - Jobs: jobs.md
+          - Sessions: sessions.md
+          - Steering: steering.md
+          - Streaming: streaming.md
+          - Context exchange: context-exchange.md
+          - Landing: landing.md
+      - Front doors:
+          - Repo policy: repo-policy.md
+          - Intake (Jira, GitHub Projects): intake.md
+          - Slack: slack.md
+          - Triggers and schedules: triggers.md
+          - A2A: a2a.md
+      - Environments and agents:
+          - Environments: environments.md
+          - Harnesses: harnesses.md
+          - Computer use: computer-use.md
+          - Build caches: caches.md
+      - Usage and insight:
+          - Activity, usage and budgets: activity.md
+          - Observability: observability.md
+  - Reference:
+      - Security model: security.md
+      - E2B-compatible API: e2b.md
+      - hangar-envd: envd.md
+      - Trace export (hangar.trace/v1): api/traces.md
+      - CI: ci.md
+  - Design:
+      - specs/README.md
+      - 0001 Agent runs: specs/0001-agent-runs.md
+      - 0002 Results and landing: specs/0002-results-and-landing.md
+      - 0003 Sandbox security: specs/0003-sandbox-security.md
+      - 0004 Supervisor, scheduling, performance: specs/0004-supervisor-scheduling-performance.md
+      - 0005 Traces and decision model: specs/0005-traces-and-decision-model.md
+      - 0006 Environments and harness packs: specs/0006-environments-and-harness-packs.md
+      - 0007 Experiments, policy and team learning: specs/0007-experiments-policy-and-team-learning.md
+      - 0008 Swarms, improvement loop and RL: specs/0008-swarm-improvement-loop-and-rl.md
+      - 0009 Jobs, the factory front door: specs/0009-jobs-and-the-factory-front-door.md
+      - 0010 Sessions: specs/0010-sessions.md
+      - 0011 The factory roadmap: specs/0011-factory-roadmap.md
+      - 0012 Cutting edge: specs/0012-cutting-edge.md
+      - 0013 E2B and CubeSandbox: specs/0013-e2b-cube-fast-sandboxes.md
+      - 0014 Sister tool interfaces: specs/0014-sister-tool-interfaces.md
+      - Research - Google AX: research/ax.md
+  - Operations:
+      - Running on GKE: gke.md
+      - Deploying from CI/CD: cicd.md
+      - Acceptance on the cluster: acceptance.md
+      - Upgrading: upgrading.md
+      - Team scale: team-scale.md
+      - The Cloud Doctor: doctor.md
+      - MicroVM tier (E2B, CubeSandbox): microvm.md
+      - Local microVMs: local-microvms.md
