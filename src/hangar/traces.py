@@ -379,9 +379,11 @@ def turn_children(x: Export, parent: str | None, key: str, turn: SessionTurn, ha
             "hangar.shell.ops": shell_ops(a.detail) or None}, parent=parent)
     if turn_span is None:
         return
-    for st in turn.steers:
+    for st in turn.steers:  # --- #162: + its id, class and place in the event log
         x.event(turn_span, st.kind, st.ts, {"hangar.kind": st.kind, "hangar.text": st.text[:TEXT],
-                                            "hangar.requester": st.requester, "hangar.steer.status": st.status})
+                                            "hangar.requester": st.requester, "hangar.steer.status": st.status,
+                                            "hangar.steer.id": st.id, "hangar.steer.class": st.steer_class,
+                                            "hangar.steer.classified_by": st.classified_by, "hangar.seq": st.seq})
     if turn.question:
         x.event(turn_span, "question", end, {"hangar.kind": "question", "hangar.text": turn.question[:TEXT]})
 
@@ -488,8 +490,13 @@ def _point(x: Export, sp: dict[str, Any], ev: RunEvent, root: str | None = None)
                                       "hangar.verify.round": d.get("round"), "hangar.seq": seq})
     elif ev.kind == "progress" and d.get("action") == "taint":  # --- taint (#129): the turn's first untrusted read
         x.event(sp, "taint", ev.ts, {"hangar.kind": "taint", "hangar.taint.ref": d.get("ref"), "hangar.seq": seq})
-    elif ev.kind == "progress" and d.get("action") in ("steer", "interrupt"):
+    elif ev.kind == "progress" and d.get("action") in ("steer", "interrupt", "steer.received", "interrupt.received"):
         return  # from the turn's own record of steers (who, and whether it was delivered)
+    elif ev.kind == "progress" and d.get("action") == "steer.classified":  # --- #162
+        x.event(sp, "steer.classified", ev.ts, {"hangar.kind": "steer.classified", "hangar.steer.class": d.get("class"),
+                                                "hangar.steer.ref": str(d.get("ref")) if d.get("ref") is not None
+                                                else None, "hangar.steer.classified_by": d.get("by"),
+                                                "hangar.seq": seq})
     elif ev.kind == "progress" and d.get("action") == "tree":
         return  # --- #165: attributes of the tool call and the turn (hangar.git.tree*)
     elif ev.kind == "progress":
@@ -563,8 +570,10 @@ def _events_of(grouped: dict[str, list[RunEvent]], n: int, turn: SessionTurn) ->
 
 
 # ====================================================================== exports
-def session_export(svc: SessionService, s: Session, turn: int | None = None) -> dict[str, Any]:
-    """A session (every turn under a `session` root) or, with `turn`, one run on its own."""
+def session_export(svc: SessionService, s: Session, turn: int | None = None,
+                   extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A session (every turn under a `session` root) or, with `turn`, one run on its own (`extra`: more attributes
+    for its span, such as the job turn's steer class)."""
     redact = svc.fleet.broker.redact
     x = Export(trace_id(s.id), redact)
     resource = {"hangar.export.scope": "run" if turn else "session", "hangar.session.id": s.id,
@@ -575,7 +584,7 @@ def session_export(svc: SessionService, s: Session, turn: int | None = None) -> 
             raise KeyError(f"session {s.name} has no turn {turn} (it has {len(s.turns)})")
         t = s.turns[turn - 1]
         evs = read_events(svc.activity, s.id, run_id=t.run_id) if t.run_id else []
-        _turn_span(x, None, s, turn, t, evs, root=checkout(svc, s), store=_store(svc))
+        _turn_span(x, None, s, turn, t, evs, extra, root=checkout(svc, s), store=_store(svc))
         return x.request(resource)
     grouped = _by_turn(read_events(svc.activity, s.id))
     started = [t for t in s.turns if t.started_at]
@@ -621,6 +630,9 @@ def job_export(jobs: JobService, job: Job, sessions: list[Session] | None = None
         **harness_review.trace_attrs(job), **_usage_attrs(usage)},  # --- #169: hangar.failure.*
         error=(job.reason or "") if job.state.value == "failed" else None)
     pid = root["id"] if root else None
+    from hangar.steer_class import turn_attrs  # --- #162: a follow-up turn's steer class
+
+    job_turns = {t.run_id: t for t in job.turns if t.run_id}
     for s in sorted(sessions, key=lambda z: z.created_at):
         grouped = _by_turn(read_events(svc.activity, s.id))
         attempt = s.labels.get("hangar.attempt")
@@ -628,7 +640,8 @@ def job_export(jobs: JobService, job: Job, sessions: list[Session] | None = None
         where = checkout(svc, s)
         for n, t in enumerate(s.turns, 1):
             if t.started_at:
-                _turn_span(x, pid, s, n, t, _events_of(grouped, n, t), extra, root=where)
+                _turn_span(x, pid, s, n, t, _events_of(grouped, n, t),
+                           {**extra, **turn_attrs(job_turns.get(t.run_id) if t.run_id else None)}, root=where)
     _job_events(x, root, job)
     if root is not None:  # each check's test.run / test.case events on the job (testresults.py)
         testresults.add_to_export(x, root, jobs.store, job)

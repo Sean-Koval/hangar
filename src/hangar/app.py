@@ -1118,6 +1118,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import steer_api
 
     steer_api.mount(app, h, A, J, _job_session)
+    from hangar import steer_class  # --- #162: classify follow-ups and steers (correction, redirect, new_info)
+
+    steer_class.mount(app, h, A, J, _job_session)
     # --- stream: exec output, background processes, file watches and events as Server-Sent Events
     from hangar import stream_api
 

@@ -284,10 +284,19 @@ InfraReason = Literal["preempted", "power_down", "rate_limited", "provider_5xx",
                       "control_plane_restart"]
 
 
+# --- #162: what a person's steer was, so a harness is judged only on the steers it made necessary. `correction`:
+# the agent got it wrong; `redirect`: the person changed the scope; `new_info`: they added something the task never
+# said (an answer to the agent's own question is this by default); `unclassified`: nobody said (the default).
+SteerClass = Literal["correction", "redirect", "new_info", "unclassified"]
+
+
 class Turn(BaseModel):
     kind: Literal["initial", "follow_up"] = "initial"
     message: str | None = None  # follow-up text
     requester: str | None = None
+    steer_class: SteerClass = "unclassified"  # --- #162: a follow-up's class, who said so and when
+    classified_by: str | None = None
+    classified_at: float | None = None
     reply_to: str | None = None  # "github:owner/repo#N": where to post progress for this turn
     run_id: str | None = None
     harness_version: str | None = None  # --- images: the agent CLI version the turn ran (its session turn's)
@@ -660,6 +669,10 @@ class Steer(BaseModel):
     kind: Literal["steer", "interrupt"] = "steer"
     status: Literal["sending", "delivered", "queued", "failed"] = "sending"  # queued: it starts the next turn
     error: str | None = None
+    steer_class: SteerClass = "unclassified"  # --- #162
+    classified_by: str | None = None
+    classified_at: float | None = None
+    seq: int | None = None  # --- #162: its event in the session's activity log (`hangar.seq` on the trace)
 
 
 class SessionTurn(BaseModel):
