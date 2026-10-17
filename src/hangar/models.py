@@ -509,6 +509,23 @@ class Attempt(BaseModel):
     finished_at: float | None = None
 
 
+class FailureLabel(BaseModel):
+    """--- #169: where a failed or abandoned job first went wrong, and what would fix it (harness_review.py). One per
+    job: relabelling replaces it (audited `review.relabel`)."""
+
+    id: str = Field(default_factory=lambda: new_id("fl"))
+    job_id: str
+    session_id: str | None = None
+    turn: int | None = None
+    seq: int | None = None  # hangar.seq of the first failure in the session's event log
+    category: Literal["env", "tooling", "instructions", "skill", "model", "ticket", "flaky", "other"]
+    note: str = ""
+    fix: Literal["agents_md", "skill", "env", "ticket_template", "none"] = "none"
+    candidate_task: bool = False  # flightdeck turns it into a regression task
+    labelled_by: str
+    at: float = Field(default_factory=now)
+
+
 class Job(BaseModel):
     id: str = Field(default_factory=lambda: new_id("job"))
     title: str
@@ -574,6 +591,7 @@ class Job(BaseModel):
     taint: dict[str, Any] | None = None  # --- taint (#129): its untrusted input, and its sessions' taint (mirrored)
     harness_lock: dict[str, Any] | None = None  # --- harness locks (#134): the lock it runs from (harness_thaw.pin)
     force_admitted_by: str | None = None  # --- review capacity (#159): an admin let it past the open-PR cap
+    failure_label: FailureLabel | None = None  # --- #169: the Friday harness review's label (harness_review.py)
 
 
 # ---------------------------------------------------------------------------- scheduled jobs (workstream A)

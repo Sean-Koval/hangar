@@ -70,6 +70,7 @@ nav:
       - Using MCP: mcp.md
       - Team setup: team.md
       - Onboarding a team (runbook): runbooks/onboarding.md
+      - The Friday harness review (runbook): runbooks/harness-review.md
   - Guides:
       - Work:
           - Jobs: jobs.md

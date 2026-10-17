@@ -24,6 +24,7 @@ from hangar import envbuilds as envbuilds  # --- envbuilds
 from hangar import exchange, observe  # --- observe
 from hangar import fairness as fairness  # --- review capacity (#159)
 from hangar import ghprojects as ghprojects  # --- intake: registers the GitHub Projects write-back
+from hangar import harness_review as harness_review  # --- #169: the Friday harness review
 from hangar import inbox_notify as inbox_notify  # --- inbox delivery (#157, #158)
 from hangar import modelpolicy as modelpolicy  # --- canary
 from hangar import outbox as outbox  # --- outbox (#163): run capture
@@ -1172,6 +1173,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     flightrec.mount(app, h, A, U)
     outbox.mount(app, h, A)  # --- outbox (#163): GET /api/admin/outbox, retry, backfill
     weekly.mount(app, h, U)  # --- #168: GET /api/metrics/weekly, /api/metrics/standup
+    harness_review.mount(app, h, U)  # --- #169: the Friday harness review's queue and labels
     credhealth.mount(app, h, A)
     credhealth.register_inbox()
     from hangar import jira as jira_intake  # --- automation (#128): Jira intake alerts wait on the admins

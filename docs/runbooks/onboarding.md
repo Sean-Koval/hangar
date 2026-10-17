@@ -173,7 +173,7 @@ Each engineer:
 | 10:00–10:20 | Triage: each engineer clears their inbox (PRs to review, questions, approvals, failed jobs). The 10:15 Slack digest lists it, questions first; reviews are a count and a link to GitHub's review queue | `hangar inbox` ([landing.md §7](../landing.md#7-the-inbox-what-needs-you)) |
 | 10:20 | Standup, with the bot's line at 10:18 ET: yesterday's merged and abandoned agent PRs (by reason), review wait p50, top failure; Mondays, last week's summary | `HANGAR_STANDUP_CHANNEL` ([metrics.md](../metrics.md#the-standup-line)) |
 | 16:00 | The afternoon digest catches what came in since | Slack DM ([team.md](../team.md#inbox-delivery-dms-and-the-digest)) |
-| Friday, 30 min | Harness review: label the first failure on failed or abandoned jobs, at most 20 | #169 |
+| Friday, 30 min | Harness review: label the first failure on failed or abandoned jobs, until 20 candidate tasks | `hangar review queue` ([harness-review.md](harness-review.md)) |
 
 Sandboxes power on at 09:50 ET, so work queued overnight starts before triage. The digests and DMs come from the control plane, which stays up while the pools are off; a 10:15 digest sent before power-up finished says "sandboxes not up yet". Each engineer needs their Slack account linked (`hangar person link <id> slack T…/U…`); `hangar doctor` lists anyone the inbox can't reach.
 

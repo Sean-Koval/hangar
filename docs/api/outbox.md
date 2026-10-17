@@ -130,7 +130,7 @@ Schema: `$defs.job_event`. Every event has `kind`, `ts`, `job_id`, `job_source`,
 | `abandon` | the job was cancelled; or an abandon reason was set on its closed PR (#168) | `{reason}`; for a PR's reason `{reason, by, via, pr: "closed"}` |
 | `pr.ready` | the PR was opened non-draft or marked ready (#168): review wait starts here | `{}` |
 | `revert` | the nightly pass found a commit on the default branch reverting the PR's merge commit (#168, [metrics.md](../metrics.md)) | `{sha}` |
-| `label` | reserved: failure labels (#169) | |
+| `label` | a failure label from the Friday harness review, and each relabel (#169, [runbook](../runbooks/harness-review.md)) | the `FailureLabel` (`id, job_id, session_id, turn, seq, category, fix, note, candidate_task, labelled_by, at`) and `base_sha, head_sha, repo, ticket_ref, title, ticket` (redacted, at most 4,000 characters), `ticket_untrusted, verify, pr_state, abandon_reason` |
 
 Hangar scans jobs changed in the last minute for new facts and writes each once.
 
@@ -172,7 +172,7 @@ Hangar's retention never deletes what the outbox hasn't exported yet:
   and a pass every 10 minutes deletes them once the export is done, or after `HANGAR_EXPORT_GRACE_DAYS` (30) with an
   audit event `retention.unexported_deleted` (a GCS outage longer than that loses those runs, and the event says so).
 - **Test runs and cases** of a job that failed, was cancelled (abandoned), had its PR closed unmerged, or carries a
-  failure label (#169) outlive testresults' windows (cases 3 days, runs 14) until the job's runs are exported.
+  failure label (#169, `job.failure_label`) outlive testresults' windows (cases 3 days, runs 14) until the job's runs are exported.
 - Best-of-N attempt sessions are archived, never deleted, so their event logs stay.
 - With the outbox off, retention is exactly as before.
 
