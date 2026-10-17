@@ -137,7 +137,8 @@ CI check (#138).
 ## Thaw and drift
 
 A session or job can run *from* a lock: `hangar harness thaw team-default@r14 --env python "..."`, or
-`harness_lock: "team-default@r14"` on `POST /api/jobs`, `POST /api/sessions` or MCP `submit_job`.
+`harness_lock: "team-default@r14"` on `POST /api/jobs`, `POST /api/sessions` or MCP `submit_job`. An experiment variant
+runs from one too: `{harness_lock: "team-default@sha256:…"}`, by digest ([jobs.md](jobs.md#9-experiments), #135).
 
 **The registry.** `HANGAR_HARNESS_REPO` is the team harness repo ([below](#the-team-harness-repo)): locks at
 `harnesses/<name>/harness.lock` (or `<name>/harness.lock`), channels in `channels.yaml`
@@ -261,6 +262,6 @@ the API, MCP and CLI are unchanged; they pass `harness_lock` themselves.
 the digest `hangar harness check` prints, and open the PR to the harness repo. Thaw it once on a real ticket
 (`harness_lock: team-default@stable`) and record that turn 1 had no drift.
 
-Not yet: experiment variants by lock (#135), warm pools per prefix-layer digest (a thawed session takes a sandbox like
+Not yet: warm pools per prefix-layer digest (a thawed session takes a sandbox like
 any other and mounts the lock into it), mounting native fragments from the lock (they still come from the
 environment's `agent_config.files`; their hooks are compared through `harness_digest`).

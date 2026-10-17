@@ -1,5 +1,5 @@
 """CLI for the sister tool's interfaces (--- interfaces; spec 0014): `hangar trace export`, `hangar session|job|env
-manifest`, and `hangar experiment run|get|cancel|export`."""
+manifest`, and `hangar experiment run|get|cancel|export|freeze-variants`."""
 
 from __future__ import annotations
 
@@ -147,6 +147,52 @@ def experiment_export(
     typer.echo(f"wrote {out}/index.json and {n} trial file(s)")
 
 
+def experiment_freeze_variants(
+    exp_id: str = typer.Argument(..., help="An experiment whose variants use the (deprecated) overlay fields."),
+    out: Path = typer.Option(..., "--out", help="Where the harness directories go, one per variant "
+                                                "(<out>/<experiment>-<variant>/): the harness repo's harnesses/."),
+    spec_out: Path | None = typer.Option(None, "-o", "--output", help="Write the locked spec here instead of "
+                                                                      "printing it."),
+):
+    """Freeze each overlay variant from a completed trial (turn 1, `hangar harness freeze`) into a harness
+    directory, and print the equivalent spec with `harness_lock: name@sha256:...` variants (#135). Commit the
+    directories to the harness registry (HANGAR_HARNESS_REPO) before running the printed spec."""
+    from hangar import cli, experiments, harness_lock
+
+    v = cli._call("GET", f"/api/experiments/{exp_id}")
+    spec, locks = v.get("spec") or {}, {}
+    for vname, var in (spec.get("variants") or {}).items():
+        if (var or {}).get("harness_lock"):
+            continue  # already a lock
+        t = experiments.freeze_source(v, vname)
+        if t is None:
+            typer.secho(f"variant {vname}: no finished trial with a captured turn 1 to freeze from", fg="red", err=True)
+            raise typer.Exit(1)
+        name = experiments.lock_name(spec.get("name") or exp_id, vname)
+        d = cli._call("GET", f"/api/jobs/{t['job']}/harness", params={"turn": 1, "name": name})
+        root = out / name
+        prev = harness_lock.load(root) if (root / harness_lock.LOCK_FILE).exists() else None
+        lock, files = harness_lock.unwire(d)
+        lock["revision"] = harness_lock.next_revision(prev, lock)
+        harness_lock.write(root, lock, files, prev)
+        res = harness_lock.check(root)
+        if not res["ok"] or res["digest"] != d["harness_digest"]:
+            for p in res["problems"] or [f"{root}: digest {res['digest']} isn't the trial's {d['harness_digest']}"]:
+                typer.secho(p, fg="red", err=True)
+            raise typer.Exit(1)
+        for w in d.get("warnings") or []:
+            typer.secho(f"warning: variant {vname}: {w}", fg="yellow", err=True)
+        locks[vname] = f"{name}@{d['harness_digest']}"
+        typer.secho(f"variant {vname}: froze trial {t['key']} ({t['job']}) into {root} r{lock['revision']}",
+                    err=True)
+    text = yaml.safe_dump(experiments.locked_spec(spec, locks), sort_keys=False)
+    if spec_out is None:
+        typer.echo(text, nl=False)
+    else:
+        spec_out.write_text(text)
+        typer.echo(f"wrote {spec_out}")
+
+
 def register(app: typer.Typer, session_app: typer.Typer, job_app: typer.Typer, env_app: typer.Typer) -> None:
     trace_app.command("export")(trace_export)
     app.add_typer(trace_app, name="trace")
@@ -157,4 +203,5 @@ def register(app: typer.Typer, session_app: typer.Typer, job_app: typer.Typer, e
     experiment_app.command("get")(experiment_get)
     experiment_app.command("cancel")(experiment_cancel)
     experiment_app.command("export")(experiment_export)
+    experiment_app.command("freeze-variants")(experiment_freeze_variants)  # --- #135
     app.add_typer(experiment_app, name="experiment")
