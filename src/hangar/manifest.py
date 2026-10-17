@@ -70,6 +70,7 @@ _SECTION = re.compile(r"^(?P<path>[\w.]+?)(?:\[\*\](?:\.\{(?P<fields>[\w,]+)\})?
 PROVIDERS = {"claude-code": "anthropic", "codex": "openai", "antigravity": "gcp.gemini"}
 TEXT_MAX = 16_000
 PROBE_SECONDS = 20
+PROBE_WAIT_SECONDS = 5  # how long a turn start waits for the probe before the agent runs
 
 
 # ====================================================================== pieces
