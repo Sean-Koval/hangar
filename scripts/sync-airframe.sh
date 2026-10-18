@@ -8,7 +8,8 @@
 # Template: agent-factory airframe/sync-airframe.sh. Each tool repo keeps a copy as
 # scripts/sync-airframe.sh and lists what it vendors in FILES, one "<theme file> <destination>"
 # pair per line. Published theme files: airframe.css (tokens), airframe-components.css (the af-
-# classes), airframe-docs.css (docs-site mapping), airframe-icons.svg (sprite), airframe-tokens.json.
+# classes), airframe-docs.css (docs-site mapping), airframe-icons.svg (sprite), airframe-tokens.json,
+# airframe.js (the helpers and behaviours: toast, confirm, drawer; an ES module).
 set -eu
 
 FILES="
@@ -17,6 +18,7 @@ airframe-docs.css       docs/stylesheets/airframe-docs.css
 airframe.css            src/hangar/ui/airframe/airframe.css
 airframe-components.css src/hangar/ui/airframe/airframe-components.css
 airframe-icons.svg      src/hangar/ui/airframe/airframe-icons.svg
+airframe.js             src/hangar/ui/airframe/airframe.js
 "
 
 ref="${1:-main}"

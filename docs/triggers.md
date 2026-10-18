@@ -32,6 +32,10 @@ A trusted person then decides:
 | MCP `approve_job` | MCP `reject_job` |
 | `hangar job approve ID` | `hangar job reject ID` |
 
+Over REST the body may carry a `reason` (`{"reason": "..."}`, up to 2,000 characters). It is kept on the job as
+`approval.decision_reason`, goes into the job's event and the audit entry, and is told to the requester where the job
+was asked for (the issue comment). The web console requires a reason to reject and makes it optional to approve.
+
 #### Who may approve
 
 One rule decides on every path (`src/hangar/approvals.py`), so MCP and REST give the same answer and the same refusal text:
