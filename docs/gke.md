@@ -27,7 +27,7 @@ The quick way is one script. It reads the Terraform outputs, builds the control-
 bash deploy/gke/up.sh            # KATA=1 also installs Kata on the microVM pool (step 4)
 ```
 
-Without `DOMAIN=...` it serves on `https://<static-ip>.sslip.io`, a public wildcard DNS name that resolves to the static IP, so the managed certificate provisions with no DNS setup. The admin token is saved to `~/.hangar/gke-admin-token`. On a first install `up.sh` also sets `HANGAR_SESSION_STORE` to the bucket terraform made (`session_bucket`), so checkpoints outlive the control plane's disk. On a hangar that's already running with checkpoints on its disk, it leaves the setting alone, since switching would strand the local checkpoints of suspended sessions. The manual steps below do the same thing by hand.
+Without `DOMAIN=...` it serves on `https://<static-ip>.sslip.io`, a public wildcard DNS name that resolves to the static IP, so the managed certificate provisions with no DNS setup. The admin token is saved to `~/.hangar/gke-admin-token`. On a first install `up.sh` also sets `HANGAR_SESSION_STORE` to the bucket terraform made (`session_bucket`), so checkpoints outlive the control plane's disk. On a hangar that's already running with checkpoints on its disk, it leaves the setting alone, since switching would strand the local checkpoints of suspended sessions. On every install it sets `HANGAR_OUTBOX_URL` to the run bucket (`run_bucket`, [below](#run-capture-bucket)), so finished runs reach flightdeck. The manual steps below do the same thing by hand.
 
 
 ```bash
@@ -58,15 +58,27 @@ control plane keeps the checkout on its disk and refreshes it every 10 minutes
 ### Run capture bucket
 
 Terraform also creates `<project>-hangar-runs` (`enable_run_bucket`, default on; `deploy/terraform/gke/outbox.tf`) for
-run capture ([docs/api/outbox.md](api/outbox.md)). Set `HANGAR_OUTBOX_URL` in the `hangar-site` config map to
-`terraform output -raw run_bucket` (the commented line in `deploy/k8s/config.yaml`). The bucket has uniform access
+run capture ([docs/api/outbox.md](api/outbox.md)). `up.sh` sets `HANGAR_OUTBOX_URL` in the `hangar` config map to
+`terraform output -raw run_bucket` on every install, a running one too: turning it on strands nothing. It keeps a value
+the `hangar` config map already has, a value in `hangar-site` wins, and it restarts hangar when the URL changed but the
+image didn't, because the outbox reads the URL at startup. By hand, uncomment the line in `deploy/k8s/config.yaml`.
+While it's off, `hangar doctor` on GKE warns `run capture (outbox)`. The bucket has uniform access
 and no public access; hangar's service account gets `roles/storage.objectCreator` on it only, and an IAM deny policy
 (`hangar-runs-write-once`, matching the bucket's `hangar-write-once=runs` tag) takes `objects.delete` and
 `objects.update` away from it, because its project-wide `roles/storage.admin` (Cloud Build's staging bucket) would
 otherwise allow them: hangar can create runs, never delete or overwrite one. Applying the deny policy needs
-`roles/iam.denyAdmin` on the project. Readers, such as the sister tool's compactor, go in `run_bucket_readers` and get
-`roles/storage.objectViewer`. Objects under `v1/tapes/` expire after `run_tape_days` (30). Deleting a run for a
-deletion request takes an admin's own credentials ([outbox.md](api/outbox.md#retention-and-the-export-189)).
+`roles/iam.denyAdmin` on the project. Readers go in `run_bucket_readers` and get `roles/storage.objectViewer`.
+flightdeck's nightly compactor is the one reader: its `deploy/compactor/setup.sh` creates the service account
+`flightdeck-compactor@<project>.iam.gserviceaccount.com` and grants it that role on the bucket itself; listing it in
+`run_bucket_readers` keeps the grant in terraform (apply after the account exists). Objects under `v1/tapes/` expire
+after `run_tape_days` (30). Deleting a run for a deletion request takes an admin's own credentials
+([outbox.md](api/outbox.md#retention-and-the-export-189)).
+
+To check that runs land: `hangar doctor` reports `run capture (outbox)` as `on: N object(s) pending to GCS bucket
+gs://<project>-hangar-runs`, `hangar outbox status` lists what's queued, and once a job has finished,
+`gcloud storage ls "gs://<project>-hangar-runs/v1/runs/$(date -u +%F)/*/run.json"` lists its record set's last object
+(dates are UTC). flightdeck compacts them overnight, in the pools-off window
+([flightdeck data-plane.md](https://sean-koval.github.io/flightdeck/data-plane/#compactor)).
 
 ## 2a. Log in, connect and configure
 
