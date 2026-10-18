@@ -1,4 +1,4 @@
-/* Airframe theme-v4 components: the af- classes. Generated from airframe/styles/ by scripts/airframe.py;
+/* Airframe theme-v6 components: the af- classes. Generated from airframe/styles/ by scripts/airframe.py;
    do not edit. Load after airframe.css. Reference and previews: airframe/components/, and the
    gallery on https://sean-koval.github.io/agent-factory/airframe/ */
 @import url('https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=DM+Mono:wght@400;500&family=Red+Hat+Text:ital,wght@0,400..700;1,400..700&display=swap');
@@ -65,6 +65,9 @@ body{margin:0;background:var(--af-canvas);color:var(--af-fg);font-family:var(--a
 .af-btn--sm{height:28px;padding:0 11px;font-size:10.5px}
 .af-btn--sm .af-ic{width:13px;height:13px}
 .af-btn:disabled{opacity:.45;cursor:default}
+/* text variant: sentence-case Red Hat Text where people read (Tower's desk, dialogs, questions); mono capitals stay the default where data is */
+.af-btn--text{font-family:var(--af-font-sans);font-weight:500;font-size:13.5px;letter-spacing:0;text-transform:none}
+.af-btn--text.af-btn--sm{font-size:13px}
 
 /* ---- status: color + shape + word ---- */
 .af-status{--c:var(--af-status-off);display:inline-flex;align-items:center;gap:7px;font-size:13px;color:var(--af-fg);white-space:nowrap}
@@ -104,7 +107,7 @@ body{margin:0;background:var(--af-canvas);color:var(--af-fg);font-family:var(--a
 .af-kv dd.af-mono{font-size:12.5px}
 .af-tag{display:inline-flex;align-items:center;gap:5px;font-family:var(--af-font-mono);font-weight:500;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--af-fg-muted);border:1px solid var(--af-line);border-radius:var(--af-radius-control);padding:3px 6px;white-space:nowrap}
 .af-kbd{font-family:var(--af-font-mono);font-size:11px;color:var(--af-fg-subtle);border:1px solid var(--af-line);border-radius:var(--af-radius-control);padding:1px 5px}
-.af-id{font-family:var(--af-font-mono);font-weight:500;letter-spacing:.01em}
+.af-id{font-family:var(--af-font-mono);font-weight:500;letter-spacing:.01em;white-space:nowrap}
 
 /* ---- readout: digits on unlit cells inside a display window ---- */
 .af-window{background:var(--af-display-window);color:var(--af-fg)}
@@ -227,8 +230,31 @@ body{margin:0;background:var(--af-canvas);color:var(--af-fg);font-family:var(--a
 .af-select__value small{font-size:inherit;color:var(--af-fg-subtle);margin-left:6px}
 .af-input:hover,.af-select:hover,.af-input.is-hover,.af-select.is-hover{border-color:var(--af-fg-subtle)}
 .af-input:focus-within,.af-input.is-focus,.af-select.is-focus{outline:2px solid var(--af-focus);outline-offset:2px}
-.af-input.is-disabled,.af-input:has(input:disabled),.af-select:disabled{opacity:.45;cursor:default;border-color:var(--af-line-strong)}
+.af-input.is-disabled,.af-input:has(input:disabled),.af-input:has(textarea:disabled),.af-select:disabled{opacity:.45;cursor:default;border-color:var(--af-line-strong)}
 .af-input.is-invalid{border-color:var(--af-status-failed)}
+/* multi-line and prose variants: a textarea in the same well; sans for sentences people write (answers, reasons), mono stays for data */
+.af-input--area{height:auto;min-height:64px;align-items:stretch;padding:8px 10px}
+.af-input textarea{flex:1;min-width:0;min-height:0;padding:0;border:0;outline:0;background:transparent;color:var(--af-fg);font:inherit;line-height:1.5;resize:vertical}
+.af-input textarea::placeholder{color:var(--af-fg-subtle);opacity:1}
+.af-input--sans{font-family:var(--af-font-sans);font-size:14px}
+/* inline field error: the failed mark and words, in fg; never a red fill or red text */
+.af-field__error{display:flex;align-items:flex-start;gap:7px;font-size:12.5px;line-height:1.4;color:var(--af-fg)}
+.af-field__error .af-status{font-size:inherit;white-space:normal;align-items:flex-start}
+.af-field__error .af-status__mark{margin-top:5px}
+
+/* ---- chip: an option or a suggestion. 2px radius, hairline; pressed inverts like a segment. Never a status, never a pill. ---- */
+.af-chip{display:inline-flex;align-items:center;gap:6px;height:28px;max-width:100%;padding:0 10px;border:1px solid var(--af-line-strong);border-radius:var(--af-radius-control);background:transparent;color:var(--af-fg);
+  font-family:var(--af-font-sans);font-size:13px;line-height:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;
+  transition:background var(--af-dur) var(--af-ease),color var(--af-dur) var(--af-ease),border-color var(--af-dur) var(--af-ease)}
+.af-chip:hover{background:var(--af-selected)}
+.af-chip[aria-pressed="true"]{background:var(--af-fg);border-color:var(--af-fg);color:var(--af-canvas)}
+.af-chip .af-ic{width:14px;height:14px;color:var(--af-fg-subtle)}
+.af-chip[aria-pressed="true"] .af-ic{color:inherit}
+.af-chip--mono{font-family:var(--af-font-mono);font-size:12px}
+.af-chip--sm{height:24px;padding:0 8px;font-size:12px}
+.af-chip:disabled,.af-chip.is-dismissed{opacity:.45;cursor:default}
+.af-chip:disabled:hover,.af-chip.is-dismissed:hover{background:transparent}
+.af-chips{display:flex;flex-wrap:wrap;gap:6px;min-width:0}
 
 .af-switch{position:relative;flex:none;width:38px;height:20px;padding:0;border:1px solid var(--af-line-strong);border-radius:var(--af-radius-control);background:var(--af-surface);cursor:pointer;
   transition:background var(--af-dur) var(--af-ease),border-color var(--af-dur) var(--af-ease)}
@@ -293,9 +319,46 @@ a.af-seg__btn{display:inline-flex;align-items:center;text-decoration:none}
 .af-search>.af-ic{width:14px;height:14px}
 .af-search>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .af-search .af-kbd{flex:none;font-size:10.5px}
-.af-avatar{width:30px;height:30px;flex:none;display:grid;place-items:center;padding:0;border:1px solid var(--af-line-strong);border-radius:var(--af-radius-round);background:transparent;color:var(--af-fg);
-  font-family:var(--af-font-mono);font-weight:500;font-size:10.5px;letter-spacing:.04em;cursor:pointer}
-.af-avatar:hover{background:var(--af-selected)}
+/* ---- avatar triad: people round, agents hexagonal, firms square. Initials in mono on a 1px line-strong edge, no fill, no hue.
+   The default (no variant) is the round person avatar the nav uses. Sizes 22, 28, 44; 30 is the nav's. ---- */
+.af-avatar{position:relative;width:30px;height:30px;flex:none;display:grid;place-items:center;padding:0;border:1px solid var(--af-line-strong);border-radius:var(--af-radius-round);background:transparent;color:var(--af-fg);
+  font-family:var(--af-font-mono);font-weight:500;font-size:10.5px;line-height:1;letter-spacing:.04em;text-decoration:none;white-space:nowrap}
+button.af-avatar,a.af-avatar{cursor:pointer}
+button.af-avatar:hover,a.af-avatar:hover{background:var(--af-selected)}
+.af-avatar>.af-ic{width:16px;height:16px;color:var(--af-fg-muted)}
+.af-avatar--person{border-radius:var(--af-radius-round)}
+.af-avatar--firm{border-radius:var(--af-radius-control)}
+.af-avatar--22{width:22px;height:22px;font-size:9px}.af-avatar--22>.af-ic{width:12px;height:12px}
+.af-avatar--28{width:28px;height:28px;font-size:10px}.af-avatar--28>.af-ic{width:14px;height:14px}
+.af-avatar--44{width:44px;height:44px;font-size:14px}.af-avatar--44>.af-ic{width:22px;height:22px}
+.af-avatar--pending{border-style:dashed;color:var(--af-fg-subtle)}
+/* the hexagon is three clipped layers: a ground ring (transparent unless stacked), a 1px line-strong edge, the fill. The box is
+   4px larger than its siblings with a -2px margin, so the visible hexagon matches their size and the ring has room. */
+.af-avatar--agent{--af-hex:polygon(50% 0,93.3% 25%,93.3% 75%,50% 100%,6.7% 75%,6.7% 25%);width:34px;height:34px;margin:-2px;border:0;border-radius:0;background:var(--af-avatar-ground,transparent);clip-path:var(--af-hex)}
+.af-avatar--agent::before,.af-avatar--agent::after{content:"";position:absolute;inset:2px;z-index:-1;background:var(--af-line-strong);clip-path:var(--af-hex)}
+.af-avatar--agent::after{inset:3px;background:var(--af-avatar-fill,var(--af-raised))}
+button.af-avatar--agent:hover::after,a.af-avatar--agent:hover::after{background:var(--af-selected)}
+.af-avatar--agent.af-avatar--22{width:26px;height:26px}.af-avatar--agent.af-avatar--28{width:32px;height:32px}.af-avatar--agent.af-avatar--44{width:48px;height:48px}
+.af-avatar--agent.af-avatar--pending::before{background:var(--af-line)}
+@supports not (clip-path:polygon(0 0,0 0,0 0)){
+  .af-avatar--agent{width:30px;height:30px;margin:0;border:1px solid var(--af-line-strong);background:transparent}
+  .af-avatar--agent::before,.af-avatar--agent::after{display:none}
+  .af-avatar--agent.af-avatar--22{width:22px;height:22px}.af-avatar--agent.af-avatar--28{width:28px;height:28px}.af-avatar--agent.af-avatar--44{width:44px;height:44px}
+}
+/* stacked group: 2px ground ring between neighbours; set --af-avatar-ground to the ground the group sits on (raised by default) */
+.af-avatars{--af-avatar-ground:var(--af-raised);display:inline-flex;align-items:center;flex:none}
+.af-avatars>.af-avatar{margin-left:-5px;box-shadow:0 0 0 2px var(--af-avatar-ground)}
+.af-avatars>.af-avatar--22{margin-left:-3px}
+.af-avatars>.af-avatar--44{margin-left:-8px}
+.af-avatars>.af-avatar--agent{margin-left:-7px;box-shadow:none}
+.af-avatars>.af-avatar--agent.af-avatar--22{margin-left:-5px}
+.af-avatars>.af-avatar--agent.af-avatar--44{margin-left:-10px}
+.af-avatars>.af-avatar:first-child{margin-left:0}
+.af-avatars>.af-avatar--agent:first-child{margin-left:-2px}
+.af-avatars__more{margin-left:8px;font-family:var(--af-font-mono);font-size:11px;color:var(--af-fg-subtle);white-space:nowrap}
+.af-who{display:inline-flex;align-items:center;gap:8px;min-width:0}
+.af-who__name{font-weight:500;font-size:13.5px;color:var(--af-fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.af-who__sub{font-size:12px;color:var(--af-fg-subtle);white-space:nowrap}
 @media (max-width:860px){
   .af-nav__tabs{flex:0 1 auto;min-width:0;overflow-x:auto;scrollbar-width:none}
   .af-search{flex:none;width:auto;min-width:0}.af-search>span{display:none}
@@ -414,6 +477,272 @@ a.af-seg__btn{display:inline-flex;align-items:center;text-decoration:none}
   .af-table tbody tr:is(.is-selected,[aria-selected="true"]) td:first-child{border-left:3px solid Highlight}
   .af-seg__btn[aria-pressed="true"],.af-seg__btn[aria-current="page"]{background:Highlight;color:HighlightText}
   .af-nav__tab:is([aria-current="page"],.is-active)::after{background:CanvasText}
+  .af-chip[aria-pressed="true"]{background:Highlight;color:HighlightText;border-color:Highlight}
+  /* the hexagon keeps its shape: edge in CanvasText, fill in Canvas (clip-path is geometry, so it survives) */
+  .af-avatar--agent{background:Canvas}
+  .af-avatar--agent::before{background:CanvasText}
+  .af-avatar--agent::after{background:Canvas}
+  .af-avatars>.af-avatar{box-shadow:0 0 0 2px Canvas}
+  .af-input.is-invalid{outline:2px solid CanvasText;outline-offset:-2px}
+}
+/* ===== agents.css ===== */
+/* ===== Airframe · agents — the parts a person uses to work with an agent: the approval card's decisions (reason, edit,
+   session, quorum, waiting on others), the question card, the composer, the greyscale diff and the object chip.
+   Tokens only, on top of base.css and core.css. Color appears only where a person is needed (the approval diamond, the
+   failed triangle); diffs are greyscale: additions in fg with a 2px fg gutter bar, deletions in fg-muted. ===== */
+
+/* ---- approval card v2: decisions ---- */
+.af-approval__btns{flex-wrap:wrap;justify-content:flex-end}
+.af-approval__reason{display:flex;flex-direction:column;gap:12px;padding-top:12px;border-top:1px solid var(--af-line-subtle)}
+.af-approval__reason .af-approval__btns{margin-left:0;justify-content:flex-start}
+.af-approval__edit{font-family:var(--af-font-mono);font-size:12.5px;line-height:1.6}
+.af-approval__edit textarea{white-space:pre;overflow-wrap:normal;overflow-x:auto;font-variant-numeric:tabular-nums}
+.af-approval__hint{display:flex;align-items:flex-start;gap:7px;margin:0;font-size:12.5px;line-height:1.45;color:var(--af-fg-muted)}
+.af-approval__hint .af-ic{flex:none;margin-top:2px;color:var(--af-fg-subtle)}
+.af-approval__hint b{font-family:var(--af-font-mono);font-weight:500;font-size:12px;color:var(--af-fg)}
+/* quorum strip: who signed, who is waited on. Grey throughout; the card's lit ring already says whether it is yours. */
+.af-approval__quorum{display:flex;align-items:center;gap:12px 16px;flex-wrap:wrap;min-height:28px;padding-top:12px;border-top:1px solid var(--af-line-subtle);font-size:12.5px;color:var(--af-fg-muted);min-width:0}
+.af-approval__quorum>.af-avatars{flex:none}
+.af-approval__signed{white-space:nowrap}
+.af-approval__signed b{font-family:var(--af-font-mono);font-weight:500;font-size:12px;color:var(--af-fg);font-variant-numeric:tabular-nums}
+.af-approval__quorum>.af-meta{font-size:11.5px}
+.af-approval--waiting .af-approval__cmd{color:var(--af-fg-muted)}
+/* verdict additions: an allowed decision is a quiet check and a word (allowed is not green); a denial carries its reason */
+.af-verdict__ok{display:inline-flex;align-items:center;gap:7px;justify-self:start;font-size:13px;color:var(--af-fg);white-space:nowrap}
+.af-verdict__ok .af-ic{width:14px;height:14px;color:var(--af-fg-subtle)}
+.af-verdict__why{font-size:12.5px;line-height:1.45;color:var(--af-fg-muted)}
+
+/* ---- question: an agent asks a person. Same approval role (a person is needed), the word "Needs input", one primary action. ---- */
+.af-question{gap:14px}
+.af-question__q{margin:0;font-size:17px;font-weight:600;line-height:1.35;letter-spacing:-.005em;color:var(--af-fg);text-wrap:balance}
+.af-question__ctx{margin:0;font-size:13.5px;line-height:1.5;color:var(--af-fg-muted);text-wrap:pretty}
+.af-question__ctx code{font-family:var(--af-font-mono);font-size:12.5px;color:var(--af-fg)}
+.af-question__opts{display:flex;flex-wrap:wrap;gap:6px}
+.af-question__free{gap:6px}
+/* free text dismisses the options: once the person writes, the chips dim and unpress (no script needed) */
+.af-question:has(.af-question__free textarea:not(:placeholder-shown)) .af-chip{opacity:.45;background:transparent;border-color:var(--af-line-strong);color:var(--af-fg);border-style:dashed}
+.af-question__act{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.af-question__act>.af-meta{font-size:11.5px}
+.af-question__act>.af-btn{margin-left:auto}
+
+/* ---- composer: an input with suggestion chips and one send button; a queued row with a take-back; a disabled state that says why ---- */
+.af-composer{display:flex;flex-direction:column;gap:8px;min-width:0}
+.af-composer__queued{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 12px;padding:6px 4px 8px 12px;background:var(--af-surface);border-radius:var(--af-radius-control);min-width:0}
+.af-composer__queued>.af-lbl{min-width:0;white-space:normal}
+.af-composer__qmsg{grid-column:1;min-width:0;font-size:13px;line-height:1.45;color:var(--af-fg);overflow-wrap:anywhere}
+.af-composer__queued>.af-btn{grid-column:2;grid-row:1 / span 2;align-self:center}
+.af-composer__box{display:flex;flex-direction:column;gap:8px;min-width:0;padding:10px 10px 8px;border:1px solid var(--af-line-strong);border-radius:var(--af-radius-control);background:var(--af-surface);
+  transition:border-color var(--af-dur) var(--af-ease)}
+.af-composer__box:hover{border-color:var(--af-fg-subtle)}
+.af-composer__box:focus-within{outline:2px solid var(--af-focus);outline-offset:2px}
+.af-composer__input{display:block;width:100%;min-height:24px;max-height:40vh;margin:0;padding:0 2px;border:0;outline:0;background:transparent;color:var(--af-fg);
+  font-family:var(--af-font-sans);font-size:14px;line-height:1.5;resize:none;field-sizing:content}
+.af-composer__input::placeholder{color:var(--af-fg-subtle);opacity:1}
+.af-composer__row{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;min-width:0}
+.af-composer__chips{display:flex;flex-wrap:wrap;gap:6px;min-width:0}
+.af-composer__send{margin-left:auto}
+.af-composer__why{display:flex;align-items:center;gap:8px;margin:0;padding:0 2px;font-size:12.5px;line-height:1.4;color:var(--af-fg-subtle)}
+.af-composer__why .af-status{font-size:inherit;color:inherit}
+.af-composer.is-disabled .af-composer__box{opacity:.45}
+.af-composer.is-disabled .af-composer__box:hover{border-color:var(--af-line-strong)}
+.af-composer.is-disabled .af-composer__input,.af-composer.is-disabled .af-chip{cursor:default}
+
+/* ---- diff: unified, greyscale. The change is the brightest thing: additions in fg with a 2px fg bar, deletions in fg-muted
+   with a 2px line-strong bar, context in fg-subtle. The sign column (+ −) carries the meaning without hue or tone.
+   Only a hunk a failing test points at takes a mark, the failed triangle, in its header. No fills. ---- */
+.af-diff{--af-diff-n:3.6em;background:var(--af-raised);border-radius:var(--af-radius-card);min-width:0;overflow:hidden;
+  font-family:var(--af-font-mono);font-size:12px;line-height:1.6;font-variant-numeric:tabular-nums}
+.af-diff__file{display:flex;align-items:center;gap:10px;min-height:var(--af-row-h);padding:4px 8px 4px 14px;border-bottom:1px solid var(--af-line);min-width:0}
+.af-diff__file>.af-ic{color:var(--af-fg-subtle)}
+.af-diff__path{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;font-size:12.5px;letter-spacing:.01em;color:var(--af-fg)}
+.af-diff__path small{font-weight:400;font-size:inherit;color:var(--af-fg-subtle)}
+.af-diff__stat{display:inline-flex;gap:8px;flex:none;font-size:11.5px;white-space:nowrap}
+.af-diff__stat b{font-weight:500}
+.af-diff__add{color:var(--af-fg)}
+.af-diff__del{color:var(--af-fg-muted)}
+.af-diff__tools{display:inline-flex;gap:4px;flex:none;margin-left:auto}
+.af-diff__hunk{border-top:1px solid var(--af-line-subtle)}
+.af-diff__file+.af-diff__hunk{border-top:0}
+.af-diff__hh{display:flex;align-items:center;gap:12px;min-height:28px;padding:2px 12px 2px 14px;background:var(--af-surface);color:var(--af-fg-subtle);font-size:11px;white-space:nowrap;min-width:0}
+.af-diff__hh code{font:inherit;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--af-fg-muted)}
+.af-diff__hh>.af-status{margin-left:auto;flex:none;font-family:var(--af-font-sans);font-size:12px;color:var(--af-fg)}
+.af-diff__line{display:grid;grid-template-columns:var(--af-diff-n) var(--af-diff-n) 16px minmax(0,1fr) auto;align-items:center;min-height:22px;color:var(--af-fg-subtle)}
+.af-diff__line:hover{background:color-mix(in srgb,var(--af-fg) 3%,transparent)}
+.af-diff__n{padding-right:8px;text-align:right;font-size:11px;color:var(--af-fg-subtle);user-select:none}
+.af-diff__s{align-self:stretch;display:flex;align-items:center;justify-content:center;font-size:11px;user-select:none}
+.af-diff__code{margin:0;padding:0 12px 0 6px;overflow-x:auto;white-space:pre;font:inherit;color:inherit;tab-size:4;scrollbar-width:none}
+.af-diff__line--add{color:var(--af-fg)}
+.af-diff__line--add .af-diff__s{box-shadow:inset 2px 0 0 var(--af-fg)}
+.af-diff__line--del{color:var(--af-fg-muted)}
+.af-diff__line--del .af-diff__s{box-shadow:inset 2px 0 0 var(--af-line-strong)}
+.af-diff__cmt{height:20px;padding:0 7px;margin-right:6px;font-size:9.5px;opacity:0;transition:opacity var(--af-dur) var(--af-ease)}
+.af-diff__line:hover .af-diff__cmt,.af-diff__line:focus-within .af-diff__cmt,.af-diff__cmt:focus-visible,.af-diff__cmt[aria-pressed="true"]{opacity:1}
+.af-diff__cmt[aria-pressed="true"]{color:var(--af-fg)}
+.af-diff__more{display:flex;align-items:center;justify-content:center;min-height:24px;border-top:1px solid var(--af-line-subtle);font-size:11px;color:var(--af-fg-subtle)}
+/* an inline comment thread under a line: a surface well, indented past the numbers; replies go to the agent with the next message */
+.af-diff__thread{display:flex;flex-direction:column;gap:10px;margin:4px 12px 12px calc(var(--af-diff-n) * 2 + 16px);padding:12px 14px;background:var(--af-surface);border-radius:var(--af-radius-control);
+  font-family:var(--af-font-sans);font-size:13px;line-height:1.5;color:var(--af-fg);font-variant-numeric:normal}
+.af-comment{display:grid;grid-template-columns:22px minmax(0,1fr);gap:2px 10px;align-items:start}
+.af-comment>.af-avatar{margin-top:1px}
+.af-comment__who{display:flex;align-items:baseline;gap:8px;min-width:0;min-height:22px;line-height:22px}
+.af-comment__name{font-weight:600;font-size:13px;color:var(--af-fg)}
+.af-comment__time{font-family:var(--af-font-mono);font-size:11px;color:var(--af-fg-subtle);white-space:nowrap}
+.af-comment__text{grid-column:2;margin:0;color:var(--af-fg);text-wrap:pretty}
+.af-comment__text code{font-family:var(--af-font-mono);font-size:12px;color:var(--af-fg)}
+.af-diff__thread>.af-composer{margin-top:2px}
+.af-diff__thread .af-composer__box{background:var(--af-raised)}
+.af-diff__note{display:flex;align-items:center;gap:8px;font-size:12px;line-height:1.4;color:var(--af-fg-subtle)}
+.af-diff__note .af-ic{flex:none;width:14px;height:14px}
+.af-diff__note b{font-weight:500;color:var(--af-fg-muted)}
+
+/* ---- object chip: a business object by reference (ticket, PR, account, trade). Source glyph, mono key, title, state word.
+   A surface tile with a hairline, 2px radius: never a pill, never a status fill. Hover or focus shows the trust line. ---- */
+.af-obj{position:relative;display:inline-flex;align-items:center;gap:7px;max-width:100%;height:26px;padding:0 8px 0 7px;border-radius:var(--af-radius-control);background:var(--af-surface);box-shadow:inset 0 0 0 1px var(--af-line);
+  color:var(--af-fg);font-family:var(--af-font-sans);font-size:13px;line-height:1;white-space:nowrap;text-decoration:none;vertical-align:middle;cursor:default;
+  transition:background var(--af-dur) var(--af-ease)}
+a.af-obj,button.af-obj{cursor:pointer;border:0;font:inherit}
+a.af-obj:hover,button.af-obj:hover{background:color-mix(in srgb,var(--af-fg) 6%,var(--af-surface))}
+.af-obj>.af-ic{flex:none;width:14px;height:14px;color:var(--af-fg-subtle)}
+.af-obj__key{flex:none;font-family:var(--af-font-mono);font-weight:500;font-size:11.5px;letter-spacing:.01em;color:var(--af-fg)}
+.af-obj__title{min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--af-fg-muted)}
+a.af-obj:hover .af-obj__title{color:var(--af-fg);text-decoration:underline;text-decoration-color:var(--af-line-strong);text-underline-offset:3px}
+.af-obj__state{flex:none;display:inline-flex;align-items:center;gap:6px;padding-left:8px;border-left:1px solid var(--af-line);font-family:var(--af-font-mono);font-weight:500;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--af-fg-subtle)}
+.af-obj__state.af-status{color:var(--af-fg)}
+.af-obj--restricted{background:transparent;color:var(--af-fg-subtle)}
+.af-obj--restricted .af-obj__key{color:var(--af-fg-muted)}
+.af-obj--restricted .af-obj__state{border-left:0;padding-left:0}
+/* trust line: source, freshness, provenance as keyed data in a popover below the chip */
+.af-obj__trust{position:absolute;left:0;top:calc(100% + 6px);z-index:20;display:none;flex-wrap:wrap;gap:4px 14px;min-width:260px;max-width:min(440px,80vw);padding:8px 10px;
+  background:var(--af-overlay);border:1px solid var(--af-line);border-radius:var(--af-radius-card);box-shadow:var(--af-shadow-overlay);white-space:normal;cursor:default}
+.af-obj:hover .af-obj__trust,.af-obj:focus-visible .af-obj__trust,.af-obj:focus-within .af-obj__trust,.af-obj.is-open .af-obj__trust{display:flex}
+.af-obj__trust .af-meta{font-size:11.5px;row-gap:3px}
+.af-objs{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0}
+
+/* Forced colors: gutter bars and marks in CanvasText, the hunk header and chip edges as outlines, pressed chips in Highlight */
+@media (forced-colors: active){
+  .af-diff{outline:1px solid CanvasText;outline-offset:-1px}
+  .af-diff__hh{border-top:1px solid CanvasText;border-bottom:1px solid CanvasText}
+  .af-diff__line--add .af-diff__s,.af-diff__line--del .af-diff__s{box-shadow:none;border-left:2px solid CanvasText}
+  .af-diff__line--del .af-diff__s{border-left-style:dashed}
+  .af-diff__thread,.af-composer__box,.af-composer__queued{outline:1px solid CanvasText;outline-offset:-1px}
+  .af-obj{outline:1px solid CanvasText;outline-offset:-1px}
+  .af-obj__trust{outline:1px solid CanvasText}
+  .af-approval__reason,.af-approval__quorum{border-top-color:CanvasText}
+}
+/* ===== patterns.css ===== */
+/* ===== Airframe · patterns — the page-level recipes every console writes twice: page header, empty state, toast, dialog,
+   drawer. CSS and a markup contract; the optional airframe.js carries the behaviour (toast timing and inhibition, confirm,
+   drawer focus and inert). Tokens only. Floating surfaces (toast, trust lines, menus) are the only ones with a shadow. ===== */
+
+/* ---- layers and sizes: toast above drawer above scrim; a dialog uses the browser's top layer, above all three ---- */
+:root{--af-z-scrim:100;--af-z-drawer:110;--af-z-toast:120;--af-drawer-w:480px;--af-drawer-h:40vh;--af-drawer-inset:0px}
+html.af-drawer-open--bottom{--af-drawer-inset:var(--af-drawer-h)}
+
+/* ---- page header: title (two sizes), lede, a summary line (status mark, keyed counts, capacity), an actions slot ---- */
+.af-page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:var(--af-space-16) var(--af-space-24);min-width:0}
+.af-page-head--rule{padding-bottom:var(--af-space-16);border-bottom:1px solid var(--af-rule)}
+.af-page-head__text{display:flex;flex-direction:column;gap:var(--af-space-8);min-width:0}
+.af-page-head__text>.af-lbl{margin-bottom:var(--af-space-4)}
+.af-page-head__title{margin:0;font-family:var(--af-font-display);font-stretch:var(--af-display-stretch);font-weight:700;font-size:36px;line-height:1.05;letter-spacing:-.005em;color:var(--af-fg);text-wrap:balance}
+.af-page-head__title .af-id{font-size:.86em;font-weight:500;letter-spacing:0;color:var(--af-fg)}
+.af-page-head--s .af-page-head__title{font-size:24px;line-height:1.1;letter-spacing:0}
+.af-page-head__lede{margin:0;max-width:62ch;font-size:14px;line-height:1.5;color:var(--af-fg-muted);text-wrap:pretty}
+.af-page-head--s .af-page-head__lede{font-size:13.5px}
+.af-page-head__sum{display:flex;flex-wrap:wrap;align-items:center;gap:var(--af-space-8) var(--af-space-20);min-width:0;padding-top:var(--af-space-4)}
+.af-page-head__sum>.af-meta{font-size:11.5px}
+.af-page-head__actions{display:flex;flex:none;align-items:center;justify-content:flex-end;gap:var(--af-space-8);flex-wrap:wrap}
+@media (max-width:760px){
+  .af-page-head{flex-direction:column;align-items:stretch;gap:var(--af-space-12)}
+  .af-page-head__title{font-size:28px}
+  .af-page-head--s .af-page-head__title{font-size:22px}
+  .af-page-head__actions{justify-content:flex-start}
+}
+
+/* ---- empty state: icon, display title, one sentence, one primary action and at most one text link.
+   Kinds: no-data, after-action, error (no illustration, no second action). The clear state ("Nothing is waiting on you.")
+   is the hero of a needs-you queue, so it gets the large title and the grey counts. ---- */
+.af-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:var(--af-space-12);min-height:220px;padding:var(--af-space-40) var(--af-space-24);text-align:center;color:var(--af-fg);min-width:0}
+.af-empty>.af-ic{width:24px;height:24px;color:var(--af-fg-subtle);margin-bottom:var(--af-space-4)}
+.af-empty>.af-status{font-size:13px}
+.af-empty__title{margin:0;max-width:30ch;font-family:var(--af-font-display);font-stretch:var(--af-display-stretch);font-weight:600;font-size:22px;line-height:1.15;letter-spacing:0;color:var(--af-fg);text-wrap:balance}
+.af-empty__text{margin:0;max-width:46ch;font-size:14px;line-height:1.5;color:var(--af-fg-muted);text-wrap:pretty}
+.af-empty__text b{font-weight:500;color:var(--af-fg);white-space:nowrap}
+.af-empty__text .af-mono{font-size:13px;color:var(--af-fg)}
+.af-empty__counts{display:flex;flex-wrap:wrap;justify-content:center;gap:var(--af-space-8) var(--af-space-24);padding-top:var(--af-space-4)}
+.af-empty__act{display:flex;align-items:center;justify-content:center;gap:var(--af-space-16);flex-wrap:wrap;margin-top:var(--af-space-8)}
+.af-empty__act .af-link{font-size:13px}
+.af-empty--clear{min-height:280px;gap:var(--af-space-16)}
+.af-empty--clear .af-empty__title{font-size:28px;line-height:1.1;letter-spacing:-.005em}
+.af-empty[data-kind="error"]>.af-ic{display:none}
+.af-empty[data-kind="error"] .af-empty__title{font-family:var(--af-font-sans);font-stretch:normal;font-size:17px;line-height:1.35}
+.af-empty--compact{flex-direction:row;align-items:center;justify-content:flex-start;gap:var(--af-space-12);min-height:0;padding:var(--af-space-12) var(--af-space-16);text-align:left}
+.af-empty--compact>.af-ic{width:16px;height:16px;margin:0}
+.af-empty--compact .af-empty__title{font-family:var(--af-font-sans);font-stretch:normal;font-weight:600;font-size:13.5px;line-height:1.4;max-width:none}
+.af-empty--compact .af-empty__text{font-size:13px;max-width:none}
+.af-empty--compact .af-empty__body{display:flex;flex-direction:column;gap:2px;min-width:0}
+.af-empty--compact .af-empty__act{margin:0 0 0 auto;flex:none;gap:var(--af-space-8)}
+
+/* ---- toast: bottom centre, overlay tone, one optional action; the bad variant carries the failed mark; role=status.
+   Lifts above an open bottom drawer through --af-drawer-inset. ---- */
+.af-toasts{position:fixed;left:50%;bottom:calc(var(--af-space-16) + var(--af-drawer-inset));z-index:var(--af-z-toast);display:flex;flex-direction:column;align-items:center;gap:var(--af-space-8);
+  width:max-content;max-width:min(560px,calc(100vw - 32px));margin:0;padding:0;transform:translateX(-50%);pointer-events:none}
+.af-toast{display:flex;align-items:center;gap:var(--af-space-12);min-height:40px;max-width:100%;padding:8px 8px 8px 14px;background:var(--af-overlay);border:1px solid var(--af-line);border-radius:var(--af-radius-card);box-shadow:var(--af-shadow-overlay);
+  color:var(--af-fg);font-family:var(--af-font-sans);font-size:13.5px;line-height:1.4;text-align:left;pointer-events:auto}
+.af-toast>.af-status{flex:none}
+.af-toast__msg{min-width:0;text-wrap:pretty}
+.af-toast__msg b{font-family:var(--af-font-mono);font-weight:500;font-size:12.5px;letter-spacing:.01em}
+.af-toast__act{flex:none;margin-left:auto}
+.af-toast:not(:has(.af-toast__act)){padding-right:14px}
+.af-toast.is-leaving{opacity:0;transition:opacity var(--af-dur) var(--af-ease)}
+/* in flow, for documentation and previews */
+.af-toasts--inline{position:static;transform:none;width:auto;max-width:none;align-items:flex-start;pointer-events:auto}
+
+/* ---- dialog: a <dialog> with title-m, body, and a footer in inspect / refuse / accept order. A confirm replaces window.confirm():
+   the confirming button is primary, or danger when the action destroys something. The scrim is the ::backdrop. ---- */
+.af-dialog{width:min(480px,calc(100vw - 32px));max-width:none;max-height:calc(100vh - 64px);margin:auto;padding:0;border:0;border-radius:var(--af-radius-card);background:var(--af-raised);color:var(--af-fg);overflow:hidden}
+.af-dialog--wide{width:min(640px,calc(100vw - 32px))}
+/* in flow, for documentation and previews (not modal, so it does not inhibit toasts) */
+.af-dialog--inline{position:static;margin:0;width:auto;max-width:480px}
+.af-dialog::backdrop{background:color-mix(in srgb,var(--af-canvas) 72%,transparent)}
+.af-dialog__form{display:flex;flex-direction:column;max-height:calc(100vh - 64px);min-width:0}
+.af-dialog__head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--af-space-12);padding:var(--af-space-20) var(--af-space-20) 0}
+.af-dialog__head>.af-lbl{margin-bottom:var(--af-space-8)}
+.af-dialog__title{margin:0;font-family:var(--af-font-sans);font-weight:600;font-size:20px;line-height:1.3;letter-spacing:-.01em;color:var(--af-fg);text-wrap:balance}
+.af-dialog__body{padding:var(--af-space-12) var(--af-space-20) var(--af-space-20);font-size:14px;line-height:1.5;color:var(--af-fg-muted);overflow:auto;min-height:0}
+.af-dialog__body p{margin:0}
+.af-dialog__body p+p{margin-top:var(--af-space-8)}
+.af-dialog__body b{font-weight:500;color:var(--af-fg)}
+.af-dialog__body .af-mono,.af-dialog__body .af-id{color:var(--af-fg);white-space:nowrap}
+.af-dialog__body>.af-field,.af-dialog__body>.af-kv{margin-top:var(--af-space-12)}
+.af-dialog__foot{display:flex;align-items:center;justify-content:flex-end;gap:var(--af-space-8);flex-wrap:wrap;padding:var(--af-space-12) var(--af-space-20);border-top:1px solid var(--af-line-subtle)}
+.af-dialog__foot>.af-btn--ghost:first-child{margin-right:auto}
+
+/* ---- drawer: a right sheet (480px) or a bottom drawer (40vh) over a scrim; toast above drawer above scrim.
+   Open with the is-open class (airframe.js adds Escape, focus return and an inert page). ---- */
+.af-scrim{position:fixed;inset:0;z-index:var(--af-z-scrim);background:color-mix(in srgb,var(--af-canvas) 72%,transparent)}
+.af-scrim:not(.is-open){display:none}
+.af-drawer{position:fixed;z-index:var(--af-z-drawer);display:flex;flex-direction:column;min-width:0;background:var(--af-raised);color:var(--af-fg);outline:0}
+.af-drawer:not(.is-open){display:none}
+.af-drawer--right{top:0;right:0;bottom:0;width:min(var(--af-drawer-w),100vw);border-left:1px solid var(--af-line)}
+.af-drawer--bottom{left:0;right:0;bottom:0;height:var(--af-drawer-h);border-top:1px solid var(--af-line)}
+.af-drawer__head{display:flex;align-items:center;gap:var(--af-space-12);flex:none;min-height:var(--af-header-h);padding:0 var(--af-space-12) 0 var(--af-space-20);border-bottom:1px solid var(--af-line-subtle);min-width:0}
+.af-drawer--bottom .af-drawer__head{min-height:40px;padding-left:var(--af-space-16)}
+.af-drawer__title{flex:1;min-width:0;margin:0;font-family:var(--af-font-sans);font-weight:600;font-size:16px;line-height:1.35;letter-spacing:-.005em;color:var(--af-fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.af-drawer__title .af-id{font-size:15px}
+.af-drawer__head>.af-status{flex:none}
+.af-drawer__body{flex:1;min-height:0;overflow:auto;padding:var(--af-space-20)}
+.af-drawer--bottom .af-drawer__body{padding:0}
+.af-drawer__foot{display:flex;align-items:center;justify-content:flex-end;gap:var(--af-space-8);flex:none;flex-wrap:wrap;padding:var(--af-space-12) var(--af-space-20);border-top:1px solid var(--af-line-subtle)}
+.af-drawer__foot>.af-btn--ghost:first-child{margin-right:auto}
+.af-drawer__grip{position:absolute;left:50%;top:-1px;width:40px;height:3px;margin-left:-20px;background:var(--af-line-strong);cursor:row-resize}
+@media (max-width:760px){.af-drawer--right{width:100vw;border-left:0}}
+
+/* Forced colors: the floating surfaces keep their edges, the scrim stays a scrim */
+@media (forced-colors: active){
+  .af-toast,.af-dialog,.af-drawer{outline:1px solid CanvasText;outline-offset:-1px}
+  .af-dialog::backdrop,.af-scrim{background:Canvas;opacity:.8}
+  .af-page-head--rule{border-bottom-color:CanvasText}
+  .af-drawer__grip{background:CanvasText}
 }
 /* ===== viz.css ===== */
 /* ===== Airframe · viz — icon specimen, fleet view, session lanes, trace spans. Tokens only (tokens.css + base.css atoms). ===== */
