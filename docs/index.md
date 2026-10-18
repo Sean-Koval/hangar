@@ -14,7 +14,7 @@
 
 ## What it looks like
 
-The web UI on `:8787`: jobs with their timeline, the agent's activity, the check and the PR; sessions you come back to; and the inbox of everything waiting on you.
+The web UI on `:8787`: jobs with their timeline, the agent's activity, the check and the PR; sessions you come back to; the fleet four ways (**Board**, every sandbox at a glance; **Bays**, each one's task and next action; **Columns**, sorted by what needs you; **Owners**, capacity by person), where you can allow or deny a held step and open any sandbox's terminal; and the inbox of everything waiting on you.
 
 ![The jobs view: issue #42's job succeeded, check passed, draft PR #43, the agent's summary](assets/front/ui-jobs.png)
 

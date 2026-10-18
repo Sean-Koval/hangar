@@ -20,7 +20,7 @@ SYNC = ROOT / "scripts" / "sync-airframe.sh"
 
 # hangar's own files: no color literals. (favicon.svg is the exception: a favicon can't read CSS variables, so it
 # carries the Airframe product-hangar and line-strong values by hand.)
-OWN = ["app.css", "index.html", "vnc.html", "app.js"]
+OWN = ["app.css", "index.html", "vnc.html", "app.js", "fleet.js"]
 HEX = re.compile(r"(?<![\w&])#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})\b")
 FUNC = re.compile(r"\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\s*\(", re.IGNORECASE)
 HEADER = re.compile(r"\A/\*\s*Airframe (theme-v\d+) (tokens|components)\b.{0,40}?Generated from airframe/", re.S)
@@ -96,7 +96,8 @@ def test_icons_the_console_uses_are_in_the_sprite():
     used = set()
     for name in ("index.html", "vnc.html"):
         used |= set(re.findall(r"airframe-icons\.svg#af-([a-z0-9-]+)", (UI / name).read_text()))
-    used |= set(re.findall(r'\bic\("([a-z0-9-]+)"', (UI / "app.js").read_text()))
+    for name in ("app.js", "fleet.js"):
+        used |= set(re.findall(r'\bic\("([a-z0-9-]+)"', (UI / name).read_text()))
     assert used and not used - sprite, f"not in the Airframe sprite: {sorted(used - sprite)}"
 
 
@@ -112,6 +113,33 @@ def test_console_serves_and_links_airframe(settings):
         r = c.get(path)
         assert r.status_code == 200 and r.headers["content-type"].startswith(kind), path
     assert "/ui/airframe/airframe.css" in c.get("/ui/vnc.html").text
+    # the Fleet page is fleet.js, after app.js whose helpers it uses
+    assert page.index('src="/ui/app.js"') < page.index('src="/ui/fleet.js"')
+    assert c.get("/ui/fleet.js").status_code == 200
+
+
+def test_fleet_views_use_the_theme_v3_components():
+    """Board, Bays, Columns and Owners are Airframe's FleetView, FleetBays, FleetColumns and FleetOwners: the vendored
+    theme has them, and the console builds with them rather than its own copies."""
+    css = (VENDORED / "airframe-components.css").read_text()
+    js = (UI / "fleet.js").read_text()
+    for cls in ("af-fleet__board", "af-stand", "af-bays", "af-bay", "af-statecols", "af-mini", "af-owners", "af-cap",
+                "af-track", "af-person"):
+        assert f".{cls}" in css, f"{cls} is not in the vendored Airframe: sync theme-v3 or later"
+        assert cls in js, f"fleet.js doesn't use {cls}"
+    own = (UI / "app.css").read_text()
+    for cls in ("af-bay", "af-mini", "af-stand", "af-owners"):  # placement tweaks only, never a redefinition
+        assert not re.search(rf"(^|[,}}])\s*\.{cls}\s*\{{", own, re.M), f"app.css redefines .{cls}"
+    links = re.findall(r'data-fleet-view="([a-z]+)"', (UI / "index.html").read_text())
+    assert links == ["board", "bays", "columns", "owners"]
+
+
+def test_overview_carries_the_person_caps_the_owners_view_shows(settings):
+    settings.admin_token = "t0ken"
+    settings.person_max_sandboxes, settings.person_max_sessions = 7, 3
+    c = TestClient(create_app(settings), headers={"Authorization": "Bearer t0ken"})
+    ov = c.get("/api/overview").json()
+    assert ov["person_caps"] == {"sandboxes": 7, "sessions": 3} and ov["max_sandboxes"] == settings.max_sandboxes
 
 
 def test_oauth_consent_page_is_on_airframe_too():
