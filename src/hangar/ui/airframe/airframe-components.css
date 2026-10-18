@@ -1,4 +1,4 @@
-/* Airframe theme-v2 components: the af- classes. Generated from airframe/styles/ by scripts/airframe.py;
+/* Airframe theme-v3 components: the af- classes. Generated from airframe/styles/ by scripts/airframe.py;
    do not edit. Load after airframe.css. Reference and previews: airframe/components/, and the
    gallery on https://sean-koval.github.io/agent-factory/airframe/ */
 @import url('https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=DM+Mono:wght@400;500&family=Red+Hat+Text:ital,wght@0,400..700;1,400..700&display=swap');
@@ -238,7 +238,8 @@ body{margin:0;background:var(--af-canvas);color:var(--af-fg);font-family:var(--a
   font-family:var(--af-font-mono);font-weight:500;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;transition:color var(--af-dur) var(--af-ease),background var(--af-dur) var(--af-ease)}
 .af-seg__btn:first-child{border-left:0}
 .af-seg__btn:hover,.af-seg__btn.is-hover{color:var(--af-fg);background:var(--af-selected)}
-.af-seg__btn[aria-pressed="true"]{background:var(--af-fg);color:var(--af-canvas)}
+.af-seg__btn[aria-pressed="true"],.af-seg__btn[aria-current="page"]{background:var(--af-fg);color:var(--af-canvas)}
+a.af-seg__btn{display:inline-flex;align-items:center;text-decoration:none}
 .af-seg__btn:focus-visible,.af-seg__btn.is-focus{outline:2px solid var(--af-focus);outline-offset:-2px;position:relative}
 .af-seg__btn[aria-pressed="true"]:focus-visible,.af-seg__btn[aria-pressed="true"].is-focus{outline-offset:-4px;outline-color:var(--af-canvas);box-shadow:inset 0 0 0 2px var(--af-focus)}
 .af-seg__btn:disabled{opacity:.45;cursor:default}
@@ -623,3 +624,103 @@ button.af-lanes__label:focus-visible{outline:2px solid var(--af-focus);outline-o
 .af-span--key.af-span--failed{margin-right:14px}
 .af-span--key.af-span--open{margin-right:7px}
 .af-span--path{height:0;border-top:1.5px solid var(--af-brand-text);border-radius:0}
+
+/* ===================================================================================================
+   Fleet views: the same sandboxes four ways. Board is FleetView above; Bays, Columns and Owners follow.
+   Shared parts: af-cap (capacity bar), af-track (labeled stage track), af-person. Tokens only.
+   =================================================================================================== */
+
+/* ---- capacity: "27 of 120 slots" with a 2px bar ---- */
+.af-cap{display:inline-flex;align-items:center;gap:var(--af-space-8);font-family:var(--af-font-mono);font-size:12px;color:var(--af-fg-muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.af-cap__bar{position:relative;display:inline-block;width:120px;height:2px;background:var(--af-rule)}
+.af-cap__bar i{position:absolute;top:0;bottom:0;left:0;background:var(--af-fg)}
+.af-cap--sm .af-cap__bar{width:72px}
+.af-cap--sm{font-size:11px;color:var(--af-fg-subtle)}
+
+/* ---- stage track: plan, edit, test, PR, labeled ---- */
+.af-track{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:3px}
+.af-track__seg{display:flex;flex-direction:column;gap:5px;font-family:var(--af-font-mono);font-weight:500;font-size:9.5px;line-height:1;letter-spacing:.09em;text-transform:uppercase;color:var(--af-fg-dim)}
+.af-track__seg i{display:block;height:2px;background:var(--af-rule)}
+.af-track__seg--done{color:var(--af-fg-subtle)}
+.af-track__seg--done i{background:var(--af-fg-subtle)}
+.af-track__seg--now{color:var(--af-fg)}
+.af-track__seg--now i{background:var(--af-fg)}
+
+/* ---- Bays: one box per sandbox, grouped by environment ---- */
+.af-bays{display:grid;grid-template-columns:repeat(auto-fill,minmax(248px,1fr));gap:var(--af-space-12)}
+.af-bay{--c:var(--af-status-running);position:relative;display:flex;flex-direction:column;gap:10px;min-width:0;padding:14px 16px 12px;background:var(--af-raised);border-radius:var(--af-radius-card);
+  transition:background var(--af-dur) var(--af-ease)}
+.af-bay:hover{background:color-mix(in srgb,var(--af-fg) 4%,var(--af-raised))}
+.af-bay.is-selected{outline:1px solid var(--af-brand-text);outline-offset:2px}
+.af-bay__top{display:flex;align-items:center;justify-content:space-between;gap:var(--af-space-8);min-width:0}
+.af-bay__id{font-family:var(--af-font-mono);font-weight:500;font-size:13px;letter-spacing:.01em;color:var(--af-fg);white-space:nowrap}
+.af-bay__title{margin:0;min-height:2.7em;font-size:14px;line-height:1.35;color:var(--af-fg);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.af-bay__note{margin:0;font-size:12.5px;line-height:1.4;color:var(--af-fg-muted)}
+.af-bay__note b{font-family:var(--af-font-mono);font-weight:500;font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--c);margin-right:6px}
+.af-bay__foot{display:flex;align-items:center;justify-content:space-between;gap:var(--af-space-8);margin-top:auto;padding-top:10px;border-top:1px solid var(--af-line-subtle);
+  font-family:var(--af-font-mono);font-size:12px;color:var(--af-fg-subtle);font-variant-numeric:tabular-nums;min-width:0}
+.af-bay__foot b{font-weight:500;color:var(--af-fg)}
+.af-bay__time{display:inline-flex;flex-direction:column;gap:5px;min-width:0}
+.af-bay__left{position:relative;display:block;width:96px;height:2px;background:var(--af-rule)}
+.af-bay__left i{position:absolute;top:0;bottom:0;left:0;background:var(--af-fg-subtle)}
+.af-bay--queued{--c:var(--af-status-queued)}
+.af-bay--approval{--c:var(--af-status-approval)}
+.af-bay--failed{--c:var(--af-status-failed)}
+.af-bay--denied{--c:var(--af-status-denied)}
+.af-bay--approval,.af-bay--failed,.af-bay--denied{box-shadow:inset 0 0 0 1px var(--c);background:color-mix(in srgb,var(--c) 6%,var(--af-raised))}
+.af-bay--approval:hover,.af-bay--failed:hover,.af-bay--denied:hover{background:color-mix(in srgb,var(--c) 10%,var(--af-raised))}
+.af-bay--approval .af-track__seg--now i,.af-bay--failed .af-track__seg--now i,.af-bay--denied .af-track__seg--now i{background:var(--c)}
+.af-bay--off{background:none;box-shadow:inset 0 0 0 1px var(--af-line)}
+.af-bay--off .af-bay__id,.af-bay--off .af-bay__title{color:var(--af-fg-muted)}
+.af-bay--new{align-items:center;justify-content:center;gap:var(--af-space-8);min-height:188px;background:none;box-shadow:none;border:1px dashed var(--af-line-strong);
+  color:var(--af-fg-subtle);font-family:var(--af-font-mono);font-weight:500;font-size:11px;letter-spacing:.08em;text-transform:uppercase;text-decoration:none;cursor:pointer}
+.af-bay--new:hover{background:none;color:var(--af-fg);border-color:var(--af-fg-subtle)}
+
+/* ---- Columns: one column per state, attention first; Running spans two ---- */
+.af-statecols{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:var(--af-space-16);align-items:start}
+.af-statecol{display:flex;flex-direction:column;gap:var(--af-space-12);min-width:0}
+.af-statecol--wide{grid-column:span 2}
+.af-statecol__head{position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:var(--af-space-8);padding:var(--af-space-8) 0;
+  border-bottom:1px solid var(--af-rule);background:var(--af-canvas)}
+.af-statecol__count{font-family:var(--af-font-mono);font-size:12px;color:var(--af-fg-subtle);font-variant-numeric:tabular-nums}
+.af-statecol__list{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--af-space-8)}
+.af-statecol--wide .af-statecol__list{grid-template-columns:repeat(2,minmax(0,1fr))}
+.af-statecol__empty{padding:var(--af-space-16);border:1px dashed var(--af-line);border-radius:var(--af-radius-card);font-size:13px;color:var(--af-fg-subtle)}
+.af-mini{--c:var(--af-status-running);display:flex;flex-direction:column;gap:8px;min-width:0;padding:12px;background:var(--af-raised);border-radius:var(--af-radius-card);
+  transition:background var(--af-dur) var(--af-ease)}
+.af-mini:hover{background:color-mix(in srgb,var(--af-fg) 4%,var(--af-raised))}
+.af-mini.is-selected{outline:1px solid var(--af-brand-text);outline-offset:2px}
+.af-mini__top{display:flex;align-items:center;justify-content:space-between;gap:var(--af-space-8);min-width:0;font-family:var(--af-font-mono);font-size:12px;color:var(--af-fg-subtle);font-variant-numeric:tabular-nums}
+.af-mini__top b{font-weight:500;color:var(--af-fg);letter-spacing:.01em;white-space:nowrap}
+.af-mini__top span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.af-mini__title{margin:0;font-size:13px;line-height:1.35;color:var(--af-fg);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.af-mini .af-stand__pips{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:2px}
+.af-mini--queued{--c:var(--af-status-queued)}
+.af-mini--approval{--c:var(--af-status-approval)}
+.af-mini--failed{--c:var(--af-status-failed)}
+.af-mini--denied{--c:var(--af-status-denied)}
+.af-mini--approval,.af-mini--failed,.af-mini--denied{box-shadow:inset 0 0 0 1px var(--c);background:color-mix(in srgb,var(--c) 6%,var(--af-raised))}
+.af-mini--approval .af-stand__pip--now,.af-mini--failed .af-stand__pip--now,.af-mini--denied .af-stand__pip--now{background:var(--c)}
+.af-mini--off{background:none;box-shadow:inset 0 0 0 1px var(--af-line)}
+.af-mini--off .af-mini__title{color:var(--af-fg-muted)}
+
+/* ---- Owners: people down, environments across, tiles in the cells ---- */
+.af-owners{overflow-x:auto}
+.af-owners__rows{display:flex;flex-direction:column;min-width:1040px;padding-top:var(--af-space-16)}
+.af-owners__row{display:grid;grid-template-columns:minmax(200px,240px) repeat(var(--af-owners-cols,4),minmax(200px,1fr))}
+.af-owners__h{display:flex;align-items:center;gap:var(--af-space-8);padding:0 var(--af-space-12) var(--af-space-8);border-bottom:1px solid var(--af-rule);
+  font-family:var(--af-font-mono);font-weight:500;font-size:12px;color:var(--af-fg);min-width:0}
+.af-owners__h .af-ic{color:var(--af-fg-subtle)}
+.af-owners__h small{margin-left:auto;font-size:11px;font-weight:400;color:var(--af-fg-subtle)}
+.af-owners__who{display:flex;flex-direction:column;gap:var(--af-space-8);padding:var(--af-space-12);border-bottom:1px solid var(--af-line-subtle);min-width:0}
+.af-owners__cell{padding:var(--af-space-12);border-bottom:1px solid var(--af-line-subtle);border-left:1px solid var(--af-line-subtle);min-width:0}
+.af-owners__row:last-child .af-owners__who,.af-owners__row:last-child .af-owners__cell{border-bottom:0}
+.af-owners__cell .af-fleet__board{grid-template-columns:repeat(auto-fill,minmax(68px,1fr))}
+.af-owners__none{font-family:var(--af-font-mono);font-size:12px;color:var(--af-fg-dim)}
+.af-person{display:flex;align-items:center;gap:var(--af-space-8);min-width:0}
+.af-person__av{display:inline-flex;flex:none;align-items:center;justify-content:center;width:28px;height:28px;border-radius:var(--af-radius-round);background:var(--af-surface);
+  box-shadow:inset 0 0 0 1px var(--af-line-strong);font-family:var(--af-font-mono);font-weight:500;font-size:11px;color:var(--af-fg)}
+.af-person__name{font-weight:600;font-size:14px;color:var(--af-fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+@media (max-width:1100px){.af-statecols{grid-template-columns:repeat(2,minmax(0,1fr))}.af-statecol--wide{grid-column:span 2}}
+@media (max-width:640px){.af-statecols{grid-template-columns:minmax(0,1fr)}.af-statecol--wide{grid-column:auto}.af-statecol--wide .af-statecol__list{grid-template-columns:minmax(0,1fr)}}
