@@ -8,6 +8,7 @@ The team release: Wave 1 (#75–#90), Wave 2 (#91–#100), Wave 3 (#101–#110) 
 
 - **`approvals: ask` no longer holds hangar's own `hangar-agent done`** (#292). Every ask-mode turn ended on a pending approval for the agent's closing `hangar-agent done "<summary>"`. The driver now allows, by policy, a shell call that is exactly one `hangar-agent done|progress|ask|result '<json>'` command; anything chained, redirected or substituted (`hangar-agent done; rm -rf ~`), and `artifact`, `result @FILE`, `env` and `svc`, still ask ([steering.md](docs/steering.md#tool-approvals)).
 - **`power.sh` keeps a node pool's minimum of 0** (#295). GKE omits a `minNodeCount` of 0, and `read` folded the empty tab-separated field of `value(...)`, so `down` saved a 0–2 pool as `2-1` and `up` brought it back with a floor of 2 nodes. `pools_to_zero` and `restore_pools` now read `csv[no-heading](...)` with `IFS=,`.
+- **The acceptance `steer` check raises an approval again** (#293). Claude Code allows `echo ok > file` inside its working directory on its own, so the check's command never reached hangar and the check failed. It now asks for a write outside the repository (`$HOME/accept-steer-<run>.txt`), which always asks, allows anything else the agent asks first, and asserts that the approval it answered is in the turn as allowed by it (not by policy or a timeout).
 
 ### Replay, trials and shadows (P4)
 

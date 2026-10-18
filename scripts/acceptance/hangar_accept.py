@@ -19,6 +19,7 @@ import contextlib
 import hashlib
 import json
 import os
+import posixpath
 import re
 import secrets
 import shlex
@@ -731,35 +732,44 @@ def check_model(api: Api, state: State, opts: argparse.Namespace) -> str:
 
 def check_steer(api: Api, state: State, opts: argparse.Namespace) -> str:
     """A live turn with approvals=ask: the agent asks to run a command, hangar holds it until it is allowed, and a
-    steer message reaches the turn while it waits (it costs a few cents)."""
+    steer message reaches the turn while it waits (it costs a few cents).
+
+    The command writes outside the repository (#293): Claude Code allows a write inside its working directory on its
+    own, so `echo ok > file` in the repo never reached hangar as an approval. A write elsewhere always asks."""
     if not opts.with_model:  # --- acceptance
         raise Skip("costs money: run with --with-model")
     name = f"accept-{state.run}-steer"
     s = _new_session(api, state, name, opts, approvals="ask")
     if s["state"] != "idle":
         raise Fail(f"session {name} is {s['state']}: {s.get('reason')}")
-    target_file = f"accept-steer-{state.run}.txt"
+    repo = _repo_path(api, s["sandbox_id"])
+    home = api.must(s["sandbox_id"], 'printf %s "$HOME"').strip() or "/tmp"
+    outside = home if repo.rstrip("/") != home.rstrip("/") else posixpath.dirname(home)  # never inside the checkout
+    target = posixpath.join(outside, f"accept-steer-{state.run}.txt")
     seen: dict[str, Any] = {}
 
     def wait() -> bool:
         ap = api.call("GET", f"/api/sessions/{name}/approvals")
-        if not ap["pending"]:
-            return False
-        a = ap["pending"][0]
-        seen["approval"] = a
-        say(f"approval {a['id']} pending: {a['tool']} {a['detail'][:120]!r} (live={ap['live']})")
-        try:  # whatever happens to it, the approval is answered next, so the turn doesn't sit waiting
-            st = api.call("POST", f"/api/sessions/{name}/steer",
-                          json={"message": "When you are done, end your reply with the word STEERED."})
-        except Fail as e:
-            st = {"status": "failed", "error": str(e)}
-        seen["steer"] = st
-        say(f"steer: {st['status']}")
-        api.call("POST", f"/api/sessions/{name}/approvals/{a['id']}", json={"decision": "allow"})
-        say("allowed")
-        return True
+        for a in ap["pending"]:
+            if target not in (a.get("detail") or ""):  # something else the agent asked first: let it, keep waiting
+                say(f"approval {a['id']} pending for something else: {a['tool']} {a['detail'][:120]!r}; allowing")
+                api.call("POST", f"/api/sessions/{name}/approvals/{a['id']}", json={"decision": "allow"})
+                continue
+            seen["approval"] = a
+            say(f"approval {a['id']} pending: {a['tool']} {a['detail'][:120]!r} (live={ap['live']})")
+            try:  # whatever happens to it, the approval is answered next, so the turn doesn't sit waiting
+                st = api.call("POST", f"/api/sessions/{name}/steer",
+                              json={"message": "When you are done, end your reply with the word STEERED."})
+            except Fail as e:
+                st = {"status": "failed", "error": str(e)}
+            seen["steer"] = st
+            say(f"steer: {st['status']}")
+            api.call("POST", f"/api/sessions/{name}/approvals/{a['id']}", json={"decision": "allow"})
+            say("allowed")
+            return True
+        return False
 
-    s = _turn(api, name, f"Use your shell tool to run exactly this command: echo ok > {target_file} . Then reply DONE.",
+    s = _turn(api, name, f"Use your shell tool to run exactly this command: echo ok > {target} . Then reply DONE.",
               opts.turn_timeout, on_wait=wait)
     t = s["turns"][-1]
     approvals, steers = [a["status"] for a in t.get("approvals", [])], [x["status"] for x in t.get("steers", [])]
@@ -768,11 +778,15 @@ def check_steer(api: Api, state: State, opts: argparse.Namespace) -> str:
         raise Fail("the turn ran one-shot, not under hangar's driver (HANGAR_LIVE_TURNS off, or no python3 in the "
                    "sandbox?)")
     if "approval" not in seen:
-        raise Fail("the agent's command never waited for an approval")
+        raise Fail(f"the agent's command never waited for an approval (it writes {target}, outside the repository)")
+    held = next((a for a in t.get("approvals", []) if a.get("id") == seen["approval"]["id"]), None)
+    if held is None:
+        raise Fail(f"approval {seen['approval']['id']} isn't in the turn's approvals")
+    if held.get("status") not in ("allowed", "allowed_always") or held.get("by") == "policy":
+        raise Fail(f"approval {held['id']} ended {held.get('status')} by {held.get('by')}, not allowed by this check")
     if seen["steer"]["status"] not in ("delivered", "queued"):
         raise Fail(f"the steer message was {seen['steer']['status']}: {seen['steer'].get('error')}")
-    repo = _repo_path(api, s["sandbox_id"])
-    if api.exec(s["sandbox_id"], f"cat {shlex.quote(target_file)}", cwd=repo)["stdout"].strip() != "ok":
+    if api.exec(s["sandbox_id"], f"cat {shlex.quote(target)}", cwd=repo)["stdout"].strip() != "ok":
         raise Fail("the allowed command didn't run")
     said = "STEERED" in (t.get("summary") or "")
     say(f"the agent {'acted on' if said else 'did not visibly act on'} the steer message (model behaviour: not "
