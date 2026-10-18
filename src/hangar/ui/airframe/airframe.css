@@ -1,0 +1,246 @@
+/*
+  Airframe theme-v2 tokens. Generated from airframe/tokens.json by scripts/airframe.py; do not edit.
+  Change a value in airframe/tokens.json, run `python3 scripts/airframe.py build`, and add a
+  theme/CHANGELOG.md entry. Tool repos vendor this file unmodified (scripts/sync-airframe.sh).
+
+  Contract: every token is --af-<name>; Night is `dark` (the default), Day is `light`, set with
+  data-theme on <html> or any element (the docs sites use data-md-color-scheme). Component
+  classes live in airframe-components.css. The brand yellow is never a status.
+*/
+
+:root,
+[data-theme="dark"],
+[data-md-color-scheme="slate"] {
+  color-scheme: dark;
+  --af-canvas: #000000;
+  --af-surface: #0A0A0A;
+  --af-raised: #141414;
+  --af-overlay: #1C1C1C;
+  --af-line-subtle: #1F1F1F;
+  --af-line: #2A2A2A;
+  --af-line-strong: #6B6B6B;
+  --af-rule: #424242;
+  --af-fg: #FFFFFF;
+  --af-fg-muted: #A6A6A6;
+  --af-fg-subtle: #8A8A8A;
+  --af-fg-dim: #5C5C5C;
+  --af-selected: #1F1F1F;
+  --af-brand: #FFC400;
+  --af-brand-hover: #FFD23F;
+  --af-brand-wash: rgba(255,196,0,0.12);
+  --af-on-brand: #111213;
+  --af-brand-text: #FFC400;
+  --af-brand-line: #FFC400;
+  --af-focus: #FFC400;
+  --af-status-running: #C7C7C7;
+  --af-status-queued: #8A8A8A;
+  --af-status-approval: #FF8A3D;
+  --af-status-failed: #FF4D4D;
+  --af-status-denied: #D93036;
+  --af-on-status-denied: #FFFFFF;
+  --af-status-off: #6B6B6B;
+  --af-lamp-caution: #FF8A3D;
+  --af-lamp-warning: #FF4D4D;
+  --af-on-lamp: #000000;
+  --af-terminal-bg: #0A0A0A;
+  --af-terminal-fg: #E6E7E3;
+  --af-terminal-dim: #8E9297;
+  --af-terminal-ok: #C7C7C7;
+  --af-terminal-err: #FF4D4D;
+  --af-code-keyword: #FFFFFF;
+  --af-code-function: #D9D9D9;
+  --af-code-string: #A6A6A6;
+  --af-code-number: #CCCCCC;
+  --af-code-comment: #808080;
+  --af-span-model: #C7C7C7;
+  --af-span-tool: #999999;
+  --af-span-sandbox: #616161;
+  --af-stage-plan: #383838;
+  --af-stage-edit: #6B6B6B;
+  --af-stage-test: #A3A3A3;
+  --af-readout-cell: #161616;
+  --af-display-window: #0A0A0A;
+  --af-dot-field: #262626;
+  --af-product-hangar: #EE8F63;
+  --af-product-flightdeck: #D98CD2;
+  --af-product-tower: #C5A93B;
+  --af-product-aidlc: #69C27E;
+  --af-product-spaceport: #B199F4;
+  --af-chart-1: #FFFFFF;
+  --af-chart-2: #BFBFBF;
+  --af-chart-3: #8C8C8C;
+  --af-chart-4: #666666;
+  --af-chart-5: #FF8A3D;
+  --af-chart-6: #333333;
+  --af-shadow-overlay: 0 12px 32px rgba(0,0,0,0.6);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --af-canvas: #F4F4F2;
+    --af-surface: #EDEDEB;
+    --af-raised: #FFFFFF;
+    --af-overlay: #FFFFFF;
+    --af-line-subtle: #E6E6E3;
+    --af-line: #DCDCD9;
+    --af-line-strong: #858583;
+    --af-rule: #BDBDBA;
+    --af-fg: #0A0A0A;
+    --af-fg-muted: #474746;
+    --af-fg-subtle: #666664;
+    --af-fg-dim: #9C9C99;
+    --af-selected: #E6E6E3;
+    --af-brand-wash: rgba(255,196,0,0.18);
+    --af-brand-text: #7A5F00;
+    --af-brand-line: #7A5F00;
+    --af-focus: #7A5F00;
+    --af-status-running: #3A3A3A;
+    --af-status-queued: #666664;
+    --af-status-approval: #B04E00;
+    --af-status-failed: #C42B2B;
+    --af-status-denied: #C42B2B;
+    --af-status-off: #858583;
+    --af-span-model: #383838;
+    --af-span-tool: #666664;
+    --af-span-sandbox: #9E9E9E;
+    --af-stage-plan: #C7C7C7;
+    --af-stage-edit: #949494;
+    --af-stage-test: #5C5C5C;
+    --af-readout-cell: #EBEBEA;
+    --af-display-window: #FAFAF9;
+    --af-dot-field: #DCDCD9;
+    --af-product-hangar: #A44C1D;
+    --af-product-flightdeck: #914A8C;
+    --af-product-tower: #816600;
+    --af-product-aidlc: #1D7D3E;
+    --af-product-spaceport: #6F57AB;
+    --af-chart-1: #000000;
+    --af-chart-2: #4D4D4D;
+    --af-chart-3: #737373;
+    --af-chart-4: #8A8A8A;
+    --af-chart-5: #B04E00;
+    --af-chart-6: #D6D6D3;
+    --af-shadow-overlay: 0 12px 32px rgba(0,0,0,0.12);
+  }
+}
+
+[data-theme="light"],
+[data-md-color-scheme="default"] {
+  color-scheme: light;
+  --af-canvas: #F4F4F2;
+  --af-surface: #EDEDEB;
+  --af-raised: #FFFFFF;
+  --af-overlay: #FFFFFF;
+  --af-line-subtle: #E6E6E3;
+  --af-line: #DCDCD9;
+  --af-line-strong: #858583;
+  --af-rule: #BDBDBA;
+  --af-fg: #0A0A0A;
+  --af-fg-muted: #474746;
+  --af-fg-subtle: #666664;
+  --af-fg-dim: #9C9C99;
+  --af-selected: #E6E6E3;
+  --af-brand-wash: rgba(255,196,0,0.18);
+  --af-brand-text: #7A5F00;
+  --af-brand-line: #7A5F00;
+  --af-focus: #7A5F00;
+  --af-status-running: #3A3A3A;
+  --af-status-queued: #666664;
+  --af-status-approval: #B04E00;
+  --af-status-failed: #C42B2B;
+  --af-status-denied: #C42B2B;
+  --af-status-off: #858583;
+  --af-span-model: #383838;
+  --af-span-tool: #666664;
+  --af-span-sandbox: #9E9E9E;
+  --af-stage-plan: #C7C7C7;
+  --af-stage-edit: #949494;
+  --af-stage-test: #5C5C5C;
+  --af-readout-cell: #EBEBEA;
+  --af-display-window: #FAFAF9;
+  --af-dot-field: #DCDCD9;
+  --af-product-hangar: #A44C1D;
+  --af-product-flightdeck: #914A8C;
+  --af-product-tower: #816600;
+  --af-product-aidlc: #1D7D3E;
+  --af-product-spaceport: #6F57AB;
+  --af-chart-1: #000000;
+  --af-chart-2: #4D4D4D;
+  --af-chart-3: #737373;
+  --af-chart-4: #8A8A8A;
+  --af-chart-5: #B04E00;
+  --af-chart-6: #D6D6D3;
+  --af-shadow-overlay: 0 12px 32px rgba(0,0,0,0.12);
+}
+
+:root {
+  --af-display-stretch: 125%;
+  --af-display-weight: 700;
+  --af-display-track: -0.01em;
+  --af-label-track: 0.08em;
+  --af-space-2: 2px;
+  --af-space-4: 4px;
+  --af-space-8: 8px;
+  --af-space-12: 12px;
+  --af-space-16: 16px;
+  --af-space-20: 20px;
+  --af-space-24: 24px;
+  --af-space-28: 28px;
+  --af-space-32: 32px;
+  --af-space-40: 40px;
+  --af-space-48: 48px;
+  --af-space-64: 64px;
+  --af-space-104: 104px;
+  --af-space-160: 160px;
+  --af-radius-none: 0px;
+  --af-radius-control: 2px;
+  --af-radius-card: 4px;
+  --af-radius-round: 50%;
+  --af-container-max: 1280px;
+  --af-header-h: 56px;
+  --af-row-h: 32px;
+  --af-row-h-compact: 28px;
+  --af-lane-h: 30px;
+  --af-span-h: 28px;
+  --af-icon-stroke: 1.5;
+  --af-icon-size: 16px;
+  --af-font-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --af-font-sans: "Red Hat Text", "Helvetica Neue", Arial, sans-serif;
+  --af-font-mono: "DM Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+
+/* theme-v1 names, kept as aliases (re-declared in every theme scope so they follow it) */
+:root,
+[data-theme],
+[data-md-color-scheme] {
+  --af-st-run: var(--af-status-running);
+  --af-st-queue: var(--af-status-queued);
+  --af-st-appr: var(--af-status-approval);
+  --af-st-fail: var(--af-status-failed);
+  --af-st-deny: var(--af-status-denied);
+  --af-st-off: var(--af-status-off);
+  --af-p-hangar: var(--af-product-hangar);
+  --af-p-flightdeck: var(--af-product-flightdeck);
+  --af-p-workspace: var(--af-product-tower);
+  --af-p-tower: var(--af-product-tower);
+  --af-product-workspace: var(--af-product-tower);
+  --af-p-aidlc: var(--af-product-aidlc);
+  --af-p-spaceport: var(--af-product-spaceport);
+  --af-term-bg: var(--af-terminal-bg);
+  --af-term-fg: var(--af-terminal-fg);
+  --af-code-k: var(--af-code-keyword);
+  --af-code-f: var(--af-code-function);
+  --af-code-s: var(--af-code-string);
+  --af-code-n: var(--af-code-number);
+  --af-code-c: var(--af-code-comment);
+  --af-dot: var(--af-dot-field);
+  --af-f-display: var(--af-font-display);
+  --af-f-sans: var(--af-font-sans);
+  --af-f-mono: var(--af-font-mono);
+  --af-r-ctl: var(--af-radius-control);
+  --af-r-card: var(--af-radius-card);
+  --af-r-chip: var(--af-radius-control);
+  --af-pad: var(--af-space-16);
+  --af-gap: var(--af-space-12);
+}

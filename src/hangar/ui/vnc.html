@@ -4,21 +4,32 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<title>hangar · agent screen</title>
+<title>hangar agent screen</title>
+<link rel="icon" type="image/svg+xml" href="/ui/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="/ui/airframe/airframe.css">
+<link rel="stylesheet" href="/ui/airframe/airframe-components.css">
 <style>
-  :root { --bg: #111418; --fg: #e6e8eb; --muted: #9aa3ad; --accent: #f2c230; --bad: #f87171; }
-  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
-               font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  header { display: flex; gap: 12px; align-items: center; padding: 8px 14px; border-bottom: 1px solid #23282f; }
-  header b { color: var(--accent); }
-  #mode { color: var(--muted); }
-  #status { margin-left: auto; color: var(--muted); }
-  #status.bad { color: var(--bad); }
-  #screen { position: absolute; top: 41px; left: 0; right: 0; bottom: 0; }
+  /* Airframe tokens only (tests/test_ui_airframe.py): the screen's chrome is an af-nav header with a status */
+  html, body { height: 100%; }
+  body { display: flex; flex-direction: column; }
+  header.af-nav { flex: none; gap: 14px; }
+  header .af-lbl { color: var(--af-fg-muted); }
+  #status { margin-left: auto; }
+  #screen { position: relative; flex: 1; min-height: 0; background: var(--af-canvas); }
 </style>
 </head>
 <body>
-<header><b>hangar</b><span>agent screen</span><span id="mode"></span><span id="status">connecting…</span></header>
+<header class="af-nav af-hue--hangar">
+  <span class="af-lockup">
+    <span class="af-mark af-mark--sm af-hue--hangar" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 20 V13 A9 9 0 0 1 21 13 V20"/><path d="M2 20 H22"/><path d="M9 20 V15 H15 V20"/></svg></span>
+    <span class="af-lockup__name">hangar</span>
+  </span>
+  <span class="af-nav__sep" aria-hidden="true"></span>
+  <span class="af-lbl"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-agent"/></svg>Agent screen<span id="mode" class="af-lbl__sub"></span></span>
+  <span id="status" class="af-status af-status--queued" role="status"><i class="af-status__mark"></i><span id="status-text">Connecting…</span></span>
+</header>
 <div id="screen"></div>
 <script type="module">
   // A one-time ticket from POST /api/screen/tickets (or MCP open_screen) arrives in the fragment, which browsers
@@ -31,11 +42,15 @@
   const ticket = params.get("ticket");
   const control = params.get("control") === "1";
   const status = document.getElementById("status");
-  document.getElementById("mode").textContent = control ? "· you have control" : "· view only";
-  const say = (text, bad) => { status.textContent = text; status.className = bad ? "bad" : ""; };
+  document.getElementById("mode").textContent = control ? "you have control" : "view only";
+  // Airframe statuses: connecting is queued (ring), connected is running (quiet dot), a lost screen is failed
+  const say = (text, role) => {
+    document.getElementById("status-text").textContent = text;
+    status.className = `af-status af-status--${role}${role === "failed" ? " af-status--lit" : ""}`;
+  };
 
   if (!ticket) {
-    say("no ticket: open this page from `hangar` (open_screen) or POST /api/screen/tickets", true);
+    say("No ticket: open this page from `hangar` (open_screen) or POST /api/screen/tickets", "failed");
   } else {
     const scheme = location.protocol === "https:" ? "wss" : "ws";
     const rfb = new RFB(document.getElementById("screen"),
@@ -43,9 +58,10 @@
                         { wsProtocols: ["binary"] });
     rfb.viewOnly = !control;
     rfb.scaleViewport = true;
-    rfb.addEventListener("connect", () => say("connected"));
-    rfb.addEventListener("disconnect", (e) => say(e.detail.clean ? "disconnected" : "the screen went away", !e.detail.clean));
-    rfb.addEventListener("securityfailure", (e) => say(`refused: ${e.detail.reason || "security failure"}`, true));
+    rfb.background = getComputedStyle(document.documentElement).getPropertyValue("--af-canvas").trim();
+    rfb.addEventListener("connect", () => say("Connected", "running"));
+    rfb.addEventListener("disconnect", (e) => say(e.detail.clean ? "Disconnected" : "The screen went away", e.detail.clean ? "off" : "failed"));
+    rfb.addEventListener("securityfailure", (e) => say(`Refused: ${e.detail.reason || "security failure"}`, "failed"));
   }
 </script>
 </body>

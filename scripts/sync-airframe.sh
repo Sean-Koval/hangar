@@ -1,36 +1,46 @@
 #!/bin/sh
-# Refresh the vendored Airframe theme (docs/stylesheets/airframe*.css) from the suite repo,
-# Sean-Koval/agent-factory, which owns it. Take the files unmodified; the product hue lives in
-# docs/stylesheets/product.css. Usage: sh scripts/sync-airframe.sh [ref]   (default: main)
+# Refresh this repo's vendored Airframe files from Sean-Koval/agent-factory, which owns them.
+# Take the files unmodified and never edit them here; change Airframe in agent-factory instead.
+#
+#   sh scripts/sync-airframe.sh theme-v2     # a release tag (what the sync PRs use)
+#   sh scripts/sync-airframe.sh              # main
+#
+# Template: agent-factory airframe/sync-airframe.sh. Each tool repo keeps a copy as
+# scripts/sync-airframe.sh and lists what it vendors in FILES, one "<theme file> <destination>"
+# pair per line. Published theme files: airframe.css (tokens), airframe-components.css (the af-
+# classes), airframe-docs.css (docs-site mapping), airframe-icons.svg (sprite), airframe-tokens.json.
 set -eu
+
+FILES="
+airframe.css            docs/stylesheets/airframe.css
+airframe-docs.css       docs/stylesheets/airframe-docs.css
+airframe.css            src/hangar/ui/airframe/airframe.css
+airframe-components.css src/hangar/ui/airframe/airframe-components.css
+airframe-icons.svg      src/hangar/ui/airframe/airframe-icons.svg
+"
 
 ref="${1:-main}"
 base="https://raw.githubusercontent.com/Sean-Koval/agent-factory/${ref}/theme"
-dest="$(cd "$(dirname "$0")/.." && pwd)/docs/stylesheets"
+root="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-for f in airframe.css airframe-docs.css; do
+# fetch each distinct file once, and fail before touching anything if one is missing
+for f in $(printf '%s\n' "$FILES" | awk 'NF {print $1}' | sort -u); do
   code="$(curl -sS -L -o "$tmp/$f" -w '%{http_code}' "$base/$f")" || {
-    echo "sync-airframe: could not fetch $base/$f" >&2
-    exit 1
-  }
+    echo "sync-airframe: could not fetch $base/$f" >&2; exit 1; }
   if [ "$code" != "200" ]; then
-    echo "sync-airframe: $base/$f returned HTTP $code (does the agent-factory repo exist and publish theme/$f on '$ref'?)" >&2
-    exit 1
+    echo "sync-airframe: $base/$f returned HTTP $code (is '$ref' a published ref that has theme/$f?)" >&2; exit 1
   fi
-  if [ ! -s "$tmp/$f" ]; then
-    echo "sync-airframe: $base/$f is empty" >&2
-    exit 1
-  fi
+  [ -s "$tmp/$f" ] || { echo "sync-airframe: $base/$f is empty" >&2; exit 1; }
 done
 
-mkdir -p "$dest"
-for f in airframe.css airframe-docs.css; do
-  if cmp -s "$tmp/$f" "$dest/$f"; then
-    echo "unchanged  docs/stylesheets/$f"
+printf '%s\n' "$FILES" | awk 'NF {print $1, $2}' | while read -r f dest; do
+  mkdir -p "$(dirname "$root/$dest")"
+  if cmp -s "$tmp/$f" "$root/$dest"; then
+    echo "unchanged  $dest"
   else
-    cp "$tmp/$f" "$dest/$f"
-    echo "updated    docs/stylesheets/$f"
+    cp "$tmp/$f" "$root/$dest"
+    echo "updated    $dest"
   fi
 done
