@@ -44,6 +44,7 @@ from hangar import (  # strategies: workstream D; --- observe; steer: live turns
     weekly,  # --- #168: `/hangar abandon <reason>` on an agent PR
 )
 from hangar import autoinstall as autoinstall  # --- autoinstall: agent-led environment setup jobs
+from hangar import canaries as canaries  # --- #184: injection canaries in shadows
 from hangar import clouddoctor as clouddoctor  # --- clouddoctor: its own jobs report back; its fixes are fenced
 from hangar import computer as computer  # --- computer
 from hangar import delivery as delivery  # --- least-privilege: hangar pushes a job's work
@@ -1141,6 +1142,7 @@ class JobService:
         turn.usage, turn.outcome, turn.outcome_reason = total_usage([st]), st.outcome, st.outcome_reason
         turn.outcome_class, turn.infra_reason = st.outcome_class, st.infra_reason  # --- #166
         exchange.record_job_turn(job, turn, st)  # workstream E: result, question, artifacts
+        await canaries.after_turn(self, job, s, st)  # --- #184: a canary shadow's signals, before anything moves on
         if job.verify and (rounds := await verifyloop.read_rounds(self, job, turn)):  # --- overnight/autofix
             turn.verify_rounds = rounds
             self._event(job, f"the check failed {rounds} time(s) during the turn; each went back to the agent")

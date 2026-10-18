@@ -568,6 +568,10 @@ class ModelGateway:
                 why.append("untrusted context item")
             if taint.tainted(job):
                 why.append("the job is tainted")
+            from hangar import canaries
+
+            if canaries.record_of(self.fleet, job) is not None:  # --- #184: a canary shadow, by construction
+                why.append("an injection canary shadow")
         if (turn is not None and taint.tainted(turn)) or taint.tainted(s):
             why.append("the turn read untrusted content (taint)")
         return bool(why), why

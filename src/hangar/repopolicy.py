@@ -70,6 +70,17 @@ class PolicyError(ValueError):
     pass
 
 
+class CanaryPolicy(BaseModel):
+    """--- #184: injection canaries in this repo's shadows (canaries.py): a share `p` of the shadows get one benign
+    instruction with a fresh token, planted at one of `placements`."""
+
+    model_config = ConfigDict(extra="forbid")
+    p: float = Field(0.0, ge=0.0, le=1.0)
+    placements: list[Literal["ticket_description", "ticket_comment", "slack_thread", "repo_file"]] = Field(
+        default_factory=lambda: ["ticket_description", "ticket_comment", "slack_thread", "repo_file"], min_length=1,
+        max_length=4)
+
+
 class ShadowPolicy(BaseModel):
     """--- #183: shadow runs of this repo's real intake jobs (shadows.py): a candidate harness, as a pin set or a lock
     by digest, on a sampled share `p` of the jobs from `sources`, at the base each job started on, delivering nothing.
@@ -84,6 +95,7 @@ class ShadowPolicy(BaseModel):
         default_factory=lambda: ["jira", "github", "slack"], max_length=4)
     owner: str | None = Field(None, max_length=100)
     budget_usd: float = Field(5.0, gt=0, le=200)
+    canary: CanaryPolicy | None = None  # --- #184: injection canaries in some of the shadows
 
     @model_validator(mode="after")
     def _one(self) -> ShadowPolicy:
