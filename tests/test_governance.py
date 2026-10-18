@@ -365,7 +365,7 @@ def test_parse_modes_and_router_needs_a_url():
 
 # ====================================================================== keys and hashes
 def _workspace_args_hash(args: dict) -> str:
-    """Copied from governed-agent-workspace server/aw/store.py (sha256 + args_hash): the two must agree."""
+    """Copied from Tower (Sean-Koval/tower) server/aw/store.py (sha256 + args_hash): the two must agree."""
     return hashlib.sha256(json.dumps(args, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
 
 
