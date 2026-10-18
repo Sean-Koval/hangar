@@ -24,10 +24,10 @@ The web UI on `:8787`: jobs with their timeline, the agent's activity, the check
 
 ## Where it sits
 
-Many doors bring work in; hangar runs it; the pull request is the one gate out. Hangar is the run plane of the agent factory: sister tools define the harness (ai-dlc), judge the runs (flightdeck, through [trace export](api/traces.md) and the [sister tool interfaces](specs/0014-sister-tool-interfaces.md)) and govern risky actions (the governed workspace). The suite's [architecture page](https://sean-koval.github.io/agent-factory/architecture/) shows how they connect.
+Many doors bring work in; hangar runs it; the pull request is the one gate out. Hangar is the run plane of the agent factory: sister tools define the harness (ai-dlc), judge the runs (flightdeck, through [trace export](api/traces.md) and the [sister tool interfaces](specs/0014-sister-tool-interfaces.md)) and govern risky actions (Tower, formerly the governed workspace). The suite's [architecture page](https://sean-koval.github.io/agent-factory/architecture/) shows how they connect.
 
-![Trackers, chat and automation send work to hangar, which runs it in sandboxes, verifies it and opens a draft PR for people to review; ai-dlc supplies the harness lock, flightdeck reads the outbox, the governed workspace decides risky actions](assets/front/hangar-suite-dark.png#only-dark)
-![Trackers, chat and automation send work to hangar, which runs it in sandboxes, verifies it and opens a draft PR for people to review; ai-dlc supplies the harness lock, flightdeck reads the outbox, the governed workspace decides risky actions](assets/front/hangar-suite-light.png#only-light)
+![Trackers, chat and automation send work to hangar, which runs it in sandboxes, verifies it and opens a draft PR for people to review; ai-dlc supplies the harness lock, flightdeck reads the outbox, Tower decides risky actions](assets/front/hangar-suite-dark.png#only-dark)
+![Trackers, chat and automation send work to hangar, which runs it in sandboxes, verifies it and opens a draft PR for people to review; ai-dlc supplies the harness lock, flightdeck reads the outbox, Tower decides risky actions](assets/front/hangar-suite-light.png#only-light)
 
 ## Use cases
 
