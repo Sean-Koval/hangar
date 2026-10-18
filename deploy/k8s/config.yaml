@@ -17,7 +17,8 @@ data:
   HANGAR_K8S_POD_SNAPSHOTS: "false"         # true after applying pod-snapshots.yaml (full-state forks)
   # Durable session checkpoints (docs/sessions.md). deploy/gke/up.sh sets it from `terraform output session_bucket`.
   # HANGAR_SESSION_STORE: "gs://PROJECT_ID-hangar-sessions"
-  # Run capture for the sister tool (docs/api/outbox.md): `terraform output run_bucket`.
+  # Run capture for flightdeck's compactor (docs/api/outbox.md). deploy/gke/up.sh sets it from
+  # `terraform output run_bucket` (enable_run_bucket, on by default).
   # HANGAR_OUTBOX_URL: "gs://PROJECT_ID-hangar-runs"
   # `hangar power up` runs this Cloud Run job (docs/gke.md section 6). deploy/gke/up.sh sets it from
   # `terraform output power_up_job` when the power schedule is on.

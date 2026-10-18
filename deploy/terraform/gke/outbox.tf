@@ -1,6 +1,7 @@
 # --------------------------------------------------------------------------- run capture: the outbox (#163)
 # Every finished agent run, written once, as immutable objects (docs/api/outbox.md): the sister tool reads them while
-# the sandbox pools are off. Set HANGAR_OUTBOX_URL=gs://<bucket> (output run_bucket) in the hangar-site config map.
+# the sandbox pools are off. deploy/gke/up.sh sets HANGAR_OUTBOX_URL=gs://<bucket> (output run_bucket) in the hangar
+# config map.
 #
 # Write-once: hangar's service account gets roles/storage.objectCreator on this bucket only (create, never read back,
 # delete or overwrite), and because its project-wide roles/storage.admin (Cloud Build's staging bucket, main.tf)
