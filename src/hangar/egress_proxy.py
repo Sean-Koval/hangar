@@ -432,6 +432,11 @@ class EgressProxy:
         return pol
 
     def _decide(self, sb: Sandbox, host: str, port: int) -> tuple[egress.Policy, egress.Rule]:
+        from hangar import canaries
+
+        if canaries.is_canary_host(host):  # --- #184: an injection canary's host, refused whatever the policy
+            canaries.hit(self.fleet, sb, host, "proxy")
+            raise Denied(403, "canary", f"{host} is not a reachable host", "policy")
         try:
             pol = self._policy(sb)
         except Exception as e:  # noqa: BLE001 - its environment is gone or unreadable: deny

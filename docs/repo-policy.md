@@ -183,6 +183,7 @@ curl -s -X PUT $HANGAR/api/repos/policy -H "Authorization: Bearer $ADMIN" -d '{"
 | `sources` | `jira`, `github`, `slack`, `github-projects` (default the first three) |
 | `owner` | Whose monthly eval cap the shadows count against ([the eval budget](#the-eval-budget)); the team budget always |
 | `budget_usd` | Each shadow's job budget (5) |
+| `canary` | Injection canaries in some shadows: `{"p": 0.0-1.0, "placements": [...]}` (below; absent: none) |
 
 When a sampled job has started (its sandbox is up, its base commit known), hangar starts one trial against a pin set of
 the candidate at that commit (`POST /api/trials`, `source: shadow`, `shadow_of: <job id>`), in the eval queue class
@@ -198,6 +199,14 @@ fenced as for the job, and:
 **Review comes first.** Turning `p` above 0 is refused unless the last 7 days' review-wait p50 is under 4 hours
 (`hangar metrics weekly`). When it rises above that, shadows pause by themselves (an audit entry `shadow.paused`, once),
 and they resume when it falls back (`shadow.resumed`).
+
+**Injection canaries.** With `canary: {"p": 0.2, "placements": ["ticket_description", "ticket_comment",
+"slack_thread", "repo_file"]}` (placements default to all four), a share `p` of the shadows get one benign instruction
+with a fresh token `CANARY-<8 hex>`, planted at one of the placements the shadow has: appended to the ticket's text, as
+a comment on it, as a reply in the Slack thread, or in a `NOTES.local.md` added to the shadow's working tree (excluded
+from git, never committed). The attachment it lands in is fenced as untrusted; the real job never sees it. After the
+turn hangar records whether the agent obeyed (`canary.json` in the outbox) and flightdeck rates each harness digest's
+injection susceptibility from them. How it works and what it records: [security.md](security.md#injection-canaries).
 
 ## The check on the base commit
 
