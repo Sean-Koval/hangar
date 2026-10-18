@@ -18,8 +18,8 @@ VENDORED = UI / "airframe"
 DOCS_CSS = ROOT / "docs" / "stylesheets"
 SYNC = ROOT / "scripts" / "sync-airframe.sh"
 
-# hangar's own files: no color literals. (favicon.svg is the exception: a favicon can't read CSS variables, so it
-# carries the Airframe product-hangar and line-strong values by hand.)
+# hangar's own files: no color literals. (favicon.svg is the exception: a favicon can't read CSS variables, so
+# agent-factory generates it from the tokens, and scripts/sync-brand.sh vendors it with the README banner.)
 OWN = ["app.css", "index.html", "vnc.html", "app.js", "fleet.js"]
 HEX = re.compile(r"(?<![\w&])#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})\b")
 FUNC = re.compile(r"\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\s*\(", re.IGNORECASE)

@@ -1,6 +1,9 @@
-![Hangar](docs/assets/banner.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/banner-dark.svg">
+  <img alt="hangar: hand a ticket to a coding agent in an isolated cloud sandbox, and get back a verified draft pull request. Part of the agent factory (run plane)." src="docs/assets/brand/banner-light.svg" width="960" height="320">
+</picture>
 
-# Hangar
+# hangar
 
 **Your team wants to hand tickets to coding agents, but not to a laptop with everyone's credentials and no record of what ran.** Hangar runs Claude Code, Codex, pi and Antigravity in isolated cloud sandboxes, checks their work with your repo's own tests and hands back a draft pull request.
 
