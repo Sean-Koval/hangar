@@ -1307,19 +1307,26 @@ def _release_sessions(api: Api, names: list[str], timeout: float) -> list[str]:
 def _scale_sessions(api: Api, state: State, opts: argparse.Namespace, n: int, k: int, cap: int, plan: list[int],
                     env: str, people: list[str], tokens: dict[str, str], names: list[tuple[str, str]]) -> str:
     t = time.monotonic()
+    seen: list[str] = []  # --- #294: every no-room reason the pool gave during the boots
+    def room() -> str | None:
+        why = ha.fleet_no_room(api)
+        if why:
+            seen.append(why)
+        return why
+
     try:
         booted = asyncio.run(_boot_all(api.url, [(tokens[p], name) for p, name in names], env, opts.boot_timeout,
-                                       room=lambda: ha.fleet_no_room(api)))
+                                       room=room, waiting=lambda: _starting_stages(api)))
     except NoRoom as e:
         note(state, "scale-smoke", sessions=n, people=k, fit=e.up)
         raise Skip(f"the sandbox pool fit {e.up} of {n} sessions: {e.why}; rerun with --scale-sessions {e.up} or "
                    "fewer, or give the pool room (nodes, quota)") from None
     wall = time.monotonic() - t
-    errors = [str(b)[:200] for b in booted if isinstance(b, BaseException)]
+    failed = [(name, b) for (_, name), b in zip(names, booted, strict=True) if isinstance(b, BaseException)]
     times = [b[0] for b in booted if not isinstance(b, BaseException)]
     sandboxes = [b[1] for b in booted if not isinstance(b, BaseException)]
-    if errors:
-        raise Fail(f"{len(errors)} of {n} sessions didn't start: {'; '.join(errors[:3])}")
+    if failed:
+        _boot_failures(api, state, n, k, env, failed, len(times), seen)
     p95 = pct(times, 95)
     say(f"{n} sessions up in {wall:.0f}s: new_session to idle p50 {pct(times, 50):.1f}s, p95 {p95:.1f}s, max "
         f"{max(times):.1f}s")
@@ -1397,8 +1404,85 @@ async def _mcp_call(url: str, token: str, tool: str, args: dict[str, Any]) -> tu
     return bool(res.is_error), " ".join(getattr(b, "text", "") for b in res.content), _sc(res)
 
 
+# --- #294: what a sandbox, or a session's reason, says when the pool has no room for it (hangar's pending reasons)
+CAPACITY = (*ha.NO_ROOM, "quota", "no node has room", "insufficient cpu", "insufficient memory")
+TIMED_OUT = ("still starting after", "waiting for the sandbox to start")
+
+
+def leaf(e: BaseException) -> BaseException:
+    """The first real exception inside (nested) exception groups: anyio's TaskGroup in the MCP client wraps what a
+    boot raises as "unhandled errors in a TaskGroup (1 sub-exception)", which says nothing."""
+    while isinstance(e, BaseExceptionGroup) and e.exceptions:
+        e = e.exceptions[0]
+    return e
+
+
+def capacity_bound(text: str) -> bool:
+    low = text.lower()
+    return any(m.lower() in low for m in CAPACITY)
+
+
+def _starting_stages(api: Api) -> str:
+    """The stages of every sandbox still starting, joined (#294)."""
+    try:
+        sbs = api.call("GET", "/api/sandboxes")
+    except Fail:
+        return ""
+    return " | ".join(str((sb.get("info") or {}).get("stage") or "") for sb in sbs if sb.get("state") == "starting")
+
+
+def _boot_failures(api: Api, state: State, n: int, k: int, env: str, failed: list[tuple[str, BaseException]],
+                   up: int, seen: list[str]) -> None:
+    """--- #294: classify the boots that failed. Capacity-bound (the session's reason or its sandbox's stage says the
+    pool can't fit it, or it timed out while the pool said so or other sandboxes of its environment still wait) skips
+    with the number that fit; anything else fails with the real error text."""
+    try:
+        sbs = api.call("GET", "/api/sandboxes")
+    except Fail:
+        sbs = []
+    pending = [sb for sb in sbs if sb.get("state") in ("starting", "pending") and sb.get("environment") == env]
+    pending_why = next((st for sb in pending if capacity_bound(st := str((sb.get("info") or {}).get("stage") or ""))),
+                       None)
+    capacity: list[str] = []
+    genuine: list[str] = []
+    for name, exc in failed:
+        text = str(leaf(exc)) or type(leaf(exc)).__name__
+        where = [text]
+        with contextlib.suppress(Exception):
+            r = api.http.get(f"/api/sessions/{name}")
+            if r.status_code == 200:
+                s = r.json()
+                where.append(str(s.get("reason") or ""))
+                if sid := s.get("sandbox_id"):
+                    r2 = api.http.get(f"/api/sandboxes/{sid}")
+                    if r2.status_code == 200:
+                        sb = r2.json()
+                        where += [str((sb.get("info") or {}).get("stage") or ""), str(sb.get("error") or "")]
+        said = " | ".join(w for w in where if w)
+        timed_out = any(m in said for m in TIMED_OUT)
+        if capacity_bound(said) or (timed_out and (seen or pending)):
+            capacity.append(f"{name}: {said[:200]}")
+        else:
+            genuine.append(f"{name}: {said[:200]}")
+    if genuine:
+        raise Fail(f"{len(genuine)} of {n} sessions didn't start: {'; '.join(genuine[:3])}"
+                   + (f" (and {len(capacity)} more waited on a full pool)" if capacity else ""))
+    why = (seen[-1] if seen else None) or pending_why or capacity[0].split(": ", 1)[-1]
+    note(state, "scale-smoke", sessions=n, people=k, fit=up)
+    raise Skip(f"the sandbox pool fit {up} of {n} sessions: {why}; {len(capacity)} waited on capacity; rerun with "
+               f"--scale-sessions {up} or fewer, or give the pool room (nodes, quota)")
+
+
 async def _mcp_boot(url: str, token: str, name: str, env: str, timeout: float) -> tuple[float, str]:
-    """A person's new_session over MCP, then get_session until it is idle with its sandbox: (seconds, sandbox)."""
+    """A person's new_session over MCP, then get_session until it is idle with its sandbox: (seconds, sandbox). What
+    the boot raised comes out as itself, not inside the MCP client's TaskGroup (#294)."""
+    try:
+        return await _mcp_boot_in(url, token, name, env, timeout)
+    except BaseExceptionGroup as g:
+        raise leaf(g) from None
+
+
+async def _mcp_boot_in(url: str, token: str, name: str, env: str, timeout: float) -> tuple[float, str]:
     http, client = _mcp_client(url, token)
     async with http, client as c:
         t0 = time.monotonic()
@@ -1426,18 +1510,29 @@ class NoRoom(Exception):
 
 
 async def _boot_all(url: str, plan: list[tuple[str, str]], env: str, timeout: float,
-                    room: Callable[[], str | None] | None = None) -> list[Any]:
-    """Every session's boot at once. `room` (#294) says why the pool has no room, or None: once it has said so for
-    ha.ROOM_GRACE seconds the boots stop with NoRoom, instead of each waiting out its timeout."""
+                    room: Callable[[], str | None] | None = None,
+                    waiting: Callable[[], str] | None = None) -> list[Any]:
+    """Every session's boot at once; one that fails doesn't stop the others (its exception is in the result). `room`
+    (#294) says why the pool has no room, or None: once it has said so for ha.ROOM_GRACE seconds (`waiting`, the
+    stages of the sandboxes still starting, keeps the wait going while they only say no node has room yet) the boots
+    stop with NoRoom, instead of each waiting out its timeout."""
     tasks = [asyncio.create_task(_mcp_boot(url, tok, name, env, timeout)) for tok, name in plan]
     blocked: float | None = None
+    last_why = ""
     while room is not None and not all(t.done() for t in tasks):
         await asyncio.wait(tasks, timeout=ROOM_POLL_SECONDS)
         if all(t.done() for t in tasks):
             break
         why = await asyncio.to_thread(room)
-        blocked = (blocked or time.monotonic()) if why else None
-        if why and time.monotonic() - blocked >= ha.ROOM_GRACE:
+        if why:
+            last_why = why
+        # --- #294: GKE alternates NotTriggerScaleUp with FailedScheduling ("no node has room right now"), and hangar
+        # shows the latest; once the pool said it can't grow, only a reason that isn't capacity clears the wait
+        still = why is None and blocked is not None and waiting is not None and \
+            capacity_bound(await asyncio.to_thread(waiting))
+        blocked = (blocked or time.monotonic()) if why or still else None
+        if blocked is not None and time.monotonic() - blocked >= ha.ROOM_GRACE:
+            why = why or last_why
             up = sum(1 for t in tasks if t.done() and not t.cancelled() and t.exception() is None)
             for t in tasks:
                 t.cancel()
