@@ -293,7 +293,8 @@ class _SteerHangar:
     def __init__(self, asks: bool):
         self.asks, self.polls, self.calls = asks, 0, []
         self.s = {"state": "idle", "busy": False, "sandbox_id": "sb-1", "turns": [], "reason": None}
-        self.allowed = False
+        self.allowed = self.other = False
+        self.held = "allowed"
 
     def call(self, method, path, ok=(200,), **kw):
         self.calls.append((method, path, kw.get("json")))
@@ -305,7 +306,8 @@ class _SteerHangar:
             t = self.s["turns"][-1] if self.s["turns"] else None
             if t and (self.allowed or not self.asks) and not t["finished_at"]:
                 t.update(finished_at=1.0, exit_code=0, live=True, summary="DONE STEERED",
-                         approvals=[{"status": "allowed"}] if self.asks else [],
+                         approvals=[{"id": "apr-0", "status": "allowed", "by": "acceptance"},
+                                    {"id": "apr-1", "status": self.held, "by": "acceptance"}] if self.asks else [],
                          steers=[{"status": "delivered"}] if self.asks else [])
                 self.s.update(state="idle", busy=False)
             return self.s
@@ -315,7 +317,10 @@ class _SteerHangar:
             return self.s
         if (method, path) == ("GET", f"/api/sessions/{name}/approvals"):
             self.polls += 1
-            pending = [{"id": "apr-1", "tool": "Bash", "detail": "echo ok > f"}] if self.asks and self.polls > 1 else []
+            pending = [] if not self.asks or self.polls < 2 or self.allowed else [
+                {"id": "apr-1", "tool": "Bash", "detail": "echo ok > /home/agent/accept-steer-r1.txt"}]
+            if self.asks and self.polls == 2 and not self.other:  # something else asked first: allowed, not counted
+                pending = [{"id": "apr-0", "tool": "Bash", "detail": "mkdir -p build"}, *pending]
             return {"pending": pending, "live": True}
         if (method, path) == ("POST", f"/api/sessions/{name}/steer"):
             return {"status": "delivered"}
@@ -323,12 +328,18 @@ class _SteerHangar:
             assert kw["json"] == {"decision": "allow"}
             self.allowed = True
             return {}
+        if (method, path) == ("POST", f"/api/sessions/{name}/approvals/apr-0"):
+            self.other = True
+            return {}
         if (method, path) == ("GET", "/api/sandboxes/sb-1"):
             return {"info": {"repo_path": "/workspace/r"}}
         raise AssertionError(f"unexpected {method} {path}")
 
     def exec(self, sb, command, cwd=None, timeout=120):
-        assert sb == "sb-1" and cwd == "/workspace/r" and command.startswith("cat ")
+        assert sb == "sb-1"
+        if command == 'printf %s "$HOME"':
+            return {"exit_code": 0, "stdout": "/home/agent", "stderr": ""}
+        assert command == "cat /home/agent/accept-steer-r1.txt", command  # outside the checkout (#293)
         return {"exit_code": 0, "stdout": "ok\n" if self.allowed else "", "stderr": ""}
 
 
@@ -423,11 +434,45 @@ def test_steer_check_flow(tmp_path, monkeypatch, asks):
     if asks:
         assert ha.check_steer(api, state, opts) == "approval held and allowed, steer delivered, command ran"
         order = [p.rsplit("/", 1)[-1] for m, p, _ in fake.calls if m == "POST"]
-        assert order == ["sessions", "send", "steer", "apr-1"]
+        assert order == ["sessions", "send", "apr-0", "steer", "apr-1"]
+        prompt = next(j["message"] for m, p, j in fake.calls if p.endswith("/send"))
+        assert "echo ok > /home/agent/accept-steer-r1.txt" in prompt  # a write the policy always holds
     else:
         with pytest.raises(ha.Fail, match="never waited for an approval"):
             ha.check_steer(api, state, opts)
     assert state.get("sessions") == ["accept-r1-steer"]  # cleanup will find it
+
+
+@pytest.mark.parametrize("held,by,why", [("denied", "timeout", "ended denied"), ("allowed", "policy", "by policy")])
+def test_steer_check_asserts_the_approval_it_answered(tmp_path, monkeypatch, held, by, why):
+    """--- #293: the check passes only on the approval it answered itself, recorded in the turn as allowed."""
+    import argparse
+
+    sys.path.insert(0, str(ROOT / "scripts" / "acceptance"))
+    try:
+        import hangar_accept as ha
+    finally:
+        sys.path.pop(0)
+    monkeypatch.setattr(ha.time, "sleep", lambda _s: None)
+    fake = _SteerHangar(True)
+    fake.held = held
+    real = fake.call
+
+    def call(method, path, **kw):
+        out = real(method, path, **kw)
+        for a in (out.get("turns") or [{}])[-1].get("approvals", []) if isinstance(out, dict) else []:
+            if a.get("id") == "apr-1":
+                a["by"] = by
+        return out
+
+    monkeypatch.setattr(ha.Api, "call", lambda self, *a, **kw: call(*a, **kw))
+    monkeypatch.setattr(ha.Api, "exec", lambda self, *a, **kw: fake.exec(*a, **kw))
+    state = ha.State(tmp_path / "state.json")
+    state.set("run", "r1")
+    opts = argparse.Namespace(session_env="claude-python", repo="https://github.com/o/r.git", model=None,
+                              boot_timeout=60, turn_timeout=60, with_model=True)
+    with pytest.raises(ha.Fail, match=why):
+        ha.check_steer(ha.Api("http://hangar.invalid", "t"), state, opts)
 
 
 @pytest.mark.parametrize("wait,ok", [(0.5, True), (30, False)])

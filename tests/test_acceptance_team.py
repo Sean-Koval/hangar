@@ -12,6 +12,7 @@ Docker run is tests/test_e2e_acceptance_docker.py.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import re
@@ -201,6 +202,129 @@ def test_scale_smoke_caps_isolates_and_leaves_nothing(tmp_path, hangar_with):
     assert not [p for p in people if h.store.get(Person, p)]
     assert not [t for t in h.store.list(ApiToken) if t.name.startswith("accept-")]
     assert not [s for s in h.store.list(Sandbox) if s.person in people and s.state.value != "stopped"]
+
+
+def _live_sessions(h, run: str) -> list[str]:
+    return [s.name for s in h.sessions.list() if s.name.startswith(f"accept-{run}") and s.state.value != "archived"]
+
+
+@settings(person_max_sessions=3)
+def test_a_failed_scale_smoke_deletes_its_sessions_at_once(tmp_path, hangar_with, monkeypatch):
+    """--- #294: scale-smoke failed with 7 of 20 sessions up and left them running until the run's cleanup, so the
+    next checks waited on a full pool. Pass or fail, its sessions go before the check returns."""
+    h, api = hangar_with.h, hangar_with.api
+    state = ha.State(tmp_path / "state.json")
+    real = tc._mcp_call
+
+    async def leaky(url, token, tool, args):  # a member reads another's session: the check fails after the boots
+        return (False, "{}", {}) if tool == "get_session" else await real(url, token, tool, args)
+
+    monkeypatch.setattr(tc, "_mcp_call", leaky)
+    with pytest.raises(ha.Fail, match="could read"):
+        tc.check_scale_smoke(api, state, _opts(scale_sessions=5, scale_people=3))
+    assert len([n for n in state.get("sessions") if n.startswith(f"accept-{state.run}-s")]) == 5
+    assert not _live_sessions(h, state.run)  # gone before cleanup
+
+
+@settings(person_max_sessions=3)
+def test_scale_smoke_skips_with_the_number_that_fit(tmp_path, hangar_with, monkeypatch):
+    """--- #294: when the pool can't fit the sessions, the check skips with how many did, and releases them."""
+    h, api = hangar_with.h, hangar_with.api
+    state = ha.State(tmp_path / "state.json")
+    real = tc._boot_all
+
+    async def two_then_full(url, plan, env, timeout, room=None):
+        assert room is not None
+        got = await real(url, plan[:2], env, timeout)
+        raise tc.NoRoom(len(got), "2 sandboxes running; the cluster can't add a node: a Google Cloud quota is "
+                                  "exhausted (N2D_CPUS)")
+
+    monkeypatch.setattr(tc, "_boot_all", two_then_full)
+    with pytest.raises(ha.Skip, match=r"fit 2 of 5 sessions: 2 sandboxes running; .*quota.*--scale-sessions 2"):
+        tc.check_scale_smoke(api, state, _opts(scale_sessions=5, scale_people=3))
+    assert state.get("data:scale-smoke")["fit"] == 2
+    assert not _live_sessions(h, state.run)
+
+
+def test_boot_all_stops_once_the_pool_has_had_no_room_for_the_grace(monkeypatch):
+    """--- #294: the boots stop on a lasting no-room reason, counting those that came up; a passing one doesn't."""
+    async def boot(url, token, name, env, timeout):
+        if name.startswith("up"):
+            return 1.0, f"sb-{name}"
+        await asyncio.sleep(3600)  # waits on a node that never comes
+
+    monkeypatch.setattr(tc, "_mcp_boot", boot)
+    monkeypatch.setattr(tc, "ROOM_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(ha, "ROOM_GRACE", 0.05)
+    plan = [("t", "up-1"), ("t", "up-2"), ("t", "wait-1"), ("t", "wait-2")]
+    with pytest.raises(tc.NoRoom) as e:
+        asyncio.run(tc._boot_all("u", plan, "e", 60, room=lambda: "the cluster can't add a node: quota"))
+    assert e.value.up == 2 and "quota" in e.value.why
+    reasons = iter(["the cluster can't add a node", None] + [None] * 1000)  # it cleared: keep waiting
+
+    async def slow_up(url, token, name, env, timeout):
+        await asyncio.sleep(0.2)
+        return 1.0, "sb"
+
+    monkeypatch.setattr(tc, "_mcp_boot", slow_up)
+    got = asyncio.run(tc._boot_all("u", plan, "e", 60, room=lambda: next(reasons)))
+    assert got == [(1.0, "sb")] * 4
+
+
+def test_capacity_bound_creates_skip_with_the_numbers(monkeypatch):
+    """--- #294: prepull and warmstart waited out 900 s each on a full pool; a create that waits on a pool that
+    can't grow skips once the reason has lasted ROOM_GRACE, saying how many sandboxes run. Other checks still fail
+    on the timeout."""
+    stage = "waiting for the sandbox to start (95s): the cluster can't add a node: a Google Cloud quota is exhausted"
+
+    def fn(method, path, body, req):
+        if path == "/api/sandboxes/sb-9":
+            return {"id": "sb-9", "state": "starting", "info": {"stage": stage}}
+        if path == "/api/sandboxes":
+            return [{"id": f"sb-{i}", "state": "running", "info": {}} for i in range(7)] + [
+                {"id": "sb-9", "state": "starting", "info": {"stage": stage}}]
+        return None
+
+    api = _FakeApi(fn=fn)
+    monkeypatch.setattr(ha, "ROOM_GRACE", 0.0)
+    monkeypatch.setattr(ha, "POLL_SECONDS", 0.01)
+    with pytest.raises(ha.Skip, match=r"no room for another sandbox: 7 sandboxes running.*quota"):
+        ha._running(api, "sb-9", 5, capacity_skip=True)
+    with pytest.raises(ha.Fail, match="still starting"):
+        ha._running(api, "sb-9", 0.05)
+    assert ha.fleet_no_room(api) == f"7 sandboxes running; {stage}"
+    adding = _FakeApi(fn=lambda m, p, b, r: [{"id": "x", "state": "starting", "info": {
+        "stage": "adding a node to the cluster (usually 1-3 minutes)"}}] if p == "/api/sandboxes" else None)
+    assert ha.fleet_no_room(adding) is None  # a node on its way is not "no room"
+
+
+@pytest.mark.parametrize("keep", [False, True])
+def test_each_check_releases_what_it_made_when_it_ends(tmp_path, hangar_with, monkeypatch, keep):
+    """--- #294: a check's sandboxes and sessions go when it ends (pass, fail or skip), not at the run's end; the
+    run's shared sandbox stays for the checks after it. --keep leaves everything to the cleanup."""
+    from hangar.models import Sandbox
+
+    h = hangar_with.h
+    monkeypatch.setenv("HANGAR_URL", hangar_with.url)
+    monkeypatch.setenv("HANGAR_TOKEN", TOKEN)
+    monkeypatch.setenv("HANGAR_CLI_CONFIG", str(tmp_path / "none.json"))
+    st = tmp_path / "state.json"
+    args = ["--state", str(st), "--summary", str(tmp_path / "sum"), "--no-kubectl", "--env", "xenv",
+            "--session-env", "xenv", "--warm-env", "xenv", *(["--keep"] if keep else [])]
+    assert ha.main(["sandbox", *args]) == ha.PASS
+    assert ha.main(["warmstart", *args]) == ha.PASS
+    state = ha.State(st)
+    shared, warm = state.get("sandbox"), [x for x in state.get("sandboxes") if x != state.get("sandbox")]
+    assert len(warm) == 2
+
+    def live(sid: str) -> bool:
+        sb = h.store.get(Sandbox, sid)
+        return sb is not None and sb.state.value not in ("stopped", "error")
+
+    assert live(shared)
+    assert all(live(x) for x in warm) if keep else not any(live(x) for x in warm)
+    ha.cleanup(ha.Api(hangar_with.url, TOKEN), state, _opts())
+    assert not live(shared) and not any(live(x) for x in warm)
 
 
 @pytest.mark.parametrize("total,people,cap,plan", [(20, 3, 15, [15, 3, 2]), (20, 3, 0, [8, 6, 6]),
