@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 from hangar import computer as _computer  # --- computer
 from hangar import plugins as _plugins  # --- #136
@@ -79,6 +79,9 @@ class Skill(BaseModel):
     git: str | None = None
     name: str | None = None
     harnesses: list[str] | None = None  # default: every installed harness with a skills_dir
+    # The directory `path` is relative to when the skill came from a parent (`extends`): the parent's file, not the
+    # child's. A child saved through the API lives on the data volume, where the shipped `skills/` isn't.
+    _base: Path | None = PrivateAttr(default=None)
 
 
 class AgentConfig(BaseModel):
@@ -456,6 +459,13 @@ def _safe_name(name: str) -> str:
     return name
 
 
+def skill_dir(spec: EnvSpec, rel: str) -> Path:
+    """The directory of the spec's skill at `rel`: relative to the file that declared it (a parent's, for an
+    inherited skill), contained in that file's directory."""
+    base = next((sk._base for sk in spec.skills if sk.path == rel and sk._base is not None), None)
+    return _contained_path(base or spec.source_dir or Path("."), rel)
+
+
 def _contained_path(root: Path, rel: str) -> Path:
     """Resolve a spec-relative path, refusing anything outside the spec's directory."""
     if Path(rel).is_absolute():
@@ -587,8 +597,10 @@ class EnvCatalog:
         if name in _seen:
             raise ValueError(f"circular extends: {' -> '.join((*_seen, name))}")
         data, src = self._raw[name]
+        bases: dict[str, Path | None] = {}
         if parent := data.get("extends"):
             parent_spec = self.get(parent, (*_seen, name), _merge=_merge)
+            bases = {sk.path: sk._base or parent_spec.source_dir for sk in parent_spec.skills if sk.path}
             # --- #124: a parent's default sudo (false) isn't a "no" its children inherit (heavy implies sudo)
             skip = {"source_dir"} | ({"sudo"} if "sudo" not in parent_spec.model_fields_set else set())
             merged = _merge(parent_spec.model_dump(exclude=skip), data)
@@ -600,6 +612,10 @@ class EnvCatalog:
             merged["skills"] = remove_skills(merged.get("skills") or [], remove, f"environment {name}")
         spec = EnvSpec.model_validate(merged)
         spec.source_dir = src
+        own = {sk.get("path") for sk in (data.get("skills") or []) if isinstance(sk, dict)}
+        for sk in spec.skills:  # inherited: relative to the parent's file (a child saved elsewhere can't see it)
+            if sk.path and sk.path in bases and sk.path not in own:
+                sk._base = bases[sk.path]
         return spec
 
 
@@ -762,7 +778,7 @@ def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace",
     for i, skill in enumerate(spec.skills):
         targets = [h for h in skill_targets if skill.harnesses is None or h.name in skill.harnesses]
         if skill.path:
-            src = _contained_path(spec.source_dir or Path("."), skill.path)
+            src = skill_dir(spec, skill.path)
             sname = _safe_name(skill.name or src.name)
             for f in sorted(p for p in src.rglob("*") if p.is_file() and not p.is_symlink()):
                 if not f.resolve().is_relative_to(src.resolve()):

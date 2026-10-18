@@ -303,3 +303,36 @@ def test_the_migration_dry_run_reads_saved_environments(tmp_path):
     cat = EnvCatalog([shipped], save_dir=saved)
     cat.add({"name": "mine", "extends": "parent", "skills": [{"name": "b", "path": "skills/b"}]})
     assert merge_changes(EnvCatalog([shipped], save_dir=saved)) == {"mine": ["skills lost: a"]}
+
+
+def test_a_saved_child_finds_the_skills_it_inherits(tmp_path):
+    """A child saved through the API lives on the data volume (save_dir), not beside the shipped envs: an inherited
+    skill path is relative to the parent's file. Found on the first live GKE run: a saved `hangar-jobs` (extends
+    `hangar`) and the acceptance egress environment failed with "skill path not found: skills/repo-conventions"."""
+    from hangar.envspec import render, skill_dir
+
+    shipped, saved = tmp_path / "envs", tmp_path / "data" / "envs"
+    (shipped / "skills" / "conv").mkdir(parents=True)
+    (shipped / "skills" / "conv" / "SKILL.md").write_text("---\nname: conv\n---\nhi\n")
+    (shipped / "parent.yaml").write_text("name: parent\nharnesses: [claude-code]\nskills:\n  - path: skills/conv\n")
+    cat = EnvCatalog([shipped], save_dir=saved)
+    cat.add({"name": "child", "extends": "parent", "credentials": ["x"]}, save_dir=saved)
+    child = cat.get("child")
+    assert child.source_dir == saved and skill_dir(child, "skills/conv") == (shipped / "skills" / "conv").resolve()
+    assert any(p.endswith("SKILL.md") for p in render(child).files)
+    # a grandchild saved beside the child still reaches the shipped skill
+    cat.add({"name": "grandchild", "extends": "child"}, save_dir=saved)
+    assert skill_dir(cat.get("grandchild"), "skills/conv") == (shipped / "skills" / "conv").resolve()
+
+
+def test_a_childs_own_skill_stays_relative_to_the_child(tmp_path):
+    from hangar.envspec import skill_dir
+
+    shipped, saved = tmp_path / "envs", tmp_path / "data" / "envs"
+    (shipped / "skills" / "conv").mkdir(parents=True)
+    (shipped / "parent.yaml").write_text("name: parent\nskills:\n  - path: skills/conv\n")
+    (saved / "skills" / "mine").mkdir(parents=True)
+    (saved / "child.yaml").write_text("name: child\nextends: parent\nskills:\n  - path: skills/mine\n")
+    child = EnvCatalog([shipped, saved]).get("child")
+    assert [s.path for s in child.skills] == ["skills/mine"]  # component lists replace (#132)
+    assert skill_dir(child, "skills/mine") == (saved / "skills" / "mine").resolve()
