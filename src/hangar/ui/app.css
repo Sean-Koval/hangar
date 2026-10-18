@@ -112,22 +112,83 @@ fieldset.creds legend { padding: 0; margin-bottom: var(--af-space-8); font-famil
 .form-foot .hint { margin-right: auto; }
 .new-form > label.wide textarea { width: 100%; }
 
-/* ---------- fleet: one tonal card per sandbox ---------- */
+/* ---------- fleet: four views of the same sandboxes (Airframe theme-v3), one selection, one detail panel ---------- */
 .fleet-sum { display: flex; flex-wrap: wrap; align-items: center; gap: var(--af-space-8) var(--af-space-20); }
-.bays { display: flex; flex-direction: column; gap: var(--af-space-12); }
-.bay-top { display: grid; grid-template-columns: minmax(180px, 260px) 9.5em minmax(0, 1fr); gap: var(--af-space-8) var(--af-space-24); align-items: start; }
-.bay-who { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.bay-name { font-family: var(--af-font-mono); font-weight: 500; font-size: 15px; line-height: 1.3; color: var(--af-fg); overflow-wrap: anywhere; }
-.bay-id { font-family: var(--af-font-mono); font-size: 12px; color: var(--af-fg-subtle); }
-.bay-top > .af-status { padding-top: 2px; }
-.bay-top > .af-meta { padding-top: 1px; }
+.fleet-views { flex: none; }
+.fleet-main { position: relative; min-width: 0; }
+.fleet-view { min-width: 0; }
+/* Board (FleetView) */
+.fleet-board { gap: var(--af-space-20); }
+.fleet-board .af-fleet__body { gap: var(--af-space-20); }
+.fleet-key-stand { width: 16px; height: 10px; padding: 0; }
+.fleet-key-pips { width: 44px; }
+.fleet-key-hint { margin-left: auto; }
+/* Bays (FleetBays), Columns (FleetColumns): tiles are focusable and selectable as a whole */
+.fleet-groups { display: flex; flex-direction: column; gap: var(--af-space-28); min-width: 0; }
+.fleet-group { display: flex; flex-direction: column; gap: var(--af-space-12); min-width: 0; }
+.fleet-view .af-bay[data-tile], .fleet-view .af-mini[data-tile] { cursor: pointer; }
+.fleet-view .af-bay[data-tile]:focus-visible, .fleet-view .af-mini[data-tile]:focus-visible { outline: 2px solid var(--af-focus); outline-offset: 2px; }
+.fleet-view .af-bay .af-bay__foot .af-btn { flex: none; }
+.af-statecol__head { top: var(--af-header-h); }  /* under the sticky app header */
+.fleet-view .fleet-mini-foot > :last-child { flex: none; }  /* the age never truncates */
+.fleet-view .af-bay__note, .fd .af-bay__note { overflow-wrap: anywhere; }
+/* Owners (FleetOwners) */
+.fleet-view .af-owners { scrollbar-width: thin; }
+.af-person__av .af-ic { color: var(--af-fg-subtle); }
+/* an empty view: what to do next, per environment */
+.fleet-empty { display: flex; flex-direction: column; align-items: center; gap: var(--af-space-12); padding: var(--af-space-40) var(--af-space-24);
+  border: 1px dashed var(--af-line-strong); border-radius: var(--af-radius-card); text-align: center; color: var(--af-fg-muted); }
+.fleet-empty p { margin: 0; }
+.fleet-empty > .af-ic { color: var(--af-fg-subtle); }
+#view-fleet.is-empty .fleet-detail { display: none; }
+#view-fleet.is-empty .fleet-main { display: block; }
+.fleet-view .af-statecol__empty { grid-column: 1 / -1; margin: 0; }
+.fleet-empty__envs { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--af-space-8); }
+
+/* the detail panel: a drawer by default (and on narrow screens), docked beside the Board on wide ones */
+.fleet-detail { position: fixed; top: var(--af-header-h); right: 0; bottom: var(--drawer-pad, 0px); z-index: 15; width: min(420px, 100vw);
+  overflow-y: auto; overscroll-behavior: contain; padding: var(--af-space-20); background: var(--af-overlay); border-left: 1px solid var(--af-line);
+  box-shadow: var(--af-shadow-overlay); opacity: 0; visibility: hidden;
+  transition: opacity var(--af-dur) var(--af-ease), visibility 0s linear var(--af-dur); }
+#view-fleet.has-selection .fleet-detail { opacity: 1; visibility: visible; transition: opacity var(--af-dur) var(--af-ease); }
+@media (min-width: 1081px) {
+  #view-fleet[data-fleet-view="board"] .fleet-main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: var(--af-space-12); align-items: start; }
+  #view-fleet[data-fleet-view="board"] .fleet-detail { position: sticky; top: calc(var(--af-header-h) + var(--af-space-16)); right: auto; bottom: auto;
+    z-index: auto; width: auto; max-height: calc(100vh - var(--af-header-h) - var(--af-space-32) - var(--drawer-pad, 0px));
+    background: var(--af-raised); border-left: 0; border-radius: var(--af-radius-card); box-shadow: none; opacity: 1; visibility: visible; transition: none; }
+  #view-fleet[data-fleet-view="board"] .fd-close { display: none; }
+}
+.fd { --c: var(--af-status-running); display: flex; flex-direction: column; gap: var(--af-space-16); min-width: 0; }
+.fd[data-role="approval"] { --c: var(--af-status-approval); }
+.fd[data-role="failed"] { --c: var(--af-status-failed); }
+.fd[data-role="denied"] { --c: var(--af-status-denied); }
+.fd-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.fd-head > .af-ic { color: var(--af-brand-text); }
+.fd-head .af-id { font-size: 14px; }
+.fd-close { margin-left: auto; }
+.fd-title { margin: 0; font-family: var(--af-font-sans); font-weight: 600; font-size: 16px; line-height: 1.35; letter-spacing: -.005em; color: var(--af-fg); }
+.fd-decide { display: flex; flex-direction: column; gap: 10px; padding: var(--af-space-12); border-radius: var(--af-radius-card);
+  background: color-mix(in srgb, var(--c) 6%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 45%, transparent); }
+.fd-cmd { margin: 0; font-family: var(--af-font-mono); font-weight: 500; font-size: 13px; line-height: 1.45; color: var(--af-fg); overflow-wrap: anywhere; }
+.fd-decide__btns { display: flex; justify-content: flex-end; gap: var(--af-space-8); }
+.fd-kv { margin: 0; }
+.fd-kv .sub-val { margin-left: var(--af-space-8); color: var(--af-fg-subtle); }
+.fd-lease { display: flex; align-items: center; gap: 10px; }
+.fd-task > p { margin: var(--af-space-8) 0 0; max-height: 220px; overflow: auto; font-size: 13px; line-height: 1.5; color: var(--af-fg-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.fd-actions { display: flex; flex-wrap: wrap; gap: 6px; padding-top: var(--af-space-16); border-top: 1px solid var(--af-line-subtle); }
+.fd-actions [data-act="destroy"] { margin-left: auto; }
+.fd-runs { display: flex; flex-direction: column; gap: 2px; }
+.fd-runs h4 { margin: 0 0 6px; font-family: var(--af-font-mono); font-weight: 500; font-size: 11px; letter-spacing: var(--af-label-track); text-transform: uppercase; color: var(--af-fg-muted); }
+.fd-run { display: grid; grid-template-columns: 16px auto minmax(0, 1fr) auto; align-items: center; gap: var(--af-space-8); width: 100%; padding: 6px 8px;
+  border: 0; border-radius: var(--af-radius-control); background: transparent; color: var(--af-fg); font-size: 12.5px; text-align: left; }
+.fd-run:hover { background: var(--af-selected); }
+.fd-run > .af-ic { color: var(--af-fg-subtle); }
+.fd-run__prompt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--af-fg-muted); }
+.fd-empty { display: flex; flex-direction: column; align-items: flex-start; gap: var(--af-space-8); color: var(--af-fg-muted); }
+.fd-empty p { margin: 0; }
+.fd-empty > .af-ic { color: var(--af-fg-subtle); }
 .bay-err { margin: 0; }
 .bay-err .af-meta__item { white-space: normal; }
-.bay-runs { display: flex; flex-wrap: wrap; align-items: center; gap: var(--af-space-4) var(--af-space-8); }
-.bay-runs .af-btn .hint { margin-left: 4px; font-size: inherit; letter-spacing: inherit; }
-.bay-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--af-space-4); padding-top: var(--af-space-12);
-  border-top: 1px solid var(--af-line-subtle); }
-.bay-actions .end { margin-left: auto; }
 .empty-floor { padding: var(--af-space-40) var(--af-space-24); border: 1px dashed var(--af-line-strong); border-radius: var(--af-radius-card);
   text-align: center; color: var(--af-fg-muted); }
 .empty-floor p { margin: 0 0 var(--af-space-16); }
@@ -298,8 +359,6 @@ body:has(.drawer:not([hidden])) .toast { bottom: calc(var(--drawer-h) + var(--af
 @media (max-width: 1360px) { .topbar .af-nav__tab > .af-ic { display: none; } }
 @media (max-width: 1080px) {
   .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .bay-top { grid-template-columns: minmax(0, 1fr) auto; }
-  .bay-top > .af-meta { grid-column: 1 / -1; }
   .split, .split.even, #view-credentials .split { grid-template-columns: minmax(0, 1fr); }
   .providers { display: none; }
 }

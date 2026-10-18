@@ -148,6 +148,14 @@
           <p id="fleet-sub" class="sub"></p>
         </div>
         <div class="actions">
+          <!-- four views of the same sandboxes (Airframe FleetView, FleetBays, FleetColumns, FleetOwners), kept in the
+               URL (#fleet?view=bays) and remembered; fleet.js marks the current one -->
+          <nav class="af-seg fleet-views" aria-label="Fleet view">
+            <a class="af-seg__btn" href="#fleet?view=board" data-fleet-view="board">Board</a>
+            <a class="af-seg__btn" href="#fleet?view=bays" data-fleet-view="bays">Bays</a>
+            <a class="af-seg__btn" href="#fleet?view=columns" data-fleet-view="columns">Columns</a>
+            <a class="af-seg__btn" href="#fleet?view=owners" data-fleet-view="owners">Owners</a>
+          </nav>
           <label class="check"><input type="checkbox" id="show-stopped"> Show stopped</label>
           <button class="af-btn af-btn--primary" id="btn-new" type="button">New sandbox</button>
         </div>
@@ -170,7 +178,12 @@
           <button class="af-btn af-btn--primary" type="submit">Start sandbox</button>
         </div>
       </form>
-      <div id="bays" class="bays" aria-live="polite"></div>
+      <div class="fleet-main">
+        <div id="bays" class="fleet-view"></div>
+        <!-- one selection across the views: beside the Board, a drawer elsewhere -->
+        <aside id="fleet-detail" class="fleet-detail" aria-label="Sandbox"></aside>
+      </div>
+      <p id="fleet-live" class="visually-hidden" aria-live="polite"></p>
     </section>
 
     <!-- ENVIRONMENTS -->
@@ -310,5 +323,6 @@
 <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
 <script src="/ui/app.js"></script>
+<script src="/ui/fleet.js"></script>
 </body>
 </html>
