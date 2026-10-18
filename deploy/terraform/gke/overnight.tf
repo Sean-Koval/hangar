@@ -6,8 +6,12 @@
 #   the other pools are ready. Nothing else scales it, so it never runs by day.
 # - Labelled and tainted hangar.dev/lane=overnight: gVisor sandboxes tolerate the taint (power.LANE_TOLERATION), so
 #   at night they land on it; no other workload does.
-# - Spot: about 9 h x $0.327 x 30 = $88/month at n2d-standard-16 prices (docs/team-scale.md, "Cost"). A preemption
-#   has no guaranteed replacement: the lane's running turns are marked infra_error/preempted and resume at 10:00.
+# - Spot e2-standard-16 by default, not the sandbox pool's n2d-standard-16: E2 draws on the regional CPUS quota, not
+#   N2D_CPUS, which the sandbox pool may already use up (one project here sits at 16/16), so the lane needs no N2D
+#   quota request. E2 runs on Intel or AMD, and GKE Sandbox turns SMT off on Intel, so a node shows 8 or 16 vCPUs:
+#   HANGAR_OVERNIGHT_LANE_SANDBOXES defaults to the 7 that fit either way. About 9 h x $0.3217 x 30 = $87/month
+#   (docs/team-scale.md, "Cost"). A preemption has no guaranteed replacement: the lane's running turns are marked
+#   infra_error/preempted and resume at 10:00.
 resource "google_container_node_pool" "overnight" {
   count      = var.enable_overnight_lane ? 1 : 0
   name       = "sandboxes-overnight"

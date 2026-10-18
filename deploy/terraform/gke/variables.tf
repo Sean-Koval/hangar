@@ -43,15 +43,19 @@ variable "sandbox_spot" {
 }
 
 variable "enable_overnight_lane" {
-  description = "Adds the sandboxes-overnight pool: one Spot gVisor node power.sh keeps up 01:00-10:00 while the overnight lane is on (hangar power overnight on), for overnight repos' intake jobs and evals (~$88/month; docs/gke.md section 6)."
+  description = "Adds the sandboxes-overnight pool: one Spot gVisor node power.sh keeps up 01:00-10:00 while the overnight lane is on (hangar power overnight on), for overnight repos' intake jobs and evals (~$87/month; docs/gke.md section 6)."
   type        = bool
   default     = false
 }
 
 variable "overnight_machine_type" {
-  description = "The overnight lane's node: an n2d-standard-16 holds 14 standard sandboxes (HANGAR_OVERNIGHT_LANE_SANDBOXES)."
+  description = "The overnight lane's node. e2-standard-16 (Spot) uses the regional CPUS quota rather than N2D_CPUS, which the sandbox pool may have used up. E2 lands on Intel or AMD and GKE Sandbox turns SMT off on Intel, so it holds 7 standard sandboxes for certain (14 on AMD): keep HANGAR_OVERNIGHT_LANE_SANDBOXES at 7, or set 14 with an n2d-standard-16 here once N2D_CPUS has room for it."
   type        = string
-  default     = "n2d-standard-16"
+  default     = "e2-standard-16"
+  validation {
+    condition     = !can(regex("^(e2-(micro|small|medium)|.*-metal)$", var.overnight_machine_type))
+    error_message = "GKE Sandbox needs a full-core, non-metal machine type: not e2-micro, e2-small, e2-medium or *-metal."
+  }
 }
 
 variable "enable_kata_pool" {
