@@ -475,6 +475,60 @@ def risky(tool: str, data: dict, cwd: str) -> str | None:
     return None
 
 
+# --- #292: hangar's own hand-back commands are not the agent's tool use. Under approvals=ask, a turn's closing
+# `hangar-agent done "..."` waited on a person like any other command. These subcommands only write files under the
+# turn's $HANGAR_IO (exchange.HELPER); `artifact`, `result @FILE`, `env`, `svc` and the computer commands read or
+# run other things and still ask.
+_OWN_SUBCOMMANDS = ("progress", "ask", "done", "result")
+_SHELLS = ("bash", "sh", "zsh", "dash")
+
+
+def _one_simple_command(command: str) -> bool:
+    """The command is one simple command: no `;`, `&&`, `|`, `&`, redirection, subshell, newline, backquote or
+    `$(...)` / `${...}` outside single quotes, and every quote closed. Plain words, quoted strings, `$VAR`."""
+    quote, i, n = "", 0, len(command)
+    while i < n:
+        c = command[i]
+        if quote == "'":
+            quote = "" if c == "'" else quote
+        elif c == "\\":
+            if i + 1 < n and command[i + 1] == "\n":
+                return False  # a line continuation: keep it simple
+            i += 1  # the next character is taken literally, inside double quotes or out
+        elif c == "`" or (c == "$" and command[i + 1:i + 2] in ("(", "{")):
+            return False  # command or parameter substitution, which runs (or assigns) inside double quotes too
+        elif quote == '"':
+            quote = "" if c == '"' else quote
+        elif c in "'\"":
+            quote = c
+        elif c in ";&|<>()\n\r":
+            return False
+        i += 1
+    return quote == "" and not command.endswith("\\")
+
+
+def own_command(tool: str, data: dict, depth: int = 0) -> bool:
+    """A shell call that is exactly one of hangar's own hand-back commands (`hangar-agent done "..."`,
+    `progress`, `ask`, `result '<json>'`), which a person need not approve: it only writes the turn's files under
+    $HANGAR_IO. Anything chained, redirected or substituted (`hangar-agent done; rm -rf ~`) is not."""
+    if tool not in ("Bash", "shell"):
+        return False
+    argv = data.get("argv")
+    if depth == 0 and isinstance(argv, list) and len(argv) == 3 and all(isinstance(a, str) for a in argv) \
+            and os.path.basename(argv[0]) in _SHELLS and re.fullmatch(r"-l?c", argv[1]):
+        return own_command(tool, {"command": argv[2]}, depth + 1)  # codex: ["bash", "-lc", "<script>"]
+    command = data.get("command")
+    if not isinstance(command, str) or not _one_simple_command(command.strip()):
+        return False
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    if len(words) < 2 or words[0] != "hangar-agent" or words[1] not in _OWN_SUBCOMMANDS:
+        return False
+    return not (words[1] == "result" and len(words) > 2 and words[2].startswith("@"))  # @FILE reads a file
+
+
 # --- taint (#130): what needs a person once the turn has read untrusted content (the plan's sinks): a push, a PR, a
 # fetch to a host (data out, or a payload in), and MCP tools the environment marks as writes
 _TAINT_WEB = {"WebFetch", "WebSearch"}  # tools whose use taints the turn, seen in the harness's own stream
@@ -591,6 +645,8 @@ class Driver:
         self._approval("approval_request", id=aid, tool=tool, detail=shown(what), policy=policy,
                        expires_at=round(expires), **gate)
         a = Approval(aid, key, tool, answer, expires)
+        if policy != "auto" and own_command(tool, data):  # --- #292: hangar's own hand-back, not the agent's
+            return self._answer(a, "allow", "", "policy")
         if policy == "ask":
             self.pending[aid] = a
             return
@@ -1158,6 +1214,8 @@ class Codex(Harness):
         if tool == "shell":
             command = p.get("command")
             data = {"command": " ".join(map(str, command)) if isinstance(command, list) else command}
+            if isinstance(command, list):
+                data["argv"] = [str(c) for c in command]  # --- #292: the script, its quoting intact
         else:
             paths = self.files.get(p.get("itemId")) or list((p.get("fileChanges") or {}).keys())
             data = {"paths": paths + ([p["grantRoot"]] if p.get("grantRoot") else []), "reason": p.get("reason")}
