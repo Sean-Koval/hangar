@@ -94,7 +94,10 @@ const harnessWord = (h) => HARNESS_WORD[h] || h || "the agent";
 function untilWords(ts) {
   if (!ts) return "";
   const s = Math.round(ts - Date.now() / 1000);
-  return s <= 0 ? "now" : s < 3600 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`;
+  if (s <= 0) return "now";
+  if (s < 3600) return `${Math.round(s / 60)} min`;
+  const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);  // "2 h 10 min", as Airframe's cards read
+  return m ? `${h} h ${m} min` : `${h} h`;
 }
 // a: {id, kind: tool | job | request, cmd, tool, taint, policy, since, expires, who: {harness, sandbox, owner, requester},
 //     job, session (names, for the inspect link and the words), allowAlways, approve, deny}
