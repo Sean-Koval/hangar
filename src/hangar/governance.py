@@ -1,4 +1,4 @@
-"""The governance decision point: how hangar asks the governed workspace whether an action may happen (spec 0015).
+"""The governance decision point: how hangar asks Tower whether an action may happen (spec 0015).
 
 Hangar is the Run plane and enforces; the workspace is the Govern plane and decides. Five kinds of decision cross
 that line: releasing a job that waits for a trusted person, a tool call a live turn asks about, arming a landing,

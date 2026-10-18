@@ -35,7 +35,7 @@ Entry points, for callers and for what builds on this (#130's taint gates, part 
   first (`with_logins`) when `approvers` should count.
 * `Approver` is who is deciding: `from_principal` (MCP, REST), `from_github`, `from_jira`, `in_process`.
 
-Part B (#172) swaps the decision source behind `can_decide` for the governed workspace's policy decision point,
+Part B (#172) swaps the decision source behind `can_decide` for Tower's policy decision point,
 without touching callers.
 """
 
