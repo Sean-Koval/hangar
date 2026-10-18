@@ -1,8 +1,9 @@
 """The web console and the agent screen are built on Airframe, the suite's design system.
 
 Airframe's source of truth is Sean-Koval/agent-factory. scripts/sync-airframe.sh vendors its published theme files,
-unmodified, into src/hangar/ui/airframe/ (the console) and docs/stylesheets/ (the docs site). hangar's own UI files
-use `var(--af-*)` tokens and `af-` classes only, so a color literal there is a bug: change Airframe instead.
+unmodified, into src/hangar/ui/airframe/ (the console: the CSS, the icon sprite and airframe.js, the helpers and
+behaviours) and docs/stylesheets/ (the docs site). hangar's own UI files use `var(--af-*)` tokens and `af-` classes
+only, so a color literal there is a bug: change Airframe instead.
 """
 
 import re
@@ -77,14 +78,20 @@ def test_vendored_files_come_unmodified_from_one_tag():
     assert "Airframe for the docs sites" in (DOCS_CSS / "airframe-docs.css").read_text()
     sprite = (VENDORED / "airframe-icons.svg").read_text()
     assert sprite.startswith('<svg xmlns="http://www.w3.org/2000/svg"') and '<symbol id="af-agent"' in sprite
+    # theme-v6: the helpers and behaviours come as one ES module, from the same release
+    js = (VENDORED / "airframe.js").read_text()
+    assert js.startswith("/*! Airframe helpers.") and "do not edit the copy" in js
+    for name in ("status", "icon", "meta", "btn", "avatar", "toast", "confirm"):
+        assert f"export function {name}(" in js, f"airframe.js lacks {name}()"
+    assert "export const drawer" in js
 
 
 def test_vendored_dir_holds_only_what_the_sync_script_writes():
     pairs = re.search(r'FILES="\n(.*?)\n"', SYNC.read_text(), re.S).group(1).split("\n")
     dests = {line.split()[1] for line in pairs if line.strip()}
     assert {"src/hangar/ui/airframe/airframe.css", "src/hangar/ui/airframe/airframe-components.css",
-            "src/hangar/ui/airframe/airframe-icons.svg", "docs/stylesheets/airframe.css",
-            "docs/stylesheets/airframe-docs.css"} <= dests
+            "src/hangar/ui/airframe/airframe-icons.svg", "src/hangar/ui/airframe/airframe.js",
+            "docs/stylesheets/airframe.css", "docs/stylesheets/airframe-docs.css"} <= dests
     for d in dests:
         assert (ROOT / d).is_file(), f"{d} is missing: run sh scripts/sync-airframe.sh theme-vN"
     extra = {str(p.relative_to(ROOT)) for p in VENDORED.iterdir()} - dests
@@ -109,12 +116,19 @@ def test_console_serves_and_links_airframe(settings):
     assert page.index("/ui/airframe/airframe.css") < page.index("/ui/airframe/airframe-components.css") < page.index(
         "/ui/app.css")
     for path, kind in (("/ui/airframe/airframe.css", "text/css"), ("/ui/airframe/airframe-components.css", "text/css"),
-                       ("/ui/airframe/airframe-icons.svg", "image/svg+xml"), ("/ui/favicon.svg", "image/svg+xml")):
+                       ("/ui/airframe/airframe-icons.svg", "image/svg+xml"), ("/ui/favicon.svg", "image/svg+xml"),
+                       ("/ui/airframe/airframe.js", "text/javascript")):
         r = c.get(path)
         assert r.status_code == 200 and r.headers["content-type"].startswith(kind), path
     assert "/ui/airframe/airframe.css" in c.get("/ui/vnc.html").text
-    # the Fleet page is fleet.js, after app.js whose helpers it uses
-    assert page.index('src="/ui/app.js"') < page.index('src="/ui/fleet.js"')
+    # airframe.js is an ES module, loaded first and handed to the classic scripts as window.airframe; the deferred
+    # scripts then run in order: app.js, then the Fleet page (fleet.js), which uses app.js's helpers
+    mod = re.search(r'<script type="module">(.*?)</script>', page, re.S)
+    assert mod and 'from "/ui/airframe/airframe.js"' in mod.group(1) and "window.airframe = airframe" in mod.group(1)
+    assert 'config.icons = "/ui/airframe/airframe-icons.svg"' in mod.group(1), "the sprite is not next to the page"
+    assert mod.start() < page.index('src="/ui/app.js"') < page.index('src="/ui/fleet.js"')
+    for src in ("/ui/app.js", "/ui/fleet.js"):
+        assert re.search(rf'<script defer src="{src}">', page), f"{src} must be deferred to run after the module"
     assert c.get("/ui/fleet.js").status_code == 200
 
 
