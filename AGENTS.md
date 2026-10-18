@@ -9,3 +9,8 @@
 - Statuses follow the dark cockpit: running and queued stay grey; only needs approval (orange diamond), failed (red triangle) and denied (red placard) carry color. The brand yellow is for the primary action, focus and selection, never a status. hangar's hue (`--af-product-hangar`) appears only in its mark, the docs header and the 2px nav marker.
 - Never edit the vendored files: `src/hangar/ui/airframe/` and `docs/stylesheets/airframe.css` and `airframe-docs.css`. Change Airframe in agent-factory, then refresh with `sh scripts/sync-airframe.sh theme-vN`. hangar's product hue for the docs lives in `docs/stylesheets/product.css`.
 - Coding agents: the Airframe skill is committed at `.claude/skills/airframe/` (Claude Code) and `.agents/skills/airframe/` (Codex) with the rules and the class map; refresh it with `npx shadcn@latest add https://sean-koval.github.io/agent-factory/r/skill.json` and never edit it here.
+
+## Docs
+
+- The site is `mkdocs.yml` and `docs/`, built with Zensical as `.github/workflows/docs.yml` does. Build it locally with `pip install zensical==0.0.71`, then `zensical build --strict` (into `site/`, which is not committed) or `zensical serve` (http://localhost:8000, rebuilt on save). `--strict` fails on a broken link or anchor, as CI does.
+- `tests/test_front_page.py` keeps README.md and `docs/index.md` honest: the security posture section in both, and one features table with a status per row.

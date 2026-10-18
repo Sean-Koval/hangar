@@ -157,4 +157,12 @@ uv run ruff check src tests
 uv run hangar serve --reload
 ```
 
+The docs site builds the way `.github/workflows/docs.yml` builds it (Zensical, from `mkdocs.yml`):
+
+```bash
+pip install zensical==0.0.71
+zensical build --strict    # into site/; a broken link or anchor fails it, as in CI
+zensical serve             # http://localhost:8000, rebuilt on save
+```
+
 Code map: `fleet.py` (lifecycle), `envspec.py` (specs to Dockerfiles), `broker.py` + `vault.py` (credentials), `harnesses.py` (per-agent install, auth, run), `mcp_server.py`, `app.py` (REST, websockets, dashboard), `providers/` (docker, kubernetes, e2b), `ui/` (no-build dashboard).
