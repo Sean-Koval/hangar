@@ -41,7 +41,7 @@ STYLE = """
 PRODUCT = {
     "hangar": "var(--af-product-hangar, #EE8F63)",
     "flightdeck": "var(--af-product-flightdeck, #D98CD2)",
-    "workspace": "var(--af-product-tower, #C5A93B)",
+    "tower": "var(--af-product-tower, #C5A93B)",
     "aidlc": "var(--af-product-aidlc, #69C27E)",
     "spaceport": "var(--af-product-spaceport, #B199F4)",
 }
@@ -198,10 +198,10 @@ def hangar_suite() -> str:
             350,
             112,
             "Govern",
-            ["Approvals and rules for risky actions;", "hangar asks, the workspace decides"],
-            eyebrow="GOVERNED WORKSPACE  ·  PLANNED",
+            ["Approvals and rules for risky actions;", "hangar asks, Tower decides"],
+            eyebrow="TOWER  ·  PLANNED",
             kind="box-plan",
-            product="workspace",
+            product="tower",
             name_cls="name-s",
         ),
         # doors -> hangar
