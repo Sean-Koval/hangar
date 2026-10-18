@@ -874,7 +874,8 @@ def check_backup(api: Api, state: State, opts: argparse.Namespace) -> str:
         + (f"every {listed['every_hours']:g} h" if listed["every_hours"] else "no schedule (HANGAR_BACKUP_HOURS)"))
     if r["name"] not in names:
         raise Fail(f"{r['name']} isn't in the list of backups")
-    if state.get("provider") == "kubernetes" and not str(listed["where"]).startswith("gs://"):
+    # `where` is for people ("GCS bucket gs://…", or a directory): the bucket is named inside it, not at its start
+    if state.get("provider") == "kubernetes" and "gs://" not in str(listed["where"]):
         raise Fail(f"backups go to {listed['where']}, the control plane's own disk: point HANGAR_SESSION_STORE at the "
                    "bucket, or snapshot the disk (docs/gke.md §7)")
     return f"{r['name']} in {listed['where']}"
