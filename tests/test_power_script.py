@@ -33,7 +33,7 @@ d, p = json.loads(os.environ["GCLOUD_LABELS"]), os.environ["GCLOUD_LOG"] + ".loc
 if os.path.exists(p):
     d["resourceLabels"]["hangar-power-lock"] = open(p).read().strip()
 print(json.dumps(d))' ;;
-  *"node-pools describe system"*) printf 'False\t1\t2\n' ;;
+  *"node-pools describe system"*) printf 'False,1,2\n' ;;
   *"node-pools describe sandboxes-gvisor"*) printf '%b\n' "$GCLOUD_SANDBOX_AUTOSCALING" ;;
 esac
 """
@@ -62,7 +62,7 @@ def updates(calls: list[str], pool: str) -> list[str]:
 
 
 def test_up_restores_the_range_saved_at_down(tmp_path):
-    calls = power_up(tmp_path, r"False\t0\t4")
+    calls = power_up(tmp_path, "False,0,4")
     assert any("--min-nodes 0 --max-nodes 4" in c for c in updates(calls, "sandboxes-gvisor"))
     assert any("--min-nodes 1 --max-nodes 2" in c for c in updates(calls, "system"))
     assert any("resize c" in c and "--node-pool system --num-nodes 1" in c for c in calls)
@@ -71,7 +71,7 @@ def test_up_restores_the_range_saved_at_down(tmp_path):
 def test_up_keeps_a_range_set_while_the_cluster_was_down(tmp_path):
     """terraform apply in the power-down window: autoscaling is on again, 0-10. `up` keeps it and drops the label
     saved at `down`, instead of setting the pool back to 0-4."""
-    calls = power_up(tmp_path, r"True\t0\t10")
+    calls = power_up(tmp_path, "True,,10")
     assert not any("--max-nodes 4" in c for c in updates(calls, "sandboxes-gvisor")), calls
     assert any("--remove-labels=hangar-power-sandboxes-gvisor" in c for c in calls), calls
     assert any("--min-nodes 1 --max-nodes 2" in c for c in updates(calls, "system"))  # the other pool as before
@@ -103,7 +103,9 @@ elif "node-pools describe" in line and "instanceGroupUrls" in line:
     print(f"https://www.googleapis.com/compute/v1/projects/p/zones/z/instanceGroupManagers/ig-{a[3]}")
 elif "node-pools describe" in line:
     p = st["pools"][a[3]]
-    print("True\t%s\t%s" % (p["min"], p["max"]) if p["on"] else "False\t\t")
+    # as GKE prints it: a minNodeCount of 0 is omitted (an empty field), not printed as 0; value() separates with tabs
+    sep = "," if "csv[no-heading]" in line else "\t"
+    print(sep.join(["True", str(p["min"] or ""), str(p["max"])] if p["on"] else ["False", "", ""]))
 elif "instance-groups managed describe" in line:
     print(st["pools"][a[4].rsplit("ig-", 1)[1]]["size"])
 elif "clusters describe" in line:
@@ -121,7 +123,11 @@ elif "clusters update" in line and "--enable-autoscaling" in line:
     st["pools"][arg("--node-pool")].update(on=True, min=int(arg("--min-nodes")), max=int(arg("--max-nodes")))
 elif "clusters resize" in line:
     st["pools"][arg("--node-pool")]["size"] = int(arg("--num-nodes"))
-json.dump(st, open(path, "w"))
+# atomically: power.sh reads a describe's output through `read < <(gcloud ...)`, so the next call can start before
+# this one has saved; a plain rewrite let it read a truncated file
+with open(path + ".tmp", "w") as f:
+    json.dump(st, f)
+os.replace(path + ".tmp", path)
 """
 
 # A kubectl that answers like a running hangar (one with state: its replicas, and what it was told), so `down`, `off`
@@ -305,6 +311,22 @@ def test_down_powers_only_the_sandbox_pools_and_leaves_hangar_up(cluster):
     # A second `down` (a retry) keeps what the first saved instead of saving 0 nodes over it.
     cluster["run"]("down")
     assert cluster["state"]()["labels"] == st["labels"]
+
+
+def test_a_pool_with_a_minimum_of_0_keeps_it_through_down_and_up(cluster):
+    """--- live GKE qualification (#295): GKE omits a minNodeCount of 0, so value() printed `True<TAB><TAB>2` and
+    `read` folded the empty field: a 0-2 pool was saved as 2-1 and came back with a floor of 2 nodes."""
+    st = cluster["state"]()
+    st["pools"]["sandboxes-gvisor"].update(min=0, max=2, size=1)
+    cluster["set_state"](st)
+    cluster["run"]("down")
+    assert cluster["state"]()["labels"]["hangar-power-sandboxes-gvisor"] == "0-2"
+    cluster["clear"]()
+    cluster["run"]("up")
+    gvisor = cluster["state"]()["pools"]["sandboxes-gvisor"]
+    assert (gvisor["on"], gvisor["min"], gvisor["max"]) == (True, 0, 2)
+    calls = cluster["calls"]()
+    assert not any("resize" in c and "--node-pool sandboxes-gvisor" in c for c in calls), calls  # no warm floor
 
 
 def test_up_restores_each_pool_prepulls_then_lets_jobs_start(cluster):
