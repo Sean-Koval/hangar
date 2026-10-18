@@ -42,3 +42,51 @@ def test_job_steer_routes_belong_to_the_jobs_owner(client):  # noqa: F811
     assert client.post("/api/jobs/job-nope/steer", headers=svc, json={"message": "hi"}).status_code == 404
     assert client.get("/api/jobs/job-nope/approvals", headers=svc).status_code == 404
     assert client.post("/api/jobs/job-nope/interrupt").status_code == 404
+
+
+def test_a_steer_on_its_way_can_be_taken_back(client):  # noqa: F811
+    """A send to a busy session is delivered in the background; until the agent has it, the console's queued row
+    can take it back: the steer becomes `cancelled` and the deliverer stops. Delivered or queued ones can't."""
+    import asyncio
+
+    from hangar import steer as steering
+    from hangar.models import Steer
+
+    h = client.app.state.hangar
+    s = h.sessions.for_job(job_id="job-0000beef", environment="plain", harness=None, model=None, repo=None,
+                           base_branch=None, branch="hangar/job-0000beef", provider=None, labels={}, extra_dirs=[],
+                           idle_minutes=5)
+    s.turns.append(SessionTurn(message="m", run_id=None, started_at=1.0, live=False))
+    s.sandbox_id, s.state = "sb-gone", SessionState.RUNNING
+    t = s.turns[-1]
+    t.steers += [Steer(text="on its way", requester="ana"), Steer(text="taken", requester="ana", status="delivered"),
+                 Steer(text="next turn", requester="ana", status="queued")]
+    assert client.post(f"/api/sessions/{s.name}/steers/str-nope/withdraw").status_code == 404
+    for st in t.steers[1:]:
+        r = client.post(f"/api/sessions/{s.name}/steers/{st.id}/withdraw")
+        assert r.status_code == 400 and "can't be taken back" in r.json()["error"], r.text
+    r = client.post(f"/api/sessions/{s.name}/steers/{t.steers[0].id}/withdraw")
+    assert r.status_code == 200 and r.json()["status"] == "cancelled" and t.steers[0].status == "cancelled"
+    assert client.post(f"/api/sessions/{s.name}/steers/{t.steers[0].id}/withdraw").json()["status"] == "cancelled"
+    [audit] = [e for e in h.store.audit_tail(20) if e.action == "session.steer.withdraw"]
+    assert audit.detail["steer"] == t.steers[0].id
+
+    # the deliverer: a message waiting for a busy session (no live turn to take it, no free session to start a
+    # turn on) stops when it is taken back, and releases its hold without starting anything
+    svc = h.sessions
+    st = Steer(text="waiting", requester="ana")
+    t.steers.append(st)
+    svc._busy.add(s.id)
+    svc._holds[s.id] += 1
+    started = []
+    svc.start_turn = lambda *a, **k: started.append(a)  # type: ignore[method-assign]
+
+    async def run():
+        task = asyncio.ensure_future(steering._deliver(svc, s, st))
+        await asyncio.sleep(0.5)
+        assert not task.done() and st.status == "sending"
+        steering.withdraw(svc, s, st.id, "ana")
+        await asyncio.wait_for(task, 5)
+
+    asyncio.run(run())
+    assert st.status == "cancelled" and not started and s.id not in svc._holds
