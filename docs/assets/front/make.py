@@ -11,6 +11,7 @@ with asciinema-player. Frames are captured as screenshots and encoded with ffmpe
 Writes, next to this file (or into --out):
   hangar-demo.gif / hangar-demo.mp4      the recording (README uses the GIF, the docs site the MP4)
   ui-jobs.png, ui-sessions.png           the web UI's jobs and sessions views
+  ui-fleet-{board,bays,columns,owners}.png  the Fleet page's four views (docs/console.md)
   inbox.png                              `hangar inbox` in a terminal
   hangar-suite.svg, -dark.png, -light.png  the diagram (diagram.py)
 CI (.github/workflows/front-page.yml) runs this, checks the files and their sizes, and keeps them as an artifact.
@@ -37,6 +38,7 @@ import demo  # noqa: E402
 import diagram  # noqa: E402
 
 W, H = 1280, 720  # the recording and screenshot viewport
+FLEET_VIEWS = ("bays", "columns", "owners", "board")  # the Board last: it is shot with a held sandbox selected
 MAX_BYTES = 3_000_000  # each asset stays small enough for the repo
 FONTS = (
     "https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900"
@@ -377,13 +379,24 @@ async def ui(pw, out: Path, work: Path) -> None:
     await tab.wait_for_timeout(1200)
     await tab.screenshot(path=str(out / "ui-sessions.png"))
     print("wrote", out / "ui-jobs.png", "and", out / "ui-sessions.png")
+    # the fleet four ways; on the Board, the sandbox waiting on a person is selected, so its detail panel shows
+    for view in FLEET_VIEWS:
+        await tab.goto(f"{demo.URL}/#fleet?view={view}", wait_until="networkidle")
+        await tab.wait_for_selector(f'#view-fleet[data-fleet-view="{view}"] #bays [data-tile]')
+        if view == "board":
+            await tab.locator("#bays [data-tile].af-stand--approval").first.click()
+            await tab.wait_for_selector("#fleet-detail .fd")
+        await tab.wait_for_timeout(800)
+        await tab.screenshot(path=str(out / f"ui-fleet-{view}.png"))
+        print("wrote", out / f"ui-fleet-{view}.png")
     await browser.close()
 
 
 def check(out: Path, only: str | None) -> None:
     names = {
         "diagram": ["hangar-suite.svg", "hangar-suite-dark.png", "hangar-suite-light.png"],
-        "ui": ["hangar-demo.gif", "hangar-demo.mp4", "ui-jobs.png", "ui-sessions.png", "inbox.png"],
+        "ui": ["hangar-demo.gif", "hangar-demo.mp4", "ui-jobs.png", "ui-sessions.png", "inbox.png",
+               *(f"ui-fleet-{v}.png" for v in sorted(FLEET_VIEWS))],
     }
     want = [n for k, v in names.items() if only in (None, k) for n in v]
     bad = []

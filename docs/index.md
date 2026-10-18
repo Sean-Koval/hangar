@@ -14,11 +14,13 @@
 
 ## What it looks like
 
-The web UI on `:8787`: jobs with their timeline, the agent's activity, the check and the PR; sessions you come back to; the fleet four ways (**Board**, every sandbox at a glance; **Bays**, each one's task and next action; **Columns**, sorted by what needs you; **Owners**, capacity by person), where you can allow or deny a held step and open any sandbox's terminal; and the inbox of everything waiting on you.
+The web UI on `:8787`: jobs with their timeline, the agent's activity, the check and the PR; sessions you come back to; the fleet four ways (**Board**, every sandbox at a glance; **Bays**, each one's task and next action; **Columns**, sorted by what needs you; **Owners**, capacity by person), where you can allow or deny a held step and open any sandbox's terminal; and the inbox of everything waiting on you. [The web console](console.md) walks through it.
 
 ![The jobs view: issue #42's job succeeded, check passed, draft PR #43, the agent's summary](assets/front/ui-jobs.png)
 
 ![The sessions view: a resumable session with its saved conversation and checkpoint](assets/front/ui-sessions.png)
+
+![The Fleet page's Board: every sandbox as a tile by environment, the one waiting on a person selected, with its detail panel](assets/front/ui-fleet-board.png)
 
 ![hangar inbox: PR #43 waits for review; another job's agent asks a question](assets/front/inbox.png)
 

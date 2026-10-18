@@ -15,11 +15,13 @@ Documentation site: **[sean-koval.github.io/hangar](https://sean-koval.github.io
 
 ## What it looks like
 
-The web UI on `:8787`: jobs with their timeline, the agent's activity, the check and the PR; sessions you come back to; and the inbox of everything waiting on you.
+The web UI on `:8787`: jobs with their timeline, the agent's activity, the check and the PR; sessions you come back to; the fleet four ways (Board, Bays, Columns and Owners), where you can allow or deny a held step; and the inbox of everything waiting on you ([the web console](docs/console.md)).
 
 ![The jobs view: issue #42's job succeeded, check passed, draft PR #43, the agent's summary](docs/assets/front/ui-jobs.png)
 
 ![The sessions view: a resumable session with its saved conversation and checkpoint](docs/assets/front/ui-sessions.png)
+
+![The Fleet page's Board: every sandbox as a tile by environment, the one waiting on a person selected, with its detail panel](docs/assets/front/ui-fleet-board.png)
 
 ![hangar inbox: PR #43 waits for review; another job's agent asks a question](docs/assets/front/inbox.png)
 

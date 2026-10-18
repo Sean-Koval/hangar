@@ -79,6 +79,7 @@ nav:
           - Governance break-glass: runbooks/break-glass.md
   - Guides:
       - Work:
+          - The web console: console.md
           - Jobs: jobs.md
           - Sessions: sessions.md
           - Steering: steering.md
