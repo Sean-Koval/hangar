@@ -950,12 +950,14 @@ def check_secrets(api: Api, state: State, opts: argparse.Namespace) -> str:
         raise Skip("needs an agent turn (a few cents): run with --with-model")
     if not opts.test_repo:
         raise Skip("needs --test-repo OWNER/REPO (or HANGAR_ACCEPT_TEST_REPO), in HANGAR_GITHUB_REPOS")
+    who = getattr(opts, "as_person", None)  # --- #293: a job no person owns needs a team credential
+    ha.need_login(api, opts, repo=opts.test_repo, person=who, purpose="automated")
     head, tail = synthetic_token()
     fname = f"accept-secret-{state.run}.txt"
     plant = (f"f={fname}; [ -f $f ] || {{ printf '%s%s\\n' {shlex.quote(head)} {shlex.quote(tail)} > $f && "
              "git add $f && git -c user.name='hangar acceptance' -c user.email=acceptance@hangar.invalid commit -qm "
              f"'acceptance: a synthetic token'; }}; true")
-    job = api.call("POST", "/api/jobs", json={
+    job = ha.as_person(api, state, opts).call("POST", "/api/jobs", json={
         "title": f"hangar acceptance {state.run}: secret scan", "repo": f"https://github.com/{opts.test_repo}.git",
         "instructions": NO_CHANGES,
         "verify": plant, "verify_in_loop": False, "deliver": "branch", "autofix": "off",

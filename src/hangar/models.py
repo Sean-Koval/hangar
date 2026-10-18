@@ -283,7 +283,8 @@ class JobEvent(BaseModel):
 # (a record from before #166), never read as `agent`. outcomes.py classifies.
 OutcomeClass = Literal["agent", "infra_error", "cancelled", "human"]
 InfraReason = Literal["preempted", "power_down", "rate_limited", "provider_5xx", "sandbox_create", "checkpoint",
-                      "control_plane_restart", "drift"]  # --- #178: drift: a trial's turn 1 didn't run its pin set
+                      "control_plane_restart", "drift",  # --- #178: drift: a trial's turn 1 didn't run its pin set
+                      "no_login"]  # --- #293: the turn's harness had no login, so hangar didn't start it
 
 
 # --- #162: what a person's steer was, so a harness is judged only on the steers it made necessary. `correction`:

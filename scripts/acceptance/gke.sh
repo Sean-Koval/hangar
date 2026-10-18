@@ -28,7 +28,7 @@ VALUE_OPTS=" --env --session-env --repo --gateway-repo --model --exec-calls --in
  --doctor-baseline --test-env-prefix --egress-allow --egress-deny --egress-direct --dns-probe --service-image
  --service-wait --test-repo --fixture-repo --fixture-push-url --build-timeout --landing-timeout --jira-project
  --scale-sessions --scale-people --scale-env --scale-p95 --job-cap --power-down-cmd --power-up-cmd --power-timeout
- --prepull-envs --boot-timeout --turn-timeout --max-usd "
+ --prepull-envs --boot-timeout --turn-timeout --max-usd --as "
 FLAG_OPTS=" --with-model --power-cycle --power-cycle-anyway "
 VALUE_OPTS=" ${VALUE_OPTS//[[:space:]]/ } "  # one space between names (and around them), so " $1 " matches any
 ONLY="" SKIPS="" KEEP=0 EXPECT_ENVD=1 GATE=all REPORT="hangar-accept-report.json" RECORD=""
@@ -50,6 +50,10 @@ usage: $0 [options]
                         Both branches are deleted afterwards with the gh CLI if you have it.
   --with-model          also run the checks that need real agent turns (they cost a few cents each): model, steer,
                         secrets, landing, egress's env request, scale-smoke's job queue
+  --as PERSON           create those sessions and jobs as PERSON (an admin), so their own login reaches the turns;
+                        without it they belong to no person and need a team credential for the harness, or the
+                        checks skip naming the fix (hangar cred add NAME --team --harness claude-code --kind api_key
+                        --file key.txt)
   --max-usd N           what one of those jobs or turns may spend: its budget, where hangar stops it (default: 1);
                         the run prints what they spent
   --model NAME          model for those turns (default: the environment's)

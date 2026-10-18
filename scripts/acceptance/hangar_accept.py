@@ -645,13 +645,57 @@ def check_isolation(api: Api, state: State, opts: argparse.Namespace) -> str:
     return f"{len(probes) - 1} closed as they should be; the internet is reachable"
 
 
+# ---------------------------------------------------------------------------- --- #293: whose turn, which login
+TEAM_KEY_FIX = "hangar cred add NAME --team --harness {harness} --kind api_key --file key.txt"
+
+
+def as_person(api: Api, state: State, opts: argparse.Namespace) -> Api:
+    """The client that creates this run's sessions and jobs: `api` itself, or with --as PERSON one with an admin token
+    of that person's, so the work is theirs and their own login reaches its turns (a deploy's admin token belongs to
+    no person, and a personal subscription login never reaches work no person owns)."""
+    who = getattr(opts, "as_person", None)
+    if not who:
+        return api
+    if (made := getattr(opts, "_as_api", None)) is not None:
+        return made
+    try:
+        tok, _ = api.scopes_token(state, f"as-{opts.check}", ["admin"], person=who)
+    except Fail as e:
+        raise Fail(f"--as {who}: couldn't mint a token for them ({e}); --as needs a person with the admin role "
+                   "(hangar person ls)") from None
+    opts._as_api = Api(api.url, tok)
+    return opts._as_api
+
+
+def need_login(api: Api, opts: argparse.Namespace, *, environment: str | None = None, person: str | None = None,
+               repo: str | None = None, purpose: str = "interactive") -> None:
+    """Skip a check whose agent turn would start with no login (#293): ask hangar which credentials a session (or a
+    job) on `environment` for `person` would get. A hangar without the question (before #293) goes on."""
+    params = {"environment": environment, "person": person, "repo": repo, "purpose": purpose}
+    try:
+        r = api.http.get("/api/credentials/login", params={k: v for k, v in params.items() if v})
+    except httpx.HTTPError:
+        return
+    if r.status_code != 200:
+        return
+    d = r.json()
+    if d.get("login") is not False:
+        return
+    harness = d.get("harness") or "its harness"
+    whose = f"{person}'s" if person else \
+        "this run's (its token belongs to no person, so no personal login reaches them)"
+    raise Skip(f"no login for {harness} would reach {whose} turns on {d.get('environment')}: add a team API key ("
+               + TEAM_KEY_FIX.format(harness=harness) + ")" + ("" if person else ", or rerun with --as PERSON"))
+
+
 def _new_session(api: Api, state: State, name: str, opts: argparse.Namespace, **extra: Any) -> dict[str, Any]:
-    """A session with no first message: it boots a sandbox and waits. idle_minutes 0: it stays up until suspended."""
+    """A session with no first message: it boots a sandbox and waits. idle_minutes 0: it stays up until suspended.
+    With --as PERSON it is that person's (#293)."""
     body = {"name": name, "environment": opts.session_env, "repo": opts.repo, "idle_minutes": 0,
             "labels": {LABEL: state.run}, "model": opts.model,
             **({"budget": {"max_cost_usd": opts.max_usd}} if getattr(opts, "max_usd", None) else {}),  # --- acceptance
             **extra}
-    api.call("POST", "/api/sessions", json={k: v for k, v in body.items() if v is not None})
+    as_person(api, state, opts).call("POST", "/api/sessions", json={k: v for k, v in body.items() if v is not None})
     state.add("sessions", name)
     return api.settle(name, opts.boot_timeout, want_sandbox=True)
 
@@ -737,6 +781,8 @@ def check_model(api: Api, state: State, opts: argparse.Namespace) -> str:
     name = state.get("session")
     if not name:
         raise Skip("needs the session check")
+    sess = api.session(name)  # --- #293: the session's own person and environment decide its login
+    need_login(api, opts, environment=sess.get("environment") or opts.session_env, person=sess.get("person"))
     word = f"hangar-accept-{state.run}"
     t0 = time.monotonic()
     s = _turn(api, name, f"Reply with exactly this text and nothing else, without using any tools: {word}",
@@ -764,6 +810,7 @@ def check_steer(api: Api, state: State, opts: argparse.Namespace) -> str:
     if not opts.with_model:  # --- acceptance
         raise Skip("costs money: run with --with-model")
     name = f"accept-{state.run}-steer"
+    need_login(api, opts, environment=opts.session_env, person=getattr(opts, "as_person", None))  # --- #293
     s = _new_session(api, state, name, opts, approvals="ask")
     if s["state"] != "idle":
         raise Fail(f"session {name} is {s['state']}: {s.get('reason')}")
@@ -1163,6 +1210,8 @@ def main(argv: list[str]) -> int:
     p.add_argument("--doctor-baseline", type=Path, default=None,
                    help="JSON list of doctor checks already failing before a deploy: reported, not failed on")
     p.add_argument("--with-model", action="store_true", help="run the checks that need real agent turns")
+    p.add_argument("--as", dest="as_person", default=None, metavar="PERSON",
+                   help="create the sessions and jobs as this (admin) person, so their own login reaches the turns")
     p.add_argument("--keep", action="store_true",
                    help="leave what each check made until the run's cleanup (by default it goes when the check ends)")
     team_checks.add_args(p)  # --- acceptance

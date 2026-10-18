@@ -200,6 +200,8 @@ Anyone may change their own settings; admins anyone's (`PUT /api/people/{id}/del
 
 - **personal credentials shared**: fails for any subscription login stored as a team credential, and says what the migration did.
 - **team credentials for jobs**: mapped repos (GitHub and Slack), inbound webhooks and schedules without a person whose environment's harness would get no login, and repos whose `credentials: person` policy makes unlinked senders' jobs fail.
+
+A turn whose harness would start with no login (no credential for it among the sandbox's, none of its login variables in the turn's environment, no login file) isn't started: the turn ends at once with `no login for <harness> reaches …` and the command to add a team key, recorded as `infra_error` / `no_login`, not as the agent's failure. `GET /api/credentials/login?environment=E[&person=P][&repo=R][&purpose=automated]` (admins) answers the same question before anything starts: the credentials a session (or a job) would get, and `login` true, false, or null when the environment sets a login variable itself.
 - **subscription logins**: warns for mapped repos, webhooks and schedules whose harness would find only subscription logins, and for people whose only logins for a harness are subscriptions (their jobs fail while their sessions work); fails under `HANGAR_SUBSCRIPTION_LOGINS=any`.
 - **harness repo**: when `HANGAR_HARNESS_REPO` is set, whether it is reachable, when it was last refreshed, and
   whether every channel resolves.

@@ -1229,6 +1229,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     harness_thaw.mount(app, h, U, A)
     experiments.mount(app, h, J, owner_filter)
+    from hangar import turnlogin  # --- #293: GET /api/credentials/login, would a session get a login
+
+    turnlogin.mount(app, h, A)
     from hangar import pinsets  # --- #178: pin sets and trials, the seam with flightdeck
 
     pinsets.mount(app, h, J, owner_filter)

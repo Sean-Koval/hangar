@@ -958,6 +958,9 @@ async def _finish_trial(jobs: JobService, job: Job, st: State, spec: ExperimentS
     if t.outcome_class == "infra_error" and t.infra_reason == "drift":  # --- #178: not what was pinned; not again
         t.excluded, t.state = True, "done"
         st.notes.append(f"trial {t.ref}: its turn 1 didn't run pin set {t.pin_set} (drift): excluded, not retried")
+    elif t.outcome_class == "infra_error" and t.infra_reason == "no_login":  # --- #293: a retry would find none either
+        t.excluded, t.state = True, "done"
+        st.notes.append(f"trial {t.ref}: no login for its harness (no_login): excluded, not retried")
     elif t.outcome_class == "infra_error":  # --- #166: not the agent's result: left out, and run again
         t.excluded, t.state = True, "done"
         retry = _retry(jobs, st, spec, t)

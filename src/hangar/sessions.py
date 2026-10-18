@@ -43,6 +43,7 @@ from hangar import resident as resident  # --- durable: live and recent sessions
 from hangar import slo as slo  # --- clouddoctor: turn-start and resume times for `hangar status`
 from hangar import steer as steering  # workstream steer: live turns
 from hangar import taint as taint  # --- taint (#129): whether a turn has read untrusted content
+from hangar import turnlogin as turnlogin  # --- #293: a turn's harness must have a login
 from hangar.checkpoints import CheckpointStore, make_store
 from hangar.ckpt import CKPT_DIR, CKPT_REF, PACK_READ_LIMIT, PARTS, RESTORE_DIR  # noqa: F401 - re-exported (strategies, exchange)
 from hangar.events import Activity, RunEvent, resolve_budget, total_usage
@@ -997,6 +998,22 @@ class SessionService:
                           f"could not start: {e}")
                 raise
 
+    async def _check_login(self, s: Session, turn: SessionTurn, sb: Sandbox) -> None:
+        """--- #293: refuse a turn whose harness would start with no login (turnlogin.py), recording it on the turn
+        as `infra_error` / `no_login`, so it reads as configuration, not the agent's failure."""
+        harness = s.harness or sb.info.get("harness")
+        try:
+            await turnlogin.check(self.fleet, sb, harness, s.person)
+        except turnlogin.NoLogin as e:
+            turn.harness = harness
+            turn.outcome, turn.outcome_reason = "error", str(e)
+            turn.finished_at = now()
+            outcomes.mark(turn, "infra_error", turnlogin.INFRA_REASON)
+            self.fleet.audit(f"session:{s.id}", "session.turn_refused", s.id, reason=turnlogin.INFRA_REASON,
+                             harness=harness)
+            self._save(s)
+            raise
+
     @observe.turn_begin  # --- observe: the turn's invoke_agent span
     async def begin_turn(self, s: Session, turn: SessionTurn, prompt: str | None = None,
                          extra_env: dict[str, str] | None = None, timeout_minutes: int | None = None,
@@ -1006,6 +1023,7 @@ class SessionService:
         already carries the history."""
         sb = self.fleet.get(s.sandbox_id or "")
         t0 = now()  # --- clouddoctor: turn start, for `hangar status`
+        await self._check_login(s, turn, sb)  # --- #293: no login for the harness: refused, not an agent failure
         # The sandbox must outlive this turn (the idle loop skips busy sessions, so extend now).
         tmo = timeout_minutes if timeout_minutes is not None else self.settings.session_turn_timeout_minutes
         want = now() + (tmo + max(s.idle_minutes, 30) + 30) * 60
