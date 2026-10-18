@@ -226,9 +226,10 @@ async def test_claims_are_refused_with_what_to_do(jobs, world, settings):
 
 
 def test_history_resolves_when_the_registry_is_a_subdirectory_of_a_repo(settings, tmp_path):
-    """HANGAR_HARNESS_REPO inside a repo (agent-factory's examples/team-harness, #228): `git log -- <path>` reads the
-    path from the registry, but `git show <commit>:<path>` reads it from the repo's root, so every older revision
-    was missed and `team@stable` failed whenever stable wasn't the current lock."""
+    """HANGAR_HARNESS_REPO inside a repo (#228; agent-factory's examples/team-harness was one before it moved to
+    Sean-Koval/team-harness): `git log -- <path>` reads the path from the registry, but `git show <commit>:<path>`
+    reads it from the repo's root, so every older revision was missed and `team@stable` failed whenever stable
+    wasn't the current lock."""
     repo = tmp_path / "suite"
     reg = repo / "examples" / "team-harness"
 

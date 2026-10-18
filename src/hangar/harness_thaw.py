@@ -97,9 +97,9 @@ def _git(root: Path, *args: str) -> str | None:
 
 def _blob(commit: str, rel: str) -> str:
     """`git show`'s name for the file at `rel` (relative to the registry) in `commit`. A bare `<commit>:<path>` is
-    read from the repository's root, so it misses whenever HANGAR_HARNESS_REPO is a subdirectory of a repo (#228,
-    agent-factory's examples/team-harness); `./` makes the path relative to `git -C`'s directory, as `log --` and
-    `ls-tree` already read theirs."""
+    read from the repository's root, so it misses whenever HANGAR_HARNESS_REPO is a subdirectory of a repo (#228:
+    agent-factory's examples/team-harness was one, until it moved to its own repo); `./` makes the path relative to
+    `git -C`'s directory, as `log --` and `ls-tree` already read theirs."""
     return f"{commit}:./{rel}"
 
 

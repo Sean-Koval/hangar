@@ -147,8 +147,8 @@ runs from one too: `{harness_lock: "team-default@sha256:…"}`, by digest ([jobs
 `harnesses/<name>/harness.lock` (or `<name>/harness.lock`), channels in `channels.yaml`
 (`{team-default: {stable: "sha256:..."}}`). A reference is `name` (the current lock), `name@rN`, `name@sha256:...` or
 `name@<channel>`; a revision or digest that isn't the checkout's current one is found in its git history. The
-registry can be a subdirectory of a larger repo (such as agent-factory's `examples/team-harness`): its paths, and the
-history lookups, are relative to that directory.
+registry can also be a subdirectory of a larger repo: its paths, and the history lookups, are relative to that
+directory.
 `GET /api/harness-locks/{ref}` shows what a reference resolves to.
 
 **The claim** is refused, with what to do, when:
