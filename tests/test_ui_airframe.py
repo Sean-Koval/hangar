@@ -210,6 +210,32 @@ def test_the_reply_is_a_composer_and_a_question_is_a_question_card():
     assert 'status("approval", "Needs input", { lit: true })' in app
 
 
+def test_the_change_is_a_greyscale_diff_with_comments_for_the_agent():
+    """theme-v6: a job's or session's change (GET .../patch) renders as Airframe's Diff (file index with the stat,
+    hunks, greyscale lines, a Comment affordance per line); a comment opens a thread under its line and is queued;
+    the queued comments go to the agent with the next message from the Composer, or alone, each with its file:line
+    and the line itself."""
+    app, css = (UI / "app.js").read_text(), (UI / "app.css").read_text()
+    for part in ("af-diff", "af-diff__file", "af-diff__path", "af-diff__stat", "af-diff__add", "af-diff__del",
+                 "af-diff__tools", "af-diff__hunk", "af-diff__hh", "af-diff__line", "af-diff__n", "af-diff__s",
+                 "af-diff__code", "af-diff__cmt", "af-diff__more", "af-diff__thread", "af-diff__note", "af-comment",
+                 "af-comment__who", "af-comment__name", "af-comment__time", "af-comment__text"):
+        assert part in app, f"app.js lacks {part}"
+    assert "function parsePatch(" in app and "function diffFileHtml(" in app and "function threadHtml(" in app
+    assert "af-diff__line af-diff__line--${l.kind}" in app
+    assert '"\\u2212"' in app, "a real minus sign in the sign column and the stat"
+    assert "/api/${kind}/${id}/patch" in app
+    assert 'changesHtml("jobs", j.id' in app and 'changesHtml("sessions", x.id' in app
+    # comments are queued per job or session and ride with the next message, with the file:line and the line itself
+    assert "const review = new Map()" in app and "function reviewText(" in app
+    assert "Review comments on the change (" in app and "${c.key}\\n> ${c.code}\\n${c.text}" in app
+    assert "Sent to the agent with your next message" in app and "review comment${queued === 1" in app
+    assert '"data-send-comments"' in app and "review.delete(rkey)" in app
+    # a half-written comment survives the 4 s repaint; no color of hangar's own in the diff
+    assert "function restoreThreads(" in app and "restoreThreads(box, threads, rkey)" in app
+    assert "af-diff__line--add" not in css and "af-diff__line--del" not in css, "the diff's tones are Airframe's"
+
+
 def test_held_actions_are_approval_cards_decided_in_place():
     """theme-v6: a held tool call, a job waiting to start and an environment request are Airframe's ApprovalCard v2,
     on the job and session details, in the Fleet detail and in the Needs-you view; Deny asks for a reason and refuses
