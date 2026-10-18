@@ -692,7 +692,7 @@ class Fleet:
         spec = self.catalog.get(environment)
         pname = provider or self.settings.default_provider
         prov = self.provider(pname)
-        self.power.check(pname)  # --- ops: the pools are off for the night: say when, don't wait for a node
+        self.power.check(pname, labels)  # --- ops: the pools are off for the night (#186: but the overnight lane)
         try:  # --- heavy: Docker and the profile (heavy.py); the spec with them, for the image and the provider
             hv = heavy.decide(self, spec, repo or (spec.repo.url if spec.repo else None), labels)  # as tiers.route
             base_spec, spec = spec, heavy.prepare(self, spec, pname, hv)

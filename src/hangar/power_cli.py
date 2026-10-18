@@ -47,7 +47,8 @@ def _until(text: str) -> float:
 def _show(o: dict) -> None:
     p = o["power"]
     color = "green" if p["state"] == "up" else "yellow"
-    line = {"up": "on", "down": "powered down", "starting": "powering on"}.get(p["state"], p["state"])
+    line = {"up": "on", "down": "powered down", "starting": "powering on",
+            "night": "powered down except the overnight lane"}.get(p["state"], p["state"])  # --- #186
     if p["state"] != "up" and p.get("when"):
         line += f"; ready at {p['when']}"
     typer.secho(f"sandboxes: {line}" + (" (should have been on by now; power.sh never said so)" if p["stale"] else ""),
@@ -63,6 +64,9 @@ def _show(o: dict) -> None:
             if pre.get("images") is not None else ""))
     if p.get("last_down"):
         typer.echo(f"last power-down: {_at(p['last_down'])}")
+    if (o2 := p.get("overnight")) and o2.get("on"):  # --- #186
+        typer.echo(f"overnight lane: on (by {o2.get('by')}" + (", forced" if o2.get("forced") else "") +
+                   f"); {o2.get('running', 0)} of {o2.get('capacity', '?')} running")
     if p.get("warm_pools"):
         typer.echo("warm pools today: " + ", ".join(f"{k}={v}" for k, v in sorted(p["warm_pools"].items())))
     if d := o.get("last_deploy"):
@@ -134,3 +138,17 @@ def hold(days: float | None = typer.Option(None, "--days", help="Hold for this m
 def release():
     """End a hold: the power schedule runs again from its next time (it doesn't power anything on now)."""
     typer.secho(_cli()._call("POST", "/api/admin/power/release")["message"], fg="green")
+
+
+@power_app.command("overnight")
+def overnight(state: str = typer.Argument(..., help="on or off"),
+              force: bool = typer.Option(False, "--force", help="Turn it on below the yield gate (audited).")):
+    """--- #186: the overnight lane, one Spot node kept up 01:00-10:00 for intake jobs of `overnight: true` repos (and
+    `lane: overnight` jobs) and evals. On needs the last 14 days' agent PR yield at 60% or more, unless --force.
+    `power.sh down` keeps the node up while it's on (terraform enable_overnight_lane creates the pool)."""
+    if state not in ("on", "off"):
+        raise typer.BadParameter("on or off")
+    r = _cli()._call("POST", "/api/admin/power/overnight", json={"on": state == "on", "force": force})
+    rate = f"; agent PR yield {r['yield']:.0%}" if r.get("yield") is not None else ""
+    typer.secho(f"overnight lane {'on' if r['on'] else 'off'}" + (" (forced below the yield gate)" if r.get("forced")
+                                                                  else "") + rate, fg="green" if r["on"] else "yellow")

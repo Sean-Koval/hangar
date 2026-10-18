@@ -45,6 +45,7 @@ hangar repo check acme/app          # is it ready for agent work? (below)
 | `ai_review_budget_usd` | What one review job may spend. Unset: $1.50 (`--ai-review-budget`). |
 | `max_open_agent_prs` | [Review capacity](team-scale.md#review-capacity): open agent PRs awaiting a person before their new jobs on this repo wait as `awaiting_capacity`; `0` turns it off. Unset: `HANGAR_PERSON_MAX_OPEN_AGENT_PRS` (5) (`--max-open-agent-prs`). |
 | `verify_allowed` | Globs (`make test*`, `pytest tests/*`) a ticket's own *Verify command* ([agent tickets](intake.md#agent-tickets)) must match to become that job's `verify` (`--verify-allowed`, repeated). Unset: a ticket's command is only ever a suggestion to the agent, and the job's check stays the policy's or the environment's. A matched command is the job's own check (`verify_source: job`), so the [base check](#the-check-on-the-base-commit) is skipped for it, as for any acceptance test a job brings. `*` alone is refused. |
+| `overnight` | `true`: the repo's intake jobs (Jira, GitHub, Slack, GitHub Projects) run at night in the overnight lane instead of waiting for 10:00 (`--overnight`; [gke.md](gke.md#the-overnight-lane), #186). A job from any repo can ask for it with the label `lane: overnight`. |
 
 The repo is `owner/repo` for GitHub (any URL form, any case), or the git URL for another host.
 
@@ -183,6 +184,7 @@ curl -s -X PUT $HANGAR/api/repos/policy -H "Authorization: Bearer $ADMIN" -d '{"
 | `sources` | `jira`, `github`, `slack`, `github-projects` (default the first three) |
 | `owner` | Whose monthly eval cap the shadows count against ([the eval budget](#the-eval-budget)); the team budget always |
 | `budget_usd` | Each shadow's job budget (5) |
+| `canary` | Injection canaries in some shadows: `{"p": 0.0-1.0, "placements": [...]}` (below; absent: none) |
 
 When a sampled job has started (its sandbox is up, its base commit known), hangar starts one trial against a pin set of
 the candidate at that commit (`POST /api/trials`, `source: shadow`, `shadow_of: <job id>`), in the eval queue class
@@ -198,6 +200,14 @@ fenced as for the job, and:
 **Review comes first.** Turning `p` above 0 is refused unless the last 7 days' review-wait p50 is under 4 hours
 (`hangar metrics weekly`). When it rises above that, shadows pause by themselves (an audit entry `shadow.paused`, once),
 and they resume when it falls back (`shadow.resumed`).
+
+**Injection canaries.** With `canary: {"p": 0.2, "placements": ["ticket_description", "ticket_comment",
+"slack_thread", "repo_file"]}` (placements default to all four), a share `p` of the shadows get one benign instruction
+with a fresh token `CANARY-<8 hex>`, planted at one of the placements the shadow has: appended to the ticket's text, as
+a comment on it, as a reply in the Slack thread, or in a `NOTES.local.md` added to the shadow's working tree (excluded
+from git, never committed). The attachment it lands in is fenced as untrusted; the real job never sees it. After the
+turn hangar records whether the agent obeyed (`canary.json` in the outbox) and flightdeck rates each harness digest's
+injection susceptibility from them. How it works and what it records: [security.md](security.md#injection-canaries).
 
 ## The check on the base commit
 

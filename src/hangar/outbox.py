@@ -10,6 +10,7 @@ after hangar's own retention has let them go:
                                          trace.otlp.json  hangar.trace/v1 of this run only
                                          tests.json       hangar.tests/v1: the turn's TestRuns, with every case
                                          grade.json       experiment trials, when the grader has run
+                                         canary.json      canary shadows (#184, canaries.py)
                                          patch.diff       the turn's diff against the commit it started on
     v1/jobs/{date}/{job_id}/events/{ts}-{kind}.json       hangar.job_event/v1: pr.open, review.first, pr.merge, ...
 

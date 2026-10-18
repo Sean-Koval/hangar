@@ -335,6 +335,16 @@ pool run around the clock (730 h a month), so the URL answers and GitHub, Slack 
 | Warm floor: one n2d-standard-16 Spot node and its 200 GB disk ($0.354 / h), all powered hours, at most | 461 | **+$163** |
 | … when the pool would hold a node anyway on workdays (the typical scenario), and weekends sit idle | ~132 | ~+$47 |
 
+**The overnight lane** (#186, off by default; [gke.md](gke.md#the-overnight-lane)). One e2-standard-16 Spot node
+through the night while the lane is on: 9 h × $0.3217 ([gcloud-compute.com][e2-16], us-central1, fetched 2026-10-18)
+× 30 ≈ **$87 a month** (*estimate*), plus its 200 GB disk for those hours, 270 h × $0.027 ≈ $7. E2 rather than the
+sandbox pool's N2D because it takes the regional `CPUS` quota, not `N2D_CPUS` (which a project sized for the sandbox
+pool may have used in full). E2 lands on Intel or AMD, and GKE Sandbox turns SMT off on Intel, so the node shows 8 or
+16 vCPUs: it runs up to 7 standard sandboxes (`HANGAR_OVERNIGHT_LANE_SANDBOXES`; 14 on AMD or an n2d-standard-16, the
+[packing](#packing) of one node), shared by
+overnight repos' intake jobs and evals. The plan turns it on only once agent PR yield is at least 60%
+(`hangar power overnight on` refuses below that without `--force`).
+
 The floor costs nothing extra in hours when sandboxes run anyway; it is the price of idle evenings and weekends with a
 node up. `sandbox_warm_nodes = 0` gives it back (and the first create of the day waits for a node again: 1–2 min, plus
 image pulls), as does a weekday-only `power_up_cron = "50 9 * * 1-5"` (then weekends stay off until someone runs
@@ -519,3 +529,4 @@ remote repository's storage (Artifact Registry, cleaned after 30 days).
 [overlay]: https://gvisor.dev/blog/2023/05/08/rootfs-overlay/
 [quotas]: https://docs.cloud.google.com/compute/quotas
 [e2]: https://gcloud-compute.com/e2-standard-2.html
+[e2-16]: https://gcloud-compute.com/e2-standard-16.html

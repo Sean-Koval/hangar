@@ -168,6 +168,15 @@ if "exec" in a:
     elif what == "POST /api/admin/power/release":
         st["hold"] = {"until": None, "set_at": json.loads(rest[2])["set_at"], "by": "admin"}
         print("{}")
+    elif what == "GET /api/admin/power":  # --- #186: whether the overnight lane is on
+        print(json.dumps({"power": {"state": "up", "overnight": st.get("overnight") or {"on": False}}}))
+    elif what == "POST /api/admin/power/overnight":
+        b = json.loads(rest[2])
+        if b["on"] and st.get("yield_low") and not b["force"]:
+            sys.stderr.write("HTTP Error 409: Conflict\n")
+            sys.exit(1)
+        st["overnight"] = {"on": b["on"], "forced": bool(b["on"] and b["force"] and st.get("yield_low"))}
+        print(json.dumps(st["overnight"]))
     elif what == "GET /api/admin/deploys":
         print(json.dumps(st.get("deploys", [])))
     elif what == "POST /api/admin/deploys/pending":
@@ -725,6 +734,60 @@ def test_power_sh_shellcheck_is_clean():
         pytest.skip("shellcheck isn't installed (CI's lint job runs it)")
     r = subprocess.run(["shellcheck", str(ROOT / "deploy/gke/power.sh")], capture_output=True, text=True)
     assert r.returncode == 0, r.stdout
+
+
+# ====================================================================== --- #186: the overnight lane
+def _with_lane(cluster, on: bool) -> None:
+    st = cluster["state"]()
+    st["pools"]["sandboxes-overnight"] = {"on": False, "min": None, "max": None, "size": 0}
+    cluster["set_state"](st)
+    cluster["set_hangar"]({**cluster["hangar"](), "overnight": {"on": on}})
+
+
+def test_down_with_the_lane_on_leaves_one_overnight_node_and_says_night(cluster):
+    _with_lane(cluster, on=True)
+    cluster["run"]("down")
+    st = cluster["state"]()
+    assert st["pools"]["sandboxes-overnight"]["size"] == 1  # exactly one node, never saved as a range to restore
+    assert st["pools"]["sandboxes-gvisor"]["size"] == 0 and st["pools"]["sandboxes-microvm"]["size"] == 0
+    assert "hangar-power-sandboxes-overnight" not in st["labels"] and st["labels"]["hangar-power-overnight"] == "on"
+    assert [t["state"] for t in _told(cluster["kubectl"]())] == ["night"]
+    assert _summary(cluster)["state"] == "down"  # the lane's label isn't a saved pool
+    # the morning: the other pools first, hangar told, then the lane's node goes
+    cluster["clear"]()
+    cluster["run"]("up")
+    st = cluster["state"]()
+    assert st["pools"]["sandboxes-overnight"]["size"] == 0 and st["pools"]["sandboxes-gvisor"]["size"] == 1
+    calls = cluster["calls"]()
+    i_up = max(i for i, c in enumerate(calls) if "/api/admin/power/state" in c)
+    i_lane = _at(calls, "resize", "--node-pool sandboxes-overnight", "--num-nodes 0")
+    assert i_up < i_lane
+
+
+def test_down_with_the_lane_off_or_no_pool_is_a_plain_down(cluster):
+    _with_lane(cluster, on=False)
+    cluster["run"]("down")
+    st = cluster["state"]()
+    assert st["pools"]["sandboxes-overnight"]["size"] == 0 and "hangar-power-overnight" not in st["labels"]
+    assert [t["state"] for t in _told(cluster["kubectl"]())] == ["down"]
+
+
+def test_power_sh_overnight_goes_through_hangars_yield_gate(cluster):
+    out = cluster["run"]("overnight", "on", ok=False)
+    assert "no sandboxes-overnight node pool" in out
+    _with_lane(cluster, on=False)
+    cluster["set_hangar"]({**cluster["hangar"](), "yield_low": True})
+    out = cluster["run"]("overnight", "on", ok=False)
+    assert "hangar refused" in out and "hangar-power-overnight" not in cluster["state"]()["labels"]
+    out = cluster["run"]("overnight", "on", "--force")
+    assert "overnight lane on (forced)" in out and cluster["state"]()["labels"]["hangar-power-overnight"] == "on"
+    assert cluster["hangar"]()["overnight"]["on"] is True
+    st = cluster["state"]()
+    st["pools"]["sandboxes-overnight"]["size"] = 1  # at night
+    cluster["set_state"](st)
+    cluster["run"]("overnight", "off")
+    st = cluster["state"]()
+    assert "hangar-power-overnight" not in st["labels"] and st["pools"]["sandboxes-overnight"]["size"] == 0
 
 
 # ------------------------------------------------- deploy.yml: what crosses jobs, and an old server's upgrade
