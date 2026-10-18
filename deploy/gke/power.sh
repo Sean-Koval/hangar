@@ -466,8 +466,10 @@ pools_to_zero() {  # sandbox|control: the sandbox pools (POWER_POOLS), or every 
   local p on min max had keep n
   for p in $(pools); do
     if [ "$1" = sandbox ]; then powered "$p" || continue; else ! powered "$p" || continue; fi
-    read -r on min max < <(gcloud container node-pools describe "$p" --cluster "$CLUSTER" "${G[@]}" \
-      --format='value(autoscaling.enabled,autoscaling.minNodeCount,autoscaling.maxNodeCount)')
+    # csv, not value(): GKE omits a minNodeCount of 0, and `read` folds the empty tab-separated field into the next,
+    # so a 0-2 pool read as min 2. Commas aren't IFS whitespace, so an empty field stays empty.
+    IFS=, read -r on min max < <(gcloud container node-pools describe "$p" --cluster "$CLUSTER" "${G[@]}" \
+      --format='csv[no-heading](autoscaling.enabled,autoscaling.minNodeCount,autoscaling.maxNodeCount)')
     had=$(py label "$(labels)" "$(label_key "$p")")  # read now, not before the loop
     # Remember how to bring it back as a label on the cluster (not the pool: pool labels become node labels), so
     # `up` restores it without terraform: an autoscaling range, or a fixed pool's node count (the microVM pool).
@@ -504,8 +506,8 @@ restore_pools() {  # sandbox|control: back to the ranges saved at down/off; FLOO
     range=$(py label "$saved" "$(label_key "$p")")
     if [ "$1" = sandbox ]; then powered "$p" || continue
     else ! powered "$p" || continue; [ -n "$range" ] || continue; fi
-    read -r on cur_min cur_max < <(gcloud container node-pools describe "$p" --cluster "$CLUSTER" "${G[@]}" \
-      --format='value(autoscaling.enabled,autoscaling.minNodeCount,autoscaling.maxNodeCount)') || true
+    IFS=, read -r on cur_min cur_max < <(gcloud container node-pools describe "$p" --cluster "$CLUSTER" "${G[@]}" \
+      --format='csv[no-heading](autoscaling.enabled,autoscaling.minNodeCount,autoscaling.maxNodeCount)') || true  # csv: see pools_to_zero
     if [ "$on" = "True" ]; then
       # `down` turned autoscaling off, so it is on again only if its range was set while the pools were down (a
       # terraform apply in the power-down window, docs/team-scale.md): that range wins over the one saved at `down`.
