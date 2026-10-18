@@ -388,6 +388,12 @@ credentials.delete:
   rest: DELETE /api/credentials/{name}
   scope: user
   owner: guard
+credentials.get_login:
+  server: hangar
+  mcp: null
+  rest: GET /api/credentials/login
+  scope: admin
+  owner: admin
 credentials.get_migration:
   server: hangar
   mcp: null
