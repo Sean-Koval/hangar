@@ -323,3 +323,24 @@ def test_oauth_consent_page_is_on_airframe_too():
     page = _code(_PAGE)
     assert not HEX.search(page) and not FUNC.search(page), "the OAuth consent page uses Airframe tokens only"
     assert "/ui/airframe/airframe.css" in _PAGE and "/ui/airframe/airframe-components.css" in _PAGE
+
+
+def test_page_forms_are_airframe_fields_and_the_screen_has_an_empty_state():
+    """Every field on the page forms (new job, session and sandbox, the credential form, the environment spec) is
+    Airframe's af-field with its control in an af-input well; hangar styles only the two native controls Airframe has
+    no part for (select, file). The agent screen says what is not there with an Airframe empty state."""
+    html, css, app = (UI / "index.html").read_text(), (UI / "app.css").read_text(), (UI / "app.js").read_text()
+    own = r"\b(?:af-field|af-field__label|check|chip)\b"
+    bare = [m.group(0)[:80] for m in re.finditer(rf"<label(?![^>]*\bclass=\"[^\"]*{own})[^>]*>", html)]
+    assert not bare, "a bare <label>: wrap the control in af-field / af-input:\n" + "\n".join(bare)
+    for field in re.findall(r'<label class="af-field[^"]*">(.*?)</label>', html, re.S):
+        assert field.startswith('<span class="af-field__label">'), field[:80]
+        assert re.search(r'<span class="af-input|<select|<input type="file"', field), field[:80]
+    sans = 'af-input af-input--area af-input--sans"><textarea name="instructions"'
+    assert sans in html, "sentences people write are sans"
+    assert 'field("Spec (YAML)", inputWell(' in app
+    bare_css = re.search(r"^(?:input, select, textarea|label|textarea|input)\s*\{", css, re.M)
+    assert not bare_css, "app.css styles bare controls; Airframe's af-input does"
+    assert not re.search(r"[a-z]\(s\)[ ,.`<]", app), "write the plural (plural(n, word)), never '(s)'"
+    vnc = (UI / "vnc.html").read_text()
+    assert 'class="af-empty"' in vnc and 'show("no-data", "No screen to show."' in vnc and 'show("error"' in vnc

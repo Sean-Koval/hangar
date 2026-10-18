@@ -39,27 +39,23 @@ h1, h2, h3, h4 { margin: 0; }
 .muted { color: var(--af-fg-subtle); }
 .detail-reason { margin: 0; }
 
-/* ---------- controls: recessed, square, mono values (Airframe Controls) ---------- */
+/* ---------- controls: every field is Airframe's (af-field, af-input, af-input--area); two native controls wear the
+   same well because Airframe has no part for them: the select (Airframe's af-select is a listbox menu) and the file
+   input. A checkbox with words beside it (label.check) is hangar's own, Airframe has none. ---------- */
 button { font: inherit; color: inherit; cursor: pointer; }
-input, select, textarea { width: 100%; height: 34px; padding: 0 10px; border: 1px solid var(--af-line-strong);
+select, input[type="file"] { width: 100%; height: 34px; padding: 0 10px; border: 1px solid var(--af-line-strong);
   border-radius: var(--af-radius-control); background: var(--af-surface); color: var(--af-fg);
   font-family: var(--af-font-mono); font-size: 12.5px; font-weight: 400; letter-spacing: normal; text-transform: none;
   transition: border-color var(--af-dur) var(--af-ease); }
-textarea { height: auto; padding: 8px 10px; line-height: 1.5; resize: vertical; }
-input:hover, select:hover, textarea:hover { border-color: var(--af-fg-subtle); }
-input::placeholder, textarea::placeholder { color: var(--af-fg-subtle); opacity: 1; }
+select { cursor: pointer; }
+select:hover, input[type="file"]:hover { border-color: var(--af-fg-subtle); }
 input[type="file"] { height: auto; padding: 6px; font-size: 12px; }
 input[type="file"]::file-selector-button { margin-right: 10px; height: 26px; padding: 0 10px; border: 1px solid var(--af-line-strong);
   border-radius: var(--af-radius-control); background: transparent; color: var(--af-fg); cursor: pointer;
   font-family: var(--af-font-mono); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; }
 input[type="checkbox"] { width: 14px; height: 14px; margin: 0; accent-color: var(--af-brand); }
-select { cursor: pointer; }
-label { display: flex; flex-direction: column; gap: 6px; min-width: 0; font-family: var(--af-font-mono); font-weight: 500;
-  font-size: 10px; line-height: 1.2; letter-spacing: .09em; text-transform: uppercase; color: var(--af-fg-subtle); }
-/* Airframe's field (af-field) carries its own label and hint styles; the bare labels above are hangar's page forms */
-label.af-field { font: inherit; letter-spacing: 0; text-transform: none; color: inherit; }
-label.check { flex-direction: row; align-items: center; gap: var(--af-space-8); font-family: var(--af-font-sans);
-  font-weight: 400; font-size: 13px; letter-spacing: 0; text-transform: none; color: var(--af-fg-muted); cursor: pointer; white-space: nowrap; }
+label.check { display: flex; align-items: center; gap: var(--af-space-8); min-width: 0; font-size: 13px; color: var(--af-fg-muted);
+  cursor: pointer; white-space: nowrap; }
 .af-input > input { height: 100%; }
 details > summary { cursor: pointer; font-family: var(--af-font-mono); font-weight: 500; font-size: 10px; letter-spacing: .09em;
   text-transform: uppercase; color: var(--af-fg-subtle); }
@@ -104,18 +100,16 @@ main { padding: var(--af-space-28) var(--page-pad) calc(var(--drawer-pad, 0px) +
 .grid .wide { grid-column: span 2; }
 fieldset.creds { margin: 0; padding: 0; border: 0; min-width: 0; }
 fieldset.creds legend { padding: 0; margin-bottom: var(--af-space-8); font-family: var(--af-font-mono); font-weight: 500;
-  font-size: 10px; letter-spacing: .09em; text-transform: uppercase; color: var(--af-fg-subtle); }
+  font-size: 10px; line-height: 1.2; letter-spacing: .09em; text-transform: uppercase; color: var(--af-fg-subtle); }  /* as af-field__label */
 .chips { display: flex; flex-wrap: wrap; gap: var(--af-space-8); }
-.chip { flex-direction: row; align-items: center; gap: var(--af-space-8); padding: 6px 10px; border: 1px solid var(--af-line-strong);
-  border-radius: var(--af-radius-control); background: var(--af-surface); color: var(--af-fg); cursor: pointer;
-  font-size: 12px; font-weight: 400; letter-spacing: normal; text-transform: none; }
+.chip { display: inline-flex; align-items: center; gap: var(--af-space-8); padding: 6px 10px; border: 1px solid var(--af-line-strong);
+  border-radius: var(--af-radius-control); background: var(--af-surface); color: var(--af-fg); cursor: pointer; font-size: 12px; }
 .chip:hover { border-color: var(--af-fg-subtle); }
 .chip:has(input:checked) { border-color: var(--af-brand-text); background: var(--af-brand-wash); }
 .chip:has(input:disabled) { opacity: .45; cursor: default; }
 .chip .hint { font-size: 11.5px; }
 .form-foot { display: flex; gap: var(--af-space-8); align-items: center; justify-content: flex-end; flex-wrap: wrap; }
 .form-foot .hint { margin-right: auto; }
-.new-form > label.wide textarea { width: 100%; }
 
 /* ---------- fleet: four views of the same sandboxes (Airframe theme-v3), one selection, one detail panel ---------- */
 .fleet-views { flex: none; }
@@ -210,7 +204,7 @@ fieldset.creds legend { padding: 0; margin-bottom: var(--af-space-8); font-famil
 .detail-head { display: flex; align-items: baseline; gap: var(--af-space-8) var(--af-space-16); flex-wrap: wrap; }
 .detail-head h3 { font-size: 20px; line-height: 1.3; letter-spacing: -.01em; }
 .env-detail { display: flex; flex-direction: column; gap: var(--af-space-16); min-width: 0; }
-.env-detail textarea { min-height: 320px; }
+.env-detail .af-input--area { min-height: 320px; }  /* the spec: room for a whole environment */
 .env-bar { display: flex; gap: var(--af-space-8); align-items: center; flex-wrap: wrap; }
 .env-bar select { width: auto; }
 .env-bar .hint { margin-right: auto; }
@@ -263,6 +257,18 @@ h4.with-meta .af-meta { text-transform: none; letter-spacing: normal; font-weigh
 .needs .cards { margin-top: 0; }
 .needs .af-verdict__time { display: flex; gap: var(--af-space-4); padding: 0; }
 .needs .af-empty--clear { border: 1px dashed var(--af-line-strong); border-radius: var(--af-radius-card); }
+/* a decision in a narrow place (the docked Fleet panel, a phone): the reviewer line above the buttons, which share the
+   width, so the primary never sits alone at the end of a ragged row; the Needs-you rows put their buttons under the words */
+.needs, .job-detail, .fd { container-type: inline-size; }
+@container (max-width: 420px) {
+  .af-approval__act { flex-direction: column; align-items: stretch; }
+  .af-approval__act > .af-meta { align-self: flex-start; }
+  .af-approval__btns { margin-left: 0; }
+  .af-approval__btns > .af-btn { flex: 1 1 auto; justify-content: center; }
+  .af-approval__btns > .af-btn--ghost { flex: 0 0 auto; }  /* inspect keeps its size; the decisions share the rest */
+  .needs .af-verdict { grid-template-columns: auto minmax(0, 1fr); }
+  .needs .af-verdict__time { grid-column: 1 / -1; justify-content: flex-end; }
+}
 
 /* timeline and activity: a status mark per event, quiet unless an event failed or waits on a person */
 .timeline, .turns { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }

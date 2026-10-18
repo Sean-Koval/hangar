@@ -89,23 +89,23 @@
         </div>
       </header>
       <form id="job-form" class="panel new-form" hidden>
-        <label class="wide">What should the agent do?<textarea name="instructions" rows="5" required
-          placeholder="CSV export drops non-ASCII characters. Fix it and add a regression test."></textarea></label>
+        <label class="af-field wide"><span class="af-field__label">What should the agent do?</span><span class="af-input af-input--area af-input--sans"><textarea name="instructions" rows="5" required
+          placeholder="CSV export drops non-ASCII characters. Fix it and add a regression test."></textarea></span></label>
         <div class="grid">
-          <label>Environment<select name="environment" required></select></label>
-          <label>Agent<select name="harness"></select></label>
-          <label>Model<input name="model" placeholder="environment default"></label>
-          <label class="wide">Repo<input name="repo" placeholder="environment default"></label>
-          <label>Base branch<input name="base_branch" placeholder="repo default"></label>
-          <label>Check with<input name="verify" placeholder="pytest -q"></label>
-          <label>Deliver as<select name="deliver">
+          <label class="af-field"><span class="af-field__label">Environment</span><select name="environment" required></select></label>
+          <label class="af-field"><span class="af-field__label">Agent</span><select name="harness"></select></label>
+          <label class="af-field"><span class="af-field__label">Model</span><span class="af-input"><input name="model" placeholder="environment default"></span></label>
+          <label class="af-field wide"><span class="af-field__label">Repo</span><span class="af-input"><input name="repo" placeholder="environment default"></span></label>
+          <label class="af-field"><span class="af-field__label">Base branch</span><span class="af-input"><input name="base_branch" placeholder="repo default"></span></label>
+          <label class="af-field"><span class="af-field__label">Check with</span><span class="af-input"><input name="verify" placeholder="pytest -q"></span></label>
+          <label class="af-field"><span class="af-field__label">Deliver as</span><select name="deliver">
             <option value="draft_pr">Draft PR</option><option value="pr">PR</option>
             <option value="branch">Branch only</option><option value="none">Nothing (keep in sandbox)</option></select></label>
-          <label>Minutes per turn<input name="timeout_minutes" type="number" min="1" max="720" placeholder="60"></label>
+          <label class="af-field"><span class="af-field__label">Minutes per turn</span><span class="af-input"><input name="timeout_minutes" type="number" min="1" max="720" placeholder="60"></span></label>
         </div>
         <div class="grid">
-          <label class="wide">Context files<input type="file" id="job-files" multiple></label>
-          <label class="wide">Links (one per line)<textarea name="links" rows="2" placeholder="https://…"></textarea></label>
+          <label class="af-field wide"><span class="af-field__label">Context files</span><input type="file" id="job-files" multiple></label>
+          <label class="af-field wide"><span class="af-field__label">Links (one per line)</span><span class="af-input af-input--area"><textarea name="links" rows="2" placeholder="https://…"></textarea></span></label>
         </div>
         <div class="form-foot">
           <span class="hint">Files land next to the repo in ~/.hangar/jobs/&lt;job&gt;/, never in the repo itself.</span>
@@ -134,12 +134,12 @@
       </header>
       <form id="session-form" class="panel new-form" hidden>
         <div class="grid">
-          <label>Name<input name="name" required pattern="[a-z0-9][a-z0-9._-]*" placeholder="csv-fix"></label>
-          <label>Environment<select name="environment" required></select></label>
-          <label>Agent<select name="harness"></select></label>
+          <label class="af-field"><span class="af-field__label">Name</span><span class="af-input"><input name="name" required pattern="[a-z0-9][a-z0-9._-]*" placeholder="csv-fix"></span></label>
+          <label class="af-field"><span class="af-field__label">Environment</span><select name="environment" required></select></label>
+          <label class="af-field"><span class="af-field__label">Agent</span><select name="harness"></select></label>
         </div>
-        <label class="wide">First message (optional)<textarea name="message" rows="4"
-          placeholder="Fix the unicode bug in CSV export. Start by reproducing it with a test."></textarea></label>
+        <label class="af-field wide"><span class="af-field__label">First message (optional)</span><span class="af-input af-input--area af-input--sans"><textarea name="message" rows="4"
+          placeholder="Fix the unicode bug in CSV export. Start by reproducing it with a test."></textarea></span></label>
         <div class="form-foot">
           <span class="hint">Without a message the sandbox just opens, ready for you or the agent.</span>
           <button type="button" class="af-btn af-btn--ghost" id="session-cancel">Cancel</button>
@@ -174,14 +174,14 @@
       </header>
       <form id="new-form" class="panel new-form" hidden>
         <div class="grid">
-          <label>Environment<select name="environment" required></select></label>
-          <label>Name<input name="name" placeholder="auto"></label>
-          <label class="wide">Repo<input name="repo" placeholder="https://github.com/org/repo.git (optional)"></label>
-          <label>Branch<input name="branch" placeholder="default"></label>
-          <label>Work branch<input name="work_branch" placeholder="agent/task-name"></label>
-          <label>Provider<select name="provider"></select></label>
-          <label>Expires after (min)<input name="ttl_minutes" type="number" min="0" placeholder="240"></label>
-          <label>Count<input name="count" type="number" min="1" max="20" value="1"></label>
+          <label class="af-field"><span class="af-field__label">Environment</span><select name="environment" required></select></label>
+          <label class="af-field"><span class="af-field__label">Name</span><span class="af-input"><input name="name" placeholder="auto"></span></label>
+          <label class="af-field wide"><span class="af-field__label">Repo</span><span class="af-input"><input name="repo" placeholder="https://github.com/org/repo.git (optional)"></span></label>
+          <label class="af-field"><span class="af-field__label">Branch</span><span class="af-input"><input name="branch" placeholder="default"></span></label>
+          <label class="af-field"><span class="af-field__label">Work branch</span><span class="af-input"><input name="work_branch" placeholder="agent/task-name"></span></label>
+          <label class="af-field"><span class="af-field__label">Provider</span><select name="provider"></select></label>
+          <label class="af-field"><span class="af-field__label">Expires after (min)</span><span class="af-input"><input name="ttl_minutes" type="number" min="0" placeholder="240"></span></label>
+          <label class="af-field"><span class="af-field__label">Count</span><span class="af-input"><input name="count" type="number" min="1" max="20" value="1"></span></label>
         </div>
         <fieldset class="creds"><legend>Credentials</legend><div id="new-creds" class="chips"></div></fieldset>
         <div class="form-foot">
@@ -232,13 +232,13 @@
         </div>
         <form id="cred-form" class="panel">
           <h3>Add a key or token</h3>
-          <label>Harness<select name="harness"></select></label>
-          <label>Kind<select name="kind"></select></label>
+          <label class="af-field"><span class="af-field__label">Harness</span><select name="harness"></select></label>
+          <label class="af-field"><span class="af-field__label">Kind</span><select name="kind"></select></label>
           <p id="cred-slot" class="hint"></p>
-          <label>Name<input name="name" required placeholder="claude-max"></label>
-          <label>Value<textarea name="value" rows="4" required placeholder="Paste the key, token, or file contents"></textarea></label>
-          <label class="file">…or load a file<input type="file" id="cred-file"></label>
-          <label>Description<input name="description" placeholder="optional"></label>
+          <label class="af-field"><span class="af-field__label">Name</span><span class="af-input"><input name="name" required placeholder="claude-max"></span></label>
+          <label class="af-field"><span class="af-field__label">Value</span><span class="af-input af-input--area"><textarea name="value" rows="4" required placeholder="Paste the key, token, or file contents"></textarea></span></label>
+          <label class="af-field file"><span class="af-field__label">…or load a file</span><input type="file" id="cred-file"></label>
+          <label class="af-field"><span class="af-field__label">Description</span><span class="af-input"><input name="description" placeholder="optional"></span></label>
           <button class="af-btn af-btn--primary" type="submit">Save credential</button>
         </form>
       </div>
