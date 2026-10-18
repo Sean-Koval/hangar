@@ -47,7 +47,7 @@ async function api(method, path, body, { raw = false } = {}) {
 let toastTimer;
 function toast(msg, bad = false) {
   const t = $("#toast");
-  t.textContent = msg;
+  t.innerHTML = (bad ? mark("failed") : "") + esc(msg);
   t.classList.toggle("bad", bad);
   t.hidden = false;
   clearTimeout(toastTimer);
@@ -83,7 +83,7 @@ function showGate(err) {
   $("#shell").hidden = true;
   $("#gate").hidden = false;
   $("#gate-error").hidden = !err;
-  $("#gate-error").textContent = err || "";
+  $("#gate-error").innerHTML = err ? mark("failed") + esc(err) : "";
   $("#gate-token").focus();
 }
 $("#gate-form").addEventListener("submit", async (e) => {
@@ -542,7 +542,7 @@ function renderSession(x) {
   box.classList.toggle("af-card--lit", role === "approval");
   box.innerHTML = `
     <div class="detail-head"><h3 class="af-mono">${esc(x.name)}</h3>${status(role, sesWord(x), true)}</div>
-    ${x.reason ? `<p class="${role === "failed" ? "error" : "hint"}">${esc(x.reason)}</p>` : ""}
+    ${x.reason ? `<p class="${role === "failed" ? "error" : "hint"}">${role === "failed" ? mark("failed") : ""}${esc(x.reason)}</p>` : ""}
     <dl class="kv af-kv">
       ${x.needs_input && role === "approval" ? `<dt>Question</dt><dd>${esc(x.needs_input)}</dd>` : ""}
       <dt>Where</dt><dd>${meta([["env", x.environment, "strong"], ["harness", x.harness || "default agent"], ["model", x.model || ""]])}</dd>
@@ -737,7 +737,7 @@ async function loadEnvs() {
   state.envs = await api("GET", "/api/environments");
   $("#env-list").innerHTML = state.envs.map((e) => `<li><button data-env="${esc(e.name)}" class="${e.name === state.selectedEnv ? "active" : ""}">
       <span class="t">${esc(e.name)}</span>
-      <span class="d">${e.error ? `<span class="error">${esc(e.error)}</span>` : esc(e.description || (e.harnesses || []).join(", "))}</span></button></li>`).join("")
+      <span class="d">${e.error ? `<span class="error">${mark("failed")}${esc(e.error)}</span>` : esc(e.description || (e.harnesses || []).join(", "))}</span></button></li>`).join("")
     || `<li class="empty-floor"><p>No environments yet. Create one from a base.</p></li>`;
   if (state.selectedEnv) showEnv(state.selectedEnv);
 }

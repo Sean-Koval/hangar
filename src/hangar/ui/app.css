@@ -33,10 +33,8 @@ dialog h3 { font-size: 20px; line-height: 1.3; letter-spacing: -.01em; }
 .hint { color: var(--af-fg-subtle); font-size: 12.5px; }
 .empty { margin: 0; color: var(--af-fg-subtle); }
 .muted { color: var(--af-fg-subtle); }
-/* an error line: the failed mark (red triangle), then the words */
+/* an error line: Airframe's failed mark (app.js mark("failed")) and the words */
 .error { display: flex; align-items: baseline; gap: var(--af-space-8); margin: 0; color: var(--af-fg); }
-.error::before { content: ""; flex: none; width: 10px; height: 9px; background: var(--af-status-failed);
-  clip-path: polygon(50% 0, 100% 100%, 0 100%); }
 .error[hidden] { display: none; }
 
 /* ---------- controls: recessed, square, mono values (Airframe Controls) ---------- */
@@ -324,7 +322,6 @@ dialog .form-foot { margin-top: var(--af-space-4); }
 .toast { position: fixed; right: var(--af-space-20); bottom: var(--af-space-20); z-index: 30; max-width: 420px; display: flex; align-items: baseline;
   gap: 10px; padding: 10px 14px; border: 1px solid var(--af-line); border-radius: var(--af-radius-card); background: var(--af-overlay);
   color: var(--af-fg); box-shadow: var(--af-shadow-overlay); font-size: 13px; }
-.toast.bad::before { content: ""; flex: none; width: 10px; height: 9px; background: var(--af-status-failed); clip-path: polygon(50% 0, 100% 100%, 0 100%); }
 .toast[hidden] { display: none; }
 body:has(.drawer:not([hidden])) .toast { bottom: calc(var(--drawer-h) + var(--af-space-16)); }
 
