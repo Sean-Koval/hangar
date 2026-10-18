@@ -104,7 +104,7 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; }
       if [ "$1" = --only ]; then ONLY=",$2,"; else SKIPS=",$2,"; fi
       shift 2 ;;
-    --keep) KEEP=1; shift ;;
+    --keep) KEEP=1; ARGS+=(--keep); shift ;;  # each check leaves what it made, too
     -h|--help) usage; exit 0 ;;
     *)
       if [[ "$VALUE_OPTS" == *" $1 "* ]]; then

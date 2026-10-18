@@ -468,6 +468,24 @@ async def _mcp(url: str, token: str, calls: list[tuple[str, dict[str, Any]]]) ->
 
 CLIENT_DEADLINE = 230.0  # --- deadlines: claude.ai gives up on a tool call after about this long
 POLL_SECONDS = 3.0
+# --- #294: what hangar says while a sandbox waits for a node that can't come (providers/kubernetes._explain_event).
+# "adding a node" isn't here: that one usually arrives.
+NO_ROOM = ("the cluster can't add a node", "node pool is at its maximum size")
+ROOM_GRACE = 90.0  # how long a no-room reason must last before a capacity-bound check gives up (and skips)
+
+
+def no_room(stage: object) -> bool:
+    return isinstance(stage, str) and any(m in stage for m in NO_ROOM)
+
+
+def fleet_no_room(api: Api) -> str | None:
+    """The reason a starting sandbox gives when the pool has no room and can't grow, with how many run, or None."""
+    sbs = api.call("GET", "/api/sandboxes")
+    why = next(((sb.get("info") or {}).get("stage") for sb in sbs
+                if sb.get("state") == "starting" and no_room((sb.get("info") or {}).get("stage"))), None)
+    if why is None:
+        return None
+    return f"{sum(1 for sb in sbs if sb.get('state') == 'running')} sandboxes running; {why}"
 
 
 async def _mcp_within(url: str, token: str, name: str, args: dict[str, Any], deadline: float
@@ -533,9 +551,11 @@ def check_mcp(api: Api, state: State, opts: argparse.Namespace) -> str:
             f"create still came up; exec ok; {about['version']}")
 
 
-def _running(api: Api, sb: str, timeout: float) -> float:
-    """Seconds until the sandbox is running; fails on `error`, `stopped` or the timeout."""
-    t0, last = time.monotonic(), None
+def _running(api: Api, sb: str, timeout: float, capacity_skip: bool = False) -> float:
+    """Seconds until the sandbox is running; fails on `error`, `stopped` or the timeout. With `capacity_skip` (the
+    capacity-bound checks, #294), a sandbox that waits ROOM_GRACE seconds on a pool that can't grow skips the check
+    with the numbers, rather than timing out."""
+    t0, last, blocked = time.monotonic(), None, None
     while True:
         s = api.call("GET", f"/api/sandboxes/{sb}")
         now = (s["state"], (s.get("info") or {}).get("stage"))
@@ -546,6 +566,11 @@ def _running(api: Api, sb: str, timeout: float) -> float:
             return time.monotonic() - t0
         if s["state"] in ("error", "stopped"):
             raise Fail(f"sandbox {sb} ended {s['state']}: {s.get('error')}")
+        blocked = (blocked or time.monotonic()) if no_room(now[1]) else None
+        if capacity_skip and blocked is not None and time.monotonic() - blocked >= ROOM_GRACE:
+            running = sum(1 for x in api.call("GET", "/api/sandboxes") if x.get("state") == "running")
+            raise Skip(f"no room for another sandbox: {running} sandboxes running, and after "
+                       f"{time.monotonic() - t0:.0f}s {sb} still waits: {now[1]}")
         if time.monotonic() - t0 > timeout:
             raise Fail(f"sandbox {sb} still {s['state']} after {timeout:.0f}s ({now[1]})")
         time.sleep(POLL_SECONDS)
@@ -950,7 +975,7 @@ def check_warmstart(api: Api, state: State, opts: argparse.Namespace) -> str:
         if "id" not in sb:
             raise Fail(sb.get("error") or str(sb))
         state.add("sandboxes", sb["id"])
-        _running(api, sb["id"], opts.boot_timeout)
+        _running(api, sb["id"], opts.boot_timeout, capacity_skip=True)
         secs = time.monotonic() - t0
         warm = bool((api.call("GET", f"/api/sandboxes/{sb['id']}").get("info") or {}).get("warm"))
         runs.append({"path": "warm" if warm else "cold", "seconds": round(secs, 2)})
@@ -987,6 +1012,50 @@ def tools() -> int:
 
 
 # ---------------------------------------------------------------------------- cleanup
+def drop_session(api: Api, name: str, wait: float = 600) -> None:
+    """Interrupt, suspend and delete a session (gone already is fine)."""
+    r = api.http.get(f"/api/sessions/{name}")
+    if r.status_code == 404:
+        return
+    s = r.json()
+    if s["busy"] or s["state"] == "running":
+        with contextlib.suppress(Fail):
+            api.call("POST", f"/api/sessions/{name}/interrupt")
+        api.settle(name, min(wait, 300))
+    if s.get("sandbox_id") or api.session(name).get("sandbox_id"):
+        api.call("POST", f"/api/sessions/{name}/suspend")
+        api.settle(name, wait, want_sandbox=False)
+    api.call("DELETE", f"/api/sessions/{name}")
+
+
+def destroy_sandbox(api: Api, sid: str) -> None:
+    r = api.http.get(f"/api/sandboxes/{sid}")
+    if r.status_code == 200 and r.json()["state"] not in ("stopped", "error"):
+        api.call("DELETE", f"/api/sandboxes/{sid}")
+
+
+def release(api: Api, state: State, before: dict[str, list[str]]) -> list[str]:
+    """--- #294: when a check ends, pass or fail, the sessions and sandboxes it made go, so the next check has the
+    capacity (on a one-node pool, scale-smoke's leftovers starved prepull and warmstart until the run's cleanup).
+    The run's shared sandbox and session (`sandbox`, `session`: later checks use them) stay. Returns what's left,
+    which the run's cleanup tries again."""
+    keep = {state.get("sandbox"), state.get("session")}
+    left = []
+    for name in [n for n in state.get("sessions", []) if n not in before["sessions"] and n not in keep]:
+        try:
+            drop_session(api, name, wait=300)
+        except Exception as e:  # noqa: BLE001 - the run's cleanup tries again
+            left.append(f"session {name}")
+            say(f"could not release session {name} yet: {e}")
+    for sid in [x for x in state.get("sandboxes", []) if x not in before["sandboxes"] and x not in keep]:
+        try:
+            destroy_sandbox(api, sid)
+        except Exception as e:  # noqa: BLE001
+            left.append(f"sandbox {sid}")
+            say(f"could not release sandbox {sid} yet: {e}")
+    return left
+
+
 def cleanup(api: Api, state: State, opts: argparse.Namespace) -> str:
     """Remove everything this run created. Never fails part-way: each step reports and the next one runs."""
     left: list[str] = []
@@ -1001,27 +1070,10 @@ def cleanup(api: Api, state: State, opts: argparse.Namespace) -> str:
 
     team_checks.cleanup_first(api, state, attempt, opts)  # --- acceptance: pools on, jobs, PRs, requests
     for name in reversed(state.get("sessions", [])):
-        def drop(name: str = name) -> None:
-            r = api.http.get(f"/api/sessions/{name}")
-            if r.status_code == 404:
-                return
-            s = r.json()
-            if s["busy"] or s["state"] == "running":
-                with contextlib.suppress(Fail):
-                    api.call("POST", f"/api/sessions/{name}/interrupt")
-                api.settle(name, 300)
-            if s.get("sandbox_id") or api.session(name).get("sandbox_id"):
-                api.call("POST", f"/api/sessions/{name}/suspend")
-                api.settle(name, 600, want_sandbox=False)
-            api.call("DELETE", f"/api/sessions/{name}")
-        attempt(f"session {name}", drop)
+        attempt(f"session {name}", lambda name=name: drop_session(api, name))
     swept = [sb["id"] for sb in api.call("GET", "/api/sandboxes", params={"label": f"{LABEL}={state.run}"})]
     for sid in dict.fromkeys([*state.get("sandboxes", []), *swept]):
-        def destroy(sid: str = sid) -> None:
-            r = api.http.get(f"/api/sandboxes/{sid}")
-            if r.status_code == 200 and r.json()["state"] not in ("stopped", "error"):
-                api.call("DELETE", f"/api/sandboxes/{sid}")
-        attempt(f"sandbox {sid}", destroy)
+        attempt(f"sandbox {sid}", lambda sid=sid: destroy_sandbox(api, sid))
     for tid in state.get("tokens", []):
         attempt(f"token {tid}", lambda tid=tid: api.call("DELETE", f"/api/tokens/{tid}"))
     for b in state.get("branches", []):
@@ -1097,6 +1149,8 @@ def main(argv: list[str]) -> int:
     p.add_argument("--doctor-baseline", type=Path, default=None,
                    help="JSON list of doctor checks already failing before a deploy: reported, not failed on")
     p.add_argument("--with-model", action="store_true", help="run the checks that need real agent turns")
+    p.add_argument("--keep", action="store_true",
+                   help="leave what each check made until the run's cleanup (by default it goes when the check ends)")
     team_checks.add_args(p)  # --- acceptance
     opts = p.parse_args(argv)
     if opts.gateway_repo and not re.fullmatch(r"[\w.-]+/[\w.-]+", opts.gateway_repo):
@@ -1108,6 +1162,8 @@ def main(argv: list[str]) -> int:
     state.save()
     t0 = time.monotonic()
     code, summary = PASS, ""
+    before = {k: list(state.get(k, [])) for k in ("sessions", "sandboxes")}
+    api: Api | None = None
     try:
         api = Api(*target())
         summary = CHECKS[opts.check](api, state, opts)
@@ -1119,6 +1175,12 @@ def main(argv: list[str]) -> int:
         code, summary = FAIL, f"{type(e).__name__}: {e}"
     except Exception as e:  # noqa: BLE001 - one check's bug must not stop the others or the cleanup
         code, summary = FAIL, f"unexpected {type(e).__name__}: {e}"
+    if api is not None and opts.check != "cleanup" and not opts.keep:  # --- #294: free the capacity now
+        try:
+            if left := release(api, state, before):
+                summary += f" (left for the run's cleanup: {', '.join(left)})"
+        except Exception as e:  # noqa: BLE001 - never turns the check's result into a crash
+            say(f"could not release what {opts.check} made: {type(e).__name__}: {e}")
     if opts.summary:
         opts.summary.write_text(f"{time.monotonic() - t0:.1f}\n{' '.join(summary.split())}\n")
     else:
