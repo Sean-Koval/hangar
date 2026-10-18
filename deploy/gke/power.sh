@@ -794,7 +794,7 @@ print("   warm pools for the day:", ", ".join(f"{k}={v}" for k, v in sorted((r.g
 overnight)
   [ -n "$LANE_ARG" ] || die "usage: $0 overnight on [--force] | off"
   lane_pool || die "there is no $LANE_POOL node pool: set enable_overnight_lane = true in deploy/terraform/gke and apply"
-  kube && hangar_ready || die "turning the lane on or off goes through hangar (the yield gate), which isn't reachable"
+  { kube && hangar_ready; } || die "turning the lane on or off goes through hangar (the yield gate), which isn't reachable"
   hangar_api POST /api/admin/power/overnight "{\"on\": $([ "$LANE_ARG" = on ] && echo true || echo false), \"force\": $FORCE}" |
     python3 -c 'import json,sys; r = json.load(sys.stdin); print("   overnight lane", "on" if r["on"] else "off",
     "(forced)" if r.get("forced") else "")' || die "hangar refused (hangar power overnight on says why; below the yield gate it takes --force)"
