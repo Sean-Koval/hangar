@@ -805,3 +805,24 @@ def test_a_member_cant_widen_egress_with_a_remote_mcp_server(fleet, tmp_path):
     assert any("evil.example" in n for n in mine.notes)
     assert pol("swap").allows("evil.example", 443) is None
     assert pol("admins").allows("more.example", 443)
+
+
+def test_open_sandboxes_get_the_gateway_in_etc_hosts(monkeypatch):
+    """Open environments run under GKE Agent Sandbox's managed policy, whose resolver answers internet names only.
+    Found on the first live GKE run with the gateway on: every clone failed with "Could not resolve host:
+    hangar-gateway.hangar.svc". Their pods keep their resolver and get hangar's directly reached names in
+    /etc/hosts; the egress proxy is not one of them (open environments don't use it)."""
+    import socket
+
+    def fake(host, *a, **k):
+        if host == "hangar-gateway.hangar.svc":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.4.0.9", 0))]
+        raise socket.gaierror("no")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake)
+    s = Settings(egress_url="http://egress.hangar.svc:3128", gateway_url="http://hangar-gateway.hangar.svc:8788")
+    assert egress.k8s_direct_hosts(s) == [{"ip": "10.4.0.9", "hostnames": ["hangar-gateway.hangar.svc"]}]
+    assert egress.k8s_direct_hosts(Settings()) == []
+    assert egress.k8s_direct_hosts(Settings(gateway_url="http://10.4.0.9:8788")) == []
+    with pytest.raises(egress.EgressError, match="nowhere.svc"):
+        egress.k8s_direct_hosts(Settings(gateway_url="http://nowhere.svc:8788"))
