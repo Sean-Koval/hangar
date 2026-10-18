@@ -332,6 +332,23 @@ def _later(svc: SessionService, s: Session, st: Steer) -> None:
     svc._spawn(_deliver(svc, s, st))
 
 
+def withdraw(svc: SessionService, s: Session, steer_id: str, requester: str) -> Steer:
+    """Take back a message that is still on its way (`sending`): the console's queued row. Once the agent has it
+    (`delivered`) or it started a turn (`queued`) there is nothing to take back; interrupt instead."""
+    st = next((x for t in reversed(s.turns) for x in t.steers if x.id == steer_id), None)
+    if st is None:
+        raise KeyError(f"no steer '{steer_id}' on session {s.name}")
+    if st.status == "cancelled":
+        return st
+    if st.status != "sending":
+        raise SteerError(f"steer {st.id} is {st.status}: the agent has it already, so it can't be taken back; "
+                         "interrupt the turn instead")
+    st.status, st.error = "cancelled", None
+    svc._save(s)
+    svc.fleet.audit(requester, "session.steer.withdraw", s.id, steer=st.id)
+    return st
+
+
 async def _deliver(svc: SessionService, s: Session, st: Steer) -> None:
     held = True
     tried: set[str] = set()  # runs that turned out to be over (or one-shot)
@@ -359,6 +376,8 @@ async def _deliver(svc: SessionService, s: Session, st: Steer) -> None:
     try:
         deadline = now() + svc.settings.session_turn_timeout_minutes * 60 + 600
         while now() < deadline:
+            if st.status == "cancelled":  # taken back (withdraw) while it waited
+                return
             cur = s.turns[-1]
             if (cur.live and cur.run_id and cur.run_id not in tried and not cur.finished_at
                     and s.state == SessionState.RUNNING):

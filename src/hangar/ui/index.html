@@ -27,7 +27,7 @@
       <label class="af-field__label" for="gate-token">API token</label>
       <div class="af-input"><input id="gate-token" type="password" autocomplete="off" placeholder="hgr_…" required></div>
     </div>
-    <p id="gate-error" class="error" hidden></p>
+    <p id="gate-error" hidden></p>
     <button class="af-btn af-btn--primary" type="submit">Open hangar</button>
   </form>
 </div>
@@ -40,9 +40,10 @@
     </a>
     <span class="af-nav__sep" aria-hidden="true"></span>
     <nav class="af-nav__tabs" aria-label="Sections">
-      <a class="af-nav__tab" href="#jobs" data-view="jobs"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-job"/></svg>Jobs<span id="nav-jobs" class="af-nav__count"></span></a>
-      <a class="af-nav__tab" href="#sessions" data-view="sessions"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-session"/></svg>Sessions<span id="nav-sessions" class="af-nav__count"></span></a>
-      <a class="af-nav__tab" href="#fleet" data-view="fleet"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-fleet"/></svg>Fleet<span id="nav-count" class="af-nav__count"></span></a>
+      <a class="af-nav__tab" href="#needs" data-view="needs"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-approval"/></svg>Needs you<span id="nav-needs" class="af-nav__count" data-count="needs"></span></a>
+      <a class="af-nav__tab" href="#jobs" data-view="jobs"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-job"/></svg>Jobs<span id="nav-jobs" class="af-nav__count" data-count="jobs"></span></a>
+      <a class="af-nav__tab" href="#sessions" data-view="sessions"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-session"/></svg>Sessions<span id="nav-sessions" class="af-nav__count" data-count="sessions"></span></a>
+      <a class="af-nav__tab" href="#fleet" data-view="fleet"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-fleet"/></svg>Fleet<span id="nav-count" class="af-nav__count" data-count="fleet"></span></a>
       <a class="af-nav__tab" href="#environments" data-view="environments"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-environment"/></svg>Environments</a>
       <a class="af-nav__tab" href="#credentials" data-view="credentials"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-secret"/></svg>Credentials</a>
       <a class="af-nav__tab" href="#snapshots" data-view="snapshots"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-snapshot"/></svg>Snapshots</a>
@@ -57,15 +58,28 @@
   </header>
 
   <main id="main">
+    <!-- NEEDS YOU: what waits on a person (GET /api/inbox), decided in place -->
+    <section id="view-needs" class="view" hidden>
+      <header class="af-page-head">
+        <div class="af-page-head__text">
+          <h1 class="af-page-head__title">Needs you</h1>
+          <p class="af-page-head__lede">Held tool calls, jobs waiting to start and the agents' questions, decided here;
+            then what failed and what waits for a review on GitHub.</p>
+          <div id="needs-sum" class="af-page-head__sum"></div>
+        </div>
+      </header>
+      <div id="needs-list" class="needs"></div>
+    </section>
+
     <!-- JOBS -->
     <section id="view-jobs" class="view" hidden>
-      <header class="view-head">
-        <div>
-          <h2>Jobs</h2>
-          <p id="jobs-sub" class="sub">Work handed to cloud agents by people, services and GitHub. Each job ends as a
+      <header class="af-page-head">
+        <div class="af-page-head__text">
+          <h1 class="af-page-head__title">Jobs</h1>
+          <p id="jobs-sub" class="af-page-head__lede">Work handed to cloud agents by people, services and GitHub. Each job ends as a
             verified branch and PR; reply to steer it, or open its terminal to work alongside the agent.</p>
         </div>
-        <div class="actions">
+        <div class="af-page-head__actions">
           <select id="jobs-filter" aria-label="Filter jobs">
             <option value="">All jobs</option><option value="active">In progress</option>
             <option value="succeeded">Succeeded</option><option value="failed">Failed</option>
@@ -101,20 +115,19 @@
       </form>
       <div class="split jobs-split">
         <ul id="job-list" class="list"></ul>
-        <div id="job-detail" class="panel job-detail"><p class="empty">Choose a job to see its timeline, result and
-          sandbox.</p></div>
+        <div id="job-detail" class="panel job-detail"></div>
       </div>
     </section>
 
     <!-- SESSIONS -->
     <section id="view-sessions" class="view" hidden>
-      <header class="view-head">
-        <div>
-          <h2>Sessions</h2>
-          <p class="sub">Streams of work you come back to. The agent's conversation and the repo are saved after
+      <header class="af-page-head">
+        <div class="af-page-head__text">
+          <h1 class="af-page-head__title">Sessions</h1>
+          <p class="af-page-head__lede">Streams of work you come back to. The agent's conversation and the repo are saved after
             every turn and when a session goes idle; resuming starts a fresh sandbox and picks up where it left off.</p>
         </div>
-        <div class="actions">
+        <div class="af-page-head__actions">
           <label class="check"><input type="checkbox" id="ses-jobs"> Show job sessions</label>
           <button class="af-btn af-btn--primary" id="btn-new-session" type="button">New session</button>
         </div>
@@ -135,19 +148,18 @@
       </form>
       <div class="split jobs-split">
         <ul id="session-list" class="list"></ul>
-        <div id="session-detail" class="panel job-detail"><p class="empty">Choose a session to resume it, talk to
-          its agent, or open its terminal.</p></div>
+        <div id="session-detail" class="panel job-detail"></div>
       </div>
     </section>
 
     <!-- FLEET -->
     <section id="view-fleet" class="view">
-      <header class="view-head">
-        <div>
-          <h2>Fleet</h2>
-          <p id="fleet-sub" class="sub"></p>
+      <header class="af-page-head">
+        <div class="af-page-head__text">
+          <h1 class="af-page-head__title">Fleet</h1>
+          <div id="fleet-sub" class="af-page-head__sum"></div>
         </div>
-        <div class="actions">
+        <div class="af-page-head__actions">
           <!-- four views of the same sandboxes (Airframe FleetView, FleetBays, FleetColumns, FleetOwners), kept in the
                URL (#fleet?view=bays) and remembered; fleet.js marks the current one -->
           <nav class="af-seg fleet-views" aria-label="Fleet view">
@@ -188,22 +200,22 @@
 
     <!-- ENVIRONMENTS -->
     <section id="view-environments" class="view" hidden>
-      <header class="view-head">
-        <div><h2>Environments</h2>
-          <p class="sub">Layered templates: base, tools, harnesses, dependencies, skills, then repo.</p></div>
-        <div class="actions"><button class="af-btn af-btn--primary" id="btn-new-env" type="button">New environment</button></div>
+      <header class="af-page-head">
+        <div class="af-page-head__text"><h1 class="af-page-head__title">Environments</h1>
+          <p class="af-page-head__lede">Layered templates: base, tools, harnesses, dependencies, skills, then repo.</p></div>
+        <div class="af-page-head__actions"><button class="af-btn af-btn--primary" id="btn-new-env" type="button">New environment</button></div>
       </header>
       <div class="split">
         <ul id="env-list" class="list"></ul>
-        <div id="env-detail" class="panel env-detail"><p class="empty">Choose an environment to edit or build it.</p></div>
+        <div id="env-detail" class="panel env-detail"></div>
       </div>
     </section>
 
     <!-- CREDENTIALS -->
     <section id="view-credentials" class="view" hidden>
-      <header class="view-head">
-        <div><h2>Credentials</h2>
-          <p class="sub">Encrypted at rest and injected into sandboxes at start. Values are never shown again.</p></div>
+      <header class="af-page-head">
+        <div class="af-page-head__text"><h1 class="af-page-head__title">Credentials</h1>
+          <p class="af-page-head__lede">Encrypted at rest and injected into sandboxes at start. Values are never shown again.</p></div>
       </header>
       <div class="split">
         <div>
@@ -234,8 +246,8 @@
 
     <!-- SNAPSHOTS -->
     <section id="view-snapshots" class="view" hidden>
-      <header class="view-head"><div><h2>Snapshots</h2>
-        <p class="sub">Full snapshots keep everything; workspace snapshots are portable across providers.</p></div></header>
+      <header class="af-page-head"><div class="af-page-head__text"><h1 class="af-page-head__title">Snapshots</h1>
+        <p class="af-page-head__lede">Full snapshots keep everything; workspace snapshots are portable across providers.</p></div></header>
       <div class="af-table-wrap">
         <table class="table af-table" id="snap-table">
           <thead><tr><th scope="col">Snapshot</th><th scope="col">From</th><th scope="col">Environment</th><th scope="col">Kind</th><th scope="col">Taken</th><th scope="col" class="act"><span class="visually-hidden">Actions</span></th></tr></thead>
@@ -246,8 +258,8 @@
 
     <!-- CONNECT -->
     <section id="view-connect" class="view" hidden>
-      <header class="view-head"><div><h2>Connect an MCP client</h2>
-        <p class="sub">Point Codex, Claude Code or any MCP client at this hangar with a token.</p></div></header>
+      <header class="af-page-head"><div class="af-page-head__text"><h1 class="af-page-head__title">Connect an MCP client</h1>
+        <p class="af-page-head__lede">Point Codex, Claude Code or any MCP client at this hangar with a token.</p></div></header>
       <div class="split even">
         <div id="connect-snippets" class="panel snippets"></div>
         <div class="panel">
@@ -267,8 +279,8 @@
 
     <!-- ACTIVITY -->
     <section id="view-activity" class="view" hidden>
-      <header class="view-head"><div><h2>Activity</h2>
-        <p class="sub">Everything people and MCP clients did, newest first.</p></div></header>
+      <header class="af-page-head"><div class="af-page-head__text"><h1 class="af-page-head__title">Activity</h1>
+        <p class="af-page-head__lede">Everything people and MCP clients did, newest first.</p></div></header>
       <div class="af-table-wrap">
         <table class="table af-table" id="audit-table">
           <thead><tr><th scope="col">When</th><th scope="col">Who</th><th scope="col">Action</th><th scope="col">Target</th><th scope="col">Detail</th></tr></thead>
@@ -279,11 +291,11 @@
 
     <!-- USAGE (--- observe) -->
     <section id="view-usage" class="view" hidden>
-      <header class="view-head">
-        <div><h2>Usage</h2>
-          <p class="sub">What agent turns spent, from every job and session. Cost is the harness's own figure, or
+      <header class="af-page-head">
+        <div class="af-page-head__text"><h1 class="af-page-head__title">Usage</h1>
+          <p class="af-page-head__lede">What agent turns spent, from every job and session. Cost is the harness's own figure, or
             list prices for the model; turns on a model with no known price count their tokens only.</p></div>
-        <div class="actions">
+        <div class="af-page-head__actions">
           <select id="usage-range" aria-label="Time range">
             <option value="7d">Last 7 days</option><option value="30d" selected>Last 30 days</option>
             <option value="90d">Last 90 days</option>
@@ -309,20 +321,53 @@
     </section>
   </main>
 
-  <!-- The terminal is always dark (Airframe Terminal): the drawer is a nested Night scope in both themes. -->
-  <section id="drawer" class="drawer" data-theme="dark" hidden aria-label="Terminals">
-    <div class="drawer-grip" id="drawer-grip" title="Drag to resize"></div>
-    <div class="drawer-tabs" role="tablist" id="drawer-tabs"></div>
-    <div class="drawer-body" id="drawer-body"></div>
-  </section>
+  <!-- Below 760px the nine tabs become a bottom tab bar (Jobs, Sessions, Fleet, More) and the other six sections
+       sit in the More sheet between the bar and the header; app.js marks the current one and toggles the sheet. -->
+  <nav id="tabbar" class="tabbar af-hue--hangar" aria-label="Sections">
+    <a class="tab" href="#needs" data-view="needs"><span class="tab-ic"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-approval"/></svg><span class="tab-count" data-count="needs"></span></span>Needs you</a>
+    <a class="tab" href="#jobs" data-view="jobs"><span class="tab-ic"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-job"/></svg><span class="tab-count" data-count="jobs"></span></span>Jobs</a>
+    <a class="tab" href="#sessions" data-view="sessions"><span class="tab-ic"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-session"/></svg><span class="tab-count" data-count="sessions"></span></span>Sessions</a>
+    <a class="tab" href="#fleet" data-view="fleet"><span class="tab-ic"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-fleet"/></svg><span class="tab-count" data-count="fleet"></span></span>Fleet</a>
+    <button type="button" class="tab" id="tab-more" data-more aria-expanded="false" aria-controls="more-sheet"><span class="tab-ic"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-more"/></svg></span>More</button>
+  </nav>
+  <div id="more-sheet" class="more-sheet" role="dialog" aria-label="More sections" hidden>
+    <nav class="more-list" aria-label="More sections">
+      <a class="af-menu__item" href="#environments" data-view="environments"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-environment"/></svg>Environments</a>
+      <a class="af-menu__item" href="#credentials" data-view="credentials"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-secret"/></svg>Credentials</a>
+      <a class="af-menu__item" href="#snapshots" data-view="snapshots"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-snapshot"/></svg>Snapshots</a>
+      <a class="af-menu__item" href="#connect" data-view="connect"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-egress"/></svg>Connect</a>
+      <a class="af-menu__item" href="#activity" data-view="activity"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-log"/></svg>Activity</a>
+      <a class="af-menu__item" href="#usage" data-view="usage"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-cost"/></svg>Usage</a>
+    </nav>
+    <div id="more-providers" class="more-foot"></div>
+  </div>
+
+  <!-- The terminals: Airframe's bottom drawer (airframe.drawer, no scrim: the page above stays usable), always dark
+       (Airframe Terminal), so the drawer is a nested Night scope in both themes. -->
+  <aside id="drawer" class="af-drawer af-drawer--bottom terminal-drawer" data-theme="dark" aria-label="Terminals">
+    <span class="af-drawer__grip" id="drawer-grip" aria-hidden="true" title="Drag to resize"></span>
+    <header class="af-drawer__head">
+      <span class="af-lbl"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-terminal"/></svg>Terminal</span>
+      <div class="drawer-tabs" role="tablist" id="drawer-tabs"></div>
+    </header>
+    <div class="af-drawer__body" id="drawer-body"></div>
+  </aside>
 </div>
 
-<dialog id="dialog"><form method="dialog" id="dialog-form"></form></dialog>
-<div id="toast" class="toast" role="status" hidden></div>
+<!-- the one form dialog (Airframe Dialog); confirms are airframe.confirm() -->
+<dialog id="dialog" class="af-dialog" aria-labelledby="dialog-title"><form method="dialog" id="dialog-form" class="af-dialog__form"></form></dialog>
 
-<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
-<script src="/ui/app.js"></script>
-<script src="/ui/fleet.js"></script>
+<!-- Airframe's helpers and behaviours (status, meta, btn, avatar, toast, confirm, drawer) are one ES module, vendored
+     with the CSS. The console's classic scripts reach it as window.airframe: deferred scripts run in document order,
+     so the module is in place before app.js and fleet.js. -->
+<script type="module">
+  import airframe from "/ui/airframe/airframe.js";
+  airframe.config.icons = "/ui/airframe/airframe-icons.svg";
+  window.airframe = airframe;
+</script>
+<script defer src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+<script defer src="/ui/app.js"></script>
+<script defer src="/ui/fleet.js"></script>
 </body>
 </html>

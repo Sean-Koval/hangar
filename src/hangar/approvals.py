@@ -226,13 +226,15 @@ def people_repo(repo: str | None) -> str:
 
 # ---------------------------------------------------------------------------- deciding on a job
 async def decide(jobs: JobService, job_id: str, approver: Approver,
-                 decision: Literal["approve", "reject"]) -> Job:
-    """Approve or reject a job waiting for approval: `with_logins`, then `decide_now`."""
+                 decision: Literal["approve", "reject"], reason: str | None = None) -> Job:
+    """Approve or reject a job waiting for approval: `with_logins`, then `decide_now`. `reason` is the decider's
+    words: kept on the decision and told to the requester."""
     job = jobs.get(job_id)
-    return decide_now(jobs, job.id, await with_logins(jobs, approver, job.repo), decision)
+    return decide_now(jobs, job.id, await with_logins(jobs, approver, job.repo), decision, reason)
 
 
-def decide_now(jobs: JobService, job_id: str, approver: Approver, decision: Literal["approve", "reject"]) -> Job:
+def decide_now(jobs: JobService, job_id: str, approver: Approver, decision: Literal["approve", "reject"],
+               reason: str | None = None) -> Job:
     """Raises JobNotFound for a job the principal may not see, JobError when it isn't waiting, ApprovalRefused
     (audited as `job.<decision>.refused`) when the rule says no."""
     from hangar.jobs import JobError, JobNotFound
@@ -248,7 +250,7 @@ def decide_now(jobs: JobService, job_id: str, approver: Approver, decision: Lite
         jobs.admission.refused(f"owner:{approver.actor}", approver.actor, f"job.{decision}.refused", job.id,
                                why=d.why, decided_person=approver.person, self_approved=d.self_approved)
         raise ApprovalRefused(d.why)
-    _record(jobs, job, approver, decision, d)
+    _record(jobs, job, approver, decision, d, (reason or "").strip() or None)
     return job
 
 
@@ -260,7 +262,8 @@ def _sees(jobs: JobService, approver: Approver, job: Job) -> bool:
     return is_repo_approver(jobs.store, approver, job.repo)
 
 
-def _record(jobs: JobService, job: Job, approver: Approver, decision: str, d: Decision) -> None:
+def _record(jobs: JobService, job: Job, approver: Approver, decision: str, d: Decision,
+            reason: str | None = None) -> None:
     from hangar.models import JobApproval, JobState, now
     from hangar.triggers import _drop, _github_ref
 
@@ -268,18 +271,23 @@ def _record(jobs: JobService, job: Job, approver: Approver, decision: str, d: De
     a = job.approval or JobApproval(requested_by=job.requester)
     job.approval = a.model_copy(update={
         "decided_by": who, "decided_at": now(), "decision": "approved" if decision == "approve" else "rejected",
-        "decided_person": approver.person, "self_approved": d.self_approved, "rule": d.rule})
+        "decided_person": approver.person, "self_approved": d.self_approved, "rule": d.rule,
+        "decision_reason": reason})
     detail = {"requested_by": a.requested_by, "decided_person": approver.person, "self_approved": d.self_approved,
               "rule": d.rule}
+    if reason:
+        detail["reason"] = reason[:300]
+    said = f": {reason}" if reason else ""
     if decision == "approve":
         jobs._event(job, f"approved by {who}" + (" (self-approved: HANGAR_SELF_APPROVAL=allow_solo)"
-                                                  if d.self_approved else ""), JobState.QUEUED, reason=None)
+                                                  if d.self_approved else "") + said, JobState.QUEUED, reason=None)
         jobs.fleet.audit(who, "job.approve", job.id, **detail)
         jobs._queue.put_nowait(job.id)
         if ref := _github_ref(job):
-            jobs._spawn(jobs._comment(job, ref, f"Approved by {who}. Hangar job `{job.id}` is queued."))
+            jobs._spawn(jobs._comment(job, ref, f"Approved by {who}{said}. Hangar job `{job.id}` is queued."))
     else:
-        _drop(jobs, job, f"rejected by {who}", "rejected", f"Rejected by {who}. Hangar job `{job.id}` will not run.")
+        _drop(jobs, job, f"rejected by {who}{said}", "rejected",
+              f"Rejected by {who}{said}. Hangar job `{job.id}` will not run.")
         jobs.fleet.audit(who, "job.reject", job.id, **detail)
 
 

@@ -62,6 +62,12 @@ def mount(app: FastAPI, h: Any, admin: Any, job_caller: Any, job_session: Callab
         """Stop the running turn, or with a message, have the agent carry on with that instead."""
         return await interrupt(sessions.get(ref), body, who)
 
+    @app.post("/api/sessions/{ref}/steers/{steer_id}/withdraw")
+    async def session_withdraw(ref: str, steer_id: str, who: str = admin):
+        """Take back a message that is still on its way to the agent (a `send` to a busy session)."""
+        s = sessions.get(ref)
+        return _steer(s, steering.withdraw(sessions, s, steer_id, who))
+
     @app.get("/api/sessions/{ref}/approvals")
     async def session_approvals(ref: str, _: str = admin):
         return steering.view(sessions.get(ref))
