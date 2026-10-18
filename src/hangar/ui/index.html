@@ -40,6 +40,7 @@
     </a>
     <span class="af-nav__sep" aria-hidden="true"></span>
     <nav class="af-nav__tabs" aria-label="Sections">
+      <a class="af-nav__tab" href="#needs" data-view="needs"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-approval"/></svg>Needs you<span id="nav-needs" class="af-nav__count" data-count="needs"></span></a>
       <a class="af-nav__tab" href="#jobs" data-view="jobs"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-job"/></svg>Jobs<span id="nav-jobs" class="af-nav__count" data-count="jobs"></span></a>
       <a class="af-nav__tab" href="#sessions" data-view="sessions"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-session"/></svg>Sessions<span id="nav-sessions" class="af-nav__count" data-count="sessions"></span></a>
       <a class="af-nav__tab" href="#fleet" data-view="fleet"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-fleet"/></svg>Fleet<span id="nav-count" class="af-nav__count" data-count="fleet"></span></a>
@@ -57,6 +58,19 @@
   </header>
 
   <main id="main">
+    <!-- NEEDS YOU: what waits on a person (GET /api/inbox), decided in place -->
+    <section id="view-needs" class="view" hidden>
+      <header class="af-page-head">
+        <div class="af-page-head__text">
+          <h1 class="af-page-head__title">Needs you</h1>
+          <p class="af-page-head__lede">Held tool calls, jobs waiting to start and the agents' questions, decided here;
+            then what failed and what waits for a review on GitHub.</p>
+          <div id="needs-sum" class="af-page-head__sum"></div>
+        </div>
+      </header>
+      <div id="needs-list" class="needs"></div>
+    </section>
+
     <!-- JOBS -->
     <section id="view-jobs" class="view" hidden>
       <header class="af-page-head">
@@ -310,6 +324,7 @@
   <!-- Below 760px the nine tabs become a bottom tab bar (Jobs, Sessions, Fleet, More) and the other six sections
        sit in the More sheet between the bar and the header; app.js marks the current one and toggles the sheet. -->
   <nav id="tabbar" class="tabbar af-hue--hangar" aria-label="Sections">
+    <a class="tab" href="#needs" data-view="needs"><span class="tab-ic"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-approval"/></svg><span class="tab-count" data-count="needs"></span></span>Needs you</a>
     <a class="tab" href="#jobs" data-view="jobs"><span class="tab-ic"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-job"/></svg><span class="tab-count" data-count="jobs"></span></span>Jobs</a>
     <a class="tab" href="#sessions" data-view="sessions"><span class="tab-ic"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-session"/></svg><span class="tab-count" data-count="sessions"></span></span>Sessions</a>
     <a class="tab" href="#fleet" data-view="fleet"><span class="tab-ic"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-fleet"/></svg><span class="tab-count" data-count="fleet"></span></span>Fleet</a>

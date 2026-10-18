@@ -174,7 +174,7 @@ def test_console_is_assembled_from_airframe_parts():
     # drawers: the terminal is the bottom drawer (always Night), the Fleet detail the right one (airframe.drawer)
     assert 'id="drawer" class="af-drawer af-drawer--bottom' in html and 'data-theme="dark"' in html
     assert 'airframe.drawer.open("#drawer", { scrim: false })' in app
-    assert "af-drawer--right" in fleet and "af-drawer__foot" in fleet
+    assert "af-drawer--right" in fleet and "af-drawer__body" in fleet
     assert "airframe.drawer.open(el, { scrim: false })" in fleet
     assert "--drawer-pad: calc(var(--af-drawer-inset)" in css, "the page and the detail stop above the terminal drawer"
     # empty states are af-empty (no-data, after-action, compact); the five own shapes are gone
@@ -210,6 +210,40 @@ def test_the_reply_is_a_composer_and_a_question_is_a_question_card():
     assert 'status("approval", "Needs input", { lit: true })' in app
 
 
+def test_held_actions_are_approval_cards_decided_in_place():
+    """theme-v6: a held tool call, a job waiting to start and an environment request are Airframe's ApprovalCard v2,
+    on the job and session details, in the Fleet detail and in the Needs-you view; Deny asks for a reason and refuses
+    without one (it goes back to the agent), Approve is the primary, "Allow for this turn" the second accept with a
+    hint; decided ones are verdict rows. The Needs-you view reads GET /api/inbox and leads the nav."""
+    html, app, fleet = (UI / "index.html").read_text(), (UI / "app.js").read_text(), (UI / "fleet.js").read_text()
+    for part in ("af-approval", "af-approval__subject", "af-approval__cmd", "af-approval__act", "af-approval__btns",
+                 "af-approval__reason", "af-approval__hint", "af-field__error", "af-verdict", "af-verdict__ok",
+                 "af-verdict__why"):
+        assert part in app, f"app.js lacks {part}"
+    assert "function approvalHtml(" in app and "function denyReasonHtml(" in app and "function verdictHtml(" in app
+    # the decision order and the reason rule
+    btns = re.search(r'<div class="af-approval__btns">\$\{inspect\}(.*?)</div>', app, re.S).group(1)
+    order = [btns.index(f'"data-decide": "{d}"') for d in ("deny", "allow_always", "allow")]
+    assert order == sorted(order), "refuse, the second accept, then the primary accept"
+    assert "(required)</span>" in app and "Reason for ${a.kind" in app
+    assert "if (!reason) {" in app and "aria-invalid" in app, "deny without a reason is refused in place"
+    # the three routes a card answers through, with the reason where each takes it
+    assert "reason ? { reason } : {}" in app and '"reject" : "approve"' in app
+    assert "{ decision, message: reason || null }" in app and "/api/env-requests/${a.id}" in app
+    # where the cards are: job detail, session detail, Fleet detail (delegated clicks), Needs you
+    assert app.count("approvalClick(e, ") >= 3
+    assert "approvalClick(e, (id) => fleet.cards.get(id), loadFleet)" in fleet
+    assert "jobApproval(j, false)" in app and "toolApprovals(x.pending_approvals" in app
+    assert "function detailCards(u)" in fleet
+    assert 'api("GET", "/api/inbox")' in app and 'id="view-needs"' in html
+    assert 'href="#needs" data-view="needs"' in html
+    assert html.index('href="#needs"') < html.index('href="#jobs"'), "what needs a person leads the nav"
+    assert 'cls: "af-empty--clear"' in app and 'title: "Nothing is waiting on you."' in app, "the clear state"
+    # a half-written reason or answer survives the 4 s repaint
+    assert "function openReasons(" in app or "const openReasons" in app
+    assert "restoreReasons(box, reasons, findCard)" in app and "restoreReasons(el, reasons" in fleet
+
+
 def test_narrow_screens_get_a_bottom_tab_bar():
     """Below 760px the nine tabs become a bottom tab bar (Jobs, Sessions, Fleet, More) and the six other sections sit in
     the More sheet, so every section is reachable on a phone (Tower's pattern)."""
@@ -217,17 +251,17 @@ def test_narrow_screens_get_a_bottom_tab_bar():
     top = re.findall(r'<a class="af-nav__tab" href="#([a-z]+)"', html)
     bar = re.findall(r'<a class="tab" href="#([a-z]+)"', html)
     more = re.findall(r'<a class="af-menu__item" href="#([a-z]+)"', html)
-    assert len(top) == 9 and bar == ["jobs", "sessions", "fleet"] and bar + more == top, (bar, more)
+    assert len(top) == 10 and bar == ["needs", "jobs", "sessions", "fleet"] and bar + more == top, (bar, more)
     assert 'class="tab" id="tab-more" data-more aria-expanded="false" aria-controls="more-sheet"' in html
     assert '<div id="more-sheet" class="more-sheet" role="dialog" aria-label="More sections" hidden>' in html
     # the counts show in both bars; the current section is marked in all three places
-    for name in ("jobs", "sessions", "fleet"):
+    for name in ("needs", "jobs", "sessions", "fleet"):
         assert html.count(f'data-count="{name}"') == 2, name
     assert "navCount(" in app and "function markCurrent()" in app and 'moreSheet(' in app
     # CSS: hidden wide, a fixed 4-column bar below 760px; what sits at the bottom stops above it
     assert ".tabbar, .more-sheet { display: none; }" in css
     narrow = css[css.index("@media (max-width: 760px)"):]
-    for rule in (".topbar .af-nav__tabs { display: none; }", "grid-template-columns: repeat(4, 1fr)",
+    for rule in (".topbar .af-nav__tabs { display: none; }", "grid-template-columns: repeat(5, 1fr)",
                  "--tabbar-h: calc(57px", ".terminal-drawer { bottom: var(--tabbar-h); }",
                  ".af-toasts { bottom: calc(var(--af-space-16) + var(--drawer-pad)); }"):
         assert rule in narrow, rule
