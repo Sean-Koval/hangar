@@ -225,6 +225,38 @@ async def test_claims_are_refused_with_what_to_do(jobs, world, settings):
         harness_thaw.resolve(settings, "team")
 
 
+def test_history_resolves_when_the_registry_is_a_subdirectory_of_a_repo(settings, tmp_path):
+    """HANGAR_HARNESS_REPO inside a repo (agent-factory's examples/team-harness, #228): `git log -- <path>` reads the
+    path from the registry, but `git show <commit>:<path>` reads it from the repo's root, so every older revision
+    was missed and `team@stable` failed whenever stable wasn't the current lock."""
+    repo = tmp_path / "suite"
+    reg = repo / "examples" / "team-harness"
+
+    def freeze(rev: int, text: str) -> dict:
+        lock = hl._lock(name="team", revision=rev, components=[
+            {"id": "skill:review", "path": "skills/review", "digest": harness_lock.files_digest({"SKILL.md":
+                                                                                                text.encode()})}])
+        harness_lock.write(reg / "harnesses" / "team", lock, {"skills/review/SKILL.md": text.encode()})
+        return lock
+
+    (repo / "docs").mkdir(parents=True)
+    (repo / "docs" / "index.md").write_text("the suite\n")  # the repo holds more than the registry
+    digest = harness_lock.harness_digest(freeze(1, "Review it.\n"))
+    (reg / "channels.yaml").write_text(yaml.safe_dump({"team": {"stable": digest}}))
+    _commit(repo, "team r1")
+    freeze(2, "Review it twice.\n")
+    _commit(repo, "team r2")
+    settings.harness_repo = str(reg)
+
+    assert harness_thaw.resolve(settings, "team").lock["revision"] == 2  # the current lock: the working tree
+    for ref in ("team@stable", "team@r1", f"team@{digest}"):
+        r = harness_thaw.resolve(settings, ref)
+        assert (r.lock["revision"], r.digest, r.path) == (1, digest, "harnesses/team/harness.lock"), ref
+        assert r.commit
+    d, stale = harness_thaw.materialize(settings, harness_thaw.resolve(settings, "team@stable"))
+    assert stale == [] and (d / "skills/review/SKILL.md").read_text() == "Review it.\n"  # r1's files, from history
+
+
 async def test_a_thawed_session_keeps_its_harness_and_the_cli_thaws_and_reports(jobs, world, settings, monkeypatch):
     reg, digest = await _frozen_registry(jobs, world)
     s = jobs.sessions.new(NewSession(name="thawed", environment="lockenv", harness_lock="team@r1"),
