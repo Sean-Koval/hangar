@@ -188,6 +188,28 @@ def test_console_is_assembled_from_airframe_parts():
     assert "airframe.meta(" in app and "airframe.icon(" in app
 
 
+def test_the_reply_is_a_composer_and_a_question_is_a_question_card():
+    """theme-v6: the follow-up and message forms are Airframe's Composer (a queued row with a take-back while the
+    agent is busy, a disabled state that says why), and an agent's question is Airframe's Question card answered in
+    place, instead of a kv line and "Answer the agent" elsewhere."""
+    app, css = (UI / "app.js").read_text(), (UI / "app.css").read_text()
+    for part in ("af-composer", "af-composer__queued", "af-composer__qmsg", "af-composer__box", "af-composer__input",
+                 "af-composer__row", "af-composer__send", "af-composer__why", "af-question", "af-question__q",
+                 "af-question__free", "af-question__act", "af-chip"):
+        assert part in app, f"app.js lacks {part}"
+    assert "function composerHtml(" in app and "function questionHtml(" in app
+    # every disabled composer says why; the busy one queues through the server's steer and takes back with withdraw
+    assert 'disabled: true, why:' in app and '"data-take-back"' in app
+    assert '/steers/${id}/withdraw' in app and "/api/jobs/${j.id}/steer" in app and "/api/jobs/${j.id}/follow-up" in app
+    assert "/api/jobs/${j.id}/approvals" in app, "a running job's turn info says whether it can be steered"
+    # the old forms and their CSS are gone
+    for dead in ("job-followup", "ses-send", "ses-msg", 'class="followup"'):
+        assert dead not in app, dead
+    assert ".followup" not in css
+    # a question is distinct from an approval but takes the same role and word
+    assert 'status("approval", "Needs input", { lit: true })' in app
+
+
 def test_narrow_screens_get_a_bottom_tab_bar():
     """Below 760px the nine tabs become a bottom tab bar (Jobs, Sessions, Fleet, More) and the six other sections sit in
     the More sheet, so every section is reachable on a phone (Tower's pattern)."""

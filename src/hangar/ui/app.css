@@ -234,8 +234,9 @@ h4.with-meta .af-meta { text-transform: none; letter-spacing: normal; font-weigh
   font-family: var(--af-font-mono); font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .log.summary { max-height: 360px; background: var(--af-surface); color: var(--af-fg); box-shadow: none; border-radius: var(--af-radius-control);
   font-family: var(--af-font-sans); font-size: 14px; line-height: 1.55; font-variant-ligatures: none; font-feature-settings: "liga" 0, "calt" 0; }
-.followup { margin-top: var(--af-space-20); display: flex; flex-direction: column; gap: var(--af-space-8); }
-.followup textarea { width: 100%; }
+/* the agent's question (Airframe Question) and the reply (Composer) sit in the detail's flow */
+.job-detail .af-question { margin: var(--af-space-16) 0; }
+.job-detail > .af-question:first-of-type { margin-top: var(--af-space-20); }
 
 /* timeline and activity: a status mark per event, quiet unless an event failed or waits on a person */
 .timeline, .turns { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }

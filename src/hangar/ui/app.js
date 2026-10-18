@@ -31,6 +31,92 @@ const readout = (text, size = "m") => `<span class="af-readout af-readout--${siz
   /[0-9a-z]/i.test(c) ? `<b>${esc(c)}</b>` : `<b class="af-readout__p">${esc(c)}</b>`).join("")}</span>`;
 const tok = (name, el = document.documentElement) => getComputedStyle(el).getPropertyValue(`--af-${name}`).trim();
 
+/* ---- Airframe Composer: the input a person steers an agent with. One send button, a queued row per message that
+   waits for the agent's current tool call (with a take-back while it can still be taken back), and a disabled
+   state that says why. `queued` items: {id, text, sub, takeBack}; `why` is the line under the box; `busy` draws
+   the queued ring before it. ---- */
+const queuedRow = (q) => `<div class="af-composer__queued" data-steer="${esc(q.id || "")}">
+    <span class="af-lbl">Queued<span class="af-lbl__sub">${esc(q.sub || "applies after this tool call")}</span></span>
+    <span class="af-composer__qmsg">${esc(q.text)}</span>
+    ${q.takeBack ? btn("", { kind: "ghost", sm: true, icon: "close", attrs: { "data-take-back": q.id, "aria-label": "Take back the queued message" } }) : ""}
+  </div>`;
+function composerHtml({ id, placeholder, send = "Send", why = "", busy = false, disabled = false, queued = [], chips = [], note = "" }) {
+  return `<div class="af-composer${disabled ? " is-disabled" : ""}" id="${esc(id)}">${queued.map(queuedRow).join("")}
+    <div class="af-composer__box">
+      <textarea class="af-composer__input" rows="1" placeholder="${esc(placeholder)}" aria-label="${esc(placeholder)}"${disabled ? " disabled" : ""}></textarea>
+      <div class="af-composer__row">
+        ${chips.length ? `<div class="af-composer__chips" role="group" aria-label="Suggestions">${chips.map((c) =>
+          `<button type="button" class="af-chip af-chip--sm" data-chip${disabled ? " disabled" : ""}>${esc(c)}</button>`).join("")}</div>` : ""}
+        ${note ? `<span class="af-diff__note">${ic("agent")}<span>${note}</span></span>` : ""}
+        ${btn(send, { kind: "primary", sm: true, icon: "arrow-right", cls: "af-composer__send", disabled })}
+      </div>
+    </div>
+    ${why ? `<p class="af-composer__why">${busy ? mark("queued") : ""}${why}</p>` : ""}
+  </div>`;
+}
+// wires a composer: `onSend(text)` (async; the field clears on success), `onTakeBack(id)`; Ctrl/Cmd+Enter sends
+function wireComposer(el, { onSend, onTakeBack, draft = "" }) {
+  if (!el) return;
+  const ta = $(".af-composer__input", el), sendBtn = $(".af-composer__send", el);
+  ta.value = draft;
+  if (!CSS.supports("field-sizing", "content")) {  // grow with the content where the browser doesn't do it itself
+    const grow = () => { ta.style.height = "auto"; ta.style.height = `${Math.min(ta.scrollHeight, window.innerHeight * .4)}px`; };
+    ta.addEventListener("input", grow); grow();
+  }
+  const send = () => {
+    const text = ta.value.trim();
+    if (!text || sendBtn.disabled) return;
+    ta.value = "";  // cleared before the send, so a refresh mid-send doesn't carry the words back; restored if it fails
+    const restore = () => { const cur = $(`#${CSS.escape(el.id)} .af-composer__input`) || ta; if (!cur.value) cur.value = text; };
+    busy(sendBtn, async () => {
+      try { if ((await onSend(text)) === false) restore(); }
+      catch (e) { restore(); throw e; }
+    });
+  };
+  sendBtn.addEventListener("click", send);
+  ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); } });
+  $$("[data-chip]", el).forEach((c) => c.addEventListener("click", () => { ta.value = c.textContent; ta.focus(); }));
+  $$("[data-take-back]", el).forEach((b) => b.addEventListener("click", () => busy(b, () => onTakeBack(b.dataset.takeBack))));
+}
+
+/* ---- Airframe Question: an agent asks a person. The approval role (a person is needed now) with the word "Needs
+   input"; the agent's options as chips when it offered any, free text otherwise (text wins); one primary, Answer.
+   The answer goes back as the agent's next message, in place. ---- */
+function questionHtml({ id, who, turn, question, context = "", options = [], asked, meanwhile = "holding the turn" }) {
+  return `<article class="af-card af-card--lit af-question" id="${esc(id)}">
+    <div class="af-card__top">
+      <span class="af-lbl">${ic("agent")}Question<span class="af-lbl__sub">${esc(who)}</span>${turn ? `<span class="af-lbl__sub">turn ${turn}</span>` : ""}</span>
+      ${status("approval", "Needs input", { lit: true })}
+    </div>
+    <p class="af-question__q">${esc(question)}</p>
+    ${context ? `<p class="af-question__ctx">${context}</p>` : ""}
+    ${options.length ? `<div class="af-question__opts" role="group" aria-label="Options">${options.slice(0, 5).map((o) =>
+      `<button type="button" class="af-chip" aria-pressed="false" data-option>${esc(o)}</button>`).join("")}</div>` : ""}
+    <label class="af-field af-question__free">
+      <span class="af-field__label">${options.length ? "Or answer in your own words" : "Your answer"}</span>
+      <span class="af-input af-input--area af-input--sans"><textarea rows="2" placeholder="${options.length ? "Free text dismisses the options" : "The agent continues with this"}"></textarea></span>
+    </label>
+    <div class="af-question__act">
+      ${meta([["asked", asked ? ago(asked) : ""], ["while", meanwhile]])}
+      ${btn("Answer", { kind: "primary", sm: true, attrs: { "data-answer": true } })}
+    </div>
+  </article>`;
+}
+// wires a question card: a pressed option is the answer unless the person wrote; `onAnswer(text)` sends it
+function wireQuestion(el, onAnswer) {
+  if (!el) return;
+  const ta = $("textarea", el);
+  $$("[data-option]", el).forEach((o) => o.addEventListener("click", () => {
+    $$("[data-option]", el).forEach((x) => x.setAttribute("aria-pressed", String(x === o && x.getAttribute("aria-pressed") !== "true")));
+  }));
+  $("[data-answer]", el).addEventListener("click", (e) => {
+    const picked = $('[data-option][aria-pressed="true"]', el);
+    const text = ta.value.trim() || (picked ? picked.textContent : "");
+    if (!text) { ta.focus(); return; }
+    busy(e.currentTarget, () => onAnswer(text));
+  });
+}
+
 const store = {
   get token() { try { return localStorage.getItem("hangar.token") || ""; } catch { return ""; } },
   set token(v) { try { v ? localStorage.setItem("hangar.token", v) : localStorage.removeItem("hangar.token"); } catch {} },
@@ -457,19 +543,56 @@ $("#job-list").addEventListener("click", (e) => {
   if (window.innerWidth < 860) $("#job-detail").scrollIntoView({ behavior: "smooth", block: "start" });
 });
 
+// What a running job's turn can take (GET /api/jobs/{id}/approvals: running, live, pending, decided), fetched while
+// the job is active and selected; a change re-renders the detail. The job view itself doesn't say whether the turn is
+// live (steerable) or one-shot.
+const turnInfo = new Map();
+async function fetchTurnInfo(j) {
+  const cur = turnInfo.get(j.id);
+  if (cur?.busy) return;
+  turnInfo.set(j.id, { ...cur, busy: true });
+  try {
+    const v = await api("GET", `/api/jobs/${j.id}/approvals`);
+    turnInfo.set(j.id, { ...v, busy: false });
+    if ((cur?.live !== v.live || cur?.running !== v.running) && state.selectedJob === j.id) renderJob(state.jobs.find((x) => x.id === j.id));
+  } catch { turnInfo.set(j.id, { ...cur, busy: false }); }
+}
+const inflight = new Map();  // job id -> a steer on its way (the direct route answers once the agent has it)
+
+// the Composer's state for a job: steer while a live turn runs, follow up after, and say why when neither works
+function jobComposer(j, info) {
+  const live = !!j.sandbox_id;
+  if (j.state === "awaiting_approval") return { disabled: true, why: "Waiting for approval. Approve or reject it from the Fleet page; a reply comes after." };
+  if (j.active) {
+    if (j.state === "running" && info?.running && !info.live) return { disabled: true,
+      why: `${esc(j.harness || "These")} turns run one-shot and can't take a message mid-turn; wait for the turn, or cancel the job.` };
+    if (j.state === "running" && (!info || info.running)) return { mode: "steer", placeholder: "Steer the agent", busy: true,
+      why: "The agent is working; your message applies after this tool call." };
+    return { disabled: true, why: `The job is ${esc(word(j.state).toLowerCase())}; a reply after it finishes runs another turn.` };
+  }
+  if (live || j.session?.checkpoints) return { mode: "follow-up", placeholder: "Reply to the agent",
+    why: "Runs another turn in the same sandbox and branch; the PR updates." };
+  return { disabled: true, why: `The sandbox was released with no checkpoint. Submit a new job; branch <span class="af-mono">${esc(j.branch)}</span> has the work.` };
+}
+
 function renderJob(j) {
   const box = $("#job-detail");
   if (!j) { box.innerHTML = emptyState({ kind: "after-action", compact: true, icon: "job", title: "That job is no longer listed.", text: "It may have been cleaned up, or the filter hides it." }); return; }
-  // keep a half-typed follow-up across the 4s refresh
-  const draft = $("#job-followup-text")?.value || "";
+  // keep a half-typed message across the 4s refresh
+  const draft = $("#job-composer .af-composer__input")?.value || $("#job-question textarea")?.value || "";
   const r = j.result || {};
+  const info = turnInfo.get(j.id);
+  if (j.active && j.state === "running") fetchTurnInfo(j);
+  const question = j.state === "needs_input" && r.question;
+  const cm = question ? null : jobComposer(j, info);
+  const pending = inflight.get(j.id);
   const verify = j.verify ? (r.verify_exit_code == null ? `<span class="hint">not run yet</span>`
     : r.verify_exit_code === 0 ? `<span class="passed">${ic("check", 14)}passed</span>`
       : status("failed", `Failed, exit ${r.verify_exit_code}`)) : "";
   const turns = j.turns || [];
   const live = !!j.sandbox_id;
   const role = jobRole(j);
-  box.classList.toggle("af-card--lit", role === "approval");  // lit only while it waits on a person
+  box.classList.toggle("af-card--lit", role === "approval" && !question);  // lit only while it waits on a person; a question card lights itself
   box.innerHTML = `
     <div class="detail-head"><h3>${esc(j.title)}</h3>${status(role, jobWord(j), { lit: true })}
       ${j.reason ? meta([["reason", j.reason.replace(/_/g, " "), role === "failed" ? "failed" : ""]]) : ""}</div>
@@ -495,11 +618,10 @@ function renderJob(j) {
     </div>
     ${r.summary ? `<h4>Agent's summary</h4><pre class="log summary">${esc(r.summary)}</pre>` : ""}
     ${r.verify_tail && r.verify_exit_code ? `<h4>Check output</h4><pre class="log">${esc(r.verify_tail)}</pre>` : ""}
-    ${!j.active && (live || j.session?.checkpoints) ? `<form id="job-followup" class="followup">
-        <label>Reply to the agent<textarea id="job-followup-text" rows="3" required
-          placeholder="Also handle the empty-file case, and keep the old function name."></textarea></label>
-        <div class="env-bar"><span class="hint">Runs another turn in the same sandbox and branch; the PR updates.</span>
-          <button class="af-btn af-btn--primary" type="submit">Send</button></div></form>` : ""}
+    ${question ? `<h4>The agent asks</h4>${questionHtml({ id: "job-question", who: j.id, turn: turns.length, question: r.question, asked: j.updated_at,
+        meanwhile: live ? "holding the sandbox" : "the sandbox is released; your answer resumes it" })}`
+      : `<h4>${cm.mode === "steer" ? "Steer the agent" : "Reply to the agent"}</h4>${composerHtml({ id: "job-composer", ...cm,
+        queued: pending ? [{ id: "", text: pending, sub: "on its way; applies after this tool call" }] : [] })}`}
     ${activityBlock("jobs", j.id, j.usage)}
     <h4>Timeline</h4>
     <ol class="timeline">${(j.events || []).slice().reverse().map((e) => `<li data-tone="${JOB_STATE[e.state] || "off"}">${mark(JOB_STATE[e.state] || "off")}
@@ -509,10 +631,30 @@ function renderJob(j) {
       ${meta([["by", t.requester || ""], ["exit", t.exit_code ?? ""]])}
       ${t.message ? `<div class="hint">${esc(t.message)}</div>` : ""}</li>`).join("")}</ol>` : ""}
     <details><summary>Instructions</summary><pre class="log summary">${esc(j.instructions)}</pre></details>`;
-  const ta = $("#job-followup-text");
-  if (ta) ta.value = draft;
   fillActivity(box);
   const sb = { id: j.sandbox_id, name: j.id };
+  // the reply: an answer to the agent's question and a follow-up both run another turn; a steer lands in this one
+  const followUp = async (message) => {
+    await api("POST", `/api/jobs/${j.id}/follow-up`, { message });
+    toast(`Sent; ${j.id} is running another turn`);
+    await loadJobs();
+  };
+  wireQuestion($("#job-question"), (text) => { $("#job-question textarea").value = ""; return followUp(text); });
+  if ($("#job-question textarea")) $("#job-question textarea").value = draft;
+  wireComposer($("#job-composer"), { draft, onSend: async (text) => {
+    if (cm.mode !== "steer") return followUp(text);
+    // the direct route answers once the agent has the message: show it queued meanwhile (a refresh keeps the row)
+    $("#job-composer").prepend(airframe.el(queuedRow({ text, sub: "on its way; applies after this tool call" })));
+    inflight.set(j.id, text);
+    try {
+      await api("POST", `/api/jobs/${j.id}/steer`, { message: text });
+      toast("The agent has your message; it applies after this tool call.");
+    } catch (e) {
+      if (e.message !== "unauthorized") toast(e.message, true);
+      return false;  // not taken: the words come back to the box
+    } finally { inflight.delete(j.id); renderJob(j); }
+    await loadJobs();
+  } });
   $("#job-watch")?.addEventListener("click", () => openTerminal(sb, j.terminal_session));
   $("#job-shell")?.addEventListener("click", () => openTerminal(sb));
   $("[data-goto-ses]", box)?.addEventListener("click", (e) => {
@@ -523,15 +665,6 @@ function renderJob(j) {
     const b = e.currentTarget;
     if (!(await confirmAction(`Cancel ${j.id}?`, "The agent is stopped. Work committed so far stays in the sandbox and on the branch.", "Cancel job", { cancel: "Keep running" }))) return;
     busy(b, async () => { await api("POST", `/api/jobs/${j.id}/cancel`); toast(`Cancelling ${j.id}`); loadJobs(); });
-  });
-  $("#job-followup")?.addEventListener("submit", (e) => {
-    e.preventDefault();
-    busy($("button[type=submit]", e.target), async () => {
-      await api("POST", `/api/jobs/${j.id}/follow-up`, { message: $("#job-followup-text").value });
-      $("#job-followup-text").value = "";
-      toast(`Sent; ${j.id} is running another turn`);
-      await loadJobs();
-    });
   });
 }
 
@@ -574,21 +707,43 @@ $("#session-list").addEventListener("click", (e) => {
   if (window.innerWidth < 860) $("#session-detail").scrollIntoView({ behavior: "smooth", block: "start" });
 });
 
+// the Composer's state for a session: a send to a busy live session queues and applies after the tool call (with a
+// take-back while it is on its way); an idle or suspended one starts a turn; archived and job sessions say why not
+function sesComposer(x) {
+  const t = x.turns.at(-1);
+  if (x.state === "archived") return { disabled: true, why: "This session is archived. Its conversation is kept; start a new session to continue the work." };
+  if (x.job_id) return { disabled: true, why: `This session carries job <span class="af-mono">${esc(x.job_id)}</span>; reply on the job, whose turns are verified and delivered.` };
+  if (x.busy || x.state === "running") {
+    if (t && t.run_id && !t.live && !t.finished_at) return { disabled: true,
+      why: `${esc(x.harness || "These")} turns run one-shot and can't take a message mid-turn; wait for the turn to end.` };
+    const steers = (t?.steers || []).filter((st) => st.status === "sending");
+    const failed = (t?.steers || []).filter((st) => st.status === "failed" && st.ts > Date.now() / 1000 - 600).at(-1);
+    return { placeholder: "Steer the agent", busy: !failed, queued: steers.map((st) => ({ id: st.id, text: st.text, takeBack: true })),
+      why: failed ? `${mark("failed")}Not delivered: ${esc(failed.error || "the agent did not take the message")}. Send it again.`
+        : "The agent is busy; your message will queue and apply after this tool call." };
+  }
+  if (x.state === "suspended") return { placeholder: "What next?", why: "Resumes the session, then the agent continues with this." };
+  return { placeholder: "What next?", why: "The agent continues its own conversation with everything it knew." };
+}
+
 function renderSession(x) {
   const box = $("#session-detail");
   if (!x) { box.innerHTML = emptyState({ kind: "after-action", compact: true, icon: "session", title: "That session is no longer listed." }); return; }
-  const draft = $("#ses-msg")?.value || "";
+  const draft = $("#ses-composer .af-composer__input")?.value || $("#ses-question textarea")?.value || "";
   const live = !!x.sandbox_id && ["idle", "running"].includes(x.state);
   const ck = x.checkpoints?.at(-1);
   const keep = x.idle_minutes;
   const role = sesRole(x);
-  const form = !(x.job_id || x.state === "archived");  // the message form carries the panel's one primary action
-  box.classList.toggle("af-card--lit", role === "approval");
+  const question = x.needs_input && role === "approval" && !x.job_id;
+  const cm = question ? null : sesComposer(x);
+  const form = !cm?.disabled || question;  // the message carries the panel's one primary action
+  box.classList.toggle("af-card--lit", role === "approval" && !question);  // a question card lights itself
   box.innerHTML = `
     <div class="detail-head"><h3 class="af-mono">${esc(x.name)}</h3>${status(role, sesWord(x), { lit: true })}</div>
     ${x.reason ? (role === "failed" ? `<p class="detail-reason">${errorLine(x.reason)}</p>` : `<p class="hint">${esc(x.reason)}</p>`) : ""}
+    ${question ? questionHtml({ id: "ses-question", who: x.name, turn: x.turns.length, question: x.needs_input, asked: x.last_active_at,
+      meanwhile: live ? "holding the sandbox" : "the sandbox is released; your answer resumes it" }) : ""}
     <dl class="kv af-kv">
-      ${x.needs_input && role === "approval" ? `<dt>Question</dt><dd>${esc(x.needs_input)}</dd>` : ""}
       <dt>Where</dt><dd>${meta([["env", x.environment, "strong"], ["harness", x.harness || "default agent"], ["model", x.model || ""]])}</dd>
       ${x.repo ? `<dt>Repo</dt><dd><span class="af-mono">${esc(jobRepo(x))}</span></dd><dt>Branch</dt><dd><code>${esc(x.branch)}</code></dd>` : ""}
       <dt>Conversation</dt><dd>${x.harness_session ? `<code>${esc(x.harness_session)}</code> <span class="sub-val">resumes natively</span>`
@@ -609,22 +764,28 @@ function renderSession(x) {
       ${live ? `<button id="ses-shell" type="button" class="af-btn af-btn--secondary">${ic("terminal")}Open a shell</button><button id="ses-suspend" type="button" class="af-btn af-btn--ghost">${ic("spindown")}Suspend</button>` : ""}
     </div>
     ${x.last_summary ? `<h4>Agent's last summary</h4><pre class="log summary">${esc(x.last_summary)}</pre>` : ""}
-    ${x.job_id || x.state === "archived" ? "" : `<form id="ses-send" class="followup">
-      <label>Message the agent<textarea id="ses-msg" rows="3" required ${x.state === "running" ? "disabled" : ""}
-        placeholder="${x.state === "suspended" ? "Resumes the session, then the agent continues with this." : "What next?"}"></textarea></label>
-      <div class="env-bar"><span class="hint">${x.state === "running" ? "The agent is working…"
-        : "The agent continues its own conversation with everything it knew."}</span>
-        <button class="af-btn af-btn--primary" type="submit" ${x.state === "running" || x.busy ? "disabled" : ""}>Send</button></div></form>`}
+    ${question ? "" : `<h4>${cm.busy || cm.queued?.length ? "Steer the agent" : "Message the agent"}</h4>${composerHtml({ id: "ses-composer", ...cm })}`}
     ${x.turns.length ? activityBlock("sessions", x.id, x.usage) : ""}
     ${x.turns.length ? `<h4>Turns</h4><ol class="turns">${x.turns.slice().reverse().map((t) => `<li>
       <b>${esc(t.message.split("\n")[0].slice(0, 140))}</b>
       ${meta([["harness", t.harness || ""], ["mode", t.mode], t.exit_code != null ? ["exit", t.exit_code] : t.run_id ? ["exit", "running"] : null,
         ["started", t.started_at ? ago(t.started_at) : ""]])}
       ${t.summary ? `<div class="turn-summary">${esc(t.summary.slice(0, 600))}</div>` : ""}</li>`).join("")}</ol>` : ""}`;
-  const ta = $("#ses-msg");
-  if (ta) ta.value = draft;
   fillActivity(box);
   const sb = { id: x.sandbox_id, name: x.name };
+  // one route for all of it: a send starts a turn, or steers the running one (queued server-side, with a take-back)
+  const send = async (message) => {
+    await api("POST", `/api/sessions/${x.id}/send`, { message });
+    toast(x.state === "suspended" ? `Resuming ${x.name}, then sending` : x.busy || x.state === "running" ? "Queued; it applies after this tool call" : "Sent");
+    await loadSessions();
+  };
+  wireQuestion($("#ses-question"), (text) => { $("#ses-question textarea").value = ""; return send(text); });
+  if ($("#ses-question textarea")) $("#ses-question textarea").value = draft;
+  wireComposer($("#ses-composer"), { draft, onSend: send, onTakeBack: async (id) => {
+    await api("POST", `/api/sessions/${x.id}/steers/${id}/withdraw`);
+    toast("Taken back; the agent never saw it.");
+    await loadSessions();
+  } });
   $("#ses-open")?.addEventListener("click", (e) => busy(e.currentTarget, async () => {
     await api("POST", `/api/sessions/${x.id}/open`, {}); toast(`Resuming ${x.name}`); loadSessions(); }));
   $("#ses-shell")?.addEventListener("click", () => openTerminal(sb));
@@ -636,15 +797,6 @@ function renderSession(x) {
   $("#ses-idle")?.addEventListener("change", (e) => busy(e.currentTarget, async () => {
     await api("POST", `/api/sessions/${x.id}/idle`, { idle_minutes: Number(e.target.value) }); loadSessions(); }));
   $("[data-goto-job]", box)?.addEventListener("click", (e) => { state.selectedJob = e.target.dataset.gotoJob; });
-  $("#ses-send")?.addEventListener("submit", (e) => {
-    e.preventDefault();
-    busy($("button[type=submit]", e.target), async () => {
-      await api("POST", `/api/sessions/${x.id}/send`, { message: $("#ses-msg").value });
-      $("#ses-msg").value = "";
-      toast(x.state === "suspended" ? `Resuming ${x.name}, then sending` : "Sent");
-      await loadSessions();
-    });
-  });
 }
 
 /* ------------------------------------------------------------------ activity (workstream C) */
