@@ -344,28 +344,29 @@ class HangarOAuthProvider:
 # ---------------------------------------------------------------------------- consent page
 _PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Authorize · Hangar</title>
+<link rel="icon" type="image/svg+xml" href="/ui/favicon.svg">
+<link rel="stylesheet" href="/ui/airframe/airframe.css"><link rel="stylesheet" href="/ui/airframe/airframe-components.css">
 <style>
-:root{{--floor:#1e2833;--panel:#26323f;--line:#3a4857;--ink:#e8ecef;--ink2:#a9b4be;--y:#f2c230;--err:#e5684f;color-scheme:dark}}
-@media (prefers-color-scheme: light){{:root{{--floor:#e6e9eb;--panel:#f6f7f8;--line:#cdd4da;--ink:#1f2a36;--ink2:#4b5967;--y:#e8b419;color-scheme:light}}}}
-*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--floor);
-color:var(--ink);font:15px/1.5 system-ui,sans-serif;padding:16px}}
-.card{{width:min(460px,100%);background:var(--panel);border-top:6px solid var(--y);border-radius:8px;padding:26px;
-display:flex;flex-direction:column;gap:14px}}h1{{margin:0;font-size:26px}}p{{margin:0;color:var(--ink2)}}
-code{{font-size:13px}}label{{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--ink2)}}
-input{{font:inherit;color:inherit;background:var(--floor);border:1px solid var(--line);border-radius:4px;padding:8px}}
-.row{{display:flex;gap:10px;justify-content:flex-end}}button{{font:inherit;border-radius:4px;padding:7px 14px;
-border:1px solid var(--line);background:transparent;color:inherit;cursor:pointer}}
-button.p{{background:var(--y);border-color:var(--y);color:#1e2833;font-weight:600}}.e{{color:var(--err)}}
-</style></head><body><form class="card" method="post" action="/oauth/consent">
+/* Airframe (vendored in /ui/airframe/): tokens and af- classes only, like the console */
+body{{min-height:100vh;display:grid;place-items:center;padding:16px}}
+.card{{width:min(460px,100%)}}h1{{margin:0;font-family:var(--af-font-display);font-stretch:var(--af-display-stretch);
+font-weight:var(--af-display-weight);letter-spacing:var(--af-display-track);font-size:22px;line-height:1.2}}
+p{{margin:0;color:var(--af-fg-muted)}}code{{font-family:var(--af-font-mono);font-size:12.5px;color:var(--af-fg)}}
+.row{{display:flex;gap:8px;justify-content:flex-end}}
+.e{{display:flex;gap:8px;align-items:baseline;color:var(--af-fg)}}
+.e::before{{content:"";flex:none;width:10px;height:9px;background:var(--af-status-failed);clip-path:polygon(50% 0,100% 100%,0 100%)}}
+</style></head><body><form class="card af-card af-card--airy" method="post" action="/oauth/consent">
+<span class="af-mark af-mark--lg af-hue--hangar" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 20 V13 A9 9 0 0 1 21 13 V20"/><path d="M2 20 H22"/><path d="M9 20 V15 H15 V20"/></svg></span>
 <h1>Connect {name} to Hangar?</h1>
 <p><b>{name}</b> wants to manage your sandboxes: create and destroy them, run commands and agents,
 and read and write their files. It will act as the token you approve with.</p>
 <p>After approval you'll return to <code>{host}</code>.</p>
 {error}
 <input type="hidden" name="req" value="{req}">
-<label>Hangar API token<input name="token" type="password" autocomplete="off" required autofocus placeholder="hgr_…"></label>
-<div class="row"><button name="action" value="deny" formnovalidate>Deny</button>
-<button class="p" name="action" value="approve">Approve</button></div>
+<div class="af-field"><label class="af-field__label" for="token">Hangar API token</label>
+<div class="af-input"><input id="token" name="token" type="password" autocomplete="off" required autofocus placeholder="hgr_…"></div></div>
+<div class="row"><button class="af-btn af-btn--danger" name="action" value="deny" formnovalidate>Deny</button>
+<button class="af-btn af-btn--primary" name="action" value="approve">Approve</button></div>
 </form></body></html>"""
 
 _HEADERS = {"X-Frame-Options": "DENY", "Content-Security-Policy": "frame-ancestors 'none'",

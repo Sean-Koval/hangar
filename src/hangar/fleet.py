@@ -1698,6 +1698,10 @@ class Fleet:
             "sandboxes": {st.value: sum(1 for s in sbs if s.state == st) for st in ACTIVE},
             "total_active": len(sbs),
             "max_sandboxes": self.settings.max_sandboxes,
+            # the per-person caps (fairness.py), for the console's Owners view: sandboxes started directly, live
+            # sessions (each holds a sandbox); 0 = off
+            "person_caps": {"sandboxes": self.settings.person_max_sandboxes,
+                            "sessions": self.settings.person_max_sessions},
             "providers": {
                 name: {"ok": True, "capabilities": p.capabilities.model_dump()} for name, p in self.providers.items()
             } | {name: {"ok": False, "error": err} for name, err in self.provider_errors.items()},

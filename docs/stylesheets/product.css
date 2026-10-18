@@ -1,1 +1,1 @@
-:root { --af-product: var(--af-p-hangar); }
+:root, [data-md-color-scheme] { --af-product: var(--af-product-hangar); }

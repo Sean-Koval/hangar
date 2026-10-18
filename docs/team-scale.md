@@ -30,6 +30,9 @@ To onboard the team itself (people, credentials, and each repo's App, branch pro
 | `HANGAR_WORKSPACE_TRANSFER_MB` | 1024 | Workspace archives in the control plane's memory at once (read at startup) |
 | `HANGAR_K8S_CPU_REQUEST_FRACTION` | 0.5 | Share of an environment's `cpus` a sandbox pod requests; the limit stays `cpus`. 1 = Guaranteed QoS, as before |
 
+`GET /api/overview` reports the per-person sandbox and session caps as `person_caps`; the web UI's **Fleet → Owners**
+view shows each person's use of them, with their sandboxes by environment and what they spent today.
+
 A cap reached answers 429 over REST and the E2B API, and an error naming the cap over MCP. Every cap is per
 **person**, the person hangar records on each token and on the work it starts ([security.md](security.md#people)):
 all of a person's tokens, MCP and REST calls, and the OAuth connectors they approved count together, and the

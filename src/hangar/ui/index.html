@@ -3,47 +3,58 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hangar</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M2 30V14L16 4l14 10v16h-6V18H8v12z' fill='%23F2C230'/%3E%3C/svg%3E">
+<title>hangar</title>
+<!-- Airframe (Sean-Koval/agent-factory) is the design source of truth: /ui/airframe/ is vendored by
+     scripts/sync-airframe.sh and never edited here; app.css uses var(--af-*) tokens and af- classes only. -->
+<link rel="icon" type="image/svg+xml" href="/ui/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+<link rel="stylesheet" href="/ui/airframe/airframe.css">
+<link rel="stylesheet" href="/ui/airframe/airframe-components.css">
 <link rel="stylesheet" href="/ui/app.css">
 </head>
 <body>
 <div id="gate" class="gate" hidden>
-  <form id="gate-form" class="gate-card">
-    <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M2 30V14L16 4l14 10v16h-6V18H8v12z"/></svg>
-    <h1>Hangar</h1>
+  <form id="gate-form" class="gate-card af-card af-card--airy">
+    <div class="gate-brand">
+      <span class="af-mark af-mark--lg af-hue--hangar" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 20 V13 A9 9 0 0 1 21 13 V20"/><path d="M2 20 H22"/><path d="M9 20 V15 H15 V20"/></svg></span>
+      <h1>hangar</h1>
+    </div>
     <p>Paste an API token to open the control plane. A bootstrap token is printed when the server
       first starts and saved to <code>~/.hangar/bootstrap-token</code>.</p>
-    <label for="gate-token">API token</label>
-    <input id="gate-token" type="password" autocomplete="off" placeholder="hgr_…" required>
+    <div class="af-field">
+      <label class="af-field__label" for="gate-token">API token</label>
+      <div class="af-input"><input id="gate-token" type="password" autocomplete="off" placeholder="hgr_…" required></div>
+    </div>
     <p id="gate-error" class="error" hidden></p>
-    <button class="primary" type="submit">Open hangar</button>
+    <button class="af-btn af-btn--primary" type="submit">Open hangar</button>
   </form>
 </div>
 
 <div id="shell" class="shell" hidden>
-  <nav class="rail" aria-label="Sections">
-    <a class="brand" href="#fleet">
-      <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M2 30V14L16 4l14 10v16h-6V18H8v12z"/></svg>
-      <span>Hangar</span>
+  <header class="af-nav af-hue--hangar topbar">
+    <a class="af-nav__switch" href="#fleet" aria-label="hangar fleet">
+      <span class="af-mark af-hue--hangar" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 20 V13 A9 9 0 0 1 21 13 V20"/><path d="M2 20 H22"/><path d="M9 20 V15 H15 V20"/></svg></span>
+      <span class="af-nav__name">hangar</span>
     </a>
-    <a href="#jobs" data-view="jobs">Jobs <span id="nav-jobs" class="pill"></span></a>
-    <a href="#sessions" data-view="sessions">Sessions <span id="nav-sessions" class="pill"></span></a>
-    <a href="#fleet" data-view="fleet">Fleet <span id="nav-count" class="pill"></span></a>
-    <a href="#environments" data-view="environments">Environments</a>
-    <a href="#credentials" data-view="credentials">Credentials</a>
-    <a href="#snapshots" data-view="snapshots">Snapshots</a>
-    <a href="#connect" data-view="connect">Connect</a>
-    <a href="#activity" data-view="activity">Activity</a>
-    <a href="#usage" data-view="usage">Usage</a>
-    <div class="rail-foot">
-      <div id="providers"></div>
-      <button id="signout" class="link">Sign out</button>
+    <span class="af-nav__sep" aria-hidden="true"></span>
+    <nav class="af-nav__tabs" aria-label="Sections">
+      <a class="af-nav__tab" href="#jobs" data-view="jobs"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-job"/></svg>Jobs<span id="nav-jobs" class="af-nav__count"></span></a>
+      <a class="af-nav__tab" href="#sessions" data-view="sessions"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-session"/></svg>Sessions<span id="nav-sessions" class="af-nav__count"></span></a>
+      <a class="af-nav__tab" href="#fleet" data-view="fleet"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-fleet"/></svg>Fleet<span id="nav-count" class="af-nav__count"></span></a>
+      <a class="af-nav__tab" href="#environments" data-view="environments"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-environment"/></svg>Environments</a>
+      <a class="af-nav__tab" href="#credentials" data-view="credentials"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-secret"/></svg>Credentials</a>
+      <a class="af-nav__tab" href="#snapshots" data-view="snapshots"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-snapshot"/></svg>Snapshots</a>
+      <a class="af-nav__tab" href="#connect" data-view="connect"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-egress"/></svg>Connect</a>
+      <a class="af-nav__tab" href="#activity" data-view="activity"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-log"/></svg>Activity</a>
+      <a class="af-nav__tab" href="#usage" data-view="usage"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-cost"/></svg>Usage</a>
+    </nav>
+    <div class="af-nav__right">
+      <div id="providers" class="providers"></div>
+      <button id="signout" class="af-btn af-btn--ghost af-btn--sm" type="button">Sign out</button>
     </div>
-  </nav>
+  </header>
 
   <main id="main">
     <!-- JOBS -->
@@ -60,7 +71,7 @@
             <option value="succeeded">Succeeded</option><option value="failed">Failed</option>
             <option value="cancelled">Cancelled</option>
           </select>
-          <button class="primary" id="btn-new-job">New job</button>
+          <button class="af-btn af-btn--primary" id="btn-new-job" type="button">New job</button>
         </div>
       </header>
       <form id="job-form" class="panel new-form" hidden>
@@ -84,8 +95,8 @@
         </div>
         <div class="form-foot">
           <span class="hint">Files land next to the repo in ~/.hangar/jobs/&lt;job&gt;/, never in the repo itself.</span>
-          <button type="button" class="ghost" id="job-cancel-form">Cancel</button>
-          <button class="primary" type="submit">Submit job</button>
+          <button type="button" class="af-btn af-btn--ghost" id="job-cancel-form">Cancel</button>
+          <button class="af-btn af-btn--primary" type="submit">Submit job</button>
         </div>
       </form>
       <div class="split jobs-split">
@@ -105,7 +116,7 @@
         </div>
         <div class="actions">
           <label class="check"><input type="checkbox" id="ses-jobs"> Show job sessions</label>
-          <button class="primary" id="btn-new-session">New session</button>
+          <button class="af-btn af-btn--primary" id="btn-new-session" type="button">New session</button>
         </div>
       </header>
       <form id="session-form" class="panel new-form" hidden>
@@ -118,8 +129,8 @@
           placeholder="Fix the unicode bug in CSV export. Start by reproducing it with a test."></textarea></label>
         <div class="form-foot">
           <span class="hint">Without a message the sandbox just opens, ready for you or the agent.</span>
-          <button type="button" class="ghost" id="session-cancel">Cancel</button>
-          <button class="primary" type="submit">Start session</button>
+          <button type="button" class="af-btn af-btn--ghost" id="session-cancel">Cancel</button>
+          <button class="af-btn af-btn--primary" type="submit">Start session</button>
         </div>
       </form>
       <div class="split jobs-split">
@@ -137,8 +148,16 @@
           <p id="fleet-sub" class="sub"></p>
         </div>
         <div class="actions">
+          <!-- four views of the same sandboxes (Airframe FleetView, FleetBays, FleetColumns, FleetOwners), kept in the
+               URL (#fleet?view=bays) and remembered; fleet.js marks the current one -->
+          <nav class="af-seg fleet-views" aria-label="Fleet view">
+            <a class="af-seg__btn" href="#fleet?view=board" data-fleet-view="board">Board</a>
+            <a class="af-seg__btn" href="#fleet?view=bays" data-fleet-view="bays">Bays</a>
+            <a class="af-seg__btn" href="#fleet?view=columns" data-fleet-view="columns">Columns</a>
+            <a class="af-seg__btn" href="#fleet?view=owners" data-fleet-view="owners">Owners</a>
+          </nav>
           <label class="check"><input type="checkbox" id="show-stopped"> Show stopped</label>
-          <button class="primary" id="btn-new">New sandbox</button>
+          <button class="af-btn af-btn--primary" id="btn-new" type="button">New sandbox</button>
         </div>
       </header>
       <form id="new-form" class="panel new-form" hidden>
@@ -155,11 +174,16 @@
         <fieldset class="creds"><legend>Credentials</legend><div id="new-creds" class="chips"></div></fieldset>
         <div class="form-foot">
           <span class="hint">Count above 1 starts identical sandboxes in parallel, each on its own numbered work branch.</span>
-          <button type="button" class="ghost" id="new-cancel">Cancel</button>
-          <button class="primary" type="submit">Start sandbox</button>
+          <button type="button" class="af-btn af-btn--ghost" id="new-cancel">Cancel</button>
+          <button class="af-btn af-btn--primary" type="submit">Start sandbox</button>
         </div>
       </form>
-      <div id="bays" class="bays" aria-live="polite"></div>
+      <div class="fleet-main">
+        <div id="bays" class="fleet-view"></div>
+        <!-- one selection across the views: beside the Board, a drawer elsewhere -->
+        <aside id="fleet-detail" class="fleet-detail" aria-label="Sandbox"></aside>
+      </div>
+      <p id="fleet-live" class="visually-hidden" aria-live="polite"></p>
     </section>
 
     <!-- ENVIRONMENTS -->
@@ -167,7 +191,7 @@
       <header class="view-head">
         <div><h2>Environments</h2>
           <p class="sub">Layered templates: base, tools, harnesses, dependencies, skills, then repo.</p></div>
-        <div class="actions"><button class="primary" id="btn-new-env">New environment</button></div>
+        <div class="actions"><button class="af-btn af-btn--primary" id="btn-new-env" type="button">New environment</button></div>
       </header>
       <div class="split">
         <ul id="env-list" class="list"></ul>
@@ -183,10 +207,12 @@
       </header>
       <div class="split">
         <div>
-          <table class="table" id="cred-table">
-            <thead><tr><th>Name</th><th>Harness</th><th>Kind</th><th>Status</th><th></th></tr></thead>
-            <tbody></tbody>
-          </table>
+          <div class="af-table-wrap">
+            <table class="table af-table" id="cred-table">
+              <thead><tr><th scope="col">Name</th><th scope="col">Harness</th><th scope="col">Kind</th><th scope="col">Status</th><th scope="col" class="act"><span class="visually-hidden">Actions</span></th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
           <h3 class="section-title">Sign in with a subscription</h3>
           <p class="sub">Runs the harness's own login inside a short-lived sandbox. Finish the flow in the terminal
             that opens below, then capture the result.</p>
@@ -201,7 +227,7 @@
           <label>Value<textarea name="value" rows="4" required placeholder="Paste the key, token, or file contents"></textarea></label>
           <label class="file">…or load a file<input type="file" id="cred-file"></label>
           <label>Description<input name="description" placeholder="optional"></label>
-          <button class="primary" type="submit">Save credential</button>
+          <button class="af-btn af-btn--primary" type="submit">Save credential</button>
         </form>
       </div>
     </section>
@@ -210,10 +236,12 @@
     <section id="view-snapshots" class="view" hidden>
       <header class="view-head"><div><h2>Snapshots</h2>
         <p class="sub">Full snapshots keep everything; workspace snapshots are portable across providers.</p></div></header>
-      <table class="table" id="snap-table">
-        <thead><tr><th>Snapshot</th><th>From</th><th>Environment</th><th>Kind</th><th>Taken</th><th></th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <div class="af-table-wrap">
+        <table class="table af-table" id="snap-table">
+          <thead><tr><th scope="col">Snapshot</th><th scope="col">From</th><th scope="col">Environment</th><th scope="col">Kind</th><th scope="col">Taken</th><th scope="col" class="act"><span class="visually-hidden">Actions</span></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </section>
 
     <!-- CONNECT -->
@@ -221,18 +249,18 @@
       <header class="view-head"><div><h2>Connect an MCP client</h2>
         <p class="sub">Point Codex, Claude Code or any MCP client at this hangar with a token.</p></div></header>
       <div class="split even">
-        <div id="connect-snippets"></div>
+        <div id="connect-snippets" class="panel snippets"></div>
         <div class="panel">
           <h3>API tokens</h3>
           <form id="token-form" class="inline">
-            <input name="name" required placeholder="codex-laptop">
-            <button class="primary" type="submit">Create token</button>
+            <div class="af-input"><input name="name" required placeholder="codex-laptop" aria-label="Token name"></div>
+            <button class="af-btn af-btn--primary" type="submit">Create token</button>
           </form>
           <div id="token-new" class="reveal" hidden></div>
-          <table class="table compact" id="token-table"><tbody></tbody></table>
+          <table class="table af-table af-table--compact" id="token-table"><tbody></tbody></table>
           <h3 class="section-title">Connected apps</h3>
           <p class="sub">Apps that connected with OAuth, such as ChatGPT connectors. Revoking ends their access immediately.</p>
-          <table class="table compact" id="oauth-table"><tbody></tbody></table>
+          <table class="table af-table af-table--compact" id="oauth-table"><tbody></tbody></table>
         </div>
       </div>
     </section>
@@ -241,10 +269,12 @@
     <section id="view-activity" class="view" hidden>
       <header class="view-head"><div><h2>Activity</h2>
         <p class="sub">Everything people and MCP clients did, newest first.</p></div></header>
-      <table class="table" id="audit-table">
-        <thead><tr><th>When</th><th>Who</th><th>Action</th><th>Target</th><th>Detail</th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <div class="af-table-wrap">
+        <table class="table af-table" id="audit-table">
+          <thead><tr><th scope="col">When</th><th scope="col">Who</th><th scope="col">Action</th><th scope="col">Target</th><th scope="col">Detail</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </section>
 
     <!-- USAGE (--- observe) -->
@@ -260,26 +290,27 @@
           </select>
         </div>
       </header>
-      <div id="usage-tiles" class="tiles"></div>
+      <div id="usage-tiles" class="tiles af-grid af-grid--4"></div>
       <div class="panel usage-chart">
-        <h3>Spend per day (UTC)</h3>
+        <h3><span class="af-lbl"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-cost"/></svg>Spend per day<span class="af-lbl__sub">UTC</span></span></h3>
         <div id="usage-days" class="bars"></div>
       </div>
       <div class="split even usage-split">
         <div><h3 class="section-title">Top repos</h3>
-          <table class="table compact" id="usage-repos"><thead><tr><th>Repo</th><th>Turns</th><th>Tokens</th>
-            <th>Spend</th></tr></thead><tbody></tbody></table></div>
+          <div class="af-table-wrap"><table class="table af-table af-table--compact" id="usage-repos"><thead><tr><th scope="col">Repo</th>
+            <th scope="col" class="af-num">Turns</th><th scope="col" class="af-num">Tokens</th><th scope="col" class="af-num">Spend</th></tr></thead><tbody></tbody></table></div></div>
         <div><h3 class="section-title">Top requesters</h3>
-          <table class="table compact" id="usage-requesters"><thead><tr><th>Requester</th><th>Turns</th>
-            <th>Tokens</th><th>Spend</th></tr></thead><tbody></tbody></table></div>
+          <div class="af-table-wrap"><table class="table af-table af-table--compact" id="usage-requesters"><thead><tr><th scope="col">Requester</th>
+            <th scope="col" class="af-num">Turns</th><th scope="col" class="af-num">Tokens</th><th scope="col" class="af-num">Spend</th></tr></thead><tbody></tbody></table></div></div>
       </div>
       <h3 class="section-title">Budget stops</h3>
-      <table class="table compact" id="usage-stops"><thead><tr><th>Job or session</th><th>Repo</th>
-        <th>Requester</th><th>Why</th><th>When</th></tr></thead><tbody></tbody></table>
+      <div class="af-table-wrap"><table class="table af-table af-table--compact" id="usage-stops"><thead><tr><th scope="col">Job or session</th>
+        <th scope="col">Repo</th><th scope="col">Requester</th><th scope="col">Why</th><th scope="col">When</th></tr></thead><tbody></tbody></table></div>
     </section>
   </main>
 
-  <section id="drawer" class="drawer" hidden aria-label="Terminals">
+  <!-- The terminal is always dark (Airframe Terminal): the drawer is a nested Night scope in both themes. -->
+  <section id="drawer" class="drawer" data-theme="dark" hidden aria-label="Terminals">
     <div class="drawer-grip" id="drawer-grip" title="Drag to resize"></div>
     <div class="drawer-tabs" role="tablist" id="drawer-tabs"></div>
     <div class="drawer-body" id="drawer-body"></div>
@@ -292,5 +323,6 @@
 <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
 <script src="/ui/app.js"></script>
+<script src="/ui/fleet.js"></script>
 </body>
 </html>

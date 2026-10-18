@@ -1,17 +1,16 @@
-# README banner
+# README banner, favicon and marks
 
-The banner uses the dashboard's slate background (`#1e2833`), yellow icon
-(`#f2c230`), Barlow Condensed Bold wordmark, and Barlow Regular supporting text.
-The icon matches [the dashboard](https://github.com/Sean-Koval/hangar/blob/main/src/hangar/ui/index.html), and colors match
-[its stylesheet](https://github.com/Sean-Koval/hangar/blob/main/src/hangar/ui/app.css).
+`brand/` holds the README banner (Night and Day), the GitHub social preview, the favicon and the header mark.
+They are generated in [Sean-Koval/agent-factory](https://github.com/Sean-Koval/agent-factory) by
+`scripts/banners.py` from Airframe's tokens, product marks and fonts (text is outlined, so GitHub renders
+it without web fonts), and vendored here unmodified:
 
-Lettering is outlined so GitHub renders the intended fonts without relying on
-installed fonts or remote font loading. The SVG includes an accessible title and
-description.
+```bash
+sh scripts/sync-brand.sh theme-vN      # or a commit; also refreshes src/hangar/ui/favicon.svg
+```
 
-The font source is [The Barlow Project](https://github.com/jpt/barlow), distributed
-through [Google Fonts](https://github.com/google/fonts) under the
-[SIL Open Font License](OFL.txt).
+Never edit them here; change Airframe or the banner copy in agent-factory. `social.png` is uploaded by hand
+in the repository settings (Social preview).
 
 # Front page assets
 

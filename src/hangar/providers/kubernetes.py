@@ -25,6 +25,7 @@ import shutil
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 from hangar import (
     egress,  # --- egress
@@ -143,6 +144,11 @@ class KubernetesProvider(Provider):
         except Exception as e:  # noqa: BLE001
             raise ProviderError(f"cannot load kubernetes config: {e}") from e
         self.core = client.CoreV1Api()
+        # --- exec streams get their own ApiClient. kubernetes.stream.stream swaps the client's `request` for the
+        # websocket one while it connects and puts the old one back after; two execs connecting at once on a shared
+        # client can put the websocket one back for good, and from then on every ordinary call (list or read a pod)
+        # fails with "Handshake status 200 OK": the reconciler, envd's pod IP and sandbox readiness all stop.
+        self.core_exec = client.CoreV1Api(client.ApiClient())
         self.crd = client.CustomObjectsApi()
         self.envd = KubernetesEnvd(self, settings)  # --- envd: exec, files and terminals through the in-sandbox daemon
         self._known_images: set[str] = set()
@@ -287,6 +293,8 @@ class KubernetesProvider(Provider):
             # integration (#97 + #99): the services' names (127.0.0.1) stay in /etc/hosts beside hangar's own
             if hosts := [*services_hosts, *(dns or {}).get("hostAliases", [])]:
                 pod["hostAliases"] = hosts
+        elif dns and dns.get("hostAliases"):  # open: its own resolver, plus hangar's Service names (k8s_direct_hosts)
+            pod["hostAliases"] = [*services_hosts, *dns["hostAliases"]]
         if s.k8s_pod_snapshots and rc == "gvisor":
             # Pod snapshots need gVisor, a KSA with access to the snapshot bucket, and the policy's label.
             labels.update(SNAPSHOT_LABEL)
@@ -325,11 +333,13 @@ class KubernetesProvider(Provider):
         meta = {"name": name, "labels": {**MANAGED, "dev.hangar/env": spec.name},
                 "annotations": {"dev.hangar/image": image}}
         dns = None
-        if egress.proxied(self.settings, spec):  # --- review(egress): kube-dns would be a tunnel out
-            try:
+        try:
+            if egress.proxied(self.settings, spec):  # --- review(egress): kube-dns would be a tunnel out
                 dns = await asyncio.to_thread(egress.k8s_pod_dns, self.settings)
-            except egress.EgressError as e:
-                raise ProviderError(str(e)) from e
+            elif aliases := await asyncio.to_thread(egress.k8s_direct_hosts, self.settings):
+                dns = {"hostAliases": aliases}  # open: the managed policy's resolver can't see Service names
+        except egress.EgressError as e:
+            raise ProviderError(str(e)) from e
         tspec: dict = {"podTemplate": self._pod_template(spec, image, dns)}
         if egress.proxied(self.settings, spec):  # --- egress: not Agent Sandbox's default policy (public internet)
             tspec["networkPolicy"] = egress.k8s_template_policy()
@@ -517,11 +527,16 @@ class KubernetesProvider(Provider):
         return out
 
     # ------------------------------------------------------------------ I/O
+    @property
+    def _exec_api(self) -> Any:
+        """The CoreV1Api exec streams use: never the one ordinary calls share (see core_exec in __init__)."""
+        return getattr(self, "core_exec", None) or self.core
+
     def _exec_blocking(self, pod: str, argv: list[str], timeout: int,
                        keep: int | None = 2 * MAX_OUTPUT) -> tuple[int, str, str]:
         """Only the last `keep` characters of each stream are kept (None: all of them, for hangar's own uploads
         and reads): the sandbox decides how much its commands print."""
-        ws = k8s_stream(self.core.connect_get_namespaced_pod_exec, pod, self.ns, container=CONTAINER,
+        ws = k8s_stream(self._exec_api.connect_get_namespaced_pod_exec, pod, self.ns, container=CONTAINER,
                         command=argv, stderr=True, stdin=False, stdout=True, tty=False,
                         _preload_content=False)
         big = 1 << 62
@@ -585,7 +600,7 @@ class KubernetesProvider(Provider):
         check = f' && [ "$(wc -c < {tmp})" -eq {int(size)} ]' if size is not None else ""
         script = (f"mkdir -p {d} && head -c {_b64_len(len(data))} | base64 -d > {tmp}{check} && chmod {mode:o} {tmp} "
                   f"&& mv {tmp} {q}; rc=$?; rm -f {tmp}; exit $rc")
-        ws = k8s_stream(self.core.connect_get_namespaced_pod_exec, pod, self.ns, container=CONTAINER,
+        ws = k8s_stream(self._exec_api.connect_get_namespaced_pod_exec, pod, self.ns, container=CONTAINER,
                         command=["sh", "-c", script], stderr=True, stdin=True, stdout=True, tty=False,
                         _preload_content=False)
         err: list[str] = []
@@ -740,7 +755,7 @@ class KubernetesProvider(Provider):
         pod = await self._pod(sandbox)
 
         def _open():
-            return k8s_stream(self.core.connect_get_namespaced_pod_exec, pod, self.ns, container=CONTAINER,
+            return k8s_stream(self._exec_api.connect_get_namespaced_pod_exec, pod, self.ns, container=CONTAINER,
                               command=command, stderr=True, stdin=True, stdout=True, tty=True,
                               _preload_content=False)
 

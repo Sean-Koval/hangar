@@ -62,7 +62,8 @@ PATHS: list[tuple[str, list[str] | str]] = [
                   "tests/test_setup_cicd.py"]),  # --- cicd: deploy/gke/setup-cicd.sh
     ("scripts/acceptance/*", ["tests/test_acceptance_script.py", "tests/test_acceptance_team.py",  # --- acceptance
                               "tests/test_e2e_acceptance_docker.py", "tests/test_e2e_heavy_docker.py"]),  # --- heavy
-    ("src/hangar/ui/*", ["tests/test_app.py"]),
+    ("src/hangar/ui/*", ["tests/test_app.py", "tests/test_ui_airframe.py"]),  # the console on Airframe
+    ("scripts/sync-airframe.sh", ["tests/test_ui_airframe.py"]),
     ("envs/*", "envs"),
     ("envd/*", "envd"),
 ]

@@ -631,7 +631,8 @@ def _decide(cluster, tmp_path, event: str, ref: str, labels: dict, moved: bool |
                CALL_LOG=str(tmp_path / "c.log"), GH_LOG=str(tmp_path / "gh.log"))
     r = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]], cwd=ROOT, env=env,
                        capture_output=True, text=True, timeout=60)
-    deploy = "refused" if r.returncode else out.read_text().strip().removeprefix("deploy=")
+    outputs = dict(line.split("=", 1) for line in out.read_text().splitlines() if "=" in line)
+    deploy = "refused" if r.returncode else outputs.get("deploy", "")
     return deploy, r.stdout + r.stderr
 
 
@@ -702,3 +703,67 @@ def test_power_sh_shellcheck_is_clean():
         pytest.skip("shellcheck isn't installed (CI's lint job runs it)")
     r = subprocess.run(["shellcheck", str(ROOT / "deploy/gke/power.sh")], capture_output=True, text=True)
     assert r.returncode == 0, r.stdout
+
+
+# ------------------------------------------------- deploy.yml: what crosses jobs, and an old server's upgrade
+def test_no_job_output_carries_a_secret_derived_value():
+    """GitHub drops a job output that contains a secret's value ("Skip output 'image' since it may contain secret"),
+    so an image reference built from HANGAR_REGISTRY arrived empty and the rollout set an empty image. Outputs carry
+    only values free of secrets (the digest); the deploy job rebuilds the reference from the secret itself."""
+    doc = yaml.safe_load((ROOT / ".github/workflows/deploy.yml").read_text())
+    jobs = doc["jobs"]
+    for name, job in jobs.items():
+        for key, expr in (job.get("outputs") or {}).items():
+            step_id = expr.split("steps.")[1].split(".")[0] if "steps." in expr else None
+            step = next((s for s in job["steps"] if s.get("id") == step_id), None)
+            if step is not None and "run" in step:
+                for line in step["run"].splitlines():
+                    if "GITHUB_OUTPUT" in line and f"{key}=" in line:
+                        assert "$HANGAR_REGISTRY" not in line and "secrets." not in line, (name, key, line)
+    assert jobs["control-plane"]["outputs"] == {"digest": "${{ steps.build.outputs.digest }}"}
+    image = jobs["deploy"]["env"]["IMAGE"]
+    assert image.startswith("${{ secrets.HANGAR_REGISTRY }}/control-plane:${{ github.sha }}@")
+    assert "needs.control-plane.outputs.digest" in image
+
+
+def _before(tmp_path, *, view: str, infra: str, image: str, event: str = "push"):
+    """The Before step's power decision and image guard, cut at the acceptance tooling (stubbed)."""
+    doc = yaml.safe_load((ROOT / ".github/workflows/deploy.yml").read_text())
+    run = next(s for s in doc["jobs"]["deploy"]["steps"] if s.get("id") == "pre")["run"]
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    stubs = {"uv": "exit 0", "gh": f"echo {HEAD}", "curl": f"printf '%s' '{view}'; [ -n '{view}' ]",
+             "kubectl": "echo r/control-plane:old@sha256:" + "a" * 64}
+    for name, body in stubs.items():
+        (bin_ / name).write_text(f"#!/bin/sh\n{body}\n")
+        (bin_ / name).chmod(0o755)
+    out = tmp_path / "out"
+    out.write_text("")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GITHUB_")}
+    env.update(PATH=f"{bin_}:{env['PATH']}", GITHUB_OUTPUT=str(out), GITHUB_EVENT_NAME=event,
+               GITHUB_REF="refs/heads/main", GITHUB_SHA=HEAD, GITHUB_REPOSITORY="o/r", HANGAR_URL="https://h",
+               HANGAR_TOKEN="t", NS="hangar", FORCE="false", INFRA=infra, IMAGE=image)
+    r = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", run], cwd=tmp_path, env=env,
+                       capture_output=True, text=True, timeout=60)
+    outputs = dict(line.split("=", 1) for line in out.read_text().splitlines() if "=" in line)
+    return r.returncode, outputs, r.stdout + r.stderr
+
+
+GOOD_IMAGE = f"reg/p/hangar/control-plane:{HEAD}@sha256:{'b' * 64}"
+
+
+def test_a_server_too_old_to_report_its_power_doesnt_block_its_own_upgrade(tmp_path):
+    code, outputs, log = _before(tmp_path, view="", infra="up", image=GOOD_IMAGE)
+    assert code == 0 and outputs.get("go") == "true" and outputs["power"] == "up", log
+    assert "using the cluster's labels: up" in log
+
+
+def test_with_neither_the_server_nor_the_labels_a_merge_still_skips(tmp_path):
+    code, outputs, log = _before(tmp_path, view="", infra="unknown", image=GOOD_IMAGE)
+    assert code == 0 and outputs.get("go") == "false" and "infra is unknown" in log, log
+
+
+@pytest.mark.parametrize("image", ["", "reg/p/hangar/control-plane:" + HEAD + "@", "reg/p/hangar/control-plane:x"])
+def test_an_empty_or_partial_image_reference_is_refused_before_the_cluster_is_touched(tmp_path, image):
+    code, outputs, log = _before(tmp_path, view='{"power": {"state": "up"}}', infra="up", image=image)
+    assert code != 0 and "go" not in outputs and "no usable image reference" in log, log
