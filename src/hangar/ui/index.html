@@ -40,9 +40,9 @@
     </a>
     <span class="af-nav__sep" aria-hidden="true"></span>
     <nav class="af-nav__tabs" aria-label="Sections">
-      <a class="af-nav__tab" href="#jobs" data-view="jobs"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-job"/></svg>Jobs<span id="nav-jobs" class="af-nav__count"></span></a>
-      <a class="af-nav__tab" href="#sessions" data-view="sessions"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-session"/></svg>Sessions<span id="nav-sessions" class="af-nav__count"></span></a>
-      <a class="af-nav__tab" href="#fleet" data-view="fleet"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-fleet"/></svg>Fleet<span id="nav-count" class="af-nav__count"></span></a>
+      <a class="af-nav__tab" href="#jobs" data-view="jobs"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-job"/></svg>Jobs<span id="nav-jobs" class="af-nav__count" data-count="jobs"></span></a>
+      <a class="af-nav__tab" href="#sessions" data-view="sessions"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-session"/></svg>Sessions<span id="nav-sessions" class="af-nav__count" data-count="sessions"></span></a>
+      <a class="af-nav__tab" href="#fleet" data-view="fleet"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-fleet"/></svg>Fleet<span id="nav-count" class="af-nav__count" data-count="fleet"></span></a>
       <a class="af-nav__tab" href="#environments" data-view="environments"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-environment"/></svg>Environments</a>
       <a class="af-nav__tab" href="#credentials" data-view="credentials"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-secret"/></svg>Credentials</a>
       <a class="af-nav__tab" href="#snapshots" data-view="snapshots"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-snapshot"/></svg>Snapshots</a>
@@ -306,6 +306,26 @@
         <th scope="col">Repo</th><th scope="col">Requester</th><th scope="col">Why</th><th scope="col">When</th></tr></thead><tbody></tbody></table></div>
     </section>
   </main>
+
+  <!-- Below 760px the nine tabs become a bottom tab bar (Jobs, Sessions, Fleet, More) and the other six sections
+       sit in the More sheet between the bar and the header; app.js marks the current one and toggles the sheet. -->
+  <nav id="tabbar" class="tabbar af-hue--hangar" aria-label="Sections">
+    <a class="tab" href="#jobs" data-view="jobs"><span class="tab-ic"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-job"/></svg><span class="tab-count" data-count="jobs"></span></span>Jobs</a>
+    <a class="tab" href="#sessions" data-view="sessions"><span class="tab-ic"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-session"/></svg><span class="tab-count" data-count="sessions"></span></span>Sessions</a>
+    <a class="tab" href="#fleet" data-view="fleet"><span class="tab-ic"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-fleet"/></svg><span class="tab-count" data-count="fleet"></span></span>Fleet</a>
+    <button type="button" class="tab" id="tab-more" data-more aria-expanded="false" aria-controls="more-sheet"><span class="tab-ic"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-more"/></svg></span>More</button>
+  </nav>
+  <div id="more-sheet" class="more-sheet" role="dialog" aria-label="More sections" hidden>
+    <nav class="more-list" aria-label="More sections">
+      <a class="af-menu__item" href="#environments" data-view="environments"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-environment"/></svg>Environments</a>
+      <a class="af-menu__item" href="#credentials" data-view="credentials"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-secret"/></svg>Credentials</a>
+      <a class="af-menu__item" href="#snapshots" data-view="snapshots"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-snapshot"/></svg>Snapshots</a>
+      <a class="af-menu__item" href="#connect" data-view="connect"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-egress"/></svg>Connect</a>
+      <a class="af-menu__item" href="#activity" data-view="activity"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-log"/></svg>Activity</a>
+      <a class="af-menu__item" href="#usage" data-view="usage"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-cost"/></svg>Usage</a>
+    </nav>
+    <div id="more-providers" class="more-foot"></div>
+  </div>
 
   <!-- The terminals: Airframe's bottom drawer (airframe.drawer, no scrim: the page above stays usable), always dark
        (Airframe Terminal), so the drawer is a nested Night scope in both themes. -->

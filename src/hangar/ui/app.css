@@ -8,7 +8,8 @@
 
 :root {
   --af-drawer-h: 340px;                 /* the terminal drawer's height (Airframe Drawer); the grip resizes it */
-  --drawer-pad: var(--af-drawer-inset);  /* what the open terminal drawer covers: the page and the detail drawer stop above it */
+  --tabbar-h: 0px;                      /* the bottom tab bar, on a phone */
+  --drawer-pad: calc(var(--af-drawer-inset) + var(--tabbar-h));  /* what covers the bottom of the page: the page, the detail drawer and the toasts stop above it */
   --page-pad: max(var(--af-space-32), calc((100% - var(--af-container-max)) / 2));
 }
 html, body { height: 100%; }
@@ -331,10 +332,40 @@ form.inline .af-input { flex: 1; }
   .split, .split.even, #view-credentials .split { grid-template-columns: minmax(0, 1fr); }
   .providers { display: none; }
 }
+/* a phone: the tabs leave the top bar for a bottom tab bar (Jobs, Sessions, Fleet, More); the six other sections and the
+   providers sit in the More sheet between the header and the bar. Everything that sits at the bottom stops above the bar. */
+.tabbar, .more-sheet { display: none; }
+@media (max-width: 760px) {
+  :root { --tabbar-h: calc(57px + env(safe-area-inset-bottom)); }
+  .topbar .af-nav__tabs { display: none; }
+  .tabbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: var(--af-z-drawer); display: grid; grid-template-columns: repeat(4, 1fr);
+    padding: 0 var(--af-space-4) env(safe-area-inset-bottom); background: var(--af-canvas); border-top: 1px solid var(--af-line); }
+  .tab { position: relative; display: grid; justify-items: center; align-content: center; gap: 4px; height: 56px; padding: 0; border: 0; border-radius: 0;
+    background: none; color: var(--af-fg-muted); text-decoration: none; font-family: var(--af-font-mono); font-weight: 500; font-size: 10px;
+    letter-spacing: .08em; text-transform: uppercase; }
+  .tab .af-ic { width: 20px; height: 20px; color: var(--af-fg-subtle); }
+  .tab[aria-current="page"], .tab[aria-current="page"] .af-ic { color: var(--af-fg); }
+  .tab[aria-current="page"]::after { content: ""; position: absolute; left: 22%; right: 22%; top: -1px; height: 2px; background: var(--pc, var(--af-fg)); }
+  .tab:focus-visible { outline-offset: -2px; }
+  .tab-ic { position: relative; display: grid; place-items: center; }
+  .tab-count { position: absolute; top: -6px; left: 16px; padding: 0 3px; background: var(--af-canvas); color: var(--af-fg);
+    font-size: 10.5px; letter-spacing: .04em; }
+  .tab-count:empty { display: none; }
+  .more-sheet { display: flex; flex-direction: column; gap: var(--af-space-16); position: fixed; left: 0; right: 0; top: var(--af-header-h); bottom: var(--tabbar-h);
+    z-index: var(--af-z-scrim); padding: var(--af-space-12) var(--af-space-16) var(--af-space-24); overflow-y: auto; background: var(--af-canvas); }
+  .more-sheet[hidden] { display: none; }
+  .more-list { display: flex; flex-direction: column; gap: 2px; }
+  .more-sheet .af-menu__item { min-height: 44px; font-size: 14px; text-decoration: none; }
+  .more-sheet .af-menu__item[aria-current="page"] { background: var(--af-selected); color: var(--af-fg); }
+  .more-foot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--af-space-8) var(--af-space-16); padding: var(--af-space-12) var(--af-space-8) 0; border-top: 1px solid var(--af-line-subtle); }
+  .more-foot .af-status { font-size: 13px; }
+  .terminal-drawer { bottom: var(--tabbar-h); }
+  .af-toasts { bottom: calc(var(--af-space-16) + var(--drawer-pad)); }
+}
 @media (max-width: 720px) {
   :root { --page-pad: var(--af-space-16); }
   main { padding-top: var(--af-space-20); }
-  .topbar .af-nav__name, .topbar .af-nav__sep { display: none; }
+  .topbar .af-nav__sep { display: none; }  /* the tabs are in the bar below, so the name has room */
   .grid { grid-template-columns: minmax(0, 1fr); }
   .grid .wide { grid-column: auto; }
   .job-detail, .env-detail { padding: var(--af-space-16); }
