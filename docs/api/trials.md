@@ -151,6 +151,17 @@ cache holds for the same key. Flightdeck decides whether the difference is signi
 The index lists them: `pins.variants.<name>.pin_set` and each trial's `pin_set`. `trials` and `parallel` stay as
 conveniences of the batch wrapper.
 
+## Forks
+
+`POST /api/runs/{session}.{run}/fork {at_seq, continuations, pin_set?, mode: "replay-prefix", on_divergence?, budget?,
+wait_seconds?}` forks a recorded run at a step ([sessions.md](../sessions.md#fork-at-a-step)): an experiment job whose
+k trials each replay the run's tape to `at_seq` in a replay sandbox, then go live. It answers (and `GET
+/api/forks/{id}` reads) `{fork, run, at_seq, status, divergence: {seq, kind: model|tool|network|tree} | null, tainted,
+trial_ids, trials}`; each trial is an ordinary trial (`GET /api/trials/{id}`), `source: "experiment"`, with
+`fork_of`, `replay`, `tainted` and, for a clean prefix on the run's own harness, `aa` (`reproduced`: whether it got
+the run's outcome). With a `pin_set`, the continuations run its harness lock and environment; a different harness
+diverges at step 1.
+
 ## Access
 
 REST only, with `jobs`-scoped tokens (admins too): flightdeck talks REST, and once the MCP server is split (#140) it

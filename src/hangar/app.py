@@ -1232,6 +1232,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import pinsets  # --- #178: pin sets and trials, the seam with flightdeck
 
     pinsets.mount(app, h, J, owner_filter)
+    from hangar import forks  # --- #179: fork a recorded run at a step
+
+    forks.mount(app, h, J, owner_filter)
+    from hangar import determinism  # --- #179: the nightly determinism report
+
+    determinism.mount(app, h, A)
     from hangar import trialcache  # --- #180: the trial cache's invalidation and its sentinel
 
     trialcache.mount(app, h, J, A)

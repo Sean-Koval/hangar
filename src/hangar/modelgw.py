@@ -317,6 +317,8 @@ class ModelGateway:
 
     def revoke(self, sandbox_id: str) -> None:
         self.issued.pop(sandbox_id, None)
+        if (replays := self.fleet.__dict__.get("_replays")) is not None:  # --- #179
+            replays.forget(sandbox_id)
         for g in self.grants(sandbox_id):
             self.store.delete(ModelGrant, g.id)
 
@@ -344,9 +346,10 @@ class ModelGateway:
     def attach(self, sb: Sandbox, spec: EnvSpec, harness: str | None, creds: list[Credential]) -> list[Credential]:
         """For `model_gateway: record`: mint the sandbox's bearer and drop the harness's API key from what is written
         into the sandbox (its env comes from `sandbox_env`). Refuses subscription logins: they can't be proxied."""
-        from hangar import delivery, teamcreds
+        from hangar import delivery, replay, teamcreds
 
-        if spec.model_gateway != "record" or delivery.sealed(sb) or delivery.builds_repo_code(sb):
+        replaying = replay.labelled(sb)  # --- #179: a replay sandbox always goes through the gateway
+        if (spec.model_gateway != "record" and not replaying) or delivery.sealed(sb) or delivery.builds_repo_code(sb):
             return creds
         provider = HARNESS_PROVIDER.get(harness or "")
         if provider is None:
@@ -373,6 +376,13 @@ class ModelGateway:
         base = f"{self.settings.gateway_url.rstrip('/')}/model/{provider}{info.base_suffix}"
         self.issued[sb.id] = {info.base_env: base, info.key_env: token}
         sb.info["model_gateway"] = {"mode": "record", "provider": provider, "credential": key.name}
+        if replaying:  # --- #179: its calls are answered from a tape (replay.py)
+            try:
+                p = replay.of(self.fleet).bind(sb)
+            except replay.ReplayError as e:
+                raise ModelGatewayError(str(e)) from e
+            if p is not None:
+                sb.info["model_gateway"].update({"mode": p["mode"], "replay": p["id"], "run": p["run"]})
         self.fleet.audit(sb.created_by or "system", "modelgw.grant", sb.id, provider=provider, credential=key.name)
         return [c for c in creds if c.name != key.name]
 
@@ -412,6 +422,14 @@ class ModelGateway:
             return Response(status_code=499)
         if len(body) > MAX_REQUEST:
             return self._error(provider, 413, "hangar: request too large for the model gateway")
+        from hangar import replay
+
+        if replay.labelled_id(self.fleet, grant.sandbox_id):  # --- #179: a replay answers from its tape
+            return await replay.of(self.fleet).handle(self, request, grant, provider, body)
+        return await self.forward(request, grant, provider, body)
+
+    async def forward(self, request: Request, grant: ModelGrant, provider: str, body: bytes) -> Response:
+        """The call to the provider with the vault's key, streamed back and recorded."""
         try:
             key = self.broker.secret_text(grant.credential)
         except Exception as e:  # noqa: BLE001 - never a secret in the message
@@ -551,6 +569,9 @@ class ModelGateway:
             "sandbox_id": tape.sandbox_id, "provider": tape.provider, "model": tape.model,
             "entries": tape.seq, "genesis": genesis(tape.run), "head": tape.head, "started_at": tape.started_at,
             "bytes": tape.bytes, "final": untrusted is not None,
+            # --- #179: the tool call ids behind the placeholders, so a replay can match the run's `tree` events
+            "tool_ids": {raw: ph for raw, ph in tape.norm.ids.items()
+                         if ph.split(":")[0].lstrip("<") in ("toolu", "srvtoolu", "call", "fc")},
         }
         if untrusted is not None:
             d["untrusted"], d["untrusted_reasons"] = untrusted

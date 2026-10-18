@@ -35,6 +35,7 @@ v1/runs/{date}/{session_id}.{run_id}/run.json          hangar.run/v1, written la
 v1/jobs/{date}/{job_id}/events/{ts_ms}-{kind}.json     hangar.job_event/v1
 v1/tapes/{date}/{session_id}.{run_id}/tape/{seq}.json  hangar.tape/v1 entries (#177), expired after 30 days
                                           tape/index.json
+v1/determinism/{date}/{repo}.json                      hangar.determinism/v1: the nightly determinism report (#179)
 ```
 
 - `{date}` is the UTC date (`YYYY-MM-DD`) the run finished, or the event happened.
@@ -216,5 +217,6 @@ then have the sister tool recompact the affected dates (flightdeck: `flightdeck 
 
 ## Out of scope
 
-The GCS → Parquet compactor (flightdeck, Sean-Koval/flightdeck#5); replaying tapes (#179); exporting anywhere other
+The GCS → Parquet compactor (flightdeck, Sean-Koval/flightdeck#5); replaying tapes from the bucket (replays read the
+control plane's local copy, [model-gateway.md](../model-gateway.md#replay)); exporting anywhere other
 than GCS or a local directory.
