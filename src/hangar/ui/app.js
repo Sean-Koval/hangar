@@ -14,7 +14,6 @@ const ic = (name, cls = "") => `<svg class="af-ic${cls ? ` ${cls}` : ""}" aria-h
 const status = (role, word, lit = false) =>
   `<span class="af-status af-status--${role}${lit ? " af-status--lit" : ""}"><i class="af-status__mark"></i>${esc(word)}</span>`;
 const mark = (role) => `<span class="af-status af-status--${role}" aria-hidden="true"><i class="af-status__mark"></i></span>`;
-const SEVERITY = ["denied", "failed", "approval", "running", "queued", "off"];  // a group shows its most severe child
 const word = (s) => String(s || "").replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
 // keyed inline data: [[key, value, modifier?]], value already escaped when it is html (pass {html})
 const meta = (items) => `<span class="af-meta">${items.filter((x) => x && x[1] !== "" && x[1] != null).map(([k, v, mod]) =>

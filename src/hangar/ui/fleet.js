@@ -8,8 +8,10 @@ const FLEET_VIEWS = ["board", "bays", "columns", "owners"];
 const FLEET_STORE = "hangar.fleetView";
 const STAGES = ["plan", "edit", "test", "pr"];
 const STAGE_WORD = { plan: "Plan", edit: "Edit", test: "Test", pr: "PR" };
-// Attention first everywhere: what needs a person, then the hard stops, then the quiet states.
-const ROLE_RANK = { approval: 0, denied: 1, failed: 2, running: 3, queued: 4, off: 5 };
+// Attention first everywhere: what needs a person, then what failed, then what policy stopped, then the quiet
+// states. The page header's mark and counts, each pool's counts and the order of tiles all follow this one list.
+const ATTENTION = ["approval", "failed", "denied", "running", "queued", "off"];
+const ROLE_RANK = Object.fromEntries(ATTENTION.map((r, i) => [r, i]));
 // sandbox state -> Airframe role and word, when nothing about its job or session says more
 const SB_ROLE = { pending: "queued", starting: "queued", running: "running", paused: "off", stopping: "off", stopped: "off",
   error: "failed" };
@@ -234,11 +236,12 @@ function counts(units) {
   }
   return c;
 }
+// keyed counts in attention order: what needs a person first, then failed, then denied, then the quiet states
 const countMeta = (c, keep = []) => meta([
-  ["running", c.running],
   c.approval || keep.includes("approval") ? ["needs you", c.approval, c.approval ? "approval" : ""] : null,
   c.failed || keep.includes("failed") ? ["failed", c.failed, c.failed ? "failed" : ""] : null,
   c.denied || keep.includes("denied") ? ["denied", c.denied, c.denied ? "failed" : ""] : null,
+  ["running", c.running],
   ["starting", c.queued],
   c.paused || keep.includes("paused") ? ["paused", c.paused] : null,
   c.off ? ["spun down", c.off] : null,
@@ -250,7 +253,8 @@ const capHtml = (n, max, sm = false, unit = "slots") => max
 function summaryHtml(units) {
   if (!units.length) return "No sandboxes running. Start one from an environment.";
   const c = counts(units);
-  const top = SEVERITY.find((r) => units.some((u) => u.role === r));
+  // the header leads with what needs a person, not with the loudest state: a denied sandbox is a record, a held one is work
+  const top = ATTENTION.find((r) => units.some((u) => u.role === r));
   const words = { approval: "Needs you", failed: "Failed", denied: "Denied", running: "Running", queued: "Starting",
     off: units.some((u) => u.sb.state === "paused") ? "Paused" : "Spun down" };
   const active = units.filter((u) => u.live).length;

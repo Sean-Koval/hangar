@@ -134,6 +134,21 @@ def test_fleet_views_use_the_theme_v3_components():
     assert links == ["board", "bays", "columns", "owners"]
 
 
+def test_fleet_header_leads_with_what_needs_a_person():
+    """The Fleet header's mark and keyed counts put what needs a person first, then failed, then denied, then the
+    quiet states (running, starting, paused): one attention order, shared with each pool's counts and the tiles."""
+    js = (UI / "fleet.js").read_text()
+    order = re.search(r"const ATTENTION = \[([^\]]*)\]", js)
+    assert order, "fleet.js defines ATTENTION, the one attention order"
+    assert re.findall(r'"([a-z]+)"', order.group(1)) == ["approval", "failed", "denied", "running", "queued", "off"]
+    assert "ATTENTION.find(" in js and "ROLE_RANK = Object.fromEntries(ATTENTION" in js
+    # the keyed counts list the roles in that order too, running after the three that carry color
+    counts = re.search(r"const countMeta = .*?\n\]\);", js, re.S).group(0)
+    keys = [k for k in re.findall(r'\["([a-z ]+)", c\.', counts)]
+    assert keys == ["needs you", "failed", "denied", "running", "starting", "paused", "spun down"], keys
+    assert "SEVERITY" not in js and "SEVERITY" not in (UI / "app.js").read_text(), "the old denied-first order is gone"
+
+
 def test_overview_carries_the_person_caps_the_owners_view_shows(settings):
     settings.admin_token = "t0ken"
     settings.person_max_sandboxes, settings.person_max_sessions = 7, 3
