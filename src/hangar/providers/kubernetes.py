@@ -293,6 +293,8 @@ class KubernetesProvider(Provider):
             # integration (#97 + #99): the services' names (127.0.0.1) stay in /etc/hosts beside hangar's own
             if hosts := [*services_hosts, *(dns or {}).get("hostAliases", [])]:
                 pod["hostAliases"] = hosts
+        elif dns and dns.get("hostAliases"):  # open: its own resolver, plus hangar's Service names (k8s_direct_hosts)
+            pod["hostAliases"] = [*services_hosts, *dns["hostAliases"]]
         if s.k8s_pod_snapshots and rc == "gvisor":
             # Pod snapshots need gVisor, a KSA with access to the snapshot bucket, and the policy's label.
             labels.update(SNAPSHOT_LABEL)
@@ -331,11 +333,13 @@ class KubernetesProvider(Provider):
         meta = {"name": name, "labels": {**MANAGED, "dev.hangar/env": spec.name},
                 "annotations": {"dev.hangar/image": image}}
         dns = None
-        if egress.proxied(self.settings, spec):  # --- review(egress): kube-dns would be a tunnel out
-            try:
+        try:
+            if egress.proxied(self.settings, spec):  # --- review(egress): kube-dns would be a tunnel out
                 dns = await asyncio.to_thread(egress.k8s_pod_dns, self.settings)
-            except egress.EgressError as e:
-                raise ProviderError(str(e)) from e
+            elif aliases := await asyncio.to_thread(egress.k8s_direct_hosts, self.settings):
+                dns = {"hostAliases": aliases}  # open: the managed policy's resolver can't see Service names
+        except egress.EgressError as e:
+            raise ProviderError(str(e)) from e
         tspec: dict = {"podTemplate": self._pod_template(spec, image, dns)}
         if egress.proxied(self.settings, spec):  # --- egress: not Agent Sandbox's default policy (public internet)
             tspec["networkPolicy"] = egress.k8s_template_policy()

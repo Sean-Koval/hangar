@@ -376,3 +376,31 @@ def test_the_real_provider_builds_a_separate_client_for_exec_streams():
     src = inspect.getsource(k)
     assert "k8s_stream(self.core." not in src  # every stream goes through _exec_api
     assert "self.core_exec = client.CoreV1Api(client.ApiClient())" in src
+
+
+def test_an_open_pod_keeps_its_resolver_and_gets_hangars_names():
+    """Open environments (Agent Sandbox's managed policy) keep their DNS and get the gateway in /etc/hosts; a proxied
+    pod still gets no resolver at all."""
+    aliases = [{"ip": "10.4.0.9", "hostnames": ["hangar-gateway.hangar.svc"]}]
+    pod = provider()._pod_template(spec(), "i", {"hostAliases": aliases})["spec"]
+    assert pod["hostAliases"] == aliases and "dnsPolicy" not in pod and "dnsConfig" not in pod
+    assert "hostAliases" not in provider()._pod_template(spec(), "i")["spec"]
+
+
+async def test_the_warm_pool_template_of_an_open_environment_names_the_gateway(monkeypatch):
+    import hangar.providers.kubernetes as k
+
+    p = provider(gateway_url="http://hangar-gateway.hangar.svc:8788")
+    applied: list[dict] = []
+
+    async def fake_apply(kind, body):
+        applied.append(body)
+
+    monkeypatch.setattr(p, "_apply", fake_apply)
+    monkeypatch.setattr(k.egress, "proxied", lambda settings, spec: False)
+    monkeypatch.setattr(k.egress, "k8s_direct_hosts",
+                        lambda settings: [{"ip": "10.4.0.9", "hostnames": ["hangar-gateway.hangar.svc"]}])
+    await p.sync_warm_pool(spec(), "reg/py:abc")
+    tpl = next(b for b in applied if b["kind"] == "SandboxTemplate")["spec"]["podTemplate"]["spec"]
+    assert tpl["hostAliases"] == [{"ip": "10.4.0.9", "hostnames": ["hangar-gateway.hangar.svc"]}]
+    assert "dnsPolicy" not in tpl

@@ -542,6 +542,29 @@ def _direct_hosts(settings: Settings) -> list[str]:
     return out
 
 
+def _host_aliases(names: list[str]) -> list[dict[str, Any]]:
+    """Resolve hangar's own Service names here, in the control plane, into pod `hostAliases`. Blocking."""
+    import socket
+
+    by_ip: dict[str, list[str]] = {}
+    for h in dict.fromkeys(n for n in names if n and not _is_ip(n)):
+        try:
+            ip = next(i[4][0] for i in socket.getaddrinfo(h, None, socket.AF_INET, socket.SOCK_STREAM))
+        except (OSError, StopIteration) as e:
+            raise EgressError(f"can't resolve {h} for sandboxes' /etc/hosts: {e}") from e
+        by_ip.setdefault(ip, []).append(h)
+    return [{"ip": ip, "hostnames": hs} for ip, hs in sorted(by_ip.items())]
+
+
+def k8s_direct_hosts(settings: Settings) -> list[dict[str, Any]]:
+    """hangar's directly reached Services (the git gateway, an in-cluster collector) as `hostAliases` for an *open*
+    environment's pods. Those run under GKE Agent Sandbox's managed policy, whose resolver answers internet names
+    only: without these entries a sandbox can't find the gateway ("Could not resolve host: hangar-gateway.hangar.svc"),
+    and with the gateway required every clone through it fails. Blocking: run it in a thread."""
+    return _host_aliases([h for u in _direct_hosts(settings) for h in [urlsplit(u).hostname if "://" in u else u]
+                          if h])
+
+
 def k8s_pod_dns(settings: Settings) -> dict[str, Any]:
     """The DNS of a proxied environment's pods (review): none, and hangar's own Service names in /etc/hosts.
 
@@ -550,19 +573,13 @@ def k8s_pod_dns(settings: Settings) -> dict[str, Any]:
     tools hand the proxy a host name and the proxy resolves it. What it does look up itself is hangar's proxy, git
     gateway and OTel collector, resolved here, in the control plane, to their Service addresses. The resolver is
     loopback, where nothing answers, so any other lookup fails at once. Blocking: run it in a thread."""
-    import socket
-
     names = [h for u in (settings.egress_url, *_direct_hosts(settings)) if u
-             for h in [urlsplit(u).hostname if "://" in u else u] if h and not _is_ip(h)]
-    by_ip: dict[str, list[str]] = {}
-    for h in dict.fromkeys(names):
-        try:
-            ip = next(i[4][0] for i in socket.getaddrinfo(h, None, socket.AF_INET, socket.SOCK_STREAM))
-        except (OSError, StopIteration) as e:
-            raise EgressError(f"can't resolve {h} for proxied sandboxes' /etc/hosts (they have no DNS): {e}") from e
-        by_ip.setdefault(ip, []).append(h)
-    return {"dnsPolicy": "None", "dnsConfig": {"nameservers": ["127.0.0.1"]},
-            "hostAliases": [{"ip": ip, "hostnames": hs} for ip, hs in sorted(by_ip.items())]}
+             for h in [urlsplit(u).hostname if "://" in u else u] if h]
+    try:
+        aliases = _host_aliases(names)
+    except EgressError as e:
+        raise EgressError(f"{e} (proxied sandboxes have no DNS)") from e
+    return {"dnsPolicy": "None", "dnsConfig": {"nameservers": ["127.0.0.1"]}, "hostAliases": aliases}
 
 
 async def _proxy_url(fleet: Fleet, prov: Provider, sb: Sandbox) -> str:
