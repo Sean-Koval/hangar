@@ -418,6 +418,12 @@ credentials.put_owner:
   rest: PUT /api/credentials/{name}/owner
   scope: admin
   owner: admin
+determinism.run:
+  server: hangar
+  mcp: null
+  rest: POST /api/determinism/run
+  scope: admin
+  owner: admin
 doctor.get:
   server: hangar
   mcp: null
@@ -844,6 +850,12 @@ fleet.overview:
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
     every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+fork.get:
+  server: hangar
+  mcp: null
+  rest: "GET /api/forks/{fork_id}"
+  scope: jobs
+  owner: token
 gc.post:
   server: hangar
   mcp: null
@@ -1508,6 +1520,12 @@ revoke.post:
   scope: oauth
   owner: own_grant
   enforced_by: 'mcp.server.auth: the OAuth 2.1 flow (PKCE); grants act as the approving token'
+run.fork:
+  server: hangar
+  mcp: null
+  rest: "POST /api/runs/{run}/fork"
+  scope: jobs
+  owner: token
 sandbox.agent_status:
   server: hangar-sandbox
   mcp: agent_status

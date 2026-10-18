@@ -34,7 +34,7 @@
       "source": {"enum": ["experiment", "shadow"], "description": "Who asked for the trials (#178; shadow: #183)."},
       "task_digests": {"type": ["object", "null"], "additionalProperties": {"type": "string"}, "description": "Task id -> flightdeck's task digest for the trial cache (#180)."},
       "cache_record": {"type": "boolean", "description": "Whether finished trials fill the trial cache (false for a sentinel run, #180)."},
-      "fork": {"type": "object", "description": "A fork of a recorded run (docs/sessions.md#fork-at-a-step): {run, at_seq, mode, on_divergence, continuations, tainted, harness_digest, pin_set, purpose, tolerate}. Added within v1 (#179)."}}},
+      "fork": {"type": ["object", "null"], "description": "A fork of a recorded run (docs/sessions.md#fork-at-a-step): {run, at_seq, mode, on_divergence, continuations, tainted, harness_digest, pin_set, purpose, tolerate}. Added within v1 (#179)."}}},
     "pins": {
       "type": "object",
       "properties": {
