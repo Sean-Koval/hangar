@@ -16,7 +16,7 @@ hangar session approvals api-fix --allow ap-3f9c0a1b2c4d
 hangar session interrupt api-fix "stop; write the failing test first"
 ```
 
-`hangar session send` to a running Claude Code or Codex session is a steer now, not an error. If the turn ends before the message arrives, the message starts the next turn instead, so it is never lost.
+`hangar session send` to a running Claude Code or Codex session is a steer now, not an error. If the turn ends before the message arrives, the message starts the next turn instead, so it is never lost. While it is still on its way (`sending`), it can be taken back (`withdraw`, below); the web console shows it as a queued row with a take-back until the agent has it.
 
 ## Steer
 
@@ -50,6 +50,7 @@ The policy is set per session (`approvals` on `new_session`, `--approvals`), per
 
 - **Deny:** the agent sees the denial, with your message if you gave one, and carries on: the turn does not fail.
 - **`allow_always`:** also allows calls like this one for the rest of the turn. For Claude Code these are the CLI's own suggestions with destination `session`; for Codex it is `acceptForSession`. Both live in the agent's running process: nothing is written to the repository's or the user's settings, and the next turn asks again (verified with both CLIs).
+- **hangar's own hand-back commands are not asked about:** under `ask` and `deny-risky`, a shell call that is exactly `hangar-agent done`, `progress`, `ask` or `result '<json>'` (one simple command: nothing chained with `;`, `&&` or `|`, no redirection, no `$(...)` or backquotes) is allowed by the policy at once, recorded as an approval resolved `by: policy`. These only write the turn's files under `$HANGAR_IO`. `hangar-agent artifact`, `result @FILE`, `env`, `svc` and the computer commands, and anything chained to an allowed one (`hangar-agent done ok; rm -rf ~`), still ask.
 - **What you are shown** is the whole command, up to 2,000 characters. A longer one shows both ends with the cut marked ("[…N characters not shown…]"); deny what you can't see.
 - **No prompts:** `ask` and `deny-risky` need a live turn. A session on pi or Antigravity with one of these policies fails its turn with a clear message rather than run with checks off. So does a sandbox without `python3` (3.8 or later, with `ctypes`), which the driver needs. The one repair run that asks for a missing structured result is skipped under these policies, for the same reason.
 
@@ -103,6 +104,7 @@ The class, `classified_by` and `classified_at` are on the turn or steer record. 
 | Route | Body |
 | --- | --- |
 | `POST /api/sessions/{ref}/steer` | `{"message": "..."}` |
+| `POST /api/sessions/{ref}/steers/{id}/withdraw` | none: takes back a message that is still `sending` (a `send` to a busy session, on its way to the agent). Once it is `delivered` or `queued` there is nothing to take back; interrupt instead. The steer's status becomes `cancelled`. |
 | `POST /api/sessions/{ref}/interrupt` | optional `{"message": "..."}` |
 | `GET /api/sessions/{ref}/approvals` | the running turn's policy, pending and recent approvals |
 | `POST /api/sessions/{ref}/approvals/{id}` | `{"decision": "allow" \| "deny" \| "allow_always", "message": "..."}` |
