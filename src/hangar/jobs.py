@@ -66,6 +66,7 @@ from hangar import secretscan as secretscan  # --- egress: secrets are scanned f
 from hangar import shadows as shadows  # --- #183: shadow runs of sampled real jobs
 from hangar import teamcreds as teamcreds  # --- review: only a job's person continues it from a front door
 from hangar import testresults as testresults  # --- testresults: structured results of every check
+from hangar import turnlogin as turnlogin  # --- #293: a turn refused for want of a login
 from hangar.events import resolve_budget, total_usage, usage_line
 from hangar.fleet import Fleet, FleetError, PoweredDown, _clip_tail  # --- ops: PoweredDown
 from hangar.github import GitHub, GitHubError, parse_repo
@@ -1101,14 +1102,19 @@ class JobService:
         exchange.job_turn_io(job, turn, st, first=not any(t.run_id for t in job.turns[:-1]))
         self._event(job, f"agent turn {n} starting ({s.harness or 'default harness'}"
                          + (", resuming its conversation" if resuming else "") + ")", JobState.RUNNING, reason=None)
-        await self.sessions.begin_turn(
-            s, st, prompt=self._prompt(job, turn, sb.info.get("repo_path"), resuming=resuming)
-            + exchange.prompt_notes(self.settings, s, st, protocol=not resuming),
-            extra_env={"HANGAR_JOB_ID": job.id, "HANGAR_JOB_DIR": ctx,
-                       **verifyloop.turn_env(self.settings, job, s.harness or sb.info.get("harness"),  # autofix
-                                             sb.info.get("repo_path"), job.timeout_minutes, turn.budget or job.budget)},
-            timeout_minutes=job.timeout_minutes,
-            handoff=False)  # the job's own follow-up prompt carries the task, context and last summary
+        try:
+            await self.sessions.begin_turn(
+                s, st, prompt=self._prompt(job, turn, sb.info.get("repo_path"), resuming=resuming)
+                + exchange.prompt_notes(self.settings, s, st, protocol=not resuming),
+                extra_env={"HANGAR_JOB_ID": job.id, "HANGAR_JOB_DIR": ctx,
+                           **verifyloop.turn_env(self.settings, job, s.harness or sb.info.get("harness"),  # autofix
+                                                 sb.info.get("repo_path"), job.timeout_minutes,
+                                                 turn.budget or job.budget)},
+                timeout_minutes=job.timeout_minutes,
+                handoff=False)  # the job's own follow-up prompt carries the task, context and last summary
+        except turnlogin.NoLogin:
+            outcomes.mark(job.result, "infra_error", turnlogin.INFRA_REASON)  # --- #293: configuration, no agent ran
+            raise
         turn.run_id = st.run_id
         turn.started_at = st.started_at
         turn.harness_version = st.harness_version  # --- images

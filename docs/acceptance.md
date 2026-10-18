@@ -54,6 +54,12 @@ The suite is built to run against the hangar your team uses:
   actually spent (`model spend: $…`, also in the report), usually cents each. The power cycle runs only with
   `--power-cycle`, and skips while anyone else has a live session (idle ones too: their sandbox would go), an active
   job, or any other sandbox; it looks again just before powering down.
+- **A login for the turns, or a skip.** `model`, `steer` and `secrets` first ask hangar
+  (`GET /api/credentials/login`) whether a login for the harness would reach their turn, and skip, naming the fix,
+  when none would. The sessions and jobs a deploy's admin token makes belong to no person, so a personal subscription
+  login never reaches them: add a team API key (`hangar cred add NAME --team --harness claude-code --kind api_key
+  --file key.txt`), or pass `--as PERSON` (an admin) to create them as that person, whose own login then reaches the
+  sessions (a job still needs an API key: subscription logins never reach automated work).
 - **One run at a time.** Runs don't share names, so two that overlap don't clean up each other's things, but they
   do share the test environments, the fixture repo and the test repo's policy: the `envbuild` and `landing` checks
   of two overlapping runs can fail each other.
@@ -96,7 +102,7 @@ Each check that needs something skips, saying what, until it has it.
 | `envbuild`'s preview | `HANGAR_PREVIEW_DOMAIN` with wildcard DNS (and a wildcard certificate on GKE) | nothing: it skips the preview part without it |
 | `intake` | Jira intake configured (`HANGAR_JIRA`, [intake.md](intake.md)) with a Jira project mapped to the test repo, such as `"ACC": {"repo": "you/accept-target"}` in its `projects` (a project nobody uses is fine: the issue is synthetic and never created in Jira). The synthetic issue's job is cancelled at once but may start first, so without a project on the test repo the check skips rather than start a job on a real repo; `--jira-project KEY` overrides that | `--test-repo`, `HANGAR_ACCEPT_JIRA_WEBHOOK_SECRET` (the value of the vault credential `webhook_secret_credential` names) |
 | `power --power-cycle` | `gcloud` logged in to the project, and `deploy/terraform/gke`'s outputs or `PROJECT`, `ZONE`, `CLUSTER` for `deploy/gke/power.sh`. With `HANGAR_POWER_UP_JOB` set, powering up goes through hangar instead | `--power-cycle`; `--power-down-cmd`, `--power-up-cmd` to override |
-| `model`, `steer`, `secrets`, `landing`, egress's request, scale's job queue | A model credential in `--session-env` | `--with-model`; `--max-usd` caps each job or turn |
+| `model`, `steer`, `secrets`, `landing`, egress's request, scale's job queue | A model credential in `--session-env` that reaches work no person owns (a team API key), or `--as PERSON` | `--with-model`; `--max-usd` caps each job or turn; `--as PERSON` |
 
 In `deploy.yml`, the repos are variables and the tokens secrets of the `production` environment:
 `HANGAR_ACCEPT_TEST_REPO`, `HANGAR_ACCEPT_FIXTURE_REPO` (variables), `HANGAR_ACCEPT_GITHUB_TOKEN`,

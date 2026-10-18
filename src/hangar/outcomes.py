@@ -6,9 +6,9 @@ as failures they corrupt yield metrics and paired experiments, so every turn, at
 
 * `agent`: the agent's own result, success or failure. What statistics count.
 * `infra_error`: infrastructure ended it; `infra_reason` says what (`preempted`, `power_down`, `rate_limited`,
-  `provider_5xx`, `sandbox_create`, `checkpoint`, `control_plane_restart`). An experiment retries such a trial as a
-  fresh one and leaves it out (`excluded`); jobs aren't retried beyond today's restart and power-down resume, but
-  the class is recorded and weekly yield leaves them out.
+  `provider_5xx`, `sandbox_create`, `checkpoint`, `control_plane_restart`, `no_login`). An experiment retries such
+  a trial as a fresh one and leaves it out (`excluded`); jobs aren't retried beyond today's restart and power-down
+  resume, but the class is recorded and weekly yield leaves them out.
 * `cancelled`: someone (or the experiment) stopped it.
 * `human`: a person stepped in: an interrupt, or the agent asked a question.
 
@@ -30,7 +30,8 @@ if TYPE_CHECKING:
 
 CLASSES = ("agent", "infra_error", "cancelled", "human")
 INFRA_REASONS = ("preempted", "power_down", "rate_limited", "provider_5xx", "sandbox_create", "checkpoint",
-                 "control_plane_restart", "drift")  # --- #178: drift: a trial's turn 1 didn't run its pin set
+                 "control_plane_restart", "drift",  # --- #178: drift: a trial's turn 1 didn't run its pin set
+                 "no_login")  # --- #293: no login for the turn's harness: configuration, refused before it started
 # How a harness reports a provider error it gave up on: Claude Code's result (`API Error: 529 {..."overloaded_error"
 # ...}`), Codex's `turn.failed` (`exceeded retry limit, last status: 429 Too Many Requests`), pi's and agy's errors.
 _RATE = re.compile(r"\b429\b|rate[_ -]?limit|too many requests|resource[_ ]exhausted", re.I)

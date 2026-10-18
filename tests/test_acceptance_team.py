@@ -1103,3 +1103,36 @@ def test_heavy_check_material():
     subprocess.run(["bash", "-n", "-c", tc.HEAVY_ISOLATION], check=True)
     assert "HEAVY_ISOLATION" in inspect.getsource(tc.check_heavy)
     assert "heavy" in tc.CHECKS and "heavy" in SCRIPT.read_text().split("CHECKS=", 1)[1].split('"', 2)[1]
+
+
+# ---------------------------------------------------------------------------- #293: model checks need a login
+def test_model_checks_skip_when_no_login_would_reach_the_turn(tmp_path, hangar_with):
+    """--- #293: the acceptance session belonged to no person (the deploy's admin token) and there was no team
+    credential, so the turn ended with Claude Code's "Not logged in". The model checks ask hangar first and skip,
+    naming the fix; --as PERSON makes the work that person's."""
+    from hangar.models import CredentialKind
+
+    h, api = hangar_with.h, hangar_with.api
+    state = ha.State(tmp_path / "state.json")
+    opts = _opts(session_env="agent", with_model=True)
+    with pytest.raises(ha.Skip, match=r"no login for claude-code would reach this run's .*hangar cred add NAME --team "
+                                      r"--harness claude-code --kind api_key --file key.txt.*--as PERSON"):
+        ha.check_steer(api, state, opts)
+    assert not state.get("sessions")  # nothing was started
+    api.call("POST", "/api/people", json={"id": "sean", "role": "admin", "token": False})
+    api.call("POST", "/api/people", json={"id": "mo", "role": "member", "token": False})
+    h.broker.put("claude-sean", "claude-code", CredentialKind.OAUTH_TOKEN, "sk-ant-oat01-sean-0123456789abcdef",
+                 person="sean")
+    ha.need_login(api, opts, environment="agent", person="sean")  # their own login reaches their session
+    with pytest.raises(ha.Skip, match="sean's turns"):
+        ha.need_login(api, opts, environment="agent", person="sean", purpose="automated")  # not a job (#125)
+    as_sean = ha.as_person(api, state, _opts(as_person="sean", check="steer"))
+    assert as_sean is not api
+    toks = {t["name"]: t for t in api.call("GET", "/api/tokens")}
+    assert toks[f"accept-{state.run}-as-steer"].get("person") == "sean"
+    with pytest.raises(ha.Fail, match="--as mo: couldn't mint a token .*admin role"):
+        ha.as_person(api, state, _opts(as_person="mo", check="steer"))
+    h.broker.put("claude-team", "claude-code", CredentialKind.API_KEY, "sk-ant-api03-team-0123456789", team=True)
+    ha.need_login(api, opts, environment="agent")  # a team key: the checks run
+    old = _FakeApi(fn=lambda m, p, b, r: None)  # a hangar from before #293 has no such route: go on
+    ha.need_login(old, opts, environment="agent")
