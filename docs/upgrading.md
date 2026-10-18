@@ -2,6 +2,9 @@
 
 Guides, newest first:
 
+- [**Adopt & capture and frontier**](#adopt-capture-and-frontier-133189) (#133–#189, with #140 and #177–#186): the
+  MCP split, the review rules, Slack DMs, run capture, harness locks, trials and the eval lane. One ordered procedure
+  for everything since the safe release, ending with `hangar doctor`. It includes the two guides below.
 - [**The repo-conventions hand-off**](#the-repo-conventions-hand-off-143) (#143): prebuild the images that bake the
   skill in.
 - [**Claude Code plugins from a seed**](#claude-code-plugins-from-a-seed-136) (#136): nothing to do unless you want plugins.
@@ -14,6 +17,242 @@ Guides, newest first:
 - [**The overnight stack**](#upgrading-from-before-the-overnight-stack-4869) (#48–#69), for a hangar older than that. Do its backup and read its defaults first, then follow this release's procedure: its prebuild also covers the overnight guide's "republish the Codex pack" step.
 
 Both are written for the GKE install from [gke.md](gke.md): one zonal cluster, gVisor sandboxes, the control plane with SQLite on the `hangar-data` PVC, checkpoints in the session bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / `power.sh`. [CHANGELOG.md](https://github.com/Sean-Koval/hangar/blob/main/CHANGELOG.md) lists what each adds.
+
+## When to deploy
+
+Image or node-pool upgrades, which replace the sandbox pool's nodes or every environment's image
+(the team release's node pool, the safe release's `sudo: false`), go by hand with `deploy/gke/up.sh` in the power-down
+window, **01:00–09:50 ET**: no sandbox is running, and the control plane stays up and queues events. Routine deploys
+with `deploy.yml` go while the sandbox pools are on, **10:00–01:00 ET**: its acceptance checks need sandboxes, and it
+refuses while the pools are down ([cicd.md](cicd.md#2-start-the-deploy-then-approve-it)). The power schedule is
+terraform's `power_down_cron` (`0 1 * * *`) and `power_up_cron` (`50 9 * * *`, ready at 10:00), in
+`America/New_York`. With the [overnight lane](gke.md#the-overnight-lane) on, one Spot node stays up through the
+night: an upgrade in the window suspends its sessions first.
+
+## Adopt & capture and frontier (#133–#189)
+
+Everything merged since the safe release, for a hangar that runs it: six engineers on three repos, planned work
+through Jira, the inbox in Slack, review load gating admission, every run captured for flightdeck, harnesses as locked
+directories (P2, #133–#171, #189, #221), and the frontier work that landed with it (P4: the MCP split #140, record and
+replay #177 and #179, trials and pin sets #178, the trial cache #180, the eval lane and budget #181 and #182, shadows
+and canaries #183 and #184, the overnight lane #186). Nothing here is tagged yet (release tags: #274), so this guide
+starts from the safe release: do [its procedure](#the-safe-release-120132) first if you haven't. It includes
+[the repo-conventions hand-off](#the-repo-conventions-hand-off-143) and [plugins from a seed](#claude-code-plugins-from-a-seed-136).
+
+Most of it is off until you turn it on. What changes by itself is the MCP endpoint your clients use, who may approve
+their own agent's PR, how many agent PRs a person can have waiting before new jobs wait, Slack DMs, the PR body's
+separator, and every turn's digests.
+
+This release changes no node pool and only the images that bake in the `repo-conventions` skill, so it deploys by
+day with `deploy.yml`.
+
+```bash
+kubectl -n hangar get deploy hangar -o jsonpath='{.spec.template.spec.containers[0].image}' | tee ~/.hangar/pre-upgrade-image
+hangar admin backup                                                # 1. back up, record the image
+terraform -chdir=deploy/terraform/gke apply                        # 2. the hangar-runs bucket (additions only)
+uv run hangar images plan && uv run hangar images build --registry "$REG"   # 3. the repo-conventions images
+hangar setup slack --manifest slack-app.yaml                       # 4. re-apply the app manifest: im:write, interactivity
+gh workflow run deploy.yml --ref main                              # 5. by day, 10:00–01:00 ET; approve it
+hangar connect claude-code                                         # 6. every client: hangar and hangar-sandbox
+hangar repo set acme/app --ai-review hangar                        # 7. the review rules, per repo
+hangar person link alice slack T0123ABCD/U012AB3CD                 # 8. Slack links, for DMs
+#                                                                    9. turn on what you want: run capture (#273), ...
+hangar doctor                                                      # 10. all green
+```
+
+### What you configure
+
+`hangar config set NAME VALUE` keeps a setting in hangar's database; `hangar-site` wins over it. Repo policy fields
+are set with `hangar repo set OWNER/REPO`, people's delivery with `hangar person set ID`.
+
+| Setting | Values (default first) | What it does | Step |
+| --- | --- | --- | --- |
+| MCP client entries | `hangar` (`/mcp`), `hangar-sandbox` (`/mcp/sandbox`) | `/mcp` lists the work tools (jobs, sessions, schedules, discovery); the drive tools (sandboxes, `exec`, files, terminals, `run_agent`, snapshots, environment builds) are on `/mcp/sandbox`, with the same tokens and OAuth grants (#140). For this release the drive tools still answer on `/mcp`, unlisted, with a note an hour to re-add the connector | [6](#6-re-add-mcp-clients) |
+| Repo policy `self_approval` (`--self-approval`) | `low_risk_with_ai_review`, `never`, `any` | Whether the job's own person can be the only approver of its PR, under `land: auto_after_approval`: by default only for a low-risk PR (docs and tests) with an independent AI review of that head that isn't `blocking` (#160). `any` is the old behaviour | [7](#7-the-review-rules-per-repo) |
+| Repo policy `ai_review` (`--ai-review`) | `off`, `hangar`, `check:<name>` | An independent first-pass review of every agent PR: `hangar` runs a review job on the other harness (Codex for a Claude Code PR, else Claude Code; model `frontier`, $1.50 a review) and posts one `COMMENT` review; `check:<name>` reads your review bot's check (#161). **While it is `off`, no self-approval lands** under the default rule | [7](#7-the-review-rules-per-repo) |
+| `HANGAR_PERSON_MAX_OPEN_AGENT_PRS` | `5` (`0` is off) | Once a person has this many agent PRs awaiting review, their new jobs wait as `queued` with reason `awaiting_capacity` (#159). Repo policy `max_open_agent_prs` (`--max-open-agent-prs`) overrides it for a repo, `HANGAR_PERSON_MAX_OPEN_AGENT_PRS_OVERRIDES` (`{}`) for a person; a team job's bucket gets the cap times the policy's approvers. Only a job's first turn waits; AI review jobs and trials never do | [7](#7-the-review-rules-per-repo) |
+| Delivery (`hangar person set ID`) | `--dm questions`, `all`, `off`; `--digest 10:15,16:00`; `--tz America/New_York`; weekdays only | A person with a linked Slack account gets a DM for each question and approval of their own agents, and a digest at each `--digest` time (#157, #158). `all` adds the team's work (for admins). The Slack app needs the `im:write` scope | [4](#4-the-slack-app-imwrite-and-interactivity), [8](#8-people-and-the-inbox) |
+| Terraform `enable_run_bucket` | `true` | The `<project>-hangar-runs` bucket for run capture: hangar's account may create objects and nothing else, and a deny policy takes away delete and overwrite. Applying it needs `roles/iam.denyAdmin`. `run_bucket_readers` (`[]`) are the readers (flightdeck's compactor); tapes expire after `run_tape_days` (`30`) | [2](#2-terraform-the-run-bucket) |
+| `HANGAR_OUTBOX_URL` | unset (off) | Run capture (#163): every finished run written once, redacted, as `hangar.run/v1` objects. `HANGAR_OUTBOX_SESSIONS` (`all`, `jobs_only`); a deleted session's files wait up to `HANGAR_EXPORT_GRACE_DAYS` (`30`) for their export (#189). Read at start: set it in `hangar-site` and restart | [9](#9-turn-on-what-you-want) |
+| `HANGAR_JIRA` `trigger` | `{"status": "Ready for agent"}` from `hangar setup jira` | The default door for planned work (#156). An existing `HANGAR_JIRA` keeps its trigger. A ticket's acceptance criteria reach the job as an untrusted `acceptance.md`; its verify command is used only if it matches the repo policy's `verify_allowed` (`--verify-allowed`, unset) | [9](#9-turn-on-what-you-want) |
+| `HANGAR_HARNESS_REPO`, `HANGAR_DEFAULT_HARNESS` | unset, unset | The team harness repo, a path or a git URL with `#ref`, refreshed every `HANGAR_HARNESS_REPO_REFRESH_SECONDS` (`600`) and on a `push` webhook; the lock intake jobs that name no harness run from (#138). `HANGAR_HARNESS_DRIFT` (`warn`, `fail`) | [9](#9-turn-on-what-you-want) |
+| `HANGAR_STANDUP_CHANNEL` | unset (off) | A weekday standup line at `HANGAR_STANDUP_TIME` (`10:18`) in `HANGAR_STANDUP_TIMEZONE` (`America/New_York`) (#168) | [9](#9-turn-on-what-you-want) |
+| `HANGAR_GITHUB_APP_SLUG` | unset | Narrows the digest's review-queue link to the App's PRs (#158) | [9](#9-turn-on-what-you-want) |
+| `HANGAR_EVAL_WINDOW` | `20:00-00:15` (in `HANGAR_EVAL_TZ`, `America/New_York`), `always` | Eval-class jobs (experiment trials, shadows, replays) start only in the window, after waiting interactive jobs, in at most `HANGAR_EVAL_MAX_RUNNING` (`0`: half the job slots), and with `HANGAR_EVAL_TPM_BUDGET` (unset) under a token rate (#181) | — |
+| `HANGAR_EVAL_BUDGET_USD_MONTH`, `HANGAR_EVAL_AUTHOR_CAP_USD_MONTH` | `1500` (`0` is off), `400` | Monthly eval spend, the team's and each author's (`hangar person set ID --eval-cap`) (#182) | — |
+| `HANGAR_TRIAL_INFRA_RETRIES` | `2` | A trial infrastructure ended (`infra_error`) runs again, at most 10% of an experiment's trials (#166) | — |
+| Off until you set them | — | Repo policy `shadow` and `shadow.canary` (#183, #184); an environment's `model_gateway: record` and tapes (#177; `HANGAR_DETERMINISM_SCHEDULE`, `0 21 * * *`, replays only recorded runs, #179); `HANGAR_TRIAL_SENTINEL` (`[]`, #180); terraform `enable_overnight_lane` (`false`) with `hangar power overnight on` and repo policy `overnight` (#186) | [9](#9-turn-on-what-you-want) |
+
+### What changes for people
+
+| Who | Before → now | What to do |
+| --- | --- | --- |
+| **MCP client users** | every tool on `/mcp` → work tools on `/mcp`, drive tools on `/mcp/sandbox` (`hangar-sandbox`); a client connected before keeps calling them on `/mcp` for this release, with a note to re-add the connector (#140) | `hangar connect claude-code` (or `codex`) again writes both; in claude.ai, ChatGPT or Claude Desktop add `<public_url>/mcp/sandbox` as a second connector ([mcp.md](mcp.md#two-servers)) |
+| **Engineers who approve their own agent's PR** | their approval landed it → it lands only when the PR is low risk with an independent AI review of that head; otherwise it waits for a second reviewer, with a `landing.note` and an inbox `review` item for the repo's approvers. Tainted PRs (every Jira-door job) need a second person as before (#160) | turn on `ai_review` for the repo, or ask a teammate; `--self-approval any` brings the old rule back ([landing.md](landing.md#self-approval-who-may-be-the-only-approver)) |
+| **Engineers with many open agent PRs** | new jobs started at once → past 5 agent PRs awaiting their review, new jobs wait as `awaiting_capacity` until one merges or closes; follow-ups and fix rounds don't wait. The count is taken at the first start, so it can apply at once (#159) | review or close one; an admin lets a job through with `hangar job admit <id>` ([team-scale.md](team-scale.md#review-capacity)) |
+| **Anyone with a linked Slack account** | nothing in Slack outside job threads → a DM for each question and approval on their own work, and a digest at 10:15 and 16:00 on weekdays (#157, #158) | `hangar person set <id> --dm off` opts out; `--digest ""` drops the digest ([team.md](team.md#inbox-delivery-dms-and-the-digest)) |
+| **Slack thread repliers** | a reply was a follow-up → a reply can be classified (`fix:`, `redirect:`, `info:`, or the buttons under hangar's answer); only corrections count against the agent (#162) | nothing; the buttons need the app's interactivity (step 4) |
+| **Scripts that read hangar's PR bodies** | sections separated by `---` → by `___`, and the body ends in trailers (`Hangar-Job`, `Harness-Digest`, `Environment-Digest`, `Harness-Lock` when thawed), which the squash or merge commit carries too (not with `merge_method: rebase`) (#137) | split on `___`, or read the trailers with `git interpret-trailers` ([jobs.md](jobs.md#the-pull-request)) |
+| **Anything that compares digests** (flightdeck, a team harness repo's `channels.yaml`) | → every turn's `harness_digest` changes once, plugins or not: #221 narrowed the identity's plugin section to `plugins[*].{name,marketplace,digest,enabled}`, and the section's name is part of what is hashed. Every environment's `environment.spec_digest`, and so every turn's `environment_digest` and `config_digest`, changes once too: the spec gained `model_gateway` (#177) | compare digests only within one side of the upgrade; re-key `channels.yaml` and any `name@sha256:` reference written before, from the digest `hangar harness check DIR` prints ([harness-lock.md](harness-lock.md#identity)) |
+| **Experiment authors** | trials started at once, on any model name, with no monthly cap → a floating model alias is refused naming the concrete ids (#167); trials wait for the 20:00–00:15 eval window (#181) and count against $1,500 a month for the team and $400 per author (#182); infrastructure-ended trials are retried (#166); an environment spec edited mid-experiment ends its running trials as `infra_error` / `drift` (#178) | pin dated model ids; `HANGAR_EVAL_WINDOW=always` and `HANGAR_EVAL_BUDGET_USD_MONTH=0` give the old behaviour ([jobs.md](jobs.md#9-experiments)) |
+| **Whoever writes Jira tickets** | the description was the task → its acceptance criteria also reach the job as an untrusted `acceptance.md`, and the queued comment hints when there are none; a verify command in the ticket is used only where `verify_allowed` matches (#156) | write tickets from the [Jira template](https://github.com/Sean-Koval/hangar/blob/main/docs/templates/jira-agent-ticket.md) ([intake.md](intake.md#agent-tickets)) |
+| **Reviewers** | → the packet's Agent line links the harness digest and lock (#137); removing or changing a line of an existing ADR's `checks:` block makes a PR high risk (#170) | nothing |
+
+### 1. Back up and record the image
+
+```bash
+kubectl -n hangar get deploy hangar -o jsonpath='{.spec.template.spec.containers[0].image}' | tee ~/.hangar/pre-upgrade-image
+hangar admin backup && hangar admin backups
+```
+
+The image is what [rolling back](#rolling-back-adopt-capture-and-frontier) puts back.
+
+### 2. Terraform: the run bucket
+
+`deploy/terraform/gke/outbox.tf` is new: the `<project>-hangar-runs` bucket (`enable_run_bucket`, on by default),
+`roles/storage.objectCreator` on it for hangar's service account, a `hangar-write-once=runs` tag, and an IAM deny
+policy that takes `objects.delete` and `objects.update` away from that account ([gke.md](gke.md#run-capture-bucket)).
+Applying the deny policy needs `roles/iam.denyAdmin` on the project. The bucket does nothing until step 9 points hangar
+at it; set `enable_run_bucket = false` to leave it out.
+
+```bash
+cd deploy/terraform/gke
+terraform plan    # expect additions only: the bucket, its IAM member, the tag key, value and binding, the deny policy
+terraform apply
+```
+
+Leave `enable_overnight_lane` at `false` for now (step 9). If the plan changes a node pool, something else in your
+tfvars moved: apply that in the power-down window.
+
+### 3. Prebuild the repo-conventions images
+
+The `repo-conventions` skill changed (#143), so the images that bake it in get new tags: `claude-python`,
+`claude-python-kata`, `codex-node`, `example-repo`, `hangar`, `hangar-jobs` and `polyglot` among the shipped ones, and
+any environment of yours that lists the skill or extends one of them. Nothing else in this release changes an image
+tag. Build them before anyone waits on a first sandbox:
+
+```bash
+uv run hangar images plan                           # what will build
+uv run hangar images build --registry "$REG"        # or let images.yml build them on the merge
+```
+
+### 4. The Slack app: `im:write` and interactivity
+
+DMs need the bot scope `im:write`, and the steer buttons need *Interactivity* with the request URL
+`<public_url>/api/hooks/slack/interactions`. Both are in [the manifest](slack-app-manifest.yaml). Write it with your URL
+filled in, paste it into the app's *App Manifest* page at <https://api.slack.com/apps>, and reinstall the app to the
+workspace so the token gets the new scope:
+
+```bash
+hangar setup slack --manifest slack-app.yaml        # Enter at each secret prompt keeps the stored one
+```
+
+Without the scope `hangar doctor` warns (`slack dm scope`), and DMs fail while threads keep working.
+
+### 5. Deploy with deploy.yml, by day
+
+Between 10:00 and 01:00 ET, while the pools are on ([when to deploy](#when-to-deploy)):
+
+```bash
+gh workflow run deploy.yml --ref main
+```
+
+Approve it on `production`. It builds the images it needs, rolls out, and runs the core acceptance checks, `mcp`
+among them, then the team checks ([cicd.md](cicd.md)). On Docker: `uv run hangar down`, update the checkout,
+`uv run hangar up`.
+
+On its first start hangar counts each person's open agent PRs, so the review cap (step 7) applies from then, and
+creates the tables it adds (the outbox's queue, pin sets, the trial cache, model grants). Inbox delivery starts with
+it; run capture, the standup line and the harness repo stay idle until step 9 sets them.
+
+### 6. Re-add MCP clients
+
+```bash
+hangar connect claude-code      # writes hangar (/mcp) and hangar-sandbox (/mcp/sandbox); --no-sandbox leaves it out
+hangar connect codex            # the same; other clients get hangar only unless --with-sandbox
+```
+
+In claude.ai, ChatGPT or Claude Desktop, which never refresh a tool list, remove the hangar connector and add it again
+(`<public_url>/mcp`), then add `<public_url>/mcp/sandbox` as a second connector if you drive sandboxes yourself
+([clients.md](clients.md)). Until then a call of a drive tool on `/mcp` still works, with a note an hour saying where it
+moved. The Ingress sends every path to hangar, so `/mcp/sandbox` needs no change there.
+
+### 7. The review rules, per repo
+
+Decide for each landing repo, right after the rollout (the previous version's CLI doesn't know these flags):
+
+```bash
+hangar repo set acme/app --ai-review hangar                 # an independent AI review of every agent PR
+hangar repo set acme/app --self-approval any                # or: the requester's approval lands any PR, as before
+hangar repo set acme/app --max-open-agent-prs 8             # this repo's cap (0 turns it off)
+hangar job list --reason awaiting_capacity                  # who is waiting on review now
+```
+
+With the default `self_approval` and `ai_review` off, a person's own approval never lands their PR: a second
+reviewer does. A team of one keeps `HANGAR_SELF_APPROVAL=allow_solo`. `--ai-review hangar` needs a credential for
+the reviewing harness (an API key: [team.md](team.md#3-team-credentials)).
+
+### 8. People and the inbox
+
+DMs go to a person's linked Slack account only ([team.md](team.md#inbox-delivery-dms-and-the-digest)):
+
+```bash
+hangar person link alice slack T0123ABCD/U012AB3CD
+hangar person set alice --tz Europe/Berlin --digest 09:30,16:00 --quiet 19:00-08:00
+hangar person set bob --dm off                              # no DMs, no digest
+```
+
+`hangar doctor` lists everyone the inbox can't reach (`inbox delivery`).
+
+### 9. Turn on what you want
+
+Each is off until set; turn them on one at a time.
+
+- **Run capture** (#163, #189): set `HANGAR_OUTBOX_URL` in the `hangar-site` config map to
+  `terraform output -raw run_bucket`, add flightdeck's compactor to `run_bucket_readers`, and restart; the outbox reads
+  the URL when hangar starts. #273 does this for the GKE deploy, with the compactor. Operating it:
+  [the outbox runbook](runbooks/outbox.md).
+- **The Jira door** (#156): `hangar setup jira` ([intake.md](intake.md#3-the-configuration)); then
+  `hangar repo set acme/app --verify-allowed 'make test*'` if tickets may name their check.
+- **The team harness repo** (#138): `hangar config set HANGAR_HARNESS_REPO https://github.com/acme/harnesses.git`, add
+  the `push` event to that repo's webhook, and `HANGAR_DEFAULT_HARNESS=team-default@stable` once a lock is promoted
+  ([harness-lock.md](harness-lock.md#the-team-harness-repo)).
+- **The standup line** (#168): `hangar config set HANGAR_STANDUP_CHANNEL C0123ABCD` ([metrics.md](metrics.md#the-standup-line)).
+- **Shadows and canaries** (#183, #184): repo policy `shadow`, refused while the review-wait p50 is over 4 h
+  ([repo-policy.md](repo-policy.md#shadows)).
+- **Record and replay** (#177, #179): `model_gateway: record` on an environment ([model-gateway.md](model-gateway.md));
+  the nightly determinism report then replays its recorded runs.
+- **The overnight lane** (#186): `enable_overnight_lane = true` and `terraform apply`, then `hangar power overnight on`,
+  refused below 60% agent PR yield ([gke.md](gke.md#the-overnight-lane)).
+
+### 10. `hangar doctor`
+
+```bash
+hangar doctor
+```
+
+All green means: both MCP servers are served and list their tools (`mcp hangar`, `mcp hangar-sandbox`), the Slack
+token has `im:write`, everyone who gets DMs has a linked Slack account, and, where you turned them on, the outbox is
+draining (`run capture (outbox)`) and the harness repo is readable (`harness repo`). Then check one job end to end:
+a ticket moved to *Ready for agent*, its PR body ending in trailers, and a DM for its first question.
+
+### Rolling back adopt & capture and frontier
+
+Put the image from step 1 back:
+
+```bash
+kubectl -n hangar set image deploy/hangar hangar="$(cat ~/.hangar/pre-upgrade-image)"
+kubectl -n hangar rollout status deploy/hangar
+```
+
+- **Records an earlier version can't read.** Jobs with `source: review` (AI reviews, #161) or `source: shadow` (#183),
+  and trial turns with `infra_reason: drift` (#178), fail validation in the safe release's models, so any read that
+  reaches them fails there. Roll back before turning on AI review, shadows or pin-set trials, or plan to roll forward.
+- **MCP**: the earlier version serves no `/mcp/sandbox`, so `hangar-sandbox` connectors stop answering; `/mcp` lists
+  every tool again.
+- **What stays**: the bucket and its objects (write-once), the new tables (the earlier version doesn't read them),
+  repo policy fields and people's delivery settings, which it ignores. Digests it records for a turn won't match the
+  ones this version recorded for the same configuration.
 
 ## The repo-conventions hand-off (#143)
 
@@ -145,8 +384,10 @@ uv run hangar images build --registry "$REG"        # or let the images workflow
 
 ### 5. Deploy in the power-down window
 
-On GKE roll out between 01:00 and 09:50 ET, while the sandbox pools are powered down and the control plane is up
-([team-scale.md](team-scale.md#applying-it)): no running sandbox is cut off, and events wait in the queue.
+On GKE roll out by hand between 01:00 and 09:50 ET, while the sandbox pools are powered down and the control plane is
+up ([team-scale.md](team-scale.md#applying-it)): no running sandbox is cut off, and events wait in the queue. This
+release changes every environment's image, so it is an upgrade for the power-down window, not a routine `deploy.yml`
+deploy, which runs 10:00–01:00 and refuses while the pools are down ([when to deploy](#when-to-deploy)).
 
 ```bash
 bash deploy/gke/up.sh
