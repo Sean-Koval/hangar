@@ -5,24 +5,431 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-/* ---- Airframe (vendored in /ui/airframe/): icons, statuses, keyed data, readouts ---- */
-const ICONS = "/ui/airframe/airframe-icons.svg";
-const ic = (name, cls = "") => `<svg class="af-ic${cls ? ` ${cls}` : ""}" aria-hidden="true"><use href="${ICONS}#af-${name}"/></svg>`;
+/* ---- Airframe (vendored in /ui/airframe/): the helpers and behaviours come from airframe.js (window.airframe, loaded
+   before this script): status, icon, meta, btn, avatar, toast, confirm, drawer. The console adds only what it needs on
+   top: a bare mark, a word-caser, a readout. ---- */
+const airframe = window.airframe;
 // Airframe has six statuses, each color + shape + word: running (grey dot), queued (ring), approval (orange
 // diamond), failed (red triangle), denied (red placard), off (small dot). Every console state maps to one of them;
 // only approval, failed and denied carry color, so a screen with no color on it needs nobody.
-const status = (role, word, lit = false) =>
-  `<span class="af-status af-status--${role}${lit ? " af-status--lit" : ""}"><i class="af-status__mark"></i>${esc(word)}</span>`;
+const { status, btn, avatar } = airframe;
+const ic = (name, size) => airframe.icon(name, { size });
 const mark = (role) => `<span class="af-status af-status--${role}" aria-hidden="true"><i class="af-status__mark"></i></span>`;
 const word = (s) => String(s || "").replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
-// keyed inline data: [[key, value, modifier?]], value already escaped when it is html (pass {html})
-const meta = (items) => `<span class="af-meta">${items.filter((x) => x && x[1] !== "" && x[1] != null).map(([k, v, mod]) =>
-  `<span class="af-meta__item${mod ? ` af-meta__item--${mod}` : ""}"><span class="af-meta__key">${esc(k)}</span>` +
-  `<span class="af-meta__val">${typeof v === "object" ? v.html : esc(v)}</span></span>`).join("")}</span>`;
+// keyed inline data: [[key, value, modifier?]]; an item with no value is left out
+const meta = (items) => airframe.meta(items.filter((x) => x && x[1] !== "" && x[1] != null));
+// an error line: the failed mark and the words, never a red fill (Airframe's field error)
+const errorLine = (text) => `<span class="af-field__error">${status("failed", text)}</span>`;
+// an empty state: what is not here and what to do about it (Airframe EmptyState); `compact` is the one-row form
+const emptyState = ({ kind = "no-data", icon, title, text = "", actions = "", compact = false, cls = "", counts = "" }) =>
+  `<div class="af-empty${compact ? " af-empty--compact" : ""}${cls ? ` ${cls}` : ""}" data-kind="${kind}">${icon ? ic(icon, compact ? undefined : 24) : ""}${compact
+    ? `<div class="af-empty__body"><span class="af-empty__title">${esc(title)}</span>${text ? `<span class="af-empty__text">${text}</span>` : ""}</div>`
+    : `<h3 class="af-empty__title">${esc(title)}</h3>${counts ? `<div class="af-empty__counts">${counts}</div>` : ""}${text ? `<p class="af-empty__text">${text}</p>` : ""}`}${actions
+    ? `<div class="af-empty__act">${actions}</div>` : ""}</div>`;
+// the avatar triad (Airframe): agents are hexagonal with the harness's initials, or the agent glyph when there is none
+const initialsOf = (name) => {
+  const w = String(name || "").split(/[\s._-]+/).filter(Boolean);
+  return ((w.length > 1 ? w[0][0] + w[1][0] : (w[0] || "?").slice(0, 2)) || "?").toUpperCase();
+};
+const agentAvatar = (harness, size = 28) => avatar("agent", harness ? initialsOf(harness) : "", { size, name: harness || "agent" });
 // a readout: one unlit cell per digit or letter; punctuation sits between cells
 const readout = (text, size = "m") => `<span class="af-readout af-readout--${size}">${[...String(text)].map((c) =>
   /[0-9a-z]/i.test(c) ? `<b>${esc(c)}</b>` : `<b class="af-readout__p">${esc(c)}</b>`).join("")}</span>`;
 const tok = (name, el = document.documentElement) => getComputedStyle(el).getPropertyValue(`--af-${name}`).trim();
+
+/* ---- Airframe Composer: the input a person steers an agent with. One send button, a queued row per message that
+   waits for the agent's current tool call (with a take-back while it can still be taken back), and a disabled
+   state that says why. `queued` items: {id, text, sub, takeBack}; `why` is the line under the box; `busy` draws
+   the queued ring before it. ---- */
+const queuedRow = (q) => `<div class="af-composer__queued" data-steer="${esc(q.id || "")}">
+    <span class="af-lbl">Queued<span class="af-lbl__sub">${esc(q.sub || "applies after this tool call")}</span></span>
+    <span class="af-composer__qmsg">${esc(q.text)}</span>
+    ${q.takeBack ? btn("", { kind: "ghost", sm: true, icon: "close", attrs: { "data-take-back": q.id, "aria-label": "Take back the queued message" } }) : ""}
+  </div>`;
+function composerHtml({ id, placeholder, send = "Send", why = "", busy = false, disabled = false, queued = [], chips = [], note = "" }) {
+  return `<div class="af-composer${disabled ? " is-disabled" : ""}" id="${esc(id)}">${queued.map(queuedRow).join("")}
+    <div class="af-composer__box">
+      <textarea class="af-composer__input" rows="1" placeholder="${esc(placeholder)}" aria-label="${esc(placeholder)}"${disabled ? " disabled" : ""}></textarea>
+      <div class="af-composer__row">
+        ${chips.length ? `<div class="af-composer__chips" role="group" aria-label="Suggestions">${chips.map((c) =>
+          `<button type="button" class="af-chip af-chip--sm" data-chip${disabled ? " disabled" : ""}>${esc(c)}</button>`).join("")}</div>` : ""}
+        ${note ? `<span class="af-diff__note">${ic("agent")}<span>${note}</span></span>` : ""}
+        ${btn(send, { kind: "primary", sm: true, icon: "arrow-right", cls: "af-composer__send", disabled })}
+      </div>
+    </div>
+    ${why ? `<p class="af-composer__why">${busy ? mark("queued") : ""}${why}</p>` : ""}
+  </div>`;
+}
+// wires a composer: `onSend(text)` (async; the field clears on success), `onTakeBack(id)`; Ctrl/Cmd+Enter sends
+function wireComposer(el, { onSend, onTakeBack, draft = "" }) {
+  if (!el) return;
+  const ta = $(".af-composer__input", el), sendBtn = $(".af-composer__send", el);
+  ta.value = draft;
+  if (!CSS.supports("field-sizing", "content")) {  // grow with the content where the browser doesn't do it itself
+    const grow = () => { ta.style.height = "auto"; ta.style.height = `${Math.min(ta.scrollHeight, window.innerHeight * .4)}px`; };
+    ta.addEventListener("input", grow); grow();
+  }
+  const send = () => {
+    const text = ta.value.trim();
+    if (!text || sendBtn.disabled) return;
+    ta.value = "";  // cleared before the send, so a refresh mid-send doesn't carry the words back; restored if it fails
+    const restore = () => { const cur = $(`#${CSS.escape(el.id)} .af-composer__input`) || ta; if (!cur.value) cur.value = text; };
+    busy(sendBtn, async () => {
+      try { if ((await onSend(text)) === false) restore(); }
+      catch (e) { restore(); throw e; }
+    });
+  };
+  sendBtn.addEventListener("click", send);
+  ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); } });
+  $$("[data-chip]", el).forEach((c) => c.addEventListener("click", () => { ta.value = c.textContent; ta.focus(); }));
+  $$("[data-take-back]", el).forEach((b) => b.addEventListener("click", () => busy(b, () => onTakeBack(b.dataset.takeBack))));
+}
+
+/* ---- Airframe ApprovalCard v2: one held action waiting on a reviewer. The exact command, who asked and for whom,
+   the policy that held it, when it expires and what happens then; the decision in inspect / refuse / accept order,
+   "Allow for this turn" as the second accept with a hint; Deny opens a reason field, and the reason is required
+   (it goes back to the agent); approve needs none. Decided ones become verdict rows. ---- */
+const HARNESS_WORD = { "claude-code": "Claude Code", codex: "Codex", pi: "pi", antigravity: "Antigravity" };
+const harnessWord = (h) => HARNESS_WORD[h] || h || "the agent";
+function untilWords(ts) {
+  if (!ts) return "";
+  const s = Math.round(ts - Date.now() / 1000);
+  return s <= 0 ? "now" : s < 3600 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`;
+}
+// a: {id, kind: tool | job | request, cmd, tool, taint, policy, since, expires, who: {harness, sandbox, owner, requester},
+//     job, session (names, for the inspect link and the words), allowAlways, approve, deny}
+function approvalHtml(a) {
+  const who = a.who || {};
+  const consequence = a.kind === "job" ? "the job is dropped" : a.kind === "request" ? "the request lapses" : "it is denied and the agent carries on";
+  const label = a.kind === "job" ? "Job approval" : a.kind === "request" ? "Request" : "Approval";
+  const inspect = !a.inspect ? "" : a.job ? btn("Open job", { kind: "ghost", sm: true, attrs: { "data-go": `job:${a.job}` } })
+    : a.sessionId ? btn("Open session", { kind: "ghost", sm: true, attrs: { "data-go": `session:${a.sessionId}` } }) : "";
+  return `<article class="af-card af-card--lit af-approval" data-approval="${esc(a.id)}" data-kind="${esc(a.kind)}">
+    <div class="af-card__top">
+      <span class="af-lbl">${ic("approval")}${label}<span class="af-lbl__sub">${esc(a.id)}</span></span>
+      ${status("approval", "Needs approval", { lit: true })}
+    </div>
+    <div class="af-approval__subject">
+      <p class="af-approval__cmd">${esc(a.cmd)}</p>
+      ${meta([["tool", a.tool && a.tool !== a.cmd ? a.tool : ""], ["taint", a.taint || ""], ["job", a.kind !== "job" ? a.job || "" : ""], ["session", a.job ? "" : a.session || ""]])}
+    </div>
+    <dl class="af-kv">
+      <dt>Requested by</dt><dd>${who.sandbox ? `<span class="af-who">${agentAvatar(who.harness, 22)}<span class="af-id">${esc(who.sandbox)}</span></span> ` : ""}<span class="af-muted">${esc(
+        who.sandbox ? harnessWord(who.harness) : who.requester || "someone")}${who.owner ? `, for ${esc(who.owner)}` : ""}${a.since ? `, ${ago(a.since)}` : ""}</span></dd>
+      ${a.policy ? `<dt>Policy</dt><dd>${a.policy}</dd>` : ""}
+      ${a.expires ? `<dt>Expires</dt><dd>in <span class="af-mono">${esc(untilWords(a.expires))}</span>, then ${consequence}</dd>` : ""}
+    </dl>
+    <div class="af-approval__act">
+      ${meta([["reviewer", "you"]])}
+      <div class="af-approval__btns">${inspect}${btn(a.deny || "Deny", { kind: "danger", sm: true, attrs: { "data-decide": "deny" } })}${a.allowAlways
+        ? btn("Allow for this turn", { kind: "secondary", sm: true, attrs: { "data-decide": "allow_always" } }) : ""}${btn(a.approve || "Allow", { kind: "primary", sm: true, attrs: { "data-decide": "allow" } })}</div>
+    </div>
+    ${a.allowAlways ? `<p class="af-approval__hint">${ic("info")}<span>For this turn also allows calls like this one until the turn ends. Nothing is written to the harness's settings; the next turn asks again.</span></p>` : ""}
+  </article>`;
+}
+// the reason block that takes the action row's place once Deny is pressed; the reason is required
+function denyReasonHtml(a) {
+  const back = a.who?.sandbox || a.job || a.session || "the requester";
+  return `<div class="af-approval__reason" role="group" aria-labelledby="deny-lbl-${esc(a.id)}">
+    <label class="af-field">
+      <span class="af-field__label" id="deny-lbl-${esc(a.id)}">Reason for ${a.kind === "job" ? "rejecting" : "denying"} (required)</span>
+      <span class="af-input af-input--area af-input--sans"><textarea rows="2" placeholder="What the agent should do instead"></textarea></span>
+      <span class="af-field__error" hidden>${status("failed", `Give a reason. It goes back to ${esc(back)}.`)}</span>
+    </label>
+    <div class="af-approval__btns">${btn("Cancel", { kind: "ghost", sm: true, attrs: { "data-decide": "cancel" } })}${btn(a.deny || "Deny", { kind: "danger", sm: true, attrs: { "data-decide": "deny-confirm" } })}</div>
+  </div>`;
+}
+// a click inside a card, delegated from the panel that holds it (panels repaint): `find(id)` gives the card's
+// object, `after()` reloads. Deny asks for the reason first and refuses without one. True when it handled the click.
+function openReason(el, a, text = "") {
+  const act = $(".af-approval__act", el);
+  if (!act || $(".af-approval__reason", el)) return;
+  act.hidden = true;
+  act.insertAdjacentHTML("afterend", denyReasonHtml(a));
+  $(".af-approval__reason textarea", el).value = text;
+}
+// the open reason fields in a panel, so a repaint (the 4 s refresh) keeps what the person is writing
+const openReasons = (root) => $$(".af-approval__reason", root).map((r) => [r.closest("[data-approval]").dataset.approval, $("textarea", r).value]);
+function restoreReasons(root, saved, find) {
+  for (const [id, text] of saved) {
+    const el = $(`[data-approval="${CSS.escape(id)}"]`, root), a = el && find(id);
+    if (a) openReason(el, a, text);
+  }
+}
+function approvalClick(e, find, after) {
+  const b = e.target.closest("[data-decide]");
+  if (!b) return false;
+  const el = b.closest("[data-approval]"), a = find(el.dataset.approval), d = b.dataset.decide;
+  if (!a) return true;
+  if (d === "deny") {
+    openReason(el, a);
+    $(".af-approval__reason textarea", el).focus();
+  } else if (d === "cancel") {
+    $(".af-approval__reason", el).remove();
+    $(".af-approval__act", el).hidden = false;
+  } else if (d === "deny-confirm") {
+    const box = $(".af-approval__reason", el), ta = $("textarea", box), reason = ta.value.trim();
+    if (!reason) {
+      $(".af-input", box).classList.add("is-invalid"); ta.setAttribute("aria-invalid", "true");
+      $(".af-field__error", box).hidden = false; ta.focus();
+      return true;
+    }
+    busy(b, async () => { await decideApproval(a, "deny", reason); await after(); });
+  } else busy(b, async () => { await decideApproval(a, d, ""); await after(); });
+  return true;
+}
+// a decided action on one line: the denied placard with its reason, or a quiet check for allowed
+function verdictHtml(v) {
+  const denied = v.status === "denied";
+  const when = v.decided_at ? new Date(v.decided_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+  return `<div class="af-verdict">
+    ${denied ? status("denied", "Denied") : `<span class="af-verdict__ok">${ic("check")}${v.status === "allowed_always" ? "Allowed for the turn" : v.status === "cancelled" ? "Withdrawn" : "Allowed"}</span>`}
+    <span class="af-verdict__body"><span class="af-verdict__cmd">${esc(v.detail || v.tool || "")}</span>${v.message || v.by
+      ? `<span class="af-verdict__why">${esc(v.message || "")}${v.by ? `${v.message ? " " : ""}By ${esc(v.by)}.` : ""}</span>` : ""}${meta([["tool", v.tool && v.detail ? v.tool : ""]])}</span>
+    <span class="af-verdict__time">${esc(when)}</span>
+  </div>`;
+}
+// the held tool calls on a job or session, as cards; `ctx`: {harness, sandbox, owner, job (id), session (name),
+// sessionId, inspect (false on the job's or session's own page)}
+function toolApprovals(list, ctx) {
+  return (list || []).map((ap) => {
+    const req = (ap.tool || "").startsWith("env_request:");
+    return { id: ap.id, kind: req ? "request" : "tool", cmd: ap.detail || ap.tool, tool: ap.tool, taint: ap.taint,
+      policy: req ? `The agent asked for ${esc(ap.tool.slice(12))} access; nothing is granted until someone answers.`
+        : `<span class="af-mono">approvals: ask</span>${ap.taint ? ` <span class="af-muted">and the turn read untrusted content</span>` : ""}`,
+      since: ap.requested_at, expires: ap.expires_at, who: ctx, job: ctx.job, session: ctx.session, sessionId: ctx.sessionId,
+      inspect: ctx.inspect !== false, allowAlways: !req, approve: req ? "Approve" : "Allow" };
+  });
+}
+// a job waiting for a trusted person before it starts
+function jobApproval(j, inspect = true) {
+  return { id: j.id, kind: "job", cmd: j.title, policy: esc(j.approval?.reason || "Started from outside the team: a trusted person approves it."),
+    since: j.created_at, expires: j.approval?.expires_at, who: { requester: j.requester, owner: j.person, harness: j.harness }, job: j.id,
+    inspect, approve: "Approve job", deny: "Reject" };
+}
+// answers a card: a tool call on its job or session, a job waiting to start, or an environment request
+async function decideApproval(a, decision, reason) {
+  if (a.kind === "job") await api("POST", `/api/jobs/${a.job}/${decision === "deny" ? "reject" : "approve"}`, reason ? { reason } : {});
+  else if (a.kind === "request") await api("POST", `/api/env-requests/${a.id}`, { decision: decision === "deny" ? "deny" : "approve", note: reason || null });
+  else await api("POST", `${a.job ? `/api/jobs/${a.job}` : `/api/sessions/${a.sessionId}`}/approvals/${a.id}`, { decision, message: reason || null });
+  toast(decision === "deny" ? `${a.kind === "job" ? "Rejected" : "Denied"}: ${a.cmd.slice(0, 80)}` : `${a.kind === "job" ? "Approved" : "Allowed"}: ${a.cmd.slice(0, 80)}`);
+}
+
+/* ---- Airframe Diff: the change the agent made, greyscale, with line comments that go back to the agent. The patch is
+   GET /api/{jobs,sessions}/{ref}/patch (commits, uncommitted changes and untracked files against the base), parsed here
+   into files, hunks and lines. A comment opens a thread under its line; the queued comments ride with the next message
+   from the Composer (or go alone with "Send comments"), each with its file:line and the line itself. ---- */
+const MAX_DIFF_LINES = 3000;
+function parsePatch(text) {
+  const files = [];
+  let f = null, h = null, old = 0, neu = 0, lines = 0;
+  for (const raw of text.split("\n")) {
+    if (raw.startsWith("diff --git ")) {
+      const m = /^diff --git a\/(.*?) b\/(.*)$/.exec(raw);
+      f = { path: m ? m[2] : raw.slice(11), oldPath: m ? m[1] : "", hunks: [], added: 0, removed: 0, binary: false, mode: "" };
+      files.push(f); h = null;
+    } else if (!f) continue;
+    else if (raw.startsWith("GIT binary patch") || raw.startsWith("Binary files")) f.binary = true;
+    else if (raw.startsWith("new file mode")) f.mode = "new";
+    else if (raw.startsWith("deleted file mode")) f.mode = "deleted";
+    else if (raw.startsWith("rename to ")) f.mode = "renamed";
+    else if (raw.startsWith("@@")) {
+      const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(raw);
+      old = m ? Number(m[1]) : 0; neu = m ? Number(m[2]) : 0;
+      h = { header: raw, lines: [] }; f.hunks.push(h);
+    } else if (h && lines < MAX_DIFF_LINES && !raw.startsWith("\\ No newline")) {
+      const c = raw[0], text = raw.slice(1);
+      if (c === "+") { h.lines.push({ kind: "add", old: "", new: neu++, text }); f.added++; }
+      else if (c === "-") { h.lines.push({ kind: "del", old: old++, new: "", text }); f.removed++; }
+      else if (c === " ") h.lines.push({ kind: "ctx", old: old++, new: neu++, text });
+      else continue;
+      lines++;
+    }
+  }
+  return { files, truncated: lines >= MAX_DIFF_LINES };
+}
+// what the person wrote on the lines, per job or session, until the next message takes it to the agent
+const review = new Map();  // ref -> [{path, line, kind, code, text, at}]
+const reviewKey = (kind, id) => `${kind}/${id}`;
+const lineKey = (path, kind, line) => `${path}:${kind === "del" ? "-" : "+"}${line}`;
+// one file: header with the path, the stat and the tools; hunks; each line a grid with a Comment affordance
+function diffFileHtml(f, i, key) {
+  const dir = f.path.includes("/") ? f.path.slice(0, f.path.lastIndexOf("/") + 1) : "", base = f.path.slice(dir.length);
+  const comments = review.get(key) || [];
+  const line = (l) => {
+    const n = l.kind === "del" ? l.old : l.new, k = lineKey(f.path, l.kind, n);
+    const mine = comments.filter((c) => c.key === k);
+    return `<div class="af-diff__line af-diff__line--${l.kind}" data-line="${esc(k)}"><span class="af-diff__n">${l.old}</span><span class="af-diff__n">${l.new}</span>` +
+      `<span class="af-diff__s">${l.kind === "add" ? "+" : l.kind === "del" ? "\u2212" : " "}</span><code class="af-diff__code">${esc(l.text)}</code>` +
+      `<button type="button" class="af-btn af-btn--ghost af-diff__cmt" data-comment="${esc(k)}" aria-pressed="${mine.length ? "true" : "false"}" aria-label="Comment on line ${n}">Comment</button></div>` +
+      (mine.length ? threadHtml(k, mine, key) : "");
+  };
+  return `<div class="af-diff" id="diff-${i}" aria-label="Diff of ${esc(f.path)}">
+    <header class="af-diff__file">${ic("diff")}<span class="af-diff__path"><small>${esc(dir)}</small>${esc(base)}</span>
+      <span class="af-diff__stat"><b class="af-diff__add">+${f.added}</b><b class="af-diff__del">\u2212${f.removed}</b></span>
+      ${meta([["file", f.mode || ""]])}
+      <span class="af-diff__tools">${btn("Copy patch", { kind: "ghost", sm: true, attrs: { "data-copy-file": i } })}</span></header>
+    ${f.binary ? `<div class="af-diff__more">binary file</div>` : f.hunks.map((h) => `<section class="af-diff__hunk">
+      <div class="af-diff__hh"><code>${esc(h.header)}</code></div>${h.lines.map(line).join("")}</section>`).join("")}
+  </div>`;
+}
+// the thread under a line: the comments so far and a Composer to add one; what is written goes with the next message
+function threadHtml(k, mine, key, open = false) {
+  return `<div class="af-diff__thread" role="group" aria-label="Comment thread on ${esc(k)}" data-thread="${esc(k)}">
+    ${mine.map((c) => `<div class="af-comment">${avatar("person", initialsOf(state.me?.person || "you"), { size: 22, name: state.me?.person || "you" })}
+      <span class="af-comment__who"><span class="af-comment__name">${esc(state.me?.person || "You")}</span><span class="af-comment__time">${esc(new Date(c.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }))}</span></span>
+      <p class="af-comment__text">${esc(c.text)}</p>${btn("", { kind: "ghost", sm: true, icon: "close", cls: "comment-x", attrs: { "data-uncomment": c.at, "aria-label": "Remove this comment" } })}</div>`).join("")}
+    ${mine.length && !open ? "" : `<div class="af-composer"><div class="af-composer__box">
+      <textarea class="af-composer__input" rows="1" placeholder="${mine.length ? "Reply" : "Comment for the agent"}" aria-label="Comment on ${esc(k)}"></textarea>
+      <div class="af-composer__row"><span class="af-diff__note">${ic("agent")}<span>Sent to the agent with your next message</span></span>
+        ${btn("Add", { kind: "primary", sm: true, cls: "af-composer__send", attrs: { "data-add-comment": k } })}</div></div></div>`}
+  </div>`;
+}
+function diffHtml(patch, key) {
+  if (!patch) return "";
+  if (patch.error) return emptyState({ kind: "error", compact: true, title: "The change did not load.", text: esc(patch.error) });
+  const { files, truncated } = patch.parsed;
+  if (!files.length) return emptyState({ compact: true, icon: "diff", title: "No change yet.", text: `Nothing differs from <span class="af-mono">${esc((patch.base || "").slice(0, 7))}</span> ${patch.source === "sandbox" ? "in the sandbox" : `at ${esc(patch.source || "the last checkpoint")}`}.` });
+  const list = files.map((f, i) => `<a class="diff-index__row" href="#diff-${i}" data-diff-jump="${i}"><span class="af-diff__path"><small>${esc(f.path.includes("/") ? f.path.slice(0, f.path.lastIndexOf("/") + 1) : "")}</small>${esc(f.path.slice(f.path.lastIndexOf("/") + 1))}</span>
+    <span class="af-diff__stat"><b class="af-diff__add">+${f.added}</b><b class="af-diff__del">\u2212${f.removed}</b></span></a>`).join("");
+  const n = (review.get(key) || []).length;
+  return `<div class="diff-head">${meta([["against", (patch.base || "").slice(0, 7), "strong"], ["commit", (patch.head || "").slice(0, 7)], ["files", files.length],
+      ["from", patch.source === "sandbox" ? "the sandbox" : patch.source || ""], ["as of", patch.as_of ? ago(patch.as_of) : ""]])}
+      ${n ? `<span class="af-lbl">${n} comment${n === 1 ? "" : "s"} queued</span>${btn("Send comments", { kind: "secondary", sm: true, attrs: { "data-send-comments": true } })}` : ""}
+      ${btn("Refresh", { kind: "ghost", sm: true, attrs: { "data-diff-refresh": true } })}</div>
+    <nav class="diff-index" aria-label="Changed files">${list}</nav>
+    <div class="diffs">${files.map((f, i) => diffFileHtml(f, i, key)).join("")}</div>
+    ${truncated || patch.truncated ? `<p class="hint">The change is longer than shown (${patch.truncated ? "the server capped the patch" : `the first ${MAX_DIFF_LINES} lines`}); pull the branch for the rest.</p>` : ""}`;
+}
+// the queued comments as the text the agent gets: file:line, the line itself, the words
+function reviewText(key) {
+  const cs = review.get(key) || [];
+  if (!cs.length) return "";
+  return `Review comments on the change (${cs.length}):\n\n` + cs.map((c) => `${c.key}\n> ${c.code}\n${c.text}`).join("\n\n");
+}
+// the patch per job or session, fetched when asked and kept until the head moves
+const patches = new Map();
+async function loadPatch(kind, id, force = false) {
+  const key = reviewKey(kind, id);
+  const cur = patches.get(key);
+  if (cur?.busy || (cur && !force && !cur.error)) return cur;
+  patches.set(key, { ...cur, busy: true });
+  try {
+    const p = await api("GET", `/api/${kind}/${id}/patch`);
+    patches.set(key, { ...p, parsed: parsePatch(p.patch || ""), busy: false });
+  } catch (e) { patches.set(key, { error: e.message, busy: false }); }
+  return patches.get(key);
+}
+// clicks inside a "Changes" section: show, refresh, copy, a comment thread, add or remove a comment, send them alone
+function diffClick(e, kind, id, rerender, sendAlone) {
+  const key = reviewKey(kind, id), box = e.currentTarget;
+  const show = e.target.closest("[data-diff-show]"), refresh = e.target.closest("[data-diff-refresh]");
+  if (show || refresh) { busy(show || refresh, async () => { await loadPatch(kind, id, !!refresh); rerender(); }); return true; }
+  const copy = e.target.closest("[data-copy-file]");
+  if (copy) {
+    const f = patches.get(key)?.parsed.files[Number(copy.dataset.copyFile)];
+    const text = patches.get(key).patch.split("diff --git ").find((part) => part.startsWith(`a/${f.oldPath || f.path} `));
+    navigator.clipboard.writeText(`diff --git ${text}`).then(() => toast(`Copied the patch of ${f.path}`));
+    return true;
+  }
+  const cmt = e.target.closest("[data-comment]");
+  if (cmt) {  // Comment toggles the line's thread with its composer; the comments already there stay
+    const row = cmt.closest(".af-diff__line"), k = cmt.dataset.comment;
+    const mine = (review.get(key) || []).filter((c) => c.key === k);
+    const thread = row.nextElementSibling?.matches?.("[data-thread]") ? row.nextElementSibling : null;
+    if (thread && $(".af-composer", thread)) {
+      if (mine.length) thread.outerHTML = threadHtml(k, mine, key, false); else thread.remove();
+      cmt.setAttribute("aria-pressed", String(mine.length > 0));
+    } else {
+      if (thread) thread.remove();
+      row.insertAdjacentHTML("afterend", threadHtml(k, mine, key, true));
+      cmt.setAttribute("aria-pressed", "true");
+      $(`[data-thread="${CSS.escape(k)}"] textarea`, box)?.focus();
+    }
+    return true;
+  }
+  const add = e.target.closest("[data-add-comment]");
+  if (add) {
+    const thread = add.closest("[data-thread]"), ta = $("textarea", thread), text = ta.value.trim();
+    if (!text) return ta.focus(), true;
+    const k = add.dataset.addComment, row = $(`[data-line="${CSS.escape(k)}"]`, box);
+    const list = review.get(key) || [];
+    list.push({ key: k, code: $(".af-diff__code", row)?.textContent || "", text, at: Date.now() });
+    review.set(key, list);
+    ta.value = "";  // the thread stays open for a reply, empty
+    rerender();
+    return true;
+  }
+  const rm = e.target.closest("[data-uncomment]");
+  if (rm) {
+    review.set(key, (review.get(key) || []).filter((c) => String(c.at) !== rm.dataset.uncomment));
+    rerender();
+    return true;
+  }
+  if (e.target.closest("[data-send-comments]")) { busy(e.target.closest("[data-send-comments]"), () => sendAlone()); return true; }
+  const jump = e.target.closest("[data-diff-jump]");
+  if (jump) { e.preventDefault(); $(`#diff-${jump.dataset.diffJump}`, box)?.scrollIntoView({ behavior: "smooth", block: "start" }); return true; }
+  return false;
+}
+// the open threads and what is typed in them, so a repaint (the 4 s refresh) keeps them
+const openThreads = (root) => $$("[data-thread] textarea", root).map((ta) => [ta.closest("[data-thread]").dataset.thread, ta.value]);
+function restoreThreads(root, saved, key) {
+  for (const [k, text] of saved) {
+    const row = $(`[data-line="${CSS.escape(k)}"]`, root);
+    if (!row) continue;
+    const thread = row.nextElementSibling?.matches?.("[data-thread]") ? row.nextElementSibling : null;
+    if (thread) thread.remove();
+    row.insertAdjacentHTML("afterend", threadHtml(k, (review.get(key) || []).filter((c) => c.key === k), key, true));
+    $(".af-diff__cmt", row).setAttribute("aria-pressed", "true");
+    const ta = $(`[data-thread="${CSS.escape(k)}"] textarea`, root);
+    if (ta) ta.value = text;
+  }
+}
+// the "Changes" section of a job or session detail
+function changesHtml(kind, id, hasWork) {
+  const key = reviewKey(kind, id), p = patches.get(key);
+  return `<h4 class="with-meta">Changes${p && !p.error && p.parsed ? meta([["files", p.parsed.files.length], ["+", p.parsed.files.reduce((n, f) => n + f.added, 0)], ["\u2212", p.parsed.files.reduce((n, f) => n + f.removed, 0)]]) : ""}</h4>
+    <div class="changes" data-changes="${esc(key)}">${p && !p.busy ? diffHtml(p, key) : p?.busy ? `<p class="hint">Reading the change from ${hasWork ? "the sandbox" : "the last checkpoint"}…</p>`
+      : `<div class="env-bar">${btn("Show the change", { kind: "secondary", sm: true, icon: "diff", attrs: { "data-diff-show": true } })}<span class="hint">The commits, uncommitted edits and new files against the base, from ${hasWork ? "the sandbox" : "the last checkpoint"}. Comment on a line and it goes to the agent with your next message.</span></div>`}</div>`;
+}
+
+/* ---- Airframe Question: an agent asks a person. The approval role (a person is needed now) with the word "Needs
+   input"; the agent's options as chips when it offered any, free text otherwise (text wins); one primary, Answer.
+   The answer goes back as the agent's next message, in place. ---- */
+function questionHtml({ id, who, turn, question, context = "", options = [], asked, meanwhile = "holding the turn" }) {
+  return `<article class="af-card af-card--lit af-question" id="${esc(id)}">
+    <div class="af-card__top">
+      <span class="af-lbl">${ic("agent")}Question<span class="af-lbl__sub">${esc(who)}</span>${turn ? `<span class="af-lbl__sub">turn ${turn}</span>` : ""}</span>
+      ${status("approval", "Needs input", { lit: true })}
+    </div>
+    <p class="af-question__q">${esc(question)}</p>
+    ${context ? `<p class="af-question__ctx">${context}</p>` : ""}
+    ${options.length ? `<div class="af-question__opts" role="group" aria-label="Options">${options.slice(0, 5).map((o) =>
+      `<button type="button" class="af-chip" aria-pressed="false" data-option>${esc(o)}</button>`).join("")}</div>` : ""}
+    <label class="af-field af-question__free">
+      <span class="af-field__label">${options.length ? "Or answer in your own words" : "Your answer"}</span>
+      <span class="af-input af-input--area af-input--sans"><textarea rows="2" placeholder="${options.length ? "Free text dismisses the options" : "The agent continues with this"}"></textarea></span>
+    </label>
+    <div class="af-question__act">
+      ${meta([["asked", asked ? ago(asked) : ""], ["while", meanwhile]])}
+      ${btn("Answer", { kind: "primary", sm: true, attrs: { "data-answer": true } })}
+    </div>
+  </article>`;
+}
+// wires a question card: a pressed option is the answer unless the person wrote; `onAnswer(text)` sends it
+function wireQuestion(el, onAnswer) {
+  if (!el) return;
+  const ta = $("textarea", el);
+  $$("[data-option]", el).forEach((o) => o.addEventListener("click", () => {
+    $$("[data-option]", el).forEach((x) => x.setAttribute("aria-pressed", String(x === o && x.getAttribute("aria-pressed") !== "true")));
+  }));
+  $("[data-answer]", el).addEventListener("click", (e) => {
+    const picked = $('[data-option][aria-pressed="true"]', el);
+    const text = ta.value.trim() || (picked ? picked.textContent : "");
+    if (!text) { ta.focus(); return; }
+    busy(e.currentTarget, () => onAnswer(text));
+  });
+}
 
 const store = {
   get token() { try { return localStorage.getItem("hangar.token") || ""; } catch { return ""; } },
@@ -44,15 +451,11 @@ async function api(method, path, body, { raw = false } = {}) {
   return data;
 }
 
-let toastTimer;
-function toast(msg, bad = false) {
-  const t = $("#toast");
-  t.innerHTML = (bad ? mark("failed") : "") + esc(msg);
-  t.classList.toggle("bad", bad);
-  t.hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.hidden = true), bad ? 7000 : 3500);
-}
+// Airframe's toast: bottom centre, held while a dialog or drawer is open or a field has focus (alert inhibition), the
+// failed mark for a bad outcome; `opts` adds an action ({label, onClick}) or `critical: true`.
+const toast = (msg, bad = false, opts = {}) => airframe.toast(msg, { tone: bad ? "bad" : "plain", ...opts });
+// Airframe's confirm on an af-dialog, in place of window.confirm(): the refusing button first, the verb last
+const confirmAction = (title, body, ok, { danger = true, cancel = "Keep it" } = {}) => airframe.confirm({ title, body, ok, cancel, danger });
 
 async function busy(btn, fn) {
   const label = btn?.innerHTML;  // buttons can carry an icon: keep the markup, not just the text
@@ -83,13 +486,13 @@ function showGate(err) {
   $("#shell").hidden = true;
   $("#gate").hidden = false;
   $("#gate-error").hidden = !err;
-  $("#gate-error").innerHTML = err ? mark("failed") + esc(err) : "";
+  $("#gate-error").innerHTML = err ? errorLine(err) : "";
   $("#gate-token").focus();
 }
 $("#gate-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   store.token = $("#gate-token").value.trim();
-  try { await api("GET", "/api/me"); boot(); } catch {}
+  try { state.me = await api("GET", "/api/me"); boot(); } catch {}
 });
 $("#signout").addEventListener("click", () => { store.token = ""; showGate(); });
 
@@ -98,15 +501,43 @@ function route() {
   const [v, q] = (location.hash || "#fleet").slice(1).split("?");
   const linked = new URLSearchParams(q || "").get("job");  // #jobs?job=<id>: the inbox's links (#157)
   if (v === "jobs" && linked) state.selectedJob = linked;
-  state.view = ["jobs", "sessions", "fleet", "environments", "credentials", "snapshots", "connect", "activity", "usage"].includes(v) ? v : "fleet";
+  state.view = ["needs", "jobs", "sessions", "fleet", "environments", "credentials", "snapshots", "connect", "activity", "usage"].includes(v) ? v : "fleet";
   $$(".view").forEach((s) => (s.hidden = s.id !== `view-${state.view}`));
-  $$(".af-nav__tab[data-view]").forEach((a) => {
-    if (a.dataset.view === state.view) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
-  });
-  ({ jobs: loadJobs, sessions: loadSessions, fleet: loadFleet, environments: loadEnvs, credentials: loadCreds, snapshots: loadSnaps, connect: loadConnect,
-     activity: loadAudit, usage: loadUsage })[state.view]();
+  moreSheet(false);
+  markCurrent();
+  ({ needs: loadNeeds, jobs: loadJobs, sessions: loadSessions, fleet: loadFleet, environments: loadEnvs, credentials: loadCreds, snapshots: loadSnaps,
+     connect: loadConnect, activity: loadAudit, usage: loadUsage })[state.view]();
 }
 window.addEventListener("hashchange", route);
+// "Open job" / "Open session" on a card outside the Fleet page (fleet.js handles its own)
+document.addEventListener("click", (e) => {
+  const g = e.target.closest("[data-go]");
+  if (g && !g.closest("#view-fleet")) { e.preventDefault(); goTo(g.dataset.go); }
+});
+// the current section, in the top bar, the bottom tab bar and the More sheet; on a phone the sections past the first
+// three live under More, so the More tab is current for them, and while the sheet is open
+function markCurrent() {
+  const more = !$("#more-sheet").hidden;
+  $$("[data-view]").forEach((a) => {
+    const cur = a.dataset.view === state.view && !(more && a.closest("#tabbar"));
+    if (cur) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+  });
+  if (more || $(`#more-sheet [data-view="${state.view}"]`)) $("#tab-more").setAttribute("aria-current", "page");
+  else $("#tab-more").removeAttribute("aria-current");
+}
+// a count beside a section's name, in the top bar and the bottom tab bar alike
+const navCount = (name, n) => $$(`[data-count="${name}"]`).forEach((el) => (el.textContent = n || ""));
+// the More sheet (narrow screens): the six sections the tab bar has no room for, and the providers' state
+function moreSheet(open) {
+  const sheet = $("#more-sheet"), tab = $("#tab-more");
+  sheet.hidden = !open;
+  tab.setAttribute("aria-expanded", String(open));
+  markCurrent();
+  if (open) $("#more-sheet [data-view]").focus();
+}
+$("#tab-more").addEventListener("click", () => moreSheet($("#more-sheet").hidden));
+$("#more-sheet").addEventListener("click", (e) => { if (e.target.closest("[data-view]")) moreSheet(false); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#more-sheet").hidden) { moreSheet(false); $("#tab-more").focus(); } });
 
 let pollTimer = null;
 async function boot() {
@@ -115,14 +546,18 @@ async function boot() {
   await refreshMeta();
   route();
   clearInterval(pollTimer);
+  let tick = 0;
   pollTimer = setInterval(() => {
     if (document.hidden) return;
+    tick++;
     if (state.view === "fleet") loadFleet(true);
     if (state.view === "jobs") loadJobs(true);
     if (state.view === "sessions") loadSessions(true);
+    if (state.view === "needs" || tick % 8 === 0) loadNeeds(true);  // the count elsewhere, every half minute
   }, 4000);
   loadJobs(true);  // fills the nav counts
   loadSessions(true);
+  loadNeeds(true);
 }
 
 async function refreshMeta() {
@@ -131,10 +566,12 @@ async function refreshMeta() {
   ]);
   Object.assign(state, { overview: ov, envs, creds, harnesses });
   // a provider is quiet while it works (running) and a failed triangle when it doesn't
-  $("#providers").innerHTML = Object.entries(ov.providers).map(([n, p]) =>
+  const providers = Object.entries(ov.providers).map(([n, p]) =>
     `<span class="prov af-status af-status--${p.ok ? "running" : "failed"}" title="${esc(p.error || (p.capabilities?.microvm ? "microVM isolation" : ""))}">
        <i class="af-status__mark"></i>${esc(n)}${p.ok ? "" : " unavailable"}${n === ov.default_provider && Object.keys(ov.providers).length > 1
          ? `<span class="hint">default</span>` : ""}</span>`).join("");
+  $("#providers").innerHTML = providers;
+  $("#more-providers").innerHTML = `<span class="af-lbl">Providers</span>${providers}`;  // the top bar hides them on a phone
 }
 
 /* ------------------------------------------------------------------ fleet */
@@ -186,30 +623,35 @@ $("#new-form").addEventListener("submit", async (e) => {
   btn.innerHTML = label;
 });
 
-/* ---- dialogs ---- */
-function dialog(html, onSubmit) {
+/* ---- dialogs: Airframe's af-dialog (one short form that creates or runs one thing). The footer runs refuse, accept:
+   the refusing button is first in focus order so Enter never destroys, the verb is on the confirming one. ---- */
+const field = (label, control, hint = "") => `<label class="af-field"><span class="af-field__label">${esc(label)}</span>${control}${hint
+  ? `<span class="af-field__hint">${esc(hint)}</span>` : ""}</label>`;
+const inputWell = (html, { area = false, sans = false } = {}) => `<span class="af-input${area ? " af-input--area" : ""}${sans ? " af-input--sans" : ""}">${html}</span>`;
+
+function dialog({ title, body, ok, cancel = "Cancel", wide = false }, onSubmit) {
   const d = $("#dialog"), f = $("#dialog-form");
-  f.innerHTML = html + `<div class="form-foot"><button value="cancel" formnovalidate class="af-btn af-btn--ghost">Cancel</button>
-    <button value="ok" class="af-btn af-btn--primary" id="dialog-ok"></button></div>`;
-  $("#dialog-ok").textContent = f.dataset.ok || "OK";
+  d.classList.toggle("af-dialog--wide", wide);
+  f.innerHTML = `<header class="af-dialog__head"><h2 class="af-dialog__title" id="dialog-title">${title}</h2></header>
+    <div class="af-dialog__body">${body}</div>
+    <footer class="af-dialog__foot">${btn(cancel, { kind: "secondary", type: "submit", attrs: { value: "cancel", formnovalidate: true } })}${btn(ok, { kind: "primary", type: "submit", attrs: { value: "ok", id: "dialog-ok" } })}</footer>`;
   f.onsubmit = async (e) => {
     if (e.submitter?.value !== "ok") return;
     e.preventDefault();
     await busy($("#dialog-ok"), async () => { if ((await onSubmit(new FormData(f))) !== false) d.close(); });
   };
   d.showModal();
-  $("input, textarea, select", f)?.focus();
+  ($("input, textarea, select", f) || $('[value="cancel"]', f))?.focus();
 }
 
 function agentDialog(sb) {
   const env = state.envs.find((e) => e.name === sb.environment);
   const hs = (env?.harnesses || []).filter((h) => h !== "git");
   if (!hs.length) return toast(`${sb.environment} has no agent harness installed. Add one to the environment.`, true);
-  $("#dialog-form").dataset.ok = "Start agent";
-  dialog(`<h3>Run an agent in <span class="af-mono">${esc(sb.name)}</span></h3>
-    <label>Harness<select name="harness">${hs.map((h) => `<option>${esc(h)}</option>`).join("")}</select></label>
-    <label>Task<textarea name="prompt" rows="6" required placeholder="Fix the failing test in tests/test_api.py and commit the change."></textarea></label>
-    <p class="hint">Runs headless in its own terminal session. The terminal opens so you can watch it.</p>`,
+  dialog({ title: `Run an agent in <span class="af-mono">${esc(sb.name)}</span>`, ok: "Start agent", body:
+    field("Harness", `<select name="harness">${hs.map((h) => `<option>${esc(h)}</option>`).join("")}</select>`) +
+    field("Task", inputWell(`<textarea name="prompt" rows="6" required placeholder="Fix the failing test in tests/test_api.py and commit the change."></textarea>`, { area: true, sans: true }),
+      "Runs headless in its own terminal session. The terminal opens so you can watch it.") },
   async (fd) => {
     const r = await api("POST", `/api/sandboxes/${sb.id}/agent`, { prompt: fd.get("prompt"), harness: fd.get("harness") });
     toast(`Agent ${r.harness} started (${r.run_id})`);
@@ -219,10 +661,8 @@ function agentDialog(sb) {
 }
 
 function execDialog(sb) {
-  $("#dialog-form").dataset.ok = "Run";
-  dialog(`<h3>Run a command in ${esc(sb.name)}</h3>
-    <label>Command<input name="command" required placeholder="pytest -q"></label>
-    <pre id="exec-out" class="log" hidden></pre>`,
+  dialog({ title: `Run a command in <span class="af-mono">${esc(sb.name)}</span>`, ok: "Run", cancel: "Close", body:
+    field("Command", inputWell(`<input name="command" required placeholder="pytest -q">`)) + `<pre id="exec-out" class="log" hidden></pre>` },
   async (fd) => {
     const r = await api("POST", `/api/sandboxes/${sb.id}/exec`, { command: fd.get("command") });
     const out = $("#exec-out");
@@ -233,12 +673,11 @@ function execDialog(sb) {
 }
 
 function forkDialog(sb) {
-  $("#dialog-form").dataset.ok = "Fork";
-  dialog(`<h3>Fork ${esc(sb.name)}</h3>
-    <p class="sub">Snapshots this sandbox and starts copies with the same files, installed dependencies and repo state.
-      Exclusive credentials stay with the original.</p>
-    <label>Copies<input name="count" type="number" min="1" max="20" value="2"></label>
-    <label>Work branch prefix<input name="work_branch_prefix" placeholder="attempt (gives attempt-1, attempt-2, …)"></label>`,
+  dialog({ title: `Fork <span class="af-mono">${esc(sb.name)}</span>`, ok: "Fork", body:
+    `<p>Snapshots this sandbox and starts copies with the same files, installed dependencies and repo state.
+      Exclusive credentials stay with the original.</p>` +
+    field("Copies", inputWell(`<input name="count" type="number" min="1" max="20" value="2">`)) +
+    field("Work branch prefix", inputWell(`<input name="work_branch_prefix" placeholder="attempt">`), "Gives attempt-1, attempt-2, …") },
   async (fd) => {
     const res = await api("POST", `/api/sandboxes/${sb.id}/fork`, {
       count: Number(fd.get("count")), work_branch_prefix: fd.get("work_branch_prefix") || null });
@@ -250,10 +689,14 @@ function forkDialog(sb) {
 const terms = new Map(); // key -> {term, ws, fit, el, tab, sb, session}
 let activeTerm = null;
 
+// The terminal drawer is Airframe's bottom drawer (no scrim: the page above stays usable); opening it lifts the toasts
+// and pads the page through --af-drawer-inset. Its height is --af-drawer-h, which the grip resizes.
+const showDrawer = () => airframe.drawer.open("#drawer", { scrim: false });
+const hideDrawer = () => airframe.drawer.close("#drawer");
+
 function openTerminal(sb, session = null, initial = null) {
   const key = `${sb.id}:${session || (initial ? "agent" : "shell")}`;
-  $("#drawer").hidden = false;
-  document.body.style.setProperty("--drawer-pad", "var(--drawer-h)");
+  showDrawer();
   if (terms.has(key)) return activateTerm(key);
   const el = document.createElement("div");
   el.className = "term";
@@ -331,7 +774,7 @@ function closeTerm(key) {
   const t = terms.get(key);
   if (!t) return;
   t.ws?.close(); t.term.dispose(); t.el.remove(); t.tab.remove(); terms.delete(key);
-  if (!terms.size) { $("#drawer").hidden = true; document.body.style.removeProperty("--drawer-pad"); }
+  if (!terms.size) hideDrawer();
   else if (activeTerm === key) activateTerm([...terms.keys()].at(-1));
 }
 function closeTerminalsFor(id) { for (const k of [...terms.keys()]) if (k.startsWith(id + ":")) closeTerm(k); }
@@ -343,16 +786,17 @@ function closeTerminalsFor(id) { for (const k of [...terms.keys()]) if (k.starts
   extra.innerHTML = `<button id="term-sessions" class="af-btn af-btn--ghost af-btn--sm" title="Attach to a terminal session an agent or MCP client is using">${ic("terminal")}Sessions…</button>
     <button id="term-hide" class="af-btn af-btn--ghost af-btn--sm">${ic("chevron-down")}Hide</button>`;
   tabs.appendChild(extra);
-  $("#term-hide").addEventListener("click", () => { $("#drawer").hidden = true; document.body.style.removeProperty("--drawer-pad"); });
+  $("#term-hide").addEventListener("click", hideDrawer);
+  // Escape belongs to the program in the terminal (vim, less), not to the drawer
+  $("#drawer-body").addEventListener("keydown", (e) => { if (e.key === "Escape") e.stopPropagation(); });
   $("#term-sessions").addEventListener("click", async () => {
     const t = terms.get(activeTerm);
     if (!t) return;
     const sessions = await api("GET", `/api/sandboxes/${t.sb.id}/terminals`).catch((e) => (toast(e.message, true), []));
     if (!sessions.length) return toast("No terminal sessions in this sandbox yet.");
-    $("#dialog-form").dataset.ok = "Attach";
-    dialog(`<h3>Attach to a session in ${esc(t.sb.name)}</h3>
-      <p class="sub">You and the agent share the same terminal: you see what it types and can type back.</p>
-      <label>Session<select name="s">${sessions.map((s) => `<option>${esc(s)}</option>`).join("")}</select></label>`,
+    dialog({ title: `Attach to a session in <span class="af-mono">${esc(t.sb.name)}</span>`, ok: "Attach", body:
+      `<p>You and the agent share the same terminal: you see what it types and can type back.</p>` +
+      field("Session", `<select name="s">${sessions.map((s) => `<option>${esc(s)}</option>`).join("")}</select>`) },
     async (fd) => openTerminal(t.sb, fd.get("s")));
   });
   const grip = $("#drawer-grip");
@@ -360,7 +804,7 @@ function closeTerminalsFor(id) { for (const k of [...terms.keys()]) if (k.starts
     grip.setPointerCapture(e.pointerId);
     const move = (ev) => {
       const h = Math.min(Math.max(window.innerHeight - ev.clientY, 160), window.innerHeight - 120);
-      document.documentElement.style.setProperty("--drawer-h", `${h}px`);
+      document.documentElement.style.setProperty("--af-drawer-h", `${h}px`);
       terms.get(activeTerm)?.fit.fit();
     };
     grip.addEventListener("pointermove", move);
@@ -368,6 +812,77 @@ function closeTerminalsFor(id) { for (const k of [...terms.keys()]) if (k.starts
   });
   window.addEventListener("resize", () => terms.get(activeTerm)?.fit.fit());
 })();
+
+/* ------------------------------------------------------------------ needs you */
+// What waits on a person, from GET /api/inbox (the same list the CLI, Slack and MCP clients get): approvals and
+// questions first, as the cards they are decided on; then failed jobs and PRs waiting for review, as rows.
+async function loadNeeds(quiet = false) {
+  try {
+    state.inbox = await api("GET", "/api/inbox");
+    renderNeeds();
+  } catch (e) { if (!quiet && e.message !== "unauthorized") toast(e.message, true); }
+}
+state.needsCards = [];
+function needsCard(item) {
+  const job = item.job ? state.jobs.find((j) => j.id === item.job) : null;
+  const ses = item.session ? state.sessions.find((x) => x.name === item.session) : null;
+  const ctx = { harness: job?.harness || ses?.harness, sandbox: job?.sandbox_id || ses?.sandbox_id, owner: job?.person || job?.requester || ses?.person,
+    job: job?.id, session: ses?.name, sessionId: ses?.id };
+  if (item.approval) {
+    const ap = [...(job?.pending_approvals || []), ...(ses?.pending_approvals || [])].find((a) => a.id === item.approval);
+    if (ap) return toolApprovals([ap], ctx)[0];
+    return { ...toolApprovals([{ id: item.approval, tool: "", detail: item.reason, requested_at: item.since, expires_at: item.expires_at }], ctx)[0], cmd: item.reason };
+  }
+  if (item.request) return toolApprovals([{ id: item.request, tool: "env_request:", detail: item.reason, requested_at: item.since }], ctx)[0];
+  if (job?.state === "awaiting_approval") return jobApproval(job);
+  return { id: item.id, kind: "job", cmd: item.reason, since: item.since, expires: item.expires_at, who: { requester: "someone" }, job: item.job,
+    inspect: true, approve: "Approve job", deny: "Reject" };
+}
+function renderNeeds() {
+  const items = state.inbox?.items || [];
+  const approvals = items.filter((i) => i.kind === "approval"), questions = items.filter((i) => i.kind === "question");
+  const failed = items.filter((i) => i.kind === "failed"), review = items.filter((i) => i.kind === "review");
+  navCount("needs", approvals.length + questions.length);
+  if (state.view !== "needs") return;
+  const n = approvals.length + questions.length;
+  const running = state.jobs.filter((j) => j.active).length, sessions = state.sessions.filter((x) => ["idle", "running", "starting"].includes(x.state) && !x.job_id).length;
+  $("#needs-sum").innerHTML = (n ? status("approval", `${n} waiting on you`, { lit: true }) : status("running", "Nothing is waiting on you"))
+    + meta([["approvals", approvals.length], ["questions", questions.length], ["failed", failed.length], ["review", review.length]]);
+  const box = $("#needs-list");
+  const open = openReasons(box), drafts = Object.fromEntries($$(".af-question", box).map((q) => [q.id, $("textarea", q).value]));
+  state.needsCards = approvals.map(needsCard);
+  const qcards = questions.map((item) => {
+    const job = item.job ? state.jobs.find((j) => j.id === item.job) : null;
+    const ses = item.session ? state.sessions.find((x) => x.name === item.session) : null;
+    return { id: `needs-q-${item.id}`, job, ses, html: questionHtml({ id: `needs-q-${item.id}`, who: job?.id || item.session || "", turn: ses?.turns?.length,
+      question: item.reason.replace(/^the agent asks: /, ""), asked: item.since, meanwhile: "holding the sandbox" }) };
+  });
+  const row = (i, st) => `<div class="af-verdict">${st}<span class="af-verdict__body"><span class="af-verdict__cmd">${esc(i.title || i.job || "")}</span>
+      <span class="af-verdict__why">${esc(i.reason)}</span>${meta([["repo", (i.repo || "").replace(/^https?:\/\/(www\.)?github\.com\//, "").replace(/\.git$/, "")]])}</span>
+      <span class="af-verdict__time">${i.links?.pr ? `<a class="af-btn af-btn--ghost af-btn--sm" href="${esc(i.links.pr)}" target="_blank" rel="noopener">Open PR</a>` : ""}${i.job
+        ? btn("Open job", { kind: "ghost", sm: true, attrs: { "data-go": `job:${i.job}` } }) : ""}</span></div>`;
+  box.innerHTML = !items.length
+    ? emptyState({ kind: "after-action", cls: "af-empty--clear", icon: "approval", title: "Nothing is waiting on you.",
+        counts: status("running", `${running} job${running === 1 ? "" : "s"} running`) + status("running", `${sessions} session${sessions === 1 ? "" : "s"} up`),
+        text: "They work on their own. A held tool call, a job waiting to start or a question lands here first." })
+    : `${state.needsCards.length || qcards.length ? `<div class="cards">${state.needsCards.map(approvalHtml).join("")}${qcards.map((q) => q.html).join("")}</div>` : ""}
+      ${failed.length ? `<h3 class="section-title">Failed</h3><div class="verdicts">${failed.map((i) => row(i, status("failed", "Failed"))).join("")}</div>` : ""}
+      ${review.length ? `<h3 class="section-title">Waiting for review</h3><div class="verdicts">${review.map((i) => row(i, status("queued", "Review"))).join("")}</div>` : ""}`;
+  const findCard = (id) => state.needsCards.find((c) => c.id === id);
+  restoreReasons(box, open, findCard);
+  for (const q of qcards) {
+    const el = $(`#${CSS.escape(q.id)}`);
+    if (drafts[q.id]) $("textarea", el).value = drafts[q.id];
+    wireQuestion(el, async (text) => {
+      if (q.job) await api("POST", `/api/jobs/${q.job.id}/follow-up`, { message: text });
+      else if (q.ses) await api("POST", `/api/sessions/${q.ses.id}/send`, { message: text });
+      toast("Sent; the agent continues with your answer");
+      await Promise.all([loadJobs(true), loadSessions(true)]);
+      await loadNeeds();
+    });
+  }
+  box.onclick = (e) => approvalClick(e, findCard, async () => { await Promise.all([loadJobs(true), loadSessions(true)]); await loadNeeds(); });
+}
 
 /* ------------------------------------------------------------------ jobs */
 const JOB_ACTIVE = ["queued", "provisioning", "running", "verifying", "delivering"];
@@ -377,8 +892,8 @@ const JOB_STATE = { queued: "queued", provisioning: "queued", running: "running"
   succeeded: "off", failed: "failed", cancelled: "off", needs_input: "approval" };
 JOB_STATE.awaiting_approval = "approval"; // workstream A: approve with `hangar job approve` or `/hangar approve`
 const JOB_WORD = { needs_input: "Needs input", awaiting_approval: "Needs approval" };
-const jobRole = (j) => JOB_STATE[j.state] || "off";
-const jobWord = (j) => JOB_WORD[j.state] || word(j.state);
+const jobRole = (j) => (j.pending_approvals?.length && j.active ? "approval" : JOB_STATE[j.state] || "off");
+const jobWord = (j) => (j.pending_approvals?.length && j.active ? "Needs approval" : JOB_WORD[j.state] || word(j.state));
 
 async function loadJobs(quiet = false) {
   try {
@@ -393,21 +908,27 @@ function jobRepo(j) {
 
 function renderJobs() {
   const active = state.jobs.filter((j) => j.active);
-  $("#nav-jobs").textContent = active.length || "";
+  navCount("jobs", active.length);
   if (state.view !== "jobs") return;
   const f = $("#jobs-filter").value;
   const shown = state.jobs.filter((j) => !f || (f === "active" ? j.active : j.state === f));
+  const hidden = state.jobs.length - shown.length;
   $("#job-list").innerHTML = shown.length ? shown.map((j) => `<li><button data-job="${esc(j.id)}"
       class="job-row ${j.id === state.selectedJob ? "active" : ""} ${jobRole(j) === "approval" ? "is-attention" : ""}" data-tone="${jobRole(j)}">
       <span class="t">${esc(j.title)}</span>
       <span class="d">${status(jobRole(j), jobWord(j))}${meta([
         j.reason ? ["reason", j.reason.replace(/_/g, " "), jobRole(j) === "failed" ? "failed" : ""] : null,
         ["source", j.source], ["created", ago(j.created_at)], j.result?.pr_number ? ["pr", `#${j.result.pr_number}`] : null])}</span></button></li>`).join("")
-    : `<li class="empty-floor"><p>${state.jobs.length ? "No jobs match this filter."
-      : "No jobs yet. Submit one here, label a GitHub issue <code>hangar</code>, or call submit_job from an MCP client."}</p></li>`;
+    : `<li>${state.jobs.length
+      ? emptyState({ kind: "after-action", icon: "job", title: `${hidden} job${hidden === 1 ? " is" : "s are"} hidden by the filter.`,
+        actions: btn("Show all jobs", { sm: true, attrs: { "data-clear-filter": true } }) })
+      : emptyState({ icon: "job", title: "No jobs yet.", text: `Submit one here, label a GitHub issue <code>hangar</code>, or call <code>submit_job</code> from an MCP client.` })}</li>`;
   if (state.selectedJob) renderJob(state.jobs.find((j) => j.id === state.selectedJob));
+  else if (!$("#job-detail .af-empty")) $("#job-detail").innerHTML = emptyState({ compact: true, icon: "job", title: "No job selected.",
+    text: "Choose one to see its timeline, result and sandbox." });
 }
 $("#jobs-filter").addEventListener("change", renderJobs);
+$("#job-list").addEventListener("click", (e) => { if (e.target.closest("[data-clear-filter]")) { $("#jobs-filter").value = ""; renderJobs(); } });
 $("#job-list").addEventListener("click", (e) => {
   const b = e.target.closest("button[data-job]");
   if (!b) return;
@@ -416,22 +937,67 @@ $("#job-list").addEventListener("click", (e) => {
   if (window.innerWidth < 860) $("#job-detail").scrollIntoView({ behavior: "smooth", block: "start" });
 });
 
+// What a running job's turn can take (GET /api/jobs/{id}/approvals: running, live, pending, decided), fetched while
+// the job is active and selected; a change re-renders the detail. The job view itself doesn't say whether the turn is
+// live (steerable) or one-shot.
+const turnInfo = new Map();
+async function fetchTurnInfo(j) {
+  const cur = turnInfo.get(j.id);
+  if (cur?.busy) return;
+  turnInfo.set(j.id, { ...cur, busy: true });
+  try {
+    const v = await api("GET", `/api/jobs/${j.id}/approvals`);
+    turnInfo.set(j.id, { ...v, busy: false });
+    if ((cur?.live !== v.live || cur?.running !== v.running) && state.selectedJob === j.id) renderJob(state.jobs.find((x) => x.id === j.id));
+  } catch { turnInfo.delete(j.id); }  // unknown: the Composer assumes a live turn and the server says otherwise
+}
+const inflight = new Map();  // job id -> a steer on its way (the direct route answers once the agent has it)
+
+// the Composer's state for a job: steer while a live turn runs, follow up after, and say why when neither works
+function jobComposer(j, info) {
+  const live = !!j.sandbox_id;
+  if (j.state === "awaiting_approval") return { disabled: true, why: "Waiting for approval. Approve or reject it from the Fleet page; a reply comes after." };
+  if (j.active) {
+    if (j.state === "running" && info?.running && !info.live) return { disabled: true,
+      why: `${esc(j.harness || "These")} turns run one-shot and can't take a message mid-turn; wait for the turn, or cancel the job.` };
+    if (j.state === "running" && (!info || info.running)) return { mode: "steer", placeholder: "Steer the agent", busy: true,
+      why: "The agent is working; your message applies after this tool call." };
+    return { disabled: true, why: `The job is ${esc(word(j.state).toLowerCase())}; a reply after it finishes runs another turn.` };
+  }
+  if (live || j.session?.checkpoints) return { mode: "follow-up", placeholder: "Reply to the agent",
+    why: "Runs another turn in the same sandbox and branch; the PR updates." };
+  return { disabled: true, why: `The sandbox was released with no checkpoint. Submit a new job; branch <span class="af-mono">${esc(j.branch)}</span> has the work.` };
+}
+
 function renderJob(j) {
   const box = $("#job-detail");
-  if (!j) { box.innerHTML = `<p class="empty">That job is no longer listed.</p>`; return; }
-  // keep a half-typed follow-up across the 4s refresh
-  const draft = $("#job-followup-text")?.value || "";
+  if (!j) { box.innerHTML = emptyState({ kind: "after-action", compact: true, icon: "job", title: "That job is no longer listed.", text: "It may have been cleaned up, or the filter hides it." }); return; }
+  // keep a half-typed message across the 4s refresh
+  const draft = $("#job-composer .af-composer__input")?.value || $("#job-question textarea")?.value || "";
+  const reasons = openReasons(box), threads = openThreads(box), focused = !!document.activeElement?.closest?.("[data-thread]");
+  const rkey = reviewKey("jobs", j.id), queued = (review.get(rkey) || []).length;
   const r = j.result || {};
+  const info = turnInfo.get(j.id);
+  if (j.active && j.state === "running") fetchTurnInfo(j);
+  else if (j.pending_approvals?.length && !info) fetchTurnInfo(j);
+  const question = j.state === "needs_input" && r.question;
+  const cm = question ? null : jobComposer(j, info);
+  const pending = inflight.get(j.id);
+  // what waits on a person, as Airframe approval cards: the job itself (a trusted person starts it) or held tool calls
+  const cards = [...(j.state === "awaiting_approval" ? [jobApproval(j, false)] : []),
+    ...toolApprovals(j.pending_approvals, { harness: j.harness, sandbox: j.sandbox_id, owner: j.person || j.requester, job: j.id, inspect: false })];
+  const verdicts = (info?.decided || []).filter((v) => v.status !== "pending").slice(-5).reverse();
   const verify = j.verify ? (r.verify_exit_code == null ? `<span class="hint">not run yet</span>`
-    : r.verify_exit_code === 0 ? `<span class="passed">${ic("check", "af-ic--14")}passed</span>`
+    : r.verify_exit_code === 0 ? `<span class="passed">${ic("check", 14)}passed</span>`
       : status("failed", `Failed, exit ${r.verify_exit_code}`)) : "";
   const turns = j.turns || [];
   const live = !!j.sandbox_id;
   const role = jobRole(j);
-  box.classList.toggle("af-card--lit", role === "approval");  // lit only while it waits on a person
+  box.classList.remove("af-card--lit");  // the cards that wait on a person light themselves
   box.innerHTML = `
-    <div class="detail-head"><h3>${esc(j.title)}</h3>${status(role, jobWord(j), true)}
+    <div class="detail-head"><h3>${esc(j.title)}</h3>${status(role, jobWord(j), { lit: true })}
       ${j.reason ? meta([["reason", j.reason.replace(/_/g, " "), role === "failed" ? "failed" : ""]]) : ""}</div>
+    ${cards.length ? `<div class="cards">${cards.map(approvalHtml).join("")}</div>` : ""}
     <dl class="kv af-kv">
       <dt>Asked by</dt><dd>${esc(j.requester)} via ${esc(j.source)}${j.source_ref ? ` (${esc(j.source_ref.replace(/^github:/, ""))})` : ""}, ${ago(j.created_at)}</dd>
       <dt>Where</dt><dd>${meta([["env", j.environment, "strong"], ["harness", j.harness || "default agent"], ["model", j.model || ""]])}</dd>
@@ -454,11 +1020,13 @@ function renderJob(j) {
     </div>
     ${r.summary ? `<h4>Agent's summary</h4><pre class="log summary">${esc(r.summary)}</pre>` : ""}
     ${r.verify_tail && r.verify_exit_code ? `<h4>Check output</h4><pre class="log">${esc(r.verify_tail)}</pre>` : ""}
-    ${!j.active && (live || j.session?.checkpoints) ? `<form id="job-followup" class="followup">
-        <label>Reply to the agent<textarea id="job-followup-text" rows="3" required
-          placeholder="Also handle the empty-file case, and keep the old function name."></textarea></label>
-        <div class="env-bar"><span class="hint">Runs another turn in the same sandbox and branch; the PR updates.</span>
-          <button class="af-btn af-btn--primary" type="submit">Send</button></div></form>` : ""}
+    ${question ? `<h4>The agent asks</h4>${questionHtml({ id: "job-question", who: j.id, turn: turns.length, question: r.question, asked: j.updated_at,
+        meanwhile: live ? "holding the sandbox" : "the sandbox is released; your answer resumes it" })}`
+      : `<h4>${cm.mode === "steer" ? "Steer the agent" : "Reply to the agent"}</h4>${composerHtml({ id: "job-composer", ...cm,
+        note: queued && !cm.disabled ? `${queued} review comment${queued === 1 ? " goes" : "s go"} with this message` : "",
+        queued: pending ? [{ id: "", text: pending, sub: "on its way; applies after this tool call" }] : [] })}`}
+    ${live || j.session?.checkpoints || r.commits?.length ? changesHtml("jobs", j.id, live) : ""}
+    ${verdicts.length ? `<h4>Decisions</h4><div class="verdicts">${verdicts.map(verdictHtml).join("")}</div>` : ""}
     ${activityBlock("jobs", j.id, j.usage)}
     <h4>Timeline</h4>
     <ol class="timeline">${(j.events || []).slice().reverse().map((e) => `<li data-tone="${JOB_STATE[e.state] || "off"}">${mark(JOB_STATE[e.state] || "off")}
@@ -468,28 +1036,52 @@ function renderJob(j) {
       ${meta([["by", t.requester || ""], ["exit", t.exit_code ?? ""]])}
       ${t.message ? `<div class="hint">${esc(t.message)}</div>` : ""}</li>`).join("")}</ol>` : ""}
     <details><summary>Instructions</summary><pre class="log summary">${esc(j.instructions)}</pre></details>`;
-  const ta = $("#job-followup-text");
-  if (ta) ta.value = draft;
   fillActivity(box);
   const sb = { id: j.sandbox_id, name: j.id };
+  const findCard = (id) => cards.find((c) => c.id === id);
+  restoreReasons(box, reasons, findCard);
+  restoreThreads(box, threads, rkey);
+  if (focused) $("[data-thread] textarea", box)?.focus({ preventScroll: true });
+  // the reply: an answer to the agent's question and a follow-up both run another turn; a steer lands in this one;
+  // the review comments on the change ride along with the message (or go alone)
+  const withReview = (text) => { const rv = reviewText(rkey); return rv ? (text ? `${rv}\n\n---\n\n${text}` : rv) : text; };
+  const followUp = async (message, plain = false) => {
+    await api("POST", `/api/jobs/${j.id}/follow-up`, { message: plain ? message : withReview(message) });
+    if (!plain) review.delete(rkey);
+    toast(`Sent; ${j.id} is running another turn`);
+    await loadJobs();
+  };
+  const steer = async (text) => {
+    // the direct route answers once the agent has the message: show it queued meanwhile (a refresh keeps the row)
+    const shown = text || `Review comments (${(review.get(rkey) || []).length})`;
+    $("#job-composer")?.prepend(airframe.el(queuedRow({ text: shown, sub: "on its way; applies after this tool call" })));
+    inflight.set(j.id, shown);
+    try {
+      await api("POST", `/api/jobs/${j.id}/steer`, { message: withReview(text) });
+      review.delete(rkey);
+      toast("The agent has your message; it applies after this tool call.");
+    } catch (e) {
+      if (e.message !== "unauthorized") toast(e.message, true);
+      return false;  // not taken: the words come back to the box
+    } finally { inflight.delete(j.id); renderJob(j); }
+    await loadJobs();
+  };
+  const sendAlone = () => (cm?.mode === "steer" ? steer("") : followUp(""));
+  box.onclick = (e) => approvalClick(e, findCard, async () => { turnInfo.delete(j.id); await loadJobs(); })
+    || diffClick(e, "jobs", j.id, () => renderJob(j), sendAlone);
+  wireQuestion($("#job-question"), (text) => { $("#job-question textarea").value = ""; return followUp(text, true); });
+  if ($("#job-question textarea")) $("#job-question textarea").value = draft;
+  wireComposer($("#job-composer"), { draft, onSend: (text) => (cm.mode === "steer" ? steer(text) : followUp(text)) });
   $("#job-watch")?.addEventListener("click", () => openTerminal(sb, j.terminal_session));
   $("#job-shell")?.addEventListener("click", () => openTerminal(sb));
   $("[data-goto-ses]", box)?.addEventListener("click", (e) => {
     state.selectedSession = e.target.dataset.gotoSes;
     $("#ses-jobs").checked = true;
   });
-  $("#job-cancel")?.addEventListener("click", (e) => {
-    if (!confirm(`Cancel ${j.id}? The agent is stopped; work committed so far stays in the sandbox.`)) return;
-    busy(e.currentTarget, async () => { await api("POST", `/api/jobs/${j.id}/cancel`); toast(`Cancelling ${j.id}`); loadJobs(); });
-  });
-  $("#job-followup")?.addEventListener("submit", (e) => {
-    e.preventDefault();
-    busy($("button[type=submit]", e.target), async () => {
-      await api("POST", `/api/jobs/${j.id}/follow-up`, { message: $("#job-followup-text").value });
-      $("#job-followup-text").value = "";
-      toast(`Sent; ${j.id} is running another turn`);
-      await loadJobs();
-    });
+  $("#job-cancel")?.addEventListener("click", async (e) => {
+    const b = e.currentTarget;
+    if (!(await confirmAction(`Cancel ${j.id}?`, "The agent is stopped. Work committed so far stays in the sandbox and on the branch.", "Cancel job", { cancel: "Keep running" }))) return;
+    busy(b, async () => { await api("POST", `/api/jobs/${j.id}/cancel`); toast(`Cancelling ${j.id}`); loadJobs(); });
   });
 }
 
@@ -498,8 +1090,8 @@ function renderJob(j) {
 // on a person (orange diamond), a saved one is off; only a failed boot is red.
 const SES_TONE = { starting: "queued", idle: "running", running: "running", suspending: "off", suspended: "off",
   failed: "failed", archived: "off" };
-const sesRole = (x) => (x.needs_input && x.state !== "running" ? "approval" : SES_TONE[x.state] || "off");
-const sesWord = (x) => (x.needs_input && x.state !== "running" ? "Needs input" : word(x.state));
+const sesRole = (x) => (x.pending_approvals?.length ? "approval" : x.needs_input && x.state !== "running" ? "approval" : SES_TONE[x.state] || "off");
+const sesWord = (x) => (x.pending_approvals?.length ? "Needs approval" : x.needs_input && x.state !== "running" ? "Needs input" : word(x.state));
 
 async function loadSessions(quiet = false) {
   try {
@@ -511,15 +1103,17 @@ async function loadSessions(quiet = false) {
 function renderSessions() {
   const showJobs = $("#ses-jobs").checked;
   const mine = state.sessions.filter((x) => showJobs || !x.job_id);
-  $("#nav-sessions").textContent = mine.filter((x) => ["idle", "running", "starting"].includes(x.state)).length || "";
+  navCount("sessions", mine.filter((x) => ["idle", "running", "starting"].includes(x.state)).length);
   if (state.view !== "sessions") return;
   $("#session-list").innerHTML = mine.length ? mine.map((x) => `<li><button data-ses="${esc(x.id)}"
       class="job-row ${x.id === state.selectedSession ? "active" : ""} ${sesRole(x) === "approval" ? "is-attention" : ""}" data-tone="${sesRole(x)}">
       <span class="t af-mono">${esc(x.name)}</span>
       <span class="d">${status(sesRole(x), `${sesWord(x)}${x.busy && x.state !== "running" ? "…" : ""}`)}${meta([
         ["env", x.environment], ["active", ago(x.last_active_at)]])}</span></button></li>`).join("")
-    : `<li class="empty-floor"><p>No sessions yet. Start one here, or from an MCP client with new_session.</p></li>`;
+    : `<li>${emptyState({ icon: "session", title: "No sessions yet.", text: `Start one here, or from an MCP client with <code>new_session</code>.` })}</li>`;
   if (state.selectedSession) renderSession(state.sessions.find((x) => x.id === state.selectedSession));
+  else if (!$("#session-detail .af-empty")) $("#session-detail").innerHTML = emptyState({ compact: true, icon: "session", title: "No session selected.",
+    text: "Choose one to resume it, talk to its agent, or open its terminal." });
 }
 $("#ses-jobs").addEventListener("change", renderSessions);
 $("#session-list").addEventListener("click", (e) => {
@@ -530,21 +1124,49 @@ $("#session-list").addEventListener("click", (e) => {
   if (window.innerWidth < 860) $("#session-detail").scrollIntoView({ behavior: "smooth", block: "start" });
 });
 
+// the Composer's state for a session: a send to a busy live session queues and applies after the tool call (with a
+// take-back while it is on its way); an idle or suspended one starts a turn; archived and job sessions say why not
+function sesComposer(x) {
+  const t = x.turns.at(-1);
+  if (x.state === "archived") return { disabled: true, why: "This session is archived. Its conversation is kept; start a new session to continue the work." };
+  if (x.job_id) return { disabled: true, why: `This session carries job <span class="af-mono">${esc(x.job_id)}</span>; reply on the job, whose turns are verified and delivered.` };
+  if (x.busy || x.state === "running") {
+    if (t && t.run_id && !t.live && !t.finished_at) return { disabled: true,
+      why: `${esc(x.harness || "These")} turns run one-shot and can't take a message mid-turn; wait for the turn to end.` };
+    const steers = (t?.steers || []).filter((st) => st.status === "sending");
+    const failed = (t?.steers || []).filter((st) => st.status === "failed" && st.ts > Date.now() / 1000 - 600).at(-1);
+    return { placeholder: "Steer the agent", busy: !failed, queued: steers.map((st) => ({ id: st.id, text: st.text, takeBack: true })),
+      why: failed ? `${mark("failed")}Not delivered: ${esc(failed.error || "the agent did not take the message")}. Send it again.`
+        : "The agent is busy; your message will queue and apply after this tool call." };
+  }
+  if (x.state === "suspended") return { placeholder: "What next?", why: "Resumes the session, then the agent continues with this." };
+  return { placeholder: "What next?", why: "The agent continues its own conversation with everything it knew." };
+}
+
 function renderSession(x) {
   const box = $("#session-detail");
-  if (!x) { box.innerHTML = `<p class="empty">That session is no longer listed.</p>`; return; }
-  const draft = $("#ses-msg")?.value || "";
+  if (!x) { box.innerHTML = emptyState({ kind: "after-action", compact: true, icon: "session", title: "That session is no longer listed." }); return; }
+  const draft = $("#ses-composer .af-composer__input")?.value || $("#ses-question textarea")?.value || "";
+  const reasons = openReasons(box), threads = openThreads(box), focused = !!document.activeElement?.closest?.("[data-thread]");
+  const rkey = reviewKey("sessions", x.id), queued = (review.get(rkey) || []).length;
   const live = !!x.sandbox_id && ["idle", "running"].includes(x.state);
   const ck = x.checkpoints?.at(-1);
   const keep = x.idle_minutes;
   const role = sesRole(x);
-  const form = !(x.job_id || x.state === "archived");  // the message form carries the panel's one primary action
-  box.classList.toggle("af-card--lit", role === "approval");
+  const question = x.needs_input && role === "approval" && !x.job_id;
+  const cm = question ? null : sesComposer(x);
+  const form = !cm?.disabled || question;  // the message carries the panel's one primary action
+  const cards = toolApprovals(x.pending_approvals, { harness: x.harness, sandbox: x.sandbox_id, owner: x.person || x.owner, job: x.job_id,
+    session: x.name, sessionId: x.id, inspect: false });
+  const verdicts = (x.turns.at(-1)?.approvals || []).filter((v) => v.status !== "pending").slice(-5).reverse();
+  box.classList.remove("af-card--lit");  // the cards that wait on a person light themselves
   box.innerHTML = `
-    <div class="detail-head"><h3 class="af-mono">${esc(x.name)}</h3>${status(role, sesWord(x), true)}</div>
-    ${x.reason ? `<p class="${role === "failed" ? "error" : "hint"}">${role === "failed" ? mark("failed") : ""}${esc(x.reason)}</p>` : ""}
+    <div class="detail-head"><h3 class="af-mono">${esc(x.name)}</h3>${status(role, sesWord(x), { lit: true })}</div>
+    ${x.reason ? (role === "failed" ? `<p class="detail-reason">${errorLine(x.reason)}</p>` : `<p class="hint">${esc(x.reason)}</p>`) : ""}
+    ${cards.length ? `<div class="cards">${cards.map(approvalHtml).join("")}</div>` : ""}
+    ${question ? questionHtml({ id: "ses-question", who: x.name, turn: x.turns.length, question: x.needs_input, asked: x.last_active_at,
+      meanwhile: live ? "holding the sandbox" : "the sandbox is released; your answer resumes it" }) : ""}
     <dl class="kv af-kv">
-      ${x.needs_input && role === "approval" ? `<dt>Question</dt><dd>${esc(x.needs_input)}</dd>` : ""}
       <dt>Where</dt><dd>${meta([["env", x.environment, "strong"], ["harness", x.harness || "default agent"], ["model", x.model || ""]])}</dd>
       ${x.repo ? `<dt>Repo</dt><dd><span class="af-mono">${esc(jobRepo(x))}</span></dd><dt>Branch</dt><dd><code>${esc(x.branch)}</code></dd>` : ""}
       <dt>Conversation</dt><dd>${x.harness_session ? `<code>${esc(x.harness_session)}</code> <span class="sub-val">resumes natively</span>`
@@ -565,22 +1187,40 @@ function renderSession(x) {
       ${live ? `<button id="ses-shell" type="button" class="af-btn af-btn--secondary">${ic("terminal")}Open a shell</button><button id="ses-suspend" type="button" class="af-btn af-btn--ghost">${ic("spindown")}Suspend</button>` : ""}
     </div>
     ${x.last_summary ? `<h4>Agent's last summary</h4><pre class="log summary">${esc(x.last_summary)}</pre>` : ""}
-    ${x.job_id || x.state === "archived" ? "" : `<form id="ses-send" class="followup">
-      <label>Message the agent<textarea id="ses-msg" rows="3" required ${x.state === "running" ? "disabled" : ""}
-        placeholder="${x.state === "suspended" ? "Resumes the session, then the agent continues with this." : "What next?"}"></textarea></label>
-      <div class="env-bar"><span class="hint">${x.state === "running" ? "The agent is working…"
-        : "The agent continues its own conversation with everything it knew."}</span>
-        <button class="af-btn af-btn--primary" type="submit" ${x.state === "running" || x.busy ? "disabled" : ""}>Send</button></div></form>`}
+    ${question ? "" : `<h4>${cm.busy || cm.queued?.length ? "Steer the agent" : "Message the agent"}</h4>${composerHtml({ id: "ses-composer", ...cm,
+      note: queued && !cm.disabled ? `${queued} review comment${queued === 1 ? " goes" : "s go"} with this message` : "" })}`}
+    ${x.turns.length && (live || x.checkpoint_count) ? changesHtml("sessions", x.id, live) : ""}
+    ${verdicts.length ? `<h4>Decisions</h4><div class="verdicts">${verdicts.map(verdictHtml).join("")}</div>` : ""}
     ${x.turns.length ? activityBlock("sessions", x.id, x.usage) : ""}
     ${x.turns.length ? `<h4>Turns</h4><ol class="turns">${x.turns.slice().reverse().map((t) => `<li>
       <b>${esc(t.message.split("\n")[0].slice(0, 140))}</b>
       ${meta([["harness", t.harness || ""], ["mode", t.mode], t.exit_code != null ? ["exit", t.exit_code] : t.run_id ? ["exit", "running"] : null,
         ["started", t.started_at ? ago(t.started_at) : ""]])}
       ${t.summary ? `<div class="turn-summary">${esc(t.summary.slice(0, 600))}</div>` : ""}</li>`).join("")}</ol>` : ""}`;
-  const ta = $("#ses-msg");
-  if (ta) ta.value = draft;
   fillActivity(box);
   const sb = { id: x.sandbox_id, name: x.name };
+  const findCard = (id) => cards.find((c) => c.id === id);
+  restoreReasons(box, reasons, findCard);
+  restoreThreads(box, threads, rkey);
+  if (focused) $("[data-thread] textarea", box)?.focus({ preventScroll: true });
+  // one route for all of it: a send starts a turn, or steers the running one (queued server-side, with a take-back);
+  // the review comments on the change ride along with the message (or go alone)
+  const withReview = (text) => { const rv = reviewText(rkey); return rv ? (text ? `${rv}\n\n---\n\n${text}` : rv) : text; };
+  const send = async (message, plain = false) => {
+    await api("POST", `/api/sessions/${x.id}/send`, { message: plain ? message : withReview(message) });
+    if (!plain) review.delete(rkey);
+    toast(x.state === "suspended" ? `Resuming ${x.name}, then sending` : x.busy || x.state === "running" ? "Queued; it applies after this tool call" : "Sent");
+    await loadSessions();
+  };
+  box.onclick = (e) => approvalClick(e, findCard, loadSessions) || diffClick(e, "sessions", x.id, () => renderSession(x), () => send(""));
+  // (a send with no words of its own carries the review comments alone)
+  wireQuestion($("#ses-question"), (text) => { $("#ses-question textarea").value = ""; return send(text, true); });
+  if ($("#ses-question textarea")) $("#ses-question textarea").value = draft;
+  wireComposer($("#ses-composer"), { draft, onSend: send, onTakeBack: async (id) => {
+    await api("POST", `/api/sessions/${x.id}/steers/${id}/withdraw`);
+    toast("Taken back; the agent never saw it.");
+    await loadSessions();
+  } });
   $("#ses-open")?.addEventListener("click", (e) => busy(e.currentTarget, async () => {
     await api("POST", `/api/sessions/${x.id}/open`, {}); toast(`Resuming ${x.name}`); loadSessions(); }));
   $("#ses-shell")?.addEventListener("click", () => openTerminal(sb));
@@ -592,15 +1232,6 @@ function renderSession(x) {
   $("#ses-idle")?.addEventListener("change", (e) => busy(e.currentTarget, async () => {
     await api("POST", `/api/sessions/${x.id}/idle`, { idle_minutes: Number(e.target.value) }); loadSessions(); }));
   $("[data-goto-job]", box)?.addEventListener("click", (e) => { state.selectedJob = e.target.dataset.gotoJob; });
-  $("#ses-send")?.addEventListener("submit", (e) => {
-    e.preventDefault();
-    busy($("button[type=submit]", e.target), async () => {
-      await api("POST", `/api/sessions/${x.id}/send`, { message: $("#ses-msg").value });
-      $("#ses-msg").value = "";
-      toast(x.state === "suspended" ? `Resuming ${x.name}, then sending` : "Sent");
-      await loadSessions();
-    });
-  });
 }
 
 /* ------------------------------------------------------------------ activity (workstream C) */
@@ -737,9 +1368,11 @@ async function loadEnvs() {
   state.envs = await api("GET", "/api/environments");
   $("#env-list").innerHTML = state.envs.map((e) => `<li><button data-env="${esc(e.name)}" class="${e.name === state.selectedEnv ? "active" : ""}">
       <span class="t">${esc(e.name)}</span>
-      <span class="d">${e.error ? `<span class="error">${mark("failed")}${esc(e.error)}</span>` : esc(e.description || (e.harnesses || []).join(", "))}</span></button></li>`).join("")
-    || `<li class="empty-floor"><p>No environments yet. Create one from a base.</p></li>`;
+      <span class="d">${e.error ? errorLine(e.error) : esc(e.description || (e.harnesses || []).join(", "))}</span></button></li>`).join("")
+    || `<li>${emptyState({ icon: "environment", title: "No environments yet.", text: "Create one from a base; it builds the first time a sandbox needs it." })}</li>`;
   if (state.selectedEnv) showEnv(state.selectedEnv);
+  else if (!$("#env-detail .af-empty")) $("#env-detail").innerHTML = emptyState({ compact: true, icon: "environment", title: "No environment selected.",
+    text: "Choose one to edit or build it." });
 }
 $("#env-list").addEventListener("click", (e) => {
   const b = e.target.closest("button[data-env]");
@@ -810,12 +1443,11 @@ async function followBuild(job) {
 }
 
 $("#btn-new-env").addEventListener("click", () => {
-  $("#dialog-form").dataset.ok = "Create";
-  dialog(`<h3>New environment</h3>
-    <label>Name<input name="name" required pattern="[a-z0-9-]+" placeholder="my-service"></label>
-    <label>Start from<select name="extends">${state.envs.filter((e) => !e.error).map((e) => `<option>${esc(e.name)}</option>`).join("")}</select></label>
-    <label>Repo (optional)<input name="repo" placeholder="https://github.com/org/repo.git"></label>
-    <label>Setup command after clone (optional)<input name="setup" placeholder="uv sync"></label>`,
+  dialog({ title: "New environment", ok: "Create", body:
+    field("Name", inputWell(`<input name="name" required pattern="[a-z0-9-]+" placeholder="my-service">`)) +
+    field("Start from", `<select name="extends">${state.envs.filter((e) => !e.error).map((e) => `<option>${esc(e.name)}</option>`).join("")}</select>`) +
+    field("Repo (optional)", inputWell(`<input name="repo" placeholder="https://github.com/org/repo.git">`)) +
+    field("Setup command after clone (optional)", inputWell(`<input name="setup" placeholder="uv sync">`)) },
   async (fd) => {
     const name = fd.get("name");
     const spec = { name, extends: fd.get("extends"), description: "" };
@@ -839,7 +1471,7 @@ async function loadCreds() {
         : `<span class="af-tag">exclusive</span> <span class="muted">free</span>`) : `<span class="af-tag">shared</span>`}</td>
       <td class="act">${c.leased_to ? `<button type="button" class="af-btn af-btn--secondary af-btn--sm" data-release="${esc(c.name)}" title="Use only if the holding sandbox is gone">Release</button>` : ""}
         <button type="button" class="af-btn af-btn--ghost af-btn--sm" data-del="${esc(c.name)}">Delete</button></td></tr>`).join("")
-    : `<tr><td colspan="5" class="empty-row">No credentials yet. Add an API key on the right, or sign in with a subscription below.</td></tr>`;
+    : `<tr><td colspan="5">${emptyState({ compact: true, icon: "secret", title: "No credentials yet.", text: "Add an API key on the right, or sign in with a subscription below." })}</td></tr>`;
   $("#login-buttons").innerHTML = state.harnesses.filter((h) => h.logins.length).map((h) =>
     `<button type="button" class="af-btn af-btn--secondary" data-login="${esc(h.name)}" title="${esc(h.logins[0].notes)}">${ic("user")}Sign in to ${esc(h.title)}</button>`).join("");
   const f = $("#cred-form");
@@ -877,8 +1509,8 @@ $("#cred-form").addEventListener("submit", async (e) => {
 });
 $("#cred-table").addEventListener("click", async (e) => {
   const del = e.target.closest("[data-del]"), rel = e.target.closest("[data-release]");
-  if (del && confirm(`Delete credential ${del.dataset.del}? Running sandboxes keep their copy until they stop.`)) {
-    await busy(del, async () => { await api("DELETE", `/api/credentials/${encodeURIComponent(del.dataset.del)}`); toast("Deleted"); loadCreds(); });
+  if (del && await confirmAction(`Delete credential ${del.dataset.del}?`, "Running sandboxes keep their copy until they stop; new ones can't use it.", "Delete")) {
+    await busy(del, async () => { await api("DELETE", `/api/credentials/${encodeURIComponent(del.dataset.del)}`); toast(`Deleted ${del.dataset.del}`); loadCreds(); });
   }
   if (rel) await busy(rel, async () => { await api("POST", `/api/credentials/${encodeURIComponent(rel.dataset.release)}/release`); toast("Released"); loadCreds(); });
 });
@@ -886,10 +1518,9 @@ $("#login-buttons").addEventListener("click", (e) => {
   const b = e.target.closest("[data-login]");
   if (!b) return;
   const h = state.harnesses.find((x) => x.name === b.dataset.login);
-  $("#dialog-form").dataset.ok = "Start sign-in";
-  dialog(`<h3>Sign in to ${esc(h.title)}</h3>
-    <p class="sub">${esc(h.logins[0].notes)}</p>
-    <label>Save as credential<input name="credential" required value="${esc(h.name)}-login"></label>`,
+  dialog({ title: `Sign in to ${esc(h.title)}`, ok: "Start sign-in", body:
+    `<p>${esc(h.logins[0].notes)}</p>` +
+    field("Save as credential", inputWell(`<input name="credential" required value="${esc(h.name)}-login">`)) },
   async (fd) => {
     const lg = await api("POST", "/api/logins", { harness: h.name, credential: fd.get("credential") });
     const sb = { id: lg.sandbox, name: `sign-in ${h.name}` };
@@ -898,10 +1529,9 @@ $("#login-buttons").addEventListener("click", (e) => {
   });
 });
 function showLoginBar(lg) {
-  $("#dialog-form").dataset.ok = "Capture credential";
-  setTimeout(() => dialog(`<h3>Finish signing in</h3>
-    <p class="sub">Complete the flow in the terminal below (open the link, paste the code back). When it says you
-      are signed in, capture the credential. The sign-in sandbox is destroyed afterwards.</p>`,
+  setTimeout(() => dialog({ title: "Finish signing in", ok: "Capture credential", cancel: "Not yet", body:
+    `<p>Complete the flow in the terminal below (open the link, paste the code back). When it says you
+      are signed in, capture the credential. The sign-in sandbox is destroyed afterwards.</p>` },
   async () => {
     const c = await api("POST", `/api/logins/${lg.id}/complete`);
     toast(`Saved ${c.name}`);
@@ -920,12 +1550,14 @@ async function loadSnaps() {
       <td class="af-table__mono">${ago(s.created_at)}</td>
       <td class="act"><button type="button" class="af-btn af-btn--secondary af-btn--sm" data-fork="${esc(s.id)}">${ic("fork")}Start copy</button>
         <button type="button" class="af-btn af-btn--ghost af-btn--sm" data-sdel="${esc(s.id)}">Delete</button></td></tr>`).join("")
-    : `<tr><td colspan="6" class="empty-row">No snapshots. Snapshot a running sandbox from the fleet, or fork one.</td></tr>`;
+    : `<tr><td colspan="6">${emptyState({ compact: true, icon: "snapshot", title: "No snapshots yet.", text: "Snapshot a running sandbox from the fleet, or fork one." })}</td></tr>`;
 }
 $("#snap-table").addEventListener("click", async (e) => {
   const f = e.target.closest("[data-fork]"), d = e.target.closest("[data-sdel]");
   if (f) await busy(f, async () => { const r = await api("POST", `/api/snapshots/${f.dataset.fork}/fork`, { count: 1 }); toast(`Started ${r[0].name}`); });
-  if (d && confirm("Delete this snapshot?")) await busy(d, async () => { await api("DELETE", `/api/snapshots/${d.dataset.sdel}`); loadSnaps(); });
+  if (d && await confirmAction(`Delete snapshot ${d.dataset.sdel}?`, "It can't be forked or restored afterwards. Sandboxes started from it keep running.", "Delete")) {
+    await busy(d, async () => { await api("DELETE", `/api/snapshots/${d.dataset.sdel}`); toast(`Deleted ${d.dataset.sdel}`); loadSnaps(); });
+  }
 });
 
 /* ------------------------------------------------------------------ connect */
@@ -948,12 +1580,12 @@ async function loadOAuth() {
     <td><span class="af-table__id">${esc(a.client_name)}</span><div class="muted af-mono">${esc((a.redirect_uris[0] || "").replace(/^https?:\/\//, "").split("/")[0])}</div></td>
     <td class="muted">${a.active ? `approved by ${esc(a.approved_by || "?")}, ${ago(a.last_issued)}` : "no active session"}</td>
     <td class="act"><button type="button" class="af-btn af-btn--ghost af-btn--sm" data-oauth-revoke="${esc(a.client_id)}">Revoke</button></td></tr>`).join("")
-    : `<tr><td class="empty-row">No apps connected with OAuth yet.</td></tr>`;
+    : `<tr><td>${emptyState({ compact: true, title: "No apps connected with OAuth yet." })}</td></tr>`;
 }
 $("#oauth-table").addEventListener("click", async (e) => {
   const b = e.target.closest("[data-oauth-revoke]");
-  if (b && confirm("Revoke this app? It loses access immediately and must be approved again.")) {
-    await busy(b, async () => { await api("DELETE", `/api/oauth/clients/${encodeURIComponent(b.dataset.oauthRevoke)}`); loadOAuth(); });
+  if (b && await confirmAction("Revoke this app?", "It loses access immediately and must be approved again to connect.", "Revoke", { cancel: "Keep access" })) {
+    await busy(b, async () => { await api("DELETE", `/api/oauth/clients/${encodeURIComponent(b.dataset.oauthRevoke)}`); toast("Revoked"); loadOAuth(); });
   }
 });
 $("#connect-snippets").addEventListener("click", (e) => {
@@ -980,8 +1612,8 @@ $("#token-form").addEventListener("submit", async (e) => {
 });
 $("#token-table").addEventListener("click", async (e) => {
   const b = e.target.closest("[data-revoke]");
-  if (b && confirm("Revoke this token? Clients using it stop working immediately.")) {
-    await busy(b, async () => { await api("DELETE", `/api/tokens/${b.dataset.revoke}`); loadTokens(); });
+  if (b && await confirmAction("Revoke this token?", "Clients using it stop working immediately. Create a new one to reconnect them.", "Revoke", { cancel: "Keep it" })) {
+    await busy(b, async () => { await api("DELETE", `/api/tokens/${b.dataset.revoke}`); toast("Revoked"); loadTokens(); });
   }
 });
 
@@ -992,7 +1624,7 @@ async function loadAudit() {
     <td class="af-table__mono" title="${new Date(a.ts * 1000).toLocaleString()}">${ago(a.ts)}</td>
     <td>${esc(a.actor)}</td><td class="af-table__mono">${esc(a.action)}</td><td class="af-table__mono">${esc(a.target || "")}</td>
     ${((d) => `<td class="af-table__mono clip" title="${esc(d)}">${esc(d.slice(0, 160))}</td>`)(Object.entries(a.detail).map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`).join("  "))}</tr>`).join("")
-    || `<tr><td colspan="5" class="empty-row">Nothing recorded yet.</td></tr>`;
+    || `<tr><td colspan="5">${emptyState({ compact: true, icon: "log", title: "Nothing recorded yet.", text: "Every action by a person or an MCP client lands here." })}</td></tr>`;
 }
 
 /* ------------------------------------------------------------------ usage (--- observe) */
@@ -1021,7 +1653,7 @@ async function loadUsage() {
       $(`${sel} tbody`).innerHTML = data.rows.length ? data.rows.map((r) => `<tr><td class="af-table__mono">${esc(r.key)}</td>
         <td class="af-num af-table__mono">${r.turns}</td><td class="af-num af-table__mono">${kTok(r.tokens)}</td>
         <td class="af-num af-table__mono" title="${r.unpriced_turns ? `${r.unpriced_turns} turn(s) with no known price` : ""}">${usd(r.cost_usd)}${r.unpriced_turns ? " +" : ""}</td></tr>`).join("")
-        : `<tr><td colspan="4" class="empty-row">No agent turns in this range.</td></tr>`;
+        : `<tr><td colspan="4">${emptyState({ compact: true, title: "No agent turns in this range." })}</td></tr>`;
     };
     rows("#usage-repos", repos);
     rows("#usage-requesters", people);
@@ -1029,7 +1661,7 @@ async function loadUsage() {
       <td class="af-table__id">${esc(b.job || b.session || "")}</td><td class="af-table__mono">${esc(b.repo)}</td><td>${esc(b.requester || "")}</td>
       <td>${esc(b.reason || "")}</td>
       <td class="af-table__mono" title="${new Date(b.ts * 1000).toLocaleString()}">${ago(b.ts)}</td></tr>`).join("")
-      : `<tr><td colspan="5" class="empty-row">No turn was stopped over its budget in this range.</td></tr>`;
+      : `<tr><td colspan="5">${emptyState({ compact: true, title: "No turn was stopped over its budget in this range." })}</td></tr>`;
   } catch (e) { if (e.message !== "unauthorized") toast(e.message, true); }
 }
 $("#usage-range").addEventListener("change", () => loadUsage());
@@ -1044,7 +1676,7 @@ function drawSpend(rows, since) {
   }
   const max = Math.max(0, ...days.map((d) => d.cost_usd));
   const box = $("#usage-days");
-  if (!max) { box.innerHTML = `<p class="empty">No priced spend in this range.</p>`; return; }
+  if (!max) { box.innerHTML = emptyState({ kind: "after-action", compact: true, icon: "cost", title: "No priced spend in this range.", text: "Turns on a model with no known price count their tokens only." }); return; }
   // greyscale bars; a day with a budget stop is the one attention series (chart-5), "look here"
   const tipText = (d) => `${d.key}: ${usd(d.cost_usd)}, ${kTok(d.tokens)} tokens, ${d.turns} turn(s)`
     + (d.budget_stops ? `, ${d.budget_stops} budget stop(s)` : "");
@@ -1074,5 +1706,5 @@ function drawSpend(rows, since) {
 }
 
 /* ------------------------------------------------------------------ start */
-if (store.token) api("GET", "/api/me").then(boot).catch(() => showGate());
+if (store.token) api("GET", "/api/me").then((me) => { state.me = me; boot(); }).catch(() => showGate());
 else showGate();

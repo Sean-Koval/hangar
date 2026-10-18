@@ -16,7 +16,7 @@ hangar session approvals api-fix --allow ap-3f9c0a1b2c4d
 hangar session interrupt api-fix "stop; write the failing test first"
 ```
 
-`hangar session send` to a running Claude Code or Codex session is a steer now, not an error. If the turn ends before the message arrives, the message starts the next turn instead, so it is never lost.
+`hangar session send` to a running Claude Code or Codex session is a steer now, not an error. If the turn ends before the message arrives, the message starts the next turn instead, so it is never lost. While it is still on its way (`sending`), it can be taken back (`withdraw`, below); the web console shows it as a queued row with a take-back until the agent has it.
 
 ## Steer
 
@@ -104,6 +104,7 @@ The class, `classified_by` and `classified_at` are on the turn or steer record. 
 | Route | Body |
 | --- | --- |
 | `POST /api/sessions/{ref}/steer` | `{"message": "..."}` |
+| `POST /api/sessions/{ref}/steers/{id}/withdraw` | none: takes back a message that is still `sending` (a `send` to a busy session, on its way to the agent). Once it is `delivered` or `queued` there is nothing to take back; interrupt instead. The steer's status becomes `cancelled`. |
 | `POST /api/sessions/{ref}/interrupt` | optional `{"message": "..."}` |
 | `GET /api/sessions/{ref}/approvals` | the running turn's policy, pending and recent approvals |
 | `POST /api/sessions/{ref}/approvals/{id}` | `{"decision": "allow" \| "deny" \| "allow_always", "message": "..."}` |
