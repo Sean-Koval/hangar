@@ -215,6 +215,184 @@ async function decideApproval(a, decision, reason) {
   toast(decision === "deny" ? `${a.kind === "job" ? "Rejected" : "Denied"}: ${a.cmd.slice(0, 80)}` : `${a.kind === "job" ? "Approved" : "Allowed"}: ${a.cmd.slice(0, 80)}`);
 }
 
+/* ---- Airframe Diff: the change the agent made, greyscale, with line comments that go back to the agent. The patch is
+   GET /api/{jobs,sessions}/{ref}/patch (commits, uncommitted changes and untracked files against the base), parsed here
+   into files, hunks and lines. A comment opens a thread under its line; the queued comments ride with the next message
+   from the Composer (or go alone with "Send comments"), each with its file:line and the line itself. ---- */
+const MAX_DIFF_LINES = 3000;
+function parsePatch(text) {
+  const files = [];
+  let f = null, h = null, old = 0, neu = 0, lines = 0;
+  for (const raw of text.split("\n")) {
+    if (raw.startsWith("diff --git ")) {
+      const m = /^diff --git a\/(.*?) b\/(.*)$/.exec(raw);
+      f = { path: m ? m[2] : raw.slice(11), oldPath: m ? m[1] : "", hunks: [], added: 0, removed: 0, binary: false, mode: "" };
+      files.push(f); h = null;
+    } else if (!f) continue;
+    else if (raw.startsWith("GIT binary patch") || raw.startsWith("Binary files")) f.binary = true;
+    else if (raw.startsWith("new file mode")) f.mode = "new";
+    else if (raw.startsWith("deleted file mode")) f.mode = "deleted";
+    else if (raw.startsWith("rename to ")) f.mode = "renamed";
+    else if (raw.startsWith("@@")) {
+      const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(raw);
+      old = m ? Number(m[1]) : 0; neu = m ? Number(m[2]) : 0;
+      h = { header: raw, lines: [] }; f.hunks.push(h);
+    } else if (h && lines < MAX_DIFF_LINES && !raw.startsWith("\\ No newline")) {
+      const c = raw[0], text = raw.slice(1);
+      if (c === "+") { h.lines.push({ kind: "add", old: "", new: neu++, text }); f.added++; }
+      else if (c === "-") { h.lines.push({ kind: "del", old: old++, new: "", text }); f.removed++; }
+      else if (c === " ") h.lines.push({ kind: "ctx", old: old++, new: neu++, text });
+      else continue;
+      lines++;
+    }
+  }
+  return { files, truncated: lines >= MAX_DIFF_LINES };
+}
+// what the person wrote on the lines, per job or session, until the next message takes it to the agent
+const review = new Map();  // ref -> [{path, line, kind, code, text, at}]
+const reviewKey = (kind, id) => `${kind}/${id}`;
+const lineKey = (path, kind, line) => `${path}:${kind === "del" ? "-" : "+"}${line}`;
+// one file: header with the path, the stat and the tools; hunks; each line a grid with a Comment affordance
+function diffFileHtml(f, i, key) {
+  const dir = f.path.includes("/") ? f.path.slice(0, f.path.lastIndexOf("/") + 1) : "", base = f.path.slice(dir.length);
+  const comments = review.get(key) || [];
+  const line = (l) => {
+    const n = l.kind === "del" ? l.old : l.new, k = lineKey(f.path, l.kind, n);
+    const mine = comments.filter((c) => c.key === k);
+    return `<div class="af-diff__line af-diff__line--${l.kind}" data-line="${esc(k)}"><span class="af-diff__n">${l.old}</span><span class="af-diff__n">${l.new}</span>` +
+      `<span class="af-diff__s">${l.kind === "add" ? "+" : l.kind === "del" ? "\u2212" : " "}</span><code class="af-diff__code">${esc(l.text)}</code>` +
+      `<button type="button" class="af-btn af-btn--ghost af-diff__cmt" data-comment="${esc(k)}" aria-pressed="${mine.length ? "true" : "false"}" aria-label="Comment on line ${n}">Comment</button></div>` +
+      (mine.length ? threadHtml(k, mine, key) : "");
+  };
+  return `<div class="af-diff" id="diff-${i}" aria-label="Diff of ${esc(f.path)}">
+    <header class="af-diff__file">${ic("diff")}<span class="af-diff__path"><small>${esc(dir)}</small>${esc(base)}</span>
+      <span class="af-diff__stat"><b class="af-diff__add">+${f.added}</b><b class="af-diff__del">\u2212${f.removed}</b></span>
+      ${meta([["file", f.mode || ""]])}
+      <span class="af-diff__tools">${btn("Copy patch", { kind: "ghost", sm: true, attrs: { "data-copy-file": i } })}</span></header>
+    ${f.binary ? `<div class="af-diff__more">binary file</div>` : f.hunks.map((h) => `<section class="af-diff__hunk">
+      <div class="af-diff__hh"><code>${esc(h.header)}</code></div>${h.lines.map(line).join("")}</section>`).join("")}
+  </div>`;
+}
+// the thread under a line: the comments so far and a Composer to add one; what is written goes with the next message
+function threadHtml(k, mine, key, open = false) {
+  return `<div class="af-diff__thread" role="group" aria-label="Comment thread on ${esc(k)}" data-thread="${esc(k)}">
+    ${mine.map((c) => `<div class="af-comment">${avatar("person", initialsOf(state.me?.person || "you"), { size: 22, name: state.me?.person || "you" })}
+      <span class="af-comment__who"><span class="af-comment__name">${esc(state.me?.person || "You")}</span><span class="af-comment__time">${esc(new Date(c.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }))}</span></span>
+      <p class="af-comment__text">${esc(c.text)}</p>${btn("", { kind: "ghost", sm: true, icon: "close", cls: "comment-x", attrs: { "data-uncomment": c.at, "aria-label": "Remove this comment" } })}</div>`).join("")}
+    ${mine.length && !open ? "" : `<div class="af-composer"><div class="af-composer__box">
+      <textarea class="af-composer__input" rows="1" placeholder="${mine.length ? "Reply" : "Comment for the agent"}" aria-label="Comment on ${esc(k)}"></textarea>
+      <div class="af-composer__row"><span class="af-diff__note">${ic("agent")}<span>Sent to the agent with your next message</span></span>
+        ${btn("Add", { kind: "primary", sm: true, cls: "af-composer__send", attrs: { "data-add-comment": k } })}</div></div></div>`}
+  </div>`;
+}
+function diffHtml(patch, key) {
+  if (!patch) return "";
+  if (patch.error) return emptyState({ kind: "error", compact: true, title: "The change did not load.", text: esc(patch.error) });
+  const { files, truncated } = patch.parsed;
+  if (!files.length) return emptyState({ compact: true, icon: "diff", title: "No change yet.", text: `Nothing differs from <span class="af-mono">${esc((patch.base || "").slice(0, 7))}</span> ${patch.source === "sandbox" ? "in the sandbox" : `at ${esc(patch.source || "the last checkpoint")}`}.` });
+  const list = files.map((f, i) => `<a class="diff-index__row" href="#diff-${i}" data-diff-jump="${i}"><span class="af-diff__path"><small>${esc(f.path.includes("/") ? f.path.slice(0, f.path.lastIndexOf("/") + 1) : "")}</small>${esc(f.path.slice(f.path.lastIndexOf("/") + 1))}</span>
+    <span class="af-diff__stat"><b class="af-diff__add">+${f.added}</b><b class="af-diff__del">\u2212${f.removed}</b></span></a>`).join("");
+  const n = (review.get(key) || []).length;
+  return `<div class="diff-head">${meta([["against", (patch.base || "").slice(0, 7), "strong"], ["commit", (patch.head || "").slice(0, 7)], ["files", files.length],
+      ["from", patch.source === "sandbox" ? "the sandbox" : patch.source || ""], ["as of", patch.as_of ? ago(patch.as_of) : ""]])}
+      ${n ? `<span class="af-lbl">${n} comment${n === 1 ? "" : "s"} queued</span>${btn("Send comments", { kind: "secondary", sm: true, attrs: { "data-send-comments": true } })}` : ""}
+      ${btn("Refresh", { kind: "ghost", sm: true, attrs: { "data-diff-refresh": true } })}</div>
+    <nav class="diff-index" aria-label="Changed files">${list}</nav>
+    <div class="diffs">${files.map((f, i) => diffFileHtml(f, i, key)).join("")}</div>
+    ${truncated || patch.truncated ? `<p class="hint">The change is longer than shown (${patch.truncated ? "the server capped the patch" : `the first ${MAX_DIFF_LINES} lines`}); pull the branch for the rest.</p>` : ""}`;
+}
+// the queued comments as the text the agent gets: file:line, the line itself, the words
+function reviewText(key) {
+  const cs = review.get(key) || [];
+  if (!cs.length) return "";
+  return `Review comments on the change (${cs.length}):\n\n` + cs.map((c) => `${c.key}\n> ${c.code}\n${c.text}`).join("\n\n");
+}
+// the patch per job or session, fetched when asked and kept until the head moves
+const patches = new Map();
+async function loadPatch(kind, id, force = false) {
+  const key = reviewKey(kind, id);
+  const cur = patches.get(key);
+  if (cur?.busy || (cur && !force && !cur.error)) return cur;
+  patches.set(key, { ...cur, busy: true });
+  try {
+    const p = await api("GET", `/api/${kind}/${id}/patch`);
+    patches.set(key, { ...p, parsed: parsePatch(p.patch || ""), busy: false });
+  } catch (e) { patches.set(key, { error: e.message, busy: false }); }
+  return patches.get(key);
+}
+// clicks inside a "Changes" section: show, refresh, copy, a comment thread, add or remove a comment, send them alone
+function diffClick(e, kind, id, rerender, sendAlone) {
+  const key = reviewKey(kind, id), box = e.currentTarget;
+  const show = e.target.closest("[data-diff-show]"), refresh = e.target.closest("[data-diff-refresh]");
+  if (show || refresh) { busy(show || refresh, async () => { await loadPatch(kind, id, !!refresh); rerender(); }); return true; }
+  const copy = e.target.closest("[data-copy-file]");
+  if (copy) {
+    const f = patches.get(key)?.parsed.files[Number(copy.dataset.copyFile)];
+    const text = patches.get(key).patch.split("diff --git ").find((part) => part.startsWith(`a/${f.oldPath || f.path} `));
+    navigator.clipboard.writeText(`diff --git ${text}`).then(() => toast(`Copied the patch of ${f.path}`));
+    return true;
+  }
+  const cmt = e.target.closest("[data-comment]");
+  if (cmt) {  // Comment toggles the line's thread with its composer; the comments already there stay
+    const row = cmt.closest(".af-diff__line"), k = cmt.dataset.comment;
+    const mine = (review.get(key) || []).filter((c) => c.key === k);
+    const thread = row.nextElementSibling?.matches?.("[data-thread]") ? row.nextElementSibling : null;
+    if (thread && $(".af-composer", thread)) {
+      if (mine.length) thread.outerHTML = threadHtml(k, mine, key, false); else thread.remove();
+      cmt.setAttribute("aria-pressed", String(mine.length > 0));
+    } else {
+      if (thread) thread.remove();
+      row.insertAdjacentHTML("afterend", threadHtml(k, mine, key, true));
+      cmt.setAttribute("aria-pressed", "true");
+      $(`[data-thread="${CSS.escape(k)}"] textarea`, box)?.focus();
+    }
+    return true;
+  }
+  const add = e.target.closest("[data-add-comment]");
+  if (add) {
+    const thread = add.closest("[data-thread]"), ta = $("textarea", thread), text = ta.value.trim();
+    if (!text) return ta.focus(), true;
+    const k = add.dataset.addComment, row = $(`[data-line="${CSS.escape(k)}"]`, box);
+    const list = review.get(key) || [];
+    list.push({ key: k, code: $(".af-diff__code", row)?.textContent || "", text, at: Date.now() });
+    review.set(key, list);
+    ta.value = "";  // the thread stays open for a reply, empty
+    rerender();
+    return true;
+  }
+  const rm = e.target.closest("[data-uncomment]");
+  if (rm) {
+    review.set(key, (review.get(key) || []).filter((c) => String(c.at) !== rm.dataset.uncomment));
+    rerender();
+    return true;
+  }
+  if (e.target.closest("[data-send-comments]")) { busy(e.target.closest("[data-send-comments]"), () => sendAlone()); return true; }
+  const jump = e.target.closest("[data-diff-jump]");
+  if (jump) { e.preventDefault(); $(`#diff-${jump.dataset.diffJump}`, box)?.scrollIntoView({ behavior: "smooth", block: "start" }); return true; }
+  return false;
+}
+// the open threads and what is typed in them, so a repaint (the 4 s refresh) keeps them
+const openThreads = (root) => $$("[data-thread] textarea", root).map((ta) => [ta.closest("[data-thread]").dataset.thread, ta.value]);
+function restoreThreads(root, saved, key) {
+  for (const [k, text] of saved) {
+    const row = $(`[data-line="${CSS.escape(k)}"]`, root);
+    if (!row) continue;
+    const thread = row.nextElementSibling?.matches?.("[data-thread]") ? row.nextElementSibling : null;
+    if (thread) thread.remove();
+    row.insertAdjacentHTML("afterend", threadHtml(k, (review.get(key) || []).filter((c) => c.key === k), key, true));
+    $(".af-diff__cmt", row).setAttribute("aria-pressed", "true");
+    const ta = $(`[data-thread="${CSS.escape(k)}"] textarea`, root);
+    if (ta) ta.value = text;
+  }
+}
+// the "Changes" section of a job or session detail
+function changesHtml(kind, id, hasWork) {
+  const key = reviewKey(kind, id), p = patches.get(key);
+  return `<h4 class="with-meta">Changes${p && !p.error && p.parsed ? meta([["files", p.parsed.files.length], ["+", p.parsed.files.reduce((n, f) => n + f.added, 0)], ["\u2212", p.parsed.files.reduce((n, f) => n + f.removed, 0)]]) : ""}</h4>
+    <div class="changes" data-changes="${esc(key)}">${p && !p.busy ? diffHtml(p, key) : p?.busy ? `<p class="hint">Reading the change from ${hasWork ? "the sandbox" : "the last checkpoint"}…</p>`
+      : `<div class="env-bar">${btn("Show the change", { kind: "secondary", sm: true, icon: "diff", attrs: { "data-diff-show": true } })}<span class="hint">The commits, uncommitted edits and new files against the base, from ${hasWork ? "the sandbox" : "the last checkpoint"}. Comment on a line and it goes to the agent with your next message.</span></div>`}</div>`;
+}
+
 /* ---- Airframe Question: an agent asks a person. The approval role (a person is needed now) with the word "Needs
    input"; the agent's options as chips when it offered any, free text otherwise (text wins); one primary, Answer.
    The answer goes back as the agent's next message, in place. ---- */
@@ -314,7 +492,7 @@ function showGate(err) {
 $("#gate-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   store.token = $("#gate-token").value.trim();
-  try { await api("GET", "/api/me"); boot(); } catch {}
+  try { state.me = await api("GET", "/api/me"); boot(); } catch {}
 });
 $("#signout").addEventListener("click", () => { store.token = ""; showGate(); });
 
@@ -771,7 +949,7 @@ async function fetchTurnInfo(j) {
     const v = await api("GET", `/api/jobs/${j.id}/approvals`);
     turnInfo.set(j.id, { ...v, busy: false });
     if ((cur?.live !== v.live || cur?.running !== v.running) && state.selectedJob === j.id) renderJob(state.jobs.find((x) => x.id === j.id));
-  } catch { turnInfo.set(j.id, { ...cur, busy: false }); }
+  } catch { turnInfo.delete(j.id); }  // unknown: the Composer assumes a live turn and the server says otherwise
 }
 const inflight = new Map();  // job id -> a steer on its way (the direct route answers once the agent has it)
 
@@ -796,7 +974,8 @@ function renderJob(j) {
   if (!j) { box.innerHTML = emptyState({ kind: "after-action", compact: true, icon: "job", title: "That job is no longer listed.", text: "It may have been cleaned up, or the filter hides it." }); return; }
   // keep a half-typed message across the 4s refresh
   const draft = $("#job-composer .af-composer__input")?.value || $("#job-question textarea")?.value || "";
-  const reasons = openReasons(box);
+  const reasons = openReasons(box), threads = openThreads(box), focused = !!document.activeElement?.closest?.("[data-thread]");
+  const rkey = reviewKey("jobs", j.id), queued = (review.get(rkey) || []).length;
   const r = j.result || {};
   const info = turnInfo.get(j.id);
   if (j.active && j.state === "running") fetchTurnInfo(j);
@@ -844,7 +1023,9 @@ function renderJob(j) {
     ${question ? `<h4>The agent asks</h4>${questionHtml({ id: "job-question", who: j.id, turn: turns.length, question: r.question, asked: j.updated_at,
         meanwhile: live ? "holding the sandbox" : "the sandbox is released; your answer resumes it" })}`
       : `<h4>${cm.mode === "steer" ? "Steer the agent" : "Reply to the agent"}</h4>${composerHtml({ id: "job-composer", ...cm,
+        note: queued && !cm.disabled ? `${queued} review comment${queued === 1 ? " goes" : "s go"} with this message` : "",
         queued: pending ? [{ id: "", text: pending, sub: "on its way; applies after this tool call" }] : [] })}`}
+    ${live || j.session?.checkpoints || r.commits?.length ? changesHtml("jobs", j.id, live) : ""}
     ${verdicts.length ? `<h4>Decisions</h4><div class="verdicts">${verdicts.map(verdictHtml).join("")}</div>` : ""}
     ${activityBlock("jobs", j.id, j.usage)}
     <h4>Timeline</h4>
@@ -859,29 +1040,38 @@ function renderJob(j) {
   const sb = { id: j.sandbox_id, name: j.id };
   const findCard = (id) => cards.find((c) => c.id === id);
   restoreReasons(box, reasons, findCard);
-  box.onclick = (e) => approvalClick(e, findCard, async () => { turnInfo.delete(j.id); await loadJobs(); });
-  // the reply: an answer to the agent's question and a follow-up both run another turn; a steer lands in this one
-  const followUp = async (message) => {
-    await api("POST", `/api/jobs/${j.id}/follow-up`, { message });
+  restoreThreads(box, threads, rkey);
+  if (focused) $("[data-thread] textarea", box)?.focus({ preventScroll: true });
+  // the reply: an answer to the agent's question and a follow-up both run another turn; a steer lands in this one;
+  // the review comments on the change ride along with the message (or go alone)
+  const withReview = (text) => { const rv = reviewText(rkey); return rv ? (text ? `${rv}\n\n---\n\n${text}` : rv) : text; };
+  const followUp = async (message, plain = false) => {
+    await api("POST", `/api/jobs/${j.id}/follow-up`, { message: plain ? message : withReview(message) });
+    if (!plain) review.delete(rkey);
     toast(`Sent; ${j.id} is running another turn`);
     await loadJobs();
   };
-  wireQuestion($("#job-question"), (text) => { $("#job-question textarea").value = ""; return followUp(text); });
-  if ($("#job-question textarea")) $("#job-question textarea").value = draft;
-  wireComposer($("#job-composer"), { draft, onSend: async (text) => {
-    if (cm.mode !== "steer") return followUp(text);
+  const steer = async (text) => {
     // the direct route answers once the agent has the message: show it queued meanwhile (a refresh keeps the row)
-    $("#job-composer").prepend(airframe.el(queuedRow({ text, sub: "on its way; applies after this tool call" })));
-    inflight.set(j.id, text);
+    const shown = text || `Review comments (${(review.get(rkey) || []).length})`;
+    $("#job-composer")?.prepend(airframe.el(queuedRow({ text: shown, sub: "on its way; applies after this tool call" })));
+    inflight.set(j.id, shown);
     try {
-      await api("POST", `/api/jobs/${j.id}/steer`, { message: text });
+      await api("POST", `/api/jobs/${j.id}/steer`, { message: withReview(text) });
+      review.delete(rkey);
       toast("The agent has your message; it applies after this tool call.");
     } catch (e) {
       if (e.message !== "unauthorized") toast(e.message, true);
       return false;  // not taken: the words come back to the box
     } finally { inflight.delete(j.id); renderJob(j); }
     await loadJobs();
-  } });
+  };
+  const sendAlone = () => (cm?.mode === "steer" ? steer("") : followUp(""));
+  box.onclick = (e) => approvalClick(e, findCard, async () => { turnInfo.delete(j.id); await loadJobs(); })
+    || diffClick(e, "jobs", j.id, () => renderJob(j), sendAlone);
+  wireQuestion($("#job-question"), (text) => { $("#job-question textarea").value = ""; return followUp(text, true); });
+  if ($("#job-question textarea")) $("#job-question textarea").value = draft;
+  wireComposer($("#job-composer"), { draft, onSend: (text) => (cm.mode === "steer" ? steer(text) : followUp(text)) });
   $("#job-watch")?.addEventListener("click", () => openTerminal(sb, j.terminal_session));
   $("#job-shell")?.addEventListener("click", () => openTerminal(sb));
   $("[data-goto-ses]", box)?.addEventListener("click", (e) => {
@@ -957,7 +1147,8 @@ function renderSession(x) {
   const box = $("#session-detail");
   if (!x) { box.innerHTML = emptyState({ kind: "after-action", compact: true, icon: "session", title: "That session is no longer listed." }); return; }
   const draft = $("#ses-composer .af-composer__input")?.value || $("#ses-question textarea")?.value || "";
-  const reasons = openReasons(box);
+  const reasons = openReasons(box), threads = openThreads(box), focused = !!document.activeElement?.closest?.("[data-thread]");
+  const rkey = reviewKey("sessions", x.id), queued = (review.get(rkey) || []).length;
   const live = !!x.sandbox_id && ["idle", "running"].includes(x.state);
   const ck = x.checkpoints?.at(-1);
   const keep = x.idle_minutes;
@@ -996,7 +1187,9 @@ function renderSession(x) {
       ${live ? `<button id="ses-shell" type="button" class="af-btn af-btn--secondary">${ic("terminal")}Open a shell</button><button id="ses-suspend" type="button" class="af-btn af-btn--ghost">${ic("spindown")}Suspend</button>` : ""}
     </div>
     ${x.last_summary ? `<h4>Agent's last summary</h4><pre class="log summary">${esc(x.last_summary)}</pre>` : ""}
-    ${question ? "" : `<h4>${cm.busy || cm.queued?.length ? "Steer the agent" : "Message the agent"}</h4>${composerHtml({ id: "ses-composer", ...cm })}`}
+    ${question ? "" : `<h4>${cm.busy || cm.queued?.length ? "Steer the agent" : "Message the agent"}</h4>${composerHtml({ id: "ses-composer", ...cm,
+      note: queued && !cm.disabled ? `${queued} review comment${queued === 1 ? " goes" : "s go"} with this message` : "" })}`}
+    ${x.turns.length && (live || x.checkpoint_count) ? changesHtml("sessions", x.id, live) : ""}
     ${verdicts.length ? `<h4>Decisions</h4><div class="verdicts">${verdicts.map(verdictHtml).join("")}</div>` : ""}
     ${x.turns.length ? activityBlock("sessions", x.id, x.usage) : ""}
     ${x.turns.length ? `<h4>Turns</h4><ol class="turns">${x.turns.slice().reverse().map((t) => `<li>
@@ -1008,14 +1201,20 @@ function renderSession(x) {
   const sb = { id: x.sandbox_id, name: x.name };
   const findCard = (id) => cards.find((c) => c.id === id);
   restoreReasons(box, reasons, findCard);
-  box.onclick = (e) => approvalClick(e, findCard, loadSessions);
-  // one route for all of it: a send starts a turn, or steers the running one (queued server-side, with a take-back)
-  const send = async (message) => {
-    await api("POST", `/api/sessions/${x.id}/send`, { message });
+  restoreThreads(box, threads, rkey);
+  if (focused) $("[data-thread] textarea", box)?.focus({ preventScroll: true });
+  // one route for all of it: a send starts a turn, or steers the running one (queued server-side, with a take-back);
+  // the review comments on the change ride along with the message (or go alone)
+  const withReview = (text) => { const rv = reviewText(rkey); return rv ? (text ? `${rv}\n\n---\n\n${text}` : rv) : text; };
+  const send = async (message, plain = false) => {
+    await api("POST", `/api/sessions/${x.id}/send`, { message: plain ? message : withReview(message) });
+    if (!plain) review.delete(rkey);
     toast(x.state === "suspended" ? `Resuming ${x.name}, then sending` : x.busy || x.state === "running" ? "Queued; it applies after this tool call" : "Sent");
     await loadSessions();
   };
-  wireQuestion($("#ses-question"), (text) => { $("#ses-question textarea").value = ""; return send(text); });
+  box.onclick = (e) => approvalClick(e, findCard, loadSessions) || diffClick(e, "sessions", x.id, () => renderSession(x), () => send(""));
+  // (a send with no words of its own carries the review comments alone)
+  wireQuestion($("#ses-question"), (text) => { $("#ses-question textarea").value = ""; return send(text, true); });
   if ($("#ses-question textarea")) $("#ses-question textarea").value = draft;
   wireComposer($("#ses-composer"), { draft, onSend: send, onTakeBack: async (id) => {
     await api("POST", `/api/sessions/${x.id}/steers/${id}/withdraw`);
@@ -1507,5 +1706,5 @@ function drawSpend(rows, since) {
 }
 
 /* ------------------------------------------------------------------ start */
-if (store.token) api("GET", "/api/me").then(boot).catch(() => showGate());
+if (store.token) api("GET", "/api/me").then((me) => { state.me = me; boot(); }).catch(() => showGate());
 else showGate();
