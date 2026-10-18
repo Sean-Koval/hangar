@@ -33,7 +33,8 @@
       "pin_sets": {"type": ["object", "null"], "additionalProperties": {"type": "string"}, "description": "Variant -> pin set id, for trials started with POST /api/trials (#178)."},
       "source": {"enum": ["experiment", "shadow"], "description": "Who asked for the trials (#178; shadow: #183)."},
       "task_digests": {"type": ["object", "null"], "additionalProperties": {"type": "string"}, "description": "Task id -> flightdeck's task digest for the trial cache (#180)."},
-      "cache_record": {"type": "boolean", "description": "Whether finished trials fill the trial cache (false for a sentinel run, #180)."}}},
+      "cache_record": {"type": "boolean", "description": "Whether finished trials fill the trial cache (false for a sentinel run, #180)."},
+      "fork": {"type": "object", "description": "A fork of a recorded run (docs/sessions.md#fork-at-a-step): {run, at_seq, mode, on_divergence, continuations, tainted, harness_digest, pin_set, purpose, tolerate}. Added within v1 (#179)."}}},
     "pins": {
       "type": "object",
       "properties": {
@@ -122,6 +123,10 @@
           "infra_reason": {"enum": ["preempted", "power_down", "rate_limited", "provider_5xx", "sandbox_create", "checkpoint", "control_plane_restart", "drift", null], "description": "What infrastructure did, when outcome_class is infra_error. Added within v1 (#166). drift (#178): its turn 1 didn't run its pin set; excluded and not retried."},
           "pin_set": {"type": ["string", "null"], "pattern": "^pin-[0-9a-f]{16}$", "description": "The pin set the trial ran against (GET /api/pinsets/{id}). Added within v1 (#178)."},
           "cached": {"type": "boolean", "description": "The trial is in the trial cache under its pin set and task (a counted trial of a fully pinned key). Added within v1 (#180)."},
+          "replay": {"type": ["string", "null"], "description": "A fork's trial: its replay (rpl-...), which replayed the run's tape to at_seq before going live (docs/model-gateway.md#replay). Added within v1 (#179)."},
+          "fork_of": {"type": ["string", "null"], "description": "A fork's trial: the run it forked, {session}.{run}. Added within v1 (#179)."},
+          "tainted": {"type": "boolean", "description": "The run it forked had an untrusted tape (#177): not promotion evidence without review. Added within v1 (#179)."},
+          "aa": {"type": ["object", "null"], "description": "A fork's trial with a clean prefix on the run's own harness: {production_harness, original_job, original_passed, fork_passed, reproduced}. Added within v1 (#179)."},
           "excluded": {"type": "boolean", "description": "Leave this trial out of statistics: it ended in infra_error. Its retry, if any, is the next attempt under the same key. Added within v1 (#166)."},
           "attempt": {"type": "integer", "minimum": 1, "description": "1 for the trial as laid out; 2 and up for its retries after infra errors (at most HANGAR_TRIAL_INFRA_RETRIES, and 10% of the experiment's trials in all). Several trials can share a key: the highest attempt is the one that counts. Added within v1 (#166)."},
           "retry_of": {"type": ["string", "null"], "description": "The job id of the excluded trial this one retries; with attempt, the retry chain. Added within v1 (#166)."},

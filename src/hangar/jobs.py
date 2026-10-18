@@ -1011,6 +1011,10 @@ class JobService:
                 branch_ref: str | None = None) -> str:
         """`branch_ref` (overnight/cache): how the prompt names the branch instead of `job.branch`, so best-of-N
         attempts get one identical prompt and name their own branches after it."""
+        from hangar import replay  # --- #179: a replay starts with the recorded run's own prompt
+
+        if turn.kind != "follow_up" and (recorded := replay.prompt_override(self.fleet, job)) is not None:
+            return recorded
         ctx = self._ctxdir(job)
         branch = branch_ref or f"branch `{job.branch}`"
         files = [c for c in job.context if c.kind != "url" and c.kind not in exchange.CODE_KINDS]

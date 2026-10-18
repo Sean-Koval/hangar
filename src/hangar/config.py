@@ -623,6 +623,13 @@ class Settings(BaseSettings):
     # this cron (in HANGAR_EVAL_TZ: the eval window) bypassing the cache, written to v1/sentinel/{date}.json. []: off
     trial_sentinel: list[dict[str, Any]] = Field(default_factory=list)
     trial_sentinel_schedule: str = "0 20 * * *"
+    # --- #179: the nightly determinism report (determinism.py): when (a cron in eval_tz; "off"), how many of a
+    # repo's previous-day turns it replays, for how many repos, and each replay's job budget (no model call leaves
+    # hangar: sandbox time only)
+    determinism_schedule: str = "0 21 * * *"
+    determinism_runs_per_repo: int = Field(50, ge=0, le=200)
+    determinism_max_repos: int = Field(10, ge=0, le=100)
+    determinism_replay_budget_usd: float = Field(1.0, gt=0, le=50)
     # --- #182: monthly eval spend (evalbudget.py), per calendar month UTC: the team's (0: off) and each author's
     eval_budget_usd_month: float = Field(1500.0, ge=0)
     eval_author_cap_usd_month: float = Field(400.0, ge=0)

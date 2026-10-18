@@ -220,6 +220,23 @@ class Grader(BaseModel):
         return v
 
 
+class ForkSpec(BaseModel):
+    """--- #179: an experiment that forks a recorded run (forks.py): each trial replays `run`'s tape to `at_seq` in a
+    replay sandbox (replay.py), then goes live (`continuations` > 0) or stops (`replay-strict`)."""
+
+    model_config = ConfigDict(extra="forbid")
+    run: str = Field(pattern=r"^ses-[0-9a-f]{8}\.run-[0-9a-f]{8}$")
+    at_seq: int = Field(ge=0)
+    mode: Literal["replay-prefix", "replay-strict"] = "replay-prefix"
+    on_divergence: Literal["stop", "live"] = "stop"
+    continuations: int = Field(1, ge=0, le=20)
+    tainted: bool = False
+    harness_digest: str | None = None  # the run's: an A/A trial ran the same
+    pin_set: str | None = None
+    purpose: Literal["fork", "determinism"] = "fork"
+    tolerate: Literal["tool"] | None = None
+
+
 class ExperimentSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=100)
@@ -248,6 +265,7 @@ class ExperimentSpec(BaseModel):
     # --- #183: a shadow's real job, and whose eval budget its trials count against (the harness owner)
     shadow_of: str | None = Field(None, max_length=40)
     author: str | None = Field(None, max_length=100)
+    fork: ForkSpec | None = None  # --- #179: a fork of a recorded run at a step
 
     @field_validator("variants")
     @classmethod
@@ -303,6 +321,12 @@ class Trial(BaseModel):
     retry_of: str | None = None
     pin_set: str | None = None  # --- #178: what it ran against (pinsets.py)
     cached: bool = False  # --- #180: it is in the trial cache (trialcache.py)
+    # --- #179: a fork's trial: its replay (replay.py), the run forked, whether that run's tape was untrusted, and
+    # the A/A record (a clean prefix on the run's own harness: did it reproduce the run's outcome?)
+    replay: str | None = None
+    fork_of: str | None = None
+    tainted: bool = False
+    aa: dict[str, Any] | None = None
 
     @property
     def ref(self) -> str:
@@ -848,6 +872,18 @@ def _start_trial(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t:
         labels |= {shadows.SHADOW_OF: spec.shadow_of, posture.FLOOR_LABEL: "none"}
     if spec.author:
         labels[AUTHOR_LABEL] = spec.author
+    if spec.fork is not None:  # --- #179: the trial replays the run to at_seq in a replay sandbox (replay.py)
+        from hangar import posture, replay
+
+        f = spec.fork
+        try:
+            rp = replay.plan(jobs.fleet, f.run, mode=f.mode, at_seq=f.at_seq, on_divergence=f.on_divergence,
+                             tolerate=f.tolerate, purpose=f.purpose, parent=job.id, trial=t.ref, actor=job.requester)
+        except replay.ReplayError as e:
+            t.state, t.outcome, t.reason, t.finished_at = "done", "failed", f"could not start: {e}", now()
+            return
+        labels |= {replay.REPLAY_LABEL: rp["id"], replay.FORK_OF_LABEL: f.run, posture.FLOOR_LABEL: "none"}
+        t.replay, t.fork_of, t.tainted = rp["id"], f.run, rp["tainted"]
     req = SubmitJob(
         instructions=instructions, title=f"{spec.name}: {t.ref}"[:200], repo=tp.get("repo"),
         base_branch=task.base_branch, environment=v.environment or spec.environment, harness=pin["harness"],
@@ -912,6 +948,10 @@ async def _finish_trial(jobs: JobService, job: Job, st: State, spec: ExperimentS
                                    f"lock {vp.get('harness_lock')}")
             elif t.harness_digest and not vp.get("harness_digest") and vp:
                 vp["harness_digest"] = t.harness_digest  # an overlay variant's digest, as its first trial ran it
+    if t.replay:  # --- #179: a fork's trial: its trees against the run's, and the A/A record
+        from hangar import forks
+
+        forks.finish_trial(jobs, job, st, t, child)
     t.state = "grading" if spec.grader and child.state != JobState.CANCELLED and s is not None else "done"
     retry = None
     _cache(jobs, job, st, spec, t)  # --- #180: a counted trial of a pinned key fills the cache

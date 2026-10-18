@@ -42,6 +42,7 @@ from hangar import plugins as plugins  # --- #136: Claude Code plugins from the 
 from hangar import posture as posture  # --- intake posture (#123): an intake job's egress floor
 from hangar import power as power  # --- ops: the sandbox pools' power schedule
 from hangar import reconciler as reconciler  # --- reconciler
+from hangar import replay as replay  # --- #179: replay sandboxes (egress none, no credentials)
 from hangar import slo as slo  # --- clouddoctor: create times by path, for `hangar status`
 from hangar import svc_control as svc_control  # --- envbuilds: the service supervisor (`hangar-agent svc`)
 from hangar import teamcreds as teamcreds  # --- teamcreds
@@ -740,6 +741,9 @@ class Fleet:
             created_by=actor,
             person=person,  # --- identity
         )
+        if replay.labelled(sb):  # --- #179: a replay's sandbox: egress none, only the API key the gateway takes out
+            sb.labels = dict(sb.labels)
+            cred_names = sb.credentials = replay.isolate(self, sb, hname, cred_names)
         if resolved.warnings:  # --- #125: shown on the sandbox, its session, its job and the turn manifests
             sb.info["credential_warnings"] = list(resolved.warnings)
             sb.info.setdefault("warnings", []).extend(resolved.warnings)
@@ -890,7 +894,8 @@ class Fleet:
         # get nothing else: no credential at all (without the gateway not even git's), no `secrets:`, no cloud
         # tokens. A build's mapped build secrets reach its install command alone (envbuilds._install).
         validating = delivery.builds_repo_code(sb)
-        if validating:
+        replaying = replay.labelled(sb)  # --- #179: nothing but the gateway: no credential, secret, token or MCP
+        if validating or replaying:
             creds = []
         if h:
             if h.install:
@@ -899,13 +904,16 @@ class Fleet:
             extra_env.update(h.env)
             extra_env["HANGAR_HARNESS"] = h.name
             extra_env.update(plugins.env(spec, h.name))  # --- #136: the read-only plugin seed
-        for var, cred in ({} if validating else delivery.secrets(self, sb, spec)).items():  # --- least-privilege
+        for var, cred in ({} if validating or replaying else delivery.secrets(self, sb, spec)).items():
             extra_env[var] = self.broker.sandbox_secret(cred)  # --- identity: refuses control-plane credentials
         extra_env.update(await egress.attach(self, prov, sb, spec))  # --- egress: HTTPS_PROXY in a proxied env
-        if not validating:  # --- review #102
+        if not validating and not replaying:  # --- review #102
             extra_env.update(await self.cloud.attach(prov, sb, spec))  # --- egress: cloud OIDC tokens, no stored keys
         if delivery.sealed(sb):  # --- sealed (#126): no GitHub API and no build caches: nothing to carry data out on
             self.gateway.issued.pop(sb.id, None)
+        elif replaying:  # --- #179: the model gateway only (its calls are answered from the tape)
+            self.gateway.issued.pop(sb.id, None)
+            extra_env.update(modelgw.of(self).sandbox_env(sb))
         else:
             extra_env.update(ghapi.sandbox_env(self.settings, sb))  # --- egress2: the read-only GitHub API (gateway)
             extra_env.update(modelgw.of(self).sandbox_env(sb))  # --- #177: the model gateway's URL and bearer
@@ -923,8 +931,8 @@ class Fleet:
             await self._merge_json(prov, sb, f"{home}/{rel}", patch)
         servers = {n: s for n, s in spec.mcp.items() if s.harnesses is None or h.name in s.harnesses}
         servers.update(envdoctor.builtin_mcp(spec, self.settings, home))  # --- computer: hangar-env, browser
-        if delivery.sealed(sb):  # --- sealed (#126): a grader runs no agent; no MCP server is configured in it
-            servers = {}
+        if delivery.sealed(sb) or replaying:  # --- sealed (#126): a grader runs no agent; no MCP server in it
+            servers = {}  # --- #179: a replay's side-effecting tools are answered from the tape
         resolved = {}
         for n, srv in servers.items():
             missing: set[str] = set()

@@ -306,6 +306,28 @@ outage and across restarts. The control plane stays up overnight, so the queue d
 Retention waits for the export: a deleted session's event log and manifests, and a failed job's test results, stay
 until the outbox has uploaded its runs (at most `HANGAR_EXPORT_GRACE_DAYS`, 30; [outbox.md](api/outbox.md#retention-and-the-export-189)).
 
+## The determinism report
+
+Each night in the eval window, hangar strictly replays the previous day's recorded turns of each repo
+([model-gateway.md](model-gateway.md#replay), `replay-strict` with `tolerate: tool`): the taped answers are served
+again in fresh replay sandboxes and every tool call re-executed, so a step whose output doesn't reproduce on an
+identical tree (a flaky test, a build that reaches the network, a command that reads the clock) shows up. It costs
+sandbox time only: no model call leaves hangar.
+
+- **Which turns.** Tapes whose turn finished on the previous UTC day, of a session's first run, not of a trial, shadow
+  or replay: up to `HANGAR_DETERMINISM_RUNS_PER_REPO` (50) per repo, sampled deterministically, for at most
+  `HANGAR_DETERMINISM_MAX_REPOS` (10) repos, the busiest first. Each replay is a fork with no continuation
+  ([sessions.md](sessions.md#fork-at-a-step)) in the eval queue class, with `HANGAR_DETERMINISM_REPLAY_BUDGET_USD` (1)
+  as its job budget. `POST /api/determinism/run {"date"?}` (admins) starts a day's now.
+- **What it writes**, once every replay has ended: per repo, `v1/determinism/{date}/{repo}.json`
+  (`hangar.determinism/v1`) in the outbox and `<data>/determinism/{date}/{repo}.json`. `steps` lists the steps whose
+  outputs didn't reproduce, ranked by how often (`count`, and in how many `runs`), each with its `kind` (`tool`,
+  `network`; `model` means the replay stopped there because the harness or its system prompt changed), the `tool`, its
+  `command` or `file`, and `evidence` (run, step, replay, and excerpts of both outputs, redacted as the tape is). Also
+  `replays`, `reproduced`, `diverged`, `unreplayed` and `errors`.
+- **Flaky tests.** A test on the repo's flaky list ([jobs.md](jobs.md#flaky-tests)) whose id shows in a mismatched
+  output gets the step as `evidence` on its list entry (the last 5), with a link to the report.
+
 ## Credential health
 
 Each agent credential is checked without calling a model:
@@ -382,3 +404,7 @@ The endpoint, scopes, collector install and roles were checked against Google's 
 | `HANGAR_OUTBOX_URL` | unset | [Run capture](#run-capture): `gs://bucket[/prefix]` or a local directory ([outbox.md](api/outbox.md)) |
 | `HANGAR_OUTBOX_SESSIONS` | `all` | `jobs_only` leaves out sessions not attached to a job |
 | `HANGAR_EXPORT_GRACE_DAYS` | `30` | How long a deleted session's event log and manifests wait for their export |
+| `HANGAR_DETERMINISM_SCHEDULE` | `0 21 * * *` | When the [determinism report](#the-determinism-report)'s replays start, in `HANGAR_EVAL_TZ`; `off` turns it off |
+| `HANGAR_DETERMINISM_RUNS_PER_REPO` | `50` | Previous-day turns replayed per repo (at most 200) |
+| `HANGAR_DETERMINISM_MAX_REPOS` | `10` | Repos replayed per night, the busiest first |
+| `HANGAR_DETERMINISM_REPLAY_BUDGET_USD` | `1` | Each replay's job budget (sandbox time only) |

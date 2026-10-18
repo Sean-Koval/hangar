@@ -74,7 +74,8 @@ SESSION_REFS = "refs/heads/hangar/session/"
 # --- least-privilege: sandboxes whose agent (or repo code) never pushes: a job's (hangar delivers it), a repo build's
 # and env setup's validation (they run the repo's install). Their grant is fetch-only. --- review(#114): and an
 # experiment's grader, which runs a trial's agent-written patch.
-FETCH_ONLY_LABELS = ("hangar.job", "hangar.build", "hangar.env-validate", "hangar.experiment.grader")
+FETCH_ONLY_LABELS = ("hangar.job", "hangar.build", "hangar.env-validate", "hangar.experiment.grader",
+                     "hangar.replay")  # --- #179: a replay's sandbox (replay.py)
 
 _PATH = re.compile(r"^/git/(?P<host>[A-Za-z0-9.-]{1,253}(?::[0-9]{1,5})?)/(?P<owner>[A-Za-z0-9_.-]{1,100})/"
                    r"(?P<repo>[A-Za-z0-9_.-]{1,100})/(?P<svc>info/refs|git-upload-pack|git-receive-pack)$")

@@ -3,7 +3,7 @@
 Replay-as-fork, steer-point replay and the nightly determinism report need what the model actually answered. With
 `model_gateway: record`, a sandbox's harness calls its model provider through hangar's gateway instead of directly:
 the API key stays in the control plane, and every request and response is kept as a **tape**: normalized, redacted
-and hash-chained as it is recorded. Replaying a tape is #179; this page covers recording.
+and hash-chained as it is recorded. [Replay](#replay) serves a tape back to rebuild a run by re-execution (#179).
 
 Record mode is for automated runs on API keys (part A's credential policy, [team.md](team.md)). A subscription login
 (a Claude Pro or Max login, a ChatGPT `auth.json`) can't go through a recording proxy, and `record` refuses to start a
@@ -99,8 +99,42 @@ source (`untrusted_source`) or an untrusted context item, or when its taint fire
 A tainted tape can replay an attacker's tool call: it can't serve as promotion evidence without review (flightdeck's
 rule), and replays run with egress `none`.
 
+## Replay
+
+A replay (#179, `src/hangar/replay.py`) re-executes a recorded run in a fresh sandbox: the harness gets the tape's
+answers instead of the provider's, runs every tool call for real, and each request it sends, which carries those
+tools' outputs, is compared with the tape's request for that step. The first that doesn't match is the
+**divergence**. A replay is made for a sandbox labelled with its id (`hangar.replay`) by a [fork at a
+step](sessions.md#fork-at-a-step) or the [determinism report](observability.md#the-determinism-report); its plan and
+progress are kept in `<data>/replays/<id>.json`, so a control-plane restart carries on.
+
+| Mode | |
+| --- | --- |
+| `replay-strict` | Every request must be one of the tape's. A miss, or a request past the tape's end, is an error the harness can't retry (a provider-shaped 400), and the turn ends. With `tolerate: tool` (the determinism report), a request that differs only in tool outputs is recorded as a mismatch and the step served anyway, so one replay finds every step that doesn't reproduce. |
+| `replay-prefix` | The tape's answers for steps 1..`at_seq` while each request matches; the request after step `at_seq` is checked too (it carries that step's tool outputs), then forwarded to the provider, recorded on a tape of its own: the run goes live from N. A divergence before that stops the replay (`on_divergence: stop`) or goes live there (`live`). |
+
+**Matching.** Both sides are compared as the tape stores them (redacted, normalized with the run's placeholders), then
+loosened: dates, durations (`0.53s`, `120ms`), UUIDs and hex addresses are replaced, and the request's `metadata`
+(Claude Code's per-session user id) is dropped. Requests match in order within a window of the next 8 unserved steps,
+since a harness's side calls interleave. Served answers get fresh concrete ids for their placeholders (`<toolu:3>`
+becomes `toolu_hgr…`), registered so the harness's next request normalizes to the same placeholder. `<ts>`, `<tmp>`
+and redacted secrets can't be restored and are served as written: a step whose command used one diverges.
+
+**Kinds.** `model`: the requests differ outside tool outputs (another harness, system prompt or tool list; the first
+differing field is named). `tool`: only a tool's output differs (the tool and its command or file are named).
+`network`: a tool output differs and the replay's shows a network error, as it will with egress `none`. `tree`: the
+working tree after an edit or command differs from the run's `tree` events (#165), checked when the replay's turn has
+ended; new tapes' `index.json` carries `tool_ids` (the tool call ids behind the placeholders) for that.
+
+**Side effects** (MCP tools, Jira, Slack, web fetch and search) are answered from the tape: the replay sandbox has no
+MCP server, and the gateway puts the taped output in place of the replay's before comparing and, once live, before
+forwarding upstream.
+
+**Isolation.** A replay sandbox goes through the gateway whatever its environment's `model_gateway` says. It has
+egress `none`, holds no credential (it is created with the harness's API key only, which the gateway takes out), no
+`secrets:`, cloud token, MCP server, GitHub API or build cache, and its git grant is fetch-only.
+
 ## Limits of this version
 
-- Record only; replay modes are #179.
 - Vendor-loop agents and Gemini/Antigravity have no gateway path.
 - While the pools are powered down there are no sandboxes, so no traffic.
