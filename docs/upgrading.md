@@ -27,7 +27,8 @@ with `deploy.yml` go while the sandbox pools are on, **10:00–01:00 ET**: its a
 refuses while the pools are down ([cicd.md](cicd.md#2-start-the-deploy-then-approve-it)). The power schedule is
 terraform's `power_down_cron` (`0 1 * * *`) and `power_up_cron` (`50 9 * * *`, ready at 10:00), in
 `America/New_York`. With the [overnight lane](gke.md#the-overnight-lane) on, one Spot node stays up through the
-night: an upgrade in the window suspends its sessions first.
+night, and nothing suspends its sessions for an upgrade: suspend them first (`hangar session suspend <name>`), or
+leave sandbox node changes for the day.
 
 ## Adopt & capture and frontier (#133–#189)
 
@@ -93,7 +94,7 @@ are set with `hangar repo set OWNER/REPO`, people's delivery with `hangar person
 | **Anyone with a linked Slack account** | nothing in Slack outside job threads → a DM for each question and approval on their own work, and a digest at 10:15 and 16:00 on weekdays (#157, #158) | `hangar person set <id> --dm off` opts out; `--digest ""` drops the digest ([team.md](team.md#inbox-delivery-dms-and-the-digest)) |
 | **Slack thread repliers** | a reply was a follow-up → a reply can be classified (`fix:`, `redirect:`, `info:`, or the buttons under hangar's answer); only corrections count against the agent (#162) | nothing; the buttons need the app's interactivity (step 4) |
 | **Scripts that read hangar's PR bodies** | sections separated by `---` → by `___`, and the body ends in trailers (`Hangar-Job`, `Harness-Digest`, `Environment-Digest`, `Harness-Lock` when thawed), which the squash or merge commit carries too (not with `merge_method: rebase`) (#137) | split on `___`, or read the trailers with `git interpret-trailers` ([jobs.md](jobs.md#the-pull-request)) |
-| **Anything that compares digests** (flightdeck, a team harness repo's `channels.yaml`) | → every turn's `harness_digest` changes once, plugins or not: #221 narrowed the identity's plugin section to `plugins[*].{name,marketplace,digest,enabled}`, and the section's name is part of what is hashed. Every environment's `environment.spec_digest`, and so every turn's `environment_digest` and `config_digest`, changes once too: the spec gained `model_gateway` (#177) | compare digests only within one side of the upgrade; re-key `channels.yaml` and any `name@sha256:` reference written before, from the digest `hangar harness check DIR` prints ([harness-lock.md](harness-lock.md#identity)) |
+| **Anything that compares digests** (flightdeck, a team harness repo's `channels.yaml`) | → every turn's `harness_digest` changes once, plugins or not: #221 narrowed the identity's plugin section to `plugins[*].{name,marketplace,digest,enabled}`, and the section's name is part of what is hashed. Every environment's `environment.spec_digest`, and so every turn's `environment_digest` and `config_digest`, changes too, because every field of the spec is digested and it gained `plugins` (#136, PR #215) and `model_gateway` (#177, PR #257): a hangar from before #136 sees both changes, one that already had #136 sees one | compare digests only within one side of the upgrade; re-key `channels.yaml` and any `name@sha256:` reference written before, from the digest `hangar harness check DIR` prints ([harness-lock.md](harness-lock.md#identity)) |
 | **Experiment authors** | trials started at once, on any model name, with no monthly cap → a floating model alias is refused naming the concrete ids (#167); trials wait for the 20:00–00:15 eval window (#181) and count against $1,500 a month for the team and $400 per author (#182); infrastructure-ended trials are retried (#166); an environment spec edited mid-experiment ends its running trials as `infra_error` / `drift` (#178) | pin dated model ids; `HANGAR_EVAL_WINDOW=always` and `HANGAR_EVAL_BUDGET_USD_MONTH=0` give the old behaviour ([jobs.md](jobs.md#9-experiments)) |
 | **Whoever writes Jira tickets** | the description was the task → its acceptance criteria also reach the job as an untrusted `acceptance.md`, and the queued comment hints when there are none; a verify command in the ticket is used only where `verify_allowed` matches (#156) | write tickets from the [Jira template](https://github.com/Sean-Koval/hangar/blob/main/docs/templates/jira-agent-ticket.md) ([intake.md](intake.md#agent-tickets)) |
 | **Reviewers** | → the packet's Agent line links the harness digest and lock (#137); removing or changing a line of an existing ADR's `checks:` block makes a PR high risk (#170) | nothing |
@@ -268,8 +269,10 @@ harness lock frozen from one of them before this release reports drift when thaw
 
 ## Claude Code plugins from a seed (#136)
 
-Nothing to do: an environment without `plugins:` behaves as before, and its manifests keep their digests
-(`plugins` is `null`). What changes:
+Nothing to do: an environment without `plugins:` behaves as before (its manifests record `plugins: null`). Its
+digests still change across this release: the spec's new `plugins` field changes every environment's `spec_digest`,
+and #221 later re-keyed every turn's `harness_digest`
+([adopt & capture, what changes for people](#what-changes-for-people)). What changes:
 
 - An environment can declare Claude Code plugins (`plugins:`), installed into a read-only seed in its image and
   loaded in every turn, `ask` and `deny-risky` included ([harnesses.md](harnesses.md#plugins)). Plugins the
