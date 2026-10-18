@@ -248,6 +248,12 @@ class OpenBody(BaseModel):
     harness: str | None = None
 
 
+class DecisionBody(BaseModel):
+    """Why a job was approved or rejected (--- approvals): optional on the API; the console requires it to reject."""
+
+    reason: str | None = Field(None, max_length=2000)
+
+
 class IdleBody(BaseModel):
     idle_minutes: int = Field(ge=0, le=10080)  # 0 = stay up until suspended by hand
 
@@ -979,12 +985,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return approvals.from_principal(p, via="rest")
 
     @app.post("/api/jobs/{job_id}/approve")
-    async def job_approve(job_id: str, who: approvals.Approver = Depends(approver)):
-        return jobs.view(await approvals.decide(jobs, job_id, who, "approve"))
+    async def job_approve(job_id: str, body: DecisionBody | None = None,
+                          who: approvals.Approver = Depends(approver)):
+        """`reason` (optional) is kept on the decision and told to the requester."""
+        return jobs.view(await approvals.decide(jobs, job_id, who, "approve", body.reason if body else None))
 
     @app.post("/api/jobs/{job_id}/reject")
-    async def job_reject(job_id: str, who: approvals.Approver = Depends(approver)):
-        return jobs.view(await approvals.decide(jobs, job_id, who, "reject"))
+    async def job_reject(job_id: str, body: DecisionBody | None = None,
+                         who: approvals.Approver = Depends(approver)):
+        """`reason` (optional here; the console requires one to reject) goes to the requester with the rejection."""
+        return jobs.view(await approvals.decide(jobs, job_id, who, "reject", body.reason if body else None))
 
     @app.post("/api/hooks/inbound/{source}")
     async def inbound_hook(source: str, request: Request):

@@ -485,6 +485,9 @@ class JobApproval(BaseModel):
     decided_person: str | None = None
     self_approved: bool = False
     rule: str | None = None
+    # the decider's words (REST `reason`): required by the console to reject, optional to approve; sent to the
+    # requester where the job was asked for, and kept here with the decision
+    decision_reason: str | None = None
 
 
 # --- workstream D: forks/best-of-N
@@ -677,7 +680,8 @@ class Steer(BaseModel):
     requester: str | None = None
     ts: float = Field(default_factory=now)
     kind: Literal["steer", "interrupt"] = "steer"
-    status: Literal["sending", "delivered", "queued", "failed"] = "sending"  # queued: it starts the next turn
+    # queued: it starts the next turn; cancelled: taken back (withdraw) before the agent had it
+    status: Literal["sending", "delivered", "queued", "failed", "cancelled"] = "sending"
     error: str | None = None
     steer_class: SteerClass = "unclassified"  # --- #162
     classified_by: str | None = None
