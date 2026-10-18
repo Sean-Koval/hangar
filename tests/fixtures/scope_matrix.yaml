@@ -2249,6 +2249,14 @@ turn.wait:
   rest: null
   scope: mcp
   owner: guard
+turn.withdraw:
+  server: hangar
+  mcp: null
+  rest: POST /api/sessions/{ref}/steers/{steer_id}/withdraw
+  scope: admin
+  owner: admin
+  note: 'takes back a send to a busy session while it is still on its way (the console''s queued row); no MCP tool: the
+    tool list is at its cap'
 ui.mount:
   server: hangar
   mcp: null

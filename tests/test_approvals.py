@@ -154,6 +154,27 @@ def test_admins_and_repo_approvers_approve_someone_elses_job_on_both_surfaces(wo
     assert h.jobs.get(own).approval.rule == "admin"
 
 
+def test_a_decision_carries_its_reason(world):
+    """The console requires a reason to reject and offers one to approve: REST takes `{"reason"}`, the job keeps it
+    on the decision, the event and the audit entry say it, and nothing changes for callers that send none."""
+    h, c = world["h"], world["client"]
+    auth = {"Authorization": "Bearer t0ken"}
+    job, why = _held(h, None), "Not from this repo's board; ask in #ops."
+    r = c.post(f"/api/jobs/{job}/reject", headers=auth, json={"reason": why})
+    assert r.status_code == 200 and r.json()["approval"]["decision_reason"] == why
+    j = h.jobs.get(job)
+    assert j.state == JobState.CANCELLED and j.events[-1].message == f"rejected by admin: {why}"
+    [audit] = [e for e in h.store.audit_tail(50) if e.action == "job.reject" and e.target == job]
+    assert audit.detail["reason"] == why
+    job = _held(h, None)
+    r = c.post(f"/api/jobs/{job}/approve", headers=auth, json={"reason": "  "})  # blank is no reason
+    assert r.status_code == 200 and r.json()["approval"]["decision_reason"] is None
+    assert h.jobs.get(job).events[-1].message == "approved by admin"
+    job = _held(h, None)
+    assert c.post(f"/api/jobs/{job}/approve", headers=auth).status_code == 200  # no body, as before
+    assert c.post(f"/api/jobs/{_held(h, None)}/reject", headers=auth, json={"reason": "x" * 2001}).status_code == 422
+
+
 def test_service_tokens_and_unknown_jobs(world):
     h = world["h"]
     job = _held(h, None)
