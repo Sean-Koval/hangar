@@ -573,7 +573,7 @@ def packet_line(jobs: JobService, job: Job) -> str | None:
 def outdated(fleet: Fleet, ref: str) -> dict[str, Any]:
     """Report only: the lock's CLI version against harnesses.lock.yaml, and each skill against its source in the
     environments that declare it (a `path:` skill whose files there no longer hash to the lock's)."""
-    from hangar.envspec import _contained_path
+    from hangar.envspec import skill_dir
     from hangar.harnesses import HARNESSES
 
     r = resolve(fleet.settings, ref)
@@ -599,8 +599,7 @@ def outdated(fleet: Fleet, ref: str) -> dict[str, Any]:
                 if not any(sk.path == src[5:] for sk in spec.skills):
                     continue
                 with contextlib.suppress(ValueError, FileNotFoundError, OSError):
-                    d = harness_lock.files_digest(harness_lock.read_dir(_contained_path(spec.source_dir or Path("."),
-                                                                                        src[5:])))
+                    d = harness_lock.files_digest(harness_lock.read_dir(skill_dir(spec, src[5:])))
                     seen.append({"environment": spec.name, "digest": d, "changed": d != c.get("digest")})
             row["environments"] = seen
             row["status"] = ("changed upstream" if any(x["changed"] for x in seen) else "up to date") if seen else \
