@@ -1027,14 +1027,17 @@ def doctor_checks(h: Any) -> list[dict[str, Any]]:
     from hangar.doctor import _check
 
     o = of(h.fleet)
-    if not o.enabled:
-        return []
+    if not o.enabled:  # --- #273: on GKE, say so: no finished run reaches flightdeck's compactor
+        return [_check("run capture (outbox)", None, "off: HANGAR_OUTBOX_URL is unset, so no finished run is "
+                       "captured for flightdeck", "bash deploy/gke/up.sh sets it from `terraform output run_bucket` "
+                       "(deploy/terraform/gke); or set HANGAR_OUTBOX_URL=gs://<bucket> in hangar-site and restart "
+                       "hangar")] if "kubernetes" in h.fleet.providers else []
     st = o.status()
     out = []
     age = st["oldest_pending_age_seconds"] or 0
     slow = st["pending"] > WARN_PENDING or age > WARN_AGE
     out.append(_check("run capture (outbox)", None if slow else True,
-                      f"{st['pending']} object(s) pending to {st['sink']}"
+                      f"on: {st['pending']} object(s) pending to {st['sink']}"
                       + (f", oldest {round(age / 3600, 1)} h" if age else "")
                       + (f"; last error: {st['last_error']}" if st["last_error"] and slow else ""),
                       "check the bucket and hangar's service account (roles/storage.objectCreator on it, "

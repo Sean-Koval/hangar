@@ -52,7 +52,8 @@ _RESTART = ("public_url", "oauth_", "env_dirs", "image_prefix", "registry", "ext
             "io_threads",  # integrate: #53's I/O pool and the Docker connection pool are sized at startup
             # --- overnight/acceptance: providers find hangar-envd's binaries when they start, and /metrics is set
             # up once (docs/upgrading.md tells people to turn these off with `hangar config set`)
-            "envd", "envd_dir", "metrics_enabled")
+            "envd", "envd_dir", "metrics_enabled",
+            "outbox_url")  # --- #273: the outbox picks its sink when it is first made
 
 
 class SettingError(ValueError):

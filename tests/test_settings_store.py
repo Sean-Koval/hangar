@@ -137,3 +137,5 @@ def test_settings_read_at_startup_say_so():
     # --- overnight/acceptance: the envd router and /metrics are set up at startup; per-turn settings aren't
     assert needs_restart("envd") and needs_restart("envd_dir") and needs_restart("metrics_enabled")
     assert not needs_restart("live_turns") and not needs_restart("cache") and not needs_restart("uid_split")
+    # --- #273: the outbox's sink is made once; which sessions it captures is read per run
+    assert needs_restart("outbox_url") and not needs_restart("outbox_sessions")
