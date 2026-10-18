@@ -893,11 +893,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/jobs")
     async def job_list(state: str | None = None, limit: int = 50, cursor: str | None = None,
-                       reason: str | None = None, caller: Caller = J):
+                       reason: str | None = None, source: str | None = None, caller: Caller = J):
         # --- durable: a page, each job with its `cursor`; X-Next-Cursor when there are more. --- #159: `reason`
-        # (awaiting_capacity: new jobs held for review capacity)
+        # (awaiting_capacity: new jobs held for review capacity). --- #183: shadows only with ?source=shadow (admins)
+        if source == "shadow" and not identity.is_admin():
+            raise HTTPException(403, "shadow jobs are listed for admins only")
         page, nxt = jobs.page(state=state, owner=owner_filter(caller), limit=limit, person=people.scope(),
-                              cursor=cursor, reason=reason)
+                              cursor=cursor, reason=reason, source=source)
         return FastJSON([{**jobs.view(j), "cursor": c} for j, c in page],
                         headers={"X-Next-Cursor": nxt} if nxt else None)
 

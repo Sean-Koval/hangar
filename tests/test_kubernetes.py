@@ -342,3 +342,65 @@ async def test_write_file_streams_in_one_exec(monkeypatch, tmp_path):
     await p.write_file(sb, "/home/agent/ckpt/agent.tgz", data, mode=0o600)
     assert len(streams) == 1 and "head -c" in streams[0].command[-1]
     assert (tmp_path / "home/ckpt/agent.tgz").read_bytes() == data
+
+
+def test_exec_streams_never_use_the_client_ordinary_calls_share(monkeypatch):
+    """kubernetes.stream.stream swaps its client's `request` for the websocket one while it connects; two execs at
+    once on a shared client can leave it swapped, and every later list or read fails with "Handshake status 200 OK"
+    (seen live on GKE: the reconciler, envd and sandbox readiness all stopped). Streams use their own client."""
+    import hangar.providers.kubernetes as k
+
+    p = provider()
+    p.core = type("Core", (), {"connect_get_namespaced_pod_exec": "shared"})()
+    p.core_exec = type("Core", (), {"connect_get_namespaced_pod_exec": "own"})()
+    used: list[str] = []
+
+    class Connected(Exception):
+        pass
+
+    def fake_stream(fn, pod, ns, **kw):
+        used.append(fn)
+        raise Connected
+
+    monkeypatch.setattr(k, "k8s_stream", fake_stream)
+    with pytest.raises(Connected):
+        p._exec_blocking("pod-1", ["true"], 5)
+    assert used == ["own"]
+
+
+def test_the_real_provider_builds_a_separate_client_for_exec_streams():
+    import inspect
+
+    import hangar.providers.kubernetes as k
+
+    src = inspect.getsource(k)
+    assert "k8s_stream(self.core." not in src  # every stream goes through _exec_api
+    assert "self.core_exec = client.CoreV1Api(client.ApiClient())" in src
+
+
+def test_an_open_pod_keeps_its_resolver_and_gets_hangars_names():
+    """Open environments (Agent Sandbox's managed policy) keep their DNS and get the gateway in /etc/hosts; a proxied
+    pod still gets no resolver at all."""
+    aliases = [{"ip": "10.4.0.9", "hostnames": ["hangar-gateway.hangar.svc"]}]
+    pod = provider()._pod_template(spec(), "i", {"hostAliases": aliases})["spec"]
+    assert pod["hostAliases"] == aliases and "dnsPolicy" not in pod and "dnsConfig" not in pod
+    assert "hostAliases" not in provider()._pod_template(spec(), "i")["spec"]
+
+
+async def test_the_warm_pool_template_of_an_open_environment_names_the_gateway(monkeypatch):
+    import hangar.providers.kubernetes as k
+
+    p = provider(gateway_url="http://hangar-gateway.hangar.svc:8788")
+    applied: list[dict] = []
+
+    async def fake_apply(kind, body):
+        applied.append(body)
+
+    monkeypatch.setattr(p, "_apply", fake_apply)
+    monkeypatch.setattr(k.egress, "proxied", lambda settings, spec: False)
+    monkeypatch.setattr(k.egress, "k8s_direct_hosts",
+                        lambda settings: [{"ip": "10.4.0.9", "hostnames": ["hangar-gateway.hangar.svc"]}])
+    await p.sync_warm_pool(spec(), "reg/py:abc")
+    tpl = next(b for b in applied if b["kind"] == "SandboxTemplate")["spec"]["podTemplate"]["spec"]
+    assert tpl["hostAliases"] == [{"ip": "10.4.0.9", "hostnames": ["hangar-gateway.hangar.svc"]}]
+    assert "dnsPolicy" not in tpl

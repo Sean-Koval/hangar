@@ -167,6 +167,39 @@ Evals run on API keys with dollar caps, so eval spend has a monthly budget of it
 - **Seeing it.** `hangar eval budget` (`GET /api/eval/budget`) shows the month, the team's budget, what's spent and
   left, and each author's cap and spend.
 
+## Shadows
+
+A shadow runs a candidate harness on a sampled real ticket, at the same base commit, and delivers nothing; flightdeck
+grades it later against what people merged (#183). The harness owner turns it on per repo:
+
+```bash
+curl -s -X PUT $HANGAR/api/repos/policy -H "Authorization: Bearer $ADMIN" -d '{"repo": "acme/api",
+  "shadow": {"harness": "team-next@sha256:9a41...", "p": 0.1, "sources": ["jira", "github"], "owner": "ivy"}}'
+```
+
+| Field | Meaning |
+| --- | --- |
+| `harness` or `pin_set` | The candidate: a harness lock by digest, or a pin set (its harness, environment and model; the task and base are the real job's) |
+| `p` | The share of the repo's real jobs from `sources` that get a shadow (0.0-1.0; absent or 0: none) |
+| `sources` | `jira`, `github`, `slack`, `github-projects` (default the first three) |
+| `owner` | Whose monthly eval cap the shadows count against ([the eval budget](#the-eval-budget)); the team budget always |
+| `budget_usd` | Each shadow's job budget (5) |
+
+When a sampled job has started (its sandbox is up, its base commit known), hangar starts one trial against a pin set of
+the candidate at that commit (`POST /api/trials`, `source: shadow`, `shadow_of: <job id>`), in the eval queue class
+([team-scale.md](team-scale.md#the-eval-queue-class)). The shadow gets the job's task text and context, untrusted parts
+fenced as for the job, and:
+
+- `deliver: none`, no PR, no `intake.tracker` label, no `source_ref`, `reply_to` or callback: nothing reaches Jira,
+  Slack or GitHub;
+- egress `none`, and no person, so the team's credentials and never someone's own login;
+- in nobody's inbox or job list (`GET /api/jobs?source=shadow`, admins only);
+- `run.json` in the outbox says `source: shadow` and `shadow_of`, and the real job's merge or close events grade it.
+
+**Review comes first.** Turning `p` above 0 is refused unless the last 7 days' review-wait p50 is under 4 hours
+(`hangar metrics weekly`). When it rises above that, shadows pause by themselves (an audit entry `shadow.paused`, once),
+and they resume when it falls back (`shadow.resumed`).
+
 ## The check on the base commit
 
 With a check on every front door, a red base branch would fail every job's check. The agent would spend its verify-fix rounds on failures it didn't cause, best-of-N would rank every attempt as failing, and every PR would go out as a draft. So hangar runs a job's **standing check**, the one from the repo's policy or the environment, once on the base commit before the agent starts:

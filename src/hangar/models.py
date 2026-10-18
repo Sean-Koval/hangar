@@ -546,7 +546,8 @@ class Job(BaseModel):
                     "jira", "github-projects",
                     "env-setup",
                     "experiment",
-                    "review"] = "api"  # --- intake; --- autoinstall: env setup's jobs; --- interfaces: trials;
+                    "review",
+                    "shadow"] = "api"  # --- intake; --- autoinstall: env setup's jobs; --- interfaces: trials;
     # --- AI review (#161): `review` is an independent first-pass review of an agent PR (aireview.py)
     source_ref: str | None = None  # e.g. "github:owner/repo#12"
     requester: str = "system"

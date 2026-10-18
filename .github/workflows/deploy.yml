@@ -96,6 +96,7 @@ jobs:
       id-token: write
     outputs:
       deploy: ${{ steps.decide.outputs.deploy }}
+      infra: ${{ steps.decide.outputs.infra }}
     env:
       STATE_SA: ${{ secrets.GCP_STATE_SERVICE_ACCOUNT }}
       HANGAR_CLUSTER: ${{ secrets.HANGAR_CLUSTER }}
@@ -130,6 +131,7 @@ jobs:
               echo "infra: $out"
             fi
           fi
+          echo "infra=$state" >> "$GITHUB_OUTPUT"
           deploy=true
           if [ "$EVENT" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then
             head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha) || head=""
@@ -170,8 +172,11 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    # Only the digest crosses jobs: GitHub drops a job output that contains a secret's value ("Skip output 'image'
+    # since it may contain secret"), and the registry path is the HANGAR_REGISTRY secret. The deploy job rebuilds the
+    # full reference from the secret, the commit and this digest.
     outputs:
-      image: ${{ steps.out.outputs.image }}
+      digest: ${{ steps.build.outputs.digest }}
     env:
       HANGAR_REGISTRY: ${{ secrets.HANGAR_REGISTRY }}
     steps:
@@ -200,8 +205,11 @@ jobs:
           tags: ${{ env.HANGAR_REGISTRY }}/control-plane:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - id: out
-        run: echo "image=$HANGAR_REGISTRY/control-plane:$GITHUB_SHA@${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+      - name: Digest
+        run: |
+          digest='${{ steps.build.outputs.digest }}'
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::the build returned no image digest"; exit 1; }
+          echo "built control-plane:$GITHUB_SHA@$digest"
 
   deploy:
     needs: [setup, state, images, control-plane]
@@ -216,7 +224,8 @@ jobs:
       HANGAR_URL: ${{ secrets.HANGAR_URL }}
       HANGAR_TOKEN: ${{ secrets.HANGAR_DEPLOY_TOKEN }}
       HANGAR_REGISTRY: ${{ secrets.HANGAR_REGISTRY }}
-      IMAGE: ${{ needs.control-plane.outputs.image }}
+      IMAGE: ${{ secrets.HANGAR_REGISTRY }}/control-plane:${{ github.sha }}@${{ needs.control-plane.outputs.digest }}
+      INFRA: ${{ needs.state.outputs.infra }}  # the cluster's power labels, read by the state job
       FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
       NS: hangar
     steps:
@@ -271,6 +280,12 @@ jobs:
           api() { curl -fsS --max-time 30 -H "Authorization: Bearer $HANGAR_TOKEN" "$@"; }
           view=$(api "$HANGAR_URL/api/admin/power") || view='{}'
           power=$(jq -r '.power.state // "unknown"' <<<"$view" 2>/dev/null) || power=unknown
+          if [ "$power" = unknown ] && [ -n "$INFRA" ] && [ "$INFRA" != unknown ]; then
+            # a server too old to report its power (or one that is down) can't block its own upgrade: the state
+            # job already read the cluster's labels
+            echo "::notice::hangar didn't report its power state; using the cluster's labels: $INFRA"
+            power=$INFRA
+          fi
           held=$(jq -r '.power.hold.when // empty' <<<"$view" 2>/dev/null) || held=""
           echo "power=$power" >> "$GITHUB_OUTPUT"
           echo "sandbox pools: $power${held:+ (held until $held)}"
@@ -293,6 +308,10 @@ jobs:
           prev=$(kubectl -n "$NS" get deploy hangar -o jsonpath='{.spec.template.spec.containers[?(@.name=="hangar")].image}')
           [ -n "$prev" ] || { echo "::error::can't read the running image, so there would be nothing to roll back to"; exit 1; }
           echo "previous=$prev" >> "$GITHUB_OUTPUT"
+          if [[ ! "$IMAGE" =~ /control-plane:[0-9a-f]{40}@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::no usable image reference to deploy (control-plane job's digest missing); refusing before touching the cluster"
+            exit 1
+          fi
           echo "running $prev; deploying $IMAGE"
           echo "go=true" >> "$GITHUB_OUTPUT"
       - name: Drain (creates and destroys in flight finish before hangar restarts)

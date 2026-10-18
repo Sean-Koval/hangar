@@ -491,10 +491,10 @@ def _overlay(fleet: Fleet, job_id: str | None) -> dict[str, Any] | None:
 
 
 def _source_files(spec: EnvSpec, rel: str) -> dict[str, bytes] | None:
-    from hangar.envspec import _contained_path
+    from hangar.envspec import skill_dir
 
     try:
-        src = _contained_path(spec.source_dir or Path("."), rel)
+        src = skill_dir(spec, rel)
     except (ValueError, FileNotFoundError, OSError):
         return None
     return read_dir(src) if src.is_dir() else None

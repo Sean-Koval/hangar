@@ -591,6 +591,12 @@ what it doesn't:
 - **Touched tests.** `touched_tests`: existing test files the trial changed (the job's own check, else from its
   patch).
 
+### Shadows
+
+A repo policy's `shadow` (#183, [repo-policy.md](repo-policy.md#shadows)) samples real intake jobs and runs a candidate
+harness on each at the same base commit: a `source: shadow` trial (`shadow_of` names the real job) that delivers
+nothing, writes back nowhere and runs with egress `none`, for flightdeck to grade against what was merged.
+
 ### The monthly eval budget
 
 Trials count against the team's monthly eval budget and their author's cap (`HANGAR_EVAL_BUDGET_USD_MONTH`, 1500;

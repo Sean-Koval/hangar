@@ -490,6 +490,8 @@ class Outbox:
         m = manifest_doc or {}
         exp = _experiment(job, self.store)
         source = "experiment" if exp else ("job" if (job is not None or s.job_id) else "session")
+        if job is not None and job.source == "shadow":  # --- #183
+            source = "shadow"
         u = total_usage([turn])
         jt = job.turns[job_turn - 1] if job is not None and job_turn else None
         last = job is not None and jt is not None and job_turn == len(job.turns)
@@ -566,7 +568,7 @@ class Outbox:
             "traceparent": extra.get("traceparent"),
             "untrusted": bool(job.untrusted_source) if job else False,
             "tainted": bool((turn.taint or {}).get("tainted")),
-            "shadow_of": None,  # #183
+            "shadow_of": job.labels.get("hangar.shadow_of") if job else None,  # --- #183: the real job
             "pr": {"url": job.result.pr_url, "number": job.result.pr_number} if job and job.result.pr_url else None,
             "diff_files": list(job.result.files)[:DIFF_FILES] if last and job and job.result.files else None,
             "patch": {"base": patch["base"], "bytes": len(patch["text"].encode()), "truncated": patch["truncated"]}

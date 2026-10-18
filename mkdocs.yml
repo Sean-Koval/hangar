@@ -8,6 +8,8 @@ edit_uri: edit/main/docs/
 theme:
   name: material
   font: false
+  logo: assets/brand/mark.svg
+  favicon: assets/brand/favicon.svg
   features:
     - navigation.tabs
     - navigation.sections
@@ -59,7 +61,7 @@ markdown_extensions:
 exclude_docs: |
   research/0012/
 
-# The site's map. Every page under docs/ is in it except docs/assets/README.md (notes on the banner, for the repo) and
+# The site's map. Every page under docs/ is in it except docs/assets/README.md (notes on the brand and front-page assets, for the repo) and
 # the research scripts excluded above. Superseded and deferred specs keep their pages, grouped apart (#220).
 nav:
   - Home: index.md

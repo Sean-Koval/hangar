@@ -206,3 +206,7 @@ Both have *Goal*, *Acceptance criteria* (a checklist), *Verify command*, *Out of
 ## Adding a tracker
 
 `src/hangar/intake.py` holds what every front door shares: `person_for` (who the sender is), `once` (commit after handle), `open_job` (one job per ticket), `submit` (approval for untrusted senders and refusals as answers) and `TRACKERS`, the write-back registry. A tracker sets the job label `intake.tracker` to its ticket reference and registers `TRACKERS[<scheme>] = update(svc, job, ticket, stage)`. Hangar calls it once per stage (`started`, `needs_input`, `delivered`, `failed`) whenever the job reports, whichever thread the conversation is in. `jira.py` and `ghprojects.py` are the two examples.
+
+**Shadows never write back** (#183). A repo policy's `shadow` samples real intake jobs for a shadow run of a candidate
+harness ([repo-policy.md](repo-policy.md#shadows)). A shadow is a `source: shadow` trial without `intake.tracker`,
+`source_ref` or `reply_to`, so no tracker, Slack thread or GitHub issue hears about it: only the real job writes back.
