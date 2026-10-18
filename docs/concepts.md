@@ -90,9 +90,10 @@ Hangar is the run plane of the agent factory: it runs the work and emits data ab
 Every turn records a [manifest](specs/0014-sister-tool-interfaces.md#2-the-effective-harness-manifest-hangarmanifestv1)
 of the configuration it ran with; [trace export](api/traces.md) gives each run as OTLP on the OpenTelemetry GenAI
 conventions; [run capture](api/outbox.md) writes every finished run to a bucket once; and
-[experiment jobs](jobs.md#9-experiments) run variants against graders. Flightdeck reads these to evaluate harnesses;
-Tower decides approvals ([spec 0015](specs/0015-governance-decision-point.md)). Live metrics, traces and
-cost are in [activity](activity.md) and [observability](observability.md).
+[experiment jobs](jobs.md#9-experiments) run variants against graders. Flightdeck reads these to evaluate harnesses.
+Tower, the Govern plane, is to decide approvals once hangar asks it: its decision API is built, and hangar's wiring is
+open (#172, [spec 0015](specs/0015-governance-decision-point.md)). Live metrics, traces and cost are in
+[activity](activity.md) and [observability](observability.md).
 
 ## Inside the control plane
 

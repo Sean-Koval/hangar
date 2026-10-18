@@ -25,11 +25,11 @@ The web UI on `:8787`: jobs with their timeline, the agent's activity, the check
 
 ## Where it sits
 
-Many doors bring work in; hangar runs it; the pull request is the one gate out. Sister tools define the harness (ai-dlc), judge the runs (flightdeck) and govern risky actions (Tower, formerly the governed workspace).
+Many doors bring work in; hangar runs it; the pull request is the one gate out. Around it, the team harness repo defines the harness (ai-dlc adds an optional workflow plugin), flightdeck judges the runs and [Tower](https://sean-koval.github.io/agent-factory/tools/workspace/), the Govern plane, decides risky actions: its decision API is built, and hangar's wiring to it is open ([#172](https://github.com/Sean-Koval/hangar/issues/172), [spec 0015](docs/specs/0015-governance-decision-point.md)).
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="docs/assets/front/hangar-suite-light.png">
-  <img alt="Trackers, chat and automation send work to hangar, which runs it in sandboxes, verifies it and opens a draft PR for people to review; ai-dlc supplies the harness lock, flightdeck reads the outbox, Tower decides risky actions" src="docs/assets/front/hangar-suite-dark.png">
+  <img alt="Trackers, chat and automation send work to hangar, which runs it in sandboxes, verifies it and opens a draft PR for people to review; the team harness repo supplies the harness lock, flightdeck reads the outbox, and hangar is to ask Tower about risky actions" src="docs/assets/front/hangar-suite-dark.png">
 </picture>
 
 ## Use cases

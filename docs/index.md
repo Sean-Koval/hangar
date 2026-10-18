@@ -24,10 +24,10 @@ The web UI on `:8787`: jobs with their timeline, the agent's activity, the check
 
 ## Where it sits
 
-Many doors bring work in; hangar runs it; the pull request is the one gate out. Hangar is the run plane of the agent factory: sister tools define the harness (ai-dlc), judge the runs (flightdeck, through [trace export](api/traces.md) and the [sister tool interfaces](specs/0014-sister-tool-interfaces.md)) and govern risky actions (Tower, formerly the governed workspace). The suite's [architecture page](https://sean-koval.github.io/agent-factory/architecture/) shows how they connect.
+Many doors bring work in; hangar runs it; the pull request is the one gate out. Hangar is the run plane of the agent factory: around it, the team harness repo defines the harness (ai-dlc adds an optional workflow plugin), flightdeck judges the runs (through [trace export](api/traces.md) and the [sister tool interfaces](specs/0014-sister-tool-interfaces.md)) and [Tower](https://sean-koval.github.io/agent-factory/tools/workspace/), the Govern plane, decides risky actions: its decision API is built, and hangar's wiring to it is open ([#172](https://github.com/Sean-Koval/hangar/issues/172), [spec 0015](specs/0015-governance-decision-point.md)). The suite's [architecture page](https://sean-koval.github.io/agent-factory/architecture/) shows how they connect.
 
-![Trackers, chat and automation send work to hangar, which runs it in sandboxes, verifies it and opens a draft PR for people to review; ai-dlc supplies the harness lock, flightdeck reads the outbox, Tower decides risky actions](assets/front/hangar-suite-dark.png#only-dark)
-![Trackers, chat and automation send work to hangar, which runs it in sandboxes, verifies it and opens a draft PR for people to review; ai-dlc supplies the harness lock, flightdeck reads the outbox, Tower decides risky actions](assets/front/hangar-suite-light.png#only-light)
+![Trackers, chat and automation send work to hangar, which runs it in sandboxes, verifies it and opens a draft PR for people to review; the team harness repo supplies the harness lock, flightdeck reads the outbox, and hangar is to ask Tower about risky actions](assets/front/hangar-suite-dark.png#only-dark)
+![Trackers, chat and automation send work to hangar, which runs it in sandboxes, verifies it and opens a draft PR for people to review; the team harness repo supplies the harness lock, flightdeck reads the outbox, and hangar is to ask Tower about risky actions](assets/front/hangar-suite-light.png#only-light)
 
 ## Use cases
 
