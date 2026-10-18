@@ -233,7 +233,7 @@ def test_scale_smoke_skips_with_the_number_that_fit(tmp_path, hangar_with, monke
     state = ha.State(tmp_path / "state.json")
     real = tc._boot_all
 
-    async def two_then_full(url, plan, env, timeout, room=None):
+    async def two_then_full(url, plan, env, timeout, room=None, waiting=None):
         assert room is not None
         got = await real(url, plan[:2], env, timeout)
         raise tc.NoRoom(len(got), "2 sandboxes running; the cluster can't add a node: a Google Cloud quota is "
@@ -244,6 +244,125 @@ def test_scale_smoke_skips_with_the_number_that_fit(tmp_path, hangar_with, monke
         tc.check_scale_smoke(api, state, _opts(scale_sessions=5, scale_people=3))
     assert state.get("data:scale-smoke")["fit"] == 2
     assert not _live_sessions(h, state.run)
+
+
+async def _in_task_group(exc: BaseException):
+    """Raise `exc` the way a boot's error left the MCP client live: inside an anyio TaskGroup, which wraps it."""
+    import anyio
+
+    async with anyio.create_task_group():
+        raise exc
+
+
+_REAL_BOOT = tc._mcp_boot_in
+
+
+def _full_once_booting(reason: str):
+    """A fleet_no_room that has room at the check's start and says `reason` once the boots run."""
+    calls = iter([None])
+    return lambda api: next(calls, reason)
+
+
+def _scale_with(monkeypatch, fail):
+    """Boot the first two sessions for real; the rest raise `fail(name)` inside a TaskGroup, after a moment."""
+    real = _REAL_BOOT
+    count = {"n": 0}
+
+    async def boot(url, token, name, env, timeout):
+        count["n"] += 1
+        if count["n"] <= 2:
+            return await real(url, token, name, env, timeout)
+        await asyncio.sleep(0.2)
+        await _in_task_group(fail(name))
+
+    monkeypatch.setattr(tc, "_mcp_boot_in", boot)
+    monkeypatch.setattr(tc, "ROOM_POLL_SECONDS", 0.02)
+
+
+def test_a_boot_error_comes_out_of_the_task_group_and_the_others_go_on(monkeypatch):
+    """--- #294: the live run said "unhandled errors in a TaskGroup (1 sub-exception)" nine times. A boot's error is
+    reported as itself, and the other boots still finish."""
+    async def boot(url, token, name, env, timeout):
+        if name == "bad":
+            await _in_task_group(ha.Fail("session bad still starting after 900s"))
+        return 1.0, f"sb-{name}"
+
+    monkeypatch.setattr(tc, "_mcp_boot_in", boot)
+    got = asyncio.run(tc._boot_all("u", [("t", "a"), ("t", "bad"), ("t", "b")], "e", 60))
+    assert got[0] == (1.0, "sb-a") and got[2] == (1.0, "sb-b")
+    assert isinstance(got[1], ha.Fail) and str(got[1]) == "session bad still starting after 900s"
+    assert tc.leaf(ExceptionGroup("x", [ExceptionGroup("y", [ValueError("deep")])])).args == ("deep",)
+
+
+@settings(person_max_sessions=3)
+def test_scale_smoke_skips_when_boots_time_out_on_a_full_pool(tmp_path, hangar_with, monkeypatch):
+    """--- #294: 9 of 20 boots timed out inside the MCP client's TaskGroup while the pool said it couldn't add a node;
+    the check failed. It now skips with the number that fit, and releases them."""
+    h, api = hangar_with.h, hangar_with.api
+    state = ha.State(tmp_path / "state.json")
+    _scale_with(monkeypatch, lambda name: ha.Fail(f"session {name} still starting after 900s"))
+    monkeypatch.setattr(ha, "fleet_no_room", _full_once_booting("2 sandboxes running; the cluster can't add a node: "
+                                                                "a Google Cloud quota is exhausted (N2D_CPUS)"))
+    with pytest.raises(ha.Skip, match=r"fit 2 of 5 sessions: 2 sandboxes running; .*quota.*3 waited on capacity"
+                                      r".*--scale-sessions 2") as e:
+        tc.check_scale_smoke(api, state, _opts(scale_sessions=5, scale_people=3))
+    assert "TaskGroup" not in str(e.value)
+    assert state.get("data:scale-smoke")["fit"] == 2
+    assert not _live_sessions(h, state.run)
+
+
+@settings(person_max_sessions=3)
+def test_scale_smoke_skips_on_a_capacity_reason_in_the_error(tmp_path, hangar_with, monkeypatch):
+    """--- #294: a session that failed saying the pool is at its maximum size is capacity, even if the pool's
+    reason never showed while the boots ran."""
+    h, api = hangar_with.h, hangar_with.api
+    state = ha.State(tmp_path / "state.json")
+    _scale_with(monkeypatch, lambda name: ha.Fail(
+        f"session {name} ended failed: timed out after 600s waiting for the sandbox to start; last seen: the sandbox "
+        "node pool is at its maximum size; raise sandbox_max_nodes or free sandboxes"))
+    with pytest.raises(ha.Skip, match=r"fit 2 of 5 sessions: .*maximum size"):
+        tc.check_scale_smoke(api, state, _opts(scale_sessions=5, scale_people=3))
+    assert not _live_sessions(h, state.run)
+
+
+@settings(person_max_sessions=3)
+def test_scale_smoke_still_fails_on_a_genuine_boot_error(tmp_path, hangar_with, monkeypatch):
+    """--- #294: an error that isn't capacity fails the check, with its own text; so does a timeout with no sign of
+    a full pool."""
+    h, api = hangar_with.h, hangar_with.api
+    state = ha.State(tmp_path / "state.json")
+    _scale_with(monkeypatch, lambda name: ha.Fail(f"new_session {name}: the image failed to pull: manifest unknown"))
+    monkeypatch.setattr(ha, "fleet_no_room", _full_once_booting("2 sandboxes running; the cluster can't add a node"))
+    with pytest.raises(ha.Fail, match=r"3 of 5 sessions didn't start: accept-.*manifest unknown") as e:
+        tc.check_scale_smoke(api, state, _opts(scale_sessions=5, scale_people=3))
+    assert "TaskGroup" not in str(e.value)
+    assert not _live_sessions(h, state.run)
+    state = ha.State(tmp_path / "state2.json")
+    _scale_with(monkeypatch, lambda name: ha.Fail(f"session {name} still starting after 900s"))
+    monkeypatch.setattr(ha, "fleet_no_room", lambda api: None)
+    with pytest.raises(ha.Fail, match=r"3 of 5 sessions didn't start: .*still starting after 900s"):
+        tc.check_scale_smoke(api, state, _opts(scale_sessions=5, scale_people=3))
+    assert not _live_sessions(h, state.run)
+
+
+def test_boot_all_keeps_waiting_while_gke_alternates_its_reasons(monkeypatch):
+    """--- #294: hangar shows a pod's latest event, and GKE alternates "can't add a node" with "no node has room";
+    the second doesn't restart the grace. A reason that isn't capacity does."""
+    async def boot(url, token, name, env, timeout):
+        if name.startswith("up"):
+            return 1.0, f"sb-{name}"
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(tc, "_mcp_boot", boot)
+    monkeypatch.setattr(tc, "ROOM_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(ha, "ROOM_GRACE", 0.1)
+    plan = [("t", "up-1"), ("t", "wait-1")]
+    flip = iter(["the cluster can't add a node: quota", None] * 1000)
+    with pytest.raises(tc.NoRoom) as e:
+        asyncio.run(tc._boot_all("u", plan, "e", 60, room=lambda: next(flip),
+                                 waiting=lambda: "waiting for the sandbox to start (40s): no node has room right now "
+                                                 "(0/1 nodes are available: 1 Insufficient cpu)"))
+    assert e.value.up == 1 and "can't add a node" in e.value.why
 
 
 def test_boot_all_stops_once_the_pool_has_had_no_room_for_the_grace(monkeypatch):

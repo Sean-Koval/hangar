@@ -47,6 +47,11 @@ The suite is built to run against the hangar your team uses:
   cluster can't add a node" (a quota) or the pool "is at its maximum size", rather than waiting out
   `--boot-timeout`. `scale-smoke` says how many of its sessions fit (`the sandbox pool fit 7 of 20 sessions: …`);
   rerun it with that many `--scale-sessions` or give the pool room. A node being added is waited for as before.
+  Pods that alternate "can't add a node" with "no node has room right now" keep counting towards the 90 s. One
+  session's failure doesn't stop the others: when boots fail, `scale-smoke` reads each one's error, session reason
+  and sandbox stage, and skips with the fit count if every failure was capacity (a no-room reason, a quota, or a
+  start timeout while the pool said it was full or others of the environment still waited); any other error fails
+  the check with its own text.
 - **Nothing that costs money by default.** Checks that need a real agent turn run only with `--with-model`, and each
   of their jobs and turns has a budget of `--max-usd` (default $1), where hangar stops it. With everything on, that is
   at most about 13 of them: `model`, `steer`, egress's request, `secrets`, `landing`, and `scale-smoke`'s queue (its
