@@ -2,15 +2,43 @@
 
 The control plane serves a web console on the same port as the API, `:8787` by default (`HANGAR_PORT`). Open it,
 paste an API token, and it shows the fleet. The server prints a bootstrap admin token when it first starts and saves
-it to `~/.hangar/bootstrap-token` (in its data directory). The console uses an admin's routes, so use an admin token; the token stays
-in that browser until you choose **Sign out**.
+it to `~/.hangar/bootstrap-token` (in its data directory). The console uses an admin's routes, so use an admin token;
+the token stays in that browser until you choose **Sign out**.
 
-Its top bar has nine sections: **Jobs**, **Sessions**, **Fleet**, **Environments**, **Credentials**, **Snapshots**,
-**Connect** (MCP snippets and API tokens), **Activity** (the audit log) and **Usage** (spend, budget stops). This page
-covers the first three, where the work happens. The Jobs, Sessions and Fleet tabs carry counts: active jobs, live
-sessions and live sandboxes. Jobs, Sessions and Fleet refresh every 4 seconds while the browser tab is visible.
+Its top bar has ten sections: **Needs you**, **Jobs**, **Sessions**, **Fleet**, **Environments**, **Credentials**,
+**Snapshots**, **Connect** (MCP snippets and API tokens), **Activity** (the audit log) and **Usage** (spend, budget
+stops). This page covers the first four, where the work happens. Needs you, Jobs, Sessions and Fleet carry counts:
+what waits on you, active jobs, live sessions and live sandboxes. The open section refreshes every 4 seconds while the
+browser tab is visible, and the Needs-you count about every half minute elsewhere. On a phone (below 760 px) the first
+four sections move to a bottom tab bar, and the other six, with the providers' state, sit under **More**.
 
 The console follows the browser's light or dark setting. Terminals are always dark.
+
+## Needs you
+
+Everything waiting on a person, from the same list `hangar inbox`, Slack and MCP clients get (`GET /api/inbox`): your
+own work, and for an admin also the work nobody in particular owns, such as jobs from GitHub issues and Slack.
+
+First come the cards you decide in place:
+
+- **A held tool call**: a running turn under `approvals: ask` wants to run a command. The card shows the exact
+  command, which agent asked and in which sandbox, for whom and how long ago, the policy that held it (and whether the
+  turn read untrusted content), and when it expires and what happens then (it is denied and the agent carries on).
+  **Allow**, **Allow for this turn** (also allows calls like this one until the turn ends; nothing is written to the
+  agent's settings, so the next turn asks again) or **Deny**.
+- **A job waiting to start**: from someone the team doesn't trust, for example, or held by a daily spend cap; the card
+  says why. **Approve job** or **Reject**. Approving follows the same rule as every other approval path, so you can't
+  approve your own work ([security](security.md)).
+- **A request** an agent made for access (an environment request): **Approve** or **Deny**.
+- **A question** the agent asked: type an answer (or pick one of the options it offered) and **Answer**. The answer
+  goes back as the agent's next message.
+
+**Deny** and **Reject** need a reason: the field opens in the card, and the reason goes back to the agent or the
+requester. **Open job** or **Open session** shows the work first. After the cards come the jobs that failed in the last
+week and the PRs waiting for your review on GitHub, with **Open job** and **Open PR**. With nothing waiting, the page
+says so and shows how many jobs and sessions are running.
+
+The same cards appear on the job or session they belong to, and in the Fleet's detail panel.
 
 ## Jobs
 
@@ -21,18 +49,27 @@ Work handed to cloud agents by people, services and the [front doors](intake.md)
 repo, base branch, check command (**Check with**), what to deliver (draft PR, PR, branch only, or nothing) and minutes
 per turn, plus context files and links. Files go to `~/.hangar/jobs/<job>/` beside the repo, never into it.
 
-Choose a job to see:
+Choose a job to see what waits on you (its cards, above), then:
 
 - who asked and through which door, where it runs (environment, agent, model), its repo and branch, the pull request
   and the check's result;
 - the agent's summary and, when the check failed, its output;
+- the agent's question, or the message box (below);
+- **Changes**: **Show the change** reads the commits, uncommitted edits and new files against the base, from the
+  sandbox or its last checkpoint, as a diff per file. **Comment** on a line, and the comments go to the agent with your
+  next message, each with its file, line and the line itself; **Send comments** sends them on their own;
+- **Decisions**: the tool calls decided in the running turn, allowed or denied, with the reason and who decided;
 - **Activity**: what the agent did (messages, tool calls, commands, file changes), with tokens and cost;
 - the **Timeline** of the job's events, its **Turns**, and its **Instructions**.
 
+**The message box.** While the agent's turn is running, the box steers it: the message applies after the current
+tool call, and shows as queued until the agent has it. A one-shot agent can't take a message mid-turn, and the box
+says so. Once the job has finished, **Reply to the agent** runs another turn in the same sandbox and branch, and the PR
+updates; a job whose sandbox was released resumes from its last checkpoint. Ctrl+Enter (⌘+Enter) sends.
+
 While a job runs, **Watch the agent** opens the agent's own terminal, **Open a shell** opens another one in the same
-sandbox, and **Cancel job** stops the agent (work committed so far stays in the sandbox). When it has finished, **Reply
-to the agent** runs another turn in the same sandbox and branch, and the PR updates. A job whose sandbox has been
-released resumes from its last checkpoint. See [jobs](jobs.md).
+sandbox, and **Cancel job** stops the agent after you confirm; work committed so far stays in the sandbox and on the
+branch. See [jobs](jobs.md) and [steering](steering.md).
 
 ## Sessions
 
@@ -42,15 +79,19 @@ Streams of work you come back to. The list shows your own sessions; **Show job s
 **New session** takes a name, an environment, an agent and an optional first message. Without a message the sandbox
 just opens.
 
-A session's panel shows its conversation (resumed natively, or by a summary handoff), its checkpoints and its idle
-setting: suspend after 15 minutes, 30 minutes, 2 hours or 8 hours idle, or stay up until you suspend it. From there:
+A session's panel shows what waits on you (its cards, or the agent's question), its conversation (resumed natively, or
+by a summary handoff), its checkpoints and its idle setting: suspend after 15 minutes, 30 minutes, 2 hours or 8 hours
+idle, or stay up until you suspend it. Then **Changes**, **Decisions**, **Activity** and **Turns**, as on a job. From
+there:
 
-- **Message the agent**: it continues its own conversation. A suspended session resumes first.
+- **Message the agent**: an idle or suspended session starts a turn (a suspended one resumes first). While the agent
+  is busy, your message queues and applies after the current tool call; until the agent has it, the queued row has a
+  × to take it back.
 - **Resume** (or **Open**, before anything was saved) starts a fresh sandbox from the last checkpoint.
 - **Talk to the agent here** resumes the agent's conversation interactively in a terminal, between turns.
 - **Last turn's terminal**, **Open a shell** and **Suspend** (save, then release the sandbox).
 
-See [sessions](sessions.md).
+A session that carries a job takes its messages on the job. See [sessions](sessions.md).
 
 ## Fleet
 
@@ -64,12 +105,13 @@ The same sandboxes are shown four ways, with one selection shared by all four. T
 
 ### Board
 
-![The Board: every sandbox of the checkout-python environment as a small tile with its tail number, one waiting on a person and selected, its detail panel beside the board](assets/front/ui-fleet-board.png)
+![The Board: every sandbox of the checkout-python environment as a small tile with its tail number, the one waiting on a person selected, its detail panel beside the board with the agent's question](assets/front/ui-fleet-board.png)
 
 Every sandbox at a glance: one small tile per sandbox, grouped by environment, labelled with the last four characters of
 its id. A tile shows its status mark and, while the work has a stage, four pips for plan, edit, test and PR. Tiles are
 ordered by attention: what needs a person, then failed, then denied, then the quiet states. Hover for the sandbox's
-name, status, reason and task. On a wide screen the detail panel sits beside the Board; elsewhere it opens as a drawer.
+name, status, reason and task. On a wide screen the detail panel sits beside the Board; elsewhere it opens as a drawer
+on the right.
 
 ### Bays
 
@@ -113,20 +155,11 @@ The brand yellow marks the selected tile, focus and the primary action, never a 
 
 ### The detail panel
 
-Select a sandbox in any view to open its detail panel. It holds every action, so all four views get the same ones. It
-shows the reason the sandbox needs you, its stage, its name, the job or session it belongs to (a link) and whose it is,
-where it runs (environment, provider, agent, model), its age and lease, repo, branch, credentials, the sandbox it was
-forked from, and its task.
-
-**Deciding a hold.** When a sandbox needs approval, the panel shows what is held and two buttons:
-
-- a job waiting for approval to start (from someone the team doesn't trust, for example, or held by a daily spend cap;
-  the panel says why): **Approve job** queues it, **Deny** rejects it after you confirm, and it won't run;
-- a tool call a running turn asked for under `approvals: ask`: the command is shown, and **Allow** or **Deny** answers
-  it. A denied call goes back to the agent, which carries on.
-
-Approving a job follows the same rule as every other approval path, so you can't approve your own work
-([security](security.md)). For an agent's question, **Answer the agent** opens its job or session, where you reply.
+Select a sandbox in any view to open its detail panel. It holds every action, so all four views get the same ones.
+What waits on a person comes first: the [cards](#needs-you) for a held tool call or a job waiting to start, decided
+here, or the agent's question with its **Answer**. Then its stage, its name, the job or session it belongs to (a link)
+and whose it is, where it runs (environment, provider, agent, model), its age and lease, repo, branch, credentials, the
+sandbox it was forked from, and its task.
 
 **Sandbox actions.** On a running sandbox: **Terminal** (a shell), **Run agent** (a headless agent on a task, in its own
 terminal, which opens), **Run command**, **Fork** (snapshot it and start copies with the same files, dependencies and
@@ -140,24 +173,26 @@ its terminal.
   **Home** and **End** go to the first and last.
 - **Enter** (or **Space**) opens the focused sandbox in the detail panel.
 - **Escape** closes the panel where it is a drawer, and focus returns to the tile.
+- In a message box, **Ctrl+Enter** (⌘+Enter) sends.
 
-Focus and scroll survive the 4-second refresh. When the set of sandboxes that need someone, failed or were denied
-changes, a screen reader hears how many need you and how many failed or were denied.
+Focus, scroll and a half-written answer or reason survive the 4-second refresh. When the set of sandboxes that need
+someone, failed or were denied changes, a screen reader hears how many need you and how many failed or were denied.
 
 ## Terminals
 
-Terminals open in a drawer at the bottom of the console, one tab each; drag its edge to resize it. Opening an agent run
-attaches to the same terminal the agent uses: you see what it types and can type back. **Terminal** opens a plain
-shell; to switch to a terminal an agent or an MCP client is using, choose **Sessions…**, pick it and **Attach**. A
-closed connection reconnects when you press Enter.
+Terminals open in a drawer at the bottom of the console, one tab each; drag its top edge to resize it. Opening an
+agent run attaches to the same terminal the agent uses: you see what it types and can type back. **Terminal** opens a
+plain shell; to switch to a terminal an agent or an MCP client is using, choose **Sessions…**, pick it and **Attach**.
+A closed connection reconnects when you press Enter. Escape inside a terminal goes to the program running there (vim,
+less), not to the console.
 
 ## Hide, Destroy and Snapshot
 
 - **Hide**, in the terminal drawer, only hides the drawer. The terminals stay open and the sandbox keeps running.
   Close a terminal with its tab's ×.
 - **Destroy**, in the detail panel, deletes the sandbox and its filesystem, after you confirm, and closes its
-  terminals. Push or save what you want to keep first. A session's sandbox is checkpointed before it goes, so the
-  session suspends and resumes later from that checkpoint.
+  terminals. Push or save what you want to keep first. A job's branch and a session's conversation are kept: a
+  session's sandbox is checkpointed before it goes, so the session suspends and resumes later from that checkpoint.
 - **Snapshot** keeps the sandbox's state without stopping it: a full snapshot where the provider has them, otherwise
   the workspace's files. Snapshots are listed under **Snapshots**, where **Start copy** starts a new sandbox from one.
   Take one before you destroy a sandbox whose files you may need.

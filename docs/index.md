@@ -20,7 +20,7 @@ The web UI on `:8787`: jobs with their timeline, the agent's activity, the check
 
 ![The sessions view: a resumable session with its saved conversation and checkpoint](assets/front/ui-sessions.png)
 
-![The Fleet page's Board: every sandbox as a tile by environment, the one waiting on a person selected, with its detail panel](assets/front/ui-fleet-board.png)
+![The Fleet page's Board: every sandbox as a tile by environment, the one waiting on a person selected, with the agent's question in its detail panel](assets/front/ui-fleet-board.png)
 
 ![hangar inbox: PR #43 waits for review; another job's agent asks a question](assets/front/inbox.png)
 
