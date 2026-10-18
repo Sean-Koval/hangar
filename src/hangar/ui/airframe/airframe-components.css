@@ -1,4 +1,4 @@
-/* Airframe theme-v3 components: the af- classes. Generated from airframe/styles/ by scripts/airframe.py;
+/* Airframe theme-v4 components: the af- classes. Generated from airframe/styles/ by scripts/airframe.py;
    do not edit. Load after airframe.css. Reference and previews: airframe/components/, and the
    gallery on https://sean-koval.github.io/agent-factory/airframe/ */
 @import url('https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=DM+Mono:wght@400;500&family=Red+Hat+Text:ital,wght@0,400..700;1,400..700&display=swap');
@@ -112,6 +112,18 @@ body{margin:0;background:var(--af-canvas);color:var(--af-fg);font-family:var(--a
 .af-readout b{font-weight:inherit;background:var(--af-readout-cell);padding:.05em .05em;margin-right:.07em}
 .af-readout b.af-readout__p{background:none;padding-inline:0;margin-right:.03em}
 .af-readout--l{font-size:clamp(34px,5vw,60px)} .af-readout--m{font-size:30px} .af-readout--s{font-size:20px}
+
+/* Forced colors (Windows Contrast Themes): the browser replaces background colors and drops box-shadows, which would
+   erase the status marks and the lit edge. Paint marks in CanvasText so the shape still says the status, and turn
+   tonal separation and lit edges into outlines. System colors only; never opt a status out of forced colors. */
+@media (forced-colors: active){
+  .af-status__mark{background:CanvasText}
+  .af-status--queued .af-status__mark{background:transparent;border-color:CanvasText}
+  .af-status--denied{background:Canvas;color:CanvasText;outline:1px solid CanvasText;outline-offset:-1px}
+  .af-card{outline:1px solid CanvasText;outline-offset:-1px}
+  .af-card--lit{outline-width:2px;outline-offset:-2px}
+  .af-btn--primary{border:2px solid ButtonText}
+}
 /* ===== core.css ===== */
 /* ===== Airframe · core components. af- BEM classes on top of base.css atoms.
    Tokens only: every color is var(--token) or a color-mix() of tokens. No borders on cards, no shadows
@@ -394,6 +406,15 @@ a.af-seg__btn{display:inline-flex;align-items:center;text-decoration:none}
   .af-hero__stage{padding:20px 0 20px 20px}
 }
 @media (max-width:520px){.af-hero .af-readouts{--af-cols:1}}
+
+/* Forced colors: attention rows keep an edge once their tint and inset ring are gone (see base.css) */
+@media (forced-colors: active){
+  .af-list__row.is-attention{outline:2px solid CanvasText;outline-offset:-2px}
+  .af-table tr.is-attention td:first-child{border-left:3px solid CanvasText}
+  .af-table tbody tr:is(.is-selected,[aria-selected="true"]) td:first-child{border-left:3px solid Highlight}
+  .af-seg__btn[aria-pressed="true"],.af-seg__btn[aria-current="page"]{background:Highlight;color:HighlightText}
+  .af-nav__tab:is([aria-current="page"],.is-active)::after{background:CanvasText}
+}
 /* ===== viz.css ===== */
 /* ===== Airframe · viz — icon specimen, fleet view, session lanes, trace spans. Tokens only (tokens.css + base.css atoms). ===== */
 
@@ -724,3 +745,28 @@ button.af-lanes__label:focus-visible{outline:2px solid var(--af-focus);outline-o
 
 @media (max-width:1100px){.af-statecols{grid-template-columns:repeat(2,minmax(0,1fr))}.af-statecol--wide{grid-column:span 2}}
 @media (max-width:640px){.af-statecols{grid-template-columns:minmax(0,1fr)}.af-statecol--wide{grid-column:auto}.af-statecol--wide .af-statecol__list{grid-template-columns:minmax(0,1fr)}}
+
+/* Forced colors: marks, pips and lane marks in CanvasText; tiles get an outline, attention tiles a 2px one; hatched
+   waits become dashed outlines because gradients and box-shadows are dropped (see base.css) */
+@media (forced-colors: active){
+  .af-stand__mark,.af-lane-mark--fail,.af-lane-mark--deny,.af-span--failed::after{background:CanvasText}
+  .af-stand--queued .af-stand__mark{background:transparent;border-color:CanvasText}
+  .af-stand__pip,.af-track__seg i{background:GrayText}
+  .af-stand__pip--done,.af-stand__pip--now,.af-track__seg--done i,.af-track__seg--now i{background:CanvasText}
+  .af-stand,.af-bay,.af-mini{outline:1px solid CanvasText;outline-offset:-1px}
+  .af-stand--approval,.af-stand--failed,.af-stand--denied,.af-bay--approval,.af-bay--failed,.af-bay--denied,
+  .af-mini--approval,.af-mini--failed,.af-mini--denied{outline-width:2px;outline-offset:-2px}
+  .af-stand--off{outline-style:dashed}
+  .af-lane-seg--plan,.af-lane-seg--edit,.af-lane-seg--test{background:GrayText}
+  .af-lane-seg--pr,.af-lane-mark--merge{outline:1px solid CanvasText;outline-offset:-1px}
+  .af-lane-seg--wait,.af-span--wait{background:none;outline:2px solid CanvasText;outline-offset:-2px}
+  .af-span--failed{outline:2px solid CanvasText;outline-offset:-2px}
+  .af-span--model,.af-span--sandbox{background:GrayText}
+  .af-span--tool{outline:1px solid CanvasText;outline-offset:-1px}
+  .af-span--turn::before{background:CanvasText}
+  .af-bay--new,.af-stand--free{outline:none}
+  .af-stand[aria-pressed="true"],.af-bay.is-selected,.af-mini.is-selected{outline:2px solid Highlight;outline-offset:2px}
+  .af-lanes__row--selected .af-lanes__label{border-left:2px solid Highlight}
+  .af-trace__row[aria-pressed="true"]{outline:2px solid Highlight;outline-offset:-2px}
+  .af-lanes__now,.af-lanes__now::before,.af-lanes__keynow{background:Highlight}
+}
