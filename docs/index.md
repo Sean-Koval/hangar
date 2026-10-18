@@ -67,7 +67,7 @@ To look around first without Docker or a key, run the demo hangar the recording 
 | **Usage and insight** | Tokens, cost and budgets per job and person ([activity](activity.md)), traces as OTLP ([observability](observability.md)), and run capture for [flightdeck](specs/0014-sister-tool-interfaces.md). | Shipped |
 | **Shadow runs** | A repo policy samples real tickets and runs a candidate harness on each at the same base commit; it delivers nothing, and flightdeck grades it against what people merged ([shadows](repo-policy.md#shadows)). | Shadow |
 | **Governed approvals** | Job release, landing and risky tool calls ask [Tower](https://sean-koval.github.io/agent-factory/tools/workspace/), the Govern plane, which decides and signs a receipt; hangar enforces and fails closed. Today hangar's own approval rule decides; the client and contract are built ([spec 0015](specs/0015-governance-decision-point.md)). | Planned ([#172](https://github.com/Sean-Koval/hangar/issues/172)) |
-| **Overnight lane** | One Spot node kept up while the sandbox pools are powered down (01:00–10:00), so evening tickets become PRs by morning. | Planned ([#186](https://github.com/Sean-Koval/hangar/issues/186)) |
+| **Overnight lane** | One Spot node kept up while the sandbox pools are powered down (01:00–10:00) for the intake jobs of repos that opt in and for evals, so evening tickets become PRs by morning; off until an admin turns it on ([the overnight lane](gke.md#the-overnight-lane)). | Shipped |
 
 *Shipped*: on main, on by default or behind a setting. *Shadow*: built, and runs beside real work without changing what people get. *Planned*: an open issue.
 
