@@ -176,7 +176,7 @@ def test_console_is_assembled_from_airframe_parts():
     assert 'airframe.drawer.open("#drawer", { scrim: false })' in app
     assert "af-drawer--right" in fleet and "af-drawer__foot" in fleet
     assert "airframe.drawer.open(el, { scrim: false })" in fleet
-    assert "--drawer-pad: var(--af-drawer-inset)" in css, "the page and the detail stop above the terminal drawer"
+    assert "--drawer-pad: calc(var(--af-drawer-inset)" in css, "the page and the detail stop above the terminal drawer"
     # empty states are af-empty (no-data, after-action, compact); the five own shapes are gone
     assert "af-empty" in js and 'kind: "after-action"' in app
     for dead in ("empty-floor", "fleet-empty__envs", "fd-empty", "empty-row", 'class="empty"', 'class="error"'):
@@ -186,6 +186,30 @@ def test_console_is_assembled_from_airframe_parts():
     # the markup helpers are airframe.js's, not copies
     assert "const { status, btn, avatar } = airframe;" in app
     assert "airframe.meta(" in app and "airframe.icon(" in app
+
+
+def test_narrow_screens_get_a_bottom_tab_bar():
+    """Below 760px the nine tabs become a bottom tab bar (Jobs, Sessions, Fleet, More) and the six other sections sit in
+    the More sheet, so every section is reachable on a phone (Tower's pattern)."""
+    html, css, app = (UI / "index.html").read_text(), (UI / "app.css").read_text(), (UI / "app.js").read_text()
+    top = re.findall(r'<a class="af-nav__tab" href="#([a-z]+)"', html)
+    bar = re.findall(r'<a class="tab" href="#([a-z]+)"', html)
+    more = re.findall(r'<a class="af-menu__item" href="#([a-z]+)"', html)
+    assert len(top) == 9 and bar == ["jobs", "sessions", "fleet"] and bar + more == top, (bar, more)
+    assert 'class="tab" id="tab-more" data-more aria-expanded="false" aria-controls="more-sheet"' in html
+    assert '<div id="more-sheet" class="more-sheet" role="dialog" aria-label="More sections" hidden>' in html
+    # the counts show in both bars; the current section is marked in all three places
+    for name in ("jobs", "sessions", "fleet"):
+        assert html.count(f'data-count="{name}"') == 2, name
+    assert "navCount(" in app and "function markCurrent()" in app and 'moreSheet(' in app
+    # CSS: hidden wide, a fixed 4-column bar below 760px; what sits at the bottom stops above it
+    assert ".tabbar, .more-sheet { display: none; }" in css
+    narrow = css[css.index("@media (max-width: 760px)"):]
+    for rule in (".topbar .af-nav__tabs { display: none; }", "grid-template-columns: repeat(4, 1fr)",
+                 "--tabbar-h: calc(57px", ".terminal-drawer { bottom: var(--tabbar-h); }",
+                 ".af-toasts { bottom: calc(var(--af-space-16) + var(--drawer-pad)); }"):
+        assert rule in narrow, rule
+    assert "--drawer-pad: calc(var(--af-drawer-inset) + var(--tabbar-h))" in css
 
 
 def test_fleet_header_leads_with_what_needs_a_person():

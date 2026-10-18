@@ -103,13 +103,36 @@ function route() {
   if (v === "jobs" && linked) state.selectedJob = linked;
   state.view = ["jobs", "sessions", "fleet", "environments", "credentials", "snapshots", "connect", "activity", "usage"].includes(v) ? v : "fleet";
   $$(".view").forEach((s) => (s.hidden = s.id !== `view-${state.view}`));
-  $$(".af-nav__tab[data-view]").forEach((a) => {
-    if (a.dataset.view === state.view) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
-  });
+  moreSheet(false);
+  markCurrent();
   ({ jobs: loadJobs, sessions: loadSessions, fleet: loadFleet, environments: loadEnvs, credentials: loadCreds, snapshots: loadSnaps, connect: loadConnect,
      activity: loadAudit, usage: loadUsage })[state.view]();
 }
 window.addEventListener("hashchange", route);
+// the current section, in the top bar, the bottom tab bar and the More sheet; on a phone the sections past the first
+// three live under More, so the More tab is current for them, and while the sheet is open
+function markCurrent() {
+  const more = !$("#more-sheet").hidden;
+  $$("[data-view]").forEach((a) => {
+    const cur = a.dataset.view === state.view && !(more && a.closest("#tabbar"));
+    if (cur) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+  });
+  if (more || $(`#more-sheet [data-view="${state.view}"]`)) $("#tab-more").setAttribute("aria-current", "page");
+  else $("#tab-more").removeAttribute("aria-current");
+}
+// a count beside a section's name, in the top bar and the bottom tab bar alike
+const navCount = (name, n) => $$(`[data-count="${name}"]`).forEach((el) => (el.textContent = n || ""));
+// the More sheet (narrow screens): the six sections the tab bar has no room for, and the providers' state
+function moreSheet(open) {
+  const sheet = $("#more-sheet"), tab = $("#tab-more");
+  sheet.hidden = !open;
+  tab.setAttribute("aria-expanded", String(open));
+  markCurrent();
+  if (open) $("#more-sheet [data-view]").focus();
+}
+$("#tab-more").addEventListener("click", () => moreSheet($("#more-sheet").hidden));
+$("#more-sheet").addEventListener("click", (e) => { if (e.target.closest("[data-view]")) moreSheet(false); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#more-sheet").hidden) { moreSheet(false); $("#tab-more").focus(); } });
 
 let pollTimer = null;
 async function boot() {
@@ -134,10 +157,12 @@ async function refreshMeta() {
   ]);
   Object.assign(state, { overview: ov, envs, creds, harnesses });
   // a provider is quiet while it works (running) and a failed triangle when it doesn't
-  $("#providers").innerHTML = Object.entries(ov.providers).map(([n, p]) =>
+  const providers = Object.entries(ov.providers).map(([n, p]) =>
     `<span class="prov af-status af-status--${p.ok ? "running" : "failed"}" title="${esc(p.error || (p.capabilities?.microvm ? "microVM isolation" : ""))}">
        <i class="af-status__mark"></i>${esc(n)}${p.ok ? "" : " unavailable"}${n === ov.default_provider && Object.keys(ov.providers).length > 1
          ? `<span class="hint">default</span>` : ""}</span>`).join("");
+  $("#providers").innerHTML = providers;
+  $("#more-providers").innerHTML = `<span class="af-lbl">Providers</span>${providers}`;  // the top bar hides them on a phone
 }
 
 /* ------------------------------------------------------------------ fleet */
@@ -403,7 +428,7 @@ function jobRepo(j) {
 
 function renderJobs() {
   const active = state.jobs.filter((j) => j.active);
-  $("#nav-jobs").textContent = active.length || "";
+  navCount("jobs", active.length);
   if (state.view !== "jobs") return;
   const f = $("#jobs-filter").value;
   const shown = state.jobs.filter((j) => !f || (f === "active" ? j.active : j.state === f));
@@ -528,7 +553,7 @@ async function loadSessions(quiet = false) {
 function renderSessions() {
   const showJobs = $("#ses-jobs").checked;
   const mine = state.sessions.filter((x) => showJobs || !x.job_id);
-  $("#nav-sessions").textContent = mine.filter((x) => ["idle", "running", "starting"].includes(x.state)).length || "";
+  navCount("sessions", mine.filter((x) => ["idle", "running", "starting"].includes(x.state)).length);
   if (state.view !== "sessions") return;
   $("#session-list").innerHTML = mine.length ? mine.map((x) => `<li><button data-ses="${esc(x.id)}"
       class="job-row ${x.id === state.selectedSession ? "active" : ""} ${sesRole(x) === "approval" ? "is-attention" : ""}" data-tone="${sesRole(x)}">

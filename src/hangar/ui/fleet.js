@@ -183,7 +183,7 @@ function renderFleet() {
   $$(".fleet-views [data-fleet-view]").forEach((a) => {
     if (a.dataset.fleetView === fleet.view) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
   });
-  $("#nav-count").textContent = units.filter((u) => u.live).length || "";
+  navCount("fleet", units.filter((u) => u.live).length);
   $("#fleet-sub").innerHTML = summaryHtml(units);
   const body = { board: boardHtml, bays: baysHtml, columns: columnsHtml, owners: ownersHtml }[fleet.view](units);
   paint($("#bays"), body, `view:${fleet.view}`);
