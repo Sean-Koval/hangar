@@ -39,14 +39,9 @@ function personOf(actor, person) {
 const personName = (id) => (id ? fleet.people[id]?.name || id : "hangar");
 const firstName = (id) => personName(id).split(" ")[0];
 const ownerOf = (u) => (u.owner ? personName(u.owner) : u.actor || "hangar");
-const initialsOf = (name) => {
-  const w = String(name || "").split(/[\s._-]+/).filter(Boolean);
-  return ((w.length > 1 ? w[0][0] + w[1][0] : (w[0] || "?").slice(0, 2)) || "?").toUpperCase();
-};
 const initials = (id) => initialsOf(personName(id));
-// the avatar triad: people are round, agents hexagonal (the harness's initials; the agent glyph when there is none)
+// the avatar triad: people are round (owners), agents hexagonal (agentAvatar, app.js)
 const personAvatar = (id, size = 28) => avatar("person", initials(id), { size, name: personName(id) });
-const agentAvatar = (harness, size = 28) => avatar("agent", harness ? initialsOf(harness) : "", { size, name: harness || "agent" });
 const repoShort = (r) => (r || "").replace(/^https?:\/\/(www\.)?github\.com\//, "").replace(/\.git$/, "");
 const dur = (s) => (s < 3600 ? `${Math.max(1, Math.round(s / 60))} min`
   : `${Math.floor(s / 3600)} h${Math.round((s % 3600) / 60) ? ` ${Math.round((s % 3600) / 60)} min` : ""}`);
@@ -206,10 +201,17 @@ function paint(el, html, key) {
   const inside = el.contains(active) && active !== el;
   const focusId = inside ? active.closest("[data-id]")?.dataset.id : null;
   const focusSel = inside ? focusKey(active) : "";
+  const typing = inside && active.matches("textarea") ? [active.closest(".af-question, .af-approval")?.dataset.approval || "question", active.value] : null;
+  const reasons = openReasons(el);
   const scrolls = [...el.querySelectorAll("[data-scroll]")].map((s) => [s.dataset.scroll, s.scrollLeft, s.scrollTop]);
   const own = [el.scrollLeft, el.scrollTop];
   el.innerHTML = html;
   el.dataset.painted = key;
+  restoreReasons(el, reasons, (id) => fleet.cards.get(id));
+  if (typing) {  // a half-written answer or reason survives the repaint, with its focus
+    const ta = typing[0] === "question" ? el.querySelector(".af-question textarea") : el.querySelector(`[data-approval="${CSS.escape(typing[0])}"] textarea`);
+    if (ta) { ta.value = typing[1]; ta.focus({ preventScroll: true }); }
+  }
   [el.scrollLeft, el.scrollTop] = own;
   for (const [k, l, t] of scrolls) {
     const s = el.querySelector(`[data-scroll="${CSS.escape(k)}"]`);
@@ -223,7 +225,7 @@ function paint(el, html, key) {
   }
 }
 // what identifies a focused control across a repaint: its data attributes (the tile, the action, the run, the env)
-const focusKey = (n) => ["data-tile", "data-act", "data-go", "data-select", "data-run", "data-env", "data-fleet-close"]
+const focusKey = (n) => ["data-tile", "data-act", "data-go", "data-select", "data-run", "data-env", "data-fleet-close", "data-decide", "data-answer"]
   .filter((a) => n.hasAttribute(a)).map((a) => `[${a}="${CSS.escape(n.getAttribute(a))}"]`).join("");
 // one tab stop per board (the selected tile, else the first); arrow keys move within it
 function tabStops(el) {
@@ -410,9 +412,25 @@ function ownersHtml(units) {
   return `<div class="af-panel af-owners" data-scroll="owners"><div class="af-owners__rows" data-board>${head}${rows}</div></div>`;
 }
 
-/* ---- the detail panel: everything about the selected sandbox, and every action. Airframe's Drawer parts (head, body,
-   foot) in both of its places: a right drawer (airframe.drawer, no scrim) in Bays, Columns and Owners and on narrow
-   screens, a docked panel beside the Board on wide ones. The decision sits in the foot: inspect, refuse, accept. */
+/* ---- the detail panel: everything about the selected sandbox, and every action. Airframe's Drawer parts (head and
+   body) in both of its places: a right drawer (airframe.drawer, no scrim) in Bays, Columns and Owners and on narrow
+   screens, a docked panel beside the Board on wide ones. What waits on a person sits first in the body as Airframe's
+   ApprovalCard (a held tool call, a job waiting to start) or Question card, decided in place. */
+// the cards the selected sandbox shows, by approval id, for the delegated click handler
+fleet.cards = new Map();
+function detailCards(u) {
+  const cards = [];
+  const job = u.job, ses = u.ses;
+  if (job?.state === "awaiting_approval") cards.push(jobApproval(job));
+  const ctx = { harness: u.harness, sandbox: u.id, owner: ownerOf(u), job: job?.id, session: ses?.name, sessionId: ses?.id };
+  const seen = new Set();
+  for (const ap of [...(job?.pending_approvals || []), ...(ses?.pending_approvals || [])]) {
+    if (seen.has(ap.id)) continue;
+    seen.add(ap.id);
+    cards.push(...toolApprovals([ap], ctx));
+  }
+  return cards;
+}
 function detailHtml(u) {
   if (!u) return `<div class="af-drawer__body">${emptyState({ compact: true, icon: "agent", title: "No sandbox selected.",
     text: "Arrow keys move across the board; Enter opens one." })}</div>`;
@@ -420,16 +438,17 @@ function detailHtml(u) {
   const act = (a, icon, label, kind = "secondary", extra = {}) => btn(label, { kind, sm: true, icon, attrs: { "data-act": a, ...extra } });
   const runs = (sb.info?.runs || []).slice(-4).reverse();
   const branch = sb.info?.work_branch || sb.branch;
-  const go = u.job ? `job:${u.job.id}` : u.ses ? `session:${u.ses.id}` : null;
-  // a hold the console can decide: a job waiting to start, or a tool call a running turn asked for
-  const decide = u.ask ? `${go ? btn(u.job ? "Open job" : "Open session", { kind: "ghost", sm: true, attrs: { "data-go": go } }) : ""}
-      ${btn("Deny", { kind: "danger", sm: true, attrs: { "data-act": "deny" } })}${btn(u.ask.kind === "job" ? "Approve job" : "Allow", { kind: "primary", sm: true, attrs: { "data-act": "approve" } })}` : "";
-  const answer = u.label === "Needs input" && go ? btn("Answer the agent", { kind: "primary", sm: true, icon: "session", attrs: { "data-go": go } }) : "";
+  // what waits on a person: held tool calls and a job waiting to start as approval cards, a question as its card
+  const cards = detailCards(u);
+  fleet.cards = new Map(cards.map((c) => [c.id, c]));
+  const question = u.label === "Needs input" && u.reason?.[0] === "Question" ? questionHtml({ id: `fleet-question-${u.id}`, who: u.job ? u.job.id : u.ses?.name || u.id,
+    turn: u.ses?.turns?.length, question: u.reason[1], asked: u.ses?.last_active_at, meanwhile: "holding the sandbox" }) : "";
   return `<header class="af-drawer__head">${agentAvatar(u.harness)}
       <h2 class="af-drawer__title"><span class="af-id">${esc(u.id)}</span> ${esc(u.work)}</h2>
       ${btn("", { kind: "ghost", sm: true, icon: "close", attrs: { "data-fleet-close": true, "aria-label": "Close" } })}</header>
     <div class="af-drawer__body fd" data-id="${esc(u.id)}" data-role="${u.role}">
-      <div class="fd-state">${status(u.role, u.label, { lit: true })}${u.reason && u.ask?.kind === "tool" ? `<p class="fd-cmd">${esc(u.reason[1])}</p>` : note(u)}</div>
+      <div class="fd-state">${status(u.role, u.label, { lit: true })}${cards.length || question ? "" : note(u)}</div>
+      ${cards.length ? `<div class="cards">${cards.map(approvalHtml).join("")}</div>` : ""}${question}
       ${track(u)}
       <dl class="af-kv fd-kv">
         <dt>Name</dt><dd class="af-mono">${esc(u.name)}</dd>
@@ -456,8 +475,7 @@ function detailHtml(u) {
         ${act("destroy", "close", "Destroy", "danger")}</div>` : ""}
       ${runs.length && running ? `<div class="fd-runs"><h4>Agent runs</h4>${runs.map((r) =>
         `<button type="button" class="fd-run" data-act="run" data-run="${esc(r.id)}" title="${esc(r.prompt)}">${ic("terminal")}<span class="af-mono">${esc(r.harness)}</span><span class="fd-run__prompt">${esc(r.prompt || "")}</span><span class="hint">${ago(r.started_at)}</span></button>`).join("")}</div>` : ""}
-    </div>
-    ${decide || answer ? `<footer class="af-drawer__foot" data-id="${esc(u.id)}">${decide || answer}</footer>` : ""}`;
+    </div>`;
 }
 
 /* ------------------------------------------------------------------ selection, actions, keys */
@@ -498,24 +516,24 @@ function goTo(target) {
   location.hash = "#sessions";
 }
 
-async function decide(u, allow, btn) {
-  const a = u.ask;
-  await busy(btn, async () => {
-    if (a.kind === "job") {
-      if (!allow && !(await confirmAction(`Reject ${a.job}?`, "The job won't run; its requester is told. Nothing has started yet.", "Reject", { cancel: "Keep waiting" }))) return;
-      await api("POST", `/api/jobs/${a.job}/${allow ? "approve" : "reject"}`);
-      toast(`${allow ? "Approved" : "Rejected"} ${a.job}`);
-    } else {
-      const path = a.job ? `/api/jobs/${a.job}/approvals/${a.approval}` : `/api/sessions/${a.session}/approvals/${a.approval}`;
-      await api("POST", path, { decision: allow ? "allow" : "deny" });
-      toast(`${allow ? "Allowed" : "Denied"}: ${u.reason?.[1] || a.approval}`);
-    }
-    await loadFleet();
-  });
+// a question answered from the detail: the reply goes where the agent asked (its job or session)
+async function answerFromDetail(u, text) {
+  if (u.job) await api("POST", `/api/jobs/${u.job.id}/follow-up`, { message: text });
+  else await api("POST", `/api/sessions/${u.ses.id}/send`, { message: text });
+  toast("Sent; the agent continues with your answer");
+  await loadFleet();
 }
 
 $("#view-fleet").addEventListener("click", async (e) => {
   if (e.target.closest("[data-fleet-close]")) return closeDetail();
+  if (approvalClick(e, (id) => fleet.cards.get(id), loadFleet)) return;
+  const ans = e.target.closest("[data-answer]");
+  if (ans) {
+    const card = ans.closest(".af-question"), u = fleet.byId.get(card.closest("[data-id]")?.dataset.id);
+    const text = $("textarea", card).value.trim();
+    if (!text) return $("textarea", card).focus();
+    return busy(ans, () => answerFromDetail(u, text));
+  }
   const go = e.target.closest("[data-go]");
   if (go) { e.preventDefault(); return goTo(go.dataset.go); }
   const pick = e.target.closest("[data-select]");
@@ -531,7 +549,6 @@ $("#view-fleet").addEventListener("click", async (e) => {
   const id = b.closest("[data-id]")?.dataset.id;
   const u = fleet.byId.get(id), sb = u?.sb;
   if (!sb) return;
-  if (act === "approve" || act === "deny") return decide(u, act === "approve", b);
   if (act === "term") return openTerminal(sb);
   if (act === "run") return openTerminal(sb, b.dataset.run);
   if (act === "agent") return agentDialog(sb);

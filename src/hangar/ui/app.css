@@ -16,6 +16,7 @@ html, body { height: 100%; }
 body { font-family: var(--af-font-sans); }
 a { color: inherit; text-decoration-color: var(--af-line-strong); text-decoration-thickness: 1px; text-underline-offset: 3px; }
 a:hover { text-decoration-color: var(--af-brand-text); }
+a.af-btn { text-decoration: none; }
 code, pre { font-family: var(--af-font-mono); }
 code { font-size: .92em; }
 h1, h2, h3, h4 { margin: 0; }
@@ -234,9 +235,18 @@ h4.with-meta .af-meta { text-transform: none; letter-spacing: normal; font-weigh
   font-family: var(--af-font-mono); font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .log.summary { max-height: 360px; background: var(--af-surface); color: var(--af-fg); box-shadow: none; border-radius: var(--af-radius-control);
   font-family: var(--af-font-sans); font-size: 14px; line-height: 1.55; font-variant-ligatures: none; font-feature-settings: "liga" 0, "calt" 0; }
-/* the agent's question (Airframe Question) and the reply (Composer) sit in the detail's flow */
-.job-detail .af-question { margin: var(--af-space-16) 0; }
-.job-detail > .af-question:first-of-type { margin-top: var(--af-space-20); }
+/* what waits on a person sits first: approval and question cards (Airframe ApprovalCard, Question), then the
+   decided ones as verdict rows; the same in the Needs-you view, the detail panels and the Fleet drawer */
+.cards { display: flex; flex-direction: column; gap: var(--af-space-12); margin: var(--af-space-16) 0; }
+.panel .af-card, .fd .af-card { background: var(--af-surface); }  /* a card inside a raised panel sits one tone down */
+.panel .af-card--lit, .fd .af-card--lit { background: color-mix(in srgb, var(--af-status-approval) 6%, var(--af-surface)); }
+.cards .af-approval__cmd { font-size: 14px; }
+.job-detail > .af-question { margin: var(--af-space-16) 0; }
+.verdicts { display: flex; flex-direction: column; gap: 4px; }
+.job-detail .af-verdict, .fd .af-verdict { background: var(--af-surface); }
+.needs .cards { margin-top: 0; }
+.needs .af-verdict__time { display: flex; gap: var(--af-space-4); padding: 0; }
+.needs .af-empty--clear { border: 1px dashed var(--af-line-strong); border-radius: var(--af-radius-card); }
 
 /* timeline and activity: a status mark per event, quiet unless an event failed or waits on a person */
 .timeline, .turns { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
@@ -326,12 +336,13 @@ form.inline .af-input { flex: 1; }
 .usage-split { margin-top: var(--af-space-4); }
 
 /* ---------- narrow screens ---------- */
-/* nine tabs: drop their icons before they have to scroll */
-@media (max-width: 1360px) { .topbar .af-nav__tab > .af-ic { display: none; } }
+/* ten tabs in a bar capped at container-max: with icons they never fit, so the top bar's tabs go without (the bottom
+   bar keeps them); below 1200px the padding tightens and the providers go, and the ten fit down to 1120px */
+.topbar .af-nav__tab > .af-ic { display: none; }
+@media (max-width: 1200px) { .topbar .af-nav__tab { padding: 0 7px; } .providers { display: none; } }
 @media (max-width: 1080px) {
   .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .split, .split.even, #view-credentials .split { grid-template-columns: minmax(0, 1fr); }
-  .providers { display: none; }
 }
 /* a phone: the tabs leave the top bar for a bottom tab bar (Jobs, Sessions, Fleet, More); the six other sections and the
    providers sit in the More sheet between the header and the bar. Everything that sits at the bottom stops above the bar. */
@@ -339,7 +350,7 @@ form.inline .af-input { flex: 1; }
 @media (max-width: 760px) {
   :root { --tabbar-h: calc(57px + env(safe-area-inset-bottom)); }
   .topbar .af-nav__tabs { display: none; }
-  .tabbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: var(--af-z-drawer); display: grid; grid-template-columns: repeat(4, 1fr);
+  .tabbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: var(--af-z-drawer); display: grid; grid-template-columns: repeat(5, 1fr);
     padding: 0 var(--af-space-4) env(safe-area-inset-bottom); background: var(--af-canvas); border-top: 1px solid var(--af-line); }
   .tab { position: relative; display: grid; justify-items: center; align-content: center; gap: 4px; height: 56px; padding: 0; border: 0; border-radius: 0;
     background: none; color: var(--af-fg-muted); text-decoration: none; font-family: var(--af-font-mono); font-weight: 500; font-size: 10px;
