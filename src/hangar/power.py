@@ -8,6 +8,13 @@
 - `starting` (09:50): the pools are coming back; the same answers, with "about N minutes".
 - `up` (once the floor node is ready and the images are pulled onto it): held jobs go back to the queue a few at a
   time, and each environment's warm pool is sized for the morning from last week's creates in that hour.
+- `night` (#186; 01:00 with the overnight lane on): like `down`, except one Spot node stays up (the
+  `sandboxes-overnight` pool). Intake jobs labelled `lane: overnight` or from a repo whose policy says
+  `overnight: true`, and eval-class jobs (#181), run on it, at most HANGAR_OVERNIGHT_LANE_SANDBOXES at once;
+  everything else waits for the morning as with `down`. A lane job whose node is preempted
+  (`infra_error/preempted`) waits for the morning too and resumes from its checkpoint. `hangar power overnight on`
+  turns the lane on only when the last 14 days' agent PR yield (#168) is at least HANGAR_OVERNIGHT_MIN_YIELD (60%),
+  unless `--force` (audited); power.sh reads it at `down`.
 A `down` or `starting` that should have ended an hour ago counts as up: a power job that failed to report must not
 leave hangar refusing work. `hangar doctor` says so.
 
@@ -40,7 +47,13 @@ log = logging.getLogger(__name__)
 
 STATE_KEY = "power:state"
 DEPLOYS_KEY = "ops:deploys"
-STATES = ("up", "starting", "down")
+STATES = ("up", "starting", "down", "night")
+OVERNIGHT_KEY = "power:overnight"  # --- #186: {"on", "by", "at", "forced", "yield"}
+LANE = "overnight"  # a job's `lane` label, and the lane's name
+YIELD_DAYS = 14
+# The overnight pool's taint (deploy/terraform/gke, enable_overnight_lane): gVisor sandboxes tolerate it, so at night,
+# with every other sandbox pool at 0 nodes, they land on the lane's node, and by day (the pool at 0) nowhere changes.
+LANE_TOLERATION = {"key": "hangar.dev/lane", "operator": "Equal", "value": LANE, "effect": "NoSchedule"}
 GRACE = 3600.0  # a down or starting state this long past its ready time counts as up
 WAITING = "powered_down"  # a held job's reason
 RECHECK = 60.0  # seconds between a held job's own looks at the power state
@@ -72,6 +85,8 @@ class Power:
         self.clock = clock
         self.started = clock()
         self.held: list[str] = []  # queued jobs a worker set aside while the pools are off
+        self.lane: set[str] = set()  # --- #186: jobs running in the overnight lane tonight
+        self.lane_cut: set[str] = set()  # lane jobs whose node was preempted: they wait for the morning
         st = store.kv_get_json(STATE_KEY, None) or {}
         self._warm: dict[str, int] = dict(st.get("warm") or {}) if st.get("state") == "up" else {}
 
@@ -120,15 +135,23 @@ class Power:
         st = self.state()
         return st.get("state") != "up" and not st.get("stale")
 
+    @property
+    def night(self) -> bool:
+        """--- #186: the pools are down except the overnight lane."""
+        st = self.state()
+        return st.get("state") == "night" and not st.get("stale")
+
     def affects(self, provider: str | None) -> bool:
         return (provider or self.settings.default_provider) in self.settings.power_providers
 
-    def refusal(self, provider: str | None) -> str | None:
+    def refusal(self, provider: str | None, labels: dict[str, str] | None = None) -> str | None:
+        if labels and self.night and labels.get("hangar.job") in self.lane:
+            return None  # --- #186: a job the overnight lane admitted gets its sandbox on the lane's node
         return self.message() if self.off and self.affects(provider) else None
 
-    def check(self, provider: str | None) -> None:
+    def check(self, provider: str | None, labels: dict[str, str] | None = None) -> None:
         """Refuse a create on a powered-down provider, at once and with when it's back."""
-        if (why := self.refusal(provider)) is not None:
+        if (why := self.refusal(provider, labels)) is not None:
             from hangar.fleet import PoweredDown
 
             raise PoweredDown(why)
@@ -160,6 +183,11 @@ class Power:
         if st.get("state") == "starting":
             return ("Sandboxes are powering on now" + (f" and are ready at about {when}" if when else "") +
                     ". Try again then; jobs submitted now are queued and start once they're on.")
+        if st.get("state") == "night":  # --- #186
+            return ("Sandboxes are powered down for the night" + (f" and power on at {when}" if when else "") +
+                    ", except the overnight lane, which runs agent jobs from repos set to `overnight: true` (or "
+                    "labelled `lane: overnight`) and evals. Other jobs submitted now are queued and start then; an "
+                    "admin can power them on early with `hangar power up`.")
         return ("Sandboxes are powered down for the night" + (f" and power on at {when}" if when else "") +
                 ". Jobs submitted now are queued and start then; an admin can power them on early with "
                 "`hangar power up`.")
@@ -189,7 +217,7 @@ class Power:
             raise ValueError(f"unknown time zone '{tz}' (an IANA name like America/New_York)") from e
         cron = up_cron or prev.get("up_cron")
         warm_s = 60 * max(0.0, float(warm_minutes if warm_minutes is not None else prev.get("warm_minutes", 10)))
-        if ready_at is None and state == "down" and cron:
+        if ready_at is None and state in ("down", "night") and cron:
             from hangar.triggers import Cron, CronError
 
             try:
@@ -203,8 +231,11 @@ class Power:
                               "warm_minutes": warm_s / 60, "ready_at": ready_at if state != "up" else None,
                               "last_down": prev.get("last_down"), "last_up": prev.get("last_up"),
                               "warm": self._warm if state == "up" else {}}
-        if state == "down":
+        if state in ("down", "night"):
             st["last_down"] = t
+        if state != "night":  # --- #186: the lane's night is over (or never began)
+            self.lane.clear()
+            self.lane_cut.clear()
         if state == "up":  # ready_at: when people were told to expect sandboxes (the warm pools' hour)
             st["last_up"] = {"at": t, "by": by, "prepull": _prepull_summary(prepull),
                              "ready_at": prev.get("ready_at") if prev.get("state") != "up" else None}
@@ -221,10 +252,76 @@ class Power:
             if job.reason == WAITING:  # held before a restart; it runs now
                 job.reason = None
             return False
+        if self.night and self._admit_to_lane(svc, job):  # --- #186: the overnight lane runs it now
+            return False
         self._hold(svc, job_id)
         if job.reason != WAITING:
             svc._event(job, f"waiting: {self.status_line()}", reason=WAITING)
         return True
+
+    # ------------------------------------------------------------------ --- #186: the overnight lane
+    def lane_eligible(self, svc: JobService, job: Job) -> bool:
+        """Eval-class jobs, and intake jobs labelled `lane: overnight` or from a repo whose policy says `overnight`."""
+        from hangar import posture
+
+        if job.id in self.lane_cut:
+            return False  # its node was preempted tonight: the morning
+        if job.queue_class == "eval":
+            return True
+        if not posture.is_intake(job):
+            return False
+        if job.labels.get("lane") == LANE:
+            return True
+        pol = svc.policies.get(job.repo) if job.repo else None
+        return bool(pol is not None and getattr(pol, "overnight", None))
+
+    def lane_running(self, svc: JobService) -> list[str]:
+        from hangar.models import JOB_TERMINAL
+
+        for jid in list(self.lane):
+            j = svc._jobs.get(jid)
+            if j is None or j.state in JOB_TERMINAL or (j.state == JobState.QUEUED and j.reason == WAITING):
+                self.lane.discard(jid)
+        return sorted(self.lane)
+
+    def _admit_to_lane(self, svc: JobService, job: Job) -> bool:
+        if not self.lane_eligible(svc, job):
+            return False
+        if job.id not in self.lane:
+            if len(self.lane_running(svc)) >= self.settings.overnight_lane_sandboxes:
+                return False  # the lane is full: it waits, and looks again (RECHECK) or runs in the morning
+            self.lane.add(job.id)
+            svc._event(job, "running in the overnight lane (the other sandbox pools are off until the morning)",
+                       reason=None)
+        return True
+
+    def overnight(self) -> dict[str, Any]:
+        return dict(self.store.kv_get_json(OVERNIGHT_KEY, None) or {"on": False})
+
+    def set_overnight(self, svc: JobService, on: bool, by: str, force: bool = False) -> dict[str, Any]:
+        """`hangar power overnight on|off`: on needs the last 14 days' agent PR yield at HANGAR_OVERNIGHT_MIN_YIELD
+        or more (#168), or `force` (audited). power.sh keeps the overnight node up at `down` while it is on."""
+        from hangar import weekly
+
+        t = self.clock()
+        rate = None
+        need = self.settings.overnight_min_yield
+        if on:
+            try:
+                rate = weekly.compute(svc, t - YIELD_DAYS * 86400, t)["yield"]["value"]
+            except Exception:  # noqa: BLE001 - no metrics: not known
+                log.exception("could not read the agent PR yield")
+            if (rate is None or rate < need) and not force:
+                have = "no agent PR reached a final state" if rate is None else f"it is {rate:.0%}"
+                raise PowerError(f"the overnight lane needs the last {YIELD_DAYS} days' agent PR yield at "
+                                 f"{need:.0%} or more, and {have} (`hangar metrics weekly`). Turning it on anyway "
+                                 "takes --force, which is audited")
+        forced = bool(on and force and (rate is None or rate < need))
+        rec = {"on": on, "by": by, "at": t, "forced": forced, "yield": rate}
+        self.store.kv_set_json(OVERNIGHT_KEY, rec)
+        svc.fleet.audit(by, "power.overnight.on" if on else "power.overnight.off", None, forced=forced,
+                        agent_pr_yield=rate)
+        return rec
 
     def _hold(self, svc: JobService, job_id: str) -> None:
         """Set a job aside until release(). It also looks again every RECHECK seconds, so a power-up that is never
@@ -239,7 +336,10 @@ class Power:
         if job_id not in self.held:
             return  # released
         job = svc._jobs.get(job_id)
-        if self.off and job is not None and job.state == JobState.QUEUED and not job.cancel_requested:
+        lane_room = job is not None and self.night and self.lane_eligible(svc, job) \
+            and len(self.lane_running(svc)) < self.settings.overnight_lane_sandboxes  # --- #186: a lane seat freed
+        if self.off and job is not None and job.state == JobState.QUEUED and not job.cancel_requested \
+                and not lane_room:
             asyncio.get_running_loop().call_later(RECHECK, self._recheck, svc, job_id)
             return
         self.held.remove(job_id)
@@ -282,14 +382,18 @@ class Power:
 
         if not self.off or not self.affects(job.provider):
             return False
-        why = "the sandbox pools powered down"
-        if not restarts.resume(svc, job, why=why, message=POWERED_DOWN, infra="power_down"):
+        why, infra = "the sandbox pools powered down", "power_down"
+        if self.night and job.id in self.lane:  # --- #186: the overnight node (Spot) was preempted: the morning
+            why, infra = "the overnight lane's Spot node was preempted", "preempted"
+            self.lane.discard(job.id)
+            self.lane_cut.add(job.id)
+        if not restarts.resume(svc, job, why=why, message=POWERED_DOWN, infra=infra):
             return False
         cut = [t for t in job.turns if t.run_id and t.outcome in ("gone", "error")]
         if cut and not cut[-1].outcome_reason:
             cut[-1].outcome_reason = why
-        if cut:  # --- #166: the power-down cut it off, whatever the turn made of it
-            outcomes.mark(cut[-1], "infra_error", "power_down")
+        if cut:  # --- #166: the power-down (or the lane's preemption) cut it off, whatever the turn made of it
+            outcomes.mark(cut[-1], "infra_error", infra)
         svc._event(job, f"waiting: {self.status_line()}", reason=WAITING)
         self._hold(svc, job.id)
         return True
@@ -431,7 +535,10 @@ class Power:
                           "jobs_waiting": len(self.held), "warm_pools": dict(self._warm),
                           "last_up": st.get("last_up"), "last_down": st.get("last_down"),
                           "hold": self.hold_view(),  # --- infra-state
-                          "deploy_pending": powerhold.pending(self.store)},
+                          "deploy_pending": powerhold.pending(self.store),
+                          # --- #186: whether power.sh keeps the overnight node up, and what runs on it
+                          "overnight": {**self.overnight(), "running": len(self.lane),
+                                        "capacity": self.settings.overnight_lane_sandboxes}},
                 "last_deploy": (deploys(self.store) or [None])[0],
                 "loops": loops(self.settings, self.started, self.clock())}
 
@@ -481,7 +588,7 @@ def prepull_manifest(settings: Settings, refs: list[str], namespace: str = "hang
         if rc == "gvisor" and settings.k8s_gke_node_selector:
             pod["nodeSelector"] = {"sandbox.gke.io/runtime": "gvisor"}
             pod["tolerations"] = [{"key": "sandbox.gke.io/runtime", "operator": "Equal", "value": "gvisor",
-                                   "effect": "NoSchedule"}]
+                                   "effect": "NoSchedule"}, LANE_TOLERATION]  # --- #186: the lane's node pulls too
         elif rc.startswith("kata") and settings.k8s_gke_node_selector:
             pod["nodeSelector"] = {"hangar.dev/runtime": "kata"}
             pod["tolerations"] = [{"key": "hangar.dev/runtime", "operator": "Equal", "value": "kata",
@@ -627,6 +734,7 @@ def doctor_checks(h: Any) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------- REST
 def mount(app: Any, h: Any, admin: Any) -> None:
     """GET /api/admin/power; POST /api/admin/power/state (power.sh); POST /api/admin/power/up (`hangar power up`);
+    POST /api/admin/power/overnight (#186);
     GET /api/admin/power/prepull (power.sh); POST and GET /api/admin/deploys (deploy.yml)."""
     from fastapi import Body, HTTPException, Request
     from fastapi.responses import JSONResponse
@@ -664,9 +772,19 @@ def mount(app: Any, h: Any, admin: Any) -> None:
             except Exception as e:  # noqa: BLE001 - the pools are up either way; the warm pools keep their size
                 log.exception("sizing the warm pools at power-up failed")
                 out["warm_pools"], out["warm_pools_error"] = {}, str(e)[:300]
-        elif state == "down":
+        elif state in ("down", "night"):
             await p.clear_warm_pools(h.fleet)
         return out
+
+    @app.post("/api/admin/power/overnight")
+    async def power_overnight(body: dict[str, Any] = Body(...), who: str = admin):
+        """--- #186: `hangar power overnight on|off [--force]` (and power.sh overnight): the overnight lane."""
+        if not isinstance(body.get("on"), bool):
+            raise HTTPException(400, "on: true or false")
+        try:
+            return p.set_overnight(h.jobs, body["on"], who, force=bool(body.get("force")))
+        except PowerError as e:
+            raise HTTPException(409, str(e)) from e
 
     @app.post("/api/admin/power/up")
     async def power_up(who: str = admin):

@@ -578,6 +578,11 @@ class Settings(BaseSettings):
     # Warm pools for the day at power-up: `auto` (from last week's creates in that hour), `off`, or `env=N,env2=M`
     power_warm_pools: str = "auto"
     power_warm_max: int = Field(3, ge=0, le=50)
+    # --- #186: the overnight lane (one Spot node kept up at night): how many sandboxes it runs at once (7 standard
+    # sandboxes fit its e2-standard-16 whether it lands on Intel, SMT off, or AMD; 14 on an n2d-standard-16,
+    # docs/team-scale.md), and the agent PR yield `hangar power overnight on` needs
+    overnight_lane_sandboxes: int = Field(7, ge=0, le=200)
+    overnight_min_yield: float = Field(0.6, ge=0.0, le=1.0)
     power_prepull_image: str = "registry.k8s.io/pause:3.10.1"  # the prepull DaemonSet's only container
     # --- clouddoctor: the nightly pass (opstatus.py): credential checks, then the Cloud Doctor (docs/doctor.md). A
     # cron in doctor_time_zone (unset: the power schedule's zone, else UTC); "off" turns it off. Half past midnight

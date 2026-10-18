@@ -50,7 +50,8 @@ FIELDS = ("verify", "environment", "harness", "model", "budget", "job_budget", "
           "self_approval",  # --- self-approval (#160)
           "ai_review", "ai_review_harness", "ai_review_model", "ai_review_budget_usd",  # --- AI review (#161)
           "verify_allowed",  # --- #156
-          "shadow")  # --- #183
+          "shadow",  # --- #183
+          "overnight")  # --- #186: its intake jobs run in the overnight lane
 _LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")  # a GitHub login
 
 
@@ -166,6 +167,8 @@ class RepoPolicy(BaseModel):
     # `pytest tests/*`); otherwise the agent gets it only as a suggestion (intake.apply_ticket)
     verify_allowed: list[str] | None = Field(None, max_length=50)
     shadow: ShadowPolicy | None = None  # --- #183: shadow runs of sampled intake jobs (default: none)
+    # --- #186: its intake jobs run at night in the overnight lane (power state `night`, power.py)
+    overnight: bool | None = None
     updated_at: float = Field(default_factory=now)
     updated_by: str | None = None
 
@@ -395,6 +398,7 @@ class PolicyUpdate(BaseModel):
     ai_review_budget_usd: float | None = Field(None, gt=0, le=100)
     verify_allowed: list[str] | None = None  # --- #156
     shadow: ShadowPolicy | None = None  # --- #183
+    overnight: bool | None = None  # --- #186
 
     @field_validator("heavy", mode="before")
     @classmethod
