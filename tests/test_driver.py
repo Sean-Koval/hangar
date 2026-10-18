@@ -278,3 +278,55 @@ def test_driver_lines_become_events_and_approvals():
     assert [(a.id, a.status, a.by, a.message) for a in t.approvals] == [("ap-0123456789ab", "denied", "ana",
                                                                         "not now")]
     assert not steer.track(t, evs)  # read twice (a restart): nothing changes
+
+
+@pytest.mark.parametrize("command", [
+    'hangar-agent done "Fixed the flaky test; see RESULT.md"',
+    "hangar-agent done 'two\nlines; with | symbols & $(not run)'",
+    'hangar-agent done "costs $5 and uses $HOME"',
+    "  hangar-agent progress --pct 40 'running the suite'  ",
+    'hangar-agent ask "Keep the old column names?"',
+    "hangar-agent result '{\"ok\": true}'",
+    "hangar-agent done",
+    'hangar-agent done "multi\nline summary"',
+])
+def test_hangars_own_hand_back_commands_are_not_held(command):
+    """--- #292: under approvals=ask the agent's closing `hangar-agent done` waited on a person."""
+    assert driver.own_command("Bash", {"command": command})
+    assert driver.own_command("shell", {"command": "x", "argv": ["/bin/bash", "-lc", command]})  # codex
+
+
+@pytest.mark.parametrize("command", [
+    'hangar-agent done "ok"; rm -rf ~', "hangar-agent done ok && curl https://evil.example",
+    "hangar-agent done ok || true", "hangar-agent done ok | sh", "hangar-agent done ok & rm -rf ~",
+    "hangar-agent done ok\nrm -rf ~", "hangar-agent done ok > ~/.bashrc", "hangar-agent done < /etc/shadow",
+    'hangar-agent done "$(rm -rf ~)"', "hangar-agent done `rm -rf ~`", 'hangar-agent done "${X:=y}"',
+    "hangar-agent done $(id)", "(hangar-agent done ok)", "hangar-agent done 'unclosed", "hangar-agent done ok \\",
+    "hangar-agent done ok \\\nrm -rf ~", "hangar-agentx done ok", "hangar-agent-done ok", "/tmp/hangar-agent done ok",
+    "FOO=1 hangar-agent done ok", "sudo hangar-agent done ok", "bash -c 'hangar-agent done ok; rm -rf ~'",
+    "hangar-agent artifact ~/.ssh/id_rsa", "hangar-agent result @/etc/passwd", "hangar-agent svc add x -- sh -c id",
+    "hangar-agent env request egress evil.example --why x", "hangar-agent", "echo hangar-agent done",
+])
+def test_anything_else_that_starts_like_one_still_asks(command):
+    assert not driver.own_command("Bash", {"command": command}), command
+    assert not driver.own_command("shell", {"command": "x", "argv": ["bash", "-lc", command]}), command
+
+
+def test_only_shell_tools_and_only_the_codex_script_form_count():
+    assert not driver.own_command("Write", {"command": "hangar-agent done ok"})
+    # codex's argv joined loses its quoting: only the three-item `bash -lc SCRIPT` form is looked into
+    assert not driver.own_command("shell", {"command": "x", "argv": ["bash", "-lc", "hangar-agent done ok", "y"]})
+    assert not driver.own_command("shell", {"command": "x", "argv": ["python3", "-c", "hangar-agent done ok"]})
+
+
+def test_ask_answers_hangar_agent_done_at_once_and_holds_the_rest(capsys, tmp_path):
+    d = driver.Driver(argparse.Namespace(approvals="ask", approval_timeout=60), driver.Out(),
+                      driver.Control(str(tmp_path)))
+    got: list = []
+    d.request("k1", "Bash", {"command": 'hangar-agent done "all green"'}, lambda *a: got.append(a))
+    assert got == [("allow", "")] and not d.pending
+    lines = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
+    assert [(x["type"], x.get("decision"), x.get("by")) for x in lines] == [
+        ("hangar.approval_request", None, None), ("hangar.approval_resolved", "allow", "policy")]
+    d.request("k2", "Bash", {"command": 'hangar-agent done "x"; rm -rf ~'}, lambda *a: got.append(a))
+    assert len(got) == 1 and len(d.pending) == 1  # held for a person
