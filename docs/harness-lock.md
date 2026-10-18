@@ -203,8 +203,9 @@ the sandbox changed them between the mount and turn 1, or a binding (an MCP serv
 **Drift** is recorded as `SessionTurn.drift: [{component, lock, effective}]` (`[]`: matched; `null`: not checked),
 a `harness.drift` event in the session's events (`data.drift`, `data.action`), a warning on the turn, and a line in
 the job's review packet (`**Harness:** team-default@r14 …: **drift** on turn 1 (skill:review)`). Under
-`HANGAR_HARNESS_DRIFT=fail` turn 1 stops: outcome `failed`, reason `harness_drift` (part B's `infra_error` outcome
-replaces it); a job fails with that reason and delivers nothing. The default, `warn`, carries on. A turn that ends
+`HANGAR_HARNESS_DRIFT=fail` turn 1 stops: outcome `failed`, reason `harness_drift`; a job fails with that reason and
+delivers nothing. (A trial against a [pin set](api/trials.md) is different: one whose turn 1 drifted from its pins ends
+as `outcome_class: infra_error`, `infra_reason: drift`, whatever `HANGAR_HARNESS_DRIFT` says.) The default, `warn`, carries on. A turn that ends
 before its check has run waits for it (up to 40 s) under `fail`. Only turn 1 is checked: what the agent changes later
 is its behaviour, not drift. Writable state (`~/.claude.json`, plugin caches) is never digested.
 

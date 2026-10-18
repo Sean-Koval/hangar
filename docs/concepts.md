@@ -7,7 +7,7 @@ has the details.
  people and their tools           front doors                hangar (control plane)                 sandboxes
  ────────────────────────   ─────────────────────────   ─────────────────────────────────   ──────────────────────
  MCP clients, CLI, browser ─► MCP · REST · CLI          ─► jobs and sessions                 ─► sandbox: environment
- Jira, GitHub, Slack       ─► GitHub · Jira · Projects     repo policy · people · budgets        + harness (agent CLI)
+ Jira, GitHub, Slack       ─► GitHub · Jira · Projects     repo policy · people · budgets        + harness (CLI, config)
  services, CI, agents      ─► Slack · webhooks ·           credentials (vault, gateway)         + repo checkout
                                schedules · A2A             verify → branch → PR → landing       on Docker, GKE or E2B
 ```
@@ -22,11 +22,15 @@ ahead of time. See [environments](environments.md).
 
 ## Harness
 
-The agent CLI inside a sandbox: Claude Code, Codex, pi or Antigravity. An environment lists the harnesses it allows;
-you pick one per sandbox, not per image. Each harness ships once as a read-only *harness pack* mounted at start, pinned
-to a version in hangar's harness lock, with a model resolved from a policy (`balanced`, `frontier`) or a pinned id.
-A team can freeze a harness that worked (its skills, instructions, model and approvals) into a
-[harness lock](harness-lock.md) and run work from it. See [harnesses](harnesses.md).
+Everything that shapes the agent apart from the model: the CLI at a pinned version, instructions, skills, plugins,
+MCP bindings, hooks and approvals. A team freezes one into a harness directory (native files plus `harness.lock`);
+its identity, `harness_digest`, is a SHA-256 over the lock's identity fields, equal to the manifest's. See
+[harness locks](harness-lock.md).
+
+The CLI is Claude Code, Codex, pi or Antigravity. An environment lists the CLIs it allows; you pick one per sandbox,
+not per image. Each ships once as a read-only *harness pack* mounted at start, at the version the CLI pin file
+(`src/hangar/harnesses.lock.yaml`) names, with a model resolved from a policy (`balanced`, `frontier`) or a pinned id.
+See [harnesses](harnesses.md).
 
 ## Sandbox
 
