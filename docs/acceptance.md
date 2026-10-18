@@ -35,10 +35,18 @@ The suite is built to run against the hangar your team uses:
   their branches, denies pending requests, removes sessions, sandboxes, tokens and test people, and puts back the
   landing check's repo policy and the fixture repo's files. It removes only what its own state file lists, and puts
   back only a policy field or a file that still holds what the run set: a change someone made in the meantime stays.
+  Each check also releases the sessions and sandboxes it made as soon as it ends, pass, fail or skip, so the next
+  check has the capacity; the run's shared sandbox and session (from `sandbox` and `session`, which later checks use)
+  stay until the cleanup. `scale-smoke` deletes its sessions before it returns, whatever happened.
   `--keep` leaves everything for debugging; the run prints the command that cleans up later
   (`python3 scripts/acceptance/hangar_accept.py cleanup --state <file>`).
 - **Room for the team.** `scale-smoke` skips when its sessions would leave fewer than a tenth of
   `HANGAR_MAX_SANDBOXES` (at least 10) free, so the team's own creates aren't refused.
+- **Room in the pool.** The capacity-bound checks (`scale-smoke`, `prepull`, `warmstart`) skip, with the numbers,
+  when the sandbox pool has no room and can't grow: once hangar has said for 90 s that a sandbox waits because "the
+  cluster can't add a node" (a quota) or the pool "is at its maximum size", rather than waiting out
+  `--boot-timeout`. `scale-smoke` says how many of its sessions fit (`the sandbox pool fit 7 of 20 sessions: …`);
+  rerun it with that many `--scale-sessions` or give the pool room. A node being added is waited for as before.
 - **Nothing that costs money by default.** Checks that need a real agent turn run only with `--with-model`, and each
   of their jobs and turns has a budget of `--max-usd` (default $1), where hangar stops it. With everything on, that is
   at most about 13 of them: `model`, `steer`, egress's request, `secrets`, `landing`, and `scale-smoke`'s queue (its

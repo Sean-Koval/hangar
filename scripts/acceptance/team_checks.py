@@ -99,8 +99,9 @@ def ensure_env(api: Api, opts: argparse.Namespace, suffix: str, spec: dict[str, 
 
 
 def new_sandbox(api: Api, state: State, opts: argparse.Namespace, env: str, suffix: str, ttl: int = 60,
-                **extra: Any) -> tuple[dict[str, Any], float]:
-    """A running sandbox named accept-<run>-<suffix>, recorded for cleanup, and the seconds it took."""
+                capacity_skip: bool = False, **extra: Any) -> tuple[dict[str, Any], float]:
+    """A running sandbox named accept-<run>-<suffix>, recorded for cleanup, and the seconds it took. With
+    `capacity_skip`, a pool with no room that can't grow skips the check (ha._running)."""
     t0 = time.monotonic()
     sb = api.call("POST", "/api/sandboxes", json={"environment": env, "name": f"accept-{state.run}-{suffix}",
                                                   "ttl_minutes": ttl, "labels": {LABEL: state.run}, **extra})[0]
@@ -108,7 +109,7 @@ def new_sandbox(api: Api, state: State, opts: argparse.Namespace, env: str, suff
         raise Fail(f"a sandbox of {env}: {sb.get('error') or sb}")
     state.add("sandboxes", sb["id"])
     if sb["state"] != "running":
-        ha._running(api, sb["id"], opts.boot_timeout)
+        ha._running(api, sb["id"], opts.boot_timeout, capacity_skip=capacity_skip)
     return api.call("GET", f"/api/sandboxes/{sb['id']}"), time.monotonic() - t0
 
 
@@ -1184,6 +1185,9 @@ def check_intake(api: Api, state: State, opts: argparse.Namespace) -> str:
 
 
 # ---------------------------------------------------------------------------- scale smoke
+ROOM_POLL_SECONDS = 15.0  # how often a scale boot asks whether the pool has room (#294)
+
+
 def split_sessions(total: int, people: int, cap: int) -> list[int]:
     """Sessions per person: the first as many as their cap allows (so the cap can be tested), the rest shared."""
     first = min(cap, total - (people - 1)) if cap > 0 else total // people + total % people
@@ -1252,12 +1256,64 @@ def check_scale_smoke(api: Api, state: State, opts: argparse.Namespace) -> str:
         tokens[p] = tok
     names = [(p, f"accept-{state.run}-s{i:02d}") for i, p in enumerate(p for p, m in zip(people, plan, strict=True)
                                                                        for _ in range(m))]
+    if why := ha.fleet_no_room(api):  # --- #294: a pool that already has no room and can't grow
+        raise Skip(f"no room for {n} sessions: {why}")
+    had = set(state.get("sessions", []))
     for _, name in names:
         state.add("sessions", name)
     say(f"{n} sessions on {env} for {k} people ({'/'.join(map(str, plan))}) over MCP; the cap per person is "
         f"{cap or 'off'}")
+    torn_down = False
+    try:
+        result = _scale_sessions(api, state, opts, n, k, cap, plan, env, people, tokens, names)
+        torn_down = True
+        return result
+    finally:
+        if not torn_down:  # --- #294: pass or fail, its sessions (and the one past the cap) go now, not at the end
+            _release_sessions(api, [x for x in state.get("sessions", []) if x not in had], opts.boot_timeout)
+
+
+def _release_sessions(api: Api, names: list[str], timeout: float) -> list[str]:
+    """Release sessions all at once: a starting one loses its sandbox (it may wait on a node that never comes), a
+    busy one is interrupted, one at rest is suspended; then each is deleted once at rest, within one deadline. What
+    couldn't go yet is left for the run's cleanup (and returned)."""
+    live = []
+    for name in names:
+        r = api.http.get(f"/api/sessions/{name}")
+        if r.status_code == 404:
+            continue
+        live.append(name)
+        s = r.json()
+        with contextlib.suppress(Fail):
+            if s.get("state") == "starting" and s.get("sandbox_id"):
+                api.call("DELETE", f"/api/sandboxes/{s['sandbox_id']}")
+            elif s.get("busy") or s.get("state") == "running":
+                api.call("POST", f"/api/sessions/{name}/interrupt")
+            elif s.get("sandbox_id"):
+                api.call("POST", f"/api/sessions/{name}/suspend")
+    left = []
+    deadline = time.monotonic() + min(timeout, 600)
+    for name in live:
+        try:
+            ha.drop_session(api, name, wait=max(30.0, deadline - time.monotonic()))
+        except Exception as e:  # noqa: BLE001 - keep releasing the others
+            left.append(name)
+            say(f"could not release session {name} yet: {e}")
+    say(f"released {len(live) - len(left)} of {len(live)} sessions" + (f"; left for cleanup: {', '.join(left)}"
+                                                                       if left else ""))
+    return left
+
+
+def _scale_sessions(api: Api, state: State, opts: argparse.Namespace, n: int, k: int, cap: int, plan: list[int],
+                    env: str, people: list[str], tokens: dict[str, str], names: list[tuple[str, str]]) -> str:
     t = time.monotonic()
-    booted = asyncio.run(_boot_all(api.url, [(tokens[p], name) for p, name in names], env, opts.boot_timeout))
+    try:
+        booted = asyncio.run(_boot_all(api.url, [(tokens[p], name) for p, name in names], env, opts.boot_timeout,
+                                       room=lambda: ha.fleet_no_room(api)))
+    except NoRoom as e:
+        note(state, "scale-smoke", sessions=n, people=k, fit=e.up)
+        raise Skip(f"the sandbox pool fit {e.up} of {n} sessions: {e.why}; rerun with --scale-sessions {e.up} or "
+                   "fewer, or give the pool room (nodes, quota)") from None
     wall = time.monotonic() - t
     errors = [str(b)[:200] for b in booted if isinstance(b, BaseException)]
     times = [b[0] for b in booted if not isinstance(b, BaseException)]
@@ -1361,9 +1417,33 @@ async def _mcp_boot(url: str, token: str, name: str, env: str, timeout: float) -
             await asyncio.sleep(ha.POLL_SECONDS)
 
 
-async def _boot_all(url: str, plan: list[tuple[str, str]], env: str, timeout: float) -> list[Any]:
-    return await asyncio.gather(*(_mcp_boot(url, tok, name, env, timeout) for tok, name in plan),
-                                return_exceptions=True)
+class NoRoom(Exception):
+    """--- #294: the sandbox pool has no room for the rest and can't grow: `up` sessions started."""
+
+    def __init__(self, up: int, why: str):
+        super().__init__(why)
+        self.up, self.why = up, why
+
+
+async def _boot_all(url: str, plan: list[tuple[str, str]], env: str, timeout: float,
+                    room: Callable[[], str | None] | None = None) -> list[Any]:
+    """Every session's boot at once. `room` (#294) says why the pool has no room, or None: once it has said so for
+    ha.ROOM_GRACE seconds the boots stop with NoRoom, instead of each waiting out its timeout."""
+    tasks = [asyncio.create_task(_mcp_boot(url, tok, name, env, timeout)) for tok, name in plan]
+    blocked: float | None = None
+    while room is not None and not all(t.done() for t in tasks):
+        await asyncio.wait(tasks, timeout=ROOM_POLL_SECONDS)
+        if all(t.done() for t in tasks):
+            break
+        why = await asyncio.to_thread(room)
+        blocked = (blocked or time.monotonic()) if why else None
+        if why and time.monotonic() - blocked >= ha.ROOM_GRACE:
+            up = sum(1 for t in tasks if t.done() and not t.cancelled() and t.exception() is None)
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise NoRoom(up, why)
+    return await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _fair_jobs(api: Api, state: State, opts: argparse.Namespace, tokens: dict[str, str], people: list[str],
@@ -1479,7 +1559,7 @@ def power_up(api: Api, state: State, opts: argparse.Namespace, since: float) -> 
 
 
 def _create_time(api: Api, state: State, opts: argparse.Namespace, env: str, suffix: str) -> dict[str, Any]:
-    sb, secs = new_sandbox(api, state, opts, env, suffix, ttl=30)
+    sb, secs = new_sandbox(api, state, opts, env, suffix, ttl=30, capacity_skip=True)
     info = sb.get("info") or {}
     stages = [str(s[1]) for s in info.get("stages") or []]
     pulled = any("pulling the environment image" in s for s in stages)

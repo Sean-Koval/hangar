@@ -104,7 +104,7 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; }
       if [ "$1" = --only ]; then ONLY=",$2,"; else SKIPS=",$2,"; fi
       shift 2 ;;
-    --keep) KEEP=1; shift ;;
+    --keep) KEEP=1; ARGS+=(--keep); shift ;;  # each check leaves what it made, too
     -h|--help) usage; exit 0 ;;
     *)
       if [[ "$VALUE_OPTS" == *" $1 "* ]]; then
@@ -226,7 +226,7 @@ check mcp         "create_sandbox over MCP within claude.ai's 230 s, a dropped c
 check isolation   "a sandbox can't reach another sandbox's envd, the metadata server or hangar's API"
 check session     "session: checkpoint, suspend, resume in a new sandbox with the work restored (no model)"
 check model       "a real short agent turn"
-check steer       "a live turn: an approval held until allowed, a steer message delivered"
+check steer       "a live turn: a write outside the repo held as an approval until allowed, a steer message delivered"
 check gateway     "git gateway: push to hangar/accept-<run> works, a push outside the grant is refused"
 check e2b         "the e2b SDK with a sandboxes token: create, run, files, list, kill"
 check backup      "back up the database now and list the backups"
