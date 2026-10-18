@@ -2,10 +2,13 @@
    Tokens and af- classes only: every color, font and radius is var(--af-*); no color literals
    (tests/test_ui_airframe.py enforces it). Night is the default; Day follows the OS. The brand yellow
    marks the primary action, focus and selection, never a status; color appears only for needs approval
-   (orange diamond), failed (red triangle) and denied (red placard). */
+   (orange diamond), failed (red triangle) and denied (red placard).
+   The page header, empty states, toasts, dialogs and the two drawers are Airframe's (theme-v6 patterns and
+   airframe.js); this file places them and styles only what Airframe has no part for. */
 
 :root {
-  --drawer-h: 340px;
+  --af-drawer-h: 340px;                 /* the terminal drawer's height (Airframe Drawer); the grip resizes it */
+  --drawer-pad: var(--af-drawer-inset);  /* what the open terminal drawer covers: the page and the detail drawer stop above it */
   --page-pad: max(var(--af-space-32), calc((100% - var(--af-container-max)) / 2));
 }
 html, body { height: 100%; }
@@ -18,24 +21,21 @@ h1, h2, h3, h4 { margin: 0; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
   clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
-/* headlines: Archivo Expanded for view titles, Red Hat Text for panels, mono capitals for section labels */
-.view-head h2, .gate-brand h1 { font-family: var(--af-font-display); font-stretch: var(--af-display-stretch);
+/* headlines: Archivo Expanded for the gate (view titles are Airframe's af-page-head), Red Hat Text for panels, mono
+   capitals for section labels */
+.gate-brand h1 { font-family: var(--af-font-display); font-stretch: var(--af-display-stretch);
   font-weight: var(--af-display-weight); letter-spacing: var(--af-display-track); line-height: 1.05; font-size: 36px;
   color: var(--af-fg); text-wrap: balance; }
-.panel > h3:not(.section-title), dialog h3 { font-family: var(--af-font-sans); font-weight: 600; font-size: 16px; line-height: 1.35;
+.panel > h3:not(.section-title) { font-family: var(--af-font-sans); font-weight: 600; font-size: 16px; line-height: 1.35;
   letter-spacing: -.005em; color: var(--af-fg); }
-dialog h3 { font-size: 20px; line-height: 1.3; letter-spacing: -.01em; }
 .section-title, .snippet h3, .job-detail h4, .env-detail h4 { font-family: var(--af-font-mono); font-weight: 500;
   font-size: 11px; line-height: 1.2; letter-spacing: var(--af-label-track); text-transform: uppercase; color: var(--af-fg-muted); }
 .section-title { margin: var(--af-space-28) 0 var(--af-space-12); }
 .panel h3.section-title { margin-top: var(--af-space-24); }
 .sub { margin: var(--af-space-8) 0 0; max-width: 68ch; color: var(--af-fg-muted); }
 .hint { color: var(--af-fg-subtle); font-size: 12.5px; }
-.empty { margin: 0; color: var(--af-fg-subtle); }
 .muted { color: var(--af-fg-subtle); }
-/* an error line: Airframe's failed mark (app.js mark("failed")) and the words */
-.error { display: flex; align-items: baseline; gap: var(--af-space-8); margin: 0; color: var(--af-fg); }
-.error[hidden] { display: none; }
+.detail-reason { margin: 0; }
 
 /* ---------- controls: recessed, square, mono values (Airframe Controls) ---------- */
 button { font: inherit; color: inherit; cursor: pointer; }
@@ -54,6 +54,8 @@ input[type="checkbox"] { width: 14px; height: 14px; margin: 0; accent-color: var
 select { cursor: pointer; }
 label { display: flex; flex-direction: column; gap: 6px; min-width: 0; font-family: var(--af-font-mono); font-weight: 500;
   font-size: 10px; line-height: 1.2; letter-spacing: .09em; text-transform: uppercase; color: var(--af-fg-subtle); }
+/* Airframe's field (af-field) carries its own label and hint styles; the bare labels above are hangar's page forms */
+label.af-field { font: inherit; letter-spacing: 0; text-transform: none; color: inherit; }
 label.check { flex-direction: row; align-items: center; gap: var(--af-space-8); font-family: var(--af-font-sans);
   font-weight: 400; font-size: 13px; letter-spacing: 0; text-transform: none; color: var(--af-fg-muted); cursor: pointer; white-space: nowrap; }
 .af-input > input { height: 100%; }
@@ -81,11 +83,14 @@ details[open] > summary { margin-bottom: var(--af-space-8); }
 .providers .af-status { font-size: 12px; color: var(--af-fg-muted); }
 .providers .af-status .hint { margin-left: 6px; font-size: 11px; }
 main { padding: var(--af-space-28) var(--page-pad) calc(var(--drawer-pad, 0px) + var(--af-space-40)); min-width: 0; }
-.view-head { display: flex; justify-content: space-between; align-items: flex-end; gap: var(--af-space-16);
-  margin-bottom: var(--af-space-24); flex-wrap: wrap; }
-.actions { display: flex; gap: var(--af-space-12); align-items: center; flex-wrap: wrap; }
-.actions select { width: auto; }
-.panel { position: relative; background: var(--af-raised); border-radius: var(--af-radius-card); padding: var(--af-space-16); min-width: 0; }
+/* every view opens with Airframe's page header; its actions slot holds the view's filter and one primary */
+.view > .af-page-head { margin-bottom: var(--af-space-24); }
+.af-page-head__actions { gap: var(--af-space-12); }
+.af-page-head__actions select { width: auto; }
+/* empty states (Airframe EmptyState) inside a list, a table or a panel sit flush, not as a page */
+.list .af-empty { min-height: 0; padding: var(--af-space-24) var(--af-space-16); }
+.table .af-empty--compact { padding-inline: 0; }
+.panel {  position: relative; background: var(--af-raised); border-radius: var(--af-radius-card); padding: var(--af-space-16); min-width: 0; }
 .split { display: grid; grid-template-columns: minmax(240px, 320px) minmax(0, 1fr); gap: var(--af-space-12); align-items: start; }
 .split.even { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 .jobs-split { grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); }
@@ -111,7 +116,6 @@ fieldset.creds legend { padding: 0; margin-bottom: var(--af-space-8); font-famil
 .new-form > label.wide textarea { width: 100%; }
 
 /* ---------- fleet: four views of the same sandboxes (Airframe theme-v3), one selection, one detail panel ---------- */
-.fleet-sum { display: flex; flex-wrap: wrap; align-items: center; gap: var(--af-space-8) var(--af-space-20); }
 .fleet-views { flex: none; }
 .fleet-main { position: relative; min-width: 0; }
 .fleet-view { min-width: 0; }
@@ -133,42 +137,30 @@ fieldset.creds legend { padding: 0; margin-bottom: var(--af-space-8); font-famil
 /* Owners (FleetOwners) */
 .fleet-view .af-owners { scrollbar-width: thin; }
 .af-person__av .af-ic { color: var(--af-fg-subtle); }
-/* an empty view: what to do next, per environment */
-.fleet-empty { display: flex; flex-direction: column; align-items: center; gap: var(--af-space-12); padding: var(--af-space-40) var(--af-space-24);
-  border: 1px dashed var(--af-line-strong); border-radius: var(--af-radius-card); text-align: center; color: var(--af-fg-muted); }
-.fleet-empty p { margin: 0; }
-.fleet-empty > .af-ic { color: var(--af-fg-subtle); }
+/* an empty fleet (Airframe EmptyState) sits on a dashed floor so the room reads as room */
+.fleet-empty { border: 1px dashed var(--af-line-strong); border-radius: var(--af-radius-card); }
 #view-fleet.is-empty .fleet-detail { display: none; }
 #view-fleet.is-empty .fleet-main { display: block; }
 .fleet-view .af-statecol__empty { grid-column: 1 / -1; margin: 0; }
-.fleet-empty__envs { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--af-space-8); }
 
-/* the detail panel: a drawer by default (and on narrow screens), docked beside the Board on wide ones */
-.fleet-detail { position: fixed; top: var(--af-header-h); right: 0; bottom: var(--drawer-pad, 0px); z-index: 15; width: min(420px, 100vw);
-  overflow-y: auto; overscroll-behavior: contain; padding: var(--af-space-20); background: var(--af-overlay); border-left: 1px solid var(--af-line);
-  box-shadow: var(--af-shadow-overlay); opacity: 0; visibility: hidden;
-  transition: opacity var(--af-dur) var(--af-ease), visibility 0s linear var(--af-dur); }
-#view-fleet.has-selection .fleet-detail { opacity: 1; visibility: visible; transition: opacity var(--af-dur) var(--af-ease); }
+/* the detail panel: Airframe's Drawer parts (head, body, foot). fleet.js makes it a right drawer (af-drawer--right,
+   no scrim) in Bays, Columns and Owners and on narrow screens, and docks it beside the Board on wide ones. */
+.fleet-detail.af-drawer--right { top: var(--af-header-h); bottom: var(--drawer-pad, 0px); overscroll-behavior: contain; }
+.fleet-detail.is-docked { display: flex; flex-direction: column; min-width: 0; background: var(--af-raised); border-radius: var(--af-radius-card); }
+.fleet-detail.is-docked [data-fleet-close] { display: none; }
 @media (min-width: 1081px) {
-  #view-fleet[data-fleet-view="board"] .fleet-main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: var(--af-space-12); align-items: start; }
-  #view-fleet[data-fleet-view="board"] .fleet-detail { position: sticky; top: calc(var(--af-header-h) + var(--af-space-16)); right: auto; bottom: auto;
-    z-index: auto; width: auto; max-height: calc(100vh - var(--af-header-h) - var(--af-space-32) - var(--drawer-pad, 0px));
-    background: var(--af-raised); border-left: 0; border-radius: var(--af-radius-card); box-shadow: none; opacity: 1; visibility: visible; transition: none; }
-  #view-fleet[data-fleet-view="board"] .fd-close { display: none; }
+  #view-fleet[data-fleet-view="board"]:not(.is-empty) .fleet-main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: var(--af-space-12); align-items: start; }
+  .fleet-detail.is-docked { position: sticky; top: calc(var(--af-header-h) + var(--af-space-16));
+    max-height: calc(100vh - var(--af-header-h) - var(--af-space-32) - var(--drawer-pad, 0px)); }
 }
-.fd { --c: var(--af-status-running); display: flex; flex-direction: column; gap: var(--af-space-16); min-width: 0; }
-.fd[data-role="approval"] { --c: var(--af-status-approval); }
-.fd[data-role="failed"] { --c: var(--af-status-failed); }
-.fd[data-role="denied"] { --c: var(--af-status-denied); }
-.fd-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.fd-head > .af-ic { color: var(--af-brand-text); }
-.fd-head .af-id { font-size: 14px; }
-.fd-close { margin-left: auto; }
-.fd-title { margin: 0; font-family: var(--af-font-sans); font-weight: 600; font-size: 16px; line-height: 1.35; letter-spacing: -.005em; color: var(--af-fg); }
-.fd-decide { display: flex; flex-direction: column; gap: 10px; padding: var(--af-space-12); border-radius: var(--af-radius-card);
-  background: color-mix(in srgb, var(--c) 6%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 45%, transparent); }
-.fd-cmd { margin: 0; font-family: var(--af-font-mono); font-weight: 500; font-size: 13px; line-height: 1.45; color: var(--af-fg); overflow-wrap: anywhere; }
-.fd-decide__btns { display: flex; justify-content: flex-end; gap: var(--af-space-8); }
+.fleet-detail .af-drawer__head { gap: 10px; }
+.fleet-detail .af-drawer__title .af-id { margin-right: 6px; }
+.fleet-detail.is-docked .af-drawer__head { align-items: flex-start; padding-block: var(--af-space-12); }
+.fleet-detail.is-docked .af-drawer__title { white-space: normal; }  /* a docked panel has room for the whole title */
+.fd { display: flex; flex-direction: column; gap: var(--af-space-16); min-width: 0; }
+.fd-state { display: flex; flex-direction: column; gap: var(--af-space-8); }
+.fd-cmd { margin: 0; padding: 10px 12px; background: var(--af-surface); border-radius: var(--af-radius-control);
+  font-family: var(--af-font-mono); font-weight: 500; font-size: 13px; line-height: 1.45; color: var(--af-fg); overflow-wrap: anywhere; }
 .fd-kv { margin: 0; }
 .fd-kv .sub-val { margin-left: var(--af-space-8); color: var(--af-fg-subtle); }
 .fd-lease { display: flex; align-items: center; gap: 10px; }
@@ -182,15 +174,8 @@ fieldset.creds legend { padding: 0; margin-bottom: var(--af-space-8); font-famil
 .fd-run:hover { background: var(--af-selected); }
 .fd-run > .af-ic { color: var(--af-fg-subtle); }
 .fd-run__prompt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--af-fg-muted); }
-.fd-empty { display: flex; flex-direction: column; align-items: flex-start; gap: var(--af-space-8); color: var(--af-fg-muted); }
-.fd-empty p { margin: 0; }
-.fd-empty > .af-ic { color: var(--af-fg-subtle); }
 .bay-err { margin: 0; }
 .bay-err .af-meta__item { white-space: normal; }
-.empty-floor { padding: var(--af-space-40) var(--af-space-24); border: 1px dashed var(--af-line-strong); border-radius: var(--af-radius-card);
-  text-align: center; color: var(--af-fg-muted); }
-.empty-floor p { margin: 0 0 var(--af-space-16); }
-.empty-floor .af-ic { color: var(--af-fg-subtle); margin-bottom: var(--af-space-12); }
 
 /* ---------- lists (jobs, sessions, environments) ---------- */
 .list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; background: var(--af-raised);
@@ -205,10 +190,7 @@ fieldset.creds legend { padding: 0; margin-bottom: var(--af-space-8); font-famil
 .list button.active { background: var(--af-selected); box-shadow: inset 2px 0 0 var(--af-brand-text); }
 .list .t { display: block; font-size: 14px; font-weight: 500; line-height: 1.35; overflow-wrap: anywhere; }
 .list .d { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; font-size: 12px; color: var(--af-fg-subtle); min-width: 0; }
-.list .d .af-status { font-size: 12px; }
-.list .d .error { font-size: 12px; }
-.list .empty-floor { border: 0; padding: var(--af-space-24) var(--af-space-16); }
-.list .empty-floor p { margin: 0; }
+.list .d .af-status, .list .d .af-field__error { font-size: 12px; }
 #env-list .t { font-family: var(--af-font-mono); font-size: 13px; }
 
 /* ---------- tables (Airframe FleetTable: unfilled header, faint row rules) ---------- */
@@ -218,7 +200,6 @@ fieldset.creds legend { padding: 0; margin-bottom: var(--af-space-8); font-famil
 .table td.act .af-btn + .af-btn { margin-left: var(--af-space-4); }
 .table .muted { font-size: 12px; }
 .table td.clip { max-width: 0; width: 45%; overflow: hidden; text-overflow: ellipsis; }
-.table td.empty-row { white-space: normal; color: var(--af-fg-subtle); }
 .panel .af-table th:first-child, .panel .af-table td:first-child { padding-left: 0; }
 .panel .af-table th:last-child, .panel .af-table td:last-child { padding-right: 0; }
 
@@ -290,13 +271,13 @@ form.inline .af-input { flex: 1; }
 #cred-form .af-btn { align-self: flex-start; }
 #cred-form p { margin: 0; }
 
-/* ---------- terminal drawer: always dark (a nested Night scope, data-theme="dark") ---------- */
-.drawer { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; height: var(--drawer-h); display: flex; flex-direction: column;
-  background: var(--af-terminal-bg); color: var(--af-terminal-fg); border-top: 1px solid var(--af-line); }
-.drawer-grip { position: relative; height: 8px; margin-top: -8px; cursor: ns-resize; }
-.drawer-grip::after { content: ""; position: absolute; left: 50%; bottom: 3px; width: 32px; height: 2px; margin-left: -16px; background: var(--af-line-strong); }
-.drawer-tabs { display: flex; align-items: stretch; flex: none; height: 36px; padding: 0 var(--af-space-8); overflow-x: auto;
-  border-bottom: 1px solid color-mix(in srgb, var(--af-terminal-fg) 9%, transparent); }
+/* ---------- terminal drawer: Airframe's bottom drawer, always dark (a nested Night scope, data-theme="dark"), the
+   terminal's own ground; the head holds one tab per terminal ---------- */
+.terminal-drawer { background: var(--af-terminal-bg); color: var(--af-terminal-fg); }
+.terminal-drawer .af-drawer__head { gap: var(--af-space-16); padding-right: var(--af-space-8); border-bottom-color: color-mix(in srgb, var(--af-terminal-fg) 9%, transparent); }
+.terminal-drawer .af-drawer__head > .af-lbl { flex: none; color: var(--af-terminal-dim); }
+.terminal-drawer .af-drawer__grip { height: 11px; top: -5px; padding: 4px 0; background-clip: content-box; }  /* a 3px bar, an 11px grip */
+.drawer-tabs { display: flex; align-items: stretch; flex: 1; align-self: stretch; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .drawer-tabs .tab { position: relative; display: flex; align-items: center; gap: var(--af-space-8); padding: 0 10px 0 12px; border: 0;
   border-radius: 0; background: transparent; color: var(--af-terminal-dim); font-family: var(--af-font-mono); font-size: 12px; white-space: nowrap; }
 .drawer-tabs .tab:hover { color: var(--af-terminal-fg); }
@@ -308,22 +289,13 @@ form.inline .af-input { flex: 1; }
 .drawer-tabs .tab .x:hover { color: var(--af-terminal-fg); background: color-mix(in srgb, var(--af-terminal-fg) 10%, transparent); }
 .drawer-tabs .tab .x .af-ic { width: 12px; height: 12px; }
 .drawer-tabs .tab-extra { margin-left: auto; display: flex; gap: var(--af-space-4); align-items: center; padding-left: var(--af-space-12); }
-.drawer-body { flex: 1; position: relative; min-height: 0; }
+.terminal-drawer .af-drawer__body { position: relative; overflow: hidden; }
 .term { position: absolute; inset: 0; padding: 8px 10px; }
 .term .xterm-viewport { scrollbar-color: var(--af-line-strong) transparent; }
 
-/* ---------- dialog and toast: the floating surfaces (overlay, hairline, shadow-overlay) ---------- */
-dialog { width: min(560px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--af-line); border-radius: var(--af-radius-card);
-  background: var(--af-overlay); color: var(--af-fg); box-shadow: var(--af-shadow-overlay); }
-dialog::backdrop { background: color-mix(in srgb, var(--af-canvas) 72%, transparent); }
-dialog form { display: flex; flex-direction: column; gap: var(--af-space-16); padding: var(--af-space-24); }
-dialog p { margin: 0; }
-dialog .form-foot { margin-top: var(--af-space-4); }
-.toast { position: fixed; right: var(--af-space-20); bottom: var(--af-space-20); z-index: 30; max-width: 420px; display: flex; align-items: baseline;
-  gap: 10px; padding: 10px 14px; border: 1px solid var(--af-line); border-radius: var(--af-radius-card); background: var(--af-overlay);
-  color: var(--af-fg); box-shadow: var(--af-shadow-overlay); font-size: 13px; }
-.toast[hidden] { display: none; }
-body:has(.drawer:not([hidden])) .toast { bottom: calc(var(--drawer-h) + var(--af-space-16)); }
+/* ---------- the form dialog (Airframe Dialog): fields stack in the body; a command's output opens as a terminal well ---------- */
+.af-dialog__body > .af-field + .af-field, .af-dialog__body > p + .af-field { margin-top: var(--af-space-16); }
+.af-dialog__body > .log { margin-top: var(--af-space-16); }
 
 /* ---------- usage (--- observe): summary cards with readouts, a greyscale bar chart ---------- */
 .tiles { margin-bottom: var(--af-space-12); }
@@ -331,7 +303,7 @@ body:has(.drawer:not([hidden])) .toast { bottom: calc(var(--drawer-h) + var(--af
 .usage-chart { padding: var(--af-space-16) var(--af-space-20) var(--af-space-20); }
 .usage-chart h3 { margin-bottom: var(--af-space-16); }
 .bars { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 180px auto; gap: 6px 10px; }
-.bars .empty { grid-column: 1 / -1; }
+.bars .af-empty { grid-column: 1 / -1; }
 .bars-axis { display: flex; flex-direction: column; justify-content: space-between; text-align: right; color: var(--af-fg-subtle);
   font-family: var(--af-font-mono); font-size: 10px; font-variant-numeric: tabular-nums; }
 .bars-plot { display: flex; align-items: flex-end; gap: 2px; border-top: 1px solid var(--af-line-subtle); border-bottom: 1px solid var(--af-rule); }
@@ -362,7 +334,6 @@ body:has(.drawer:not([hidden])) .toast { bottom: calc(var(--drawer-h) + var(--af
 @media (max-width: 720px) {
   :root { --page-pad: var(--af-space-16); }
   main { padding-top: var(--af-space-20); }
-  .view-head h2 { font-size: 28px; }
   .topbar .af-nav__name, .topbar .af-nav__sep { display: none; }
   .grid { grid-template-columns: minmax(0, 1fr); }
   .grid .wide { grid-column: auto; }

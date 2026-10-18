@@ -1,7 +1,8 @@
 /* hangar console: the Fleet page. The same sandboxes four ways, from Airframe theme-v3 (vendored in /ui/airframe/):
    Board (FleetView), Bays (FleetBays), Columns (FleetColumns) and Owners (FleetOwners). One selection is shared by all
    four and opens one detail panel (beside the Board, a drawer elsewhere) that carries every sandbox action.
-   A classic script loaded after app.js, whose helpers it uses ($, api, esc, ic, status, meta, ago, until, busy). */
+   A classic script loaded after app.js, whose helpers it uses ($, api, esc, ic, status, meta, btn, avatar, ago, until,
+   busy, emptyState, confirmAction) along with Airframe's drawer (window.airframe). */
 "use strict";
 
 const FLEET_VIEWS = ["board", "bays", "columns", "owners"];
@@ -38,10 +39,14 @@ function personOf(actor, person) {
 const personName = (id) => (id ? fleet.people[id]?.name || id : "hangar");
 const firstName = (id) => personName(id).split(" ")[0];
 const ownerOf = (u) => (u.owner ? personName(u.owner) : u.actor || "hangar");
-const initials = (id) => {
-  const w = personName(id).split(/[\s._-]+/).filter(Boolean);
+const initialsOf = (name) => {
+  const w = String(name || "").split(/[\s._-]+/).filter(Boolean);
   return ((w.length > 1 ? w[0][0] + w[1][0] : (w[0] || "?").slice(0, 2)) || "?").toUpperCase();
 };
+const initials = (id) => initialsOf(personName(id));
+// the avatar triad: people are round, agents hexagonal (the harness's initials; the agent glyph when there is none)
+const personAvatar = (id, size = 28) => avatar("person", initials(id), { size, name: personName(id) });
+const agentAvatar = (harness, size = 28) => avatar("agent", harness ? initialsOf(harness) : "", { size, name: harness || "agent" });
 const repoShort = (r) => (r || "").replace(/^https?:\/\/(www\.)?github\.com\//, "").replace(/\.git$/, "");
 const dur = (s) => (s < 3600 ? `${Math.max(1, Math.round(s / 60))} min`
   : `${Math.floor(s / 3600)} h${Math.round((s % 3600) / 60) ? ` ${Math.round((s % 3600) / 60)} min` : ""}`);
@@ -183,6 +188,7 @@ function renderFleet() {
   const body = { board: boardHtml, bays: baysHtml, columns: columnsHtml, owners: ownersHtml }[fleet.view](units);
   paint($("#bays"), body, `view:${fleet.view}`);
   paint($("#fleet-detail"), detailHtml(fleet.byId.get(fleet.selected)), "detail");
+  placeDetail();
   // say it when something new needs a person (the screen reader hears it; the screen already shows it)
   const waiting = units.filter((u) => ROLE_RANK[u.role] <= 2).map((u) => u.id).sort().join(" ");
   if (fleet.attention !== null && waiting !== fleet.attention) {
@@ -251,15 +257,14 @@ const capHtml = (n, max, sm = false, unit = "slots") => max
   : `<span class="af-cap${sm ? " af-cap--sm" : ""}">${n} ${unit}</span>`;
 
 function summaryHtml(units) {
-  if (!units.length) return "No sandboxes running. Start one from an environment.";
+  if (!units.length) return `<span class="af-muted">No sandboxes running.</span>`;
   const c = counts(units);
   // the header leads with what needs a person, not with the loudest state: a denied sandbox is a record, a held one is work
   const top = ATTENTION.find((r) => units.some((u) => u.role === r));
   const words = { approval: "Needs you", failed: "Failed", denied: "Denied", running: "Running", queued: "Starting",
     off: units.some((u) => u.sb.state === "paused") ? "Paused" : "Spun down" };
   const active = units.filter((u) => u.live).length;
-  return `<span class="fleet-sum">${status(top, words[top])}${countMeta(c, ["approval", "failed", "denied", "paused"])}
-    ${capHtml(active, state.overview?.max_sandboxes)}</span>`;
+  return `${status(top, words[top])}${countMeta(c, ["approval", "failed", "denied", "paused"])}${capHtml(active, state.overview?.max_sandboxes)}`;
 }
 
 /* ---- shared parts */
@@ -281,26 +286,28 @@ const stand = (u) => `<button type="button" class="af-stand af-stand--${u.role}"
 // the one action a bay or a card offers; everything else is in the detail panel
 function oneAction(u, primaryOk = true) {
   const go = u.job ? `job:${u.job.id}` : u.ses ? `session:${u.ses.id}` : null;
-  const btn = (kind, attr, label, icon = "") => `<button type="button" class="af-btn af-btn--${kind} af-btn--sm" ${attr}>${icon ? ic(icon) : ""}${esc(label)}</button>`;
+  const b = (kind, attrs, label, icon) => btn(label, { kind, sm: true, icon, attrs });
   if (u.role === "approval") {
     const k = primaryOk ? "primary" : "secondary";
-    return u.label === "Needs input" && go ? btn(k, `data-go="${esc(go)}"`, "Answer") : btn(k, `data-select="${esc(u.id)}"`, "Review");
+    return u.label === "Needs input" && go ? b(k, { "data-go": go }, "Answer") : b(k, { "data-select": u.id }, "Review");
   }
-  if (u.role === "denied") return btn("secondary", `data-select="${esc(u.id)}"`, "Decision");
-  if (u.role === "failed") return u.job ? btn("secondary", `data-go="job:${esc(u.job.id)}"`, "Open job") : btn("secondary", `data-select="${esc(u.id)}"`, "Details");
-  if (u.sb.state === "paused") return btn("ghost", `data-act="resume"`, "Resume", "play");
-  if (u.sb.state === "running") return btn("ghost", `data-act="term"`, "Terminal", "terminal");
-  if (go) return btn("ghost", `data-go="${esc(go)}"`, u.job ? "Open job" : "Open session");
+  if (u.role === "denied") return b("secondary", { "data-select": u.id }, "Decision");
+  if (u.role === "failed") return u.job ? b("secondary", { "data-go": `job:${u.job.id}` }, "Open job") : b("secondary", { "data-select": u.id }, "Details");
+  if (u.sb.state === "paused") return b("ghost", { "data-act": "resume" }, "Resume", "play");
+  if (u.sb.state === "running") return b("ghost", { "data-act": "term" }, "Terminal", "terminal");
+  if (go) return b("ghost", { "data-go": go }, u.job ? "Open job" : "Open session");
   return "";
 }
 const envIcon = (env) => ic(/gpu/i.test(env) ? "gpu" : "environment");
-const emptyView = (text, envs = true) => `<div class="fleet-empty">${ic("fleet", "af-ic--24")}<p>${esc(text)}</p>${envs
-  ? `<div class="fleet-empty__envs">${(state.envs || []).filter((e) => !e.error).slice(0, 6).map((e) =>
-    `<button type="button" class="af-btn af-btn--secondary af-btn--sm" data-act="new" data-env="${esc(e.name)}">${ic("plus")}Start in ${esc(e.name)}</button>`).join("")}</div>` : ""}</div>`;
+// an empty fleet (Airframe EmptyState, no-data): one action and one link (the page header already has the primary);
+// the Bays view keeps a start bay per environment
+const emptyView = (title, text, start = true) => emptyState({ icon: "fleet", title, text, cls: "fleet-empty", actions: start
+  ? `${btn("Start a sandbox", { attrs: { "data-act": "new" } })}<a class="af-link" href="#environments">Environments</a>`
+  : `<a class="af-link" href="#environments">Environments</a>` });
 
 /* ---- Board: every sandbox as a stand, by environment (FleetView) */
 function boardHtml(units) {
-  if (!units.length) return emptyView("No sandboxes running. Start one from an environment.");
+  if (!units.length) return emptyView("No sandboxes running.", "Start one from an environment; the first boot of an image takes about a minute.");
   const pools = envNames(units).map((env) => {
     const us = units.filter((u) => u.env === env);
     return `<section class="af-fleet__pool" aria-label="${esc(env)}">
@@ -331,7 +338,7 @@ function bay(u) {
 }
 function baysHtml(units) {
   const envs = units.length ? envNames(units) : (state.envs || []).filter((e) => !e.error).map((e) => e.name).sort();
-  if (!envs.length) return emptyView("No environments yet. Create one under Environments.", false);
+  if (!envs.length) return emptyView("No environments yet.", "Create one under Environments, then start a sandbox from it.", false);
   const start = (env) => `<button type="button" class="af-bay af-bay--new" data-act="new" data-env="${esc(env)}">${ic("plus")}Start in ${esc(env)}</button>`;
   if (!units.length) return `<div class="fleet-groups"><div class="af-bays">${envs.map(start).join("")}</div></div>`;
   return `<div class="fleet-groups" data-board>${envs.map((env) => {
@@ -364,14 +371,14 @@ function columnsHtml(units) {
     let us = units.filter(pick);
     if (wide) us = us.slice().sort((a, b) => a.env.localeCompare(b.env) || a.sb.created_at - b.sb.created_at || a.id.localeCompare(b.id));
     return `<section class="af-statecol${wide ? " af-statecol--wide" : ""}" aria-label="${esc(name)}">
-      <div class="af-statecol__head">${status(role, name, role === "approval" || role === "failed")}<span class="af-statecol__count">${us.length}</span></div>
+      <div class="af-statecol__head">${status(role, name, { lit: role === "approval" || role === "failed" })}<span class="af-statecol__count">${us.length}</span></div>
       <div class="af-statecol__list">${us.length ? us.map(mini).join("") : `<p class="af-statecol__empty">${esc(empty)}</p>`}</div></section>`;
   }).join("")}</div>`;
 }
 
 /* ---- Owners: people down, environments across (FleetOwners) */
 function ownersHtml(units) {
-  if (!units.length) return emptyView("Nobody has a sandbox right now. Start one from an environment.");
+  if (!units.length) return emptyView("Nobody has a sandbox right now.", "Start one from an environment; it lands in your row.");
   const envs = envNames(units);
   const caps = state.overview?.person_caps || {};
   const people = [...new Set(units.map((u) => u.owner || ""))].sort((a, b) =>
@@ -391,8 +398,7 @@ function ownersHtml(units) {
     const direct = mine.filter((u) => u.kind === "sandbox" && u.live).length;
     const sessions = (state.sessions || []).filter((s) => !s.job_id && ["starting", "idle", "running"].includes(s.state) && personOf(s.owner, s.person) === p).length;
     const need = mine.filter((u) => u.role === "approval").length;
-    const who = p ? `<span class="af-person"><span class="af-person__av" aria-hidden="true">${esc(initials(p))}</span><span class="af-person__name">${esc(personName(p))}</span></span>`
-      : `<span class="af-person"><span class="af-person__av" aria-hidden="true">${ic("agent", "af-ic--14")}</span><span class="af-person__name">hangar</span></span>`;
+    const who = `<span class="af-who">${p ? personAvatar(p) : avatar("agent", "", { size: 28, name: "hangar" })}<span class="af-who__name">${esc(p ? personName(p) : "hangar")}</span></span>`;
     return `<div class="af-owners__row" style="${cols}"><div class="af-owners__who">${who}
         ${p ? `${capHtml(direct, caps.sandboxes, true, "sandboxes")}${sessions ? capHtml(sessions, caps.sessions, true, "sessions") : ""}` : `<span class="af-cap af-cap--sm">${mine.length} started by hangar</span>`}
         ${meta([fleet.spend && p ? ["today", `$${(spend[p] || 0).toFixed(2)}`] : null, need ? ["needs you", need, "approval"] : null])}</div>
@@ -404,63 +410,77 @@ function ownersHtml(units) {
   return `<div class="af-panel af-owners" data-scroll="owners"><div class="af-owners__rows" data-board>${head}${rows}</div></div>`;
 }
 
-/* ---- the detail panel: everything about the selected sandbox, and every action */
+/* ---- the detail panel: everything about the selected sandbox, and every action. Airframe's Drawer parts (head, body,
+   foot) in both of its places: a right drawer (airframe.drawer, no scrim) in Bays, Columns and Owners and on narrow
+   screens, a docked panel beside the Board on wide ones. The decision sits in the foot: inspect, refuse, accept. */
 function detailHtml(u) {
-  if (!u) return `<div class="fd-empty">${ic("agent", "af-ic--24")}<p>Select a sandbox to see its work and act on it.</p>
-    <p class="hint">Arrow keys move across the board; Enter opens one.</p></div>`;
+  if (!u) return `<div class="af-drawer__body">${emptyState({ compact: true, icon: "agent", title: "No sandbox selected.",
+    text: "Arrow keys move across the board; Enter opens one." })}</div>`;
   const sb = u.sb, running = sb.state === "running", paused = sb.state === "paused", live = running || paused;
-  const act = (a, icon, label, kind = "secondary", extra = "") =>
-    `<button type="button" class="af-btn af-btn--${kind} af-btn--sm" data-act="${a}"${extra}>${icon ? ic(icon) : ""}${esc(label)}</button>`;
+  const act = (a, icon, label, kind = "secondary", extra = {}) => btn(label, { kind, sm: true, icon, attrs: { "data-act": a, ...extra } });
   const runs = (sb.info?.runs || []).slice(-4).reverse();
   const branch = sb.info?.work_branch || sb.branch;
+  const go = u.job ? `job:${u.job.id}` : u.ses ? `session:${u.ses.id}` : null;
   // a hold the console can decide: a job waiting to start, or a tool call a running turn asked for
-  const decide = u.ask ? `<div class="fd-decide">
-      ${u.ask.kind === "tool" && u.reason ? `<p class="fd-cmd">${esc(u.reason[1])}</p>` : ""}
-      <div class="fd-decide__btns"><button type="button" class="af-btn af-btn--danger af-btn--sm" data-act="deny">Deny</button>
-        <button type="button" class="af-btn af-btn--primary af-btn--sm" data-act="approve">${u.ask.kind === "job" ? "Approve job" : "Allow"}</button></div></div>` : "";
-  const answer = u.label === "Needs input" ? `<div class="fd-decide"><button type="button" class="af-btn af-btn--primary af-btn--sm"
-      data-go="${esc(u.job ? `job:${u.job.id}` : `session:${u.ses.id}`)}">${ic("session")}Answer the agent</button></div>` : "";
-  return `<div class="fd" data-id="${esc(u.id)}" data-role="${u.role}">
-    <div class="fd-head">${ic("agent", "af-ic--20")}<span class="af-id">${esc(u.id)}</span>${status(u.role, u.label, true)}
-      <button type="button" class="af-btn af-btn--ghost af-btn--icon af-btn--sm fd-close" data-fleet-close aria-label="Close">${ic("close")}</button></div>
-    <h3 class="fd-title">${esc(u.work)}</h3>
-    ${u.reason && u.ask?.kind !== "tool" ? note(u) : ""}${decide}${answer}
-    ${track(u)}
-    <dl class="af-kv fd-kv">
-      <dt>Name</dt><dd class="af-mono">${esc(u.name)}</dd>
-      <dt>${u.kind === "job" ? "Job" : u.kind === "session" ? "Session" : "Started by"}</dt><dd>${u.job
-        ? `<a href="#jobs?job=${esc(u.job.id)}" data-go="job:${esc(u.job.id)}" class="af-mono">${esc(u.job.id)}</a>`
-        : u.ses ? `<a href="#sessions" data-go="session:${esc(u.ses.id)}" class="af-mono">${esc(u.ses.name)}</a>` : esc(sb.created_by || "")}
-        <span class="sub-val">${esc(ownerOf(u))}</span></dd>
-      <dt>Where</dt><dd>${meta([["env", u.env, "strong"], ["provider", u.provider], ["harness", u.harness], ["model", u.model]])}</dd>
-      <dt>Age</dt><dd>${dur(u.age)}</dd>
-      ${live && u.left != null ? `<dt>Lease</dt><dd class="fd-lease"><span>${esc(left(u.left))}</span><span class="af-bay__left" aria-hidden="true"><i style="width:${Math.round(100 * u.leftFrac)}%"></i></span></dd>` : ""}
-      ${sb.repo ? `<dt>Repo</dt><dd class="af-mono">${esc(repoShort(sb.repo))}</dd>` : ""}
-      ${branch ? `<dt>Branch</dt><dd><code>${esc(branch)}</code></dd>` : ""}
-      ${sb.credentials?.length ? `<dt>Credentials</dt><dd class="af-mono">${esc(sb.credentials.join(", "))}</dd>` : ""}
-      ${sb.parent ? `<dt>Forked from</dt><dd class="af-mono">${esc(sb.parent)}</dd>` : ""}
-      ${sb.info?.warm ? `<dt>Start</dt><dd>warm</dd>` : ""}
-    </dl>
-    ${sb.error && u.reason?.[0] !== "Error" ? `<p class="bay-err">${meta([["error", sb.error, "failed"]])}</p>` : ""}
-    ${u.task ? `<details class="fd-task"><summary>Task</summary><p>${esc(u.task)}</p></details>` : ""}
-    ${sb.state !== "stopped" ? `<div class="fd-actions">
-      ${running ? act("term", "terminal", "Terminal") + act("agent", "agent", "Run agent") + act("exec", "play", "Run command")
-        + act("fork", "fork", "Fork") + act("snapshot", "snapshot", "Snapshot") + act("pause", "pause", "Pause") : ""}
-      ${paused ? act("resume", "play", "Resume") : ""}
-      ${live ? act("extend", "duration", "+1 hour", "secondary", ` title="Add one hour"`) : ""}
-      ${act("destroy", "close", "Destroy", "danger")}</div>` : ""}
-    ${runs.length && running ? `<div class="fd-runs"><h4>Agent runs</h4>${runs.map((r) =>
-      `<button type="button" class="fd-run" data-act="run" data-run="${esc(r.id)}" title="${esc(r.prompt)}">${ic("terminal")}<span class="af-mono">${esc(r.harness)}</span><span class="fd-run__prompt">${esc(r.prompt || "")}</span><span class="hint">${ago(r.started_at)}</span></button>`).join("")}</div>` : ""}
-  </div>`;
+  const decide = u.ask ? `${go ? btn(u.job ? "Open job" : "Open session", { kind: "ghost", sm: true, attrs: { "data-go": go } }) : ""}
+      ${btn("Deny", { kind: "danger", sm: true, attrs: { "data-act": "deny" } })}${btn(u.ask.kind === "job" ? "Approve job" : "Allow", { kind: "primary", sm: true, attrs: { "data-act": "approve" } })}` : "";
+  const answer = u.label === "Needs input" && go ? btn("Answer the agent", { kind: "primary", sm: true, icon: "session", attrs: { "data-go": go } }) : "";
+  return `<header class="af-drawer__head">${agentAvatar(u.harness)}
+      <h2 class="af-drawer__title"><span class="af-id">${esc(u.id)}</span> ${esc(u.work)}</h2>
+      ${btn("", { kind: "ghost", sm: true, icon: "close", attrs: { "data-fleet-close": true, "aria-label": "Close" } })}</header>
+    <div class="af-drawer__body fd" data-id="${esc(u.id)}" data-role="${u.role}">
+      <div class="fd-state">${status(u.role, u.label, { lit: true })}${u.reason && u.ask?.kind === "tool" ? `<p class="fd-cmd">${esc(u.reason[1])}</p>` : note(u)}</div>
+      ${track(u)}
+      <dl class="af-kv fd-kv">
+        <dt>Name</dt><dd class="af-mono">${esc(u.name)}</dd>
+        <dt>${u.kind === "job" ? "Job" : u.kind === "session" ? "Session" : "Started by"}</dt><dd>${u.job
+          ? `<a href="#jobs?job=${esc(u.job.id)}" data-go="job:${esc(u.job.id)}" class="af-mono">${esc(u.job.id)}</a>`
+          : u.ses ? `<a href="#sessions" data-go="session:${esc(u.ses.id)}" class="af-mono">${esc(u.ses.name)}</a>` : esc(sb.created_by || "")}
+          <span class="sub-val">${esc(ownerOf(u))}</span></dd>
+        <dt>Where</dt><dd>${meta([["env", u.env, "strong"], ["provider", u.provider], ["harness", u.harness], ["model", u.model]])}</dd>
+        <dt>Age</dt><dd>${dur(u.age)}</dd>
+        ${live && u.left != null ? `<dt>Lease</dt><dd class="fd-lease"><span>${esc(left(u.left))}</span><span class="af-bay__left" aria-hidden="true"><i style="width:${Math.round(100 * u.leftFrac)}%"></i></span></dd>` : ""}
+        ${sb.repo ? `<dt>Repo</dt><dd class="af-mono">${esc(repoShort(sb.repo))}</dd>` : ""}
+        ${branch ? `<dt>Branch</dt><dd><code>${esc(branch)}</code></dd>` : ""}
+        ${sb.credentials?.length ? `<dt>Credentials</dt><dd class="af-mono">${esc(sb.credentials.join(", "))}</dd>` : ""}
+        ${sb.parent ? `<dt>Forked from</dt><dd class="af-mono">${esc(sb.parent)}</dd>` : ""}
+        ${sb.info?.warm ? `<dt>Start</dt><dd>warm</dd>` : ""}
+      </dl>
+      ${sb.error && u.reason?.[0] !== "Error" ? `<p class="bay-err">${meta([["error", sb.error, "failed"]])}</p>` : ""}
+      ${u.task ? `<details class="fd-task"><summary>Task</summary><p>${esc(u.task)}</p></details>` : ""}
+      ${sb.state !== "stopped" ? `<div class="fd-actions">
+        ${running ? act("term", "terminal", "Terminal") + act("agent", "agent", "Run agent") + act("exec", "play", "Run command")
+          + act("fork", "fork", "Fork") + act("snapshot", "snapshot", "Snapshot") + act("pause", "pause", "Pause") : ""}
+        ${paused ? act("resume", "play", "Resume") : ""}
+        ${live ? act("extend", "duration", "+1 hour", "secondary", { title: "Add one hour" }) : ""}
+        ${act("destroy", "close", "Destroy", "danger")}</div>` : ""}
+      ${runs.length && running ? `<div class="fd-runs"><h4>Agent runs</h4>${runs.map((r) =>
+        `<button type="button" class="fd-run" data-act="run" data-run="${esc(r.id)}" title="${esc(r.prompt)}">${ic("terminal")}<span class="af-mono">${esc(r.harness)}</span><span class="fd-run__prompt">${esc(r.prompt || "")}</span><span class="hint">${ago(r.started_at)}</span></button>`).join("")}</div>` : ""}
+    </div>
+    ${decide || answer ? `<footer class="af-drawer__foot" data-id="${esc(u.id)}">${decide || answer}</footer>` : ""}`;
 }
 
 /* ------------------------------------------------------------------ selection, actions, keys */
-// the panel is a drawer in Bays, Columns and Owners, and on narrow screens (CSS decides; this follows it)
-const isDrawer = () => getComputedStyle($("#fleet-detail")).position === "fixed";
+// The panel is docked beside the Board on a wide screen and a right drawer (Airframe Drawer, no scrim) everywhere
+// else: in Bays, Columns and Owners, and on narrow screens. JS decides, so the drawer's open, close, Escape and focus
+// return are airframe.drawer's; the terminal drawer below shortens it through --drawer-pad.
+const DOCKED = window.matchMedia("(min-width: 1081px)");
+const isDrawer = () => !(fleet.view === "board" && DOCKED.matches);
+function placeDetail() {
+  const el = $("#fleet-detail"), drawer = isDrawer();
+  const wasOpen = el.classList.contains("af-drawer") && airframe.drawer.isOpen(el);
+  if (wasOpen && !(drawer && fleet.selected)) airframe.drawer.close(el);
+  el.classList.toggle("af-drawer", drawer);
+  el.classList.toggle("af-drawer--right", drawer);
+  el.classList.toggle("is-docked", !drawer);
+  if (drawer && fleet.selected && !wasOpen) airframe.drawer.open(el, { scrim: false });
+}
+DOCKED.addEventListener("change", () => { if (state.view === "fleet") placeDetail(); });
+// closed from outside (Escape, or airframe.drawer.close): the selection goes with it, and focus returns to the tile
+$("#fleet-detail").addEventListener("af:close", () => { if (fleet.selected) { fleet.selected = null; renderFleet(); } });
 function selectUnit(id) {
   fleet.selected = id && fleet.byId.has(id) ? id : null;
   renderFleet();
-  if (fleet.selected && isDrawer()) $("#fleet-detail .fd-close")?.focus({ preventScroll: true });
 }
 function closeDetail() {
   const id = fleet.selected;
@@ -482,7 +502,7 @@ async function decide(u, allow, btn) {
   const a = u.ask;
   await busy(btn, async () => {
     if (a.kind === "job") {
-      if (!allow && !confirm(`Reject ${a.job}? It won't run.`)) return;
+      if (!allow && !(await confirmAction(`Reject ${a.job}?`, "The job won't run; its requester is told. Nothing has started yet.", "Reject", { cancel: "Keep waiting" }))) return;
       await api("POST", `/api/jobs/${a.job}/${allow ? "approve" : "reject"}`);
       toast(`${allow ? "Approved" : "Rejected"} ${a.job}`);
     } else {
@@ -500,26 +520,27 @@ $("#view-fleet").addEventListener("click", async (e) => {
   if (go) { e.preventDefault(); return goTo(go.dataset.go); }
   const pick = e.target.closest("[data-select]");
   if (pick) return selectUnit(pick.dataset.select);
-  const btn = e.target.closest("button[data-act]");
-  if (!btn) {
+  const b = e.target.closest("button[data-act]");
+  if (!b) {
     const tile = e.target.closest("[data-tile]");
     if (tile && !e.target.closest("a, button:not([data-tile])")) selectUnit(tile.dataset.id === fleet.selected && isDrawer() ? null : tile.dataset.id);
     return;
   }
-  const act = btn.dataset.act;
-  if (act === "new") { openNewForm(btn.dataset.env); $("#new-form").scrollIntoView({ behavior: "smooth", block: "start" }); return; }
-  const id = btn.closest("[data-id]")?.dataset.id;
+  const act = b.dataset.act;
+  if (act === "new") { openNewForm(b.dataset.env); $("#new-form").scrollIntoView({ behavior: "smooth", block: "start" }); return; }
+  const id = b.closest("[data-id]")?.dataset.id;
   const u = fleet.byId.get(id), sb = u?.sb;
   if (!sb) return;
-  if (act === "approve" || act === "deny") return decide(u, act === "approve", btn);
+  if (act === "approve" || act === "deny") return decide(u, act === "approve", b);
   if (act === "term") return openTerminal(sb);
-  if (act === "run") return openTerminal(sb, btn.dataset.run);
+  if (act === "run") return openTerminal(sb, b.dataset.run);
   if (act === "agent") return agentDialog(sb);
   if (act === "exec") return execDialog(sb);
   if (act === "fork") return forkDialog(sb);
-  await busy(btn, async () => {
+  if (act === "destroy" && !(await confirmAction(`Destroy ${sb.name}?`, `Its filesystem is deleted unless you snapshot it first.${u.job || u.ses
+    ? " The branch and the conversation are kept." : ""}`, "Destroy"))) return;
+  await busy(b, async () => {
     if (act === "destroy") {
-      if (!confirm(`Destroy ${sb.name}? Its filesystem is deleted unless you snapshot it first.`)) return;
       await api("DELETE", `/api/sandboxes/${id}`); toast(`Destroyed ${sb.name}`); closeTerminalsFor(id);
     } else if (act === "snapshot") {
       const s = await api("POST", `/api/sandboxes/${id}/snapshot`, { kind: "auto" }); toast(`Snapshot ${s.id} taken (${s.kind})`);
@@ -533,7 +554,7 @@ $("#view-fleet").addEventListener("click", async (e) => {
 // Arrow keys move within a board (by position, so they work across pools, cells and columns); Enter and Space open
 // the tile; Escape closes the drawer.
 $("#view-fleet").addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && fleet.selected && isDrawer()) { e.preventDefault(); return closeDetail(); }
+  if (e.key === "Escape" && fleet.selected && isDrawer()) { e.preventDefault(); e.stopPropagation(); return closeDetail(); }
   const tile = e.target.closest?.("[data-tile]");
   if (!tile || e.target !== tile) return;
   if ((e.key === "Enter" || e.key === " ") && tile.tagName !== "BUTTON") { e.preventDefault(); return selectUnit(tile.dataset.id); }

@@ -5,20 +5,27 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-/* ---- Airframe (vendored in /ui/airframe/): icons, statuses, keyed data, readouts ---- */
-const ICONS = "/ui/airframe/airframe-icons.svg";
-const ic = (name, cls = "") => `<svg class="af-ic${cls ? ` ${cls}` : ""}" aria-hidden="true"><use href="${ICONS}#af-${name}"/></svg>`;
+/* ---- Airframe (vendored in /ui/airframe/): the helpers and behaviours come from airframe.js (window.airframe, loaded
+   before this script): status, icon, meta, btn, avatar, toast, confirm, drawer. The console adds only what it needs on
+   top: a bare mark, a word-caser, a readout. ---- */
+const airframe = window.airframe;
 // Airframe has six statuses, each color + shape + word: running (grey dot), queued (ring), approval (orange
 // diamond), failed (red triangle), denied (red placard), off (small dot). Every console state maps to one of them;
 // only approval, failed and denied carry color, so a screen with no color on it needs nobody.
-const status = (role, word, lit = false) =>
-  `<span class="af-status af-status--${role}${lit ? " af-status--lit" : ""}"><i class="af-status__mark"></i>${esc(word)}</span>`;
+const { status, btn, avatar } = airframe;
+const ic = (name, size) => airframe.icon(name, { size });
 const mark = (role) => `<span class="af-status af-status--${role}" aria-hidden="true"><i class="af-status__mark"></i></span>`;
 const word = (s) => String(s || "").replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
-// keyed inline data: [[key, value, modifier?]], value already escaped when it is html (pass {html})
-const meta = (items) => `<span class="af-meta">${items.filter((x) => x && x[1] !== "" && x[1] != null).map(([k, v, mod]) =>
-  `<span class="af-meta__item${mod ? ` af-meta__item--${mod}` : ""}"><span class="af-meta__key">${esc(k)}</span>` +
-  `<span class="af-meta__val">${typeof v === "object" ? v.html : esc(v)}</span></span>`).join("")}</span>`;
+// keyed inline data: [[key, value, modifier?]]; an item with no value is left out
+const meta = (items) => airframe.meta(items.filter((x) => x && x[1] !== "" && x[1] != null));
+// an error line: the failed mark and the words, never a red fill (Airframe's field error)
+const errorLine = (text) => `<span class="af-field__error">${status("failed", text)}</span>`;
+// an empty state: what is not here and what to do about it (Airframe EmptyState); `compact` is the one-row form
+const emptyState = ({ kind = "no-data", icon, title, text = "", actions = "", compact = false, cls = "" }) =>
+  `<div class="af-empty${compact ? " af-empty--compact" : ""}${cls ? ` ${cls}` : ""}" data-kind="${kind}">${icon ? ic(icon, compact ? undefined : 24) : ""}${compact
+    ? `<div class="af-empty__body"><span class="af-empty__title">${esc(title)}</span>${text ? `<span class="af-empty__text">${text}</span>` : ""}</div>`
+    : `<h3 class="af-empty__title">${esc(title)}</h3>${text ? `<p class="af-empty__text">${text}</p>` : ""}`}${actions
+    ? `<div class="af-empty__act">${actions}</div>` : ""}</div>`;
 // a readout: one unlit cell per digit or letter; punctuation sits between cells
 const readout = (text, size = "m") => `<span class="af-readout af-readout--${size}">${[...String(text)].map((c) =>
   /[0-9a-z]/i.test(c) ? `<b>${esc(c)}</b>` : `<b class="af-readout__p">${esc(c)}</b>`).join("")}</span>`;
@@ -44,15 +51,11 @@ async function api(method, path, body, { raw = false } = {}) {
   return data;
 }
 
-let toastTimer;
-function toast(msg, bad = false) {
-  const t = $("#toast");
-  t.innerHTML = (bad ? mark("failed") : "") + esc(msg);
-  t.classList.toggle("bad", bad);
-  t.hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.hidden = true), bad ? 7000 : 3500);
-}
+// Airframe's toast: bottom centre, held while a dialog or drawer is open or a field has focus (alert inhibition), the
+// failed mark for a bad outcome; `opts` adds an action ({label, onClick}) or `critical: true`.
+const toast = (msg, bad = false, opts = {}) => airframe.toast(msg, { tone: bad ? "bad" : "plain", ...opts });
+// Airframe's confirm on an af-dialog, in place of window.confirm(): the refusing button first, the verb last
+const confirmAction = (title, body, ok, { danger = true, cancel = "Keep it" } = {}) => airframe.confirm({ title, body, ok, cancel, danger });
 
 async function busy(btn, fn) {
   const label = btn?.innerHTML;  // buttons can carry an icon: keep the markup, not just the text
@@ -83,7 +86,7 @@ function showGate(err) {
   $("#shell").hidden = true;
   $("#gate").hidden = false;
   $("#gate-error").hidden = !err;
-  $("#gate-error").innerHTML = err ? mark("failed") + esc(err) : "";
+  $("#gate-error").innerHTML = err ? errorLine(err) : "";
   $("#gate-token").focus();
 }
 $("#gate-form").addEventListener("submit", async (e) => {
@@ -186,30 +189,35 @@ $("#new-form").addEventListener("submit", async (e) => {
   btn.innerHTML = label;
 });
 
-/* ---- dialogs ---- */
-function dialog(html, onSubmit) {
+/* ---- dialogs: Airframe's af-dialog (one short form that creates or runs one thing). The footer runs refuse, accept:
+   the refusing button is first in focus order so Enter never destroys, the verb is on the confirming one. ---- */
+const field = (label, control, hint = "") => `<label class="af-field"><span class="af-field__label">${esc(label)}</span>${control}${hint
+  ? `<span class="af-field__hint">${esc(hint)}</span>` : ""}</label>`;
+const inputWell = (html, { area = false, sans = false } = {}) => `<span class="af-input${area ? " af-input--area" : ""}${sans ? " af-input--sans" : ""}">${html}</span>`;
+
+function dialog({ title, body, ok, cancel = "Cancel", wide = false }, onSubmit) {
   const d = $("#dialog"), f = $("#dialog-form");
-  f.innerHTML = html + `<div class="form-foot"><button value="cancel" formnovalidate class="af-btn af-btn--ghost">Cancel</button>
-    <button value="ok" class="af-btn af-btn--primary" id="dialog-ok"></button></div>`;
-  $("#dialog-ok").textContent = f.dataset.ok || "OK";
+  d.classList.toggle("af-dialog--wide", wide);
+  f.innerHTML = `<header class="af-dialog__head"><h2 class="af-dialog__title" id="dialog-title">${title}</h2></header>
+    <div class="af-dialog__body">${body}</div>
+    <footer class="af-dialog__foot">${btn(cancel, { kind: "secondary", type: "submit", attrs: { value: "cancel", formnovalidate: true } })}${btn(ok, { kind: "primary", type: "submit", attrs: { value: "ok", id: "dialog-ok" } })}</footer>`;
   f.onsubmit = async (e) => {
     if (e.submitter?.value !== "ok") return;
     e.preventDefault();
     await busy($("#dialog-ok"), async () => { if ((await onSubmit(new FormData(f))) !== false) d.close(); });
   };
   d.showModal();
-  $("input, textarea, select", f)?.focus();
+  ($("input, textarea, select", f) || $('[value="cancel"]', f))?.focus();
 }
 
 function agentDialog(sb) {
   const env = state.envs.find((e) => e.name === sb.environment);
   const hs = (env?.harnesses || []).filter((h) => h !== "git");
   if (!hs.length) return toast(`${sb.environment} has no agent harness installed. Add one to the environment.`, true);
-  $("#dialog-form").dataset.ok = "Start agent";
-  dialog(`<h3>Run an agent in <span class="af-mono">${esc(sb.name)}</span></h3>
-    <label>Harness<select name="harness">${hs.map((h) => `<option>${esc(h)}</option>`).join("")}</select></label>
-    <label>Task<textarea name="prompt" rows="6" required placeholder="Fix the failing test in tests/test_api.py and commit the change."></textarea></label>
-    <p class="hint">Runs headless in its own terminal session. The terminal opens so you can watch it.</p>`,
+  dialog({ title: `Run an agent in <span class="af-mono">${esc(sb.name)}</span>`, ok: "Start agent", body:
+    field("Harness", `<select name="harness">${hs.map((h) => `<option>${esc(h)}</option>`).join("")}</select>`) +
+    field("Task", inputWell(`<textarea name="prompt" rows="6" required placeholder="Fix the failing test in tests/test_api.py and commit the change."></textarea>`, { area: true, sans: true }),
+      "Runs headless in its own terminal session. The terminal opens so you can watch it.") },
   async (fd) => {
     const r = await api("POST", `/api/sandboxes/${sb.id}/agent`, { prompt: fd.get("prompt"), harness: fd.get("harness") });
     toast(`Agent ${r.harness} started (${r.run_id})`);
@@ -219,10 +227,8 @@ function agentDialog(sb) {
 }
 
 function execDialog(sb) {
-  $("#dialog-form").dataset.ok = "Run";
-  dialog(`<h3>Run a command in ${esc(sb.name)}</h3>
-    <label>Command<input name="command" required placeholder="pytest -q"></label>
-    <pre id="exec-out" class="log" hidden></pre>`,
+  dialog({ title: `Run a command in <span class="af-mono">${esc(sb.name)}</span>`, ok: "Run", cancel: "Close", body:
+    field("Command", inputWell(`<input name="command" required placeholder="pytest -q">`)) + `<pre id="exec-out" class="log" hidden></pre>` },
   async (fd) => {
     const r = await api("POST", `/api/sandboxes/${sb.id}/exec`, { command: fd.get("command") });
     const out = $("#exec-out");
@@ -233,12 +239,11 @@ function execDialog(sb) {
 }
 
 function forkDialog(sb) {
-  $("#dialog-form").dataset.ok = "Fork";
-  dialog(`<h3>Fork ${esc(sb.name)}</h3>
-    <p class="sub">Snapshots this sandbox and starts copies with the same files, installed dependencies and repo state.
-      Exclusive credentials stay with the original.</p>
-    <label>Copies<input name="count" type="number" min="1" max="20" value="2"></label>
-    <label>Work branch prefix<input name="work_branch_prefix" placeholder="attempt (gives attempt-1, attempt-2, …)"></label>`,
+  dialog({ title: `Fork <span class="af-mono">${esc(sb.name)}</span>`, ok: "Fork", body:
+    `<p>Snapshots this sandbox and starts copies with the same files, installed dependencies and repo state.
+      Exclusive credentials stay with the original.</p>` +
+    field("Copies", inputWell(`<input name="count" type="number" min="1" max="20" value="2">`)) +
+    field("Work branch prefix", inputWell(`<input name="work_branch_prefix" placeholder="attempt">`), "Gives attempt-1, attempt-2, …") },
   async (fd) => {
     const res = await api("POST", `/api/sandboxes/${sb.id}/fork`, {
       count: Number(fd.get("count")), work_branch_prefix: fd.get("work_branch_prefix") || null });
@@ -250,10 +255,14 @@ function forkDialog(sb) {
 const terms = new Map(); // key -> {term, ws, fit, el, tab, sb, session}
 let activeTerm = null;
 
+// The terminal drawer is Airframe's bottom drawer (no scrim: the page above stays usable); opening it lifts the toasts
+// and pads the page through --af-drawer-inset. Its height is --af-drawer-h, which the grip resizes.
+const showDrawer = () => airframe.drawer.open("#drawer", { scrim: false });
+const hideDrawer = () => airframe.drawer.close("#drawer");
+
 function openTerminal(sb, session = null, initial = null) {
   const key = `${sb.id}:${session || (initial ? "agent" : "shell")}`;
-  $("#drawer").hidden = false;
-  document.body.style.setProperty("--drawer-pad", "var(--drawer-h)");
+  showDrawer();
   if (terms.has(key)) return activateTerm(key);
   const el = document.createElement("div");
   el.className = "term";
@@ -331,7 +340,7 @@ function closeTerm(key) {
   const t = terms.get(key);
   if (!t) return;
   t.ws?.close(); t.term.dispose(); t.el.remove(); t.tab.remove(); terms.delete(key);
-  if (!terms.size) { $("#drawer").hidden = true; document.body.style.removeProperty("--drawer-pad"); }
+  if (!terms.size) hideDrawer();
   else if (activeTerm === key) activateTerm([...terms.keys()].at(-1));
 }
 function closeTerminalsFor(id) { for (const k of [...terms.keys()]) if (k.startsWith(id + ":")) closeTerm(k); }
@@ -343,16 +352,17 @@ function closeTerminalsFor(id) { for (const k of [...terms.keys()]) if (k.starts
   extra.innerHTML = `<button id="term-sessions" class="af-btn af-btn--ghost af-btn--sm" title="Attach to a terminal session an agent or MCP client is using">${ic("terminal")}Sessions…</button>
     <button id="term-hide" class="af-btn af-btn--ghost af-btn--sm">${ic("chevron-down")}Hide</button>`;
   tabs.appendChild(extra);
-  $("#term-hide").addEventListener("click", () => { $("#drawer").hidden = true; document.body.style.removeProperty("--drawer-pad"); });
+  $("#term-hide").addEventListener("click", hideDrawer);
+  // Escape belongs to the program in the terminal (vim, less), not to the drawer
+  $("#drawer-body").addEventListener("keydown", (e) => { if (e.key === "Escape") e.stopPropagation(); });
   $("#term-sessions").addEventListener("click", async () => {
     const t = terms.get(activeTerm);
     if (!t) return;
     const sessions = await api("GET", `/api/sandboxes/${t.sb.id}/terminals`).catch((e) => (toast(e.message, true), []));
     if (!sessions.length) return toast("No terminal sessions in this sandbox yet.");
-    $("#dialog-form").dataset.ok = "Attach";
-    dialog(`<h3>Attach to a session in ${esc(t.sb.name)}</h3>
-      <p class="sub">You and the agent share the same terminal: you see what it types and can type back.</p>
-      <label>Session<select name="s">${sessions.map((s) => `<option>${esc(s)}</option>`).join("")}</select></label>`,
+    dialog({ title: `Attach to a session in <span class="af-mono">${esc(t.sb.name)}</span>`, ok: "Attach", body:
+      `<p>You and the agent share the same terminal: you see what it types and can type back.</p>` +
+      field("Session", `<select name="s">${sessions.map((s) => `<option>${esc(s)}</option>`).join("")}</select>`) },
     async (fd) => openTerminal(t.sb, fd.get("s")));
   });
   const grip = $("#drawer-grip");
@@ -360,7 +370,7 @@ function closeTerminalsFor(id) { for (const k of [...terms.keys()]) if (k.starts
     grip.setPointerCapture(e.pointerId);
     const move = (ev) => {
       const h = Math.min(Math.max(window.innerHeight - ev.clientY, 160), window.innerHeight - 120);
-      document.documentElement.style.setProperty("--drawer-h", `${h}px`);
+      document.documentElement.style.setProperty("--af-drawer-h", `${h}px`);
       terms.get(activeTerm)?.fit.fit();
     };
     grip.addEventListener("pointermove", move);
@@ -397,17 +407,23 @@ function renderJobs() {
   if (state.view !== "jobs") return;
   const f = $("#jobs-filter").value;
   const shown = state.jobs.filter((j) => !f || (f === "active" ? j.active : j.state === f));
+  const hidden = state.jobs.length - shown.length;
   $("#job-list").innerHTML = shown.length ? shown.map((j) => `<li><button data-job="${esc(j.id)}"
       class="job-row ${j.id === state.selectedJob ? "active" : ""} ${jobRole(j) === "approval" ? "is-attention" : ""}" data-tone="${jobRole(j)}">
       <span class="t">${esc(j.title)}</span>
       <span class="d">${status(jobRole(j), jobWord(j))}${meta([
         j.reason ? ["reason", j.reason.replace(/_/g, " "), jobRole(j) === "failed" ? "failed" : ""] : null,
         ["source", j.source], ["created", ago(j.created_at)], j.result?.pr_number ? ["pr", `#${j.result.pr_number}`] : null])}</span></button></li>`).join("")
-    : `<li class="empty-floor"><p>${state.jobs.length ? "No jobs match this filter."
-      : "No jobs yet. Submit one here, label a GitHub issue <code>hangar</code>, or call submit_job from an MCP client."}</p></li>`;
+    : `<li>${state.jobs.length
+      ? emptyState({ kind: "after-action", icon: "job", title: `${hidden} job${hidden === 1 ? " is" : "s are"} hidden by the filter.`,
+        actions: btn("Show all jobs", { sm: true, attrs: { "data-clear-filter": true } }) })
+      : emptyState({ icon: "job", title: "No jobs yet.", text: `Submit one here, label a GitHub issue <code>hangar</code>, or call <code>submit_job</code> from an MCP client.` })}</li>`;
   if (state.selectedJob) renderJob(state.jobs.find((j) => j.id === state.selectedJob));
+  else if (!$("#job-detail .af-empty")) $("#job-detail").innerHTML = emptyState({ compact: true, icon: "job", title: "No job selected.",
+    text: "Choose one to see its timeline, result and sandbox." });
 }
 $("#jobs-filter").addEventListener("change", renderJobs);
+$("#job-list").addEventListener("click", (e) => { if (e.target.closest("[data-clear-filter]")) { $("#jobs-filter").value = ""; renderJobs(); } });
 $("#job-list").addEventListener("click", (e) => {
   const b = e.target.closest("button[data-job]");
   if (!b) return;
@@ -418,19 +434,19 @@ $("#job-list").addEventListener("click", (e) => {
 
 function renderJob(j) {
   const box = $("#job-detail");
-  if (!j) { box.innerHTML = `<p class="empty">That job is no longer listed.</p>`; return; }
+  if (!j) { box.innerHTML = emptyState({ kind: "after-action", compact: true, icon: "job", title: "That job is no longer listed.", text: "It may have been cleaned up, or the filter hides it." }); return; }
   // keep a half-typed follow-up across the 4s refresh
   const draft = $("#job-followup-text")?.value || "";
   const r = j.result || {};
   const verify = j.verify ? (r.verify_exit_code == null ? `<span class="hint">not run yet</span>`
-    : r.verify_exit_code === 0 ? `<span class="passed">${ic("check", "af-ic--14")}passed</span>`
+    : r.verify_exit_code === 0 ? `<span class="passed">${ic("check", 14)}passed</span>`
       : status("failed", `Failed, exit ${r.verify_exit_code}`)) : "";
   const turns = j.turns || [];
   const live = !!j.sandbox_id;
   const role = jobRole(j);
   box.classList.toggle("af-card--lit", role === "approval");  // lit only while it waits on a person
   box.innerHTML = `
-    <div class="detail-head"><h3>${esc(j.title)}</h3>${status(role, jobWord(j), true)}
+    <div class="detail-head"><h3>${esc(j.title)}</h3>${status(role, jobWord(j), { lit: true })}
       ${j.reason ? meta([["reason", j.reason.replace(/_/g, " "), role === "failed" ? "failed" : ""]]) : ""}</div>
     <dl class="kv af-kv">
       <dt>Asked by</dt><dd>${esc(j.requester)} via ${esc(j.source)}${j.source_ref ? ` (${esc(j.source_ref.replace(/^github:/, ""))})` : ""}, ${ago(j.created_at)}</dd>
@@ -478,9 +494,10 @@ function renderJob(j) {
     state.selectedSession = e.target.dataset.gotoSes;
     $("#ses-jobs").checked = true;
   });
-  $("#job-cancel")?.addEventListener("click", (e) => {
-    if (!confirm(`Cancel ${j.id}? The agent is stopped; work committed so far stays in the sandbox.`)) return;
-    busy(e.currentTarget, async () => { await api("POST", `/api/jobs/${j.id}/cancel`); toast(`Cancelling ${j.id}`); loadJobs(); });
+  $("#job-cancel")?.addEventListener("click", async (e) => {
+    const b = e.currentTarget;
+    if (!(await confirmAction(`Cancel ${j.id}?`, "The agent is stopped. Work committed so far stays in the sandbox and on the branch.", "Cancel job", { cancel: "Keep running" }))) return;
+    busy(b, async () => { await api("POST", `/api/jobs/${j.id}/cancel`); toast(`Cancelling ${j.id}`); loadJobs(); });
   });
   $("#job-followup")?.addEventListener("submit", (e) => {
     e.preventDefault();
@@ -518,8 +535,10 @@ function renderSessions() {
       <span class="t af-mono">${esc(x.name)}</span>
       <span class="d">${status(sesRole(x), `${sesWord(x)}${x.busy && x.state !== "running" ? "…" : ""}`)}${meta([
         ["env", x.environment], ["active", ago(x.last_active_at)]])}</span></button></li>`).join("")
-    : `<li class="empty-floor"><p>No sessions yet. Start one here, or from an MCP client with new_session.</p></li>`;
+    : `<li>${emptyState({ icon: "session", title: "No sessions yet.", text: `Start one here, or from an MCP client with <code>new_session</code>.` })}</li>`;
   if (state.selectedSession) renderSession(state.sessions.find((x) => x.id === state.selectedSession));
+  else if (!$("#session-detail .af-empty")) $("#session-detail").innerHTML = emptyState({ compact: true, icon: "session", title: "No session selected.",
+    text: "Choose one to resume it, talk to its agent, or open its terminal." });
 }
 $("#ses-jobs").addEventListener("change", renderSessions);
 $("#session-list").addEventListener("click", (e) => {
@@ -532,7 +551,7 @@ $("#session-list").addEventListener("click", (e) => {
 
 function renderSession(x) {
   const box = $("#session-detail");
-  if (!x) { box.innerHTML = `<p class="empty">That session is no longer listed.</p>`; return; }
+  if (!x) { box.innerHTML = emptyState({ kind: "after-action", compact: true, icon: "session", title: "That session is no longer listed." }); return; }
   const draft = $("#ses-msg")?.value || "";
   const live = !!x.sandbox_id && ["idle", "running"].includes(x.state);
   const ck = x.checkpoints?.at(-1);
@@ -541,8 +560,8 @@ function renderSession(x) {
   const form = !(x.job_id || x.state === "archived");  // the message form carries the panel's one primary action
   box.classList.toggle("af-card--lit", role === "approval");
   box.innerHTML = `
-    <div class="detail-head"><h3 class="af-mono">${esc(x.name)}</h3>${status(role, sesWord(x), true)}</div>
-    ${x.reason ? `<p class="${role === "failed" ? "error" : "hint"}">${role === "failed" ? mark("failed") : ""}${esc(x.reason)}</p>` : ""}
+    <div class="detail-head"><h3 class="af-mono">${esc(x.name)}</h3>${status(role, sesWord(x), { lit: true })}</div>
+    ${x.reason ? (role === "failed" ? `<p class="detail-reason">${errorLine(x.reason)}</p>` : `<p class="hint">${esc(x.reason)}</p>`) : ""}
     <dl class="kv af-kv">
       ${x.needs_input && role === "approval" ? `<dt>Question</dt><dd>${esc(x.needs_input)}</dd>` : ""}
       <dt>Where</dt><dd>${meta([["env", x.environment, "strong"], ["harness", x.harness || "default agent"], ["model", x.model || ""]])}</dd>
@@ -737,9 +756,11 @@ async function loadEnvs() {
   state.envs = await api("GET", "/api/environments");
   $("#env-list").innerHTML = state.envs.map((e) => `<li><button data-env="${esc(e.name)}" class="${e.name === state.selectedEnv ? "active" : ""}">
       <span class="t">${esc(e.name)}</span>
-      <span class="d">${e.error ? `<span class="error">${mark("failed")}${esc(e.error)}</span>` : esc(e.description || (e.harnesses || []).join(", "))}</span></button></li>`).join("")
-    || `<li class="empty-floor"><p>No environments yet. Create one from a base.</p></li>`;
+      <span class="d">${e.error ? errorLine(e.error) : esc(e.description || (e.harnesses || []).join(", "))}</span></button></li>`).join("")
+    || `<li>${emptyState({ icon: "environment", title: "No environments yet.", text: "Create one from a base; it builds the first time a sandbox needs it." })}</li>`;
   if (state.selectedEnv) showEnv(state.selectedEnv);
+  else if (!$("#env-detail .af-empty")) $("#env-detail").innerHTML = emptyState({ compact: true, icon: "environment", title: "No environment selected.",
+    text: "Choose one to edit or build it." });
 }
 $("#env-list").addEventListener("click", (e) => {
   const b = e.target.closest("button[data-env]");
@@ -810,12 +831,11 @@ async function followBuild(job) {
 }
 
 $("#btn-new-env").addEventListener("click", () => {
-  $("#dialog-form").dataset.ok = "Create";
-  dialog(`<h3>New environment</h3>
-    <label>Name<input name="name" required pattern="[a-z0-9-]+" placeholder="my-service"></label>
-    <label>Start from<select name="extends">${state.envs.filter((e) => !e.error).map((e) => `<option>${esc(e.name)}</option>`).join("")}</select></label>
-    <label>Repo (optional)<input name="repo" placeholder="https://github.com/org/repo.git"></label>
-    <label>Setup command after clone (optional)<input name="setup" placeholder="uv sync"></label>`,
+  dialog({ title: "New environment", ok: "Create", body:
+    field("Name", inputWell(`<input name="name" required pattern="[a-z0-9-]+" placeholder="my-service">`)) +
+    field("Start from", `<select name="extends">${state.envs.filter((e) => !e.error).map((e) => `<option>${esc(e.name)}</option>`).join("")}</select>`) +
+    field("Repo (optional)", inputWell(`<input name="repo" placeholder="https://github.com/org/repo.git">`)) +
+    field("Setup command after clone (optional)", inputWell(`<input name="setup" placeholder="uv sync">`)) },
   async (fd) => {
     const name = fd.get("name");
     const spec = { name, extends: fd.get("extends"), description: "" };
@@ -839,7 +859,7 @@ async function loadCreds() {
         : `<span class="af-tag">exclusive</span> <span class="muted">free</span>`) : `<span class="af-tag">shared</span>`}</td>
       <td class="act">${c.leased_to ? `<button type="button" class="af-btn af-btn--secondary af-btn--sm" data-release="${esc(c.name)}" title="Use only if the holding sandbox is gone">Release</button>` : ""}
         <button type="button" class="af-btn af-btn--ghost af-btn--sm" data-del="${esc(c.name)}">Delete</button></td></tr>`).join("")
-    : `<tr><td colspan="5" class="empty-row">No credentials yet. Add an API key on the right, or sign in with a subscription below.</td></tr>`;
+    : `<tr><td colspan="5">${emptyState({ compact: true, icon: "secret", title: "No credentials yet.", text: "Add an API key on the right, or sign in with a subscription below." })}</td></tr>`;
   $("#login-buttons").innerHTML = state.harnesses.filter((h) => h.logins.length).map((h) =>
     `<button type="button" class="af-btn af-btn--secondary" data-login="${esc(h.name)}" title="${esc(h.logins[0].notes)}">${ic("user")}Sign in to ${esc(h.title)}</button>`).join("");
   const f = $("#cred-form");
@@ -877,8 +897,8 @@ $("#cred-form").addEventListener("submit", async (e) => {
 });
 $("#cred-table").addEventListener("click", async (e) => {
   const del = e.target.closest("[data-del]"), rel = e.target.closest("[data-release]");
-  if (del && confirm(`Delete credential ${del.dataset.del}? Running sandboxes keep their copy until they stop.`)) {
-    await busy(del, async () => { await api("DELETE", `/api/credentials/${encodeURIComponent(del.dataset.del)}`); toast("Deleted"); loadCreds(); });
+  if (del && await confirmAction(`Delete credential ${del.dataset.del}?`, "Running sandboxes keep their copy until they stop; new ones can't use it.", "Delete")) {
+    await busy(del, async () => { await api("DELETE", `/api/credentials/${encodeURIComponent(del.dataset.del)}`); toast(`Deleted ${del.dataset.del}`); loadCreds(); });
   }
   if (rel) await busy(rel, async () => { await api("POST", `/api/credentials/${encodeURIComponent(rel.dataset.release)}/release`); toast("Released"); loadCreds(); });
 });
@@ -886,10 +906,9 @@ $("#login-buttons").addEventListener("click", (e) => {
   const b = e.target.closest("[data-login]");
   if (!b) return;
   const h = state.harnesses.find((x) => x.name === b.dataset.login);
-  $("#dialog-form").dataset.ok = "Start sign-in";
-  dialog(`<h3>Sign in to ${esc(h.title)}</h3>
-    <p class="sub">${esc(h.logins[0].notes)}</p>
-    <label>Save as credential<input name="credential" required value="${esc(h.name)}-login"></label>`,
+  dialog({ title: `Sign in to ${esc(h.title)}`, ok: "Start sign-in", body:
+    `<p>${esc(h.logins[0].notes)}</p>` +
+    field("Save as credential", inputWell(`<input name="credential" required value="${esc(h.name)}-login">`)) },
   async (fd) => {
     const lg = await api("POST", "/api/logins", { harness: h.name, credential: fd.get("credential") });
     const sb = { id: lg.sandbox, name: `sign-in ${h.name}` };
@@ -898,10 +917,9 @@ $("#login-buttons").addEventListener("click", (e) => {
   });
 });
 function showLoginBar(lg) {
-  $("#dialog-form").dataset.ok = "Capture credential";
-  setTimeout(() => dialog(`<h3>Finish signing in</h3>
-    <p class="sub">Complete the flow in the terminal below (open the link, paste the code back). When it says you
-      are signed in, capture the credential. The sign-in sandbox is destroyed afterwards.</p>`,
+  setTimeout(() => dialog({ title: "Finish signing in", ok: "Capture credential", cancel: "Not yet", body:
+    `<p>Complete the flow in the terminal below (open the link, paste the code back). When it says you
+      are signed in, capture the credential. The sign-in sandbox is destroyed afterwards.</p>` },
   async () => {
     const c = await api("POST", `/api/logins/${lg.id}/complete`);
     toast(`Saved ${c.name}`);
@@ -920,12 +938,14 @@ async function loadSnaps() {
       <td class="af-table__mono">${ago(s.created_at)}</td>
       <td class="act"><button type="button" class="af-btn af-btn--secondary af-btn--sm" data-fork="${esc(s.id)}">${ic("fork")}Start copy</button>
         <button type="button" class="af-btn af-btn--ghost af-btn--sm" data-sdel="${esc(s.id)}">Delete</button></td></tr>`).join("")
-    : `<tr><td colspan="6" class="empty-row">No snapshots. Snapshot a running sandbox from the fleet, or fork one.</td></tr>`;
+    : `<tr><td colspan="6">${emptyState({ compact: true, icon: "snapshot", title: "No snapshots yet.", text: "Snapshot a running sandbox from the fleet, or fork one." })}</td></tr>`;
 }
 $("#snap-table").addEventListener("click", async (e) => {
   const f = e.target.closest("[data-fork]"), d = e.target.closest("[data-sdel]");
   if (f) await busy(f, async () => { const r = await api("POST", `/api/snapshots/${f.dataset.fork}/fork`, { count: 1 }); toast(`Started ${r[0].name}`); });
-  if (d && confirm("Delete this snapshot?")) await busy(d, async () => { await api("DELETE", `/api/snapshots/${d.dataset.sdel}`); loadSnaps(); });
+  if (d && await confirmAction(`Delete snapshot ${d.dataset.sdel}?`, "It can't be forked or restored afterwards. Sandboxes started from it keep running.", "Delete")) {
+    await busy(d, async () => { await api("DELETE", `/api/snapshots/${d.dataset.sdel}`); toast(`Deleted ${d.dataset.sdel}`); loadSnaps(); });
+  }
 });
 
 /* ------------------------------------------------------------------ connect */
@@ -948,12 +968,12 @@ async function loadOAuth() {
     <td><span class="af-table__id">${esc(a.client_name)}</span><div class="muted af-mono">${esc((a.redirect_uris[0] || "").replace(/^https?:\/\//, "").split("/")[0])}</div></td>
     <td class="muted">${a.active ? `approved by ${esc(a.approved_by || "?")}, ${ago(a.last_issued)}` : "no active session"}</td>
     <td class="act"><button type="button" class="af-btn af-btn--ghost af-btn--sm" data-oauth-revoke="${esc(a.client_id)}">Revoke</button></td></tr>`).join("")
-    : `<tr><td class="empty-row">No apps connected with OAuth yet.</td></tr>`;
+    : `<tr><td>${emptyState({ compact: true, title: "No apps connected with OAuth yet." })}</td></tr>`;
 }
 $("#oauth-table").addEventListener("click", async (e) => {
   const b = e.target.closest("[data-oauth-revoke]");
-  if (b && confirm("Revoke this app? It loses access immediately and must be approved again.")) {
-    await busy(b, async () => { await api("DELETE", `/api/oauth/clients/${encodeURIComponent(b.dataset.oauthRevoke)}`); loadOAuth(); });
+  if (b && await confirmAction("Revoke this app?", "It loses access immediately and must be approved again to connect.", "Revoke", { cancel: "Keep access" })) {
+    await busy(b, async () => { await api("DELETE", `/api/oauth/clients/${encodeURIComponent(b.dataset.oauthRevoke)}`); toast("Revoked"); loadOAuth(); });
   }
 });
 $("#connect-snippets").addEventListener("click", (e) => {
@@ -980,8 +1000,8 @@ $("#token-form").addEventListener("submit", async (e) => {
 });
 $("#token-table").addEventListener("click", async (e) => {
   const b = e.target.closest("[data-revoke]");
-  if (b && confirm("Revoke this token? Clients using it stop working immediately.")) {
-    await busy(b, async () => { await api("DELETE", `/api/tokens/${b.dataset.revoke}`); loadTokens(); });
+  if (b && await confirmAction("Revoke this token?", "Clients using it stop working immediately. Create a new one to reconnect them.", "Revoke", { cancel: "Keep it" })) {
+    await busy(b, async () => { await api("DELETE", `/api/tokens/${b.dataset.revoke}`); toast("Revoked"); loadTokens(); });
   }
 });
 
@@ -992,7 +1012,7 @@ async function loadAudit() {
     <td class="af-table__mono" title="${new Date(a.ts * 1000).toLocaleString()}">${ago(a.ts)}</td>
     <td>${esc(a.actor)}</td><td class="af-table__mono">${esc(a.action)}</td><td class="af-table__mono">${esc(a.target || "")}</td>
     ${((d) => `<td class="af-table__mono clip" title="${esc(d)}">${esc(d.slice(0, 160))}</td>`)(Object.entries(a.detail).map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`).join("  "))}</tr>`).join("")
-    || `<tr><td colspan="5" class="empty-row">Nothing recorded yet.</td></tr>`;
+    || `<tr><td colspan="5">${emptyState({ compact: true, icon: "log", title: "Nothing recorded yet.", text: "Every action by a person or an MCP client lands here." })}</td></tr>`;
 }
 
 /* ------------------------------------------------------------------ usage (--- observe) */
@@ -1021,7 +1041,7 @@ async function loadUsage() {
       $(`${sel} tbody`).innerHTML = data.rows.length ? data.rows.map((r) => `<tr><td class="af-table__mono">${esc(r.key)}</td>
         <td class="af-num af-table__mono">${r.turns}</td><td class="af-num af-table__mono">${kTok(r.tokens)}</td>
         <td class="af-num af-table__mono" title="${r.unpriced_turns ? `${r.unpriced_turns} turn(s) with no known price` : ""}">${usd(r.cost_usd)}${r.unpriced_turns ? " +" : ""}</td></tr>`).join("")
-        : `<tr><td colspan="4" class="empty-row">No agent turns in this range.</td></tr>`;
+        : `<tr><td colspan="4">${emptyState({ compact: true, title: "No agent turns in this range." })}</td></tr>`;
     };
     rows("#usage-repos", repos);
     rows("#usage-requesters", people);
@@ -1029,7 +1049,7 @@ async function loadUsage() {
       <td class="af-table__id">${esc(b.job || b.session || "")}</td><td class="af-table__mono">${esc(b.repo)}</td><td>${esc(b.requester || "")}</td>
       <td>${esc(b.reason || "")}</td>
       <td class="af-table__mono" title="${new Date(b.ts * 1000).toLocaleString()}">${ago(b.ts)}</td></tr>`).join("")
-      : `<tr><td colspan="5" class="empty-row">No turn was stopped over its budget in this range.</td></tr>`;
+      : `<tr><td colspan="5">${emptyState({ compact: true, title: "No turn was stopped over its budget in this range." })}</td></tr>`;
   } catch (e) { if (e.message !== "unauthorized") toast(e.message, true); }
 }
 $("#usage-range").addEventListener("change", () => loadUsage());
@@ -1044,7 +1064,7 @@ function drawSpend(rows, since) {
   }
   const max = Math.max(0, ...days.map((d) => d.cost_usd));
   const box = $("#usage-days");
-  if (!max) { box.innerHTML = `<p class="empty">No priced spend in this range.</p>`; return; }
+  if (!max) { box.innerHTML = emptyState({ kind: "after-action", compact: true, icon: "cost", title: "No priced spend in this range.", text: "Turns on a model with no known price count their tokens only." }); return; }
   // greyscale bars; a day with a budget stop is the one attention series (chart-5), "look here"
   const tipText = (d) => `${d.key}: ${usd(d.cost_usd)}, ${kTok(d.tokens)} tokens, ${d.turns} turn(s)`
     + (d.budget_stops ? `, ${d.budget_stops} budget stop(s)` : "");

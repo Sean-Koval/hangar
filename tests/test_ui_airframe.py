@@ -138,14 +138,54 @@ def test_fleet_views_use_the_theme_v3_components():
     css = (VENDORED / "airframe-components.css").read_text()
     js = (UI / "fleet.js").read_text()
     for cls in ("af-fleet__board", "af-stand", "af-bays", "af-bay", "af-statecols", "af-mini", "af-owners", "af-cap",
-                "af-track", "af-person"):
-        assert f".{cls}" in css, f"{cls} is not in the vendored Airframe: sync theme-v3 or later"
+                "af-track", "af-who"):
+        assert f".{cls}" in css, f"{cls} is not in the vendored Airframe: sync theme-v6 or later"
         assert cls in js, f"fleet.js doesn't use {cls}"
+    # the avatar triad (theme-v6): owners are round people, harnesses hexagonal agents, through airframe.js's avatar()
+    for kind in ("person", "agent"):
+        assert f".af-avatar--{kind}" in css and f'avatar("{kind}"' in js, f"fleet.js doesn't draw {kind} avatars"
+    assert "af-person__av" not in js, "FleetOwners' own initials are the avatar triad now"
     own = (UI / "app.css").read_text()
     for cls in ("af-bay", "af-mini", "af-stand", "af-owners"):  # placement tweaks only, never a redefinition
         assert not re.search(rf"(^|[,}}])\s*\.{cls}\s*\{{", own, re.M), f"app.css redefines .{cls}"
     links = re.findall(r'data-fleet-view="([a-z]+)"', (UI / "index.html").read_text())
     assert links == ["board", "bays", "columns", "owners"]
+
+
+def test_console_is_assembled_from_airframe_parts():
+    """theme-v6: the console's page headers, empty states, toasts, confirms, the form dialog and both drawers are
+    Airframe's parts (patterns CSS and airframe.js), not hangar's own copies; the copies' CSS is gone."""
+    html, css = (UI / "index.html").read_text(), (UI / "app.css").read_text()
+    app, fleet = (UI / "app.js").read_text(), (UI / "fleet.js").read_text()
+    js = app + fleet
+    # page header: one af-page-head per view, title in the display face, lede, summary, actions
+    views = re.findall(r'<section id="view-[a-z-]+" class="view"', html)
+    assert len(views) == html.count('<header class="af-page-head')
+    assert "view-head" not in html and ".view-head" not in css
+    assert 'id="fleet-sub" class="af-page-head__sum"' in html
+    # toasts and confirms come from airframe.js; window.confirm() and the own toast are gone
+    assert "airframe.toast(" in app and "airframe.confirm(" in app
+    assert not re.search(r"(?<![.\w])confirm\(", js), "use confirmAction() (airframe.confirm), never window.confirm()"
+    assert 'id="toast"' not in html and ".toast" not in css
+    # the form dialog is an af-dialog with the Airframe footer order (refuse, then accept); fields are af-field
+    assert '<dialog id="dialog" class="af-dialog"' in html
+    assert "af-dialog__foot" in app and "af-field__label" in app
+    assert re.search(r"\bdialog\s*\{", css) is None, "app.css no longer styles <dialog>: af-dialog does"
+    # drawers: the terminal is the bottom drawer (always Night), the Fleet detail the right one (airframe.drawer)
+    assert 'id="drawer" class="af-drawer af-drawer--bottom' in html and 'data-theme="dark"' in html
+    assert 'airframe.drawer.open("#drawer", { scrim: false })' in app
+    assert "af-drawer--right" in fleet and "af-drawer__foot" in fleet
+    assert "airframe.drawer.open(el, { scrim: false })" in fleet
+    assert "--drawer-pad: var(--af-drawer-inset)" in css, "the page and the detail stop above the terminal drawer"
+    # empty states are af-empty (no-data, after-action, compact); the five own shapes are gone
+    assert "af-empty" in js and 'kind: "after-action"' in app
+    for dead in ("empty-floor", "fleet-empty__envs", "fd-empty", "empty-row", 'class="empty"', 'class="error"'):
+        assert dead not in js and dead not in html, f"{dead} is still used"
+    for dead in (".empty", ".empty-floor", ".fd-empty", ".fd-decide", ".fd-head", ".error", ".drawer", ".drawer-grip"):
+        assert not re.search(rf"(^|[,}}])\s*{re.escape(dead)}(?![\w-])", css, re.M), f"app.css defines {dead}"
+    # the markup helpers are airframe.js's, not copies
+    assert "const { status, btn, avatar } = airframe;" in app
+    assert "airframe.meta(" in app and "airframe.icon(" in app
 
 
 def test_fleet_header_leads_with_what_needs_a_person():
