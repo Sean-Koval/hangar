@@ -31,6 +31,17 @@ all = ["kubernetes>=31", "e2b>=2.50", "opentelemetry-sdk>=1.30", "opentelemetry-
 [project.scripts]
 hangar = "hangar.cli:app"
 
+# --- plugin host (docs/plugins.md): hangar's own plugins, in the one group outside plugins use. Built-ins load
+# always (each still waits for its own settings); others only when HANGAR_PLUGINS.enable names them.
+[project.entry-points."hangar.plugins"]
+github = "hangar.app:GITHUB_PLUGIN"
+slack = "hangar.slack:PLUGIN"
+jira = "hangar.jira:PLUGIN"
+ghprojects = "hangar.ghprojects:PLUGIN"
+webhook = "hangar.events_out:PLUGIN"
+command = "hangar.deliverers.command:PLUGIN"
+image-ready = "hangar.deliverers.image_ready:PLUGIN"
+
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6", "a2a-sdk>=1.2,<2",  # a2a-sdk: interop tests only
        "opentelemetry-sdk>=1.30", "opentelemetry-exporter-otlp-proto-http>=1.30",  # observe: span tests

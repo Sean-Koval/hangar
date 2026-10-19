@@ -16,7 +16,8 @@ jira.py, ghprojects.py). What they have in common lives here, so a new tracker o
   and the refusal turned into an answer the front door can send (`submit`).
 * **Write-back.** A job that came from a tracker keeps the ticket in step as it runs: started, a question, delivered,
   failed (`track`, called from `JobService._comment` whenever the job reports, whichever thread the conversation is
-  in by then). Each tracker registers how in `TRACKERS`.
+  in by then). Each tracker registers how in `TRACKERS`: through the plugin host (`host.add_tracker`, ext.trackers;
+  docs/plugins.md), so a tracker can live in a package of its own.
 * **The ticket's shape** (#156). An agent ticket (docs/templates/) has a *Goal*, *Acceptance criteria*, a *Verify
   command*, *Out of scope* and *Touches risk paths?*. `parse_ticket` reads the criteria and the command by heading
   (Markdown, Jira wiki, Jira Cloud's ADF as `adf_text` flattens it, a GitHub issue form); `apply_ticket` hands them to
@@ -51,7 +52,8 @@ TRACKER = "intake.tracker"  # job label: the ticket the job keeps in step ("jira
 STAGE = "intake.stage"  # job label: the stage last written back, so a repeated report writes nothing twice
 STAGES = ("started", "needs_input", "delivered", "failed")
 
-# scheme of the TRACKER label -> update(svc, job, ticket, stage). Raising is fine: `track` records it on the job.
+# scheme of the TRACKER label -> update(svc, job, ticket, stage) (ext.trackers.Tracker). Raising is fine: `track`
+# records it on the job. Filled by the built-ins at import and by plugins through `host.add_tracker`.
 TRACKERS: dict[str, Callable[[JobService, Job, str, str], Awaitable[None]]] = {}
 
 

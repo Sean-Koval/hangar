@@ -31,6 +31,7 @@ from hangar import (  # --- teamcreds: linked Slack users; --- trust: commit aft
     steer_class,  # --- #162: classifying follow-ups
 )
 from hangar.exchange import open_question
+from hangar.ext import NoSettings  # --- plugin host
 from hangar.github import parse_repo
 from hangar.jobs import NOTIFIERS, Caller, JobError, JobNotFound, JobService, SubmitJob
 from hangar.models import ContextItem, Credential, Job
@@ -306,6 +307,8 @@ async def notify(svc: JobService, job: Job | None, ref: str, body: str, kind: st
         await api.close()
 
 
+# The thread notifier is registered at import too, so a JobService works without the app (the CLI, tests); the
+# plugin's register() is what the app runs, and adds the door (plugin host, docs/plugins.md).
 NOTIFIERS["slack"] = notify
 
 
@@ -866,3 +869,33 @@ async def doctor_checks(h, transport: httpx.AsyncBaseTransport | None = None) ->
                           f"-> {repo}" if ok else f"mapped to {repo}, which isn't in HANGAR_GITHUB_REPOS",
                           f"add {repo} to HANGAR_GITHUB_REPOS with its environment, or fix the mapping"))
     return out
+
+
+# ============================================================================ plugin host (docs/plugins.md)
+class _SlackDoor:
+    name = "slack"
+    reply = staticmethod(notify)
+
+    def __init__(self, jobs: JobService):
+        self.door = SlackFrontDoor(jobs)
+
+    def mount(self, app: FastAPI) -> None:
+        self.door.mount(app)
+
+    def doctor(self) -> list[dict[str, Any]]:
+        return []  # hangar doctor runs doctor_checks itself
+
+
+class _SlackPlugin:
+    """Built in: /api/hooks/slack/*, and replies in `slack:` threads. Answers "not configured" until
+    HANGAR_SLACK_SIGNING_SECRET_CREDENTIAL is set, as before."""
+
+    name = "slack"
+    api = "hangar.plugin/v1"
+    Settings = NoSettings
+
+    def register(self, host: Any, settings: Any) -> None:
+        host.add_door(_SlackDoor(host.jobs))
+
+
+PLUGIN = _SlackPlugin()

@@ -40,6 +40,7 @@ from hangar import (
     steer_class,  # --- #162
 )
 from hangar.exchange import open_question
+from hangar.ext import NoSettings  # --- plugin host
 from hangar.github import parse_repo, verify_signature
 from hangar.jobs import NOTIFIERS, JobError, JobService, SubmitJob
 from hangar.models import JOB_TERMINAL, AuditEvent, ContextItem, Job, JobState
@@ -448,6 +449,8 @@ async def update(svc: JobService, job: Job, ref: str, stage: str) -> None:
         await api.close()
 
 
+# Registered at import too, so a JobService works without the app (the CLI, tests); the plugin's register() is
+# what the app runs, and adds the door (plugin host, docs/plugins.md).
 NOTIFIERS["jira"] = notify
 intake.TRACKERS["jira"] = update
 
@@ -1193,3 +1196,34 @@ def automation_checks(h: Any, cfg: JiraConfig, stored: set[str] | None = None) -
                       "send Issue created/updated through the admin webhook with a secret (docs/intake.md), then "
                       "remove automation_token_credential"))
     return out
+
+
+# ============================================================================ plugin host (docs/plugins.md)
+class _JiraDoor:
+    name = "jira"
+    reply = staticmethod(notify)
+
+    def __init__(self, jobs: JobService):
+        self.door = JiraFrontDoor(jobs)
+
+    def mount(self, app: FastAPI) -> None:
+        self.door.mount(app)
+
+    def doctor(self) -> list[dict[str, Any]]:
+        return []  # hangar doctor runs doctor_checks itself
+
+
+class _JiraPlugin:
+    """Built in: /api/hooks/jira, comments on `jira:` issues and the `jira` tracker. Answers "not configured"
+    until HANGAR_JIRA is set, as before."""
+
+    name = "jira"
+    api = "hangar.plugin/v1"
+    Settings = NoSettings
+
+    def register(self, host: Any, settings: Any) -> None:
+        host.add_door(_JiraDoor(host.jobs))
+        host.add_tracker("jira", update)
+
+
+PLUGIN = _JiraPlugin()

@@ -541,6 +541,10 @@ class Settings(BaseSettings):
     # "token_credential": ..., "webhook_secret_credential": ..., "projects": {"ABC": {"repo": "owner/repo"}},
     # "trigger": {"status": "Ready for agent"}, "statuses": {"started": "In Progress", ...}} (jira.JiraConfig).
     jira: dict[str, Any] = Field(default_factory=dict)
+    # --- plugin host (docs/plugins.md): {"enable": ["hangar-acme-bump"], "notifiers": {"webhook": {"url": ...,
+    # "secret_credential": ..., "events": ["pr.*"]}}, "deliverers": {"hangar-acme-bump": {...}}}. Read once at
+    # startup; a plugin that isn't installed or settings that don't validate refuse to start (pluginhost.py).
+    plugins: dict[str, Any] = Field(default_factory=dict)
     # GitHub Projects boards, by "org/number": {"acme/7": {"trigger": "Ready for agent", "repos": ["acme/api"],
     # "statuses": {"started": "In progress", "delivered": "In review"}}} (ghprojects.Board).
     github_projects: dict[str, dict[str, Any]] = Field(default_factory=dict)
