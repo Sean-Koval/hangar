@@ -87,6 +87,7 @@ nav:
           - Slack: slack.md
           - Triggers and schedules: triggers.md
           - A2A: a2a.md
+          - Plugins and events out: plugins.md
       - Environments and agents:
           - Environments: environments.md
           - Harnesses: harnesses.md
