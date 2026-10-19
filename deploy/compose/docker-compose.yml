@@ -15,14 +15,14 @@ services:
       HANGAR_DOCKER_RUNTIME: ${HANGAR_DOCKER_RUNTIME:-}   # runsc (gVisor) or kata on Linux hosts
       HANGAR_MAX_SANDBOXES: ${HANGAR_MAX_SANDBOXES:-20}
       # --- isolation: sandboxes run on hangar's own network (hangar-sandboxes), where they can't reach each other or
-      # this container; hangar reaches them with docker exec (docs/security.md#sandbox-networking-on-docker)
+      # this container; hangar reaches them with docker exec (docs/security/docker-network.md)
       HANGAR_ENV_DIRS: '["/app/envs", "/envs"]'
-      # --- intake posture (docs/security.md#intake-posture): jobs from GitHub, Jira, Slack and inbound webhooks need
+      # --- intake posture (docs/security/front-doors.md#intake-posture): jobs from GitHub, Jira, Slack and inbound webhooks need
       # the git gateway, and their sandboxes get at least `allowlist` egress through hangar's proxy on the
       # hangar-egress network's gateway address. A control plane inside this container can't listen there, so under
       # enforce such jobs are refused (no gateway) or fail to start (an open environment) with a message saying so;
       # nothing runs unfenced. For intake on this host run `hangar serve` on the host itself with HANGAR_GATEWAY_URL
-      # (docs/security.md#git-credential-gateway), or set HANGAR_INTAKE_POSTURE=warn and accept the risk.
+      # (docs/security/git-gateway.md), or set HANGAR_INTAKE_POSTURE=warn and accept the risk.
       HANGAR_INTAKE_POSTURE: ${HANGAR_INTAKE_POSTURE:-enforce}
       # HANGAR_GATEWAY_URL: http://host.docker.internal:8788
     volumes:

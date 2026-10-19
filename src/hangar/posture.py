@@ -38,7 +38,7 @@ FLOOR_LABEL = "hangar.egress.floor"  # on the job, its session and its sandboxes
 INTAKE_LABEL = "hangar.intake"  # on the job (and env setup's children): why it is an intake job
 FLOOR = "allowlist"
 FLOORS = ("allowlist", "none")
-DOC = "docs/security.md#intake-posture"
+DOC = "docs/security/front-doors.md#intake-posture"
 
 
 def mode(settings: Settings) -> str:
@@ -244,7 +244,7 @@ def gateway_fix(settings: Settings, fleet: Any) -> str:
     bridge (it binds HANGAR_HOST, 127.0.0.1, otherwise), which needs a restart."""
     import sys
 
-    doc = "docs/security.md#turning-it-on"
+    doc = "docs/security/git-gateway.md#turning-it-on"
     if "kubernetes" in list(fleet.providers):
         return f"set HANGAR_GATEWAY_URL=http://hangar-gateway.hangar.svc:8788 (deploy/k8s/config.yaml; {doc})"
     cmd = "hangar config set HANGAR_GATEWAY_URL http://host.docker.internal:8788"
@@ -298,7 +298,7 @@ def doctor_checks(h: Any) -> list[dict[str, Any]]:
                           "gateway): under enforce, intake jobs in open environments fail to start here" if local else
                           (f"hangar's proxy on the egress network's gateway, port {s.egress_port}" if s.egress_port
                            else "HANGAR_EGRESS_PORT is 0: proxied sandboxes can't start"),
-                          "HANGAR_INTAKE_POSTURE=warn for local use (docs/security.md#intake-posture)"))
+                          "HANGAR_INTAKE_POSTURE=warn for local use (docs/security/front-doors.md#intake-posture)"))
     others = [n for n in provs if n not in ("docker", "kubernetes")]
     if others and p == "enforce":
         out.append(_check("intake posture: other providers", None, f"{', '.join(others)} can't keep a sandbox off the "

@@ -748,7 +748,7 @@ environment.build:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 environment.clone:
   server: hangar-sandbox
   mcp: clone_environment
@@ -760,7 +760,7 @@ environment.clone:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 environment.get:
   server: hangar
   mcp: describe_environment
@@ -772,7 +772,7 @@ environment.get:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 environment.list:
   server: hangar
   mcp: list_environments
@@ -784,7 +784,7 @@ environment.list:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 environment.save:
   server: hangar-sandbox
   mcp: create_environment
@@ -796,7 +796,7 @@ environment.save:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 environment.validate:
   server: hangar-sandbox
   mcp: validate_environment
@@ -808,7 +808,7 @@ environment.validate:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 environments.get_context:
   server: hangar
   mcp: null
@@ -847,7 +847,7 @@ events.get:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 events.get_job:
   server: hangar
   mcp: null
@@ -903,7 +903,7 @@ fleet.overview:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 fork.get:
   server: hangar
   mcp: null
@@ -1591,7 +1591,7 @@ sandbox.agent_status:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 sandbox.create:
   server: hangar-sandbox
   mcp: create_sandbox
@@ -1603,7 +1603,7 @@ sandbox.create:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 sandbox.create_many:
   server: hangar-sandbox
   mcp: create_sandboxes
@@ -1621,7 +1621,7 @@ sandbox.destroy:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 sandbox.destroy_many:
   server: hangar-sandbox
   mcp: destroy_sandboxes
@@ -1641,7 +1641,7 @@ sandbox.exec:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 sandbox.extend:
   server: hangar-sandbox
   mcp: extend_sandbox
@@ -1653,7 +1653,7 @@ sandbox.extend:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 sandbox.fork:
   server: hangar-sandbox
   mcp: fork_sandbox
@@ -1667,7 +1667,7 @@ sandbox.fork:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 sandbox.get:
   server: hangar-sandbox
   mcp: get_sandbox
@@ -1679,7 +1679,7 @@ sandbox.get:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 sandbox.list:
   server: hangar-sandbox
   mcp: list_sandboxes
@@ -1691,7 +1691,7 @@ sandbox.list:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 sandbox.list_files:
   server: hangar-sandbox
   mcp: list_files
@@ -1703,7 +1703,7 @@ sandbox.list_files:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 sandbox.pause:
   server: hangar-sandbox
   mcp: pause_sandbox
@@ -1715,7 +1715,7 @@ sandbox.pause:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 sandbox.process:
   server: hangar-sandbox
   mcp: process
@@ -1733,7 +1733,7 @@ sandbox.process:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 sandbox.read_file:
   server: hangar-sandbox
   mcp: read_file
@@ -1751,7 +1751,7 @@ sandbox.resume:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 sandbox.run_agent:
   server: hangar-sandbox
   mcp: run_agent
@@ -1763,7 +1763,7 @@ sandbox.run_agent:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 sandbox.snapshot:
   server: hangar-sandbox
   mcp: snapshot_sandbox
@@ -1775,7 +1775,7 @@ sandbox.snapshot:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 sandbox.terminal_close:
   server: hangar-sandbox
   mcp: terminal_close
@@ -1793,7 +1793,7 @@ sandbox.terminal_list:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 sandbox.terminal_open:
   server: hangar-sandbox
   mcp: terminal_open
@@ -1824,7 +1824,7 @@ sandbox.watch:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 sandbox.write_file:
   server: hangar-sandbox
   mcp: write_file
@@ -1855,7 +1855,7 @@ schedule.create:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.admin_job_caller);
-    MCP serves every person, and people.Guard keeps a member to their own schedules (docs/security.md#people)'
+    MCP serves every person, and people.Guard keeps a member to their own schedules (docs/security/people.md#people)'
 schedule.delete:
   server: hangar
   mcp: delete_schedule
@@ -1867,7 +1867,7 @@ schedule.delete:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 schedule.list:
   server: hangar
   mcp: list_schedules
@@ -1879,7 +1879,7 @@ schedule.list:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 schedule.run:
   server: hangar
   mcp: run_schedule_now
@@ -1891,7 +1891,7 @@ schedule.run:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 schedules.get:
   server: hangar
   mcp: null
@@ -1929,7 +1929,7 @@ session.artifact:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 session.create:
   server: hangar
   mcp: new_session
@@ -1941,7 +1941,7 @@ session.create:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 session.fork:
   server: hangar
   mcp: fork_session
@@ -1953,7 +1953,7 @@ session.fork:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 session.get:
   server: hangar
   mcp: get_session
@@ -1966,7 +1966,7 @@ session.get:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 session.idle:
   server: hangar
   mcp: keep_session
@@ -1978,7 +1978,7 @@ session.idle:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 session.list:
   server: hangar
   mcp: list_sessions
@@ -1990,7 +1990,7 @@ session.list:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 session.open:
   server: hangar-sandbox
   mcp: open_session
@@ -2002,7 +2002,7 @@ session.open:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 session.patch:
   server: hangar
   mcp: get_session_patch
@@ -2015,7 +2015,7 @@ session.patch:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 session.send:
   server: hangar
   mcp: send_to_session
@@ -2027,7 +2027,7 @@ session.send:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 session.suspend:
   server: hangar
   mcp: suspend_session
@@ -2039,7 +2039,7 @@ session.suspend:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 sessions.delete:
   server: hangar
   mcp: null
@@ -2147,7 +2147,7 @@ snapshot.list:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 snapshots.delete:
   server: hangar
   mcp: null
@@ -2264,7 +2264,7 @@ turn.answer_approval:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 turn.answer_approval_job:
   server: hangar
   mcp: null
@@ -2299,7 +2299,7 @@ turn.steer:
     mcp: guard
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
-    every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+    every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
 turn.steer_job:
   server: hangar
   mcp: null

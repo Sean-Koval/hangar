@@ -1,4 +1,4 @@
-"""Test and coverage reports, parsed (--- testresults; docs/jobs.md, "Test results").
+"""Test and coverage reports, parsed (--- testresults; docs/jobs/test-results.md).
 
 The one parser for what test runners write: JUnit XML (pytest `--junitxml`, gotestsum, jest-junit and vitest's
 `junit` reporter, cargo-nextest, Maven surefire and failsafe, Gradle), Cobertura XML and LCOV coverage. Every

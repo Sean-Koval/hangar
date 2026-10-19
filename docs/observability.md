@@ -325,7 +325,7 @@ sandbox time only: no model call leaves hangar.
   `network`; `model` means the replay stopped there because the harness or its system prompt changed), the `tool`, its
   `command` or `file`, and `evidence` (run, step, replay, and excerpts of both outputs, redacted as the tape is). Also
   `replays`, `reproduced`, `diverged`, `unreplayed` and `errors`.
-- **Flaky tests.** A test on the repo's flaky list ([jobs.md](jobs.md#flaky-tests)) whose id shows in a mismatched
+- **Flaky tests.** A test on the repo's flaky list ([jobs/test-results.md](jobs/test-results.md#flaky-tests)) whose id shows in a mismatched
   output gets the step as `evidence` on its list entry (the last 5), with a link to the report.
 
 ## Credential health

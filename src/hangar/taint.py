@@ -1,4 +1,4 @@
-"""Taint tracking (#129): whether an agent turn has read content nobody hangar trusts wrote (docs/security.md#taint).
+"""Taint tracking (#129): whether an agent turn has read content nobody hangar trusts wrote (docs/security/taint.md).
 
 Untrusted *inputs* were already marked at submit time (`ContextItem.untrusted`, `Job.untrusted_source`, the prompt's
 fence). What the agent fetches *while it runs* wasn't: an issue comment through the GitHub MCP server, a web page, a

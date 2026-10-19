@@ -62,12 +62,14 @@ markdown_extensions:
       base_path: [docs/assets/diagrams]   # the theme-aware SVGs diagram.py draws, inlined with --8<--
       check_paths: true
 
-# Benchmark scripts kept next to a research note; not pages.
+# Not pages: benchmark scripts kept next to a research note, and the repo's notes on the brand and front-page assets.
 exclude_docs: |
   research/0012/
+  assets/README.md
 
-# The site's map. Every page under docs/ is in it except docs/assets/README.md (notes on the brand and front-page assets, for the repo) and
-# the research scripts excluded above. Superseded and deferred specs keep their pages, grouped apart (#220).
+# The site's map. Every page under docs/ is in it except what exclude_docs lists and the superseded and deferred specs
+# (0001, 0004, 0005, 0007, 0008), which keep their pages and are reached from specs/README.md only (#220, KAN-106).
+# tests/test_docs_size.py keeps every page in this map under its word cap.
 nav:
   - Home: index.md
   - Get started:
@@ -85,7 +87,14 @@ nav:
   - Guides:
       - Work:
           - The web console: console.md
-          - Jobs: jobs.md
+          - Jobs:
+              - jobs/README.md
+              - From GitHub, Slack and Jira: jobs/from-github-slack-jira.md
+              - Working with the agent: jobs/working-with-the-agent.md
+              - An agent loop that finishes the job: jobs/agent-loop.md
+              - Test results: jobs/test-results.md
+              - Experiments: jobs/experiments.md
+              - "Reference: labels, outcomes, settings": jobs/reference.md
           - Sessions: sessions.md
           - Steering: steering.md
           - Streaming: streaming.md
@@ -110,7 +119,23 @@ nav:
           - Observability: observability.md
           - Weekly adoption metrics: metrics.md
   - Reference:
-      - Security model: security.md
+      - Security model:
+          - security/README.md
+          - "The threat model": security/threat-model.md
+          - What is not covered: security/not-covered.md
+          - The git credential gateway: security/git-gateway.md
+          - Egress allowlists: security/egress.md
+          - Package mirrors: security/package-mirrors.md
+          - Sandbox networking on Docker: security/docker-network.md
+          - Secret scanning and redaction: security/secret-scanning.md
+          - Credentials in sandboxes: security/credentials.md
+          - Taint tracking: security/taint.md
+          - Front-door security: security/front-doors.md
+          - People and OAuth connectors: security/people.md
+          - Sealed graders: security/graders.md
+          - Build caches: security/build-caches.md
+          - Screens and requests: security/screen.md
+          - The vault key ring: security/vault-key.md
       - E2B-compatible API: e2b.md
       - hangar-envd: envd.md
       - Trace export (hangar.trace/v1): api/traces.md
@@ -118,8 +143,9 @@ nav:
       - Model gateway and tapes: model-gateway.md
       - Trials and pin sets (hangar.pinset/v1): api/trials.md
       - CI: ci.md
-  - Design:
+  - Design notes:
       - specs/README.md
+      - Cross-spec decisions: specs/decisions.md
       - Built and current:
           - 0002 Results and landing: specs/0002-results-and-landing.md
           - 0003 Sandbox security: specs/0003-sandbox-security.md
@@ -131,12 +157,6 @@ nav:
           - 0013 E2B and CubeSandbox: specs/0013-e2b-cube-fast-sandboxes.md
           - 0014 Sister tool interfaces: specs/0014-sister-tool-interfaces.md
           - 0015 Governance decision point: specs/0015-governance-decision-point.md
-      - Superseded and deferred:
-          - 0001 Agent runs (superseded): specs/0001-agent-runs.md
-          - 0004 Supervisor, scheduling, performance (deferred): specs/0004-supervisor-scheduling-performance.md
-          - 0005 Traces and decision model (deferred): specs/0005-traces-and-decision-model.md
-          - 0007 Experiments, policy and team learning (deferred): specs/0007-experiments-policy-and-team-learning.md
-          - 0008 Swarms, improvement loop and RL (deferred): specs/0008-swarm-improvement-loop-and-rl.md
       - Research - Google AX: research/ax.md
   - Operations:
       - Running on GKE: gke.md
@@ -144,6 +164,19 @@ nav:
       - Deploy on your company's cluster: deploy-company.md
       - Acceptance on the cluster: acceptance.md
       - Upgrading: upgrading.md
+      - Release notes:
+          - releases/README.md
+          - "Adopt & capture and frontier (#133–#189)": releases/adopt-capture.md
+          - "Adopt & capture: the procedure": releases/adopt-capture-procedure.md
+          - "The safe release (#120–#132)": releases/safe-release.md
+          - "The team release (#75–#117)": releases/team-release.md
+          - "Team release: what changes": releases/team-release-changes.md
+          - "Team release: steps 1–8": releases/team-release-procedure.md
+          - "Team release: steps 9–11": releases/team-release-sandboxes.md
+          - "Team release: steps 12–14, rollback": releases/team-release-operations.md
+          - "The overnight stack (#48–#69)": releases/overnight-stack.md
+          - "Overnight stack: defaults": releases/overnight-stack-defaults.md
+          - "Overnight stack: upgrade and prove": releases/overnight-stack-procedure.md
       - Troubleshooting: troubleshooting.md
       - Team scale: team-scale.md
       - The Cloud Doctor: doctor.md

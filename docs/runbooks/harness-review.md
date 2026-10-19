@@ -17,7 +17,7 @@ The queue lists [agent jobs](../metrics.md) from the window that need a look, ne
 - jobs whose PR was closed without merging (an abandoned PR, with its [abandon reason](../landing.md#what-hangar-records) when someone gave one);
 - jobs that took two or more correction steers (once steers are classified, #162).
 
-Jobs already labelled drop out. So do `infra_error` jobs ([jobs.md](../jobs.md#outcome-classes)): infrastructure isn't a
+Jobs already labelled drop out. So do `infra_error` jobs ([jobs/reference.md](../jobs/reference.md#outcome-classes)): infrastructure isn't a
 harness failure. `--include-infra` shows them anyway. A member sees their own jobs and an admin sees everyone's, so the
 facilitator should use an admin token.
 

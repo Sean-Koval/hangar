@@ -344,7 +344,7 @@ async def _gateway(s: Any, repo: str, transport: httpx.AsyncBaseTransport | None
     if not posture.gateway_serves(s, url):
         out.append(_c("git gateway", "fail", posture.gateway_problem(s, url) or "the gateway doesn't serve the repo",
                       "set HANGAR_GATEWAY_URL (and HANGAR_GATEWAY_UPSTREAMS for github.com); "
-                      "docs/security.md#git-credential-gateway"))
+                      "docs/security/git-gateway.md"))
         return out
     try:
         async with httpx.AsyncClient(transport=transport, timeout=5) as c:
@@ -381,12 +381,12 @@ def _environment(h: Any, svc: JobService, repo: str, policy: RepoPolicy | None, 
                                                      "it hold a GitHub token" if serves else
                                                      "its sandboxes hold a GitHub token an injected prompt could use, "
                                                      "and landing refuses to land their PRs"),
-                      f"set credential_mode: gateway on {env} (docs/security.md#git-credential-gateway)"))
+                      f"set credential_mode: gateway on {env} (docs/security/git-gateway.md)"))
     else:
         out.append(_c(f"credential mode {env}", "ok" if serves else "fail",
                       "gateway: sandboxes hold a fetch-only grant, never a GitHub token" if serves else
                       "resolves to direct: there is no gateway for the repo, so its sandboxes hold a GitHub token",
-                      "set HANGAR_GATEWAY_URL (docs/security.md#git-credential-gateway)"))
+                      "set HANGAR_GATEWAY_URL (docs/security/git-gateway.md)"))
     docker = svc._runs_docker(spec, url)
     if spec.sudo and not docker:
         out.append(_c(f"sudo {env}", "warn" if p == "enforce" else "fail",
@@ -408,7 +408,7 @@ def _environment(h: Any, svc: JobService, repo: str, policy: RepoPolicy | None, 
     elif p == "enforce":
         out.append(_c(f"egress {env}", "warn", "egress open: intake jobs get the allowlist floor, but jobs from MCP, "
                       "REST and schedules on this repo reach the whole internet",
-                      f"set egress.mode: allowlist on {env} (docs/security.md#egress-allowlists)"))
+                      f"set egress.mode: allowlist on {env} (docs/security/egress.md)"))
     else:
         out.append(_c(f"egress {env}", "fail", f"egress open and HANGAR_INTAKE_POSTURE={p}: an agent steered by a "
                       "ticket's text can send the repo anywhere",

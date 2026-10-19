@@ -20,7 +20,7 @@ An agent's PR used to need three things from a person: read it, approve it, then
 
    | Permission | Access | What hangar does with it |
    | --- | --- | --- |
-   | Contents | Read and write | push agent branches (through the [git gateway](security.md#git-credential-gateway)); merge a PR that is already mergeable (`PUT /pulls/{n}/merge`); read CODEOWNERS and the base branch's required checks (`GET /contents/…`, `GET /branches/{b}`) |
+   | Contents | Read and write | push agent branches (through the [git gateway](security/git-gateway.md)); merge a PR that is already mergeable (`PUT /pulls/{n}/merge`); read CODEOWNERS and the base branch's required checks (`GET /contents/…`, `GET /branches/{b}`) |
    | Pull requests | Read and write | open PRs, write and edit their comments (the review packet), read their files and reviews, arm and disarm auto-merge |
    | Metadata | Read | added by GitHub to every App; also reads rulesets (`GET /rules/branches/{b}`) |
 
@@ -47,7 +47,7 @@ An agent's PR used to need three things from a person: read it, approve it, then
 | The App, for the git gateway | pushes agent branches for sandboxes in `credential_mode: gateway` with no git credential of their own | an installation token with `{"contents": "write"}` only |
 | The control token (`HANGAR_GITHUB_TOKEN_CREDENTIAL`) | comments on issues, reads issue comments, checks team membership (trust and CODEOWNERS teams), reads Actions logs for auto-fix, reads classic branch protection for `hangar doctor` | as before |
 
-The App's key is a `github_app` credential: control-plane only, refused in any sandbox ([security.md](security.md#credential-handling)). If the App can't act on a repo (not installed there), hangar uses the control token and says so in the job's events.
+The App's key is a `github_app` credential: control-plane only, refused in any sandbox ([security/credentials.md](security/credentials.md#credential-handling)). If the App can't act on a repo (not installed there), hangar uses the control token and says so in the job's events.
 
 The permissions above were checked against GitHub's "Permissions required for GitHub Apps" page (October 2026): `POST /repos/{o}/{r}/pulls` and `POST`/`PATCH` issue comments need Pull requests: write; `PUT /pulls/{n}/merge` needs Contents: write; `GET /branches/{b}` and `GET /contents/{path}` need Contents: read; `GET /rules/branches/{b}` needs Metadata: read; `GET /branches/{b}/protection` needs Administration: read, which the App deliberately lacks.
 
@@ -99,11 +99,11 @@ hangar arms auto-merge; **GitHub decides when it merges**. These settings on the
 - **Only the approved commit.** hangar arms with `enablePullRequestAutoMerge(expectedHeadOid: <approved sha>)`. GitHub has no REST route for auto-merge, so this is GraphQL. When the PR is already mergeable, GitHub refuses to arm ("Pull request is in clean status") and hangar merges it with `PUT /pulls/{n}/merge` and `sha: <approved sha>`. Either call fails if the head moved.
 - **A push clears the approval.** Any new head, from the agent, auto-fix, a follow-up or a person, clears the approval in hangar's record and disarms. A later push needs a new review, which "dismiss stale approvals" and "most recent push" enforce on GitHub's side.
 - **No agent runs while armed.** Before arming, the job's session takes a checkpoint and its sandbox goes, and with it the sandbox's gateway grant, so nothing the agent left running can push. Before any later agent turn on the job (a follow-up, an auto-fix round, a verify-fix turn), hangar disarms; if it can't, the turn doesn't start. After a turn that pushed nothing, the approval still covers the head and hangar arms again. Arming also waits for any queued or running turn on the job.
-- **Checks.** "Green" means every check the base branch requires (from its protection summary and rulesets) passed on the head: `success`, `neutral` or `skipped`. GitHub saying `mergeable_state: clean` also counts, in case a webhook was missed. A failed check holds landing even when it isn't required: an agent's red PR goes to [auto-fix](jobs.md#7-an-agent-loop-that-finishes-the-job), not to main. With no required checks, GitHub merges as soon as auto-merge is armed, so make CI required (`hangar doctor` warns).
+- **Checks.** "Green" means every check the base branch requires (from its protection summary and rulesets) passed on the head: `success`, `neutral` or `skipped`. GitHub saying `mergeable_state: clean` also counts, in case a webhook was missed. A failed check holds landing even when it isn't required: an agent's red PR goes to [auto-fix](jobs/agent-loop.md), not to main. With no required checks, GitHub merges as soon as auto-merge is armed, so make CI required (`hangar doctor` warns).
 - **Requests for changes win.** A "changes requested" review from anyone, or a dismissed approval, takes the PR back to open and disarms.
 - **GitHub's record decides.** Review webhooks can arrive late, out of order (hangar redelivers missed ones after a restart) or replayed, so right before arming hangar lists the PR's reviews (`GET /pulls/{n}/reviews`, Pull requests: read): the approver's latest review must still be an approval of the head, and nobody's latest may request changes. A push, dismissal or follow-up that arrives while GitHub is arming is caught after the arm and disarmed; a disarm GitHub refused is tried again after the job's next turn and on restart.
 - **The merge commit says which harness wrote it** (#137). The message hangar gives GitHub is the agent's summary
-  followed by the job's [trailers](jobs.md#the-pull-request) (`Hangar-Job`, `Harness-Digest`, `Environment-Digest`,
+  followed by the job's [trailers](jobs/working-with-the-agent.md#the-pull-request) (`Hangar-Job`, `Harness-Digest`, `Environment-Digest`,
   `Harness-Lock`): `commitBody` when it arms auto-merge, `commit_message` when it merges an already mergeable PR, so
   the merged commit carries them whichever way it lands. That holds for the `squash` and `merge` methods; `rebase`
   keeps the agent's commits as they are, so the trailers are in the PR body only. A metric that reads them from the
@@ -112,7 +112,7 @@ hangar arms auto-merge; **GitHub decides when it merges**. These settings on the
 
 ### Tainted PRs
 
-When the job's agent read untrusted content (`hangar:tainted`, [security.md](security.md#taint-gates)), the approval
+When the job's agent read untrusted content (`hangar:tainted`, [security/taint.md](security/taint.md#taint-gates)), the approval
 that lands it must come from someone other than the job's own person and its requester: a reviewer whose GitHub
 account is linked to the job's person, or who asked for the job, doesn't land it (the job's timeline says why), and
 another approver or code owner does. The rule is `approvals.can_decide(kind="land")`, so
@@ -209,7 +209,7 @@ Each non-draft agent PR on a repo with `ai_review` set gets a first-pass review 
 - **`hangar`**: hangar runs a review job (`source: review`) on a **different harness from the author's**: codex reviews claude-code's PRs and claude-code everyone else's, unless `ai_review_harness` names one. Its model is `ai_review_model`, by default the `frontier` policy resolved to a concrete id when the job is submitted. It runs in the PR job's environment with the PR's branch checked out; the PR diff and the review packet go in as **untrusted** context (agent-written code, possibly steered by an untrusted ticket, is input to the reviewer, never instructions). It delivers nothing (`deliver: none`), its sandboxes get egress `none` (the intake floor label), and, as every job's, its git gateway grant is fetch-only: it can't push. It is an intake job, so under `HANGAR_INTAKE_POSTURE=enforce` it needs the git gateway like any other, and egress `none` needs hangar's egress proxy (Docker's egress network, or `HANGAR_EGRESS_URL` on GKE); where the sandbox can't be fenced, the review job fails rather than running open, and the packet says the review failed. Its spend is capped by `ai_review_budget_usd` (default $1.50), counts in the daily caps under the PR's person, and shows in usage under `source=review` (`hangar usage --by source`).
 - **`check:<name>`**: an org review bot the team already licenses: hangar waits for a check run or status named `<name>` on the PR's head and maps its conclusion to a verdict (`success` approve; `neutral`, `skipped` comment; `failure`, `action_required` blocking; otherwise error). No job runs.
 
-The result is recorded on `landing.ai_review` with the head it reviewed, and the App posts **one PR review with `event: COMMENT`** (never `APPROVE`: it must not satisfy branch protection) and at most 20 inline comments; mentions in its text are neutralized. The App's review is a bot's, so it starts no [auto-fix](jobs.md#pr-auto-fix) round. A push asks for a review of the new head, at most one every 5 minutes; a draft (a tainted PR opens as one) is reviewed when it is marked ready. The review is advisory: it never approves, never counts toward [review capacity](team-scale.md#review-capacity), and creates no inbox item. When the environment has only the author's harness, the review runs on it in a fresh session, flagged `independent: false`, and it doesn't satisfy the [self-approval rule](#self-approval-who-may-be-the-only-approver).
+The result is recorded on `landing.ai_review` with the head it reviewed, and the App posts **one PR review with `event: COMMENT`** (never `APPROVE`: it must not satisfy branch protection) and at most 20 inline comments; mentions in its text are neutralized. The App's review is a bot's, so it starts no [auto-fix](jobs/agent-loop.md#pr-auto-fix) round. A push asks for a review of the new head, at most one every 5 minutes; a draft (a tainted PR opens as one) is reviewed when it is marked ready. The review is advisory: it never approves, never counts toward [review capacity](team-scale.md#review-capacity), and creates no inbox item. When the environment has only the author's harness, the review runs on it in a fresh session, flagged `independent: false`, and it doesn't satisfy the [self-approval rule](#self-approval-who-may-be-the-only-approver).
 
 ## 7. The inbox: what needs you
 
@@ -224,7 +224,7 @@ One list per person, newest first, from the records hangar keeps:
 | `failed` | a job that failed in the last 7 days and has no open PR | read why, then follow up or resubmit |
 | `alert` | admins only: a front door saw use that a real sender wouldn't make, such as a Jira Automation token used for an issue nobody just moved ([intake.md](intake.md#fallback-an-automation-rule)); kept 7 days | check the rule, rotate the token if it doesn't explain it |
 
-It is per person, as everything is since [people](security.md#people): a member sees items for their own jobs and sessions. An admin sees their own, plus work nobody in particular owns (jobs from GitHub issues, Slack and inbound webhooks). Read it:
+It is per person, as everything is since [people](security/people.md#people): a member sees items for their own jobs and sessions. An admin sees their own, plus work nobody in particular owns (jobs from GitHub issues, Slack and inbound webhooks). Read it:
 
 - MCP: the resource `hangar://inbox` (not a tool, so it adds nothing to the tool list). Subscribe to it to hear when it changes; it changes with any job or session.
 - CLI: `hangar inbox` (`--json` for the raw list).
@@ -246,7 +246,7 @@ Other modules add kinds of request through `inbox.SOURCES`: a function from the 
 
 ## What it doesn't cover
 
-- **Direct-mode sandboxes** hold a GitHub token. If that token can write to the repo, the agent can arm auto-merge on its own PR, or approve it as the token's owner. So hangar lands a PR only when its delivery recorded that the job's sandbox pushed through the gateway: `credential_mode: direct`, or a mode hangar couldn't read, means merging by hand, and once a job's sandbox was direct it stays that way. The inbox says so. "Only the control plane arms" holds only with the [git gateway](security.md#git-credential-gateway); branch protection ("approval of the most recent push", since the token's owner pushed it) is what stops the agent's own approval from merging.
+- **Direct-mode sandboxes** hold a GitHub token. If that token can write to the repo, the agent can arm auto-merge on its own PR, or approve it as the token's owner. So hangar lands a PR only when its delivery recorded that the job's sandbox pushed through the gateway: `credential_mode: direct`, or a mode hangar couldn't read, means merging by hand, and once a job's sandbox was direct it stays that way. The inbox says so. "Only the control plane arms" holds only with the [git gateway](security/git-gateway.md); branch protection ("approval of the most recent push", since the token's owner pushed it) is what stops the agent's own approval from merging.
 - **Merge queues.** With a merge queue on the branch, GitHub queues instead of merging, and ignores `merge_method`.
 - **Check results come from webhooks.** The App has no Checks permission, so hangar can't list a commit's checks. It learns them from `check_run`, `check_suite` and `status` deliveries, and falls back to GitHub's `mergeable_state` when one was missed.
 - **The approval is checked against the PR's head when the review arrives.** An approval GitHub accepts on an older commit doesn't count for hangar.

@@ -1,5 +1,8 @@
 # 0013 E2B and CubeSandbox as references: API compatibility and a fast VM tier
 
+!!! note "Design record"
+    Written 2026-10-13; **partly built**. The current behaviour is on [e2b.md](../e2b.md), [envd.md](../envd.md) and [microvm.md](../microvm.md); the status line below says what shipped.
+
 Status: partly built (2026-10-15): `hangar-envd`, the E2B-compatible API and the `e2b` provider flavours; the microVM tier on GKE isn't validated live. Was: proposal. · Date: 2026-10-13 · Builds on: 0012 (items 8 and 15, §4), 0004 (performance), 0003 (gateway, egress), 0010 (sessions), 0006 (environments)
 
 The owner wants to use E2B and Tencent's CubeSandbox as references for hangar in three ways:

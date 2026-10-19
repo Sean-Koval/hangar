@@ -1,8 +1,11 @@
 # 0002: Run results, verification, fan-out grading and the land step
 
+!!! note "Design record"
+    Written 2026-10-12; **partly built, in another shape**. The current behaviour is on [landing.md](../landing.md) and [jobs](../jobs/README.md); the status line below says what shipped.
+
 Status: partly built, in another shape (2026-10-15): verification with the repo's own check (0009, #82) and landing on approval through a GitHub App (#96, #101; [landing.md](../landing.md)). Was: proposed. · Date: 2026-10-12 · Author: hangar maintainers
 
-> Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins.
+> Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/README.md](README.md); where this spec conflicts with that page, the page wins.
 
 ## 1. Summary
 
@@ -391,7 +394,7 @@ If the proxy is unreachable, `fleet.create` fails fast with a clear error (a one
 
 - Existing tokens keep `["admin"]`, so every current call works. Only the new `approve` check is strict.
 - The env admin token and the generated `bootstrap-admin` token receive `approve` (they are the human's tokens). Other existing tokens do not. `hangar token create NAME --scopes operate,land` is for orchestrators. `hangar token scope ID +approve` grants it later.
-- OAuth tokens (`oauth.py`, scope `hangar`) map to `operate` + `land` and can never reach `/api`, as today (docs/security.md). They cannot approve.
+- OAuth tokens (`oauth.py`, scope `hangar`) map to `operate` + `land` and can never reach `/api`, as today (docs/security/README.md). They cannot approve.
 - Enforcement is a `require(scope)` dependency on REST routes and a check in the MCP `tool()` wrapper using the actor's scopes (the contextvar in `MCPAuthMiddleware` carries them). A tool call without scope raises `ToolError("insufficient_scope: requires 'land'")`. For transport-level step-up, `MCPAuthMiddleware` can answer 403 with `WWW-Authenticate: Bearer error="insufficient_scope", scope="land"` as the MCP security guidance describes. Whether the clients in docs/clients.md act on it is unverified (open question 8).
 - Session ids are never used for authorization.
 
@@ -671,7 +674,7 @@ Failure modes:
 4. **Phase 2, fan-out and rank.** New tools only. `max_concurrent_agents` defaults to 3, so existing multi-sandbox flows that call `run_agent` directly will see `queued` beyond 3 concurrent agents on one subscription credential. That is a behavior change. Set it to 0 to disable queueing.
 5. **Phase 3, land in token mode.** Enabled when `policies.yaml` exists and `land_credential` is set. Start with one repo, `review_bridge: true`, and a ruleset. Guide in the new `docs/landing.md`.
 6. **Phase 4, proxy mode.** Opt-in per environment (`repo.git_mode: proxy`). After one release with no regressions, new environments default to proxy. `describe_environment` and the dashboard show warnings for token-mode sandboxes. The `gh` credential moves to `purpose: control-plane` when the user switches (`hangar cred set-purpose gh control-plane`).
-7. **Tokens.** `approve` scope is new. Existing tokens keep working. Orchestrator tokens should be recreated with `operate,land`. `docs/security.md` and `docs/clients.md` are updated.
+7. **Tokens.** `approve` scope is new. Existing tokens keep working. Orchestrator tokens should be recreated with `operate,land`. `docs/security/README.md` and `docs/clients.md` are updated.
 8. **Rollback.** Each phase is a setting (`HANGAR_LAND=off`, `repo.git_mode: token`). Stored rows are ignored when the feature is off.
 
 ## 8. Test plan
@@ -746,7 +749,7 @@ PR-sized, in order. Sizes: S ≤ 1 day, M ≈ 2–3 days, L ≈ 4–6 days.
 | 9 | Dashboard | Inbox, run detail, land cards, policy and notifier editors. | L |
 | 10 | Git push proxy | `/git` router, pkt-line check, `hgs_` tokens, sandbox git config, provider reachability (docker URL, GKE Service and NetworkPolicy or public path, e2b), `git_mode`, identity from `GET /user`. | L |
 | 11 | Conflicts and rebase worker | Overlap detection, `merge-tree` prediction, land worker sandbox, `update: rebase`, resolve-conflicts run, publish-before-destroy in `destroy` and the reaper. | M |
-| 12 | Docs and acceptance | `docs/landing.md`, update `docs/security.md`, `docs/gke.md`, `scripts/accept_landing.py`, run A1–A16 on GKE. | M |
+| 12 | Docs and acceptance | `docs/landing.md`, update `docs/security/README.md`, `docs/gke.md`, `scripts/accept_landing.py`, run A1–A16 on GKE. | M |
 
 Milestones 1–3 deliver value alone: a lost run is visible, and results and verification are real. Milestone 10 is the one that changes the security posture, so it ships behind `git_mode`.
 

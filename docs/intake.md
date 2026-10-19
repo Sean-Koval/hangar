@@ -16,7 +16,7 @@ Write tickets from the [agent ticket template](#agent-tickets). hangar keeps the
 | Delivered | the outcome with the PR, which is also added as a remote link; the `delivered` transition | the outcome on the issue (the PR says `Closes #N`); the `delivered` column |
 | Failed or cancelled | what went wrong; the `failed` transition | the `failed` column |
 
-GitHub issues ([jobs.md §4](jobs.md#4-trigger-from-github)) and Slack ([slack.md](slack.md)) follow the same rule: their jobs go to the linked person too.
+GitHub issues ([jobs/README.md §4](jobs/from-github-slack-jira.md#4-trigger-from-github)) and Slack ([slack.md](slack.md)) follow the same rule: their jobs go to the linked person too.
 
 ## Who a job belongs to, and who is trusted
 
@@ -33,7 +33,7 @@ The repo must be in `HANGAR_GITHUB_REPOS`, as for every front door, and the repo
 
 ### Safety
 
-The fence around ticket text is in the prompt; the boundaries are outside it. Under the default `HANGAR_INTAKE_POSTURE=enforce` ([security.md](security.md#intake-posture)) every Jira and GitHub Projects job needs the [git gateway](security.md#git-credential-gateway): without `HANGAR_GATEWAY_URL` (or for a repo whose host the gateway doesn't serve) the job is refused and the reason is posted on the issue. Its sandboxes hold only a fetch-only grant (hangar pushes), and they get at least `allowlist` egress, even in an `open` environment: the environment's presets and hosts, the repo policy's, and the harness's API. Anything else is an egress request a person answers. `warn` runs such jobs as before for one release, with a `posture.warn` event and a line in the review packet.
+The fence around ticket text is in the prompt; the boundaries are outside it. Under the default `HANGAR_INTAKE_POSTURE=enforce` ([security/front-doors.md](security/front-doors.md#intake-posture)) every Jira and GitHub Projects job needs the [git gateway](security/git-gateway.md): without `HANGAR_GATEWAY_URL` (or for a repo whose host the gateway doesn't serve) the job is refused and the reason is posted on the issue. Its sandboxes hold only a fetch-only grant (hangar pushes), and they get at least `allowlist` egress, even in an `open` environment: the environment's presets and hosts, the repo policy's, and the harness's API. Anything else is an egress request a person answers. `warn` runs such jobs as before for one release, with a `posture.warn` event and a line in the review packet.
 
 ## Jira Cloud
 
@@ -185,7 +185,7 @@ hangar config set github_projects '{
 
 The key is `org/project-number` (from the board's URL, `github.com/orgs/acme/projects/7`). `trigger` is the column that starts a job. `status_field` names the single-select field the columns are, if it isn't `Status`. `repos` limits which repos' issues count; empty means any repo in `HANGAR_GITHUB_REPOS`. `statuses` names the column for each stage. Draft items and pull requests on the board are ignored.
 
-When an item moves to the trigger column, hangar reads the item and its issue in one query. It starts the job only if the item is still in that column, so a delivery that arrives late for an item that has moved on does nothing. From then on the job is the issue's job: the comments, `/hangar approve`, `/hangar <answer>` and `Closes #N` work exactly as for a [GitHub issue](jobs.md#4-trigger-from-github).
+When an item moves to the trigger column, hangar reads the item and its issue in one query. It starts the job only if the item is still in that column, so a delivery that arrives late for an item that has moved on does nothing. From then on the job is the issue's job: the comments, `/hangar approve`, `/hangar <answer>` and `Closes #N` work exactly as for a [GitHub issue](jobs/from-github-slack-jira.md#4-trigger-from-github).
 
 ## Agent tickets
 
@@ -206,7 +206,7 @@ Both have *Goal*, *Acceptance criteria* (a checklist), *Verify command*, *Out of
 - **Within 1 MB.** A Jira delivery larger than 1 MB (in practice, a very long description) isn't taken: hangar answers `413`. One that is authentic and fresh is audited (`jira.too_large`, with its size and delivery id), and if its issue is in the trigger status or has the trigger label, hangar comments on the issue once a day that the description is too large to start a job from. Jira doesn't retry a `413`, so shorten the description (attach long logs as files) and move the issue again.
 - **Once.** Each delivery is claimed (by the digest of its signed body) before it's handled and marked done after. A retry of one that was handled is acknowledged and dropped, and a replay can't pass as new by changing an unsigned header. One that failed half way, or hit a rate limit, runs again on the sender's retry. Jira treats only `200` as delivered, so hangar answers `200` for everything handled or ignored, `429` when rate limited and `503` when misconfigured, which Jira retries.
 - **One job per ticket.** A ticket with an unfinished job doesn't start a second.
-- **Tainted from turn 1.** Ticket text is untrusted, so every intake job is [tainted](security.md#taint-gates): its PR opens as a draft labelled `hangar:tainted` and needs a reviewer other than the job's own person to land. Give intake repos `approvals: deny-risky`, so pushes and fetches inside the turn are refused too.
+- **Tainted from turn 1.** Ticket text is untrusted, so every intake job is [tainted](security/taint.md#taint-gates): its PR opens as a draft labelled `hangar:tainted` and needs a reviewer other than the job's own person to land. Give intake repos `approvals: deny-risky`, so pushes and fetches inside the turn are refused too.
 - **Credentials stay in the control plane.** The Jira token, webhook secret and Automation token are control-plane credentials: they can't be attached to a sandbox or mapped into one with `secrets:`.
 - **Write-back never blocks the job.** If Jira or GitHub can't be reached, or the workflow has no transition to a status, that goes on the job's timeline and the job carries on.
 

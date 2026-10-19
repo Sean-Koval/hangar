@@ -1,4 +1,4 @@
-"""What the egress proxy reads of a TLS handshake it never terminates (--- egress2; docs/security.md#egress-allowlists).
+"""What the egress proxy reads of a TLS handshake it never terminates (--- egress2; docs/security/egress.md).
 
 The CONNECT target is a name the sandbox chose, and the TLS server name (SNI) is the only other signal the proxy sees:
 everything after the ClientHello is encrypted. So the hello is checked in full before a byte of it is relayed:

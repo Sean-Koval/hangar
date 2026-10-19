@@ -1,5 +1,8 @@
 # 0011 The factory roadmap: trust, context exchange, throughput
 
+!!! note "Design record"
+    Written 2026-10-13; **built**. The current behaviour is on [triggers.md](../triggers.md), [context-exchange.md](../context-exchange.md) and [the git gateway](../security/git-gateway.md); the status line below says what shipped.
+
 Status: built (2026-10-15): workstreams #40–#46. · Date: 2026-10-13 · Builds on: 0003 (gateway), 0007 (budgets, parsers), 0008 (swarm), 0009 (jobs), 0010 (sessions)
 
 Jobs (0009) and sessions (0010) are live: work arrives from GitHub, REST and MCP, runs in a resumable session on our own cluster, and comes back as a PR. This spec picks the next slice of the earlier specs that turns that into a factory other systems can safely hand work to, and adds the piece none of them covered well: **how context moves in and out of an agent session**, for MCP clients above all.
@@ -95,4 +98,4 @@ The position for now:
   
   B and G consume `needs_input` and treat it as optional until E merges.
 - **Merge order:** A, C, E, then D, B, F, G. Later PRs rebase on earlier ones; the integrator resolves conflicts.
-- **Every PR:** passes unit tests and ruff, adds tests for the acceptance cases (the fake provider, plus Docker e2e where it matters), updates the docs (`docs/jobs.md`, `docs/sessions.md`, or a new page), and states which shared files it touched.
+- **Every PR:** passes unit tests and ruff, adds tests for the acceptance cases (the fake provider, plus Docker e2e where it matters), updates the docs (`docs/jobs/README.md`, `docs/sessions.md`, or a new page), and states which shared files it touched.

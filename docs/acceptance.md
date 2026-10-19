@@ -116,7 +116,7 @@ until the checks pass by hand: each check without its fixture skips.
 
 ## The first live run after deploying Waves 1–3
 
-Run these in order after [the upgrade](upgrading.md#upgrading-to-the-team-release-75117) (its step 14). Each step
+Run these in order after [the upgrade](releases/team-release.md) (its step 14). Each step
 assumes the ones before it passed; when one fails, the next section says where to look. All of them work with
 `--no-kubectl`.
 
@@ -206,7 +206,7 @@ bash scripts/acceptance/gke.sh --no-kubectl --skip core,model,steer,gateway     
 ([harnesses.md](harnesses.md#the-canary)) run in GitHub Actions only (`harness-contract.yml`, `harness-canary.yml`,
 `harness-canary-land.yml`), never against the cluster: they need no sandboxes and run while the pools are off. Check
 them in the repository's Actions tab: `contract` green on the deploy's commit, and the last nightly canary run green
-or its `harness-canary` issue read. Their owner setup is in [upgrading.md](upgrading.md#11b-the-harness-canary).
+or its `harness-canary` issue read. Their owner setup is in [releases/team-release-sandboxes.md](releases/team-release-sandboxes.md#11b-the-harness-canary).
 
 ## When a check fails
 
@@ -220,7 +220,7 @@ or the REST views named. `--keep` leaves what the run made, so you can look at t
 | `sandbox` | a create works | the pools are off or full, an image is missing, a quota | `hangar power status`; the create's error; `hangar images plan` |
 | `exec`, `stream` | hangar-envd carries exec, unbuffered | envd not reachable (NetworkPolicy `allow-hangar-envd`), a proxy buffering SSE | `--no-expect-envd` to compare; `GET /metrics` `hangar_sandbox_exec_seconds` by transport |
 | `files`, `mcp` | MCP works within claude.ai's 230 s; a dropped client's create still comes up | `HANGAR_MCP_TOOL_WAIT_SECONDS` too high; a regression of #86 | the sandbox's `stage` in `hangar sb ls`; the MCP version line |
-| `isolation` | sandboxes can't reach each other, the metadata server or hangar | a NetworkPolicy not applied | `hangar doctor`; [security.md](security.md) |
+| `isolation` | sandboxes can't reach each other, the metadata server or hangar | a NetworkPolicy not applied | `hangar doctor`; [security/README.md](security/README.md) |
 | `session` | checkpoint, suspend and resume restore the work | the session store (bucket) unreachable | `hangar session get <name>` (its `reason`); `hangar doctor` |
 | `e2b`, `backup`, `metrics` | the E2B API, backups, `/metrics` and its scope | `e2b` extra missing (it skips); the backup bucket; `HANGAR_METRICS_ENABLED` | the check's line; `hangar admin backups` |
 | `computer` | Chromium runs (under gVisor on GKE), a page screenshot is a whole PNG of the display's size and not blank, the display is captured, 3 s of video record, the screen opens through a one-time ticket, a view-only viewer's pointer and keys never arrive and a control viewer's do | the image build failed (no Chromium), gVisor missing on the pool (`runtime runc`), `/dev/shm` or the display didn't start, the websocket blocked by the load balancer | `hangar env list` (`accept-computer`); `hangar-agent computer status` and `env doctor` in a `--keep` sandbox; `GET /api/audit` for `screen.*` |

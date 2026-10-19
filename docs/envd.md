@@ -70,7 +70,7 @@ runc's), and `agent_status` long-polls to stop holding API-server connections an
 4. **Reaching it.**
    - Docker: the container's IP (Linux hosts), else the port published on `127.0.0.1` (Docker Desktop, where
      container IPs aren't routable). Containers created before this change have no published port. Sandboxes run on
-     hangar's own network, where containers can't reach each other ([security](security.md#sandbox-networking-on-docker)),
+     hangar's own network, where containers can't reach each other ([security](security/docker-network.md)),
      and that includes a container attached to it: a control plane that runs in a container (Docker Compose) can't
      reach the daemon there, and uses `docker exec`. Pointing `HANGAR_DOCKER_NETWORK` at a network shared with the
      control plane makes the daemon reachable, and lets sandboxes reach each other and the control plane

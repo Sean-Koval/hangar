@@ -1,4 +1,4 @@
-"""The vault key ring, and rotating the vault key (docs/security.md#rotating-the-vault-key).
+"""The vault key ring, and rotating the vault key (docs/security/vault-key.md#rotating-the-vault-key).
 
 One Fernet key encrypted the vault, every checkpoint and every backup, and nothing could replace it: a key that
 leaked stayed good for everything ever stored. HANGAR_SECRET_KEY (or <data dir>/secret.key) now holds a list of
@@ -280,7 +280,7 @@ class Rotation:
         self.store = store
         self.ring = keyring
         # (store, may it refuse reads): the session store; and the backup store when it's another one, which hangar
-        # may be allowed only to write to (docs/security.md#backups-and-the-vault-key)
+        # may be allowed only to write to (docs/security/vault-key.md#backups-and-the-vault-key)
         self.stores = stores
         self.live_sandboxes = live_sandboxes
         self.audit = audit
@@ -350,7 +350,7 @@ class Rotation:
         if r.get("phase") != "pending":
             if self.settings.secret_key:
                 raise RotationError("no new key: put a new one first in HANGAR_SECRET_KEY (newest first, comma-"
-                                "separated: <new>,<old>), restart hangar, then run this again (docs/security.md"
+                                "separated: <new>,<old>), restart hangar, then run this again (docs/security/README.md"
                                 "#rotating-the-vault-key)")
             await asyncio.to_thread(self._new_file_key)
         r = self.ring.rotation or {}

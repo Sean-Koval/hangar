@@ -1,4 +1,4 @@
-# The hangar repo as a jobs target (spec 0009, docs/jobs.md): map it with
+# The hangar repo as a jobs target (spec 0009, docs/jobs/README.md): map it with
 #   HANGAR_GITHUB_REPOS='{"Sean-Koval/hangar": "hangar-jobs"}'
 # Credentials are vault names; each sandbox gets only the ones for its harness (plus git).
 name: hangar-jobs

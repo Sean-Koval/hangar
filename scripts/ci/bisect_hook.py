@@ -3,7 +3,7 @@
 
 The failing tests come from the run's junit XML (final outcomes: a test that passed its rerun isn't failing), the
 failed jobs from the REST API, and the range from the last green run of the same workflow on main. With HANGAR_URL
-and HANGAR_TOKEN set, it submits a job (POST /api/jobs, docs/jobs.md) whose agent runs `git bisect run` over that
+and HANGAR_TOKEN set, it submits a job (POST /api/jobs, docs/jobs/README.md) whose agent runs `git bisect run` over that
 range with a check that reproduces the failure, then opens a fix or revert PR. Without them, or when hangar can't be
 reached, it opens a GitHub issue with the same instructions, or comments on the open one.
 

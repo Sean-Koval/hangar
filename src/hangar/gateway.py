@@ -65,7 +65,7 @@ MAX_FETCH_REQUEST = 64 * 1024 * 1024  # an upload-pack request lists wants and h
 SERVICES = ("git-upload-pack", "git-receive-pack")
 # Installation tokens live an hour; take a new one when less than this is left.
 TOKEN_REFRESH_SECONDS = 600
-# --- overnight/sandbox-security: limits a sandbox can't talk its way past (docs/security.md, threat model)
+# --- overnight/sandbox-security: limits a sandbox can't talk its way past (docs/security/README.md, threat model)
 MAX_INFLIGHT_PER_GRANT = 8  # concurrent requests per grant; git uses one or two at a time
 AUTH_FAILURES = 30  # failed grant checks per source address...
 AUTH_WINDOW = 60.0  # ...per this many seconds, before that address gets 429 without a lookup
@@ -782,7 +782,7 @@ class Gateway:
             return creds
         if not self.settings.gateway_url:
             raise GatewayError(f"environment {spec.name} uses credential_mode: gateway but HANGAR_GATEWAY_URL is not "
-                               "set (docs/security.md)")
+                               "set (docs/security/README.md)")
         git = [c for c in creds if c.kind in GIT_KINDS]
         if any(c.kind == CredentialKind.SSH_KEY for c in git):
             sb.info.setdefault("warnings", []).append("SSH keys are not attached in credential_mode: gateway")
@@ -1223,7 +1223,7 @@ class Gateway:
         if not s.gateway_url:
             if wants:
                 out.append(_check("git gateway", False, f"environments {', '.join(wants)} use credential_mode: gateway "
-                                  "but HANGAR_GATEWAY_URL is not set", "set HANGAR_GATEWAY_URL (docs/security.md)"))
+                                  "but HANGAR_GATEWAY_URL is not set", "set HANGAR_GATEWAY_URL (docs/security/README.md)"))
             return out
         async with httpx.AsyncClient(transport=transport, timeout=5) as c:
             try:
@@ -1258,5 +1258,5 @@ class Gateway:
                     out.append(_check(f"github app {cred.name}", True, "installation token minted"))
                 except Exception as e:  # noqa: BLE001
                     out.append(_check(f"github app {cred.name}", False, f"can't mint a token: {e}",
-                                      "check app_id, installation_id and the private key (docs/security.md)"))
+                                      "check app_id, installation_id and the private key (docs/security/README.md)"))
         return out

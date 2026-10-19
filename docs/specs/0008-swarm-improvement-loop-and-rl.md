@@ -1,8 +1,11 @@
 # 0008: Sandbox swarms for coding work, and the improvement loop, labeling and RL built on them
 
+!!! note "Design record"
+    Written 2026-10-12; **deferred**. The current behaviour is on [forks and best-of-N](../jobs/working-with-the-agent.md#6-forks-and-best-of-n); the status line below says what shipped.
+
 Status: deferred (2026-10-15): not scheduled, and not for 2026 (swarms, the improvement loop, RL); the Harbor adapter, `save_as_task` and ATIF moved to flightdeck (decisions 16 and 17). Was: draft. · Date: 2026-10-12 · Builds on: 0004 (scheduler, performance), 0005 (traces, Decision-1), 0006 (environments, packs), 0007 (policy, MCP gateway, experiments, labels, team learning) · Research: three briefs of 2026-10-12, sources in §10
 
-> Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins.
+> Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/README.md](README.md); where this spec conflicts with that page, the page wins.
 
 ## 1. Summary
 

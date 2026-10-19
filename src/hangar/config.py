@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     oauth_enabled: bool = True
     # Redirect hosts OAuth clients may register: a host (https, and http for loopback; subdomains too) or an exact
     # "scheme://host" for a native app's own scheme. "*" allows any (not recommended). --- overnight/sweep: Cursor's
-    # app scheme is allowed by default, like the loopback ports native clients use (docs/security.md).
+    # app scheme is allowed by default, like the loopback ports native clients use (docs/security/README.md).
     oauth_redirect_hosts: list[str] = Field(default_factory=lambda: [
         "chatgpt.com", "chat.openai.com", "openai.com", "claude.ai", "claude.com", "localhost", "127.0.0.1",
         "cursor://anysphere.cursor-mcp"])
@@ -303,7 +303,7 @@ class Settings(BaseSettings):
     standup_channel: str | None = None
     standup_time: str = "10:18"
     standup_timezone: str = "America/New_York"
-    # --- workstream F: git gateway (spec 0003, docs/security.md) -------------
+    # --- workstream F: git gateway (spec 0003, docs/security/README.md) -------------
     # URL sandboxes use to reach the gateway, e.g. http://hangar-gateway.hangar.svc:8788 on GKE or
     # http://host.docker.internal:8788 on Docker. Unset = no gateway; environments asking for it fail to start.
     gateway_url: str | None = None
@@ -330,13 +330,13 @@ class Settings(BaseSettings):
     # --- egress2: the gateway holds a push and scans it for secrets before forwarding it (pushscan.py, with
     # HANGAR_SECRET_SCAN). A bigger push is refused in block mode, let through unscanned (audited) in warn mode.
     gateway_scan_max_mb: int = Field(64, ge=1, le=1024)
-    # --- intake posture (#123, posture.py, docs/security.md#intake-posture): jobs from GitHub, GitHub Projects,
+    # --- intake posture (#123, posture.py, docs/security/front-doors.md#intake-posture): jobs from GitHub, GitHub Projects,
     # Jira, Slack and inbound webhooks (or with an untrusted author or context). enforce: they need the git gateway
     # (else refused at submit) and their sandboxes get at least `allowlist` egress; warn: they run as before, with a
     # job event, an audit entry and a review-packet line saying what enforce would do (the one-release transition,
     # docs/upgrading.md); off: neither.
     intake_posture: Literal["enforce", "warn", "off"] = "enforce"
-    # --- egress: hostname allowlists (egress.py, docs/security.md#egress) ----
+    # --- egress: hostname allowlists (egress.py, docs/security/egress.md) ----
     # The mode of environments that don't set `egress.mode`: open (the public internet, as before), allowlist or none.
     egress_default: Literal["open", "allowlist", "none"] = "open"
     # --- harness locks (#134, harness_thaw.py, docs/harness-lock.md): the harness registry, a checkout of the team
@@ -406,7 +406,7 @@ class Settings(BaseSettings):
     a2a_max_wait_seconds: int = 1800  # a blocking SendMessage returns the task as it stands after this long
     a2a_max_request_bytes: int = 4_000_000  # base64 attachments are ~4/3 of HANGAR_JOB_MAX_CONTEXT_BYTES
     a2a_max_push_configs: int = 5  # push notification configs per task
-    # --- front-door-auth: rate limits, caps and replay protection (docs/security.md) ------------
+    # --- front-door-auth: rate limits, caps and replay protection (docs/security/README.md) ------------
     # Job submissions and follow-ups per caller (a jobs token, a GitHub or Slack user, a webhook source): a token
     # bucket refilling at this rate. Admin tokens and schedules are exempt. 0 = off.
     job_rate_per_minute: float = 30
@@ -449,13 +449,13 @@ class Settings(BaseSettings):
     # first one to answer, so they read the prompt prefix it cached instead of each writing it (0 = no wait).
     cache: Literal["auto", "5m", "1h", "off"] = "auto"
     cache_stagger_seconds: float = Field(15.0, ge=0, le=120)
-    # --- overnight/autofix: an agent loop that finishes the job (docs/jobs.md §7) ---------------------------
+    # --- overnight/autofix: an agent loop that finishes the job (docs/jobs/agent-loop.md) ---------------------------
     # A job's `verify` runs inside the agent's turn too (a Claude Code Stop hook; the driver for Codex; a follow-up
     # turn for the others), and a failure goes back to the agent, up to this many times per turn. Jobs can say
     # otherwise (`verify_in_loop`, `max_verify_rounds`); hangar's own check after the turn still decides delivery.
     verify_in_loop: bool = True
     max_verify_rounds: int = Field(3, ge=0, le=10)
-    # --- testresults: structured results of every check (testresults.py, docs/jobs.md#test-results). inject: set the
+    # --- testresults: structured results of every check (testresults.py, docs/jobs/test-results.md). inject: set the
     # reporter variables (PYTEST_ADDOPTS --junitxml, GOTESTSUM_JUNITFILE, JEST_JUNIT_OUTPUT_DIR) and read the reports
     # the check writes; collect: only read the reports (the repo's `verify_reports`, the usual paths); off: neither.
     test_reports: Literal["inject", "collect", "off"] = "inject"
@@ -484,7 +484,7 @@ class Settings(BaseSettings):
     backup_keep: int = 14  # newest backups kept; older ones are deleted after each backup
     # --- durable: where backups go when not next to the checkpoints (gs://bucket[/prefix] or a path). Best a bucket
     # where hangar's service account may only create objects, with a lifecycle rule doing the keeping
-    # (docs/security.md#backups-and-the-vault-key). Unset: the session store's `_backups/`.
+    # (docs/security/vault-key.md#backups-and-the-vault-key). Unset: the session store's `_backups/`.
     backup_store: str | None = None
     # How long `hangar serve` waits for open requests (streams, terminals) on shutdown before cutting them.
     # Long-polls answer at once (shutdown.py). Keep it under the pod's terminationGracePeriodSeconds (45).
