@@ -139,6 +139,10 @@ The old token stops working at once. In the rule's **Send web request** action, 
 
 Hangar's own comments start with `[hangar]` and are never read as replies.
 
+### Branch and PR names carry the key
+
+A job for a Jira issue is named with its key, which the [GitHub for Jira](https://github.com/marketplace/jira-software-github) app reads to link the branch and the PR to the issue: the branch is `hangar/<key>-<job>` (for example `hangar/KAN-35-job-1a2b3c4d`), the PR title starts with `<key>: ` (unless it already does) and the PR body has a `Jira: <key>` line. Hangar takes the key from the Jira door's `jira.issue` label or `jira:` ticket, or from a job's `jira:` [`ticket`](changesets.md) or a `jira` label on a job submitted any other way (`"labels": {"jira": "KAN-35"}`). Any key of Jira's shape counts (`[A-Z][A-Z0-9]+-<number>`); anything else is ignored. A job given its own `branch` keeps it, and a repo policy's [`branch_template`](repo-policy.md) names the branch instead.
+
 ## Jira Data Center
 
 The same, with three differences:

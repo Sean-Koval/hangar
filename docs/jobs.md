@@ -2,12 +2,10 @@
 
 A job is a piece of development work handed to hangar by a service, an app, an MCP client, the CLI, a GitHub issue or a Slack channel. Hangar runs a coding agent on it in a fresh sandbox, checks the result with the repo's own command, and delivers a branch and a (draft) PR. Engineers can follow along, reply, or take over. The design is in [spec 0009](specs/0009-jobs-and-the-factory-front-door.md).
 
-```
-caller ──POST /api/jobs──► queue ─► sandbox (env + harness) ─► agent turn ─► verify ─► commit, push hangar/<job>, PR
-   ▲                                                      ▲                                  │
-   └──── signed callback: job.started / job.finished ─────┼──────────────────────────────────┘
-                     engineer: follow-up (API, MCP, CLI, `/hangar` on the PR) or attach to the terminal
-```
+<figure class="af-figure">
+--8<-- "jobs-flow.svg"
+<figcaption>A job: the caller, the queue, a sandbox, the agent's turn, the repo's check, a branch and a draft PR; a signed callback comes back</figcaption>
+</figure>
 
 ## 0. Log in and check your setup
 
@@ -77,7 +75,7 @@ EOF
 | Field | Meaning |
 | --- | --- |
 | `instructions` | What to do (required, up to 64 KB). |
-| `repo`, `base_branch`, `branch` | The repo to work in; the base defaults to the repo's default branch, and the branch defaults to `hangar/<job>`. A custom branch must be under `hangar/` and must not exist yet: jobs never push to existing branches. |
+| `repo`, `base_branch`, `branch` | The repo to work in; the base defaults to the repo's default branch, and the branch defaults to `hangar/<job>` (`hangar/<key>-<job>` for a Jira ticket's job, [intake.md](intake.md#branch-and-pr-names-carry-the-key), or the repo policy's [`branch_template`](repo-policy.md)). A custom branch must be under `hangar/` and must not exist yet: jobs never push to existing branches. |
 | `environment`, `harness`, `model`, `provider` | Where and with what to run. Left out: the repo's [policy](repo-policy.md), then the first environment mapped in `HANGAR_GITHUB_REPOS`. |
 | `harness_lock` | Run from a [harness lock](harness-lock.md#thaw-and-drift) in the registry: `name`, `name@rN`, `name@sha256:…` or `name@stable`. It fixes the harness, model and approvals (a conflicting `harness` or `model` is refused); a lock on another CLI version than `harnesses.lock.yaml` pins is refused at submit. Turn 1 is checked against it: drift is a warning, an event and a review-packet line, or, under `HANGAR_HARNESS_DRIFT=fail`, the job fails with `reason: "harness_drift"` and delivers nothing. |
 | `verify` | The repo's own check. It runs inside the agent's turn, where a failure goes back to the agent ([§7](#7-an-agent-loop-that-finishes-the-job)), and hangar runs it again after the turn. A failing check still delivers, as a draft PR. Left out: the repo's [policy](repo-policy.md), then the environment's `verify:`; `""` means no check. |

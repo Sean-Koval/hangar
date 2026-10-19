@@ -56,6 +56,30 @@ STAGES = ("started", "needs_input", "delivered", "failed")
 # records it on the job. Filled by the built-ins at import and by plugins through `host.add_tracker`.
 TRACKERS: dict[str, Callable[[JobService, Job, str, str], Awaitable[None]]] = {}
 
+# --- ticket keys: a job for a Jira ticket names its branch, PR title and PR body with the key, which the GitHub for
+# Jira app reads to link them to the ticket. Any project's key ("KAN-35", "ABC2-7"), never a fixed one.
+TICKET_KEY = re.compile(r"[A-Z][A-Z0-9]+-\d+")
+TICKET_LABEL = "jira"  # job label: the ticket key of a job submitted by hand ({"jira": "KAN-35"})
+
+
+def ticket_key(labels: dict[str, str] | None, source_ref: str | None = None, ticket: str | None = None) -> str | None:
+    """The ticket key a job works on, or None: the Jira door's `jira.issue` label, an explicit `jira` label, or a
+    `jira:<key>` tracker label, source ref or job `ticket` (change sets). Anything not shaped like a key is ignored."""
+    labels = labels or {}
+    refs = (labels.get(TRACKER), source_ref, ticket)
+    for value in (labels.get("jira.issue"), labels.get(TICKET_LABEL),
+                  *(r.split(":", 1)[1] for r in refs if r and r.startswith("jira:"))):
+        if value and TICKET_KEY.fullmatch(value.strip()):
+            return value.strip()
+    return None
+
+
+def ticket_title(title: str, key: str | None) -> str:
+    """`title` prefixed `<key>: `, unless it already starts with the key (the Jira door's "KAN-35: summary")."""
+    if not key or re.match(rf"{re.escape(key)}(?!\d)", title):
+        return title
+    return f"{key}: {title}"[:200]
+
 
 # ====================================================================== who
 def person_for(store: Store, source: str, external_id: str | int | None) -> str | None:

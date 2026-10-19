@@ -15,21 +15,15 @@ Documentation site: **[sean-koval.github.io/hangar](https://sean-koval.github.io
 
 ## What it looks like
 
-The console on `:8787`. **Needs you** is first: held tool calls, jobs waiting to start and the agents' questions, decided in place; then what failed and what waits for review ([the web console](docs/console.md)).
+The console on `:8787` opens on **Needs you**: held tool calls, jobs waiting to start and the agents' questions, decided in place; then what failed and what waits for review. [The web console](docs/console.md) walks through it, the Jobs and Sessions pages and the Fleet's four views.
 
 ![Needs you: a job from outside the team waiting for approval, a held git push with its policy and expiry and Deny, Allow for this turn and Allow, and an agent's question answered in place](docs/assets/front/ui-needs.png)
 
-The **Fleet** board, every sandbox of four environments at a glance; the selected one's held call is decided beside it.
-
-![The Fleet board: tiles per environment with their stage pips, needs-you and failed ones marked, and the selected sandbox's approval card docked on the right](docs/assets/front/ui-fleet.png)
-
-A **job**: issue #42's timeline, the agent's activity, the check and the draft PR; the **review loop** reads the agent's change as a greyscale diff, where a comment on a line goes back to the agent with your next message.
-
-![The jobs view: issue #42's job succeeded, check passed, draft PR #43, the agent's summary](docs/assets/front/ui-jobs.png)
+The **review loop**: decide what is held, read the agent's change as a greyscale diff, and comment on a line; the comment goes back to the agent with your next message.
 
 ![The review loop: decide a held edit in Needs you, open the held push's job, show the change as a diff, comment on a line and send it to the agent](docs/assets/front/hangar-review.gif)
 
-<sub>The review loop on the fixture (`docs/assets/front/fixture.py`: a team's afternoon served over the same console); [MP4](docs/assets/front/hangar-review.mp4). Also: [sessions you come back to](docs/assets/front/ui-sessions.png) and [the inbox from the CLI](docs/assets/front/inbox.png).</sub>
+<sub>Recorded on the fixture (`docs/assets/front/fixture.py`: a team's afternoon served over the same console); [MP4](docs/assets/front/hangar-review.mp4).</sub>
 
 ## Where it sits
 
@@ -64,7 +58,7 @@ Open the dashboard at [localhost:8787](http://localhost:8787) and ask your MCP c
 
 To look around first without Docker or a key, run the demo hangar the recording uses: `uv run python docs/assets/front/demo.py`, then `uv run python docs/assets/front/demo.py ticket` in another terminal.
 
-The [docs home page](https://sean-koval.github.io/hangar/#first-task) walks through a first task, parallel attempts, your own environment and everyday commands.
+[Getting started](docs/guide.md#credentials) continues with credentials, a first task, parallel attempts, your own environment and everyday commands.
 
 ## Features
 
@@ -97,7 +91,7 @@ For an existing deployment, read [the upgrade guide](docs/upgrading.md) before u
 
 | Topic | Guide |
 | --- | --- |
-| First task, everyday commands, deployment and limits | [Front page walkthrough](https://sean-koval.github.io/hangar/#first-task) · [Getting started](docs/guide.md) · [Concepts](docs/concepts.md) |
+| First task, everyday commands, deployment and limits | [Getting started](docs/guide.md) · [Concepts](docs/concepts.md) |
 | Environments and onboarding a team | [Environments](docs/environments.md) · [Onboarding runbook](docs/runbooks/onboarding.md) |
 | Clients, OAuth and MCP tools | [Connecting clients](docs/clients.md) · [Using MCP](docs/mcp.md) |
 | Jobs, sessions, steering, landing | [Jobs](docs/jobs.md) · [Sessions](docs/sessions.md) · [Steering](docs/steering.md) · [Landing](docs/landing.md) |

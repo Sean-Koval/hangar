@@ -13,7 +13,7 @@ secret manager and hangar's admin configuration kept as reviewed files in your o
 | Example overlay | `deploy/kustomize/example` | Copy it into your deploy repository |
 | Terraform module | `deploy/terraform/modules/hangar-workload` | hangar's Google service account, Workload Identity binding, buckets, and optionally a registry. Never creates a cluster |
 | Released images | `.github/workflows/release.yml` | `ghcr.io/sean-koval/hangar:<tag>` and the harness packs, listed by digest in each release |
-| Config as code | `hangar apply -f` | Environments, credential references and repo policies from YAML |
+| Config as code | `hangar apply -f` | Environments, credential references, repo policies and change-set profiles from YAML |
 | Mounted credentials | `HANGAR_SECRETS_DIR` | A credential whose value is a file from your secret manager |
 
 The owner's path is unchanged: `deploy/k8s`, `deploy/gke/up.sh`, `deploy/terraform/gke` and `deploy.yml` work as
@@ -182,7 +182,7 @@ an admin token (`HANGAR_URL`, `HANGAR_TOKEN`):
 hangar apply -f policy/            # make hangar match the files
 hangar apply -f policy/ --dry-run  # what would change
 hangar apply -f policy/ --check    # the same, and exit 1 on any drift (a scheduled drift job)
-hangar apply -f policy/ --prune    # also remove repo policies no file declares
+hangar apply -f policy/ --prune    # also remove repo policies and change-set profiles no file declares
 ```
 
 `-f` takes files or directories (read recursively, `*.yaml` and `*.yml`), and a file may hold several documents.
@@ -206,17 +206,28 @@ environment: payments
 verify: make test
 land: auto_after_approval
 approvers: [alice, bob]
+---
+schema: hangar.changeset-profile/v1  # a change-set profile (changesets.md)
+name: payments-bot
+environment: payments
+repos:
+  infra: {repo: https://github.com/acme/payments-infra.git}
+  code:  {repo: https://github.com/acme/payments.git}
+land_order: [infra, code]
 ```
 
 Applying is declarative. A repo policy becomes exactly what its file says: a field the file leaves out is cleared. An
 environment becomes its file's spec. A credential is a team credential unless it names a `person`. Environments are
-applied first, then credentials, then the policies that may name them. Applying is idempotent: an object that already
+applied first, then credentials, then the policies that may name them, then change-set profiles (checked like
+`hangar changeset profile-set`: their environment must exist and each deliverer kind must be registered, so a
+company deliverer's plugin is enabled first). Applying is idempotent: an object that already
 matches is reported `unchanged` and not written, so the second run of the same files writes nothing. A file with an
 unknown schema, an unknown field, a credential `value`, or an object declared twice is refused before anything is
 applied. A run is all or nothing: if the server refuses a write, the writes already made are rolled back
 and apply exits 1 naming the refused document (`file#index`), or lists each object a failed rollback left changed.
 
-Drift is everything apply would create or change, plus repo policies that live in hangar but in no file. `--check`
+Drift is everything apply would create or change, plus repo policies and change-set profiles that live in hangar but
+in no file. `--check`
 and `--dry-run` print each field as `live -> declared`, and `--json` gives the same for scripts. The API never returns
 a credential's value or source, so a credential counts as unchanged when its metadata (harness, kind, description,
 owner, and `env_var`, `file_path` and `exposure` when the file sets them) matches.

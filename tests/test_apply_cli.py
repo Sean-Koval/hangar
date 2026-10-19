@@ -292,6 +292,60 @@ def test_a_failing_rollback_names_what_it_left_changed(api, tmp_path, monkeypatc
 
 
 
+PROFILE = """\
+schema: hangar.changeset-profile/v1
+name: svc
+environment: plain
+repos:
+  infra: {repo: https://github.com/acme/infra.git}
+  code:  {repo: https://github.com/acme/code.git}
+land_order: [infra, code]
+"""
+
+
+def _profiles(c):
+    """The change-set profiles as the API shows them, but who wrote them when (a rollback is a write)."""
+    return {p["name"]: {k: v for k, v in p.items() if k not in ("updated_at", "updated_by")}
+            for p in c.get("/api/changesets/profiles").json()}
+
+
+def _put_profile(c, name, land_order):
+    body = {"schema": "hangar.changeset-profile/v1", "name": name, "environment": "plain",
+            "repos": {"infra": {"repo": "https://github.com/acme/infra.git"},
+                      "code": {"repo": "https://github.com/acme/code.git"}}, "land_order": land_order}
+    assert c.put("/api/changesets/profiles", json=body).status_code == 200
+
+
+def test_a_refused_write_rolls_back_change_set_profiles(api, tmp_path, monkeypatch):
+    c, _ = api
+    _put_profile(c, "svc", ["code", "infra"])  # changed by the file
+    _put_profile(c, "old", ["infra", "code"])  # pruned
+    _put_profile(c, "stale", ["infra", "code"])  # pruning it is refused
+    before, profiles = _state(c), _profiles(c)
+    d = _dir(tmp_path, **{"all.yaml": ENV + "---\n" + PROFILE + "---\n" + PROFILE.replace("name: svc", "name: new")})
+    # acme-python created, svc changed, new created, old pruned, then deleting stale is refused
+    _refuse(monkeypatch, 5)
+    r = run("-f", str(d), "--prune", "--json")
+    assert r.exit_code == 1, r.output
+    assert "changeset stale (pruned: no file declares it): could not delete it" in r.output
+    out = json.loads(r.stdout)
+    assert out["left_changed"] == []
+    assert [x["name"] for x in out["rolled_back"]] == ["acme-python", "svc", "new", "old"]
+    assert _profiles(c) == profiles  # svc's previous body back, new deleted, old recreated: the same digests
+    assert _state(c) == before
+
+
+def test_a_refused_write_after_a_created_profile_deletes_it(api, tmp_path, monkeypatch):
+    c, _ = api
+    _refuse(monkeypatch, 2)  # the profile is created, then the next one is refused
+    d = _dir(tmp_path, **{"a.yaml": PROFILE + "---\n" + PROFILE.replace("name: svc", "name: svc2")})
+    r = run("-f", str(d))
+    assert r.exit_code == 1, r.output
+    assert "rolled back 1 change(s): hangar is as it was before this run" in r.output
+    assert _profiles(c) == {}
+
+
+
 def test_only_a_saved_environment_can_be_deleted(api, tmp_path):
     """DELETE /api/environments/{name}: what a rollback removes a created environment with."""
     c, _ = api
