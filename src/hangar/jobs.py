@@ -572,7 +572,8 @@ class JobService:
             self._event(job, lock_note)
         if branch_note:  # --- change sets (G7)
             self._event(job, branch_note)
-        if cs is not None:  # --- change sets
+        if cs is not None:  # --- change sets: and changeset.created, to the room that asked
+            changesets.created(self, cs)
             self._event(job, f"change set {cs.id} (profile {cs.profile}, {cs.profile_digest[:19]}): "
                         + ", ".join(f"{r} {v.repo}" + (" (read-only)" if v.agent != "write" else "")
                                     for r, v in cs.roles.items()) + "; lands " + " → ".join(cs.land_order))

@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 import httpx
@@ -122,7 +123,8 @@ class MultiGH:
             n = self.NUMBERS[repo]
             pr = {"number": n, "html_url": f"https://github.com/{repo}/pull/{n}", "node_id": f"PR_{repo}_{n}",
                   "state": "open", "draft": body["draft"], "title": body["title"], "body": body["body"],
-                  "head_ref": body["head"], "base_ref": body["base"], "created_at": "2026-10-19T00:00:00Z"}
+                  "head_ref": body["head"], "base_ref": body["base"],
+                  "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
             self.prs[(repo, n)] = pr
             return httpx.Response(201, json=self._view(repo, pr))
         if mm := re.match(r"^/pulls/(\d+)$", rest):

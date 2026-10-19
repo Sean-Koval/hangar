@@ -99,6 +99,19 @@ Follow-ups go to the parent: a `/hangar` comment on any part's PR, `follow_up_jo
 
 Each change of state is an event on the parent job (`changeset.landing: …`, `changeset.deploying: …`, `changeset.done: …`, `changeset.broken: …`), a callback to its `callback_url` with that event name, and an audit record.
 
+**Events out.** Every [notifier](plugins.md#events) (the signed webhook to a chat bot, say) hears the set's progress as `hangar.event/v1` events with stable ids (`<changeset>:<type>[:<key>]`, so a repeat is the same event), carrying the parent job, its person and its `reply_to`:
+
+| Type | When | Key |
+| --- | --- | --- |
+| `changeset.created` | the parent job is submitted | |
+| `changeset.pr_opened` | a role's PR (or the deploy PR) is opened | `<role>:<pr>` |
+| `changeset.waiting` | an approved PR waits for an earlier role to merge | `<role>:<earlier role>` |
+| `changeset.landed` | a role's PR merged | `<role>` |
+| `changeset.landing`, `changeset.deploying`, `changeset.done`, `changeset.broken` | the set's state changed | |
+| `changeset.deployed` | the deploy PR merged | `<deploy role>` |
+
+Each part job carries the parent's `relay.reply_to` label, so the PRs' own events (`pr.opened`, `pr.approved`, `pr.landed`) go to the same conversation.
+
 ## Deliverers
 
 The deploy step is two **deliverers**, named by `kind` (`hangar.plugin/v1`, `src/hangar/ext/deliverers.py`):

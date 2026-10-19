@@ -389,6 +389,13 @@ def create(svc: JobService, job: Job, prof: Profile) -> ChangeSet:
     return cs
 
 
+def created(svc: JobService, cs: ChangeSet) -> None:
+    """After the parent job is stored (jobs.submit): `changeset.created`."""
+    emit(svc, cs, "changeset.created", None, f"change set {cs.id} ({cs.profile}): "
+         + ", ".join(r for r, v in cs.roles.items() if v.agent == "write") + "; lands " + " → ".join(cs.land_order),
+         roles={r: v.repo for r, v in cs.roles.items()}, land_order=cs.land_order)
+
+
 # ====================================================================== the parent's sandbox (fleet, gateway)
 def sandbox_roles(fleet: Fleet, sb: Sandbox) -> ChangeSet | None:
     """The change set whose parent job this sandbox runs, or None. Labels are anyone's to set, so it is bound through
@@ -664,6 +671,9 @@ async def deliver(svc: JobService, job: Job, draft: bool) -> None:
             tainted = taint.tainted(part)
             await svc._ensure_pr(part, draft=draft or job.deliver == "draft_pr" or tainted)
             await svc.landing.delivered(part)
+            if part.result.pr_number:
+                emit(svc, cs, "changeset.pr_opened", f"{role}:{part.result.pr_number}",
+                     f"{role}: PR #{part.result.pr_number} opened ({_short_repo(part.repo or '')})", part)
     job.result.commits = commits
     job.result.files = files
     job.result.diffstat = "\n".join(stats)[-4000:] or None
@@ -682,12 +692,21 @@ def _new_part(svc: JobService, parent: Job, cs: ChangeSet, role: str) -> Job:
                base_branch=r.base_branch, branch=r.branch, environment=parent.environment, harness=parent.harness,
                model=parent.model, deliver=parent.deliver, state=JobState.SUCCEEDED, person=parent.person,
                changeset=cs.id, parent=parent.id, role=role, ticket=parent.ticket, autofix="off",
-               labels={LABEL: cs.id, ROLE_LABEL: role}, keep_minutes=0)
+               labels={LABEL: cs.id, ROLE_LABEL: role, **_reply_label(svc, parent)}, keep_minutes=0)
     cs.parts[role] = part.id
     svc._jobs[part.id] = part
     svc._event(part, f"part {role} of change set {cs.id}, delivered from job {parent.id}", JobState.SUCCEEDED)
     svc.fleet.audit(f"job:{parent.id}", "changeset.part", part.id, changeset=cs.id, role=role, repo=r.repo)
     return part
+
+
+def _reply_label(svc: JobService, parent: Job) -> dict[str, str]:
+    """A part (one repo's PR) answers in the parent's conversation: its relay.reply_to, so events out about the PR
+    (pr.opened, pr.landed) reach the room that asked."""
+    from hangar.ext.notify import REPLY_TO_LABEL
+
+    r = reply_to(svc, parent)
+    return {REPLY_TO_LABEL: r} if r else {}
 
 
 def parts(svc: JobService, cs: ChangeSet) -> dict[str, Job]:
@@ -775,7 +794,11 @@ def gate(svc: JobService, job: Job) -> str | None:
     for role in before:
         p = parts(svc, cs).get(role)
         if p is not None and p.landing.pr_state != "merged":
-            return f"waiting for {role} #{p.result.pr_number or '?'} to merge first (change set {cs.id})"
+            why = f"waiting for {role} #{p.result.pr_number or '?'} to merge first (change set {cs.id})"
+            if job.landing.pr_state == "approved":
+                emit(svc, cs, "changeset.waiting", f"{job.role}:{role}", f"{job.role} PR #{job.result.pr_number} "
+                     f"is approved and {why}", job, waiting_for=role)
+            return why
     return None
 
 
@@ -798,6 +821,48 @@ def set_state(svc: JobService, cs: ChangeSet, state: str, why: str, event: str |
         svc._event(parent, f"{name}: {why}")
         svc._spawn(svc._callback(parent, name))
     svc.fleet.audit("hangar", name, cs.id, why=why[:500])
+    emit(svc, cs, name, None, why)
+
+
+# ---------------------------------------------------------------------- events out (hangar.event/v1)
+EVENTS = ("changeset.created", "changeset.pr_opened", "changeset.waiting", "changeset.landed",
+          "changeset.landing", "changeset.deploying", "changeset.deployed", "changeset.done", "changeset.broken")
+
+
+def reply_to(svc: JobService, parent: Job) -> str | None:
+    """Where the parent's conversation is (its relay.reply_to label, a turn's reply_to, its source_ref)."""
+    from hangar import events_out
+
+    return events_out._reply_to(parent)
+
+
+def emit(svc: JobService, cs: ChangeSet, kind: str, key: str | None, summary: str, part: Job | None = None,
+         **data: Any) -> None:
+    """A change set's fact to every notifier (events_out), with a stable id (`<cs>:<kind>[:<key>]`), so a repeat of
+    the same fact is the same event and is sent once. It carries the parent's person and reply_to, so the room
+    that asked hears it."""
+    from hangar import events_out
+    from hangar.ext.notify import Event
+
+    d = events_out.of(svc)
+    if not d.notifiers:
+        return
+    try:
+        parent = svc.get(cs.parent_job)
+    except KeyError:
+        return
+    from hangar import inbox
+
+    links = {"job": u} if (u := inbox.job_url(svc, parent.id)) else {}
+    if part is not None and part.result.pr_url and part.result.pr_url.startswith("https://"):
+        links["pr"] = part.result.pr_url
+    body = {"changeset": cs.id, "profile": cs.profile, "state": cs.state, "ticket": cs.ticket,
+            **({"role": part.role, "part_job": part.id, "pr_number": part.result.pr_number} if part else {}),
+            **{k: v for k, v in data.items() if v is not None}}
+    d.emit(Event(id=f"{cs.id}:{kind}" + (f":{key}" if key else ""), type=kind, at=now(), job=parent.id,
+                 session=parent.session_id, person=parent.person, repo=part.repo if part else parent.repo,
+                 reply_to=reply_to(svc, parent), links=links, summary=svc.broker.redact(summary)[:500],
+                 data={k: v for k, v in body.items() if v is not None}))
 
 
 def part_closed(svc: JobService, job: Job) -> None:
@@ -810,8 +875,12 @@ def part_closed(svc: JobService, job: Job) -> None:
         return
     if cs.deploy is not None and cs.deploy.job == job.id:
         cs.deploy.state = "merged"
+        emit(svc, cs, "changeset.deployed", job.role, f"{job.role} PR #{job.result.pr_number} merged: the deploy "
+             "is your CD's now", job, merge_sha=job.landing.merge_commit_sha)
         set_state(svc, cs, "done", f"deploy PR #{job.result.pr_number} merged")
         return
+    emit(svc, cs, "changeset.landed", job.role, f"{job.role} PR #{job.result.pr_number} landed", job,
+         merge_sha=job.landing.merge_commit_sha)
     if cs.state == "broken":
         return
     ps = parts(svc, cs)
@@ -1034,6 +1103,8 @@ async def _apply(svc: JobService, cs: ChangeSet, prof: Profile, ready: Ready) ->
             await svc._ensure_pr(part, draft=parent.deliver == "draft_pr")
             if not part.result.pr_number:
                 raise DeliverError("the deploy PR wasn't opened (see the part job's events)")
+            emit(svc, cs, "changeset.pr_opened", f"{role}:{part.result.pr_number}",
+                 f"{role}: deploy PR #{part.result.pr_number} opened ({_short_repo(r.repo)})", part)
             await svc.landing.delivered(part)
             await link_prs(svc, cs)
     finally:
