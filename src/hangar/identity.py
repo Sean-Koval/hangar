@@ -61,7 +61,11 @@ def actor_name(p: Principal) -> str:
     """The MCP actor: what audit entries, task handles and stream caps are keyed by. Token names aren't unique, so
     a teammate's are prefixed with their person (`:` can't occur in a token name); the owner's stay as they were.
     The `@` keeps them apart from requesters such as `github:octocat`, so per-person caps (fairness.person_of)
-    find the person in them (review)."""
+    find the person in them (review). --- relay: a relayed caller is always shown with both identities:
+    `@alice:relay:<bot token>` (the owner's too), or `relay:<bot token>(symphony:<id>)` for an account linked to
+    nobody."""
+    if p.via is not None:
+        return f"@{p.person}:{p.name}" if p.person else f"{p.name}({p.on_behalf_of})"
     return p.name if p.person in (None, "owner") else f"@{p.person}:{p.name}"
 
 
