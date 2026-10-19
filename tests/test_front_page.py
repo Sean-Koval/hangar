@@ -43,3 +43,39 @@ def test_both_pages_show_one_features_table_with_a_status_per_row():
     statuses = [row.rstrip(" |").rsplit("| ", 1)[1] for row in readme[2:]]
     assert statuses and all(re.fullmatch(r"Shipped|Shadow|Partial|Planned \(\[#\d+\]\(https://github\.com/Sean-Koval/"
                                          r"hangar/issues/\d+\)\)", s) for s in statuses), statuses
+
+
+GUIDE = (ROOT / "docs" / "guide.md").read_text()
+
+
+def commands(text: str, heading: str) -> str:
+    """The first fenced bash block under a heading."""
+    m = re.search(r"```bash\n(.*?)```", section(text, heading), re.S)
+    assert m, f"no bash block under '## {heading}'"
+    return m.group(1)
+
+
+def test_there_is_one_quickstart_and_the_readme_repeats_it():
+    """The docs home sends people to the guide; the README's five commands are the guide's five commands."""
+    assert "## Quickstart" not in INDEX and "## Getting started" not in INDEX
+    assert "](guide.md#quickstart)" in INDEX
+    assert commands(README, "Quickstart") == commands(GUIDE, "Quickstart")
+
+
+def test_the_docs_home_is_a_front_door():
+    """A hero, three audiences, the diagram, one console image, the features table and three links: outside the
+    features table, under 500 words of prose (alt text and markup aside), and no more than three images."""
+    prose = INDEX.replace(section(INDEX, "Features"), "")
+    words = re.sub(r"!\[[^\]]*\]\([^)]*\)|aria-label=\"[^\"]*\"|<[^>]+>|\]\([^)]*\)|[|*`#-]", " ", prose).split()
+    assert len(words) < 500, len(words)
+    assert len(re.findall(r"^!\[", INDEX, re.M)) <= 3, "one screenshot and the diagram in both flavors"
+
+
+def test_the_fleet_views_are_explained_on_the_console_page_only():
+    """Board, Bays, Columns and Owners are walked through in docs/console.md; the README and the docs home name the
+    Fleet once and link there."""
+    for text, name in ((README, "README.md"), (INDEX, "docs/index.md")):
+        assert not re.search(r"\bBays\b.*\bColumns\b.*\bOwners\b", text), f"{name} explains the Fleet views"
+        assert "console.md)" in text, f"{name} does not link to the console page"
+    console = (ROOT / "docs" / "console.md").read_text()
+    assert all(f"\n### {v}\n" in console for v in ("Board", "Bays", "Columns", "Owners"))
