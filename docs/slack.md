@@ -1,6 +1,7 @@
 # Slack: start and steer jobs from a channel
 
 Type `/hangar fix the flaky upload test` in a channel, or mention `@hangar` with the instructions, and hangar runs a [job](jobs.md) on that channel's repo. It reports back in a thread:
+
 - when the agent starts;
 - when it needs a decision;
 - when it finishes, with the outcome, the agent's summary, the PR link, the verification result, and what went wrong if it failed.
@@ -37,7 +38,7 @@ decision was made, on a mapped channel, and hangar drafts an ADR from the thread
 `docs/decisions/NNNN-use-parquet-for-runs.md`. A person other than the one who asked reviews and merges it.
 
 - **Opt in per repo.** The repo needs a `docs/decisions/` directory: without one hangar refuses in the thread and
-  points to [docs/templates/adr.md](templates/adr.md), the format it writes (frontmatter `id`, `kind: decision`,
+  points to [docs/templates/adr.md](https://github.com/Sean-Koval/hangar/blob/main/docs/templates/adr.md), the format it writes (frontmatter `id`, `kind: decision`,
   `status: proposed`, `label`, `sources` with the thread's permalink and content hash, `author: agent:<model>`,
   `supersedes`; sections Context, Decision, Options considered, Consequences, Checks).
 - **The thread is untrusted.** It reaches the agent only as `slack-thread.md`, an untrusted context item (the parent

@@ -8,19 +8,33 @@
 [Quickstart](#quickstart){ .md-button .md-button--primary } [Suite overview](https://sean-koval.github.io/agent-factory/){ .md-button }
 </div>
 
-<video src="assets/front/hangar-demo.mp4" poster="assets/front/ui-jobs.png" autoplay loop muted playsinline controls width="100%" aria-label="A GitHub issue labelled hangar becomes a job: a sandbox starts, the agent edits and tests the code, hangar verifies and opens draft PR #43, and the PR shows up in hangar inbox"></video>
+<video src="assets/front/hangar-demo.mp4" poster="assets/front/ui-jobs.png" autoplay loop muted playsinline controls width="100%" aria-label="A GitHub issue labelled hangar becomes a job: a sandbox starts, the agent edits and tests the code, hangar verifies and opens draft PR #43, and the PR waits in Needs you with a question another job asked"></video>
 
 <small>A ticket becoming a sandbox run and a draft PR, recorded by `docs/assets/front/make.py` against the demo hangar (the fake provider, a scripted agent and a stand-in GitHub).</small>
 
 ## What it looks like
 
-The web UI on `:8787`: jobs with their timeline, the agent's activity, the check and the PR; sessions you come back to; the fleet four ways (**Board**, every sandbox at a glance; **Bays**, each one's task and next action; **Columns**, sorted by what needs you; **Owners**, capacity by person), where you can allow or deny a held step and open any sandbox's terminal; and the inbox of everything waiting on you.
+The console on `:8787`. **Needs you** is first: held tool calls, jobs waiting to start and the agents' questions, decided in place; then what failed and what waits for review on GitHub.
+
+![Needs you: a job from outside the team waiting for approval, a held git push with its policy and expiry and Deny, Allow for this turn and Allow, and an agent's question answered in place](assets/front/ui-needs.png)
+
+The **Fleet** four ways over the same sandboxes (**Board**, every one at a glance; **Bays**, each one's task and next action; **Columns**, sorted by what needs you; **Owners**, capacity by person); the selected sandbox's held call is decided beside it, and any sandbox's terminal opens below.
+
+![The Fleet board: tiles per environment with their stage pips, needs-you and failed ones marked, and the selected sandbox's approval card docked on the right](assets/front/ui-fleet.png)
+
+A **job** is issue #42's timeline, the agent's activity, the check and the draft PR; a **session** is a stream of work you come back to.
 
 ![The jobs view: issue #42's job succeeded, check passed, draft PR #43, the agent's summary](assets/front/ui-jobs.png)
 
 ![The sessions view: a resumable session with its saved conversation and checkpoint](assets/front/ui-sessions.png)
 
-![hangar inbox: PR #43 waits for review; another job's agent asks a question](assets/front/inbox.png)
+The **review loop**: decide what is held, read the agent's change as a greyscale diff, and comment on a line; the comment goes back to the agent with your next message.
+
+<video src="assets/front/hangar-review.mp4" poster="assets/front/ui-review.png" loop muted playsinline controls width="100%" aria-label="The review loop: decide a held edit in Needs you, open the held push's job, show the change as a diff, comment on a line and send it to the agent"></video>
+
+<small>On the fixture (`docs/assets/front/fixture.py`, a team's afternoon served over the same console). The same inbox from the CLI: `hangar inbox`.</small>
+
+![hangar inbox in a terminal: PR #43 waits for review; another job's agent asks a question](assets/front/inbox.png)
 
 ## Where it sits
 
