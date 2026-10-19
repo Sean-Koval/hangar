@@ -1,0 +1,17 @@
+# Run capture for flightdeck (docs/api/outbox.md): hangar writes every finished agent run, once, as hangar.run/v1
+# objects to a bucket it may only create objects in (the hangar-workload module's run bucket). Your overlay's
+# hangar-deploy ConfigMap sets:
+#   outbox_url: gs://my-project-hangar-runs   (the module's output run_bucket_url)
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target: {kind: ConfigMap, name: hangar, namespace: hangar}
+    patch: |-
+      - op: add
+        path: /data/HANGAR_OUTBOX_URL
+        value: set-by-hangar-deploy
+replacements:
+  - source: {kind: ConfigMap, name: hangar-deploy, fieldPath: data.outbox_url}
+    targets:
+      - select: {kind: ConfigMap, name: hangar, namespace: hangar}
+        fieldPaths: [data.HANGAR_OUTBOX_URL]

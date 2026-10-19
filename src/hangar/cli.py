@@ -1553,3 +1553,7 @@ _ops.register(app, admin_app, cred_app)
 from hangar import interfaces_cli as _interfaces  # noqa: E402
 
 _interfaces.register(app, session_app, job_app, env_app)
+# ---------------------------------------------------------------------------- --- company-deploy: hangar apply
+from hangar import apply_cli as _apply  # noqa: E402
+
+_apply.register(app)

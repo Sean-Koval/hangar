@@ -1,0 +1,35 @@
+# Long-lived websockets (terminals) and slow MCP tool calls need a long backend timeout.
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: hangar
+  namespace: hangar
+spec:
+  timeoutSec: 3600
+  healthCheck:
+    requestPath: /healthz
+  # Recommended: Identity-Aware Proxy in front of the dashboard as a second auth layer.
+  # iap: {enabled: true, oauthclientCredentials: {secretName: iap-oauth}}
+---
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: hangar
+  namespace: hangar
+spec:
+  domains: ["set-by-hangar-deploy"]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hangar
+  namespace: hangar
+  annotations:
+    kubernetes.io/ingress.global-static-ip-name: set-by-hangar-deploy
+    networking.gke.io/managed-certificates: hangar
+    kubernetes.io/ingress.allow-http: "false"
+spec:
+  defaultBackend:
+    service:
+      name: hangar
+      port: {number: 80}

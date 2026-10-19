@@ -180,7 +180,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: hashicorp/setup-terraform@v4
       - run: |
-          for d in deploy/terraform/gke deploy/terraform/single-vm; do
+          for d in deploy/terraform/gke deploy/terraform/single-vm deploy/terraform/modules/hangar-workload; do
             terraform -chdir=$d init -backend=false && terraform -chdir=$d validate
           done
           terraform fmt -check -recursive deploy/terraform

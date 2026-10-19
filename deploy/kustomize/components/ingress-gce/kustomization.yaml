@@ -1,0 +1,24 @@
+# GKE Ingress with a Google-managed certificate. Your overlay's hangar-deploy ConfigMap sets:
+#   domain:         hangar.example.com   (an A record pointing at the static IP)
+#   static_ip_name: hangar-ip            (a global static IP; the hangar-workload module's output static_ip_name)
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - ingress.yaml
+patches:
+  - target: {kind: Service, name: hangar, namespace: hangar}
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          cloud.google.com/backend-config: '{"default": "hangar"}'
+replacements:
+  - source: {kind: ConfigMap, name: hangar-deploy, fieldPath: data.domain}
+    targets:
+      - select: {kind: ManagedCertificate, name: hangar}
+        fieldPaths: [spec.domains.0]
+  - source: {kind: ConfigMap, name: hangar-deploy, fieldPath: data.static_ip_name}
+    targets:
+      - select: {kind: Ingress, name: hangar}
+        fieldPaths:
+          - metadata.annotations.[kubernetes.io/ingress.global-static-ip-name]

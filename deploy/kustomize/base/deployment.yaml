@@ -1,0 +1,70 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hangar-data
+  namespace: hangar
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hangar
+  namespace: hangar
+spec:
+  replicas: 1                 # state is a single SQLite file on the PVC
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app: hangar}
+  template:
+    metadata:
+      labels: {app: hangar}
+    spec:
+      serviceAccountName: hangar
+      # The Service is named "hangar": legacy service-link env vars would inject HANGAR_PORT=tcp://... and collide
+      # with hangar's own settings.
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: hangar
+          image: ghcr.io/sean-koval/hangar
+          ports: [{containerPort: 8787, name: http}, {containerPort: 8788, name: gateway},
+                  {containerPort: 3128, name: egress}]  # gateway, egress: gateway.yaml
+          envFrom:
+            - configMapRef: {name: hangar}
+            - configMapRef: {name: hangar-site, optional: true}  # your overlay's settings; they win
+            # HANGAR_ADMIN_TOKEN and HANGAR_SECRET_KEY: kubectl create secret, or the external-secrets component
+            - secretRef: {name: hangar}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: credentials, mountPath: /var/run/hangar-secrets, readOnly: true}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 30
+          resources:
+            requests: {cpu: 500m, memory: 1Gi}
+            limits: {memory: 3Gi}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: hangar-data}
+        # Credentials from your secret manager, one file per credential (the external-secrets component fills it).
+        # Optional: hangar starts without it, and a credential that references a missing file has no value.
+        - name: credentials
+          secret: {secretName: hangar-credentials, optional: true, defaultMode: 0440}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hangar
+  namespace: hangar
+spec:
+  selector: {app: hangar}
+  ports: [{name: http, port: 80, targetPort: http}]

@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hangar
+  namespace: hangar
+  annotations:
+    # Long-lived websockets (terminals) and slow MCP tool calls; fork and snapshot archives of up to
+    # HANGAR_WORKSPACE_TRANSFER_MB (1 GiB by default).
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "1024m"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: ["set-by-hangar-deploy"]
+      secretName: hangar-tls
+  rules:
+    - host: set-by-hangar-deploy
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: hangar
+                port: {number: 80}

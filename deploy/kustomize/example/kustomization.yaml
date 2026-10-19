@@ -1,0 +1,40 @@
+# An example overlay for a company's existing GKE cluster (docs/deploy-company.md). Copy this directory into your own
+# deploy repository and replace every example value; keep `resources` pointing at a released tag of hangar:
+#   resources: [https://github.com/Sean-Koval/hangar//deploy/kustomize/base?ref=vX.Y.Z]
+# and the components likewise. Build it with `kubectl kustomize .` (or `kustomize build .`) and apply it with your CD.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../base
+components:
+  - ../components/gke-workload-identity
+  - ../components/ingress-gce          # or ../components/ingress-nginx
+  - ../components/external-secrets
+  - ../components/outbox
+# The image, pinned by digest (release.yml prints it in the release notes), from your own mirror if you keep one.
+images:
+  - name: ghcr.io/sean-koval/hangar
+    newName: registry.example.com/mirror/hangar
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+configMapGenerator:
+  # Values the components fill in. A local-config object: kustomize reads it and never applies it.
+  - name: hangar-deploy
+    namespace: hangar
+    options:
+      disableNameSuffixHash: true
+      annotations: {config.kubernetes.io/local-config: "true"}
+    literals:
+      - gcp_service_account=hangar@example-project.iam.gserviceaccount.com  # module output gcp_service_account
+      - domain=hangar.example.com
+      - static_ip_name=hangar-ip                                            # module output static_ip_name
+      - secret_store=example-secret-store                                   # your ClusterSecretStore
+      - outbox_url=gs://example-project-hangar-runs                         # module output run_bucket_url
+  # Your settings. The Deployment reads this after the base's `hangar` ConfigMap, so these win.
+  - name: hangar-site
+    namespace: hangar
+    options:
+      disableNameSuffixHash: true
+    literals:
+      - HANGAR_PUBLIC_URL=https://hangar.example.com
+      - HANGAR_REGISTRY=registry.example.com/hangar                         # module output registry, or yours
+      - HANGAR_SESSION_STORE=gs://example-project-hangar-sessions           # module output session_bucket_url

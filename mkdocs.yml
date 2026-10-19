@@ -130,6 +130,7 @@ nav:
   - Operations:
       - Running on GKE: gke.md
       - Deploying from CI/CD: cicd.md
+      - Deploy on your company's cluster: deploy-company.md
       - Acceptance on the cluster: acceptance.md
       - Upgrading: upgrading.md
       - Team scale: team-scale.md

@@ -1,0 +1,22 @@
+# GKE Workload Identity for the control plane: its Kubernetes service account acts as a Google service account, so
+# hangar reads and writes its buckets and registry with no key. The Google side (the account, the
+# roles/iam.workloadIdentityUser binding for hangar/hangar, bucket and registry roles) is
+# deploy/terraform/modules/hangar-workload; its output gcp_service_account is the value below.
+#
+# Your overlay sets it in the hangar-deploy ConfigMap (a local-config object kustomize never applies):
+#   gcp_service_account: hangar@my-project.iam.gserviceaccount.com
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target: {kind: ServiceAccount, name: hangar, namespace: hangar}
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          iam.gke.io/gcp-service-account: set-by-hangar-deploy
+replacements:
+  - source: {kind: ConfigMap, name: hangar-deploy, fieldPath: data.gcp_service_account}
+    targets:
+      - select: {kind: ServiceAccount, name: hangar, namespace: hangar}
+        fieldPaths:
+          - metadata.annotations.[iam.gke.io/gcp-service-account]
