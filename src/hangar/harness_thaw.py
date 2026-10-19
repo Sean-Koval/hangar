@@ -95,6 +95,14 @@ def _git(root: Path, *args: str) -> str | None:
     return r.stdout if r.returncode == 0 else None
 
 
+def _blob(commit: str, rel: str) -> str:
+    """`git show`'s name for the file at `rel` (relative to the registry) in `commit`. A bare `<commit>:<path>` is
+    read from the repository's root, so it misses whenever HANGAR_HARNESS_REPO is a subdirectory of a repo (#228:
+    agent-factory's examples/team-harness was one, until it moved to its own repo); `./` makes the path relative to
+    `git -C`'s directory, as `log --` and `ls-tree` already read theirs."""
+    return f"{commit}:./{rel}"
+
+
 def _lock_dir(root: Path, name: str) -> Path:
     for d in (root / HARNESSES_DIR / name, root / name):
         if (d / harness_lock.LOCK_FILE).is_file():
@@ -144,7 +152,7 @@ def resolve(settings: Any, ref: str) -> Resolved:
     if ok(current):
         return Resolved(ref, name, current, harness_lock.harness_digest(current), rel)
     for commit in (_git(root, "log", "--format=%H", "--", rel) or "").split():  # the registry's history
-        text = _git(root, "show", f"{commit}:{rel}")
+        text = _git(root, "show", _blob(commit, rel))
         with contextlib.suppress(yaml.YAMLError, ValueError, TypeError):
             old = yaml.safe_load(text or "")
             if not harness_lock.problems(old) and ok(old):
@@ -238,7 +246,7 @@ def _registry_files(root: Path, r: Resolved) -> dict[str, bytes]:
         if not rel or not needed(rel) or not harness_lock.safe_path(rel):
             continue
         try:
-            p = subprocess.run(["git", "-C", str(root), "show", f"{r.commit}:{full}"], capture_output=True, timeout=20)
+            p = subprocess.run(["git", "-C", str(root), "show", _blob(r.commit, full)], capture_output=True, timeout=20)
         except (OSError, subprocess.TimeoutExpired):
             continue
         if p.returncode == 0:
