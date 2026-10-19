@@ -163,7 +163,7 @@ class SubmitJob(BaseModel):
     # --- #181: `eval` waits for the eval window and the token budget, behind interactive work (evalqueue.py)
     queue_class: Literal["interactive", "eval"] | None = None
     # --- change sets (docs/changesets.md): a change-set profile's name (one agent across its repos, one PR per
-    # changed repo, landed in order), and the ticket the work is for ("jira:PAY-412")
+    # changed repo, landed in order, then the deploy step), and the ticket the work is for ("jira:PAY-412")
     changeset: str | None = Field(None, max_length=63)
     ticket: str | None = Field(None, max_length=240)
 
@@ -301,7 +301,7 @@ class JobService:
         n = fairness.job_slots(self.settings)  # --- scale: sized from capacity unless set
         self._workers = [asyncio.create_task(self._worker(i)) for i in range(n)]
         autofix.restore(self)  # --- overnight/autofix: PR triggers still waiting for their window
-        self._workers.append(asyncio.create_task(changesets.deploy_loop(self)))  # --- change sets: reverts
+        self._workers.append(asyncio.create_task(changesets.deploy_loop(self)))  # --- change sets: deploy steps
         restarts.release(self, resumed)  # --- reconciler
         for job in interrupted:
             self._spawn(self._report(job))

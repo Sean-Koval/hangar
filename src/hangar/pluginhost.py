@@ -145,6 +145,9 @@ class Host:
         if kind in self.deliverers and self.deliverers[kind] is not d:
             raise PluginConfigError(f"plugin {self._who()}: there is already a '{kind}' deliverer")
         self.deliverers[kind] = d
+        from hangar.ext import deliverers as ext_deliverers  # --- change sets look a profile's kinds up there
+
+        ext_deliverers.DELIVERERS[kind] = d
         self._added(f"deliverer:{kind}")
 
     def _who(self) -> str:

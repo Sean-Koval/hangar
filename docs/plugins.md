@@ -148,6 +148,6 @@ def verify(key: bytes, body: bytes, headers) -> bool:
 | `jira` | Door `/api/hooks/jira`, comments on `jira:` issues, tracker `jira` | `HANGAR_JIRA` ([intake.md](intake.md)) |
 | `ghprojects` | Tracker `ghproject` | `HANGAR_GITHUB_PROJECTS` ([intake.md](intake.md)) |
 | `webhook` | Notifier `webhook` | `HANGAR_PLUGINS.notifiers.webhook` ([above](#the-webhook)) |
-| `command`, `image-ready` | Deliverers for change sets | Listed now; they show as "not available in this build" until change sets ship |
+| `command`, `image-ready` | Deliverers for a [change set's deploy step](changesets.md#deliverers) | Always on; a profile's `deploy` names them |
 
 The Slack inbox DMs and digests ([team.md](team.md#inbox-delivery-dms-and-the-digest)) stay as they were.
