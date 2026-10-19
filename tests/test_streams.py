@@ -146,17 +146,25 @@ async def test_caps_per_token_bytes_and_rate(envd_fleet):
 async def test_streams_close_on_destroy_shutdown_and_revocation(envd_fleet):
     fleet = envd_fleet
     sb = await sandbox(fleet)
+    started = asyncio.Event()
 
     async def long_exec(st):
         async def emit(kind, data):
-            pass
+            started.set()
         return await sandbox_streams.run(fleet, sb.id, "echo hi; sleep 20", cwd=None, timeout=60, actor="t", st=st,
                                          emit=emit)
 
+    async def under_way(st):
+        """The command, once its first output has reached hangar. A fixed 0.5 s sleep raced the command's start on
+        a loaded runner (#250): closed before `hi` arrived, the stream rightly answered with no output."""
+        started.clear()
+        task = asyncio.create_task(long_exec(st))
+        await asyncio.wait_for(started.wait(), 10)
+        return task
+
     # destroy: the stream answers at once with what it has
     async with hub(fleet).open("alice", "exec", sb.id) as st:
-        task = asyncio.create_task(long_exec(st))
-        await asyncio.sleep(0.5)
+        task = await under_way(st)
         t0 = time.monotonic()
         await fleet.destroy(sb.id)
         res = await asyncio.wait_for(task, 10)
@@ -170,16 +178,14 @@ async def test_streams_close_on_destroy_shutdown_and_revocation(envd_fleet):
         return valid[0]
 
     async with hub(fleet).open("alice", "exec", sb.id, check=check) as st:
-        task = asyncio.create_task(long_exec(st))
-        await asyncio.sleep(0.5)
+        task = await under_way(st)
         valid[0] = False
         res = await asyncio.wait_for(task, 10)
     assert res["closed"] == "revoked" and "revoked" in res["note"]
 
     # shutdown (#57): every open stream ends, and no new one opens
     async with hub(fleet).open("alice", "exec", sb.id) as st:
-        task = asyncio.create_task(long_exec(st))
-        await asyncio.sleep(0.5)
+        task = await under_way(st)
         fleet.closing.set()
         res = await asyncio.wait_for(task, 10)
     assert res["closed"] == "shutdown" and "keeps running" in res["note"]
