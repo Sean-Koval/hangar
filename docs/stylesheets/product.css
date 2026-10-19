@@ -1,1 +1,9 @@
 :root, [data-md-color-scheme] { --af-product: var(--af-product-hangar); }
+
+/* Each guide diagram has a wide drawing and a stacked one (docs/assets/front/diagram.py). Phones and narrow tablets
+   get the stacked one, at the width it was drawn for, so its text stays 11 px or larger at 390 px. */
+.md-typeset figure.af-figure--stacked { display: none; }
+@media (max-width: 959px) {
+  .md-typeset figure.af-figure--wide { display: none; }
+  .md-typeset figure.af-figure--stacked { display: block; max-width: 22rem; }
+}

@@ -2,8 +2,12 @@
 
 Hangar is an [A2A](https://a2a-protocol.org/) agent. An agent built with Google ADK, an agent running on AX, or any other A2A client can send hangar a coding task and get back a branch, a pull request, a summary and (when asked for) structured data. It doesn't need to know about hangar's REST API or MCP tools. The design is in [spec 0011](specs/0011-factory-roadmap.md) §3, workstream G.
 
-<figure class="af-figure">
+<figure class="af-figure af-figure--wide">
 --8<-- "a2a-flow.svg"
+<figcaption>A2A: SendMessage in, a job runs, the task's updates stream back; the same contextId follows up</figcaption>
+</figure>
+<figure class="af-figure af-figure--stacked">
+--8<-- "a2a-flow-stacked.svg"
 <figcaption>A2A: SendMessage in, a job runs, the task's updates stream back; the same contextId follows up</figcaption>
 </figure>
 

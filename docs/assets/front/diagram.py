@@ -5,7 +5,10 @@ Drawn with the helpers of the suite's diagram generator (Sean-Koval/agent-factor
 here so this repo renders on its own: every color is an Airframe token (`var(--af-*, <dark fallback>)`), so an SVG
 inlined in a docs page follows the page's theme, and opened on its own (or as the PNGs make.py renders) it shows
 the dark or light flavor. Drawings are 800 units wide, so at a docs page's 710 px their 12.5 px body text is
-11 px; a docs page includes one with `--8<-- "name.svg"` inside `<figure class="af-figure">`.
+11 px; a docs page includes one with `--8<-- "name.svg"` inside `<figure class="af-figure af-figure--wide">`. Each
+guide drawing also has a stacked variant, `name-stacked.svg`, 350 units wide, that phones and narrow tablets show
+instead (under 960 px, docs/stylesheets/product.css) so its text stays 11 px or larger at 390 px; the page includes it in a second figure,
+`<figure class="af-figure af-figure--stacked">`, with the same caption.
 
     python3 docs/assets/front/diagram.py      # writes hangar-suite.svg next to this file and docs/assets/diagrams/*.svg
 
@@ -43,6 +46,8 @@ STYLE = """
   .af-d .dot { fill: var(--af-dot-field, #262626); }
 </style>
 """
+# hangar's own addition, for the stacked (phone) drawings: an eyebrow one size up, so it stays 11 px at 390
+STYLE_STACKED = STYLE.replace("</style>", '  .af-d .lbl-s { font: 500 11.5px "DM Mono", ui-monospace, Menlo, monospace; letter-spacing: .08em; fill: var(--af-fg-subtle, #8A8A8A); }\n</style>')
 
 PRODUCT = {
     "hangar": "var(--af-product-hangar, #EE8F63)",
@@ -57,8 +62,9 @@ def esc(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def svg(w: int, h: int, label: str, body: list[str], dots: tuple[int, int, int, int] | None = None) -> str:
-    pid = label.lower().replace(" ", "-")[:24]
+def svg(w: int, h: int, label: str, body: list[str], dots: tuple[int, int, int, int] | None = None, pid: str | None = None) -> str:
+    pid = pid or label.lower().replace(" ", "-")[:24]
+    style = STYLE_STACKED if pid.endswith("-stacked") else STYLE
     field = ""
     if dots:
         x, y, fw, fh = dots
@@ -69,7 +75,7 @@ def svg(w: int, h: int, label: str, body: list[str], dots: tuple[int, int, int, 
         )
     return (
         f'<svg class="af-d" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" role="img" '
-        f'aria-label="{esc(label)}">{STYLE}'
+        f'aria-label="{esc(label)}">{style}'
         f'<defs><marker id="{pid}-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" '
         f'orient="auto-start-reverse"><path class="arrowhead" d="M0 0L10 5L0 10z"/></marker></defs>'
         f'<rect class="bg" width="{w}" height="{h}"/>{field}'
@@ -78,13 +84,13 @@ def svg(w: int, h: int, label: str, body: list[str], dots: tuple[int, int, int, 
     )
 
 
-def box(x, y, w, h, name, lines=(), eyebrow=None, kind="box", product=None, name_cls="name"):
+def box(x, y, w, h, name, lines=(), eyebrow=None, kind="box", product=None, name_cls="name", eyebrow_cls="lbl"):
     out = [f'<rect class="{kind}" x="{x}" y="{y}" width="{w}" height="{h}" rx="3"/>']
     if product:
         out.append(f'<rect x="{x}" y="{y}" width="{w}" height="2" fill="{PRODUCT[product]}"/>')
     ty = y + 26
     if eyebrow:
-        out.append(f'<text class="lbl" x="{x + 18}" y="{ty}">{esc(eyebrow)}</text>')
+        out.append(f'<text class="{eyebrow_cls}" x="{x + 18}" y="{ty}">{esc(eyebrow)}</text>')
         ty += 22
     out.append(f'<text class="{name_cls}" x="{x + 18}" y="{ty}">{esc(name)}</text>')
     ly = ty + 22
@@ -256,6 +262,119 @@ def landing_states() -> str:
     return svg(W, 166, "How a PR lands", b)
 
 
+# ------------------------------------------------------------------------- the stacked variants, for phones
+WS = 350  # a docs page is 343 px wide on a 390 px phone, so the text keeps its size (11 px and up)
+BX, BW = 20, 310  # every stacked box's x and width
+RW = 270  # the width when an edge returns up the right-hand side
+RX, RT = 324, 340  # that edge's x, and its rotated label's x
+
+
+def stack(y, h, names, lines=(), kinds=(), eyebrows=(), gap=36, labels=(), bw=BW):
+    """Boxes one under the other with an arrow between each, and an optional label beside each arrow.
+    Returns the markup and the y below the last box."""
+    out = []
+    for i, name in enumerate(names):
+        bh = h[i] if isinstance(h, (list, tuple)) else h
+        if i:
+            out.append(edge(f"M{BX + bw // 2} {y - gap}V{y - 2}"))
+            if labels and labels[i - 1]:
+                out.append(text(BX + bw // 2 + 10, y - gap // 2 + 4, labels[i - 1]))
+        out.append(box(BX, y, bw, bh, name, lines[i] if lines else (), eyebrow=eyebrows[i] if eyebrows else None,
+                       kind=kinds[i] if kinds else "box", name_cls="name-s", eyebrow_cls="lbl-s"))
+        y += bh + gap
+    return "".join(out), y - gap
+
+
+def back_edge(y_from, y_to, label, label_y):
+    """An edge from a box's right side at y_from, up the right-hand margin, into a box's right side at y_to."""
+    return edge(f"M{BX + RW} {y_from}H{RX}V{y_to}H{BX + RW + 2}") + text(RT, label_y, label, anchor="middle", rotate=-90)
+
+
+def concepts_map_stacked() -> str:
+    body, end = stack(20, (110, 110, 128, 110),
+                      ("People and tools", "Front doors", "Control plane", "Sandboxes"),
+                      (["MCP clients, CLI, browser", "Jira, GitHub, Slack", "services, CI, other agents"],
+                       ["MCP, REST, CLI", "GitHub, Jira, Projects, Slack", "webhooks, schedules, A2A"],
+                       ["Jobs and sessions", "Policy, people, budgets", "Credentials: vault, gateway", "Verify, branch, PR, landing"],
+                       ["Environment + harness", "+ repo checkout, isolated", "Docker, GKE or E2B"]),
+                      ("person", "box", "box-hub", "box-ext"), ("WHO", "WORK IN", "HANGAR", "WORK RUNS"))
+    return svg(WS, end + 20, "People, front doors, the control plane and sandboxes", [body], pid="concepts-stacked")
+
+
+def control_plane_stacked() -> str:
+    """Two clients side by side, the control plane, three providers one under the other."""
+    b = [
+        box(20, 20, 150, 82, "MCP client", ["Codex, Claude Code,", "Cursor: HTTP + token"], kind="person", name_cls="name-s"),
+        box(180, 20, 150, 82, "Browser", ["The console: fleet,", "approvals, terminals"], kind="person", name_cls="name-s"),
+        edge("M95 102V136"), edge("M255 102V136"),
+        box(20, 138, 310, 176, "Control plane", [
+            "MCP tools, REST API,", "websocket PTYs, audit log",
+            "Fleet manager: environments,", "warm pools, snapshots, forks",
+            "Credential broker: vault,", "leases; git gateway",
+        ], eyebrow="HANGAR", kind="box-hub", product="hangar", name_cls="name-s", eyebrow_cls="lbl-s"),
+        edge("M175 314V348"),
+        text(185, 336, "sandboxes, on one of"),
+        box(20, 350, 310, 60, "Docker", ["Laptop or one VM; gVisor, Kata"], kind="box-ext", name_cls="name-s"),
+        box(20, 420, 310, 60, "Kubernetes", ["GKE: Agent Sandbox CRDs"], kind="box-ext", name_cls="name-s"),
+        box(20, 490, 310, 60, "E2B", ["Firecracker microVMs"], kind="box-ext", name_cls="name-s"),
+    ]
+    return svg(WS, 570, "Inside the control plane", b, pid="control-plane-stacked")
+
+
+def jobs_flow_stacked() -> str:
+    names = ("Caller", "Queue", "Sandbox", "Agent turn", "Verify", "Draft PR")
+    lines = (["POST /api/jobs"], ["admitted"], ["env + harness"], ["edits, tests"], ["the repo's check"], ["hangar/<job>"])
+    kinds = ("person", "box", "box", "box", "box", "box-ext")
+    body, end = stack(20, 60, names, lines, kinds, gap=30, bw=RW)
+    b = [body,
+         back_edge(end - 30, 50, "signed callback: job.started, job.finished", (end + 20) // 2),
+         text(BX, end + 32, "An engineer follows up (API, MCP, CLI,"),
+         text(BX, end + 50, "/hangar on the PR) or attaches to the terminal.")]
+    return svg(WS, end + 68, "A job, from the caller to a draft PR", b, pid="jobs-stacked")
+
+
+def a2a_flow_stacked() -> str:
+    body, end = stack(20, (64, 64, 82),
+                      ("A2A client", "/a2a", "Job"),
+                      (["ADK, AX or any other"], ["SendMessage in"], ["queue, sandbox, agent,", "verify, PR"]),
+                      ("person", "box-hub", "box"), gap=40, labels=("SendMessage", None), bw=RW)
+    b = [body,
+         back_edge(end - 30, 52, "Task, status updates (SSE), push", (end + 20) // 2),
+         edge(f"M{BX + RW // 2} {end}V{end + 30}", plan=True),
+         text(BX, end + 52, "SendMessage with the same contextId:"),
+         text(BX, end + 68, "a follow-up turn on the same job and branch")]
+    return svg(WS, end + 86, "A2A: a message in, a task out", b, pid="a2a-stacked")
+
+
+def slack_flow_stacked() -> str:
+    body, end = stack(20, (64, 82, 118),
+                      ("/hangar <instructions>", "hangar posts", "The thread"),
+                      (["in a channel"], ["\u201c@you asked hangar to", "work on owner/repo\u201d"],
+                       ["Queued as job-3fa2c1d0", "Agent started", "Done: PR, verification,", "summary"]),
+                      ("person", "box-hub", "box-ext"), gap=34, bw=RW)
+    y2 = end + 44
+    b = [body,
+         edge(f"M{BX + RW // 2} {end}V{y2 - 2}", plan=True),
+         text(BX + RW // 2 + 10, end + 26, "a reply in the thread"),
+         box(BX, y2, RW, 64, "Follow-up turn", ["same branch and PR"], name_cls="name-s"),
+         back_edge(y2 + 32, end - 20, "Done, again in the thread", (y2 + end) // 2 + 6)]
+    return svg(WS, y2 + 84, "Slack: a command, a thread, a follow-up", b, pid="slack-stacked")
+
+
+def landing_states_stacked() -> str:
+    names = ("Opened", "Open", "Approved", "Armed", "Merged")
+    lines = (["draft from hangar"], ["review packet"], ["head approved"], ["auto-merge armed"], ["rules met"])
+    kinds = ("box", "box", "box", "box-hub", "box-ext")
+    body, end = stack(20, 56, names, lines, kinds, gap=34,
+                      labels=(None, "an approver or code owner", "checks green, no agent turn", None), bw=RW)
+    open_y, armed_y = 20 + 90, 20 + 3 * 90
+    b = [body,
+         back_edge(armed_y + 40, open_y + 28, "disarmed, back to open", (open_y + armed_y) // 2 + 34),
+         text(BX, end + 30, "Disarmed by a push, changes requested"),
+         text(BX, end + 46, "or a new agent turn.")]
+    return svg(WS, end + 64, "How a PR lands", b, pid="landing-stacked")
+
+
 def main() -> None:
     OUT.write_text(hangar_suite())
     print("wrote", OUT)
@@ -267,6 +386,12 @@ def main() -> None:
         ("a2a-flow", a2a_flow),
         ("slack-flow", slack_flow),
         ("landing-states", landing_states),
+        ("concepts-map-stacked", concepts_map_stacked),
+        ("control-plane-stacked", control_plane_stacked),
+        ("jobs-flow-stacked", jobs_flow_stacked),
+        ("a2a-flow-stacked", a2a_flow_stacked),
+        ("slack-flow-stacked", slack_flow_stacked),
+        ("landing-states-stacked", landing_states_stacked),
     ):
         (DIAGRAMS / f"{name}.svg").write_text(fn())
         print("wrote", DIAGRAMS / f"{name}.svg")
