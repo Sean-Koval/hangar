@@ -285,19 +285,29 @@ h4.with-meta .af-meta { text-transform: none; letter-spacing: normal; font-weigh
   .needs .af-verdict__time { grid-column: 1 / -1; justify-content: flex-end; }
 }
 
-/* timeline and activity: a status mark per event, quiet unless an event failed or waits on a person */
+/* timeline and activity: a plain dot per entry (never a status mark: those mean running and queued elsewhere), the
+   words in fg-muted, and in fg where an entry failed or waits on a person */
 .timeline, .turns { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .timeline li { display: grid; grid-template-columns: 12px 76px minmax(0, 1fr); gap: var(--af-space-12); align-items: baseline;
   padding: 3px 0; font-size: 13px; }
-.timeline li > .af-status { justify-self: center; }
-.timeline li.hint { display: block; }
+.timeline .tl-dot { justify-self: center; width: 5px; height: 5px; border-radius: 50%; background: var(--af-line-strong); }
+.timeline li[data-tone="failed"] .tl-dot { background: var(--af-status-failed); }
+.timeline li[data-tone="approval"] .tl-dot { background: var(--af-status-approval); }
+.timeline li.hint, .timeline li.act-more { display: block; }
 .timeline .when { font-family: var(--af-font-mono); font-size: 11.5px; color: var(--af-fg-subtle); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .timeline .what { overflow-wrap: anywhere; color: var(--af-fg-muted); }
+.timeline .what a { color: var(--af-fg); font-size: 12.5px; }
 .timeline li[data-tone="failed"] .what, .timeline li[data-tone="approval"] .what { color: var(--af-fg); }
-.activity { max-height: 360px; overflow-y: auto; }
-.activity .what { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+/* the activity feed shows the newest twelve whole rows and the rest behind "Earlier (n)"; a tool's output is a
+   mono block capped at three lines with a fade and its own More, so nothing is ever cut mid-line */
 .activity .what b { margin-right: 6px; font-family: var(--af-font-mono); font-weight: 500; font-size: 9.5px; letter-spacing: .09em;
   text-transform: uppercase; color: var(--af-fg-subtle); }
+.activity .act-out { margin: 4px 0 0; padding: 6px 10px; background: var(--af-surface); border-radius: var(--af-radius-control);
+  font-size: 12px; line-height: 1.55; color: var(--af-fg-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.activity .act-out.is-capped { max-height: calc(3 * 1.55em + 12px); overflow: hidden;
+  mask-image: linear-gradient(to bottom, var(--af-fg) 55%, transparent); -webkit-mask-image: linear-gradient(to bottom, var(--af-fg) 55%, transparent); }
+.activity .act-out + .af-btn { margin-top: 2px; }
+.activity .act-more { padding-top: var(--af-space-8); }
 .turns li { padding: 10px 0; border-top: 1px solid var(--af-line-subtle); display: flex; flex-direction: column; gap: 4px; }
 .turns li:first-child { border-top: 0; padding-top: 0; }
 .turns b { font-weight: 500; }
@@ -340,6 +350,9 @@ form.inline .af-input { flex: 1; }
 .drawer-tabs .tab-extra { margin-left: auto; display: flex; gap: var(--af-space-4); align-items: center; padding-left: var(--af-space-12); }
 .terminal-drawer .af-drawer__body { position: relative; overflow: hidden; }
 .term { position: absolute; inset: 0; padding: 8px 10px; }
+/* no terminal to attach to: Airframe's empty state over the pane, in the drawer's Night scope */
+.term-empty { position: absolute; inset: 0; display: grid; place-items: center; padding: var(--af-space-16); background: var(--af-terminal-bg); }
+.term-empty .af-empty { max-width: 560px; background: color-mix(in srgb, var(--af-terminal-fg) 5%, transparent); border-radius: var(--af-radius-card); }
 .term .xterm-viewport { scrollbar-color: var(--af-line-strong) transparent; }
 
 /* ---------- the form dialog (Airframe Dialog): fields stack in the body; a command's output opens as a terminal well ---------- */

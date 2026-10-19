@@ -626,7 +626,7 @@ class Job(BaseModel):
 
 
 # ---------------------------------------------------------------------------- change sets (changesets.py)
-ChangeSetState = Literal["working", "landing", "done", "broken"]
+ChangeSetState = Literal["working", "landing", "deploying", "done", "broken"]
 
 
 class ChangeSetRole(BaseModel):
@@ -639,9 +639,20 @@ class ChangeSetRole(BaseModel):
     base_sha: str | None = None  # the commit its checkout started from (first boot; a resume keeps it)
 
 
+class DeployState(BaseModel):
+    """The deploy role's step: polled for `ready`, then run once by its `apply` deliverer."""
+
+    state: Literal["waiting", "ready", "applying", "opened", "merged", "failed"] = "waiting"
+    note: str | None = None
+    ready: dict[str, Any] = Field(default_factory=dict)  # what the ready deliverer found (an image digest, ...)
+    attempts: int = 0
+    polled_at: float | None = None
+    job: str | None = None  # its part job (the PR on the trigger repo)
+
+
 class ChangeSet(BaseModel):
     """A ticket's work across several repos (one sandbox, one agent session): one PR per changed role, landed in the
-    profile's `land_order`. Stored in the kv table (`changeset:<id>`)."""
+    profile's `land_order`, then the deploy role's step. Stored in the kv table (`changeset:<id>`)."""
 
     id: str = Field(default_factory=lambda: new_id("cs"))
     profile: str
@@ -654,6 +665,7 @@ class ChangeSet(BaseModel):
     parts: dict[str, str] = Field(default_factory=dict)  # role -> part job id, for each role that changed
     state: ChangeSetState = "working"
     reason: str | None = None  # why it is broken
+    deploy: DeployState | None = None
     profile_spec: dict[str, Any] = Field(default_factory=dict)  # the profile as it was (a later edit changes new sets)
     created_at: float = Field(default_factory=now)
     updated_at: float = Field(default_factory=now)

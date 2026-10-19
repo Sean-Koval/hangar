@@ -371,6 +371,28 @@ def test_phones_land_under_the_header_with_a_compact_fleet_and_activity_cards():
     assert 'td class="af-table__mono clip"' not in app and ".table td.clip" not in css, "the detail is keyed pairs"
 
 
+def test_job_detail_has_no_dead_terminal_and_a_feed_that_is_never_cut_mid_line():
+    """KAN-112: a finished job's terminal button is disabled with a hint instead of opening an empty drawer (and a
+    connection that never answers shows an empty state with a retry); the activity feed shows whole rows behind an
+    "Earlier (n)" expander with tool output as a capped mono block; the timeline links its URLs, uses plain dots
+    rather than status marks, and reads "1 commit" through one duration/plural helper."""
+    app, css = (UI / "app.js").read_text(), (UI / "app.css").read_text()
+    assert 'class="af-btn af-btn--secondary" disabled title="${esc(turnOver)}"' in app
+    assert "No terminal to attach to." in app and '"data-term-retry"' in app
+    assert "[disconnected; press Enter to reconnect]" not in app
+    assert "hideDrawer();  // the terminal drawer would sit over the form" in app
+    assert "const ACT_SHOWN = 12;" in app and "Earlier (${all.length - shown.length})" in app
+    assert '"data-act-more"' in app
+    assert ".activity .act-out.is-capped { max-height: calc(3 * 1.55em + 12px); overflow: hidden;" in css
+    feed = css.split("/* the activity feed")[1].split("/* ---------- connect")[0]
+    assert "max-height: 360px; overflow-y: auto; }" not in feed, "the feed is no longer a scroll box cut mid-line"
+    assert "function duration(seconds" in app and "const words = (text)" in app and "const linkify = (text)" in app
+    assert 'linkify(words(e.message))' in app and '<i class="tl-dot" aria-hidden="true"></i>' in app
+    assert "mark(JOB_STATE[e.state]" not in app and "mark(ACT_TONE[e.kind]" not in app, "timeline entries are dots"
+    assert ".timeline .tl-dot {" in css and "background: var(--af-line-strong)" in css
+    assert "toFixed(1)} h" not in app, "durations are whole units with one space: 5 h, not 5.0 h"
+
+
 def test_theme_switch_lands_on_needs_you_and_one_primary_per_view():
     """KAN-110: Night is the default and a person can switch to Day (hangar.theme, applied before first paint); the
     console opens on Needs you while something waits; Jobs and Sessions carry one yellow primary at a time."""
