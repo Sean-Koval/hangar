@@ -17,6 +17,11 @@ and nothing checked approver != requester.
   of the approver's identities (MCP actor, linked accounts, the commenting account) is the job's requester or
   `approval.requested_by`. `HANGAR_SELF_APPROVAL=allow_solo` lets a self-approval through while exactly one person
   exists (`rule="solo"`, audited `self_approved: true`); the default is `deny`.
+* **Through a relay** (--- relay, `auth.resolve_delegation`): a bot's request on behalf of a linked person decides as
+  that person, only when the relay token holds `relay_approve`, and counts as a front door (`"front_door"` on team
+  jobs, like Slack's: the bot vouches for the account). An account linked to nobody decides nothing. Never their
+  own, and `allow_solo` doesn't apply: a bot can't release the work it was asked for by the person it names.
+  Unlinked accounts' jobs are held for approval (`relay_hold`) when `HANGAR_RELAY_UNLINKED=approve`.
 * **Visibility.** A job a principal may not see answers as missing, as `people.Guard` does for every other tool: a
   member sees their own jobs and, here, jobs in repos whose approvers they are.
 
@@ -53,13 +58,17 @@ from hangar.repopolicy import RepoPolicies
 if TYPE_CHECKING:
     from hangar.auth import Principal
     from hangar.jobs import JobService
-    from hangar.models import Job
+    from hangar.models import Job, JobApproval
 
 log = logging.getLogger("hangar.approvals")
 
 Kind = Literal["approve", "reject", "egress", "land"]
 Rule = Literal["admin", "repo_approver", "front_door", "solo", "system"]
 SELF_APPROVAL_MODES = ("deny", "allow_solo")
+# --- relay: set to True by the submit path once it attaches relay_hold(...) to a held relay principal's job. Until
+# then auth.resolve_delegation refuses unlinked accounts under either HANGAR_RELAY_UNLINKED mode (fail closed: an
+# unheld team job from an unverified account must never run).
+HOLD_SUBMIT = False
 _VERB = {"approve": "approve", "reject": "reject", "egress": "approve egress for", "land": "land"}
 
 
@@ -85,6 +94,7 @@ class Approver(NamedTuple):
     github_logins: frozenset[str] | None = None
     front_door: bool = False
     token: str | None = None
+    relay: bool = False  # --- relay: decided through a relay bot (never self-approved, not even allow_solo)
 
 
 class Subject(NamedTuple):
@@ -114,6 +124,14 @@ def from_principal(p: Principal | None, via: Literal["mcp", "rest"] = "mcp") -> 
     if p is None:
         return in_process("system")
     name = identity.actor_name(p)
+    if p.via is not None:  # --- relay
+        why = None
+        if p.person is None:
+            why = "an account linked to no hangar person decides nothing"
+        elif not p.may_approve:
+            why = f"approving or rejecting jobs through a relay needs a relay_approve token; {p.via} holds relay only"
+        ids = frozenset({name} | ({p.on_behalf_of} if p.on_behalf_of else set()))
+        return Approver(name, p.person, via, ids, front_door=p.person is not None, token=why, relay=True)
     token = None if (p.admin or "user" in p.scopes) else (
         f"approving or rejecting jobs needs a person's login token (scope admin or user); this one has "
         f"{sorted(p.scopes)}")
@@ -210,6 +228,9 @@ def can_decide(ctx: Any, approver: Approver, subject: Subject, kind: Kind = "app
                                                                          if own else ""), None, own)
     if not own:
         return Decision(True, "", rule)
+    if approver.relay:  # --- relay
+        return Decision(False, f"{verb}: it is {approver.actor}'s own work, and nobody approves their own, not "
+                               "through a relay either", None, True)
     if getattr(ctx.settings, "self_approval", "deny") == "allow_solo" and len(people.list_people(store)) == 1:
         return Decision(True, "", "solo", True)
     return Decision(False, f"{verb}: it is {approver.actor}'s own work, and nobody approves their own. Ask another "
@@ -289,6 +310,19 @@ def _record(jobs: JobService, job: Job, approver: Approver, decision: str, d: De
         _drop(jobs, job, f"rejected by {who}{said}", "rejected",
               f"Rejected by {who}{said}. Hangar job `{job.id}` will not run.")
         jobs.fleet.audit(who, "job.reject", job.id, **detail)
+
+
+# ---------------------------------------------------------------------------- --- relay: held jobs
+def relay_hold(jobs: Any, p: Principal | None) -> JobApproval | None:
+    """The approval a held relay principal's job must wait on (`JobService.submit(..., approval=)`), or None for
+    anyone else. Requested by the relayed account (`symphony:<id>`), so linking it later to a person doesn't let them
+    approve it."""
+    if p is None or not p.held:
+        return None
+    from hangar.triggers import new_approval
+
+    return new_approval(jobs, p.on_behalf_of or p.name, f"asked through {p.via} by {p.on_behalf_of}, an account "
+                                                        "linked to no hangar person")
 
 
 # ---------------------------------------------------------------------------- hangar doctor

@@ -3,14 +3,14 @@
 Hangar serves MCP over streamable HTTP as two servers: `hangar` at `<public_url>/mcp` (jobs, sessions, schedules, discovery) and `hangar-sandbox` at `<public_url>/mcp/sandbox` (sandboxes, commands, files, terminals; [mcp.md](mcp.md#two-servers)). What clients get beyond tool calls (tasks, elicitation, typed results, subscriptions, prompts) is in [mcp.md](mcp.md). The quick way to connect a client:
 
 ```bash
-hangar connect claude-code      # or codex, cursor, vscode, gemini, claude-desktop
+hangar connect claude-code      # or codex, cursor, vscode, gemini, antigravity, claude-desktop
 hangar connect --list           # each client, its config file, and whether hangar is in it
 ```
 
 `hangar connect <client>` mints a token for that client on this machine and writes hangar into the client's own config file. The token is named `mcp-<client>-<host>-<file id>` and has the `mcp` scope, so it reaches `/mcp` and nothing else. It can't call the REST API, so it can't read or change the vault, settings or tokens. It can still do anything an MCP client can, including starting sandboxes that use stored credentials, so keep it as private as a password. The other servers in the file, and every other key, are left as they were. Connecting the same file again replaces the entry and revokes the token it held before; tokens in the client's other config files (a project's `.cursor/mcp.json`, another `CLAUDE_CONFIG_DIR`) are left alone. Options:
 
 - `--print` shows the entry (with a new token) and writes nothing. Use it to configure another machine.
-- `--auth oauth` writes the URL without a token. The client then signs in through hangar's OAuth server. This works for Claude Code, Codex, Cursor and Gemini CLI, and needs an https (or localhost) `HANGAR_PUBLIC_URL`. Cursor's sign-in redirects (`cursor://anysphere.cursor-mcp/oauth/callback`, and `http://localhost:8787/callback` in newer versions) are in the default `HANGAR_OAUTH_REDIRECT_HOSTS`; if you changed that list, `hangar connect cursor --auth oauth` prints the one command that adds the app scheme back (see [security.md](security.md#oauth-connectors)).
+- `--auth oauth` writes the URL without a token. The client then signs in through hangar's OAuth server. This works for Claude Code, Codex, Cursor, Gemini CLI and Antigravity, and needs an https (or localhost) `HANGAR_PUBLIC_URL`. Cursor's sign-in redirects (`cursor://anysphere.cursor-mcp/oauth/callback`, and `http://localhost:8787/callback` in newer versions) are in the default `HANGAR_OAUTH_REDIRECT_HOSTS`; if you changed that list, `hangar connect cursor --auth oauth` prints the one command that adds the app scheme back (see [security.md](security.md#oauth-connectors)). Antigravity's redirect (`https://antigravity.google/oauth-callback` in its docs) isn't in the default list: add it with `hangar config set HANGAR_OAUTH_REDIRECT_HOSTS '[…, "antigravity.google"]'` (the current list plus that host) before `hangar connect antigravity --auth oauth`.
 - `--with-sandbox` / `--no-sandbox`: also write `hangar-sandbox` (`<name>-sandbox`, `/mcp/sandbox`, the same token). On by default for Claude Code and Codex, which drive sandboxes themselves; off for the others. In claude.ai, ChatGPT or Claude Desktop's connectors, add `<public_url>/mcp/sandbox` as a second connector if you want the sandbox tools.
 - `--name` sets the server name (default `hangar`), and `--config PATH` writes another file, for example a VS Code Insiders profile.
 
@@ -23,6 +23,7 @@ Files are replaced atomically. A new file is created with mode 600. An existing 
 | `cursor` | `~/.cursor/mcp.json`, `mcpServers` | `{"url", "headers"}` | Settings → MCP |
 | `vscode` | `mcp.json` in the VS Code user folder: `~/.config/Code/User` (Linux), `~/Library/Application Support/Code/User` (macOS), `%APPDATA%\Code\User` (Windows); key `servers` | `{"type": "http", "url", "headers"}` | MCP: List Servers |
 | `gemini` | `~/.gemini/settings.json` (`$GEMINI_CLI_HOME/.gemini/settings.json`), `mcpServers` | `{"url", "type": "http", "headers"}` | new session; `/mcp` |
+| `antigravity` | `~/.gemini/config/mcp_config.json`, `mcpServers` (the Antigravity CLI `agy`, app and IDE share it) | `{"serverUrl", "headers"}` | new `agy` session; `/mcp` |
 | `claude-desktop` | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS), `%APPDATA%\Claude\claude_desktop_config.json` (Windows) | `npx -y mcp-remote@0.14.3 <url> --header-file <file>` | restart Claude Desktop |
 
 Claude Desktop's config file only starts local (stdio) servers, so the entry runs the [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) bridge, which needs Node.js. The token goes in a mode-600 header file under `~/.hangar/mcp-headers/`, not in the command line, where other users could read it from the process list. To use OAuth with Claude Desktop instead, add hangar as a custom connector under **Settings → Connectors**.
@@ -40,6 +41,7 @@ Each format was checked against the client itself or its official docs on 2026-1
 - **Cursor:** [cursor.com/docs/mcp](https://cursor.com/docs/mcp) documents `~/.cursor/mcp.json`, `mcpServers` with `url` and `headers`, and OAuth for remote servers.
 - **VS Code:** [the MCP configuration reference](https://code.visualstudio.com/docs/copilot/reference/mcp-configuration) documents `servers` with `"type": "http"`, `url` and `headers`, in `mcp.json` in the user profile. The profile folder is the one [the settings docs](https://code.visualstudio.com/docs/configure/settings) give for the user `settings.json`. The docs don't say that VS Code registers itself with an OAuth server, so `--auth oauth` isn't offered for VS Code.
 - **Gemini CLI 0.63.0:** `gemini mcp add --scope user --transport http -H …` writes exactly this entry. The CLI reads `GEMINI_CLI_HOME`, and `/mcp auth <name>` handles OAuth.
+- **Antigravity** (checked 2026-10-19): [antigravity.google/docs/mcp](https://antigravity.google/docs/mcp) documents the global `~/.gemini/config/mcp_config.json` (a project's own is `.agents/mcp_config.json`: pass it with `--config`), `mcpServers` entries whose remote servers must use `serverUrl` (it doesn't support `url` or `httpUrl`, so Gemini CLI's entry doesn't work there) with `headers`, and OAuth by dynamic client registration with `https://antigravity.google/oauth-callback` as the redirect. It documents no environment-variable expansion in that file, so the token is written into it, mode 600. The [install page](https://antigravity.google/docs/install?tab=cli) names the CLI `agy`. Not yet qualified against a live `agy`, including how it handles hangar's long tool calls ([mcp.md](mcp.md#deployment-notes)).
 - **Claude Desktop:** the config file locations and the `--header-file` and `--allow-http` flags (the latter for plain http to hosts other than localhost) come from the `mcp-remote` 0.14.3 README and its code.
 
 ## Doing it by hand
@@ -59,12 +61,57 @@ startup_timeout_sec = 20
 
 Or run `codex mcp add hangar --url https://hangar.example.com/mcp --bearer-token-env-var HANGAR_TOKEN`.
 
+### Antigravity
+
+In `~/.gemini/config/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "hangar": {
+      "serverUrl": "https://hangar.example.com/mcp",
+      "headers": { "Authorization": "Bearer hgr_..." }
+    }
+  }
+}
+```
+
+Leave out `headers` to have Antigravity sign in with OAuth instead (see the redirect note above).
+
 ### Claude Code
 
 ```bash
 claude mcp add --scope user --transport http hangar https://hangar.example.com/mcp \
   --header "Authorization: Bearer $HANGAR_TOKEN"
 ```
+
+## Bots that act for people (relay)
+
+A chat bot, such as the Symphony bot, can submit work for the person who asked in the room, so the job is theirs (their visibility, caps, credentials and audit trail), not the bot's. The bot holds a **relay** token and names that person on every MCP request:
+
+```text
+Authorization: Bearer hgr_<relay token>
+X-Hangar-On-Behalf-Of: symphony:<Symphony user id>
+# or: {"source": "symphony", "id": "<user id>", "reply_to": "symphony:<stream id>:<message id>"}
+```
+
+Set it up as an admin:
+
+```bash
+hangar person add symphony-bot --role admin --no-token   # the bot's person: only an admin's token can relay
+hangar token create symphony-bot --scope relay --person symphony-bot   # or --scope relay_approve
+hangar person link alice symphony <Symphony user id>                    # once per person
+```
+
+What hangar trusts, and what it refuses:
+
+- **The bot vouches for the Symphony account, nothing more.** A claim names a `symphony` account only. GitHub, Slack, Jira and email accounts are verified by hangar's own doors, so a relay can't claim them.
+- **Linked accounts only.** The request runs as the linked person with the `mcp` scope and nothing more: never admin, sandboxes, metrics or a login, whatever the bot's token or the person's other tokens hold. Records and audit entries show both identities, for example `@alice:relay:symphony-bot`.
+- **Unlinked accounts are refused** (the default, `relay_unlinked: refuse`). With `approve`, an unlinked account may only submit work, which waits for a trusted person's approval as an untrusted door's does; until the submit path holds such jobs, hangar refuses them under either setting.
+- **Approvals.** `approve_job` and `reject_job` through the bot need a token minted with `--scope relay_approve` instead of `relay`. They then decide as the named person under the usual rule (an admin, a repo policy approver, or a front door's trust on a team job), and nobody approves their own work through a bot, even with `HANGAR_SELF_APPROVAL=allow_solo`.
+- **A relay token does nothing on its own.** Without the header it is refused, it can't hold other scopes, and REST and the OAuth consent page don't accept it.
+
+**Status:** these rules are in `auth.resolve_delegation`; the `/mcp` endpoint starts honouring the header when it calls it (pending). Until then a relay token is refused everywhere.
 
 ## ChatGPT, claude.ai and other OAuth clients
 

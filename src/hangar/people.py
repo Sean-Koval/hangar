@@ -12,7 +12,8 @@ person id in `person`; that is also the key per-person quotas use (`identity.per
   of the team's (teamcreds.resolve).
 * **Linked identities.** A person's GitHub user id, Slack workspace/user id and Jira account id or email: those
   accounts act as the person (`resolve_external`): trusted, their caps and login, visible to them, and only they
-  continue their jobs from a front door (docs/team.md#who-is-trusted).
+  continue their jobs from a front door (docs/team.md#who-is-trusted). --- relay: a `symphony:<user id>` link is how
+  a relay bot's requests act as the person (`auth.resolve_delegation`); only `RELAY_SOURCES` can be relayed.
 * **Visibility.** Enforced at the front doors (MCP tools and resources, REST routes), not inside the services:
   the job and session machinery runs work for everyone and must see all of it.
 """
@@ -116,7 +117,10 @@ def check_token_scopes(person: Person, scopes: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------- linked identities (--- teamcreds)
-SOURCES = ("github", "slack", "jira", "email")
+SOURCES = ("github", "slack", "jira", "email", "symphony")
+# --- relay: sources hangar has no door of its own for, so a relay bot (auth.resolve_delegation) may vouch for them.
+# The others are verified by hangar's own doors, and a relay naming one would borrow that trust.
+RELAY_SOURCES = ("symphony",)
 # What intake may call a source: a GitHub Projects item's actor is a GitHub user
 _SOURCE_ALIASES = {"github_projects": "github", "github-projects": "github"}
 _EXTERNAL_RE = {
@@ -128,10 +132,12 @@ _EXTERNAL_RE = {
     "slack": re.compile(r"^[TE][A-Z0-9]{1,30}/[UW][A-Z0-9]{1,30}$"),
     "jira": re.compile(r"^[A-Za-z0-9][A-Za-z0-9.:_-]{0,127}$"),  # an Atlassian account id; a Data Center user key
     "email": re.compile(r"^[^@\s]{1,64}@[^@\s]{1,253}\.[^@\s]{2,63}$"),
+    "symphony": re.compile(r"^[1-9][0-9]{0,18}$"),  # --- relay: a Symphony user id (an int64 in its REST API)
 }
 _EXTERNAL_HINT = {"github": "a GitHub user id (a number; hangar person link looks one up from a login)",
                   "slack": "a Slack workspace and user id (like T0123ABCD/U012AB3CD)",
-                  "jira": "a Jira (Atlassian) account id", "email": "an email address"}
+                  "jira": "a Jira (Atlassian) account id", "email": "an email address",
+                  "symphony": "a Symphony user id (a number)"}
 
 
 def external_key(source: str, external_id: str | int) -> str:
@@ -246,8 +252,14 @@ class Guard:
     def __init__(self, fleet: Any, sessions: Any = None, jobs: Any = None, triggers: Any = None):
         self.fleet, self.sessions, self.jobs, self.triggers = fleet, sessions, jobs, triggers
 
+    # --- relay: all an account linked to nobody may do through a relay bot is ask for work that waits for approval
+    HELD_TOOLS = frozenset({"submit_job"})
+
     def args(self, tool: str, sig: inspect.Signature, a: tuple, kw: dict[str, Any]) -> None:
         p = identity.current.get()
+        if p is not None and getattr(p, "held", False) and tool not in self.HELD_TOOLS:
+            raise identity.Forbidden(f"{p.on_behalf_of} isn't linked to a hangar person, so through a relay it may "
+                                     f"only submit work for approval, not call {tool}")
         if p is None or p.role == "admin":
             return
         try:
