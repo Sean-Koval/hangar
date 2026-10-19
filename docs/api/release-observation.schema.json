@@ -1,0 +1,98 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^\\S(?:[^\\r\\n]*\\S)?$",
+      "title": "Id",
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "merge",
+        "build",
+        "approval",
+        "database_scope",
+        "migration",
+        "rollout"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "repository": {
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+      "title": "Repository",
+      "type": "string"
+    },
+    "revision": {
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
+      "title": "Revision",
+      "type": "string"
+    },
+    "bindings": {
+      "maxProperties": 16,
+      "minProperties": 1,
+      "patternProperties": {
+        "^\\S(?:[^\\r\\n]*\\S)?$": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^\\S(?:[^\\r\\n]*\\S)?$",
+          "type": "string"
+        }
+      },
+      "propertyNames": {
+        "maxLength": 256,
+        "minLength": 1
+      },
+      "title": "Bindings",
+      "type": "object"
+    },
+    "release": {
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^\\S(?:[^\\r\\n]*\\S)?$",
+      "title": "Release",
+      "type": "string"
+    },
+    "profile_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Profile Digest",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "observed",
+        "not_satisfied",
+        "unknown"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "observed_at": {
+      "title": "Observed At",
+      "type": "string"
+    },
+    "source": {
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^\\S(?:[^\\r\\n]*\\S)?$",
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "kind",
+    "repository",
+    "revision",
+    "bindings",
+    "release",
+    "profile_digest",
+    "status",
+    "observed_at",
+    "source"
+  ],
+  "title": "Observation",
+  "type": "object"
+}
