@@ -158,7 +158,9 @@ record `harness_lock`, so for them nothing changes.
 Claude Code plugins (skills, hooks, agents and MCP servers bundled with a manifest) are part of a harness's **prefix
 layer**: they shape what the model is told, so they must not change under an experiment or come from anything the
 agent can write. An environment declares them, and each image carries them in a read-only **seed directory**
-(`src/hangar/plugins.py`, #136). Codex has no equivalent here: its skills stay in `~/.codex/skills` (#139).
+(`src/hangar/plugins.py`, #136). An environment's plugins load in Claude Code only; Codex's skills stay in
+`~/.codex/skills` (#139). A Codex sandbox run from a harness lock gets the lock's plugins from their Codex forms, with
+exactly their hooks trusted ([harness-lock.md](harness-lock.md#codex-plugins), #244).
 
 ```yaml
 # envs/team.yaml

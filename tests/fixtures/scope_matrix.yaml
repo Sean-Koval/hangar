@@ -366,6 +366,42 @@ caches.get:
   rest: GET /api/caches
   scope: admin
   owner: admin
+changesets.delete_profile:
+  server: hangar
+  mcp: null
+  rest: "DELETE /api/changesets/profiles/{name}"
+  scope: admin
+  owner: admin
+changesets.get:
+  server: hangar
+  mcp: null
+  rest: "GET /api/changesets"
+  scope: admin
+  owner: admin
+changesets.get_one:
+  server: hangar
+  mcp: null
+  rest: "GET /api/changesets/{cs_id}"
+  scope: admin
+  owner: admin
+changesets.get_profile:
+  server: hangar
+  mcp: null
+  rest: "GET /api/changesets/profiles/{name}"
+  scope: admin
+  owner: admin
+changesets.get_profiles:
+  server: hangar
+  mcp: null
+  rest: "GET /api/changesets/profiles"
+  scope: admin
+  owner: admin
+changesets.put_profile:
+  server: hangar
+  mcp: null
+  rest: "PUT /api/changesets/profiles"
+  scope: admin
+  owner: admin
 cloud.post_rotate:
   server: hangar
   mcp: null

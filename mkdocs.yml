@@ -89,6 +89,7 @@ nav:
           - Streaming: streaming.md
           - Context exchange: context-exchange.md
           - Landing: landing.md
+          - Change sets: changesets.md
       - Front doors:
           - Repo policy: repo-policy.md
           - Intake (Jira, GitHub Projects): intake.md

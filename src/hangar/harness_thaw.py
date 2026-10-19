@@ -10,10 +10,11 @@ turn 1 that what the sandbox had matches it.
   registry into hangar's data directory (`materialize`: content-addressed, so a later edit to the registry never
   changes a claimed lock) and checked against the lock.
 * **Mount (#221).** The sandbox gets the lock's files, not the image's: its instructions file, exactly its skills, and
-  its plugins as the Claude Code seed (`mount_files`), root's and read-only to the agent. Everything that reads the
-  environment's prefix layer (the manifest, the probe, hangar's Claude Code settings, a hardened turn) reads the lock's
-  instead (`effective_spec`); the binding layer (MCP servers, hooks, approvals) is still the environment's, rendered at
-  claim.
+  its plugins as the Claude Code seed (`mount_files`), root's and read-only to the agent; for Codex, the plugins'
+  Codex forms, installed by the sandbox's Codex with exactly their hooks trusted (codex_plugins.py, #244).
+  Everything that reads the environment's prefix layer (the manifest, the probe, hangar's Claude Code settings, a
+  hardened turn) reads the lock's instead (`effective_spec`); the binding layer (MCP servers, hooks, approvals) is
+  still the environment's, rendered at claim.
 * **Verify turn 1.** After the turn's manifest is recorded: the lock's skills and plugins against the sandbox's
   effective digests (`tree`), its instructions file and plugins against the declared ones, and its `harness_digest`
   against the manifest's.
@@ -184,10 +185,13 @@ def pin(fleet: Fleet, ref: str, environment: str, harness: str | None = None, mo
         raise ThawError(f"{ref} pins {h} {lock['runtime'].get('version') or '(no version)'}, but this hangar runs "
                         f"{h} {locked or '(baked into the image)'} (harnesses.lock.yaml): re-freeze the harness from a "
                         f"turn on {locked}, or bump the lock's runtime.version and check it again")
+    from hangar import codex_plugins
     from hangar import plugins as plugins_mod
 
-    if (pl := [c["id"] for c in lock["components"] if c["id"].startswith("plugin:")]) and h != plugins_mod.HARNESS:
-        raise ThawError(f"{ref} enables {', '.join(pl)}, but plugins load only in {plugins_mod.HARNESS}")
+    pl = [c["id"] for c in lock["components"] if c["id"].startswith("plugin:")]
+    if pl and h not in (plugins_mod.HARNESS, codex_plugins.HARNESS):
+        raise ThawError(f"{ref} enables {', '.join(pl)}, but plugins load only in {plugins_mod.HARNESS} and "
+                        f"{codex_plugins.HARNESS} (from its Codex form, {codex_plugins.FORMS}/<name>/)")
     lock_model = (lock.get("model") or {}).get("id")
     if model and lock_model and model != lock_model:
         raise ThawError(f"{ref} pins model {lock_model}; drop model={model} (the model is part of the harness)")
@@ -204,6 +208,8 @@ def pin(fleet: Fleet, ref: str, environment: str, harness: str | None = None, mo
     if stale and fleet.settings.harness_drift == "fail":
         raise ThawError(f"{ref}: the registry's files differ from the lock ({'; '.join(stale[:5])}); fix the harness "
                         "directory (`hangar harness check`) or re-freeze it (HANGAR_HARNESS_DRIFT=fail)")
+    if pl and h == codex_plugins.HARNESS and (why := codex_plugins.check(d, lock)):  # --- #244
+        raise ThawError(f"{ref}: {why}; a Codex harness loads a plugin from its Codex form, pinned in the lock")
     return {"ref": ref, "name": r.name, "revision": lock["revision"], "digest": r.digest, "harness": h,
             "version": locked, "model": lock_model, "approvals": lock_appr, "commit": r.commit,
             "dir": d.name, "stale": stale,
@@ -343,6 +349,7 @@ async def mount_files(fleet: Fleet, prov: Any, sb: Sandbox, harness: str | None)
     its plugins as the seed (`plugins.SEED`, replacing the image's, installed with the sandbox's Claude Code as the
     image build does). Skills and the seed are root's and read-only to the agent; the instructions file follows in
     `seal`, once hangar has added its environment notes. Raises when the sandbox can't be given the lock."""
+    from hangar import codex_plugins
     from hangar import plugins as plugins_mod
     from hangar.harnesses import HARNESSES
 
@@ -386,10 +393,24 @@ async def mount_files(fleet: Fleet, prov: Any, sb: Sandbox, harness: str | None)
     pl = [c for c in comps if c["id"].startswith("plugin:")]
     if pl and h.name == plugins_mod.HARNESS:
         root_cmds.append(await _seed(prov, sb, d, pl, h))
+    codex_install = None
+    if pl and h.name == codex_plugins.HARNESS:  # --- #244: the plugins' Codex forms, installed by the agent's Codex
+        try:
+            got_codex = await codex_plugins.mount(prov, sb, d, lock, f"{h.prefix}/bin/codex" if h.install else "codex")
+        except ValueError as e:
+            raise RuntimeError(f"could not mount harness lock {lock['name']}@r{lock['revision']}: {e}") from None
+        if got_codex:
+            root_cmds.append(got_codex[0])
+            codex_install = got_codex[1]
     if root_cmds:
         res = await prov.exec(sb, "set -eu\n" + "\n".join(root_cmds), timeout=MOUNT_SECONDS, user="root", cwd="/")
         if res.exit_code != 0:
             raise RuntimeError(f"could not mount harness lock {lock['name']}@r{lock['revision']}: "
+                               f"{(res.stderr or res.stdout)[-400:]}")
+    if codex_install:
+        res = await prov.exec(sb, "set -eu\n" + codex_install, timeout=MOUNT_SECONDS, cwd=home)
+        if res.exit_code != 0:
+            raise RuntimeError(f"could not install harness lock {lock['name']}@r{lock['revision']}'s Codex plugins: "
                                f"{(res.stderr or res.stdout)[-400:]}")
 
 
@@ -489,6 +510,10 @@ def drift(p: dict[str, Any], m: dict[str, Any], turn: SessionTurn | None = None)
             got = (seen.get(pid) or {}).get("digest")
             if c.get("tree") and got != c["tree"] and not any(x["component"] == f"plugin:{pid}" for x in out):
                 out.append({"component": f"plugin:{pid}", "lock": c["tree"], "effective": got})
+    if probe_ok and m.get("harness", {}).get("name") == "codex":  # --- #244: the lock's Codex hooks, trusted and on
+        from hangar import codex_plugins
+
+        out += codex_plugins.drift(m.get("probe"))
     guide = next((c for c in comps if c["id"].startswith("guide:")), None)
     declared = (((m.get("instructions") or {}).get("global") or {}).get("declared") or {}).get("digest")
     if (guide or {}).get("digest") != declared:

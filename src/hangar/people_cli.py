@@ -58,15 +58,17 @@ def person_token(person_id: str, name: str = typer.Option("login", help="Label, 
 # --- teamcreds
 @person_app.command("link")
 def person_link(person_id: str,
-                source: str = typer.Argument(..., help="github | slack | jira | email"),
+                source: str = typer.Argument(..., help="github | slack | jira | email | symphony"),
                 external_id: str = typer.Argument(..., help="GitHub login or user id, Slack TEAM/USER id, Jira "
-                                                            "account id, or email.")):
+                                                            "account id, email, or Symphony user id (a number).")):
     """Link someone's account elsewhere to them: it then acts as them. Its jobs from GitHub, Slack, Jira or GitHub
     Projects start without approval, run with their own login, count against their caps and budget, and show up in
     their lists; and only they continue their jobs there. A GitHub login is stored as its numeric user id, which a
-    rename doesn't change.
+    rename doesn't change. A Symphony account is what a relay bot (a `--scope relay` token) may act for: its requests
+    then run as that person (docs/clients.md).
 
-    Example:  hangar person link alice github alice-gh;  hangar person link alice slack T0123ABCD/U012AB3CD"""
+    Example:  hangar person link alice github alice-gh;  hangar person link alice slack T0123ABCD/U012AB3CD;
+              hangar person link alice symphony 123456"""
     p = _cli()._call("POST", f"/api/people/{person_id}/links", json={"source": source, "id": external_id})
     if seen := p.get("looked_up"):  # --- review
         typer.echo(f"GitHub {seen['login']} is user id {seen['id']}")
