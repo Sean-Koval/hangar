@@ -132,7 +132,7 @@ HANGAR_URL=https://hangar.example.com HANGAR_TOKEN=hgr_... \
 
 `publish` doesn't overwrite a pack whose tag already exists: it registers the existing one. `--force` rebuilds and pushes over it; sandboxes then mount the new digest, and running ones keep the one they started with.
 
-Set `HANGAR_K8S_IMAGE_VOLUMES=false` to turn image volumes off. Hangar then bakes the selected harness into a per-harness image. Only the harness the sandbox was created for is baked.
+Set `HANGAR_K8S_IMAGE_VOLUMES=false` to turn image volumes off. hangar then bakes the selected harness into a per-harness image. Only the harness the sandbox was created for is baked.
 
 See [specs/0006-environments-and-harness-packs.md](specs/0006-environments-and-harness-packs.md) for the design.
 
@@ -196,11 +196,11 @@ Set `enable_kata_pool = true` and re-apply. That adds an Intel N2 Ubuntu pool wi
    ```
 2. Use an environment with `runtime_class: kata-qemu-runtime-rs`, such as `envs/claude-python-kata.yaml`. gVisor and Kata environments then share the cluster. To make Kata the default for every environment, set `HANGAR_K8S_RUNTIME_CLASS: kata-qemu-runtime-rs` in `deploy/k8s/config.yaml` instead.
 
-Kata 4.x defaults to its Rust runtime, `kata-qemu-runtime-rs`. The older Go runtime is still available as `kata-qemu` (enable `shims.qemu`), but it's deprecated. Hangar pins any `kata*` runtime class to the Kata pool automatically.
+Kata 4.x defaults to its Rust runtime, `kata-qemu-runtime-rs`. The older Go runtime is still available as `kata-qemu` (enable `shims.qemu`), but it's deprecated. hangar pins any `kata*` runtime class to the Kata pool automatically.
 
 Kata needs real nested virtualization, which is why the pool uses Intel N2 machines with `enable_nested_virtualization`. Running Kata inside kind on WSL boots the VM but can't reach the guest agent over vsock, so test Kata on a GCE or bare-metal Linux node.
 
-Hangar adds the matching nodeSelector and toleration to sandbox pods automatically.
+hangar adds the matching nodeSelector and toleration to sandbox pods automatically.
 
 ## 4a. The heavy tier (optional)
 
@@ -258,7 +258,7 @@ GKE restores a sandbox only from its *own* snapshots, so this powers pause and r
 How it works:
 
 - **Pause:** creates a `PodSnapshotManualTrigger`, waits for it to complete, then sets the Sandbox's `operatingMode` to `Suspended`.
-- **Resume:** sets `operatingMode` back to `Running`. Hangar checks the new pod's `PodRestored` condition. If GKE booted a fresh pod instead of restoring, the resume fails loudly rather than leaving you an empty sandbox.
+- **Resume:** sets `operatingMode` back to `Running`. hangar checks the new pod's `PodRestored` condition. If GKE booted a fresh pod instead of restoring, the resume fails loudly rather than leaving you an empty sandbox.
 - **Retention:** the policy keeps 10 snapshots per sandbox, and the bucket deletes objects after 14 days. A sandbox paused longer than that can't be restored.
 
 **Security.** With snapshots on, sandbox pods run as `hangar-sandbox`, which has read/write access to the snapshot bucket. That bucket holds every sandbox's memory, including injected credentials. This relies on Agent Sandbox's default network policy, which blocks the metadata server, so code in a sandbox can't mint a token for that service account. Don't switch templates to `networkPolicyManagement: Unmanaged`. To verify, run this from inside a sandbox; it should fail:
@@ -270,7 +270,7 @@ curl -s -m 5 -H 'Metadata-Flavor: Google' \
 
 ## 6. Sandbox nodes off at night (optional)
 
-`deploy/gke/power.sh` scales the sandbox node pools (gVisor, Kata and microVM: every pool whose name starts with `sandboxes-`) to zero at night and back in the morning. **Hangar and the `system` pool stay up**, so the URL keeps answering overnight. Nothing is deleted: disks, images, session checkpoints and the IP stay.
+`deploy/gke/power.sh` scales the sandbox node pools (gVisor, Kata and microVM: every pool whose name starts with `sandboxes-`) to zero at night and back in the morning. **hangar and the `system` pool stay up**, so the URL keeps answering overnight. Nothing is deleted: disks, images, session checkpoints and the IP stay.
 
 ```bash
 bash deploy/gke/power.sh down     # drain, suspend sessions (each checkpoints), tell hangar, sandbox pools to 0 nodes
@@ -373,7 +373,7 @@ is deleted:
 
 `up` from off brings back the system pool, waits for its node, starts hangar and waits for its rollout, tells hangar
 the sandboxes are starting, then brings back the sandbox pools at their warm floor with the prepull, tells hangar
-they're up, and ends the hold. Hangar's first start asks GitHub to redeliver what it missed (3 days at most, GitHub's
+they're up, and ends the hold. hangar's first start asks GitHub to redeliver what it missed (3 days at most, GitHub's
 limit: [redelivering webhooks][redeliver]); [cicd.md](cicd.md#taking-a-week-off) has the week-off recipe, and what
 is lost.
 
@@ -479,7 +479,7 @@ After a restore:
 
 - Tokens and credentials are as they were at the backup. A token revoked since then works again: revoke it again, or rotate them all.
 - Jobs and turns that were running at the backup restart or are marked interrupted, as after any restart.
-- A session restores from the checkpoints the backup lists. Hangar keeps 5 per session (`HANGAR_SESSION_KEEP_CHECKPOINTS`), so a session that checkpointed more than 5 times after the backup has none of those left in the bucket and can't resume. Restore from a recent backup.
+- A session restores from the checkpoints the backup lists. hangar keeps 5 per session (`HANGAR_SESSION_KEEP_CHECKPOINTS`), so a session that checkpointed more than 5 times after the backup has none of those left in the bucket and can't resume. Restore from a recent backup.
 
 **PD snapshots** are the other option, or a second layer: they copy the whole volume (database, local checkpoints, logs) and don't need the vault key to restore the disk. A snapshot of a running hangar is crash-consistent: SQLite recovers it like a power loss, and may drop the last second of commits. Schedule them on the volume's disk:
 
@@ -501,7 +501,7 @@ Sandboxes, agent turns and sessions don't stop with the control plane. A new pod
 
 ## 8. E2B SDK clients (optional)
 
-Hangar answers E2B's API, so the e2b SDKs and the tools built on them can use GKE sandboxes ([e2b.md](e2b.md)). They need two things from the cluster: hangar-envd reachable in each sandbox (`envd-network.yaml`, already applied) and a way to reach sandbox URLs. There are two ways.
+hangar answers E2B's API, so the e2b SDKs and the tools built on them can use GKE sandboxes ([e2b.md](e2b.md)). They need two things from the cluster: hangar-envd reachable in each sandbox (`envd-network.yaml`, already applied) and a way to reach sandbox URLs. There are two ways.
 
 **No new DNS (the sslip.io install, or any single host).** Clients route every sandbox call by header through the URL you already have, its certificate and its Ingress:
 

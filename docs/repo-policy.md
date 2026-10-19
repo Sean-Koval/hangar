@@ -59,7 +59,7 @@ environment, then hangar's settings.**
 
 - A job's own `verify`, `environment`, `harness` or `model` always wins.
 - A repo's `.hangar/environment.yaml` can set its `verify` and, with `extends`, its environment (within the allowlist).
-  Hangar uses the file as the default branch had it at the last clone. See [environments.md](environments.md).
+  hangar uses the file as the default branch had it at the last clone. See [environments.md](environments.md).
 - An environment can carry a `verify:` too, the fallback for every repo that runs in it:
 
   ```yaml
@@ -219,7 +219,7 @@ With a check on every front door, a red base branch would fail every job's check
 - **Once per base commit.** The result is kept per repo, base commit and command, and also per environment (its image and its spec, so a changed environment checks again) and per person (one member's sandbox never decides which failures another member's jobs may subtract). Jobs that start on the same base while it runs wait for that run, and later jobs read the result, so a team of 6 running 60 sessions on one `main` pays for at most one check per person and environment per merge. A check that times out or is killed isn't kept; the next job tries again.
 - **Only for a standing check.** A `verify` the job brought itself is its acceptance test, written for the change, and expected to fail on the base.
 - **A green base** changes nothing.
-- **A red base** is reported in the job's events ("base was red: …"), the prompt (which failures already exist, with the output in `BASELINE.txt` next to the job's context) and the PR body (**Base was red**). The in-turn gate is off for the job, because it can't tell the base's failures from new ones. Hangar's check after the turn counts only the failures the change added:
+- **A red base** is reported in the job's events ("base was red: …"), the prompt (which failures already exist, with the output in `BASELINE.txt` next to the job's context) and the PR body (**Base was red**). The in-turn gate is off for the job, because it can't tell the base's failures from new ones. hangar's check after the turn counts only the failures the change added:
   - when the check writes test reports ([jobs §8](jobs.md#8-test-results)) and both runs left complete ones, it
     subtracts the base's failing test ids from the run's, exactly. That isn't possible when a run failed with no failing
     test (a build error), or when tests the base ran (more than 5, and more than 2% of them) didn't run after the turn:
@@ -234,7 +234,7 @@ It counts test ids, so a check that fails for another reason in the same run can
 
 ## Agent scratch files
 
-Delivery commits what the agent left, and agents leave notes. Hangar keeps these out of the PR, with a narrow rule so it never drops work someone asked for. A file is scratch when all of these hold:
+Delivery commits what the agent left, and agents leave notes. hangar keeps these out of the PR, with a narrow rule so it never drops work someone asked for. A file is scratch when all of these hold:
 
 - it is new on the job's branch (a file the base commit has is never touched);
 - it is `HANDOFF.md`, `RESULT.md` or `NOTES.md` at the repo root (any case), or a `*.orig` or `*.rej` patch leftover anywhere: one next to the file it was made from (`a.py.orig` beside `a.py`), so a golden file that only shares the suffix is delivered;

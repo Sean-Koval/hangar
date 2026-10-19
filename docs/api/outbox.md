@@ -1,8 +1,8 @@
 # Run capture: the outbox (`hangar.run/v1`)
 
-Hangar writes every finished agent run, once, as immutable objects to a bucket. The sister tool (flightdeck) reads
+hangar writes every finished agent run, once, as immutable objects to a bucket. The sister tool (flightdeck) reads
 them into its own tables (`flightdeck.parquet/v1`) without asking hangar anything, so it works while the sandbox pools
-are off (01:00-10:00 ET) and after hangar's own retention has let a run go. Hangar pushes; the sister tool owns the
+are off (01:00-10:00 ET) and after hangar's own retention has let a run go. hangar pushes; the sister tool owns the
 tables and the compactor that builds them. This page is the contract between the two. It is the fourth of hangar's
 interfaces, next to the [manifest](manifest.schema.json), the [trace export](traces.md) and
 [experiments](experiment.schema.json) ([spec 0014](../specs/0014-sister-tool-interfaces.md#4a-run-capture-the-outbox-hangarrunv1)).
@@ -161,12 +161,12 @@ Schema: `$defs.job_event`. Every event has `kind`, `ts`, `job_id`, `job_source`,
 | `revert` | the nightly pass found a commit on the default branch reverting the PR's merge commit (#168, [metrics.md](../metrics.md)) | `{sha}` |
 | `label` | a failure label from the Friday harness review, and each relabel (#169, [runbook](../runbooks/harness-review.md)) | the `FailureLabel` (`id, job_id, session_id, turn, seq, category, fix, note, candidate_task, labelled_by, at`) and `base_sha, head_sha, repo, ticket_ref, title, ticket` (redacted, at most 4,000 characters), `ticket_untrusted, verify, pr_state, abandon_reason` |
 
-Hangar scans jobs changed in the last minute for new facts and writes each once.
+hangar scans jobs changed in the last minute for new facts and writes each once.
 
 ## Guarantees
 
 - **Write-once.** Every upload is a create with `ifGenerationMatch=0`; a `412` means the object is already there and
-  counts as done. Hangar's service account has `roles/storage.objectCreator` on the bucket and nothing else there,
+  counts as done. hangar's service account has `roles/storage.objectCreator` on the bucket and nothing else there,
   and an IAM deny policy takes `objects.delete` and `objects.update` away from it (its project-wide `storage.admin`
   is for Cloud Build): it can't delete or overwrite a run. Readers get `roles/storage.objectViewer`.
 - **Redacted.** Every object passes the broker's redaction (stored credentials, verbatim and in common encodings) and
@@ -194,7 +194,7 @@ Hangar scans jobs changed in the last minute for new facts and writes each once.
 
 ## Retention and the export (#189)
 
-Hangar's retention never deletes what the outbox hasn't exported yet:
+hangar's retention never deletes what the outbox hasn't exported yet:
 
 - A session's **event log and manifests** go with the session record today. Now the record goes as before, but its
   files are deleted only once every run of it is exported; until then they wait in `<data>/pending-delete/<session>/`

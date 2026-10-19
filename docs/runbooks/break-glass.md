@@ -50,7 +50,7 @@ tool calls and requests. Check the spec and the CHANGELOG for what has shipped b
 
 `HANGAR_GOVERNANCE` sets the default mode and `HANGAR_GOVERNANCE_MODES` overrides it per kind
 (`tool.call=shadow,landing.approve=enforce`). The kinds are `job.release`, `tool.call`, `landing.approve`,
-`egress.request` and `secret.request`. Hangar refuses to start in `shadow` or `enforce` without `HANGAR_GOVERNANCE_URL`.
+`egress.request` and `secret.request`. hangar refuses to start in `shadow` or `enforce` without `HANGAR_GOVERNANCE_URL`.
 
 ### When Tower is unreachable
 
@@ -84,7 +84,7 @@ HANGAR_GOVERNANCE_MODES='job.release=shadow,landing.approve=shadow'   # planned 
                                                                        # (live or at a restart) comes with #172
 ```
 
-Nothing is migrated, and receipts Tower already wrote stay (spec 0015 §14). Hangar's own checks run in every mode:
+Nothing is migrated, and receipts Tower already wrote stay (spec 0015 §14). hangar's own checks run in every mode:
 `enforce` never makes hangar more permissive than its own rules, so going back to `shadow` or `off` loosens nothing
 those rules hold. Go back to `enforce` once Tower answers again; the spec's bar for a kind's first `enforce` is a week
 with no disagreements (§14).

@@ -45,7 +45,7 @@ decision was made, on a mapped channel, and hangar drafts an ADR from the thread
   ([security.md](security.md#taint-gates)); the agent never pushes or opens it.
 - **The PR.** Title `ADR: <title>`, labels `agent-drafted` and `adr`, and a body linking the thread. It never lands on
   the requester's approval, whatever the repo's `self_approval` says ([landing.md](landing.md#agent-drafted-adrs)).
-- **Hangar checks it** after the turn, as the job's verify: exactly one new file, numbered one past the highest in
+- **hangar checks it** after the turn, as the job's verify: exactly one new file, numbered one past the highest in
   `docs/decisions/`, named after the title, with the frontmatter and sections above. The optional `checks:` block (a
   fenced ```` ```yaml ```` block starting `checks:`, trace predicates flightdeck runs nightly) must be valid YAML; hangar
   never evaluates it. A failure fails the verify with the reason, and the agent gets a fix round like any failing
@@ -91,12 +91,12 @@ hangar setup slack --manifest slack-app.yaml
 ## How it behaves
 
 - **Requests are verified.** Each request must carry a valid `X-Slack-Signature`: `v0=` followed by the HMAC-SHA256 of `v0:<timestamp>:<raw body>`, keyed with the signing secret and compared in constant time. Requests whose `X-Slack-Request-Timestamp` is more than 5 minutes off are refused with 401.
-- **Within 3 seconds.** Slack expects an answer within 3 seconds. Hangar acknowledges the command or event at once. It posts to Slack, reads the thread and submits the job in the background.
-- **Exactly once.** Slack retries an event it thinks failed (`X-Slack-Retry-Num`), and a mention in a thread arrives both as `app_mention` and as `message`. Hangar acts once per `event_id` and once per message. The record of handled events survives a restart. An event counts as handled only once its handling finishes, so one that a dying process acknowledged but never handled runs when Slack retries it.
+- **Within 3 seconds.** Slack expects an answer within 3 seconds. hangar acknowledges the command or event at once. It posts to Slack, reads the thread and submits the job in the background.
+- **Exactly once.** Slack retries an event it thinks failed (`X-Slack-Retry-Num`), and a mention in a thread arrives both as `app_mention` and as `message`. hangar acts once per `event_id` and once per message. The record of handled events survives a restart. An event counts as handled only once its handling finishes, so one that a dying process acknowledged but never handled runs when Slack retries it.
 - **No replays.** Slack doesn't retry slash commands, so a second copy of a signed command (same signature) inside the five-minute window is a replay: hangar answers "That request was already handled." and starts nothing.
-- **Other organizations.** In a Slack Connect channel, messages from another organization's members carry their own workspace ID (`user_team`). Hangar ignores their mentions and thread replies unless they are listed in `HANGAR_SLACK_USERS`, so sharing a channel doesn't give a partner company an agent on your repo. (Slack doesn't let another organization run your app's slash commands at all.)
+- **Other organizations.** In a Slack Connect channel, messages from another organization's members carry their own workspace ID (`user_team`). hangar ignores their mentions and thread replies unless they are listed in `HANGAR_SLACK_USERS`, so sharing a channel doesn't give a partner company an agent on your repo. (Slack doesn't let another organization run your app's slash commands at all.)
 - **Limits.** Each Slack user is a caller for [rate limits and the active-job cap](security.md#front-door-limits): by default 10 jobs or follow-ups at once, refilling at 30 a minute, and at most 10 unfinished jobs. Past a limit, hangar says so in the thread.
-- **Only people.** Hangar ignores messages from bots (its own included), edits and deletions.
+- **Only people.** hangar ignores messages from bots (its own included), edits and deletions.
 - **Who's asking.** The requester is `slack:<team>/<user>`, shown in the job's timeline, PR body and audit log. Slack jobs are fenced in like a `jobs` token: only repos in `HANGAR_GITHUB_REPOS`, only their environments, and no choice of provider.
 - **Who can follow up.** On a person's job, only that person (an admin uses `hangar job follow-up`); on a team job, anyone the channel trusts. A job started by someone whose Slack account is linked (`hangar person link <id> slack T…/U…`) is that person's: it runs with their own login and budget, and anyone else's reply in its thread is refused, naming whose job it is. A job started by someone with no linked account is a team job. GitHub and Jira follow the same rule (`teamcreds.may_continue`). A reply while the agent is still working gets "Can't continue yet"; reply again when the turn is done.
 - **Needs input.** When an agent stops with a question (job state `needs_input`, spec 0011 §2), hangar posts the question in the thread. Your reply is the answer: it runs as an ordinary follow-up.
@@ -113,7 +113,7 @@ Under hangar's "Continuing hangar job …" answer to a thread reply, three butto
 
 ## Inbox DMs
 
-Hangar also DMs people what needs them ([the inbox](landing.md#delivery-it-comes-to-you)): each new question or approval of their agents at once, and a digest at 10:15 and 16:00. It opens the DM with `conversations.open` and posts with `chat.postMessage`, so the app needs the **`im:write`** bot scope (in the [manifest](slack-app-manifest.yaml); an app installed before it needs the scope added and a reinstall). `hangar doctor` warns when the bot token lacks it. A DM goes to a person's linked Slack account (`hangar person link <id> slack T…/U…`); settings per person are `hangar person set <id> --dm off|questions|all --tz … --digest … --quiet …` ([team.md](team.md#inbox-delivery-dms-and-the-digest)). DM text is escaped and redacted like thread posts, and links to the thread, ticket or PR where the answer is given; there are no buttons in it.
+hangar also DMs people what needs them ([the inbox](landing.md#delivery-it-comes-to-you)): each new question or approval of their agents at once, and a digest at 10:15 and 16:00. It opens the DM with `conversations.open` and posts with `chat.postMessage`, so the app needs the **`im:write`** bot scope (in the [manifest](slack-app-manifest.yaml); an app installed before it needs the scope added and a reinstall). `hangar doctor` warns when the bot token lacks it. A DM goes to a person's linked Slack account (`hangar person link <id> slack T…/U…`); settings per person are `hangar person set <id> --dm off|questions|all --tz … --digest … --quiet …` ([team.md](team.md#inbox-delivery-dms-and-the-digest)). DM text is escaped and redacted like thread posts, and links to the thread, ticket or PR where the answer is given; there are no buttons in it.
 
 ## Security notes
 

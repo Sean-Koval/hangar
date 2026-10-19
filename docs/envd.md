@@ -56,7 +56,7 @@ runc's), and `agent_status` long-polls to stop holding API-server connections an
 1. **First use.** The first provider call for a sandbox finds no daemon, uses the provider's own exec path, and starts
    the daemon in the background. Later calls go to the daemon once it answers. `sb.info["envd"]` shows its address
    and version.
-2. **Getting the binary in.** Hangar copies it in at start:
+2. **Getting the binary in.** hangar copies it in at start:
    - Docker: one `put_archive` into `/tmp` (root-owned, so the sandbox user can't swap it) and one exec to start it.
    - Kubernetes: one exec that starts it if it's already in the pod; the first time in a pod, a streamed upload
      (~3 MB, #53's single-exec upload) comes in between.
@@ -116,7 +116,7 @@ The daemon runs inside a sandbox that runs untrusted code, so the trust boundary
 - **Deny by default.** Everything but `GET /health` needs authentication.
 - **Tokens.** Each sandbox's token is HMAC(vault key, sandbox id): unique per sandbox, never stored, the same after a
   control-plane restart (so a running daemon is found again, not started twice).
-- **Signed requests.** Hangar never sends the token. Each request carries `X-Hangar-Sig` (`<ms>.<nonce>.<body>.<mac>`):
+- **Signed requests.** hangar never sends the token. Each request carries `X-Hangar-Sig` (`<ms>.<nonce>.<body>.<mac>`):
   an HMAC with the token over the time, a random nonce, the method, the path with its query and the body's SHA-256,
   or `chunked` for an upload whose body is frames each carrying an HMAC chained from the request's. The daemon checks
   the signature before it reads any of the body and spends the nonce only then, so a peer without the token gets
@@ -127,7 +127,7 @@ The daemon runs inside a sandbox that runs untrusted code, so the trust boundary
   container IP) can't be replayed, altered, cut short or turned into a token. E2B clients use `X-Access-Token`,
   compared in constant time.
 - **Answers prove the token.** Every answer to a signed request carries `X-Hangar-Proof`, an HMAC with the token over
-  the request's signature. Hangar refuses answers without it (but a 401), so whatever else answers at a sandbox's
+  the request's signature. hangar refuses answers without it (but a 401), so whatever else answers at a sandbox's
   address, such as another sandbox that got its IP, is never taken for its daemon: its exec results, file contents and
   "no such file" are all refused, and the address is looked up again. What it does get is that one request.
 - **Untrusted answers.** Exec output keeps a bounded tail as it streams, reads stop at the caller's limit (64 MiB
@@ -170,12 +170,12 @@ uncompressed, which clients accept), pre-signed `/files` URLs, `X-Metadata-*` xa
 environment (the sandbox's, as `docker exec` gives) rather than upstream's minimal one. A hangar API that hands this
 daemon to E2B clients should report envd version `0.5.7`, the newest whose SDK features are all here.
 
-Hangar's additions: `X-Hangar-Sig`, `GET /info` (version, user, process count; authenticated), `mode=<octal>` on
+hangar's additions: `X-Hangar-Sig`, `GET /info` (version, user, process count; authenticated), `mode=<octal>` on
 uploads, and `Content-Length` on downloads.
 
 ## Troubleshooting
 
-- Hangar logs `envd: not using a daemon in <sandbox> ... (<why>)` when it falls back, then tries again 5 minutes later.
+- hangar logs `envd: not using a daemon in <sandbox> ... (<why>)` when it falls back, then tries again 5 minutes later.
 - Inside the sandbox: `/tmp/hangar-envd.log`, and `ls /tmp/hangar-envd-*` for the binary.
 - On GKE, a daemon that starts but never answers usually means the NetworkPolicy isn't applied or the CNI drops the
   traffic; hangar keeps using exec meanwhile.

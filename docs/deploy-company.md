@@ -156,7 +156,7 @@ manager, then External Secrets, then the Kubernetes Secret `hangar-credentials`,
 optional so hangar starts without it. The `external-secrets` component fills it from every remote secret named
 `hangar-credential-<name>`, as the file `<name>`.
 
-You declare the credential with a `source` instead of a value (next section). Hangar stores and seals the reference,
+You declare the credential with a `source` instead of a value (next section). hangar stores and seals the reference,
 never the value, and reads the file each time the credential is used. A rotation in your secret manager therefore
 reaches hangar on ESO's next refresh, with no restart. The value is redacted from agent output like any other
 credential, and never returned by the API or written to a log.

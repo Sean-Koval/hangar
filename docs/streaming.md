@@ -42,7 +42,7 @@ E2B's `commands.run(background=True)`, `connect`, `send_stdin`, `kill` and `list
 | `kill` | `process_id` | SIGTERM to its process group, SIGKILL 3 s later if it is still running |
 | `list` | | Your processes in the sandbox |
 
-Hangar follows each process and keeps the last 256 KiB of its output (stdout and stderr together) while nobody is
+hangar follows each process and keeps the last 256 KiB of its output (stdout and stderr together) while nobody is
 attached, so attaching later shows what it printed. A process belongs to the token that started it: no other token
 can list, attach to, write to or kill it. Exited processes stay listed for 10 minutes.
 
@@ -51,7 +51,7 @@ REST: `POST /api/sandboxes/{ref}/processes` (`{"command", "cwd"}`), `GET .../pro
 offset, so `Last-Event-ID` resumes; then `end`), `POST .../processes/{id}/input` (`{"input", "base64", "eof"}`),
 `DELETE .../processes/{id}`.
 
-After a control-plane restart, processes keep running in their sandboxes. Hangar finds a token's processes again by
+After a control-plane restart, processes keep running in their sandboxes. hangar finds a token's processes again by
 their envd tag (`hangar:<id>:<MAC>`, a MAC of the owner, sandbox and id under the control plane's key, so the agent,
 which can start processes through its own daemon, can't make one up for a token) the next time that token lists or
 attaches; their earlier output is gone (`adopted: true`).

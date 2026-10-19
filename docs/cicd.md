@@ -1,6 +1,6 @@
 # Deploying from CI/CD
 
-Hangar's control plane deploys from GitHub Actions, not from a laptop. `.github/workflows/images.yml` builds the
+hangar's control plane deploys from GitHub Actions, not from a laptop. `.github/workflows/images.yml` builds the
 environment images and harness packs on every push to `main`; `.github/workflows/deploy.yml` builds the control-plane
 image, waits for your approval, rolls it out, proves it with the acceptance checks and rolls back on failure. A merge
 to `main` starts a deploy while the infra is up, and skips it while the infra is off, held or powered down
@@ -12,7 +12,7 @@ first deploy, end to end.
 Neither workflow holds a key. They sign in to Google Cloud with [Workload Identity Federation][wif] and to hangar with
 a token kept in a GitHub environment. `deploy/gke/setup-cicd.sh` creates all of it from your machine, where `gcloud`
 (as the project's owner), `kubectl` and `gh` (as the repository's admin) are logged in, and `hangar login` has been
-run with an admin token. Hangar must already run on the cluster ([gke.md](gke.md): `deploy/gke/up.sh` makes the first
+run with an admin token. hangar must already run on the cluster ([gke.md](gke.md): `deploy/gke/up.sh` makes the first
 install; deploy.yml updates its image, and changes to `deploy/k8s`, such as the config map, still go through `up.sh`):
 
 ```bash
@@ -36,7 +36,7 @@ It is safe to re-run: each step looks first and changes only what is missing or 
 | `production` secrets | The approved deploy job | `GCP_DEPLOY_SERVICE_ACCOUNT`, `GKE_CLUSTER`, `GKE_LOCATION`, `HANGAR_URL`, and `HANGAR_DEPLOY_TOKEN` |
 
 `HANGAR_DEPLOY_TOKEN` is an admin token named `github-deploy`, minted through hangar's REST API and piped straight into
-`gh secret set`. Hangar has no deploy-only scope: the deploy drains hangar, reads its power state, runs the acceptance
+`gh secret set`. hangar has no deploy-only scope: the deploy drains hangar, reads its power state, runs the acceptance
 checks and records the deploy, all admin endpoints, and the `jobs`, `mcp` and `metrics` scopes reach none of them.
 Only the approved deploy job can read it. `--rotate-deploy-token` mints a new one, stores it, then revokes the old.
 
@@ -155,7 +155,7 @@ shows:
   the only ones that decide a rollback; the team checks after them are reported and never fail the deploy;
 - the warm and cold create times.
 
-Hangar records the deploy too: `hangar power` and `hangar doctor` show the last one and its result.
+hangar records the deploy too: `hangar power` and `hangar doctor` show the last one and its result.
 
 ## 4. When it fails, it rolls back
 

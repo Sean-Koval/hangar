@@ -63,7 +63,7 @@ Non-goals (M1):
 ## 4. User stories
 
 1. Monday, Sean runs `hangar session new early-signal --env early-signal "build the onboarding flow"` and steers the agent for an hour. He closes the laptop. Thirty minutes later the session suspends. Wednesday, `hangar session open early-signal` gives him a sandbox in about 30 seconds on the same branch, with his uncommitted sketch and the agent remembering the whole Monday conversation. He sends "now add the email step".
-2. From Claude Code: `list_sessions()`, then `send_to_session("csv-fix", "the reviewer wants a test for empty files")`. Hangar resumes the session, runs the turn, checkpoints, and returns the summary.
+2. From Claude Code: `list_sessions()`, then `send_to_session("csv-fix", "the reviewer wants a test for empty files")`. hangar resumes the session, runs the turn, checkpoints, and returns the summary.
 3. (M2) A reviewer comments `/hangar add a changelog entry` on a hangar job's PR nine days later. The job's session resumes and pushes to the same PR.
 4. The dashboard's Sessions page lists streams of work, newest first: title, repo and branch, last activity, state, and the last summary. **Resume** opens the terminal in the restored sandbox.
 

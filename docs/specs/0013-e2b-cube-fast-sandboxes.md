@@ -27,13 +27,13 @@ External claims carry a source tag such as [E2], resolved in §11. A claim marke
    - **CubeSandbox** (a Cloud Hypervisor fork in Rust) restores a memory image mapped `MAP_PRIVATE`, so every VM from one template shares its page cache. It clones the rootfs with an XFS reflink and keeps a pre-created pool of TAP devices [C2][C10][C8].
    - **What each sandbox actually costs is dirty pages.** CubeSandbox's "<5 MB overhead" is a marketing figure. Its own benchmark measures 21–26 MB per idle 2 GiB sandbox on bare metal and 27–34 MB on a PVM cloud VM [C8][C9].
    - **Rust is the right language for a VMM and a node agent.** The speed, though, comes from those mechanisms.
-3. **Hangar gets an E2B-compatible API surface,** mounted at `/e2b` on its own host name, plus a sandbox-URL edge.
+3. **hangar gets an E2B-compatible API surface,** mounted at `/e2b` on its own host name, plus a sandbox-URL edge.
    - Template maps to environment, sandbox to sandbox. Pause with `memory=false` maps to session suspend; pause with `memory=true` maps to a provider snapshot. API keys map to hangar tokens with a new `sandboxes` scope.
    - Volumes, secrets, webhooks, MCP gateway, IAM and the template build DSL don't map in the first cut (§8.1).
 4. **CubeSandbox and self-hosted E2B become flavours of hangar's `e2b` provider. Neither is a new provider.**
    - **Configuration.** The provider needs an explicit `api_url`, because CubeAPI listens on `:3000`, not `api.<domain>`. It also needs a `flavor`.
-   - **Lifecycle client.** It needs its own thin REST client for the lifecycle. The pip SDK from 2.51 on creates sandboxes with `POST /v2/sandboxes`, which CubeAPI rejects with 405; Cube's own examples pin `e2b<2.51` [C7]. Hangar requires `e2b>=2.50`.
-   - **Security gap.** CubeSandbox returns no envd access token [C6]. Hangar must keep its sandboxes private with traffic tokens and network policy.
+   - **Lifecycle client.** It needs its own thin REST client for the lifecycle. The pip SDK from 2.51 on creates sandboxes with `POST /v2/sandboxes`, which CubeAPI rejects with 405; Cube's own examples pin `e2b<2.51` [C7]. hangar requires `e2b>=2.50`.
+   - **Security gap.** CubeSandbox returns no envd access token [C6]. hangar must keep its sandboxes private with traffic tokens and network policy.
 5. **On GCP, a microVM tier runs in one of two places, and not on GKE bare metal.**
    - **Where it can't run.** GKE does not support `-metal` machine types [G4].
    - **Option A: a GKE node pool with nested virtualization.**
@@ -43,14 +43,14 @@ External claims carry a source tag such as [E2], resolved in §11. A claim marke
    - **Option B: GCE bare-metal instances outside GKE.**
      - c3-standard-192-metal is about $9.68/h, roughly the same per vCPU as VMs (secondary source [G5]).
      - The smallest is 192 vCPUs. That only pays above roughly 100 concurrent sandboxes.
-   - **Start with A.** Hangar already has an N2 nested-virtualization Kata pool in Terraform [H2].
+   - **Start with A.** hangar already has an N2 nested-virtualization Kata pool in Terraform [H2].
 6. **MicroVM snapshots beat gVisor Pod Snapshots on restore by roughly 10×.**
    - **The numbers.** CubeSandbox creates from a snapshot in 61–68 ms, whatever the dirty size up to 600 MB (bare metal, [C8]). gVisor restore was 0.3–1.25 s locally (0012 §4.3), and GKE documents "a few seconds" [0012 S40].
    - **What to do.** Keep gVisor as the default tier. Add microVMs for forks, best-of-N and RL rollouts, where restore time dominates.
 7. **Rust where it sits on a per-request hot path or inside the sandbox; Python everywhere else.**
    - **Rust:** `hangar-envd` first, then a Rust edge for sandbox URLs, then checkpoint capture as an envd RPC.
    - **The git gateway stays Python.** Its latency is GitHub's.
-   - **A home-grown node agent comes last.** Hangar builds it only if E2B and CubeSandbox both fail as providers.
+   - **A home-grown node agent comes last.** hangar builds it only if E2B and CubeSandbox both fail as providers.
    - **The boundary is separate binaries speaking HTTP, Connect or stdio, not PyO3.** The hot Python dependencies are already Rust underneath: `cryptography` and the E2B SDK's `pyqwest`.
 8. **Phase gates with numbers** (§9).
    - Exec round trip: 75 ms → ≤ 10 ms on Docker.
@@ -76,7 +76,7 @@ External claims carry a source tag such as [E2], resolved in §11. A claim marke
 
 **GCP facts** come from docs.cloud.google.com, fetched through the agent proxy. One price comes from a secondary source and is marked as such.
 
-**Not done:** no CubeSandbox or E2B cluster ran here. There is no KVM, and the disk is nearly full. The Cube and E2B performance figures are theirs, with their hardware stated. Hangar's GKE exec latency is still unmeasured; 0012 had the same gap.
+**Not done:** no CubeSandbox or E2B cluster ran here. There is no KVM, and the disk is nearly full. The Cube and E2B performance figures are theirs, with their hardware stated. hangar's GKE exec latency is still unmeasured; 0012 had the same gap.
 
 ## 3. The envd protocol: what `hangar-envd` must serve
 
@@ -152,7 +152,7 @@ Behaviour to match:
    - **Missing binary:** it still forks, because envd wraps the command in `/bin/sh -c`, and ends with 127.
 2. **Keepalive.** Send `{"event":{"keepalive":{}}}` after `Keepalive-Ping-Interval` seconds with no data. The SDK sends 50; envd defaults to 90. Data resets the timer.
 3. **The process outlives its stream.** A disconnect doesn't kill it; only `SendSignal` or the deadline does.
-4. **`Connect-Timeout-Ms` on `Start` is the process's lifetime.** On expiry envd kills the process and ends the stream with `deadline_exceeded` (*measured*). The SDK sends 60000 for `commands.run` unless the caller passes `timeout=0`. Hangar's long agent commands must pass 0.
+4. **`Connect-Timeout-Ms` on `Start` is the process's lifetime.** On expiry envd kills the process and ends the stream with `deadline_exceeded` (*measured*). The SDK sends 60000 for `commands.run` unless the caller passes `timeout=0`. hangar's long agent commands must pass 0.
 5. **Environment.** Later entries win:
    1. `PATH` from the daemon;
    2. `HOME`, `USER` and `LOGNAME` of the run-as user;
@@ -205,12 +205,12 @@ One file write produced CREATE, CHMOD and WRITE events. A recursive watch needs 
 | `GET /files?path=&username=` | `files.read` | Raw bytes with `Content-Disposition: inline; filename=…`. Honours `Accept-Encoding: gzip`; the SDKs send `gzip, deflate`, and envd answers with `Content-Encoding: gzip`. Errors are JSON `{"code":<int>,"message":…}`: 400 for a directory, 401 for an unknown user, 404, and 406 for a bad encoding. |
 | `POST /files?path=&username=` | `files.write`, `files.write_files` | Two body types are accepted. **Multipart:** every part is named `file`, and its `filename` is the full target path in both SDKs; with a single part, `?path=` wins. **`application/octet-stream`:** the raw body, which needs `?path=` and allows `Content-Encoding: gzip`. Either way it creates parent directories, overwrites, and sets ownership to the user. `X-Metadata-<k>` headers become `user.e2b.<k>` xattrs. Returns `200 [{"path","name","type":"file"}]`, or 507 when the disk is full. |
 | `GET /metrics`, `GET /envs`, `POST /files/compose` | not on the SDK's main path | Optional. |
-| `POST /init` | E2B's orchestrator only | Sets the token, env, default user and workdir, and the clock. Hangar can use its own boot path. The proxy must never forward `/init` from outside; E2B's proxy builds its deny list from the operations marked `x-internal`. |
+| `POST /init` | E2B's orchestrator only | Sets the token, env, default user and workdir, and the clock. hangar can use its own boot path. The proxy must never forward `/init` from outside; E2B's proxy builds its deny list from the operations marked `x-internal`. |
 | `/freeze`, `/unfreeze`, `/fsfreeze`, `/fsthaw`, `/collapse`, `/upgrade` | E2B's orchestrator around a snapshot | Skip them for the SDK. `/freeze` (freezing cgroups before a snapshot) is worth copying for the microVM tier (§6). |
 
 ### 3.6 Auth
 
-- **Access token.** Clients send `X-Access-Token: <envdAccessToken>`. Once a token is set, every route except `GET /health`, `GET /files`, `POST /files` and `POST /init` must present it, or the request fails with `401 {"code":401,…}` [E2 `internal/api/auth.go`]. Compare in constant time. Hangar sets the token at boot; envd stays open until `/init` sets one.
+- **Access token.** Clients send `X-Access-Token: <envdAccessToken>`. Once a token is set, every route except `GET /health`, `GET /files`, `POST /files` and `POST /init` must present it, or the request fails with `401 {"code":401,…}` [E2 `internal/api/auth.go`]. Compare in constant time. hangar sets the token at boot; envd stays open until `/init` sets one.
 - **`/files` signatures.** These are for pre-signed URLs, and are accepted when the header token is absent: `"v1_" + base64.RawStd(sha256("<path>:<read|write>:<username>:<token>[:<expiration>]"))`, with an optional `signature_expiration` in unix seconds. A header token, if present, must match.
 - **User selection is not authentication.** `Authorization: Basic base64("user:")` only picks the user to run as.
 - **Routing headers.** Every request carries `E2b-Sandbox-Id` and `E2b-Sandbox-Port`, for the edge (§4.3). The daemon ignores them.
@@ -227,7 +227,7 @@ One file write produced CREATE, CHMOD and WRITE events. A recursive watch needs 
 - `0.6.3`: entry info in events.
 - `0.6.4`: watching network mounts.
 
-These are defined in `e2b/envd/versions.py` and `js-sdk/src/envd/versions.ts` [E6]. Hangar's control API should report the highest version whose features `hangar-envd` fully implements; `0.6.4` covers everything 2.56 uses.
+These are defined in `e2b/envd/versions.py` and `js-sdk/src/envd/versions.ts` [E6]. hangar's control API should report the highest version whose features `hangar-envd` fully implements; `0.6.4` covers everything 2.56 uses.
 
 **Conformance harness.** `E2B_DEBUG=true` makes both SDKs skip the control plane and talk to `http://localhost:49983`. `Sandbox.create()` then returns `sandbox_id="debug_sandbox_id"` with `envd_version=99.99.99` and no token. So the real SDKs are the conformance suite, with no API server needed.
 
@@ -316,7 +316,7 @@ Per-sandbox tokens come back from create and connect:
 - **URL format.** The SDK builds `https://{port}-{sandboxID}.{domain}` [E6 `connection_config.py: get_host`]. For E2B's own domains (`e2b.app`, `e2b.dev`, `e2b.pro`, `e2b-staging.dev`) it sends envd traffic to the shared host `https://sandbox.{domain}` and routes with the `E2b-Sandbox-Id` and `E2b-Sandbox-Port` headers. For any other domain, which is how hangar and CubeSandbox are reached, it uses the per-port host [E6 `sandbox_domains.py`].
 - **How the edge parses it.** The proxy reads headers only on the shared host or on localhost and IP hosts. Otherwise it parses the first DNS label as `<port>-<id>` [E5 `proxy/host.go`].
   - E2B sandbox IDs match `^[a-z0-9]+$`.
-  - Hangar's IDs look like `sb-1a2b3c4d`, so hangar's edge must split the label at the *first* `-` only.
+  - hangar's IDs look like `sb-1a2b3c4d`, so hangar's edge must split the label at the *first* `-` only.
 - **`domain` in the response.** The API's `Sandbox.domain` is set only for bring-your-own-cloud clusters. The SDK falls back to `E2B_DOMAIN`, then to `api.<domain>` for the API [E3].
 - **SDK overrides.** `E2B_API_URL` overrides the API base and `E2B_SANDBOX_URL` the envd base [E6]. Both are global to the process.
 
@@ -392,9 +392,9 @@ It adds `rollback`, `templates/compat` and `adopt-baseline`.
 Gaps, against the 2.56 SDK:
 
 - **`POST /v2/sandboxes` and `POST /v2/sandboxes/{id}/connect` are missing.** From 2.51 on, pip `e2b` calls only these. I checked the wheels: 2.52.1, 2.53.1, 2.55.1 and 2.56.0 call v2, while 2.29.5 and 2.44.0 call v1 (§2, item 5). The 2.51 cut-off is from Cube's note. Cube's own example says create "gets 405 (that route is GET-only)" and pins `e2b>=2.7.0,<2.51` [C7]. So `Sandbox.create()` from a current SDK fails against CubeSandbox at this commit.
-- **No fork, `/v3/templates`, step-based builds, file-hash uploads, tags, API keys, secrets, events or webhooks.** Template builds are image-based: `image`, CPU in millicores, `writableLayerSize`, `exposedPorts`, `probePort`. Hangar's `Template.build` path (`from_image` → `/v3/templates` + `/v2/.../builds`) won't work, so it needs a Cube branch.
+- **No fork, `/v3/templates`, step-based builds, file-hash uploads, tags, API keys, secrets, events or webhooks.** Template builds are image-based: `image`, CPU in millicores, `writableLayerSize`, `exposedPorts`, `probePort`. hangar's `Template.build` path (`from_image` → `/v3/templates` + `/v2/.../builds`) won't work, so it needs a Cube branch.
 - **No envd access token.** `envdAccessToken` is always `None` [C6 `services/sandboxes.rs:146,663`]. envd inside CubeSandbox is unauthenticated, and CubeProxy enforces a traffic token only when `allowPublicTraffic=false` [C11 `sandbox_backend.lua`].
-- **Auth is off by default.** With `AUTH_CALLBACK_URL` set, CubeAPI POSTs the caller's `Authorization: Bearer` or `X-API-Key`, with the path and method, to a callback, and allows the request only on a 200 [C11]. Hangar can be that callback (§8.3).
+- **Auth is off by default.** With `AUTH_CALLBACK_URL` set, CubeAPI POSTs the caller's `Authorization: Bearer` or `X-API-Key`, with the path and method, to a callback, and allows the request only on a 200 [C11]. hangar can be that callback (§8.3).
 - **The data plane is faithful by construction,** since it is E2B's envd.
 
 ### 5.5 Benchmarks: what was measured, and on what hardware
@@ -424,7 +424,7 @@ Plan on about 50–70 ms per create at low concurrency and 25–35 MB per idle V
   - *Limits:* it can't be turned on for an existing pool, the setting is immutable, and Pods need `privileged: true`. Autopilot allows privileged Pods only through a `WorkloadAllowlist` or for approved partners.
 - **Bare metal** [G3]. `c3-{highcpu,standard,highmem}-192-metal` (192 vCPU with 512, 768 or 1,536 GB), `c4-*-288-metal`, `c4d-*-384-metal` and `c4a-*-96-metal`. Each needs a dedicated host, uses Hyperdisk only, and has no live migration (`TERMINATE` on maintenance). **GKE does not support `-metal` machine types** [G4].
 - **Price.** A secondary source gives c3-standard-192-metal at $9.68–12.43/h on demand by region (≈ $7,064/month at the low end) [G5]. That is about $0.050 per vCPU-hour with 4 GB, the same as 0012's GKE estimate for N2. GCE bills metal by vCPU and memory, like VMs.
-- **Hangar today** [H2].
+- **hangar today** [H2].
   - *Kata pool:* `deploy/terraform/gke` can add an Intel N2 Ubuntu nested-virtualization pool for Kata.
   - *GKE add-on runtime classes:* the Agent Sandbox add-on allows only the `gvisor` and `microvm` RuntimeClasses. `microvm` is GKE's managed Kata on Cloud Hypervisor, but node pools can't be created with it yet (gcloud 588).
   - *Measured start times:* local Kata creates in about 2 s, and GKE gVisor warm claims take 1.5 s, cold 17 s.
@@ -433,8 +433,8 @@ Plan on about 50–70 ms per create at low concurrency and 25–35 MB per idle V
 
 | Option | How | For | Against |
 | --- | --- | --- | --- |
-| **A. GKE nested-virtualization pool** (recommended first) | A new node pool (C3 or N2 Intel, Ubuntu image for E2B; COS works for Kata) tainted `hangar.dev/runtime=microvm`. It runs CubeSandbox's node DaemonSets or E2B's orchestrator as privileged `hostNetwork` Pods. Hangar's control plane talks to that stack's API through the `e2b` provider (§8.2). | Same cluster, VPC, Workload Identity and autoscaler. Spot works. Terraform already has the pattern. | 10%+ nested penalty. Privileged Pods weaken the node boundary, so the pool must be dedicated. E2B needs a non-COS image and hugepages before the kubelet starts. CubeSandbox needs XFS for `/data/cubelet`. PVM is impossible because GKE doesn't allow a custom kernel. |
-| **B. GCE bare-metal MIG outside GKE** | A managed instance group of `c3-standard-192-metal` running E2B Embed or CubeSandbox (or, later, a hangar node agent) directly. Hangar reaches it over the VPC. | No nested penalty; the published numbers apply; very high density (CubeSandbox: 1,000 idle 2 GiB VMs in 25 GiB). | A 192-vCPU minimum (~$7k/month). No GKE scheduling, so it is a second fleet to run. TERMINATE on maintenance. |
+| **A. GKE nested-virtualization pool** (recommended first) | A new node pool (C3 or N2 Intel, Ubuntu image for E2B; COS works for Kata) tainted `hangar.dev/runtime=microvm`. It runs CubeSandbox's node DaemonSets or E2B's orchestrator as privileged `hostNetwork` Pods. hangar's control plane talks to that stack's API through the `e2b` provider (§8.2). | Same cluster, VPC, Workload Identity and autoscaler. Spot works. Terraform already has the pattern. | 10%+ nested penalty. Privileged Pods weaken the node boundary, so the pool must be dedicated. E2B needs a non-COS image and hugepages before the kubelet starts. CubeSandbox needs XFS for `/data/cubelet`. PVM is impossible because GKE doesn't allow a custom kernel. |
+| **B. GCE bare-metal MIG outside GKE** | A managed instance group of `c3-standard-192-metal` running E2B Embed or CubeSandbox (or, later, a hangar node agent) directly. hangar reaches it over the VPC. | No nested penalty; the published numbers apply; very high density (CubeSandbox: 1,000 idle 2 GiB VMs in 25 GiB). | A 192-vCPU minimum (~$7k/month). No GKE scheduling, so it is a second fleet to run. TERMINATE on maintenance. |
 | **C. GKE managed `microvm` RuntimeClass** | Wait for node pools with `--sandbox type=microvm`. | Google runs it. | Not available; restore speed and snapshot API unknown. |
 
 **Comparison with the gVisor pool and Pod Snapshots.**
@@ -447,7 +447,7 @@ Plan on about 50–70 ms per create at low concurrency and 25–35 MB per idle V
 | Memory per idle sandbox | the Pod's working set | each restore holds its own copy (0012 §4.3, 512 MB case) | dirty pages + VMM, 21–34 MB [C8][C9]; shared page cache |
 | Operating cost | managed | managed | a privileged stack hangar must run |
 
-**Decision.** Keep gVisor as the default tier: it is managed, needs no privilege, and is fast enough for single sessions. Add the microVM tier for forks, best-of-N and RL rollouts (0008), where per-clone restore time and memory sharing dominate. Hangar selects it with the env's `runtime: microvm`.
+**Decision.** Keep gVisor as the default tier: it is managed, needs no privilege, and is fast enough for single sessions. Add the microVM tier for forks, best-of-N and RL rollouts (0008), where per-clone restore time and memory sharing dominate. hangar selects it with the env's `runtime: microvm`.
 
 ## 7. Rust in hangar: where it pays
 
@@ -466,7 +466,7 @@ Plan on about 50–70 ms per create at low concurrency and 25–35 MB per idle V
 - **Separate binaries, not PyO3.**
   - `hangar-envd` runs inside the sandbox.
   - The edge runs as a sidecar or Deployment.
-  - Hangar talks to both over HTTP and Connect.
+  - hangar talks to both over HTTP and Connect.
   - The control plane's envd client is a ~150-line Connect-JSON client on `httpx` (`hangar/envd_client.py`), so hangar doesn't depend on the E2B SDK's internals and can talk to E2B, CubeSandbox and its own daemon the same way.
 - **PyO3 only for in-process hot loops that profiling proves.** None exist today. The heavy Python dependencies are already Rust: `cryptography`, `pydantic-core`, and the E2B SDK's `pyqwest`.
 - **Distribution.** The Rust binaries ship as static musl builds in the harness-pack image volume (0006), so every environment gets `hangar-envd` without rebuilding its image. Docker gets it through a bind mount; E2B and CubeSandbox templates through a baked layer.
@@ -538,7 +538,7 @@ These are changes to `providers/e2b.py` and `config.py`, in the provider's own m
 | `envdAccessToken` | 32 random bytes per sandbox. hangar-envd gets it at boot through a 0600 file or env var read once and unset, never through a network `/init`. The control plane keeps it encrypted with the vault, so it can be returned again on connect. It is rotated on every fork and restore. It is never a gateway grant and grants nothing outside the sandbox. |
 | `trafficAccessToken` | Per sandbox, checked by the edge on `e2b-traffic-access-token`. Default `allowPublicTraffic=false` (deny by default). An environment can opt into public ports. |
 | `X-Team-ID`, admin tokens | Unsupported (501). |
-| CubeSandbox `AUTH_CALLBACK_URL` | Hangar can serve the callback: `POST /e2b/auth/callback` verifies the forwarded key as a `sandboxes`-scoped token. CubeSandbox then shares hangar's token store. That is optional; a single service key in hangar's provider config also works. |
+| CubeSandbox `AUTH_CALLBACK_URL` | hangar can serve the callback: `POST /e2b/auth/callback` verifies the forwarded key as a `sandboxes`-scoped token. CubeSandbox then shares hangar's token store. That is optional; a single service key in hangar's provider config also works. |
 
 ## 9. Phased plan and success metrics
 
@@ -610,7 +610,7 @@ Fetched or cloned 2026-10-13.
 - G4 [About machine support with GKE clusters](https://docs.cloud.google.com/kubernetes-engine/docs/concepts/machine-support)
 - G5 [gcloud-compute.com: c3-standard-192-metal](https://gcloud-compute.com/c3-standard-192-metal.html) (secondary)
 
-**Hangar**
+**hangar**
 
 - H1 `bench/results/2026-10-13-perf-docker-ab-after.json`
 - H2 `docs/gke.md` §4, `docs/local-microvms.md`, `deploy/terraform/gke/variables.tf`

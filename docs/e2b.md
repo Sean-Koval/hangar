@@ -1,6 +1,6 @@
 # E2B-compatible API
 
-Hangar answers [E2B](https://e2b.dev)'s API. Anything built on the e2b SDKs can then use your own sandboxes, with your environments, git gateway, limits and audit log, after changing an API key and a URL and nothing else. That covers the `e2b` and `e2b-code-interpreter` SDKs (Python and JS), the OpenAI Agents SDK's and LangChain's E2B integrations, and agent products that run code in E2B. It is spec 0013's phase 2.
+hangar answers [E2B](https://e2b.dev)'s API. Anything built on the e2b SDKs can then use your own sandboxes, with your environments, git gateway, limits and audit log, after changing an API key and a URL and nothing else. That covers the `e2b` and `e2b-code-interpreter` SDKs (Python and JS), the OpenAI Agents SDK's and LangChain's E2B integrations, and agent products that run code in E2B. It is spec 0013's phase 2.
 
 - **The control API** (`src/hangar/e2b_api.py`) is mounted at `/e2b`. It creates, lists, times out, pauses, resumes and kills sandboxes, and lists environments as templates.
 - **The sandbox router** (`src/hangar/sandbox_router.py`) serves E2B's sandbox URLs. It sends commands, files and terminals to each sandbox's [hangar-envd](envd.md), and an app's traffic to its own port.
@@ -36,7 +36,7 @@ Sandboxes run on Docker or Kubernetes, the providers that have hangar-envd.
 
 Tested with the stock SDKs: pip `e2b` 2.55.1 (the locked version) and 2.56.0 (the latest, released today) in `tests/test_e2b_api.py` and `tests/test_e2e_e2b_docker.py`, and npm `e2b` 2.56.0 (a smoke script against Docker, below).
 
-| SDK | API | Hangar |
+| SDK | API | hangar |
 | --- | --- | --- |
 | `Sandbox.create(template, timeout, envs, metadata)` | `POST /v2/sandboxes` (2.51+), `POST /sandboxes` | `fleet.create` from the environment; returns the sandbox's tokens and `envdVersion`. `Idempotency-Key` is honoured per token. |
 | `Sandbox.list(query)` | `GET /v2/sandboxes`, `GET /sandboxes` | metadata, state, template, `startedAfter`, order and `nextToken` paging (`x-next-token`, a position: killing a sandbox between pages doesn't break it) |
@@ -104,7 +104,7 @@ It runs in hangar's process, in front of the app, and routes by:
 
 Port 49983 goes to hangar-envd, signed as [envd.md](envd.md) describes: RPC bodies (up to 8 MiB) are read whole and signed with their hash, and uploads stream through as frames that each carry their own HMAC, so the daemon writes nothing it hasn't checked and an upload the router stops (over the cap, a client gone) leaves the file as it was. A multipart upload becomes one signed upload per file, because the daemon takes signed uploads as octet-stream only. Every answer must carry the daemon's `X-Hangar-Proof`: anything else answering at the sandbox's address gets the client a 502, and the address is looked up again. The daemon's `/health` answers anyone, so the router answers it with a signed `/info`. Responses stream back as they arrive. Small ones go back in one piece, and for streams a client that disconnects closes the upstream request (the process keeps running, as with E2B). Other ports are plain HTTP and WebSocket proxying to the sandbox's address (see Security). Docker Desktop, where container addresses aren't routable, reaches only envd.
 
-**What it costs.** `scripts/bench/e2b_router.py` drives the SDK and raw Connect calls against one Docker sandbox, through the router and straight to the daemon, interleaved. Hangar runs in a separate process. On a 2-vCPU VM (`bench/results/2026-10-13-e2b-router-docker.json`):
+**What it costs.** `scripts/bench/e2b_router.py` drives the SDK and raw Connect calls against one Docker sandbox, through the router and straight to the daemon, interleaved. hangar runs in a separate process. On a 2-vCPU VM (`bench/results/2026-10-13-e2b-router-docker.json`):
 
 | | direct p50 / p95 | through the router p50 / p95 | added p50 |
 | --- | --- | --- | --- |

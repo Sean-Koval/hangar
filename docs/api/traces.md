@@ -1,6 +1,6 @@
 # Trace export: `hangar.trace/v1`
 
-Hangar exports what an agent did as OpenTelemetry traces in OTLP/JSON, so tools outside hangar can read runs without
+hangar exports what an agent did as OpenTelemetry traces in OTLP/JSON, so tools outside hangar can read runs without
 knowing hangar's internals: the sister tool's trace timelines and behavior specs, an OTLP collector, Jaeger, Tempo or
 Phoenix. This page is the contract. It is versioned: a change that removes or renames anything below is a new version
 (`hangar.trace/v2`); adding a kind, an attribute or an event is not.
@@ -176,7 +176,7 @@ for Claude Code, `openai` for Codex, `gcp.gemini` for Antigravity; unset for pi,
 `gen_ai.usage.input_tokens` (all input, cached included, as the convention says), `gen_ai.usage.output_tokens`,
 `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_write.input_tokens`, `error.type` when it failed.
 
-Hangar: `hangar.turn.number` (1-based, in the session), `hangar.run.id`, `hangar.session.id`, `hangar.turn.mode` (`new`,
+hangar: `hangar.turn.number` (1-based, in the session), `hangar.run.id`, `hangar.session.id`, `hangar.turn.mode` (`new`,
 `resume`, `handoff`, `fork`), `hangar.turn.outcome` (`exited`, `timed_out`, `cancelled`, `over_budget`, `gone`,
 `error`, `needs_input`, `interrupted`), `hangar.turn.exit_code`, `hangar.harness`, `hangar.harness.version`,
 `hangar.turn.live`, `hangar.approvals` (`auto`, `ask`, `deny-risky`), `hangar.cost_usd`, `hangar.cost_source`
@@ -213,7 +213,7 @@ GenAI: `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name` (as the harness 
 `process.executable.name` when the command is one process (not a list or a pipeline); for `skill`,
 `gen_ai.skill.name`.
 
-Hangar: `hangar.tool.kind`, `hangar.tool.input` (a one-line summary: the command, the path, the pattern or the URL;
+hangar: `hangar.tool.kind`, `hangar.tool.input` (a one-line summary: the command, the path, the pattern or the URL;
 clipped, redacted), `hangar.tool.output` (the start of the result; clipped, redacted), `hangar.tool.ok`,
 `hangar.seq` and `hangar.seq.end`, `hangar.file.path` and `hangar.file.repo_path` (edit and read; a Codex
 `apply_patch` naming several files has only `hangar.file.path`: its `file.change` events have one each),
