@@ -117,7 +117,7 @@ Each part job carries the parent's `relay.reply_to` label, so the PRs' own event
 The deploy step is two **deliverers**, named by `kind` (`hangar.plugin/v1`, `src/hangar/ext/deliverers.py`):
 
 - `ready(ctx)` is polled by the control plane, with no sandbox. It answers `Ready` (with details for `apply`), or `None` for "not yet".
-- `apply(ctx, ready)` runs once in the deploy repo's checkout (`ctx.checkout`), changing it through `ctx.exec` only. Hangar commits, pushes and opens the PR.
+- `apply(ctx, ready)` runs once in the deploy repo's checkout (`ctx.checkout`), changing it through `ctx.exec` only. hangar commits, pushes and opens the PR.
 
 Two are built in:
 
