@@ -1,4 +1,11 @@
-<div class="af-hero" markdown>
+---
+hide:
+  - navigation
+  - toc
+---
+
+<div class="af-hero af-hero--visual" markdown>
+<div markdown>
 <span class="af-eyebrow">Agent factory · Run plane</span>
 
 # Hand tickets to coding agents in isolated cloud sandboxes
@@ -7,10 +14,11 @@
 
 [Quickstart](#quickstart){ .md-button .md-button--primary } [Suite overview](https://sean-koval.github.io/agent-factory/){ .md-button }
 </div>
-
-<video src="assets/front/hangar-demo.mp4" poster="assets/front/ui-jobs.png" autoplay loop muted playsinline controls width="100%" aria-label="A GitHub issue labelled hangar becomes a job: a sandbox starts, the agent edits and tests the code, hangar verifies and opens draft PR #43, and the PR waits in Needs you with a question another job asked"></video>
-
-<small>A ticket becoming a sandbox run and a draft PR, recorded by `docs/assets/front/make.py` against the demo hangar (the fake provider, a scripted agent and a stand-in GitHub).</small>
+<figure class="af-hero__visual">
+<video src="assets/front/hangar-demo.mp4" poster="assets/front/ui-jobs.png" autoplay loop muted playsinline controls width="1440" height="900" aria-label="A GitHub issue labelled hangar becomes a job: a sandbox starts, the agent edits and tests the code, hangar verifies and opens draft PR #43, and the PR waits in Needs you with a question another job asked"></video>
+<figcaption>A ticket becoming a sandbox run and a draft PR, recorded by docs/assets/front/make.py against the demo hangar</figcaption>
+</figure>
+</div>
 
 ## What it looks like
 
