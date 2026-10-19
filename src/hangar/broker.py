@@ -24,7 +24,7 @@ import hangar.identity as identity  # --- identity
 from hangar.harnesses import HARNESSES, slot_for
 from hangar.models import Credential, CredentialKind, now
 from hangar.store import Store
-from hangar.vault import Vault
+from hangar.vault import REF_PREFIX, Vault
 
 if TYPE_CHECKING:
     from hangar.config import Settings
@@ -37,6 +37,11 @@ NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 AUTH_FILE_LIMIT = 1024 * 1024  # a harness login file (~/.codex/auth.json and the like are a few KB)
 ENV_FILE_LIMIT = 1024 * 1024  # ~/.hangar/env: hangar's exports and PATH lines
 log = logging.getLogger("hangar.broker")
+
+
+def _is_reference(value: str | bytes) -> bool:
+    """--- company-deploy: the value is a reference to a mounted file (the vault seals it as one), not a secret."""
+    return (value.encode() if isinstance(value, str) else value).startswith(REF_PREFIX.encode())
 
 
 class CredentialError(RuntimeError):
@@ -109,9 +114,17 @@ class Broker:
         exposure: str | None = None,  # --- identity: "sandbox" | "control_plane"; unset keeps the stored choice
         person: str | None = None,  # --- identity: whose own credential it is; unset keeps the stored owner
         team: bool = False,  # --- teamcreds: a team credential (no person), whoever owned it before
+        reference_ok: bool = False,  # --- company-deploy: an admin may store a reference to a mounted file
     ) -> Credential:
         if not NAME_RE.match(name):
             raise CredentialError(f"invalid credential name '{name}': letters, digits, '.', '_', '-'")
+        # --- company-deploy: a value naming a mounted file (vault.REF_PREFIX) makes a file-backed credential. Only an
+        # admin creates one (the API passes reference_ok for admins): otherwise a member could point a credential of
+        # their own at a mounted file meant for something else, before an admin declares that name
+        is_ref = _is_reference(value)
+        if is_ref and not reference_ok:
+            raise identity.Forbidden(f"credential '{name}': only an admin can make a credential that reads a mounted "
+                                     "file (hangar apply with an admin token)")
         if exposure not in (None, "sandbox", "control_plane"):  # --- identity
             raise CredentialError("exposure must be sandbox or control_plane")
         slot = slot_for(harness, kind)
@@ -122,7 +135,10 @@ class Broker:
             if env_var or file_path:
                 raise CredentialError("github_app credentials can't be mapped into sandboxes")
             try:
-                parse_app_credential(value)
+                # --- company-deploy: a mounted App key may not be synced yet; it is parsed when used, and `hangar
+                # doctor` checks it (Gateway.doctor), like any other App key
+                if not is_ref:
+                    parse_app_credential(value)
             except GatewayError as e:
                 raise CredentialError(str(e)) from None
         # `webhook` credentials are signing keys the control plane uses (job callbacks); never put in sandboxes.
@@ -233,6 +249,10 @@ class Broker:
                 cur = self.store.get(Credential, c.name)
                 if cur is None or cur.leased_to != sandbox.id:
                     continue
+                if data and _is_reference(data):  # --- company-deploy: a sandbox never writes a reference back
+                    log.warning("not writing back credential %s: %s in sandbox %s names a mounted file", c.name,
+                                c.file_path, sandbox.id)
+                    data = None
                 if data and data != self.vault.get(f"cred:{c.name}"):
                     self.vault.put(f"cred:{c.name}", data)
                     cur.updated_at = now()
