@@ -58,7 +58,9 @@ markdown_extensions:
           class: mermaid
           format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.details
-  - pymdownx.snippets
+  - pymdownx.snippets:
+      base_path: [docs/assets/diagrams]   # the theme-aware SVGs diagram.py draws, inlined with --8<--
+      check_paths: true
 
 # Benchmark scripts kept next to a research note; not pages.
 exclude_docs: |

@@ -1,0 +1,21 @@
+<svg class="af-d" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 300" role="img" aria-label="Slack: a command, a thread, a follow-up">
+<style>
+  .af-d .bg { fill: var(--af-canvas, #000); }
+  .af-d .box { fill: var(--af-raised, #141414); }
+  .af-d .box-hub { fill: var(--af-raised, #141414); stroke: var(--af-brand-line, #FFC400); stroke-width: 1.5; }
+  .af-d .box-plan { fill: none; stroke: var(--af-line-strong, #6B6B6B); stroke-width: 1; stroke-dasharray: 4 4; }
+  .af-d .box-ext { fill: var(--af-surface, #0A0A0A); stroke: var(--af-line-strong, #6B6B6B); stroke-width: 1; }
+  .af-d .person { fill: var(--af-surface, #0A0A0A); stroke: var(--af-fg-subtle, #8A8A8A); stroke-width: 1; }
+  .af-d .bound { fill: none; stroke: var(--af-rule, #3A3A3A); stroke-width: 1; stroke-dasharray: 2 5; }
+  .af-d .name { font: 700 15px "Archivo", "Helvetica Neue", Arial, sans-serif; font-stretch: 125%; fill: var(--af-fg, #fff); }
+  .af-d .name-s { font: 700 13px "Archivo", "Helvetica Neue", Arial, sans-serif; font-stretch: 125%; fill: var(--af-fg, #fff); }
+  .af-d .title { font: 700 20px "Archivo", "Helvetica Neue", Arial, sans-serif; font-stretch: 125%; fill: var(--af-fg, #fff); }
+  .af-d .body { font: 400 12.5px "Red Hat Text", "Helvetica Neue", Arial, sans-serif; fill: var(--af-fg-muted, #A6A6A6); }
+  .af-d .lbl { font: 500 10.5px "DM Mono", ui-monospace, Menlo, monospace; letter-spacing: .08em; fill: var(--af-fg-subtle, #8A8A8A); }
+  .af-d .edge { fill: none; stroke: var(--af-fg-subtle, #8A8A8A); stroke-width: 1.25; }
+  .af-d .edge-plan { fill: none; stroke: var(--af-fg-subtle, #8A8A8A); stroke-width: 1.25; stroke-dasharray: 5 4; }
+  .af-d .elabel { font: 400 11.5px "Red Hat Text", "Helvetica Neue", Arial, sans-serif; fill: var(--af-fg-subtle, #8A8A8A); }
+  .af-d .arrowhead { fill: var(--af-fg-subtle, #8A8A8A); }
+  .af-d .dot { fill: var(--af-dot-field, #262626); }
+</style>
+<defs><marker id="slack:-a-command,-a-thre-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0 0L10 5L0 10z"/></marker></defs><rect class="bg" width="800" height="300"/><rect class="person" x="20" y="40" width="200" height="64" rx="3"/><text class="name-s" x="38" y="66">/hangar &lt;instructions&gt;</text><text class="body" x="38" y="88">in a channel</text><rect class="box-hub" x="300" y="40" width="200" height="82" rx="3"/><rect x="300" y="40" width="200" height="2" fill="var(--af-product-hangar, #EE8F63)"/><text class="name-s" x="318" y="66">hangar posts</text><text class="body" x="318" y="88">“@you asked hangar to</text><text class="body" x="318" y="106">work on owner/repo”</text><rect class="box-ext" x="580" y="40" width="200" height="118" rx="3"/><text class="name-s" x="598" y="66">The thread</text><text class="body" x="598" y="88">Queued as job-3fa2c1d0</text><text class="body" x="598" y="106">Agent started</text><text class="body" x="598" y="124">Done: PR, verification,</text><text class="body" x="598" y="142">summary</text><path class="edge" d="M220 72H298" marker-end="url(#slack:-a-command,-a-thre-arrow)"/><path class="edge" d="M500 72H578" marker-end="url(#slack:-a-command,-a-thre-arrow)"/><rect class="box" x="300" y="190" width="200" height="64" rx="3"/><text class="name-s" x="318" y="216">Follow-up turn</text><text class="body" x="318" y="238">same branch and PR</text><path class="edge-plan" d="M680 160V222H502" marker-end="url(#slack:-a-command,-a-thre-arrow)"/><text class="elabel" x="590" y="216" text-anchor="middle">a reply in the thread</text><path class="edge" d="M400 254V280H680V282" marker-end="url(#slack:-a-command,-a-thre-arrow)"/><text class="elabel" x="540" y="274" text-anchor="middle">Done, again in the thread</text></svg>
