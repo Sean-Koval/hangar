@@ -9,7 +9,7 @@ from pathlib import Path
 import typer
 
 changeset_app = typer.Typer(no_args_is_help=True, help="Change sets: one ticket across several repos, one PR per "
-                                                       "changed repo, landed in order.")
+                                                       "changed repo, landed in order, then the deploy step.")
 
 
 def _cli():
@@ -32,7 +32,7 @@ def _read(path: Path) -> dict:
 
 @changeset_app.command("validate")
 def validate(file: Path = typer.Argument(..., help="A hangar.changeset-profile/v1 YAML or JSON file.")):
-    """Check a profile offline (no control plane): its shape, roles and land_order.
+    """Check a profile offline (no control plane): its shape, roles, land_order and deploy step.
 
     Example:  hangar changeset validate policy/changesets/payments-bot.yaml"""
     from hangar.changesets import ChangeSetError, parse_profile
@@ -42,7 +42,8 @@ def validate(file: Path = typer.Argument(..., help="A hangar.changeset-profile/v
     except ChangeSetError as e:
         typer.secho(f"{file}: {e}", fg="red", err=True)
         raise typer.Exit(1) from None
-    typer.echo(f"{p.name}: ok ({p.digest()}); lands " + " → ".join(p.land_order))
+    typer.echo(f"{p.name}: ok ({p.digest()}); lands " + " → ".join(p.land_order)
+               + (f", then {p.deploy.role} ({p.deploy.apply.kind})" if p.deploy else ""))
 
 
 @changeset_app.command("profile-set")
@@ -63,7 +64,9 @@ def profiles(as_json: bool = typer.Option(False, "--json")):
     if not xs:
         typer.echo("No change-set profiles. Add one with: hangar changeset profile-set FILE")
     for p in xs:
-        typer.echo(f"{p['name']:24} {', '.join(p['repos'])}  lands {' → '.join(p['land_order'])}")
+        deploy = p.get("deploy") or {}
+        typer.echo(f"{p['name']:24} {', '.join(p['repos'])}  lands {' → '.join(p['land_order'])}"
+                   + (f", then {deploy['role']}" if deploy else ""))
 
 
 @changeset_app.command("profile")
@@ -79,7 +82,7 @@ def profile_rm(name: str):
 
 
 @changeset_app.command("list")
-def list_(state: str | None = typer.Option(None, help="working | landing | done | broken"),
+def list_(state: str | None = typer.Option(None, help="working | landing | deploying | done | broken"),
           as_json: bool = typer.Option(False, "--json")):
     """Change sets, newest first."""
     xs = _cli()._call("GET", "/api/changesets", params={"state": state} if state else None)
@@ -94,5 +97,5 @@ def list_(state: str | None = typer.Option(None, help="working | landing | done 
 
 @changeset_app.command("get")
 def get(cs_id: str):
-    """One change set, as JSON: its roles, parts and landing order."""
+    """One change set, as JSON: its roles, parts, landing order and deploy step."""
     _cli()._print(_cli()._call("GET", f"/api/changesets/{cs_id}"))
