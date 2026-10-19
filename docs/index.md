@@ -15,8 +15,8 @@ hide:
 [Quickstart](guide.md#quickstart){ .md-button .md-button--primary } [The web console](console.md){ .md-button }
 </div>
 <figure class="af-hero__visual">
-<video src="assets/front/hangar-demo.mp4" poster="assets/front/ui-jobs.png" autoplay loop muted playsinline controls width="1440" height="900" aria-label="A GitHub issue labelled hangar becomes a job: a sandbox starts, the agent edits and tests the code, hangar verifies and opens draft PR #43, and the PR waits in Needs you with a question another job asked"></video>
-<figcaption>A ticket becoming a sandbox run and a draft PR, recorded by docs/assets/front/make.py against the demo hangar</figcaption>
+<video src="assets/front/hangar-demo.mp4" poster="assets/front/ui-jobs.png" autoplay muted playsinline controls width="1280" height="800" aria-label="A GitHub issue labelled hangar becomes a job: a sandbox starts, the agent edits and tests the code, hangar verifies and opens draft PR #43, and the PR waits in Needs you with a question another job asked"></video>
+<figcaption>18 s: a ticket becoming a sandbox run and a draft PR, recorded by docs/assets/front/make.py against the demo hangar</figcaption>
 </figure>
 </div>
 
