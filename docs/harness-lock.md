@@ -141,7 +141,7 @@ CI check (#138).
 
 A session or job can run *from* a lock: `hangar harness thaw team-default@r14 --env python "..."`, or
 `harness_lock: "team-default@r14"` on `POST /api/jobs`, `POST /api/sessions` or MCP `submit_job`. An experiment variant
-runs from one too: `{harness_lock: "team-default@sha256:…"}`, by digest ([jobs.md](jobs.md#9-experiments), #135).
+runs from one too: `{harness_lock: "team-default@sha256:…"}`, by digest ([jobs/experiments.md](jobs/experiments.md), #135).
 
 **The registry.** `HANGAR_HARNESS_REPO` is the team harness repo ([below](#the-team-harness-repo)): locks at
 `harnesses/<name>/harness.lock` (or `<name>/harness.lock`), channels in `channels.yaml`
@@ -211,7 +211,7 @@ is its behaviour, not drift. Writable state (`~/.claude.json`, plugin caches) is
 
 **In the PR.** A job's PR body and the commit hangar lands end with `Harness-Digest:` (and `Harness-Lock:
 team-default@r14` for a thawed job) as git trailers, and its review packet shows the short digest and the lock
-([jobs.md](jobs.md#the-pull-request), #137).
+([jobs/working-with-the-agent.md](jobs/working-with-the-agent.md#the-pull-request), #137).
 
 **Upstream drift.** `hangar harness outdated NAME` (`GET /api/harness-locks/{ref}/outdated`) reports a lock's CLI
 version against `harnesses.lock.yaml`, and each `path:` skill against its source in the environments that declare

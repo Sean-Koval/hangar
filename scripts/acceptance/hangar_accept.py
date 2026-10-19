@@ -889,7 +889,7 @@ def check_gateway(api: Api, state: State, opts: argparse.Namespace) -> str:
     say(f"sandbox git mode: {git}")
     if git.get("mode") != "gateway":
         raise Fail("the session's sandbox isn't in gateway mode: set HANGAR_GATEWAY_URL "
-                   "(http://hangar-gateway.hangar.svc:8788 on GKE; docs/security.md)")
+                   "(http://hangar-gateway.hangar.svc:8788 on GKE; docs/security/README.md)")
     repo = sb["info"]["repo_path"]
     leaks = api.exec(sb["id"], "env | grep -c -E '^(GH_TOKEN|GITHUB_TOKEN)=' ; "
                                "grep -c -E 'gh[pousr]_|github_pat_' ~/.git-credentials 2>/dev/null || true", cwd=repo)

@@ -1,8 +1,11 @@
 # 0005: Session traces and a decision model for run classification
 
+!!! note "Design record"
+    Written 2026-10-12; **deferred**. The current behaviour is on [api/traces.md](../api/traces.md) (trace export); the status line below says what shipped.
+
 Status: deferred (2026-10-15): the `DecisionService` and Decision-1 are not scheduled; trace export moved to [0014](0014-sister-tool-interfaces.md), and evaluation to flightdeck. Was: draft. · Date: 2026-10-12 · Builds on: 0001 (run events), 0002 (verification, approvals), 0003 (gateway, egress) · Consumed by: 0004 (supervisor)
 
-> Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins.
+> Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/README.md](README.md); where this spec conflicts with that page, the page wins.
 
 ## 1. Summary
 
@@ -164,7 +167,7 @@ New event types (added to 0001 §5.4's table; no existing type changes meaning):
 | `tool.decision` | `tool_id?, name, decision ("accept"/"reject"), source (config/user/…)` | otel (`claude_code.tool_decision`) | Permission outcomes. With `--dangerously-skip-permissions` these are all accepts, so low value on the current run command. |
 | `decision` | `decision_id, task, label, p_top, mode` | hangar | One row per `DecisionService` result, so cursors see it (5.5). |
 
-**Test results (implemented, diverging from the sketch above; [jobs.md §8](../jobs.md#8-test-results)).** The `test.result` this spec's `failure_triage` reads is not a run event: each run of a check hangar makes is a `TestRun` record (counts, failures with messages, every case's outcome by test id, coverage, commit and tree), and a `progress` event with `data.action: "tests"` and the counts goes into the job's and session's events. In traces it is a `test.run` span event and one `test.case` event per failing or flaky test (the kinds [`hangar.trace/v1`](../api/traces.md) reserves, attributes under `hangar.test.*`), with OpenTelemetry's test semantic conventions alongside (`test.suite.name`, `test.suite.run.status`, `test.case.name`, `test.case.result.status`; development stability); `GET /api/jobs/{id}/tests?format=otel` serves the same events as data.
+**Test results (implemented, diverging from the sketch above; [jobs.md §8](../jobs/test-results.md)).** The `test.result` this spec's `failure_triage` reads is not a run event: each run of a check hangar makes is a `TestRun` record (counts, failures with messages, every case's outcome by test id, coverage, commit and tree), and a `progress` event with `data.action: "tests"` and the counts goes into the job's and session's events. In traces it is a `test.run` span event and one `test.case` event per failing or flaky test (the kinds [`hangar.trace/v1`](../api/traces.md) reserves, attributes under `hangar.test.*`), with OpenTelemetry's test semantic conventions alongside (`test.suite.name`, `test.suite.run.status`, `test.case.name`, `test.case.result.status`; development stability); `GET /api/jobs/{id}/tests?format=otel` serves the same events as data.
 
 Enrichment rules, not new rows:
 

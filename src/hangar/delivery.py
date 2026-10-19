@@ -148,7 +148,7 @@ def clone_hint(sb: Sandbox) -> str:
     if builds_repo_code(sb) and git.get("mode") != "gateway":
         return ("\nhangar: a repo build or env-setup validation runs the repo's install, so its sandbox holds no git "
                 "credential; it clones a private repo only through the git gateway's fetch-only grant "
-                "(HANGAR_GATEWAY_URL, docs/security.md#git-credential-gateway)")
+                "(HANGAR_GATEWAY_URL, docs/security/git-gateway.md)")
     if git.get("mode") == "gateway" and not git.get("repo"):
         return ("\nhangar: the git gateway doesn't serve this repo's host (HANGAR_GATEWAY_UPSTREAMS), and this "
                 "sandbox holds no git credential of its own (a job's, a build's and a validation's never do while the "

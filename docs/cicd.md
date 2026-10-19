@@ -40,7 +40,7 @@ It is safe to re-run: each step looks first and changes only what is missing or 
 checks and records the deploy, all admin endpoints, and the `jobs`, `mcp` and `metrics` scopes reach none of them.
 Only the approved deploy job can read it. `--rotate-deploy-token` mints a new one, stores it, then revokes the old.
 
-The script also does the [upgrade](upgrading.md#upgrading-to-the-team-release-75117) steps a script can do safely: it
+The script also does the [upgrade](releases/team-release.md) steps a script can do safely: it
 copies the vault key from the `hangar` Secret into Secret Manager (`hangar-vault-key`, piped, never printed), and
 creates the PyPI and npm remote repositories for the package mirrors. It prints, without doing them, what needs you:
 the quota requests (Google reviews each, so they can't be automated reliably), the `terraform apply` for the node pool
@@ -166,7 +166,7 @@ already failing before the deploy is reported, not rolled back for: a rollback c
 rollout (a build, a refusal, your rejection) changes nothing on the cluster.
 
 To go back to an earlier release later, push or re-run a `v*` tag that points at it: deploys run only from `main` and
-`v*` tags. Rolling back a whole release has steps beyond the image: [upgrading.md](upgrading.md#rolling-back-this-release).
+`v*` tags. Rolling back a whole release has steps beyond the image: [releases/team-release-operations.md](releases/team-release-operations.md#rolling-back-this-release).
 
 ## When signing in fails
 

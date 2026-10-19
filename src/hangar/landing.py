@@ -1286,7 +1286,7 @@ async def doctor_checks(h: Any) -> list[dict[str, Any]]:
         out.append(_check("landing: agent tokens", None, "jobs don't use the git gateway, so a job's sandbox holds a "
                           "GitHub token that could push and arm auto-merge itself; branch protection is then the "
                           "only gate, and hangar doesn't land such jobs",
-                          "set HANGAR_GATEWAY_URL (docs/security.md#git-credential-gateway)"))
+                          "set HANGAR_GATEWAY_URL (docs/security/git-gateway.md)"))
     for p in repos:
         repo = p.repo
         gh = await svc.landing.client(repo)

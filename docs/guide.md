@@ -76,11 +76,11 @@ Once a single task works, ask your MCP client:
 
 > Create three claude-python sandboxes for my repo, each on its own work branch, using claude-api. Ask each agent to fix the same flaky test, run the project's tests, and report the changes and results. Let me review the attempts before removing the sandboxes.
 
-To start from work you have already prepared, use `snapshot_sandbox` and `fork_sandbox`. Snapshot behavior varies by provider; see [where it runs](#where-it-runs). For a task that should produce a draft PR, use a [job](jobs.md): jobs support verification commands, follow-ups, budgets and GitHub triggers. [Sessions](sessions.md) preserve a conversation and repository state across turns.
+To start from work you have already prepared, use `snapshot_sandbox` and `fork_sandbox`. Snapshot behavior varies by provider; see [where it runs](#where-it-runs). For a task that should produce a draft PR, use a [job](jobs/README.md): jobs support verification commands, follow-ups, budgets and GitHub triggers. [Sessions](sessions.md) preserve a conversation and repository state across turns.
 
 ### Take work from GitHub
 
-`uv run hangar setup github` asks for a repo and a token and stores them. It then registers the repo's webhook and sends a test delivery. GitHub can't reach `localhost`, so on a laptop pass `--webhook-url` with a tunnel URL. See [jobs: trigger from GitHub](jobs.md#4-trigger-from-github).
+`uv run hangar setup github` asks for a repo and a token and stores them. It then registers the repo's webhook and sends a test delivery. GitHub can't reach `localhost`, so on a laptop pass `--webhook-url` with a tunnel URL. See [jobs: trigger from GitHub](jobs/from-github-slack-jira.md#4-trigger-from-github).
 
 ### Your own environment
 
@@ -157,17 +157,17 @@ hangar connect claude-code                    # an mcp token of her own
 hangar cred add claude-alice --harness claude-code --kind api_key --file key.txt
 ```
 
-Members see and act on their own sandboxes, sessions and jobs; admins on everyone's. Alice's sessions and jobs use her own API key; teammates without one of their own use a team API key (`hangar cred add NAME --team --kind api_key`). Jobs and other automated work never use a subscription login ([team.md](team.md#subscription-logins)). A job that waits for approval is approved by an admin or a repo policy approver, from `hangar job approve` or a login connection, never by its own person or requester ([upgrading.md](upgrading.md#the-safe-release-120132)). `hangar cred owner NAME PERSON|team` hands a credential to someone or back to the team, and `hangar person rm` revokes someone's tokens. See [security.md](security.md#people).
+Members see and act on their own sandboxes, sessions and jobs; admins on everyone's. Alice's sessions and jobs use her own API key; teammates without one of their own use a team API key (`hangar cred add NAME --team --kind api_key`). Jobs and other automated work never use a subscription login ([team.md](team.md#subscription-logins)). A job that waits for approval is approved by an admin or a repo policy approver, from `hangar job approve` or a login connection, never by its own person or requester ([releases/safe-release.md](releases/safe-release.md)). `hangar cred owner NAME PERSON|team` hands a credential to someone or back to the team, and `hangar person rm` revokes someone's tokens. See [security/people.md](security/people.md#people).
 
 ## Next steps
 
 | To | Read |
 | --- | --- |
 | Connect Codex, Claude Code, Cursor or another client | [Connecting clients](clients.md) · [Using MCP](mcp.md) |
-| Hand a task to a cloud agent and get a PR back | [Jobs](jobs.md) |
+| Hand a task to a cloud agent and get a PR back | [Jobs](jobs/README.md) |
 | Keep working with an agent across days | [Sessions](sessions.md) |
 | Write an environment for your repo | [Environments](environments.md#environment-specs) |
-| Take work from GitHub, Jira or Slack | [Jobs: trigger from GitHub](jobs.md#4-trigger-from-github) · [Intake](intake.md) · [Slack](slack.md) |
+| Take work from GitHub, Jira or Slack | [Jobs: trigger from GitHub](jobs/from-github-slack-jira.md#4-trigger-from-github) · [Intake](intake.md) · [Slack](slack.md) |
 | Let an approval land the PR | [Landing](landing.md) |
 | Put a team on it, repo by repo | [The onboarding runbook](runbooks/onboarding.md) |
 | Upgrade a running hangar | [Upgrading](upgrading.md) |
@@ -245,6 +245,8 @@ HANGAR_E2E=1 uv run pytest tests/test_e2e_docker.py   # real Docker, driven over
 uv run ruff check src tests
 uv run hangar serve --reload
 ```
+
+What CI runs on a pull request and on `main`, and how a red main hands its bisect to a hangar job, is on [ci.md](ci.md).
 
 The docs site builds the way `.github/workflows/docs.yml` builds it (Zensical, from `mkdocs.yml`):
 

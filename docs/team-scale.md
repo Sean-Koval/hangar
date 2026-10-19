@@ -34,7 +34,7 @@ To onboard the team itself (people, credentials, and each repo's App, branch pro
 view shows each person's use of them, with their sandboxes by environment and what they spent today.
 
 A cap reached answers 429 over REST and the E2B API, and an error naming the cap over MCP. Every cap is per
-**person**, the person hangar records on each token and on the work it starts ([security.md](security.md#people)):
+**person**, the person hangar records on each token and on the work it starts ([security/people.md](security/people.md#people)):
 all of a person's tokens, MCP and REST calls, and the OAuth connectors they approved count together, and the
 admin's existing tokens all count as `owner`. `fairness.person_of` is the one place that maps who acted to a person;
 records from before people fall back to the token's name. hangar's own actors (sessions' and jobs' sandboxes, the
@@ -109,7 +109,7 @@ provider the observed rate, the per-trial estimate and the budget. Metrics: `han
 [repo-policy.md](repo-policy.md#the-eval-budget)); the eval queue decides when trials run, the budget whether more may.
 
 **Power-down**: a drain (`power.sh down`, [gke.md](gke.md#6-sandbox-nodes-off-at-night-optional)) cancels running
-trials rather than checkpointing them, marks them `infra_error` / `power_down` ([jobs.md](jobs.md#the-eval-queue)),
+trials rather than checkpointing them, marks them `infra_error` / `power_down` ([jobs/experiments.md](jobs/experiments.md#the-eval-queue)),
 and the experiment queues a fresh attempt; like every queued eval job it waits for the next window, not for the 10:00
 power-up. When people work late, evals wait: that starvation is accepted.
 
@@ -388,7 +388,7 @@ of held down saves the system node, ~$13 a week, and costs what's lost while not
    create after the deploy rewrites each environment's warm-pool template once (the CPU request changed), so those
    creates are cold.
 5. Add each engineer as a person (`hangar person add <name>`), so the caps are per person. The whole procedure for
-   this release, people included, is in [upgrading.md](upgrading.md#upgrading-to-the-team-release-75117).
+   this release, people included, is in [releases/team-release.md](releases/team-release.md).
 
 On the first start, retention moves every settled record older than 7 days into the archive, 100 rows at a time in
 the background (20,000 records took 201 batches, ~1.3 s of lock time in all, at most 0.11 s at once, during the

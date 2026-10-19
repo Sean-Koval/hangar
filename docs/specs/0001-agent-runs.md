@@ -1,8 +1,11 @@
 # 0001: Agent runs (liveness, structured status, resume, ready-to-test sandboxes)
 
+!!! note "Design record"
+    Written 2026-10-12; **superseded**. The current behaviour is on [jobs](../jobs/README.md) and [sessions](../sessions.md); the status line below says what shipped.
+
 Status: superseded (2026-10-15): the `Run` model by jobs, sessions and turns ([0009](0009-jobs-and-the-factory-front-door.md), [0010](0010-sessions.md)); liveness by the reconciler (#84) and the event watcher; see decisions 1 and 13 in [the index](README.md). Was: draft. · Date: 2026-10-12. Author: hangar agent session, for review.
 
-> Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins.
+> Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/README.md](README.md); where this spec conflicts with that page, the page wins.
 
 ## 1. Summary
 
@@ -510,7 +513,7 @@ repo:
 4. **Never build on the create path.** `_ensure_image` keeps today's behaviour: use an existing image. If the pin says the lockfile changed, it still creates the sandbox from the old image, sets `deps_drift`, and queues a background `build` (debounced per env). The warm pool refills from the new image through `sync_warm_pool` (`updateStrategy: Recreate`).
 5. **Refresh triggers.** `POST /api/environments/{name}/refresh` and `hangar env refresh <name>` (for CI on pushes to the default branch). An opt-in reaper check every `HANGAR_BAKE_CHECK_MINUTES` (default 0 = off) compares the pin to the image's digest.
 6. **Private repos at build time.** Local builds (`hangar env publish`, which already builds with the user's Docker) pass the token as a BuildKit secret (`RUN --mount=type=secret,id=git_token`), so it never lands in a layer. Cloud Build for private repos needs Secret Manager wiring; open question 8. Until then a private baked repo is built locally.
-7. **Caches.** No shared writable volumes. `docs/security.md` says "no shared volumes", and a package cache written by one sandbox and read by another would be a poisoning path. Per-repo cache means: the image keeps `deps.cache` dirs (read at claim-time drift installs), BuildKit cache mounts speed up builds, and the baked `.git` makes the claim-time fetch a delta. Each sandbox's own cache writes go to its own filesystem layer (Docker) or ephemeral storage (k8s).
+7. **Caches.** No shared writable volumes. `docs/security/README.md` says "no shared volumes", and a package cache written by one sandbox and read by another would be a poisoning path. Per-repo cache means: the image keeps `deps.cache` dirs (read at claim-time drift installs), BuildKit cache mounts speed up builds, and the baked `.git` makes the claim-time fetch a delta. Each sandbox's own cache writes go to its own filesystem layer (Docker) or ephemeral storage (k8s).
 
 **Warm pools.** Baked images work as is: Kubernetes `SandboxWarmPool` pods and Docker warm pools start from the baked image; a claim adds only credentials, fetch/checkout, work branch and the drift check. Set `warm_pool: N` on baked environments. E2B has no warm pools (`Capabilities.warm_pools=False`), so there the baked template is the only lever.
 
@@ -548,7 +551,7 @@ Trust model: the agent controls everything inside the sandbox, including `.hb`, 
 - **Forged status.** An agent can write `.exit` with 0, or fake events. So `succeeded` is only "ended cleanly plus the caller's `verify` passed", and `RunResult` fields come from hangar's own `exec` of git, not from the log. This applies Jarmak's "verify the workspace, not the self-report".
 - **Forged rate limits.** A fake `rate_limit` event could make hangar queue runs. The gate affects only queueing, is overridable (`ignore_limits`), and the banner shows the last raw event. It can't kill anything.
 - **Event flood and oversized lines.** Per-tick caps (256 KiB, 2,000 events), a 1 MiB line limit, 14-day retention, a per-run event cap. SQLite writes are batched.
-- **Secrets in events and prompts.** Text fields are redacted with `broker.redact`, the same as audit entries (`fleet.py:audit`). Redaction only knows vault values (documented in `docs/security.md`). The full prompt is now stored in SQLite, not just 200 characters, so stored runs are as sensitive as audit.
+- **Secrets in events and prompts.** Text fields are redacted with `broker.redact`, the same as audit entries (`fleet.py:audit`). Redaction only knows vault values (documented in `docs/security/README.md`). The full prompt is now stored in SQLite, not just 200 characters, so stored runs are as sensitive as audit.
 - **Prompt injection through status.** `message.text`, `final_text` and `tool.end.summary` are attacker-influenced strings that an orchestrator model will read. Responses carry `data.source = "agent"` on these fields. hangar-derived fields (`run_state`, `reason`, `alive`, `result`) are separate keys. The orchestrator's instructions in `mcp_server.py:INSTRUCTIONS` get one line saying agent text is untrusted. This is Willison's trifecta: this spec adds a path for untrusted content to reach a model that holds tools, so it labels it.
 - **MCP rules.** No token passthrough: usage and events never include `CLAUDE_CODE_OAUTH_TOKEN`; the harness `session_id` is a conversation id, not an auth token, and every call still needs the bearer token. Minimal scopes: new tools are tagged `runs:read` and `runs:write`. They do not enlarge what an admin token can already do (`exec` can read the same files today).
 - **Branch safety.** This spec adds no push, merge or credential path. The supervisor runs as the sandbox user with the same capabilities. `resume_agent` re-reads `~/.hangar/env` like the first run. Verification runs `git` read-only. The "agents must never merge or push outside their branch" requirement belongs to the credential-proxy spec (Claude Code on the web keeps git credentials outside the sandbox and checks each push; see Anthropic's [sandboxing post](https://anthropic.com/engineering/claude-code-sandboxing)). This spec's `result.pushed` and `commits_ahead` give that work something to assert on.
@@ -580,7 +583,7 @@ Trust model: the agent controls everything inside the sandbox, including `.hb`, 
    - `agent_status` no longer needs the sandbox to be RUNNING.
    - Codex runs use new flags (the old ones fail on 0.162.1, so there is no working behaviour to preserve).
    - `allow_concurrent` default flips from `true` to `false` one release after M2.
-6. **Docs.** `README.md` MCP table, `docs/clients.md` (polling example), `docs/gke.md` (baked environments, Spot caveat), `docs/security.md` (run data and event handling).
+6. **Docs.** `README.md` MCP table, `docs/clients.md` (polling example), `docs/gke.md` (baked environments, Spot caveat), `docs/security/README.md` (run data and event handling).
 7. **Rollback.** Turn off `HANGAR_RUNS_V2`. The tables stay and are ignored.
 
 ## 8. Test plan

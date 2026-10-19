@@ -28,8 +28,8 @@ Other `A2A-Version` values get `VersionNotSupportedError` (-32009). The gRPC and
 
   The card carries the 0.3 fields too (`url`, `protocolVersion`, `preferredTransport`, the 0.3 form of the security scheme), so 0.3 and 1.0 clients both read it.
 - **Endpoint:** `POST /a2a`, with `Authorization: Bearer <hangar token>`.
-- **Tokens:** an admin token, or a `jobs`-scoped token with the same fence as the REST API ([jobs.md §1](jobs.md#1-give-a-service-a-token)). A `jobs` token can work only on repos in `HANGAR_GITHUB_REPOS`, in their mapped environments, can't pick a provider, and sees only its own tasks. Its `max_budget` caps every task's per-turn budget, as over REST. A `contextId` or `taskId` that belongs to another token's job is "not found": it can't be used to read, cancel or continue someone else's work.
-- **Limits:** a `jobs` token is a caller for [rate limits and the active-job cap](security.md#front-door-limits), on new tasks and follow-ups alike. It may hold `HANGAR_A2A_MAX_STREAMS_PER_OWNER` (20) streams and blocking sends open at once; past that, a stream is refused with a JSON-RPC error and a blocking `SendMessage` returns the task at once instead of waiting.
+- **Tokens:** an admin token, or a `jobs`-scoped token with the same fence as the REST API ([jobs/README.md §1](jobs/README.md#1-give-a-service-a-token)). A `jobs` token can work only on repos in `HANGAR_GITHUB_REPOS`, in their mapped environments, can't pick a provider, and sees only its own tasks. Its `max_budget` caps every task's per-turn budget, as over REST. A `contextId` or `taskId` that belongs to another token's job is "not found": it can't be used to read, cancel or continue someone else's work.
+- **Limits:** a `jobs` token is a caller for [rate limits and the active-job cap](security/front-doors.md#front-door-limits), on new tasks and follow-ups alike. It may hold `HANGAR_A2A_MAX_STREAMS_PER_OWNER` (20) streams and blocking sends open at once; past that, a stream is refused with a JSON-RPC error and a blocking `SendMessage` returns the task at once instead of waiting.
 - A missing or unknown token gets HTTP 401 with `WWW-Authenticate: Bearer realm="hangar"`. A token without the `jobs` or `admin` scope gets 403.
 
 ```bash
@@ -116,7 +116,7 @@ Each POST carries:
 
 - `Authorization: <scheme> <credentials>` from the config;
 - `X-A2A-Notification-Token: <token>`;
-- for `jobs` tokens with a bound callback key, the same `X-Hangar-Signature` as [job callbacks](jobs.md#3-verify-callbacks).
+- for `jobs` tokens with a bound callback key, the same `X-Hangar-Signature` as [job callbacks](jobs/README.md#3-verify-callbacks).
 
 Push URLs are checked like job callbacks: public `https` hosts only, unless the host is in `HANGAR_JOB_CALLBACK_HOSTS`. Before each send the name is resolved again, and the connection goes to the address that was checked, so a name that re-resolves to an internal address in between (DNS rebinding) reaches nothing. Redirects aren't followed. Delivery is at least once (three tries per state). Token and credentials are stored encrypted in the vault, and `Get`/`List` never return them.
 

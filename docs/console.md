@@ -28,7 +28,7 @@ First come the cards you decide in place:
   agent's settings, so the next turn asks again) or **Deny**.
 - **A job waiting to start**: from someone the team doesn't trust, for example, or held by a daily spend cap; the card
   says why. **Approve job** or **Reject**. Approving follows the same rule as every other approval path, so you can't
-  approve your own work ([security](security.md)).
+  approve your own work ([security](security/README.md)).
 - **A request** an agent made for access (an environment request): **Approve** or **Deny**.
 - **A question** the agent asked: type an answer (or pick one of the options it offered) and **Answer**. The answer
   goes back as the agent's next message.
@@ -69,7 +69,7 @@ updates; a job whose sandbox was released resumes from its last checkpoint. Ctrl
 
 While a job runs, **Watch the agent** opens the agent's own terminal, **Open a shell** opens another one in the same
 sandbox, and **Cancel job** stops the agent after you confirm; work committed so far stays in the sandbox and on the
-branch. See [jobs](jobs.md) and [steering](steering.md).
+branch. See [jobs](jobs/README.md) and [steering](steering.md).
 
 ## Sessions
 

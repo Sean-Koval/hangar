@@ -42,7 +42,7 @@ There are no reruns before the merge: a test that fails, fails the PR.
   `tests/test_jobs.py` for its fixtures.
 - **Tests that read every module's source** (they build `"src" / "hangar"`, like `test_sweep_caps.py`) run for any
   hangar change. That includes `test_scope_parity.py`, so a change to `mcp_server.py`, `app.py` or any module that
-  mounts routes runs the REST/MCP scope check ([security.md](security.md#scopes)).
+  mounts routes runs the REST/MCP scope check ([security/front-doors.md](security/front-doors.md#scopes)).
 - **Non-Python paths** map to the tests that read them, through a table in the script: `envs/`, `envd/`,
   `scripts/acceptance/`, `deploy/`, `docs/gke.md`, and `README.md` and `docs/index.md` (`tests/test_front_page.py`).
   Other docs, `*.md`, the Dockerfile and terraform select no tests.
@@ -187,7 +187,7 @@ test, the envd build, `docker build`, terraform validate, ruff).
 What happens next depends on the repo secrets:
 
 - **`HANGAR_URL` and `HANGAR_TOKEN` are set** (an admin token, or a `jobs` token whose `HANGAR_GITHUB_REPOS` maps this
-  repo): the hook submits a hangar job (`POST /api/jobs`, [jobs.md](jobs.md)) with `deliver: pr` and the failing
+  repo): the hook submits a hangar job (`POST /api/jobs`, [jobs/README.md](jobs/README.md)) with `deliver: pr` and the failing
   tests as `verify`.
   - The agent runs `git bisect run` between the two commits with that check. It then fixes the culprit, with a
     regression test, or reverts it, and opens a PR. The check is also the job's `verify`.

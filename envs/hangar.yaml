@@ -7,7 +7,7 @@ repo:
   url: https://github.com/Sean-Koval/hangar.git
   branch: main
   setup: uv sync
-# The check every job on this repo runs unless the job or the repo's policy names another (docs/jobs.md §7):
+# The check every job on this repo runs unless the job or the repo's policy names another (docs/jobs/agent-loop.md):
 # ruff and the tests the change can break, as pre-merge CI selects them.
 verify: bash scripts/ci/verify.sh
 skills:

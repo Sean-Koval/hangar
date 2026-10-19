@@ -1,4 +1,4 @@
-# Network baseline for sandbox pods (docs/security.md, threat model). Defence in depth: GKE Agent Sandbox's
+# Network baseline for sandbox pods (docs/security/README.md, threat model). Defence in depth: GKE Agent Sandbox's
 # managed policy already blocks private ranges and the metadata server, but hangar shouldn't depend on it alone
 # (a template switched to `networkPolicyManagement: Unmanaged`, or the open-source controller, has no such policy).
 #

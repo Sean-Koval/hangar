@@ -1140,7 +1140,7 @@ raise SystemExit(pytest.main(["--noconftest", "-p", "no:cacheprovider", "-c", os
                              plugins=[HangarGrade()]))
 '''
 GRADE_HELPER = r"""#!/bin/sh
-# hangar-grade: run an experiment's hidden tests from their pristine copy (written by hangar; docs/jobs.md#grading).
+# hangar-grade: run an experiment's hidden tests from their pristine copy (written by hangar; docs/jobs/experiments.md#grading).
 #   hangar-grade pytest [PYTEST ARGS...]   the tests in $HANGAR_HIDDEN_TESTS against the code in $HANGAR_REPO
 # Nothing the repo carries loads first: no conftest.py (--noconftest), no pytest settings (-c /dev/null, addopts
 # cleared), no sitecustomize.py, usercustomize.py or user site (python -I), no plugin it declares, no cache, no

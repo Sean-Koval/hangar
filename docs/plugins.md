@@ -126,7 +126,7 @@ Other producers add types under their own prefix. Change sets, for example, emit
 | `X-Hangar-Timestamp` | Unix seconds when it was sent |
 | `X-Hangar-Signature` | `sha256=` and the hex HMAC-SHA256 of `<timestamp>.<body>`, keyed with the secret in `secret_credential` |
 
-Settings: `url`, `secret_credential`, `events` (glob patterns, default every event) and `timeout_seconds` (default 10). The URL follows the [job callback](jobs.md) rules: https and a public address, unless the host is in `HANGAR_JOB_CALLBACK_HOSTS` (for an in-cluster bot, `symphony-bot.internal`). The rules are checked at startup and again on every connection. Without a usable secret nothing is sent unsigned, and `hangar doctor` says why.
+Settings: `url`, `secret_credential`, `events` (glob patterns, default every event) and `timeout_seconds` (default 10). The URL follows the [job callback](jobs/README.md) rules: https and a public address, unless the host is in `HANGAR_JOB_CALLBACK_HOSTS` (for an in-cluster bot, `symphony-bot.internal`). The rules are checked at startup and again on every connection. Without a usable secret nothing is sent unsigned, and `hangar doctor` says why.
 
 To verify, recompute the HMAC over the timestamp, a dot and the raw body. Compare in constant time. Refuse a timestamp more than five minutes from your clock, and an event id you've already seen within that window. `hangar.events_out.verify(key, body, headers)` does the first two:
 
@@ -143,7 +143,7 @@ def verify(key: bytes, body: bytes, headers) -> bool:
 
 | Plugin | Adds | Configured by |
 | --- | --- | --- |
-| `github` | Door `/api/hooks/github` (issues, comments, landing, checks, Projects items) | `HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL` ([jobs.md](jobs.md)) |
+| `github` | Door `/api/hooks/github` (issues, comments, landing, checks, Projects items) | `HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL` ([jobs/README.md](jobs/README.md)) |
 | `slack` | Door `/api/hooks/slack/*`, replies in `slack:` threads | `HANGAR_SLACK_*` ([slack.md](slack.md)) |
 | `jira` | Door `/api/hooks/jira`, comments on `jira:` issues, tracker `jira` | `HANGAR_JIRA` ([intake.md](intake.md)) |
 | `ghprojects` | Tracker `ghproject` | `HANGAR_GITHUB_PROJECTS` ([intake.md](intake.md)) |

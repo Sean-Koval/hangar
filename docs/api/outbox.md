@@ -105,7 +105,7 @@ human review, reverts and abandon reasons (#168, [metrics.md](../metrics.md)).
 - **`trace.otlp.json`**: `hangar.trace/v1` for this run only, as `GET /api/sessions/{name}/trace?turn=N` returns it:
   the `turn` span with its tool calls, subagents, approvals and events.
 - **`tests.json`** (`hangar.tests/v1`, `$defs.tests` in the schema): `runs` are the turn's `TestRun` records
-  ([jobs.md](../jobs.md#8-test-results)) with `cases`, every case's outcome by test id (not only the failures);
+  ([jobs/test-results.md](../jobs/test-results.md)) with `cases`, every case's outcome by test id (not only the failures);
   `events` are their `test.run` and `test.case` span events in OTLP/JSON span-event form (`name`, `timeUnixNano`,
   `attributes` as OTLP key-values), exactly what `GET /api/jobs/{id}/tests?format=otel` describes, so a trace
   flattener reads them unchanged. Each run has `counted` ([traces.md](traces.md#test-results): the field predicates
@@ -115,7 +115,7 @@ human review, reverts and abandon reasons (#168, [metrics.md](../metrics.md)).
   `trial_key`, `job_id`, `session_id` and `run_id`. `test_run` names the grader's `grader` TestRun and `tests` holds
   it in `tests.json`'s shape (`runs` with every case, `events`), trusted only for `trust: isolated` (#164).
 - **`canary.json`** (`hangar.canary/v1`, #184): a canary shadow's injection canary
-  ([security.md](../security.md#injection-canaries)): `token`, `placement`, `template_id`, `expected_signals`,
+  ([security/taint.md](../security/taint.md#injection-canaries)): `token`, `placement`, `template_id`, `expected_signals`,
   `signals` (each signal and whether hangar saw it), `obeyed`, `experiment_id`, `shadow_of`, `harness_digest`,
   `job_id`, `session_id`, `run_id`. Staged as the shadow's turn ends, before its `run.json`, and not listed in
   `objects`.

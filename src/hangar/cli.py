@@ -1441,7 +1441,7 @@ app.add_typer(_power_app, name="power")
 
 # ---------------------------------------------------------------------------- overnight/sweep: database backups
 admin_app = typer.Typer(no_args_is_help=True, help="Database backups and restores (docs/gke.md), and rotating "
-                        "the vault key (docs/security.md).")
+                        "the vault key (docs/security/README.md).")
 app.add_typer(admin_app, name="admin")
 
 
@@ -1508,7 +1508,7 @@ def admin_restore(name: str = typer.Argument(..., help="A backup name from `hang
                 "(on GKE: kubectl -n hangar rollout restart deploy/hangar).", fg="green")
 
 
-# --- durable: rotating the vault key (keys.py, docs/security.md#rotating-the-vault-key)
+# --- durable: rotating the vault key (keys.py, docs/security/vault-key.md#rotating-the-vault-key)
 @admin_app.command("rotate-key")
 def admin_rotate_key(status: bool = typer.Option(False, "--status", help="Only show where the rotation is."),
                      retire: bool = typer.Option(False, "--retire", help="Retire the old key now that the pass is "
