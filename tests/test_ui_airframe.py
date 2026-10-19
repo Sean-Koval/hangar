@@ -356,11 +356,14 @@ def test_phones_land_under_the_header_with_a_compact_fleet_and_activity_cards():
     assert '<select id="fleet-view-select" class="fleet-view-select" aria-label="Fleet view">' in html
     select = html.split('id="fleet-view-select"')[1].split("</select>")[0]
     assert re.findall(r'<option value="([a-z]+)">', select) == ["board", "bays", "columns", "owners"]
-    assert '$("#fleet-view-select").value = fleet.view;' in fleet and 'location.hash = `#fleet?view=${e.target.value}`' in fleet
+    assert '$("#fleet-view-select").value = fleet.view;' in fleet
+    assert 'location.hash = `#fleet?view=${e.target.value}`' in fleet
     assert '<span class="fleet-brief af-muted">' in fleet
     phone = css[css.index("@media (max-width: 480px)"):]
-    for rule in ('grid-template-areas: "title new" "sum sum" "views stopped"', "#view-fleet .fleet-view-select { display: block;",
-                 "#view-fleet .fleet-views, #view-fleet #fleet-sub > .af-meta, #view-fleet #fleet-sub > .af-cap { display: none; }",
+    for rule in ('grid-template-areas: "title new" "sum sum" "views stopped"',
+                 "#view-fleet .fleet-view-select { display: block;",
+                 "#view-fleet .fleet-views, #view-fleet #fleet-sub > .af-meta, #view-fleet #fleet-sub > .af-cap "
+                 "{ display: none; }",
                  "#audit-table thead { display: none; }", '"action when" "who who" "target target" "detail detail"'):
         assert rule in phone, rule
     assert "function auditRows(" in app and "function auditDetail(" in app and 'class="af-meta__key"' in app
