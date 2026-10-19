@@ -1223,7 +1223,8 @@ class Gateway:
         if not s.gateway_url:
             if wants:
                 out.append(_check("git gateway", False, f"environments {', '.join(wants)} use credential_mode: gateway "
-                                  "but HANGAR_GATEWAY_URL is not set", "set HANGAR_GATEWAY_URL (docs/security/README.md)"))
+                                  "but HANGAR_GATEWAY_URL is not set",
+                                  "set HANGAR_GATEWAY_URL (docs/security/README.md)"))
             return out
         async with httpx.AsyncClient(transport=transport, timeout=5) as c:
             try:

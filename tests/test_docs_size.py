@@ -19,7 +19,8 @@ WORD_CAP = 2500
 # page -> (ceiling, why it is over the cap)
 OVER_CAP = {
     "security/threat-model.md": (2600, "one table: every goal of an attacker in a sandbox, read as a whole"),
-    "releases/team-release-changes.md": (4000, "one table of 53 settings the team release changes; half a table hides rows"),
+    "releases/team-release-changes.md": (4000, "one table of 53 settings the team release changes; "
+                                         "half a table hides rows"),
     "environments.md": (8600, "to split by task (image, services, mcp, cloud, the repo's own file)"),
     "gke.md": (7500, "to split: install, images and packs, operations"),
     "team-scale.md": (7000, "to split: sizing, caps, the reconciler"),
