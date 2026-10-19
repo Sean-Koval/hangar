@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import inspect
 import json
 import logging
 import math
@@ -17,6 +16,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+import hangar.auth as auth_mod  # --- relay
 import hangar.identity as identity  # --- identity
 import hangar.identity_api as identity_api  # --- identity
 from hangar import approvals as approvals  # --- approvals (#121)
@@ -176,21 +176,17 @@ GITHUB_PLUGIN = _GitHubPlugin()
 
 
 # ---------------------------------------------------------------------------- MCP auth
-def _delegation():
-    """auth.resolve_delegation(auth, principal, headers) -> Principal, when this build has it (relay identity)."""
-    import hangar.auth as auth_mod
-
-    return getattr(auth_mod, "resolve_delegation", None)
-
-
 class MCPAuthMiddleware:
     """Accepts static hangar tokens and (when enabled) OAuth access tokens issued by hangar."""
 
-    def __init__(self, app, auth: TokenAuth, oauth=None, resource_metadata_url: str | None = None):
+    def __init__(self, app, auth: TokenAuth, oauth=None, resource_metadata_url: str | None = None, *,
+                 settings: Settings | None = None, audit=None):
         self.app = app
         self.auth = auth
         self.oauth = oauth
         self.resource_metadata_url = resource_metadata_url
+        self.settings = settings  # --- relay: relay_unlinked
+        self.audit = audit  # --- relay: fleet.audit, for relay.refused
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -198,19 +194,19 @@ class MCPAuthMiddleware:
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
         token = bearer_from_headers(headers)
         # --- identity: the caller's principal (identity and scopes), not only its name; `mcp` tokens (hangar connect)
+        # --- relay: relay tokens too, which resolve_delegation turns into the person they act for, or refuses
         who = self.auth.principal(token)
-        if who is not None and not (who.admin or "mcp" in who.scopes or "user" in who.scopes):
+        if who is not None and not (who.admin or who.relay or "mcp" in who.scopes or "user" in who.scopes):
             who = None
         if who is None and self.oauth is not None:
             who = await self.oauth.principal(token)
-        if who is not None and (delegate := _delegation()) is not None:
-            # --- plugin host / relay identity (WP4): a relay token acting `on_behalf_of` a linked person
-            # (X-Hangar-On-Behalf-Of) becomes that person's principal; refused with identity.Forbidden
-            try:
-                res = delegate(self.auth, who, headers)
-                who = (await res) if inspect.isawaitable(res) else res
-            except identity.Forbidden as e:
-                return await JSONResponse({"error": str(e)}, status_code=403)(scope, receive, send)
+        # --- relay identity (WP4): a relay token acting `on_behalf_of` a linked person (X-Hangar-On-Behalf-Of)
+        # becomes that person's principal; any refused claim (or a relay token without one) answers 403
+        unlinked = self.settings.relay_unlinked if self.settings is not None else "refuse"
+        try:
+            who = auth_mod.resolve_delegation(self.auth, who, headers, unlinked=unlinked, audit=self.audit)
+        except identity.Forbidden as e:
+            return await JSONResponse({"error": str(e)}, status_code=403)(scope, receive, send)
         actor = identity.actor_name(who) if who else None
         if actor is None:
             challenge = 'Bearer realm="hangar"'
@@ -222,7 +218,8 @@ class MCPAuthMiddleware:
         tok = current_actor.set(actor)
         ptok = identity.current.set(who)  # --- identity
         # --- stream: streams this request opens re-check the token while they stay open (revocation closes them)
-        cred = stream_credential.set(token_check(self.auth, self.oauth, token, ("mcp", "user")))  # --- identity
+        cred = stream_credential.set(token_check(self.auth, self.oauth, token,  # --- identity, relay
+                                                  ("mcp", "user", *auth_mod.RELAY_SCOPES)))
         try:
             await self.app(scope, receive, send)
         finally:
@@ -504,9 +501,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     oauth, rm_url = _setup_oauth(app, h)
     app.state.oauth = oauth
     # --- #140: first, so /mcp's mount doesn't take /mcp/sandbox; its own protected-resource metadata (RFC 9728)
+    relay = {"settings": h.settings, "audit": h.fleet.audit}  # --- relay
     app.mount("/mcp/sandbox", MCPAuthMiddleware(mcp_sb_asgi, h.auth, oauth,
-                                                rm_url + "/sandbox" if rm_url else None))
-    app.mount("/mcp", MCPAuthMiddleware(mcp_asgi, h.auth, oauth, rm_url))
+                                                rm_url + "/sandbox" if rm_url else None, **relay))
+    app.mount("/mcp", MCPAuthMiddleware(mcp_asgi, h.auth, oauth, rm_url, **relay))
     app.add_middleware(MCPPathMiddleware)
     # --- front-door-auth: body caps before anything parses a body, and an audit entry for refused requests
     from hangar.frontdoor import FrontDoorMiddleware, RateLimited
@@ -921,7 +919,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         person = identity_api.credential_person(h, body.name, body.harness, body.kind, body.person, body.exposure,
                                                 body.team)  # --- teamcreds
         c = h.broker.put(body.name, body.harness, body.kind, body.value, body.description, body.env_var,
-                         body.file_path, exposure=body.exposure, person=person, team=body.team)  # --- identity
+                         body.file_path, exposure=body.exposure, person=person, team=body.team,  # --- identity
+                         reference_ok=identity.is_admin())  # --- company-deploy: mounted files are admins'
         fleet.audit(who, "credential.put", c.name, harness=c.harness, kind=c.kind.value, person=c.person)
         return {**c.model_dump(mode="json"), "owner": teamcreds.owner(c, h.settings)}  # --- teamcreds
 

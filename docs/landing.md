@@ -91,13 +91,10 @@ hangar arms auto-merge; **GitHub decides when it merges**. These settings on the
 
 ## 4. How a PR lands
 
-```
-opened ──▶ open ──approval of the head by an approver or code owner──▶ approved
-                                                                           │ required checks green, no agent turn
-                                                                           ▼
-                                        armed (auto-merge for exactly that commit) ──GitHub's rules met──▶ merged
- push, changes requested, approval dismissed, an agent turn starting ──▶ back to open (disarmed)
-```
+<figure class="af-figure">
+--8<-- "landing-states.svg"
+<figcaption>How a PR lands: opened, open, approved, armed, merged; a push, changes requested, a dismissed approval or a new agent turn disarms it</figcaption>
+</figure>
 
 - **Only the approved commit.** hangar arms with `enablePullRequestAutoMerge(expectedHeadOid: <approved sha>)`. GitHub has no REST route for auto-merge, so this is GraphQL. When the PR is already mergeable, GitHub refuses to arm ("Pull request is in clean status") and hangar merges it with `PUT /pulls/{n}/merge` and `sha: <approved sha>`. Either call fails if the head moved.
 - **A push clears the approval.** Any new head, from the agent, auto-fix, a follow-up or a person, clears the approval in hangar's record and disarms. A later push needs a new review, which "dismiss stale approvals" and "most recent push" enforce on GitHub's side.

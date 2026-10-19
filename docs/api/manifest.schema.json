@@ -178,7 +178,11 @@
       "plugins": {"description": "The declared seed plugins' directories in the sandbox as the turn started (#136; null: none declared, or not read).",
         "oneOf": [{"type": "null"}, {"type": "array", "items": {"type": "object", "required": ["id", "present"], "properties": {
           "id": {"type": "string"}, "present": {"type": "boolean"}, "digest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]},
-          "files": {"type": "integer"}}}}]}}},
+          "files": {"type": "integer"}}}}]},
+      "codex_hooks": {"description": "The harness lock's Codex plugin hooks as the sandbox's Codex reported them as the turn started (#244; null: none, or not read). key '-': Codex couldn't be asked (status says why).",
+        "oneOf": [{"type": "null"}, {"type": "array", "items": {"type": "object", "required": ["key", "status", "enabled"], "properties": {
+          "key": {"type": "string"}, "status": {"type": "string", "description": "trusted, untrusted, modified, missing, error, no-python3"},
+          "enabled": {"type": "boolean"}}}}]}}},
     "warnings": {"type": "array", "items": {"type": "string"}}
   },
   "$defs": {

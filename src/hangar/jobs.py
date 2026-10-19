@@ -45,6 +45,7 @@ from hangar import (  # strategies: workstream D; --- observe; steer: live turns
 )
 from hangar import autoinstall as autoinstall  # --- autoinstall: agent-led environment setup jobs
 from hangar import canaries as canaries  # --- #184: injection canaries in shadows
+from hangar import changesets as changesets  # --- change sets: one ticket across several repos (changesets.py)
 from hangar import clouddoctor as clouddoctor  # --- clouddoctor: its own jobs report back; its fixes are fenced
 from hangar import computer as computer  # --- computer
 from hangar import delivery as delivery  # --- least-privilege: hangar pushes a job's work
@@ -161,6 +162,10 @@ class SubmitJob(BaseModel):
     autofix: str | None = Field(None, max_length=40)  # "ci,reviews" (default) | "ci" | "reviews" | "off"
     # --- #181: `eval` waits for the eval window and the token budget, behind interactive work (evalqueue.py)
     queue_class: Literal["interactive", "eval"] | None = None
+    # --- change sets (docs/changesets.md): a change-set profile's name (one agent across its repos, one PR per
+    # changed repo, landed in order, then the deploy step), and the ticket the work is for ("jira:PAY-412")
+    changeset: str | None = Field(None, max_length=63)
+    ticket: str | None = Field(None, max_length=240)
 
 
 def _safe_name(name: str, taken: set[str]) -> str:
@@ -296,6 +301,7 @@ class JobService:
         n = fairness.job_slots(self.settings)  # --- scale: sized from capacity unless set
         self._workers = [asyncio.create_task(self._worker(i)) for i in range(n)]
         autofix.restore(self)  # --- overnight/autofix: PR triggers still waiting for their window
+        self._workers.append(asyncio.create_task(changesets.deploy_loop(self)))  # --- change sets: deploy steps
         restarts.release(self, resumed)  # --- reconciler
         for job in interrupted:
             self._spawn(self._report(job))
@@ -415,6 +421,14 @@ class JobService:
                 return j
         if autoinstall.is_setup_req(req):  # --- autoinstall
             autoinstall.check_submit(self, req)
+        profile = None
+        if req.changeset:  # --- change sets: the profile fills the primary repo and the environment
+            req, profile = changesets.prepare(self, req, caller.restricted)
+        try:  # --- change sets (G7): the ticket the work is for; a Jira intake job's own key
+            ticket = changesets.check_ticket(req.ticket) or (
+                source_ref if source == "jira" and (source_ref or "").startswith("jira:") else None)
+        except changesets.ChangeSetError as e:
+            raise JobError(str(e)) from e
         allowed_envs = self.repo_envs(req.repo)
         if caller.restricted:
             # Service tokens run only against repos the operator mapped, in the environments mapped for them.
@@ -441,6 +455,8 @@ class JobService:
             raise JobError(str(e).strip("'\"")) from e
         if policy is None and not req.repo and spec.repo:  # --- frontdoor: the environment names the repo
             policy = self.policies.get(spec.repo.url)
+        if policy is not None and policy.require_ticket and not ticket:  # --- change sets (G7)
+            raise JobError(f"the repo policy for {policy.repo} requires a ticket (ticket='jira:KEY-1')")
         defaults = repopolicy.resolve(req, policy, spec)
         if req.verify is None and repo_cfg is not None and repo_cfg.verify is not None:  # --- envbuilds
             v = repo_cfg.verify.strip()
@@ -491,9 +507,14 @@ class JobService:
         if stance is not None and stance.refused:
             raise JobError(stance.message())
         job_id = new_id("job")
-        branch = req.branch or f"hangar/{job_id}"
-        if not _BRANCH_RE.match(branch) or not branch.startswith("hangar/"):
-            raise JobError(f"invalid branch name '{branch}': jobs push only to new branches under hangar/")
+        # --- change sets (G7): the repo policy's `branch_template` (it always holds {job}); else, for a job on a Jira
+        # ticket, hangar/<KEY>-<job> (ticket keys: GitHub for Jira links by the key); else hangar/<job>
+        key = intake.ticket_key(req.labels, source_ref, ticket)
+        templated, branch_note = (None, None) if req.branch else changesets.branch_for(policy, job_id, ticket)
+        branch = req.branch or templated or (f"hangar/{key}-{job_id}" if key else f"hangar/{job_id}")
+        if not _BRANCH_RE.match(branch) or not (branch.startswith("hangar/") or branch == templated):
+            raise JobError(f"invalid branch name '{branch}': jobs push only to new branches under hangar/"
+                           + (" (or the repo policy's branch_template)" if templated else ""))
         if req.base_branch and (req.base_branch == branch or not _BRANCH_RE.match(req.base_branch)):
             raise JobError("base_branch must be a valid branch name different from the job branch")
         context = self._check_context(req.context)
@@ -507,7 +528,9 @@ class JobService:
             if cred is None or cred.harness != "webhook":
                 raise JobError(f"callback_secret '{callback_secret}' must name a credential with harness "
                                "'webhook' (hangar cred add NAME --harness webhook --kind generic)")
-        title = (req.title or req.instructions.strip().splitlines()[0])[:200].strip() or job_id
+        # the repo policy's `title_template` names the PR instead of the `<KEY>: ` prefix (change sets, G7)
+        title = intake.ticket_title((req.title or req.instructions.strip().splitlines()[0])[:200].strip() or job_id,
+                                    None if getattr(policy, "title_template", None) else key)
         job = Job(
             id=job_id, title=title, instructions=req.instructions, source=source, source_ref=source_ref,
             requester=requester, owner=caller.owner, repo=repo, base_branch=req.base_branch, branch=branch,
@@ -526,6 +549,7 @@ class JobService:
             approval=approval, untrusted_source=untrusted_source,
             person=caller.person,  # --- identity
             queue_class=req.queue_class or "interactive",  # --- #181
+            ticket=ticket,  # --- change sets (G7)
         )
         job.budget = resolve_budget(jobbudget.merge(req.budget, policy.budget if policy else None, cls=Budget),
                                     self.settings, caller.max_budget if caller.restricted else None)  # --- frontdoor
@@ -538,6 +562,7 @@ class JobService:
         job.strategy, job.n, job.judge = req.strategy, attempts, req.judge  # workstream D
         taint.seed_job(job)  # --- taint (#129): untrusted task text or context: tainted from turn 1
         job.verify_in_loop, job.max_verify_rounds, job.autofix = req.verify_in_loop, req.max_verify_rounds, fix_mode
+        cs = changesets.create(self, job, profile) if profile is not None else None  # --- change sets
         self._jobs[job.id] = job
         best = f" (best of {attempts})" if req.strategy == "best_of_n" else ""
         if approval is not None:  # an untrusted trigger: wait for a trusted person instead of queueing
@@ -549,6 +574,13 @@ class JobService:
             self._event(job, f"from the repo policy for {repopolicy.repo_key(repo)}: " + "; ".join(defaults.notes))
         if lock_note:  # --- #138
             self._event(job, lock_note)
+        if branch_note:  # --- change sets (G7)
+            self._event(job, branch_note)
+        if cs is not None:  # --- change sets: and changeset.created, to the room that asked
+            changesets.created(self, cs)
+            self._event(job, f"change set {cs.id} (profile {cs.profile}, {cs.profile_digest[:19]}): "
+                        + ", ".join(f"{r} {v.repo}" + (" (read-only)" if v.agent != "write" else "")
+                                    for r, v in cs.roles.items()) + "; lands " + " → ".join(cs.land_order))
         self.fleet.audit(requester, "job.submit", job.id, environment=env, repo=repo, source=source)
         if stance is not None and stance.posture == "warn" and stance.problems:  # --- intake posture (#123)
             self._event(job, "posture.warn: " + "; ".join(stance.problems) + " (HANGAR_INTAKE_POSTURE=warn runs it; "
@@ -571,6 +603,9 @@ class JobService:
         """`steer_class` (#162): what the follow-up is, when its sender said (a `fix:` prefix); an answer to the
         agent's question is `new_info` unless they said otherwise."""
         job = self.get(job_id, owner)
+        if job.parent:  # --- change sets: a part's PR is continued by the agent's job, the change set's parent
+            return self.follow_up(job.parent, message, requester, owner, reply_to, context, output_schema,
+                                  front_door, sender_person, steer_class)
         # --- review: from a front door (GitHub, Slack, Jira; `sender_person` is the sender's linked person): a
         # person's job runs with their own login, so only they continue it there (teamcreds.may_continue)
         if front_door and (why := teamcreds.may_continue(job.person, sender_person)):
@@ -695,6 +730,8 @@ class JobService:
         if s is not None and self.sessions.env_requests is not None:  # --- computer: answered like approvals
             d["pending_approvals"] += self.sessions.env_requests.approvals_view(s)
         d["autofix_state"] = autofix.view(job)  # --- overnight/autofix: what is waiting, not the logs it carries
+        if job.changeset and (cs := changesets.of(self).of(job)) is not None:  # --- change sets
+            d["changeset"] = changesets.view(self, cs)
         if job.state in JOB_TERMINAL:  # --- clouddoctor: the failed or slow job's record (hangar://jobs/<id>/record)
             d["flight_record"] = r.id if (r := flightrec.of(self.fleet).for_job(job.id)) else None
         return exchange.scrub_turns(d)  # workstream E: attachment contents never leave in a view
@@ -845,6 +882,8 @@ class JobService:
     async def _process(self, job_id: str) -> None:
         job = self.get(job_id)
         if job.state in JOB_TERMINAL or job.state == JobState.AWAITING_APPROVAL:  # only approval queues it
+            return
+        if job.source == "changeset":  # --- change sets: a part job never runs an agent (its parent does)
             return
         self._active.add(job.id)
         try:
@@ -1054,7 +1093,8 @@ class JobService:
                 + (f"## The question you asked (the message above answers it)\n\n{asked}\n\n" if asked else "")
                 + f"## Where things are\n\nRepository: {repo_path or '(none)'}, branch `{job.branch}`. "
                 f"The original task and context are in `{ctx}/` and below.\n\n"
-                f"## Original task\n\n{job.instructions}\n\n"
+                + (f"#{section}\n\n" if job.changeset and (section := changesets.prompt_section(self, job)) else "")
+                + f"## Original task\n\n{job.instructions}\n\n"
                 + (f"#{untrusted}\n\n" if untrusted else "")
                 + f"## How to finish\n\n{finish_txt}\n"
             )
@@ -1079,6 +1119,8 @@ class JobService:
         if repo_path:
             parts.append(f"# Repository\n\nWorking copy: `{repo_path}`, on {branch} "
                          f"(from `{job.base_branch}`).")
+        if job.changeset and (section := changesets.prompt_section(self, job)):  # --- change sets
+            parts.append(section)
         parts.append(f"# How to finish\n\n{finish_txt}")
         return "\n\n".join(parts) + "\n"
 
@@ -1226,8 +1268,18 @@ class JobService:
             job.result.verify_tail = self.broker.redact("hangar's ADR check failed:\n" + "\n".join(bad))[-4000:]
             job.result.new_failures = bad[:20]  # counts on a red base too
             self._event(job, "ADR check failed: " + "; ".join(bad)[:1500])
+        roles_failed: list[str] = []
+        if repo_path and job.changeset:  # --- change sets: each other changed role runs its own repo's check
+            code, tail_, roles_failed = await changesets.verify_roles(self, job)
+            if code is not None:
+                if job.result.verify_exit_code in (None, 0):
+                    job.result.verify_exit_code, job.result.verify_tail = code, tail_
+                else:
+                    job.result.verify_tail = ((job.result.verify_tail or "") + "\n" + (tail_ or ""))[-4000:]
         # --- frontdoor: on a red base only the failures this change added count ("unknown": can't tell them apart)
         verdict = baseline.verdict(job, job.result.verify_exit_code, job.result.new_failures)
+        if roles_failed:  # --- change sets: a role's own check failed, whatever the primary's said
+            verdict = "fail"
         verify_ok = verdict == "pass"
         if repo_path and baseline.red(job):
             self._event(job, baseline.after_line(job))
@@ -1247,7 +1299,11 @@ class JobService:
         if repo_path:
             self._event(job, "delivering", JobState.DELIVERING)
             try:
-                await self._deliver(job, draft=not (clean and verify_ok) or bool(job.result.touched_tests))
+                draft = not (clean and verify_ok) or bool(job.result.touched_tests)
+                if job.changeset:  # --- change sets: one PR per changed role (changesets.py)
+                    await changesets.deliver(self, job, draft=draft)
+                else:
+                    await self._deliver(job, draft=draft)
             except _SecretFound as e:  # --- egress: back to the agent to remove it while rounds are left
                 if (nxt := secretscan.fix_turn(self, job, turn, e.blocked)) is not None:
                     job.turns.append(nxt)
@@ -1363,8 +1419,9 @@ class JobService:
         try:
             pr = await gh.find_pr(repo, job.branch)
             if pr is None:
+                title = changesets.title_for(self.policies.get(job.repo), job)  # --- change sets (G7)
                 pr = await gh.open_pr(repo, job.branch, job.base_branch or await gh.default_branch(repo),
-                                      secretscan.clean(self, job, job.title, "the PR title"),  # --- egress
+                                      secretscan.clean(self, job, title, "the PR title"),  # --- egress
                                       secretscan.clean(self, job, self._pr_body(job), "the PR body"), draft)
                 self._event(job, f"opened {'draft ' if pr.get('draft') else ''}PR #{pr['number']}")
             job.result.pr_url, job.result.pr_number = pr.get("html_url"), pr.get("number")
@@ -1401,6 +1458,7 @@ class JobService:
         lines += computer.pr_lines(self, job)  # --- computer: screenshots and recorded demos
         lines += clouddoctor.pr_lines(self, job)  # --- clouddoctor: a doctor fix names its evidence
         lines += adr.pr_lines(job)  # --- #170: the thread it was drafted from
+        lines += changesets.pr_lines(self, job)  # --- change sets: the sibling PRs and the landing order
         lines.append(f"hangar job `{job.id}` · requested by {job.requester} via {job.source} · "
                      f"{job.environment} / {job.harness}" + (f" / {job.model}" if job.model else ""))
         if usage := self.usage(job):  # workstream C
@@ -1408,6 +1466,8 @@ class JobService:
         m = re.match(r"^github:([^#]+)#(\d+)$", job.source_ref or "")
         if m and parse_repo(job.repo) == m.group(1) and job.labels.get("github.kind") == "issue":
             lines.append(f"Closes #{m.group(2)}")
+        if key := intake.ticket_key(job.labels, job.source_ref, job.ticket):  # --- ticket keys
+            lines.append(f"Jira: {key}")
         from hangar import trailers  # --- #137: Hangar-Job, Harness-Digest, ... as git trailers, last
 
         return "\n".join(lines) + trailers.block(self, job)

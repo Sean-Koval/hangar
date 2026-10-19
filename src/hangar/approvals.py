@@ -65,10 +65,11 @@ log = logging.getLogger("hangar.approvals")
 Kind = Literal["approve", "reject", "egress", "land"]
 Rule = Literal["admin", "repo_approver", "front_door", "solo", "system"]
 SELF_APPROVAL_MODES = ("deny", "allow_solo")
-# --- relay: set to True by the submit path once it attaches relay_hold(...) to a held relay principal's job. Until
-# then auth.resolve_delegation refuses unlinked accounts under either HANGAR_RELAY_UNLINKED mode (fail closed: an
-# unheld team job from an unverified account must never run).
-HOLD_SUBMIT = False
+# --- relay: True since the submit path (mcp_server.submit_job, the only door a relay reaches) attaches
+# relay_hold(...) to a held relay principal's job, single-repo or change set. False would make
+# auth.resolve_delegation refuse unlinked accounts under either HANGAR_RELAY_UNLINKED mode (fail closed: an unheld team
+# job from an unverified account must never run).
+HOLD_SUBMIT = True
 _VERB = {"approve": "approve", "reject": "reject", "egress": "approve egress for", "land": "land"}
 
 

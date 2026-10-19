@@ -28,6 +28,10 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: The committed diagrams are what diagram.py draws
+        run: |
+          python3 docs/assets/front/diagram.py
+          git diff --exit-code -- docs/assets/diagrams docs/assets/front/hangar-suite.svg
       - run: pip install zensical==0.0.71
       # --strict: a broken link or anchor (a warning) fails the build instead of deploying with it
       - run: zensical build --strict

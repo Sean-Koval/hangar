@@ -13,7 +13,7 @@ secret manager and hangar's admin configuration kept as reviewed files in your o
 | Example overlay | `deploy/kustomize/example` | Copy it into your deploy repository |
 | Terraform module | `deploy/terraform/modules/hangar-workload` | hangar's Google service account, Workload Identity binding, buckets, and optionally a registry. Never creates a cluster |
 | Released images | `.github/workflows/release.yml` | `ghcr.io/sean-koval/hangar:<tag>` and the harness packs, listed by digest in each release |
-| Config as code | `hangar apply -f` | Environments, credential references and repo policies from YAML |
+| Config as code | `hangar apply -f` | Environments, credential references, repo policies and change-set profiles from YAML |
 | Mounted credentials | `HANGAR_SECRETS_DIR` | A credential whose value is a file from your secret manager |
 
 The owner's path is unchanged: `deploy/k8s`, `deploy/gke/up.sh`, `deploy/terraform/gke` and `deploy.yml` work as
@@ -166,12 +166,12 @@ The rules:
 - **A credential reads only its own file.** The source must be `file:<HANGAR_SECRETS_DIR>/<credential name>`;
   anything else is refused with a 400. A symlink out of the directory, or a file over 1 MiB, reads as no value. So
   does a file that isn't mounted yet; the warning in hangar's log names the path, never the contents.
-- **Declare every mounted name with `hangar apply`** before members store credentials of their own. A member can
-  create a credential only under a name nobody holds, and could then reference the file of that name.
+- **Only an admin creates one.** A credential that references a mounted file is stored only with an admin token
+  (`hangar apply` from CD); a member's attempt answers 403, and a sandbox's login write-back never stores a reference.
 - **Static secrets only.** An `auth_file` credential whose tokens rotate inside the sandbox is written back to the
   vault when its lease ends. That write replaces the reference with the stored value.
-- **Not yet for `github_app` credentials.** The broker validates a GitHub App key's JSON when it is stored, before
-  the vault sees the reference, so it refuses one. Keep the App key as a stored value for now.
+- **GitHub App keys work too.** A `github_app` credential's JSON is checked when hangar uses it rather than when the
+  reference is stored, since the file may not be synced yet; `hangar doctor` reports a missing or malformed one.
 
 ## 5. Config as code: `hangar apply`
 
@@ -182,7 +182,7 @@ an admin token (`HANGAR_URL`, `HANGAR_TOKEN`):
 hangar apply -f policy/            # make hangar match the files
 hangar apply -f policy/ --dry-run  # what would change
 hangar apply -f policy/ --check    # the same, and exit 1 on any drift (a scheduled drift job)
-hangar apply -f policy/ --prune    # also remove repo policies no file declares
+hangar apply -f policy/ --prune    # also remove repo policies and change-set profiles no file declares
 ```
 
 `-f` takes files or directories (read recursively, `*.yaml` and `*.yml`), and a file may hold several documents.
@@ -206,16 +206,27 @@ environment: payments
 verify: make test
 land: auto_after_approval
 approvers: [alice, bob]
+---
+schema: hangar.changeset-profile/v1  # a change-set profile (changesets.md)
+name: payments-bot
+environment: payments
+repos:
+  infra: {repo: https://github.com/acme/payments-infra.git}
+  code:  {repo: https://github.com/acme/payments.git}
+land_order: [infra, code]
 ```
 
 Applying is declarative. A repo policy becomes exactly what its file says: a field the file leaves out is cleared. An
 environment becomes its file's spec. A credential is a team credential unless it names a `person`. Environments are
-applied first, then credentials, then the policies that may name them. Applying is idempotent: an object that already
+applied first, then credentials, then the policies that may name them, then change-set profiles (checked like
+`hangar changeset profile-set`: their environment must exist and each deliverer kind must be registered, so a
+company deliverer's plugin is enabled first). Applying is idempotent: an object that already
 matches is reported `unchanged` and not written, so the second run of the same files writes nothing. A file with an
 unknown schema, an unknown field, a credential `value`, or an object declared twice is refused before anything is
 applied.
 
-Drift is everything apply would create or change, plus repo policies that live in hangar but in no file. `--check`
+Drift is everything apply would create or change, plus repo policies and change-set profiles that live in hangar but
+in no file. `--check`
 and `--dry-run` print each field as `live -> declared`, and `--json` gives the same for scripts. The API never returns
 a credential's value or source, so a credential counts as unchanged when its metadata (harness, kind, description,
 owner, and `env_var`, `file_path` and `exposure` when the file sets them) matches.

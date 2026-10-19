@@ -10,13 +10,10 @@ Reply in that thread to follow up. The agent picks up its own conversation, on t
 
 Slack is the door for **unplanned** work: an alert, a question in a thread. Planned work comes through Jira's *Ready for agent* status, and repo chores through a GitHub label or Projects column ([intake.md](intake.md)). The Slack door is maintained but not extended beyond `@hangar adr` (#170).
 
-```
-/hangar <instructions> ──► hangar posts "<@you> asked hangar to work on owner/repo" ──► thread:
-                              Queued as hangar job job-3fa2c1d0 …
-                              Agent started …
-                              Done: PR, verification, summary
-   you, in the thread: "also handle empty files" ──► follow-up turn ──► Done …
-```
+<figure class="af-figure">
+--8<-- "slack-flow.svg"
+<figcaption>Slack: /hangar starts a job, the thread carries its progress, a reply in the thread is a follow-up</figcaption>
+</figure>
 
 ## Commands
 

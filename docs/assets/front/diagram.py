@@ -1,11 +1,15 @@
-"""Hangar's place in the agent factory, as a theme-aware SVG (docs/assets/front/hangar-suite.svg).
+"""The docs' diagrams as theme-aware SVGs: hangar's place in the agent factory (docs/assets/front/hangar-suite.svg,
+for the README and the docs home) and the explanatory drawings the guide pages inline (docs/assets/diagrams/*.svg).
 
 Drawn with the helpers of the suite's diagram generator (Sean-Koval/agent-factory, scripts/diagrams.py), copied
-here so this repo renders on its own: every color is an Airframe token (`var(--af-*, <dark fallback>)`), so the SVG
+here so this repo renders on its own: every color is an Airframe token (`var(--af-*, <dark fallback>)`), so an SVG
 inlined in a docs page follows the page's theme, and opened on its own (or as the PNGs make.py renders) it shows
-the dark or light flavor.
+the dark or light flavor. Drawings are 800 units wide, so at a docs page's 710 px their 12.5 px body text is
+11 px; a docs page includes one with `--8<-- "name.svg"` inside `<figure class="af-figure">`.
 
-    python3 docs/assets/front/diagram.py      # writes hangar-suite.svg next to this file
+    python3 docs/assets/front/diagram.py      # writes hangar-suite.svg next to this file and docs/assets/diagrams/*.svg
+
+CI (.github/workflows/docs.yml) runs it and fails when a committed SVG differs from what it draws.
 """
 
 # ruff: noqa: E501 - the vendored stylesheet and the drawing's coordinates read best one per line
@@ -13,7 +17,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-OUT = Path(__file__).resolve().parent / "hangar-suite.svg"
+HERE = Path(__file__).resolve().parent
+OUT = HERE / "hangar-suite.svg"
+DIAGRAMS = HERE.parent / "diagrams"
 
 # ---------------------------------------------------------------- from agent-factory scripts/diagrams.py (unchanged)
 STYLE = """
@@ -97,139 +103,173 @@ def text(x, y, s, cls="elabel", anchor="start", rotate=None):
     return f'<text class="{cls}" x="{x}" y="{y}" text-anchor="{anchor}"{t}>{esc(s)}</text>'
 
 
-# ------------------------------------------------------------------------------------------------- the drawing
+# ------------------------------------------------------------------------------------------------- the drawings
+W = 800  # every drawing's width, so body text stays 11 px at a docs page's 710 px
+
+
+def flow(y, xs, w, h, names, lines=(), kinds=(), eyebrows=(), gap_label=None):
+    """A row of boxes at the same height with an arrow between each; returns the markup and each box's x."""
+    out = []
+    for i, x in enumerate(xs):
+        out.append(
+            box(x, y, w, h, names[i], lines[i] if lines else (), eyebrow=eyebrows[i] if eyebrows else None,
+                kind=kinds[i] if kinds else "box", name_cls="name-s")
+        )
+        if i:
+            out.append(edge(f"M{xs[i - 1] + w} {y + h // 2}H{x - 2}"))
+    return "".join(out)
+
+
 def hangar_suite() -> str:
-    D = (40, 250)  # doors column x, width
-    H = (390, 400)  # hangar x, width
-    G = (930, 230)  # the gate column x, width
+    """Where hangar sits: doors in, hangar runs it, the PR out, people; below, the three sister planes."""
+    y, h, w = 92, 118, 175
+    xs = (20, 215, 410, 605)
     b = [
-        text(40, 48, "Where hangar sits", "title"),
-        text(40, 72, "MANY DOORS  ·  ONE RUN PLANE  ·  ONE GATE", "lbl"),
-        # doors
-        box(
-            D[0],
-            110,
-            D[1],
-            76,
-            "Trackers",
-            ["Jira “Ready for agent”, GitHub", "labels and Projects columns"],
-            name_cls="name-s",
-        ),
-        box(
-            D[0],
-            202,
-            D[1],
-            76,
-            "Chat and laptops",
-            ["Slack @hangar; Claude Code, Codex", "or Cursor over MCP"],
-            name_cls="name-s",
-        ),
-        box(D[0], 294, D[1], 76, "Automation", ["Schedules, webhooks, CI,", "A2A and the REST API"], name_cls="name-s"),
-        # hangar
-        box(
-            H[0],
-            110,
-            H[1],
-            250,
-            "Run the work",
-            [
-                "Admission: repo policy, trust, budgets, fairness",
-                "Jobs (one-shot) and sessions (resumable)",
-                "Isolated sandboxes from prepared environments:",
-                "  Docker, gVisor or Kata VM, GKE, E2B",
-                "Claude Code, Codex, pi or Antigravity inside",
-                "Verify with the repo's own check",
-                "Push through the git gateway; credentials stay out",
-                "The inbox: reviews, questions, approvals",
-            ],
-            eyebrow="HANGAR  ·  RUN PLANE",
-            kind="box-hub",
-            product="hangar",
-        ),
-        # the gate
-        box(
-            G[0],
-            110,
-            G[1],
-            120,
-            "One gate: the PR",
-            ["Draft PR with a review packet;", "an approval lands it", "(landing, merge stays human)"],
-            eyebrow="GITHUB",
-            kind="box-ext",
-            name_cls="name-s",
-        ),
-        box(
-            G[0],
-            250,
-            G[1],
-            120,
-            "People",
-            ["Review PRs, answer questions,", "steer a running agent", "(web UI, Slack, CLI, MCP)"],
-            eyebrow="YOUR TEAM",
-            kind="person",
-            name_cls="name-s",
-        ),
-        # sister tools
-        box(
-            40,
-            440,
-            350,
-            112,
-            "Define",
-            ["Native files and harness.lock, frozen from", "a good run; ai-dlc's optional workflow plugin"],
-            eyebrow="TEAM HARNESS REPO  +  AI-DLC",
-            product="aidlc",
-            name_cls="name-s",
-        ),
-        box(
-            425,
-            440,
-            350,
-            112,
-            "Judge",
-            ["Reads runs from the outbox: manifests,", "traces (hangar.trace/v1), grades"],
-            eyebrow="FLIGHTDECK",
-            product="flightdeck",
-            name_cls="name-s",
-        ),
-        box(
-            810,
-            440,
-            350,
-            112,
-            "Govern",
-            ["Rules and approvals for risky actions;", "hangar will ask it once #172 lands"],
-            eyebrow="TOWER  ·  DECISION API BUILT",
-            kind="box-plan",
-            product="tower",
-            name_cls="name-s",
-        ),
-        # doors -> hangar
-        edge(f"M{D[0] + D[1]} 148H{H[0] - 30}V200H{H[0] - 2}"),
-        edge(f"M{D[0] + D[1]} 240H{H[0] - 2}"),
-        edge(f"M{D[0] + D[1]} 332H{H[0] - 30}V280H{H[0] - 2}"),
-        text(D[0] + D[1] + 8, 232, "tickets, tasks"),
-        # hangar -> gate, people
-        edge(f"M{H[0] + H[1]} 170H{G[0] - 2}"),
-        text(H[0] + H[1] + 12, 162, "branch + draft PR"),
-        edge(f"M{H[0] + H[1]} 290H{G[0] - 2}"),
-        text(H[0] + H[1] + 12, 282, "inbox, comments"),
-        edge(f"M{G[0]} 340H{H[0] + H[1] + 2}"),
-        text(H[0] + H[1] + 12, 332, "replies, approvals"),
-        # sister tools
-        edge("M215 438V400H500V362"),
-        text(223, 418, "harness lock"),
-        edge("M590 360V438"),
-        text(598, 410, "outbox"),
-        edge("M720 360V400H985V438", plan=True),
-        text(870, 392, "decide?", anchor="middle"),
+        text(20, 44, "Where hangar sits", "title"),
+        text(20, 66, "MANY DOORS  ·  ONE RUN PLANE  ·  ONE GATE", "lbl"),
+        box(xs[0], y, w, h, "Doors", ["Trackers, chat, automation:", "Jira, GitHub, Slack, MCP,", "webhooks, schedules, A2A"], eyebrow="WORK IN", name_cls="name-s"),
+        box(xs[1], y, w, h, "hangar runs it", ["An isolated sandbox per job", "The repo's own check", "Credentials stay outside"], eyebrow="RUN PLANE", kind="box-hub", product="hangar", name_cls="name-s"),
+        box(xs[2], y, w, h, "Draft PR", ["One commit, pushed by", "hangar; an approval", "lands it"], eyebrow="THE GATE", kind="box-ext", name_cls="name-s"),
+        box(xs[3], y, w, h, "People", ["Review, answer, approve:", "console, Slack, CLI, MCP"], eyebrow="YOUR TEAM", kind="person", name_cls="name-s"),
+        edge(f"M{xs[0] + w} {y + h // 2}H{xs[1] - 2}"),
+        edge(f"M{xs[1] + w} {y + h // 2}H{xs[2] - 2}"),
+        edge(f"M{xs[2] + w} {y + h // 2}H{xs[3] - 2}"),
+        # the sister planes, one line each
+        box(20, 262, 240, 86, "Define", ["Harness lock, frozen from a good run"], eyebrow="TEAM HARNESS REPO + AI-DLC", product="aidlc", name_cls="name-s"),
+        box(280, 262, 240, 86, "Judge", ["Reads every run from the outbox"], eyebrow="FLIGHTDECK", product="flightdeck", name_cls="name-s"),
+        box(540, 262, 240, 86, "Govern", ["Decides risky actions (#172, planned)"], eyebrow="TOWER", kind="box-plan", product="tower", name_cls="name-s"),
+        edge("M140 260V236H250V212"),
+        text(148, 252, "harness lock"),
+        edge("M340 212V260"),
+        text(348, 246, "outbox"),
+        edge("M430 212V236H660V260", plan=True),
+        text(545, 230, "decide?", anchor="middle"),
+        text(20, 376, "Solid: shipped. Dashed: Tower's decision API is built; hangar's wiring to it is open."),
     ]
-    return svg(1200, 590, "Where hangar sits", b, dots=(900, 20, 300, 70))
+    return svg(W, 396, "Where hangar sits", b, dots=(560, 16, 220, 60))
+
+
+def concepts_map() -> str:
+    """The four columns of the concepts page: people and their tools, front doors, the control plane, sandboxes."""
+    y, h, w = 20, 146, 176
+    xs = (20, 216, 412, 608)
+    b = [
+        box(xs[0], y, w, h, "People and tools", ["MCP clients, CLI, browser", "Jira, GitHub, Slack", "services, CI, other agents"], eyebrow="WHO", kind="person", name_cls="name-s"),
+        box(xs[1], y, w, h, "Front doors", ["MCP, REST, CLI", "GitHub, Jira, Projects, Slack", "webhooks, schedules, A2A"], eyebrow="WORK IN", name_cls="name-s"),
+        box(xs[2], y, w, h, "Control plane", ["Jobs and sessions", "Policy, people, budgets", "Credentials: vault, gateway", "Verify, branch, PR, landing"], eyebrow="HANGAR", kind="box-hub", product="hangar", name_cls="name-s"),
+        box(xs[3], y, w, h, "Sandboxes", ["Environment + harness", "+ repo checkout, isolated", "Docker, GKE or E2B"], eyebrow="WORK RUNS", kind="box-ext", name_cls="name-s"),
+        edge(f"M{xs[0] + w} {y + h // 2}H{xs[1] - 2}"),
+        edge(f"M{xs[1] + w} {y + h // 2}H{xs[2] - 2}"),
+        edge(f"M{xs[2] + w} {y + h // 2}H{xs[3] - 2}"),
+    ]
+    return svg(W, 186, "People, front doors, the control plane and sandboxes", b)
+
+
+def control_plane() -> str:
+    """Inside the control plane: two clients above, the control plane, three providers below."""
+    b = [
+        box(60, 20, 300, 60, "MCP client", ["Codex, Claude Code, Cursor: HTTP + token"], kind="person", name_cls="name-s"),
+        box(440, 20, 300, 60, "Browser", ["The console: fleet, approvals, live terminals"], kind="person", name_cls="name-s"),
+        box(60, 120, 680, 126, "Control plane", [
+            "MCP tools, REST API, websocket PTYs, audit log",
+            "Fleet manager: environments (layered specs to images, warm pools), snapshots and forks, TTL reaper",
+            "Credential broker: encrypted vault, leases; git gateway",
+        ], eyebrow="HANGAR", kind="box-hub", product="hangar", name_cls="name-s"),
+        edge("M210 80V118"),
+        edge("M590 80V118"),
+        box(60, 290, 200, 86, "Docker", ["Laptop or one VM; gVisor, Kata"], eyebrow="PROVIDER · SANDBOXES", kind="box-ext", name_cls="name-s"),
+        box(300, 290, 200, 86, "Kubernetes", ["GKE: Agent Sandbox CRDs"], eyebrow="PROVIDER · SANDBOXES", kind="box-ext", name_cls="name-s"),
+        box(540, 290, 200, 86, "E2B", ["Firecracker microVMs"], eyebrow="PROVIDER · SANDBOXES", kind="box-ext", name_cls="name-s"),
+        edge("M160 246V288"),
+        edge("M400 246V288"),
+        edge("M640 246V288"),
+    ]
+    return svg(W, 396, "Inside the control plane", b)
+
+
+def jobs_flow() -> str:
+    """A job: caller to queue to sandbox to agent turn to verify to a branch and a draft PR, and what comes back."""
+    y, h, w = 40, 64, 122
+    xs = (20, 151, 282, 413, 544, 675)
+    names = ("Caller", "Queue", "Sandbox", "Agent turn", "Verify", "Draft PR")
+    lines = (["POST /api/jobs"], ["admitted"], ["env + harness"], ["edits, tests"], ["the repo's check"], ["hangar/<job>"])
+    kinds = ("person", "box", "box", "box", "box", "box-ext")
+    b = [flow(y, xs, w, h, names, lines, kinds)]
+    # the signed callback, back to the caller
+    b.append(edge(f"M{xs[5] + w // 2} {y + h}V150H{xs[0] + w // 2}V{y + h + 2}"))
+    b.append(text(400, 144, "signed callback: job.started, job.finished", anchor="middle"))
+    # the engineer, following along
+    b.append(text(400, 184, "An engineer follows up (API, MCP, CLI, /hangar on the PR) or attaches to the sandbox's terminal.", anchor="middle"))
+    return svg(W, 200, "A job, from the caller to a draft PR", b)
+
+
+def a2a_flow() -> str:
+    """A2A: a client sends a message, hangar runs a job, task updates stream back; the same contextId follows up."""
+    y, h = 40, 64
+    b = [
+        box(20, y, 180, h, "A2A client", ["ADK, AX or any other"], kind="person", name_cls="name-s"),
+        box(300, y, 140, h, "/a2a", ["SendMessage in"], kind="box-hub", product="hangar", name_cls="name-s"),
+        box(540, y, 240, h, "Job", ["queue, sandbox, agent, verify, PR"], name_cls="name-s"),
+        edge(f"M200 {y + h // 2}H298"),
+        text(249, y + h // 2 - 8, "SendMessage", anchor="middle"),
+        edge(f"M440 {y + h // 2}H538"),
+        edge(f"M610 {y + h}V150H110V{y + h + 2}"),
+        text(360, 144, "Task, status updates (SSE), push notifications", anchor="middle"),
+        edge(f"M110 {y + h}V186H660V{y + h + 2}", plan=True),
+        text(385, 180, "SendMessage with the same contextId: a follow-up turn on the same job and branch", anchor="middle"),
+    ]
+    return svg(W, 206, "A2A: a message in, a task out", b)
+
+
+def slack_flow() -> str:
+    """Slack: /hangar starts a job; the thread carries its progress; a reply in the thread is a follow-up."""
+    y, h = 40, 64
+    b = [
+        box(20, y, 200, h, "/hangar <instructions>", ["in a channel"], kind="person", name_cls="name-s"),
+        box(300, y, 200, 82, "hangar posts", ["“@you asked hangar to", "work on owner/repo”"], kind="box-hub", product="hangar", name_cls="name-s"),
+        box(580, y, 200, 118, "The thread", ["Queued as job-3fa2c1d0", "Agent started", "Done: PR, verification,", "summary"], kind="box-ext", name_cls="name-s"),
+        edge(f"M220 {y + h // 2}H298"),
+        edge(f"M500 {y + h // 2}H578"),
+        box(300, 190, 200, 64, "Follow-up turn", ["same branch and PR"], name_cls="name-s"),
+        edge("M680 160V222H502", plan=True),
+        text(590, 216, "a reply in the thread", anchor="middle"),
+        edge("M400 254V280H680V282"),
+        text(540, 274, "Done, again in the thread", anchor="middle"),
+    ]
+    return svg(W, 300, "Slack: a command, a thread, a follow-up", b)
+
+
+def landing_states() -> str:
+    """How a PR lands: opened, open, approved, armed, merged, and what sends it back to open."""
+    y, h, w = 40, 56, 128
+    xs = (20, 184, 348, 512, 676)
+    names = ("Opened", "Open", "Approved", "Armed", "Merged")
+    lines = (["draft from hangar"], ["review packet"], ["head approved"], ["auto-merge armed"], ["rules met"])
+    kinds = ("box", "box", "box", "box-hub", "box-ext")
+    b = [
+        flow(y, xs, w, h, names, lines, kinds),
+        text(266, y - 10, "an approver or code owner", anchor="middle"),
+        text(430, y - 10, "checks green, no agent turn", anchor="middle"),
+        edge(f"M{xs[3] + w - 12} {y + h}V150H{xs[1] + 12}V{y + h + 2}"),
+        text(412, 144, "disarmed, back to open: a push, changes requested, a new agent turn", anchor="middle"),
+    ]
+    return svg(W, 166, "How a PR lands", b)
 
 
 def main() -> None:
     OUT.write_text(hangar_suite())
     print("wrote", OUT)
+    DIAGRAMS.mkdir(parents=True, exist_ok=True)
+    for name, fn in (
+        ("concepts-map", concepts_map),
+        ("control-plane", control_plane),
+        ("jobs-flow", jobs_flow),
+        ("a2a-flow", a2a_flow),
+        ("slack-flow", slack_flow),
+        ("landing-states", landing_states),
+    ):
+        (DIAGRAMS / f"{name}.svg").write_text(fn())
+        print("wrote", DIAGRAMS / f"{name}.svg")
 
 
 if __name__ == "__main__":

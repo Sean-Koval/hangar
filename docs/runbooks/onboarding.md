@@ -89,7 +89,7 @@ Steps 4–7 for each repo: repo 1 in phase 1, repos 2 and 3 in phase 2.
 - **The GitHub App installed on this repo only** (Contents and Pull requests: Read and write, nothing else), and
   `HANGAR_GITHUB_APP_CREDENTIAL` set ([landing.md §1](../landing.md#1-the-github-app)). Not on any bypass list.
 - **`credential_mode: gateway`** on the repo's environment, with `HANGAR_GATEWAY_URL` set
-  ([security.md, turning it on](../security/git-gateway.md#turning-it-on)).
+  ([the git gateway, turning it on](../security/git-gateway.md#turning-it-on)).
 - **Branch protection** on the default branch ([landing.md §3](../landing.md#3-the-branch-protection-to-enable)):
   a pull request with at least 1 approval, dismiss stale approvals on a push, approval of the most recent push,
   required status checks, and *Allow auto-merge* in Settings → General.

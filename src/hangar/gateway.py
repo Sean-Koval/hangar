@@ -655,17 +655,24 @@ class Gateway:
             self.store.put(g)
 
     # --- least-privilege: hangar's own push of a job's work (delivery.py)
-    def mint_delivery(self, sb: Sandbox, ref: str, sha: str, minutes: float) -> tuple[str, str]:
+    def mint_delivery(self, sb: Sandbox, ref: str, sha: str, minutes: float,
+                      repo: str | None = None) -> tuple[str, str]:
         """(token, grant id): a grant beside the sandbox's own (which stays fetch-only) that pushes exactly `sha` to
         `ref` of the sandbox's repo, for `minutes`. Hangar mints it after a job's checks; a copy the agent lifts can
-        only push that commit there, which is what hangar is pushing."""
+        only push that commit there, which is what hangar is pushing. --- change sets: `repo` ("owner/repo", one of
+        the sandbox grant's) narrows it to that one repo, so one role's delivery can't push another's."""
         if not valid_ref(ref) or not _OID.match(sha):
             raise GatewayError(f"can't push {sha[:12]!r} to {ref!r}")
         own = next((g for g in self.grants(sb.id) if not g.pins), None)
         if own is None:
             raise GatewayError("the sandbox's gateway grant is gone (revoked, or the sandbox stopped)")
+        repos = list(own.repos)
+        if repo is not None:
+            if repo.lower() not in own.repos:
+                raise GatewayError(f"the sandbox's grant doesn't cover {repo}")
+            repos = [repo.lower()]
         raw = PREFIX + secrets.token_urlsafe(32)
-        g = SandboxGrant(sandbox_id=sb.id, token_hash=hash_token(raw), host=own.host, repos=list(own.repos),
+        g = SandboxGrant(sandbox_id=sb.id, token_hash=hash_token(raw), host=own.host, repos=repos,
                          push_refs=[ref], pins={ref: sha}, credential=own.credential,
                          expires_at=min(now() + minutes * 60, sb.expires_at or float("inf")))
         self.store.put(g)
@@ -795,14 +802,20 @@ class Gateway:
             if cred.kind not in (CredentialKind.GIT_TOKEN, CredentialKind.GITHUB_APP):
                 raise GatewayError(f"credential '{upstream}' is a {cred.kind.value}; the gateway needs a git_token or "
                                    "github_app credential")
-            token = self.mint(sb, remote[0], [remote[1]], push_refs, upstream)
+            from hangar import changesets  # --- change sets: a parent job's grant fetches every role's repo
+
+            extra, roles = changesets.grant_repos(self.fleet, sb, remote[0], self.hosts)
+            token = self.mint(sb, remote[0], [remote[1], *extra], push_refs, upstream)
             self.issued[sb.id] = token  # --- caches
             self.fleet.audit(sb.created_by or "system", "gateway.grant", sb.id, repo=remote[1], push_refs=push_refs,
-                             credential=upstream)
+                             credential=upstream, **({"repos": [remote[1], *extra]} if extra else {}))
+        else:
+            roles = {}
         await self._configure(prov, sb, token)
         sb.info["git"] = {"mode": "gateway", "repo": remote[1] if remote else None,
                           "push_refs": push_refs if token else [], "credential": upstream if token else None,
-                          **({"fetch_only": True} if fetch_only else {})}  # --- least-privilege
+                          **({"fetch_only": True} if fetch_only else {}),  # --- least-privilege
+                          **({"repos": roles} if roles else {})}  # --- change sets: {role: owner/repo}
         self.store.put(sb)
         return [c for c in creds if c.kind not in GIT_KINDS]
 

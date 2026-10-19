@@ -158,7 +158,8 @@ directory.
 - the environment can't run the lock's harness, or doesn't define an MCP server the lock binds (endpoints and
   credentials live in the environment);
 - the request names another `harness`, `model` or `approvals` than the lock's;
-- the lock has plugins and isn't a Claude Code harness;
+- the lock has plugins and isn't a Claude Code or Codex harness, or is a Codex harness and an enabled plugin has no
+  [Codex form](#codex-plugins) the lock pins;
 - under `HANGAR_HARNESS_DRIFT=fail`, the registry's files differ from the lock (edited without re-freezing).
 
 Otherwise the session (a job's too) is pinned to the lock's harness, concrete model and approval mode, and records
@@ -177,6 +178,7 @@ happens to the registry later (a session that resumes days later mounts the same
   there with the sandbox's own Claude Code as the image build installs them (`claude plugin marketplace add` /
   `install`), root's and read-only. `CLAUDE_CODE_PLUGIN_SEED_DIR` and hangar's `--settings` (`enabledPlugins`) then
   name the lock's plugins, so an environment that declares no plugins still runs them.
+- **Plugins** (Codex): each enabled plugin's [Codex form](#codex-plugins), installed by the sandbox's Codex.
 
 Everything that reads the environment's prefix layer (the manifest's declared skills, instructions and plugins, the
 probe, hangar's Claude Code settings, a hardened turn's settings) reads the lock's instead; the binding layer (MCP
@@ -190,6 +192,7 @@ agent's own user can't.
 | --- | --- | --- |
 | each skill | its `tree` digest | the sandbox's effective skill digest (`skills.effective`); a skill the sandbox has and the lock doesn't is drift too, except hangar's own (`hangar-environment`, `verify-ui`) |
 | each plugin | its `digest`, `enabled` and `tree` | the manifest's declared plugin (read from the mounted lock) and what the probe found in the seed (`probe.plugins`) |
+| each Codex plugin hook | trusted and enabled | what the sandbox's Codex reports for it (`probe.codex_hooks`; drift `codex-hook:<key>`, or `codex-hooks` when Codex couldn't be asked) |
 | the instructions file | the `guide:` digest | the declared one (`instructions.global.declared.digest`: hangar splices its environment notes into the sandbox's copy, so that copy isn't compared byte for byte) |
 | the CLI | `runtime.version` | the version the sandbox's CLI reported |
 | everything else | its `harness_digest` | the manifest's `harness_digest` (model, MCP servers, hooks, approvals) |
@@ -208,6 +211,37 @@ delivers nothing. (A trial against a [pin set](api/trials.md) is different: one 
 as `outcome_class: infra_error`, `infra_reason: drift`, whatever `HANGAR_HARNESS_DRIFT` says.) The default, `warn`, carries on. A turn that ends
 before its check has run waits for it (up to 40 s) under `fail`. Only turn 1 is checked: what the agent changes later
 is its behaviour, not drift. Writable state (`~/.claude.json`, plugin caches) is never digested.
+
+### Codex plugins
+
+A `plugin:<name>@<marketplace>` component is a Claude Code plugin. For a Codex harness the same lock carries the
+plugin's **Codex form**: the directory `native/codex/<name>/`, a Codex local plugin (`.codex-plugin/plugin.json`
+naming `<name>`, its skills and hooks), every file of it pinned as a `native:codex/<name>/...` component. AI-DLC's
+workflow plugin ships one (`plugins/ai-dlc-workflow/native/codex/` there; its publish script copies it to
+`native/codex/ai-dlc-workflow/`). A Codex claim refuses an enabled plugin without one, a form file the lock doesn't
+pin with its digest, and a form whose manifest names another plugin. Disabled plugins load nowhere.
+
+The mount stages each form as a local marketplace at `/opt/hangar/codex-marketplaces/<marketplace>/` (root's,
+read-only) and the sandbox's Codex installs it from there as the agent (`codex plugin marketplace add`, `codex plugin
+add <name>@<marketplace>`), so the plugin keeps the lock's id.
+
+**Hook trust.** Codex (0.162.1, the version `harnesses.lock.yaml` pins) runs a plugin's hooks only once they are
+trusted, and skips untrusted ones silently: installing a plugin doesn't trust its hooks. Trust is per hook,
+`hooks.state."<key>".trusted_hash` in the user config or a `-c` flag, where the key is
+`<name>@<marketplace>:<hooks file>:<event>:<group>:<handler>` and the hash is Codex's digest of the hook's event,
+matcher, command, timeout and options (verified against Codex's source at `rust-v0.162.1` and the CLI's own
+`hooks/list`). hangar computes it for exactly the hooks of the lock's Codex forms, from the lock's files, and passes it
+to every Codex turn of the sandbox as one `-c hooks.state={...}` (`HANGAR_CODEX_HOOK_TRUST`, in the harness's `run` and
+`live_run`). Nothing is written to the agent's config, so no other hook is trusted by hangar, and a hook edited in the
+agent's plugin cache no longer matches its hash: Codex reports it `modified` and skips it. A hardened turn starts Codex
+with hooks off (`--disable hooks`), plugin hooks included.
+
+Turn 1's probe asks the sandbox's Codex (its app server's `hooks/list`, with the same override; needs `python3` in the
+sandbox) for each of those hooks. One that isn't `trusted` and enabled is drift: `codex-hook:<key>` with Codex's status
+(`untrusted`, `modified`, `missing`, `disabled`), or `codex-hooks` when Codex couldn't be asked.
+
+The Codex form is pinned but isn't identity: `harness_digest` covers the plugin's Claude Code form (its `digest`,
+`enabled`), so a change to the Codex form alone changes its `native:` digests, not the digest.
 
 **In the PR.** A job's PR body and the commit hangar lands end with `Harness-Digest:` (and `Harness-Lock:
 team-default@r14` for a thawed job) as git trailers, and its review packet shows the short digest and the lock

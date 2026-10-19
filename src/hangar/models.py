@@ -551,7 +551,8 @@ class Job(BaseModel):
                     "env-setup",
                     "experiment",
                     "review",
-                    "shadow"] = "api"  # --- intake; --- autoinstall: env setup's jobs; --- interfaces: trials;
+                    "shadow",
+                    "changeset"] = "api"  # --- intake; --- autoinstall: env setup's jobs; --- interfaces: trials;
     # --- AI review (#161): `review` is an independent first-pass review of an agent PR (aireview.py)
     source_ref: str | None = None  # e.g. "github:owner/repo#12"
     requester: str = "system"
@@ -615,6 +616,59 @@ class Job(BaseModel):
     queue_class: Literal["interactive", "eval"] = "interactive"
     priority: Literal["now"] | None = None
     infra_cut: str | None = None
+    # --- change sets (changesets.py, docs/changesets.md): `changeset` is the set a parent job (the agent's) or a part
+    # job (one PR per changed repo; it never runs an agent) belongs to; a part names its `parent` job and `role`.
+    # `ticket` ("jira:PAY-412"): the tracker item it is for (repo policy `require_ticket`, `title_template`)
+    changeset: str | None = None
+    parent: str | None = None
+    role: str | None = None
+    ticket: str | None = None
+
+
+# ---------------------------------------------------------------------------- change sets (changesets.py)
+ChangeSetState = Literal["working", "landing", "deploying", "done", "broken"]
+
+
+class ChangeSetRole(BaseModel):
+    """One repo of a change set, as its parent job's sandbox checked it out (`/workspace/<role>`)."""
+
+    repo: str
+    agent: Literal["write", "read"] = "write"
+    branch: str = ""
+    base_branch: str | None = None
+    base_sha: str | None = None  # the commit its checkout started from (first boot; a resume keeps it)
+
+
+class DeployState(BaseModel):
+    """The deploy role's step: polled for `ready`, then run once by its `apply` deliverer."""
+
+    state: Literal["waiting", "ready", "applying", "opened", "merged", "failed"] = "waiting"
+    note: str | None = None
+    ready: dict[str, Any] = Field(default_factory=dict)  # what the ready deliverer found (an image digest, ...)
+    attempts: int = 0
+    polled_at: float | None = None
+    job: str | None = None  # its part job (the PR on the trigger repo)
+
+
+class ChangeSet(BaseModel):
+    """A ticket's work across several repos (one sandbox, one agent session): one PR per changed role, landed in the
+    profile's `land_order`, then the deploy role's step. Stored in the kv table (`changeset:<id>`)."""
+
+    id: str = Field(default_factory=lambda: new_id("cs"))
+    profile: str
+    profile_digest: str
+    ticket: str | None = None
+    parent_job: str
+    primary: str  # the role whose repo is the parent job's `repo`
+    roles: dict[str, ChangeSetRole] = Field(default_factory=dict)
+    land_order: list[str] = Field(default_factory=list)
+    parts: dict[str, str] = Field(default_factory=dict)  # role -> part job id, for each role that changed
+    state: ChangeSetState = "working"
+    reason: str | None = None  # why it is broken
+    deploy: DeployState | None = None
+    profile_spec: dict[str, Any] = Field(default_factory=dict)  # the profile as it was (a later edit changes new sets)
+    created_at: float = Field(default_factory=now)
+    updated_at: float = Field(default_factory=now)
 
 
 # ---------------------------------------------------------------------------- scheduled jobs (workstream A)

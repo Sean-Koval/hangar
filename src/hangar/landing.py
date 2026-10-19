@@ -290,6 +290,8 @@ class Landing:
             return
         st = job.landing
         with contextlib.suppress(Exception):  # the sandbox is the job's own; this is best effort
+            if job.parent:  # --- change sets: a part holds no sandbox; its delivery set push_mode and files
+                raise LookupError
             sb = self.svc.fleet.get(job.sandbox_id)
             if st.push_mode != "direct":  # once a sandbox held a token, its approvals stay suspect
                 st.push_mode = (sb.info.get("git") or {}).get("mode") or st.push_mode
@@ -326,10 +328,24 @@ class Landing:
                 from hangar.jobs import JobError
 
                 raise JobError("could not disarm the PR's auto-merge before the agent turn; try the follow-up again")
+        from hangar import changesets  # --- change sets: the agent's turn can push to every part's branch
+
+        for part in changesets.parts_of(self.svc, job):
+            async with self._locks[part.id]:
+                if part.landing.armed_sha and not await self._disarm(part, "an agent turn is starting on its "
+                                                                           "change set"):
+                    from hangar.jobs import JobError
+
+                    raise JobError(f"could not disarm {part.role}'s PR #{part.result.pr_number} before the agent "
+                                   "turn; try the follow-up again")
 
     def idle(self, job: Job) -> None:
         """The job's turn is over (jobs._process): land what waited for it, or end what the PR's end waited for."""
         st = job.landing
+        from hangar import changesets  # --- change sets: the parent's turn is over; its parts may land now
+
+        for part in changesets.parts_of(self.svc, job):
+            self.idle(part)
         if st.pr_state in ("merged", "closed") and not st.ended:
             self._bg(job, self.end(job))
         elif st.armed_sha and (st.armed_sha != st.head_sha or st.approved_sha != st.armed_sha):
@@ -442,6 +458,10 @@ class Landing:
                 self.svc._event(job, f"PR #{job.result.pr_number} closed without merging" +
                                 (f" by @{who}" if who else ""))
             self.svc._save(job)
+            if job.parent:  # --- change sets: the next role may land, the deploy step start, or the set break
+                from hangar import changesets
+
+                changesets.part_closed(self.svc, job)
             if job.id in self.svc._active:
                 self._stop_turn(job)
             else:
@@ -565,6 +585,11 @@ class Landing:
             return self._note(job, "the repo's policy lands PRs by hand (land: manual): merge it on GitHub")
         if job.id in svc._active or (job.state not in JOB_TERMINAL and job.state != JobState.NEEDS_INPUT):
             return self._note(job, "an agent turn is queued or running on this job")
+        if job.parent:  # --- change sets: land_order, a broken set, the agent's own turn
+            from hangar import changesets
+
+            if why := changesets.gate(svc, job):
+                return self._note(job, why)
         if st.push_mode == "direct":  # the agent held a GitHub token: the approval may be its own
             return self._note(job, "its sandbox held a GitHub token (credential_mode: direct), so hangar doesn't "
                                    "land it; merge it on GitHub, or use the git gateway")
@@ -642,8 +667,11 @@ class Landing:
         # A push, a dismissal or a follow-up handled while GitHub was arming found nothing armed to undo
         # (`pushed` and the review handlers run off the lock): look again now that there is.
         svc = self.svc
+        from hangar import changesets  # --- change sets: or its set's agent turn was queued, or the set broke
+
         if st.head_sha != sha or st.approved_sha != sha or job.id in svc._active or \
-                (job.state not in JOB_TERMINAL and job.state != JobState.NEEDS_INPUT):
+                (job.state not in JOB_TERMINAL and job.state != JobState.NEEDS_INPUT) or \
+                (job.parent and changesets.gate(svc, job)):
             await self._disarm(job, "the PR moved, its approval went, or an agent turn was queued while arming")
 
     def commit_body(self, job: Job) -> str:
@@ -752,6 +780,14 @@ class Landing:
             st.armed_sha = None
             job.autofix_state.pending, job.autofix_state.due_at = [], None
             why = f"PR #{job.result.pr_number} {st.pr_state}"
+            if job.parent:  # --- change sets: a part holds no session; the parent's goes once every part ended
+                from hangar import changesets
+
+                st.ended = True
+                self.svc._save(job)
+                if (parent := changesets.all_ended(self.svc, job)) is not None:
+                    self._bg(parent, self._release_parent(parent, f"every PR of change set {job.changeset} ended"))
+                return
             if not await self._release(job, why):
                 return  # the work isn't saved: its sandbox stays until it idles out, which checkpoints again
             if (s := self.svc._session(job)) is not None:
@@ -762,9 +798,22 @@ class Landing:
                                 reason=f"pr_{st.pr_state}")
             self.svc._event(job, f"{why}: the session's work is in its final checkpoint and its sandbox is gone")
 
+    async def _release_parent(self, parent: Job, why: str) -> None:
+        from hangar import hot_resume
+
+        if await self._release(parent, why) and (s := self.svc._session(parent)) is not None:
+            await hot_resume.discard(self.svc.sessions, s.id)
+            self.svc._event(parent, f"{why}: the session's work is in its final checkpoint and its sandbox is gone")
+
     async def _release(self, job: Job, why: str) -> bool:
         """Checkpoint the job's session and let its sandbox go. False when the checkpoint failed (the sandbox stays,
-        so no work is lost)."""
+        so no work is lost). --- change sets: a part's is its parent's (the agent's sandbox goes before any part
+        arms)."""
+        if job.parent:
+            try:
+                job = self.svc.get(job.parent)
+            except KeyError:
+                return True
         s = self.svc._session(job)
         try:
             if s is not None and s.sandbox_id:

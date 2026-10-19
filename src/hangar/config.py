@@ -263,6 +263,10 @@ class Settings(BaseSettings):
     # --- approvals (#121): nobody approves their own job. `allow_solo` permits it while exactly one person exists
     # (a single-person install, legacy tokens only), audited `self_approved: true` (approvals.py)
     self_approval: Literal["deny", "allow_solo"] = "deny"
+    # --- relay (docs/clients.md): what a relay's claim for an account linked to nobody gets. `refuse` answers 403;
+    # `approve` lets it only submit work (a job or a change set), which waits for a trusted person's approval
+    # (mcp_server.submit_job attaches approvals.relay_hold)
+    relay_unlinked: Literal["refuse", "approve"] = "refuse"
     # Signed inbound webhooks at /api/hooks/inbound/<source>: {"sentry": {"secret": "...", ...}} (docs/triggers.md)
     inbound_webhooks: dict[str, dict[str, Any]] = Field(default_factory=dict)
     inbound_max_body_bytes: int = 1_000_000

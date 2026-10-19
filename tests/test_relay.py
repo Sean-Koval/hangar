@@ -14,11 +14,10 @@ import json
 
 import pytest
 from fastapi.testclient import TestClient
-from starlette.responses import JSONResponse
 
 import hangar.identity as identity
 from hangar import approvals, auth, people
-from hangar.auth import DelegationRefused, Principal, TokenAuth, bearer_from_headers, resolve_delegation
+from hangar.auth import DelegationRefused, Principal, TokenAuth, resolve_delegation
 from hangar.jobs import Caller, SubmitJob
 from hangar.models import ApiToken, JobState
 from hangar.triggers import new_approval
@@ -162,13 +161,14 @@ def test_refusals_are_audited(tokens):
 
 
 # ====================================================================== unlinked accounts (HANGAR_RELAY_UNLINKED)
-def test_unlinked_accounts_fail_closed_until_holds_are_wired(tokens, monkeypatch):
+def test_unlinked_accounts_are_refused_or_held(tokens, monkeypatch):
     with pytest.raises(DelegationRefused, match="isn't linked"):
         _as(tokens, tokens["relay"], "symphony:999", unlinked="refuse")
     with pytest.raises(DelegationRefused, match="one of refuse, approve"):
         _as(tokens, tokens["relay"], "symphony:999", unlinked="allow")
-    # approve: only once the submit path attaches approvals.relay_hold (an unheld team job must never run)
-    assert approvals.HOLD_SUBMIT is False
+    # approve: only while the submit path attaches approvals.relay_hold (an unheld team job must never run)
+    assert approvals.HOLD_SUBMIT is True
+    monkeypatch.setattr(approvals, "HOLD_SUBMIT", False)
     with pytest.raises(DelegationRefused, match="can't hold a relayed job"):
         _as(tokens, tokens["relay"], "symphony:999", unlinked="approve")
     monkeypatch.setattr(approvals, "HOLD_SUBMIT", True)
@@ -253,38 +253,11 @@ def test_allow_solo_never_applies_through_a_relay(settings, store):
 
 
 # ====================================================================== end to end over /mcp
-def _wire(monkeypatch, unlinked: str = "refuse") -> None:
-    """MCPAuthMiddleware with the call WP1 adds to app.py: resolve_delegation on the token's principal, before the
-    scope check, answering 403 to a refused claim."""
-    from hangar import app as app_mod
-    from hangar.mcp_server import current_actor
-
-    async def call(self, scope, receive, send):
-        if scope["type"] != "http":
-            return await self.app(scope, receive, send)
-        headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
-        try:
-            who = resolve_delegation(self.auth, self.auth.principal(bearer_from_headers(headers)), headers,
-                                     unlinked=unlinked)
-        except DelegationRefused as e:
-            return await JSONResponse({"error": str(e)}, status_code=403)(scope, receive, send)
-        if who is None or not (who.admin or "mcp" in who.scopes or "user" in who.scopes):
-            return await JSONResponse({"error": "unauthorized"}, status_code=401)(scope, receive, send)
-        tok, ptok = current_actor.set(identity.actor_name(who)), identity.current.set(who)
-        try:
-            await self.app(scope, receive, send)
-        finally:
-            identity.current.reset(ptok)
-            current_actor.reset(tok)
-
-    monkeypatch.setattr(app_mod.MCPAuthMiddleware, "__call__", call)
-
-
 @pytest.fixture
 def world(settings, monkeypatch):
+    """The real app: MCPAuthMiddleware runs every /mcp request through resolve_delegation (app.py)."""
     from hangar.app import create_app
 
-    _wire(monkeypatch)
     settings.admin_token = "t0ken"
     settings.public_url = "http://localhost:8787"
     app = create_app(settings)
@@ -325,6 +298,30 @@ def test_the_bot_submits_alices_job_as_alice(world):
     assert [j["id"] for j in mine["structuredContent"]["result"]] == [job.id], mine
     got = _call(c, _session(c, world["sym-bot"], "symphony:102"), "get_job", {"job": job.id})
     assert got.get("isError") and "no job" in got["content"][0]["text"]
+
+
+def test_relay_end_to_end_linked_runs_as_the_person_unlinked_is_refused(world):
+    """Over /mcp with the real middleware: a relay-only token (scope `relay`, nothing else) reaches the resolver, a
+    linked Symphony account's job is that person's, and an unlinked one is refused with 403 and audited."""
+    c, h = world["client"], world["h"]
+    claim = json.dumps({"source": "symphony", "id": 102, "reply_to": "symphony:42:7"})
+    res = _call(c, _session(c, world["sym-bot"], claim), "submit_job",
+                {"instructions": "bump it", "repo": REPO, "environment": "plain", "deliver": "none"})
+    assert not res.get("isError"), res
+    job = h.jobs.get(json.loads(res["content"][0]["text"])["id"])
+    assert (job.person, job.requester) == ("bob", "@bob:relay:sym-bot")
+    init = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "bot", "version": "1"}}}
+    r = c.post("/mcp", json=init, headers={"Accept": "application/json, text/event-stream",
+                                           "Authorization": f"Bearer {world['sym-bot']}", H: "symphony:999"})
+    assert r.status_code == 403 and "isn't linked to a hangar person" in r.json()["error"]
+    refused = [e for e in h.store.audit_tail(50) if e.action == "relay.refused"]
+    assert [e.target for e in refused] == ["symphony:999"]
+    # HANGAR_RELAY_UNLINKED=approve is read by the middleware: the unlinked account gets in, held (tests below)
+    h.settings.relay_unlinked = "approve"
+    r = c.post("/mcp", json=init, headers={"Accept": "application/json, text/event-stream",
+                                           "Authorization": f"Bearer {world['sym-bot']}", H: "symphony:999"})
+    assert r.status_code == 200, r.text
 
 
 def test_over_http_the_refusals_are_403(world):

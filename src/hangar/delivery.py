@@ -156,25 +156,33 @@ def clone_hint(sb: Sandbox) -> str:
     return ""
 
 
-async def push(fleet: Fleet, sandbox_id: str, branch: str, sha: str, actor: str, timeout: int = 300) -> ExecResult:
+async def push(fleet: Fleet, sandbox_id: str, branch: str, sha: str, actor: str, timeout: int = 300,
+               repo: str | None = None, cwd: str | None = None) -> ExecResult:
     """Push `sha` to `branch` of the sandbox's origin, as hangar: in gateway mode with a delivery grant pinned to that
     ref and commit (dropped when the push ends), else with the sandbox's own git credential (direct mode). The
-    sandbox's hooks don't run in it."""
+    sandbox's hooks don't run in it. --- change sets: `repo` (a role's clone URL) and `cwd` (its checkout) push one
+    role of a change set, with a grant for that repo alone."""
     q = shlex.quote
     ref = f"refs/heads/{branch}"
     cmd = f"git -c core.hooksPath=/dev/null push -q origin {q(sha)}:{q(ref)}"
     sb, prov = fleet._running(sandbox_id)
     git = sb.info.get("git") or {}
     if git.get("mode") != "gateway" or not git.get("repo"):
-        return await fleet.exec(sandbox_id, cmd, timeout=timeout, actor=actor)
-    from hangar.gateway import GatewayError
+        return await fleet.exec(sandbox_id, cmd, cwd=cwd, timeout=timeout, actor=actor)
+    from hangar.gateway import GatewayError, parse_remote
 
     gw = fleet.gateway
+    name = None
+    if repo is not None:
+        remote = parse_remote(repo, gw.hosts)
+        if remote is None:
+            return ExecResult(exit_code=1, stdout="", stderr=f"hangar: the git gateway doesn't serve {repo}")
+        name = remote[1]
     try:
-        token, grant = gw.mint_delivery(sb, ref, sha, DELIVERY_MINUTES)
+        token, grant = gw.mint_delivery(sb, ref, sha, DELIVERY_MINUTES, repo=name)
     except GatewayError as e:
         return ExecResult(exit_code=1, stdout="", stderr=f"hangar: {e}")
-    fleet.audit(actor, "gateway.grant", sb.id, repo=git.get("repo"), push_refs=[ref], pin=sha, delivery=True)
+    fleet.audit(actor, "gateway.grant", sb.id, repo=name or git.get("repo"), push_refs=[ref], pin=sha, delivery=True)
     # The token reaches git through a 0600 file read and removed before the push: never a command line (which the
     # audit log records) and never ~/.git-credentials. The header goes to the gateway's URL only; an empty value
     # first drops any extraHeader the agent configured for it.
@@ -184,7 +192,7 @@ async def push(fleet: Fleet, sandbox_id: str, branch: str, sha: str, actor: str,
     path = f"/tmp/.hangar-push-{pysecrets.token_hex(8)}"
     try:
         await prov.write_file(sb, path, env.encode(), 0o600)
-        return await fleet.exec(sandbox_id, f"set -a; . {path}; set +a; rm -f {path}; {cmd}", timeout=timeout,
-                                actor=actor)
+        return await fleet.exec(sandbox_id, f"set -a; . {path}; set +a; rm -f {path}; {cmd}", cwd=cwd,
+                                timeout=timeout, actor=actor)
     finally:
         gw.drop(grant)

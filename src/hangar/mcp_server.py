@@ -848,7 +848,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                    callback_url: str | None = None, budget: dict[str, Any] | None = None,
                    output_schema: dict[str, Any] | None = None, strategy: str = "single", n: int | None = None,
                    judge: bool = False, verify_in_loop: bool | None = None,
-                   autofix: str | None = None, harness_lock: str | None = None) -> live.JobOut:
+                   autofix: str | None = None, harness_lock: str | None = None, changeset: str | None = None,
+                   ticket: str | None = None) -> live.JobOut:
         """Hand development work to a cloud agent. Hangar starts a sandbox of `environment` (default: the repo's),
         runs the agent, then `verify` (e.g. "pytest -q"), pushes hangar/<job> and opens a PR (`deliver`: draft_pr |
         pr | branch | none). `context` items: {"name", "content", "kind": "log"}, {"kind": "url", "url"}, your
@@ -857,16 +858,28 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         is delivered as a draft. Then wait_for_turn(job id).
         `strategy="best_of_n"`, `n` 2-8: parallel attempts, the best delivered (`judge=True`: an agent compares).
         `verify_in_loop` (default on): failures go back to the agent in the turn. `autofix` (ci,reviews | ci |
-        reviews | off): PR CI failures and trusted reviews start follow-ups. `harness_lock`: name@rN."""
+        reviews | off): PR CI failures and trusted reviews start follow-ups. `harness_lock`: name@rN.
+        `changeset`: a profile (no `repo`): one PR per changed repo. `ticket`: "jira:PAY-412"."""
         req = SubmitJob(instructions=instructions, repo=repo, environment=environment, title=title, harness=harness,
                         model=model, base_branch=base_branch, verify=verify, deliver=deliver,
                         context=[ContextItem.model_validate(c) for c in context or []],
                         timeout_minutes=timeout_minutes, callback_url=callback_url, output_schema=output_schema,
                         budget=Budget.model_validate(budget) if budget else None, strategy=strategy, n=n,
                         judge=judge, verify_in_loop=verify_in_loop, autofix=autofix,  # --- overnight/autofix
-                        harness_lock=harness_lock)  # --- harness locks (#134)
+                        harness_lock=harness_lock,  # --- harness locks (#134)
+                        changeset=changeset, ticket=ticket)  # --- change sets (docs/changesets.md)
         who = current_actor.get()
-        return jobs.view(jobs.submit(req, Caller(who, who, person=identity.person()), source="mcp"))  # identity
+        # --- relay (WP4): a bot acting for a Symphony account linked to nobody (HANGAR_RELAY_UNLINKED=approve)
+        # submits work that waits for a trusted person's approval, single-repo or change set; the account's own
+        # text is untrusted. A relay's `reply_to` goes on the job for events out (ext/notify.REPLY_TO_LABEL).
+        p = identity.current.get()
+        hold = approvals.relay_hold(jobs, p)
+        if p is not None and getattr(p, "reply_to", None):
+            from hangar.ext.notify import REPLY_TO_LABEL
+
+            req = req.model_copy(update={"labels": {**req.labels, REPLY_TO_LABEL: p.reply_to}})
+        return jobs.view(jobs.submit(req, Caller(who, who, person=identity.person()), source="mcp",  # identity
+                                     approval=hold, untrusted_source=p.on_behalf_of if hold else None))
 
     @tool()
     async def get_job(job: str) -> live.JobOut:

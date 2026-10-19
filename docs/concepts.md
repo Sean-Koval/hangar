@@ -3,14 +3,10 @@
 The words the rest of these docs use, in one page. Each section says what the thing is, why it exists, and which page
 has the details.
 
-```
- people and their tools           front doors                hangar (control plane)                 sandboxes
- ────────────────────────   ─────────────────────────   ─────────────────────────────────   ──────────────────────
- MCP clients, CLI, browser ─► MCP · REST · CLI          ─► jobs and sessions                 ─► sandbox: environment
- Jira, GitHub, Slack       ─► GitHub · Jira · Projects     repo policy · people · budgets        + harness (CLI, config)
- services, CI, agents      ─► Slack · webhooks ·           credentials (vault, gateway)         + repo checkout
-                               schedules · A2A             verify → branch → PR → landing       on Docker, GKE or E2B
-```
+<figure class="af-figure">
+--8<-- "concepts-map.svg"
+<figcaption>People and their tools, the front doors, the control plane and the sandboxes it runs</figcaption>
+</figure>
 
 ## Environment
 
@@ -103,21 +99,10 @@ open (#172, [spec 0015](specs/0015-governance-decision-point.md)). Live metrics,
 
 Connect Codex, Claude Code, or any MCP client to hangar. Then spin up isolated sandboxes from environment templates that bundle your tools, agent harness, dependencies, skills, and repo. hangar handles the logins, runs agents inside the sandboxes, forks a prepared sandbox into N parallel attempts, and tears everything down when you're done. The same control plane runs on your laptop (Docker), on a single VM (Docker + gVisor or Kata microVMs), or on GKE (Agent Sandbox with gVisor or Kata). E2B is supported as a backend too.
 
-```
- MCP client (Codex, Claude Code, …)        Browser
-          │  streamable HTTP + bearer token   │  dashboard + live terminals
-          ▼                                   ▼
- ┌──────────────────────── hangar control plane ────────────────────────┐
- │  MCP tools · REST API · websocket PTYs · audit log                    │
- │  Fleet manager ── environments (layered specs → images, warm pools)   │
- │                ── credential broker (encrypted vault, leases)         │
- │                ── snapshots / forks · TTL reaper                      │
- └───────┬─────────────────────────┬─────────────────────────┬──────────┘
-         ▼                         ▼                         ▼
-   Docker provider          Kubernetes provider          E2B provider
-   laptop / single VM       Agent Sandbox CRDs           Firecracker VMs
-   runc · gVisor · Kata     gVisor · Kata on GKE         cloud / BYOC / self-host
-```
+<figure class="af-figure">
+--8<-- "control-plane.svg"
+<figcaption>Inside the control plane: clients above it, providers below it</figcaption>
+</figure>
 
 ## What you get
 
