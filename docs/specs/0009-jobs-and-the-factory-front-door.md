@@ -6,13 +6,13 @@ Status: built (2026-10-15): #30 and the waves after it. · Date: 2026-10-12 · B
 
 ## 1. Summary
 
-The owner's goal is a **software factory**: coding agents running on our own infrastructure that do development work for engineers, triggered by the tools engineers and services already use. Hangar already has the factory floor: environments, harness packs, sandboxes, credentials, agent runs. What it lacks is the **front door**, a way for a client, application or service to say "do this work, here is what you need to know, tell me when it's done".
+The owner's goal is a **software factory**: coding agents running on our own infrastructure that do development work for engineers, triggered by the tools engineers and services already use. hangar already has the factory floor: environments, harness packs, sandboxes, credentials, agent runs. What it lacks is the **front door**, a way for a client, application or service to say "do this work, here is what you need to know, tell me when it's done".
 
 That front door is the **job**:
 
 - **Submitting:** a caller submits a job with instructions, a repo, and a **context bundle** (issue text, logs, stack traces, files, links). Callers are a service with a narrow token, an MCP client, the CLI, or a GitHub issue or comment.
 - **Running:** hangar queues the job, starts a sandbox from the right environment and harness, places the context next to the repo, and runs the agent with a prompt hangar writes. It then verifies the result with the repo's own command.
-- **Delivering:** hangar commits anything left uncommitted, pushes a `hangar/<job>` branch, and opens a (draft) PR. Hangar does this, not the agent, so delivery doesn't depend on the agent remembering to.
+- **Delivering:** hangar commits anything left uncommitted, pushes a `hangar/<job>` branch, and opens a (draft) PR. hangar does this, not the agent, so delivery doesn't depend on the agent remembering to.
 - **Collaborating:** engineers stay in the loop. They can follow the job and attach to its terminal while it runs. They can reply on the PR or through the API (`follow_up`), and the agent continues in the same sandbox. They can also take over the sandbox themselves.
 - **Reporting back:** the caller hears back through a signed webhook and, for GitHub-triggered jobs, comments on the issue.
 
@@ -44,7 +44,7 @@ Non-goals (this spec):
 ## 4. User stories
 
 1. A support tool files "export to CSV drops unicode" with the customer's sample file and the stack trace. It calls `POST /api/jobs` with a `jobs`-scoped token. Twenty minutes later its webhook receives `job.finished` with a draft PR link and the verification result.
-2. Sean labels a GitHub issue `hangar`. Hangar comments "On it: job-3fa2…", and later comments the summary and a PR link. Sean comments `/hangar also handle the empty-file case` on the PR, and the agent continues on the same branch.
+2. Sean labels a GitHub issue `hangar`. hangar comments "On it: job-3fa2…", and later comments the summary and a PR link. Sean comments `/hangar also handle the empty-file case` on the PR, and the agent continues on the same branch.
 3. From Claude Code, Sean calls `submit_job(repo=…, instructions=…, context=[{name:"trace.txt", content:…}])`, keeps working, and checks `get_job` later.
 4. While a job runs, an engineer opens the dashboard terminal on the job's sandbox (`terminal_session` in the job view) and watches, or takes over.
 5. CI posts a failing test's log as a job ("fix the flake in test_x, here's the log"), with `verify="pytest tests/test_x.py -q --count 20"`.
@@ -135,7 +135,7 @@ After each turn, hangar runs these steps in the repo checkout:
 2. If the working tree has changes, commit them as `hangar: uncommitted changes from <job>`. Agents forget.
 3. Count commits ahead of `origin/<base>`. If there are none, record "no changes" and skip delivery.
 4. Push with `git push origin HEAD:refs/heads/<branch>`. A force push is never used.
-5. Open a PR when `deliver` is `pr` or `draft_pr`, a GitHub repo can be parsed from the URL, and a GitHub token is configured. The token is a vault credential named by `HANGAR_GITHUB_TOKEN_CREDENTIAL`, held by the control plane, not the sandbox. The PR body holds the summary, the verification result, the job id, and `Closes #N` for issue-triggered jobs. Hangar looks up an existing PR for the branch before creating one.
+5. Open a PR when `deliver` is `pr` or `draft_pr`, a GitHub repo can be parsed from the URL, and a GitHub token is configured. The token is a vault credential named by `HANGAR_GITHUB_TOKEN_CREDENTIAL`, held by the control plane, not the sandbox. The PR body holds the summary, the verification result, the job id, and `Closes #N` for issue-triggered jobs. hangar looks up an existing PR for the branch before creating one.
 
 ### 5.5 Callers
 

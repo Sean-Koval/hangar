@@ -6,7 +6,7 @@ Status: partly built (2026-10-15): branch protection, the git credential gateway
 
 ## 1. Summary
 
-- Agents must never hold a credential that can write outside their own branch. Hangar moves the GitHub token, and later the model credential, out of sandboxes and into a gateway in the control plane.
+- Agents must never hold a credential that can write outside their own branch. hangar moves the GitHub token, and later the model credential, out of sandboxes and into a gateway in the control plane.
 - Each sandbox gets a scoped, short-lived grant. The gateway checks every git push and every GitHub REST call against that grant before it attaches the real token.
 - Egress goes through a per-policy allowlist proxy. NetworkPolicy lets sandboxes talk to that proxy and the gateway only.
 - hangar's own tokens get real scopes (`read`, `operate`, `admin`) and per-token limits. The dashboard gets IAP/SSO, login rate limits and a CSP.
@@ -347,7 +347,7 @@ Presets, as data in `hangar/egress.py`:
 
 **Kubernetes (GKE Agent Sandbox).**
 
-- One `Deployment` + `Service` per distinct policy, `hangar-egress-<policyhash>`, in the sandbox namespace, with a ConfigMap holding the rendered ACL. Hangar renders and applies them when it builds an environment (`Fleet.build`), next to the SandboxTemplate.
+- One `Deployment` + `Service` per distinct policy, `hangar-egress-<policyhash>`, in the sandbox namespace, with a ConfigMap holding the rendered ACL. hangar renders and applies them when it builds an environment (`Fleet.build`), next to the SandboxTemplate.
 - Sandbox pods get the label `dev.hangar/egress=<policyhash>` in `kubernetes.py:_pod_template`, and `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` (gateway host) as container env.
 - A `NetworkPolicy` per policy selects those pods and allows egress to exactly: the matching proxy pods (3128), the gateway Service (8788) and nothing else. No DNS: the proxy resolves names, so DNS tunnelling from the sandbox is closed too. Tools that ignore `HTTPS_PROXY` fail closed.
 - **Problem:** NetworkPolicies are additive. The add-on's default policy already allows public internet. Another policy cannot take that away. The template therefore needs `networkPolicyManagement: Unmanaged` (the field `docs/gke.md` warns about) and hangar's own default-deny + allow policy, which must also block RFC1918 and the metadata IP itself. Allow-only-the-proxy covers both by construction. Update `docs/gke.md:105` accordingly, and re-run the same probes as the live run (metadata, kube API, control plane, kubelet) as an acceptance test. Whether the add-on's admission policy accepts `Unmanaged` templates: open question 7. GKE also has an FQDN NetworkPolicy resource on Dataplane V2. It is GKE-only, resolves names to IPs (shared CDN addresses make rules broad), and does not help docker or e2b, so it is not the primary design.

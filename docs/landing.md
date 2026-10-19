@@ -1,12 +1,12 @@
 # Landing: an approval lands the PR
 
-An agent's PR used to need three things from a person: read it, approve it, then come back after CI and click merge. With landing on, a person reads the PR and approves it. Hangar takes it from there, and GitHub's branch protection stays the gate.
+An agent's PR used to need three things from a person: read it, approve it, then come back after CI and click merge. With landing on, a person reads the PR and approves it. hangar takes it from there, and GitHub's branch protection stays the gate.
 
 - **Agent PRs come from a GitHub App** (`hangar-agents[bot]`), not from a person's token. A PR's author can't approve it, so with the App as author GitHub lets the person who asked for the work approve it. Whether that approval alone lands the PR is the [self-approval rule](#self-approval-who-may-be-the-only-approver): by default only for a low-risk PR (docs and tests) with an independent AI review of the approved head, never for a tainted PR; otherwise a second reviewer must approve.
 - **An independent AI review comes first** ([section 6a](#6a-ai-first-pass-review)): a hangar job on another harness than the author's (or an org review bot's check) reviews each agent PR and posts one advisory COMMENT review.
 - **The control plane, never the agent, arms auto-merge.** It does so after a qualifying approval of the PR's current head and green required checks, and only for that commit.
-- **A push after the approval needs a new review.** Hangar disarms before any agent turn starts on the job, and GitHub dismisses the stale approval.
-- **Hangar knows when work lands.** Each job records its PR's state (`open`, `approved`, `merged`, `closed`), when it merged, and how long it took from green checks to merged. A merged or closed PR ends the job's session.
+- **A push after the approval needs a new review.** hangar disarms before any agent turn starts on the job, and GitHub dismisses the stale approval.
+- **hangar knows when work lands.** Each job records its PR's state (`open`, `approved`, `merged`, `closed`), when it merged, and how long it took from green checks to merged. A merged or closed PR ends the job's session.
 - **Each agent PR gets a review packet**: a comment with the verification, cost, harness and model, files touched, risk and links.
 - **One inbox** lists what needs you: `hangar://inbox`, `hangar inbox`, `GET /api/inbox`, and reaches you in Slack: a DM for each question or approval, and a digest twice a day.
 
@@ -75,7 +75,7 @@ hangar repo set acme/app --land auto_after_approval --approver alice --approver 
 
 ## 3. The branch protection to enable
 
-Hangar arms auto-merge; **GitHub decides when it merges**. These settings on the default branch make that decision safe. Set them under Settings → Branches (classic protection) or Settings → Rules → Rulesets:
+hangar arms auto-merge; **GitHub decides when it merges**. These settings on the default branch make that decision safe. Set them under Settings → Branches (classic protection) or Settings → Rules → Rulesets:
 
 | Setting | Classic protection | Ruleset (`pull_request` rule) | Why |
 | --- | --- | --- | --- |
@@ -85,7 +85,7 @@ Hangar arms auto-merge; **GitHub decides when it merges**. These settings on the
 | Require status checks to pass | `required_status_checks` | `required_status_checks` rule | CI decides "green", not hangar's view of it |
 | Allow auto-merge (Settings → General) | | | otherwise GitHub refuses to arm |
 
-**Hangar won't arm auto-merge on a base branch that doesn't dismiss stale approvals.** It disarms on every push it hears of, but a person with write access can push while hangar misses the webhook, and GitHub keeps auto-merge on after such a push: without dismissal it could merge that push on the earlier approval. So before arming, hangar reads the base branch's protection and rulesets (cached for 5 minutes); when neither dismisses stale approvals, or neither can be read, it doesn't arm, and the job's events and `hangar doctor` (a failure) say why and how to fix it. A repo can opt out with `hangar repo set owner/repo --no-require-stale-dismissal`, which `hangar doctor` then reports as a warning.
+**hangar won't arm auto-merge on a base branch that doesn't dismiss stale approvals.** It disarms on every push it hears of, but a person with write access can push while hangar misses the webhook, and GitHub keeps auto-merge on after such a push: without dismissal it could merge that push on the earlier approval. So before arming, hangar reads the base branch's protection and rulesets (cached for 5 minutes); when neither dismisses stale approvals, or neither can be read, it doesn't arm, and the job's events and `hangar doctor` (a failure) say why and how to fix it. A repo can opt out with `hangar repo set owner/repo --no-require-stale-dismissal`, which `hangar doctor` then reports as a warning.
 
 `hangar doctor` checks these for every repo with `land: auto_after_approval` and warns about what else is missing. It reads classic protection with the control token when that token has Administration: read, and rulesets through `GET /rules/branches/{b}`, which the App can read. It also warns when no App is configured, and when jobs don't use the git gateway. In direct mode a job's sandbox holds a GitHub token that could arm auto-merge itself, so branch protection would be the only gate.
 
@@ -96,7 +96,7 @@ Hangar arms auto-merge; **GitHub decides when it merges**. These settings on the
 <figcaption>How a PR lands: opened, open, approved, armed, merged; a push, changes requested, a dismissed approval or a new agent turn disarms it</figcaption>
 </figure>
 
-- **Only the approved commit.** Hangar arms with `enablePullRequestAutoMerge(expectedHeadOid: <approved sha>)`. GitHub has no REST route for auto-merge, so this is GraphQL. When the PR is already mergeable, GitHub refuses to arm ("Pull request is in clean status") and hangar merges it with `PUT /pulls/{n}/merge` and `sha: <approved sha>`. Either call fails if the head moved.
+- **Only the approved commit.** hangar arms with `enablePullRequestAutoMerge(expectedHeadOid: <approved sha>)`. GitHub has no REST route for auto-merge, so this is GraphQL. When the PR is already mergeable, GitHub refuses to arm ("Pull request is in clean status") and hangar merges it with `PUT /pulls/{n}/merge` and `sha: <approved sha>`. Either call fails if the head moved.
 - **A push clears the approval.** Any new head, from the agent, auto-fix, a follow-up or a person, clears the approval in hangar's record and disarms. A later push needs a new review, which "dismiss stale approvals" and "most recent push" enforce on GitHub's side.
 - **No agent runs while armed.** Before arming, the job's session takes a checkpoint and its sandbox goes, and with it the sandbox's gateway grant, so nothing the agent left running can push. Before any later agent turn on the job (a follow-up, an auto-fix round, a verify-fix turn), hangar disarms; if it can't, the turn doesn't start. After a turn that pushed nothing, the approval still covers the head and hangar arms again. Arming also waits for any queued or running turn on the job.
 - **Checks.** "Green" means every check the base branch requires (from its protection summary and rulesets) passed on the head: `success`, `neutral` or `skipped`. GitHub saying `mergeable_state: clean` also counts, in case a webhook was missed. A failed check holds landing even when it isn't required: an agent's red PR goes to [auto-fix](jobs.md#7-an-agent-loop-that-finishes-the-job), not to main. With no required checks, GitHub merges as soon as auto-merge is armed, so make CI required (`hangar doctor` warns).
@@ -146,7 +146,7 @@ Otherwise the approval is recorded but doesn't arm anything: the job's timeline 
 
 **When it applies, precisely.** Only to a *person's* job (team jobs from GitHub issues, Slack or webhooks have no person and are unchanged) and only where an approval lands the PR (`land: auto_after_approval`). It runs **after** the [taint gate](#tainted-prs), which has already refused the job's own person and requester on a tainted PR, whatever `self_approval` says (low risk and an AI review included; `any` too). So every Jira-door job, tainted from turn 1 by its ticket text, still needs a second human. The rule can only refuse more, never allow what the taint gate refused. As for every other approval, `HANGAR_SELF_APPROVAL=allow_solo` lets the one person of a one-person install land their own. GitHub's "require approval of the most recent reviewable push" still applies on its side.
 
-Everything that needs GitHub runs in the background, under a per-job lock, so a webhook is answered at once. Hangar's record lives on the job, so a restart loses nothing: approved PRs are evaluated again and merged PRs' sessions ended at startup. Deliveries missed while hangar was down are [redelivered](upgrading.md).
+Everything that needs GitHub runs in the background, under a per-job lock, so a webhook is answered at once. hangar's record lives on the job, so a restart loses nothing: approved PRs are evaluated again and merged PRs' sessions ended at startup. Deliveries missed while hangar was down are [redelivered](upgrading.md).
 
 ### What hangar records
 
@@ -187,7 +187,7 @@ To use the **App's webhook** instead of per-repo hooks, point it at `https://<ha
 
 ## 6. The review packet
 
-Hangar writes one comment on each agent PR when it delivers, and edits it on every later push, rather than posting again. It is built from the job record, so it works for any repo without a CI job:
+hangar writes one comment on each agent PR when it delivers, and edits it on every later push, rather than posting again. It is built from the job record, so it works for any repo without a CI job:
 
 - **Verification**: the command and its result, "base was red" when the [check on the base](repo-policy.md#the-check-on-the-base-commit) failed, and whether the agent changed the check's own tests;
 - **Risk**: `high` when a path matches `.github/**`, `.hangar/**` (the repo's environment, which runs in every build and sandbox) or the policy's `risk_paths`, or when the PR removes or changes a line of an existing ADR's `checks:` block ([above](#agent-drafted-adrs)), `low` for docs and tests only, `normal` otherwise;

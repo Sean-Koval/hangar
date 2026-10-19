@@ -101,7 +101,7 @@ hangar config set HANGAR_GITHUB_APP_CREDENTIAL github-app
 #   the environment's YAML: credential_mode: gateway (step 7 checks it: `credential mode ENV`)
 ```
 
-Hangar can't apply branch protection or install the App: the App deliberately lacks Administration. A GitHub admin
+hangar can't apply branch protection or install the App: the App deliberately lacks Administration. A GitHub admin
 does those by hand; step 7 checks them.
 
 ### 5. The repo policy

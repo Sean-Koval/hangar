@@ -71,7 +71,7 @@ curl -s $HANGAR/api/trials/job-1a2b3c4d.2 -H "Authorization: Bearer $TOKEN"
 | `reuse` | `{min_trials: k}`: use cached trials of the same key when it has at least k ([the cache](#the-cache)) |
 | `task_digest` | Flightdeck's own task digest for the cache key (default: computed from the task) |
 
-**How they run.** Hangar makes one experiment job for the request, whose only variant is the pin set
+**How they run.** hangar makes one experiment job for the request, whose only variant is the pin set
 (`{harness_lock}`). Its trials run as experiment trials do:
 
 - each is an ordinary job (`deliver: none`) claimed from the lock, checked out at the pinned base commit;

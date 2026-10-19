@@ -4,7 +4,7 @@ Status: deferred (2026-10-15): the MCP gateway, the `policy:` block and labels a
 
 > Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins.
 
-> **Update 2026-10-15 ([0014](0014-sister-tool-interfaces.md)):** interpreting runs moved to a sister tool in a separate repository. Hangar keeps what needs sandboxes, credentials or the control plane's trust boundary: policy and its enforcement (§5.2), the MCP gateway (§5.1), budgets, and experiments as a job kind that runs task × variant × trial isolated and pinned and records each trial (manifest, trace, verification, an optional external grader's output). The sister tool owns the paired analysis and report (§5.4 rules 4–5, `experiment_report`), labels and the labeler cascade (§5.5), process mining and routing on labels, and team learning's miners and proposals (§5.6). Milestones M7, M8 and M10 are split accordingly (§7).
+> **Update 2026-10-15 ([0014](0014-sister-tool-interfaces.md)):** interpreting runs moved to a sister tool in a separate repository. hangar keeps what needs sandboxes, credentials or the control plane's trust boundary: policy and its enforcement (§5.2), the MCP gateway (§5.1), budgets, and experiments as a job kind that runs task × variant × trial isolated and pinned and records each trial (manifest, trace, verification, an optional external grader's output). The sister tool owns the paired analysis and report (§5.4 rules 4–5, `experiment_report`), labels and the labeler cascade (§5.5), process mining and routing on labels, and team learning's miners and proposals (§5.6). Milestones M7, M8 and M10 are split accordingly (§7).
 
 ## 1. Summary
 
@@ -121,7 +121,7 @@ The resolved policy, with defaults filled in and the hash of each part, is store
 
 ### 5.4 Experiments (A/B testing with environments)
 
-> **Moved to flightdeck (2026-10-15, decision 17).** Hangar keeps the experiment job kind it built ([0014 §4](0014-sister-tool-interfaces.md#4-experiment-jobs-hangarexperimentv1)); analysis, reports and graded-task formats are flightdeck's. Kept for history.
+> **Moved to flightdeck (2026-10-15, decision 17).** hangar keeps the experiment job kind it built ([0014 §4](0014-sister-tool-interfaces.md#4-experiment-jobs-hangarexperimentv1)); analysis, reports and graded-task formats are flightdeck's. Kept for history.
 
 **Variant.** A base environment plus an overlay, with everything pinned. The variant id is the hash of the resolved spec, image digest, pack digests, harness version, model id and thinking level, policy hash and instructions/skills hashes.
 
@@ -156,7 +156,7 @@ Rules, extending 0005 §5.8:
 
 ### 5.5 Traces, labels and lifecycle links
 
-> **Moved to flightdeck (2026-10-15, decision 17).** Hangar keeps the stream parsers (`src/hangar/events.py`) and the trace export (`hangar.trace/v1`, [0014 §3](0014-sister-tool-interfaces.md#3-trace-export-hangartracev1)); labels and lifecycle analysis are flightdeck's. Kept for history.
+> **Moved to flightdeck (2026-10-15, decision 17).** hangar keeps the stream parsers (`src/hangar/events.py`) and the trace export (`hangar.trace/v1`, [0014 §3](0014-sister-tool-interfaces.md#3-trace-export-hangartracev1)); labels and lifecycle analysis are flightdeck's. Kept for history.
 
 **One span schema** across harnesses: 0005's `run_events` and `traces.db`, with OpenTelemetry GenAI-style attribute names (`gen_ai.request.model`, `gen_ai.usage.*`).
 

@@ -67,7 +67,7 @@ For one run, find its key, then look in the bucket:
    directly.
 2. The run's prefix is `v1/runs/<date>/<session_id>.<run_id>/`, where `<date>` is the UTC date the run finished
    (`YYYY-MM-DD`).
-3. List it with your own credentials. Hangar's service account can create objects there but can't read them:
+3. List it with your own credentials. hangar's service account can create objects there but can't read them:
 
    ```bash
    gcloud storage ls gs://<project>-hangar-runs/v1/runs/2026-10-18/<session_id>.<run_id>/

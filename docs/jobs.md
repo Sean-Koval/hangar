@@ -1,6 +1,6 @@
 # Jobs: handing work to cloud agents
 
-A job is a piece of development work handed to hangar by a service, an app, an MCP client, the CLI, a GitHub issue or a Slack channel. Hangar runs a coding agent on it in a fresh sandbox, checks the result with the repo's own command, and delivers a branch and a (draft) PR. Engineers can follow along, reply, or take over. The design is in [spec 0009](specs/0009-jobs-and-the-factory-front-door.md).
+A job is a piece of development work handed to hangar by a service, an app, an MCP client, the CLI, a GitHub issue or a Slack channel. hangar runs a coding agent on it in a fresh sandbox, checks the result with the repo's own command, and delivers a branch and a (draft) PR. Engineers can follow along, reply, or take over. The design is in [spec 0009](specs/0009-jobs-and-the-factory-front-door.md).
 
 <figure class="af-figure">
 --8<-- "jobs-flow.svg"
@@ -153,7 +153,7 @@ To set the same things by hand, use `hangar cred add gh-control --harness git --
 Then:
 
 - Label an issue `hangar` (`HANGAR_GITHUB_TRIGGER_LABEL`), or comment `/hangar` on it, to start a job. The issue body and recent comments by trusted people (by default owners, members and collaborators) become context; other people's comments are left out. `/hangar harness=codex model=gpt-5.5 also add a test` picks the harness and model and adds instructions.
-- Hangar comments when it starts and when it finishes, with the summary, verification and PR link. The PR says `Closes #N`.
+- hangar comments when it starts and when it finishes, with the summary, verification and PR link. The PR says `Closes #N`.
 - Comment `/hangar <message>` on the PR to continue in the same sandbox and branch.
 
 A `/hangar` comment or label from someone who isn't trusted (by default: not an owner, member or collaborator; or set `HANGAR_GITHUB_TRUSTED`) creates the job in `awaiting_approval`, and it runs only after a trusted `/hangar approve`. A job held by a daily spend cap waits the same way, and only an admin or a repo policy approver other than its own person can release it. See [triggers.md](triggers.md#who-may-approve). Only repos in `HANGAR_GITHUB_REPOS` are accepted, and GitHub's redelivery of the same event does not start a second job.
@@ -164,13 +164,13 @@ Jobs from every front door get the repo's defaults (`verify`, environment, harne
 
 ## 4a. Trigger from Slack
 
-`/hangar <instructions>` or `@hangar <instructions>` in a mapped channel starts a job on the channel's repo. Hangar replies in a thread when the agent starts, needs input and finishes, and a reply in the thread is a follow-up. Setup (app manifest, credentials, channel map) is in [slack.md](slack.md).
+`/hangar <instructions>` or `@hangar <instructions>` in a mapped channel starts a job on the channel's repo. hangar replies in a thread when the agent starts, needs input and finishes, and a reply in the thread is a follow-up. Setup (app manifest, credentials, channel map) is in [slack.md](slack.md).
 
 ## 4b. Trigger from Jira or GitHub Projects
 
-Planned work comes in through Jira: moving an issue to **Ready for agent** in a mapped project is the default door (`hangar setup jira`), and a configured label works too. Repo-local chores come in through a GitHub label (`hangar`) or a GitHub Projects column of the same name. Hangar comments on the issue when it queues the job (saying when it starts if the sandbox pools are powered down), when the agent starts, asks its questions there (a comment answers), and moves the ticket's status as the job goes. Setup is in [intake.md](intake.md).
+Planned work comes in through Jira: moving an issue to **Ready for agent** in a mapped project is the default door (`hangar setup jira`), and a configured label works too. Repo-local chores come in through a GitHub label (`hangar`) or a GitHub Projects column of the same name. hangar comments on the issue when it queues the job (saying when it starts if the sandbox pools are powered down), when the agent starts, asks its questions there (a comment answers), and moves the ticket's status as the job goes. Setup is in [intake.md](intake.md).
 
-Write the ticket from the [agent ticket template](intake.md#agent-tickets): *Goal*, *Acceptance criteria*, *Verify command*, *Out of scope*, *Touches risk paths?*. Hangar hands the criteria to the agent as untrusted `acceptance.md` and counts them (`intake.acceptance`); the ticket's verify command is a suggestion unless the repo policy's `verify_allowed` matches it. A ticket without criteria still starts, and the queued comment says to add them.
+Write the ticket from the [agent ticket template](intake.md#agent-tickets): *Goal*, *Acceptance criteria*, *Verify command*, *Out of scope*, *Touches risk paths?*. hangar hands the criteria to the agent as untrusted `acceptance.md` and counts them (`intake.acceptance`); the ticket's verify command is a suggestion unless the repo policy's `verify_allowed` matches it. A ticket without criteria still starts, and the queued comment says to add them.
 
 ## 5. Work with the agent
 
@@ -229,7 +229,7 @@ Over REST or MCP: `"strategy": "best_of_n", "n": 3` (2–8), and optionally `"ju
 
 How it runs:
 
-1. Hangar prepares the job once: a sandbox, the branch checks and the context files. Then it checkpoints that state.
+1. hangar prepares the job once: a sandbox, the branch checks and the context files. Then it checkpoints that state.
 2. It [forks](sessions.md#forks-and-best-of-n) the job's session into N attempt sessions. Each attempt restores the checkpoint into its own sandbox, on branch `<job branch>-attempt-<i>`, and runs the agent on the same prompt. The agent sees `$HANGAR_ATTEMPT` (1…N). Each attempt is a full first turn: it gets the job's local work (`patch`/`bundle` context), its `output_schema` (with the repair run when the result is missing) and the [`HANGAR_IO`](context-exchange.md) protocol, and the job's `budget` caps each attempt (and the judge) as it caps any agent turn.
 3. Each attempt is verified in its own sandbox, and what it left uncommitted is committed there. An attempt stopped over budget or by its timeout is still ranked (below those that finished cleanly), and delivered as a draft if it wins.
 4. Ranking:
@@ -267,7 +267,7 @@ Rounds and limits:
 - **Budget:** the rounds share the turn's [budget](activity.md). Follow-up turns get what is left of it, not a fresh one.
 - **Job view:** each turn shows `verify_rounds`, and hangar's follow-up turns show `trigger: "verify"`.
 
-**Hangar's own check after the turn still decides delivery.** The gate is advisory: it helps an agent that wants to pass the check, and it is not a control against one that doesn't. It runs inside the sandbox, as the agent's user, so the agent can get past it:
+**hangar's own check after the turn still decides delivery.** The gate is advisory: it helps an agent that wants to pass the check, and it is not a control against one that doesn't. It runs inside the sandbox, as the agent's user, so the agent can get past it:
 
 - **Settings files don't switch the hook off.** It lives on the command line, not in a file, and its `disableAllHooks: false` outranks the user, project and local settings files. This was verified with Claude Code 2.1.296: `disableAllHooks: true` in all three files leaves the hook running.
 - **Other ways around it remain.** Managed settings (`/etc/claude-code/managed-settings.json`) outrank the command line, and the agent can write them in an environment that sets `sudo: true` (off by default since #124; a job's Docker sandbox under `HANGAR_INTAKE_POSTURE=enforce` runs with `no-new-privileges`, so sudo fails there anyway). The agent can also use up the rounds by writing to the rounds file, or put its own `claude`, `pytest` or other command first on `PATH` for this turn or, through `~/.hangar/env`, for later ones.
@@ -506,7 +506,7 @@ resolved once and every trial gets that id, recorded in `pins.variants.<name>.mo
 shape decided, and the experiment's notes say so). Ordinary jobs still accept aliases; their manifests say
 `model.concrete: false` ([harnesses.md](harnesses.md#concrete-ids-and-floating-aliases)).
 
-Hangar pins the harness version, the model id and each task's base commit, mounts only the trial's harness, gives it
+hangar pins the harness version, the model id and each task's base commit, mounts only the trial's harness, gives it
 exactly the variant's skills and instructions (the lock's, or the overlay's), and keeps egress the same for every
 variant. It records what each
 trial ran with (its [manifest](api/manifest.schema.json)), what it did (its [trace](api/traces.md)) and its
@@ -585,7 +585,7 @@ what it doesn't:
   pass there the task can't tell a fix from no fix: `task_checks.<task>.invalid` with `hidden tests pass on base`, and
   every grade of the task says `task_invalid`. With `reference_patch` they also run on it, and must pass. One grader
   run per task, not per trial.
-- **Canaries.** Hangar writes the grader's canary as a comment line into every hidden test file that takes comments
+- **Canaries.** hangar writes the grader's canary as a comment line into every hidden test file that takes comments
   (`canary_files` counts them). After each trial it looks for it in the trial's patch, its `RESULT.md`, its trace
   export and the egress proxy's records of its sandbox. A hit makes the trial `contaminated` (with `contamination`
   saying where), adds a note to the experiment and a `grade.canary_seen` audit entry. The canary is kept only in the
@@ -655,7 +655,7 @@ Every agent turn, best-of-N attempt, experiment trial and job (`result.outcome_c
 | `cancelled` | someone (or an experiment) stopped it | no |
 | `human` | a person stepped in: an interrupt, or the agent asked a question | no (a job that then finishes is `agent`) |
 
-Records from before this have no class: unknown, never `agent`. Hangar errs towards `agent`: a turn is `infra_error`
+Records from before this have no class: unknown, never `agent`. hangar errs towards `agent`: a turn is `infra_error`
 only on a recorded node event (the reconciler's `pod_replaced`: node repair, scale-down, preemption), the power-down,
 a control-plane restart, a failed sandbox create or checkpoint restore, or the harness's own error report of a
 provider error (HTTP 429 after its retries, a 5xx, `overloaded_error`) on a run that failed. What a tool printed never

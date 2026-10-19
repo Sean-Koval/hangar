@@ -1,6 +1,6 @@
 # A2A: hand hangar work from another agent
 
-Hangar is an [A2A](https://a2a-protocol.org/) agent. An agent built with Google ADK, an agent running on AX, or any other A2A client can send hangar a coding task and get back a branch, a pull request, a summary and (when asked for) structured data. It doesn't need to know about hangar's REST API or MCP tools. The design is in [spec 0011](specs/0011-factory-roadmap.md) §3, workstream G.
+hangar is an [A2A](https://a2a-protocol.org/) agent. An agent built with Google ADK, an agent running on AX, or any other A2A client can send hangar a coding task and get back a branch, a pull request, a summary and (when asked for) structured data. It doesn't need to know about hangar's REST API or MCP tools. The design is in [spec 0011](specs/0011-factory-roadmap.md) §3, workstream G.
 
 <figure class="af-figure">
 --8<-- "a2a-flow.svg"
@@ -9,7 +9,7 @@ Hangar is an [A2A](https://a2a-protocol.org/) agent. An agent built with Google 
 
 ## Protocol version
 
-Hangar implements **A2A 1.0** ([specification](https://a2a-protocol.org/v1.0.0/specification/), [`a2a.proto`](https://github.com/a2aproject/A2A/blob/main/specification/a2a.proto)) over the **JSON-RPC binding**. Because many clients still speak 0.3, the same endpoint also accepts **A2A 0.3** ([specification](https://a2a-protocol.org/v0.3.0/specification/)).
+hangar implements **A2A 1.0** ([specification](https://a2a-protocol.org/v1.0.0/specification/), [`a2a.proto`](https://github.com/a2aproject/A2A/blob/main/specification/a2a.proto)) over the **JSON-RPC binding**. Because many clients still speak 0.3, the same endpoint also accepts **A2A 0.3** ([specification](https://a2a-protocol.org/v0.3.0/specification/)).
 
 | | 1.0 | 0.3 |
 | --- | --- | --- |
@@ -39,7 +39,7 @@ hangar token create adk-lead --scope jobs     # prints the token once
 
 A message turns into a job like this:
 
-| A2A | Hangar |
+| A2A | hangar |
 | --- | --- |
 | Text parts | The instructions (joined with blank lines). A message needs at least one. |
 | File parts (`raw`, or 0.3 `file.bytes`) | Context files in `~/.hangar/jobs/<job>/`, under their `filename` |
@@ -75,9 +75,9 @@ To get JSON back, give the task a JSON Schema: `output_schema` in the metadata, 
 
 **One task is one job, and the job is also the task's context.** The task id is the job id. Unless the client chose its own `contextId`, the context id is the job id too.
 
-- **Follow-up:** send a message with the task's `contextId` and no `taskId`. Hangar runs a follow-up turn on the same job: same branch, same sandbox or session, and the agent resumes its own conversation. The response is the same task, working again. (The spec would let a server open a new task in the context; hangar keeps one, because a job has one branch and one PR.)
+- **Follow-up:** send a message with the task's `contextId` and no `taskId`. hangar runs a follow-up turn on the same job: same branch, same sandbox or session, and the agent resumes its own conversation. The response is the same task, working again. (The spec would let a server open a new task in the context; hangar keeps one, because a job has one branch and one PR.)
 - **Answering a question:** when the task is `input-required`, reply with its `taskId` (and `contextId`), as the spec describes. That is a follow-up too.
-- A message with the `taskId` of a finished task is refused (`UnsupportedOperationError`, as the spec requires), and so is a message to a task that is still working. Hangar can't add a message to a turn that is already running.
+- A message with the `taskId` of a finished task is refused (`UnsupportedOperationError`, as the spec requires), and so is a message to a task that is still working. hangar can't add a message to a turn that is already running.
 
 | Job state | Task state |
 | --- | --- |
@@ -105,7 +105,7 @@ What comes back on a task:
 
 `SendStreamingMessage` and `SubscribeToTask` stream Server-Sent Events. The first item is the task. Then comes one status update per job event (provisioning, agent turn starting, verifying, delivering, …), then the artifacts, then the final status. The stream closes when the task finishes or needs input. Idle streams get an SSE comment every 15 seconds, so proxies don't close them.
 
-For push notifications, set `configuration.taskPushNotificationConfig` (0.3: `pushNotificationConfig`) on the message, or call `CreateTaskPushNotificationConfig`. Hangar POSTs to the URL whenever the task state changes:
+For push notifications, set `configuration.taskPushNotificationConfig` (0.3: `pushNotificationConfig`) on the message, or call `CreateTaskPushNotificationConfig`. hangar POSTs to the URL whenever the task state changes:
 
 - a `statusUpdate` while the task works;
 - the full `task` (with artifacts) when it finishes or needs input;

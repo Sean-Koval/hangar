@@ -6,10 +6,10 @@ Status: partly built, in another shape (2026-10-15): verification with the repo'
 
 ## 1. Summary
 
-- Hangar collects each run's branch, commits, diff, PR and CI checks itself, from git and GitHub. It never parses the agent's prose.
-- Hangar runs the environment's verify command in a clean sandbox after the agent finishes, so "done" no longer depends on the agent's word.
+- hangar collects each run's branch, commits, diff, PR and CI checks itself, from git and GitHub. It never parses the agent's prose.
+- hangar runs the environment's verify command in a clean sandbox after the agent finishes, so "done" no longer depends on the agent's word.
 - `fanout_start` runs N attempts, grades them (verification, CI, diff size) and returns a ranked list with reasons.
-- `land_request` waits for CI, updates the branch, detects conflicts, and merges only after a human approves. Hangar holds the merge credential. The agent holds none.
+- `land_request` waits for CI, updates the branch, detects conflicts, and merges only after a human approves. hangar holds the merge credential. The agent holds none.
 - A git push proxy limits each sandbox to its own branch. Notifiers (dashboard, webhook, Slack, ntfy, email) tell a human when to act.
 
 ## 2. Problem and evidence
@@ -60,7 +60,7 @@ Non-goals:
 - An LLM judge or semantic grading. Grading here is mechanical. A `scorer_command` hook can come later.
 - Egress filtering (a separate spec). Resumable agent conversations (this spec only stores `harness_session_id`).
 - Hosts other than GitHub in v1. The `GitHost` interface leaves room for GitLab and Gitea.
-- Replacing GitHub branch protection. Hangar adds a gate. It does not remove the need for rulesets.
+- Replacing GitHub branch protection. hangar adds a gate. It does not remove the need for rulesets.
 
 ## 4. User stories
 
@@ -68,7 +68,7 @@ Orchestrator agent over MCP:
 
 - As an orchestrator, I call `fanout_start(n=3)` and get back one id. `fanout_status(wait_seconds=60)` returns when something changes, with a ranking and reasons. I never read logs.
 - I call `run_result(run_id)` and get commits, diff stat, PR, checks and verification as JSON. A run that died is `lost`, with whatever commits exist.
-- I call `fanout_pick(land=true)`. Hangar opens a PR for the winner and queues it for landing. I poll `land_status` and see `awaiting_approval`. I cannot approve. I tell the user to look.
+- I call `fanout_pick(land=true)`. hangar opens a PR for the winner and queues it for landing. I poll `land_status` and see `awaiting_approval`. I cannot approve. I tell the user to look.
 - I get `conflict` with the conflicting files and the PR that caused it. I may start a follow-up run to resolve it.
 
 Human on the dashboard:
@@ -215,7 +215,7 @@ Rules:
 1. **A run watcher** replaces polling by the client. A new `Fleet._run_watch_loop` task runs every `run_watch_interval_seconds` (default 10 s; `_reaper_loop` at 60 s is too slow). For each `running` run it makes one `exec`: `cat .exit || (tmux has-session -t <run> && echo RUNNING || echo GONE)`.
 2. **`lost` detection.** `GONE` twice in a row (two ticks) and no `.exit` means `lost`, exit code `-1`. `run_agent` also writes `$$` to `<run>.pid`. The probe checks `kill -0` so a zombie (the "defunct" processes seen on 2026-10-11) counts as gone. A `lost` run still goes through `publishing` and `collecting`. Commits made before the crash are real.
 3. **Stages are idempotent and keyed by `(run_id, head_sha)`.** After a control-plane restart, `Fleet.start` scans runs whose stage is not `done` or `error` and resumes them (Jarmak: recovery outside the failure domain, retried steps idempotent).
-4. **Publishing.** Hangar pushes the branch itself, not the agent. It execs in the agent's sandbox with hardened git: `git -c core.hooksPath=/dev/null -c core.fsmonitor=false push origin HEAD:refs/heads/<work_branch>`. In proxy mode this goes through the proxy. The agent may also push (it is allowed to push its own branch). Uncommitted changes set `git.dirty = true` and a warning. Hangar does not auto-commit unless `publish.auto_commit: true`.
+4. **Publishing.** hangar pushes the branch itself, not the agent. It execs in the agent's sandbox with hardened git: `git -c core.hooksPath=/dev/null -c core.fsmonitor=false push origin HEAD:refs/heads/<work_branch>`. In proxy mode this goes through the proxy. The agent may also push (it is allowed to push its own branch). Uncommitted changes set `git.dirty = true` and a warning. hangar does not auto-commit unless `publish.auto_commit: true`.
 5. **Collecting reads from GitHub, not the sandbox.** The sandbox is only used for `head_sha`, `dirty`, and unpushed count, using plumbing commands (`rev-parse`, `status --porcelain`, `rev-list --count`). The agent controls that repo's config, hooks and aliases, so its local `git log` output is not trusted. Everything else (commits, files, PR, checks) comes from GitHub (5.3).
 6. **Compat.** `agent_status` keeps `state: "running" | "finished"`. `lost`, `timed_out` and `cancelled` map to `finished` with `exit_code: -1` (the code already uses -1 for an empty file). New fields `phase` (the full `RunState`) and `stage` are added.
 7. **Run limits.** `max_minutes` (default from policy, 120) stops a run that runs too long: `tmux kill-session` for that run, `state = timed_out`.
@@ -235,7 +235,7 @@ GitHub endpoints used (REST, `X-GitHub-Api-Version` pinned):
 | update branch | `PUT /repos/{o}/{r}/pulls/{n}/update-branch` with `expected_head_sha` |
 | merge | `PUT /repos/{o}/{r}/pulls/{n}/merge` with `sha` (fails if the head moved) and `merge_method` |
 
-The compare endpoint caps commits and files. Hangar sets `diff.truncated = true` when it hits a cap and shows "at least". Responses are cached by ETag. A rate limit or outage sets the stage to `degraded` with a warning; it never fails the run.
+The compare endpoint caps commits and files. hangar sets `diff.truncated = true` when it hits a cap and shows "at least". Responses are cached by ETag. A rate limit or outage sets the stage to `degraded` with a warning; it never fails the run.
 
 `rollup`: `none` if there are no check runs, `pending` if any is not `completed`, `failure` if any conclusion is not in `{success, neutral, skipped}`, else `success`. `policy.required_checks` filters which names count for landing.
 
@@ -245,7 +245,7 @@ The compare endpoint caps commits and files. Hangar sets `diff.truncated = true`
 
 ### 5.4 Verification
 
-Why not just trust the exit code or CI? Jarmak measured a model that "submitted" every trial and resolved 44% under an external oracle. CI is also slower and can be skipped or edited. Hangar needs its own check, run where the agent cannot influence the environment it runs in.
+Why not just trust the exit code or CI? Jarmak measured a model that "submitted" every trial and resolved 44% under an external oracle. CI is also slower and can be skipped or edited. hangar needs its own check, run where the agent cannot influence the environment it runs in.
 
 Modes (`repo.verify.mode`, default `clean`):
 
@@ -334,33 +334,33 @@ Variance: the fan-out record keeps per-attempt duration, cost and result. Becaus
 #### Usage and concurrency (single Claude Pro subscription)
 
 - All sandboxes that attach the same subscription credential share one limit. `Fleet._slots_free(credential)` counts `running` runs per credential. Queued runs start from the watcher when a slot frees.
-- Hangar reads the rate-limit event the Claude log already carries (the live run saw a `rate_limit_event` at 91%). The adapter stores the last one per credential in `kv` key `usage:<credential>`. `fleet_overview` returns it under `usage`.
+- hangar reads the rate-limit event the Claude log already carries (the live run saw a `rate_limit_event` at 91%). The adapter stores the last one per credential in `kv` key `usage:<credential>`. `fleet_overview` returns it under `usage`.
 - If the last known utilization is at or above `usage.pause_at_pct` (default 90), the watcher stops starting queued runs, sets the fan-out to `paused_usage`, and fires `usage.high`. A human or the orchestrator may override with `fanout_resume`. Open question 3 covers the exact event schema.
 - N attempts cost about N times one attempt. `fanout_start` returns a `warnings` entry when `n > concurrency` or usage is already above 70%.
 
 ### 5.6 Git access: one branch, no merge rights
 
-This is the section the safety of the land step rests on. Today the PAT lives in the sandbox (`harnesses.py` git slot). Hangar cannot stop that token from pushing to `main` or calling the merge API except through GitHub rules. Two supported modes:
+This is the section the safety of the land step rests on. Today the PAT lives in the sandbox (`harnesses.py` git slot). hangar cannot stop that token from pushing to `main` or calling the merge API except through GitHub rules. Two supported modes:
 
 | | **proxy mode** (recommended) | **token mode** (compat) |
 | --- | --- | --- |
 | Agent holds a GitHub credential | No. Only a per-sandbox hangar token. | Yes. Fine-grained PAT "A" (contents + PRs write, one repo). |
 | Can push elsewhere than its branch | No. Proxy rejects it. | Yes, unless GitHub rules forbid it. |
 | Can merge or approve | No. No credential. | Merge blocked only by GitHub rules. Needs rulesets. |
-| Who opens the PR | Hangar (identity "B") | The agent (identity "A") |
-| What enforces "human approved" | Hangar (and optionally GitHub review) | GitHub required review, satisfied by hangar's review-bridge |
+| Who opens the PR | hangar (identity "B") | The agent (identity "A") |
+| What enforces "human approved" | hangar (and optionally GitHub review) | GitHub required review, satisfied by hangar's review-bridge |
 
 **Proxy mode.** A new `app.py` router at `/git/{sandbox_id}/{owner}/{repo}.git/` speaks the git smart-HTTP protocol (`info/refs`, `git-upload-pack`, `git-receive-pack`).
 
-- At claim time (`fleet.create`, after `broker.inject`), hangar writes in the sandbox: `git config --global url."<git_proxy_url>/git/<sandbox_id>/".insteadOf https://github.com/` and a `~/.git-credentials` entry for the proxy host with username `x-hangar` and password `hgs_<random>`. Hangar stores only the hash in `Sandbox.info["git"]`. No GitHub token is written. The existing commit identity (commit b820e5b) is set from a one-time `GET /user` made by hangar with its push credential and cached.
+- At claim time (`fleet.create`, after `broker.inject`), hangar writes in the sandbox: `git config --global url."<git_proxy_url>/git/<sandbox_id>/".insteadOf https://github.com/` and a `~/.git-credentials` entry for the proxy host with username `x-hangar` and password `hgs_<random>`. hangar stores only the hash in `Sandbox.info["git"]`. No GitHub token is written. The existing commit identity (commit b820e5b) is set from a one-time `GET /user` made by hangar with its push credential and cached.
 - Auth: the `hgs_` token is valid only for its sandbox id, its repo, and its work branch. It is revoked on `destroy` and when the land request ends. It is never accepted on `/api` or `/mcp`.
-- Fetch and clone: allowed for the sandbox's repo only. Hangar proxies the upload-pack with the push credential's read access.
+- Fetch and clone: allowed for the sandbox's repo only. hangar proxies the upload-pack with the push credential's read access.
 - Push: the proxy reads the first pkt-lines of the `git-receive-pack` request body (`<old> <new> <ref>\0<caps>`, then a flush). It rejects the whole request, before forwarding a byte of the pack, if any command is not an update of exactly `refs/heads/<work_branch>`. Tags, other branches, deletion (all-zero new id) and a ref outside the branch all return an error that git prints to the agent. Non-fast-forward (force) pushes to its own branch are allowed by default, since agents rebase. `push.allow_force: false` rejects them by comparing the old id with the proxy's cached tip.
 - Then the proxy forwards the request to GitHub with the push credential "B-push".
 - Limits: pushes over `push.max_bytes` (default 200 MiB) are rejected. Pushes touching `.github/workflows/**` are allowed but flagged `sensitive` in the result (see 6).
 - The proxy is the only place the push credential is used for agent traffic. The credential is `purpose: control-plane`.
 
-**Token mode** stays so nothing breaks on day one. Safety then comes from GitHub: a ruleset on the default branch (and release branches) that requires a PR, requires status checks, requires one approval from someone other than the PR author, and blocks force-push and deletion, with an empty bypass list. The agent's PAT user must not be a repo admin (admins bypass classic protection unless "include administrators" is set). Token mode cannot enforce "one branch only" because a PAT with write access can push to any unprotected branch. Hangar shows a banner for any sandbox in token mode: "this sandbox holds a GitHub token".
+**Token mode** stays so nothing breaks on day one. Safety then comes from GitHub: a ruleset on the default branch (and release branches) that requires a PR, requires status checks, requires one approval from someone other than the PR author, and blocks force-push and deletion, with an empty bypass list. The agent's PAT user must not be a repo admin (admins bypass classic protection unless "include administrators" is set). Token mode cannot enforce "one branch only" because a PAT with write access can push to any unprotected branch. hangar shows a banner for any sandbox in token mode: "this sandbox holds a GitHub token".
 
 **Identities.** Two hangar-side credentials, both `purpose: control-plane`, stored in the vault and never injected:
 
@@ -427,7 +427,7 @@ requested ─▶ queued ─▶ updating ─▶ waiting_ci ─▶ awaiting_approv
 
 - **queued.** Land requests are serialized per `(repo, base)`. Only one is in `updating`..`merging` at a time. This keeps "update, test, merge" from racing with itself. If the repo uses GitHub's merge queue, hangar should enqueue instead (open question 4).
 - **updating.** If `behind_by > 0` or `mergeable_state == "behind"`, bring the branch up to date. `update: merge` (default) calls update-branch with `expected_head_sha`. `update: rebase` runs in an ephemeral **land worker** sandbox (no model credentials, proxy token scoped to this branch) that does `git rebase origin/<base>` and `git push --force-with-lease=<branch>:<old_sha>` through the proxy. The control plane itself never runs git against repo content. A clean update gives a new `head_sha`. Any prior approval is dropped (below). Verification re-runs on the new head (stage `verifying` for that sha).
-- **conflict.** Update failed with a conflict. Hangar records the file list, never resolves it silently, and notifies `land.conflict`. The orchestrator may call `run_agent` on the same sandbox with a resolve prompt. Hangar offers this as `land_resolve_conflicts` in the dashboard (not an MCP tool in v1). The new commits restart the pipeline.
+- **conflict.** Update failed with a conflict. hangar records the file list, never resolves it silently, and notifies `land.conflict`. The orchestrator may call `run_agent` on the same sandbox with a resolve prompt. hangar offers this as `land_resolve_conflicts` in the dashboard (not an MCP tool in v1). The new commits restart the pipeline.
 - **waiting_ci.** Poll `checks(head_sha)` every 20 s (only for active land requests). Required checks come from policy. Missing required checks after `ci_timeout_minutes` (default 45) go to `ci_failed` with reason "check X never reported". This covers a workflow that was skipped or renamed. A GitHub webhook receiver `POST /api/webhooks/github` (HMAC) can replace polling later.
 - **awaiting_approval.** Only reached when CI is green on the exact `head_sha`, verification passed (if required), the branch is up to date, and there are no unresolved conflicts. A notification goes out (5.9). The card in the Inbox shows the facts.
 - **merging.** Check approvals (below). Call merge with `sha=head_sha`. A 409/405 means the head or base moved: return to `updating`. After a crash the step is safe to repeat: the first action is `get_pr`, and if `merged` is true, record `landed`.
@@ -437,7 +437,7 @@ requested ─▶ queued ─▶ updating ─▶ waiting_ci ─▶ awaiting_approv
 
 1. **Early warning.** Every time a land request's files are known, hangar intersects them with other open land requests on the same base and fills `overlaps: [{"land": "land-ab12", "files": ["src/a.py"]}]`. This costs nothing (the compare API already returned the file lists). It is shown as a warning in the Inbox, even when the PRs are still in CI.
 2. **Predicted conflict.** When two requests overlap, the land worker runs `git merge-tree --write-tree` for the pair (git 2.38 or later). Conflicts show as "will conflict if land-ab12 merges first".
-3. **Real conflict** is found at `updating`, after the first one lands. The second request moves to `conflict`. Hangar never force-merges and never rewrites a branch without `--force-with-lease`.
+3. **Real conflict** is found at `updating`, after the first one lands. The second request moves to `conflict`. hangar never force-merges and never rewrites a branch without `--force-with-lease`.
 
 #### Approvals
 
@@ -481,12 +481,12 @@ repos:
 
 #### Interaction with GitHub branch protection
 
-Hangar's gate and GitHub's gate are different layers. Use both.
+hangar's gate and GitHub's gate are different layers. Use both.
 
 | GitHub setting | Proxy mode | Token mode |
 | --- | --- | --- |
 | Ruleset on `main`: require PR | Required. Defense in depth. B merges through the PR. | Required. This is what stops the agent pushing to main. |
-| Required status checks | Required. Same names as `policy.required_checks`. Hangar also checks them itself. | Required. |
+| Required status checks | Required. Same names as `policy.required_checks`. hangar also checks them itself. | Required. |
 | Required approving reviews | 0 is enough, because hangar is the gate. Set 1+ for dual control, and set `github_review: required`; a human then approves in GitHub too. | **1+, from a non-author.** Set `review_bridge: true`: after a hangar approval B submits the APPROVE review (B differs from A, the author), and B merges. |
 | Restrict who can push or merge | Nobody but B (and humans) has write. The agent has no credential. | Cannot restrict A without breaking its push. |
 | Bypass list | Empty. Admins included. | Empty. A must not be admin. |
@@ -495,7 +495,7 @@ Hangar's gate and GitHub's gate are different layers. Use both.
 
 "Requester cannot approve" holds at both layers. In hangar it is the `approve` scope plus `forbid_self_approval`. In GitHub it is the platform rule that a PR author cannot approve their own PR. This is why B opens PRs in proxy mode, and why B reviews A's PRs in token mode.
 
-CI trigger gating (Copilot holds workflows until a human approves) is only partly reachable: GitHub controls it, and the settings that gate workflow runs apply to forks and first-time contributors. Hangar's equivalent is: the PR is a draft, and `verify` runs first in a clean sandbox before any human time is spent. See open question 5.
+CI trigger gating (Copilot holds workflows until a human approves) is only partly reachable: GitHub controls it, and the settings that gate workflow runs apply to forks and first-time contributors. hangar's equivalent is: the PR is a draft, and `verify` runs first in a clean sandbox before any human time is spent. See open question 5.
 
 ### 5.9 Notifications (`notify/`)
 
@@ -604,7 +604,7 @@ POST /api/land/land-3fa91c20/approve
 Intentional behavior changes (the only breaks):
 
 1. A dead run now reports `finished` with `exit_code: -1`, not `running` forever. This fixes the bug.
-2. In proxy mode the sandbox has no `GH_TOKEN` and no `gh` login. Prompts that tell the agent to `gh pr create` stop working. Hangar adds a short line to the run preamble: "Commit to the current branch. Hangar pushes and opens the PR." (`prompt_preamble`, opt-out).
+2. In proxy mode the sandbox has no `GH_TOKEN` and no `gh` login. Prompts that tell the agent to `gh pr create` stop working. hangar adds a short line to the run preamble: "Commit to the current branch. hangar pushes and opens the PR." (`prompt_preamble`, opt-out).
 3. `run_agent` may return `state: "queued"` when the subscription cap is reached.
 
 ### 5.12 Dashboard UX (`ui/`)
@@ -753,14 +753,14 @@ Milestones 1–3 deliver value alone: a lost run is visible, and results and ver
 ## 10. Open questions
 
 1. **GKE reachability of the proxy.** Does the Agent Sandbox add-on allow an extra allow-egress NetworkPolicy next to its managed default? If not, use the public `/git` path. Needs a test on the live cluster. Not verified.
-2. **Egress.** The credential leg is removed for git, but code and the Claude token can still leave over open egress. Should a sibling spec define per-environment allowlists (None / common dependencies / all, GET-only mode) as in Codex cloud, with setup phase open and agent phase closed? Hangar's setup scripts run at claim time, so the two-phase model needs a design.
+2. **Egress.** The credential leg is removed for git, but code and the Claude token can still leave over open egress. Should a sibling spec define per-environment allowlists (None / common dependencies / all, GET-only mode) as in Codex cloud, with setup phase open and agent phase closed? hangar's setup scripts run at claim time, so the two-phase model needs a design.
 3. **Usage event schema.** The live run showed a `rate_limit_event` with 7-day usage at 91%. Field names, units and whether it appears on every run are not verified. M4 starts by capturing real logs as fixtures. Also unknown: whether the 5-hour window is reported.
 4. **GitHub merge queue.** If a repo uses it, hangar should call the GraphQL `enqueuePullRequest` mutation instead of the merge endpoint. I believe the mutation exists but did not verify its permissions or merge-queue behavior with App tokens.
-5. **CI gating.** Copilot holds workflows until a human approves. Hangar can only order its own steps (verify first, draft PR). Is there a GitHub setting that holds `pull_request` workflows for same-repo bot-authored PRs? Not found or verified. Also: marking a draft PR ready needs the GraphQL `markPullRequestReadyForReview` mutation (REST has no equivalent that I know of). Verify, or default to non-draft.
+5. **CI gating.** Copilot holds workflows until a human approves. hangar can only order its own steps (verify first, draft PR). Is there a GitHub setting that holds `pull_request` workflows for same-repo bot-authored PRs? Not found or verified. Also: marking a draft PR ready needs the GraphQL `markPullRequestReadyForReview` mutation (REST has no equivalent that I know of). Verify, or default to non-draft.
 6. **Long verify commands.** `exec` is used up to 30 minutes. Longer suites need the tmux + log path. Does the kubernetes provider's exec stream survive that long through the GKE API proxy?
 7. **Test tampering.** Should `verify.restore_paths` exist, or is a protected-paths CODEOWNERS rule enough? Restoring files from `base_sha` can break legitimately changed tests.
 8. **MCP scope challenge.** Do Claude Code and Codex act on `insufficient_scope` challenges, or only show the error? `docs/clients.md` does not say. Not verified.
 9. **Other harnesses' events.** Claude Code accepts `--output-format stream-json` (confirmed against the local `claude` 2.1.296 help, which also has `--session-id`, `--resume` and `--fork-session`). I could not install Codex or Gemini here. `codex exec --json`, Gemini's `--output-format stream-json`, and `agy`'s event format are unverified, as are the exact fields for session ids. Until verified, those harnesses report null `agent` fields and still get full git/PR/verify results, which do not depend on the adapter.
 10. **Hosts beyond GitHub.** The `GitHost` interface fits GitLab and Gitea, but the proxy's pkt-line check is host-neutral while review-bridge and update-branch are not. Defer, or include one more host in v1?
-11. **Approver identity.** Hangar tokens are named but not tied to people. Is a token name enough for the audit trail, or does the dashboard need user accounts (or IAP identity headers) before `required_approvals: 2` means two humans?
+11. **Approver identity.** hangar tokens are named but not tied to people. Is a token name enough for the audit trail, or does the dashboard need user accounts (or IAP identity headers) before `required_approvals: 2` means two humans?
 12. **App vs PAT.** A GitHub App gives short-lived tokens and distinct attribution but is more setup than a fine-grained PAT. Should v1 support PAT only, with App support in M12?
