@@ -65,6 +65,7 @@ Each GitHub user is a caller for [rate limits and the active-job cap](security.m
 ### Untrusted text in the prompt
 
 Text written by someone who isn't trusted is marked in the agent's prompt as untrusted input that can't override the instructions:
+
 - the issue body, when the issue's author isn't trusted (the file is listed as `untrusted`);
 - the extra text of an untrusted person's `/hangar` comment (quoted as a request, not as instructions);
 - everything that came from an inbound webhook.
@@ -111,6 +112,7 @@ Store the signing secret in the vault: `hangar cred add sentry-hook --harness we
 | `filter` | Optional `{"field": "a.b", "equals": value}`, or a list of them (all must match). Other deliveries get `200 {"ignored": ...}`. |
 
 Formats verified against the providers' docs (October 2026):
+
 - **Sentry:** `Sentry-Hook-Signature`, hex HMAC-SHA256 of the body; `Sentry-Hook-Timestamp`; `Request-ID` as the delivery id.
 - **Jira Cloud** (an admin webhook with a secret): `X-Hub-Signature` with `prefix: "sha256="`, hex HMAC-SHA256 of the body; `X-Atlassian-Webhook-Identifier` as the delivery id (the same across retries). Jira signs no timestamp.
 - **GitHub Projects** (an organization webhook sending `projects_v2_item`): `X-Hub-Signature-256` with `prefix: "sha256="`; `X-GitHub-Delivery`.

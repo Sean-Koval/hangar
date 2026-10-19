@@ -93,6 +93,7 @@ There are few tools, each covering a lot, with sensible defaults. The existing s
 - **Agent sandboxes** (`profile: agent`, 1–2 vCPU, harness pack mounted): a harness runs inside under policy.
 
 **Placement** chooses a backend by need:
+
 - **Default:** GKE pools on hangar's own nodes, forking at the disk level (repo, dependencies and build caches carried over). Code and credentials stay in the owner's project.
 - **Process state needed** (a running dev server, warmed language server, mid-session fork): GKE Pod Snapshots, then E2B if the M2 benchmark shows Pod Snapshots too slow or too fragile.
 - **Local:** Docker.

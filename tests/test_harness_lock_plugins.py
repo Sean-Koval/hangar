@@ -187,7 +187,14 @@ def test_pin_carries_the_lock_dir_and_plugins_need_claude_code(fleet, tmp_path, 
     (tmp_path / "envs/lockenv.yaml").write_text("name: lockenv\nharnesses: [claude-code, codex]\n")
     fleet.catalog.reload()
     monkeypatch.setattr(HARNESSES["codex"], "version", registry["lock"]["runtime"]["version"])
-    with pytest.raises(harness_thaw.ThawError, match="plugins load only in claude-code"):
+    with pytest.raises(harness_thaw.ThawError, match="plugin:workflow@team has no Codex form: native/codex/workflow/"):
+        harness_thaw.pin(fleet, "team", "lockenv")  # --- #244: a Codex lock needs each enabled plugin's Codex form
+    lock["runtime"]["harness"] = "pi"
+    (registry["reg"] / "harnesses/team/harness.lock").write_text(harness_lock.dump(lock))
+    (tmp_path / "envs/lockenv.yaml").write_text("name: lockenv\nharnesses: [claude-code, pi]\n")
+    fleet.catalog.reload()
+    monkeypatch.setattr(HARNESSES["pi"], "version", registry["lock"]["runtime"]["version"])
+    with pytest.raises(harness_thaw.ThawError, match="plugins load only in claude-code and codex"):
         harness_thaw.pin(fleet, "team", "lockenv")
 
 

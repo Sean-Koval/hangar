@@ -62,11 +62,11 @@ TICKET_KEY = re.compile(r"[A-Z][A-Z0-9]+-\d+")
 TICKET_LABEL = "jira"  # job label: the ticket key of a job submitted by hand ({"jira": "KAN-35"})
 
 
-def ticket_key(labels: dict[str, str] | None, source_ref: str | None = None) -> str | None:
+def ticket_key(labels: dict[str, str] | None, source_ref: str | None = None, ticket: str | None = None) -> str | None:
     """The ticket key a job works on, or None: the Jira door's `jira.issue` label, an explicit `jira` label, or a
-    `jira:<key>` tracker label or source ref. Anything not shaped like a key is ignored."""
+    `jira:<key>` tracker label, source ref or job `ticket` (change sets). Anything not shaped like a key is ignored."""
     labels = labels or {}
-    refs = (labels.get(TRACKER), source_ref)
+    refs = (labels.get(TRACKER), source_ref, ticket)
     for value in (labels.get("jira.issue"), labels.get(TICKET_LABEL),
                   *(r.split(":", 1)[1] for r in refs if r and r.startswith("jira:"))):
         if value and TICKET_KEY.fullmatch(value.strip()):

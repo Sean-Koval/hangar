@@ -1,0 +1,24 @@
+{#-
+  Airframe suite strip for the docs sites (Material for MkDocs and Zensical): one row above the header
+  that names the suite and links every product's docs site, with the 2px product marker under this one.
+  Vendored from Sean-Koval/agent-factory theme/airframe-suite.html; never edit it in a tool repo.
+
+  Wire it with config only:
+    theme: {custom_dir: overrides}          # overrides/main.html extends base.html and includes this file
+    extra: {airframe: {product: hangar}}    # which strip item is current: agent-factory, hangar, flightdeck,
+                                            # tower, ai-dlc, airframe
+  Styled by airframe-docs.css (.af-suite). The list lives here, not in each site's config, so every site
+  shows the same family; a product joins the strip when its docs site is public.
+-#}
+{% set product = (config.extra.airframe.product if config.extra.airframe else "") or "" %}
+{% if product == "agent-factory" and page and page.url[:9] == "airframe/" %}{% set product = "airframe" %}{% endif %}
+<nav class="af-suite" aria-label="Agent factory suite">
+  <a class="af-suite__home" href="https://sean-koval.github.io/agent-factory/"{% if product == "agent-factory" %} aria-current="true"{% endif %}>Agent factory</a>
+  <ul class="af-suite__list">
+    <li><a href="https://sean-koval.github.io/hangar/"{% if product == "hangar" %} aria-current="true"{% endif %}><small>Run</small>hangar</a></li>
+    <li><a href="https://sean-koval.github.io/flightdeck/"{% if product == "flightdeck" %} aria-current="true"{% endif %}><small>Judge</small>flightdeck</a></li>
+    <li>{% if product == "tower" %}<a href="{{ nav.homepage.url | url }}" aria-current="true"><small>Govern</small>Tower</a>{% else %}<span title="Private repository for now"><small>Govern</small>Tower</span>{% endif %}</li>
+    <li><a href="https://sean-koval.github.io/ai-dlc/"{% if product == "ai-dlc" %} aria-current="true"{% endif %}><small>Define</small>ai-dlc</a></li>
+    <li><a href="https://sean-koval.github.io/agent-factory/airframe/"{% if product == "airframe" %} aria-current="true"{% endif %}><small>Design</small>Airframe</a></li>
+  </ul>
+</nav>

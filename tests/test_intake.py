@@ -246,6 +246,7 @@ def test_ticket_keys():
     assert intake.ticket_key({"jira.issue": "ABC-12"}) == "ABC-12"
     assert intake.ticket_key({"jira": "KAN-35"}) == "KAN-35" and intake.ticket_key({}, "jira:ZZ9-1") == "ZZ9-1"
     assert intake.ticket_key({intake.TRACKER: "jira:OPS-7"}) == "OPS-7"
+    assert intake.ticket_key({}, None, "jira:PAY-9") == "PAY-9" and intake.ticket_key({}, None, "github:a/b#3") is None
     for labels, ref in (({"jira": "kan-35"}, None), ({"jira": "KAN-35; rm"}, None), ({}, "github:a/b#3"),
                         ({intake.TRACKER: "ghproject:p:i"}, None), ({"jira": "K-1"}, None), (None, None)):
         assert intake.ticket_key(labels, ref) is None, (labels, ref)

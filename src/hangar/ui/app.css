@@ -1,6 +1,7 @@
 /* The hangar console on Airframe (Sean-Koval/agent-factory, vendored in /ui/airframe/).
    Tokens and af- classes only: every color, font and radius is var(--af-*); no color literals
-   (tests/test_ui_airframe.py enforces it). Night is the default; Day follows the OS. The brand yellow
+   (tests/test_ui_airframe.py enforces it). Night is the default; the top bar's switch turns Day on and the choice is
+   kept (hangar.theme; ?theme=auto follows the OS instead). The brand yellow
    marks the primary action, focus and selection, never a status; color appears only for needs approval
    (orange diamond), failed (red triangle) and denied (red placard).
    The page header, empty states, toasts, dialogs and the two drawers are Airframe's (theme-v6 patterns and
@@ -80,9 +81,16 @@ details[open] > summary { margin-bottom: var(--af-space-8); }
 .providers { display: flex; align-items: center; gap: var(--af-space-12); }
 .providers .af-status { font-size: 12px; color: var(--af-fg-muted); }
 .providers .af-status .hint { margin-left: 6px; font-size: 11px; }
+/* the theme switch: the sun offers Day while Night is in force, the moon offers Night (app.js sets data-theme on it) */
+.theme-switch .af-ic { width: 16px; height: 16px; }
+.theme-switch .theme-switch__moon, .theme-switch[data-theme="light"] .theme-switch__sun { display: none; }
+.theme-switch[data-theme="light"] .theme-switch__moon { display: inline-block; }
 main { padding: var(--af-space-28) var(--page-pad) calc(var(--drawer-pad, 0px) + var(--af-space-40)); min-width: 0; }
-/* every view opens with Airframe's page header; its actions slot holds the view's filter and one primary */
+/* every view opens with Airframe's page header; its actions slot holds the view's filter and at most one primary.
+   On Jobs and Sessions the composer's Send is the primary while something is open, so New job / New session are
+   secondary up there and primary only in the panel's empty state, and never while the new form (Submit) is open. */
 .view > .af-page-head { margin-bottom: var(--af-space-24); }
+.view:has(> .new-form:not([hidden])) .job-detail .af-empty__act { display: none; }
 .af-page-head__actions { gap: var(--af-space-12); }
 .af-page-head__actions select { width: auto; }
 /* empty states (Airframe EmptyState) inside a list, a table or a panel sit flush, not as a page */

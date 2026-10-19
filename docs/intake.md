@@ -48,6 +48,7 @@ hangar cred add jira-api --harness webhook --kind generic       # paste the API 
 ### 2. The webhook
 
 In Jira, go to **Settings → System → WebHooks → Create a WebHook**:
+
 - **URL:** `https://<your hangar>/api/hooks/jira`
 - **Secret:** generate a long random value, and store the same value in hangar: `hangar cred add jira-webhook --harness webhook --kind generic`
 - **Events:** Issue **created** and **updated**, and Comment **created**, each with the JQL `project in (ABC, DEF)` for your mapped projects.
@@ -140,11 +141,12 @@ Hangar's own comments start with `[hangar]` and are never read as replies.
 
 ### Branch and PR names carry the key
 
-A job for a Jira issue is named with its key, which the [GitHub for Jira](https://github.com/marketplace/jira-software-github) app reads to link the branch and the PR to the issue: the branch is `hangar/<key>-<job>` (for example `hangar/KAN-35-job-1a2b3c4d`), the PR title starts with `<key>: ` (unless it already does) and the PR body has a `Jira: <key>` line. Hangar takes the key from the Jira door's `jira.issue` label or `jira:` ticket, or from a `jira` label on a job submitted any other way (`"labels": {"jira": "KAN-35"}`). Any key of Jira's shape counts (`[A-Z][A-Z0-9]+-<number>`); anything else is ignored, and a job given its own `branch` keeps it.
+A job for a Jira issue is named with its key, which the [GitHub for Jira](https://github.com/marketplace/jira-software-github) app reads to link the branch and the PR to the issue: the branch is `hangar/<key>-<job>` (for example `hangar/KAN-35-job-1a2b3c4d`), the PR title starts with `<key>: ` (unless it already does) and the PR body has a `Jira: <key>` line. Hangar takes the key from the Jira door's `jira.issue` label or `jira:` ticket, or from a job's `jira:` [`ticket`](changesets.md) or a `jira` label on a job submitted any other way (`"labels": {"jira": "KAN-35"}`). Any key of Jira's shape counts (`[A-Z][A-Z0-9]+-<number>`); anything else is ignored. A job given its own `branch` keeps it, and a repo policy's [`branch_template`](repo-policy.md) names the branch instead.
 
 ## Jira Data Center
 
 The same, with three differences:
+
 - `"deployment": "server"` and no `email`. `token_credential` holds a [personal access token](https://confluence.atlassian.com/enterprise/using-personal-access-tokens-1026032365.html), sent as `Authorization: Bearer`.
 - Hangar calls REST v2 and writes comments as wiki markup.
 - Use a version whose webhook form has a **Secret** field: it sends the same `X-Hub-Signature: sha256=…`. Accounts are linked by user key, not accountId (`hangar person link dana jira JIRAUSER10100`); hangar reads who moved an issue from `?expand=changelog`.
@@ -156,6 +158,7 @@ GitHub sends project item events (`projects_v2_item`) only for projects that bel
 ### 1. The webhook
 
 In the organization's **Settings → Webhooks → Add webhook**:
+
 - **Payload URL:** `https://<your hangar>/api/hooks/github`, content type `application/json`
 - **Secret:** the same value as the repository webhooks (`HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL`)
 - **Events:** only **Projects v2 items**

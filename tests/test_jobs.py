@@ -420,8 +420,13 @@ async def test_a_ticket_key_names_the_branch_title_and_pr_body(jobs, world):
     plain = jobs.submit(SubmitJob(instructions="x", repo=world["url"], environment="jobenv", title="KAN-35 later",
                                   labels={"jira": "not-a-key"}), Caller("svc", "svc"))
     assert plain.branch == f"hangar/{plain.id}" and plain.title == "KAN-35 later"
+    ticketed = jobs.submit(SubmitJob(instructions="Fix it", repo=world["url"], environment="jobenv",
+                                     ticket="jira:PAY-9"), Caller("svc", "svc"))  # change sets' `ticket`
+    assert ticketed.branch == f"hangar/PAY-9-{ticketed.id}" and ticketed.title == "PAY-9: Fix it"
+    assert "\nJira: PAY-9\n" in jobs._pr_body(ticketed)
     assert "Jira:" not in jobs._pr_body(plain)
     await _until(jobs, plain.id, DONE)
+    await _until(jobs, ticketed.id, DONE)
 
 
 async def test_existing_branch_is_refused(jobs, world, fleet):

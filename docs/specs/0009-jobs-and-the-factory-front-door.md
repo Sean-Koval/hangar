@@ -149,17 +149,20 @@ After each turn, hangar runs these steps in the repo checkout:
 **Scopes.** `admin` can do everything. `jobs` can use only `/api/jobs*`, and is rejected on the MCP endpoint, at OAuth consent, and on every other route. Scope enforcement is new; tokens created before this change keep `admin`.
 
 **Service-token fence.** A `jobs` token:
+
 - may target only repos in `HANGAR_GITHUB_REPOS` (`owner/repo` or an exact git URL), in the environments mapped to them, and can't pick a provider;
 - signs callbacks with the `webhook` credential an admin bound to it (`hangar token create svc --scope jobs --callback-secret KEY`), so one service can't get payloads signed with another's key;
 - sees only its own jobs. Ownership is the token id, not the name; token names may not contain `:` or be `admin`/`system`.
 
 **Callbacks.**
+
 - **Payload:** `POST callback_url` with `{"event": "job.started" | "job.finished", "job": <job view>}`, sent on start and on every terminal state.
 - **Signing:** `X-Hangar-Signature: sha256=<hmac>` over the body, the same scheme as 0002's notifier webhook, keyed by the vault credential named in `callback_secret`.
 - **Retries:** 3 attempts with backoff. A failed callback is recorded in the job's events and never fails the job.
 - **Allowed hosts:** callback URLs must be `https` (or `http://localhost` for testing) unless `HANGAR_JOB_CALLBACK_HOSTS` allows the host.
 
 **GitHub trigger.** Only repos listed in `HANGAR_GITHUB_REPOS` are accepted (`{"owner/repo": "environment"}`). Triggers:
+
 - an issue labeled `HANGAR_GITHUB_TRIGGER_LABEL` (default `hangar`);
 - an issue comment starting with `/hangar`.
 

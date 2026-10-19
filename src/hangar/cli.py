@@ -720,6 +720,9 @@ def job_submit(
                                        "(default) | ci | reviews | off."),
     profile: str | None = typer.Option(None, "--profile", help="--- heavy: standard | large | xlarge: the job's "
                                        "sandbox size, up to what the repo's policy allows (label hangar.profile)."),
+    changeset: str | None = typer.Option(None, "--changeset", help="A change-set profile: one agent across its "
+                                         "repos, one PR per changed repo (docs/changesets.md); leave --repo out."),
+    ticket: str | None = typer.Option(None, "--ticket", help="The ticket it is for, e.g. jira:PAY-412."),
 ):
     """Submit a job. Example:
 
@@ -752,7 +755,8 @@ def job_submit(
         **({"strategy": "best_of_n", "n": best_of, "judge": judge} if best_of else {}),
         **({"verify_in_loop": verify_in_loop} if verify_in_loop is not None else {}),
         **({"autofix": autofix} if autofix else {}),
-        **({"labels": {"hangar.profile": profile}} if profile else {})})  # --- heavy
+        **({"labels": {"hangar.profile": profile}} if profile else {}),  # --- heavy
+        **({"changeset": changeset} if changeset else {}), **({"ticket": ticket} if ticket else {})})
     typer.secho(f"{j['id']} queued: {j['title']}", fg="green")
     if wait:
         j = _wait_job(j["id"])
@@ -1366,6 +1370,11 @@ def schedule_rm(ref: str):
 from hangar.repo_cli import repo_app as _repo_app  # noqa: E402
 
 app.add_typer(_repo_app, name="repo")
+
+# ---------------------------------------------------------------------------- change sets (changeset_cli.py)
+from hangar.changeset_cli import changeset_app as _changeset_app  # noqa: E402
+
+app.add_typer(_changeset_app, name="changeset")
 
 # ---------------------------------------------------------------------------- #182: the eval budget (eval_cli.py)
 from hangar.eval_cli import eval_app as _eval_app  # noqa: E402

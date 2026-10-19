@@ -3,6 +3,8 @@
 Status: partly built (2026-10-18): hangar's side is the contract, the client skeleton and contract tests (spike #171, #208), not yet wired (#172); Tower's side has the decision API (Tower#13), signed events (Tower#17), attestation receipts (Tower#18) and approver ≠ requester (Tower#19). · Date: 2026-10-16 · Builds on: 0002 (landing), 0011 (triggers and approvals), 0014 (manifest digests), #121 (one approval rule), #123 (intake posture), #129/#130 (taint and its gates) · Counterparts in Tower (a private repository for now): Tower#13 (decision API), Tower#14 (passports), Tower#16 (correlation), Tower#17 (webhooks), Tower#18 (receipts), Tower#19 (approver ≠ requester), Tower#20 (reconciliation), Tower#22 (per-run stop)
 
 > Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins.
+>
+> The governed workspace this spec names is [Tower](https://github.com/Sean-Koval/tower), the product's name since October 2026; the spec keeps the name it was written with.
 
 ## 1. The split
 

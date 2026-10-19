@@ -265,14 +265,16 @@ HARNESSES: dict[str, Harness] = {
         # The sandbox is the isolation boundary, so codex's own (Landlock/seccomp) sandbox is bypassed;
         # it cannot work under gVisor anyway.
         run=(
-            'codex exec ${HANGAR_SESSION_RESUME:+resume "$HANGAR_SESSION_RESUME"} '
+            'codex exec ${HANGAR_CODEX_HOOK_TRUST:+-c "$HANGAR_CODEX_HOOK_TRUST"} '
+            '${HANGAR_SESSION_RESUME:+resume "$HANGAR_SESSION_RESUME"} '
             '${HANGAR_SESSION_FORK:+fork "$HANGAR_SESSION_FORK"} '
             "--json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "
             '${HANGAR_MODEL:+-m "$HANGAR_MODEL"} "$(cat "$HANGAR_PROMPT_FILE")"'
         ),
         # Verified with 0.162.1: thread/start, thread/resume and thread/fork from $HANGAR_SESSION_*, see driver.Codex.
         live="codex",
-        live_run="codex app-server",
+        # --- #244: a lock's Codex plugin hooks trusted for the turn (codex_plugins.TRUST_ENV), nothing else
+        live_run='codex app-server ${HANGAR_CODEX_HOOK_TRUST:+-c "$HANGAR_CODEX_HOOK_TRUST"}',
         # --- overnight/cache: no cache_env. Verified with 0.162.1: requests carry prompt_cache_key = the thread id
         # and no prompt_cache_retention / prompt_cache_options, and there is no flag or config key for them. OpenAI
         # caches automatically (GPT-5.6+: at least 30 min).

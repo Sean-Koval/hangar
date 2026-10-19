@@ -130,6 +130,7 @@ On a provider whose pause keeps the VM's memory and whose resume restores it fas
 3. **The next turn resumes it.** E2B's connect, or CubeSandbox's, restores the memory snapshot, and hangar checks that a command runs. The session is back on the same machine: running processes, caches, build artifacts, ignored directories and anything else a checkpoint leaves out are all still there.
 
 It falls back to restoring the checkpoint in a new sandbox whenever the parked sandbox can't be trusted to be the latest state:
+
 - a newer checkpoint exists (the session resumed elsewhere and was suspended again);
 - the sandbox is gone (reaped, or lost by the provider);
 - resuming it fails, or it doesn't answer a command afterwards.
@@ -137,6 +138,7 @@ It falls back to restoring the checkpoint in a new sandbox whenever the parked s
 In every fallback the parked sandbox is destroyed. No checkpoint is ever deleted by any of this. A parked sandbox survives a control-plane restart; startup doesn't count it as an orphan. Archiving or deleting the session destroys it.
 
 Parked sandboxes are a cache, so hangar bounds them. When a suspend would break one of these rules, the sandbox is destroyed as before, and the next resume restores the checkpoint:
+
 - **A cap.** At most `HANGAR_SESSION_HOT_RESUME_MAX` (20) sandboxes are parked at once; past that, the longest-parked goes first.
 - **Headroom.** Paused sandboxes count against `HANGAR_MAX_SANDBOXES`, so nothing is parked while the fleet is three-quarters full. If the fleet fills up later, a create evicts the longest-parked sandbox instead of being refused.
 - **No rotating tokens.** A sandbox holding an exclusive credential, such as a Claude Code OAuth login with its rotating refresh token, isn't parked. The token goes back to the vault, so other sandboxes can use it, and a paused copy can't go stale.
@@ -177,6 +179,7 @@ microvm_local_ssds   = 0                 # Cube: raw local NVMe (a -lssd machine
 The pool runs Ubuntu with nested virtualization (`advanced_machine_features.enable_nested_virtualization`), is labelled `hangar.dev/runtime=microvm` and `nested-virtualization=enabled`, and is tainted `hangar.dev/runtime=microvm:NoSchedule`. It was checked with `terraform fmt` and `terraform validate` (Terraform 1.13.4, google provider 8.7.0). Nothing was applied.
 
 The constraints, from GKE's docs as spec 0013 §6.1 records them [G1][G2] (re-read on 2026-10-13):
+
 - **Machines.** C3, C4, C4D, N2, N4 or N4D. Google's own ComputeClass example uses C3, C4 and C4D. E2, N2D, Arm and memory-optimized machines lack nested virtualization. GKE can't run `-metal` machine types [G4].
 - **Immutable.** Nested virtualization can't be turned on for an existing pool, and the setting can't be changed later. An org policy that disables nested virtualization blocks it.
 - **Privileged Pods.** Pods that use the nested VMs need `securityContext.privileged: true`. Both stacks also want `hostNetwork`. That is why the pool is tainted and dedicated: nothing else, including hangar's own sandboxes, may share these nodes.
@@ -198,6 +201,7 @@ The constraints, from GKE's docs as spec 0013 §6.1 records them [G1][G2] (re-re
 - **No PVM.** CubeSandbox's PVM kernel, its way to run without VT-x, needs a custom host kernel, which GKE doesn't allow. On GKE it is real nested KVM or nothing.
 
 **CubeSandbox on the pool.** Cube's Helm chart installs four DaemonSets (the node agent "Big Pod", an installer, bootstrap, and PVM; leave PVM off), all `hostNetwork` [C12]. To fit this pool:
+
 - add `nodeSelector: {hangar.dev/runtime: microvm}` and a toleration for the taint;
 - give `/data/cubelet` an XFS filesystem with reflink, either formatted from local NVMe SSDs by the installer or, for a trial, as an XFS loop image on the boot disk;
 - run CubeAPI, CubeMaster and CubeProxy as ordinary Deployments in the same namespace.
@@ -219,6 +223,7 @@ Pair it with a NetworkPolicy on the Cube namespace that admits ingress only from
 ### Option B: bare-metal C3 outside GKE
 
 A managed instance group of `c3-standard-192-metal` runs CubeSandbox or E2B directly, and hangar reaches it over the VPC.
+
 - **For:** no nested-virtualization penalty, so the published numbers apply, and very high density. Cube measured 1,000 idle 2 GiB VMs in about 25 GiB [C8].
 - **Against:** the smallest metal machine has 192 vCPUs, about $9.68/h (≈ $7k/month; from a secondary source [G5]). It is billed per vCPU and memory like a VM, so it only pays above roughly 100 concurrent sandboxes. It needs a dedicated host and Hyperdisk, and it stops (`TERMINATE`) for maintenance, so plan for snapshots to be lost on maintenance. It is a second fleet to run, outside GKE's scheduling.
 

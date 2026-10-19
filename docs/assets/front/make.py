@@ -1,19 +1,24 @@
-"""Render the front page's assets: the recording, the web UI screenshots, the inbox and the diagram.
+"""Render the front page's assets: two recordings, the console screenshots, the inbox and the diagram.
 
     uv run --with playwright==1.56.0 --with asciinema==2.4.0 --with imageio-ffmpeg==0.6.0 \\
-        python docs/assets/front/make.py [--out DIR] [--only diagram|ui]
+        python docs/assets/front/make.py [--out DIR] [--only diagram|ui|console]
 
 It starts the demo hangar (demo.py: the real control plane on the fake provider, a scripted agent and a stand-in
-GitHub) on :8787, then drives the web UI in Chromium with Playwright while a ticket becomes a sandbox run and a
-draft PR. The terminal part is a real asciinema recording of `hangar inbox` against the same server, played back
-with asciinema-player. Frames are captured as screenshots and encoded with ffmpeg.
+GitHub) on :8787, then drives the console in Chromium with Playwright while a ticket becomes a sandbox run and a
+draft PR. The inbox still is a real asciinema recording of `hangar inbox` against the same server, played back with
+asciinema-player. The console stills and the review-loop recording show a team's afternoon (fixture.py: four
+environments, six people, held tool calls, a question, a failed run, a PR to review) served over the same console
+with Playwright's request interception. Frames are captured as screenshots and encoded with ffmpeg; every still is
+1440x900 at 2x, Night.
 
 Writes, next to this file (or into --out):
-  hangar-demo.gif / hangar-demo.mp4      the recording (README uses the GIF, the docs site the MP4)
-  ui-jobs.png, ui-sessions.png           the web UI's jobs and sessions views
-  ui-fleet-{board,bays,columns,owners}.png  the Fleet page's four views (docs/console.md)
-  inbox.png                              `hangar inbox` in a terminal
-  hangar-suite.svg, -dark.png, -light.png  the diagram (diagram.py)
+  hangar-demo.gif / .mp4        a ticket becomes a sandbox run and a draft PR (README: the GIF; docs: the MP4)
+  hangar-review.gif / .mp4      the review loop: decide what is held, read the change, comment back to the agent
+  ui-jobs.png, ui-sessions.png  the console's Jobs and Sessions views, from the demo run
+  ui-fleet-{board,bays,columns,owners}.png    the Fleet page's four views, from the demo run (docs/console.md)
+  ui-needs.png, ui-fleet.png, ui-review.png   Needs you, the Fleet board and the Diff, from the fixture
+  inbox.png                     `hangar inbox` in a terminal
+  hangar-suite.svg, -dark.png, -light.png     the diagram (diagram.py)
 CI (.github/workflows/front-page.yml) runs this, checks the files and their sizes, and keeps them as an artifact.
 """
 
@@ -36,10 +41,12 @@ sys.path.insert(0, str(HERE))
 
 import demo  # noqa: E402
 import diagram  # noqa: E402
+from fixture import Fixture  # noqa: E402
 
-W, H = 1280, 720  # the recording and screenshot viewport
+W, H = 1440, 900  # the recordings' viewport; stills are the same frame at 2x
 FLEET_VIEWS = ("bays", "columns", "owners", "board")  # the Board last: it is shot with a held sandbox selected
 MAX_BYTES = 3_000_000  # each asset stays small enough for the repo
+DEMO_PACE = "0.6"  # the scripted agent's pauses, so the ticket's run fits a 20 s recording
 FONTS = (
     "https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900"
     "&family=DM+Mono:wght@400;500&family=Red+Hat+Text:wght@400..700&display=swap"
@@ -51,37 +58,37 @@ PLAYER = "https://cdn.jsdelivr.net/npm/asciinema-player@3.8.0/dist/bundle/asciin
 OVERLAY = r"""
 (() => {
   const css = `
-  #fp { position: fixed; inset: 0; pointer-events: none; z-index: 9999; font-family: "Red Hat Text", sans-serif; }
-  #fp .shade { position: absolute; inset: 0; background: rgba(0,0,0,.72); opacity: 0; transition: opacity .35s; }
+  #fp { position: fixed; inset: 0; pointer-events: none; z-index: 9999; font-family: var(--af-font-sans); }
+  #fp .shade { position: absolute; inset: 0; background: color-mix(in srgb, var(--af-canvas) 72%, transparent); opacity: 0; transition: opacity .35s; }
   #fp .shade.on { opacity: 1; }
-  #fp .cap { position: absolute; left: 50%; bottom: 26px; transform: translateX(-50%); display: flex; gap: 14px;
-    align-items: baseline; background: #000; color: #fff; border: 1px solid #3A3A3A; border-left: 3px solid #FFC400;
-    border-radius: 2px; padding: 12px 20px; font-size: 19px; max-width: 1100px; white-space: nowrap;
-    box-shadow: 0 8px 30px rgba(0,0,0,.5); opacity: 0; transition: opacity .25s; }
+  #fp .cap { position: absolute; left: 50%; bottom: 28px; transform: translateX(-50%); display: flex; gap: 14px;
+    align-items: baseline; background: var(--af-raised); color: var(--af-fg); border: 1px solid var(--af-line-strong);
+    border-left: 3px solid var(--af-brand); border-radius: var(--af-radius-control); padding: 12px 20px; font-size: 19px;
+    max-width: 1200px; white-space: nowrap; box-shadow: var(--af-shadow-overlay); opacity: 0; transition: opacity .25s; }
   #fp .cap.on { opacity: 1; }
-  #fp .cap b { font: 500 14px "DM Mono", monospace; color: #FFC400; letter-spacing: .08em; }
-  #fp .card { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: #0A0A0A;
-    border: 1px solid #3A3A3A; border-radius: 2px; color: #fff; opacity: 0; transition: opacity .35s; }
+  #fp .cap b { font: 500 14px var(--af-font-mono); color: var(--af-brand-text); letter-spacing: .08em; }
+  #fp .card { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: var(--af-raised);
+    border: 1px solid var(--af-line-strong); border-radius: var(--af-radius-card); color: var(--af-fg); opacity: 0; transition: opacity .35s; }
   #fp .card.on { opacity: 1; }
-  #fp .eyebrow { font: 500 13px "DM Mono", monospace; letter-spacing: .1em; color: #8A8A8A; }
-  #fp .title { font: 700 44px "Archivo", sans-serif; font-stretch: 125%; margin: 10px 0 14px; }
-  #fp .lede { font-size: 22px; color: #A6A6A6; line-height: 1.45; }
-  #fp .ticket { width: 700px; padding: 26px 30px 24px; border-top: 2px solid #EE8F63; }
-  #fp .ticket h3 { font: 700 26px "Archivo", sans-serif; font-stretch: 112%; margin: 12px 0 10px; }
-  #fp .ticket p { font-size: 17px; color: #A6A6A6; line-height: 1.5; margin: 0 0 16px; }
-  #fp .ticket code { font: 15px "DM Mono", monospace; color: #fff; }
+  #fp .eyebrow { font: 500 13px var(--af-font-mono); letter-spacing: .1em; color: var(--af-fg-subtle); }
+  #fp .title { font: var(--af-display-weight) 44px var(--af-font-display); font-stretch: var(--af-display-stretch); margin: 10px 0 14px; }
+  #fp .lede { font-size: 22px; color: var(--af-fg-muted); line-height: 1.45; }
+  #fp .ticket { width: 720px; padding: 26px 30px 24px; border-top: 2px solid var(--af-fg); }
+  #fp .ticket h3 { font: 600 26px var(--af-font-display); font-stretch: var(--af-display-stretch); margin: 12px 0 10px; }
+  #fp .ticket p { font-size: 17px; color: var(--af-fg-muted); line-height: 1.5; margin: 0 0 16px; }
+  #fp .ticket code { font: 15px var(--af-font-mono); color: var(--af-fg); }
   #fp .labels { display: flex; gap: 8px; align-items: center; min-height: 30px; }
-  #fp .label { font: 500 13px "DM Mono", monospace; padding: 4px 10px; border-radius: 2px; border: 1px solid #6B6B6B;
-    color: #C7C7C7; }
-  #fp .label.hangar { border-color: #FFC400; color: #111213; background: #FFC400; transform: scale(.6); opacity: 0;
+  #fp .label { font: 500 13px var(--af-font-mono); padding: 4px 10px; border-radius: var(--af-radius-control); border: 1px solid var(--af-line-strong);
+    color: var(--af-fg-muted); }
+  #fp .label.hangar { border-color: var(--af-brand); color: var(--af-on-brand); background: var(--af-brand); transform: scale(.6); opacity: 0;
     transition: all .3s; }
   #fp .label.hangar.on { transform: scale(1); opacity: 1; }
-  #fp .who { font-size: 14px; color: #8A8A8A; margin-left: 8px; opacity: 0; transition: opacity .3s .2s; }
+  #fp .who { font-size: 14px; color: var(--af-fg-subtle); margin-left: 8px; opacity: 0; transition: opacity .3s .2s; }
   #fp .label.hangar.on + .who { opacity: 1; }
-  #fp .fpterm { width: 1180px; padding: 0; overflow: hidden; }
-  #fp .fpterm .fp-bar { background: #0A0A0A; font: 500 13px "DM Mono", monospace; color: #8A8A8A; padding: 10px 16px; border-bottom: 1px solid #1F1F1F; }
-  #fp .fpterm .screen { padding: 12px 14px 16px; background: #000; }
-  #fp .ap-wrapper, #fp .ap-player { background: #000 !important; }
+  #fp .fpterm { width: 1180px; padding: 0; overflow: hidden; background: var(--af-terminal-bg); }
+  #fp .fpterm .fp-bar { font: 500 13px var(--af-font-mono); color: var(--af-terminal-dim); padding: 10px 16px; border-bottom: 1px solid color-mix(in srgb, var(--af-terminal-fg) 9%, transparent); }
+  #fp .fpterm .screen { padding: 12px 14px 16px; }
+  #fp .ap-wrapper, #fp .ap-player { background: var(--af-terminal-bg) !important; }
   #fp .ap-control-bar { display: none !important; }`;
   const add = () => {
     if (document.getElementById("fp")) return;
@@ -179,6 +186,7 @@ class Frames:
     """Screenshots taken back to back while the scenes play, with the time each was taken."""
 
     def __init__(self, page, folder: Path):
+        folder.mkdir(parents=True, exist_ok=True)
         self.page, self.folder, self.shots, self.on = page, folder, [], False
         self.task: asyncio.Task | None = None
 
@@ -198,7 +206,7 @@ class Frames:
         if self.task:
             await self.task
 
-    def encode(self, out: Path) -> None:
+    def encode(self, out: Path, name: str = "hangar-demo") -> None:
         """MP4 (H.264) and an optimised GIF from the frames, each shown for as long as it was on screen."""
         listing = self.folder / "frames.txt"
         lines = []
@@ -221,7 +229,7 @@ class Frames:
                 "30",
                 "-movflags",
                 "+faststart",
-                str(out / "hangar-demo.mp4"),
+                str(out / f"{name}.mp4"),
             ],
             check=True,
         )
@@ -232,15 +240,15 @@ class Frames:
                 "fps=8,scale=960:-1:flags=lanczos,split[a][b];"
                 "[a]palettegen=max_colors=64:stats_mode=diff[p];"
                 "[b][p]paletteuse=dither=none:diff_mode=rectangle",
-                str(out / "hangar-demo.gif"),
+                str(out / f"{name}.gif"),
             ],
             check=True,
         )
         print(
             "wrote",
-            out / "hangar-demo.mp4",
+            out / f"{name}.mp4",
             "and",
-            out / "hangar-demo.gif",
+            out / f"{name}.gif",
             f"({self.shots[-1][1] - self.shots[0][1]:.1f} s, {len(self.shots)} frames)",
         )
 
@@ -306,23 +314,23 @@ async def ui(pw, out: Path, work: Path) -> None:
     await page.evaluate("fp.show('.shade'); fp.show('.intro')")
     await hold(400)
     frames.start()
-    await hold(2600)
+    await hold(2000)
     await page.evaluate("fp.show('.intro', false)")
-    await hold(400)
+    await hold(300)
     await page.evaluate("fp.show('.ticket')")
-    await hold(1600)
+    await hold(1200)
     await page.evaluate(
         "document.querySelector('#fp .label.hangar').classList.add('on');"
         "fp.caption('1', 'Someone adds the hangar label to a ticket')"
     )
     job_id = (await asyncio.to_thread(demo.send_ticket))["job"]
-    await hold(2200)
+    await hold(1800)
     await page.evaluate("fp.show('.ticket', false); fp.show('.shade', false)")
 
     # --- 2. the job in the web UI, live
     await page.evaluate("fp.caption('2', 'hangar queues a job and starts a sandbox from the repo’s environment')")
     await page.evaluate("loadJobs(true)")
-    await hold(1600)
+    await hold(1200)
     await page.locator("#job-list li", has_text="#42").first.click()
     seen, deadline = set(), time.time() + 90
     with api() as c:
@@ -342,30 +350,34 @@ async def ui(pw, out: Path, work: Path) -> None:
             await page.evaluate("loadJobs(true)")
             if "run" in seen:  # follow the agent's activity as it arrives
                 await page.evaluate("document.querySelector('.activity')?.scrollIntoView({block: 'center'})")
-            await hold(700)
+            await hold(600)
     if job["state"] != "succeeded" or not (job.get("result") or {}).get("pr_url"):
         raise RuntimeError(f"the demo job did not deliver a PR: {job['state']} {job.get('reason')}")
     await page.evaluate("loadJobs(true)")
-    await hold(500)
+    await hold(400)
     await page.evaluate("window.scrollTo(0, 0); document.querySelector('#main').scrollTo?.(0, 0)")
     pr = job["result"]["pr_number"]
     await page.evaluate(f"fp.caption('5', 'Check passed: draft PR #{pr} is open, with the agent’s summary')")
-    cast = await asyncio.to_thread(record_cast, work / "inbox.cast")
-    await hold(1500)
+    await hold(1800)
 
-    # --- 3. the inbox in a terminal
-    await page.evaluate("fp.show('.shade'); fp.show('.fpterm')")
-    await page.evaluate("fp.caption('6', 'It waits in your inbox, with a question another job asked')")
+    # --- 3. what waits on a person: the Needs-you view (the PR to review, a question another job asked)
+    await page.evaluate("location.hash = '#needs'")
+    await hold(300)
+    await page.evaluate("fp.caption('6', 'It waits in Needs you, with a question another job asked')")
+    await hold(2000)
+    await frames.stop()
+    frames.encode(out, "hangar-demo")
+
+    # --- the inbox from the CLI, as a still: a real asciinema recording played in the overlay's terminal
+    cast = await asyncio.to_thread(record_cast, work / "inbox.cast")
+    await page.evaluate("fp.caption('', ''); fp.show('.shade'); fp.show('.fpterm')")
     await page.evaluate("cast => fp.play(cast)", cast)
     await hold(2500)
-    await frames.stop()
     await page.locator("#fp .fpterm").screenshot(path=str(out / "inbox.png"))
     print("wrote", out / "inbox.png")
-    frames.encode(out)
 
-    # --- the screenshots, without the overlay
-    await page.evaluate("document.getElementById('fp').remove()")
-    shot = await browser.new_context(viewport={"width": W, "height": 800}, device_scale_factor=2, color_scheme="dark")
+    # --- the stills, without the overlay: 1440x900 at 2x
+    shot = await browser.new_context(viewport={"width": W, "height": H}, device_scale_factor=2, color_scheme="dark")
     await shot.add_init_script(f"localStorage.setItem('hangar.token', '{demo.TOKEN}')")
     tab = await shot.new_page()
     await tab.goto(f"{demo.URL}/#jobs", wait_until="networkidle")
@@ -392,11 +404,100 @@ async def ui(pw, out: Path, work: Path) -> None:
     await browser.close()
 
 
+async def _console_page(ctx, fx: Fixture, hash_: str):
+    """The console on the fixture: the real page, the afternoon's data."""
+    page = await ctx.new_page()
+    await fx.wire(page)
+    await page.goto(f"{demo.URL}/#{hash_}", wait_until="networkidle")
+    await page.evaluate("document.fonts.ready")
+    await page.wait_for_timeout(700)
+    return page
+
+
+async def console(pw, out: Path) -> None:
+    """Needs you, the Fleet board with a held call docked beside it, and the Diff with a comment: stills at 2x."""
+    browser = await pw.chromium.launch()
+    ctx = await browser.new_context(viewport={"width": W, "height": H}, device_scale_factor=2, color_scheme="dark")
+    await ctx.add_init_script(f"localStorage.setItem('hangar.token', '{demo.TOKEN}')")
+    fx = Fixture()
+    page = await _console_page(ctx, fx, "needs")
+    await page.screenshot(path=str(out / "ui-needs.png"))
+    await page.close()
+    page = await _console_page(ctx, fx, "fleet?view=board")
+    await page.locator('[data-tile][aria-label*="Push the refunds"]').first.click()
+    await page.wait_for_timeout(500)
+    await page.screenshot(path=str(out / "ui-fleet.png"))
+    await page.close()
+    page = await _console_page(ctx, fx, "jobs")
+    await page.locator("#job-list li", has_text="Push the refunds").first.click()
+    await page.click("[data-diff-show]")
+    await page.wait_for_timeout(800)
+    await page.hover(".af-diff__line--add >> nth=0")
+    await page.click(".af-diff__line--add >> nth=0 >> [data-comment]")
+    await page.fill("[data-thread] textarea", "Cache the check; this path runs per request.")
+    await page.click("[data-add-comment]")
+    await page.wait_for_timeout(400)
+    await page.evaluate("document.querySelector('.changes').scrollIntoView({block: 'start'}); window.scrollBy(0, -96)")
+    await page.wait_for_timeout(300)
+    await page.screenshot(path=str(out / "ui-review.png"))
+    await page.close()
+    print("wrote", out / "ui-needs.png", out / "ui-fleet.png", "and", out / "ui-review.png")
+    await browser.close()
+
+
+async def review(pw, out: Path, work: Path) -> None:
+    """The review loop in one take: decide a held call in Needs you, open the job, read the change, comment back."""
+    browser = await pw.chromium.launch()
+    ctx = await browser.new_context(viewport={"width": W, "height": H}, device_scale_factor=1, color_scheme="dark")
+    await ctx.add_init_script(f"localStorage.setItem('hangar.token', '{demo.TOKEN}')")
+    await ctx.add_init_script(OVERLAY)
+    fx = Fixture()
+    page = await _console_page(ctx, fx, "needs")
+    hold = page.wait_for_timeout
+    frames = Frames(page, work)
+    frames.start()
+    await page.evaluate("fp.caption('1', 'Needs you: held tool calls, questions, failed runs and PRs to review, newest first')")
+    await hold(2200)
+    cargo = page.locator("[data-approval]", has_text="Cargo.toml").first
+    await cargo.scroll_into_view_if_needed()
+    await cargo.locator('[data-decide="allow_always"]').hover()
+    await hold(500)
+    await cargo.locator('[data-decide="allow_always"]').click()
+    await page.evaluate("fp.caption('2', 'Allow the edit for this turn: the agent carries on, the card goes')")
+    await hold(2200)
+    await page.evaluate("window.scrollTo(0, 0)")
+    await page.locator("[data-approval]", has_text="git push origin main").first.locator("[data-go]").click()
+    await hold(900)
+    await page.evaluate("fp.caption('3', 'The held push waits on its job, with the change the agent made so far')")
+    await hold(1500)
+    await page.click("[data-diff-show]")
+    await hold(900)
+    await page.evaluate("document.querySelector('.changes').scrollIntoView({block: 'start'}); window.scrollBy(0, -96)")
+    await page.evaluate("fp.caption('4', 'Read the change as a greyscale diff, file by file')")
+    await hold(1700)
+    await page.hover(".af-diff__line--add >> nth=0")
+    await hold(400)
+    await page.click(".af-diff__line--add >> nth=0 >> [data-comment]")
+    await hold(400)
+    await page.evaluate("fp.caption('5', 'A comment on a line goes back to the agent with your next message')")
+    await page.type("[data-thread] textarea", "Cache the check; this path runs per request.", delay=28)
+    await hold(300)
+    await page.click("[data-add-comment]")
+    await hold(1400)
+    await page.click("[data-send-comments]")
+    await page.evaluate("fp.caption('6', 'Sent: the agent reads it at its next step and the turn continues')")
+    await hold(2200)
+    await frames.stop()
+    frames.encode(out, "hangar-review")
+    await browser.close()
+
+
 def check(out: Path, only: str | None) -> None:
     names = {
         "diagram": ["hangar-suite.svg", "hangar-suite-dark.png", "hangar-suite-light.png"],
         "ui": ["hangar-demo.gif", "hangar-demo.mp4", "ui-jobs.png", "ui-sessions.png", "inbox.png",
                *(f"ui-fleet-{v}.png" for v in sorted(FLEET_VIEWS))],
+        "console": ["ui-needs.png", "ui-fleet.png", "ui-review.png", "hangar-review.gif", "hangar-review.mp4"],
     }
     want = [n for k, v in names.items() if only in (None, k) for n in v]
     bad = []
@@ -417,11 +518,11 @@ async def main_async(out: Path, only: str | None) -> None:
         if only in (None, "diagram"):
             render_diagram(out)
             await diagram_pngs(pw, out)
-        if only in (None, "ui"):
+        if only in (None, "ui", "console"):
             server = subprocess.Popen(
                 [sys.executable, str(HERE / "demo.py")],
                 cwd=ROOT,
-                env={**os.environ, "HANGAR_DEMO_PORT": str(demo.PORT)},
+                env={**os.environ, "HANGAR_DEMO_PORT": str(demo.PORT), "DEMO_PACE": DEMO_PACE},
             )
             try:
                 with api() as c:
@@ -434,7 +535,11 @@ async def main_async(out: Path, only: str | None) -> None:
                         await asyncio.sleep(0.2)
                 await asyncio.to_thread(wait_settled)
                 with tempfile.TemporaryDirectory(prefix="hangar-frames-") as work:
-                    await ui(pw, out, Path(work))
+                    if only in (None, "ui"):
+                        await ui(pw, out, Path(work) / "demo")
+                    if only in (None, "console"):
+                        await console(pw, out)
+                        await review(pw, out, Path(work) / "review")
             finally:
                 server.terminate()
                 server.wait(timeout=30)
@@ -443,7 +548,8 @@ async def main_async(out: Path, only: str | None) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--out", type=Path, default=HERE, help="where to write the assets (default: next to this file)")
-    ap.add_argument("--only", choices=["diagram", "ui"], help="render only the diagram, or only the UI assets")
+    ap.add_argument("--only", choices=["diagram", "ui", "console"],
+                    help="render only the diagram, only the demo run's recording and stills, or only the fixture's")
     a = ap.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
     asyncio.run(main_async(a.out, a.only))
