@@ -1,8 +1,8 @@
-"""Change sets: one ticket's work across several repos, delivered as one PR per changed repo and landed in order
-(docs/changesets.md).
+"""Change sets: one ticket's work across several repos, delivered as one PR per changed repo, landed in order, then
+deployed through the trigger repo (docs/changesets.md).
 
-A **profile** (`hangar.changeset-profile/v1`, admin config; kv `changeset-profile:<name>`) names the repos by role
-and the order they land in:
+A **profile** (`hangar.changeset-profile/v1`, admin config; kv `changeset-profile:<name>`) names the repos by role,
+the order they land in and the deploy step:
 
     schema: hangar.changeset-profile/v1
     name: payments-bot
@@ -13,6 +13,12 @@ and the order they land in:
       code:     {repo: https://github.com/acme/payments-bot.git}
       deploy:   {repo: https://github.com/acme/payments-deploy.git, agent: read}
     land_order: [database, infra, code]
+    deploy:
+      role: deploy
+      after: [database, infra, code]
+      ready: {kind: image-ready, image: registry.example.com/payments-bot, tag: "{code.merge_sha}"}
+      apply: {kind: command, run: "./bump.sh dev {code.merge_sha}"}
+      environments: [dev]
 
 A job submitted with `changeset: <profile>` is the **parent**: one sandbox and one agent session holding every
 role's checkout at `/workspace/<role>`, on each repo's branch (its policy's `branch_template`, default
@@ -24,11 +30,13 @@ delivery grant pinned to that repo, ref and commit, then opens one PR per change
 taint) with one more gate: every earlier changed role in `land_order` has merged. The parent's sandbox is
 checkpointed away before any part arms.
 
-Once every changed role has merged the set is `done`. A part closed without merging (or reverted, as the nightly
-pass sees it) makes it `broken`: later parts disarm and `changeset.broken` is announced. Nothing is reverted
-automatically.
+Once every changed role has merged the set is `deploying`: the control plane polls the deploy step's `ready`
+deliverer, then runs its `apply` deliverer in a fresh sandbox on the deploy repo (no agent), pushes the change and
+opens the deploy PR as one more part under the deploy repo's own policy. Its merge, the company CD's input, makes the
+set `done`. A part closed without merging (or reverted, as the nightly pass sees it) makes it `broken`: later parts
+disarm, the deploy step never runs, and `changeset.broken` is announced. Nothing is reverted automatically.
 
-Not in v1: an atomic cross-repo merge, rollback, best-of-N over a set. Session
+Not in v1: an atomic cross-repo merge, rollback, several deploy environments per set, best-of-N over a set. Session
 checkpoints hold the primary role's checkout; the other roles resume from the branches hangar pushed for them.
 """
 
@@ -46,7 +54,9 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from hangar.models import ChangeSet, ChangeSetRole, Job, JobState, Sandbox, Session, new_id, now
+from hangar.ext.deliverers import DeliverCtx, DeliverError, Merged, Ready, ticket_key
+from hangar.ext.deliverers import get as get_deliverer
+from hangar.models import ChangeSet, ChangeSetRole, DeployState, Job, JobState, Sandbox, Session, new_id, now
 
 if TYPE_CHECKING:
     from hangar.fleet import Fleet
@@ -60,19 +70,14 @@ PROFILE_PREFIX = "changeset-profile:"
 SET_PREFIX = "changeset:"
 LABEL = "hangar.changeset"  # on a change set's jobs and sandboxes (shown, never trusted: sandbox_roles checks)
 ROLE_LABEL = "hangar.changeset.role"
-POLL_SECONDS = 60.0  # how often landing sets are looked at (a reverted part)
-ACTIVE = ("working", "landing")
+POLL_SECONDS = 60.0  # how often the deploy step's `ready` is asked
+MAX_DEPLOY_ATTEMPTS = 3  # an `apply` that fails this often makes the set broken
+DEPLOY_TTL_MINUTES = 30
+ACTIVE = ("working", "landing", "deploying")
 _ROLE = re.compile(r"^[a-z][a-z0-9-]{0,30}$")
 _NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
 _TICKET = re.compile(r"^[a-z][a-z0-9-]{0,30}:[^\s]{1,200}$")
 _SLUG = re.compile(r"[^A-Za-z0-9._-]+")
-
-
-def ticket_key(ticket: str | None) -> str | None:
-    """`jira:PAY-412` -> `PAY-412`."""
-    if not ticket:
-        return None
-    return ticket.split(":", 1)[1] if ":" in ticket else ticket
 
 
 class ChangeSetError(ValueError):
@@ -87,6 +92,22 @@ class RoleSpec(BaseModel):
     base_branch: str | None = Field(None, max_length=200)
 
 
+class StepSpec(BaseModel):
+    """A deliverer and its own settings (`kind` plus whatever that kind reads)."""
+
+    model_config = ConfigDict(extra="allow")
+    kind: str = Field(min_length=1, max_length=63)
+
+
+class DeploySpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    role: str
+    after: list[str] | None = None  # default: every role in land_order
+    ready: StepSpec | None = None  # default: ready at once
+    apply: StepSpec
+    environments: list[str] = Field(default_factory=list, max_length=1)  # v1: one; promotion stays the company's
+
+
 class Profile(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
     schema_: Literal["hangar.changeset-profile/v1"] = Field(SCHEMA, alias="schema")
@@ -95,6 +116,7 @@ class Profile(BaseModel):
     primary: str | None = None  # the role whose repo is the parent job's `repo`: default `code`, else the last landed
     repos: dict[str, RoleSpec] = Field(min_length=1, max_length=8)
     land_order: list[str] = Field(min_length=1, max_length=8)
+    deploy: DeploySpec | None = None
     updated_at: float | None = None
     updated_by: str | None = None
 
@@ -125,12 +147,26 @@ class Profile(BaseModel):
             self.primary = "code" if "code" in writable else self.land_order[-1]
         if self.primary not in writable:
             raise ValueError(f"primary role {self.primary!r} must be a role the agent writes")
+        if d := self.deploy:
+            if d.role not in self.repos:
+                raise ValueError(f"deploy.role {d.role!r} isn't in repos")
+            if self.repos[d.role].agent == "write" or d.role in self.land_order:
+                raise ValueError(f"deploy.role {d.role!r} is changed by its step, never by the agent: give it "
+                                 "`agent: read` and leave it out of land_order")
+            if d.after is not None and (bad := [r for r in d.after if r not in self.land_order]):
+                raise ValueError(f"deploy.after names roles that don't land: {', '.join(bad)}")
+            for step in (d.ready, d.apply):
+                if step is not None and not _NAME.match(step.kind):
+                    raise ValueError(f"a deliverer kind matches {_NAME.pattern}: {step.kind!r}")
         return self
 
     def digest(self) -> str:
         """sha256 over the profile's content (not who changed it when), recorded on each change set."""
         body = self.model_dump(mode="json", by_alias=True, exclude={"updated_at", "updated_by"})
         return "sha256:" + hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    def deploy_after(self) -> list[str]:
+        return list(self.deploy.after) if self.deploy and self.deploy.after is not None else list(self.land_order)
 
 
 def parse_profile(data: Any) -> Profile:
@@ -175,6 +211,13 @@ class Profiles:
                 self.svc.fleet.catalog.get(env)
             except KeyError:
                 raise ChangeSetError(f"no environment '{env}'") from None
+        if p.deploy:
+            for step in (p.deploy.ready, p.deploy.apply):
+                if step is not None:
+                    try:
+                        get_deliverer(step.kind)
+                    except DeliverError as e:
+                        raise ChangeSetError(str(e)) from None
         p.updated_at, p.updated_by = now(), actor
         self.store.kv_set(PROFILE_PREFIX + p.name, p.model_dump_json(by_alias=True), durable=True)
         self.svc.fleet.audit(actor, "changeset.profile.set", p.name, digest=p.digest())
@@ -337,11 +380,20 @@ def create(svc: JobService, job: Job, prof: Profile) -> ChangeSet:
             branch = branch or f"hangar/{job.id}"
         cs.roles[role] = ChangeSetRole(repo=s.repo, agent=s.agent, branch=branch,
                                        base_branch=job.base_branch if role == prof.primary else s.base_branch)
+    if prof.deploy:
+        cs.deploy = DeployState()
     cs.profile_spec = prof.model_dump(mode="json", by_alias=True)
     job.changeset = cs.id
     job.labels = {**job.labels, LABEL: cs.id}
     of(svc).save(cs)
     return cs
+
+
+def created(svc: JobService, cs: ChangeSet) -> None:
+    """After the parent job is stored (jobs.submit): `changeset.created`."""
+    emit(svc, cs, "changeset.created", None, f"change set {cs.id} ({cs.profile}): "
+         + ", ".join(r for r, v in cs.roles.items() if v.agent == "write") + "; lands " + " → ".join(cs.land_order),
+         roles={r: v.repo for r, v in cs.roles.items()}, land_order=cs.land_order)
 
 
 # ====================================================================== the parent's sandbox (fleet, gateway)
@@ -619,6 +671,9 @@ async def deliver(svc: JobService, job: Job, draft: bool) -> None:
             tainted = taint.tainted(part)
             await svc._ensure_pr(part, draft=draft or job.deliver == "draft_pr" or tainted)
             await svc.landing.delivered(part)
+            if part.result.pr_number:
+                emit(svc, cs, "changeset.pr_opened", f"{role}:{part.result.pr_number}",
+                     f"{role}: PR #{part.result.pr_number} opened ({_short_repo(part.repo or '')})", part)
     job.result.commits = commits
     job.result.files = files
     job.result.diffstat = "\n".join(stats)[-4000:] or None
@@ -637,12 +692,21 @@ def _new_part(svc: JobService, parent: Job, cs: ChangeSet, role: str) -> Job:
                base_branch=r.base_branch, branch=r.branch, environment=parent.environment, harness=parent.harness,
                model=parent.model, deliver=parent.deliver, state=JobState.SUCCEEDED, person=parent.person,
                changeset=cs.id, parent=parent.id, role=role, ticket=parent.ticket, autofix="off",
-               labels={LABEL: cs.id, ROLE_LABEL: role}, keep_minutes=0)
+               labels={LABEL: cs.id, ROLE_LABEL: role, **_reply_label(svc, parent)}, keep_minutes=0)
     cs.parts[role] = part.id
     svc._jobs[part.id] = part
     svc._event(part, f"part {role} of change set {cs.id}, delivered from job {parent.id}", JobState.SUCCEEDED)
     svc.fleet.audit(f"job:{parent.id}", "changeset.part", part.id, changeset=cs.id, role=role, repo=r.repo)
     return part
+
+
+def _reply_label(svc: JobService, parent: Job) -> dict[str, str]:
+    """A part (one repo's PR) answers in the parent's conversation: its relay.reply_to, so events out about the PR
+    (pr.opened, pr.landed) reach the room that asked."""
+    from hangar.ext.notify import REPLY_TO_LABEL
+
+    r = reply_to(svc, parent)
+    return {REPLY_TO_LABEL: r} if r else {}
 
 
 def parts(svc: JobService, cs: ChangeSet) -> dict[str, Job]:
@@ -659,7 +723,7 @@ def pr_lines(svc: JobService, job: Job) -> list[str]:
     if cs is None or not job.parent:
         return []
     ps = parts(svc, cs)
-    order = list(cs.land_order)
+    order = [*cs.land_order, *([d.role] if (d := _deploy_spec(svc, cs)) else [])]
     lines = ["", f"**Change set `{cs.id}`** (profile `{cs.profile}`"
              + (f", ticket {cs.ticket}" if cs.ticket else "") + "): one PR per changed repo, landing in order "
              + " → ".join(f"**{r}**" if r == job.role else r for r in order) + ".", "",
@@ -668,7 +732,9 @@ def pr_lines(svc: JobService, job: Job) -> list[str]:
         p = ps.get(role)
         repo = cs.roles[role].repo if role in cs.roles else "?"
         if p is None:
-            lines.append(f"| {role} | {_short_repo(repo)} | - | no change |")
+            state = "waiting for the others to merge" if role == getattr(_deploy_spec(svc, cs), "role", None) \
+                else "no change"
+            lines.append(f"| {role} | {_short_repo(repo)} | - | {state} |")
             continue
         pr = f"[#{p.result.pr_number}]({p.result.pr_url})" if p.result.pr_number else "-"
         me = " (this PR)" if p.id == job.id else ""
@@ -680,6 +746,13 @@ def _short_repo(repo: str) -> str:
     from hangar.github import parse_repo
 
     return parse_repo(repo) or repo
+
+
+def _deploy_spec(svc: JobService, cs: ChangeSet) -> DeploySpec | None:
+    try:
+        return load_profile(svc, cs).deploy
+    except (ChangeSetError, ValidationError):
+        return None
 
 
 async def link_prs(svc: JobService, cs: ChangeSet) -> None:
@@ -721,7 +794,11 @@ def gate(svc: JobService, job: Job) -> str | None:
     for role in before:
         p = parts(svc, cs).get(role)
         if p is not None and p.landing.pr_state != "merged":
-            return f"waiting for {role} #{p.result.pr_number or '?'} to merge first (change set {cs.id})"
+            why = f"waiting for {role} #{p.result.pr_number or '?'} to merge first (change set {cs.id})"
+            if job.landing.pr_state == "approved":
+                emit(svc, cs, "changeset.waiting", f"{job.role}:{role}", f"{job.role} PR #{job.result.pr_number} "
+                     f"is approved and {why}", job, waiting_for=role)
+            return why
     return None
 
 
@@ -744,6 +821,48 @@ def set_state(svc: JobService, cs: ChangeSet, state: str, why: str, event: str |
         svc._event(parent, f"{name}: {why}")
         svc._spawn(svc._callback(parent, name))
     svc.fleet.audit("hangar", name, cs.id, why=why[:500])
+    emit(svc, cs, name, None, why)
+
+
+# ---------------------------------------------------------------------- events out (hangar.event/v1)
+EVENTS = ("changeset.created", "changeset.pr_opened", "changeset.waiting", "changeset.landed",
+          "changeset.landing", "changeset.deploying", "changeset.deployed", "changeset.done", "changeset.broken")
+
+
+def reply_to(svc: JobService, parent: Job) -> str | None:
+    """Where the parent's conversation is (its relay.reply_to label, a turn's reply_to, its source_ref)."""
+    from hangar import events_out
+
+    return events_out._reply_to(parent)
+
+
+def emit(svc: JobService, cs: ChangeSet, kind: str, key: str | None, summary: str, part: Job | None = None,
+         **data: Any) -> None:
+    """A change set's fact to every notifier (events_out), with a stable id (`<cs>:<kind>[:<key>]`), so a repeat of
+    the same fact is the same event and is sent once. It carries the parent's person and reply_to, so the room
+    that asked hears it."""
+    from hangar import events_out
+    from hangar.ext.notify import Event
+
+    d = events_out.of(svc)
+    if not d.notifiers:
+        return
+    try:
+        parent = svc.get(cs.parent_job)
+    except KeyError:
+        return
+    from hangar import inbox
+
+    links = {"job": u} if (u := inbox.job_url(svc, parent.id)) else {}
+    if part is not None and part.result.pr_url and part.result.pr_url.startswith("https://"):
+        links["pr"] = part.result.pr_url
+    body = {"changeset": cs.id, "profile": cs.profile, "state": cs.state, "ticket": cs.ticket,
+            **({"role": part.role, "part_job": part.id, "pr_number": part.result.pr_number} if part else {}),
+            **{k: v for k, v in data.items() if v is not None}}
+    d.emit(Event(id=f"{cs.id}:{kind}" + (f":{key}" if key else ""), type=kind, at=now(), job=parent.id,
+                 session=parent.session_id, person=parent.person, repo=part.repo if part else parent.repo,
+                 reply_to=reply_to(svc, parent), links=links, summary=svc.broker.redact(summary)[:500],
+                 data={k: v for k, v in body.items() if v is not None}))
 
 
 def part_closed(svc: JobService, job: Job) -> None:
@@ -754,6 +873,14 @@ def part_closed(svc: JobService, job: Job) -> None:
     if job.landing.pr_state != "merged":
         broken(svc, cs, f"{job.role} PR #{job.result.pr_number} was closed without merging")
         return
+    if cs.deploy is not None and cs.deploy.job == job.id:
+        cs.deploy.state = "merged"
+        emit(svc, cs, "changeset.deployed", job.role, f"{job.role} PR #{job.result.pr_number} merged: the deploy "
+             "is your CD's now", job, merge_sha=job.landing.merge_commit_sha)
+        set_state(svc, cs, "done", f"deploy PR #{job.result.pr_number} merged")
+        return
+    emit(svc, cs, "changeset.landed", job.role, f"{job.role} PR #{job.result.pr_number} landed", job,
+         merge_sha=job.landing.merge_commit_sha)
     if cs.state == "broken":
         return
     ps = parts(svc, cs)
@@ -762,7 +889,13 @@ def part_closed(svc: JobService, job: Job) -> None:
             svc.landing._bg(p, svc.landing.evaluate(p))
     landed = [r for r in cs.land_order if r in ps]
     if all(ps[r].landing.pr_state == "merged" for r in landed):
-        set_state(svc, cs, "done", "every PR merged: " + ", ".join(landed))
+        prof = _deploy_spec(svc, cs)
+        if prof is None:
+            set_state(svc, cs, "done", "every PR merged: " + ", ".join(landed))
+        else:
+            set_state(svc, cs, "deploying", "every PR merged (" + ", ".join(landed) + f"); the {prof.role} step "
+                      "runs once it is ready")
+            svc._spawn(step(svc, cs))
 
 
 def broken(svc: JobService, cs: ChangeSet, why: str) -> None:
@@ -796,7 +929,7 @@ def parts_of(svc: JobService, parent: Job) -> list[Job]:
     return list(parts(svc, cs).values())
 
 
-# ====================================================================== the background pass
+# ====================================================================== the deploy role
 async def deploy_loop(svc: JobService) -> None:
     while True:
         try:
@@ -809,14 +942,174 @@ async def deploy_loop(svc: JobService) -> None:
 
 
 async def tick(svc: JobService) -> None:
-    """Every set still landing: a reverted part breaks it."""
+    """Every set still landing or deploying: a reverted part breaks it; a deploying one polls its step."""
     for cs in of(svc).list():
-        if cs.state != "landing":
+        if cs.state not in ("landing", "deploying"):
             continue
         for role, p in parts(svc, cs).items():
-            if p.landing.reverted_at:
+            if p.landing.reverted_at and cs.state != "done":
                 broken(svc, cs, f"{role} PR #{p.result.pr_number} was reverted")
                 break
+        if cs.state == "deploying":
+            await step(svc, cs)
+
+
+_stepping: set[str] = set()
+
+
+async def step(svc: JobService, cs: ChangeSet) -> None:
+    """Poll the deploy step's `ready`; once ready, run `apply` and open the deploy PR. One at a time per set."""
+    if cs.id in _stepping or cs.state != "deploying" or cs.deploy is None:
+        return
+    if cs.deploy.state not in ("waiting", "ready"):
+        return
+    _stepping.add(cs.id)
+    try:
+        await _step(svc, cs)
+    finally:
+        _stepping.discard(cs.id)
+
+
+def _ctx(svc: JobService, cs: ChangeSet, prof: Profile, block: StepSpec) -> DeliverCtx:
+    merged: dict[str, Merged] = {}
+    for role, p in parts(svc, cs).items():
+        if role in cs.land_order:
+            merged[role] = Merged(repo=p.repo or "", pr=p.result.pr_number,
+                                  merge_sha=p.landing.merge_commit_sha or p.result.head_sha)
+
+    def note(text: str) -> None:
+        if cs.deploy is not None and cs.deploy.note != text:
+            cs.deploy.note = text
+            with contextlib.suppress(KeyError):
+                svc._event(svc.get(cs.parent_job), f"changeset.deploy: {text}")
+
+    def audit(action: str, **detail: Any) -> None:
+        svc.fleet.audit(f"changeset:{cs.id}", action, cs.id, **detail)
+
+    d = prof.deploy
+    return DeliverCtx(changeset=cs, role=d.role if d else "", merged=merged,
+                      environment=d.environments[0] if d and d.environments else None,
+                      spec=block.model_dump(), audit=audit, note=note)
+
+
+async def _step(svc: JobService, cs: ChangeSet) -> None:
+    prof = load_profile(svc, cs)
+    d, st = prof.deploy, cs.deploy
+    if d is None or st is None:
+        return
+    ready_block = d.ready or StepSpec(kind="command")
+    ctx = _ctx(svc, cs, prof, ready_block)
+    try:
+        ready = await get_deliverer(ready_block.kind).ready(ctx)
+    except DeliverError as e:
+        return _failed(svc, cs, f"{ready_block.kind}: {e}")
+    st.polled_at = now()
+    if ready is None:
+        ctx.note(f"waiting: {ready_block.kind} isn't ready yet")
+        of(svc).save(cs)
+        return
+    st.state, st.ready = "applying", dict(ready.detail)
+    of(svc).save(cs)
+    ctx.note(f"{ready_block.kind} is ready" + (f": {ready.note}" if ready.note else "") + f"; running {d.apply.kind}")
+    try:
+        await _apply(svc, cs, prof, ready)
+    except DeliverError as e:
+        st.state = "waiting"
+        return _failed(svc, cs, f"{d.apply.kind}: {e}")
+    st.state, st.note = "opened", None
+    of(svc).save(cs)
+
+
+def _failed(svc: JobService, cs: ChangeSet, why: str) -> None:
+    st = cs.deploy
+    if st is None:
+        return
+    st.attempts += 1
+    st.note = why[:1000]
+    with contextlib.suppress(KeyError):
+        svc._event(svc.get(cs.parent_job), f"changeset.deploy: attempt {st.attempts} failed: {why[:500]}")
+    if st.attempts >= MAX_DEPLOY_ATTEMPTS:
+        st.state = "failed"
+        broken(svc, cs, f"the deploy step failed {st.attempts} times: {why[:300]}")
+    of(svc).save(cs)
+
+
+async def _apply(svc: JobService, cs: ChangeSet, prof: Profile, ready: Ready) -> None:
+    """The deploy step: a fresh sandbox on the deploy repo, the apply deliverer, then hangar commits, pushes and opens
+    the PR as a part job under that repo's policy. The sandbox goes at the end, whatever happened."""
+    from hangar import delivery, secretscan
+
+    d = prof.deploy
+    assert d is not None and cs.deploy is not None
+    role, r = d.role, cs.roles[d.role]
+    parent = svc.get(cs.parent_job)
+    part = svc._jobs.get(cs.parts[role]) if role in cs.parts else None
+    if part is None:
+        part = _new_part(svc, parent, cs, role)
+        part.title = f"Deploy {cs.ticket or cs.id}: {parent.title}"[:200]  # the PR's title: the policy's template
+        cs.deploy.job = part.id
+        of(svc).save(cs)
+    env = prof.environment or parent.environment
+    actor = f"changeset:{cs.id}"
+    try:
+        sb = await svc.fleet.create(env, repo=r.repo, branch=r.base_branch, work_branch=r.branch,
+                                    labels={"hangar.job": part.id, LABEL: cs.id, ROLE_LABEL: role},
+                                    ttl_minutes=DEPLOY_TTL_MINUTES, actor=actor, person=parent.person,
+                                    purpose="automated")
+    except Exception as e:  # noqa: BLE001 - FleetError, a refused login, a full fleet: tried again next poll
+        raise DeliverError(f"could not start the deploy step's sandbox: {e}") from None
+    try:
+        path = sb.info.get("repo_path") or checkout(svc.fleet, role)
+
+        async def run(cmd: str, timeout: int = 600):
+            return await svc.fleet.exec(sb.id, cmd, cwd=path, timeout=timeout, actor=actor)
+
+        base = (await run("git rev-parse HEAD")).stdout.strip()
+        ctx = _ctx(svc, cs, prof, d.apply)
+        ctx.checkout, ctx.exec = path, run
+        await get_deliverer(d.apply.kind).apply(ctx, ready)
+        q = shlex.quote
+        msg = part.title
+        res = await run("git add -A && git diff --cached --quiet")
+        if res.exit_code == 0:
+            raise DeliverError("the step changed nothing in the deploy repo")
+        res = await run("git -c user.email=hangar@localhost -c user.name=hangar commit -q -m " + q(msg)
+                        + " -m " + q(f"Hangar-Changeset: {cs.id}"))
+        if res.exit_code != 0:
+            raise DeliverError(f"could not commit the step's change: {(res.stderr or res.stdout)[-300:]}")
+        head = (await run("git rev-parse HEAD")).stdout.strip()
+        if svc.settings.secret_scan != "off":
+            out = f"/tmp/hangar-secretscan-{part.id}"
+            scan = await run(secretscan.scan_script(path, base, out), timeout=300)
+            data = await svc.fleet.read_file(sb.id, out, limit=secretscan.MAX_SCAN_BYTES)
+            if scan.exit_code not in (0, 141) or data is None:
+                raise DeliverError("couldn't scan the step's change for secrets")
+            if hits := secretscan.scan_bundle(data.decode("utf-8", errors="replace"), svc.broker):
+                raise DeliverError("possible secret in the step's change: " + "; ".join(h.line() for h in hits[:3]))
+        push = await delivery.push(svc.fleet, sb.id, r.branch, head, actor, repo=r.repo, cwd=path)
+        if push.exit_code != 0:
+            raise DeliverError(f"push failed: {(push.stderr or push.stdout)[-400:]}")
+        names = await run(f"git diff --name-only {q(base)}..HEAD | head -n 300")
+        part.result.base_sha, part.result.head_sha, part.result.pushed = base, head, True
+        part.result.commits = [f"{head[:7]} {msg}"]
+        part.result.files = [x for x in names.stdout.splitlines() if x.strip()]
+        part.result.summary = f"The {role} step of change set {cs.id} ({d.apply.kind}), after " + ", ".join(
+            f"{k} #{m.pr}" for k, m in ctx.merged.items()) + " merged."
+        part.landing.files = part.result.files[:300]
+        part.landing.push_mode = (sb.info.get("git") or {}).get("mode") or part.landing.push_mode
+        svc._save(part)
+        svc._event(parent, f"changeset.deploy: pushed {r.branch} to {r.repo}")
+        if parent.deliver in ("pr", "draft_pr"):
+            await svc._ensure_pr(part, draft=parent.deliver == "draft_pr")
+            if not part.result.pr_number:
+                raise DeliverError("the deploy PR wasn't opened (see the part job's events)")
+            emit(svc, cs, "changeset.pr_opened", f"{role}:{part.result.pr_number}",
+                 f"{role}: deploy PR #{part.result.pr_number} opened ({_short_repo(r.repo)})", part)
+            await svc.landing.delivered(part)
+            await link_prs(svc, cs)
+    finally:
+        with contextlib.suppress(Exception):
+            await svc.fleet.destroy(sb.id, actor=actor)
 
 
 # ====================================================================== views and the API

@@ -161,13 +161,14 @@ def test_refusals_are_audited(tokens):
 
 
 # ====================================================================== unlinked accounts (HANGAR_RELAY_UNLINKED)
-def test_unlinked_accounts_fail_closed_until_holds_are_wired(tokens, monkeypatch):
+def test_unlinked_accounts_are_refused_or_held(tokens, monkeypatch):
     with pytest.raises(DelegationRefused, match="isn't linked"):
         _as(tokens, tokens["relay"], "symphony:999", unlinked="refuse")
     with pytest.raises(DelegationRefused, match="one of refuse, approve"):
         _as(tokens, tokens["relay"], "symphony:999", unlinked="allow")
-    # approve: only once the submit path attaches approvals.relay_hold (an unheld team job must never run)
-    assert approvals.HOLD_SUBMIT is False
+    # approve: only while the submit path attaches approvals.relay_hold (an unheld team job must never run)
+    assert approvals.HOLD_SUBMIT is True
+    monkeypatch.setattr(approvals, "HOLD_SUBMIT", False)
     with pytest.raises(DelegationRefused, match="can't hold a relayed job"):
         _as(tokens, tokens["relay"], "symphony:999", unlinked="approve")
     monkeypatch.setattr(approvals, "HOLD_SUBMIT", True)
@@ -316,12 +317,11 @@ def test_relay_end_to_end_linked_runs_as_the_person_unlinked_is_refused(world):
     assert r.status_code == 403 and "isn't linked to a hangar person" in r.json()["error"]
     refused = [e for e in h.store.audit_tail(50) if e.action == "relay.refused"]
     assert [e.target for e in refused] == ["symphony:999"]
-    # HANGAR_RELAY_UNLINKED=approve is read by the middleware, and still fails closed until submit holds the job
-    assert approvals.HOLD_SUBMIT is False
+    # HANGAR_RELAY_UNLINKED=approve is read by the middleware: the unlinked account gets in, held (tests below)
     h.settings.relay_unlinked = "approve"
     r = c.post("/mcp", json=init, headers={"Accept": "application/json, text/event-stream",
                                            "Authorization": f"Bearer {world['sym-bot']}", H: "symphony:999"})
-    assert r.status_code == 403 and "can't hold a relayed job" in r.json()["error"]
+    assert r.status_code == 200, r.text
 
 
 def test_over_http_the_refusals_are_403(world):

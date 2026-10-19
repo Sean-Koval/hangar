@@ -869,7 +869,17 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                         harness_lock=harness_lock,  # --- harness locks (#134)
                         changeset=changeset, ticket=ticket)  # --- change sets (docs/changesets.md)
         who = current_actor.get()
-        return jobs.view(jobs.submit(req, Caller(who, who, person=identity.person()), source="mcp"))  # identity
+        # --- relay (WP4): a bot acting for a Symphony account linked to nobody (HANGAR_RELAY_UNLINKED=approve)
+        # submits work that waits for a trusted person's approval, single-repo or change set; the account's own
+        # text is untrusted. A relay's `reply_to` goes on the job for events out (ext/notify.REPLY_TO_LABEL).
+        p = identity.current.get()
+        hold = approvals.relay_hold(jobs, p)
+        if p is not None and getattr(p, "reply_to", None):
+            from hangar.ext.notify import REPLY_TO_LABEL
+
+            req = req.model_copy(update={"labels": {**req.labels, REPLY_TO_LABEL: p.reply_to}})
+        return jobs.view(jobs.submit(req, Caller(who, who, person=identity.person()), source="mcp",  # identity
+                                     approval=hold, untrusted_source=p.on_behalf_of if hold else None))
 
     @tool()
     async def get_job(job: str) -> live.JobOut:
