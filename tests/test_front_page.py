@@ -41,5 +41,5 @@ def test_both_pages_show_one_features_table_with_a_status_per_row():
     assert readme == index, "README.md and docs/index.md show different features"
     assert readme[0] == "| Feature | What it gives your team | Status |"
     statuses = [row.rstrip(" |").rsplit("| ", 1)[1] for row in readme[2:]]
-    assert statuses and all(re.fullmatch(r"Shipped|Shadow|Planned \(\[#\d+\]\(https://github\.com/Sean-Koval/"
+    assert statuses and all(re.fullmatch(r"Shipped|Shadow|Partial|Planned \(\[#\d+\]\(https://github\.com/Sean-Koval/"
                                          r"hangar/issues/\d+\)\)", s) for s in statuses), statuses
