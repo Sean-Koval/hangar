@@ -507,9 +507,11 @@ class JobService:
         if stance is not None and stance.refused:
             raise JobError(stance.message())
         job_id = new_id("job")
-        # --- change sets (G7): the repo policy's `branch_template` (it always holds {job}), else hangar/<job>
+        # --- change sets (G7): the repo policy's `branch_template` (it always holds {job}); else, for a job on a Jira
+        # ticket, hangar/<KEY>-<job> (ticket keys: GitHub for Jira links by the key); else hangar/<job>
+        key = intake.ticket_key(req.labels, source_ref, ticket)
         templated, branch_note = (None, None) if req.branch else changesets.branch_for(policy, job_id, ticket)
-        branch = req.branch or templated or f"hangar/{job_id}"
+        branch = req.branch or templated or (f"hangar/{key}-{job_id}" if key else f"hangar/{job_id}")
         if not _BRANCH_RE.match(branch) or not (branch.startswith("hangar/") or branch == templated):
             raise JobError(f"invalid branch name '{branch}': jobs push only to new branches under hangar/"
                            + (" (or the repo policy's branch_template)" if templated else ""))
@@ -526,7 +528,9 @@ class JobService:
             if cred is None or cred.harness != "webhook":
                 raise JobError(f"callback_secret '{callback_secret}' must name a credential with harness "
                                "'webhook' (hangar cred add NAME --harness webhook --kind generic)")
-        title = (req.title or req.instructions.strip().splitlines()[0])[:200].strip() or job_id
+        # the repo policy's `title_template` names the PR instead of the `<KEY>: ` prefix (change sets, G7)
+        title = intake.ticket_title((req.title or req.instructions.strip().splitlines()[0])[:200].strip() or job_id,
+                                    None if getattr(policy, "title_template", None) else key)
         job = Job(
             id=job_id, title=title, instructions=req.instructions, source=source, source_ref=source_ref,
             requester=requester, owner=caller.owner, repo=repo, base_branch=req.base_branch, branch=branch,
@@ -1462,6 +1466,8 @@ class JobService:
         m = re.match(r"^github:([^#]+)#(\d+)$", job.source_ref or "")
         if m and parse_repo(job.repo) == m.group(1) and job.labels.get("github.kind") == "issue":
             lines.append(f"Closes #{m.group(2)}")
+        if key := intake.ticket_key(job.labels, job.source_ref, job.ticket):  # --- ticket keys
+            lines.append(f"Jira: {key}")
         from hangar import trailers  # --- #137: Hangar-Job, Harness-Digest, ... as git trailers, last
 
         return "\n".join(lines) + trailers.block(self, job)
