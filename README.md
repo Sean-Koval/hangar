@@ -9,21 +9,27 @@
 
 Documentation site: **[sean-koval.github.io/hangar](https://sean-koval.github.io/hangar/)** · part of the [agent factory](https://sean-koval.github.io/agent-factory/)
 
-![A GitHub issue labelled hangar becomes a job: a sandbox starts, the agent edits and tests the code, hangar verifies and opens draft PR #43, and the PR shows up in hangar inbox](docs/assets/front/hangar-demo.gif)
+![A GitHub issue labelled hangar becomes a job: a sandbox starts, the agent edits and tests the code, hangar verifies and opens draft PR #43, and the PR waits in Needs you with a question another job asked](docs/assets/front/hangar-demo.gif)
 
 <sub>Recorded by [`docs/assets/front/make.py`](docs/assets/front/make.py) against the demo hangar (the fake provider, a scripted agent and a stand-in GitHub); [MP4](docs/assets/front/hangar-demo.mp4).</sub>
 
 ## What it looks like
 
-The web UI on `:8787`: jobs with their timeline, the agent's activity, the check and the PR; sessions you come back to; the fleet four ways (Board, Bays, Columns and Owners), where you can allow or deny a held step; and the inbox of everything waiting on you ([the web console](docs/console.md)).
+The console on `:8787`. **Needs you** is first: held tool calls, jobs waiting to start and the agents' questions, decided in place; then what failed and what waits for review ([the web console](docs/console.md)).
+
+![Needs you: a job from outside the team waiting for approval, a held git push with its policy and expiry and Deny, Allow for this turn and Allow, and an agent's question answered in place](docs/assets/front/ui-needs.png)
+
+The **Fleet** board, every sandbox of four environments at a glance; the selected one's held call is decided beside it.
+
+![The Fleet board: tiles per environment with their stage pips, needs-you and failed ones marked, and the selected sandbox's approval card docked on the right](docs/assets/front/ui-fleet.png)
+
+A **job**: issue #42's timeline, the agent's activity, the check and the draft PR; the **review loop** reads the agent's change as a greyscale diff, where a comment on a line goes back to the agent with your next message.
 
 ![The jobs view: issue #42's job succeeded, check passed, draft PR #43, the agent's summary](docs/assets/front/ui-jobs.png)
 
-![The sessions view: a resumable session with its saved conversation and checkpoint](docs/assets/front/ui-sessions.png)
+![The review loop: decide a held edit in Needs you, open the held push's job, show the change as a diff, comment on a line and send it to the agent](docs/assets/front/hangar-review.gif)
 
-![The Fleet page's Board: every sandbox as a tile by environment, the one waiting on a person selected, with the agent's question in its detail panel](docs/assets/front/ui-fleet-board.png)
-
-![hangar inbox: PR #43 waits for review; another job's agent asks a question](docs/assets/front/inbox.png)
+<sub>The review loop on the fixture (`docs/assets/front/fixture.py`: a team's afternoon served over the same console); [MP4](docs/assets/front/hangar-review.mp4). Also: [sessions you come back to](docs/assets/front/ui-sessions.png) and [the inbox from the CLI](docs/assets/front/inbox.png).</sub>
 
 ## Where it sits
 

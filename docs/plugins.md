@@ -64,6 +64,7 @@ deliverers:
 ```
 
 `HANGAR_PLUGINS` is read once at startup, so `hangar config set plugins` applies after a restart. The server refuses to start, with the reason, when:
+
 - `HANGAR_PLUGINS` names a plugin that isn't installed;
 - it configures one that isn't enabled;
 - settings don't validate, or carry a key the plugin doesn't know;

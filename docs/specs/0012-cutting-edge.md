@@ -110,6 +110,7 @@ The workload is a Python process that imports modules and builds N MB of heap, s
 | 512 MB | 2.86 s | 0.88 s | 562 MB | 1.06 s | 80.6 s | **no**: f1 was gone after f2 restored |
 
 Findings:
+
 1. **One image can be restored into several independent sandboxes, and each continues on its own.** So the memory-fork mechanism under GKE Pod Snapshots works on gVisor itself.
 2. **Restore time grows with image size, about 1 s per 0.5 GB here.** Checkpoint is cheap.
 3. **Each fork holds its own copy of memory.** At 512 MB, two forks plus the host load exhausted this 8 GB VM: f2 took 80 s and f1 died, probably killed for memory (*unverified*; the kernel log was not checked). Memory forks need admission control on node memory. Their real payoff is state that is expensive to rebuild, such as a language-server index or a warmed dev server. A synthetic heap is cheap to rebuild.
@@ -154,10 +155,12 @@ Hangar already records verified outcomes, repair turns, `needs_input` questions 
 
 ### 6.4 Model routing, cost and latency
 Current list prices per MTok (input / output) [S11][S16]:
+
 - Anthropic: Opus 5.5 $4 / $20, Sonnet 5.5 $2 / $10, Haiku 5.5 $0.10 / $0.50 (≤100k prompt).
 - OpenAI: gpt-6.1-sol $2 / $10, gpt-6-luna $0.10 / $0.50, gpt-5.3-codex $1.75 / $14.
 
 Route **per session or job, at creation**, never per turn: a model switch makes the next request re-read the whole conversation uncached [S6]. Sensible defaults:
+
 - the strongest model for planning, best-of-N judging and anything with `needs_input`;
 - Sonnet-class models for well-specified issue fixes with a verify command;
 - Haiku- or luna-class models for `map` shards and labeling.
@@ -166,6 +169,7 @@ Choose and confirm these with 0007 experiments, on cost per *verified* task (000
 
 ### 6.5 Prompt caching and long sessions
 Facts:
+
 - Anthropic: 5-minute writes cost 1.25× input, 1-hour writes 2×. Reads cost 0.1× generally, and 0.05× on Opus 5.5 and Sonnet 5.5 [S10].
 - Claude Code: the main conversation uses a 1-hour TTL only on a subscription within plan usage. API keys and cloud providers get 5 minutes. `CLAUDE_CODE_PROMPT_CACHE_TTL=1h` or the `promptCacheTtl` setting overrides this [S6].
 - Claude Code: a resumed conversation keeps the system prompt it started with, so a resume in a fresh sandbox can still hit the cache [S6].
@@ -210,6 +214,7 @@ Effort: S ≤ 1 day, M ≈ 2–3 days, L ≈ 4–6 days (as in the specs README)
 Each wave is a set of parallel workstreams, one PR each, like 0011 §3.
 
 **Wave 3: the agent loop.** Items 1, 3, 5, 6, and 4(c–e). These are small to medium and need no new infrastructure or owner decision; most are harness flags plus front-door triggers.
+
 - *Exit:*
   - a steered turn;
   - a PR that went red and was fixed by the agent without a human;
@@ -217,6 +222,7 @@ Each wave is a set of parallel workstreams, one PR each, like 0011 §3.
   - an env whose baked layer rebuilt itself after a lockfile change.
 
 **Wave 4: the owner's compute as the platform.** Items 2 (Claude first), 7, 8, 9, and 4(a–b).
+
 - *Owner decision first:* an Anthropic Team or Enterprise org with self-hosted environments, for item 2.
 - *Exit:*
   - a claude.ai session running on a hangar GKE sandbox behind the egress proxy;
@@ -225,6 +231,7 @@ Each wave is a set of parallel workstreams, one PR each, like 0011 §3.
   - language-server diagnostics in Claude sandboxes.
 
 **Wave 5: meet users in their tools; learn.** Items 10, 11, 12, 13, then 14 and 15 as needed.
+
 - *Exit:*
   - review and answer a session from Claude Desktop (MCP App) and from Zed (ACP);
   - routing on by default with a measured cost drop;
@@ -253,6 +260,7 @@ Each wave is a set of parallel workstreams, one PR each, like 0011 §3.
 Fetched 2026-10-13.
 
 **Cloud coding agents**
+
 - S1 [Claude Code: use Claude Code in the cloud](https://code.claude.com/docs/en/claude-code-on-the-web)
 - S2 [Claude Code: cloud environments](https://code.claude.com/docs/en/cloud-environments)
 - S3 [Claude Code: self-hosted environments](https://code.claude.com/docs/en/self-hosted-environments)
@@ -273,6 +281,7 @@ Fetched 2026-10-13.
 - S28 [OpenHands runtimes](https://docs.openhands.dev/usage/runtimes/overview)
 
 **Claude Code behavior and models**
+
 - S6 [How Claude Code uses prompt caching](https://code.claude.com/docs/en/prompt-caching)
 - S7 [Agent SDK: modifying system prompts](https://code.claude.com/docs/en/agent-sdk/modifying-system-prompts)
 - S8 [Claude Code best practices](https://code.claude.com/docs/en/best-practices)
@@ -283,6 +292,7 @@ Fetched 2026-10-13.
 - S16 [OpenAI pricing](https://developers.openai.com/api/docs/pricing)
 
 **Protocols and SDKs**
+
 - S14 [Codex app-server README](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)
 - S17 [The next evolution of the Agents SDK (2026-04-15)](https://openai.com/index/the-next-evolution-of-the-agents-sdk/)
 - S45 [MCP 2026-07-28 changelog](https://modelcontextprotocol.io/specification/2026-07-28/changelog)
@@ -298,6 +308,7 @@ Fetched 2026-10-13.
 - S51 [The ACP Registry is live (Zed)](https://zed.dev/blog/acp-registry)
 
 **Sandbox platforms and runtimes**
+
 - S29 E2B: [billing](https://docs.e2b.dev/billing), [pricing](https://e2b.dev/pricing)
 - S30 [E2B snapshots](https://docs.e2b.dev/sandbox/snapshots)
 - S31 [e2b-dev/infra](https://github.com/e2b-dev/infra)
@@ -316,6 +327,7 @@ Fetched 2026-10-13.
 - S44 [KEP-2008 forensic container checkpointing](https://www.kubernetes.dev/resources/keps/2008/)
 
 **Local verification**
+
 - gVisor runsc release-20261005.0, from `gs://gvisor/releases/release/20261005/x86_64/gvisor.tar.zstd` (sha512 checked).
 - `claude` 2.1.296, `codex` 0.162.1 and `pi` 1.1.0 `--help` output.
 - Hangar's own `bench/results/2026-10-13-perf-docker-ab-after.json`.

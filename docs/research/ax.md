@@ -12,6 +12,7 @@ Date: 2026-10-13 · Workstream G of [spec 0011](../specs/0011-factory-roadmap.md
 ## 1. What they are
 
 **AX (Agent Executor)** is "a high-throughput, declarative orchestrator to run billions of autonomous agent workloads in a cluster". It is written in Go, Apache-2.0, and was announced on 2026-05-20 as "available now in preview" ([README](https://github.com/google/ax#readme), [blog](https://cloud.google.com/blog/products/ai-machine-learning/agent-executor-googles-distributed-agent-runtime)). It has three binaries ([DESIGN.md](https://github.com/google/ax/blob/main/DESIGN.md)):
+
 - `ax`: a kubectl-shaped CLI;
 - `ax-server`: a gRPC API that keeps state in **Redis** rather than CRDs ("storing millions of short-lived tasks as Kubernetes CRDs pushes etcd past its comfort zone");
 - `ax-task-runner`: PID 1 inside every task.
@@ -99,6 +100,7 @@ Hangar's `Provider` interface ([`providers/base.py`](https://github.com/Sean-Kov
 | `snapshot` / `delete_snapshot` | not available; `fork_session` keeps using 0010 checkpoints | "Stateful Task Branching" is on the roadmap |
 
 **What's missing or awkward:**
+
 - **A control path for exec and files.** The only one is debug-mode guest services. We'd be building on an interface AX describes as for debugging, with arbitrary process execution open to anyone who can reach the router with the actor header. The router must be locked to the hangar control plane by NetworkPolicy, and Substrate's own "user authorization" is still a roadmap item.
 - **Immutable Tasks.** Hangar's `extend` and TTL changes are control-plane-only anyway, but nothing about a running Task can change.
 - **No memory snapshots through AX.** AX suspends with `/workspace` fidelity, so it buys nothing over hangar's own checkpoints for resume quality.
@@ -106,6 +108,7 @@ Hangar's `Provider` interface ([`providers/base.py`](https://github.com/Sean-Kov
 - **Cluster prerequisites** (§6) and no GKE Agent Sandbox features (warm pools as `SandboxWarmPool`, Pod Snapshots).
 
 **What it would buy:**
+
 - **Density:** Substrate's multiplexing of idle actors onto shared workers ("30x+ oversubscription" in the [demo](https://github.com/agent-substrate/substrate#demo)). Coding sessions are idle most of the time, waiting on the model or on a human, which is exactly the pattern it targets. Hangar today pins a pod per live sandbox and releases it only on suspend.
 - **Start time:** golden-snapshot restores instead of a pod start. Hangar's cold path is node scale-up (2–4 min on GKE) plus an image pull ([config](https://github.com/Sean-Koval/hangar/blob/main/src/hangar/config.py)); warm pools hide it only for prebuilt environments.
 - **Hot suspend:** only via Substrate `MEMORY` fidelity, which AX doesn't expose today.
@@ -129,6 +132,7 @@ Revisit this when any of these happens:
 ## Ideas worth borrowing now
 
 These are already in §4 and still hold, with one addition:
+
 - **Declarative workspaces that pre-wire MCP servers and skills:** 0006 `mcp:` plus a skills registry.
 - **A single-writer event log for run state:** workstream C's events.
 - **Branching from checkpoints:** workstream D's `fork_session`.

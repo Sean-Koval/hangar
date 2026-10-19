@@ -24,6 +24,7 @@ hangar session send onboarding "now add the email verification step" -w   # boot
 | **Not kept:** running processes (dev servers, tmux windows), ignored files such as `.venv`/`node_modules` | They are rebuilt by the environment |
 
 Checkpoints are taken:
+
 - after every agent turn;
 - every 10 minutes while something changes;
 - when the session suspends;
@@ -36,6 +37,7 @@ All four agents resume their own conversation: Claude Code, Codex, pi and Antigr
 ## Staying open while you work
 
 A session never suspends while it's in use. Any of these keeps it up:
+
 - an agent turn running, or any agent run started in its sandbox (`run_agent`) that hasn't finished;
 - a terminal open on it (dashboard or `hangar sb attach`);
 - anything using the sandbox through hangar: commands (for their whole run), files, reading terminals, following an agent.
@@ -78,6 +80,7 @@ hangar session keep onboarding --idle 0     # stay up until I suspend it
 If the agent asks a question (`hangar-agent ask`), the turn ends as `needs_input` and the session shows it in `needs_input`; your next `send` answers it. How context moves in and out of a session is in [context exchange](context-exchange.md).
 
 In the dashboard, the **Sessions** page does all of this:
+
 - **Resume** a session;
 - message the agent;
 - **Talk to the agent here**, which opens a terminal in the agent's own conversation;
@@ -85,6 +88,7 @@ In the dashboard, the **Sessions** page does all of this:
 - set the idle time.
 
 To work alongside the agent interactively from a terminal:
+
 1. Open the session and attach to its sandbox: `hangar sb attach <sandbox_id>`.
 2. Run the `resume_command` that `get` shows, for example `claude --resume 3f2a…`. You're now in the same conversation the agent had.
 
@@ -100,6 +104,7 @@ hangar session fork onboarding -n 2 --name onboarding-a --name onboarding-b   # 
 MCP `fork_session(session, n, message?, harness?, names?)`; REST `POST /api/sessions/{name}/fork` with `{"n": 3, "message": "..."}`.
 
 Each fork is a new session:
+
 - `parent_id` names the session it came from, and `forked_from_checkpoint` names the checkpoint it started from. If the parent's sandbox is up and anything changed since its last checkpoint, hangar takes a fresh one first. A parent that is mid-turn can't be forked; wait for the turn to finish.
 - It has the parent's commits, uncommitted changes, untracked files and conversation files, on its own branch `<parent branch>-fork-<i>`, in its own sandbox. It keeps the parent's turns as history, with their artifacts (still downloadable from the fork), the parent's open question if it had one, and `get_session_patch` works on it before it ever boots. The inherited turns carry no usage: a fork's `usage` is what the fork spent.
 - **The conversation forks too.** The fork's first turn branches the agent's conversation with the CLI's own fork: each fork remembers everything up to the fork, and the forks diverge from there. Later turns resume the fork's own conversation.
@@ -168,6 +173,7 @@ has no model gateway path (only Claude Code and Codex do).
 ## Prompt caching
 
 Every model call in a turn re-sends the whole conversation. The provider's prompt cache bills the unchanged prefix at a tenth of the input price, or a twentieth on Opus 5.5 and Sonnet 5.5. A cache entry lives for a fixed time after its last use, 5 minutes by default. Sessions idle for up to 30 minutes, and agents wait on people (`needs_input`, `ask` approvals). Returning to a 150k-token conversation on Opus 5.5 costs $0.03 while the cache is warm and $0.75 once it has expired ([spec 0012 §6.5](specs/0012-cutting-edge.md#65-prompt-caching-and-long-sessions)). Hangar does three things about this:
+
 1. it asks for the right TTL;
 2. it keeps one model per session;
 3. it lets best-of-N and fork siblings share one cache write.
@@ -177,11 +183,13 @@ What it saves shows up in usage ([activity.md](activity.md#prompt-cache)).
 ### TTL policy
 
 `cache: auto | 5m | 1h | off`. Hangar takes the first of these that is set:
+
 1. the session's (`new_session(cache=…)`, `POST /api/sessions {"cache": "1h"}`);
 2. its environment's (`cache:` in the env spec);
 3. `HANGAR_CACHE` (default `auto`).
 
 `auto` asks for **1h** when the session expects to wait more than 5 minutes for its next message:
+
 - its idle time (`idle_minutes`, a job's `keep_minutes`) is over 5 minutes, or 0 (never suspends);
 - its tool approvals are `ask` and `HANGAR_APPROVAL_TIMEOUT_SECONDS` is over 5 minutes;
 - its agent has asked a question before (`needs_input`). The TTL has to be set before the wait: the turn that asks is the one whose cache entries must survive until the answer arrives.
@@ -198,6 +206,7 @@ The TTL lives on the provider, not in the sandbox. A session that suspends and r
 | Antigravity 1.3.3 | – | – | – | No flag, setting or variable. Gemini caches implicitly. |
 
 More on Claude Code:
+
 - **Main conversation only.** The TTL applies to the main conversation. Subagents keep 5 minutes.
 - **Its own default.** Without the variable, Claude Code asks for 1h only on a subscription within plan usage. An API key or a cloud provider gets 5m.
 - **What was checked.** A scripted Messages API received exactly these:
@@ -208,6 +217,7 @@ More on Claude Code:
 - **Other providers.** On Bedrock, 1-hour availability varies by model; set `cache: 5m` there if requests fail.
 
 **Break-even.** Let `p` be the input price and `r` the cache-read multiplier: 0.05 on Opus and Sonnet 5.5, 0.1 on most others.
+
 - A 1-hour write costs 2p instead of 1.25p, so each token written costs 0.75p more.
 - Each gap of 5–60 minutes saves rewriting the context `C` at 1.25p instead of reading it at r·p, a saving of (1.25 − r)·p·C.
 
@@ -230,6 +240,7 @@ Gaps longer than an hour lose the cache with either TTL. Use `hangar usage --by 
 Each model has its own cache, so switching models makes the next turn re-read the whole conversation uncached. The session's model is fixed when the session is created: the model asked for, else the environment's default for the harness. A later change to the environment doesn't move running conversations.
 
 You can still switch. `send_to_session(model=…)` (REST `POST /api/sessions/{name}/send {"model": …}`) switches from that turn on. `steer_turn(model=…)` (REST `…/steer {"model": …}`) switches from the next turn, because a running turn keeps its model. Either way:
+
 - the turn gets a warning in `warnings`;
 - the session's events get a `progress` event with `data.warning: "model_switch"`;
 - the audit log records `session.model`.
@@ -241,6 +252,7 @@ Switching harness (`open_session(harness=…)`) is a handoff anyway, and takes t
 Best-of-N attempts, and forks started with a message, begin with the same prompt prefix. Anthropic serves a cache entry only once the first response that writes it has begun. Siblings that all start at once therefore each write the whole prefix.
 
 Hangar staggers them instead:
+
 - The siblings boot their sandboxes in parallel.
 - The first one to begin its turn goes ahead.
 - The others hold the agent's start until that turn shows its first model response in the event stream (a message, a tool call, a command or usage), or until `HANGAR_CACHE_STAGGER_SECONDS` (15) after it started.
@@ -252,12 +264,14 @@ Claude Code's own fan-out holds for 5 s. Hangar's default is longer because the 
 Four Opus 5.5 attempts on a 100k-token prefix cost $2.00 when each writes it, and $0.56 when one writes and three read.
 
 Best-of-N attempts all get the same prompt (the task, context and protocol); each attempt's branch is named only at the very end. One gap is left, measured with Claude Code 2.1.296: Claude Code opens the first user message with a `gitStatus` block naming the current branch, ahead of hangar's prompt. Attempts sit on different branches, so for a new best-of-N job the shared prefix ends after the system prompt and tool definitions, and each attempt writes the task text itself (usually a few thousand tokens). `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1` removes that block (verified), but it also removes Claude Code's commit and PR instructions, so hangar leaves it on. Two cases are not affected:
+
 - Forks of a session that already has a conversation share all of it, because the resumed conversation keeps the git status it started with.
 - Codex and pi don't put the branch in the prompt.
 
 ### Keeping the cache warm: not done
 
 A session that waits on a person for over 55 minutes could refresh its 1-hour entry with a one-token request. A refresh is billed as a read: $0.03 for 150k tokens on Opus 5.5. Hangar doesn't do this, for two reasons:
+
 - **It would miss the cache.** The refresh must match the CLI's own request byte for byte: system prompt, tool definitions, beta headers and cache breakpoints. Only the CLI can build that request. A request hangar built would write a new entry, and so cost a write.
 - **It needs the model credential in the control plane.** That credential belongs only in the sandbox (and should eventually leave the sandbox too; spec 0012 item 7).
 
