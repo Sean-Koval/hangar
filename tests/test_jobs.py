@@ -410,6 +410,20 @@ async def test_callback_to_name_resolving_internally_is_not_sent(jobs, world):
     assert any("internal address" in e.message for e in job.events)
 
 
+async def test_a_ticket_key_names_the_branch_title_and_pr_body(jobs, world):
+    job = jobs.submit(SubmitJob(instructions="Make apply atomic", repo=world["url"], environment="jobenv",
+                                labels={"jira": "KAN-35"}), Caller("svc", "svc"))
+    assert job.branch == f"hangar/KAN-35-{job.id}" and job.title == "KAN-35: Make apply atomic"
+    job = await _until(jobs, job.id, DONE)
+    assert job.state == JobState.SUCCEEDED and _remote_has(world["remote"], job.branch)
+    assert "\nJira: KAN-35\n" in jobs._pr_body(job)
+    plain = jobs.submit(SubmitJob(instructions="x", repo=world["url"], environment="jobenv", title="KAN-35 later",
+                                  labels={"jira": "not-a-key"}), Caller("svc", "svc"))
+    assert plain.branch == f"hangar/{plain.id}" and plain.title == "KAN-35 later"
+    assert "Jira:" not in jobs._pr_body(plain)
+    await _until(jobs, plain.id, DONE)
+
+
 async def test_existing_branch_is_refused(jobs, world, fleet):
     git = ["git", "--git-dir", str(world["remote"])]
     subprocess.run([*git, "branch", "hangar/taken", "main"], check=True)

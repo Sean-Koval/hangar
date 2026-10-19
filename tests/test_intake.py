@@ -242,6 +242,19 @@ def test_jira_credentials_never_reach_a_sandbox(settings):
     assert identity.exposure(other, settings) == "sandbox"
 
 
+def test_ticket_keys():
+    assert intake.ticket_key({"jira.issue": "ABC-12"}) == "ABC-12"
+    assert intake.ticket_key({"jira": "KAN-35"}) == "KAN-35" and intake.ticket_key({}, "jira:ZZ9-1") == "ZZ9-1"
+    assert intake.ticket_key({intake.TRACKER: "jira:OPS-7"}) == "OPS-7"
+    for labels, ref in (({"jira": "kan-35"}, None), ({"jira": "KAN-35; rm"}, None), ({}, "github:a/b#3"),
+                        ({intake.TRACKER: "ghproject:p:i"}, None), ({"jira": "K-1"}, None), (None, None)):
+        assert intake.ticket_key(labels, ref) is None, (labels, ref)
+    assert intake.ticket_title("Make apply atomic", "KAN-35") == "KAN-35: Make apply atomic"
+    assert intake.ticket_title("KAN-35: Make apply atomic", "KAN-35") == "KAN-35: Make apply atomic"
+    assert intake.ticket_title("KAN-350 is another", "KAN-35") == "KAN-35: KAN-350 is another"
+    assert intake.ticket_title("Make apply atomic", None) == "Make apply atomic"
+
+
 def test_claims_are_scoped(store):
     g = ReplayGuard(store)
     assert redeliver.claim(g, "d1", 60, scope="jira") and not redeliver.claim(g, "d1", 60, scope="jira")
@@ -352,6 +365,7 @@ async def test_jira_status_change_queues_a_job_for_the_linked_person(door):
     assert job.source_ref == "jira:ABC-12" and job.requester == f"jira:{DANA}" and job.untrusted_source is None
     assert job.labels[intake.TRACKER] == "jira:ABC-12" and job.idempotency_key == "jira-delivery:wh-1"
     assert job.title == "ABC-12: Retry uploads that time out" and job.repo == "https://github.com/acme/api.git"
+    assert job.branch == f"hangar/ABC-12-{job.id}"  # --- ticket keys: the title already starts with the key
     [ctx] = job.context
     # --- review: anyone who can edit the issue can rewrite its text, so it is data even from a linked reporter,
     # and the summary isn't part of the instructions
