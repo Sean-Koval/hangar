@@ -9,7 +9,9 @@ import os
 
 import pytest
 
+import hangar.identity as identity
 from hangar.broker import Broker
+from hangar.gateway import parse_app_credential
 from hangar.models import CredentialKind
 from hangar.store import Store
 from hangar.vault import Vault, VaultReferenceError, load_or_create_key, reference
@@ -119,7 +121,39 @@ def test_the_default_directory_comes_from_the_environment(tmp_path, mounted, mon
 def test_the_broker_uses_and_redacts_a_mounted_credential(vault, mounted):
     kube_secret(mounted, {"anthropic": VALUE})
     broker = Broker(vault._store, vault)
-    c = broker.put("anthropic", "claude-code", CredentialKind.API_KEY, reference(f"file:{mounted}/anthropic"))
+    c = broker.put("anthropic", "claude-code", CredentialKind.API_KEY, reference(f"file:{mounted}/anthropic"),
+                   reference_ok=True)
     assert VALUE not in c.model_dump_json()
     assert broker.secret_text("anthropic") == VALUE
     assert VALUE not in broker.redact(f"the key is {VALUE}")
+
+
+def test_only_an_admin_path_stores_a_reference(vault, mounted):
+    """The broker refuses a reference unless the caller allows it (the API passes reference_ok for admins only)."""
+    kube_secret(mounted, {"anthropic": VALUE})
+    broker = Broker(vault._store, vault)
+    with pytest.raises(identity.Forbidden, match="only an admin"):
+        broker.put("anthropic", "claude-code", CredentialKind.API_KEY, reference(f"file:{mounted}/anthropic"))
+    assert vault.get("cred:anthropic") is None
+
+
+def test_a_github_app_key_can_come_from_a_mounted_file(vault, mounted):
+    """The App JSON is checked when used, not when the reference is stored (ESO may sync it later)."""
+    import json
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    broker = Broker(vault._store, vault)
+    c = broker.put("gh-app", "git", CredentialKind.GITHUB_APP, reference(f"file:{mounted}/gh-app"), reference_ok=True)
+    assert c.kind == CredentialKind.GITHUB_APP and vault.source("cred:gh-app") == f"file:{mounted}/gh-app"
+    pem = rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.NoEncryption()).decode()
+    kube_secret(mounted, {"gh-app": json.dumps({"app_id": "99", "installation_id": 7, "private_key": pem})})
+    assert parse_app_credential(broker.secret_text("gh-app")).app_id == "99"
+    # a stored (non-reference) App key is still checked when it is stored
+    from hangar.broker import CredentialError
+
+    with pytest.raises(CredentialError):
+        broker.put("gh-app-2", "git", CredentialKind.GITHUB_APP, "nope")
