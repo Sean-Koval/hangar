@@ -115,7 +115,7 @@ Two are built in:
 
 A step's settings take placeholders: `{<role>.merge_sha}`, `{<role>.pr}`, `{<role>.repo}` for each merged role, `{changeset}`, `{ticket}`, `{ticket_key}`, `{environment}` and, in `apply`, `{ready.<key>}`. In a command each value is shell-quoted. A placeholder with no value (a role that didn't change, say) fails the step rather than running it with a hole in it.
 
-Your own deliverer, an Argo CD bumper for example, is an object with a `kind` and the two async methods, registered with `hangar.ext.deliverers.add_deliverer`; the plugin host's `PluginHost.add_deliverer` makes the same call. A kind already taken by another deliverer is refused. A profile can then name it (`apply: {kind: acme-argocd-bump, app: svc-payments}`), and its settings arrive as `ctx.spec`.
+Your own deliverer, an Argo CD bumper for example, is an object with a `kind` and the two async methods, added by a [plugin](plugins.md) with `host.add_deliverer(d)` in its `register` (or, without the plugin host, `hangar.ext.deliverers.add_deliverer`). A kind already taken by another deliverer is refused. A profile can then name it (`apply: {kind: acme-argocd-bump, app: svc-payments}`), and its settings arrive as `ctx.spec`.
 
 ## Company conventions in the repo policy
 

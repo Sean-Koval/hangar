@@ -17,7 +17,8 @@ A profile's `deploy:` block names two of them by `kind`:
 
 Built-ins (`hangar.deliverers`): `command` (ready at once; apply runs `run` in the checkout) and `image-ready` (ready
 when `image:tag` is in its registry). A company plugin adds its own kind (an Argo CD bumper, say) with
-`add_deliverer`, the call the plugin host's `PluginHost.add_deliverer` makes; `DELIVERERS` is the backing store.
+a plugin's `register` (`host.add_deliverer`, which writes `DELIVERERS`, the store change sets look kinds up in);
+`add_deliverer` here registers one without the plugin host.
 Templates in a step's settings take `{<role>.merge_sha}`, `{<role>.pr}`, `{<role>.repo}`, `{changeset}`,
 `{ticket}`, `{ticket_key}`, `{environment}` and, in `apply`, `{ready.<key>}` (`ctx.render`).
 """

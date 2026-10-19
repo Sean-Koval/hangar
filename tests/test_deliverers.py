@@ -109,3 +109,33 @@ def test_add_deliverer_checks_the_plugin():
             ext.add_deliverer(NoApply())
     finally:
         ext.DELIVERERS.pop("acme-argocd-bump", None)
+
+
+def test_the_built_ins_are_plugins_and_a_hosts_deliverer_reaches_change_sets():
+    from types import SimpleNamespace
+
+    from hangar import pluginhost
+    from hangar.deliverers import command, image_ready
+
+    got: list = []
+    for mod in (command, image_ready):
+        mod.PLUGIN.register(SimpleNamespace(add_deliverer=got.append), mod.PLUGIN.Settings())
+    assert got == [command.INSTANCE, image_ready.INSTANCE]
+    assert ext.get("command") is command.INSTANCE and ext.get("image-ready") is image_ready.INSTANCE
+
+    class Bump:
+        kind = "acme-bump-argocd"
+
+        async def ready(self, ctx):
+            return ext.Ready()
+
+        async def apply(self, ctx, ready):
+            return None
+
+    host = SimpleNamespace(deliverers={}, _added=lambda what: None, _who=lambda: "acme-bump")
+    b = Bump()
+    try:
+        pluginhost.Host.add_deliverer(host, b)  # what a plugin's register calls
+        assert host.deliverers["acme-bump-argocd"] is b and ext.get("acme-bump-argocd") is b
+    finally:
+        ext.DELIVERERS.pop("acme-bump-argocd", None)

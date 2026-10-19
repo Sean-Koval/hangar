@@ -49,3 +49,23 @@ class ImageReady:
 
     async def apply(self, ctx: DeliverCtx, ready: Ready) -> None:
         raise DeliverError("image-ready is a ready check; name another kind (command, or a plugin's) for apply")
+
+
+class _Plugin:
+    """Built in (pyproject `hangar.plugins`, pluginhost.BUILTINS): registers the `image-ready` deliverer."""
+
+    name = "image-ready"
+    api = "hangar.plugin/v1"
+
+    def __init__(self, d: Any):
+        from hangar.ext import NoSettings
+
+        self.Settings = NoSettings
+        self.d = d
+
+    def register(self, host: Any, settings: Any) -> None:
+        host.add_deliverer(self.d)
+
+
+INSTANCE = ImageReady()
+PLUGIN = _Plugin(INSTANCE)

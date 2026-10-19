@@ -7,6 +7,8 @@ non-zero exit fails the step with the command's last output."""
 
 from __future__ import annotations
 
+from typing import Any
+
 from hangar.ext.deliverers import DeliverCtx, DeliverError, Ready
 
 MAX_RUN = 2000
@@ -29,3 +31,23 @@ class Command:
         if res.exit_code != 0:
             tail = ((res.stdout or "") + (res.stderr or ""))[-600:].strip()
             raise DeliverError(f"command `{cmd[:200]}` exited {res.exit_code}: {tail}")
+
+
+class _Plugin:
+    """Built in (pyproject `hangar.plugins`, pluginhost.BUILTINS): registers the `command` deliverer."""
+
+    name = "command"
+    api = "hangar.plugin/v1"
+
+    def __init__(self, d: Any):
+        from hangar.ext import NoSettings
+
+        self.Settings = NoSettings
+        self.d = d
+
+    def register(self, host: Any, settings: Any) -> None:
+        host.add_deliverer(self.d)
+
+
+INSTANCE = Command()
+PLUGIN = _Plugin(INSTANCE)
