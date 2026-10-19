@@ -1,0 +1,163 @@
+# Tagged releases for installs on someone else's cluster (docs/deploy-company.md, "Images"). A v* tag publishes:
+#   - the control plane, ghcr.io/sean-koval/hangar:<tag> (hangar-envd, the in-sandbox daemon, ships inside it), with
+#     an SBOM and provenance attached;
+#   - hangar's harness packs, ghcr.io/sean-koval/hangar-packs/harness-<harness>:<version>-<hash>
+#     (`hangar images build`); environment images stay with each install's own environments;
+#   - a GitHub release whose notes list every image by digest, the way an overlay pins it and a mirror copies it.
+# By hand: run it for an existing tag to publish it again (the image tag moves to the new build; pin the digest).
+#
+# It needs no secrets: GITHUB_TOKEN pushes to GHCR. A new GHCR package starts private; make hangar and the packs
+# public once in the package settings so clusters can pull without a token.
+#
+# deploy.yml also runs on v* tags (the owner's own cluster, behind its approval); this workflow never talks to a
+# cluster.
+name: release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: An existing v* tag to publish (again)
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  IMAGE: ghcr.io/sean-koval/hangar
+  PACKS: ghcr.io/sean-koval/hangar-packs
+
+jobs:
+  control-plane:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Check the tag
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "::error::'$TAG' is not vX.Y.Z[-pre]"; exit 1; }
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.TAG }}
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7
+        id: build
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ env.TAG }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ env.TAG }}
+            org.opencontainers.image.licenses=Apache-2.0
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Digest
+        run: |
+          digest='${{ steps.build.outputs.digest }}'
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::the build returned no image digest"; exit 1; }
+          echo "$IMAGE:$TAG@$digest" >> "$GITHUB_STEP_SUMMARY"
+
+  packs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.TAG }}
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push the harness packs
+        env:
+          HANGAR_REGISTRY: ${{ env.PACKS }}
+        run: |
+          set -o pipefail
+          uv sync --locked
+          uv run --locked hangar images plan --provider kubernetes --no-check --json > plan.json
+          only=$(python3 - <<'PY'
+          import json
+          print(" ".join("--only " + i["name"] for i in json.load(open("plan.json"))["items"] if i["kind"] == "pack"))
+          PY
+          )
+          [ -n "$only" ] || { echo "::error::no harness packs in the plan"; exit 1; }
+          # shellcheck disable=SC2086
+          uv run --locked hangar images build --provider kubernetes --builder docker --jobs 2 --json $only | tee packs.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: packs
+          path: packs.json
+
+  release:
+    needs: [control-plane, packs]
+    if: always() && needs.control-plane.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        continue-on-error: true  # the packs job failed: the release still carries the control plane
+        with:
+          name: packs
+      - name: Release notes
+        env:
+          DIGEST: ${{ needs.control-plane.outputs.digest }}
+          PACKS_RESULT: ${{ needs.packs.result }}
+        run: |
+          python3 - > notes.md <<'PY'
+          import json, os, pathlib
+          tag, image, digest = os.environ["TAG"], os.environ["IMAGE"], os.environ["DIGEST"]
+          print(f"## Images\n\nControl plane (hangar-envd inside): `{image}:{tag}@{digest}`\n")
+          print("Pin it in your overlay (deploy/kustomize, docs/deploy-company.md):\n\n```yaml")
+          print(f"images:\n  - name: {image}\n    digest: {digest}\n```\n")
+          p = pathlib.Path("packs.json")
+          if p.exists():
+              print("Harness packs:\n\n| harness | version | image |\n|---|---|---|")
+              for i in json.loads(p.read_text())["items"]:
+                  print(f"| {i['name']} | {i.get('version', '')} | `{i.get('ref') or i.get('tag', '')}` |")
+          else:
+              print(f"Harness packs: not published (the packs job: {os.environ['PACKS_RESULT']}).")
+          PY
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          files=(); [ -f packs.json ] && files+=(packs.json)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes-file notes.md
+            [ ${#files[@]} -eq 0 ] || gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes-file notes.md \
+              $([[ "$TAG" == *-* ]] && echo --prerelease) "${files[@]}"
+          fi
