@@ -18,6 +18,12 @@
   header .af-lbl { color: var(--af-fg-muted); }
   #status { margin-left: auto; }
   #screen { position: relative; flex: 1; min-height: 0; background: var(--af-canvas); }
+  /* what the screen area says when there is no screen to show (Airframe EmptyState): no ticket, the agent's screen
+     went away, or the ticket was refused; the header's status says the same in one word */
+  #empty { position: absolute; inset: 0; display: grid; place-items: center; padding: var(--af-space-24); }
+  #empty[hidden] { display: none; }
+  #empty .af-empty { background: var(--af-raised); border-radius: var(--af-radius-card); max-width: 520px; }
+  #empty .af-empty__text .af-mono { font-size: 12.5px; }
 </style>
 </head>
 <body>
@@ -30,7 +36,16 @@
   <span class="af-lbl"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-agent"/></svg>Agent screen<span id="mode" class="af-lbl__sub"></span></span>
   <span id="status" class="af-status af-status--queued" role="status"><i class="af-status__mark"></i><span id="status-text">Connecting…</span></span>
 </header>
-<div id="screen"></div>
+<div id="screen">
+  <div id="empty" hidden>
+    <div class="af-empty" data-kind="no-data">
+      <svg class="af-ic af-ic--24" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-agent"/></svg>
+      <span class="af-status af-status--failed af-status--lit" hidden><i class="af-status__mark"></i>Failed</span>
+      <h2 class="af-empty__title"></h2>
+      <p class="af-empty__text"></p>
+    </div>
+  </div>
+</div>
 <script type="module">
   // A one-time ticket from POST /api/screen/tickets (or MCP open_screen) arrives in the fragment, which browsers
   // never send to a server. Watching is view-only unless the ticket was minted for control; hangar enforces that
@@ -48,9 +63,23 @@
     document.getElementById("status-text").textContent = text;
     status.className = `af-status af-status--${role}${role === "failed" ? " af-status--lit" : ""}`;
   };
+  // the screen area without a screen: an Airframe empty state that says what is not here and what to do (no-data
+  // for a missing ticket, after-action when the agent closed its screen, error when the connection failed)
+  const empty = document.getElementById("empty"), card = empty.firstElementChild;
+  const show = (kind, title, html) => {
+    card.dataset.kind = kind;
+    card.querySelector(".af-ic").hidden = kind === "error";
+    card.querySelector(".af-status").hidden = kind !== "error";
+    card.querySelector(".af-empty__title").textContent = title;
+    card.querySelector(".af-empty__text").innerHTML = html;
+    empty.hidden = false;
+  };
+  const mono = (t) => `<span class="af-mono">${t}</span>`;
 
   if (!ticket) {
-    say("No ticket: open this page from `hangar` (open_screen) or POST /api/screen/tickets", "failed");
+    say("No ticket", "off");
+    show("no-data", "No screen to show.", `Open this page from a sandbox's <b>Agent screen</b> action, from your MCP client (${mono("open_screen")}) `
+      + `or with a ticket from ${mono("POST /api/screen/tickets")}. A ticket opens one screen once.`);
   } else {
     const scheme = location.protocol === "https:" ? "wss" : "ws";
     const rfb = new RFB(document.getElementById("screen"),
@@ -59,9 +88,24 @@
     rfb.viewOnly = !control;
     rfb.scaleViewport = true;
     rfb.background = getComputedStyle(document.documentElement).getPropertyValue("--af-canvas").trim();
-    rfb.addEventListener("connect", () => say("Connected", "running"));
-    rfb.addEventListener("disconnect", (e) => say(e.detail.clean ? "Disconnected" : "The screen went away", e.detail.clean ? "off" : "failed"));
-    rfb.addEventListener("securityfailure", (e) => say(`Refused: ${e.detail.reason || "security failure"}`, "failed"));
+    rfb.addEventListener("connect", () => { say("Connected", "running"); empty.hidden = true; });
+    rfb.addEventListener("disconnect", (e) => {
+      const when = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      if (e.detail.clean) {
+        say("Disconnected", "off");
+        show("after-action", "The agent's screen closed.", `The sandbox ended its screen session at ${mono(when)}; the sandbox itself may still be running. `
+          + "Open the screen again from the sandbox to get a new ticket.");
+      } else {
+        say("The screen went away", "failed");
+        show("error", "The screen went away.", `The connection dropped at ${mono(when)}: the sandbox stopped, or the network did. `
+          + "The sandbox's terminal and files are unaffected. Open the screen again from the sandbox for a new ticket.");
+      }
+    });
+    rfb.addEventListener("securityfailure", (e) => {
+      say("Refused", "failed");
+      show("error", "hangar refused this ticket.", `${e.detail.reason ? mono(e.detail.reason) : "The ticket was used already or has expired"}. `
+        + "A ticket opens one screen once: open the screen again from the sandbox for a new one.");
+    });
   }
 </script>
 </body>

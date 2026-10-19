@@ -94,7 +94,10 @@ const harnessWord = (h) => HARNESS_WORD[h] || h || "the agent";
 function untilWords(ts) {
   if (!ts) return "";
   const s = Math.round(ts - Date.now() / 1000);
-  return s <= 0 ? "now" : s < 3600 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`;
+  if (s <= 0) return "now";
+  if (s < 3600) return `${Math.round(s / 60)} min`;
+  const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);  // "2 h 10 min", as Airframe's cards read
+  return m ? `${h} h ${m} min` : `${h} h`;
 }
 // a: {id, kind: tool | job | request, cmd, tool, taint, policy, since, expires, who: {harness, sandbox, owner, requester},
 //     job, session (names, for the inspect link and the words), allowAlways, approve, deny}
@@ -480,6 +483,7 @@ function until(ts) {
   if (s < 3600) return `in ${Math.round(s / 60)} min`;
   return `in ${(s / 3600).toFixed(1)} h`;
 }
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;  // "1 checkpoint", "3 checkpoints": never "(s)"
 
 /* ------------------------------------------------------------------ gate */
 function showGate(err) {
@@ -1011,7 +1015,7 @@ function renderJob(j) {
         : `<div><code>${esc(c.name)}</code><span class="sub-val">${c.size} B</span></div>`).join("")}</dd>` : ""}
       <dt>Sandbox</dt><dd>${live ? `<code>${esc(j.sandbox_id)}</code>` : `<span class="hint">released; a reply resumes it from the last checkpoint</span>`}</dd>
       ${j.session ? `<dt>Session</dt><dd class="row"><a href="#sessions" data-goto-ses="${esc(j.session_id)}" class="af-mono">${esc(j.session.name)}</a>
-        ${status(sesRole(j.session), sesWord(j.session))}<span class="hint">${j.session.checkpoints} checkpoint(s)</span></dd>` : ""}
+        ${status(sesRole(j.session), sesWord(j.session))}<span class="hint">${plural(j.session.checkpoints, "checkpoint")}</span></dd>` : ""}
     </dl>
     <div class="env-bar">
       ${live && j.terminal_session ? `<button id="job-watch" type="button" class="af-btn ${j.active ? "af-btn--primary" : "af-btn--secondary"}">${ic("terminal")}${j.active ? "Watch the agent" : "Agent's terminal"}</button>` : ""}
@@ -1171,7 +1175,7 @@ function renderSession(x) {
       ${x.repo ? `<dt>Repo</dt><dd><span class="af-mono">${esc(jobRepo(x))}</span></dd><dt>Branch</dt><dd><code>${esc(x.branch)}</code></dd>` : ""}
       <dt>Conversation</dt><dd>${x.harness_session ? `<code>${esc(x.harness_session)}</code> <span class="sub-val">resumes natively</span>`
         : `<span class="hint">${x.turns.length ? "summary handoff on the next turn" : "starts with the first message"}</span>`}</dd>
-      <dt>Saved</dt><dd>${x.checkpoint_count ? `${x.checkpoint_count} checkpoint(s), last ${ago(x.last_checkpoint_at)}
+      <dt>Saved</dt><dd>${x.checkpoint_count ? `${plural(x.checkpoint_count, "checkpoint")}, last ${ago(x.last_checkpoint_at)}
         <span class="sub-val">${esc(ck?.reason || "")}</span>${ck?.warnings?.length ? ` ${meta([["warnings", ck.warnings.join("; "), "failed"]])}` : ""}`
         : `<span class="hint">nothing yet</span>`}</dd>
       <dt>Idle</dt><dd><select id="ses-idle">${[[15, "suspend after 15 min idle"], [30, "after 30 min"],
@@ -1397,10 +1401,10 @@ async function showEnv(name) {
       ...Object.entries(s.tools?.mise || {}).map(([k, v]) => [k, v]),
       s.repo ? ["repo", `${s.repo.url}${s.repo.bake ? " (baked)" : ""}`] : null,
       ["cpu", s.resources.cpus], ["memory", `${s.resources.memory_gb} GB`]])}
-    <p class="hint">${images.length ? "Built: " + images.map(([p, i]) => `${esc(p)} <code>${esc(i.split(":").pop())}</code>`).join(", ")
+    <p class="hint">${images.length ? "Built: " + images.map(([p, i]) => `${esc(p)} <code>${esc(i.split(":").pop())}</code>`).join(", ") + "."
       : "Not built yet. It builds automatically the first time a sandbox needs it."}
       Current digest <code>${esc(d.digest)}</code>.</p>
-    <label>Spec (YAML)<textarea id="env-yaml" spellcheck="false">${esc(d.yaml)}</textarea></label>
+    ${field("Spec (YAML)", inputWell(`<textarea id="env-yaml" spellcheck="false">${esc(d.yaml)}</textarea>`, { area: true }))}
     <div class="env-bar">
       <button id="env-save" type="button" class="af-btn af-btn--secondary">Save</button>
       <select id="env-prov" aria-label="Provider">${provs.map((p) => `<option>${esc(p)}</option>`).join("")}</select>
@@ -1640,7 +1644,7 @@ async function loadUsage() {
     // summary cards: one readout each, a keyed foot (Airframe SummaryCards)
     const range = `${since.replace(/\D/g, "")} d`;
     $("#usage-tiles").innerHTML = [
-      ["cost", "Spend", usd(t.cost_usd), t.unpriced_turns ? `+ ${t.unpriced_turns} turn(s) with no known price` : "list prices", "USD"],
+      ["cost", "Spend", usd(t.cost_usd), t.unpriced_turns ? `+ ${plural(t.unpriced_turns, "turn")} with no known price` : "list prices", "USD"],
       ["model", "Tokens", kTok(t.tokens), t.cache_read_tokens ? `+ ${kTok(t.cache_read_tokens)} cache reads` : "no cache reads", "in and out"],
       ["agent", "Agent turns", String(t.turns), "jobs and sessions", ""],
       ["policy", "Budget stops", String(t.budget_stops), t.budget_stops ? "turns stopped over their budget" : "none in range", ""],
@@ -1652,7 +1656,7 @@ async function loadUsage() {
     const rows = (sel, data) => {
       $(`${sel} tbody`).innerHTML = data.rows.length ? data.rows.map((r) => `<tr><td class="af-table__mono">${esc(r.key)}</td>
         <td class="af-num af-table__mono">${r.turns}</td><td class="af-num af-table__mono">${kTok(r.tokens)}</td>
-        <td class="af-num af-table__mono" title="${r.unpriced_turns ? `${r.unpriced_turns} turn(s) with no known price` : ""}">${usd(r.cost_usd)}${r.unpriced_turns ? " +" : ""}</td></tr>`).join("")
+        <td class="af-num af-table__mono" title="${r.unpriced_turns ? `${plural(r.unpriced_turns, "turn")} with no known price` : ""}">${usd(r.cost_usd)}${r.unpriced_turns ? " +" : ""}</td></tr>`).join("")
         : `<tr><td colspan="4">${emptyState({ compact: true, title: "No agent turns in this range." })}</td></tr>`;
     };
     rows("#usage-repos", repos);
@@ -1678,8 +1682,8 @@ function drawSpend(rows, since) {
   const box = $("#usage-days");
   if (!max) { box.innerHTML = emptyState({ kind: "after-action", compact: true, icon: "cost", title: "No priced spend in this range.", text: "Turns on a model with no known price count their tokens only." }); return; }
   // greyscale bars; a day with a budget stop is the one attention series (chart-5), "look here"
-  const tipText = (d) => `${d.key}: ${usd(d.cost_usd)}, ${kTok(d.tokens)} tokens, ${d.turns} turn(s)`
-    + (d.budget_stops ? `, ${d.budget_stops} budget stop(s)` : "");
+  const tipText = (d) => `${d.key}: ${usd(d.cost_usd)}, ${kTok(d.tokens)} tokens, ${plural(d.turns, "turn")}`
+    + (d.budget_stops ? `, ${plural(d.budget_stops, "budget stop")}` : "");
   const tipHtml = (d) => `<b>${esc(d.key)}</b> ${meta([["spend", usd(d.cost_usd), "strong"], ["tokens", kTok(d.tokens)], ["turns", d.turns],
     d.budget_stops ? ["budget stops", d.budget_stops] : null])}`;
   const stops = days.some((d) => d.budget_stops);
