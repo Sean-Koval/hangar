@@ -83,6 +83,12 @@ admin.get_outbox:
   rest: GET /api/admin/outbox
   scope: admin
   owner: admin
+admin.get_plugins:
+  server: hangar
+  mcp: null
+  rest: GET /api/admin/plugins
+  scope: admin
+  owner: admin
 admin.get_power:
   server: hangar
   mcp: null
