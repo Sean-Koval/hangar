@@ -54,7 +54,7 @@ Settings you change with `hangar setup` or `hangar config set` are stored in han
 
 ## A team on one hangar
 
-To put a team on hangar step by step (2 engineers on 1 repo, then 6 on 3), follow [the onboarding runbook](runbooks/onboarding.md); it ends with `hangar repo check` green for each repo.
+To put a team on hangar step by step (2 engineers on 1 repo, then 6 on 3), follow [the onboarding runbook](runbooks/onboarding.md); it ends with `hangar repo check` green for each repo. The [runbooks](runbooks/README.md) also cover the Friday harness review, run capture and governance break-glass.
 
 An admin adds people; each gets a login token, connects their own clients and stores their own agent login:
 
@@ -82,6 +82,7 @@ Members see and act on their own sandboxes, sessions and jobs; admins on everyon
 | Let an approval land the PR | [Landing](landing.md) |
 | Put a team on it, repo by repo | [The onboarding runbook](runbooks/onboarding.md) |
 | Upgrade a running hangar | [Upgrading](upgrading.md) |
+| Run it day to day, and when something breaks | [Runbooks](runbooks/README.md) · [Troubleshooting](troubleshooting.md) |
 
 ## MCP tools
 

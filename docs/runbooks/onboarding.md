@@ -1,8 +1,8 @@
 # Runbook: onboard 2 engineers on 1 repo, then 6 engineers on 3 repos
 
 One ordered checklist for putting a team on hangar: weeks 1–2 end with 2 engineers merging agent PRs on 1 repo,
-weeks 3–4 with all 6 on 3 repos. Every step names the command and the page it comes from; a step whose command isn't
-on main yet names the issue that adds it. It ends, for each repo, with `hangar repo check` green.
+weeks 3–4 with all 6 on 3 repos. Every step names the command and the page it comes from, and every command is on
+main. It ends, for each repo, with `hangar repo check` green.
 
 Read it with [team.md](../team.md) (people and credentials), [landing.md](../landing.md) (the App and branch
 protection), [intake.md](../intake.md) (Jira and GitHub Projects) and [security.md](../security.md) (the gateway).
@@ -30,14 +30,20 @@ GitHub admin or for CI).
 | repo 2 | | | — (done once) | | |
 | repo 3 | | | — (done once) | | |
 
+**Open item:** these hours are the one thing this runbook doesn't have yet. They are measured on the first real run
+of the per-repo checklist (#154).
+
 ## Phase 1: 2 engineers, 1 repo (weeks 1–2)
 
 ### 1. Control-plane prerequisites
 
 The safe release (#120–#132) is deployed: secure defaults for intake jobs, API keys for automated work, one approval
-rule ([upgrading.md, the safe release](../upgrading.md#the-safe-release-120132)). Deploy it in the power-down window,
-**01:00–09:50 ET**, while the sandbox pools are down and the control plane is up
-([team-scale.md, applying it](../team-scale.md#applying-it)).
+rule ([upgrading.md, the safe release](../upgrading.md#the-safe-release-120132)). It changes every environment's image,
+so deploy it by hand in the power-down window, **01:00–09:50 ET**, while the sandbox pools are down and the control
+plane is up ([team-scale.md, applying it](../team-scale.md#applying-it)). Later routine deploys go through
+`deploy.yml` while the pools are on, 10:00–01:00 ET ([upgrading.md, when to deploy](../upgrading.md#when-to-deploy)).
+Then the [adopt & capture upgrade](../upgrading.md#adopt-capture-and-frontier-133189) (#133–#189), which deploys by
+day.
 
 ```bash
 hangar doctor                          # clean: no failures
@@ -117,16 +123,19 @@ hangar` has a different harness from the author's review every agent PR first ([
 
 ### 6. Doors
 
-- **Jira**: map the project to the repo, with the trigger status `Ready for agent`
-  ([intake.md §3](../intake.md#3-the-configuration)); making it the default door, GitHub label and Projects parity and
-  an agent ticket template come with #156.
+- **Jira**: map the project to the repo with `hangar setup jira`; moving an issue to *Ready for agent* starts a job
+  unless you pass another `--trigger-status` or a `--trigger-label` ([intake.md §3](../intake.md#3-the-configuration)).
+  Create that status in the project's workflow first. Run it again with `--project` for repos 2 and 3: it keeps the
+  projects already mapped. Tickets follow the
+  [agent ticket template](https://github.com/Sean-Koval/hangar/blob/main/docs/templates/jira-agent-ticket.md).
 - **GitHub**: the `hangar` label (`HANGAR_GITHUB_TRIGGER_LABEL`) exists on the repo; labelling an issue starts a job
   ([jobs.md §4](../jobs.md#4-trigger-from-github)).
 - **Slack**: the team's channel maps to the repo in `HANGAR_SLACK_CHANNELS`, and the app is invited to it
   ([slack.md](../slack.md)).
 
 ```bash
-hangar config set jira '{ … "projects": {"APP": {"repo": "acme/app"}}, "trigger": {"status": "Ready for agent", "label": "hangar"} … }'
+hangar setup jira --url https://acme.atlassian.net --email hangar@acme.com --project APP=acme/app \
+  --token-file jira-token --webhook-secret-file jira-webhook-secret   # trigger: "Ready for agent"
 hangar setup slack --channel C0123ABCD=acme/app   # asks for the app's secrets; or edit HANGAR_SLACK_CHANNELS
 ```
 
@@ -156,13 +165,18 @@ Each engineer:
 
 1. Steps 2 and 3 for the four new engineers.
 2. The per-repo checklist (4–7) for repos 2 and 3, each ending with `hangar repo check` green and its hours recorded.
-3. Then turn on, as each lands:
-   - inbox DMs for questions and approvals, and the per-person digest at 10:15 and 16:00 (#157, #158);
-   - review-aware admission: new jobs wait as `awaiting_capacity` past N open agent PRs per reviewer (#159; on by
-     default at 5, `HANGAR_PERSON_MAX_OPEN_AGENT_PRS`, [team-scale.md](../team-scale.md#review-capacity));
-   - the self-approval rule for low-risk packets with an independent AI review (#160; the default), and the AI
-     first-pass review on every agent PR (#161; `hangar repo set <repo> --ai-review hangar`);
-   - run capture: `HANGAR_OUTBOX_URL` ([observability.md, run capture](../observability.md#run-capture)).
+3. Check the team features, all shipped with the adopt & capture release; the first three are on by default:
+   - inbox DMs for questions and approvals, and the per-person digest at 10:15 and 16:00 (#157, #158): on for everyone
+     with a linked Slack account (step 2); `hangar person set <id> --dm off` opts out;
+   - review-aware admission: new jobs wait as `awaiting_capacity` past 5 open agent PRs per reviewer (#159;
+     `HANGAR_PERSON_MAX_OPEN_AGENT_PRS`, or `--max-open-agent-prs` per repo, [team-scale.md](../team-scale.md#review-capacity));
+   - the self-approval rule (#160, the default `low_risk_with_ai_review`): a requester's own approval lands only a
+     low-risk PR with an independent AI review, and the AI first-pass review (#161) is off until
+     `hangar repo set <repo> --ai-review hangar`, so turn it on for each repo where people approve their own docs and
+     test PRs;
+   - run capture: on in the GKE deploy, where `deploy/gke/up.sh` sets `HANGAR_OUTBOX_URL` (#273); elsewhere off until
+     it is set ([observability.md, run capture](../observability.md#run-capture); operating it:
+     [the outbox runbook](outbox.md)).
 4. The weekly adoption metrics start counting active delegators (#168).
 5. Once the last 14 days' agent PR yield is at least 60% (`hangar metrics weekly`), consider the overnight lane: one Spot
    node 01:00–10:00 (~$87 a month) so evening tickets of the repos set to `overnight: true` are PRs by the 10:00 triage

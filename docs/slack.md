@@ -37,7 +37,7 @@ decision was made, on a mapped channel, and hangar drafts an ADR from the thread
 `docs/decisions/NNNN-use-parquet-for-runs.md`. A person other than the one who asked reviews and merges it.
 
 - **Opt in per repo.** The repo needs a `docs/decisions/` directory: without one hangar refuses in the thread and
-  points to [docs/templates/adr.md](templates/adr.md), the format it writes (frontmatter `id`, `kind: decision`,
+  points to [docs/templates/adr.md](https://github.com/Sean-Koval/hangar/blob/main/docs/templates/adr.md), the format it writes (frontmatter `id`, `kind: decision`,
   `status: proposed`, `label`, `sources` with the thread's permalink and content hash, `author: agent:<model>`,
   `supersedes`; sections Context, Decision, Options considered, Consequences, Checks).
 - **The thread is untrusted.** It reaches the agent only as `slack-thread.md`, an untrusted context item (the parent
@@ -100,7 +100,7 @@ hangar setup slack --manifest slack-app.yaml
 - **Limits.** Each Slack user is a caller for [rate limits and the active-job cap](security.md#front-door-limits): by default 10 jobs or follow-ups at once, refilling at 30 a minute, and at most 10 unfinished jobs. Past a limit, hangar says so in the thread.
 - **Only people.** Hangar ignores messages from bots (its own included), edits and deletions.
 - **Who's asking.** The requester is `slack:<team>/<user>`, shown in the job's timeline, PR body and audit log. Slack jobs are fenced in like a `jobs` token: only repos in `HANGAR_GITHUB_REPOS`, only their environments, and no choice of provider.
-- **Who can follow up.** Anyone allowed in a mapped channel can follow up in a job's thread, just as any collaborator can comment `/hangar` on a job's PR. A reply while the agent is still working gets "Can't continue yet"; reply again when the turn is done.
+- **Who can follow up.** On a person's job, only that person (an admin uses `hangar job follow-up`); on a team job, anyone the channel trusts. A job started by someone whose Slack account is linked (`hangar person link <id> slack T…/U…`) is that person's: it runs with their own login and budget, and anyone else's reply in its thread is refused, naming whose job it is. A job started by someone with no linked account is a team job. GitHub and Jira follow the same rule (`teamcreds.may_continue`). A reply while the agent is still working gets "Can't continue yet"; reply again when the turn is done.
 - **Needs input.** When an agent stops with a question (job state `needs_input`, spec 0011 §2), hangar posts the question in the thread. Your reply is the answer: it runs as an ordinary follow-up.
 - **Safe output.** Text hangar didn't write itself, such as the agent's summary, failure output, or your instructions echoed back, is escaped. It can't ping `@channel` or turn into a link. Known secrets are redacted before anything is posted.
 - **When posting fails.** If the app isn't in the channel or the token is wrong, a slash command answers privately, through Slack's `response_url`, with the reason, and no job starts. Failures to post updates are recorded on the job's timeline.
@@ -119,6 +119,6 @@ Hangar also DMs people what needs them ([the inbox](landing.md#delivery-it-comes
 
 ## Security notes
 
-Treat a mapped channel like write access to its repo's `hangar/*` branches. Anyone in your workspace who can post there can start an agent, unless `HANGAR_SLACK_USERS` is set. Messages in the thread are context for the agent, and the prompt marks them as untrusted data. Even so, they are untrusted input, like issue comments; see [jobs → Security notes](jobs.md#security-notes). A thread reply from an allowed user is a follow-up with that user's authority. Keep PR merges human-approved.
+Treat a mapped channel like write access to its repo's `hangar/*` branches. Anyone in your workspace who can post there can start an agent, unless `HANGAR_SLACK_USERS` is set. Messages in the thread are context for the agent, and the prompt marks them as untrusted data. Even so, they are untrusted input, like issue comments; see [jobs → Security notes](jobs.md#security-notes). A thread reply is a follow-up with its sender's authority: on a team job, any allowed user's; on a person's job, only that person's ([who can follow up](#how-it-behaves)). Keep PR merges human-approved.
 
 `/hangar status JOB` answers for any job on a repo Slack may use, including jobs started over REST or GitHub, to anyone allowed in a mapped channel. It shows the title, state, requester and latest event.
