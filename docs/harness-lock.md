@@ -230,7 +230,7 @@ trusted, and skips untrusted ones silently: installing a plugin doesn't trust it
 `hooks.state."<key>".trusted_hash` in the user config or a `-c` flag, where the key is
 `<name>@<marketplace>:<hooks file>:<event>:<group>:<handler>` and the hash is Codex's digest of the hook's event,
 matcher, command, timeout and options (verified against Codex's source at `rust-v0.162.1` and the CLI's own
-`hooks/list`). Hangar computes it for exactly the hooks of the lock's Codex forms, from the lock's files, and passes it
+`hooks/list`). hangar computes it for exactly the hooks of the lock's Codex forms, from the lock's files, and passes it
 to every Codex turn of the sandbox as one `-c hooks.state={...}` (`HANGAR_CODEX_HOOK_TRUST`, in the harness's `run` and
 `live_run`). Nothing is written to the agent's config, so no other hook is trusted by hangar, and a hook edited in the
 agent's plugin cache no longer matches its hash: Codex reports it `modified` and skips it. A hardened turn starts Codex
