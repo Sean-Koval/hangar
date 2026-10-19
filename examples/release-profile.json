@@ -1,0 +1,166 @@
+{
+  "version": 1,
+  "release": "example-service/release-7",
+  "max_age_seconds": 3600,
+  "stages": [
+    {
+      "id": "code",
+      "depends_on": [],
+      "requirements": [
+        {
+          "id": "code-merge",
+          "kind": "merge",
+          "repository": "example/service",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bindings": {
+            "target": "main",
+            "pull_request": "42",
+            "reviewed_head": "8888888888888888888888888888888888888888"
+          }
+        }
+      ]
+    },
+    {
+      "id": "build",
+      "depends_on": [
+        "code"
+      ],
+      "requirements": [
+        {
+          "id": "code-build",
+          "kind": "build",
+          "repository": "example/service",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bindings": {
+            "artifact": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "build_id": "jenkins-42"
+          }
+        }
+      ]
+    },
+    {
+      "id": "infrastructure",
+      "depends_on": [],
+      "requirements": [
+        {
+          "id": "infra-merge",
+          "kind": "merge",
+          "repository": "example/infrastructure",
+          "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "bindings": {
+            "target": "main",
+            "pull_request": "51",
+            "reviewed_head": "8888888888888888888888888888888888888888"
+          }
+        },
+        {
+          "id": "sre-review",
+          "kind": "approval",
+          "repository": "example/infrastructure",
+          "revision": "8888888888888888888888888888888888888888",
+          "bindings": {
+            "pull_request": "51",
+            "environment": "production",
+            "approver": "sre-reviewer",
+            "ticket": "OPS-51"
+          }
+        }
+      ]
+    },
+    {
+      "id": "database",
+      "depends_on": [],
+      "requirements": [
+        {
+          "id": "database-scope",
+          "kind": "database_scope",
+          "repository": "example/database",
+          "revision": "cccccccccccccccccccccccccccccccccccccccc",
+          "bindings": {
+            "change": "release-7",
+            "decision": "not_required",
+            "reason": "No schema changes in this release",
+            "actor": "database-owner"
+          }
+        }
+      ]
+    },
+    {
+      "id": "activation",
+      "depends_on": [
+        "build",
+        "infrastructure",
+        "database"
+      ],
+      "requirements": [
+        {
+          "id": "activation-merge",
+          "kind": "merge",
+          "repository": "example/infrastructure",
+          "revision": "dddddddddddddddddddddddddddddddddddddddd",
+          "bindings": {
+            "target": "main",
+            "pull_request": "52",
+            "artifact": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "infrastructure_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "reviewed_head": "8888888888888888888888888888888888888888",
+            "environment": "production"
+          }
+        }
+      ]
+    },
+    {
+      "id": "production",
+      "depends_on": [
+        "activation"
+      ],
+      "requirements": [
+        {
+          "id": "production-merge",
+          "kind": "merge",
+          "repository": "example/deployment",
+          "revision": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "bindings": {
+            "target": "main",
+            "pull_request": "61",
+            "artifact": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "activation_revision": "dddddddddddddddddddddddddddddddddddddddd",
+            "environment": "production",
+            "reviewed_head": "9999999999999999999999999999999999999999"
+          }
+        },
+        {
+          "id": "production-approval",
+          "kind": "approval",
+          "repository": "example/deployment",
+          "revision": "9999999999999999999999999999999999999999",
+          "bindings": {
+            "pull_request": "61",
+            "artifact": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "environment": "production",
+            "approver": "release-reviewer"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rollout",
+      "depends_on": [
+        "production"
+      ],
+      "requirements": [
+        {
+          "id": "rollout",
+          "kind": "rollout",
+          "repository": "example/deployment",
+          "revision": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "bindings": {
+            "artifact": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "environment": "production"
+          }
+        }
+      ]
+    }
+  ],
+  "environment": "production"
+}

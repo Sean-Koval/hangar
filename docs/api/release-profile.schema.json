@@ -1,0 +1,162 @@
+{
+  "$defs": {
+    "Requirement": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^\\S(?:[^\\r\\n]*\\S)?$",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "merge",
+            "build",
+            "approval",
+            "database_scope",
+            "migration",
+            "rollout"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "repository": {
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "title": "Repository",
+          "type": "string"
+        },
+        "revision": {
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
+          "title": "Revision",
+          "type": "string"
+        },
+        "bindings": {
+          "maxProperties": 16,
+          "minProperties": 1,
+          "patternProperties": {
+            "^\\S(?:[^\\r\\n]*\\S)?$": {
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^\\S(?:[^\\r\\n]*\\S)?$",
+              "type": "string"
+            }
+          },
+          "propertyNames": {
+            "maxLength": 256,
+            "minLength": 1
+          },
+          "title": "Bindings",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "repository",
+        "revision",
+        "bindings"
+      ],
+      "title": "Requirement",
+      "type": "object"
+    },
+    "Stage": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "enum": [
+            "code",
+            "build",
+            "infrastructure",
+            "database",
+            "activation",
+            "production",
+            "rollout"
+          ],
+          "title": "Id",
+          "type": "string"
+        },
+        "depends_on": {
+          "items": {
+            "enum": [
+              "code",
+              "build",
+              "infrastructure",
+              "database",
+              "activation",
+              "production",
+              "rollout"
+            ],
+            "type": "string"
+          },
+          "maxItems": 6,
+          "title": "Depends On",
+          "type": "array"
+        },
+        "requirements": {
+          "items": {
+            "$ref": "#/$defs/Requirement"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "title": "Requirements",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "depends_on",
+        "requirements"
+      ],
+      "title": "Stage",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": 1,
+      "title": "Version",
+      "type": "integer"
+    },
+    "release": {
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^\\S(?:[^\\r\\n]*\\S)?$",
+      "title": "Release",
+      "type": "string"
+    },
+    "environment": {
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^\\S(?:[^\\r\\n]*\\S)?$",
+      "title": "Environment",
+      "type": "string"
+    },
+    "max_age_seconds": {
+      "exclusiveMinimum": 0,
+      "maximum": 86400,
+      "title": "Max Age Seconds",
+      "type": "integer"
+    },
+    "stages": {
+      "items": {
+        "$ref": "#/$defs/Stage"
+      },
+      "maxItems": 7,
+      "minItems": 1,
+      "title": "Stages",
+      "type": "array"
+    }
+  },
+  "required": [
+    "version",
+    "release",
+    "environment",
+    "max_age_seconds",
+    "stages"
+  ],
+  "title": "ReleaseProfile",
+  "type": "object"
+}
