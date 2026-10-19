@@ -3,6 +3,7 @@
 Status: partly built (2026-10-15): `hangar-envd`, the E2B-compatible API and the `e2b` provider flavours; the microVM tier on GKE isn't validated live. Was: proposal. · Date: 2026-10-13 · Builds on: 0012 (items 8 and 15, §4), 0004 (performance), 0003 (gateway, egress), 0010 (sessions), 0006 (environments)
 
 The owner wants to use E2B and Tencent's CubeSandbox as references for hangar in three ways:
+
 - their features, API specs, endpoints and design;
 - how they make VMs start fast and run light;
 - where Rust makes hangar faster and smaller.
@@ -60,11 +61,13 @@ External claims carry a source tag such as [E2], resolved in §11. A claim marke
 ## 2. Method
 
 **Primary sources** were cloned on 2026-10-13. Commit hashes were read from `.git/shallow`.
+
 - `e2b-dev/infra` @ `1c7f6c944858069e061c8aa92650365d496b37f5`. Its README now calls it "E2B Runtime" and links `e2b-dev/runtime`. It contains envd 0.10.0 (`packages/envd/pkg/version.go`) and Firecracker `v1.14-0.2.0` (`packages/shared/pkg/featureflags/flags.go`).
 - `e2b-dev/E2B` @ `62a17dfc3f11439d1d06bfb9bb515eadc5adfcd3`. Its `python-sdk` and `js-sdk` are both 2.56.0, which is the latest on PyPI and npm today (`pip index versions e2b`, `npm view e2b version`).
 - `TencentCloud/CubeSandbox` @ `8d3d9914dd9d09a9de37f93c4dac703d090fc0a5`, release line v0.7.x.
 
 **Experiments** ran on a shared 2-vCPU, 8 GB VM, so treat the timings as relative. Scripts live in the overnight scratchpad `r13/`; the protocol notes are also in `scratchpad/overnight/envd-protocol.md`.
+
 1. **Built upstream envd.** I compiled it from the commit above (`go build ./packages/envd`) and ran it with `-isnotfc -no-cgroups`.
 2. **Recorded the wire traffic.** The real pip `e2b` 2.56.0 and npm `e2b` 2.56.0 SDKs, in `E2B_DEBUG=true` mode, drove every command, file, watch and PTY call through a TCP tap. I ran this over HTTP/1.1 and with the SDK's default HTTP/2 setting.
 3. **Probed the encodings.** Raw Connect probes covered errors, enums, int64 values, unknown fields and `Connect-Timeout-Ms`.
@@ -93,12 +96,14 @@ This section is the contract for `overnight/envd`. Everything in it was observed
 ### 3.2 Connect protocol
 
 **Clients and routes.** Both SDKs use the **Connect protocol with the JSON codec**:
+
 - Python: `connectrpc` 0.11 with a proto-JSON codec, `e2b/envd/client_shared.py`.
 - JS: `@connectrpc/connect-web` with `useBinaryFormat: false`, `src/sandbox/index.ts` [E6].
 
 Neither sends gRPC, gRPC-Web or binary proto. Routes are `POST /<package>.<Service>/<Method>`.
 
 **Unary calls:**
+
 - *Request:* `Content-Type: application/json` with the message as the body, plus `Connect-Protocol-Version: 1` and `Connect-Timeout-Ms: 60000`.
 - *Success:* `200`, `application/json`, with the message as the body (`{}` when empty).
 - *Error:* the HTTP status for the Connect code, with body `{"code":"not_found","message":"…"}`.
@@ -108,6 +113,7 @@ Neither sends gRPC, gRPC-Web or binary proto. Routes are `POST /<package>.<Servi
   - `invalid_argument` → 400, `unauthenticated` → 401, `unavailable` → 503, `deadline_exceeded` → 504, `resource_exhausted` → 429.
 
 **Server streams** (`Start`, `Connect`, `WatchDir`):
+
 - *Request:* `Content-Type: application/connect+json`. The body is **one envelope**: a `0x00` flag byte, a 4-byte big-endian length, then the JSON.
 - *Response:* `200` and `application/connect+json`, carrying envelopes `0x00|len|json`.
 - *End of stream:* the last envelope has flag `0x02`. Its body is `{}` on success, or `{"error":{"code":"deadline_exceeded","message":"…"}}` on failure.
@@ -116,6 +122,7 @@ Neither sends gRPC, gRPC-Web or binary proto. Routes are `POST /<package>.<Servi
 **Client streaming** (`StreamInput`) is never called. connect-web cannot do it, and the Python SDK doesn't use it.
 
 **Proto3 JSON:**
+
 - Emit lowerCamelCase names (`exitCode`, `watcherId`, `modifiedTime`). Accept those and the proto names on input.
 - Omit default values. An exit code of 0 is absent: `{"end":{"exited":true,"status":"exit status 0"}}`.
 - `bytes` → padded standard base64.
@@ -137,6 +144,7 @@ pty.create(PtySize(rows=24, cols=80))
 ```
 
 Behaviour to match:
+
 1. **Event order.** First `{"event":{"start":{"pid":N}}}` as soon as the child forks; the SDK's `request_timeout` covers only this. Then `data` events: `stdout` and `stderr` for pipes, `pty` for a PTY. Then exactly one `end`, then the `0x02` envelope. The `end` payload depends on how the process stopped:
    - **Exit:** `{"exitCode":3,"exited":true,"status":"exit status 3","error":"exit status 3"}`.
    - **Signal:** `{"exitCode":-1,"status":"signal: killed","error":"signal: killed"}`.
@@ -210,6 +218,7 @@ One file write produced CREATE, CHMOD and WRITE events. A recursive watch needs 
 ### 3.7 Version gating, the conformance harness, and the numbers
 
 **Version gating.** The SDK takes `envdVersion` from the **control API** and gates features on it:
+
 - `0.3.0`: stdin.
 - `0.4.0`: default user. Below it the SDK forces `user`.
 - `0.5.2`: `CloseStdin`.
@@ -223,6 +232,7 @@ These are defined in `e2b/envd/versions.py` and `js-sdk/src/envd/versions.ts` [E
 **Conformance harness.** `E2B_DEBUG=true` makes both SDKs skip the control plane and talk to `http://localhost:49983`. `Sandbox.create()` then returns `sandbox_id="debug_sandbox_id"` with `envd_version=99.99.99` and no token. So the real SDKs are the conformance suite, with no API server needed.
 
 **Minimum surface.**
+
 - *Must:* the transport and codec above; the process RPCs except `StreamInput`; all the filesystem RPCs; `/health`; `/files`, both directions, with gzip; `X-Access-Token`; Basic-auth user selection; keepalives; the error codes.
 - *Should:* signatures, `X-Metadata-*`, `includeEntry`, the deadline semantics and the 30 s exit retention.
 - *Skip:* `StreamInput`, `/files/compose`, `/init` and the freeze/upgrade routes.
@@ -253,6 +263,7 @@ Source: `spec/openapi.yml`, version 0.1.0, server `https://api.e2b.app` [E1]. Re
 | `AdminApiKeyAuth` / `AdminJWTAuth` + `AdminTeamAuth` | `X-Admin-Token`, or a Bearer JWT, plus `X-Team-ID` | `/nodes`, `/admin/*`, `/clusters/*` |
 
 Per-sandbox tokens come back from create and connect:
+
 - **`envdAccessToken`**, sent to envd as `X-Access-Token` (§3.6).
 - **`trafficAccessToken`**, required by the edge when `network.allowPublicTraffic=false`, in the `e2b-traffic-access-token` header [E5 `grpc/proxy/metadata.go`]. The client proxy also forwards `X-Access-Token` when it auto-resumes a paused sandbox [E5 `client-proxy/internal/proxy/proxy.go`].
 
@@ -291,6 +302,7 @@ Per-sandbox tokens come back from create and connect:
 | `POST`, `DELETE /templates/tags`; `GET /templates/{id}/tags`; `GET /templates/aliases/{alias}` | `{target:"name:tag", tags}` | | Tags are movable pointers to builds. |
 
 **Everything else.**
+
 - `GET /teams`; `GET /teams/{id}/metrics` and `/metrics/max`.
 - `GET`, `POST /api-keys`, plus `PATCH` and `DELETE /api-keys/{id}`. Bearer only: an API key can't mint keys.
 - `GET`, `POST`, `GET {id}` and `DELETE /volumes` (NFS-backed; envd mounts them).
@@ -369,6 +381,7 @@ Neither runs as an unprivileged Pod. Both need host-level setup: KVM, hugepages 
 ### 5.4 How faithful its E2B API is
 
 CubeAPI [C6] implements:
+
 - `GET /health`; `GET`/`POST /sandboxes`; `GET /v2/sandboxes`;
 - `GET`/`DELETE /sandboxes/{id}`; v1 and v2 logs;
 - the sandbox actions `network`, `timeout`, `refreshes`, `pause`, `resume`, v1 `connect` and `snapshots`;
@@ -377,6 +390,7 @@ CubeAPI [C6] implements:
 It adds `rollback`, `templates/compat` and `adopt-baseline`.
 
 Gaps, against the 2.56 SDK:
+
 - **`POST /v2/sandboxes` and `POST /v2/sandboxes/{id}/connect` are missing.** From 2.51 on, pip `e2b` calls only these. I checked the wheels: 2.52.1, 2.53.1, 2.55.1 and 2.56.0 call v2, while 2.29.5 and 2.44.0 call v1 (§2, item 5). The 2.51 cut-off is from Cube's note. Cube's own example says create "gets 405 (that route is GET-only)" and pins `e2b>=2.7.0,<2.51` [C7]. So `Sandbox.create()` from a current SDK fails against CubeSandbox at this commit.
 - **No fork, `/v3/templates`, step-based builds, file-hash uploads, tags, API keys, secrets, events or webhooks.** Template builds are image-based: `image`, CPU in millicores, `writableLayerSize`, `exposedPorts`, `probePort`. Hangar's `Template.build` path (`from_image` → `/v3/templates` + `/v2/.../builds`) won't work, so it needs a Cube branch.
 - **No envd access token.** `envdAccessToken` is always `None` [C6 `services/sandboxes.rs:146,663`]. envd inside CubeSandbox is unauthenticated, and CubeProxy enforces a traffic token only when `allowPublicTraffic=false` [C11 `sandbox_backend.lua`].
@@ -393,6 +407,7 @@ Gaps, against the 2.56 SDK:
 | Snapshots [C8] | BMI5 | Python scripts in `examples/snapshot-rollback-clone` | Snapshot 50 ms serial; 12.7 ms amortized at concurrency 10. Create from snapshot 61–68 ms. |
 
 Where the claims and the data disagree:
+
 - **Overhead.** The "<5 MB overhead" in the README and introduction has no method behind it. The repo's own density runs measure 21–34 MB per idle 2 GiB VM.
 - **Concurrency.** The README says "under 50 concurrent creations, avg 67 ms, P95 90 ms" [C1]. The bare-metal report measures avg 276 ms and p95 508 ms at concurrency 50.
 - **Hardware.** All the fast numbers are on a 96-thread bare-metal host or a PVM kernel.
@@ -447,6 +462,7 @@ Plan on about 50–70 ms per create at low concurrency and 25–35 MB per idle V
 **What stays in Python:** the control plane — `app.py`, jobs, sessions, MCP, A2A, the front door, scheduling, the store and the provider orchestration. It is I/O-bound and logic-heavy, it changes nightly, and it is where tests live.
 
 **The boundary between them:**
+
 - **Separate binaries, not PyO3.**
   - `hangar-envd` runs inside the sandbox.
   - The edge runs as a sidecar or Deployment.
@@ -486,6 +502,7 @@ Plan on about 50–70 ms per create at low concurrency and 25–35 MB per idle V
 | `GET /health` | `/healthz` | |
 
 **What does not map in the first cut:**
+
 - *Not mapped:* volumes, secrets (hangar's vault and credentials are a different model), MCP gateway, IAM, the events webhooks (hangar has its own signed callbacks), the template build DSL, and `autoResume`-on-traffic (needs the edge and auto-resume first).
 - *Answered `501` with a pointer:* `/api-keys`, `/admin`, `/nodes` and `/clusters`.
 - *Accepted as stored fields:* `metadata` keys with E2B's own semantics, such as `autoPauseMemory`. They have no behaviour in hangar.
@@ -562,6 +579,7 @@ Tier targets at a glance:
 Fetched or cloned 2026-10-13.
 
 **E2B**
+
 - E1 `e2b-dev/infra` @ `1c7f6c9`: [`spec/openapi.yml`](https://github.com/e2b-dev/infra/blob/1c7f6c944858069e061c8aa92650365d496b37f5/spec/openapi.yml)
 - E2 `e2b-dev/infra` @ `1c7f6c9`, `packages/envd/`: [`spec/process/process.proto`](https://github.com/e2b-dev/infra/blob/1c7f6c944858069e061c8aa92650365d496b37f5/packages/envd/spec/process/process.proto), [`spec/filesystem/filesystem.proto`](https://github.com/e2b-dev/infra/blob/1c7f6c944858069e061c8aa92650365d496b37f5/packages/envd/spec/filesystem/filesystem.proto), [`spec/envd.yaml`](https://github.com/e2b-dev/infra/blob/1c7f6c944858069e061c8aa92650365d496b37f5/packages/envd/spec/envd.yaml), `main.go`, `internal/api/auth.go`, `internal/permissions/{authenticate,keepalive}.go`, `internal/services/process/{start,connect,service}.go`, `internal/services/process/handler/handler.go`, `internal/services/filesystem/{dir,move,remove}.go`, `internal/api/{upload,download}.go`; `packages/shared/pkg/keys/sha256.go`
 - E3 `e2b-dev/infra` @ `1c7f6c9`: [`README.md`](https://github.com/e2b-dev/infra/blob/1c7f6c944858069e061c8aa92650365d496b37f5/README.md), [`docs/ARCHITECTURE.md`](https://github.com/e2b-dev/infra/blob/1c7f6c944858069e061c8aa92650365d496b37f5/docs/ARCHITECTURE.md)
@@ -570,6 +588,7 @@ Fetched or cloned 2026-10-13.
 - E6 `e2b-dev/E2B` @ `62a17df` (= pip and npm `e2b` 2.56.0): `packages/python-sdk/e2b/{connection_config.py, sandbox_domains.py, api/__init__.py, envd/{client_shared.py, client_async/__init__.py, utils.py, versions.py}, sandbox_async/{main.py, commands/command.py, commands/pty.py, filesystem/filesystem.py}, sandbox/filesystem/filesystem.py}`; `packages/js-sdk/src/{sandbox/index.ts, connectionConfig.ts, envd/versions.ts}`; pip wheels 2.29.5, 2.44.0, 2.52.1, 2.53.1, 2.55.1, 2.56.0 (`e2b/sandbox_async/sandbox_api.py`)
 
 **CubeSandbox** (`TencentCloud/CubeSandbox` @ `8d3d991`)
+
 - C1 [`README.md`](https://github.com/TencentCloud/CubeSandbox/blob/8d3d9914dd9d09a9de37f93c4dac703d090fc0a5/README.md)
 - C2 [`docs/architecture/overview.md`](https://github.com/TencentCloud/CubeSandbox/blob/8d3d9914dd9d09a9de37f93c4dac703d090fc0a5/docs/architecture/overview.md), `docs/architecture/network.md`
 - C3 `hypervisor/Cargo.toml` (`name = "cube-hypervisor"`, `version = "28.0.0"`), `hypervisor/README.md`, `hypervisor/CREDITS.md`
@@ -584,6 +603,7 @@ Fetched or cloned 2026-10-13.
 - C12 `docs/guide/kubernetes/architecture.md`
 
 **Google Cloud**
+
 - G1 [About nested virtualization (Compute Engine)](https://docs.cloud.google.com/compute/docs/instances/nested-virtualization/overview)
 - G2 [Use nested VMs with GKE clusters](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/nested-virtualization)
 - G3 [Bare metal instances](https://docs.cloud.google.com/compute/docs/instances/bare-metal-instances)
@@ -591,6 +611,7 @@ Fetched or cloned 2026-10-13.
 - G5 [gcloud-compute.com: c3-standard-192-metal](https://gcloud-compute.com/c3-standard-192-metal.html) (secondary)
 
 **Hangar**
+
 - H1 `bench/results/2026-10-13-perf-docker-ab-after.json`
 - H2 `docs/gke.md` §4, `docs/local-microvms.md`, `deploy/terraform/gke/variables.tf`
 - Spec 0012 (PR #54): §4.1, §4.3, items 8 and 15, sources S40–S43

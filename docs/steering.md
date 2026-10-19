@@ -21,6 +21,7 @@ hangar session interrupt api-fix "stop; write the failing test first"
 ## Steer
 
 The message is added to the running turn:
+
 - **Claude Code** reads it with the next tool result.
 - **Codex** gets it with `turn/steer`.
 
@@ -35,6 +36,7 @@ The agent keeps the work it has done and adjusts. Each steer is recorded on the 
 An interrupt always stops the turn. If the driver doesn't confirm it (no answer in time, or an answer it didn't sign), hangar kills the run instead, as it does for a one-shot turn.
 
 On a job, an interrupt is a person taking over, not a failure:
+
 - **With a message**, the job carries on with it: in the same turn when the turn is live, else as the job's next turn (a follow-up).
 - **Without one**, the job pauses in `needs_input`, with the question "Interrupted by … Follow up with what the agent should do instead, or cancel the job." Nothing is verified or delivered. Answer it like any question (`follow_up_job`, `/hangar …` on GitHub, or the MCP elicitation): the agent continues the same conversation. Cancel the job to end it.
 
@@ -57,6 +59,7 @@ The policy is set per session (`approvals` on `new_session`, `--approvals`), per
 ### Answering from an MCP client
 
 A client that supports elicitation is asked directly:
+
 - **`wait_for_turn`** returns early when an approval is pending. For 2026-07-28 clients this is an `input_required` result with a form (`decision`: allow | deny | allow_always, and an optional `message`). On handshake-era sessions it is an `elicitation/create` request. Once you answer, it keeps waiting. The result's `approval` says what happened: `answered`, `declined`, `cancelled` or `stale`.
 - **Tasks** turn `input_required` with the same form, under keys like `approve-ap-3f9c0a1b2c4d`; answer with `tasks/update`.
 
@@ -92,6 +95,7 @@ A steer is not always the agent's fault. The person may have changed the task, o
 | `unclassified` | nobody said (the default for everything else, including steers and interrupts sent over REST or MCP) |
 
 Say which:
+
 - **Slack:** click *Correction*, *Redirect* or *New info* under hangar's "Continuing…" reply to your thread message. Only the person who sent the reply can classify it; anyone else's click gets a private refusal ([slack.md](slack.md#classifying-a-reply)).
 - **Slack and Jira:** start the reply with `fix:` (or `correction:`), `redirect:` or `info:`. It is classified on arrival and the prefix is stripped from what the agent gets.
 - **Jira:** `/hangar class correction|redirect|info` classifies your last unclassified follow-up on the issue ([intake.md](intake.md#talking-to-the-job-from-the-issue)).
@@ -144,7 +148,7 @@ and writes a `{"type": "hangar.tree", "tool_use_id" | "phase": "start" | "end", 
 After a tool, the line is written only when the tree changed since the last one, so reads and commands that change
 nothing leave no line. The event parser turns each into a `progress` event with action `tree`, and the trace export
 into `hangar.git.tree` on the tool call and `hangar.git.tree.start` / `.end` on the turn
-([traces.md](api/traces.md#tool-call)).
+([traces.md](api/traces.md#toolcall)).
 
 - **How.** `git add -A` and `git write-tree` (which honour `.gitignore`), with a git directory, a scratch index (seeded
   once from the repo's, so each hash rehashes only what changed) and an object store of the driver's own in
@@ -181,6 +185,7 @@ The driver holds the run's key and answers for whoever approves. In a single use
 - **The dashboard's "Watch the agent" is a read-only view** of the run's tmux session.
 
 What the agent can't do then (`tests/test_e2e_isolation_docker.py` checks each from inside a real sandbox while a turn waits on an approval):
+
 - read a run's key or list its control directory;
 - write a command, the driver, the turn's script or its exports;
 - signal the driver, trace it (`ptrace`), or read its environment or memory;
@@ -188,17 +193,20 @@ What the agent can't do then (`tests/test_e2e_isolation_docker.py` checks each f
 - have a program it planted on its `PATH` run as root or as `hangar`.
 
 `tests/test_e2e_harden_docker.py` checks these in a real sandbox:
+
 - **Gain privileges through a setuid program.** The harness, and everything it starts (its tools, the verify gate, a one-shot run), runs with `no_new_privs`. A setuid-root `id` stays the agent's uid. A `NOPASSWD` sudo rule added behind the setup's back is refused with "the no new privileges flag is set". Tools that don't need sudo work as before (checked: `git`, `python3 -m venv`).
 - **Fake what hangar reads.** In the test the agent points its links at a log and an exit file of its own, and writes a forged "approved" line into the run log through the harness. Hangar still sees the turn running and the approval pending.
 - **Change hangar's harness settings for the next turn, or turn off the Stop hook.** See [hangar-owned harness settings](#hangar-owned-harness-settings).
 
 **How it starts.**
+
 - Root starts the turn's tmux through `setpriv` as `hangar`, with `CAP_SETUID`, `CAP_SETGID` and `CAP_KILL` in its ambient set. The driver needs the first two to start the harness as the agent, and the third to stop it.
 - Commands hangar runs as root or as `hangar` find programs through a fixed system `PATH`. The image's `PATH` starts with directories the agent owns (`~/.local/bin`), and Docker resolves an exec's command through it: a `timeout` planted there ran as root. This applied to the Docker provider's own root `mkdir` before this change too.
 - The harness's `setpriv` clears every capability. A uid change between two non-root users keeps capabilities unless they are dropped: without that step the agent would keep `CAP_SETUID` and could become `hangar`.
 - The mechanism was checked under runc (Docker 29.8) and under gVisor (`runsc` release-20260928, `runsc do`), with the same results. Kata runs a regular Linux guest kernel, so the semantics are runc's (not run here: no `/dev/kvm`).
 
 **Where it applies.** The split needs Docker (runc, gVisor or Kata runtimes), whose exec picks the uid, and an agent that can't become root. Hangar sets it up when a sandbox's first turn starts:
+
 - it adds the user with `useradd --system`;
 - it checks for `setpriv` (util-linux), `tmux` and `bash`;
 - it checks that the agent can't `sudo`, asking again under a terminal (`script`) when sudo wants one (`Defaults requiretty`: the agent can get a terminal whenever it likes);
@@ -208,6 +216,7 @@ What the agent can't do then (`tests/test_e2e_isolation_docker.py` checks each f
 The answer is cached in `sb.info.isolation` with a version (`v`). A sandbox set up before the checks changed, for example before the `requiretty` check, is probed again at its next turn.
 
 Nothing is built into images, so existing environments get the split without a rebuild. Everywhere else turns run single-user, as before, and `sb.info.isolation.why` says why:
+
 - **environments with `sudo: true`.** The agent is root whenever it likes, so a second user would protect nothing. `sudo` is `false` by default (#124), so default environments get the split. A job's Docker sandbox under `HANGAR_INTAKE_POSTURE=enforce` runs with `no-new-privileges`, so sudo fails there even where the image has it. The split execs as each user with `docker exec --user`, with no setuid binary, so it keeps working there.
 - **Kubernetes.** GKE Sandbox's policy runs each pod as one non-root user with no capabilities and no privilege escalation. No process in the pod can switch users, and a second container wouldn't share the agent's filesystem.
 - **E2B.** Its envd can run commands as another user, but this isn't wired up.
@@ -218,6 +227,7 @@ An `ask` or `deny-risky` turn in a single-user sandbox carries a warning on the 
 `required` covers `deny-risky` as well as `ask`. Its rules answer the harness's prompts, so an agent that can switch the prompts off, or answer for the driver, gets past them just as it would get past a person. `auto` turns have no approvals to protect and run either way.
 
 **What the split doesn't cover.**
+
 - **The harness is a process of the agent's uid.** Docker leaves same-uid `ptrace` to the kernel's Yama setting, and this repo's Docker hosts have no Yama at all. Where the kernel allows it, code running as the agent can change the running harness in memory. That code can be code you allowed in this turn, or a process it left running into a later turn. Changed this way, the harness can skip prompts or print anything into the run log. Hangar's own state (approvals, exit status, answers) doesn't come from the harness. Tokens and cost read from the log can still be faked, and so can budget stops. Closing this needs the harness to run non-dumpable, or a ptrace policy for the sandbox. That is a follow-up.
 - **Commands hangar runs as the agent outside a turn don't get `no_new_privs`** (`hangar sb exec`, hangar-envd, including [streamed commands and background processes](streaming.md)). A setuid program in the image that grants root without a password still undoes the split from there. That is why the setup refuses an agent with sudo. Images ship no other such program by default (root's password is locked).
 - **`auto` turns start the harness as before:** the agent's binary on its `PATH`, its environment and its settings. There is nothing to approve, so the only control there is the job's verify gate, which stays advisory ([jobs §7](jobs.md#7-an-agent-loop-that-finishes-the-job)). Hangar's own check after the turn decides delivery.
@@ -226,6 +236,7 @@ An `ask` or `deny-risky` turn in a single-user sandbox carries a warning on the 
 ## Hangar-owned harness settings
 
 The split keeps the driver, its key and your answers out of the agent's reach. The harness itself used to start from what the agent owns:
+
 - its binary, found through the agent's `PATH`;
 - its environment, from `~/.hangar/env`;
 - its settings, from `~/.claude`, the repository's `.claude/` and `~/.codex`.
@@ -244,6 +255,7 @@ So code you allowed could set up a later turn so that it never asks. It could ad
   - `approvalsReviewer: "user"` on the thread, next to `approvalPolicy`. An `approvals_reviewer = "auto_review"` in the agent's config doesn't route the turn's approvals elsewhere.
 
 **What still applies, and what doesn't.**
+
 - **Still applied:** the environment's settings, which are its allowed tools, permission rules and hooks; its MCP servers; its instructions; its seed plugins (below); and the repository's CLAUDE.md.
 - **Not loaded in these turns:** the repository's `.claude/settings.json` and `.claude/settings.local.json`, and skills. The agent can write all of them. A skill's `allowed-tools` is a permission rule, so a skill could pre-approve calls. Put what should apply in the environment's `agent_config.files`, and skills it should keep in a plugin in its seed.
 - **Plugins load only from the environment's read-only seed** ([harnesses.md](harnesses.md#plugins)). Claude Code otherwise finds an enabled plugin through `~/.claude/plugins` (`installed_plugins.json`, `known_marketplaces.json`), which the agent can write. Verified with 2.1.296: a plugin whose `PreToolUse` hook allows every call let the call through. So hangar's `--settings` enable exactly the plugins the environment declares under `plugins:`, which the image carries root's under `/opt/hangar/claude-seed`, and `CLAUDE_CODE_PLUGIN_CACHE_DIR` points at a new, unguessable directory each turn, so `~/.claude/plugins` is never read and nothing the agent left behind is in it. A seed marketplace also outranks a same-named one the agent registers. `enabledPlugins` entries for anything else, and `extraKnownMarketplaces`, are dropped from the environment's settings, and the turn says so.
@@ -255,6 +267,7 @@ So code you allowed could set up a later turn so that it never asks. It could ad
 **Where hangar can't own them, the turn says so.** This happens when the harness isn't in a prefix the agent can't change, for example a prebuilt `image:` with the CLI in `~/.local/bin`. It also happens when the managed settings are writable, or when the sandbox was set up before this change: a new sandbox fixes that, so suspend and resume the session. The turn carries a warning, or fails under `HANGAR_UID_SPLIT=required`.
 
 **What stays open.**
+
 - **Codex command rules.** Codex loads `.rules` files from `~/.codex/rules` and from the repository's `.codex/rules`, even for an untrusted project. A `prefix_rule(..., decision="allow")` lets a command run without asking, and codex 0.162 has no switch for the app server to turn rules off. `codex exec` has `--ignore-rules`. Every hardened Codex turn carries a warning saying so. `tests/test_harden_real_clis.py::test_codex_rules_still_apply` will fail once Codex gains a switch.
 - **The rest of the agent's Codex config still loads**, from `~/.codex/config.toml` and a trusted project's `.codex/config.toml`. That covers the model provider and features other than hooks. The approval policy, reviewer and sandbox are the thread's.
 - **Codex MCP servers.** They are part of that config too. Verified with 0.162.1: a server the agent adds with `default_tools_approval_mode = "approve"` runs its tool without asking (`test_codex_mcp_servers_the_agent_adds_still_apply`). Without that key, Codex asks through an MCP elicitation, which the driver declines, so the tool doesn't run. The Codex warning names this too. Hangar can't pass the environment's servers on the command line instead: they carry its secrets.
