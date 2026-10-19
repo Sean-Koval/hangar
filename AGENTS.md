@@ -14,3 +14,9 @@
 
 - The site is `mkdocs.yml` and `docs/`, built with Zensical as `.github/workflows/docs.yml` does. Build it locally with `pip install zensical==0.0.71`, then `zensical build --strict` (into `site/`, which is not committed) or `zensical serve` (http://localhost:8000, rebuilt on save). `--strict` fails on a broken link or anchor, as CI does.
 - `tests/test_front_page.py` keeps README.md and `docs/index.md` honest: the security posture section in both, and one features table with a status per row.
+
+## Tracking
+
+- Work is tracked in Jira project KAN (<https://seanmkoval.atlassian.net>). GitHub Projects is retired; GitHub Issues are for outside reports only.
+- Work tied to a ticket carries its key, so the GitHub for Jira app links it: the branch starts with it (`KAN-35-apply-atomic`), the PR title starts with it (`KAN-35: make hangar apply all or nothing`) and the PR body has a `Jira: KAN-35` line. Commits may mention it. Work without a ticket (typo fixes, outside contributions) needs no key.
+- Lanes: only `lane:agent` tickets (job-sized: one repo or one change-set profile, acceptance criteria, a verify command) start a hangar job, when moved to "Ready for agent". `lane:pair` is Sean with Claude Code; `lane:human` is Sean only.
