@@ -82,6 +82,7 @@ An answer goes to the agent at most once: if the question was already answered (
 ### Tool approvals and steering
 
 When a session or its environment uses `approvals: ask`, the agent waits for a person before it runs a command or edits a file. `wait_for_turn` puts each such request to you in the same way as a question:
+
 - an `input_required` round for 2026-07-28 clients, or `elicitation/create` for earlier ones;
 - the form has `decision` (`allow`, `deny` or `allow_always`) and an optional `message` for the agent;
 - the result's `approval` says what happened.

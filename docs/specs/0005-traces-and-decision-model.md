@@ -561,6 +561,7 @@ Rules the tool enforces:
 Decision tasks get the same discipline: their evaluation is 8.3, with run-level splits and intervals.
 
 **External tools, for the "other services" part of the brief.** None is a dependency.
+
 - An OTLP-compatible backend, if the owner runs one, receives forwarded telemetry (5.3).
 - Notifier hooks from 0002 carry `needs_human` and `stuck` alerts.
 - Existing LLM-eval or tracing products (Langfuse, Phoenix and similar) accept OTLP, to my understanding; unverified (OQ 11). The offline eval harness in 8.3 is plain Python and runs without them.

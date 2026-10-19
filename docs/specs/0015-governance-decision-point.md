@@ -3,6 +3,8 @@
 Status: partly built (2026-10-17): the contract, the client skeleton and contract tests (spike #171, #208); the workspace side is proposed. · Date: 2026-10-16 · Builds on: 0002 (landing), 0011 (triggers and approvals), 0014 (manifest digests), #121 (one approval rule), #123 (intake posture), #129/#130 (taint and its gates) · Counterparts: [Tower](https://github.com/Sean-Koval/tower) #13 (decision API), #14 (passports), #16 (correlation), #17 (webhooks), #18 (receipts), #19 (approver ≠ requester), #20 (reconciliation), #22 (per-run stop)
 
 > Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins.
+>
+> The governed workspace this spec names is [Tower](https://github.com/Sean-Koval/tower), the product's name since October 2026; the spec keeps the name it was written with.
 
 ## 1. The split
 
