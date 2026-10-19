@@ -91,8 +91,12 @@ hangar arms auto-merge; **GitHub decides when it merges**. These settings on the
 
 ## 4. How a PR lands
 
-<figure class="af-figure">
+<figure class="af-figure af-figure--wide">
 --8<-- "landing-states.svg"
+<figcaption>How a PR lands: opened, open, approved, armed, merged; a push, changes requested, a dismissed approval or a new agent turn disarms it</figcaption>
+</figure>
+<figure class="af-figure af-figure--stacked">
+--8<-- "landing-states-stacked.svg"
 <figcaption>How a PR lands: opened, open, approved, armed, merged; a push, changes requested, a dismissed approval or a new agent turn disarms it</figcaption>
 </figure>
 
