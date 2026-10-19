@@ -6,17 +6,19 @@ from CD, the way it applies Kubernetes manifests. Each YAML document names its s
     schema: hangar.environment/v1          # an environment spec (docs/environments.md), `name` and the rest
     schema: hangar.credential/v1           # a credential whose value is a mounted file, never a value
     schema: hangar.repo-policy/v1          # a repo's policy (docs/repo-policy.md), `repo` and its fields
+    schema: hangar.changeset-profile/v1    # a change-set profile (docs/changesets.md), `name` and the rest
 
 Applying is declarative and goes through the REST API with the caller's token (an admin's): what a file declares is
 what the object becomes, so a policy field the file leaves out is cleared. It is idempotent: an object that already
 matches is left alone and reported unchanged. `--check` changes nothing and exits 1 on drift (anything apply would
-create or change, and repo policies no file declares), for a scheduled drift job; `--prune` removes those policies.
+create or change, and repo policies or change-set profiles no file declares), for a scheduled drift job; `--prune`
+removes those.
 
 Credential documents carry `source: file:/var/run/hangar-secrets/<name>` (vault.py): hangar stores the reference
 and reads the file when the credential is used. Their values never pass through this command. The API returns no
 value or source, so a credential counts as unchanged when its metadata matches.
 
-Other tools add schemas to HANDLERS (a change-set profile, for one).
+Other tools add schemas to HANDLERS.
 """
 
 from __future__ import annotations
@@ -107,6 +109,7 @@ def load(paths: Iterable[Path]) -> list[Doc]:
 class Handler:
     kind = ""
     order = 0  # applied in this order: environments, then credentials, then the policies that name them
+    prunable = False  # --check reports live objects no file declares; --prune removes them
 
     def name(self, body: dict[str, Any], origin: str) -> str:
         raise NotImplementedError
@@ -202,7 +205,7 @@ class Credentials(Handler):
 
 
 class RepoPolicies(Handler):
-    kind, order = "repo", 2
+    kind, order, prunable = "repo", 2, True
 
     def name(self, body, origin):
         from hangar.repopolicy import FIELDS, repo_key
@@ -256,10 +259,55 @@ class RepoPolicies(Handler):
         return out
 
 
+class ChangesetProfiles(Handler):
+    """--- change sets: `hangar.changeset-profile/v1` (changesets.py). Compared by content (the profile's digest, and
+    field by field for the report); applied after environments, whose names a profile uses."""
+
+    kind, order, prunable = "changeset", 3, True
+    SCHEMA = "hangar.changeset-profile/v1"
+
+    @staticmethod
+    def normal(body: dict[str, Any], origin: str = "") -> dict[str, Any]:
+        from hangar.changesets import ChangeSetError, parse_profile
+
+        try:
+            p = parse_profile({**body, "schema": ChangesetProfiles.SCHEMA})
+        except ChangeSetError as e:
+            raise ApplyError(f"{origin}: change-set profile: {e}") from None
+        return p.model_dump(mode="json", by_alias=True, exclude={"updated_at", "updated_by"})
+
+    def name(self, body, origin):
+        return self.normal(body, origin)["name"]
+
+    def plan(self, call, docs, prune):
+        live = {p["name"]: p for p in call("GET", "/api/changesets/profiles")}
+        out = []
+        for d in docs:
+            want = self.normal(d.body, d.origin)
+            raw = live.pop(d.name, None)
+            have = {k: v for k, v in raw.items() if k not in ("updated_at", "updated_by", "digest")} if raw else None
+            if have == want:
+                out.append(Change(self.kind, d.name, "unchanged", origin=d.origin))
+                continue
+
+            def put(want=want):
+                call("PUT", "/api/changesets/profiles", json=want)
+
+            out.append(Change(self.kind, d.name, "change" if have else "create",
+                              _diff(have or {}, want, sorted({*want, *(have or {})})), d.origin, put))
+        for name in sorted(live):  # profiles no file declares
+            def delete(name=name):
+                call("DELETE", f"/api/changesets/profiles/{name}")
+
+            out.append(Change(self.kind, name, "delete" if prune else "live-only", apply=delete if prune else None))
+        return out
+
+
 HANDLERS: dict[str, Handler] = {
     "hangar.environment/v1": Environments(),
     "hangar.credential/v1": Credentials(),
     "hangar.repo-policy/v1": RepoPolicies(),
+    ChangesetProfiles.SCHEMA: ChangesetProfiles(),
 }
 
 
@@ -270,7 +318,7 @@ def plan(call: Call, docs: list[Doc], prune: bool = False) -> list[Change]:
     for d in docs:
         by_schema.setdefault(d.schema, []).append(d)
     for schema, h in sorted(HANDLERS.items(), key=lambda x: x[1].order):
-        if schema in by_schema or (h.kind == "repo" and prune):
+        if schema in by_schema or (h.prunable and prune):
             out += h.plan(call, by_schema.get(schema, []), prune)
     return out
 
@@ -289,10 +337,12 @@ def apply(
                                     "Repeatable."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would change; change nothing."),
     check: bool = typer.Option(False, "--check", help="Report drift and exit 1 if there is any; change nothing."),
-    prune: bool = typer.Option(False, "--prune", help="Remove repo policies no file declares."),
+    prune: bool = typer.Option(False, "--prune", help="Remove repo policies and change-set profiles no file "
+                               "declares."),
     as_json: bool = typer.Option(False, "--json"),
 ):
-    """Apply environments, credential references and repo policies from files; what's live and matches is left alone.
+    """Apply environments, credential references, repo policies and change-set profiles from files; what's live and
+    matches is left alone.
 
     Example:  hangar apply -f policy/             # in CD, with an admin token (HANGAR_URL, HANGAR_TOKEN)
               hangar apply -f policy/ --check     # drift: exit 1 when hangar differs from the files"""
