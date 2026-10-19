@@ -58,7 +58,7 @@ Non-goals:
 
 Orchestrator over MCP (e.g. a Claude chat):
 
-- I call `task_create(goal, environment, repo)`. Hangar plans it, shows me the plan, and I approve it. I get one `task_id` and disconnect.
+- I call `task_create(goal, environment, repo)`. hangar plans it, shows me the plan, and I approve it. I get one `task_id` and disconnect.
 - I return later, call `task_status(wait_seconds=60)`, and see "3 of 5 sub-tasks done, 1 nudged for looping, 1 waiting on a human decision".
 - I pass my own sub-task list and skip the planner.
 - I call `task_intervene` to restart one sub-task with a stronger model. I do not hand-manage sandboxes.
@@ -357,13 +357,13 @@ The alias `--model <alias>` is confirmed in `claude --help` 2.1.296 (aliases lik
 - Sequential retry (§5.4) always changes something: tier, harness, or a handoff prompt with the failure facts. Retrying the same thing at the same tier is not offered. Single runs vary (Jarmak), but identical retries burn the same limit.
 - The `fanout_id` is stored on the sub-task. The winner's `run_id` is `winner_run_id`; losers are cancelled once the winner is picked, and their sandboxes destroyed unless the task says keep.
 
-**Placement onto nodes.** Hangar does not schedule pods. Kubernetes does. Hangar's levers are the resource requests it writes, the warm-pool size, and the node-pool settings in §5.8.
+**Placement onto nodes.** hangar does not schedule pods. Kubernetes does. hangar's levers are the resource requests it writes, the warm-pool size, and the node-pool settings in §5.8.
 
 - *Right-sized requests* (§5.8) make bin-packing work. `n2-standard-8` is 8 vCPU / 32 GB, but allocatable is lower (GKE reserves for system and daemonsets). I did not measure it; M0 records `kubectl describe node`. With 2 CPU / 4 GiB sandboxes, expect about 6–7 per node.
 - The autoscaler `optimize-utilization` profile makes the default scheduler favor packing and lets underused nodes drain faster. §10 Q8 asks whether it applies to this cluster and node pool.
 - Anti-affinity is *not* used: spreading sandboxes across nodes would block scale-down.
 - Docker: one host, no packing problem. `max_sandboxes` and host cores are the limit. The scheduler's `slots_free` also checks `docker info` NCPU against the sum of `nano_cpus` of running sandboxes and holds new runs when it exceeds 100% (a single laptop thrashes otherwise).
-- E2B: placement is E2B's. Hangar's limit is the account's concurrent-sandbox limit (unknown; §10 Q13).
+- E2B: placement is E2B's. hangar's limit is the account's concurrent-sandbox limit (unknown; §10 Q13).
 
 ### 5.6 MCP tools and REST
 
@@ -457,7 +457,7 @@ REST (bearer or UI ticket, same as `app.py`):
 
 - *Minutes and tokens are the primary caps.* They exist for every harness that 0001's parser supports and make sense on a subscription.
 - `usd_est` uses the harness's reported `cost_usd` (Claude's `total_cost_usd`). On a subscription it is an estimate (0001 non-goal). It is shown labelled "API-equivalent".
-- `--max-budget-usd` exists in `claude --help` 2.1.296 ("only works with --print"), but I did not verify how it behaves with a subscription token. Hangar does not rely on it. The in-control-plane guard is the cap. It may be passed as a second line of defence for API-key credentials (§10 Q4).
+- `--max-budget-usd` exists in `claude --help` 2.1.296 ("only works with --print"), but I did not verify how it behaves with a subscription token. hangar does not rely on it. The in-control-plane guard is the cap. It may be passed as a second line of defence for API-key credentials (§10 Q4).
 - **Cost per task** = `agent_minutes`, `tokens`, `usd_est` (if any), **sandbox-seconds** × a configured `HANGAR_NODE_USD_PER_HOUR_PER_VCPU` (unset by default; I do not assume prices), plus the decision-call cost reported by 0005. All rolled up from `usage_ledger`.
 
 ### 5.8 Sandbox performance
@@ -622,7 +622,7 @@ Rules on hangar's side:
 - A `Decision` with `choice` not in `options`, or `confidence` under `HANGAR_DECISION_MIN_CONFIDENCE` (default 0.7), opens an escalation instead. No `classify` available opens an escalation, with the `default` option pre-selected for one-click approval.
 - `record_outcome` is called when the run ends, so 0005 can measure whether decisions were good. That data is what lets autonomy widen (§7).
 - Events emitted to the trace store: `task.created`, `plan.linted`, `subtask.dispatched`, `signal`, `action`, `decision`, `escalation.opened/resolved`, `checkpoint`, `budget`. `trace_id = task_id`, so one trace covers planner run, sub-task runs and recovery.
-- Hangar's own `task_events` do not depend on 0005. If the trace store is down, `emit` is best-effort and the supervisor continues.
+- hangar's own `task_events` do not depend on 0005. If the trace store is down, `emit` is best-effort and the supervisor continues.
 
 ### 5.10 Provider differences
 

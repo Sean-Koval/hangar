@@ -6,7 +6,7 @@ Work reaches hangar where the team already tracks it. The doors:
 - **A GitHub label or Projects column**, for repo-local chores: the `hangar` label on an issue, or the *Ready for agent* column on a board.
 - **`@hangar` in Slack**, for unplanned work: kept as it is, and not extended beyond `@hangar adr` ([slack.md](slack.md)).
 
-Write tickets from the [agent ticket template](#agent-tickets). Hangar keeps the ticket in step as the job runs:
+Write tickets from the [agent ticket template](#agent-tickets). hangar keeps the ticket in step as the job runs:
 
 | Stage | Jira | GitHub Projects |
 | --- | --- | --- |
@@ -20,7 +20,7 @@ GitHub issues ([jobs.md §4](jobs.md#4-trigger-from-github)) and Slack ([slack.m
 
 ## Who a job belongs to, and who is trusted
 
-Every front door uses one rule ([team.md](team.md#who-is-trusted) has it in full). An account in Jira or GitHub is a hangar person only when an admin has linked it to one (`hangar person link dana jira <account id>`, `hangar person link dana github <login>`, which is stored as the account's numeric GitHub id). Hangar asks `people.resolve_external` for every sender, by an id that doesn't change hands: the Atlassian account id (Data Center: the user key) and the GitHub user id (`sender.id`), never a GitHub login.
+Every front door uses one rule ([team.md](team.md#who-is-trusted) has it in full). An account in Jira or GitHub is a hangar person only when an admin has linked it to one (`hangar person link dana jira <account id>`, `hangar person link dana github <login>`, which is stored as the account's numeric GitHub id). hangar asks `people.resolve_external` for every sender, by an id that doesn't change hands: the Atlassian account id (Data Center: the user key) and the GitHub user id (`sender.id`), never a GitHub login.
 
 - **A linked sender acts as their person, so they are trusted.** The job is theirs: it counts against their caps and budget, runs with their own credentials where they have them, and they see it in their own job list.
 - **Only the job's person continues it.** A person's job runs with their own login, so in Jira only that person's comment answers its question or continues it with `/hangar <message>`. Anyone else's, a linked teammate's included, is refused with a comment saying whose job it is (an admin uses `hangar job follow-up`). The same holds on GitHub issues, PRs and Slack threads.
@@ -115,8 +115,8 @@ A stage's status can't be the trigger status: hangar would move the issue back i
 
 The hidden token stands in for a signature, but it only proves the request came from someone who holds it. It isn't tied to the body, the body's `{{now}}` is whatever the sender writes, and anyone who can edit the rule can change its body, or its URL and with it where the header goes. So hangar checks the request against Jira itself:
 
-- **Only the issue key and timestamp are read.** Hangar reads the issue through the API. The job belongs to whoever the issue's history says moved it into the trigger status or gave it the trigger label (or its creator, when it was created that way); a `user` in the body is ignored.
-- **The issue must have just been moved.** That change must be at most `automation_max_transition_age_minutes` (10) old when the request arrives, allowing `max_age_minutes` of clock skew the other way. A rule fires right after the transition, so an older one means someone is replaying the token for an issue a teammate moved long ago. Hangar answers `200 {"ignored": "no recent transition"}`, audits `hook.automation.stale_transition` (the issue, who moved it and how long ago) and alerts the admins.
+- **Only the issue key and timestamp are read.** hangar reads the issue through the API. The job belongs to whoever the issue's history says moved it into the trigger status or gave it the trigger label (or its creator, when it was created that way); a `user` in the body is ignored.
+- **The issue must have just been moved.** That change must be at most `automation_max_transition_age_minutes` (10) old when the request arrives, allowing `max_age_minutes` of clock skew the other way. A rule fires right after the transition, so an older one means someone is replaying the token for an issue a teammate moved long ago. hangar answers `200 {"ignored": "no recent transition"}`, audits `hook.automation.stale_transition` (the issue, who moved it and how long ago) and alerts the admins.
 - **At most `automation_max_starts_per_issue_per_day` (3) jobs per issue a day** start this way. Each issue has its own count, so moving a whole sprint at once isn't held up. Refusals are audited as `hook.automation.capped`.
 - **The token only sends `hangar:automation` requests.** A token-authenticated body posing as a webhook event (`jira:issue_updated`, `comment_created`) is ignored, audited (`hook.automation.wrong_event`) and alerted.
 - **Alerts.** A stale transition, a wrong event or a wrong token raises an `alert` in the admins' [inbox](landing.md#7-the-inbox-what-needs-you) and, with the [Slack app](slack.md) configured, a DM to each admin with a linked Slack account. There is at most one alert an hour per issue (and one an hour for wrong tokens); every refusal is still audited.
@@ -134,17 +134,17 @@ The old token stops working at once. In the rule's **Send web request** action, 
 - **Answer a question:** any comment from the job's person while it waits on one (for a team job, from any linked teammate).
 - **Approve or reject:** `/hangar approve`, `/hangar reject`.
 - **Continue after it's done:** `/hangar <what to do next>`, from the job's person. It resumes the same session and branch.
-- **Say what a follow-up was** ([steering.md](steering.md#classifying-steers)): start it with `fix:` (a correction), `redirect:` (the task changed) or `info:` (something it didn't know), as in `/hangar fix: use the v2 client`; or afterwards comment `/hangar class correction`, `/hangar class redirect` or `/hangar class info` to classify your last unclassified one. Hangar's "Continuing…" comment lists these. An answer to the agent's question counts as new information unless you say otherwise.
+- **Say what a follow-up was** ([steering.md](steering.md#classifying-steers)): start it with `fix:` (a correction), `redirect:` (the task changed) or `info:` (something it didn't know), as in `/hangar fix: use the v2 client`; or afterwards comment `/hangar class correction`, `/hangar class redirect` or `/hangar class info` to classify your last unclassified one. hangar's "Continuing…" comment lists these. An answer to the agent's question counts as new information unless you say otherwise.
 - **Start one by hand:** `/hangar <instructions>` on an issue with no job.
 
-Hangar's own comments start with `[hangar]` and are never read as replies.
+hangar's own comments start with `[hangar]` and are never read as replies.
 
 ## Jira Data Center
 
 The same, with three differences:
 
 - `"deployment": "server"` and no `email`. `token_credential` holds a [personal access token](https://confluence.atlassian.com/enterprise/using-personal-access-tokens-1026032365.html), sent as `Authorization: Bearer`.
-- Hangar calls REST v2 and writes comments as wiki markup.
+- hangar calls REST v2 and writes comments as wiki markup.
 - Use a version whose webhook form has a **Secret** field: it sends the same `X-Hub-Signature: sha256=…`. Accounts are linked by user key, not accountId (`hangar person link dana jira JIRAUSER10100`); hangar reads who moved an issue from `?expand=changelog`.
 
 ## GitHub Projects
@@ -163,7 +163,7 @@ If hangar runs as a GitHub App, give the App the organization's **Projects: Read
 
 ### 2. The token
 
-Hangar reads the item and sets its status column with GitHub's GraphQL API, using the control plane's own token (`HANGAR_GITHUB_TOKEN_CREDENTIAL`). Give it access to the organization's projects: the `project` scope for a classic token, or **Projects: Read and write** on the organization for a fine-grained token or an App.
+hangar reads the item and sets its status column with GitHub's GraphQL API, using the control plane's own token (`HANGAR_GITHUB_TOKEN_CREDENTIAL`). Give it access to the organization's projects: the `project` scope for a classic token, or **Projects: Read and write** on the organization for a fine-grained token or an App.
 
 GitHub doesn't retry a failed delivery, so at each start hangar asks it to redeliver the `projects_v2_item` deliveries the organization webhook failed to deliver since the last start (up to the 3 days GitHub keeps them), as it does for the repository webhooks ([triggers.md](triggers.md#replays-and-limits)). That reads `GET /orgs/{org}/hooks` and the hook's deliveries and needs the organization's **Webhooks: Read and write** permission (classic tokens: `admin:org_hook`; listing an organization's webhooks also needs an organization owner's token). Without it hangar logs a warning and moves on; boards still work.
 
@@ -190,7 +190,7 @@ As the work moves to writing tickets an agent can finish, the ticket's shape is 
 - [`docs/templates/jira-agent-ticket.md`](https://github.com/Sean-Koval/hangar/blob/main/docs/templates/jira-agent-ticket.md): a Jira description template (paste it, or make it the project's description template);
 - [`docs/templates/github-issue-agent-task.yml`](https://github.com/Sean-Koval/hangar/blob/main/docs/templates/github-issue-agent-task.yml): a GitHub issue form (copy it to `.github/ISSUE_TEMPLATE/agent-task.yml`; it labels the issue `hangar`, so opening one starts a job).
 
-Both have *Goal*, *Acceptance criteria* (a checklist), *Verify command*, *Out of scope* and *Touches risk paths? (y/n)*. Hangar reads two of them by heading, for Jira, GitHub issues and GitHub Projects alike: Markdown headings, Jira wiki (`h2.`), Jira Cloud's editor (headings and action items), a GitHub issue form's output, or a bold line. Only the first 50 KB of a description is read.
+Both have *Goal*, *Acceptance criteria* (a checklist), *Verify command*, *Out of scope* and *Touches risk paths? (y/n)*. hangar reads two of them by heading, for Jira, GitHub issues and GitHub Projects alike: Markdown headings, Jira wiki (`h2.`), Jira Cloud's editor (headings and action items), a GitHub issue form's output, or a bold line. Only the first 50 KB of a description is read.
 
 - **Acceptance criteria** go to the agent as their own context file, `acceptance.md`, **fenced as untrusted**: anyone with Edit Issues can rewrite them, so they describe what done looks like and never override the task. Their count is the job's `intake.acceptance` label, for the weekly metrics.
 - **The verify command is a suggestion.** The agent is told it may run it in its turn. It becomes the job's `verify` only when it matches a glob in the repo policy's [`verify_allowed`](repo-policy.md) (`make test*`, `pytest tests/*`), which repo admins own; otherwise hangar's check stays the policy's or the environment's (`verify_source`). Even matched, it runs as the agent's user inside the sandbox.
@@ -208,7 +208,7 @@ Both have *Goal*, *Acceptance criteria* (a checklist), *Verify command*, *Out of
 
 ## Adding a tracker
 
-`src/hangar/intake.py` holds what every front door shares: `person_for` (who the sender is), `once` (commit after handle), `open_job` (one job per ticket), `submit` (approval for untrusted senders and refusals as answers) and `TRACKERS`, the write-back registry. A tracker sets the job label `intake.tracker` to its ticket reference and registers `TRACKERS[<scheme>] = update(svc, job, ticket, stage)`. Hangar calls it once per stage (`started`, `needs_input`, `delivered`, `failed`) whenever the job reports, whichever thread the conversation is in. `jira.py` and `ghprojects.py` are the two examples.
+`src/hangar/intake.py` holds what every front door shares: `person_for` (who the sender is), `once` (commit after handle), `open_job` (one job per ticket), `submit` (approval for untrusted senders and refusals as answers) and `TRACKERS`, the write-back registry. A tracker sets the job label `intake.tracker` to its ticket reference and registers `TRACKERS[<scheme>] = update(svc, job, ticket, stage)`. hangar calls it once per stage (`started`, `needs_input`, `delivered`, `failed`) whenever the job reports, whichever thread the conversation is in. `jira.py` and `ghprojects.py` are the two examples.
 
 **Shadows never write back** (#183). A repo policy's `shadow` samples real intake jobs for a shadow run of a candidate
 harness ([repo-policy.md](repo-policy.md#shadows)). A shadow is a `source: shadow` trial without `intake.tracker`,

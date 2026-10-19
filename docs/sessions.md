@@ -172,7 +172,7 @@ has no model gateway path (only Claude Code and Codex do).
 
 ## Prompt caching
 
-Every model call in a turn re-sends the whole conversation. The provider's prompt cache bills the unchanged prefix at a tenth of the input price, or a twentieth on Opus 5.5 and Sonnet 5.5. A cache entry lives for a fixed time after its last use, 5 minutes by default. Sessions idle for up to 30 minutes, and agents wait on people (`needs_input`, `ask` approvals). Returning to a 150k-token conversation on Opus 5.5 costs $0.03 while the cache is warm and $0.75 once it has expired ([spec 0012 §6.5](specs/0012-cutting-edge.md#65-prompt-caching-and-long-sessions)). Hangar does three things about this:
+Every model call in a turn re-sends the whole conversation. The provider's prompt cache bills the unchanged prefix at a tenth of the input price, or a twentieth on Opus 5.5 and Sonnet 5.5. A cache entry lives for a fixed time after its last use, 5 minutes by default. Sessions idle for up to 30 minutes, and agents wait on people (`needs_input`, `ask` approvals). Returning to a 150k-token conversation on Opus 5.5 costs $0.03 while the cache is warm and $0.75 once it has expired ([spec 0012 §6.5](specs/0012-cutting-edge.md#65-prompt-caching-and-long-sessions)). hangar does three things about this:
 
 1. it asks for the right TTL;
 2. it keeps one model per session;
@@ -182,7 +182,7 @@ What it saves shows up in usage ([activity.md](activity.md#prompt-cache)).
 
 ### TTL policy
 
-`cache: auto | 5m | 1h | off`. Hangar takes the first of these that is set:
+`cache: auto | 5m | 1h | off`. hangar takes the first of these that is set:
 
 1. the session's (`new_session(cache=…)`, `POST /api/sessions {"cache": "1h"}`);
 2. its environment's (`cache:` in the env spec);
@@ -251,7 +251,7 @@ Switching harness (`open_session(harness=…)`) is a handoff anyway, and takes t
 
 Best-of-N attempts, and forks started with a message, begin with the same prompt prefix. Anthropic serves a cache entry only once the first response that writes it has begun. Siblings that all start at once therefore each write the whole prefix.
 
-Hangar staggers them instead:
+hangar staggers them instead:
 
 - The siblings boot their sandboxes in parallel.
 - The first one to begin its turn goes ahead.
@@ -259,7 +259,7 @@ Hangar staggers them instead:
 - Each turn records how long it waited in `cache_wait_seconds`.
 - There is no waiting with `cache: off`, or after a control-plane restart (the groups live in memory).
 
-Claude Code's own fan-out holds for 5 s. Hangar's default is longer because the first sibling must start its CLI in a sandbox, and its response reaches hangar on the next poll.
+Claude Code's own fan-out holds for 5 s. hangar's default is longer because the first sibling must start its CLI in a sandbox, and its response reaches hangar on the next poll.
 
 Four Opus 5.5 attempts on a 100k-token prefix cost $2.00 when each writes it, and $0.56 when one writes and three read.
 
@@ -270,12 +270,12 @@ Best-of-N attempts all get the same prompt (the task, context and protocol); eac
 
 ### Keeping the cache warm: not done
 
-A session that waits on a person for over 55 minutes could refresh its 1-hour entry with a one-token request. A refresh is billed as a read: $0.03 for 150k tokens on Opus 5.5. Hangar doesn't do this, for two reasons:
+A session that waits on a person for over 55 minutes could refresh its 1-hour entry with a one-token request. A refresh is billed as a read: $0.03 for 150k tokens on Opus 5.5. hangar doesn't do this, for two reasons:
 
 - **It would miss the cache.** The refresh must match the CLI's own request byte for byte: system prompt, tool definitions, beta headers and cache breakpoints. Only the CLI can build that request. A request hangar built would write a new entry, and so cost a write.
 - **It needs the model credential in the control plane.** That credential belongs only in the sandbox (and should eventually leave the sandbox too; spec 0012 item 7).
 
-pi has warming built in (`cacheWarming`, `streaming` by default), but its `idle` mode needs a pi process that outlives the turn. Hangar's `pi -p` turns exit when they finish. Revisit when a CLI offers a refresh command, or when hangar keeps one long-lived CLI process per session.
+pi has warming built in (`cacheWarming`, `streaming` by default), but its `idle` mode needs a pi process that outlives the turn. hangar's `pi -p` turns exit when they finish. Revisit when a CLI offers a refresh command, or when hangar keeps one long-lived CLI process per session.
 
 ## Thawed from a harness lock
 

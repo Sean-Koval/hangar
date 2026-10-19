@@ -16,14 +16,14 @@ Every external claim carries a source tag such as [S12], resolved in §10. Claim
    - Warp Oz offers self-hosted environments [S26].
 
    Each vendor supplies a runner binary that dials out. It needs a machine with the repo's toolchain, and a provisioner to create one per session. That provisioner is exactly what hangar's environments, warm pools, gateway and egress policy already are. **Item 2 makes hangar the provisioner, starting with Claude Code's `spawn-runner` hook.** Engineers then get claude.ai, the mobile app, `--teleport` and auto-fix on hangar's sandboxes, without hangar rebuilding any of that UX.
-2. **Hangar's protocol surface is current; its gaps are in the agent loop.** Hangar already serves MCP 2026-07-28 with tasks and MRTR elicitation, and A2A 1.0 with 0.3 compatibility (docs/mcp.md, docs/a2a.md). That puts it ahead of most clients. What it lacks is what the hosted products do inside a session:
+2. **hangar's protocol surface is current; its gaps are in the agent loop.** hangar already serves MCP 2026-07-28 with tasks and MRTR elicitation, and A2A 1.0 with 0.3 compatibility (docs/mcp.md, docs/a2a.md). That puts it ahead of most clients. What it lacks is what the hosted products do inside a session:
    - steering a running turn;
    - environments that rebuild themselves;
    - a verify gate inside the agent's loop;
    - a PR loop that fixes CI failures and review comments;
    - egress levels, and credentials injected from outside the sandbox;
    - cache-aware session handling.
-3. **Prompt caching is the cheapest cost and latency lever, and today hangar works against it.** Hangar suspends idle sessions after 30 minutes, and agents pause on `needs_input` for human-scale gaps. Claude Code with an API key uses a 5-minute TTL [S6], and GPT-5.6+ caches live for 30 minutes [S15]. On Opus 5.5, re-reading a 150k-token conversation after the cache expires costs $0.75; reading it from cache costs $0.03 [S11]. Item 1 sets a TTL policy, never changes model mid-session, and staggers best-of-N forks.
+3. **Prompt caching is the cheapest cost and latency lever, and today hangar works against it.** hangar suspends idle sessions after 30 minutes, and agents pause on `needs_input` for human-scale gaps. Claude Code with an API key uses a 5-minute TTL [S6], and GPT-5.6+ caches live for 30 minutes [S15]. On Opus 5.5, re-reading a 150k-token conversation after the cache expires costs $0.75; reading it from cache costs $0.03 [S11]. Item 1 sets a TTL policy, never changes model mid-session, and staggers best-of-N forks.
 4. **Memory fork is now cheap on the stack hangar already uses.** In a local test, a gVisor checkpoint restored into two independent sandboxes from one image. A 256 MB process restored in 0.3–1.25 s, against a 1.4–2.2 s cold start (*measured*, §4.3). GKE Pod Snapshots went GA in May 2026 [S41]. The docs show a snapshot restored into a *new* Pod named by annotation [S40], which may allow forks on GKE, not just pause and resume. Item 8 verifies this live before anything is built on it.
 5. **Providers.** Keep Docker, GKE and E2B. Add the vendor-runner pools from decision 1. Don't add Daytona, Modal, Vercel, Cloudflare or Morph as providers now: each is an E2B-like hosted VM platform, and hangar's value is the owner's own cluster (§4.2). Revisit this if an owner asks for one, through the OpenAI Agents SDK's sandbox interface (item 14), which already speaks to seven of them [S17].
 
@@ -55,13 +55,13 @@ Every external claim carries a source tag such as [S12], resolved in §10. Claim
 
 ### 3.2 What hangar lacks, in priority order
 
-1. **Hosting other vendors' runners.** Claude, Cursor, Devin, Ona and Warp all ask customers for a provisioner. Hangar is one but doesn't speak their hooks (item 2).
-2. **Steering a running turn.** Claude queues messages, Codex has `turn/steer` [S14], Cursor allows follow-ups. Hangar refuses a send while the session is busy (item 3).
-3. **Self-maintaining environments.** Every product rebuilds its cached environment by itself: Claude every ~7 days or on change, Devin every ~24 h, Codex caches for 12 h and runs a maintenance script. Hangar needs `hangar env publish`, and has no maintenance step on claim (item 4).
-4. **PR loop.** Claude's auto-fix reacts to CI failures and review comments. Hangar acts only on `/hangar` comments (item 6).
+1. **Hosting other vendors' runners.** Claude, Cursor, Devin, Ona and Warp all ask customers for a provisioner. hangar is one but doesn't speak their hooks (item 2).
+2. **Steering a running turn.** Claude queues messages, Codex has `turn/steer` [S14], Cursor allows follow-ups. hangar refuses a send while the session is busy (item 3).
+3. **Self-maintaining environments.** Every product rebuilds its cached environment by itself: Claude every ~7 days or on change, Devin every ~24 h, Codex caches for 12 h and runs a maintenance script. hangar needs `hangar env publish`, and has no maintenance step on claim (item 4).
+4. **PR loop.** Claude's auto-fix reacts to CI failures and review comments. hangar acts only on `/hangar` comments (item 6).
 5. **Network levels and credentials kept outside the sandbox** for everything except git (item 7).
-6. **Verification inside the agent's loop.** Hangar verifies after the turn and runs a repair turn. Claude Code's own guidance is a Stop hook that blocks the end of a turn until the check passes [S8] (item 5).
-7. **Code intelligence.** Claude Code cloud sessions *don't start* language-server plugins [S9]. Hangar can, which makes this a differentiator, not just a gap (item 9).
+6. **Verification inside the agent's loop.** hangar verifies after the turn and runs a repair turn. Claude Code's own guidance is a Stop hook that blocks the end of a turn until the check passes [S8] (item 5).
+7. **Code intelligence.** Claude Code cloud sessions *don't start* language-server plugins [S9]. hangar can, which makes this a differentiator, not just a gap (item 9).
 8. **Review UX inside the client.** The diff, inline comments and an answer form exist on claude.ai and Cursor. MCP Apps can put them in Claude, VS Code and Goose [S47] (item 10).
 
 ## 4. Sandbox infrastructure
@@ -92,10 +92,10 @@ Every external claim carries a source tag such as [S12], resolved in §10. Claim
   - *Don't add* Daytona, Modal, Vercel, Cloudflare or Morph now. Each needs a vendor account and keeps code off the owner's infrastructure, which is the opposite of hangar's purpose. Daytona's public code has also stopped [S33].
   - An owner who wants one of these can reach most of them through item 14's Agents SDK interface. The SDK ships Blaxel, Cloudflare, Daytona, E2B, Modal, Runloop and Vercel [S17].
 - **Borrow for GKE:**
-  - **Memory fork through Pod Snapshots (item 8).** The how-to restores a named snapshot into a new Pod with a matching spec [S40]. Hangar's docs say GKE "restores a sandbox only from its own snapshots", which looks too conservative. It needs a live test. The local gVisor proof in §4.3 shows the mechanism works on the same runtime.
+  - **Memory fork through Pod Snapshots (item 8).** The how-to restores a named snapshot into a new Pod with a matching spec [S40]. hangar's docs say GKE "restores a sandbox only from its own snapshots", which looks too conservative. It needs a live test. The local gVisor proof in §4.3 shows the mechanism works on the same runtime.
   - **Lazy restore.** Both GKE and Firecracker let the app run before memory is fully loaded [S40][S43]. Measure "first useful event", not "pod Running" (GKE's own advice [S40]).
   - **An in-sandbox daemon like E2B's envd** [S31][S42]: a process, filesystem, PTY and port API inside the sandbox, so hangar doesn't go through the Kubernetes API server for every exec. Agent Sandbox already ships an envd example. Build it only if GKE exec latency turns out to be the bottleneck (item 15). Docker exec p50 today is 75 ms (`bench/results/2026-10-13-perf-docker-ab-after.json`), with no GKE number yet.
-  - **Uniqueness after restore.** Any memory fork must re-randomize what has to stay unique: session ids, `HANGAR_*` grant tokens, RNG-derived state. GKE says to re-create secrets and read the changed environment from `/proc/gvisor/spec_environ` [S40]; Firecracker says user-space state is not reseeded [S43]. Hangar's per-sandbox gateway grant must be minted *after* a fork, never inherited.
+  - **Uniqueness after restore.** Any memory fork must re-randomize what has to stay unique: session ids, `HANGAR_*` grant tokens, RNG-derived state. GKE says to re-create secrets and read the changed environment from `/proc/gvisor/spec_environ` [S40]; Firecracker says user-space state is not reseeded [S43]. hangar's per-sandbox gateway grant must be minted *after* a fork, never inherited.
 
 ### 4.3 Experiments
 
@@ -126,7 +126,7 @@ A warm package cache removes 96–99% of install time. With one, an incremental 
 
 ## 5. Protocols
 
-| Protocol | State in October 2026 | Hangar today | Decision |
+| Protocol | State in October 2026 | hangar today | Decision |
 | --- | --- | --- | --- |
 | **MCP 2026-07-28** [S45] | Stateless (no handshake, capabilities on every request). `server/discover`. MRTR `input_required` replaces server-to-client requests. Tasks moved into an extension. `subscriptions/listen`. `ttlMs`/`cacheScope` on list results. Dynamic client registration deprecated in favor of Client ID Metadata Documents. | Serves 2026-07-28 and the 2025 revisions on one endpoint, with tasks, MRTR elicitation and subscriptions (docs/mcp.md) | Keep. Return deterministic `tools/list` order for client prompt caching [S45]. Check that the OAuth server accepts Client ID Metadata Documents (*unverified* in hangar's `oauth.py`). |
 | **MCP roadmap** (updated 2026-08-22) [S46] | Triggers & Events (server push, webhooks), DPoP and agent identity (workload identity federation, ID-JAG, RFC 8693), a `tools/call` result redesign, progressive discovery, HTTP over stdio. | n/a | When Triggers & Events lands, replace `wait_for_turn` polling with push. When DPoP and agent identity land, let a hangar sandbox call MCP servers under a delegated, narrower identity (0007's MCP gateway). No work until the specs settle. |
@@ -142,16 +142,16 @@ A warm package cache removes 96–99% of install time. With one, an incremental 
 ## 6. Agent effectiveness on hangar
 
 ### 6.1 Environment and context engineering
-- **Instructions:** keep `CLAUDE.md`/`AGENTS.md` short. Claude Code's guidance is that bloated files get ignored, and anything needed only sometimes belongs in a skill [S8]. 0008's evidence points the same way: curated skills gave +16.2 pp, self-generated ones −1.3 pp, and 2–3 focused skills beat comprehensive ones (0008 §2, SkillsBench). Hangar's `skills:` and `agent_config.instructions` are the right shape. What's missing is measuring them (item 13).
+- **Instructions:** keep `CLAUDE.md`/`AGENTS.md` short. Claude Code's guidance is that bloated files get ignored, and anything needed only sometimes belongs in a skill [S8]. 0008's evidence points the same way: curated skills gave +16.2 pp, self-generated ones −1.3 pp, and 2–3 focused skills beat comprehensive ones (0008 §2, SkillsBench). hangar's `skills:` and `agent_config.instructions` are the right shape. What's missing is measuring them (item 13).
 - **Cached dependency layers:** §4.3. Item 4 makes them keep themselves fresh.
 - **Language servers:** item 9. Install the server binary and the code-intelligence plugin in the image, so the agent gets diagnostics after every edit [S9]. Whether plugins start under `claude -p` was not verified (no API key here). That is the first test.
-- **Stable paths:** Claude Code's cache is "scoped to one machine and directory". The system prompt carries the working directory, platform, shell and OS [S6]. Hangar's fixed `/workspace/<repo>` checkout and pinned images already give forks the same prefix. Keep it that way.
+- **Stable paths:** Claude Code's cache is "scoped to one machine and directory". The system prompt carries the working directory, platform, shell and OS [S6]. hangar's fixed `/workspace/<repo>` checkout and pinned images already give forks the same prefix. Keep it that way.
 
 ### 6.2 Verification loops
-Hangar verifies after the turn (0002, `repo.verify`) and gives the agent one repair turn. Claude Code's guidance is to make the check a gate the agent can't stop past [S8]: a Stop hook that runs the check and blocks the turn from ending until it passes (with a cap on consecutive blocks), or a `/goal` condition. Item 5 injects a Stop hook that runs `repo.verify` in Claude sandboxes. Hangar's post-turn verification stays as the referee, because a gate inside the sandbox can be edited by the agent. For Codex and pi, the repair turn remains the mechanism. Ask for evidence (test output) in `RESULT.md`, as [S8] recommends.
+hangar verifies after the turn (0002, `repo.verify`) and gives the agent one repair turn. Claude Code's guidance is to make the check a gate the agent can't stop past [S8]: a Stop hook that runs the check and blocks the turn from ending until it passes (with a cap on consecutive blocks), or a `/goal` condition. Item 5 injects a Stop hook that runs `repo.verify` in Claude sandboxes. hangar's post-turn verification stays as the referee, because a gate inside the sandbox can be edited by the agent. For Codex and pi, the repair turn remains the mechanism. Ask for evidence (test output) in `RESULT.md`, as [S8] recommends.
 
 ### 6.3 Learning from outcomes (0007/0008)
-Hangar already records verified outcomes, repair turns, `needs_input` questions and PR review comments (once item 6 reads them). The cheapest learning loop is ACE-style small deltas to a repo skill, proposed as a PR and A/B-tested with 0007's experiments (0008 §2, §5.3). Item 13 limits this to one source: review comments and repair causes on merged PRs.
+hangar already records verified outcomes, repair turns, `needs_input` questions and PR review comments (once item 6 reads them). The cheapest learning loop is ACE-style small deltas to a repo skill, proposed as a PR and A/B-tested with 0007's experiments (0008 §2, §5.3). Item 13 limits this to one source: review comments and repair causes on merged PRs.
 
 ### 6.4 Model routing, cost and latency
 Current list prices per MTok (input / output) [S11][S16]:
@@ -198,7 +198,7 @@ Effort: S ≤ 1 day, M ≈ 2–3 days, L ≈ 4–6 days (as in the specs README)
 | 3 | **Steer a running turn.** `send_to_session` on a busy session queues the message into the running turn instead of failing. Claude: run with `--input-format stream-json` and keep stdin open. Codex: `codex queue --thread <id> --message …`. pi: `--mode rpc`. Antigravity: queue for the next turn. MCP `send_to_session(steer=true)`; dashboard "send now". | Every hosted product has it; it saves whole turns when the agent heads the wrong way | M | Harness profiles (built) | Steer acknowledged in the event stream within 5 s (p95). Fake-agent tests for all three modes. |
 | 4 | **Self-maintaining environments.** (a) A repo-local `.hangar/env.yaml` overlay, also read from `.devcontainer` when present. (b) `hangar env init --from-repo`: an agent drafts the env spec and verify command in a sandbox and proves them by running them, the way Devin and Cursor generate setup [S21][S18]. (c) Rebuild the baked layer automatically when a lockfile digest changes on the default branch, and every 24 h. (d) A `maintenance:` command run on claim (`git fetch && uv sync`). (e) Per-env package caches kept in the image. | Gap 3. Measured: a warm cache cuts installs from 3–31 s to 0.1–2.8 s | M | 0007 M2 builds without a laptop; 0004 M3 image distribution | `ready_s` p50 ≤ 10 s on a repo whose lockfile changed yesterday. Zero manual `env publish` in a week of normal work. |
 | 5 | **Verify gate inside the loop.** Inject a Claude Code Stop hook that runs `repo.verify` and blocks ending the turn until it passes, capped. Post-turn verification stays authoritative. Ask for evidence in `RESULT.md`. | [S8]: the difference between a session you watch and one you walk away from | S | `repo.verify` (built) | First-delivery verified-pass rate up, repair turns per job down; A/B with 0007 on 20 tasks. |
-| 6 | **PR auto-fix loop.** Subscribe to `check_run`/`check_suite` failures and `pull_request_review` / `review_comment` on hangar-opened PRs. Each event becomes a follow-up turn in the job's session. Ambiguous comments become `needs_input`. Rate-limited per PR; off per repo. | Gap 4. Hangar already has sessions, follow-ups and needs_input; only the triggers are missing | M | GitHub App webhooks (0003); front-door trust rules (built) | Share of hangar PRs that reach green with no human push. Median time from CI failure to fix push ≤ 15 min. |
+| 6 | **PR auto-fix loop.** Subscribe to `check_run`/`check_suite` failures and `pull_request_review` / `review_comment` on hangar-opened PRs. Each event becomes a follow-up turn in the job's session. Ambiguous comments become `needs_input`. Rate-limited per PR; off per repo. | Gap 4. hangar already has sessions, follow-ups and needs_input; only the triggers are missing | M | GitHub App webhooks (0003); front-door trust rules (built) | Share of hangar PRs that reach green with no human push. Median time from CI failure to fix push ≤ 15 min. |
 | 7 | **Egress levels and credential injection.** Network levels None / Trusted / Custom per env, enforced by NetworkPolicy plus an egress proxy on the gateway listener. The proxy also injects API keys for listed hosts (model API, GitHub REST, others), so no secret is readable in the sandbox. Deny by default for graded runs. | Gap 5. The model key and GitHub REST token are still in the sandbox (docs/security.md) | L | 0003 M6–M7, M9 (decision 9 of the specs README for the subscription token) | A sandbox test finds no credential in env, files or `/proc`. Blocked requests are audited. The Trusted list covers package installs for the bundled envs. |
 | 8 | **Memory fork on GKE.** Test live whether a Pod Snapshot can be restored into N new sandboxes (annotation `podsnapshot.gke.io/ps-name`, `rootfs-only` scope). If yes, `fork_session(kind="memory")` with node-memory admission control and gateway grants re-minted after restore. If no, document that and keep disk forks. | Decision 4; 0008 M2's open question | M | Pod Snapshots enabled (built, optional) | 0008 targets: memory fork N = 10 < 5 s. A forked dev server answers within 2 s of the restore. No grant shared between forks (test). |
 | 9 | **Pre-warmed code intelligence.** Env `lsp: [pyright, typescript, gopls…]` installs the server and Claude's code-intelligence plugin [S9]. Warm the index in the baked layer, or in the memory snapshot once item 8 works. | Claude's cloud sessions lack it, so it's a differentiator. Diagnostics after every edit catch type errors before tests | S (+ M for warm index) | Item 4 | First verify whether plugins load under `claude -p` (needs an API key). Then A/B with 0007: type-check failures at verify and turns per task. |
@@ -252,7 +252,7 @@ Each wave is a set of parallel workstreams, one PR each, like 0011 §3.
 - **Self-hosted Claude Code sessions:** whether Claude Code's LSP plugins start in `claude -p` mode, and in self-hosted cloud sessions. The doc only says Anthropic-hosted cloud sessions don't start them [S9].
 - **gVisor fork at 512 MB:** that f1 was OOM-killed is inferred from memory pressure; the kernel log was not checked.
 - **Best-of-N write sharing:** that concurrent identical requests each pay a cache write is inferred, not measured.
-- **Hangar's OAuth server:** whether it accepts Client ID Metadata Documents was not checked.
+- **hangar's OAuth server:** whether it accepts Client ID Metadata Documents was not checked.
 - **Pricing:** every price was list price on 2026-10-13; regional and committed-use prices differ.
 
 ## 10. Sources
@@ -330,4 +330,4 @@ Fetched 2026-10-13.
 
 - gVisor runsc release-20261005.0, from `gs://gvisor/releases/release/20261005/x86_64/gvisor.tar.zstd` (sha512 checked).
 - `claude` 2.1.296, `codex` 0.162.1 and `pi` 1.1.0 `--help` output.
-- Hangar's own `bench/results/2026-10-13-perf-docker-ab-after.json`.
+- hangar's own `bench/results/2026-10-13-perf-docker-ab-after.json`.

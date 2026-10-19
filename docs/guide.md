@@ -191,7 +191,7 @@ Moved to [Environments: environment specs](environments.md#environment-specs).
 | GKE | `deploy/terraform/gke` + `deploy/k8s` | Agent Sandbox with gVisor; optional Kata pool |
 | E2B | `HANGAR_ENABLED_PROVIDERS='["docker","e2b"]'` with `HANGAR_E2B_API_KEY` | Firecracker microVMs |
 
-You can enable several providers on one control plane and pick one per sandbox. See [docs/gke.md](gke.md) for the cluster walkthrough, [local microVMs](local-microvms.md) for Kata on your own box and [the E2B backend](microvm.md). Hangar uses a single control-plane replica with SQLite state. Kubernetes forks copy workspace files; do not assume they preserve process memory. E2B, Pod snapshots and Kata on GKE have not yet been validated live ([known limits](#known-limits)).
+You can enable several providers on one control plane and pick one per sandbox. See [docs/gke.md](gke.md) for the cluster walkthrough, [local microVMs](local-microvms.md) for Kata on your own box and [the E2B backend](microvm.md). hangar uses a single control-plane replica with SQLite state. Kubernetes forks copy workspace files; do not assume they preserve process memory. E2B, Pod snapshots and Kata on GKE have not yet been validated live ([known limits](#known-limits)).
 
 On Docker and Kubernetes, hangar starts a small daemon in each sandbox, [hangar-envd](envd.md), and runs commands, file transfers and terminals through it instead of `docker exec` or the Kubernetes exec API: an `exec` takes about 7 ms instead of 70 on Docker. It speaks E2B's envd protocol. Build it with `envd/build.sh` (the control-plane image includes it); without it, or with `HANGAR_ENVD=off`, hangar uses exec as before.
 
@@ -202,7 +202,7 @@ Because of that, hangar also answers E2B's API: the e2b SDKs, and the agent fram
 Everything is set through `HANGAR_*` settings (see `src/hangar/config.py`), which come from two places:
 
 - **The environment.** This includes `.env` and, on GKE, the `hangar` and `hangar-site` config maps. It is read at startup, and it wins.
-- **Hangar's database.** Edit it with `hangar config set KEY VALUE`, `get`, `unset` and `list` (admin tokens only). Values are checked against each setting's type and survive redeploys. Most apply at once; `hangar config set` tells you when one needs a restart. Secrets are refused: they go in the vault (`hangar cred add`), and settings name the credential.
+- **hangar's database.** Edit it with `hangar config set KEY VALUE`, `get`, `unset` and `list` (admin tokens only). Values are checked against each setting's type and survive redeploys. Most apply at once; `hangar config set` tells you when one needs a restart. Secrets are refused: they go in the vault (`hangar cred add`), and settings name the credential.
 
 `hangar config list` shows each value and where it came from. The common settings:
 

@@ -37,7 +37,7 @@ See [harnesses](harnesses.md).
 A running copy of an environment: its own files, tools, repo checkout and agent configuration, isolated from every
 other sandbox. Sandboxes start from warm pools in about a second, can be snapshotted and forked into parallel attempts,
 and run on Docker (a laptop or one VM, optionally with gVisor or Kata), GKE (Agent Sandbox with gVisor or Kata) or E2B.
-Hangar runs commands in them through a small daemon, [hangar-envd](envd.md). See the
+hangar runs commands in them through a small daemon, [hangar-envd](envd.md). See the
 [overview](guide.md#where-it-runs).
 
 ## Session
@@ -82,7 +82,7 @@ an admin or a repo approver, never your own job. See [team setup](team.md) and [
 
 ## The trust boundary
 
-Hangar assumes the sandbox is hostile. Git credentials stay behind the [git gateway](security.md#git-credential-gateway):
+hangar assumes the sandbox is hostile. Git credentials stay behind the [git gateway](security.md#git-credential-gateway):
 job sandboxes only fetch, and hangar pushes the commit it verified. [Egress allowlists](security.md#egress-allowlists)
 limit where a sandbox can connect. Intake jobs get both by default ([intake posture](security.md#intake-posture)). A turn
 that read untrusted content is [tainted](security.md#taint), and its push, PR, landing and egress then need a second
@@ -90,7 +90,7 @@ person. See the [security model](security.md).
 
 ## What hangar emits
 
-Hangar is the run plane of the agent factory: it runs the work and emits data about it, and sister tools interpret it.
+hangar is the run plane of the agent factory: it runs the work and emits data about it, and sister tools interpret it.
 Every turn records a [manifest](specs/0014-sister-tool-interfaces.md#2-the-effective-harness-manifest-hangarmanifestv1)
 of the configuration it ran with; [trace export](api/traces.md) gives each run as OTLP on the OpenTelemetry GenAI
 conventions; [run capture](api/outbox.md) writes every finished run to a bucket once; and
@@ -101,7 +101,7 @@ open (#172, [spec 0015](specs/0015-governance-decision-point.md)). Live metrics,
 
 ## Inside the control plane
 
-Connect Codex, Claude Code, or any MCP client to hangar. Then spin up isolated sandboxes from environment templates that bundle your tools, agent harness, dependencies, skills, and repo. Hangar handles the logins, runs agents inside the sandboxes, forks a prepared sandbox into N parallel attempts, and tears everything down when you're done. The same control plane runs on your laptop (Docker), on a single VM (Docker + gVisor or Kata microVMs), or on GKE (Agent Sandbox with gVisor or Kata). E2B is supported as a backend too.
+Connect Codex, Claude Code, or any MCP client to hangar. Then spin up isolated sandboxes from environment templates that bundle your tools, agent harness, dependencies, skills, and repo. hangar handles the logins, runs agents inside the sandboxes, forks a prepared sandbox into N parallel attempts, and tears everything down when you're done. The same control plane runs on your laptop (Docker), on a single VM (Docker + gVisor or Kata microVMs), or on GKE (Agent Sandbox with gVisor or Kata). E2B is supported as a backend too.
 
 ```
  MCP client (Codex, Claude Code, …)        Browser

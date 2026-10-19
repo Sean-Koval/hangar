@@ -51,7 +51,7 @@ The parsers were written against real output of each CLI. `tests/fixtures/stream
 | Harness | Output | Usage it reports |
 | --- | --- | --- |
 | Claude Code | `--output-format stream-json --verbose`: `system/init`, one `assistant` line per content block (all repeating the message's usage), `user` tool results with `tool_use_result`, then `result` | Per message while it runs (output tokens show as 1 until the end). `result` has the turn's totals and `total_cost_usd`, which hangar takes as the cost. |
-| Codex | `exec --json`: `thread.started`, `item.started`/`item.completed` (`command_execution`, `file_change`, `agent_message`, `error`), `turn.completed`/`turn.failed`, `error` | Only in `turn.completed`, at the end, with no cost. `input_tokens` includes cached tokens. Hangar prices it with the turn's model. |
+| Codex | `exec --json`: `thread.started`, `item.started`/`item.completed` (`command_execution`, `file_change`, `agent_message`, `error`), `turn.completed`/`turn.failed`, `error` | Only in `turn.completed`, at the end, with no cost. `input_tokens` includes cached tokens. hangar prices it with the turn's model. |
 | pi | `--mode json`: `session`, `message_end` (assistant messages carry usage and cost), `tool_execution_start`/`_end` | Per message, priced by pi from its own catalog |
 | Antigravity | `--output-format stream-json`: `init`, `step_update` (`agent_response` with usage, `tool` steps ACTIVE then DONE/ERROR, `error_message`), `result` | Per model step and totals in `result`, with no cost. The stream doesn't name the model, so hangar prices it with the turn's model. |
 
@@ -112,7 +112,7 @@ You can set it in several places:
 
 A `jobs` token can carry a cap: `hangar token create svc --scope jobs --max-cost 2`, or `max_budget` on `POST /api/tokens`. Its jobs never get more than the cap, whatever they ask for, and the cap also applies when they ask for nothing.
 
-Hangar checks the budget on every poll. When a turn crosses it, hangar stops the agent the way a timeout does (its tmux session is killed). It records the turn's `outcome: "over_budget"` and the reason in `outcome_reason`, for example `spent $1.26; the budget is $1.00`, and adds an `error` event. A job then:
+hangar checks the budget on every poll. When a turn crosses it, hangar stops the agent the way a timeout does (its tmux session is killed). It records the turn's `outcome: "over_budget"` and the reason in `outcome_reason`, for example `spent $1.26; the budget is $1.00`, and adds an `error` event. A job then:
 
 - verifies;
 - commits what the agent left;

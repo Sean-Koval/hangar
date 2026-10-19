@@ -1,6 +1,6 @@
 # Harnesses: versions, the contract, the canary and models
 
-Hangar runs four agent CLIs (Claude Code, Codex, pi and Antigravity) and drives two of them over undocumented, fast-moving
+hangar runs four agent CLIs (Claude Code, Codex, pi and Antigravity) and drives two of them over undocumented, fast-moving
 protocols. This page covers how their versions are pinned and moved forward, what CI checks before a version reaches
 anyone, and how each one gets "the latest strong model" without a stale default.
 
@@ -268,7 +268,7 @@ job. Either way:
 
 ### Concrete ids and floating aliases
 
-A pinned id is only reproducible if the provider can't move what it means. Hangar calls an id **concrete** when it is
+A pinned id is only reproducible if the provider can't move what it means. hangar calls an id **concrete** when it is
 in the provider's cached model list or has a known versioned shape (`claude-opus-5-5`, `claude-sonnet-4-20250514`,
 `gpt-6-astra`, `gpt-*-YYYY-MM-DD`, `gemini-3.8-flash`, `openrouter/anthropic/claude-opus-5.5`), and a **floating
 alias** when it is `*-latest`, one of OpenRouter's `~vendor/…` aliases (or `openrouter/auto`), or a bare family name

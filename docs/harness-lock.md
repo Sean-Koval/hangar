@@ -1,6 +1,6 @@
 # Harness locks
 
-A harness is a git directory of the harness's own native files plus a small `harness.lock` that pins them. Hangar
+A harness is a git directory of the harness's own native files plus a small `harness.lock` that pins them. hangar
 writes one from a turn that went well (`hangar harness freeze`), and CI in the team's harness repo checks it
 (`hangar harness check`). There is no harness spec language and no compiler: the files are what the CLI reads, and
 the lock is a frozen observation of a turn's [manifest](specs/0014-sister-tool-interfaces.md#2-the-effective-harness-manifest-hangarmanifestv1).
@@ -227,7 +227,7 @@ it. It changes nothing; exit 1 when something is outdated.
 ## The team harness repo
 
 Locks live in a git repo of their own, not in hangar (#138): a harness change is a content change the team reviews
-there, on its own cadence and `CODEOWNERS`, without a hangar release. Hangar and flightdeck read it; neither owns it.
+there, on its own cadence and `CODEOWNERS`, without a hangar release. hangar and flightdeck read it; neither owns it.
 Where it lives is the owner's choice (a team's real harness may be internal to its employer); a public example is
 built separately in agent-factory (agent-factory#4).
 
