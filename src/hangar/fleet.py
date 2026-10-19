@@ -22,6 +22,7 @@ import hangar.identity as identity  # --- identity
 import hangar.people as people  # --- identity
 from hangar import buildcache as buildcache  # --- caches
 from hangar import cloudcreds as cloudcreds  # --- egress
+from hangar import codex_plugins as codex_plugins  # --- #244: a lock's Codex plugins and their hook trust
 from hangar import delivery as delivery  # --- least-privilege
 from hangar import egress as egress  # --- egress
 from hangar import envbuilds as envbuilds  # --- envbuilds
@@ -1346,6 +1347,7 @@ class Fleet:
         wd = cwd or sb.info.get("repo_path") or self.settings.workspace_dir
         env = {**observe.run_env(self.settings, sb, run_id, hname), **(env or {})}  # --- observe: TRACEPARENT, OTel
         env.update(plugins.turn_env(harness_thaw.effective_spec(self, sb, spec), hname, env))  # --- #136; #221
+        env.update(codex_plugins.turn_env(self, sb, hname))  # --- #244: trust exactly the lock's Codex plugin hooks
         exports = (
             f"export HANGAR_PROMPT_FILE={rdir}/{run_id}.prompt HANGAR_RUN_ID={run_id}\n"
             + (f"export HANGAR_MODEL={shlex.quote(model)}\n" if model else "")

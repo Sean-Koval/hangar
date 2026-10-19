@@ -109,7 +109,9 @@ def test_codex_gets_its_hooks_off_and_says_what_stays_open():
     fleet, h = _fleet(), HARNESSES["codex"]
     _kept(fleet)
     p = harden.plan(fleet, _split(h), h, "run-0000beef", "/workspace/r", {})
-    assert p.live_run == f"{h.prefix}/bin/codex --disable hooks app-server"
+    # hooks off: a lock's plugin hooks too, whatever trust the turn carries (#244)
+    trust = '${HANGAR_CODEX_HOOK_TRUST:+-c "$HANGAR_CODEX_HOOK_TRUST"}'
+    assert p.live_run == f"{h.prefix}/bin/codex --disable hooks app-server {trust}"
     assert p.warnings == [harden.CODEX_RULES] and set(p.files) == {"run-0000beef.agent-env"}
 
 
