@@ -1,0 +1,24 @@
+# hangar's portable base (docs/deploy-company.md): the control plane and its sandbox namespace, for a cluster you
+# already run. Nothing here names a cloud project, a registry of yours or a domain; an overlay supplies them, with the
+# components in ../components for what depends on your platform (Workload Identity, the ingress, External Secrets,
+# run capture). ../example is an overlay to copy.
+#
+# deploy/k8s is a different thing: the owner's own GKE install, which deploy/gke/up.sh fills in with sed. The files
+# both trees share (namespace, gateway, sandbox and envd network policies, the heavy admission policy) are kept
+# byte-identical, and tests/test_deploy_kustomize.py fails when they drift apart.
+#
+# The namespaces are fixed (hangar, hangar-sandboxes): the network policies and HANGAR_GATEWAY_URL name them, so don't
+# set `namespace:` in an overlay.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - rbac.yaml
+  - config.yaml
+  - deployment.yaml
+  - gateway.yaml
+  - sandbox-network.yaml
+  - envd-network.yaml
+  - heavy-policy.yaml  # --- heavy: privileged sandbox pods only under Kata
+# The released image (.github/workflows/release.yml). Pin it in your overlay by digest, ideally from your own mirror:
+#   images: [{name: ghcr.io/sean-koval/hangar, newName: registry.example.com/mirror/hangar, digest: "sha256:..."}]

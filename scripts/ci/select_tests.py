@@ -58,6 +58,7 @@ PATHS: list[tuple[str, list[str] | str]] = [
     ("deploy/terraform/gke/outbox.tf", ["tests/test_outbox.py"]),  # --- outbox (#163): its write-once IAM
     ("deploy/terraform/*", []),  # the terraform job
     ("deploy/*", ["tests/test_k8s_network.py", "tests/test_sweep_durability.py", "tests/test_up_gke.py",
+                  "tests/test_deploy_kustomize.py",  # --- company-deploy: deploy/kustomize and its deploy/k8s copies
                   "tests/test_egress.py",  # --- egress: reads the NetworkPolicies too
                   "tests/test_setup_cicd.py"]),  # --- cicd: deploy/gke/setup-cicd.sh
     ("scripts/acceptance/*", ["tests/test_acceptance_script.py", "tests/test_acceptance_team.py",  # --- acceptance

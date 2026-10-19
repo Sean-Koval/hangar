@@ -1,0 +1,66 @@
+# Network baseline for sandbox pods (docs/security.md, threat model). Defence in depth: GKE Agent Sandbox's
+# managed policy already blocks private ranges and the metadata server, but hangar shouldn't depend on it alone
+# (a template switched to `networkPolicyManagement: Unmanaged`, or the open-source controller, has no such policy).
+#
+# NetworkPolicies only ever add allowances, so these say what a sandbox *may* reach; anything else is denied once a
+# pod is selected by an Egress or Ingress policy:
+#   - DNS (kube-dns, and NodeLocal DNSCache at 169.254.20.10 if enabled);
+#   - the public internet, minus every range a VPC may use for nodes, pods and Services, loopback and link-local.
+#     Link-local covers the metadata
+#     server (169.254.169.254) and GKE's Workload Identity metadata server (169.254.169.252:988), so code in a sandbox
+#     can't mint a token for the node's or a KSA's Google identity (the pod-snapshot KSA can read every snapshot, and
+#     terraform grants every KSA in this namespace a role on that bucket). Sandboxes need no Google identity of their
+#     own: Workload Identity is for hangar's pods. The VPC ranges are RFC 1918, CGNAT (100.64.0.0/10) and the
+#     reserved ranges a subnet may also use (cloud.google.com/vpc/docs/subnets: 192.0.0.0/24, 192.0.2.0/24,
+#     192.88.99.0/24, 198.18.0.0/15, 198.51.100.0/24, 203.0.113.0/24, class E 240.0.0.0/4), none of them on the
+#     internet. Privately used public ranges can't be listed here: on such a cluster, add its pod and Service
+#     ranges to `except`;
+#   - the git gateway on hangar pods (gateway.yaml).
+# Nothing may connect *to* a sandbox pod: hangar reaches sandboxes through the Kubernetes API (exec), not the pod
+# network, so sandboxes can't reach each other either. The exceptions are hangar's own pods: envd-network.yaml (the
+# in-sandbox daemon's port) and e2b.yaml (app ports). Sandbox to sandbox is closed on both sides: no ingress from
+# them, and no egress to pod addresses (the VPC ranges above). tests/test_k8s_network.py holds every
+# manifest here to that.
+#
+# Not covered: a dual-stack cluster whose pods get global (non-ULA) IPv6 addresses. Sandboxes still can't reach each
+# other there (ingress), but the IPv6 rule below lets them reach other pods that have no ingress policy of their own,
+# hangar's API port among them. Keep pod IPv6 ranges internal (ULA, fc00::/7), as GKE's internal IPv6 access does.
+#
+# --- egress: sandboxes of an `allowlist`/`none` environment (label dev.hangar/egress=proxied) are left out of this
+# baseline, so they get no internet and no DNS at all: gateway.yaml's sandbox-egress-proxied gives them the egress proxy.
+# allow-hangar-gateway (gateway.yaml) still selects every sandbox pod for Egress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-egress-baseline
+  namespace: hangar-sandboxes
+spec:
+  podSelector:
+    matchExpressions: [{key: dev.hangar/egress, operator: NotIn, values: [proxied]}]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+        - ipBlock: {cidr: 169.254.20.10/32}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16,
+                     192.0.0.0/24, 192.0.2.0/24, 192.88.99.0/24, 198.18.0.0/15, 198.51.100.0/24, 203.0.113.0/24,
+                     240.0.0.0/4]
+        - ipBlock:
+            cidr: ::/0
+            except: ["fc00::/7", "fe80::/10", "::1/128"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-deny-ingress
+  namespace: hangar-sandboxes
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]

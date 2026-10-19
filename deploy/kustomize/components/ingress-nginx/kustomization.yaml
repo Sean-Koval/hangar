@@ -1,0 +1,14 @@
+# An Ingress for ingress-nginx (or any controller that reads its annotations), TLS from Secret hangar-tls: create it
+# yourself, or let cert-manager do it by adding its issuer annotation in your overlay
+# (cert-manager.io/cluster-issuer: <issuer>). Your overlay's hangar-deploy ConfigMap sets:
+#   domain: hangar.example.com
+# A different class name: patch spec.ingressClassName in your overlay.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - ingress.yaml
+replacements:
+  - source: {kind: ConfigMap, name: hangar-deploy, fieldPath: data.domain}
+    targets:
+      - select: {kind: Ingress, name: hangar}
+        fieldPaths: [spec.rules.0.host, spec.tls.0.hosts.0]

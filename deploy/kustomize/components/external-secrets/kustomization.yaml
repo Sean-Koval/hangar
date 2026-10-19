@@ -1,0 +1,19 @@
+# Secrets from your secret manager through External Secrets Operator (external-secrets.io/v1, ESO 0.17 or later),
+# so nothing secret is in git or typed into hangar:
+#   - Secret hangar: HANGAR_ADMIN_TOKEN and HANGAR_SECRET_KEY, the control plane's own;
+#   - Secret hangar-credentials: one key per hangar credential, which the base mounts at /var/run/hangar-secrets.
+#     A credential declared with `source: file:/var/run/hangar-secrets/<name>` (`hangar apply`,
+#     docs/deploy-company.md) reads its value from there each time it is used, so a rotation in your secret manager
+#     reaches hangar on ESO's next refresh, without a restart.
+# Your overlay's hangar-deploy ConfigMap sets:
+#   secret_store: <the name of your ClusterSecretStore>
+# The remote key names below are defaults; patch them in your overlay if yours differ.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - external-secrets.yaml
+replacements:
+  - source: {kind: ConfigMap, name: hangar-deploy, fieldPath: data.secret_store}
+    targets:
+      - select: {kind: ExternalSecret}
+        fieldPaths: [spec.secretStoreRef.name]
