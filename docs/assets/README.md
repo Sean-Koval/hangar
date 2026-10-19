@@ -14,14 +14,18 @@ in the repository settings (Social preview).
 
 # Front page assets
 
-`front/` holds the recording, screenshots and diagram the README and the docs home page
-(`docs/index.md`) show, and the scripts that make them. Nothing in it is drawn by hand:
+`front/` holds the recordings, screenshots and diagram the README and the docs home page
+(`docs/index.md`) show, and the scripts that make them. Nothing in it is drawn by hand; every still is
+1440x900 at 2x in Night, every recording under 20 s with one task each:
 
 | Asset | Made by |
 | --- | --- |
-| `hangar-demo.gif`, `hangar-demo.mp4` | `make.py`: Playwright drives the web UI on :8787 while issue #42 becomes a job, a sandbox run and draft PR #43; the terminal part is an asciinema recording of `hangar inbox` played with asciinema-player; ffmpeg encodes the frames |
-| `ui-jobs.png`, `ui-sessions.png`, `inbox.png` | `make.py`, from the same run |
-| `ui-fleet-board.png`, `-bays.png`, `-columns.png`, `-owners.png` | `make.py`, the Fleet page's four views ([the web console](../console.md)), from the same run |
+| `hangar-demo.gif`, `hangar-demo.mp4` | `make.py`: Playwright drives the console on :8787 while issue #42 becomes a job, a sandbox run and draft PR #43, ending on Needs you; ffmpeg encodes the frames |
+| `ui-jobs.png`, `ui-sessions.png` | `make.py`, from the same run |
+| `inbox.png` | `make.py`: an asciinema recording of `hangar inbox` against the same server, played with asciinema-player |
+| `ui-needs.png`, `ui-fleet.png`, `ui-review.png` | `make.py --only console`, the console on `fixture.py` (a team's afternoon: four environments, six people, held tool calls, a question, a failed run, a PR to review) served with Playwright's request interception |
+| `hangar-review.gif`, `hangar-review.mp4` | `make.py --only console`: the review loop on the fixture (decide a held call, open the job, read the diff, comment back) |
+| `ui-fleet-board.png`, `-bays.png`, `-columns.png`, `-owners.png` | `make.py`, the Fleet page's four views ([the web console](../console.md)), from the demo run |
 | `hangar-suite.svg`, `-dark.png`, `-light.png` | `diagram.py` (the agent-factory diagram helpers, copied) and `make.py` (PNGs in both Airframe flavors) |
 
 They run against `demo.py`: the real control plane with the test suite's fake provider
@@ -34,7 +38,7 @@ To re-render after a UI or CLI change, run from the repository root (Chromium fr
 
 ```bash
 uv run --with playwright==1.56.0 --with asciinema==2.4.0 --with imageio-ffmpeg==0.6.0 \
-  python docs/assets/front/make.py            # or --only diagram / --only ui, --out DIR
+  python docs/assets/front/make.py            # or --only diagram / ui / console, --out DIR
 ```
 
 `make.py` fails if an asset is missing or over 3 MB. The `front-page` workflow runs it on

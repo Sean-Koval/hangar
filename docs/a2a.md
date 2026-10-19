@@ -107,11 +107,13 @@ What comes back on a task:
 `SendStreamingMessage` and `SubscribeToTask` stream Server-Sent Events. The first item is the task. Then comes one status update per job event (provisioning, agent turn starting, verifying, delivering, …), then the artifacts, then the final status. The stream closes when the task finishes or needs input. Idle streams get an SSE comment every 15 seconds, so proxies don't close them.
 
 For push notifications, set `configuration.taskPushNotificationConfig` (0.3: `pushNotificationConfig`) on the message, or call `CreateTaskPushNotificationConfig`. Hangar POSTs to the URL whenever the task state changes:
+
 - a `statusUpdate` while the task works;
 - the full `task` (with artifacts) when it finishes or needs input;
 - for configs made over 0.3, the 0.3 task each time.
 
 Each POST carries:
+
 - `Authorization: <scheme> <credentials>` from the config;
 - `X-A2A-Notification-Token: <token>`;
 - for `jobs` tokens with a bound callback key, the same `X-Hangar-Signature` as [job callbacks](jobs.md#3-verify-callbacks).

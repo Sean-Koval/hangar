@@ -366,3 +366,23 @@ def test_job_detail_has_no_dead_terminal_and_a_feed_that_is_never_cut_mid_line()
     assert "mark(JOB_STATE[e.state]" not in app and "mark(ACT_TONE[e.kind]" not in app, "timeline entries are dots"
     assert ".timeline .tl-dot {" in css and "background: var(--af-line-strong)" in css
     assert "toFixed(1)} h" not in app, "durations are whole units with one space: 5 h, not 5.0 h"
+
+
+def test_theme_switch_lands_on_needs_you_and_one_primary_per_view():
+    """KAN-110: Night is the default and a person can switch to Day (hangar.theme, applied before first paint); the
+    console opens on Needs you while something waits; Jobs and Sessions carry one yellow primary at a time."""
+    html, css, app = (UI / "index.html").read_text(), (UI / "app.css").read_text(), (UI / "app.js").read_text()
+    assert html.startswith('<!doctype html>\n<html lang="en" data-theme="dark">'), "Night is the default, not the OS"
+    head = html[:html.index("<link")]
+    assert 'localStorage.getItem("hangar.theme")' in head, "the stored theme is applied before the stylesheets"
+    assert (UI / "vnc.html").read_text().count('localStorage.getItem("hangar.theme")') == 1, "the agent screen follows"
+    assert 'id="theme-switch" class="af-btn af-btn--ghost af-btn--sm af-btn--icon theme-switch"' in html
+    assert 'aria-label="Switch to Day"' in html and '"Switch to Night"' in app
+    assert 'localStorage.setItem("hangar.theme"' in app and "function applyTheme(" in app
+    # the landing: Needs you when its count is above zero, the Fleet otherwise
+    assert 'history.replaceState(null, "", waiting ? "#needs" : "#fleet")' in app
+    # one primary: the page header's New job / New session are secondary; the panel's empty state carries the primary
+    assert 'class="af-btn af-btn--secondary" id="btn-new-job"' in html
+    assert 'class="af-btn af-btn--secondary" id="btn-new-session"' in html
+    assert 'btn("New job", { kind: "primary"' in app and 'btn("New session", { kind: "primary"' in app
+    assert ".view:has(> .new-form:not([hidden])) .job-detail .af-empty__act { display: none; }" in css

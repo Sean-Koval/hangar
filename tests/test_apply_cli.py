@@ -192,3 +192,20 @@ def test_load_reads_directories_and_multi_document_files(tmp_path):
         ("hangar.repo-policy/v1", "acme/app"), ("hangar.environment/v1", "acme-python"),
         ("hangar.credential/v1", "anthropic-team")]
     assert docs[0].origin.endswith("one.yaml#1")
+
+
+def test_only_admins_create_file_backed_credentials(api, tmp_path):
+    """A member's token can store a value of their own, but not a reference to a mounted file (403)."""
+    c, _ = api
+    c.post("/api/people", json={"id": "mia", "role": "member"})
+    tok = c.post("/api/people/mia/tokens", json={"name": "cc"}).json()["token"]
+    body = {"name": "mine", "harness": "claude-code", "kind": "api_key",
+            "value": "hangar-secret-ref:file:" + str(tmp_path / "secrets" / "mine")}
+    r = c.post("/api/credentials", json=body, headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 403 and "only an admin" in r.json()["error"], r.text
+    r = c.post("/api/credentials", json=body | {"value": "sk-ant-own-0123456789"},
+               headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 200, r.text
+    r = c.post("/api/credentials", json=body | {"name": "team-ref", "team": True,
+               "value": "hangar-secret-ref:file:" + str(tmp_path / "secrets" / "team-ref")})
+    assert r.status_code == 200, r.text  # the admin's
