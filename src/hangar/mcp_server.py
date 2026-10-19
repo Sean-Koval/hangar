@@ -848,7 +848,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                    callback_url: str | None = None, budget: dict[str, Any] | None = None,
                    output_schema: dict[str, Any] | None = None, strategy: str = "single", n: int | None = None,
                    judge: bool = False, verify_in_loop: bool | None = None,
-                   autofix: str | None = None, harness_lock: str | None = None) -> live.JobOut:
+                   autofix: str | None = None, harness_lock: str | None = None, changeset: str | None = None,
+                   ticket: str | None = None) -> live.JobOut:
         """Hand development work to a cloud agent. Hangar starts a sandbox of `environment` (default: the repo's),
         runs the agent, then `verify` (e.g. "pytest -q"), pushes hangar/<job> and opens a PR (`deliver`: draft_pr |
         pr | branch | none). `context` items: {"name", "content", "kind": "log"}, {"kind": "url", "url"}, your
@@ -857,14 +858,17 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         is delivered as a draft. Then wait_for_turn(job id).
         `strategy="best_of_n"`, `n` 2-8: parallel attempts, the best delivered (`judge=True`: an agent compares).
         `verify_in_loop` (default on): failures go back to the agent in the turn. `autofix` (ci,reviews | ci |
-        reviews | off): PR CI failures and trusted reviews start follow-ups. `harness_lock`: name@rN."""
+        reviews | off): PR CI failures and trusted reviews start follow-ups. `harness_lock`: name@rN.
+        `changeset`: a change-set profile (leave `repo` out): one agent across its repos, one PR per changed repo,
+        landed in the profile's order. `ticket`: the work's ticket, e.g. "jira:PAY-412"."""
         req = SubmitJob(instructions=instructions, repo=repo, environment=environment, title=title, harness=harness,
                         model=model, base_branch=base_branch, verify=verify, deliver=deliver,
                         context=[ContextItem.model_validate(c) for c in context or []],
                         timeout_minutes=timeout_minutes, callback_url=callback_url, output_schema=output_schema,
                         budget=Budget.model_validate(budget) if budget else None, strategy=strategy, n=n,
                         judge=judge, verify_in_loop=verify_in_loop, autofix=autofix,  # --- overnight/autofix
-                        harness_lock=harness_lock)  # --- harness locks (#134)
+                        harness_lock=harness_lock,  # --- harness locks (#134)
+                        changeset=changeset, ticket=ticket)  # --- change sets (docs/changesets.md)
         who = current_actor.get()
         return jobs.view(jobs.submit(req, Caller(who, who, person=identity.person()), source="mcp"))  # identity
 
