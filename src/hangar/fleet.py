@@ -1072,6 +1072,11 @@ class Fleet:
             f"{ws}/{repo_dirname(sb.repo)}"
         baked = bool(spec.repo and spec.repo.bake and spec.repo.url == sb.repo)
         prebuilt = envbuilds.EnvBuilds.prebuilt(sb)  # --- envbuilds: the repo's build holds its checkout, installed
+        from hangar import changesets  # --- change sets: a parent job's sandbox holds every role at /workspace/<role>
+
+        cs = changesets.sandbox_roles(self, sb)
+        if cs is not None and not baked and not prebuilt:
+            dest = changesets.checkout(self, cs.primary)
         q = shlex.quote
         if prebuilt:  # --- envbuilds
             script = envbuilds.EnvBuilds.checkout_script(sb, dest)
@@ -1096,6 +1101,8 @@ class Fleet:
         sb.info["repo_path"] = dest
         if work_branch:
             sb.info["work_branch"] = work_branch
+        if cs is not None:  # --- change sets: the other roles, beside the primary
+            await changesets.setup_checkouts(self, prov, sb, stage)
 
     @observe.traced("sandbox.destroy")  # --- observe
     async def destroy(self, ref: str, actor: str = "system") -> Sandbox:

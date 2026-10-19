@@ -51,7 +51,8 @@ FIELDS = ("verify", "environment", "harness", "model", "budget", "job_budget", "
           "ai_review", "ai_review_harness", "ai_review_model", "ai_review_budget_usd",  # --- AI review (#161)
           "verify_allowed",  # --- #156
           "shadow",  # --- #183
-          "overnight")  # --- #186: its intake jobs run in the overnight lane
+          "overnight",  # --- #186: its intake jobs run in the overnight lane
+          "branch_template", "require_ticket", "title_template")  # --- change sets (G7): SDLC conventions
 _LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")  # a GitHub login
 
 
@@ -169,8 +170,29 @@ class RepoPolicy(BaseModel):
     shadow: ShadowPolicy | None = None  # --- #183: shadow runs of sampled intake jobs (default: none)
     # --- #186: its intake jobs run at night in the overnight lane (power state `night`, power.py)
     overnight: bool | None = None
+    # --- change sets (G7, changesets.py): company naming. `branch_template` names a job's branch in this repo
+    # (`feature/{ticket_key}-{job}`; it must hold {job}, default hangar/<job>); `require_ticket` refuses a job with
+    # no ticket; `title_template` names its PRs (`{ticket_key}: {title}`). Placeholders: {job} {ticket} {ticket_key}
+    # {title} {role}
+    branch_template: str | None = Field(None, max_length=200)
+    require_ticket: bool | None = None
+    title_template: str | None = Field(None, max_length=200)
     updated_at: float = Field(default_factory=now)
     updated_by: str | None = None
+
+    @field_validator("branch_template")
+    @classmethod
+    def _branch_template(cls, v: str | None) -> str | None:  # --- change sets (G7)
+        from hangar.changesets import check_template
+
+        return check_template(v, "branch_template", need_job=True)
+
+    @field_validator("title_template")
+    @classmethod
+    def _title_template(cls, v: str | None) -> str | None:
+        from hangar.changesets import check_template
+
+        return check_template(v, "title_template")
 
     @field_validator("heavy", mode="before")
     @classmethod
@@ -399,6 +421,9 @@ class PolicyUpdate(BaseModel):
     verify_allowed: list[str] | None = None  # --- #156
     shadow: ShadowPolicy | None = None  # --- #183
     overnight: bool | None = None  # --- #186
+    branch_template: str | None = Field(None, max_length=200)  # --- change sets (G7)
+    require_ticket: bool | None = None
+    title_template: str | None = Field(None, max_length=200)
 
     @field_validator("heavy", mode="before")
     @classmethod
@@ -529,6 +554,10 @@ def mount(app: Any, h: Any, admin: Any) -> None:
             return view(svc, update(svc, body, who))
         except PolicyError as e:
             raise HTTPException(400, str(e)) from e
+
+    from hangar import changesets  # --- change sets: their profiles are admin config beside the repo policies
+
+    changesets.mount(app, h, admin)
 
     @app.delete("/api/repos/policy")
     async def repo_delete(repo: str = Query(...), field: list[str] = Query(default_factory=list),
