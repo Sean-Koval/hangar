@@ -1,42 +1,130 @@
 # Getting started
 
-Run hangar on a laptop in five minutes, then on GKE, then for a team. [Concepts](concepts.md) explains the words
-(environment, harness, sandbox, session, job) and what hangar gives you; the [README](https://github.com/Sean-Koval/hangar/blob/main/README.md)
-has the short version, and the [changelog](https://github.com/Sean-Koval/hangar/blob/main/CHANGELOG.md) what each release added.
+Run hangar on a laptop in five minutes, then on GKE, then for a team. This is the one Quickstart; the [README](https://github.com/Sean-Koval/hangar/blob/main/README.md) repeats its five commands. [Concepts](concepts.md) explains the words
+(environment, harness, sandbox, session, job) and what hangar gives you, and the [changelog](https://github.com/Sean-Koval/hangar/blob/main/CHANGELOG.md) what each release added.
 
-## Quickstart (laptop, 5 minutes)
+## Quickstart
 
-Requires Docker (Docker Desktop, OrbStack or Colima on macOS) and [uv](https://docs.astral.sh/uv/).
+Five minutes on a laptop. You need [Docker](https://docs.docker.com/get-started/get-docker/) (Docker Desktop, OrbStack or Colima on macOS) and [uv](https://docs.astral.sh/uv/getting-started/installation/) (Python 3.12+ is managed by uv).
 
 ```bash
-git clone https://github.com/Sean-Koval/hangar && cd hangar
+git clone https://github.com/Sean-Koval/hangar.git && cd hangar
 uv sync --all-extras
-uv run hangar up
+uv run hangar up        # server, CLI login, the claude-python environment, MCP clients
+uv run hangar cred add claude-api --harness claude-code --kind api_key --file anthropic-key.txt
+uv run hangar doctor    # every check passes, or names its fix
 ```
 
-`hangar up` does five things:
+`hangar up` does five things: checks that Docker is running; starts the control plane in the background (log: `~/.hangar/server.log`); logs the CLI in; builds the `claude-python` environment (the first build downloads tools, so allow a few minutes); and offers to connect each MCP client it finds. Running it again is safe: it reuses the running server, the saved login and the built images. `--env NAME` builds other environments, `--no-build` skips building, and `--connect codex` connects a client without asking. `hangar down` stops the server.
 
-1. checks that Docker is running;
-2. starts the control plane in the background (log: `~/.hangar/server.log`);
-3. logs the CLI in;
-4. builds the `claude-python` environment;
-5. offers to connect each MCP client it finds.
+Open the **console at [localhost:8787](http://localhost:8787)** to see your fleet, credentials, environments and live terminals ([the web console](console.md)). Local state is in `~/.hangar`. If a doctor check fails, follow its fix; `uv run hangar doctor --fix` applies the supported repairs.
 
-Running it again is safe: it reuses the running server, the saved login and the built images. `--env NAME` builds other environments, `--no-build` skips building, and `--connect codex` connects a client without asking. `hangar down` stops the server.
+To look around first without Docker or a key, run the demo hangar the front page's recording uses: `uv run python docs/assets/front/demo.py` (the console on :8787, its token printed), then `uv run python docs/assets/front/demo.py ticket` in another terminal to label issue #42.
 
-Then:
+### Credentials
 
-1. **Add credentials.** Use the dashboard at http://localhost:8787 (under **Credentials**), or:
-   ```bash
-   uv run hangar cred add claude-api --harness claude-code --kind api_key --file anthropic-key.txt
-   uv run hangar cred add codex-api --harness codex --kind api_key --file openai-key.txt
-   uv run hangar cred add gh --harness git --kind git_token --value "$(gh auth token)"
-   ```
-2. **Connect an MCP client**, if `hangar up` didn't. Run `uv run hangar connect claude-code` (or `codex`, `cursor`, `vscode`, `gemini`, `claude-desktop`). It adds hangar to the client's own config file, next to your other servers, with a fresh token that can reach the MCP endpoints and nothing else: `hangar` (`/mcp`: jobs, sessions, schedules) and, for Claude Code and Codex, `hangar-sandbox` (`/mcp/sandbox`: create_sandbox, exec, files, terminals; [the two servers](mcp.md#two-servers)). `hangar connect --list` shows what's connected. Details are in [docs/clients.md](clients.md).
-3. **Ask your client to do something.** For example: *"Create 3 claude-python sandboxes on github.com/me/api, each on its own branch, and run the agent in each on 'make the flaky test in tests/test_sync.py deterministic'. Report which attempt passes."*
-4. **Optional: take work from GitHub.** `uv run hangar setup github` asks for a repo and a token and stores them. It then registers the repo's webhook and sends a test delivery. GitHub can't reach `localhost`, so on a laptop pass `--webhook-url` with a tunnel URL. See [docs/jobs.md](jobs.md#4-trigger-from-github).
+Use **Credentials** in the console, or store a key from the CLI as above. Use an API key (an Anthropic Console key, an OpenAI project key, a Claude Team or Enterprise key) and set a spend limit on it in the vendor's console; hangar's own job and daily budgets cap spend inside hangar. For Codex, and for private repositories:
 
-`uv run hangar doctor` checks the setup, and `hangar doctor --fix` applies the fixes it can make on its own.
+```bash
+uv run hangar cred add codex-api --harness codex --kind api_key --file openai-key.txt
+uv run hangar env build codex-node
+uv run hangar cred add gh --harness git --kind git_token --value "$(gh auth token)"
+```
+
+Choose the credential when creating a sandbox, or list its name in your environment's `credentials` field. Storing a key alone does not attach it to every sandbox.
+
+Jobs, schedules, webhooks and experiments run on API keys only. A personal subscription login (Claude Pro or Max, a ChatGPT sign-in) is for your own interactive sessions, with a warning: see [subscription logins](team.md#subscription-logins).
+
+### Connect your client
+
+If `hangar up` did not connect your client, run `uv run hangar connect claude-code` (or `codex`, `cursor`, `vscode`, `gemini`, `claude-desktop`). It adds hangar to the client's own config file, next to your other servers, with a fresh token that can reach the MCP endpoints and nothing else: `hangar` (`/mcp`: jobs, sessions, schedules) and, for Claude Code and Codex, `hangar-sandbox` (`/mcp/sandbox`: create_sandbox, exec, files, terminals; [the two servers](mcp.md#two-servers)). Start a new client session so it reads the updated configuration. `hangar connect --list` shows what's connected; [connecting clients](clients.md) covers all options, remote connections and OAuth.
+
+### Use the hangar skill
+
+The [hangar skill](https://github.com/Sean-Koval/hangar/blob/main/skills/hangar/SKILL.md) teaches your calling agent to turn a task or ticket into a cloud job or resumable session, follow progress, handle questions, and report changes with verification evidence.
+
+Copy the `skills/hangar/` folder into your client's configured skills directory (for clients using the shared convention, `~/.agents/skills/hangar/`), and reload its skills. Connect that client to your hangar server as above; installing the skill alone does not connect MCP. For example:
+
+> Use the hangar skill to work on ticket APP-42 in my repo. Use our configured Python environment, run the project's tests, and return a draft PR with the results.
+
+This skill runs in the client that delegates work. The separate [repo-conventions skill](https://github.com/Sean-Koval/hangar/blob/main/envs/skills/repo-conventions/SKILL.md) guides coding agents working inside sandboxes.
+
+### First task
+
+In your connected MCP client, ask:
+
+> Use hangar to create a claude-python sandbox for https://github.com/YOUR-USER/YOUR-REPO.git. Use the claude-api credential and a new work branch. Run Claude Code to explain the project structure and how to run its tests. Report the sandbox name and findings.
+
+Replace the repository URL with your own. Start with a public repo, or add a Git credential for private repository access. The same from the CLI:
+
+```bash
+uv run hangar sb create claude-python \
+  --name first-task \
+  --repo https://github.com/YOUR-USER/YOUR-REPO.git \
+  --work-branch hangar/first-task \
+  --cred claude-api
+
+uv run hangar sb agent first-task \
+  "Explain the project structure and how to run its tests."
+```
+
+Open the sandbox in the console to follow the work in its live terminal. When you finish reviewing it, remove it with `uv run hangar sb rm first-task`. For Codex, use `codex-node` and `--cred codex-api` instead.
+
+### Parallel attempts
+
+Once a single task works, ask your MCP client:
+
+> Create three claude-python sandboxes for my repo, each on its own work branch, using claude-api. Ask each agent to fix the same flaky test, run the project's tests, and report the changes and results. Let me review the attempts before removing the sandboxes.
+
+To start from work you have already prepared, use `snapshot_sandbox` and `fork_sandbox`. Snapshot behavior varies by provider; see [where it runs](#where-it-runs). For a task that should produce a draft PR, use a [job](jobs.md): jobs support verification commands, follow-ups, budgets and GitHub triggers. [Sessions](sessions.md) preserve a conversation and repository state across turns.
+
+### Take work from GitHub
+
+`uv run hangar setup github` asks for a repo and a token and stores them. It then registers the repo's webhook and sends a test delivery. GitHub can't reach `localhost`, so on a laptop pass `--webhook-url` with a tunnel URL. See [jobs: trigger from GitHub](jobs.md#4-trigger-from-github).
+
+### Your own environment
+
+Save this as `envs/my-service.yaml`:
+
+```yaml
+name: my-service
+extends: python
+harnesses: [claude-code]
+default_harness: claude-code
+credentials: [claude-api]
+repo:
+  url: https://github.com/YOUR-USER/YOUR-REPO.git
+  branch: main
+  setup: uv sync
+agent_config:
+  instructions: |
+    Run the project's tests before finishing.
+resources:
+  cpus: 2
+  memory_gb: 4
+warm_pool: 1
+```
+
+Replace the repo URL, branch and setup command with your project's values, then build it with `uv run hangar env build my-service`. Ask your client to create a sandbox from `my-service`; it uses the configured repo and credential. `warm_pool: 1` keeps one sandbox pre-started for faster claims. Built-in foundations include `bare`, `python`, `node`, `go` and `polyglot`; [environments](environments.md) covers tools, skills, secrets, MCP servers and multiple agent choices.
+
+### Everyday commands
+
+Run these from the hangar checkout:
+
+| What you want | Command |
+| --- | --- |
+| List environments | `uv run hangar env list` |
+| List sandboxes | `uv run hangar sb ls` |
+| Run a command in a sandbox | `uv run hangar sb exec first-task "git status"` |
+| What waits on you | `uv run hangar inbox` |
+| Check client connections | `uv run hangar connect --list` |
+| Inspect settings and their sources | `uv run hangar config list` |
+| Freeze a good turn into a harness directory ([harness locks](harness-lock.md)) | `uv run hangar harness freeze job-1a2b3c4d --turn 1 --out ../harnesses/team-default` |
+| Check a harness directory against its lock | `uv run hangar harness check ../harnesses/team-default` |
+| Check setup | `uv run hangar doctor` |
+| Stop the local server | `uv run hangar down` |
+
+For remote instances, run `uv run hangar login https://YOUR-HANGAR-HOST` once; fleet commands then use that server.
 
 ## Production (GKE)
 
@@ -103,7 +191,7 @@ Moved to [Environments: environment specs](environments.md#environment-specs).
 | GKE | `deploy/terraform/gke` + `deploy/k8s` | Agent Sandbox with gVisor; optional Kata pool |
 | E2B | `HANGAR_ENABLED_PROVIDERS='["docker","e2b"]'` with `HANGAR_E2B_API_KEY` | Firecracker microVMs |
 
-You can enable several providers on one control plane and pick one per sandbox. See [docs/gke.md](gke.md) for the cluster walkthrough.
+You can enable several providers on one control plane and pick one per sandbox. See [docs/gke.md](gke.md) for the cluster walkthrough, [local microVMs](local-microvms.md) for Kata on your own box and [the E2B backend](microvm.md). Hangar uses a single control-plane replica with SQLite state. Kubernetes forks copy workspace files; do not assume they preserve process memory. E2B, Pod snapshots and Kata on GKE have not yet been validated live ([known limits](#known-limits)).
 
 On Docker and Kubernetes, hangar starts a small daemon in each sandbox, [hangar-envd](envd.md), and runs commands, file transfers and terminals through it instead of `docker exec` or the Kubernetes exec API: an `exec` takes about 7 ms instead of 70 on Docker. It speaks E2B's envd protocol. Build it with `envd/build.sh` (the control-plane image includes it); without it, or with `HANGAR_ENVD=off`, hangar uses exec as before.
 
