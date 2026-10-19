@@ -25,7 +25,9 @@ plugins. Verified with 2.1.296 (tests/test_harden_real_clis.py):
   one of hangar's: it is a new, unguessable path Claude Code creates as it starts, which nothing the agent left
   behind can be in.
 
-Codex has no plugin bundle here: its skills stay in ~/.codex/skills (#139).
+Codex has no seed: an environment's plugins load in Claude Code only, and Codex's skills stay in ~/.codex/skills
+(#139). A Codex sandbox run from a harness lock installs the lock's plugins from their Codex forms (codex_plugins.py,
+#244).
 """
 
 from __future__ import annotations

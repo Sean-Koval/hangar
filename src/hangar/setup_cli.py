@@ -196,7 +196,8 @@ def connect(
     list_: bool = typer.Option(False, "--list", help="Show each client, its config file and whether hangar is in it."),
     print_only: bool = typer.Option(False, "--print", help="Only print the entry (with a new token); write nothing."),
     auth: str = typer.Option("token", "--auth", help="token (a new token scoped to MCP) or oauth (the client signs "
-                             "in itself; claude-code, codex, cursor, gemini; needs an https or localhost hangar)."),
+                             "in itself; claude-code, codex, cursor, gemini, antigravity; needs an https or "
+                             "localhost hangar)."),
     name: str = typer.Option("hangar", "--name", help="Server name in the client's config."),
     config: Path | None = typer.Option(None, "--config", help="Write this file instead of the client's default."),
     with_sandbox: bool | None = typer.Option(None, "--with-sandbox/--no-sandbox", help="Also add the hangar-sandbox "
@@ -206,6 +207,7 @@ def connect(
     """Add this hangar to an MCP client's config, keeping the other servers there.
 
       hangar connect claude-code        hangar connect codex --auth oauth        hangar connect --list
+      hangar connect antigravity        (agy: ~/.gemini/config/mcp_config.json)
     """
     if list_ or not client:
         list_clients()

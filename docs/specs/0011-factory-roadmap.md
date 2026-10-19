@@ -20,6 +20,7 @@ Jobs (0009) and sessions (0010) are live: work arrives from GitHub, REST and MCP
 ## 2. Context exchange: the session I/O protocol
 
 MCP clients (Claude Code, Codex, Cursor, other agents) are the main way people hand work to hangar. A context round trip has three parts:
+
 - **in:** the request, its context and the client's local state;
 - **during:** progress, and questions the agent can't answer itself;
 - **out:** a summary, structured data, artifacts, and code the client can apply locally.
@@ -71,6 +72,7 @@ Later, not in this round: task graphs and the supervisor (0004 M6–M7), hot res
 ## 4. Google AX
 
 [AX](https://github.com/google/ax) (Agent Executor, open-sourced 2026-05-20, Apache-2.0, Go, early preview with breaking changes expected) is a Kubernetes-native orchestrator for agent workloads on Agent Substrate. Its primitives are:
+
 - `Task`: an isolated sandbox with CPU and memory limits;
 - `Workspace`: Git repos, MCP servers and skill packages, pre-wired;
 - `Model`.
@@ -78,6 +80,7 @@ Later, not in this round: task graphs and the supervisor (0004 M6–M7), hot res
 It persists actor state with an event log and snapshots, supports `ax suspend`/`ax resume`, and branches trajectories from checkpoints. It is, in effect, a peer of hangar's sandbox layer, not a library hangar would call.
 
 The position for now:
+
 - **Don't build on it yet.** It's a preview with breaking changes promised. Bring-your-own-harness is still on its roadmap, and hangar's value sits above the sandbox: harness-native conversation resume, jobs, GitHub and Slack delivery, budgets, the MCP surface. Moving the core onto AX now would trade working code for churn.
 - **Interoperate through A2A** (workstream G). ADK and AX agents can delegate coding work to hangar as an A2A agent today, with no dependency on AX internals.
 - **Keep AX as a candidate provider.** Hangar's `Provider` interface (create, exec, files, destroy, pause and resume) maps onto AX `Task`s, and AX suspend/resume could back hot resume (0010 M4). Workstream G writes the provider design. Build it when AX stabilises and if Agent Substrate beats our GKE pools on start time or density.

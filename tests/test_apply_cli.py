@@ -303,3 +303,20 @@ def test_only_a_saved_environment_can_be_deleted(api, tmp_path):
     assert c.delete("/api/environments/acme-child").json() == {"deleted": "acme-child"}
     assert c.delete("/api/environments/acme-python").status_code == 200
     assert c.get("/api/environments/acme-python").status_code == 404
+
+
+def test_only_admins_create_file_backed_credentials(api, tmp_path):
+    """A member's token can store a value of their own, but not a reference to a mounted file (403)."""
+    c, _ = api
+    c.post("/api/people", json={"id": "mia", "role": "member"})
+    tok = c.post("/api/people/mia/tokens", json={"name": "cc"}).json()["token"]
+    body = {"name": "mine", "harness": "claude-code", "kind": "api_key",
+            "value": "hangar-secret-ref:file:" + str(tmp_path / "secrets" / "mine")}
+    r = c.post("/api/credentials", json=body, headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 403 and "only an admin" in r.json()["error"], r.text
+    r = c.post("/api/credentials", json=body | {"value": "sk-ant-own-0123456789"},
+               headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 200, r.text
+    r = c.post("/api/credentials", json=body | {"name": "team-ref", "team": True,
+               "value": "hangar-secret-ref:file:" + str(tmp_path / "secrets" / "team-ref")})
+    assert r.status_code == 200, r.text  # the admin's

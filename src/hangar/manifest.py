@@ -385,7 +385,8 @@ def build(fleet: Fleet, spec: EnvSpec, harness: str | None, *, s: Session | None
         "resources": resources,
         "policy": policy,
         "probe": {"ok": probe is not None and not probe.get("error"), "error": (probe or {}).get("error"),
-                  "plugins": (probe or {}).get("plugins")}  # --- #136: the seed plugins the sandbox has
+                  "plugins": (probe or {}).get("plugins"),  # --- #136: the seed plugins the sandbox has
+                  "codex_hooks": (probe or {}).get("codex_hooks")}  # --- #244: the lock's Codex hooks
         if turn is not None else None,
         # --- #125: a subscription login in the sandbox (teamcreds), with the turn's own
         "warnings": list(dict.fromkeys([*(turn.warnings if turn is not None else []),
@@ -414,7 +415,8 @@ def _split(sb: Sandbox, run_id: str) -> bool:
 
 
 # ====================================================================== the probe: what the sandbox has
-def probe_script(repo_path: str | None, home: str, harness: str | None, spec: EnvSpec | None = None) -> str:
+def probe_script(repo_path: str | None, home: str, harness: str | None, spec: EnvSpec | None = None,
+                 extra: list[str] | None = None) -> str:
     h = HARNESSES.get(harness or "")
     q = shlex.quote
     lines = ["export LC_ALL=C GIT_OPTIONAL_LOCKS=0",
@@ -436,11 +438,14 @@ def probe_script(repo_path: str | None, home: str, harness: str | None, spec: En
                      "printf 'skill\\t%s\\t%s\\t%s\\n' \"$n\" \"$g\" \"$c\"; done")
     if spec is not None:  # --- #136
         lines += plugins.probe_lines(spec, harness)
+    lines += extra or []  # --- #244: whether Codex runs the lock's plugin hooks
     lines.append("true")
     return "\n".join(lines)
 
 
 def parse_probe(out: str) -> dict[str, Any]:
+    from hangar import codex_plugins
+
     r: dict[str, Any] = {"head": None, "global": None, "repo": [], "skills": []}
     for line in out.splitlines():
         parts = line.split("\t")
@@ -455,12 +460,27 @@ def parse_probe(out: str) -> dict[str, Any]:
                 r.setdefault("plugins", []).append({
                     "id": parts[1][:200], "present": parts[2] != "-",
                     "digest": "sha256:" + parts[2] if parts[2] != "-" else None, "files": int(parts[3].strip())})
+            elif (hook := codex_plugins.parse_probe_line(parts)) is not None:  # --- #244
+                r.setdefault("codex_hooks", []).append(hook)
             elif parts[0] == "skill" and len(parts) == 4:
                 r["skills"].append({"name": parts[1][:100], "digest": "sha256:" + parts[2],
                                     "files": int(parts[3].strip())})
         except ValueError:
             continue
     return r
+
+
+def _codex_hook_lines(svc: SessionService, sb: Sandbox, harness: str | None, home: str) -> list[str]:
+    """--- #244: the probe's question to the sandbox's Codex about the lock's plugin hooks ([] without any)."""
+    from hangar import codex_plugins
+
+    try:
+        t = codex_plugins.mounted_trust(svc.fleet, sb, harness)
+    except Exception:  # noqa: BLE001 - nothing to ask; the rest is read
+        return []
+    h = HARNESSES.get(harness or "")
+    codex = f"{h.prefix}/bin/codex" if h is not None and h.install else "codex"
+    return codex_plugins.probe_lines(t, codex, sb.info.get("repo_path") or home)
 
 
 def start_probe(svc: SessionService, s: Session, sb: Sandbox) -> asyncio.Task[dict[str, Any]]:
@@ -475,7 +495,8 @@ def start_probe(svc: SessionService, s: Session, sb: Sandbox) -> asyncio.Task[di
                 spec: EnvSpec | None = harness_thaw.effective_spec(svc.fleet, sb, svc.fleet.catalog.get(s.environment))
             except Exception:  # noqa: BLE001 - no plugins to look for, the rest is read
                 spec = None
-            res = await svc.fleet.exec(sb.id, probe_script(sb.info.get("repo_path"), home, s.harness, spec),
+            extra = _codex_hook_lines(svc, sb, s.harness, home)
+            res = await svc.fleet.exec(sb.id, probe_script(sb.info.get("repo_path"), home, s.harness, spec, extra),
                                        timeout=PROBE_SECONDS, actor=f"session:{s.id}", quiet=True)
         except Exception as e:  # noqa: BLE001 - the manifest says it couldn't look; the turn goes on
             return {"error": f"could not read the sandbox: {str(e)[:200]}"}

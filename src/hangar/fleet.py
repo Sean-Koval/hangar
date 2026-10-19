@@ -22,6 +22,7 @@ import hangar.identity as identity  # --- identity
 import hangar.people as people  # --- identity
 from hangar import buildcache as buildcache  # --- caches
 from hangar import cloudcreds as cloudcreds  # --- egress
+from hangar import codex_plugins as codex_plugins  # --- #244: a lock's Codex plugins and their hook trust
 from hangar import delivery as delivery  # --- least-privilege
 from hangar import egress as egress  # --- egress
 from hangar import envbuilds as envbuilds  # --- envbuilds
@@ -1078,6 +1079,11 @@ class Fleet:
             f"{ws}/{repo_dirname(sb.repo)}"
         baked = bool(spec.repo and spec.repo.bake and spec.repo.url == sb.repo)
         prebuilt = envbuilds.EnvBuilds.prebuilt(sb)  # --- envbuilds: the repo's build holds its checkout, installed
+        from hangar import changesets  # --- change sets: a parent job's sandbox holds every role at /workspace/<role>
+
+        cs = changesets.sandbox_roles(self, sb)
+        if cs is not None and not baked and not prebuilt:
+            dest = changesets.checkout(self, cs.primary)
         q = shlex.quote
         if prebuilt:  # --- envbuilds
             script = envbuilds.EnvBuilds.checkout_script(sb, dest)
@@ -1102,6 +1108,8 @@ class Fleet:
         sb.info["repo_path"] = dest
         if work_branch:
             sb.info["work_branch"] = work_branch
+        if cs is not None:  # --- change sets: the other roles, beside the primary
+            await changesets.setup_checkouts(self, prov, sb, stage)
 
     @observe.traced("sandbox.destroy")  # --- observe
     async def destroy(self, ref: str, actor: str = "system") -> Sandbox:
@@ -1352,6 +1360,7 @@ class Fleet:
         wd = cwd or sb.info.get("repo_path") or self.settings.workspace_dir
         env = {**observe.run_env(self.settings, sb, run_id, hname), **(env or {})}  # --- observe: TRACEPARENT, OTel
         env.update(plugins.turn_env(harness_thaw.effective_spec(self, sb, spec), hname, env))  # --- #136; #221
+        env.update(codex_plugins.turn_env(self, sb, hname))  # --- #244: trust exactly the lock's Codex plugin hooks
         exports = (
             f"export HANGAR_PROMPT_FILE={rdir}/{run_id}.prompt HANGAR_RUN_ID={run_id}\n"
             + (f"export HANGAR_MODEL={shlex.quote(model)}\n" if model else "")

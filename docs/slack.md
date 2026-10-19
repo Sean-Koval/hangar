@@ -1,6 +1,7 @@
 # Slack: start and steer jobs from a channel
 
 Type `/hangar fix the flaky upload test` in a channel, or mention `@hangar` with the instructions, and hangar runs a [job](jobs.md) on that channel's repo. It reports back in a thread:
+
 - when the agent starts;
 - when it needs a decision;
 - when it finishes, with the outcome, the agent's summary, the PR link, the verification result, and what went wrong if it failed.

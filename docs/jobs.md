@@ -18,6 +18,7 @@ hangar doctor --fix                                                         # ap
 ```
 
 `hangar doctor` checks:
+
 - the providers;
 - Cloud Build permissions (the `actAs` grant);
 - recent failed sandbox starts (quota);
@@ -138,6 +139,7 @@ hangar setup github --repo acme/app=python --token-file ~/.hangar/gh-token --non
 ```
 
 The wizard:
+
 1. **Checks the token** before storing anything. It must be able to read each repo and write to it, and to manage its webhooks. The token is read from a hidden prompt, `--token-file`, `--token-stdin` or `--token-from-gh` (the `gh` CLI's login), and it is never echoed or printed.
    - **Which token:** a [fine-grained token](https://github.com/settings/personal-access-tokens/new) for the repos, with repository permissions *Issues* and *Pull requests*: Read and write, *Webhooks*: Read and write, and *Actions*: Read (auto-fix reads failing CI logs with it). *Metadata*: Read is added automatically. A classic token needs the `repo` scope. GitHub doesn't open the check-runs API to fine-grained tokens, so with one, auto-fix describes a failing check from its webhook (title, summary, text) and its Actions log, without the check's annotations; a classic token gets those too.
    - **What it's for:** the control plane uses it to comment and open PRs; it never goes into a sandbox.
@@ -175,6 +177,7 @@ Write the ticket from the [agent ticket template](intake.md#agent-tickets): *Goa
 ## 5. Work with the agent
 
 Every job runs in a [session](sessions.md). The agent keeps its conversation between turns, and the job's sandbox, context and work in progress are checkpointed. So a reply always works:
+
 - a `/hangar` comment on the PR a week later;
 - a reply in the job's Slack thread;
 - `hangar job follow-up`;
@@ -227,6 +230,7 @@ hangar job attempts job-3fa2c1d0
 Over REST or MCP: `"strategy": "best_of_n", "n": 3` (2–8), and optionally `"judge": true`.
 
 How it runs:
+
 1. Hangar prepares the job once: a sandbox, the branch checks and the context files. Then it checkpoints that state.
 2. It [forks](sessions.md#forks-and-best-of-n) the job's session into N attempt sessions. Each attempt restores the checkpoint into its own sandbox, on branch `<job branch>-attempt-<i>`, and runs the agent on the same prompt. The agent sees `$HANGAR_ATTEMPT` (1…N). Each attempt is a full first turn: it gets the job's local work (`patch`/`bundle` context), its `output_schema` (with the repair run when the result is missing) and the [`HANGAR_IO`](context-exchange.md) protocol, and the job's `budget` caps each attempt (and the judge) as it caps any agent turn.
 3. Each attempt is verified in its own sandbox, and what it left uncommitted is committed there. An attempt stopped over budget or by its timeout is still ranked (below those that finished cleanly), and delivered as a draft if it wins.

@@ -79,6 +79,7 @@ the log: approvals still come from the driver's own file, and the turn's status,
 own reads.
 
 Following them:
+
 - **SSE**: `GET /api/sessions/{ref}/events/stream?since=<seq>` and `GET /api/jobs/{id}/events/stream?since=<seq>`
   (a `jobs` token sees only its own jobs). Each event is `id: <seq>` and `data: <event JSON>`; reconnecting with
   `Last-Event-ID` resumes. A comment every 15 s keeps proxies from timing the connection out.
@@ -110,6 +111,7 @@ REST: `GET /api/sandboxes/{ref}/watch?path=...&recursive=true` (SSE).
 | `HANGAR_STREAM_TURN_LOGS` | true | Follow running turns' logs through the daemon |
 
 Every stream ends, with what it has so far and why (`closed`, or an SSE `close` event), when:
+
 - its sandbox is destroyed or paused;
 - the token that opened it is revoked (static tokens, `mcp`-scoped tokens and OAuth access tokens alike; checked
   every `HANGAR_STREAM_RECHECK_SECONDS`): streamed commands and background processes it started are killed;
