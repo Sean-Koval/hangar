@@ -4,6 +4,9 @@
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// text with its URLs as links (escaped first; a trailing . , ; ) stays outside the link)
+const linkify = (text) => esc(text).replace(/\bhttps?:\/\/[^\s<]+?(?=[.,;:)]*(?:\s|$))/g, (u) =>
+  `<a href="${u}" target="_blank" rel="noopener" class="af-mono">${u.replace(/^https?:\/\/(www\.)?/, "")}</a>`);
 
 /* ---- Airframe (vendored in /ui/airframe/): the helpers and behaviours come from airframe.js (window.airframe, loaded
    before this script): status, icon, meta, btn, avatar, toast, confirm, drawer. The console adds only what it needs on
@@ -91,14 +94,7 @@ function wireComposer(el, { onSend, onTakeBack, draft = "" }) {
    (it goes back to the agent); approve needs none. Decided ones become verdict rows. ---- */
 const HARNESS_WORD = { "claude-code": "Claude Code", codex: "Codex", pi: "pi", antigravity: "Antigravity" };
 const harnessWord = (h) => HARNESS_WORD[h] || h || "the agent";
-function untilWords(ts) {
-  if (!ts) return "";
-  const s = Math.round(ts - Date.now() / 1000);
-  if (s <= 0) return "now";
-  if (s < 3600) return `${Math.round(s / 60)} min`;
-  const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);  // "2 h 10 min", as Airframe's cards read
-  return m ? `${h} h ${m} min` : `${h} h`;
-}
+const untilWords = (ts) => (!ts ? "" : until(ts).replace(/^in /, ""));  // "2 h 10 min", as Airframe's cards read
 // a: {id, kind: tool | job | request, cmd, tool, taint, policy, since, expires, who: {harness, sandbox, owner, requester},
 //     job, session (names, for the inspect link and the words), allowAlways, approve, deny}
 function approvalHtml(a) {
@@ -468,22 +464,27 @@ async function busy(btn, fn) {
   finally { if (btn) { btn.disabled = false; btn.innerHTML = label; } }
 }
 
-function ago(ts) {
-  if (!ts) return "";
-  const s = Math.round(Date.now() / 1000 - ts);
-  if (s < 60) return `${s} s ago`;
-  if (s < 3600) return `${Math.round(s / 60)} min ago`;
-  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
-  return `${Math.round(s / 86400)} d ago`;
+/* ---- numbers in words (the brand book's voice): one helper for every duration and count the console shows.
+   A duration is "14 s", "3 min", "2 h 10 min", "5 h", "3 d": one space, the unit in the same weight. A count is
+   "1 commit", "3 commits", never a bracketed s; what the server writes that way is tidied before it is shown. ---- */
+function duration(seconds, { fine = true } = {}) {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.round(s / 60)} min`;
+  if (s < 86400) {
+    const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
+    return fine && m && m < 60 ? `${h} h ${m} min` : `${Math.round(s / 3600)} h`;
+  }
+  return `${Math.round(s / 86400)} d`;
 }
+const ago = (ts) => (ts ? `${duration(Date.now() / 1000 - ts, { fine: false })} ago` : "");
 function until(ts) {
   if (!ts) return "never";
   const s = Math.round(ts - Date.now() / 1000);
-  if (s <= 0) return "now";
-  if (s < 3600) return `in ${Math.round(s / 60)} min`;
-  return `in ${(s / 3600).toFixed(1)} h`;
+  return s <= 0 ? "now" : `in ${duration(s)}`;
 }
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;  // "1 checkpoint", "3 checkpoints": never "(s)"
+const words = (text) => String(text ?? "").replace(/(\d+) ([a-z]+)\(s\)/g, (_, n, w) => plural(Number(n), w));  // a server's "commit(s)" -> "1 commit", "3 commits"
 
 /* ------------------------------------------------------------------ gate */
 function showGate(err) {
@@ -750,12 +751,22 @@ async function connectTerm(entry) {
     entry.initial = null;
     ws.addEventListener("open", () => setTimeout(() => ws.send(new TextEncoder().encode(cmd + "\r")), 400));
   }
+  let got = false, why = "";
+  $(".term-empty", entry.el)?.remove();
   ws.onmessage = (ev) => {
     if (typeof ev.data === "string") {
-      try { const m = JSON.parse(ev.data); if (m.type === "error") term.writeln(`\r\n\x1b[31m${m.message}\x1b[0m`); } catch { term.write(ev.data); }
-    } else term.write(new Uint8Array(ev.data));
+      try { const m = JSON.parse(ev.data); if (m.type === "error") { why = m.message; term.writeln(`\r\n\x1b[31m${m.message}\x1b[0m`); } } catch { got = true; term.write(ev.data); }
+    } else { got = true; term.write(new Uint8Array(ev.data)); }
   };
-  ws.onclose = () => term.writeln("\r\n\x1b[90m[disconnected; press Enter to reconnect]\x1b[0m");
+  // a connection that ends after output is a shell to reconnect to; one that never gave any is no terminal at all
+  // (the session ended, or the sandbox is gone): Airframe's empty state over the pane says so, with a retry
+  ws.onclose = () => {
+    if (got) { term.writeln("\r\n\x1b[90m[connection closed; press Enter to reconnect]\x1b[0m"); return; }
+    entry.el.insertAdjacentHTML("beforeend", `<div class="term-empty">${emptyState({ kind: "after-action", compact: true, icon: "terminal",
+      title: "No terminal to attach to.", text: esc(why || `${session ? `Terminal session ${session} in ${sb.name}` : sb.name} did not answer; the session may have ended, or the sandbox has spun down.`),
+      actions: btn("Try again", { kind: "secondary", sm: true, icon: "retry", attrs: { "data-term-retry": true } }) })}</div>`);
+    $("[data-term-retry]", entry.el).addEventListener("click", () => connectTerm(entry));
+  };
   const enc = new TextEncoder();
   entry.dataSub?.dispose();
   entry.dataSub = term.onData((d) => {
@@ -997,6 +1008,9 @@ function renderJob(j) {
   const turns = j.turns || [];
   const live = !!j.sandbox_id;
   const role = jobRole(j);
+  // a finished turn has no terminal to watch: the agent's process ended with it (the sandbox may still be up)
+  const lastTurn = turns.at(-1);
+  const turnOver = `The agent's turn ended ${lastTurn?.finished_at ? ago(lastTurn.finished_at) : ago(j.updated_at) || "already"}.`;
   box.classList.remove("af-card--lit");  // the cards that wait on a person light themselves
   box.innerHTML = `
     <div class="detail-head"><h3>${esc(j.title)}</h3>${status(role, jobWord(j), { lit: true })}
@@ -1018,9 +1032,11 @@ function renderJob(j) {
         ${status(sesRole(j.session), sesWord(j.session))}<span class="hint">${plural(j.session.checkpoints, "checkpoint")}</span></dd>` : ""}
     </dl>
     <div class="env-bar">
-      ${live && j.terminal_session ? `<button id="job-watch" type="button" class="af-btn ${j.active ? "af-btn--primary" : "af-btn--secondary"}">${ic("terminal")}${j.active ? "Watch the agent" : "Agent's terminal"}</button>` : ""}
+      ${live && j.terminal_session && j.active ? `<button id="job-watch" type="button" class="af-btn af-btn--primary">${ic("terminal")}Watch the agent</button>` : ""}
+      ${live && j.terminal_session && !j.active ? `<button type="button" class="af-btn af-btn--secondary" disabled title="${esc(turnOver)}">${ic("terminal")}Agent's terminal</button>` : ""}
       ${live ? `<button id="job-shell" type="button" class="af-btn af-btn--secondary">${ic("terminal")}Open a shell</button>` : ""}
       ${j.active ? `<button id="job-cancel" type="button" class="af-btn af-btn--danger">Cancel job</button>` : ""}
+      ${live && j.terminal_session && !j.active ? `<span class="hint">${esc(turnOver)} What it did is under <a href="#job-activity">Activity</a>.</span>` : ""}
     </div>
     ${r.summary ? `<h4>Agent's summary</h4><pre class="log summary">${esc(r.summary)}</pre>` : ""}
     ${r.verify_tail && r.verify_exit_code ? `<h4>Check output</h4><pre class="log">${esc(r.verify_tail)}</pre>` : ""}
@@ -1033,9 +1049,9 @@ function renderJob(j) {
     ${verdicts.length ? `<h4>Decisions</h4><div class="verdicts">${verdicts.map(verdictHtml).join("")}</div>` : ""}
     ${activityBlock("jobs", j.id, j.usage)}
     <h4>Timeline</h4>
-    <ol class="timeline">${(j.events || []).slice().reverse().map((e) => `<li data-tone="${JOB_STATE[e.state] || "off"}">${mark(JOB_STATE[e.state] || "off")}
+    <ol class="timeline">${(j.events || []).slice().reverse().map((e) => `<li data-tone="${JOB_STATE[e.state] || "off"}"><i class="tl-dot" aria-hidden="true"></i>
       <span class="when" title="${new Date(e.ts * 1000).toLocaleString()}">${ago(e.ts)}</span>
-      <span class="what">${esc(e.message)}</span></li>`).join("")}</ol>
+      <span class="what">${linkify(words(e.message))}</span></li>`).join("")}</ol>
     ${turns.length > 1 ? `<h4>Turns</h4><ol class="turns">${turns.map((t, i) => `<li><b>${i + 1}. ${esc(t.kind.replace("_", "-"))}</b>
       ${meta([["by", t.requester || ""], ["exit", t.exit_code ?? ""]])}
       ${t.message ? `<div class="hint">${esc(t.message)}</div>` : ""}</li>`).join("")}</ol>` : ""}
@@ -1187,7 +1203,7 @@ function renderSession(x) {
     <div class="env-bar">
       ${live ? "" : (x.state === "archived" ? "" : `<button id="ses-open" type="button" class="af-btn ${form ? "af-btn--secondary" : "af-btn--primary"}">${ic("play")}${x.checkpoint_count ? "Resume" : "Open"}</button>`)}
       ${live && x.resume_command && x.state !== "running" ? `<button id="ses-agent" type="button" class="af-btn af-btn--secondary">${ic("agent")}Talk to the agent here</button>` : ""}
-      ${live && x.terminal_session ? `<button id="ses-watch" type="button" class="af-btn af-btn--secondary">${ic("terminal")}Last turn's terminal</button>` : ""}
+      ${live && x.terminal_session ? `<button id="ses-watch" type="button" class="af-btn af-btn--secondary"${x.state === "running" ? "" : ` disabled title="The turn ended ${esc(ago(x.last_active_at) || "already")}; what it did is under Activity."`}>${ic("terminal")}${x.state === "running" ? "Watch the agent" : "Last turn's terminal"}</button>` : ""}
       ${live ? `<button id="ses-shell" type="button" class="af-btn af-btn--secondary">${ic("terminal")}Open a shell</button><button id="ses-suspend" type="button" class="af-btn af-btn--ghost">${ic("spindown")}Suspend</button>` : ""}
     </div>
     ${x.last_summary ? `<h4>Agent's last summary</h4><pre class="log summary">${esc(x.last_summary)}</pre>` : ""}
@@ -1255,17 +1271,36 @@ function usageMeta(u) {
 }
 
 function activityBlock(kind, id, usage) {
-  return `<h4 class="with-meta">Activity${usageMeta(usage)}</h4>
+  return `<h4 class="with-meta" id="${kind === "jobs" ? "job-activity" : "ses-activity"}">Activity${usageMeta(usage)}</h4>
     <ol class="timeline activity" data-activity="${kind}/${esc(id)}"></ol>`;
 }
 
+// the newest ACT_SHOWN rows, the rest behind "Earlier (n)"; a tool's output (result, error) is a mono block capped at
+// three lines that opens on its own "More"; a row's text is never cut mid-line
+const ACT_SHOWN = 12;
+const ACT_BLOCK = new Set(["tool_result", "error"]);
 function drawActivity(el, st) {
-  const shown = st.events.filter((e) => e.kind !== "usage").slice(-40).reverse();
-  el.innerHTML = shown.length ? shown.map((e) => `<li data-tone="${ACT_TONE[e.kind] || "off"}">${mark(ACT_TONE[e.kind] || "off")}
+  const all = st.events.filter((e) => e.kind !== "usage").reverse();
+  const shown = st.all ? all : all.slice(0, ACT_SHOWN);  // (kept on the state: the panel repaints every 4 s)
+  const row = (e) => {
+    const text = String(e.text ?? ""), block = ACT_BLOCK.has(e.kind) && (text.includes("\n") || text.length > 80);  // a one-word "ok" stays inline
+    const long = block && (text.split("\n").length > 3 || text.length > 240);
+    return `<li data-tone="${ACT_TONE[e.kind] || "off"}"><i class="tl-dot" aria-hidden="true"></i>
       <span class="when" title="${new Date(e.ts * 1000).toLocaleString()}">${ago(e.ts)}</span>
-      <span class="what"><b>${esc(ACT_LABEL[e.kind] || e.kind)}</b> ${esc(e.text)}</span></li>`).join("")
+      <span class="what"><b>${esc(ACT_LABEL[e.kind] || e.kind)}</b>${block
+        ? `<pre class="act-out af-mono${long ? " is-capped" : ""}">${esc(text)}</pre>${long ? btn("More", { kind: "ghost", sm: true, icon: "chevron-down", attrs: { "data-act-more": true, "aria-expanded": "false" } }) : ""}`
+        : ` ${linkify(words(text))}`}</span></li>`;
+  };
+  el.innerHTML = shown.length ? shown.map(row).join("") + (all.length > shown.length
+      ? `<li class="act-more">${btn(`Earlier (${all.length - shown.length})`, { kind: "ghost", sm: true, icon: "chevron-down", attrs: { "data-act-all": true } })}</li>` : "")
     : `<li class="hint">${st.loaded ? "No activity recorded." : "Loading…"}</li>`;
 }
+document.addEventListener("click", (e) => {
+  const all = e.target.closest("[data-act-all]"), more = e.target.closest("[data-act-more]");
+  if (all) { const el = all.closest("[data-activity]"), st = activity.get(el.dataset.activity); st.all = true; drawActivity(el, st); }
+  if (more) { const pre = more.previousElementSibling; const open = pre.classList.toggle("is-capped"); more.setAttribute("aria-expanded", String(!open));
+    more.innerHTML = `${ic(open ? "chevron-down" : "chevron-right")}${open ? "More" : "Less"}`; }
+});
 
 async function fillActivity(box) {
   const el = $("[data-activity]", box);
@@ -1328,6 +1363,7 @@ function syncJobHarness() {
   f.repo.placeholder = env?.repo ? `${env.repo} (environment default)` : "https://github.com/org/repo.git";
 }
 $("#btn-new-job").addEventListener("click", () => {
+  hideDrawer();  // the terminal drawer would sit over the form
   const f = $("#job-form");
   // Environments with a repo and credentials first: those are the ones set up for jobs.
   const agentEnvs = state.envs.filter((e) => !e.error && (e.harnesses || []).some((h) => h !== "git"))
