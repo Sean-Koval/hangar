@@ -1,9 +1,23 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>hangar</title>
+<!-- The theme, before first paint: Night is the default (the brand's dark cockpit); a stored choice (localStorage
+     hangar.theme) or a link's ?theme=day|night wins, and "auto" follows the OS. The switch in the top bar sets it. -->
+<script>
+  (function () {
+    var t = null;
+    try {
+      var q = new URLSearchParams(location.search).get("theme");
+      t = q || localStorage.getItem("hangar.theme");
+      if (q) localStorage.setItem("hangar.theme", q);
+    } catch (e) {}
+    if (t === "light" || t === "day") document.documentElement.dataset.theme = "light";
+    else if (t === "auto") document.documentElement.removeAttribute("data-theme");
+  })();
+</script>
 <!-- Airframe (Sean-Koval/agent-factory) is the design source of truth: /ui/airframe/ is vendored by
      scripts/sync-airframe.sh and never edited here; app.css uses var(--af-*) tokens and af- classes only. -->
 <link rel="icon" type="image/svg+xml" href="/ui/favicon.svg">
@@ -53,6 +67,13 @@
     </nav>
     <div class="af-nav__right">
       <div id="providers" class="providers"></div>
+      <!-- the theme switch: a ghost icon button, sun in Night ("Switch to Day"), moon in Day; app.js flips it and
+           remembers the choice (hangar.theme). The sun and moon are drawn here in the sprite's style until Airframe
+           ships them. -->
+      <button id="theme-switch" class="af-btn af-btn--ghost af-btn--sm af-btn--icon theme-switch" type="button" aria-label="Switch to Day" title="Switch to Day">
+        <svg class="af-ic theme-switch__sun" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><circle cx="10" cy="10" r="3.5"/><path d="M10 2v2.2M10 15.8V18M2 10h2.2M15.8 10H18M4.3 4.3l1.6 1.6M14.1 14.1l1.6 1.6M4.3 15.7l1.6-1.6M14.1 5.9l1.6-1.6"/></svg>
+        <svg class="af-ic theme-switch__moon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M16.5 12.4A7 7 0 0 1 7.6 3.5a7 7 0 1 0 8.9 8.9z"/></svg>
+      </button>
       <button id="signout" class="af-btn af-btn--ghost af-btn--sm" type="button">Sign out</button>
     </div>
   </header>
@@ -85,7 +106,7 @@
             <option value="succeeded">Succeeded</option><option value="failed">Failed</option>
             <option value="cancelled">Cancelled</option>
           </select>
-          <button class="af-btn af-btn--primary" id="btn-new-job" type="button">New job</button>
+          <button class="af-btn af-btn--secondary" id="btn-new-job" type="button">New job</button>
         </div>
       </header>
       <form id="job-form" class="panel new-form" hidden>
@@ -129,7 +150,7 @@
         </div>
         <div class="af-page-head__actions">
           <label class="check"><input type="checkbox" id="ses-jobs"> Show job sessions</label>
-          <button class="af-btn af-btn--primary" id="btn-new-session" type="button">New session</button>
+          <button class="af-btn af-btn--secondary" id="btn-new-session" type="button">New session</button>
         </div>
       </header>
       <form id="session-form" class="panel new-form" hidden>
