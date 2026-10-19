@@ -55,7 +55,7 @@ Settings you change with `hangar setup` or `hangar config set` are stored in han
 
 ## A team on one hangar
 
-To put a team on hangar step by step (2 engineers on 1 repo, then 6 on 3), follow [the onboarding runbook](runbooks/onboarding.md); it ends with `hangar repo check` green for each repo.
+To put a team on hangar step by step (2 engineers on 1 repo, then 6 on 3), follow [the onboarding runbook](runbooks/onboarding.md); it ends with `hangar repo check` green for each repo. The [runbooks](runbooks/README.md) also cover the Friday harness review, run capture and governance break-glass.
 
 An admin adds people; each gets a login token, connects their own clients and stores their own agent login:
 
@@ -83,6 +83,7 @@ Members see and act on their own sandboxes, sessions and jobs; admins on everyon
 | Let an approval land the PR | [Landing](landing.md) |
 | Put a team on it, repo by repo | [The onboarding runbook](runbooks/onboarding.md) |
 | Upgrade a running hangar | [Upgrading](upgrading.md) |
+| Run it day to day, and when something breaks | [Runbooks](runbooks/README.md) · [Troubleshooting](troubleshooting.md) |
 
 ## MCP tools
 
@@ -155,6 +156,14 @@ scripts/ci/select_tests.py --base origin/main  # just the tests your branch can 
 HANGAR_E2E=1 uv run pytest tests/test_e2e_docker.py   # real Docker, driven over MCP
 uv run ruff check src tests
 uv run hangar serve --reload
+```
+
+The docs site builds the way `.github/workflows/docs.yml` builds it (Zensical, from `mkdocs.yml`):
+
+```bash
+pip install zensical==0.0.71
+zensical build --strict    # into site/; a broken link or anchor fails it, as in CI
+zensical serve             # http://localhost:8000, rebuilt on save
 ```
 
 Code map: `fleet.py` (lifecycle), `envspec.py` (specs to Dockerfiles), `broker.py` + `vault.py` (credentials), `harnesses.py` (per-agent install, auth, run), `mcp_server.py`, `app.py` (REST, websockets, dashboard), `providers/` (docker, kubernetes, e2b), `ui/` (no-build dashboard).

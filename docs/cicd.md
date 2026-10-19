@@ -53,7 +53,10 @@ deployment policy for another branch, repository copies of the deploy secrets, a
 
 ## 2. Start the deploy, then approve it
 
-Deploy while the sandbox pools are on (10:00 to 01:00 ET): the acceptance checks need sandboxes.
+Deploy while the sandbox pools are on (10:00 to 01:00 ET): the acceptance checks need sandboxes. That is the window for
+routine `deploy.yml` deploys. Image or node-pool upgrades, which replace the sandbox pool's nodes or every
+environment's image, go by hand with `deploy/gke/up.sh` in the power-down window, 01:00 to 09:50 ET, as each upgrade
+guide says ([upgrading.md, when to deploy](upgrading.md#when-to-deploy)).
 
 ```bash
 gh workflow run deploy.yml --ref main

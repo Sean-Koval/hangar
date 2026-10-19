@@ -188,7 +188,7 @@ When an item moves to the trigger column, hangar reads the item and its issue in
 As the work moves to writing tickets an agent can finish, the ticket's shape is the tool. Two templates ship with hangar:
 
 - [`docs/templates/jira-agent-ticket.md`](https://github.com/Sean-Koval/hangar/blob/main/docs/templates/jira-agent-ticket.md): a Jira description template (paste it, or make it the project's description template);
-- [`docs/templates/github-issue-agent-task.yml`](templates/github-issue-agent-task.yml): a GitHub issue form (copy it to `.github/ISSUE_TEMPLATE/agent-task.yml`; it labels the issue `hangar`, so opening one starts a job).
+- [`docs/templates/github-issue-agent-task.yml`](https://github.com/Sean-Koval/hangar/blob/main/docs/templates/github-issue-agent-task.yml): a GitHub issue form (copy it to `.github/ISSUE_TEMPLATE/agent-task.yml`; it labels the issue `hangar`, so opening one starts a job).
 
 Both have *Goal*, *Acceptance criteria* (a checklist), *Verify command*, *Out of scope* and *Touches risk paths? (y/n)*. Hangar reads two of them by heading, for Jira, GitHub issues and GitHub Projects alike: Markdown headings, Jira wiki (`h2.`), Jira Cloud's editor (headings and action items), a GitHub issue form's output, or a bold line. Only the first 50 KB of a description is read.
 

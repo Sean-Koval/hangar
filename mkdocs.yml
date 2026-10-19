@@ -74,10 +74,15 @@ nav:
       - Connecting clients: clients.md
       - Using MCP: mcp.md
       - Team setup: team.md
-      - Onboarding a team (runbook): runbooks/onboarding.md
-      - The Friday harness review (runbook): runbooks/harness-review.md
+      - Runbooks:
+          - runbooks/README.md
+          - Onboarding a team: runbooks/onboarding.md
+          - The Friday harness review: runbooks/harness-review.md
+          - "Run capture: the outbox": runbooks/outbox.md
+          - Governance break-glass: runbooks/break-glass.md
   - Guides:
       - Work:
+          - The web console: console.md
           - Jobs: jobs.md
           - Sessions: sessions.md
           - Steering: steering.md
@@ -136,6 +141,7 @@ nav:
       - Deploy on your company's cluster: deploy-company.md
       - Acceptance on the cluster: acceptance.md
       - Upgrading: upgrading.md
+      - Troubleshooting: troubleshooting.md
       - Team scale: team-scale.md
       - The Cloud Doctor: doctor.md
       - MicroVM tier (E2B, CubeSandbox): microvm.md

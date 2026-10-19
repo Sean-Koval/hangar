@@ -15,6 +15,7 @@ Writes, next to this file (or into --out):
   hangar-demo.gif / .mp4        a ticket becomes a sandbox run and a draft PR (README: the GIF; docs: the MP4)
   hangar-review.gif / .mp4      the review loop: decide what is held, read the change, comment back to the agent
   ui-jobs.png, ui-sessions.png  the console's Jobs and Sessions views, from the demo run
+  ui-fleet-{board,bays,columns,owners}.png    the Fleet page's four views, from the demo run (docs/console.md)
   ui-needs.png, ui-fleet.png, ui-review.png   Needs you, the Fleet board and the Diff, from the fixture
   inbox.png                     `hangar inbox` in a terminal
   hangar-suite.svg, -dark.png, -light.png     the diagram (diagram.py)
@@ -43,6 +44,7 @@ import diagram  # noqa: E402
 from fixture import Fixture  # noqa: E402
 
 W, H = 1440, 900  # the recordings' viewport; stills are the same frame at 2x
+FLEET_VIEWS = ("bays", "columns", "owners", "board")  # the Board last: it is shot with a held sandbox selected
 MAX_BYTES = 3_000_000  # each asset stays small enough for the repo
 DEMO_PACE = "0.6"  # the scripted agent's pauses, so the ticket's run fits a 20 s recording
 FONTS = (
@@ -389,6 +391,16 @@ async def ui(pw, out: Path, work: Path) -> None:
     await tab.wait_for_timeout(1200)
     await tab.screenshot(path=str(out / "ui-sessions.png"))
     print("wrote", out / "ui-jobs.png", "and", out / "ui-sessions.png")
+    # the fleet four ways; on the Board, the sandbox waiting on a person is selected, so its detail panel shows
+    for view in FLEET_VIEWS:
+        await tab.goto(f"{demo.URL}/#fleet?view={view}", wait_until="networkidle")
+        await tab.wait_for_selector(f'#view-fleet[data-fleet-view="{view}"] #bays [data-tile]')
+        if view == "board":
+            await tab.locator("#bays [data-tile].af-stand--approval").first.click()
+            await tab.wait_for_selector("#fleet-detail .fd")
+        await tab.wait_for_timeout(800)
+        await tab.screenshot(path=str(out / f"ui-fleet-{view}.png"))
+        print("wrote", out / f"ui-fleet-{view}.png")
     await browser.close()
 
 
@@ -483,7 +495,8 @@ async def review(pw, out: Path, work: Path) -> None:
 def check(out: Path, only: str | None) -> None:
     names = {
         "diagram": ["hangar-suite.svg", "hangar-suite-dark.png", "hangar-suite-light.png"],
-        "ui": ["hangar-demo.gif", "hangar-demo.mp4", "ui-jobs.png", "ui-sessions.png", "inbox.png"],
+        "ui": ["hangar-demo.gif", "hangar-demo.mp4", "ui-jobs.png", "ui-sessions.png", "inbox.png",
+               *(f"ui-fleet-{v}.png" for v in sorted(FLEET_VIEWS))],
         "console": ["ui-needs.png", "ui-fleet.png", "ui-review.png", "hangar-review.gif", "hangar-review.mp4"],
     }
     want = [n for k, v in names.items() if only in (None, k) for n in v]

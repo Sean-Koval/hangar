@@ -15,7 +15,7 @@ Documentation site: **[sean-koval.github.io/hangar](https://sean-koval.github.io
 
 ## What it looks like
 
-The console on `:8787`. **Needs you** is first: held tool calls, jobs waiting to start and the agents' questions, decided in place; then what failed and what waits for review.
+The console on `:8787`. **Needs you** is first: held tool calls, jobs waiting to start and the agents' questions, decided in place; then what failed and what waits for review ([the web console](docs/console.md)).
 
 ![Needs you: a job from outside the team waiting for approval, a held git push with its policy and expiry and Deny, Allow for this turn and Allow, and an agent's question answered in place](docs/assets/front/ui-needs.png)
 
@@ -33,11 +33,11 @@ A **job**: issue #42's timeline, the agent's activity, the check and the draft P
 
 ## Where it sits
 
-Many doors bring work in; hangar runs it; the pull request is the one gate out. Sister tools define the harness (ai-dlc), judge the runs (flightdeck) and govern risky actions (Tower, formerly the governed workspace).
+Many doors bring work in; hangar runs it; the pull request is the one gate out. Around it, the team harness repo defines the harness (ai-dlc adds an optional workflow plugin), flightdeck judges the runs and [Tower](https://sean-koval.github.io/agent-factory/tools/workspace/), the Govern plane, decides risky actions: its decision API is built, and hangar's wiring to it is open ([#172](https://github.com/Sean-Koval/hangar/issues/172), [spec 0015](docs/specs/0015-governance-decision-point.md)).
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="docs/assets/front/hangar-suite-light.png">
-  <img alt="Trackers, chat and automation send work to hangar, which runs it in sandboxes, verifies it and opens a draft PR for people to review; ai-dlc supplies the harness lock, flightdeck reads the outbox, Tower decides risky actions" src="docs/assets/front/hangar-suite-dark.png">
+  <img alt="Trackers, chat and automation send work to hangar, which runs it in sandboxes, verifies it and opens a draft PR for people to review; the team harness repo supplies the harness lock, flightdeck reads the outbox, and hangar is to ask Tower about risky actions" src="docs/assets/front/hangar-suite-dark.png">
 </picture>
 
 ## Use cases
@@ -68,16 +68,30 @@ The [docs home page](https://sean-koval.github.io/hangar/#first-task) walks thro
 
 ## Features
 
-| Feature | What it gives your team |
-| --- | --- |
-| **Many front doors** | MCP clients, the CLI, REST, GitHub issues and Projects, Jira, Slack, webhooks, schedules and A2A all become [jobs](docs/jobs.md) or [sessions](docs/sessions.md), with one [repo policy](docs/repo-policy.md) for each repo. |
-| **Isolated sandboxes** | Each has its own files, tools, checkout and agent configuration, from [environments](docs/environments.md) you prepare once; fork a prepared one into parallel attempts. Docker, gVisor or Kata, GKE or E2B. |
-| **Any agent** | Claude Code, Codex, pi and Antigravity as [harnesses](docs/harnesses.md), pinned by version; a Codex client can ask for Claude Code and the other way round. A team shares one harness (instructions, skills, Claude Code plugins) frozen from a good run into a [harness repo](docs/harness-lock.md#the-team-harness-repo). |
-| **Verified delivery** | The repo's own check runs before anything is pushed; hangar pushes through the git gateway and opens a draft PR with a review packet; with [landing](docs/landing.md), an approval lands it. |
-| **People in the loop** | [Steer](docs/steering.md) a running agent, answer its questions where it asked (the ticket, the Slack thread, MCP), watch its terminal; the inbox lists what needs you. |
-| **Resumable sessions** | The conversation and repo state survive the sandbox; come back days later or fork a session. |
-| **Hostile-sandbox security** | Credentials stay behind a gateway; intake jobs get an egress allowlist and no push rights; tainted work opens as a draft and needs a second person. See the [security model](docs/security.md). |
-| **Usage and insight** | Tokens, cost and budgets per job and person ([activity](docs/activity.md)), traces as OTLP ([observability](docs/observability.md)), and run capture for [flightdeck](docs/specs/0014-sister-tool-interfaces.md). |
+| Feature | What it gives your team | Status |
+| --- | --- | --- |
+| **Many front doors** | MCP clients, the CLI, REST, GitHub issues and Projects, Jira, Slack, webhooks, schedules and A2A all become [jobs](docs/jobs.md) or [sessions](docs/sessions.md), with one [repo policy](docs/repo-policy.md) for each repo. | Shipped |
+| **Isolated sandboxes** | Each has its own files, tools, checkout and agent configuration, from [environments](docs/environments.md) you prepare once; fork a prepared one into parallel attempts. Docker, gVisor or Kata, GKE or E2B. | Shipped |
+| **Any agent** | Claude Code, Codex, pi and Antigravity as [harnesses](docs/harnesses.md), pinned by version; a Codex client can ask for Claude Code and the other way round. A team shares one harness (instructions, skills, Claude Code plugins) frozen from a good run into a [harness repo](docs/harness-lock.md#the-team-harness-repo). | Shipped |
+| **Verified delivery** | The repo's own check runs before anything is pushed; hangar pushes through the git gateway and opens a draft PR with a review packet; with [landing](docs/landing.md), an approval lands it. | Shipped |
+| **People in the loop** | [Steer](docs/steering.md) a running agent, answer its questions where it asked (the ticket, the Slack thread, MCP), watch its terminal; the inbox and the [web console](docs/console.md) show what needs you. | Shipped |
+| **Resumable sessions** | The conversation and repo state survive the sandbox; come back days later or fork a session. | Shipped |
+| **Hostile-sandbox security** | Credentials stay behind a gateway; intake jobs get an egress allowlist and no push rights; tainted work opens as a draft and needs a second person. See the [security model](docs/security.md). | Shipped |
+| **Usage and insight** | Tokens, cost and budgets per job and person ([activity](docs/activity.md)), traces as OTLP ([observability](docs/observability.md)), and run capture for [flightdeck](docs/specs/0014-sister-tool-interfaces.md). | Shipped |
+| **Shadow runs** | A repo policy samples real tickets and runs a candidate harness on each at the same base commit; it delivers nothing, and flightdeck grades it against what people merged ([shadows](docs/repo-policy.md#shadows)). | Shadow |
+| **Governed approvals** | Job release, landing and risky tool calls ask [Tower](https://sean-koval.github.io/agent-factory/tools/workspace/), the Govern plane, which decides and signs a receipt; hangar enforces and fails closed. Today hangar's own approval rule decides; the client and contract are built ([spec 0015](docs/specs/0015-governance-decision-point.md)). | Planned ([#172](https://github.com/Sean-Koval/hangar/issues/172)) |
+| **Overnight lane** | One Spot node kept up while the sandbox pools are powered down (01:00–10:00) for the intake jobs of repos that opt in and for evals, so evening tickets become PRs by morning; off until an admin turns it on ([the overnight lane](docs/gke.md#the-overnight-lane)). | Shipped |
+| **Plugins and events out** | Doors, trackers, notifiers and deliverers are plugins: a package of your own adds a chat bot's door or a company tracker without changing hangar, and every job change goes out as a signed `hangar.event/v1` ([plugins](docs/plugins.md)). | Shipped |
+| **Deploy on your company's cluster** | Kustomize base and components, a Terraform module that never creates a cluster, released images, secrets from your secret manager and admin configuration as reviewed files (`hangar apply`) ([company deploy](docs/deploy-company.md)). | Shipped |
+| **Bots that act for people** | A chat bot's relay token submits work as the linked person who asked, with their rights and audit trail, never more ([relay](docs/clients.md#bots-that-act-for-people-relay)). | Partial |
+
+*Shipped*: on main, on by default or behind a setting. *Shadow*: built, and runs beside real work without changing what people get. *Partial*: built and tested; its wiring is in progress (the relay: `/mcp` doesn't accept relay tokens yet). *Planned*: an open issue.
+
+## Security posture
+
+Hangar treats every sandbox as hostile. A job from an intake door (a GitHub issue, Jira, GitHub Projects, Slack, an inbound webhook) can fetch its repo but never push: hangar pushes the commit it verified, through the git gateway. Its network is an egress allowlist (its environment's and repo policy's hosts and its model API), the agent has no sudo, and automated work never uses a subscription login. Once an agent has read untrusted content, its PR opens as a draft and a second person, not the requester, must approve it to land. See [the security model](docs/security.md) and [the safe-release upgrade](docs/upgrading.md#the-safe-release-120132).
+
+For an existing deployment, read [the upgrade guide](docs/upgrading.md) before updating. To deploy from GitHub Actions with your approval instead of from a laptop, see [deploying from CI/CD](docs/cicd.md).
 
 ## Documentation
 

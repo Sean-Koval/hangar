@@ -7,7 +7,7 @@ has the details.
  people and their tools           front doors                hangar (control plane)                 sandboxes
  ────────────────────────   ─────────────────────────   ─────────────────────────────────   ──────────────────────
  MCP clients, CLI, browser ─► MCP · REST · CLI          ─► jobs and sessions                 ─► sandbox: environment
- Jira, GitHub, Slack       ─► GitHub · Jira · Projects     repo policy · people · budgets        + harness (agent CLI)
+ Jira, GitHub, Slack       ─► GitHub · Jira · Projects     repo policy · people · budgets        + harness (CLI, config)
  services, CI, agents      ─► Slack · webhooks ·           credentials (vault, gateway)         + repo checkout
                                schedules · A2A             verify → branch → PR → landing       on Docker, GKE or E2B
 ```
@@ -22,11 +22,15 @@ ahead of time. See [environments](environments.md).
 
 ## Harness
 
-The agent CLI inside a sandbox: Claude Code, Codex, pi or Antigravity. An environment lists the harnesses it allows;
-you pick one per sandbox, not per image. Each harness ships once as a read-only *harness pack* mounted at start, pinned
-to a version in hangar's harness lock, with a model resolved from a policy (`balanced`, `frontier`) or a pinned id.
-A team can freeze a harness that worked (its skills, instructions, model and approvals) into a
-[harness lock](harness-lock.md) and run work from it. See [harnesses](harnesses.md).
+Everything that shapes the agent apart from the model: the CLI at a pinned version, instructions, skills, plugins,
+MCP bindings, hooks and approvals. A team freezes one into a harness directory (native files plus `harness.lock`);
+its identity, `harness_digest`, is a SHA-256 over the lock's identity fields, equal to the manifest's. See
+[harness locks](harness-lock.md).
+
+The CLI is Claude Code, Codex, pi or Antigravity. An environment lists the CLIs it allows; you pick one per sandbox,
+not per image. Each ships once as a read-only *harness pack* mounted at start, at the version the CLI pin file
+(`src/hangar/harnesses.lock.yaml`) names, with a model resolved from a policy (`balanced`, `frontier`) or a pinned id.
+See [harnesses](harnesses.md).
 
 ## Sandbox
 
@@ -90,9 +94,10 @@ Hangar is the run plane of the agent factory: it runs the work and emits data ab
 Every turn records a [manifest](specs/0014-sister-tool-interfaces.md#2-the-effective-harness-manifest-hangarmanifestv1)
 of the configuration it ran with; [trace export](api/traces.md) gives each run as OTLP on the OpenTelemetry GenAI
 conventions; [run capture](api/outbox.md) writes every finished run to a bucket once; and
-[experiment jobs](jobs.md#9-experiments) run variants against graders. Flightdeck reads these to evaluate harnesses;
-Tower decides approvals ([spec 0015](specs/0015-governance-decision-point.md)). Live metrics, traces and
-cost are in [activity](activity.md) and [observability](observability.md).
+[experiment jobs](jobs.md#9-experiments) run variants against graders. Flightdeck reads these to evaluate harnesses.
+Tower, the Govern plane, is to decide approvals once hangar asks it: its decision API is built, and hangar's wiring is
+open (#172, [spec 0015](specs/0015-governance-decision-point.md)). Live metrics, traces and cost are in
+[activity](activity.md) and [observability](observability.md).
 
 ## Inside the control plane
 
@@ -128,6 +133,6 @@ Connect Codex, Claude Code, or any MCP client to hangar. Then spin up isolated s
 - **Terminals that agents and humans share.** MCP clients drive persistent tmux sessions (`terminal_send` / `terminal_read`). From the dashboard you can attach to the same session and watch, or type along.
 - **Agents inside sandboxes.** `run_agent` starts Claude Code, Codex, pi or `agy` (Antigravity) headless on a task, with an optional `model`, so one orchestrator session can fan work out across the fleet.
 - **Bearer tokens or OAuth.** `hangar connect <client>` writes the client's config with a token scoped to MCP. ChatGPT connectors and other OAuth-only clients use hangar's built-in OAuth 2.1 server: discovery, dynamic registration, PKCE, and a consent page where you approve with a hangar token. See [docs/clients.md](clients.md).
-- **A dashboard.** It covers the fleet, live terminals, the environment editor with streaming builds, credentials and sign-in, snapshots, MCP connect snippets with token management, and an audit log.
+- **A web console.** It covers jobs, sessions, the fleet four ways ([the web console](console.md)), live terminals, the environment editor with streaming builds, credentials and sign-in, snapshots, MCP connect snippets with token management, and an audit log.
 - **Traces, metrics and cost.** OpenTelemetry traces from the control plane when `OTEL_*` is set; Claude Code's and Codex's own spans join them. Prometheus `/metrics` for a scrape-only token. A usage view of spend by day, repo and requester. See [docs/observability.md](observability.md).
 
