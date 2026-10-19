@@ -13,7 +13,7 @@ Neither workflow holds a key. They sign in to Google Cloud with [Workload Identi
 a token kept in a GitHub environment. `deploy/gke/setup-cicd.sh` creates all of it from your machine, where `gcloud`
 (as the project's owner), `kubectl` and `gh` (as the repository's admin) are logged in, and `hangar login` has been
 run with an admin token. Hangar must already run on the cluster ([gke.md](gke.md): `deploy/gke/up.sh` makes the first
-install; deploy.yml updates it):
+install; deploy.yml updates its image, and changes to `deploy/k8s`, such as the config map, still go through `up.sh`):
 
 ```bash
 bash deploy/gke/setup-cicd.sh --dry-run   # read-only lookups, and every change it would make, printed

@@ -13,3 +13,7 @@ enable_kata_pool = false
 # power_time_zone       = "America/New_York"
 # sandbox_warm_nodes    = 1
 # power_deploy_repo     = "OWNER/REPO"   # public: after the power-up, hangar shows when main is ahead of it
+
+# Run capture (outbox.tf, on by default): flightdeck's nightly compactor reads the run bucket. Its
+# deploy/compactor/setup.sh creates this account and grants it read on the bucket; list it here once it exists.
+# run_bucket_readers = ["serviceAccount:flightdeck-compactor@my-gcp-project.iam.gserviceaccount.com"]

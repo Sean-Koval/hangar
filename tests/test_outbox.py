@@ -563,8 +563,12 @@ def test_doctor_warns_on_a_backlog_and_reports_held_bytes(fleet, settings, store
     (settings.data_dir / outbox.PENDING_DELETE / "ses-z" / "x.jsonl").write_bytes(b"x" * 2048)
     checks = {c["name"]: c for c in outbox.doctor_checks(h)}
     assert "1 deleted session(s)" in checks["retention held for export"]["detail"]
-    o.sink = None  # off: no checks
+    o.sink = None  # off: no checks where it is optional
     assert outbox.doctor_checks(h) == []
+    fleet.providers["kubernetes"] = fleet.providers["docker"]  # --- #273: on GKE, a warning that it is off
+    (off,) = outbox.doctor_checks(h)
+    assert off["name"] == "run capture (outbox)" and off["status"] == "warn" and off["detail"].startswith("off:")
+    assert "run_bucket" in off["fix"] and "up.sh" in off["fix"]
 
 
 def test_durations():

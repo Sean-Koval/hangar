@@ -78,7 +78,22 @@ POWER_JOB=$(tfo power_up_job 2>/dev/null || true)
 if [[ "$POWER_JOB" == projects/* ]]; then
   sed -i "s|^  # HANGAR_POWER_UP_JOB: .*|  HANGAR_POWER_UP_JOB: \"$POWER_JOB\"|" "$OUT/config.yaml"
 fi
+# --- outbox (#273): run capture to the bucket terraform made, which flightdeck's compactor reads (docs/api/outbox.md).
+# On every install, a running one too: nothing is stranded by turning it on. A value already in the `hangar` config map
+# is kept, and hangar-site still wins. null (enable_run_bucket=false) fails -raw: the outbox stays off.
+RUNS=$(tfo run_bucket 2>/dev/null || true)
+OUTBOX_WAS=$(kubectl -n hangar get configmap hangar -o jsonpath='{.data.HANGAR_OUTBOX_URL}' 2>/dev/null || true)
+OUTBOX=${OUTBOX_WAS:-$RUNS}
+if [[ "$OUTBOX" == gs://* ]]; then
+  sed -i "s|^  # HANGAR_OUTBOX_URL: .*|  HANGAR_OUTBOX_URL: \"$OUTBOX\"|" "$OUT/config.yaml"
+fi
+RUNNING=$(kubectl -n hangar get deployment hangar -o jsonpath='{.spec.template.spec.containers[0].image}' \
+  2>/dev/null || true)
 kubectl apply -k "$OUT"
+# The outbox reads its URL when hangar starts: a new image restarts the pod anyway, the same image doesn't.
+if [[ "$OUTBOX" == gs://* && "$OUTBOX" != "$OUTBOX_WAS" && "$RUNNING" == "$IMAGE" ]]; then
+  kubectl -n hangar rollout restart deploy/hangar
+fi
 kubectl -n hangar rollout status deploy/hangar --timeout=10m
 
 if [ "${KATA:-0}" = 1 ]; then

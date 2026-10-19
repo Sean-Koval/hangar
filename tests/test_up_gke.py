@@ -43,8 +43,12 @@ FAKE = textwrap.dedent('''\
         line = " ".join(args)
         if "get secret" in line or "get deployment" in line and not cfg.get("deployed"):
             sys.exit(1)
+        if "get deployment" in line:
+            print(cfg.get("image", ""), end="")
         if "get configmap" in line:
             v = cfg.get("live", {{}}).get(args[args.index("configmap") + 1])
+            if isinstance(v, dict):  # {{key: value}}: the key the jsonpath asks for
+                v = v.get(next(a for a in args if a.startswith("jsonpath=")).split(".")[-1].rstrip("}}"))
             if v is None:
                 sys.exit(1)
             print(v, end="")
@@ -72,7 +76,8 @@ def gke(tmp_path, monkeypatch):
     log.touch()
     cfg = {"changes": [["google_container_cluster.hangar", ["create"]]], "outputs": {
         "registry": "us-central1-docker.pkg.dev/p/hangar", "service_account": "hangar@p.iam.gserviceaccount.com",
-        "static_ip": "34.1.2.3", "get_credentials": "true", "session_bucket": "gs://p-hangar-sessions"}}
+        "static_ip": "34.1.2.3", "get_credentials": "true", "session_bucket": "gs://p-hangar-sessions",
+        "run_bucket": "gs://p-hangar-runs"}}
     monkeypatch.setenv("PATH", f"{bin_}:{Path(sys.executable).parent}:/usr/bin:/bin")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("HANGAR_DATA_DIR", str(tmp_path / "home" / ".hangar"))
@@ -139,6 +144,7 @@ def test_fresh_install_applies_deploys_and_wires_the_session_bucket(gke):
     assert len(applied) == 1 and applied[0][-1].endswith("gke.tfplan")  # exactly the plan that was shown
     config = gke.config()
     assert 'HANGAR_SESSION_STORE: "gs://p-hangar-sessions"' in config  # the owner patched this in by hand
+    assert 'HANGAR_OUTBOX_URL: "gs://p-hangar-runs"' in config  # --- #273: run capture on from the first install
     assert "https://34.1.2.3.sslip.io" in config
     assert "hangar login https://34.1.2.3.sslip.io --token-file" in r.output
     assert (Path.home() / ".hangar" / "gke-admin-token").exists()
@@ -164,12 +170,36 @@ def test_up_sh_leaves_a_running_hangars_checkpoints_where_they_are(gke):
     assert r.exit_code == 0, r.output
     assert "infrastructure is up to date" in r.output and not gke.ran("terraform", "apply")
     assert "# HANGAR_SESSION_STORE:" in gke.config()
-    gke.set(live={"hangar": "gs://kept"})  # already set by an earlier up.sh: kept
+    gke.set(live={"hangar": {"HANGAR_SESSION_STORE": "gs://kept"}})  # already set by an earlier up.sh: kept
     assert runner.invoke(cli.app, ["up", "--gke", "--yes"]).exit_code == 0
     assert 'HANGAR_SESSION_STORE: "gs://kept"' in gke.config()
     gke.set(outputs=gke.outputs(session_bucket=None), deployed=False, live={})
     assert runner.invoke(cli.app, ["up", "--gke", "--yes"]).exit_code == 0
     assert "# HANGAR_SESSION_STORE:" in gke.config()  # enable_session_bucket=false: no bucket, nothing set
+
+
+def test_up_sh_turns_the_outbox_on_for_a_running_hangar(gke):
+    """--- #273: unlike checkpoints, nothing is stranded by turning run capture on, so a running hangar gets it too,
+    and a restart when the image is the same (the outbox reads its URL at startup)."""
+    image = "us-central1-docker.pkg.dev/p/hangar/control-plane:" + subprocess.run(
+        ["git", "-C", str(setup_gke.checkout()), "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
+        check=True).stdout.strip()
+    gke.set(changes=[], deployed=True, image=image)
+    assert runner.invoke(cli.app, ["up", "--gke", "--yes"]).exit_code == 0
+    assert 'HANGAR_OUTBOX_URL: "gs://p-hangar-runs"' in gke.config()
+    assert ["kubectl", "-n", "hangar", "rollout", "restart", "deploy/hangar"] in gke.calls()
+    n = len(gke.calls())  # on already: kept as it is, and no restart
+    gke.set(live={"hangar": {"HANGAR_OUTBOX_URL": "gs://p-hangar-runs/team"}})
+    assert runner.invoke(cli.app, ["up", "--gke", "--yes"]).exit_code == 0
+    assert 'HANGAR_OUTBOX_URL: "gs://p-hangar-runs/team"' in gke.config()
+    assert not [c for c in gke.calls()[n:] if "restart" in c]
+    gke.set(image="elsewhere/control-plane:old", live={})  # a new image: its rollout restarts the pod anyway
+    n = len(gke.calls())
+    assert runner.invoke(cli.app, ["up", "--gke", "--yes"]).exit_code == 0
+    assert not [c for c in gke.calls()[n:] if "restart" in c]
+    gke.set(outputs=gke.outputs(run_bucket=None))  # enable_run_bucket=false: no bucket, the outbox stays off
+    assert runner.invoke(cli.app, ["up", "--gke", "--yes"]).exit_code == 0
+    assert "# HANGAR_OUTBOX_URL:" in gke.config()
 
 
 def test_gke_needs_its_tools_and_tfvars(gke, monkeypatch, tmp_path):
