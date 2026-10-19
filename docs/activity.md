@@ -105,6 +105,7 @@ A budget caps each agent turn. That means the job's first run and each follow-up
 ```
 
 You can set it in several places:
+
 - `budget` on `POST /api/jobs`, `submit_job` and `POST /api/sessions` / `new_session`;
 - `--max-cost`, `--max-tokens` and `--max-minutes` on `hangar job submit` and `hangar session new`;
 - defaults for any field left unset: `HANGAR_BUDGET_MAX_MINUTES`, `HANGAR_BUDGET_MAX_TOKENS`, `HANGAR_BUDGET_MAX_COST_USD` (all unset by default).
@@ -112,6 +113,7 @@ You can set it in several places:
 A `jobs` token can carry a cap: `hangar token create svc --scope jobs --max-cost 2`, or `max_budget` on `POST /api/tokens`. Its jobs never get more than the cap, whatever they ask for, and the cap also applies when they ask for nothing.
 
 Hangar checks the budget on every poll. When a turn crosses it, hangar stops the agent the way a timeout does (its tmux session is killed). It records the turn's `outcome: "over_budget"` and the reason in `outcome_reason`, for example `spent $1.26; the budget is $1.00`, and adds an `error` event. A job then:
+
 - verifies;
 - commits what the agent left;
 - pushes and opens the PR as a **draft**;
@@ -120,6 +122,7 @@ Hangar checks the budget on every poll. When a turn crosses it, hangar stops the
 The GitHub comment says so: "Stopped over budget (…). What the agent had done so far is delivered as a draft."
 
 How far a turn overshoots depends on when the harness reports usage:
+
 - **Claude Code, pi and Antigravity** report usage per model call. They are stopped within one poll (`HANGAR_SESSION_POLL_SECONDS`) of the call that crosses the budget.
 - **Codex** reports usage only when its turn ends. For Codex, only `max_minutes` takes effect mid-turn.
 - **A model with no price** never trips `max_cost_usd`. Use `max_tokens` for it, or add the model to `HANGAR_MODEL_PRICES`.

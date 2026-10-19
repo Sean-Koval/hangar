@@ -15,6 +15,7 @@ uv run hangar up
 ```
 
 `hangar up` does five things:
+
 1. checks that Docker is running;
 2. starts the control plane in the background (log: `~/.hangar/server.log`);
 3. logs the CLI in;

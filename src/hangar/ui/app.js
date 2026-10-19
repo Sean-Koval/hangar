@@ -437,7 +437,31 @@ function wireQuestion(el, onAnswer) {
 const store = {
   get token() { try { return localStorage.getItem("hangar.token") || ""; } catch { return ""; } },
   set token(v) { try { v ? localStorage.setItem("hangar.token", v) : localStorage.removeItem("hangar.token"); } catch {} },
+  get theme() { try { return localStorage.getItem("hangar.theme") || ""; } catch { return ""; } },
+  set theme(v) { try { v ? localStorage.setItem("hangar.theme", v) : localStorage.removeItem("hangar.theme"); } catch {} },
 };
+
+/* ---- theme: Night is the default (the dark cockpit), Day the alternative; the choice is kept in localStorage as
+   hangar.theme and applied by the inline script in <head> before first paint, so there is no flash. The switch in the
+   top bar flips between the two; "auto" (follow the OS) is reachable through ?theme=auto, as in Tower. ---- */
+const themeInForce = () => document.documentElement.dataset.theme
+  || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+function applyTheme(t) {
+  if (t === "auto") document.documentElement.removeAttribute("data-theme"); else document.documentElement.dataset.theme = t;
+  store.theme = t;
+  syncThemeSwitch();
+}
+function syncThemeSwitch() {
+  const b = $("#theme-switch");
+  if (!b) return;
+  const day = themeInForce() === "light";
+  b.dataset.theme = day ? "light" : "dark";
+  const label = day ? "Switch to Night" : "Switch to Day";
+  b.setAttribute("aria-label", label); b.title = label;
+}
+$("#theme-switch")?.addEventListener("click", () => applyTheme(themeInForce() === "light" ? "dark" : "light"));
+matchMedia("(prefers-color-scheme: light)").addEventListener?.("change", syncThemeSwitch);  // "auto" follows the OS
+syncThemeSwitch();
 const state = { view: "fleet", envs: [], creds: [], harnesses: [], overview: null, sandboxes: [], selectedEnv: null,
   jobs: [], selectedJob: null, sessions: [], selectedSession: null };
 
@@ -548,6 +572,12 @@ async function boot() {
   $("#gate").hidden = true;
   $("#shell").hidden = false;
   await refreshMeta();
+  if (!location.hash) {
+    // a person signs in to decide things: open on Needs you while something waits, on the Fleet otherwise
+    await loadNeeds(true);
+    const waiting = (state.inbox?.items || []).filter((i) => i.kind === "approval" || i.kind === "question").length;
+    history.replaceState(null, "", waiting ? "#needs" : "#fleet");
+  }
   route();
   clearInterval(pollTimer);
   let tick = 0;
@@ -928,9 +958,11 @@ function renderJobs() {
         actions: btn("Show all jobs", { sm: true, attrs: { "data-clear-filter": true } }) })
       : emptyState({ icon: "job", title: "No jobs yet.", text: `Submit one here, label a GitHub issue <code>hangar</code>, or call <code>submit_job</code> from an MCP client.` })}</li>`;
   if (state.selectedJob) renderJob(state.jobs.find((j) => j.id === state.selectedJob));
+  // with no job open the panel's empty state carries the view's one primary, New job (the header's is secondary)
   else if (!$("#job-detail .af-empty")) $("#job-detail").innerHTML = emptyState({ compact: true, icon: "job", title: "No job selected.",
-    text: "Choose one to see its timeline, result and sandbox." });
+    text: "Choose one to see its timeline, result and sandbox.", actions: btn("New job", { kind: "primary", sm: true, attrs: { "data-new-job": true } }) });
 }
+$("#job-detail").addEventListener("click", (e) => { if (e.target.closest("[data-new-job]")) $("#btn-new-job").click(); });
 $("#jobs-filter").addEventListener("change", renderJobs);
 $("#job-list").addEventListener("click", (e) => { if (e.target.closest("[data-clear-filter]")) { $("#jobs-filter").value = ""; renderJobs(); } });
 $("#job-list").addEventListener("click", (e) => {
@@ -1117,8 +1149,9 @@ function renderSessions() {
     : `<li>${emptyState({ icon: "session", title: "No sessions yet.", text: `Start one here, or from an MCP client with <code>new_session</code>.` })}</li>`;
   if (state.selectedSession) renderSession(state.sessions.find((x) => x.id === state.selectedSession));
   else if (!$("#session-detail .af-empty")) $("#session-detail").innerHTML = emptyState({ compact: true, icon: "session", title: "No session selected.",
-    text: "Choose one to resume it, talk to its agent, or open its terminal." });
+    text: "Choose one to resume it, talk to its agent, or open its terminal.", actions: btn("New session", { kind: "primary", sm: true, attrs: { "data-new-session": true } }) });
 }
+$("#session-detail").addEventListener("click", (e) => { if (e.target.closest("[data-new-session]")) $("#btn-new-session").click(); });
 $("#ses-jobs").addEventListener("change", renderSessions);
 $("#session-list").addEventListener("click", (e) => {
   const b = e.target.closest("button[data-ses]");

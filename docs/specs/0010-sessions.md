@@ -48,12 +48,14 @@ A session is the unit of *ongoing work*. A job (0009) is a *request* for work. I
 ## 3. Goals / non-goals
 
 Goals:
+
 - Resume a session days later with the agent's conversation, commits, uncommitted changes and untracked files intact.
 - Suspend idle sessions automatically. A suspended session uses no compute.
 - No work lost when a sandbox dies: reaper expiry, manual destroy, or a node going away. The loss is bounded by the checkpoint interval.
 - Same experience from the CLI, MCP and the dashboard, and (M2) from jobs and GitHub.
 
 Non-goals (M1):
+
 - Restoring running processes (dev servers, tmux windows). That is M4, with GKE Pod Snapshots.
 - Moving a conversation between harnesses natively. Handoff (§5.5) covers it with a summary.
 - Sharing one session between people at the same time. One active sandbox per session.
@@ -105,6 +107,7 @@ These steps run in the sandbox. Each artifact is read back by the control plane 
 | `meta.json` | branch, head, base, harness, harness_session, cwd | |
 
 Checkpoints are taken:
+
 - after every agent turn;
 - before suspend;
 - **before any destroy**, through a fleet pre-destroy hook, so reaper expiry and manual destroys are covered;
@@ -113,6 +116,7 @@ Checkpoints are taken:
 The last `session_keep_checkpoints` (default 5) are kept.
 
 **Limits:**
+
 - Every part is capped: `session_max_part_mb` (default 100), and `session_max_untracked_mb` (default 20) for untracked files. An oversized part is skipped with a warning on the checkpoint.
 - A partial checkpoint (timeout, error) is deleted, never recorded.
 - Interval checkpoints compare a fingerprint first: HEAD, the diff hash, untracked file names/sizes/mtimes, and the conversation files' listing. They skip when nothing changed.
@@ -120,6 +124,7 @@ The last `session_keep_checkpoints` (default 5) are kept.
 ### 5.3 Resume
 
 `open(session)`:
+
 1. Create a sandbox from `environment` with the session's `harness`, on `repo` at `base_branch`, with labels `hangar.session=<id>`. The sandbox comes from the warm pool when there is one.
 2. Reset the tree (`git reset --hard && git clean -fd`, in case environment setup touched tracked files). Fetch the bundle (or the head commit) and check out `branch` at `head`.
 3. `git apply --binary wip.patch`, then untar `untracked.tgz`.
@@ -129,6 +134,7 @@ The last `session_keep_checkpoints` (default 5) are kept.
 If the newest checkpoint doesn't restore (for example, its head is missing), the older ones are tried in turn, newest first. The session's status says which one was used, so one bad checkpoint can't brick a session.
 
 `send(session, message)` resumes first if the session is suspended, then runs one agent turn with the resume flags:
+
 - **Claude Code:** `--session-id <new uuid>` on the first turn, `--resume <uuid>` after that.
 - **pi:** `--session-id <id>` always.
 - **Codex:** a plain first turn, whose `thread_id` hangar captures from the JSON output; after that, `codex exec resume <thread_id>`.
@@ -138,6 +144,7 @@ When the turn finishes, hangar takes a checkpoint, records the summary (the last
 ### 5.4 Suspend and idle
 
 **A session never suspends while it is being used.** A pass every minute counts all of these as activity:
+
 - an agent turn running (and, for jobs, the whole verify-and-deliver step);
 - a dashboard or CLI terminal open on the sandbox (counted live, and touched on every keystroke);
 - a tmux client attached (`hangar sb attach`);
@@ -146,6 +153,7 @@ When the turn finishes, hangar takes a checkpoint, records the summary (the last
 hangar's own housekeeping (checkpoints, these probes) runs "quiet": it neither counts as activity nor fills the audit log.
 
 Only after `idle_minutes` with none of that is the session suspended:
+
 1. checkpoint;
 2. destroy the sandbox;
 3. set the state to `SUSPENDED`.
@@ -159,6 +167,7 @@ Only after `idle_minutes` with none of that is the session suspended:
 ### 5.5 Handoff (harness without resume, or switching harness)
 
 The new turn's prompt starts with a compact account of the session:
+
 - the original task;
 - each turn's message and summary;
 - the branch;

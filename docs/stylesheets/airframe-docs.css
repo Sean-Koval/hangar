@@ -1,13 +1,17 @@
+/* Airframe theme-v8 for the docs sites. Generated from airframe/docs-site/airframe-docs.css by scripts/airframe.py; do not edit. Load after airframe.css. */
 @import url("https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=DM+Mono:wght@400;500&family=Red+Hat+Text:ital,wght@0,400..700;1,400..700&display=swap");
 
 /*
-  Airframe for the docs sites (Zensical / Material for MkDocs). Hand-written; lives in
-  Sean-Koval/agent-factory theme/ next to the generated airframe.css. Load after airframe.css. It maps the theme's --md-* variables onto Airframe tokens and adds
-  the few Airframe details a docs page needs: display type for headings, mono uppercase
-  labels, a 2px product marker under the header, tonal blocks instead of boxed cards.
+  Airframe for the docs sites (Zensical / Material for MkDocs). Source: airframe/docs-site/airframe-docs.css
+  in Sean-Koval/agent-factory, published as theme/airframe-docs.css by scripts/airframe.py build. Load after
+  airframe.css. It maps the theme's --md-* variables onto Airframe tokens and adds the few Airframe details a
+  docs page needs: display type for headings, mono uppercase labels, a 2px product marker under the header,
+  tonal blocks instead of boxed cards, and the suite strip (airframe-suite.html, included through
+  overrides/main.html) that links the family's docs sites.
 
   Each site sets its own product hue once, e.g. in docs/stylesheets/product.css:
     :root { --af-product: var(--af-product-hangar); }
+  and names itself for the strip in mkdocs.yml: extra: {airframe: {product: hangar}}.
 */
 
 :root { --af-product: var(--af-brand); }
@@ -88,6 +92,30 @@
 body { background: var(--af-canvas); }
 .md-typeset { font-feature-settings: "kern"; }
 
+/* the suite strip (airframe-suite.html): one quiet row above the header; the current product carries the marker */
+.md-banner { background: var(--af-canvas); color: var(--af-fg); border-bottom: 1px solid var(--af-line-subtle); overflow: visible; }
+.md-banner__inner.md-typeset { margin: 0 auto; padding: 0 .8rem; font-size: inherit; }
+.md-typeset .af-suite { display: flex; align-items: stretch; height: 30px; white-space: nowrap; overflow-x: auto; scrollbar-width: none; }
+.md-typeset .af-suite::-webkit-scrollbar { display: none; }
+.md-typeset .af-suite a { text-decoration: none; }
+.md-typeset .af-suite__home { display: inline-flex; align-items: center; gap: .6em; padding-right: 1em; margin-right: .4em; color: var(--af-fg-muted); border-right: 1px solid var(--af-line); font-family: var(--af-font-mono); font-size: .56rem; letter-spacing: var(--af-label-track); text-transform: uppercase; }
+.md-typeset .af-suite__home::before { content: ""; width: 12px; height: 1px; background: var(--af-brand-line); flex: none; }
+.md-typeset .af-suite .af-suite__list { list-style: none; margin: 0; padding: 0; display: flex; }
+.md-typeset .af-suite .af-suite__list li { margin: 0; padding: 0; display: block; }
+.md-typeset .af-suite__list a, .md-typeset .af-suite__list span { display: inline-flex; align-items: center; gap: .55em; height: 30px; padding: 0 .8em; line-height: 1; color: var(--af-fg-muted); font-family: var(--af-font-display); font-stretch: var(--af-display-stretch); font-weight: 700; font-size: .6rem; letter-spacing: 0; }
+.md-typeset .af-suite__list small { font-family: var(--af-font-mono); font-weight: 500; font-size: .5rem; line-height: 1; padding-top: 1px; letter-spacing: var(--af-label-track); text-transform: uppercase; color: var(--af-fg-subtle); }
+.md-typeset .af-suite__list span { color: var(--af-fg-subtle); }
+.md-typeset .af-suite a:hover, .md-typeset .af-suite a:focus-visible { color: var(--af-fg); }
+.md-typeset .af-suite [aria-current] { color: var(--af-fg); box-shadow: inset 0 -2px 0 var(--af-product); }
+.md-typeset .af-suite__home[aria-current] { box-shadow: none; color: var(--af-fg); }
+.md-typeset .af-suite__home[aria-current]::before { background: var(--af-brand); }
+/* phones: the plane words go, the row scrolls sideways, and the next name is cut mid-word so the scroll shows */
+@media (max-width: 599px) {
+  .md-typeset .af-suite__home { padding-right: .6em; margin-right: 0; gap: .4em; }
+  .md-typeset .af-suite__list small { display: none; }
+  .md-typeset .af-suite__list a, .md-typeset .af-suite__list span { padding: 0 .55em; }
+}
+
 /* header and tabs: flat, with the product's 2px marker */
 .md-header, .md-tabs { background: var(--af-canvas); color: var(--af-fg); box-shadow: none; }
 .md-header { border-bottom: 1px solid var(--af-line); }
@@ -105,24 +133,32 @@ body { background: var(--af-canvas); }
 .md-typeset h3 { font-weight: 600; letter-spacing: 0; }
 .md-typeset h4, .md-typeset h5, .md-typeset h6 { font-family: var(--af-font-mono); text-transform: uppercase; letter-spacing: var(--af-label-track); font-size: .7rem; color: var(--af-fg-subtle); }
 
+/* page anatomy: the first paragraph under the title is the lede; "See also" and other end lists stay plain */
+.md-typeset h1 + p:not(.af-lede) { font-size: .9rem; line-height: 1.5; color: var(--af-fg-muted); max-width: 62ch; }
+
 /* links: plain ink, a brand underline */
 .md-typeset a { text-decoration: underline; text-decoration-color: var(--af-brand-line); text-underline-offset: .2em; text-decoration-thickness: 1px; }
 .md-typeset a:hover { color: var(--af-brand-text); }
 .md-typeset a.headerlink, .md-typeset .md-button { text-decoration: none; }
 
 /* buttons */
-.md-typeset .md-button { border-radius: var(--af-radius-control); border: 1px solid var(--af-line-strong); color: var(--af-fg); font-family: var(--af-font-mono); font-size: .64rem; letter-spacing: .06em; text-transform: uppercase; padding: .55em 1.2em; }
+.md-typeset .md-button { border-radius: var(--af-radius-control); border: 1px solid var(--af-line-strong); background: transparent; color: var(--af-fg); font-family: var(--af-font-mono); font-size: .64rem; letter-spacing: .06em; text-transform: uppercase; padding: .55em 1.2em; }
 .md-typeset .md-button--primary { background: var(--af-brand); border-color: var(--af-brand); color: var(--af-on-brand); }
 .md-typeset .md-button:hover { border-color: var(--af-fg); background: transparent; color: var(--af-fg); }
 .md-typeset .md-button--primary:hover { background: var(--af-brand-hover); border-color: var(--af-brand-hover); color: var(--af-on-brand); }
 
-/* code: terminal blocks, mono ids inline */
-.md-typeset pre > code { border-radius: var(--af-radius-card); }
+/* code: terminal blocks that scroll sideways (long commands are not wrapped); the copy button sits on the
+   terminal ground, never on the glyphs, and the end of the longest line clears it */
+.md-typeset pre > code { border-radius: var(--af-radius-card); padding-right: 3em; scrollbar-color: var(--af-terminal-dim) transparent; }
+.md-typeset .md-code__nav, .md-typeset .md-clipboard { background: var(--af-terminal-bg); border-radius: var(--af-radius-control); }
+.md-typeset .md-code__button, .md-typeset .md-clipboard { color: var(--af-terminal-dim); }
+.md-typeset pre:hover .md-code__button, .md-typeset .md-code__button:focus-visible, .md-typeset pre:hover .md-clipboard { color: var(--af-terminal-fg); }
 .md-typeset code { border-radius: var(--af-radius-control); font-size: .82em; }
 .md-typeset :not(pre) > code { background: var(--af-raised); color: var(--af-fg); padding: .1em .35em; }
 
-/* tables: open header (no fill), mono uppercase labels, a hairline under the header, row rules only */
-.md-typeset table:not([class]) { border: 0; border-radius: 0; background: transparent; font-size: .74rem; box-shadow: none; }
+/* tables: full column width, open header (no fill), mono uppercase labels, a hairline under the header, row rules only */
+.md-typeset .md-typeset__table { display: block; width: 100%; }
+.md-typeset table:not([class]) { display: table; width: 100%; border: 0; border-radius: 0; background: transparent; font-size: .74rem; box-shadow: none; }
 .md-typeset table:not([class]) th { background: transparent; color: var(--af-fg-subtle); font-family: var(--af-font-mono); font-weight: 500; font-size: .6rem; letter-spacing: var(--af-label-track); text-transform: uppercase; border-bottom: 1px solid var(--af-line); }
 .md-typeset table:not([class]) td { border-top: 1px solid var(--af-line-subtle); }
 .md-typeset table:not([class]) tr:hover { background: var(--af-selected); box-shadow: none; }
@@ -146,14 +182,32 @@ body { background: var(--af-canvas); }
 .af-figure img { width: 100%; display: block; }
 .af-figure figcaption { font-family: var(--af-font-mono); font-size: .6rem; letter-spacing: var(--af-label-track); text-transform: uppercase; color: var(--af-fg-subtle); margin-top: .6em; }
 
-/* the home page hero: one strong line, a mono label, a dot field */
+/* the home page hero: one strong line, a mono label, two actions. The dot field appears only behind a
+   product visual (af-hero--visual): the brand book puts it behind hero data, never on an empty stage. */
 .af-hero { position: relative; padding: 2.4rem 0 1.6rem; margin-bottom: 1rem; }
-.af-hero::after { content: ""; position: absolute; inset: 0 0 0 55%; background: radial-gradient(circle, var(--af-dot-field) 1.1px, transparent 1.6px) 0 0 / 8px 8px; pointer-events: none; z-index: 0; }
 .af-hero > * { position: relative; z-index: 1; }
 .af-eyebrow { font-family: var(--af-font-mono); font-size: .62rem; letter-spacing: var(--af-label-track); text-transform: uppercase; color: var(--af-fg-subtle); display: inline-flex; align-items: center; gap: .6em; }
 .af-eyebrow::before { content: ""; width: 14px; height: 1px; background: var(--af-brand-line); }
 .md-typeset .af-hero h1 { font-size: 2.6em; margin: .4em 0 .5em; max-width: 18ch; }
 .af-lede { color: var(--af-fg-muted); font-size: .95rem; max-width: 52ch; }
+.md-typeset .af-hero .md-button { margin-top: .4em; }
+@media (max-width: 959px) {
+  .af-hero { padding-top: 1.6rem; }
+  .md-typeset .af-hero h1 { font-size: 2em; }
+}
+/* af-hero--visual: words left, the product working on the right (an image or a video on the dot field);
+   below 960px the visual follows the actions. Pair with <figure class="af-hero__visual"> and, on wide
+   screens, a capture about 16:10 at 1440x900 cropped to the subject. */
+.af-hero--visual { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.6rem; align-items: center; padding-bottom: 1.2rem; }
+.af-hero--visual::after { content: ""; position: absolute; inset: auto 0 0 50%; height: 60%; background: radial-gradient(circle, var(--af-dot-field) 1.1px, transparent 1.6px) 0 0 / 8px 8px; pointer-events: none; z-index: 0; }
+.af-hero__visual { margin: 0; position: relative; z-index: 1; min-width: 0; }
+.af-hero__visual > img, .af-hero__visual > video, .af-hero__visual > a > img { display: block; width: 100%; height: auto; border-radius: var(--af-radius-card); box-shadow: 0 0 0 1px var(--af-line); }
+.md-typeset .af-hero__visual figcaption { font-style: normal; max-width: none; font-family: var(--af-font-mono); font-size: .56rem; letter-spacing: var(--af-label-track); text-transform: uppercase; color: var(--af-fg-subtle); margin-top: .6em; }
+@media (min-width: 960px) {
+  .af-hero--visual { grid-template-columns: minmax(0, 7fr) minmax(0, 8fr); gap: 2.4rem; }
+  .af-hero--visual::after { inset: 0 0 0 46%; height: auto; }
+  .md-typeset .af-hero--visual h1 { font-size: 2.3em; }
+}
 
 /* tool tiles on the suite home page */
 .af-tools { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 2px; background: var(--af-canvas); margin: 1.5em 0; }
@@ -173,3 +227,20 @@ body { background: var(--af-canvas); }
 .md-typeset figure.af-figure > svg, .md-typeset figure.af-figure > img { width: 100%; height: auto; display: block; }
 .md-typeset figure.af-figure figcaption { font-style: normal; max-width: none; }
 .md-typeset figure.af-figure figcaption a { color: var(--af-fg-muted); }
+
+/* Windows Contrast Themes: colors are replaced and box-shadows dropped, so every marker and edge that was a
+   shadow becomes a border in system colors, and the two textures go. */
+@media (forced-colors: active) {
+  .md-header::after, .af-hero--visual::after { display: none; }
+  .md-tabs__item--active { box-shadow: none; border-bottom: 2px solid Highlight; }
+  .md-nav__item .md-nav__link--active { box-shadow: none; border-left: 2px solid Highlight; }
+  .md-typeset .af-suite [aria-current] { box-shadow: none; border-bottom: 2px solid Highlight; }
+  .md-typeset .af-suite__home[aria-current] { border-bottom: 2px solid Highlight; }
+  .md-typeset .af-suite__home::before, .af-eyebrow::before { background: CanvasText; }
+  .md-typeset .admonition, .md-typeset details { box-shadow: none; border-left: 2px solid CanvasText; }
+  .af-tool { border-top-color: CanvasText; }
+  .af-swatch { box-shadow: none; outline: 1px solid CanvasText; }
+  .af-hero__visual > img, .af-hero__visual > video, .af-hero__visual > a > img { box-shadow: none; outline: 1px solid CanvasText; }
+  .md-typeset table:not([class]) th, .md-typeset table:not([class]) td { border-color: CanvasText; }
+  .md-typeset .md-button { border-color: ButtonText; }
+}
