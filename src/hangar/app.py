@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
 import math
@@ -39,17 +40,16 @@ from hangar.auth import SCOPES, TokenAuth, bearer_from_headers
 from hangar.broker import Broker, CredentialError
 from hangar.config import Settings, get_settings
 from hangar.envspec import EnvCatalog
+from hangar.ext import NoSettings  # --- plugin host
 from hangar.fleet import Fleet, FleetError
 from hangar.github import verify_signature
 from hangar.harnesses import HARNESSES, PACK_ROOT
-from hangar.jira import JiraFrontDoor  # --- intake
 from hangar.jobs import Caller, JobService, SubmitJob, handle_github
 from hangar.mcp_server import build_mcp, current_actor
 from hangar.models import Budget, ContextItem, Credential, CredentialKind, Resources, Sandbox
 from hangar.providers.base import ProviderError
 from hangar.runtime import FastJSON, install_io_executor  # perf
 from hangar.sessions import NewSession, SessionService
-from hangar.slack import SlackFrontDoor  # workstream B
 from hangar.store import Store
 from hangar.strategies import SessionForkBody, fork_session  # workstream D: forks/best-of-N
 from hangar.streams import credential as stream_credential  # --- stream
@@ -104,7 +104,85 @@ class Hangar:
         self.ops = Ops(self)
 
 
+# ---------------------------------------------------------------------------- the GitHub door (plugin host)
+class GitHubDoor:
+    """/api/hooks/github: issues, comments, PR landing and checks, Projects items (spec 0009 §5.5). Built in; replies
+    to `github:` refs are the job service's own (PR and issue comments), so it has no `reply`."""
+
+    name = "github"
+    reply = None
+
+    def __init__(self, h: Hangar):
+        self.h = h
+
+    def doctor(self) -> list[dict[str, Any]]:
+        return []  # hangar doctor checks the webhook itself (setup_api.webhook_checks)
+
+    def mount(self, app: FastAPI) -> None:
+        @app.post("/api/hooks/github")
+        async def github_hook(request: Request):
+            name = self.h.settings.github_webhook_secret_credential
+            if not name:
+                raise HTTPException(404, "GitHub webhook is not configured (HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL)")
+            body = await request.body()
+            try:  # front-door-auth: say nothing about the vault to an anonymous caller
+                secret = self.h.broker.secret_text(name)
+            except Exception as e:  # noqa: BLE001
+                log.error("GitHub webhook secret credential %s is not usable", name)
+                raise HTTPException(503, "GitHub webhook secret is not stored") from e
+            if not verify_signature(secret, body, request.headers.get("x-hub-signature-256")):
+                raise HTTPException(401, "bad signature")
+            try:
+                payload = json.loads(body)
+            except ValueError as e:
+                raise HTTPException(400, "body is not JSON") from e
+            # --- front-door-auth: GitHub signs only the body, so the same body is the same delivery, whatever its
+            # X-GitHub-Delivery header says. A redelivery or a replay is acknowledged and does nothing.
+            # Only the events that can start or steer work are remembered; replaying anything else does nothing.
+            event = request.headers.get("x-github-event", "")
+            replays, digest = self.h.jobs.admission.replays, self.h.jobs.admission.replays.digest(body)
+            ttl = self.h.settings.webhook_replay_hours * 3600
+            # --- reconciler: marked pending while handled and done after, so a pod that dies in between doesn't make
+            # GitHub's redelivery look like a replay (redeliver.py)
+            if event in ("issues", "issue_comment", "projects_v2_item") and \
+                    not redeliver.claim(replays, digest, ttl):  # --- intake: + project items
+                delivery = (request.headers.get("x-github-delivery") or "")[:100]
+                self.h.jobs.admission.refused("github:replay", "github", "hook.replay", delivery or None)
+                return JSONResponse({"ignored": "duplicate delivery"}, status_code=200)
+            try:
+                res = await handle_github(self.h.jobs, event, request.headers.get("x-github-delivery"), payload)
+            except BaseException:  # --- reconciler: a shutdown mid-handler too
+                replays.forget("github", digest)  # nothing happened: let GitHub's redelivery try again
+                raise
+            if res.get("error") or res.get("rate_limited"):
+                replays.forget("github", digest)  # a redelivery after the fix (or the wait) should run
+                if res.get("rate_limited"):
+                    return JSONResponse(res, status_code=429)
+            elif event in ("issues", "issue_comment", "projects_v2_item"):  # --- intake
+                redeliver.done(replays, digest, ttl)  # --- reconciler: handled; from now on a replay
+            return JSONResponse(res, status_code=202 if res.get("ok") else 200)
+
+
+class _GitHubPlugin:
+    name = "github"
+    api = "hangar.plugin/v1"
+    Settings = NoSettings
+
+    def register(self, host: Any, settings: Any) -> None:
+        host.add_door(GitHubDoor(host.h))
+
+
+GITHUB_PLUGIN = _GitHubPlugin()
+
+
 # ---------------------------------------------------------------------------- MCP auth
+def _delegation():
+    """auth.resolve_delegation(auth, principal, headers) -> Principal, when this build has it (relay identity)."""
+    import hangar.auth as auth_mod
+
+    return getattr(auth_mod, "resolve_delegation", None)
+
+
 class MCPAuthMiddleware:
     """Accepts static hangar tokens and (when enabled) OAuth access tokens issued by hangar."""
 
@@ -125,6 +203,14 @@ class MCPAuthMiddleware:
             who = None
         if who is None and self.oauth is not None:
             who = await self.oauth.principal(token)
+        if who is not None and (delegate := _delegation()) is not None:
+            # --- plugin host / relay identity (WP4): a relay token acting `on_behalf_of` a linked person
+            # (X-Hangar-On-Behalf-Of) becomes that person's principal; refused with identity.Forbidden
+            try:
+                res = delegate(self.auth, who, headers)
+                who = (await res) if inspect.isawaitable(res) else res
+            except identity.Forbidden as e:
+                return await JSONResponse({"error": str(e)}, status_code=403)(scope, receive, send)
         actor = identity.actor_name(who) if who else None
         if actor is None:
             challenge = 'Bearer realm="hangar"'
@@ -323,6 +409,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     apply_pending(settings)
     h = Hangar(settings)
+    # --- plugin host (docs/plugins.md): first, so a bad HANGAR_PLUGINS refuses to start before anything runs
+    from hangar import events_out, pluginhost
+
+    plugin_host = pluginhost.of(h)
     # --- workstream mcp-modern: legacy MCP clients keep a session unless HANGAR_MCP_STATELESS_HTTP (docs/mcp.md)
     stateless = h.settings.mcp_stateless_http
     mcp = build_mcp(h.fleet, h.jobs, h.sessions, triggers=h.triggers, legacy_sessions=not stateless)
@@ -372,6 +462,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         h.retention.start()  # --- scale
         h.ops.start()  # --- clouddoctor
         inbox_notify.of(h.jobs).start()  # --- inbox delivery (#157): DMs for questions and approvals
+        events_out.of(h.jobs).start(plugin_host.notifiers)  # --- plugin host: hangar.event/v1 to the notifiers
         outbox.of(h.fleet).start(h.sessions, h.jobs)  # --- outbox (#163): drains while the pools are off too
         weekly.of(h.jobs).start()  # --- #168: the nightly revert pass and the standup line
         modelpolicy.of(h.fleet).start()  # --- canary: providers' model lists, fetched now and kept fresh
@@ -387,6 +478,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await h.retention.stop()  # --- scale
         await h.ops.stop()  # --- clouddoctor
         await inbox_notify.of(h.jobs).stop()  # --- inbox delivery (#157)
+        await events_out.of(h.jobs).stop()  # --- plugin host
         await outbox.of(h.fleet).stop()  # --- outbox (#163)
         await weekly.of(h.jobs).stop()  # --- #168
         await modelpolicy.of(h.fleet).stop()  # --- canary
@@ -929,49 +1021,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         evs = jobs.events(job_id, owner=owner_filter(caller), since=since, limit=limit, tail=tail)
         return {"events": evs, "next": evs[-1]["seq"] if evs else since}
 
-    @app.post("/api/hooks/github")
-    async def github_hook(request: Request):
-        name = h.settings.github_webhook_secret_credential
-        if not name:
-            raise HTTPException(404, "GitHub webhook is not configured (HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL)")
-        body = await request.body()
-        try:  # front-door-auth: say nothing about the vault to an anonymous caller
-            secret = h.broker.secret_text(name)
-        except Exception as e:  # noqa: BLE001
-            log.error("GitHub webhook secret credential %s is not usable", name)
-            raise HTTPException(503, "GitHub webhook secret is not stored") from e
-        if not verify_signature(secret, body, request.headers.get("x-hub-signature-256")):
-            raise HTTPException(401, "bad signature")
-        try:
-            payload = json.loads(body)
-        except ValueError as e:
-            raise HTTPException(400, "body is not JSON") from e
-        # --- front-door-auth: GitHub signs only the body, so the same body is the same delivery, whatever its
-        # X-GitHub-Delivery header says. A redelivery or a replay is acknowledged and does nothing.
-        # Only the events that can start or steer work are remembered; replaying anything else does nothing.
-        event = request.headers.get("x-github-event", "")
-        replays, digest = jobs.admission.replays, jobs.admission.replays.digest(body)
-        ttl = h.settings.webhook_replay_hours * 3600
-        # --- reconciler: marked pending while handled and done after, so a pod that dies in between doesn't make
-        # GitHub's redelivery look like a replay (redeliver.py)
-        if event in ("issues", "issue_comment", "projects_v2_item") and \
-                not redeliver.claim(replays, digest, ttl):  # --- intake: + project items
-            delivery = (request.headers.get("x-github-delivery") or "")[:100]
-            jobs.admission.refused("github:replay", "github", "hook.replay", delivery or None)
-            return JSONResponse({"ignored": "duplicate delivery"}, status_code=200)
-        try:
-            res = await handle_github(jobs, event, request.headers.get("x-github-delivery"), payload)
-        except BaseException:  # --- reconciler: a shutdown mid-handler too
-            replays.forget("github", digest)  # nothing happened: let GitHub's redelivery try again
-            raise
-        if res.get("error") or res.get("rate_limited"):
-            replays.forget("github", digest)  # a redelivery after the fix (or the wait) should run
-            if res.get("rate_limited"):
-                return JSONResponse(res, status_code=429)
-        elif event in ("issues", "issue_comment", "projects_v2_item"):  # --- intake
-            redeliver.done(replays, digest, ttl)  # --- reconciler: handled; from now on a replay
-        return JSONResponse(res, status_code=202 if res.get("ok") else 200)
-
     # ------------------------------------------------------------------ triggers (workstream A)
     triggers = h.triggers
 
@@ -1033,9 +1082,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/schedules/{ref}/run")
     async def schedule_run(ref: str, who: str = A):
         return jobs.view(triggers.run_now(ref, requester=who))
-    # --- workstream B: slack (/api/hooks/slack/commands and /api/hooks/slack/events; docs/slack.md)
-    SlackFrontDoor(jobs).mount(app)
-    JiraFrontDoor(jobs).mount(app)  # --- intake: /api/hooks/jira (docs/intake.md)
+    # --- plugin host: the doors, built in (github, slack, jira; docs/slack.md, docs/intake.md) and plugins'
+    plugin_host.mount(app)
+
+    @app.get("/api/admin/plugins")
+    async def plugins_list(_: str = A):
+        """The loaded plugins, their versions and what each added (docs/plugins.md)."""
+        return {"api": "hangar.plugin/v1", "plugins": plugin_host.views()}
 
     # ------------------------------------------------------------------ sessions (spec 0010)
     sessions = h.sessions

@@ -192,6 +192,9 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
     from hangar.jira import doctor_checks as jira_checks  # --- intake
 
     out += await jira_checks(h, transport)
+    from hangar import pluginhost  # --- plugin host: each plugin, its version and what it added
+
+    out += await pluginhost.doctor_checks(h)
 
     # checkpoint storage is writable
     key = f"_doctor/{now():.0f}"

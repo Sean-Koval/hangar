@@ -53,7 +53,8 @@ _RESTART = ("public_url", "oauth_", "env_dirs", "image_prefix", "registry", "ext
             # --- overnight/acceptance: providers find hangar-envd's binaries when they start, and /metrics is set
             # up once (docs/upgrading.md tells people to turn these off with `hangar config set`)
             "envd", "envd_dir", "metrics_enabled",
-            "outbox_url")  # --- #273: the outbox picks its sink when it is first made
+            "outbox_url",  # --- #273: the outbox picks its sink when it is first made
+            "plugins")  # --- plugin host: plugins are loaded and registered when the app is built
 
 
 class SettingError(ValueError):

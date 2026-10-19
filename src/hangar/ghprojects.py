@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from hangar import autoinstall as autoinstall  # --- autoinstall: an issue labelled for an env setup
 from hangar import intake
+from hangar.ext import NoSettings  # --- plugin host
 from hangar.github import GitHubError
 from hangar.jobs import JobService, SubmitJob
 from hangar.models import ContextItem, Job, JobState
@@ -245,6 +246,7 @@ async def update(svc: JobService, job: Job, ref: str, stage: str) -> None:
         await gql.close()
 
 
+# Registered at import too, so a JobService works without the app (the CLI, tests); see PLUGIN.
 intake.TRACKERS["ghproject"] = update
 
 
@@ -376,3 +378,18 @@ async def _submit(svc: JobService, delivery: str | None, board: Board, key: str,
                     + intake.queued_notes(svc, job, "github"))  # --- #156
         svc._spawn(svc._comment(job, ref, note))
     return res
+
+
+# ============================================================================ plugin host (docs/plugins.md)
+class _ProjectsPlugin:
+    """Built in: the `ghproject` tracker. Project items arrive through the GitHub door (handle_github)."""
+
+    name = "ghprojects"
+    api = "hangar.plugin/v1"
+    Settings = NoSettings
+
+    def register(self, host: Any, settings: Any) -> None:
+        host.add_tracker("ghproject", update)
+
+
+PLUGIN = _ProjectsPlugin()
