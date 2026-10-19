@@ -2,11 +2,11 @@
 
 Claude Code, Codex, Cursor, VS Code and other agents are hangar's main users. This page covers what hangar's MCP server gives them beyond plain tool calls, and how each piece looks on the wire. To connect a client, see [clients.md](clients.md).
 
-Hangar speaks every protocol revision its SDK does: the `initialize`-handshake revisions up to **2025-11-25**, and the stateless **2026-07-28** revision (no handshake, capabilities on every request). Each endpoint serves both; each request is routed by its `MCP-Protocol-Version` header.
+hangar speaks every protocol revision its SDK does: the `initialize`-handshake revisions up to **2025-11-25**, and the stateless **2026-07-28** revision (no handshake, capabilities on every request). Each endpoint serves both; each request is routed by its `MCP-Protocol-Version` header.
 
 ## Two servers
 
-Hangar's tools are split across two MCP servers (#140), so a client that only hands off work doesn't pay, on every turn, for the tools that drive sandboxes by hand:
+hangar's tools are split across two MCP servers (#140), so a client that only hands off work doesn't pay, on every turn, for the tools that drive sandboxes by hand:
 
 | Server | Endpoint | For | Tools |
 | --- | --- | --- | --- |
@@ -135,7 +135,7 @@ A task belongs to the token that created it: any other caller gets "unknown task
 `exec(stream=true)` sends a command's output as progress notifications while it runs, and `process` runs
 background commands you attach to later; see [streaming.md](streaming.md).
 
-Subscribe to follow work without polling: a 2026-07-28 client opens `subscriptions/listen` with `resourceSubscriptions: ["hangar://jobs/job-1a2b"]`; a 2025-era client sends `resources/subscribe`. Hangar sends `notifications/resources/updated` whenever the job or session changes (state, a turn starting or ending, new events), at most every 250 ms per URI. A notification only says "read it again".
+Subscribe to follow work without polling: a 2026-07-28 client opens `subscriptions/listen` with `resourceSubscriptions: ["hangar://jobs/job-1a2b"]`; a 2025-era client sends `resources/subscribe`. hangar sends `notifications/resources/updated` whenever the job or session changes (state, a turn starting or ending, new events), at most every 250 ms per URI. A notification only says "read it again".
 
 ## Typed results and hints
 

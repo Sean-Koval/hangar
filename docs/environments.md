@@ -1,7 +1,7 @@
 # Environments: the spec, and what the repo says about itself
 
 An agent is only as good as the computer it gets. When the dependencies aren't installed, the database isn't up or
-the dev server died an hour ago, the output just gets weaker, and people blame the model. Hangar's environment specs
+the dev server died an hour ago, the output just gets weaker, and people blame the model. hangar's environment specs
 (`envs/*.yaml`, [spec 0006](specs/0006-environments-and-harness-packs.md); [the reference below](#environment-specs))
 describe the machine: the image, the harnesses, the credentials. The rest of this page covers what the **repo** says
 about itself, in a file committed next to its code:
@@ -151,7 +151,7 @@ and the message says it's decided in hangar. Secrets stay in hangar, by name. `h
 are requests that the repo's policy bounds ([the heavy tier](#what-decides)); Docker is off unless an admin allows it
 for the repo (`hangar repo set owner/repo --heavy allow`), and no other tier can be asked for.
 
-Hangar reads the file from the commit (`git cat-file`), never from the working tree. A symlink committed in its
+hangar reads the file from the commit (`git cat-file`), never from the working tree. A symlink committed in its
 place is read as the link's text, so it can't make hangar read another file in the sandbox.
 
 ### Resolution order
@@ -161,7 +161,7 @@ Per field: **what the job asked for, then the repo's file, then the repo's polic
 the last clone. So a repo's `extends` and `verify` apply to every front door (GitHub issues, Slack, schedules, MCP)
 from the second job on. `extends` picks the environment only when the repo's `HANGAR_GITHUB_REPOS` entry allows
 that environment; a repo with no entry doesn't pick its environment (an environment decides credentials, secrets
-and egress, so an admin says which ones a repo may name). Hangar uses the file only as a sandbox of the job's own
+and egress, so an admin says which ones a repo may name). hangar uses the file only as a sandbox of the job's own
 environment, or of one the allowlist names, last saw it: never as another environment's sandbox recorded it (its
 `setup` and `install` run before the read, and members make environments).
 
@@ -298,7 +298,7 @@ directory it can create, as in the example. `redis` and most others need nothing
 Images must match `HANGAR_ENV_SERVICE_IMAGES`: by default Docker's official images (`postgres:17`, `redis`), directly
 or through `mirror.gcr.io/library/`, which GKE nodes pull without Docker Hub's rate limits. An admin adds a registry
 with a pattern such as `us-docker.pkg.dev/acme/services/**` (`*` stays within one path segment, `**` crosses them).
-Other images are left out, with a setup failure that names them. Hangar's own images (under `HANGAR_REGISTRY` or
+Other images are left out, with a setup failure that names them. hangar's own images (under `HANGAR_REGISTRY` or
 `HANGAR_IMAGE_PREFIX`: environments, and repo builds that hold their repo's checkout) are never a service, whatever
 the patterns say.
 
@@ -507,11 +507,11 @@ dockerd's pulls go through the sandbox's egress policy like everything else:
 - **Allowlist**: dockerd uses the sandbox's egress proxy, with its own credential. The `docker` preset opens Docker
   Hub (`registry-1.docker.io`, `auth.docker.io` and its blob CDN, from [Docker's allowlist][docker-allowlist]); other
   registries go in `allow`. Docker Hub also takes pushes with anyone's token, so prefer hangar's mirror:
-- **Hangar's mirror** (`HANGAR_HEAVY_MIRROR=true`): a read-only pull-through of Docker Hub on the git gateway's port,
+- **hangar's mirror** (`HANGAR_HEAVY_MIRROR=true`): a read-only pull-through of Docker Hub on the git gateway's port,
   in the same pattern as the [package mirrors](security.md#package-mirrors): GET and HEAD of manifests, blobs and
   tags only. Its upstream is Docker Hub, or an Artifact Registry remote repository for Docker Hub
   (`HANGAR_HEAVY_MIRROR_UPSTREAM`, terraform's `dockerhub_mirror`) holding Docker Hub credentials of your own, so a
-  team's pulls don't hit the anonymous limit. Hangar reads it with its own Google identity; sandboxes never get
+  team's pulls don't hit the anonymous limit. hangar reads it with its own Google identity; sandboxes never get
   `*.pkg.dev`, which serves every project's writable repositories too. dockerd can't send credentials to a mirror (it
   refuses a mirror URL with a user in it), so the sandbox's egress credential is in the mirror's path. Use is summed
   into the `egress.allow` audit entries as `docker.mirror.hangar`.
@@ -720,7 +720,7 @@ mcp:
 `mcp.<name>.trust` is `trusted` or `untrusted`. Unset, a remote (`url`) server is `untrusted` and a local stdio
 (`command`) server is `trusted`. A call to an untrusted server's tool taints the turn ([security.md](security.md#taint)).
 Mark a stdio server that relays third-party text (Jira, Slack, a mail or web reader) `untrusted`, and a remote one you
-run over your own data `trusted`. Hangar's own `hangar-env` server is trusted; the built-in browser
+run over your own data `trusted`. hangar's own `hangar-env` server is trusted; the built-in browser
 (`computer.browser_mcp`) is untrusted; a server the agent adds itself is untrusted. A repo's
 `.hangar/environment.yaml` can't set `mcp:` at all.
 
@@ -752,7 +752,7 @@ one needs a person under `ask` and `deny-risky` ([steering.md](steering.md#taint
 | `HANGAR_HEAVY_WARM_POOLS` | `false` | Keep heavy environments' warm pools |
 | `HANGAR_HEAVY_DOCKER_IMAGE` | `docker:29.8.2-dind` | Where images get dockerd, containerd, runc and the CLI (Compose, Buildx) |
 | `HANGAR_HEAVY_REGISTRY_MIRRORS` | `[]` | dockerd's `registry-mirrors` (Docker Hub only), e.g. `["https://mirror.gcr.io"]` |
-| `HANGAR_HEAVY_MIRROR` | `false` | Hangar's read-only Docker Hub pull-through on the gateway, first among the mirrors |
+| `HANGAR_HEAVY_MIRROR` | `false` | hangar's read-only Docker Hub pull-through on the gateway, first among the mirrors |
 | `HANGAR_HEAVY_MIRROR_UPSTREAM` | `https://registry-1.docker.io` | Its upstream: Docker Hub, or an Artifact Registry remote repository for it |
 | `HANGAR_HEAVY_DOCKER_PRIVILEGED` | `false` | Docker provider: heavy sandboxes as privileged runc containers (root on the host) |
 

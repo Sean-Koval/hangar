@@ -1,6 +1,6 @@
 # Observability: traces, metrics, cost
 
-Operators of a software factory need to see where time and money go, and to notice when something breaks. Hangar gives you three things:
+Operators of a software factory need to see where time and money go, and to notice when something breaks. hangar gives you three things:
 
 - **OpenTelemetry traces** from the control plane: one trace per job run, session turn, MCP call or REST request, down to each sandbox start, checkpoint and agent turn. Claude Code's and Codex's own spans join the same trace.
 - **Prometheus metrics** at `GET /metrics`: fleet, sessions and jobs by state, latencies, tokens and dollars, budget stops, gateway pushes, MCP calls and control-plane health.
@@ -24,10 +24,10 @@ Notes on the settings:
 
 - **Nothing set means off.** This differs from the SDK, which defaults to OTLP on localhost. `OTEL_SDK_DISABLED=true` or `OTEL_TRACES_EXPORTER=none` also turn tracing off.
 - **The SDK is an extra.** It comes with `pip install 'hangar[otel]'` and is part of `hangar[all]`, which the control-plane image installs.
-- **Off costs nothing.** Hangar doesn't import the OpenTelemetry SDK or exporter, and each hook costs one global check. A test asserts both.
+- **Off costs nothing.** hangar doesn't import the OpenTelemetry SDK or exporter, and each hook costs one global check. A test asserts both.
 - **Protocol.** OTLP goes over HTTP/protobuf. `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` works if `opentelemetry-exporter-otlp-proto-grpc` is installed; `http/json` isn't supported.
 - **Standard variables.** The SDK reads `OTEL_EXPORTER_OTLP_HEADERS`, `_TIMEOUT`, `_CERTIFICATE`, `OTEL_SERVICE_NAME` (default `hangar`), `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER` / `_ARG` and `OTEL_BSP_*` as usual.
-- **Hangar's own TracerProvider.** Hangar doesn't install a process-wide provider. As a result, FastAPI's built-in telemetry (FastAPI ≥ 0.143) stays off and requests aren't traced twice. Don't set `FASTAPI_OTEL_AUTO_CONFIGURE=true`: that would add FastAPI's own request spans, and logs that include exception messages.
+- **hangar's own TracerProvider.** hangar doesn't install a process-wide provider. As a result, FastAPI's built-in telemetry (FastAPI ≥ 0.143) stays off and requests aren't traced twice. Don't set `FASTAPI_OTEL_AUTO_CONFIGURE=true`: that would add FastAPI's own request spans, and logs that include exception messages.
 - **A failed export never hurts the work.** If the collector is down, spans are dropped.
 
 ### What is traced
@@ -46,7 +46,7 @@ Notes on the settings:
 | `sandbox.exec`, `sandbox.read_file`, `sandbox.write_file`, `sandbox.list_files` | internal | only inside another span | `hangar.exec.exit_code`, `hangar.exec.transport` (`envd` or `exec`, see [envd.md](envd.md)), `hangar.file.bytes`. Commands and file contents are never recorded. |
 | `checkpoint.capture`, `checkpoint.restore` | internal | the turn, boot or suspend | `hangar.checkpoint.reason`, `.stored`, `.bytes` |
 | `db.backup`, `db.restore_stage` | internal | root, or `hangar admin`'s request | A database backup and a staged restore (gke.md §7): `hangar.backup.name`, `.db_bytes`, `.stored_bytes` |
-| `invoke_agent <harness>` | internal | `job.process`, or the request that sent the message | One per agent turn, from start until hangar has collected its result and checkpointed. GenAI semantic conventions: `gen_ai.operation.name=invoke_agent`, `gen_ai.agent.name` (the harness), `gen_ai.provider.name` (`anthropic` for Claude Code, `openai` for Codex, `gcp.gemini` for Antigravity), `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.conversation.id`, `gen_ai.usage.input_tokens` (cached tokens included, as the convention says), `.output_tokens`, `.cache_read.input_tokens`, `.cache_write.input_tokens`. Hangar adds `hangar.cost_usd`, `.cost_source`, `.turn.outcome`, `.turn.exit_code`, `.run.id`, `.session.id`, `.job.id`. A turn that timed out, went over budget or lost its sandbox is an error span. |
+| `invoke_agent <harness>` | internal | `job.process`, or the request that sent the message | One per agent turn, from start until hangar has collected its result and checkpointed. GenAI semantic conventions: `gen_ai.operation.name=invoke_agent`, `gen_ai.agent.name` (the harness), `gen_ai.provider.name` (`anthropic` for Claude Code, `openai` for Codex, `gcp.gemini` for Antigravity), `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.conversation.id`, `gen_ai.usage.input_tokens` (cached tokens included, as the convention says), `.output_tokens`, `.cache_read.input_tokens`, `.cache_write.input_tokens`. hangar adds `hangar.cost_usd`, `.cost_source`, `.turn.outcome`, `.turn.exit_code`, `.run.id`, `.session.id`, `.job.id`. A turn that timed out, went over budget or lost its sandbox is an error span. |
 
 Failed spans carry `error.type`: the exception class, `cancelled`, `tool_error`, or the turn's outcome. Their status message is the error, with stored credential values masked (`broker.redact`). Exceptions and stack traces are not recorded as span events.
 
@@ -67,7 +67,7 @@ With **`HANGAR_OTEL_SANDBOX_ENDPOINT`** set to an OTLP/HTTP collector that sandb
 | Harness | How hangar wires it |
 | --- | --- |
 | Claude Code | Per run, these variables: `CLAUDE_CODE_ENABLE_TELEMETRY=1`, `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1` (traces are beta), `OTEL_{TRACES,METRICS,LOGS}_EXPORTER=otlp`, `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` and `OTEL_EXPORTER_OTLP_ENDPOINT`. In `-p` mode Claude Code reads `TRACEPARENT`, so its `claude_code.interaction` span is a child of hangar's turn. |
-| Codex | Codex takes exporters only from the user-level `~/.codex/config.toml`. Hangar writes a managed `[otel]` block there when the sandbox starts: `exporter`, `trace_exporter` and `metrics_exporter`, each `{ otlp-http = { endpoint = "<endpoint>/v1/{logs,traces,metrics}", protocol = "binary" } }`, with `environment = "hangar"`. Without that block, `metrics_exporter` defaults to `statsig`. If the environment's own config already has `[otel]`, hangar leaves it alone and adds a warning to the sandbox. |
+| Codex | Codex takes exporters only from the user-level `~/.codex/config.toml`. hangar writes a managed `[otel]` block there when the sandbox starts: `exporter`, `trace_exporter` and `metrics_exporter`, each `{ otlp-http = { endpoint = "<endpoint>/v1/{logs,traces,metrics}", protocol = "binary" } }`, with `environment = "hangar"`. Without that block, `metrics_exporter` defaults to `statsig`. If the environment's own config already has `[otel]`, hangar leaves it alone and adds a warning to the sandbox. |
 | pi, Antigravity | `TRACEPARENT` only. Neither has OTel export that hangar can configure. |
 
 Every harness also gets `OTEL_RESOURCE_ATTRIBUTES` with `hangar.sandbox.id`, `hangar.run.id`, `hangar.environment` and `hangar.harness`. A sandbox can set its own resource attributes, so treat these as labels for grouping, not as proof of where a span came from.
@@ -82,7 +82,7 @@ No headers or credentials go into sandboxes, so the collector must accept unauth
 
 ### Your MCP client's trace
 
-Hangar continues an incoming `traceparent` header on REST and MCP requests (tested over streamable HTTP), so hangar's `tools/call` span sits under the client's span.
+hangar continues an incoming `traceparent` header on REST and MCP requests (tested over streamable HTTP), so hangar's `tools/call` span sits under the client's span.
 
 Claude Code sends that header on HTTP MCP requests when its tracing beta is on. Per its docs, that is only when `ANTHROPIC_BASE_URL` is unset or points at the Anthropic API, unless `CLAUDE_CODE_PROPAGATE_TRACEPARENT=1` is set. With both ends exporting, one trace runs from the laptop agent, through hangar, into the cloud agent's sandbox.
 
@@ -95,7 +95,7 @@ With `HANGAR_TRACE_LIVE_TOOLS=true`, each turn's tool calls, subagents and appro
 `GET /metrics` returns the Prometheus text format.
 
 - **Who can read it.** An admin token, or a token that can read metrics and nothing else: `hangar token create prometheus --scope metrics`.
-- **Turning it off.** `HANGAR_METRICS_ENABLED=false` turns `/metrics` off (404). Hangar then never imports `prometheus_client`.
+- **Turning it off.** `HANGAR_METRICS_ENABLED=false` turns `/metrics` off (404). hangar then never imports `prometheus_client`.
 
 | Metric | Type | Labels |
 | --- | --- | --- |
@@ -389,7 +389,7 @@ Cloud Trace takes OTLP at the Telemetry API, `https://telemetry.googleapis.com` 
 
 3. **Optional: let sandboxes reach the collector.** If you set `HANGAR_OTEL_SANDBOX_ENDPOINT`, apply `deploy/k8s/observability/otel.yaml`. It lets sandboxes reach the collector's port 4318 and nothing else in the cluster. The collector also forwards the harnesses' metrics and logs to Cloud Monitoring and Cloud Logging.
 
-The endpoint, scopes, collector install and roles were checked against Google's docs on 2026-10-13: the [Telemetry API `v1.traces`](https://docs.cloud.google.com/stackdriver/docs/reference/telemetry/v1.traces.post) and the collector page above. Hangar's spans can also go to any other OTLP backend (Tempo, Jaeger, Honeycomb, Grafana Cloud…) through `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS`. None of those has been tested.
+The endpoint, scopes, collector install and roles were checked against Google's docs on 2026-10-13: the [Telemetry API `v1.traces`](https://docs.cloud.google.com/stackdriver/docs/reference/telemetry/v1.traces.post) and the collector page above. hangar's spans can also go to any other OTLP backend (Tempo, Jaeger, Honeycomb, Grafana Cloud…) through `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS`. None of those has been tested.
 
 ## Settings
 

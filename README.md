@@ -5,7 +5,7 @@
 
 # hangar
 
-**Your team wants to hand tickets to coding agents, but not to a laptop with everyone's credentials and no record of what ran.** Hangar runs Claude Code, Codex, pi and Antigravity in isolated cloud sandboxes, checks their work with your repo's own tests and hands back a draft pull request.
+**Your team wants to hand tickets to coding agents, but not to a laptop with everyone's credentials and no record of what ran.** hangar runs Claude Code, Codex, pi and Antigravity in isolated cloud sandboxes, checks their work with your repo's own tests and hands back a draft pull request.
 
 Documentation site: **[sean-koval.github.io/hangar](https://sean-koval.github.io/hangar/)** · part of the [agent factory](https://sean-koval.github.io/agent-factory/)
 
@@ -36,7 +36,7 @@ Many doors bring work in; hangar runs it; the pull request is the one gate out. 
 
 ## Use cases
 
-- **Ticket to draft PR.** A product engineer labels a Jira or GitHub issue `hangar` (or moves it to "Ready for agent"). Hangar starts a sandbox from the repo's environment, the agent fixes it, hangar runs the repo's check and opens a draft PR that closes the issue. The engineer reviews a PR, not a chat log.
+- **Ticket to draft PR.** A product engineer labels a Jira or GitHub issue `hangar` (or moves it to "Ready for agent"). hangar starts a sandbox from the repo's environment, the agent fixes it, hangar runs the repo's check and opens a draft PR that closes the issue. The engineer reviews a PR, not a chat log.
 - **Delegate from your own agent.** A developer in Claude Code or Codex says "hand this to the cloud" with the [hangar skill](skills/hangar/SKILL.md). Their uncommitted changes go along; three attempts run in parallel (`best_of_n`); they pick the best and pull its patch back, while their laptop stays free.
 - **One fleet for the team.** A platform engineer runs one hangar on GKE. Everyone connects their own client with their own token; credentials stay behind a gateway, budgets and fairness cap spend, and the inbox brings each person their reviews, approvals and agents' questions.
 
@@ -83,7 +83,7 @@ To look around first without Docker or a key, run the demo hangar the recording 
 
 ## Security posture
 
-Hangar treats every sandbox as hostile. A job from an intake door (a GitHub issue, Jira, GitHub Projects, Slack, an inbound webhook) can fetch its repo but never push: hangar pushes the commit it verified, through the git gateway. Its network is an egress allowlist (its environment's and repo policy's hosts and its model API), the agent has no sudo, and automated work never uses a subscription login. Once an agent has read untrusted content, its PR opens as a draft and a second person, not the requester, must approve it to land. See [the security model](docs/security.md) and [the safe-release upgrade](docs/upgrading.md#the-safe-release-120132).
+hangar treats every sandbox as hostile. A job from an intake door (a GitHub issue, Jira, GitHub Projects, Slack, an inbound webhook) can fetch its repo but never push: hangar pushes the commit it verified, through the git gateway. Its network is an egress allowlist (its environment's and repo policy's hosts and its model API), the agent has no sudo, and automated work never uses a subscription login. Once an agent has read untrusted content, its PR opens as a draft and a second person, not the requester, must approve it to land. See [the security model](docs/security.md) and [the safe-release upgrade](docs/upgrading.md#the-safe-release-120132).
 
 For an existing deployment, read [the upgrade guide](docs/upgrading.md) before updating. To deploy from GitHub Actions with your approval instead of from a laptop, see [deploying from CI/CD](docs/cicd.md).
 

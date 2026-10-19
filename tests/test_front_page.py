@@ -26,7 +26,7 @@ def test_the_readme_keeps_its_security_posture():
 
 
 def test_the_docs_home_page_keeps_its_security_posture():
-    assert "**Security posture.** Hangar treats every sandbox as hostile." in INDEX
+    assert "**Security posture.** hangar treats every sandbox as hostile." in INDEX
     assert "](security.md)" in INDEX and "](upgrading.md#the-safe-release" in INDEX
 
 
@@ -79,3 +79,20 @@ def test_the_fleet_views_are_explained_on_the_console_page_only():
         assert "console.md)" in text, f"{name} does not link to the console page"
     console = (ROOT / "docs" / "console.md").read_text()
     assert all(f"\n### {v}\n" in console for v in ("Board", "Bays", "Columns", "Owners"))
+
+
+def prose(text: str) -> str:
+    """Markdown without its fenced blocks, inline code and link targets: what a person reads."""
+    text = re.sub(r"^\s*(```|~~~).*?^\s*\1\s*$", "", text, flags=re.M | re.S)
+    return re.sub(r"`[^`]*`|\]\([^)]*\)", "", text)
+
+
+def test_the_product_name_is_lowercase_in_prose():
+    """The brand book: product names keep their case everywhere, even at the start of a sentence. hangar is
+    lowercase in the README and every docs page; code, commands and link targets are left alone."""
+    hits = []
+    for path in [ROOT / "README.md", *sorted((ROOT / "docs").rglob("*.md"))]:
+        for line in prose(path.read_text()).splitlines():
+            if re.search(r"\bHangar\b", line):
+                hits.append(f"{path.relative_to(ROOT)}: {line.strip()[:80]}")
+    assert not hits, "write 'hangar', not 'Hangar':\n" + "\n".join(hits[:20])

@@ -1,6 +1,6 @@
 # The microVM tier: E2B and CubeSandbox as hangar providers
 
-Hangar can run sandboxes as microVMs that start by restoring a memory snapshot, in tens of milliseconds rather than the second or more a container or a GKE gVisor Pod takes. It doesn't run the microVMs itself. It drives a platform that does, through its `e2b` provider, and stays the control plane: environments, jobs, sessions, the git gateway, budgets and the MCP and E2B APIs all work the same on top.
+hangar can run sandboxes as microVMs that start by restoring a memory snapshot, in tens of milliseconds rather than the second or more a container or a GKE gVisor Pod takes. It doesn't run the microVMs itself. It drives a platform that does, through its `e2b` provider, and stays the control plane: environments, jobs, sessions, the git gateway, budgets and the MCP and E2B APIs all work the same on top.
 
 | Platform | VMM | How it is fast | Flavour |
 | --- | --- | --- | --- |
@@ -58,7 +58,7 @@ HANGAR_TIERS='{"fast": ["e2b"], "heavy": ["e2b"]}'   # or ["kubernetes", "e2b"]:
 - **Hot resume** pauses the VM with its memory, so a resumed session finds dockerd, its images and running stacks as
   they were.
 
-Hangar's own E2B API never uses tiers. It always creates on `HANGAR_DEFAULT_PROVIDER`, the provider that has hangar-envd, so a `fast` environment requested through `/e2b` can't route back into the `e2b` provider. If that provider pointed at this same hangar, the request would loop. An `isolated` environment is created through `/e2b` only when the default provider is one of the isolated tier's; otherwise the create fails.
+hangar's own E2B API never uses tiers. It always creates on `HANGAR_DEFAULT_PROVIDER`, the provider that has hangar-envd, so a `fast` environment requested through `/e2b` can't route back into the `e2b` provider. If that provider pointed at this same hangar, the request would loop. An `isolated` environment is created through `/e2b` only when the default provider is one of the isolated tier's; otherwise the create fails.
 
 ## The e2b provider
 
@@ -89,15 +89,15 @@ Hangar's own E2B API never uses tiers. It always creates on `HANGAR_DEFAULT_PROV
 
 A hangar environment becomes an E2B or Cube template in one of two ways:
 
-1. **Built by hangar** (`hangar env publish`, or the first create). Hangar builds the image, pushes it to `HANGAR_REGISTRY`, then:
+1. **Built by hangar** (`hangar env publish`, or the first create). hangar builds the image, pushes it to `HANGAR_REGISTRY`, then:
    - on `cloud` or `selfhosted`, runs `Template.build` from that image, named `hangar-<env>:<digest>`. E2B adds its own envd;
    - on `cube`, posts `{image, name: hangar-<env>-<digest16>, cpu (millicores), memory (MiB), exposedPorts: [49983], probePort: 49983, probePath: /health, writableLayerSize}` to CubeAPI's `/templates`, then polls `/templates/{id}/builds/{job}/status` until it is `ready`. Creates look the alias up for its `tpl-…` id.
 2. **Built out of band and mapped**: `HANGAR_E2B_ENVIRONMENT_TEMPLATES='{"python": "tpl-0a1b2c", "node": "my-team/node-22"}'`. The provider uses the mapped template and builds nothing. A mapped template has to contain what the environment would have (its tools, its harness, the `agent` user and `/workspace`), because hangar can't check it.
 
 **What has to happen out of band on CubeSandbox.** Cube templates don't get an envd injected the way E2B's do. The image must start E2B's envd on 49983 itself, or Cube's build probe never succeeds:
 
-- Set the environment's `base:` to `ghcr.io/tencentcloud/cubesandbox-base:2026.16`. That is Ubuntu 22.04 with envd, and its entrypoint (`cube-entrypoint.sh`) starts envd and then runs the image's command. Hangar's rendered image keeps that entrypoint and adds `sleep infinity` as the command.
-- Add `env: {ENVD_LOG_FILE: "-"}` to the environment. Hangar's image ends as the unprivileged `agent` user, and the entrypoint's default log file under `/var/log` would make it exit.
+- Set the environment's `base:` to `ghcr.io/tencentcloud/cubesandbox-base:2026.16`. That is Ubuntu 22.04 with envd, and its entrypoint (`cube-entrypoint.sh`) starts envd and then runs the image's command. hangar's rendered image keeps that entrypoint and adds `sleep infinity` as the command.
+- Add `env: {ENVD_LOG_FILE: "-"}` to the environment. hangar's image ends as the unprivileged `agent` user, and the entrypoint's default log file under `/var/log` would make it exit.
 - Make the image pullable by CubeMaster: a public registry, or `HANGAR_E2B_REGISTRY_USERNAME`/`_PASSWORD`, which go to Cube as `registryUsername`/`registryPassword`.
 - Alternatively, build with Cube's own tooling (`cubemastercli tpl`, or its template guide) and map the result with `HANGAR_E2B_ENVIRONMENT_TEMPLATES`.
 
@@ -150,15 +150,15 @@ Pause and connect through hangar's own E2B API keep doing what they did before: 
 
 ## Security
 
-- **CubeSandbox's envd has no token.** CubeAPI returns `envdAccessToken: null` (spec 0013 §5.4, `services/sandboxes.rs`), so the envd inside a Cube sandbox answers anyone who can reach it. Hangar therefore **refuses such sandboxes and kills them**, unless `HANGAR_E2B_ALLOW_UNAUTHENTICATED_ENVD=true`. Set that only when all of these hold:
+- **CubeSandbox's envd has no token.** CubeAPI returns `envdAccessToken: null` (spec 0013 §5.4, `services/sandboxes.rs`), so the envd inside a Cube sandbox answers anyone who can reach it. hangar therefore **refuses such sandboxes and kills them**, unless `HANGAR_E2B_ALLOW_UNAUTHENTICATED_ENVD=true`. Set that only when all of these hold:
   - CubeProxy and the VMs' network are reachable only from hangar's control plane. On GKE that means a NetworkPolicy on the microVM pool that admits only the hangar namespace; on bare metal, a VPC firewall rule from the control plane's subnet alone.
-  - Every sandbox is created with `allowPublicTraffic=false`, which hangar always does. CubeProxy then checks the traffic token on every port, envd's included (`CubeProxy/lua/sandbox_backend.lua`), and only hangar has that token. Hangar checks the part it can see: a sandbox that comes back with neither an envd token nor a traffic token (CubeMaster made it public) is refused and killed, flag or not.
+  - Every sandbox is created with `allowPublicTraffic=false`, which hangar always does. CubeProxy then checks the traffic token on every port, envd's included (`CubeProxy/lua/sandbox_backend.lua`), and only hangar has that token. hangar checks the part it can see: a sandbox that comes back with neither an envd token nor a traffic token (CubeMaster made it public) is refused and killed, flag or not.
   - The VMs' envd port is reachable only through CubeProxy, not directly on the node network.
   - Nothing else on that network runs untrusted code. The sandboxes themselves are isolated by Cube's eBPF policy, which denies private ranges by default.
 - **Upstream fix.** CubeSandbox should return an envd token and serve the v2 routes; spec 0013 §8.2 proposes the PR. Once it does, the `cube` flavour needs neither the flag nor the v1 routes.
 - **API key.** The key is sent only to `HANGAR_E2B_API_URL`, never logged, and missing from every error message. For `cube`, CubeAPI can check keys against hangar through its `AUTH_CALLBACK_URL` (spec 0013 §8.3), which isn't built yet.
 - **A sandbox's answers are untrusted.** Output is cut to a tail, reads stop at their limit, frames are capped and compression is refused, as for hangar-envd. Sandbox ids from the API are checked before they go into a URL path.
-- **No loops.** The provider deliberately has no `envd` attribute, so hangar's E2B API and sandbox router never mistake it for a hangar-envd provider. Hangar's own E2B API always creates on the default provider. A hangar whose default provider is its own `/e2b` gets a refusal ("has no hangar-envd"), not a loop. The tests check both.
+- **No loops.** The provider deliberately has no `envd` attribute, so hangar's E2B API and sandbox router never mistake it for a hangar-envd provider. hangar's own E2B API always creates on the default provider. A hangar whose default provider is its own `/e2b` gets a refusal ("has no hangar-envd"), not a loop. The tests check both.
 
 ## Deployment
 
@@ -206,7 +206,7 @@ The constraints, from GKE's docs as spec 0013 §6.1 records them [G1][G2] (re-re
 - give `/data/cubelet` an XFS filesystem with reflink, either formatted from local NVMe SSDs by the installer or, for a trial, as an XFS loop image on the boot disk;
 - run CubeAPI, CubeMaster and CubeProxy as ordinary Deployments in the same namespace.
 
-Hangar then uses:
+hangar then uses:
 
 ```bash
 HANGAR_ENABLED_PROVIDERS='["kubernetes","e2b"]'
@@ -218,7 +218,7 @@ HANGAR_E2B_ALLOW_UNAUTHENTICATED_ENVD=true   # only with the NetworkPolicy below
 
 Pair it with a NetworkPolicy on the Cube namespace that admits ingress only from the hangar namespace.
 
-**E2B self-hosted on the pool.** E2B's Embed is a one-node StatefulSet with `hostNetwork`, privileged init containers, NBD and 2 MiB hugepages [E4]. That is why the pool defaults to Ubuntu and 2048 hugepages. Hangar then uses `HANGAR_E2B_FLAVOR=selfhosted`, `HANGAR_E2B_DOMAIN=<your E2B domain>`, `HANGAR_E2B_API_URL` if the API isn't at `api.<domain>`, and an E2B API key from that deployment.
+**E2B self-hosted on the pool.** E2B's Embed is a one-node StatefulSet with `hostNetwork`, privileged init containers, NBD and 2 MiB hugepages [E4]. That is why the pool defaults to Ubuntu and 2048 hugepages. hangar then uses `HANGAR_E2B_FLAVOR=selfhosted`, `HANGAR_E2B_DOMAIN=<your E2B domain>`, `HANGAR_E2B_API_URL` if the API isn't at `api.<domain>`, and an E2B API key from that deployment.
 
 ### Option B: bare-metal C3 outside GKE
 
@@ -244,7 +244,7 @@ These numbers come from the platforms' own published measurements, which spec 00
 | CubeSandbox, PVM cloud VM (16 cores), concurrency 1 | avg 66.7 / p95 78.2 ms | | 27–34 MB | [C9]: Tencent's PVM kernel, which GKE can't run |
 | E2B | not published | fork: up to 100 per request from one checkpoint | | [E3]: no latency figure in the infra repo |
 | GKE gVisor (hangar's default tier), for comparison | 1.5 s warm claim, 17 s cold | Pod Snapshot restore 0.3–1.25 s locally, "a few seconds" on GKE | the Pod's working set | hangar measurements, 2026-10-11; spec 0012 §4.3 |
-| Hangar Docker (runc), warm pool | 318 / 354 ms | | | spec 0013 §9 |
+| hangar Docker (runc), warm pool | 318 / 354 ms | | | spec 0013 §9 |
 
 Plan on about 50–70 ms per create at low concurrency and 25–35 MB per idle VM on bare metal. Expect more on GCP nested virtualization: at least Google's 10% CPU penalty, and more for I/O, which is what restore is. Spec 0013's targets for the tier are create ≤ 100 / ≤ 250 ms at concurrency 10, and a memory fork of N = 10 in ≤ 1 s (§9, P4).
 
@@ -272,7 +272,7 @@ The provider adds little on top. One control-API round trip creates a sandbox, a
 
 1. **P3's live gate.** Run CubeSandbox and E2B Embed on one `c3-standard-8` with nested virtualization, then measure create, restore and the nested penalty against the table above.
 2. **Upstream CubeSandbox.** Add the v2 create and connect routes and an envd token, then drop the `cube` special cases.
-3. **Hangar's edge as CubeAPI's auth callback** (spec 0013 §8.3).
+3. **hangar's edge as CubeAPI's auth callback** (spec 0013 §8.3).
 4. **Native fork.** E2B's `POST /sandboxes/{id}/fork` and CubeSandbox's snapshot-and-clone for `fork_session` and best-of-N, instead of hangar's snapshot-then-create.
 5. **hangar-envd as the template's envd.** A Cube or E2B template could carry hangar-envd, which is authenticated and smaller, so Cube templates wouldn't depend on `cubesandbox-base`.
 6. **Option B in Terraform** (a bare-metal MIG), if A misses P4's gate.

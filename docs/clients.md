@@ -1,6 +1,6 @@
 # Connecting MCP clients
 
-Hangar serves MCP over streamable HTTP as two servers: `hangar` at `<public_url>/mcp` (jobs, sessions, schedules, discovery) and `hangar-sandbox` at `<public_url>/mcp/sandbox` (sandboxes, commands, files, terminals; [mcp.md](mcp.md#two-servers)). What clients get beyond tool calls (tasks, elicitation, typed results, subscriptions, prompts) is in [mcp.md](mcp.md). The quick way to connect a client:
+hangar serves MCP over streamable HTTP as two servers: `hangar` at `<public_url>/mcp` (jobs, sessions, schedules, discovery) and `hangar-sandbox` at `<public_url>/mcp/sandbox` (sandboxes, commands, files, terminals; [mcp.md](mcp.md#two-servers)). What clients get beyond tool calls (tasks, elicitation, typed results, subscriptions, prompts) is in [mcp.md](mcp.md). The quick way to connect a client:
 
 ```bash
 hangar connect claude-code      # or codex, cursor, vscode, gemini, antigravity, claude-desktop
@@ -30,7 +30,7 @@ Claude Desktop's config file only starts local (stdio) servers, so the entry run
 
 ### When hangar's tools change
 
-After an upgrade that adds or changes tools, a client has to fetch the tool list again to see them. Claude Code, Codex and the other CLIs do that when a session starts. The claude.ai web, desktop and mobile apps don't: they keep the list from when the connector was added ([claude-code#38324](https://github.com/anthropics/claude-code/issues/38324)). Remove the hangar connector and add it again (**Settings → Connectors**) to refresh it. Hangar notices calls from an older list and says so in the tool's answer, at most once an hour ([mcp.md](mcp.md#deployment-notes)); `serverInfo.version` (`<version>+tools.<hash>`) tells you which tool list a hangar serves.
+After an upgrade that adds or changes tools, a client has to fetch the tool list again to see them. Claude Code, Codex and the other CLIs do that when a session starts. The claude.ai web, desktop and mobile apps don't: they keep the list from when the connector was added ([claude-code#38324](https://github.com/anthropics/claude-code/issues/38324)). Remove the hangar connector and add it again (**Settings → Connectors**) to refresh it. hangar notices calls from an older list and says so in the tool's answer, at most once an hour ([mcp.md](mcp.md#deployment-notes)); `serverInfo.version` (`<version>+tools.<hash>`) tells you which tool list a hangar serves.
 
 ### Where these formats come from
 
@@ -115,7 +115,7 @@ What hangar trusts, and what it refuses:
 
 ## ChatGPT, claude.ai and other OAuth clients
 
-Hangar includes an OAuth 2.1 authorization server that follows the MCP authorization spec. Clients that can't send a static bearer token connect with it.
+hangar includes an OAuth 2.1 authorization server that follows the MCP authorization spec. Clients that can't send a static bearer token connect with it.
 
 1. Make sure `HANGAR_PUBLIC_URL` is the https URL clients reach hangar at, for example `https://hangar.example.com`. OAuth turns itself off for plain-http hosts other than localhost.
 2. In ChatGPT, go to **Settings → Connectors → Create** (developer mode). Set the MCP server URL to `https://hangar.example.com/mcp` and choose **OAuth** for authentication.
