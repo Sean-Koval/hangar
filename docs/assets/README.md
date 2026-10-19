@@ -21,6 +21,7 @@ in the repository settings (Social preview).
 | --- | --- |
 | `hangar-demo.gif`, `hangar-demo.mp4` | `make.py`: Playwright drives the web UI on :8787 while issue #42 becomes a job, a sandbox run and draft PR #43; the terminal part is an asciinema recording of `hangar inbox` played with asciinema-player; ffmpeg encodes the frames |
 | `ui-jobs.png`, `ui-sessions.png`, `inbox.png` | `make.py`, from the same run |
+| `ui-fleet-board.png`, `-bays.png`, `-columns.png`, `-owners.png` | `make.py`, the Fleet page's four views ([the web console](../console.md)), from the same run |
 | `hangar-suite.svg`, `-dark.png`, `-light.png` | `diagram.py` (the agent-factory diagram helpers, copied) and `make.py` (PNGs in both Airframe flavors) |
 
 They run against `demo.py`: the real control plane with the test suite's fake provider

@@ -1,4 +1,5 @@
 # The documentation site (mkdocs.yml, docs/) built with Zensical. Pull requests build it; main deploys it to GitHub Pages.
+# Build it locally the same way: pip install zensical==0.0.71, then zensical build --strict (or zensical serve).
 name: docs
 on:
   pull_request:
@@ -27,7 +28,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install zensical==0.0.71
-      - run: zensical build
+      # --strict: a broken link or anchor (a warning) fails the build instead of deploying with it
+      - run: zensical build --strict
       - if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v4
         with:

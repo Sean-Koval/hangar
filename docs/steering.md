@@ -144,7 +144,7 @@ and writes a `{"type": "hangar.tree", "tool_use_id" | "phase": "start" | "end", 
 After a tool, the line is written only when the tree changed since the last one, so reads and commands that change
 nothing leave no line. The event parser turns each into a `progress` event with action `tree`, and the trace export
 into `hangar.git.tree` on the tool call and `hangar.git.tree.start` / `.end` on the turn
-([traces.md](api/traces.md#tool-call)).
+([traces.md](api/traces.md#toolcall)).
 
 - **How.** `git add -A` and `git write-tree` (which honour `.gitignore`), with a git directory, a scratch index (seeded
   once from the repo's, so each hash rehashes only what changed) and an object store of the driver's own in
