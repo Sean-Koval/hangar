@@ -189,6 +189,11 @@
             <a class="af-seg__btn" href="#fleet?view=columns" data-fleet-view="columns">Columns</a>
             <a class="af-seg__btn" href="#fleet?view=owners" data-fleet-view="owners">Owners</a>
           </nav>
+          <!-- the same four views as one control on a phone (<= 480px), where the segmented control wraps -->
+          <select id="fleet-view-select" class="fleet-view-select" aria-label="Fleet view">
+            <option value="board">Board</option><option value="bays">Bays</option>
+            <option value="columns">Columns</option><option value="owners">Owners</option>
+          </select>
           <label class="check"><input type="checkbox" id="show-stopped"> Show stopped</label>
           <button class="af-btn af-btn--primary" id="btn-new" type="button">New sandbox</button>
         </div>
