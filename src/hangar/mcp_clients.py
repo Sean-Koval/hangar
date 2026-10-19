@@ -12,6 +12,10 @@ docs/clients.md):
   `{"type": "http", "url", "headers"}`.
 - gemini: `~/.gemini/settings.json` (or `$GEMINI_CLI_HOME/.gemini/settings.json`), `mcpServers`:
   `{"url", "type": "http", "headers"}`, as `gemini mcp add --scope user --transport http` writes it.
+- antigravity: `~/.gemini/config/mcp_config.json` (the Antigravity CLI `agy`, app and IDE share it), `mcpServers`:
+  `{"serverUrl", "headers"}`. Antigravity ignores `url` and `httpUrl`, signs in by itself (OAuth with dynamic
+  registration) when there are no headers, and doesn't expand environment variables, so the token is written as is
+  (the file is 0600 like every other).
 - claude-desktop: `claude_desktop_config.json`, whose `mcpServers` only launch local (stdio) servers, so the entry
   runs the `mcp-remote` bridge with the token in a 0600 header file rather than on the command line.
 
@@ -65,6 +69,11 @@ CLIENTS: dict[str, Client] = {c.name: c for c in (
            "VS Code picks it up from its user mcp.json; start the server from the MCP: List Servers command."),
     Client("gemini", "Gemini CLI", "gemini", True, "run `/mcp auth {name}` in Gemini CLI",
            "Start a new Gemini CLI session; /mcp lists the server."),
+    # --- relay (I-G6): Antigravity's sign-in redirect (https://antigravity.google/oauth-callback in its docs) isn't
+    # in the default HANGAR_OAUTH_REDIRECT_HOSTS; docs/clients.md says how to add it
+    Client("antigravity", "Antigravity", "agy", True, "add antigravity.google to HANGAR_OAUTH_REDIRECT_HOSTS if it "
+           "isn't there, then sign in to {name} from Antigravity's MCP settings (/mcp in agy)",
+           "Start a new agy session; /mcp lists the server."),
     Client("claude-desktop", "Claude Desktop", None, False, "",
            "Quit and reopen Claude Desktop. The entry runs `npx {bridge}`, so Node.js must be installed."),
 )}
@@ -94,6 +103,8 @@ def config_path(client: str) -> Path:
         return home / ".cursor" / "mcp.json"
     if client == "gemini":
         return Path(os.environ.get("GEMINI_CLI_HOME") or home) / ".gemini" / "settings.json"
+    if client == "antigravity":  # its docs name no variable that moves it
+        return home / ".gemini" / "config" / "mcp_config.json"
     if client == "vscode":
         if sys.platform == "win32":
             return _appdata() / "Code" / "User" / "mcp.json"
@@ -146,6 +157,8 @@ def entry(client: str, url: str, token: str | None, header_file: Path | None = N
         return {"url": url, **({"headers": headers} if headers else {})}
     if client == "gemini":
         return {"url": url, "type": "http", **({"headers": headers} if headers else {})}
+    if client == "antigravity":
+        return {"serverUrl": url, **({"headers": headers} if headers else {})}
     return {"type": "http", "url": url, **({"headers": headers} if headers else {})}  # claude-code, vscode
 
 
