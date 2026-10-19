@@ -16,6 +16,10 @@ Credential documents carry `source: file:/var/run/hangar-secrets/<name>` (vault.
 and reads the file when the credential is used. Their values never pass through this command. The API returns no
 value or source, so a credential counts as unchanged when its metadata matches.
 
+A run is all or nothing: on the first write the server refuses, the writes already made are undone in reverse order
+(the previous body put back, what was created deleted, what was pruned recreated) from the live state the plan read,
+and the command exits 1 naming the refused document. A rollback write that fails too is reported per object.
+
 Other tools add schemas to HANDLERS (a change-set profile, for one).
 """
 
@@ -49,6 +53,7 @@ class Change:
     fields: dict[str, tuple[Any, Any]] = field(default_factory=dict)  # field -> (live, declared)
     origin: str | None = None
     apply: Callable[[], None] | None = None
+    undo: Callable[[], None] | None = None  # puts back the live state the plan read, if apply ran
 
     @property
     def drift(self) -> bool:
@@ -143,8 +148,15 @@ class Environments(Handler):
                 call("PUT", f"/api/environments/{d.name}", content=yaml.safe_dump(d.body, sort_keys=False),
                      headers={"Content-Type": "application/yaml"})
 
+            def undo(d=d, raw=live and live.get("raw")):
+                if raw is None:
+                    call("DELETE", f"/api/environments/{d.name}")
+                else:
+                    call("PUT", f"/api/environments/{d.name}", content=yaml.safe_dump(raw, sort_keys=False),
+                         headers={"Content-Type": "application/yaml"})
+
             out.append(Change(self.kind, d.name, "create" if live is None else "change",
-                              _diff(have or {}, want, sorted({*want, *(have or {})})), d.origin, put))
+                              _diff(have or {}, want, sorted({*want, *(have or {})})), d.origin, put, undo))
         return out
 
 
@@ -196,8 +208,21 @@ class Credentials(Handler):
                     body["person"] = d.body.get("person")
                 call("POST", "/api/credentials", json=body)
 
+            def undo(d=d, have=have):
+                if have is None:
+                    call("DELETE", f"/api/credentials/{d.name}")
+                    return
+                # the previous metadata, with the reference: hangar only takes the file named after the credential
+                body = {k: have[k] for k in CREDENTIAL_FIELDS if have.get(k) is not None and k != "person"}
+                if "exposure" not in d.body:  # left as stored when apply didn't send it
+                    body.pop("exposure", None)
+                body.update(name=d.name, value=reference(d.body["source"]), team=have.get("person") is None)
+                if have.get("person") is not None:
+                    body["person"] = have["person"]
+                call("POST", "/api/credentials", json=body)
+
             out.append(Change(self.kind, d.name, "change" if have else "create",
-                              fields or {"source": (None, b["source"])}, d.origin, put))
+                              fields or {"source": (None, b["source"])}, d.origin, put, undo))
         return out
 
 
@@ -229,6 +254,19 @@ class RepoPolicies(Handler):
             raise ApplyError(f"{origin}: repo '{repo}': {e}") from None
         return {k: v for k, v in p.model_dump(mode="json").items() if k in FIELDS}
 
+    @staticmethod
+    def _restore(call: Call, repo: str, have: dict[str, Any] | None) -> Callable[[], None]:
+        """Undo for a write to `repo`'s policy: the live one put back, or none if there was none."""
+        from hangar.repopolicy import FIELDS
+
+        def undo():
+            if have is None:
+                call("DELETE", "/api/repos/policy", params={"repo": repo})
+            else:
+                call("PUT", "/api/repos/policy", json={"repo": repo, **{k: have.get(k) for k in FIELDS}})
+
+        return undo
+
     def plan(self, call, docs, prune):
         from hangar.repopolicy import FIELDS
 
@@ -247,12 +285,13 @@ class RepoPolicies(Handler):
 
             out.append(Change(self.kind, d.name, "change" if have else "create",
                               {k: v for k, v in fields.items() if v[1] is not None or v[0] is not None}, d.origin,
-                              put))
-        for repo in sorted(live):  # policies no file declares
+                              put, self._restore(call, d.name, have)))
+        for repo, have in sorted(live.items()):  # policies no file declares
             def delete(repo=repo):
                 call("DELETE", "/api/repos/policy", params={"repo": repo})
 
-            out.append(Change(self.kind, repo, "delete" if prune else "live-only", apply=delete if prune else None))
+            out.append(Change(self.kind, repo, "delete" if prune else "live-only", apply=delete if prune else None,
+                              undo=self._restore(call, repo, have) if prune else None))
         return out
 
 
@@ -284,6 +323,60 @@ def _show(v: Any) -> str:
     return "-" if v is None else json.dumps(v, sort_keys=True) if isinstance(v, (dict, list)) else repr(v)
 
 
+def _label(c: Change) -> str:
+    return f"{c.kind} {c.name} ({c.origin or 'pruned: no file declares it'})"
+
+
+def _apply_all(changes: list[Change], as_json: bool) -> None:
+    """Every write, or none: on the first one that fails, the ones made are undone in reverse order and the command
+    exits 1. A failing undo is reported with the object it left changed."""
+    from hangar import cli
+
+    done: list[Change] = []
+    for c in changes:
+        if c.apply is None or not c.drift:
+            continue
+        try:
+            c.apply()
+        except Exception as e:  # cli._call has said why on stderr and raised typer.Exit
+            failed, why = c, _why(e)
+            break
+        done.append(c)
+    else:
+        return
+    left: list[tuple[Change, str]] = []
+    for c in reversed(done):
+        try:
+            if c.undo is None:
+                raise RuntimeError("no way to undo it")
+            c.undo()
+        except Exception as e:
+            left.append((c, _why(e)))
+    if as_json:
+        cli._print({"applied": False, "failed": {"kind": failed.kind, "name": failed.name, "origin": failed.origin,
+                                                 "error": why},
+                    "rolled_back": [{"kind": c.kind, "name": c.name, "origin": c.origin}
+                                    for c in done if all(c is not x for x, _ in left)],
+                    "left_changed": [{"kind": c.kind, "name": c.name, "origin": c.origin, "error": e}
+                                     for c, e in left]})
+    typer.secho(f"{_label(failed)}: could not {failed.action} it{f' ({why})' if why else ''}", fg="red", err=True)
+    if not left:
+        typer.secho(f"rolled back {len(done)} change(s): hangar is as it was before this run" if done else
+                    "nothing was applied: hangar is as it was before this run", fg="red", err=True)
+    else:
+        typer.secho(f"rollback failed for {len(left)} of {len(done)} change(s); these objects are left changed:",
+                    fg="red", err=True)
+        for c, e in left:
+            typer.secho(f"    {_label(c)}: {_VERB[c.action]}, not undone{f' ({e})' if e else ''}", fg="red", err=True)
+        if len(left) < len(done):
+            typer.secho(f"the other {len(done) - len(left)} change(s) were rolled back", fg="red", err=True)
+    raise typer.Exit(1)
+
+
+def _why(e: BaseException) -> str:
+    return "" if isinstance(e, typer.Exit) else str(e) or type(e).__name__
+
+
 def apply(
     file: list[Path] = typer.Option(..., "--file", "-f", help="A YAML file or a directory of them (recursively). "
                                     "Repeatable."),
@@ -304,9 +397,8 @@ def apply(
     except ApplyError as e:
         raise typer.BadParameter(str(e), param_hint="--file") from None
     write = not (dry_run or check)
-    for c in changes:
-        if write and c.apply is not None and c.drift:
-            c.apply()
+    if write:
+        _apply_all(changes, as_json)
     if as_json:
         cli._print({"applied": write, "items": [
             {"kind": c.kind, "name": c.name, "action": c.action, "origin": c.origin,

@@ -591,6 +591,19 @@ class EnvCatalog:
     def raw(self, name: str) -> dict[str, Any]:
         return self._raw[name][0]
 
+    def remove(self, name: str) -> None:
+        """Forget (and delete the file of) a spec saved through the API/UI. A shipped spec stays: ValueError. A shipped
+        spec the saved one overrode comes back."""
+        if name not in self._raw:
+            raise KeyError(f"unknown environment '{name}'")
+        if self.save_dir is None or self._raw[name][1] != self.save_dir:
+            raise ValueError(f"environment '{name}' ships with hangar and can't be deleted")
+        if children := sorted(n for n, (d, _) in self._raw.items() if d.get("extends") == name):
+            raise ValueError(f"environment '{name}' is extended by {', '.join(children)}")
+        for f in (self.save_dir / f"{name}.yaml", self.save_dir / f"{name}.yml"):
+            f.unlink(missing_ok=True)
+        self.reload()
+
     def get(self, name: str, _seen: tuple[str, ...] = (), _merge: Any = _deep_merge) -> EnvSpec:
         if name not in self._raw:
             raise KeyError(f"unknown environment '{name}'. Known: {', '.join(self.names()) or '(none)'}")

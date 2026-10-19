@@ -682,6 +682,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         spec = fleet.save_environment(data, actor=who)
         return spec.model_dump(mode="json")
 
+    @app.delete("/api/environments/{name}")
+    async def env_delete(name: str, who: str = A):  # --- company-deploy: `hangar apply` rolling back a create
+        try:
+            fleet.delete_environment(name, actor=who)
+        except KeyError as e:
+            raise HTTPException(404, str(e.args[0])) from None
+        except ValueError as e:
+            raise HTTPException(409, str(e)) from None
+        return {"deleted": name}
+
     @app.post("/api/environments/validate")
     async def env_validate(request: Request, _: str = A):
         body = await request.body()

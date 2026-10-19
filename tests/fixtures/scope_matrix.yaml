@@ -773,6 +773,12 @@ environment.validate:
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
     every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+environments.delete:
+  server: hangar
+  mcp: null
+  rest: DELETE /api/environments/{name}
+  scope: admin
+  owner: admin
 environments.get_context:
   server: hangar
   mcp: null
