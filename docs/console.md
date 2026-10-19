@@ -5,12 +5,12 @@ paste an API token, and it shows the fleet. The server prints a bootstrap admin 
 it to `~/.hangar/bootstrap-token` (in its data directory). The console uses an admin's routes, so use an admin token;
 the token stays in that browser until you choose **Sign out**.
 
-Its top bar has ten sections: **Needs you**, **Jobs**, **Sessions**, **Fleet**, **Environments**, **Credentials**,
-**Snapshots**, **Connect** (MCP snippets and API tokens), **Activity** (the audit log) and **Usage** (spend, budget
-stops). This page covers the first four, where the work happens. Needs you, Jobs, Sessions and Fleet carry counts:
-what waits on you, active jobs, live sessions and live sandboxes. The open section refreshes every 4 seconds while the
-browser tab is visible, and the Needs-you count about every half minute elsewhere. On a phone (below 760 px) the first
-four sections move to a bottom tab bar, and the other six, with the providers' state, sit under **More**.
+The top bar's first four sections are where the work happens, and this page covers them: **Needs you** (what waits on
+a person), **Jobs**, **Sessions** and **Fleet** (every sandbox, four ways), each with a count. The other six are
+Environments, Credentials, Snapshots, Connect (MCP snippets and API tokens), Activity (the audit log) and Usage (spend,
+budget stops). The open section refreshes every 4 seconds while the browser tab is visible, and the Needs-you count
+about every half minute elsewhere. On a phone (below 760 px) the first four sections move to a bottom tab bar, and the
+other six, with the providers' state, sit under **More**.
 
 The console follows the browser's light or dark setting. Terminals are always dark.
 
