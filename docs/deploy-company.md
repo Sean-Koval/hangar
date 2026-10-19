@@ -166,12 +166,12 @@ The rules:
 - **A credential reads only its own file.** The source must be `file:<HANGAR_SECRETS_DIR>/<credential name>`;
   anything else is refused with a 400. A symlink out of the directory, or a file over 1 MiB, reads as no value. So
   does a file that isn't mounted yet; the warning in hangar's log names the path, never the contents.
-- **Declare every mounted name with `hangar apply`** before members store credentials of their own. A member can
-  create a credential only under a name nobody holds, and could then reference the file of that name.
+- **Only an admin creates one.** A credential that references a mounted file is stored only with an admin token
+  (`hangar apply` from CD); a member's attempt answers 403, and a sandbox's login write-back never stores a reference.
 - **Static secrets only.** An `auth_file` credential whose tokens rotate inside the sandbox is written back to the
   vault when its lease ends. That write replaces the reference with the stored value.
-- **Not yet for `github_app` credentials.** The broker validates a GitHub App key's JSON when it is stored, before
-  the vault sees the reference, so it refuses one. Keep the App key as a stored value for now.
+- **GitHub App keys work too.** A `github_app` credential's JSON is checked when hangar uses it rather than when the
+  reference is stored, since the file may not be synced yet; `hangar doctor` reports a missing or malformed one.
 
 ## 5. Config as code: `hangar apply`
 
