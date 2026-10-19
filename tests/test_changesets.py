@@ -56,7 +56,12 @@ def profile_data(**over) -> dict:
     d = {"schema": "hangar.changeset-profile/v1", "name": "payments-bot", "environment": "multienv",
          "repos": {"infra": {"repo": url("infra")}, "database": {"repo": url("database")},
                    "code": {"repo": url("code")}, "deploy": {"repo": url("deploy"), "agent": "read"}},
-         "land_order": ["database", "infra", "code"]}
+         "land_order": ["database", "infra", "code"],
+         "deploy": {"role": "deploy", "after": ["database", "infra", "code"],
+                    "ready": {"kind": "image-ready", "image": "registry.example.com/payments-bot",
+                              "tag": "{code.merge_sha}"},
+                    "apply": {"kind": "command", "run": "sh bump.sh {environment} {code.merge_sha}"},
+                    "environments": ["dev"]}}
     d.update(over)
     return d
 
@@ -226,12 +231,15 @@ def remote_has(remote: Path, branch: str) -> bool:
     ({"land_order": ["database", "infra"]}, "missing: code"),
     ({"land_order": ["database", "infra", "code", "deploy"]}, "read-only roles: deploy"),
     ({"land_order": ["database", "infra", "code", "nope"]}, "aren't in repos: nope"),
-    ({"repos": {"code": {"repo": url("code")}, "Bad": {"repo": url("infra")}}, "land_order": ["code"]},
-     "role names"),
-    ({"repos": {"code": {"repo": url("code")}, "infra": {"repo": url("code")}}, "land_order": ["code", "infra"]},
-     "different repo"),
+    ({"repos": {"code": {"repo": url("code")}, "Bad": {"repo": url("infra")}}, "land_order": ["code"],
+      "deploy": None}, "role names"),
+    ({"repos": {"code": {"repo": url("code")}, "infra": {"repo": url("code")}}, "land_order": ["code", "infra"],
+      "deploy": None}, "different repo"),
     ({"primary": "deploy"}, "primary role"),
-    ({"nope": 1}, "Extra inputs"),
+    ({"deploy": {"role": "code", "apply": {"kind": "command", "run": "x"}}}, "changed by its step"),
+    ({"deploy": {"role": "deploy", "after": ["deploy"], "apply": {"kind": "command", "run": "x"}}},
+     "don't land: deploy"),
+    ({"deploy": {"role": "deploy", "apply": {"kind": "command"}, "environments": ["dev", "prod"]}}, "at most 1"),
     ({"schema": "hangar.changeset-profile/v2"}, "schema"),
 ])
 def test_profile_validation(change, why):
@@ -241,11 +249,11 @@ def test_profile_validation(change, why):
 
 def test_profile_defaults_and_digest():
     p = changesets.parse_profile(profile_data())
-    assert p.primary == "code"
+    assert p.primary == "code" and p.deploy_after() == ["database", "infra", "code"]
     assert p.digest() == changesets.parse_profile(profile_data()).digest()
     assert p.digest() != changesets.parse_profile(profile_data(land_order=["infra", "database", "code"])).digest()
     nocode = profile_data(repos={"svc": {"repo": url("code")}, "db": {"repo": url("database")}},
-                          land_order=["db", "svc"])
+                          land_order=["db", "svc"], deploy=None)
     assert changesets.parse_profile(nocode).primary == "svc"  # no `code` role: the last to land
 
 
@@ -256,6 +264,10 @@ async def test_profiles_are_admin_config(fleet, settings, multi):
     store = changesets.profiles(svc)
     with pytest.raises(changesets.ChangeSetError, match="no environment 'nope'"):
         store.put(profile_data(environment="nope"), "admin")
+    bad = profile_data()
+    bad["deploy"]["apply"]["kind"] = "acme-argocd-bump"
+    with pytest.raises(changesets.ChangeSetError, match="no deliverer of kind 'acme-argocd-bump'"):
+        store.put(bad, "admin")
     p = store.put(profile_data(), "admin")
     assert store.get("payments-bot").digest() == p.digest() and [x.name for x in store.list()] == ["payments-bot"]
     assert any(e.action == "changeset.profile.set" for e in fleet.store.audit_tail(10))
@@ -354,6 +366,7 @@ async def test_four_repo_change_set_delivers_three_linked_prs(cjobs, multi, flee
         for other in ("database", "infra", "code"):
             n = MultiGH.NUMBERS[f"acme/{other}"]
             assert f"[#{n}](https://github.com/acme/{other}/pull/{n})" in body, (role, other)
+        assert "| deploy | acme/deploy | - | waiting for the others to merge |" in body
         assert body.rstrip().endswith(f"Hangar-Changeset: {cs.id}") and f"Hangar-Job: {job.id}" in body
         assert body.index("database") < body.index("infra") < body.index("| code")
     assert gh.pr("acme/code")["title"] == job.title
@@ -451,7 +464,7 @@ def test_the_profile_schema_takes_what_the_design_shows():
     block = re.search(r"```yaml\n(schema: hangar\.changeset-profile/v1\n.*?)```", doc, re.S)
     assert block, "docs/changesets.md shows a profile"
     p = changesets.parse_profile(yaml.safe_load(block.group(1)))
-    assert p.land_order == ["database", "infra", "code"] and p.repos["deploy"].agent == "read"
+    assert p.deploy and p.deploy.apply.kind == "command" and p.repos["deploy"].agent == "read"
 
 
 def test_ticket_key():
