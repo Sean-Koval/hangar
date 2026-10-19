@@ -859,8 +859,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         `strategy="best_of_n"`, `n` 2-8: parallel attempts, the best delivered (`judge=True`: an agent compares).
         `verify_in_loop` (default on): failures go back to the agent in the turn. `autofix` (ci,reviews | ci |
         reviews | off): PR CI failures and trusted reviews start follow-ups. `harness_lock`: name@rN.
-        `changeset`: a change-set profile (leave `repo` out): one agent across its repos, one PR per changed repo,
-        landed in the profile's order. `ticket`: the work's ticket, e.g. "jira:PAY-412"."""
+        `changeset`: a profile (no `repo`): one PR per changed repo. `ticket`: "jira:PAY-412"."""
         req = SubmitJob(instructions=instructions, repo=repo, environment=environment, title=title, harness=harness,
                         model=model, base_branch=base_branch, verify=verify, deliver=deliver,
                         context=[ContextItem.model_validate(c) for c in context or []],
