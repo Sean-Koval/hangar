@@ -11,12 +11,17 @@ environments, six people, held tool calls, a question, a failed run, a PR to rev
 with Playwright's request interception. Frames are captured as screenshots and encoded with ffmpeg; every still is
 1440x900 at 2x, Night.
 
+The demo recording opens on the product: the ticket card over the live console for a moment, then the console at
+full brightness; while the agent works the frames follow the job's detail panel so its text stays readable in the
+960 px GIF. The console stills are cropped to what their caption names (the Needs-you cards, the Fleet board with its
+docked panel, the diff with a comment), at 2x, so they read at a README's width.
+
 Writes, next to this file (or into --out):
   hangar-demo.gif / .mp4        a ticket becomes a sandbox run and a draft PR (README: the GIF; docs: the MP4)
   hangar-review.gif / .mp4      the review loop: decide what is held, read the change, comment back to the agent
   ui-jobs.png, ui-sessions.png  the console's Jobs and Sessions views, from the demo run
   ui-fleet-{board,bays,columns,owners}.png    the Fleet page's four views, from the demo run (docs/console.md)
-  ui-needs.png, ui-fleet.png, ui-review.png   Needs you, the Fleet board and the Diff, from the fixture
+  ui-needs.png, ui-fleet.png, ui-review.png   Needs you, the Fleet board and the Diff, from the fixture (cropped)
   inbox.png                     `hangar inbox` in a terminal
   hangar-suite.svg, -dark.png, -light.png     the diagram (diagram.py)
 CI (.github/workflows/front-page.yml) runs this, checks the files and their sizes, and keeps them as an artifact.
@@ -43,7 +48,12 @@ import demo  # noqa: E402
 import diagram  # noqa: E402
 from fixture import Fixture  # noqa: E402
 
-W, H = 1440, 900  # the recordings' viewport; stills are the same frame at 2x
+W, H = 1440, 900  # the recordings' viewport; the demo run's stills are the same frame at 2x
+ZOOM = (1040, 650)  # the demo recording's close-up while the agent works: the job's detail panel, same aspect as W x H
+NARROW = 820  # the viewport for the Needs-you and Diff crops: one column, so the crop is 820 px wide at 1x
+DOCKED = 1100  # the narrowest viewport where the Fleet's detail panel docks beside the board
+VIDEO = (1280, 800)  # the MP4's size; the GIF is 960 wide
+MAX_SECONDS = 20  # the demo recording's length
 FLEET_VIEWS = ("bays", "columns", "owners", "board")  # the Board last: it is shot with a held sandbox selected
 MAX_BYTES = 3_000_000  # each asset stays small enough for the repo
 DEMO_PACE = "0.6"  # the scripted agent's pauses, so the ticket's run fits a 20 s recording
@@ -53,7 +63,7 @@ FONTS = (
 )
 PLAYER = "https://cdn.jsdelivr.net/npm/asciinema-player@3.8.0/dist/bundle/asciinema-player"
 
-# The overlay the recording draws over the web UI: captions, the opening card, the ticket and a terminal window.
+# The overlay the recording draws over the web UI: captions, the ticket and a terminal window.
 # Airframe tokens (docs/stylesheets/airframe.css) in the dark flavor.
 OVERLAY = r"""
 (() => {
@@ -71,8 +81,6 @@ OVERLAY = r"""
     border: 1px solid var(--af-line-strong); border-radius: var(--af-radius-card); color: var(--af-fg); opacity: 0; transition: opacity .35s; }
   #fp .card.on { opacity: 1; }
   #fp .eyebrow { font: 500 13px var(--af-font-mono); letter-spacing: .1em; color: var(--af-fg-subtle); }
-  #fp .title { font: var(--af-display-weight) 44px var(--af-font-display); font-stretch: var(--af-display-stretch); margin: 10px 0 14px; }
-  #fp .lede { font-size: 22px; color: var(--af-fg-muted); line-height: 1.45; }
   #fp .ticket { width: 720px; padding: 26px 30px 24px; border-top: 2px solid var(--af-fg); }
   #fp .ticket h3 { font: 600 26px var(--af-font-display); font-stretch: var(--af-display-stretch); margin: 12px 0 10px; }
   #fp .ticket p { font-size: 17px; color: var(--af-fg-muted); line-height: 1.5; margin: 0 0 16px; }
@@ -97,10 +105,6 @@ OVERLAY = r"""
     const p = document.createElement("link"); p.rel = "stylesheet"; p.href = "%PLAYER%.css"; document.head.appendChild(p);
     const root = document.createElement("div"); root.id = "fp";
     root.innerHTML = `<div class="shade"></div>
-      <div class="card intro" style="width:900px;padding:44px 50px">
-        <div class="eyebrow">AGENT FACTORY · RUN PLANE</div><div class="title">hangar</div>
-        <div class="lede">Hand a ticket to a coding agent in an isolated cloud sandbox,<br>
-        and get back a verified draft pull request.</div></div>
       <div class="card ticket">
         <div class="eyebrow">ACME/CHECKOUT-API · ISSUE #42 · OPENED BY MARIA</div>
         <h3>CSV export drops non-ASCII characters</h3>
@@ -115,6 +119,13 @@ OVERLAY = r"""
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", add); else add();
   window.fp = {
     show(sel, on = true) { document.querySelector("#fp " + sel).classList.toggle("on", on); },
+    place(clip) {  // keep the caption inside a close-up of the viewport (null: the whole viewport)
+      const c = document.querySelector("#fp .cap");
+      if (!clip) { c.style.left = ""; c.style.bottom = ""; c.style.maxWidth = ""; return; }
+      c.style.left = (clip.x + clip.width / 2) + "px";
+      c.style.bottom = (innerHeight - clip.y - clip.height + 28) + "px";
+      c.style.maxWidth = (clip.width - 40) + "px";
+    },
     caption(step, text) {
       const c = document.querySelector("#fp .cap");
       if (!text) { c.classList.remove("on"); return; }
@@ -189,13 +200,27 @@ class Frames:
         folder.mkdir(parents=True, exist_ok=True)
         self.page, self.folder, self.shots, self.on = page, folder, [], False
         self.task: asyncio.Task | None = None
+        self.clip: dict | None = None  # a close-up: the part of the viewport each frame shows, same aspect as W x H
 
     async def _loop(self) -> None:
         while self.on:
             path = self.folder / f"{len(self.shots):05d}.png"
             t = time.monotonic()
-            await self.page.screenshot(path=str(path))
+            await self.page.screenshot(path=str(path), clip=self.clip)
             self.shots.append((path, t))
+
+    async def zoom(self, selector: str | None) -> None:
+        """Follow an element: frames show the ZOOM-sized part of the viewport around it (None: the whole viewport)."""
+        if not selector:
+            self.clip = None
+            await self.page.evaluate("fp.place(null)")
+            return
+        box = await self.page.locator(selector).first.bounding_box()
+        zw, zh = ZOOM
+        x = min(max(box["x"] - 24, 0), W - zw) if box else W - zw
+        y = min(max(box["y"] - 24, 0), H - zh) if box else 0
+        self.clip = {"x": x, "y": y, "width": zw, "height": zh}
+        await self.page.evaluate("c => fp.place(c)", self.clip)  # the caption moves into the close-up
 
     def start(self) -> None:
         self.on = True
@@ -206,8 +231,12 @@ class Frames:
         if self.task:
             await self.task
 
+    def seconds(self) -> float:
+        return self.shots[-1][1] - self.shots[0][1]
+
     def encode(self, out: Path, name: str = "hangar-demo") -> None:
-        """MP4 (H.264) and an optimised GIF from the frames, each shown for as long as it was on screen."""
+        """MP4 (H.264) and an optimised GIF from the frames, each shown for as long as it was on screen; close-up
+        frames are scaled to the same size as the others."""
         listing = self.folder / "frames.txt"
         lines = []
         for (p, t), (_, nxt) in zip(self.shots, self.shots[1:] + [(None, self.shots[-1][1] + 0.1)], strict=True):
@@ -215,22 +244,18 @@ class Frames:
         lines.append(f"file '{self.shots[-1][0]}'")
         listing.write_text("\n".join(lines) + "\n")
         exe = ffmpeg()
-        src = [exe, "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(listing)]
+        # one lossless pass brings every frame (full viewport or close-up) to the video's size at 15 fps; the MP4
+        # and the GIF are made from it, since palettegen cannot follow a frame-size change mid-stream
+        uniform = self.folder / "uniform.mkv"
         subprocess.run(
-            [
-                *src,
-                "-vf",
-                "fps=15,format=yuv420p",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "slow",
-                "-crf",
-                "30",
-                "-movflags",
-                "+faststart",
-                str(out / f"{name}.mp4"),
-            ],
+            [exe, "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(listing),
+             "-vf", f"scale={VIDEO[0]}:{VIDEO[1]}:flags=lanczos,fps=15", "-c:v", "ffv1", str(uniform)],
+            check=True,
+        )
+        src = [exe, "-y", "-loglevel", "error", "-i", str(uniform)]
+        subprocess.run(
+            [*src, "-vf", "format=yuv420p", "-c:v", "libx264", "-preset", "slow", "-crf", "30", "-movflags", "+faststart",
+             str(out / f"{name}.mp4")],
             check=True,
         )
         subprocess.run(
@@ -249,7 +274,7 @@ class Frames:
             out / f"{name}.mp4",
             "and",
             out / f"{name}.gif",
-            f"({self.shots[-1][1] - self.shots[0][1]:.1f} s, {len(self.shots)} frames)",
+            f"({self.seconds():.1f} s, {len(self.shots)} frames)",
         )
 
 
@@ -310,21 +335,17 @@ async def ui(pw, out: Path, work: Path) -> None:
     frames = Frames(page, work)
     hold = page.wait_for_timeout
 
-    # --- 1. the opening card and the ticket
-    await page.evaluate("fp.show('.shade'); fp.show('.intro')")
-    await hold(400)
-    frames.start()
-    await hold(2000)
-    await page.evaluate("fp.show('.intro', false)")
+    # --- 1. the ticket, over the live console (no title card: the banner above the recording already says it)
+    await page.evaluate("fp.show('.shade'); fp.show('.ticket')")
     await hold(300)
-    await page.evaluate("fp.show('.ticket')")
+    frames.start()
     await hold(1200)
     await page.evaluate(
         "document.querySelector('#fp .label.hangar').classList.add('on');"
         "fp.caption('1', 'Someone adds the hangar label to a ticket')"
     )
     job_id = (await asyncio.to_thread(demo.send_ticket))["job"]
-    await hold(1800)
+    await hold(1500)
     await page.evaluate("fp.show('.ticket', false); fp.show('.shade', false)")
 
     # --- 2. the job in the web UI, live
@@ -342,6 +363,7 @@ async def ui(pw, out: Path, work: Path) -> None:
                 await page.evaluate(
                     "fp.caption('3', 'The agent works in its own sandbox: reads, tests, edits, commits')"
                 )
+                await frames.zoom("#job-detail")  # the close-up: the job's panel, so its text stays readable
             if state in ("verifying", "delivering") and "verify" not in seen:
                 seen.add("verify")
                 await page.evaluate("fp.caption('4', 'hangar runs the repo’s own check, then pushes the branch')")
@@ -358,14 +380,17 @@ async def ui(pw, out: Path, work: Path) -> None:
     await page.evaluate("window.scrollTo(0, 0); document.querySelector('#main').scrollTo?.(0, 0)")
     pr = job["result"]["pr_number"]
     await page.evaluate(f"fp.caption('5', 'Check passed: draft PR #{pr} is open, with the agent’s summary')")
-    await hold(1800)
+    await hold(1600)
 
     # --- 3. what waits on a person: the Needs-you view (the PR to review, a question another job asked)
+    await frames.zoom(None)
     await page.evaluate("location.hash = '#needs'")
     await hold(300)
     await page.evaluate("fp.caption('6', 'It waits in Needs you, with a question another job asked')")
-    await hold(2000)
+    await hold(1800)
     await frames.stop()
+    if frames.seconds() > MAX_SECONDS:
+        raise RuntimeError(f"the demo recording runs {frames.seconds():.1f} s; it must open on the product and end within {MAX_SECONDS} s")
     frames.encode(out, "hangar-demo")
 
     # --- the inbox from the CLI, as a still: a real asciinema recording played in the overlay's terminal
@@ -414,21 +439,40 @@ async def _console_page(ctx, fx: Fixture, hash_: str):
     return page
 
 
-async def console(pw, out: Path) -> None:
-    """Needs you, the Fleet board with a held call docked beside it, and the Diff with a comment: stills at 2x."""
-    browser = await pw.chromium.launch()
-    ctx = await browser.new_context(viewport={"width": W, "height": H}, device_scale_factor=2, color_scheme="dark")
+async def _crop(page, path: Path, first: str, last: str, pad: int = 12) -> None:
+    """A still of the page from the top of `first` to the bottom of `last`, the viewport's full width, at 2x. The
+    sticky top bar stays at the top of the document, so it is not painted into the middle of a crop lower down."""
+    await page.add_style_tag(content=".topbar { position: absolute !important; }")
+    await page.evaluate("window.scrollTo(0, 0)")
+    box = await page.evaluate(
+        """([a, b, pad]) => {
+            const t = document.querySelector(a).getBoundingClientRect(), u = document.querySelector(b).getBoundingClientRect();
+            const y = Math.max(window.scrollY + t.top - pad, 0);
+            return {x: 0, y, width: innerWidth, height: window.scrollY + u.bottom + pad - y};
+        }""",
+        [first, last, pad],
+    )
+    await page.screenshot(path=str(path), clip=box, full_page=True)
+    print("wrote", path, f"({box['width']:.0f}x{box['height']:.0f} at 2x)")
+
+
+async def _fixture_context(browser, width: int):
+    ctx = await browser.new_context(viewport={"width": width, "height": H}, device_scale_factor=2, color_scheme="dark")
     await ctx.add_init_script(f"localStorage.setItem('hangar.token', '{demo.TOKEN}')")
+    return ctx
+
+
+async def console(pw, out: Path) -> None:
+    """Needs you, the Fleet board with a held call docked beside it, and the Diff with a comment: stills at 2x,
+    each cropped to what its caption names, from a viewport narrow enough that the crop reads at a README's width."""
+    browser = await pw.chromium.launch()
     fx = Fixture()
-    page = await _console_page(ctx, fx, "needs")
-    await page.screenshot(path=str(out / "ui-needs.png"))
+    narrow = await _fixture_context(browser, NARROW)
+    page = await _console_page(narrow, fx, "needs")
+    # the page header, a job waiting for approval, the held push with its three decisions, and a question answered in place
+    await _crop(page, out / "ui-needs.png", "#view-needs .af-page-head", "#view-needs .af-question")
     await page.close()
-    page = await _console_page(ctx, fx, "fleet?view=board")
-    await page.locator('[data-tile][aria-label*="Push the refunds"]').first.click()
-    await page.wait_for_timeout(500)
-    await page.screenshot(path=str(out / "ui-fleet.png"))
-    await page.close()
-    page = await _console_page(ctx, fx, "jobs")
+    page = await _console_page(narrow, fx, "jobs")
     await page.locator("#job-list li", has_text="Push the refunds").first.click()
     await page.click("[data-diff-show]")
     await page.wait_for_timeout(800)
@@ -437,11 +481,18 @@ async def console(pw, out: Path) -> None:
     await page.fill("[data-thread] textarea", "Cache the check; this path runs per request.")
     await page.click("[data-add-comment]")
     await page.wait_for_timeout(400)
-    await page.evaluate("document.querySelector('.changes').scrollIntoView({block: 'start'}); window.scrollBy(0, -96)")
-    await page.wait_for_timeout(300)
-    await page.screenshot(path=str(out / "ui-review.png"))
+    # the change: its files, the diff and the comment on its line, with the sticky bar painted where it sits
+    await _crop(page, out / "ui-review.png", "#job-detail h4:has(+ .changes)", "[data-thread]")
     await page.close()
-    print("wrote", out / "ui-needs.png", out / "ui-fleet.png", "and", out / "ui-review.png")
+    await narrow.close()
+    docked = await _fixture_context(browser, DOCKED)
+    page = await _console_page(docked, fx, "fleet?view=board")
+    await page.locator('[data-tile][aria-label*="Push the refunds"]').first.click()
+    await page.wait_for_timeout(500)
+    # the Fleet header, the board and the selected sandbox's approval card docked beside it
+    await _crop(page, out / "ui-fleet.png", "#view-fleet", "#fleet-detail")
+    await page.close()
+    await docked.close()
     await browser.close()
 
 
