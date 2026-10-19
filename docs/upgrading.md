@@ -74,7 +74,7 @@ are set with `hangar repo set OWNER/REPO`, people's delivery with `hangar person
 | `HANGAR_PERSON_MAX_OPEN_AGENT_PRS` | `5` (`0` is off) | Once a person has this many agent PRs awaiting review, their new jobs wait as `queued` with reason `awaiting_capacity` (#159). Repo policy `max_open_agent_prs` (`--max-open-agent-prs`) overrides it for a repo, `HANGAR_PERSON_MAX_OPEN_AGENT_PRS_OVERRIDES` (`{}`) for a person; a team job's bucket gets the cap times the policy's approvers. Only a job's first turn waits; AI review jobs and trials never do | [7](#7-the-review-rules-per-repo) |
 | Delivery (`hangar person set ID`) | `--dm questions`, `all`, `off`; `--digest 10:15,16:00`; `--tz America/New_York`; weekdays only | A person with a linked Slack account gets a DM for each question and approval of their own agents, and a digest at each `--digest` time (#157, #158). `all` adds the team's work (for admins). The Slack app needs the `im:write` scope | [4](#4-the-slack-app-imwrite-and-interactivity), [8](#8-people-and-the-inbox) |
 | Terraform `enable_run_bucket` | `true` | The `<project>-hangar-runs` bucket for run capture: hangar's account may create objects and nothing else, and a deny policy takes away delete and overwrite. Applying it needs `roles/iam.denyAdmin`. `run_bucket_readers` (`[]`) are the readers (flightdeck's compactor); tapes expire after `run_tape_days` (`30`) | [2](#2-terraform-the-run-bucket) |
-| `HANGAR_OUTBOX_URL` | unset (off) | Run capture (#163): every finished run written once, redacted, as `hangar.run/v1` objects. `HANGAR_OUTBOX_SESSIONS` (`all`, `jobs_only`); a deleted session's files wait up to `HANGAR_EXPORT_GRACE_DAYS` (`30`) for their export (#189). Read at start: set it in `hangar-site` and restart | [9](#9-turn-on-what-you-want) |
+| `HANGAR_OUTBOX_URL` | unset (off) | Run capture (#163): every finished run written once, redacted, as `hangar.run/v1` objects. `HANGAR_OUTBOX_SESSIONS` (`all`, `jobs_only`); a deleted session's files wait up to `HANGAR_EXPORT_GRACE_DAYS` (`30`) for their export (#189). On GKE `deploy/gke/up.sh` sets it from terraform's `run_bucket` (#273); read at start, so a change needs a restart | [9](#9-turn-on-what-you-want) |
 | `HANGAR_JIRA` `trigger` | `{"status": "Ready for agent"}` from `hangar setup jira` | The default door for planned work (#156). An existing `HANGAR_JIRA` keeps its trigger. A ticket's acceptance criteria reach the job as an untrusted `acceptance.md`; its verify command is used only if it matches the repo policy's `verify_allowed` (`--verify-allowed`, unset) | [9](#9-turn-on-what-you-want) |
 | `HANGAR_HARNESS_REPO`, `HANGAR_DEFAULT_HARNESS` | unset, unset | The team harness repo, a path or a git URL with `#ref`, refreshed every `HANGAR_HARNESS_REPO_REFRESH_SECONDS` (`600`) and on a `push` webhook; the lock intake jobs that name no harness run from (#138). `HANGAR_HARNESS_DRIFT` (`warn`, `fail`) | [9](#9-turn-on-what-you-want) |
 | `HANGAR_STANDUP_CHANNEL` | unset (off) | A weekday standup line at `HANGAR_STANDUP_TIME` (`10:18`) in `HANGAR_STANDUP_TIMEZONE` (`America/New_York`) (#168) | [9](#9-turn-on-what-you-want) |
@@ -209,9 +209,9 @@ hangar person set bob --dm off                              # no DMs, no digest
 
 Each is off until set; turn them on one at a time.
 
-- **Run capture** (#163, #189): set `HANGAR_OUTBOX_URL` in the `hangar-site` config map to
-  `terraform output -raw run_bucket`, add flightdeck's compactor to `run_bucket_readers`, and restart; the outbox reads
-  the URL when hangar starts. #273 does this for the GKE deploy, with the compactor. Operating it:
+- **Run capture** (#163, #189): on GKE, `deploy/gke/up.sh` sets `HANGAR_OUTBOX_URL` from terraform's `run_bucket`
+  and restarts hangar when it changes (#273); add flightdeck's compactor to `run_bucket_readers`. Step 5's `deploy.yml`
+  only changes the image, so run `up.sh` once for it, or set the URL by hand and restart. Operating it:
   [the outbox runbook](runbooks/outbox.md).
 - **The Jira door** (#156): `hangar setup jira` ([intake.md](intake.md#3-the-configuration)); then
   `hangar repo set acme/app --verify-allowed 'make test*'` if tickets may name their check.

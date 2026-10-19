@@ -174,8 +174,9 @@ Each engineer:
      low-risk PR with an independent AI review, and the AI first-pass review (#161) is off until
      `hangar repo set <repo> --ai-review hangar`, so turn it on for each repo where people approve their own docs and
      test PRs;
-   - run capture: off until `HANGAR_OUTBOX_URL` is set ([observability.md, run capture](../observability.md#run-capture);
-     #273 switches it on in the GKE deploy; operating it: [the outbox runbook](outbox.md)).
+   - run capture: on in the GKE deploy, where `deploy/gke/up.sh` sets `HANGAR_OUTBOX_URL` (#273); elsewhere off until
+     it is set ([observability.md, run capture](../observability.md#run-capture); operating it:
+     [the outbox runbook](outbox.md)).
 4. The weekly adoption metrics start counting active delegators (#168).
 5. Once the last 14 days' agent PR yield is at least 60% (`hangar metrics weekly`), consider the overnight lane: one Spot
    node 01:00–10:00 (~$87 a month) so evening tickets of the repos set to `overnight: true` are PRs by the 10:00 triage

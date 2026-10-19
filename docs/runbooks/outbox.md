@@ -29,22 +29,20 @@ the jobs that changed in the last minute and stages each new fact once.
 
 ## Switching it on
 
-On GKE, terraform makes the bucket (`enable_run_bucket`, on by default; [gke.md](../gke.md#run-capture-bucket)).
-Hangar writes nothing until `HANGAR_OUTBOX_URL` points at it. Turning it on in the GKE deploy is #273.
+On GKE, terraform makes the bucket (`enable_run_bucket`, on by default), and `deploy/gke/up.sh` turns run capture on
+(#273, PR #307): it sets `HANGAR_OUTBOX_URL` in the `hangar` config map to `terraform output -raw run_bucket` on every
+install, a running one too. It keeps a value the `hangar` config map already has, a value in `hangar-site` still wins,
+and it restarts hangar when the URL changed but the image didn't, because the outbox reads the URL when hangar starts
+([gke.md](../gke.md#run-capture-bucket)).
 
 1. Give flightdeck's compactor read access: `run_bucket_readers = ["serviceAccount:…"]` in your tfvars, then
-   `terraform apply` in `deploy/terraform/gke`.
-2. Set the URL in the `hangar-site` config map, from `terraform output -raw run_bucket` (the commented line in
-   `deploy/k8s/config.yaml`), and restart: the outbox reads the URL when hangar starts.
-
-   ```bash
-   BUCKET=$(terraform -chdir=deploy/terraform/gke output -raw run_bucket)      # gs://<project>-hangar-runs
-   kubectl -n hangar patch configmap hangar-site --type merge -p "{\"data\":{\"HANGAR_OUTBOX_URL\":\"$BUCKET\"}}"
-   #   no hangar-site yet: kubectl -n hangar create configmap hangar-site --from-literal=HANGAR_OUTBOX_URL="$BUCKET"
-   kubectl -n hangar rollout restart deploy/hangar
-   ```
-
-3. `HANGAR_OUTBOX_SESSIONS=jobs_only` leaves out sessions that no job started (people's own interactive sessions);
+   `terraform apply` in `deploy/terraform/gke` (after flightdeck's `deploy/compactor/setup.sh` has made the account).
+2. Run `bash deploy/gke/up.sh`. By hand instead: uncomment the `HANGAR_OUTBOX_URL` line in `deploy/k8s/config.yaml`,
+   or set it in `hangar-site`, and restart (`kubectl -n hangar rollout restart deploy/hangar`); `hangar config set`
+   says a restart is needed too.
+3. Check it: `hangar doctor` reports `run capture (outbox)` as on, with the objects pending; while it is off on GKE it
+   warns.
+4. `HANGAR_OUTBOX_SESSIONS=jobs_only` leaves out sessions that no job started (people's own interactive sessions);
    the default, `all`, captures them too.
 
 On a laptop, any directory works (`HANGAR_OUTBOX_URL=~/hangar-runs`): the same layout and bytes a GCS reader gets.
