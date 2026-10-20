@@ -898,6 +898,20 @@ experiments.post_cancel:
   rest: POST /api/experiments/{exp_id}/cancel
   scope: jobs
   owner: token
+fleet.get:
+  server: hangar
+  mcp: null
+  rest: GET /api/fleet
+  scope: user
+  owner: guard
+fleet.get_stream:
+  server: hangar
+  mcp: null
+  rest: GET /api/fleet/stream
+  scope: ticket
+  owner: guard
+  enforced_by: 'fleet_stream.fleet_stream: a one-time fleet ticket bound to its caller (POST /api/fleet/tickets), an
+    admin ticket (POST /api/tickets), or a `user` or admin token; the caller''s visibility as GET /api/fleet'
 fleet.overview:
   server: hangar
   mcp: fleet_overview
@@ -910,6 +924,12 @@ fleet.overview:
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
     every person, and people.Guard keeps a member to their own records (docs/security/people.md#people)'
+fleet.post_tickets:
+  server: hangar
+  mcp: null
+  rest: POST /api/fleet/tickets
+  scope: user
+  owner: guard
 fork.get:
   server: hangar
   mcp: null
@@ -1080,6 +1100,12 @@ hooks.post_slack_interactions:
   scope: signed
   owner: any
   enforced_by: 'slack: Slack''s v0 signature and replay guard; only a follow-up''s sender classifies it (#162)'
+inbox.delete_ack:
+  server: hangar
+  mcp: null
+  rest: DELETE /api/inbox/{item_id}/ack
+  scope: user
+  owner: guard
 inbox.get:
   server: hangar
   mcp: null
@@ -1091,6 +1117,12 @@ inbox.get:
   owner: guard
   exception: the REST route takes a person's `user` login (app.person_actor); MCP also takes their `mcp` tokens and OAuth
     grants. Both are fenced to the person's own records
+inbox.post_ack:
+  server: hangar
+  mcp: null
+  rest: POST /api/inbox/{item_id}/ack
+  scope: user
+  owner: guard
 job.admit:
   server: hangar
   mcp: null
@@ -1170,6 +1202,12 @@ job.reject:
   rest: POST /api/jobs/{job_id}/reject
   scope: approvals.can_decide
   owner: guard
+job.retry:
+  server: hangar
+  mcp: null
+  rest: POST /api/jobs/{job_id}/retry
+  scope: jobs
+  owner: token
 job.submit:
   server: hangar
   mcp: submit_job

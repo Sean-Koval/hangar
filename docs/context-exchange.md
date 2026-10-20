@@ -58,6 +58,7 @@ Every sandbox has the `hangar-agent` helper on its `PATH` (installed at sandbox 
 | --- | --- |
 | `hangar-agent progress [--pct N] "running the tests"` | a line in `out/progress.jsonl` |
 | `hangar-agent ask "Keep the old column names?"` | `out/QUESTION.md`; then the agent ends its turn |
+| `hangar-agent question --option "Keep them" --option "Rename them" "Keep the old column names?"` | the same, plus `out/QUESTION.json` (`{"question", "options"}`): up to 5 answers to pick from, shown as `question_options` (each at most 80 characters, redacted) on the job, the session, the inbox item and the Fleet unit. A plain `ask` offers none |
 | `hangar-agent artifact PATH [NAME]` | a copy under `out/artifacts/` (files or directories) |
 | `hangar-agent result '<json>'` (or `-` for stdin, `@file`) | `out/result.json`, checked to be JSON |
 | `hangar-agent done "summary"` | `RESULT.md` |

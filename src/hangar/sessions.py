@@ -420,6 +420,7 @@ class SessionService:
         s.turns.append(SessionTurn(message=message, requester=requester, context=context or [],
                                    output_schema=output_schema))
         s.needs_input = None  # this message answers the agent's question, if it had one
+        s.question_options = []
         s.last_active_at = now()
         self._busy.add(s.id)
         self._set(s, SessionState.RUNNING if s.sandbox_id and self._alive(s.sandbox_id) else SessionState.STARTING,
@@ -473,6 +474,7 @@ class SessionService:
             self.fleet.audit(requester, "session.delete_now", s.id)
         self.store.delete(Session, s.id)
         self._sessions.pop(s.id, None)
+        self.activity.live.drop(s.id)  # KAN-140
 
     def events(self, ref: str, since: int = 0, limit: int = 200, tail: int | None = None) -> list[dict[str, Any]]:
         """The session's activity events (every turn), oldest first: after `since`, or the last `tail`."""

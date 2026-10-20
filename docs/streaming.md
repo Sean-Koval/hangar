@@ -87,6 +87,13 @@ Following them:
   `resources/subscribe` for 2025-era clients). New events send `notifications/resources/updated` as they are recorded
   (at most every 250 ms per URI); read `hangar://sessions/<name>/events?since=<seq>` for just the new ones.
 
+## The Fleet, live
+
+`GET /api/fleet/stream` is the Fleet page's read (`GET /api/fleet`) as it changes: a `snapshot`, then `agent` (one
+unit, at most one per agent every 2 s), `gone`, `inbox` and `summary` events, resumable with `Last-Event-ID`. A
+browser gets a one-time ticket from `POST /api/fleet/tickets` (any `user` token: the stream shows that person's
+fleet). See [the fleet stream](fleet-api.md#the-fleet-stream).
+
 ## File watches
 
 Subscribe to `hangar://sandboxes/<sandbox>/watch?path=<dir>[&recursive=true]` and hangar watches that directory

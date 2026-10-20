@@ -297,6 +297,7 @@ class Turn(BaseModel):
     kind: Literal["initial", "follow_up"] = "initial"
     message: str | None = None  # follow-up text
     requester: str | None = None
+    origin: str | None = None  # KAN-140 S6: "retry" for the deck's Retry (jobretry.py); None for a person's own
     steer_class: SteerClass = "unclassified"  # --- #162: a follow-up's class, who said so and when
     classified_by: str | None = None
     classified_at: float | None = None
@@ -318,6 +319,7 @@ class Turn(BaseModel):
     result: Any = None
     result_error: str | None = None
     question: str | None = None
+    question_options: list[str] = Field(default_factory=list)  # KAN-140 S4: out/QUESTION.json
     artifacts: list[Artifact] = Field(default_factory=list)
     # --- overnight/autofix: why hangar started this turn itself ("verify": its check failed after the turn before;
     # "autofix:ci" / "autofix:review": the PR's CI or a reviewer), what is left of the budget for it, and how often
@@ -390,6 +392,7 @@ class JobResult(BaseModel):
     data: Any = None
     result_error: str | None = None
     question: str | None = None
+    question_options: list[str] = Field(default_factory=list)  # KAN-140 S4: the choices it offers
     artifacts: list[Artifact] = Field(default_factory=list)
     # --- overnight/autofix: existing files the verify command relies on that the agent changed (strategies.py)
     touched_tests: list[str] = Field(default_factory=list)
@@ -768,6 +771,7 @@ class SessionTurn(BaseModel):
     result: Any = None  # out/result.json (valid against output_schema when there is one)
     result_error: str | None = None
     question: str | None = None  # out/QUESTION.md
+    question_options: list[str] = Field(default_factory=list)  # KAN-140 S4: out/QUESTION.json, at most 5
     progress: dict[str, Any] | None = None  # the last out/progress.jsonl line
     artifacts: list[Artifact] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -838,6 +842,7 @@ class Session(BaseModel):
     budget: Budget | None = None  # per agent turn (workstream C)
     labels: dict[str, str] = Field(default_factory=dict)
     needs_input: str | None = None  # workstream E: the agent's open question; the next send answers it
+    question_options: list[str] = Field(default_factory=list)  # KAN-140 S4: the choices the question offers
     created_at: float = Field(default_factory=now)
     last_active_at: float = Field(default_factory=now)
     updated_at: float = Field(default_factory=now)

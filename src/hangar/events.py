@@ -858,6 +858,9 @@ class Activity:
         self.log = EventLog(settings.data_dir / "events", int(settings.events_max_mb) * 1024 * 1024)
         # --- stream: called with (session or job id, events) after every append, for live streams; must not raise
         self.listeners: list[Callable[[str, list[RunEvent]], None]] = []
+        from hangar.livestate import Live  # KAN-140: what each live turn is doing, for GET /api/fleet
+
+        self.live = Live()
 
     @property
     def prices(self) -> dict[str, dict[str, float]]:
@@ -949,6 +952,7 @@ class TurnWatcher:
                 log.warning("session %s: could not record events: %s", self.s.id, e)
             if tainting:
                 self._taint_seen()
+            self.a.live.observe(self.s, self.number, self.turn, keep)  # KAN-140: the fleet's live picture
             from hangar.steer import track  # workstream steer: approvals asked and answered (import cycle)
 
             if track(self.turn, keep, on_gate=self._gated):
@@ -1071,6 +1075,7 @@ class TurnWatcher:
         self.turn.usage = p.view() if (p.usage.tokens + p.usage.cache_read_tokens or p.final) else self.turn.usage
         self.turn.event_cursor = None
         self.save()
+        self.a.live.finished(self.s, self.turn)  # KAN-140
         from hangar import cache  # --- overnight/cache: siblings held for this turn go ahead whatever happened
 
         cache.STAGGER.responded(self.s.id)

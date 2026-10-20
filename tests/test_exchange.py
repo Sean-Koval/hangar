@@ -58,7 +58,7 @@ case "$msg" in
   *TASK-USE-B*) echo B > choice.txt && git add choice.txt && git commit -qm "choose B"
     hangar-agent done "Went with B" ;;
   *TASK-ASK*) echo half > half.txt && git add half.txt && git commit -qm "half done"
-    hangar-agent ask "Use A or B?" ;;
+    hangar-agent question --option "Use A" --option "Use B" "Use A or B?" ;;
   *TASK-ARTIFACTS*)
     for i in 1 2 3; do echo "file $i" > "$HANGAR_IO/out/artifacts/f$i.txt"; done
     ln -s /etc/passwd "$HANGAR_IO/out/artifacts/link"
@@ -266,9 +266,12 @@ async def test_session_question_then_answer_resumes(svc, world, fleet):
             requester="sean")
     s = await settle(svc, "ask")
     assert s.state == SessionState.IDLE and s.needs_input == "Use A or B?" and s.turns[0].outcome == "needs_input"
+    assert s.question_options == ["Use A", "Use B"] == s.turns[0].question_options  # KAN-140 S4
+    assert svc.view(s)["question_options"] == ["Use A", "Use B"]
     svc.send("ask", "TASK-USE-B", requester="sean")
     s = await settle(svc, "ask")
     assert s.needs_input is None and s.turns[1].mode == "resume" and s.turns[1].summary == "Went with B"
+    assert s.question_options == [] and s.turns[1].question_options == []
     conv = fleet.providers["docker"].boxes[s.sandbox_id] / "home/agent/.fake/sessions" / f"{s.harness_session}.jsonl"
     assert len(conv.read_text().splitlines()) == 2  # one conversation, two turns
 
@@ -373,6 +376,7 @@ async def test_job_question_github_comment_and_answer_resume_across_a_restart(jo
     assert job.state == JobState.NEEDS_INPUT and job.result.question == "Use A or B?", [e.message for e in job.events]
     assert job.turns[0].outcome == "needs_input" and not job.result.pushed and job.result.verify_exit_code is None
     assert not jobs.view(job)["active"]
+    assert job.result.question_options == ["Use A", "Use B"] == jobs.view(job)["question_options"]  # KAN-140 S4
     await asyncio.sleep(0.1)
     assert any("Use A or B?" in c and "/hangar <your answer>" in c for c in jobs.hooks.comments())
     assert "job.needs_input" in [json.loads(c.content)["event"] for c in jobs.hooks.callbacks()]
@@ -532,6 +536,33 @@ def test_helper_progress_ask_result_done(helper):
     r = run("progress", "x", env_io=False)
     assert r.returncode == 2 and "HANGAR_IO is not set" in r.stderr
     assert run("help").returncode == 0 and run("bogus").returncode == 2
+
+
+def test_helper_question_with_options(helper):
+    """KAN-140 S4: `hangar-agent question --option ...` writes QUESTION.md and QUESTION.json; plain `ask` drops a
+    stale QUESTION.json."""
+    run, io, _ = helper
+    r = run("question", "--option", "Keep them", "--option", 'Rename "them"', "Keep the old column names?")
+    assert r.returncode == 0, r.stderr
+    assert (io / "out/QUESTION.md").read_text() == "Keep the old column names?\n"
+    got = json.loads((io / "out/QUESTION.json").read_text())
+    assert got == {"question": "Keep the old column names?", "options": ["Keep them", 'Rename "them"']}
+    assert exchange.question_json((io / "out/QUESTION.json").read_text()) == (got["question"], got["options"])
+    assert run("ask", "No options now?").returncode == 0 and not (io / "out/QUESTION.json").exists()
+    six = [a for i in range(6) for a in ("--option", f"o{i}")]
+    assert run("question", *six, "Too many?").returncode == 2
+    assert run("question", "--option", "", "Empty?").returncode == 2
+    assert run("question", "--option").returncode == 2
+
+
+def test_question_options_are_capped_and_cleaned():
+    long = "x" * 200
+    assert exchange.question_options(["  A\n  b ", "A b", "", 3, long, "c", "d", "e", "f"]) == \
+        ["A b", "x" * 79 + "…", "c", "d", "e"]
+    assert exchange.question_options("not a list") == []
+    assert exchange.question_json("{nope") == (None, [])
+    assert exchange.question_json('["a"]') == (None, [])
+    assert exchange.question_json('{"question": " Q? ", "options": ["a", "a", "b"]}') == ("Q?", ["a", "b"])
 
 
 def test_helper_artifact(helper):

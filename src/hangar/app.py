@@ -25,6 +25,7 @@ from hangar import envbuilds as envbuilds  # --- envbuilds
 from hangar import evalqueue as evalqueue  # --- #181: the eval queue class
 from hangar import exchange, observe  # --- observe
 from hangar import fairness as fairness  # --- review capacity (#159)
+from hangar import fleet_api as fleet_api  # KAN-140: GET /api/fleet
 from hangar import ghprojects as ghprojects  # --- intake: registers the GitHub Projects write-back
 from hangar import harness_repo as harness_repo  # --- #138: the team harness repo
 from hangar import harness_review as harness_review  # --- #169: the Friday harness review
@@ -1020,6 +1021,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                         owner=owner_filter(caller), context=body.context,
                                         output_schema=body.output_schema))
 
+    @app.post("/api/jobs/{job_id}/retry")
+    async def job_retry(job_id: str, fresh: bool = False, caller: Caller = J):
+        """KAN-140 S6: the deck's Retry (the canned follow-up in the same conversation) or, with ?fresh=1, Start
+        over (a new job with the same task). docs/jobs/working-with-the-agent.md"""
+        from hangar import jobretry
+
+        if fresh:
+            return jobretry.view(jobs, jobretry.start_over(jobs, job_id, caller, owner_filter(caller)), "fresh",
+                                 job_id)
+        return jobretry.view(jobs, jobretry.retry(jobs, job_id, caller, owner_filter(caller)), "same", job_id)
+
     @app.post("/api/jobs/{job_id}/cancel")
     async def job_cancel(job_id: str, caller: Caller = J):
         return jobs.view(jobs.cancel(job_id, requester=caller.requester, owner=owner_filter(caller)))
@@ -1246,6 +1258,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import inbox  # --- landing: GET /api/inbox, what needs the caller
 
     inbox.mount(app, h, U)
+    fleet_api.mount(app, h, U)  # KAN-140: GET /api/fleet, the Fleet page's one read
     inbox_notify.mount(app, h, U)  # --- inbox delivery (#157, #158): PUT /api/people/{id}/delivery
     inbox_notify.register(h)  # the digests ride the ops loop
     from hangar import backup  # --- overnight/sweep: database backups (hangar admin)

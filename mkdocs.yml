@@ -87,6 +87,7 @@ nav:
   - Guides:
       - Work:
           - The web console: console.md
+          - The Fleet API: fleet-api.md
           - Jobs:
               - jobs/README.md
               - From GitHub, Slack and Jira: jobs/from-github-slack-jira.md

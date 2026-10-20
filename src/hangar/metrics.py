@@ -113,6 +113,8 @@ class Metrics:
         self.io_threads = Gauge("hangar_io_pool_threads", "I/O worker threads started", registry=r)
         self.io_max = Gauge("hangar_io_pool_max_threads", "I/O worker thread limit (HANGAR_IO_THREADS)", registry=r)
         # --- stream: streams to MCP and REST clients, and the turn logs and background processes hangar follows
+        self.retries = Counter("hangar_job_retries", "Jobs retried from the deck (KAN-140): same (the canned "
+                               "follow-up) or fresh (started over)", ["mode"], registry=r)
         self.streams_open = Gauge("hangar_streams_open", "Open streams by kind", ["kind"], registry=r)
         self.streams = Counter("hangar_streams", "Streams closed, by kind and why", ["kind", "reason"], registry=r)
         self.stream_bytes = Counter("hangar_stream_bytes", "Bytes streams sent", ["kind"], registry=r)
@@ -391,6 +393,11 @@ def http_request(method: str, route: str, status: int, seconds: float) -> None:
 
 
 # --- stream
+def job_retry(mode: str) -> None:  # KAN-140 S6
+    if M is not None:
+        M.retries.labels(mode).inc()
+
+
 def stream_opened(kind: str) -> None:
     if M is not None:
         M.streams_open.labels(kind).inc()

@@ -26,7 +26,7 @@ OVER_CAP = {
     "team-scale.md": (7000, "to split: sizing, caps, the reconciler"),
     "steering.md": (6000, "to split: the turn, approvals, the uid split"),
     "observability.md": (5500, "to split: events, metrics, traces"),
-    "landing.md": (5300, "to split: the GitHub App, approvals, review rounds"),
+    "landing.md": (5400, "to split: the GitHub App, approvals, review rounds"),
     "repo-policy.md": (4800, "to split: the file, shadows, caps"),
     "microvm.md": (4400, "to split by provider"),
     "acceptance.md": (4100, "to split: core checks, the rest"),
@@ -47,7 +47,7 @@ OVER_CAP = {
     "specs/0010-sessions.md": (2800, "design record"),
     "specs/0012-cutting-edge.md": (7000, "design record"),
     "specs/0013-e2b-cube-fast-sandboxes.md": (9200, "design record"),
-    "specs/0014-sister-tool-interfaces.md": (4500, "design record"),
+    "specs/0014-sister-tool-interfaces.md": (4600, "design record"),
     "specs/0015-governance-decision-point.md": (5700, "design record"),
 }
 

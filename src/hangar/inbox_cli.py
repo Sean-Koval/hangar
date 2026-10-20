@@ -6,7 +6,7 @@ import time
 
 import typer
 
-_ICON = {"review": "PR", "question": "??", "approval": "OK?", "failed": "!!", "abandon": "x?"}
+_ICON = {"review": "PR", "question": "??", "approval": "OK?", "failed": "!!", "abandon": "x?", "denied": "X"}
 
 
 def inbox(as_json: bool = typer.Option(False, "--json")):

@@ -35,7 +35,9 @@ First come the cards you decide in place:
 
 **Deny** and **Reject** need a reason: the field opens in the card, and the reason goes back to the agent or the
 requester. **Open job** or **Open session** shows the work first. After the cards come the jobs that failed in the last
-week and the PRs waiting for your review on GitHub, with **Open job** and **Open PR**. With nothing waiting, the page
+week, the steps policy denied in turns still running (`denied`: the agent carried on without them), and the PRs
+waiting for your review on GitHub, with **Open job** and **Open PR**. A failed or denied item has **Acknowledge**
+(`POST /api/inbox/{id}/ack`): it leaves your list for a week; a decision never does. With nothing waiting, the page
 says so and shows how many jobs and sessions are running.
 
 The same cards appear on the job or session they belong to, and in the Fleet's detail panel.
@@ -177,6 +179,8 @@ its terminal.
 
 Focus, scroll and a half-written answer or reason survive the 4-second refresh. When the set of sandboxes that need
 someone, failed or were denied changes, a screen reader hears how many need you and how many failed or were denied.
+
+The page's data comes from one read, `GET /api/fleet`, and stays current over `GET /api/fleet/stream`: see [the Fleet API](fleet-api.md).
 
 ## Terminals
 
