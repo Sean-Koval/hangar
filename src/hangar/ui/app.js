@@ -1691,12 +1691,36 @@ $("#token-table").addEventListener("click", async (e) => {
 });
 
 /* ------------------------------------------------------------------ activity */
+// The detail is keyed pairs (Airframe meta: STATUS 401, METHOD GET), a long value cut with the whole in its title;
+// a run of identical rows (same who, action, target and detail, one after the other) is one row with "× n" and the
+// span it covers; on a phone each row is a card (app.css), so nothing hides off the side of the table.
+const AUDIT_VAL = 96;
+const auditSpan = (s) => (s < 60 ? `${Math.round(s)} s` : s < 3600 ? `${Math.round(s / 60)} min` : `${Math.round(s / 3600)} h`);
+function auditDetail(d) {
+  const items = Object.entries(d || {}).map(([k, v]) => {
+    const text = typeof v === "object" ? JSON.stringify(v) : String(v ?? "");
+    const long = text.length > AUDIT_VAL;  // (Airframe's meta() markup by hand: a cut value keeps the whole in its title)
+    return `<span class="af-meta__item"><span class="af-meta__key">${esc(k.replace(/_/g, " "))}</span><span class="af-meta__val"${long ? ` title="${esc(text)}"` : ""}>${esc(long ? `${text.slice(0, AUDIT_VAL - 1)}…` : text)}</span></span>`;
+  });
+  return items.length ? `<span class="af-meta">${items.join("")}</span>` : "";
+}
+function auditRows(ev) {
+  const rows = [];
+  for (const a of ev) {
+    const key = [a.actor, a.action, a.target || "", JSON.stringify(a.detail || {})].join("\u0000");
+    const last = rows.at(-1);
+    if (last && last.key === key) { last.n++; last.first = a.ts; }  // newest first: this one is earlier
+    else rows.push({ ...a, key, n: 1, first: a.ts });
+  }
+  return rows;
+}
 async function loadAudit() {
   const ev = await api("GET", "/api/audit?limit=300");
-  $("#audit-table tbody").innerHTML = ev.map((a) => `<tr>
-    <td class="af-table__mono" title="${new Date(a.ts * 1000).toLocaleString()}">${ago(a.ts)}</td>
-    <td>${esc(a.actor)}</td><td class="af-table__mono">${esc(a.action)}</td><td class="af-table__mono">${esc(a.target || "")}</td>
-    ${((d) => `<td class="af-table__mono clip" title="${esc(d)}">${esc(d.slice(0, 160))}</td>`)(Object.entries(a.detail).map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`).join("  "))}</tr>`).join("")
+  $("#audit-table tbody").innerHTML = auditRows(ev).map((a) => `<tr>
+    <td class="af-table__mono c-when" title="${new Date(a.ts * 1000).toLocaleString()}">${ago(a.ts)}${a.n > 1
+      ? `<span class="af-table__sub">× ${a.n} in ${auditSpan(a.ts - a.first)}</span>` : ""}</td>
+    <td class="c-who">${esc(a.actor)}</td><td class="af-table__mono c-action">${esc(a.action)}</td><td class="af-table__mono c-target">${esc(a.target || "")}</td>
+    <td class="c-detail">${auditDetail(a.detail)}</td></tr>`).join("")
     || `<tr><td colspan="5">${emptyState({ compact: true, icon: "log", title: "Nothing recorded yet.", text: "Every action by a person or an MCP client lands here." })}</td></tr>`;
 }
 

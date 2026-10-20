@@ -164,6 +164,7 @@ async function loadFleet(quiet = false) {
   } catch (e) { if (!quiet && e.message !== "unauthorized") toast(e.message, true); }
 }
 $("#show-stopped").addEventListener("change", () => loadFleet());
+$("#fleet-view-select").addEventListener("change", (e) => { location.hash = `#fleet?view=${e.target.value}`; });
 
 /* ------------------------------------------------------------------ rendering */
 function renderFleet() {
@@ -178,6 +179,7 @@ function renderFleet() {
   $$(".fleet-views [data-fleet-view]").forEach((a) => {
     if (a.dataset.fleetView === fleet.view) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
   });
+  $("#fleet-view-select").value = fleet.view;
   navCount("fleet", units.filter((u) => u.live).length);
   $("#fleet-sub").innerHTML = summaryHtml(units);
   const body = { board: boardHtml, bays: baysHtml, columns: columnsHtml, owners: ownersHtml }[fleet.view](units);
@@ -266,7 +268,12 @@ function summaryHtml(units) {
   const words = { approval: "Needs you", failed: "Failed", denied: "Denied", running: "Running", queued: "Starting",
     off: units.some((u) => u.sb.state === "paused") ? "Paused" : "Spun down" };
   const active = units.filter((u) => u.live).length;
-  return `${status(top, words[top])}${countMeta(c, ["approval", "failed", "denied", "paused"])}${capHtml(active, state.overview?.max_sandboxes)}`;
+  // on a phone (app.css, <= 480px) the keyed counts and the slot meter give way to one line: what is not zero, and
+  // the slots in words, so the first sandbox is on the screen
+  const brief = [c.approval > 1 ? `${c.approval} need you` : "", c.failed ? `${c.failed} failed` : "",  // (one is the status word itself)
+    c.denied ? `${c.denied} denied` : "", `${c.running} running`, c.queued ? `${c.queued} starting` : "", c.paused ? `${c.paused} paused` : "",
+    state.overview?.max_sandboxes ? `${active} of ${state.overview.max_sandboxes} slots` : ""].filter(Boolean).join(" · ");
+  return `${status(top, words[top])}${countMeta(c, ["approval", "failed", "denied", "paused"])}${capHtml(active, state.overview?.max_sandboxes)}<span class="fleet-brief af-muted">${esc(brief)}</span>`;
 }
 
 /* ---- shared parts */

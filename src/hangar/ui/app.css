@@ -121,6 +121,7 @@ fieldset.creds legend { padding: 0; margin-bottom: var(--af-space-8); font-famil
 
 /* ---------- fleet: four views of the same sandboxes (Airframe theme-v3), one selection, one detail panel ---------- */
 .fleet-views { flex: none; }
+.fleet-view-select, .fleet-brief { display: none; }  /* the phone's forms of the view switch and the summary (below) */
 .fleet-main { position: relative; min-width: 0; }
 .fleet-view { min-width: 0; }
 /* Board (FleetView) */
@@ -203,12 +204,18 @@ fieldset.creds legend { padding: 0; margin-bottom: var(--af-space-8); font-famil
 .table td.act { white-space: nowrap; }
 .table td.act .af-btn + .af-btn { margin-left: var(--af-space-4); }
 .table .muted { font-size: 12px; }
-.table td.clip { max-width: 0; width: 45%; overflow: hidden; text-overflow: ellipsis; }
+/* the audit log: a cut value keeps the whole in its title; the detail column takes what the others leave */
+#audit-table td.c-detail { width: 45%; max-width: 0; }
+#audit-table .af-meta { display: flex; max-width: 100%; }
+#audit-table .af-meta__item { min-width: 0; max-width: 100%; }
+#audit-table .af-meta__val { overflow: hidden; text-overflow: ellipsis; }
 .panel .af-table th:first-child, .panel .af-table td:first-child { padding-left: 0; }
 .panel .af-table th:last-child, .panel .af-table td:last-child { padding-right: 0; }
 
 /* ---------- detail panels (job, session, environment) ---------- */
 .job-detail, .env-detail { padding: var(--af-space-24); }
+/* a tap on a phone scrolls the detail into view: it lands under the sticky header, not behind it */
+.job-detail, .env-detail { scroll-margin-top: calc(var(--af-header-h) + var(--af-space-16)); }
 .detail-head { display: flex; align-items: baseline; gap: var(--af-space-8) var(--af-space-16); flex-wrap: wrap; }
 .detail-head h3 { font-size: 20px; line-height: 1.3; letter-spacing: -.01em; }
 .env-detail { display: flex; flex-direction: column; gap: var(--af-space-16); min-width: 0; }
@@ -426,4 +433,37 @@ form.inline .af-input { flex: 1; }
   .job-detail, .env-detail { padding: var(--af-space-16); }
   .kv { grid-template-columns: 84px minmax(0, 1fr); }
   #usage-stops th:nth-child(2), #usage-stops td:nth-child(2), #usage-stops th:nth-child(3), #usage-stops td:nth-child(3) { display: none; }
+}
+/* a phone, narrower still: the Fleet header is three short rows (title and New sandbox; one line of what is not zero
+   and the slots; the view as a select beside Show stopped), and the Activity log is a card per row instead of five
+   columns that scroll sideways */
+@media (max-width: 480px) {
+  #view-fleet .af-page-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "title new" "sum sum" "views stopped";
+    align-items: center; gap: var(--af-space-12); }
+  #view-fleet .af-page-head__text, #view-fleet .af-page-head__actions { display: contents; }
+  #view-fleet .af-page-head__title { grid-area: title; }
+  #view-fleet #btn-new { grid-area: new; }
+  #view-fleet #fleet-sub { grid-area: sum; padding-top: 0; gap: var(--af-space-8) var(--af-space-12); }
+  #view-fleet .fleet-views, #view-fleet #fleet-sub > .af-meta, #view-fleet #fleet-sub > .af-cap { display: none; }
+  #view-fleet .fleet-brief { display: inline; font-size: 12.5px; }
+  #view-fleet .fleet-view-select { display: block; grid-area: views; width: auto; justify-self: start; }
+  #view-fleet label.check { grid-area: stopped; justify-self: end; }
+  #audit-table thead { display: none; }
+  #audit-table, #audit-table tbody { display: block; }
+  #audit-table tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "action when" "who who" "target target" "detail detail";
+    gap: 2px var(--af-space-12); padding: var(--af-space-12) var(--af-space-16); border-bottom: 1px solid var(--af-line-subtle); }
+  #audit-table tbody tr:last-child { border-bottom: 0; }
+  #audit-table td { display: block; height: auto; padding: 0; border: 0; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+  #audit-table tbody tr:hover td { background: transparent; }
+  #audit-table td.c-when { grid-area: when; text-align: right; font-size: 11.5px; color: var(--af-fg-subtle); }
+  #audit-table td.c-when .af-table__sub { display: block; margin: 0; }
+  #audit-table td.c-who { grid-area: who; font-size: 12.5px; color: var(--af-fg-muted); }
+  #audit-table td.c-action { grid-area: action; color: var(--af-fg); }
+  #audit-table td.c-target { grid-area: target; font-size: 12px; }
+  #audit-table td.c-detail { grid-area: detail; width: auto; margin-top: 4px; }
+  #audit-table td.c-target:empty, #audit-table td.c-detail:empty { display: none; }
+  #audit-table .af-meta { display: flex; flex-direction: column; row-gap: 2px; }
+  #audit-table .af-meta__item { display: grid; grid-template-columns: auto minmax(0, 1fr); white-space: normal; }
+  #audit-table .af-meta__key { white-space: nowrap; padding-top: 2px; }
+  #audit-table .af-meta__val { overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
 }
