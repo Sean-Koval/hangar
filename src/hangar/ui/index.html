@@ -79,17 +79,19 @@
   </header>
 
   <main id="main">
-    <!-- NEEDS YOU: what waits on a person (GET /api/inbox), decided in place -->
+    <!-- NEEDS YOU: the DecisionDeck (Airframe theme-v12), the whole page: one decision at a time, soonest to expire
+         on top, decided in place; then the PRs waiting for review. fleet.js draws it from GET /api/fleet's inbox. -->
     <section id="view-needs" class="view" hidden>
       <header class="af-page-head">
         <div class="af-page-head__text">
           <h1 class="af-page-head__title">Needs you</h1>
-          <p class="af-page-head__lede">Held tool calls, jobs waiting to start and the agents' questions, decided here;
-            then what failed and what waits for a review on GitHub.</p>
+          <p class="af-page-head__lede">Held tool calls, jobs waiting to start and the agents' questions, one at a time and
+            decided here; then what failed or policy stopped, to retry or put away.</p>
           <div id="needs-sum" class="af-page-head__sum"></div>
         </div>
       </header>
-      <div id="needs-list" class="needs"></div>
+      <div id="needs-deck" class="needs-deck"></div>
+      <div id="needs-review" class="needs-review"></div>
     </section>
 
     <!-- JOBS -->
@@ -173,31 +175,27 @@
       </div>
     </section>
 
-    <!-- FLEET -->
+    <!-- FLEET: Airframe theme-v12's FleetConsole. The headline in words, the decision deck as a collapsible band, then
+         every agent by environment as List (AgentRow) or Board (AgentCard): one model, one selection, kept in the URL
+         (#fleet?view=board&owner=sean) and remembered. An agent opens in place into its console. -->
     <section id="view-fleet" class="view">
-      <header class="af-page-head">
+      <header class="af-page-head fleet-head">
         <div class="af-page-head__text">
-          <h1 class="af-page-head__title">Fleet</h1>
-          <div id="fleet-sub" class="af-page-head__sum"></div>
+          <h1 class="af-page-head__title" id="fleet-title">Fleet</h1>
+          <p id="fleet-sub" class="af-page-head__sum fleet-sub"></p>
         </div>
         <div class="af-page-head__actions">
-          <!-- four views of the same sandboxes (Airframe FleetView, FleetBays, FleetColumns, FleetOwners), kept in the
-               URL (#fleet?view=bays) and remembered; fleet.js marks the current one -->
-          <nav class="af-seg fleet-views" aria-label="Fleet view">
-            <a class="af-seg__btn" href="#fleet?view=board" data-fleet-view="board">Board</a>
-            <a class="af-seg__btn" href="#fleet?view=bays" data-fleet-view="bays">Bays</a>
-            <a class="af-seg__btn" href="#fleet?view=columns" data-fleet-view="columns">Columns</a>
-            <a class="af-seg__btn" href="#fleet?view=owners" data-fleet-view="owners">Owners</a>
-          </nav>
-          <!-- the same four views as one control on a phone (<= 480px), where the segmented control wraps -->
-          <select id="fleet-view-select" class="fleet-view-select" aria-label="Fleet view">
-            <option value="board">Board</option><option value="bays">Bays</option>
-            <option value="columns">Columns</option><option value="owners">Owners</option>
-          </select>
-          <label class="check"><input type="checkbox" id="show-stopped"> Show stopped</label>
-          <button class="af-btn af-btn--primary" id="btn-new" type="button">New sandbox</button>
+          <span class="af-seg fleet-views" role="group" aria-label="Fleet view">
+            <button type="button" class="af-seg__btn" data-fleet-view="list" aria-pressed="true"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-log"/></svg>List</button>
+            <button type="button" class="af-seg__btn" data-fleet-view="board" aria-pressed="false"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-fleet"/></svg>Board</button>
+          </span>
+          <button class="af-btn af-btn--primary" id="btn-new" type="button"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-plus"/></svg>New sandbox</button>
         </div>
       </header>
+      <div class="fleet-filters">
+        <div id="fleet-owners" class="fleet-owners"></div>
+        <label class="check"><input type="checkbox" id="show-stopped"> Show stopped</label>
+      </div>
       <form id="new-form" class="panel new-form" hidden>
         <div class="grid">
           <label class="af-field"><span class="af-field__label">Environment</span><select name="environment" required></select></label>
@@ -216,10 +214,19 @@
           <button class="af-btn af-btn--primary" type="submit">Start sandbox</button>
         </div>
       </form>
-      <div class="fleet-main">
-        <div id="bays" class="fleet-view"></div>
-        <!-- one selection across the views: beside the Board, a drawer elsewhere -->
-        <aside id="fleet-detail" class="fleet-detail" aria-label="Sandbox"></aside>
+      <section id="fleet-band" class="fleet-band" aria-label="Needs you" hidden></section>
+      <div class="fleet-title"><h2>Fleet</h2><span class="af-note" id="fleet-note"></span></div>
+      <div id="fleet-body" class="fleet-body"></div>
+      <div id="fleet-key" class="af-runway__key" hidden>
+        <span class="af-status af-status--running"><i class="af-status__mark"></i>Running</span>
+        <span class="af-status af-status--queued"><i class="af-status__mark"></i>Queued</span>
+        <span class="af-status af-status--approval"><i class="af-status__mark"></i>Needs you</span>
+        <span class="af-status af-status--failed"><i class="af-status__mark"></i>Failed</span>
+        <span class="af-status af-status--denied"><i class="af-status__mark"></i>Denied</span>
+        <span class="af-status af-status--off"><i class="af-status__mark"></i>Spun down</span>
+        <span class="af-status"><span class="af-rail" aria-hidden="true" style="--p:53%"><i class="af-rail__track"></i><i class="af-rail__done"></i><b class="af-rail__stop is-on"></b><b class="af-rail__stop is-on"></b><b class="af-rail__stop"></b><b class="af-rail__stop"></b><i class="af-rail__head"></i></span>Plan, edit, test, PR</span>
+        <span class="af-status"><span class="af-rail af-rail--est" aria-hidden="true" style="--s:33.3%;--p:53%"><i class="af-rail__track"></i><i class="af-rail__done"></i><b class="af-rail__stop is-on"></b><b class="af-rail__stop is-on"></b><b class="af-rail__stop"></b><b class="af-rail__stop"></b><i class="af-rail__head"></i></span>Estimate</span>
+        <span class="af-note fleet-key-hint">Arrow keys move, Enter opens, Esc closes</span>
       </div>
       <p id="fleet-live" class="visually-hidden" aria-live="polite"></p>
     </section>

@@ -1,4 +1,5 @@
-"""The deck's Retry (KAN-140 S6): `POST /api/jobs/{id}/retry` (docs/jobs.md#5-work-with-the-agent).
+"""The deck's Retry (KAN-140 S6): `POST /api/jobs/{id}/retry`
+(docs/jobs/working-with-the-agent.md#5-work-with-the-agent).
 
 Two buttons, two meanings:
 

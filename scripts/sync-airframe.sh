@@ -4,6 +4,8 @@
 #
 #   sh scripts/sync-airframe.sh theme-v2     # a release tag (what the sync PRs use)
 #   sh scripts/sync-airframe.sh              # main
+#   sh scripts/sync-airframe.sh feat/x       # any branch or commit of agent-factory, ahead of its release tag;
+#                                            # re-sync to the tag once it is released
 #
 # Template: agent-factory airframe/sync-airframe.sh. Each tool repo keeps a copy as
 # scripts/sync-airframe.sh and lists what it vendors in FILES, one "<theme file> <destination>"

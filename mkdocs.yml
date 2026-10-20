@@ -87,7 +87,6 @@ nav:
   - Guides:
       - Work:
           - The web console: console.md
-          - The Fleet API: fleet-api.md
           - Jobs:
               - jobs/README.md
               - From GitHub, Slack and Jira: jobs/from-github-slack-jira.md
@@ -139,6 +138,7 @@ nav:
           - The vault key ring: security/vault-key.md
       - E2B-compatible API: e2b.md
       - hangar-envd: envd.md
+      - The Fleet API: api/fleet.md
       - Trace export (hangar.trace/v1): api/traces.md
       - Run capture (hangar.run/v1): api/outbox.md
       - Model gateway and tapes: model-gateway.md

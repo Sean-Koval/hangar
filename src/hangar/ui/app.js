@@ -470,7 +470,7 @@ async function api(method, path, body, { raw = false } = {}) {
   const r = await fetch(path, opts);
   if (r.status === 401) { showGate("That token was not accepted."); throw new Error("unauthorized"); }
   const data = raw ? r : await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.error || data.detail || `${r.status} ${r.statusText}`);
+  if (!r.ok) throw Object.assign(new Error(data.error || data.detail || `${r.status} ${r.statusText}`), { status: r.status });
   return data;
 }
 
@@ -610,8 +610,9 @@ async function refreshMeta() {
 }
 
 /* ------------------------------------------------------------------ fleet */
-// The Fleet page (four views of the sandboxes, one selection, the detail panel and every sandbox action) is fleet.js,
-// loaded after this file: loadFleet, renderFleet. The new-sandbox form, the dialogs and the terminals stay here.
+// The Fleet and Needs-you pages (List and Board over one model, the decision deck, the opened agent's console with every
+// sandbox action) are fleet.js, loaded after this file: loadFleet, loadNeeds. The new-sandbox form, the dialogs and
+// the terminals stay here.
 
 /* ---- new sandbox form ---- */
 function openNewForm(env) {
@@ -859,75 +860,8 @@ function closeTerminalsFor(id) { for (const k of [...terms.keys()]) if (k.starts
 })();
 
 /* ------------------------------------------------------------------ needs you */
-// What waits on a person, from GET /api/inbox (the same list the CLI, Slack and MCP clients get): approvals and
-// questions first, as the cards they are decided on; then failed jobs and PRs waiting for review, as rows.
-async function loadNeeds(quiet = false) {
-  try {
-    state.inbox = await api("GET", "/api/inbox");
-    renderNeeds();
-  } catch (e) { if (!quiet && e.message !== "unauthorized") toast(e.message, true); }
-}
-state.needsCards = [];
-function needsCard(item) {
-  const job = item.job ? state.jobs.find((j) => j.id === item.job) : null;
-  const ses = item.session ? state.sessions.find((x) => x.name === item.session) : null;
-  const ctx = { harness: job?.harness || ses?.harness, sandbox: job?.sandbox_id || ses?.sandbox_id, owner: job?.person || job?.requester || ses?.person,
-    job: job?.id, session: ses?.name, sessionId: ses?.id };
-  if (item.approval) {
-    const ap = [...(job?.pending_approvals || []), ...(ses?.pending_approvals || [])].find((a) => a.id === item.approval);
-    if (ap) return toolApprovals([ap], ctx)[0];
-    return { ...toolApprovals([{ id: item.approval, tool: "", detail: item.reason, requested_at: item.since, expires_at: item.expires_at }], ctx)[0], cmd: item.reason };
-  }
-  if (item.request) return toolApprovals([{ id: item.request, tool: "env_request:", detail: item.reason, requested_at: item.since }], ctx)[0];
-  if (job?.state === "awaiting_approval") return jobApproval(job);
-  return { id: item.id, kind: "job", cmd: item.reason, since: item.since, expires: item.expires_at, who: { requester: "someone" }, job: item.job,
-    inspect: true, approve: "Approve job", deny: "Reject" };
-}
-function renderNeeds() {
-  const items = state.inbox?.items || [];
-  const approvals = items.filter((i) => i.kind === "approval"), questions = items.filter((i) => i.kind === "question");
-  const failed = items.filter((i) => i.kind === "failed"), review = items.filter((i) => i.kind === "review");
-  navCount("needs", approvals.length + questions.length);
-  if (state.view !== "needs") return;
-  const n = approvals.length + questions.length;
-  const running = state.jobs.filter((j) => j.active).length, sessions = state.sessions.filter((x) => ["idle", "running", "starting"].includes(x.state) && !x.job_id).length;
-  $("#needs-sum").innerHTML = (n ? status("approval", `${n} waiting on you`, { lit: true }) : status("running", "Nothing is waiting on you"))
-    + meta([["approvals", approvals.length], ["questions", questions.length], ["failed", failed.length], ["review", review.length]]);
-  const box = $("#needs-list");
-  const open = openReasons(box), drafts = Object.fromEntries($$(".af-question", box).map((q) => [q.id, $("textarea", q).value]));
-  state.needsCards = approvals.map(needsCard);
-  const qcards = questions.map((item) => {
-    const job = item.job ? state.jobs.find((j) => j.id === item.job) : null;
-    const ses = item.session ? state.sessions.find((x) => x.name === item.session) : null;
-    return { id: `needs-q-${item.id}`, job, ses, html: questionHtml({ id: `needs-q-${item.id}`, who: job?.id || item.session || "", turn: ses?.turns?.length,
-      question: item.reason.replace(/^the agent asks: /, ""), asked: item.since, meanwhile: "holding the sandbox" }) };
-  });
-  const row = (i, st) => `<div class="af-verdict">${st}<span class="af-verdict__body"><span class="af-verdict__cmd">${esc(i.title || i.job || "")}</span>
-      <span class="af-verdict__why">${esc(i.reason)}</span>${meta([["repo", (i.repo || "").replace(/^https?:\/\/(www\.)?github\.com\//, "").replace(/\.git$/, "")]])}</span>
-      <span class="af-verdict__time">${i.links?.pr ? `<a class="af-btn af-btn--ghost af-btn--sm" href="${esc(i.links.pr)}" target="_blank" rel="noopener">Open PR</a>` : ""}${i.job
-        ? btn("Open job", { kind: "ghost", sm: true, attrs: { "data-go": `job:${i.job}` } }) : ""}</span></div>`;
-  box.innerHTML = !items.length
-    ? emptyState({ kind: "after-action", cls: "af-empty--clear", icon: "approval", title: "Nothing is waiting on you.",
-        counts: status("running", `${running} job${running === 1 ? "" : "s"} running`) + status("running", `${sessions} session${sessions === 1 ? "" : "s"} up`),
-        text: "They work on their own. A held tool call, a job waiting to start or a question lands here first." })
-    : `${state.needsCards.length || qcards.length ? `<div class="cards">${state.needsCards.map(approvalHtml).join("")}${qcards.map((q) => q.html).join("")}</div>` : ""}
-      ${failed.length ? `<h3 class="section-title">Failed</h3><div class="verdicts">${failed.map((i) => row(i, status("failed", "Failed"))).join("")}</div>` : ""}
-      ${review.length ? `<h3 class="section-title">Waiting for review</h3><div class="verdicts">${review.map((i) => row(i, status("queued", "Review"))).join("")}</div>` : ""}`;
-  const findCard = (id) => state.needsCards.find((c) => c.id === id);
-  restoreReasons(box, open, findCard);
-  for (const q of qcards) {
-    const el = $(`#${CSS.escape(q.id)}`);
-    if (drafts[q.id]) $("textarea", el).value = drafts[q.id];
-    wireQuestion(el, async (text) => {
-      if (q.job) await api("POST", `/api/jobs/${q.job.id}/follow-up`, { message: text });
-      else if (q.ses) await api("POST", `/api/sessions/${q.ses.id}/send`, { message: text });
-      toast("Sent; the agent continues with your answer");
-      await Promise.all([loadJobs(true), loadSessions(true)]);
-      await loadNeeds();
-    });
-  }
-  box.onclick = (e) => approvalClick(e, findCard, async () => { await Promise.all([loadJobs(true), loadSessions(true)]); await loadNeeds(); });
-}
+// The Needs-you page is the DecisionDeck (fleet.js, loadNeeds): the same inbox the CLI, Slack and MCP clients get,
+// read with the Fleet (GET /api/fleet carries it) so the deck on this page and atop the Fleet are one source.
 
 /* ------------------------------------------------------------------ jobs */
 const JOB_ACTIVE = ["queued", "provisioning", "running", "verifying", "delivering"];

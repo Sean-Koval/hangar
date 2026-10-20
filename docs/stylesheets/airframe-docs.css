@@ -1,4 +1,4 @@
-/* Airframe theme-v8 for the docs sites. Generated from airframe/docs-site/airframe-docs.css by scripts/airframe.py; do not edit. Load after airframe.css. */
+/* Airframe theme-v12 for the docs sites. Generated from airframe/docs-site/airframe-docs.css by scripts/airframe.py; do not edit. Load after airframe.css. */
 @import url("https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=DM+Mono:wght@400;500&family=Red+Hat+Text:ital,wght@0,400..700;1,400..700&display=swap");
 
 /*
@@ -103,14 +103,23 @@ body { background: var(--af-canvas); }
 .md-typeset .af-suite .af-suite__list { list-style: none; margin: 0; padding: 0; display: flex; }
 .md-typeset .af-suite .af-suite__list li { margin: 0; padding: 0; display: block; }
 .md-typeset .af-suite__list a, .md-typeset .af-suite__list span { display: inline-flex; align-items: center; gap: .55em; height: 30px; padding: 0 .8em; line-height: 1; color: var(--af-fg-muted); font-family: var(--af-font-display); font-stretch: var(--af-display-stretch); font-weight: 700; font-size: .6rem; letter-spacing: 0; }
-.md-typeset .af-suite__list small { font-family: var(--af-font-mono); font-weight: 500; font-size: .5rem; line-height: 1; padding-top: 1px; letter-spacing: var(--af-label-track); text-transform: uppercase; color: var(--af-fg-subtle); }
+.md-typeset .af-suite__list small { font-family: var(--af-font-mono); font-weight: 500; font-size: .5rem; line-height: 1; padding-top: 1px; letter-spacing: var(--af-label-track); text-transform: uppercase; color: var(--af-fg-subtle); opacity: 1; }
 .md-typeset .af-suite__list span { color: var(--af-fg-subtle); }
 .md-typeset .af-suite a:hover, .md-typeset .af-suite a:focus-visible { color: var(--af-fg); }
 .md-typeset .af-suite [aria-current] { color: var(--af-fg); box-shadow: inset 0 -2px 0 var(--af-product); }
 .md-typeset .af-suite__home[aria-current] { box-shadow: none; color: var(--af-fg); }
 .md-typeset .af-suite__home[aria-current]::before { background: var(--af-brand); }
-/* phones: the plane words go, the row scrolls sideways, and the next name is cut mid-word so the scroll shows */
-@media (max-width: 599px) {
+/* narrow screens: the row scrolls sideways and snaps to an item, a fade on the right edge says there is more,
+   and a spacer after the last item lets it scroll clear of the fade; nothing is cut */
+@media (max-width: 959px) {
+  .md-banner__inner.md-typeset { position: relative; }
+  .md-banner__inner.md-typeset::after { content: ""; position: absolute; top: 0; bottom: 0; right: 0; width: 2.4rem; pointer-events: none; background: linear-gradient(to right, transparent, var(--af-canvas) 70%); }
+  .md-typeset .af-suite { scroll-snap-type: x proximity; overscroll-behavior-x: contain; }
+  .md-typeset .af-suite .af-suite__list li { scroll-snap-align: start; }
+  .md-typeset .af-suite .af-suite__list::after { content: ""; flex: none; width: 2.4rem; }
+}
+/* phones: product names only (the role words return in the suite's home page and each product's hero) */
+@media (max-width: 480px) {
   .md-typeset .af-suite__home { padding-right: .6em; margin-right: 0; gap: .4em; }
   .md-typeset .af-suite__list small { display: none; }
   .md-typeset .af-suite__list a, .md-typeset .af-suite__list span { padding: 0 .55em; }
@@ -163,12 +172,20 @@ body { background: var(--af-canvas); }
 .md-typeset table:not([class]) td { border-top: 1px solid var(--af-line-subtle); }
 .md-typeset table:not([class]) tr:hover { background: var(--af-selected); box-shadow: none; }
 
-/* admonitions: tonal blocks with a status-colored start mark, never the brand */
-.md-typeset .admonition, .md-typeset details { border: 0; border-radius: var(--af-radius-card); background: var(--af-surface); box-shadow: inset 2px 0 0 var(--af-fg-subtle); font-size: .74rem; }
+/* admonitions: tonal blocks with a 2px start mark and a mono title. Every Material / Zensical type (note, abstract,
+   info, tip, success, question, warning, failure, danger, bug, example, quote and their aliases) maps to the greyscale
+   through --af-adm: the mark, the title icon and the details chevron take it, and the title never has a tint. Only two
+   families carry color, because a person must act: warning (caution, attention) is the approval role, danger (error)
+   and failure (fail, missing) the failed role. Success, tip, bug and question stay grey: the dark cockpit lights
+   nothing that needs nobody. Material's per-type focus ring (a tinted halo) becomes the focus token. The !important
+   rules outrank the theme's per-type tints (`.admonition.note`), which the modern Zensical theme paints on the block. */
+.md-typeset .admonition, .md-typeset details { --af-adm: var(--af-fg-subtle); border: 0; border-radius: var(--af-radius-card); background: var(--af-surface) !important; box-shadow: inset 2px 0 0 var(--af-adm); font-size: .74rem; }
+.md-typeset :is(.admonition, details):is(.warning, .caution, .attention) { --af-adm: var(--af-status-approval); }
+.md-typeset :is(.admonition, details):is(.danger, .error, .failure, .fail, .missing) { --af-adm: var(--af-status-failed); }
 .md-typeset .admonition-title, .md-typeset summary { background: transparent !important; font-family: var(--af-font-mono); font-size: .62rem; letter-spacing: var(--af-label-track); text-transform: uppercase; color: var(--af-fg-muted); }
-.md-typeset .admonition-title::before, .md-typeset summary::before { background-color: var(--af-fg-subtle) !important; }
-.md-typeset .admonition.warning, .md-typeset details.warning { box-shadow: inset 2px 0 0 var(--af-status-approval); }
-.md-typeset .admonition.danger, .md-typeset details.danger { box-shadow: inset 2px 0 0 var(--af-status-failed); }
+.md-typeset .admonition-title::before, .md-typeset summary::before { background-color: var(--af-adm) !important; }
+.md-typeset .admonition-title::after, .md-typeset summary::after { color: var(--af-fg-subtle) !important; }
+.md-typeset .admonition:focus-within, .md-typeset details:focus-within { box-shadow: inset 2px 0 0 var(--af-adm), 0 0 0 2px var(--af-focus) !important; }
 
 /* navigation: mono section labels, a brand mark on the current page */
 .md-nav__title { font-family: var(--af-font-mono); text-transform: uppercase; letter-spacing: var(--af-label-track); font-size: .6rem; color: var(--af-fg-subtle); box-shadow: none !important; background: transparent !important; }
@@ -196,16 +213,18 @@ body { background: var(--af-canvas); }
   .md-typeset .af-hero h1 { font-size: 2em; }
 }
 /* af-hero--visual: words left, the product working on the right (an image or a video on the dot field);
-   below 960px the visual follows the actions. Pair with <figure class="af-hero__visual"> and, on wide
-   screens, a capture about 16:10 at 1440x900 cropped to the subject. */
+   below 960px the visual follows the actions and the dot field is off, since in one column it would sit
+   behind the words, and the brand book puts it behind hero data only. Pair with <figure class="af-hero__visual">
+   and, on wide screens, a capture about 16:10 at 1440x900 cropped to the subject. The caption is a sentence,
+   so it is body-s in the body face, sentence case, left-aligned, not a label. */
 .af-hero--visual { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.6rem; align-items: center; padding-bottom: 1.2rem; }
-.af-hero--visual::after { content: ""; position: absolute; inset: auto 0 0 50%; height: 60%; background: radial-gradient(circle, var(--af-dot-field) 1.1px, transparent 1.6px) 0 0 / 8px 8px; pointer-events: none; z-index: 0; }
+.af-hero--visual::after { content: ""; display: none; position: absolute; inset: 0 0 0 46%; background: radial-gradient(circle, var(--af-dot-field) 1.1px, transparent 1.6px) 0 0 / 8px 8px; pointer-events: none; z-index: 0; }
 .af-hero__visual { margin: 0; position: relative; z-index: 1; min-width: 0; }
 .af-hero__visual > img, .af-hero__visual > video, .af-hero__visual > a > img { display: block; width: 100%; height: auto; border-radius: var(--af-radius-card); box-shadow: 0 0 0 1px var(--af-line); }
-.md-typeset .af-hero__visual figcaption { font-style: normal; max-width: none; font-family: var(--af-font-mono); font-size: .56rem; letter-spacing: var(--af-label-track); text-transform: uppercase; color: var(--af-fg-subtle); margin-top: .6em; }
+.md-typeset .af-hero__visual figcaption { font-style: normal; max-width: none; text-align: left; font-family: var(--af-font-sans); font-size: .65rem; line-height: 1.45; letter-spacing: 0; text-transform: none; color: var(--af-fg-subtle); margin-top: .6em; }
 @media (min-width: 960px) {
   .af-hero--visual { grid-template-columns: minmax(0, 7fr) minmax(0, 8fr); gap: 2.4rem; }
-  .af-hero--visual::after { inset: 0 0 0 46%; height: auto; }
+  .af-hero--visual::after { display: block; }
   .md-typeset .af-hero--visual h1 { font-size: 2.3em; }
 }
 
@@ -214,7 +233,7 @@ body { background: var(--af-canvas); }
 .af-tool { background: var(--af-raised); padding: var(--af-space-16); display: flex; flex-direction: column; gap: .4em; min-width: 0; text-decoration: none !important; color: var(--af-fg) !important; border-top: 2px solid var(--af-tool, var(--af-line)); }
 .af-tool:hover { background: var(--af-selected); }
 .af-tool b { font-family: var(--af-font-display); font-stretch: var(--af-display-stretch); font-weight: 700; font-size: .9rem; }
-.af-tool small { font-family: var(--af-font-mono); font-size: .58rem; letter-spacing: var(--af-label-track); text-transform: uppercase; color: var(--af-fg-subtle); }
+.af-tool small { font-family: var(--af-font-mono); font-size: .58rem; letter-spacing: var(--af-label-track); text-transform: uppercase; color: var(--af-fg-subtle); opacity: 1; }
 .af-tool span { color: var(--af-fg-muted); font-size: .72rem; line-height: 1.5; }
 
 /* footer: on the canvas, separated by a rule */
@@ -237,7 +256,9 @@ body { background: var(--af-canvas); }
   .md-typeset .af-suite [aria-current] { box-shadow: none; border-bottom: 2px solid Highlight; }
   .md-typeset .af-suite__home[aria-current] { border-bottom: 2px solid Highlight; }
   .md-typeset .af-suite__home::before, .af-eyebrow::before { background: CanvasText; }
+  .md-banner__inner.md-typeset::after { display: none; }
   .md-typeset .admonition, .md-typeset details { box-shadow: none; border-left: 2px solid CanvasText; }
+  .md-typeset .admonition:focus-within, .md-typeset details:focus-within { outline: 2px solid Highlight; outline-offset: 2px; }
   .af-tool { border-top-color: CanvasText; }
   .af-swatch { box-shadow: none; outline: 1px solid CanvasText; }
   .af-hero__visual > img, .af-hero__visual > video, .af-hero__visual > a > img { box-shadow: none; outline: 1px solid CanvasText; }

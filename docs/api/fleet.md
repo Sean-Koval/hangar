@@ -1,8 +1,10 @@
-# The Fleet API
+# The Fleet API (`GET /api/fleet`, `/api/fleet/stream`)
 
-The [console's Fleet page](console.md) reads one server-side join of sandboxes, jobs and sessions, and a stream that keeps it current. Other clients, such as the decision deck, can use the same two endpoints.
+What the console's [Fleet and Needs-you pages](../console.md#fleet) read: one joined view of every agent, with what
+each is doing now and the caller's inbox, and a stream of the same view as it changes (KAN-140). Any client can use
+them; the CLI, Slack and MCP clients keep the inbox's own routes.
 
-## The fleet read: `GET /api/fleet`
+## The read: `GET /api/fleet`
 
 The page is one read (KAN-140). Where the console used to fetch sandboxes, jobs and sessions and join them in the
 browser, `GET /api/fleet` joins them on the server, from what is already in memory, and adds what each agent is doing
@@ -71,7 +73,7 @@ The server keeps one small `LiveState` per session, fed by the turn watcher as i
 path reads a log. A control-plane restart starts with empty states, which fill again as the running turns' logs are
 re-read from their saved cursors. Two hundred sandboxes read in a few milliseconds.
 
-## The fleet stream
+## The stream: `GET /api/fleet/stream`
 
 `GET /api/fleet/stream?ticket=<ticket>` keeps the page current without polling: Server-Sent Events of the same read.
 Browsers can't set headers on an EventSource, so the console first trades its token for a ticket,
@@ -93,5 +95,6 @@ session or request (a state, an approval, a question), or an inbox ack. A `stage
 not a change by itself; the next update carries the latest. Every event's `id` is `<epoch>.<n>`, the change it
 reflects. Reconnecting with `Last-Event-ID` sends only the units changed since (and the inbox and summary); an id
 from before a restart, or older than the last 4,096 changes, gets a fresh `snapshot`. The stream counts against the
-[stream limits](streaming.md#limits-and-closing) like any other (`HANGAR_STREAM_MAX_PER_TOKEN`: one more is a 429)
+[stream limits](../streaming.md#limits-and-closing) like any other (`HANGAR_STREAM_MAX_PER_TOKEN`: one more is a 429)
 and closes when the token behind it is revoked.
+

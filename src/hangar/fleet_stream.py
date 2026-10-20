@@ -1,4 +1,4 @@
-"""`GET /api/fleet/stream`: the Fleet page's live feed (KAN-140 S5; docs/fleet-api.md#the-fleet-stream).
+"""`GET /api/fleet/stream`: the Fleet page's live feed (KAN-140 S5; docs/api/fleet.md).
 
 Instead of re-reading `GET /api/fleet` on a timer, the console opens one Server-Sent Events stream. It starts with a
 `snapshot` (the whole fleet read), then sends what changed:

@@ -119,68 +119,59 @@ fieldset.creds legend { padding: 0; margin-bottom: var(--af-space-8); font-famil
 .form-foot { display: flex; gap: var(--af-space-8); align-items: center; justify-content: flex-end; flex-wrap: wrap; }
 .form-foot .hint { margin-right: auto; }
 
-/* ---------- fleet: four views of the same sandboxes (Airframe theme-v3), one selection, one detail panel ---------- */
-.fleet-views { flex: none; }
-.fleet-view-select, .fleet-brief { display: none; }  /* the phone's forms of the view switch and the summary (below) */
-.fleet-main { position: relative; min-width: 0; }
-.fleet-view { min-width: 0; }
-/* Board (FleetView) */
-.fleet-board { gap: var(--af-space-20); }
-.fleet-board .af-fleet__body { gap: var(--af-space-20); }
-.fleet-key-stand { width: 16px; height: 10px; padding: 0; }
-.fleet-key-pips { width: 44px; }
+/* ---------- fleet and needs you: Airframe theme-v12's FleetConsole (AgentRow, AgentCard, DecisionDeck, StageRail,
+   Heartbeat, ActivityTimeline). The components carry the look; this places them on the page. ---------- */
+#view-fleet { display: flex; flex-direction: column; gap: var(--af-space-24); }
+#view-fleet[hidden] { display: none; }
+#view-fleet > .af-page-head { margin-bottom: 0; align-items: end; }
+#view-fleet .af-page-head__title { font-size: 26px; max-width: 24ch; text-wrap: balance; }
+.fleet-sub { margin: var(--af-space-8) 0 0; color: var(--af-fg-muted); font-size: 14px; }
+.fleet-views .af-ic { width: 14px; height: 14px; }
+.fleet-filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--af-space-8) var(--af-space-16); margin-top: calc(-1 * var(--af-space-8)); }
+.fleet-filters:has(.fleet-owners:empty) { justify-content: flex-end; }
+.fleet-owners { display: flex; align-items: center; gap: var(--af-space-8) var(--af-space-12); min-width: 0; flex: 1 1 auto; }
+.fleet-owners:empty { display: none; }
+.fleet-owners .af-chips { flex-wrap: wrap; }
+.fleet-owners .af-chip { flex: none; }
+.fleet-owners .af-chip .af-note { margin-left: 6px; font-family: var(--af-font-mono); font-size: 11px; }
+.fleet-title { display: flex; align-items: baseline; gap: var(--af-space-12); flex-wrap: wrap; margin-top: var(--af-space-8); }
+.fleet-title h2 { font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
+.fleet-title .af-note { font-size: 13px; color: var(--af-fg-muted); }
+.fleet-body { display: flex; flex-direction: column; gap: var(--af-space-32); min-width: 0; }
+.fleet-body .af-agent__chev { flex: none; }
 .fleet-key-hint { margin-left: auto; }
-/* Bays (FleetBays), Columns (FleetColumns): tiles are focusable and selectable as a whole */
-.fleet-groups { display: flex; flex-direction: column; gap: var(--af-space-28); min-width: 0; }
-.fleet-group { display: flex; flex-direction: column; gap: var(--af-space-12); min-width: 0; }
-.fleet-view .af-bay[data-tile], .fleet-view .af-mini[data-tile] { cursor: pointer; }
-.fleet-view .af-bay[data-tile]:focus-visible, .fleet-view .af-mini[data-tile]:focus-visible { outline: 2px solid var(--af-focus); outline-offset: 2px; }
-.fleet-view .af-bay .af-bay__foot .af-btn { flex: none; }
-.af-statecol__head { top: var(--af-header-h); }  /* under the sticky app header */
-.fleet-view .fleet-mini-foot > :last-child { flex: none; }  /* the age never truncates */
-.fleet-view .af-bay__note, .fd .af-bay__note { overflow-wrap: anywhere; }
-/* Owners (FleetOwners) */
-.fleet-view .af-owners { scrollbar-width: thin; }
-.af-person__av .af-ic { color: var(--af-fg-subtle); }
 /* an empty fleet (Airframe EmptyState) sits on a dashed floor so the room reads as room */
 .fleet-empty { border: 1px dashed var(--af-line-strong); border-radius: var(--af-radius-card); }
-#view-fleet.is-empty .fleet-detail { display: none; }
-#view-fleet.is-empty .fleet-main { display: block; }
-.fleet-view .af-statecol__empty { grid-column: 1 / -1; margin: 0; }
-
-/* the detail panel: Airframe's Drawer parts (head, body, foot). fleet.js makes it a right drawer (af-drawer--right,
-   no scrim) in Bays, Columns and Owners and on narrow screens, and docks it beside the Board on wide ones. */
-.fleet-detail.af-drawer--right { top: var(--af-header-h); bottom: var(--drawer-pad, 0px); overscroll-behavior: contain; }
-.fleet-detail.is-docked { display: flex; flex-direction: column; min-width: 0; background: var(--af-raised); border-radius: var(--af-radius-card); }
-.fleet-detail.is-docked [data-fleet-close] { display: none; }
-@media (min-width: 1081px) {
-  #view-fleet[data-fleet-view="board"]:not(.is-empty) .fleet-main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: var(--af-space-12); align-items: start; }
-  .fleet-detail.is-docked { position: sticky; top: calc(var(--af-header-h) + var(--af-space-16));
-    max-height: calc(100vh - var(--af-header-h) - var(--af-space-32) - var(--drawer-pad, 0px)); }
+/* Airframe's sprite has one chevron; previous and "hide" turn it */
+.fleet-flip .af-ic { transform: scaleX(-1); }
+.fleet-flip-y .af-ic { transform: scaleY(-1); }
+/* the deck band atop the Fleet: the DecisionDeck, or (hidden) one line that brings it back */
+.fleet-band[hidden] { display: none; }
+.af-deck__title .fleet-band__hide { margin-left: auto; }
+.fleet-band__bar { display: flex; align-items: center; gap: var(--af-space-12); width: 100%; min-height: 48px; padding: 0 var(--af-space-16);
+  border: 0; border-radius: var(--af-radius-card); background: var(--af-raised); box-shadow: inset 3px 0 0 var(--af-status-approval);
+  color: var(--af-fg-muted); text-align: left; font-size: 14px; }
+.fleet-band__bar:hover { background: var(--af-lifted); }
+.fleet-band__what { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fleet-band__what b { color: var(--af-fg); font-weight: 600; }
+.fleet-band__bar .af-ic { flex: none; color: var(--af-fg-subtle); }
+/* Needs you: the deck is the page */
+.needs-deck { min-width: 0; }
+.needs-review:not(:empty) { display: flex; flex-direction: column; gap: var(--af-space-16); margin-top: var(--af-space-40); }
+.needs-review__title { margin-top: 0; }
+.needs-review__list { display: flex; flex-direction: column; gap: var(--af-space-8); margin: 0; padding: 0; list-style: none; }
+.needs-review__row { display: grid; grid-template-columns: 18px 54px minmax(180px, 1fr) minmax(0, 220px) auto; align-items: center; gap: 14px;
+  min-height: 58px; padding: 9px 14px 9px 18px; }
+.needs-review__row > .af-status { gap: 0; }
+.needs-review__acts { display: flex; justify-content: flex-end; gap: var(--af-space-4); }
+@media (max-width: 720px) {
+  .needs-review__row { grid-template-columns: 18px minmax(0, 1fr); gap: 4px 10px; padding: 12px 14px 12px 16px; }
+  .needs-review__row > .af-agent__tail { grid-column: 2; }
+  .needs-review__row > :is(.af-agent__ttl, .af-agent__rig, .needs-review__acts) { grid-column: 2; }
+  .needs-review__acts { justify-content: flex-start; margin-left: -10px; }
 }
-.fleet-detail .af-drawer__head { gap: 10px; }
-.fleet-detail .af-drawer__title .af-id { margin-right: 6px; }
-.fleet-detail.is-docked .af-drawer__head { align-items: flex-start; padding-block: var(--af-space-12); }
-.fleet-detail.is-docked .af-drawer__title { white-space: normal; }  /* a docked panel has room for the whole title */
-.fd { display: flex; flex-direction: column; gap: var(--af-space-16); min-width: 0; }
-.fd-state { display: flex; flex-direction: column; gap: var(--af-space-8); }
-.fd-cmd { margin: 0; padding: 10px 12px; background: var(--af-surface); border-radius: var(--af-radius-control);
-  font-family: var(--af-font-mono); font-weight: 500; font-size: 13px; line-height: 1.45; color: var(--af-fg); overflow-wrap: anywhere; }
-.fd-kv { margin: 0; }
-.fd-kv .sub-val { margin-left: var(--af-space-8); color: var(--af-fg-subtle); }
-.fd-lease { display: flex; align-items: center; gap: 10px; }
-.fd-task > p { margin: var(--af-space-8) 0 0; max-height: 220px; overflow: auto; font-size: 13px; line-height: 1.5; color: var(--af-fg-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
-.fd-actions { display: flex; flex-wrap: wrap; gap: 6px; padding-top: var(--af-space-16); border-top: 1px solid var(--af-line-subtle); }
-.fd-actions [data-act="destroy"] { margin-left: auto; }
-.fd-runs { display: flex; flex-direction: column; gap: 2px; }
-.fd-runs h4 { margin: 0 0 6px; font-family: var(--af-font-mono); font-weight: 500; font-size: 11px; letter-spacing: var(--af-label-track); text-transform: uppercase; color: var(--af-fg-muted); }
-.fd-run { display: grid; grid-template-columns: 16px auto minmax(0, 1fr) auto; align-items: center; gap: var(--af-space-8); width: 100%; padding: 6px 8px;
-  border: 0; border-radius: var(--af-radius-control); background: transparent; color: var(--af-fg); font-size: 12.5px; text-align: left; }
-.fd-run:hover { background: var(--af-selected); }
-.fd-run > .af-ic { color: var(--af-fg-subtle); }
-.fd-run__prompt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--af-fg-muted); }
-.bay-err { margin: 0; }
-.bay-err .af-meta__item { white-space: normal; }
+.af-decision .af-lead code { overflow-wrap: anywhere; }
+.af-decision .af-pairs .af-mono, .af-console .af-pairs .af-mono { overflow-wrap: anywhere; }
 
 /* ---------- lists (jobs, sessions, environments) ---------- */
 .list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; background: var(--af-raised);
@@ -247,8 +238,8 @@ h4.with-meta .af-meta { text-transform: none; letter-spacing: normal; font-weigh
 /* what waits on a person sits first: approval and question cards (Airframe ApprovalCard, Question), then the
    decided ones as verdict rows; the same in the Needs-you view, the detail panels and the Fleet drawer */
 .cards { display: flex; flex-direction: column; gap: var(--af-space-12); margin: var(--af-space-16) 0; }
-.panel .af-card, .fd .af-card { background: var(--af-surface); }  /* a card inside a raised panel sits one tone down */
-.panel .af-card--lit, .fd .af-card--lit { background: color-mix(in srgb, var(--af-status-approval) 6%, var(--af-surface)); }
+.panel .af-card { background: var(--af-surface); }  /* a card inside a raised panel sits one tone down */
+.panel .af-card--lit { background: color-mix(in srgb, var(--af-status-approval) 6%, var(--af-surface)); }
 .cards .af-approval__cmd { font-size: 14px; }
 .job-detail > .af-question { margin: var(--af-space-16) 0; }
 .verdicts { display: flex; flex-direction: column; gap: 4px; }
@@ -268,21 +259,16 @@ h4.with-meta .af-meta { text-transform: none; letter-spacing: normal; font-weigh
 .af-comment { position: relative; }
 .af-comment .comment-x { position: absolute; right: 0; top: -4px; opacity: 0; }
 .af-comment:hover .comment-x, .af-comment .comment-x:focus-visible { opacity: 1; }
-.job-detail .af-verdict, .fd .af-verdict { background: var(--af-surface); }
-.needs .cards { margin-top: 0; }
-.needs .af-verdict__time { display: flex; gap: var(--af-space-4); padding: 0; }
-.needs .af-empty--clear { border: 1px dashed var(--af-line-strong); border-radius: var(--af-radius-card); }
+.job-detail .af-verdict { background: var(--af-surface); }
 /* a decision in a narrow place (the docked Fleet panel, a phone): the reviewer line above the buttons, which share the
    width, so the primary never sits alone at the end of a ragged row; the Needs-you rows put their buttons under the words */
-.needs, .job-detail, .fd { container-type: inline-size; }
+.job-detail { container-type: inline-size; }
 @container (max-width: 420px) {
   .af-approval__act { flex-direction: column; align-items: stretch; }
   .af-approval__act > .af-meta { align-self: flex-start; }
   .af-approval__btns { margin-left: 0; }
   .af-approval__btns > .af-btn { flex: 1 1 auto; justify-content: center; }
   .af-approval__btns > .af-btn--ghost { flex: 0 0 auto; }  /* inspect keeps its size; the decisions share the rest */
-  .needs .af-verdict { grid-template-columns: auto minmax(0, 1fr); }
-  .needs .af-verdict__time { grid-column: 1 / -1; justify-content: flex-end; }
 }
 
 /* timeline and activity: a plain dot per entry (never a status mark: those mean running and queued elsewhere), the
@@ -403,14 +389,13 @@ form.inline .af-input { flex: 1; }
   .tabbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: var(--af-z-drawer); display: grid; grid-template-columns: repeat(5, 1fr);
     padding: 0 var(--af-space-4) env(safe-area-inset-bottom); background: var(--af-canvas); border-top: 1px solid var(--af-line); }
   .tab { position: relative; display: grid; justify-items: center; align-content: center; gap: 4px; height: 56px; padding: 0; border: 0; border-radius: 0;
-    background: none; color: var(--af-fg-muted); text-decoration: none; font-family: var(--af-font-mono); font-weight: 500; font-size: 10px;
-    letter-spacing: .08em; text-transform: uppercase; }
+    background: none; color: var(--af-fg-muted); text-decoration: none; font-family: var(--af-font-sans); font-weight: 500; font-size: 11px; }
   .tab .af-ic { width: 20px; height: 20px; color: var(--af-fg-subtle); }
   .tab[aria-current="page"], .tab[aria-current="page"] .af-ic { color: var(--af-fg); }
   .tab[aria-current="page"]::after { content: ""; position: absolute; left: 22%; right: 22%; top: -1px; height: 2px; background: var(--pc, var(--af-fg)); }
   .tab:focus-visible { outline-offset: -2px; }
   .tab-ic { position: relative; display: grid; place-items: center; }
-  .tab-count { position: absolute; top: -6px; left: 16px; padding: 0 3px; background: var(--af-canvas); color: var(--af-fg);
+  .tab-count { position: absolute; top: -6px; left: 16px; padding: 0 3px; background: var(--af-canvas); color: var(--af-fg); font-family: var(--af-font-mono);
     font-size: 10.5px; letter-spacing: .04em; }
   .tab-count:empty { display: none; }
   .more-sheet { display: flex; flex-direction: column; gap: var(--af-space-16); position: fixed; left: 0; right: 0; top: var(--af-header-h); bottom: var(--tabbar-h);
@@ -438,16 +423,15 @@ form.inline .af-input { flex: 1; }
    and the slots; the view as a select beside Show stopped), and the Activity log is a card per row instead of five
    columns that scroll sideways */
 @media (max-width: 480px) {
-  #view-fleet .af-page-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "title new" "sum sum" "views stopped";
-    align-items: center; gap: var(--af-space-12); }
-  #view-fleet .af-page-head__text, #view-fleet .af-page-head__actions { display: contents; }
-  #view-fleet .af-page-head__title { grid-area: title; }
-  #view-fleet #btn-new { grid-area: new; }
-  #view-fleet #fleet-sub { grid-area: sum; padding-top: 0; gap: var(--af-space-8) var(--af-space-12); }
-  #view-fleet .fleet-views, #view-fleet #fleet-sub > .af-meta, #view-fleet #fleet-sub > .af-cap { display: none; }
-  #view-fleet .fleet-brief { display: inline; font-size: 12.5px; }
-  #view-fleet .fleet-view-select { display: block; grid-area: views; width: auto; justify-self: start; }
-  #view-fleet label.check { grid-area: stopped; justify-self: end; }
+  .fleet-filters { margin-top: 0; }
+  #view-fleet .af-page-head__actions { justify-content: flex-start; margin-left: 0; }
+  .fleet-owners { flex-direction: column; align-items: flex-start; }
+  /* the chips scroll sideways; the last 32 px fade so a chip at the edge reads as more, not as cut, and the end padding
+     lets the last chip scroll clear of the fade */
+  .fleet-owners .af-chips { flex-wrap: nowrap; overflow-x: auto; max-width: 100%; scrollbar-width: none; padding-right: var(--af-space-32);
+    -webkit-mask-image: linear-gradient(to right, var(--af-fg) calc(100% - var(--af-space-32)), transparent);
+    mask-image: linear-gradient(to right, var(--af-fg) calc(100% - var(--af-space-32)), transparent); }
+  .fleet-key-hint { display: none; }
   #audit-table thead { display: none; }
   #audit-table, #audit-table tbody { display: block; }
   #audit-table tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "action when" "who who" "target target" "detail detail";
