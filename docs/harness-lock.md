@@ -216,7 +216,7 @@ is its behaviour, not drift. Writable state (`~/.claude.json`, plugin caches) is
 
 A `plugin:<name>@<marketplace>` component is a Claude Code plugin. For a Codex harness the same lock carries the
 plugin's **Codex form**: the directory `native/codex/<name>/`, a Codex local plugin (`.codex-plugin/plugin.json`
-naming `<name>`, its skills and hooks), every file of it pinned as a `native:codex/<name>/...` component. AI-DLC's
+naming `<name>`, its skills and hooks), every file of it pinned as a `native:codex/<name>/...` component. ai-dlc's
 workflow plugin ships one (`plugins/ai-dlc-workflow/native/codex/` there; its publish script copies it to
 `native/codex/ai-dlc-workflow/`). A Codex claim refuses an enabled plugin without one, a form file the lock doesn't
 pin with its digest, and a form whose manifest names another plugin. Disabled plugins load nowhere.
