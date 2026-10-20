@@ -507,9 +507,22 @@ async function followOpen(first = false) {
     if (ol.dataset.html !== html) {
       const atEnd = ol.scrollTop + ol.clientHeight >= ol.scrollHeight - 8;
       ol.innerHTML = html; ol.dataset.html = html;
-      if (atEnd || first) ol.scrollTop = ol.scrollHeight;
+      if (atEnd || first) toLatest(ol);
     }
   }
+}
+
+// Show the latest events whole: the list scrolls past its max-height, so trim the window to the whole entries that fit,
+// counted from the newest, and scroll to the end; the first entry in view is never cut in half.
+function toLatest(ol) {
+  ol.style.maxHeight = "";
+  const cap = ol.clientHeight;
+  if (ol.scrollHeight > cap + 1) {
+    let h = 0;
+    for (const li of [...ol.children].reverse()) { if (h + li.offsetHeight > cap) break; h += li.offsetHeight; }
+    if (h) ol.style.maxHeight = `${h}px`;
+  }
+  ol.scrollTop = ol.scrollHeight;
 }
 
 /* ------------------------------------------------------------------ the pages */
@@ -594,9 +607,14 @@ function drawNeeds() {
     + meta([["stopped", stopped], ["review", items.filter((i) => i.kind === "review").length]]);
   paint($("#needs-deck"), deckHtml("page"), "needs");
   const review = items.filter((i) => i.kind === "review");
-  paint($("#needs-review"), review.length ? `<h3 class="section-title">Waiting for review on GitHub</h3><div class="verdicts">${review.map((i) => `<div class="af-verdict">${status("queued", "Review")}
-      <span class="af-verdict__body"><span class="af-verdict__cmd">${esc(i.title || i.job || "")}</span><span class="af-verdict__why">${esc(i.reason)}</span>${meta([["repo", repoShort(i.repo)]])}</span>
-      <span class="af-verdict__time">${i.links?.pr || i.pr ? `<a class="af-btn af-btn--ghost af-btn--sm" href="${esc(i.links?.pr || i.pr)}" target="_blank" rel="noopener">Open PR</a>` : ""}${i.job ? sbtn("Open job", "ghost", { "data-go": `job:${i.job}` }) : ""}</span></div>`).join("")}</div>` : "", "review");
+  // the PRs waiting on a person's review on GitHub: a sentence-case heading and one neutral AgentRow-shaped row each
+  // (queued mark, tail, title and why, repo, the two links); waiting on others stays grey
+  paint($("#needs-review"), review.length ? `<div class="fleet-title needs-review__title"><h2>Waiting for review</h2><span class="af-note">on GitHub, ${plural(review.length, "pull request")}</span></div>
+    <ul class="needs-review__list">${review.map((i) => { const u = unitOfItem(i), pr = i.links?.pr || i.pr; return `<li class="af-agent needs-review__row">${markOnly("queued")}
+      <span class="af-agent__tail">${esc(u?.tail || "")}</span>
+      <span class="af-agent__ttl"><span class="af-agent__work">${esc(i.title || u?.work || i.job || "")}</span><span class="af-agent__sub"><span class="af-agent__now">${esc(i.reason || "")}</span></span></span>
+      <span class="af-agent__rig">${i.repo ? `<span class="af-mono">${esc(repoShort(i.repo))}</span>` : ""}</span>
+      <span class="needs-review__acts">${pr ? `<a class="af-btn af-btn--ghost af-btn--sm" href="${esc(pr)}" target="_blank" rel="noopener">Open PR</a>` : ""}${i.job ? sbtn("Open job", "ghost", { "data-go": `job:${i.job}` }) : ""}</span></li>`; }).join("")}</ul>` : "", "review");
 }
 // say it when what needs someone changes (the screen reader hears it; the screen already shows it)
 function announce() {
@@ -616,10 +634,10 @@ function paint(el, html, key) {
   const sel = inside ? focusKey(active) : "", scope = inside ? active.closest("[data-id], [data-item]") : null;
   const scopeSel = scope ? (scope.dataset.id ? `[data-id="${CSS.escape(scope.dataset.id)}"]` : `[data-item="${CSS.escape(scope.dataset.item)}"]`) : "";
   const caret = inside && active.matches("textarea") ? [active.selectionStart, active.selectionEnd] : null;
-  const scrolls = $$(".af-timeline", el).map((o) => [o.dataset.timeline, o.scrollTop]);
+  const scrolls = $$(".af-timeline", el).map((o) => [o.dataset.timeline, o.scrollTop, o.style.maxHeight]);
   el.innerHTML = html;
   el.dataset.painted = key;
-  for (const [id, top] of scrolls) { const o = $(`[data-timeline="${CSS.escape(id || "")}"]`, el); if (o) o.scrollTop = top; }
+  for (const [id, top, max] of scrolls) { const o = $(`[data-timeline="${CSS.escape(id || "")}"]`, el); if (o) { o.style.maxHeight = max; o.scrollTop = top; } }
   if (sel) {
     const sc = scopeSel ? $(scopeSel, el) : el;
     const t = sc && (sc.matches(sel) ? sc : $(sel, sc));
