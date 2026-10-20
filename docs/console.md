@@ -124,8 +124,8 @@ Under the header is the **deck** from [Needs you](#needs-you), as a band you can
 grouped by environment, attention first: what needs you, failed, denied, running, queued, spun down. Two views of
 the same agents with one selection, kept in the URL (`#fleet?view=board`) and remembered:
 
-- **List** (the default): one row per agent. Its status mark, its tail number (the sandbox id's last four
-  characters), the work's title, and what it is doing **now** ("running pytest -q", "editing api/orders.py",
+- **List** (the default): one row per agent. Its status mark, its tail number (`8AS5`),
+  the work's title, and what it is doing **now** ("running pytest -q", "editing api/orders.py",
   "waiting on you: push to main") with a heartbeat: the time since it last did something, breathing while it runs
   and orange while it waits on a person. Then the owner, the agent and model, the **stage rail** (plan, edit, test,
   PR), the last two stages' times, a sparkline of its tokens over the last hour, and its spend.
@@ -133,6 +133,8 @@ the same agents with one selection, kept in the URL (`#fleet?view=board`) and re
   capsule, and the owner with the status word or the heartbeat.
 
 ![The Board with an agent open in place](assets/front/ui-fleet-board.png)
+
+IDs show as tail numbers (`HGR-8AS5`); hover or copy one for the real ID.
 
 The rail fills solid only when the agent reported its progress (`hangar-agent progress --pct`). Otherwise the current
 stage is dotted and its head hollow: the server's estimate from how long the stage usually takes, labelled "about

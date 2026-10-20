@@ -36,7 +36,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field
 
-from hangar import inbox, people
+from hangar import inbox, people, tails
 from hangar.auth import Principal
 from hangar.models import Job, Person, Session
 
@@ -157,7 +157,7 @@ def _link(url: str | None) -> str | None:
 def _what(x: dict[str, Any]) -> str:
     from hangar.slack import escape
 
-    ref = x.get("job") or x.get("session") or x.get("request")
+    ref = tails.tail(x.get("job") or x.get("session") or x.get("request"))  # KAN-114: the "Or:" line keeps the real ID
     title = x.get("title")
     return escape(f"{title} ({ref})" if title and ref else str(ref or title or ""))
 
