@@ -25,6 +25,7 @@ from hangar import envbuilds as envbuilds  # --- envbuilds
 from hangar import evalqueue as evalqueue  # --- #181: the eval queue class
 from hangar import exchange, observe  # --- observe
 from hangar import fairness as fairness  # --- review capacity (#159)
+from hangar import fleet_api as fleet_api  # KAN-140: GET /api/fleet
 from hangar import ghprojects as ghprojects  # --- intake: registers the GitHub Projects write-back
 from hangar import harness_repo as harness_repo  # --- #138: the team harness repo
 from hangar import harness_review as harness_review  # --- #169: the Friday harness review
@@ -1246,6 +1247,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import inbox  # --- landing: GET /api/inbox, what needs the caller
 
     inbox.mount(app, h, U)
+    fleet_api.mount(app, h, U)  # KAN-140: GET /api/fleet, the Fleet page's one read
     inbox_notify.mount(app, h, U)  # --- inbox delivery (#157, #158): PUT /api/people/{id}/delivery
     inbox_notify.register(h)  # the digests ride the ops loop
     from hangar import backup  # --- overnight/sweep: database backups (hangar admin)

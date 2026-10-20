@@ -178,6 +178,68 @@ its terminal.
 Focus, scroll and a half-written answer or reason survive the 4-second refresh. When the set of sandboxes that need
 someone, failed or were denied changes, a screen reader hears how many need you and how many failed or were denied.
 
+### The fleet read: `GET /api/fleet`
+
+The page is one read (KAN-140). Where the console used to fetch sandboxes, jobs and sessions and join them in the
+browser, `GET /api/fleet` joins them on the server, from what is already in memory, and adds what each agent is doing
+right now. An admin's token sees every sandbox; a person's own `user` token their work, as `GET /api/jobs` does. Text
+passes through the same redaction as every other view. Query: `?owner=<person id>` (or `none` for sandboxes nobody
+owns) keeps one person's units, the Owners filter; `?include_stopped=true` adds settled sandboxes.
+
+```json
+{"at": 1760900000.0, "person": "sean",
+ "counts": {"approval": 1, "failed": 0, "denied": 0, "running": 2, "queued": 0, "off": 0},
+ "owners": [{"id": "sean", "name": "Sean", "count": 2}, {"id": "none", "name": null, "count": 1}],
+ "slots": {"used": 3, "max": 120},
+ "inbox": {"counts": {"approval": 1}, "items": [{"id": "inb-…", "kind": "approval", "…": "as GET /api/inbox"}]},
+ "units": [{
+   "id": "sb-7f3a…3mx9", "tail": "3mx9", "name": "checkout-python-2", "environment": "checkout-python",
+   "provider": "docker", "state": "running", "kind": "job", "job": "job-1a2b3c4d", "job_state": "running",
+   "session": {"id": "ses-…", "name": "job-1a2b3c4d", "state": "running"},
+   "owner": "sean", "actor": "ui:sean", "harness": "claude-code", "model": "claude-opus-5-5",
+   "repo": "https://github.com/acme/checkout.git", "branch": "hangar/job-1a2b3c4d",
+   "role": "approval", "label": "Needs approval",
+   "reason": {"title": "Held", "text": "Bash: git push origin main"},
+   "ask": {"kind": "tool", "approval": "apr-9c1e", "job": "job-1a2b3c4d", "session": "ses-…"},
+   "ask_expires_at": 1760903200.0, "inbox": ["inb-4b0d…"],
+   "work": "Fix the refunds export", "task": "The CSV export drops…", "question": null,
+   "now": "waiting on you: Bash", "last_activity_at": 1760899940.0,
+   "stage": "pr", "stage_pct": null,
+   "stage_estimate": {"pct": 35, "elapsed_s": 64, "typical_s": 180, "basis": "median of 12 recent pr stages",
+                      "samples": 12},
+   "stages": [{"stage": "plan", "started_at": 1760898100.0, "ended_at": 1760898260.0},
+              {"stage": "edit", "started_at": 1760898260.0, "ended_at": 1760899500.0},
+              {"stage": "test", "started_at": 1760899500.0, "ended_at": 1760899876.0},
+              {"stage": "pr", "started_at": 1760899876.0, "ended_at": null}],
+   "files_changed": 4, "commits": 2,
+   "usage": {"input_tokens": 182000, "output_tokens": 9100, "cache_read_tokens": 1500000, "cost_usd": 1.42, "…": "…"},
+   "pr": null, "created_at": 1760898000.0, "expires_at": 1760905200.0, "turn": 1, "live": true}]}
+```
+
+Per unit:
+
+- `role` is one of the six statuses (`approval`, `failed`, `denied`, `running`, `queued`, `off`), with `label` its
+  word and `reason` why, when it needs someone or stopped. `ask` says what the person decides: a held tool call
+  (`tool`, with the approval id), a job waiting to start (`job`), the agent's question (`question`) or a request
+  another module raised (`inbox`, with the item). `inbox` lists the caller's inbox items that wait on this unit, so
+  the deck and the tile agree; `ask_expires_at` is when the wait ends by itself.
+- `now` is the humanised latest event of the live turn: `editing <path>`, `running <command>` (at most 60
+  characters), the agent's progress message, `waiting on you: <tool>`, or the tool call. While hangar itself drives
+  the work (verifying, delivering), it is the job's own timeline line. `last_activity_at` is that event's time.
+- `stage` is `plan`, `edit`, `test` or `pr`, only on a real signal: a read or search before anything else is
+  planning, a file change editing, a test runner or linter testing, a push or `gh pr` the PR; a job hangar is
+  verifying is in `test`, delivering in `pr`. No signal, no stage (a queued or idle unit has none). `stages[]` is the
+  timeline so far with `started_at` and `ended_at` (`null` while open).
+- `stage_pct` is set only when the agent itself reported progress (`hangar-agent progress --pct N`); otherwise it is
+  `null` and `stage_estimate` guesses from time: `elapsed_s` in the stage against `typical_s`, the median of the same
+  stage in this control plane's recent turns for the environment and agent (`basis` says so, and `samples` how many),
+  or a share of recent jobs' median turn, or a default. The UI shows an estimate as one; it never reaches 100.
+- `files_changed`, `commits` and `usage` are the live turn's (the delivered job's result once it has one).
+
+The server keeps one small `LiveState` per session, fed by the turn watcher as it records events; nothing on this
+path reads a log. A control-plane restart starts with empty states, which fill again as the running turns' logs are
+re-read from their saved cursors. Two hundred sandboxes read in a few milliseconds.
+
 ## Terminals
 
 Terminals open in a drawer at the bottom of the console, one tab each; drag its top edge to resize it. Opening an

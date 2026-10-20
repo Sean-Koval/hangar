@@ -473,6 +473,7 @@ class SessionService:
             self.fleet.audit(requester, "session.delete_now", s.id)
         self.store.delete(Session, s.id)
         self._sessions.pop(s.id, None)
+        self.activity.live.drop(s.id)  # KAN-140
 
     def events(self, ref: str, since: int = 0, limit: int = 200, tail: int | None = None) -> list[dict[str, Any]]:
         """The session's activity events (every turn), oldest first: after `since`, or the last `tail`."""

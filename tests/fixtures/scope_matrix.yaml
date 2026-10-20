@@ -898,6 +898,12 @@ experiments.post_cancel:
   rest: POST /api/experiments/{exp_id}/cancel
   scope: jobs
   owner: token
+fleet.get:
+  server: hangar
+  mcp: null
+  rest: GET /api/fleet
+  scope: user
+  owner: guard
 fleet.overview:
   server: hangar
   mcp: fleet_overview
