@@ -223,7 +223,8 @@ applied first, then credentials, then the policies that may name them, then chan
 company deliverer's plugin is enabled first). Applying is idempotent: an object that already
 matches is reported `unchanged` and not written, so the second run of the same files writes nothing. A file with an
 unknown schema, an unknown field, a credential `value`, or an object declared twice is refused before anything is
-applied.
+applied. A run is all or nothing: if the server refuses a write, the writes already made are rolled back
+and apply exits 1 naming the refused document (`file#index`), or lists each object a failed rollback left changed.
 
 Drift is everything apply would create or change, plus repo policies and change-set profiles that live in hangar but
 in no file. `--check`

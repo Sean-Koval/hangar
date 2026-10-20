@@ -293,6 +293,12 @@ class Fleet:
         self.audit(actor, "environment.save", spec.name)
         return spec
 
+    def delete_environment(self, name: str, actor: str = "system") -> None:
+        """--- company-deploy: what `hangar apply` rolls back an environment it created with."""
+        self.catalog.remove(name)
+        self.store.kv_delete(f"identity:env-owner:{name}")
+        self.audit(actor, "environment.delete", name)
+
     def validate_environment(self, data: dict[str, Any]) -> dict[str, Any]:
         """Check a spec without saving it: resolves `extends`, validates, renders the Dockerfile."""
         name = str(data.get("name") or "")
