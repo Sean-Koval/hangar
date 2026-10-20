@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -286,6 +287,7 @@ def ack(svc: JobService, p: Principal, item_id_: str, on: bool = True) -> dict[s
     if not on:
         current.pop(item_id_, None)
         svc.store.kv_set_json(ACKS_PREFIX + who, current)
+        _changed(svc)
         return {"id": item_id_, "acked": False}
     if item_id_ in current:
         return {"id": item_id_, "acked": True, "until": current[item_id_]}
@@ -298,7 +300,18 @@ def ack(svc: JobService, p: Principal, item_id_: str, on: bool = True) -> dict[s
     svc.store.kv_set_json(ACKS_PREFIX + who, current)
     svc.fleet.audit(f"ui:{p.name}", "inbox.ack", item_id_, kind=item["kind"], job=item.get("job"),
                     session=item.get("session"))
+    _changed(svc)
     return {"id": item_id_, "acked": True, "until": current[item_id_]}
+
+
+def _changed(svc: Any) -> None:
+    """An ack changed someone's inbox: tell whoever listens on the service (`inbox_listeners`, set by the fleet
+    stream, fleet_stream.Changes)."""
+    for fn in list(getattr(svc, "inbox_listeners", ())):
+        try:
+            fn()
+        except Exception:  # noqa: BLE001 - a listener never fails an ack
+            logging.getLogger("hangar.inbox").exception("inbox listener failed")
 
 
 def summary(xs: list[dict[str, Any]]) -> dict[str, int]:

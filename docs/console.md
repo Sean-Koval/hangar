@@ -247,6 +247,31 @@ The server keeps one small `LiveState` per session, fed by the turn watcher as i
 path reads a log. A control-plane restart starts with empty states, which fill again as the running turns' logs are
 re-read from their saved cursors. Two hundred sandboxes read in a few milliseconds.
 
+### The fleet stream
+
+`GET /api/fleet/stream?ticket=<ticket>` keeps the page current without polling: Server-Sent Events of the same read.
+Browsers can't set headers on an EventSource, so the console first trades its token for a ticket,
+`POST /api/fleet/tickets` (any person's `user` token or an admin's; one use, 60 seconds, bound to the caller, so a
+member's stream shows the member's fleet). An admin's `POST /api/tickets` ticket and a bearer token work too.
+`?owner=` filters as on the read.
+
+| Event | Data |
+| --- | --- |
+| `snapshot` | The whole read, as `GET /api/fleet` returns it, first on every new stream |
+| `agent` | One unit that changed, whole. At most one per agent every 2 seconds: a burst of events is coalesced into one update with the latest picture |
+| `gone` | `{"id"}`: a unit that left the fleet (destroyed, or out of the filter) |
+| `inbox` | `{"counts", "items"}`: the caller's inbox when it changed (an approval asked or decided, a question, a failure, an ack); the deck on Needs-you and atop Fleet reads this one source |
+| `summary` | `{"counts", "owners", "slots"}` when they changed |
+| `close` | `{"reason", "code"}` before hangar ends the stream: `cap` (over `HANGAR_STREAM_MAX_BYTES`), `revoked`, `lifetime`, `shutdown`, `limit` |
+
+What wakes a stream is a change: the turn watcher's update of an agent's live picture, or a write of a sandbox, job,
+session or request (a state, an approval, a question), or an inbox ack. A `stage_estimate` moving with the clock is
+not a change by itself; the next update carries the latest. Every event's `id` is `<epoch>.<n>`, the change it
+reflects. Reconnecting with `Last-Event-ID` sends only the units changed since (and the inbox and summary); an id
+from before a restart, or older than the last 4,096 changes, gets a fresh `snapshot`. The stream counts against the
+[stream limits](streaming.md#limits-and-closing) like any other (`HANGAR_STREAM_MAX_PER_TOKEN`: one more is a 429)
+and closes when the token behind it is revoked.
+
 ## Terminals
 
 Terminals open in a drawer at the bottom of the console, one tab each; drag its top edge to resize it. Opening an

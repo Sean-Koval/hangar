@@ -175,7 +175,7 @@ class FleetRead:
         job_by_id = {j.id: j for j in jobs}
         ses_by_id = {s.id: s for s in sess}
         job_by_sb, ses_by_sb = _latest(jobs, "sandbox_id"), _latest(sess, "sandbox_id")
-        items = inbox.items(self.jobs, p)
+        items = self.red(inbox.items(self.jobs, p))  # an agent's question or a tool's detail, as every view
         by_job: dict[str, list[dict[str, Any]]] = {}
         by_ses: dict[str, list[dict[str, Any]]] = {}
         for it in items:
@@ -347,6 +347,10 @@ def mount(app: Any, h: Any, person_actor: Any) -> None:
         if owner is not None and (not owner or len(owner) > 100):
             raise HTTPException(400, "owner is a person id, or none")
         return FastJSON(reader.units(identity.principal(), include_stopped, owner))
+
+    from hangar import fleet_stream  # S5: GET /api/fleet/stream, the same read as it changes
+
+    fleet_stream.mount(app, h, person_actor, reader)
 
 
 __all__ = ["ATTENTION", "STAGES", "FleetRead", "mount", "stage_estimate", "stage_of"]

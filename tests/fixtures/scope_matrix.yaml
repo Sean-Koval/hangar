@@ -904,6 +904,14 @@ fleet.get:
   rest: GET /api/fleet
   scope: user
   owner: guard
+fleet.get_stream:
+  server: hangar
+  mcp: null
+  rest: GET /api/fleet/stream
+  scope: ticket
+  owner: guard
+  enforced_by: 'fleet_stream.fleet_stream: a one-time fleet ticket bound to its caller (POST /api/fleet/tickets), an
+    admin ticket (POST /api/tickets), or a `user` or admin token; the caller''s visibility as GET /api/fleet'
 fleet.overview:
   server: hangar
   mcp: fleet_overview
@@ -916,6 +924,12 @@ fleet.overview:
     rest: admin
   exception: 'by design: REST outside a person''s own tokens and credentials is the admin console (app.actor); MCP serves
     every person, and people.Guard keeps a member to their own records (docs/security.md#people)'
+fleet.post_tickets:
+  server: hangar
+  mcp: null
+  rest: POST /api/fleet/tickets
+  scope: user
+  owner: guard
 fork.get:
   server: hangar
   mcp: null
