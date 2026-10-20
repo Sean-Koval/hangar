@@ -1,7 +1,7 @@
 # The agent's own computer, and an environment it can diagnose
 
 Environment quality decides what a cloud agent produces, and environment failures are silent: a missing secret or a
-blocked registry doesn't stop the run, it just makes the output worse. Hangar gives every agent two things to
+blocked registry doesn't stop the run, it just makes the output worse. hangar gives every agent two things to
 counter that:
 
 - **Its own computer** (opt-in per environment): a virtual display, Chromium through Playwright, screenshots,
@@ -85,7 +85,7 @@ indefinitely and hangar's listing is at its size cap, and a person opens a scree
 
 How it stays private:
 
-- **No port is exposed.** `x11vnc` listens on 127.0.0.1 inside the sandbox. Hangar opens the provider's terminal
+- **No port is exposed.** `x11vnc` listens on 127.0.0.1 inside the sandbox. hangar opens the provider's terminal
   stream into the sandbox (Docker exec, the Kubernetes exec websocket, or envd) and runs `hangar-computer bridge`,
   which relays the VNC connection as base64 lines. Lines survive every transport, including Kubernetes' exec
   stream, which decodes output as UTF-8.
@@ -119,7 +119,7 @@ GKE runs sandboxes under gVisor. What that means for the computer, and what hang
 | MIT-SHM between X clients | `x11vnc -noshm` under gVisor. |
 
 **What running Chromium without its sandbox costs.** Chromium's sandbox keeps a compromised renderer (a malicious or
-hijacked page plus a Chromium bug) away from the rest of the machine. Hangar turns it off on every runtime, so a
+hijacked page plus a Chromium bug) away from the rest of the machine. hangar turns it off on every runtime, so a
 page that exploits Chromium runs code as the sandbox user, with everything the agent has: the workspace, the
 credentials injected into the sandbox (the model login, git and MCP tokens in `~/.hangar/env`), and whatever the
 egress policy lets out. What stops it there:
@@ -151,7 +151,7 @@ Every harness can run shell commands, so `hangar-agent screenshot|record|browse`
 | Claude Code | Playwright scripts; Playwright MCP (`browser_mcp: true`) | Claude Code's own browser integration, [Claude in Chrome](https://code.claude.com/docs/en/chrome), needs a desktop Chrome with the extension and a `/login` session; it stays off with an API key or a `setup-token` login, so it doesn't apply in sandboxes. MCP servers come from `~/.claude.json`. |
 | Codex | Playwright scripts; Playwright MCP | Codex's [MCP docs](https://developers.openai.com/codex/mcp) list Playwright as an example server. Stdio servers get only the variables named in `env` and `env_vars`, so the `hangar-env` server finds the turn's directory in its status file instead of `$HANGAR_IO`. |
 | Antigravity (agy) | Playwright scripts; Playwright MCP | MCP servers come from `~/.gemini/config/mcp_config.json`. We found no built-in browser or computer use in the CLI. |
-| pi | Playwright scripts | Hangar writes `~/.pi/agent/mcp.json`, but pi reads MCP servers only through an extension, so rely on the shell commands. |
+| pi | Playwright scripts | hangar writes `~/.pi/agent/mcp.json`, but pi reads MCP servers only through an extension, so rely on the shell commands. |
 
 There is no model-routing subagent: the agent in the sandbox drives the browser itself.
 
@@ -189,7 +189,7 @@ library only (the image contract already requires `python3`), and speaks the han
 - **Turning it off:** `HANGAR_ENV_DOCTOR_MCP=false` for every environment. For one environment, its own server of
   that name wins, so `mcp: {hangar-env: {command: "true", harnesses: []}}` removes it there. `hangar-agent env`
   works either way.
-- **If it can't start**, the run goes on without it. Hangar never marks it required: Codex stops only for servers
+- **If it can't start**, the run goes on without it. hangar never marks it required: Codex stops only for servers
   with `required = true` and waits about a second for optional ones (`mcp_optional_startup_grace_ms`, its MCP docs,
   checked 2026-10-14). Claude Code and agy list a server that failed as failed and run without its tools. It runs
   from hangar's own file and the `python3` every image has, so the likely failure is a broken image, which the

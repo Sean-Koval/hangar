@@ -10,7 +10,7 @@ hide:
 
 # Hand tickets to coding agents in isolated cloud sandboxes
 
-<p class="af-lede">Your team wants to hand tickets to coding agents, but not to a laptop with everyone's credentials and no record of what ran. Hangar runs Claude Code, Codex, pi and Antigravity in isolated sandboxes, checks their work with your repo's own tests and hands back a draft pull request.</p>
+<p class="af-lede">Your team wants to hand tickets to coding agents, but not to a laptop with everyone's credentials and no record of what ran. hangar runs Claude Code, Codex, pi and Antigravity in isolated sandboxes, checks their work with your repo's own tests and hands back a draft pull request.</p>
 
 [Quickstart](guide.md#quickstart){ .md-button .md-button--primary } [The web console](console.md){ .md-button }
 </div>
@@ -62,7 +62,7 @@ The console on `:8787` opens on **Needs you**: held tool calls, jobs waiting to 
 
 *Shipped*: on main, on by default or behind a setting. *Shadow*: built, and runs beside real work without changing what people get. *Partial*: built and tested; its wiring is in progress (the relay: `/mcp` doesn't accept relay tokens yet). *Planned*: an open issue.
 
-**Security posture.** Hangar treats every sandbox as hostile. A job from an intake door (a GitHub issue, Jira, GitHub Projects, Slack, an inbound webhook) can fetch its repo but never push: hangar pushes the commit it verified, through the git gateway. Its network is an egress allowlist, the agent has no sudo, and automated work never uses a subscription login. Once an agent has read untrusted content, its PR opens as a draft and a second person, not the requester, must approve it to land. See [the security model](security.md) and [the safe-release upgrade](upgrading.md#the-safe-release-120132).
+**Security posture.** hangar treats every sandbox as hostile. A job from an intake door (a GitHub issue, Jira, GitHub Projects, Slack, an inbound webhook) can fetch its repo but never push: hangar pushes the commit it verified, through the git gateway. Its network is an egress allowlist, the agent has no sudo, and automated work never uses a subscription login. Once an agent has read untrusted content, its PR opens as a draft and a second person, not the requester, must approve it to land. See [the security model](security.md) and [the safe-release upgrade](upgrading.md#the-safe-release-120132).
 
 ## Where to go next
 

@@ -8,7 +8,7 @@ Status: partly built (2026-10-18): hangar's side is the contract, the client ske
 
 ## 1. The split
 
-Hangar is the **Run plane**: it holds sandboxes, credentials, sessions, jobs and landing, and it *enforces*. Tower is the **Govern plane**: one policy decision point (Cedar), approvals and their inbox, passports and hash-chained receipts, and it *decides*. Hangar's approvals ask Tower instead of hangar keeping a second approval system.
+hangar is the **Run plane**: it holds sandboxes, credentials, sessions, jobs and landing, and it *enforces*. Tower is the **Govern plane**: one policy decision point (Cedar), approvals and their inbox, passports and hash-chained receipts, and it *decides*. hangar's approvals ask Tower instead of hangar keeping a second approval system.
 
 Tower decides only **whether a person or a policy allows something**. Everything about *how* it happens stays in hangar:
 
@@ -18,13 +18,13 @@ Tower decides only **whether a person or a policy allows something**. Everything
 | Budgets, fairness, the queue, the power schedule | Whether an untrusted job may run |
 | Egress enforcement (proxy, NetworkPolicy), the git gateway, intake posture (#123) | Whether a blocked host or a missing secret may be granted |
 | Taint tracking and which calls are risky (`driver.risky`, `taint_sink`) | Whether a risky tool call in an `ask` turn may run |
-| Hangar's local self-approval check (#121), always run first | Approver ≠ requester across platforms (Tower#19), signatures, receipts |
+| hangar's local self-approval check (#121), always run first | Approver ≠ requester across platforms (Tower#19), signatures, receipts |
 
 Two rules follow. **Tower never makes hangar more permissive than hangar's own enforcement**: an `allow` lets hangar proceed with its own checks; it never skips them. **Nothing that goes wrong on the way is ever an allow** (§6).
 
 ## 2. The five decisions
 
-| Kind (hangar) | Wire kind | Today in hangar | Asked when | Hangar's deadline | Idempotency key | Tower tool (Tower#13) |
+| Kind (hangar) | Wire kind | Today in hangar | Asked when | hangar's deadline | Idempotency key | Tower tool (Tower#13) |
 | --- | --- | --- | --- | --- | --- | --- |
 | `job.release` | `hangar.job.release` | `approvals.decide_now` (#121), reached from REST, MCP `approve_job`, GitHub and Jira `/hangar approve` | the job enters `awaiting_approval` (opens the approval), and each time a person acts on it in hangar (a signature) | `JobApproval.expires_at` (`HANGAR_JOB_APPROVAL_TTL_HOURS`) | `hangar:job:<job>:release` | `release_job`, resource `Job::"<repo>"` |
 | `tool.call` | `hangar.tool.call` | the driver's `ask` approvals (`driver.Driver.request`, `steer.answer`), only calls `driver.risky` or `taint_sink` flag | the driver writes an approval request | the driver's `expires_at` (`approval_timeout_seconds`, default 600) | `hangar:session:<session>:tool:<driver approval id>` | `run_command`, `edit_file`, `fetch_url`, `use_tool` |
@@ -156,7 +156,7 @@ How hangar reads `deny`: `status` `blocked` or `denied` is the policy or a perso
 
 HTTP status codes and what hangar does:
 
-| Code | Hangar |
+| Code | hangar |
 | --- | --- |
 | 200 | the decision, if well formed; otherwise fail closed (`malformed`) |
 | 400, other 4xx | fail closed (`contract`), not retried, audited `governance.contract_error`: a bug on one side |
@@ -247,7 +247,7 @@ A disagreement is any different `outcome`. Local `allow` against remote `wait` (
 
 **Break-glass.** `hangar governance local --until <time> --reason <text>`, by an admin, confirmed by a second admin, at most 24 hours, audited `governance.break_glass` (start, confirm, end). While active, kinds in `enforce` are decided by the local rules; each such decision is queued and replayed to Tower as a record once it answers again (an open item for Tower, §16), so its receipts have no gap. Break-glass never applies to `off` or `shadow` kinds (they're local already) and ends on its own.
 
-Hangar refuses to start with `shadow` or `enforce` and no `HANGAR_GOVERNANCE_URL`, and `hangar doctor` checks the URL, the credential and the webhook secret.
+hangar refuses to start with `shadow` or `enforce` and no `HANGAR_GOVERNANCE_URL`, and `hangar doctor` checks the URL, the credential and the webhook secret.
 
 ## 8. Offline and cluster down
 
@@ -255,18 +255,18 @@ Hangar refuses to start with `shadow` or `enforce` and no `HANGAR_GOVERNANCE_URL
 | --- | --- |
 | Overnight power-down (sandbox pools off 01:00–10:00 ET; control plane and Tower up) | Job release and landing decisions work as by day; released jobs queue for 10:00. No tool calls run. Events for suspended sessions are applied when they arrive; the resumed turns start at power-up |
 | Tower down | §6. Pending things stay pending; nothing is allowed; break-glass if it lasts |
-| Hangar control plane down | Tower retries webhook deliveries for 24 h (Tower#17's outbox). On start hangar re-reads the status of every pending item (jobs awaiting approval, unarmed landings, pending requests, suspended sessions) before taking new work |
+| hangar control plane down | Tower retries webhook deliveries for 24 h (Tower#17's outbox). On start hangar re-reads the status of every pending item (jobs awaiting approval, unarmed landings, pending requests, suspended sessions) before taking new work |
 | Tower can't reach hangar (webhooks fail), hangar can reach it | Polling (§5) settles everything; slower, not wrong |
 | Both down | Nothing moves; both catch up from their own state |
 | Laptop or single-machine install with no Tower | `off` (the default): `LocalDecisionPoint` only |
-| An answer from Tower arrives after hangar gave up (deadline passed, job dropped) | Hangar withdraws the approval if it is still waiting; an `allow` for something already dropped is recorded and ignored |
+| An answer from Tower arrives after hangar gave up (deadline passed, job dropped) | hangar withdraws the approval if it is still waiting; an `allow` for something already dropped is recorded and ignored |
 
 ## 9. Identity
 
 **Control-plane calls** (every kind in §2 is asked by hangar's control plane, not by a sandbox):
 
 1. **Phase 1, a service key.** `HANGAR_GOVERNANCE_CREDENTIAL` names a secret in hangar's vault; Tower stores its hash for an agent of kind `hangar`, scoped to `/v1/decisions*` (Tower#13). It can assert any requester and signer, so it is as powerful as hangar's admin token and is rotated like one.
-2. **Phase 2, a passport** (#174, Tower#14). Hangar mints itself a token (`iss` = hangar's OIDC issuer, `sub: hangar:control-plane`, `aud` = Tower's `/oauth/token`, 5 minutes; a new `CloudCreds` method, since `mint` needs a sandbox today), exchanges it (RFC 8693) for a 15-minute passport, caches it until 60 s before expiry, and re-exchanges on a 401 (`Credential.token(fresh=True)`). Tower trusts that issuer for agent `hangar` with `claims: {sub: "hangar:control-plane"}`. The service key goes.
+2. **Phase 2, a passport** (#174, Tower#14). hangar mints itself a token (`iss` = hangar's OIDC issuer, `sub: hangar:control-plane`, `aud` = Tower's `/oauth/token`, 5 minutes; a new `CloudCreds` method, since `mint` needs a sandbox today), exchanges it (RFC 8693) for a 15-minute passport, caches it until 60 s before expiry, and re-exchanges on a 401 (`Credential.token(fresh=True)`). Tower trusts that issuer for agent `hangar` with `claims: {sub: "hangar:control-plane"}`. The service key goes.
 
 The requester and signer still come from the body, signed by hangar's TLS-authenticated identity; they are accepted only from the `hangar` agent.
 
@@ -279,13 +279,13 @@ Every request carries hangar's ids and the W3C trace context of the span that as
 - the `traceparent` header and `correlation.traceparent`: for a tool call, the turn's `invoke_agent` span (the same `TRACEPARENT` the agent runs with, `fleet.py`); for a release or landing, the job's span;
 - `correlation`: `job`, `session`, `turn`, `run` (hangar's run id), `tool_call_id` (the harness's id for the call: Claude Code's `tool_use_id`).
 
-Tower stores them on its run and receipts (`corr`, Tower#16; its run id becomes `R-h-<session>-<turn>`, or `R-h-job-<job>` for a release with no session) and echoes `corr` in events. Hangar records each decision as a `governance.decide` span with `hangar.governance.kind`, `.mode`, `.outcome`, `.approval`, `.receipt`, `.source` and `.failure`, and puts the receipt on the approval's span so reconciliation can match exactly (#176, Tower#20).
+Tower stores them on its run and receipts (`corr`, Tower#16; its run id becomes `R-h-<session>-<turn>`, or `R-h-job-<job>` for a release with no session) and echoes `corr` in events. hangar records each decision as a `governance.decide` span with `hangar.governance.kind`, `.mode`, `.outcome`, `.approval`, `.receipt`, `.source` and `.failure`, and puts the receipt on the approval's span so reconciliation can match exactly (#176, Tower#20).
 
-`args_hash` is the one value both sides compute: lowercase hex SHA-256 of `json.dumps(input, sort_keys=True, separators=(",", ":"), default=str)` over the harness's tool input as the harness sent it, before any clipping. Hangar sends it; Tower records it on the receipt for `hangar.tool.call` (it doesn't recompute it from `detail`, which is clipped); hangar's exported `execute_tool` span carries the same value as `gen_ai.tool.call.arguments.hash`.
+`args_hash` is the one value both sides compute: lowercase hex SHA-256 of `json.dumps(input, sort_keys=True, separators=(",", ":"), default=str)` over the harness's tool input as the harness sent it, before any clipping. hangar sends it; Tower records it on the receipt for `hangar.tool.call` (it doesn't recompute it from `detail`, which is clipped); hangar's exported `execute_tool` span carries the same value as `gen_ai.tool.call.arguments.hash`.
 
 ## 11. Receipts
 
-In `enforce`, an `allow` without a receipt is refused (§4.2). Hangar keeps the id where the decision lives and shows it:
+In `enforce`, an `allow` without a receipt is refused (§4.2). hangar keeps the id where the decision lives and shows it:
 
 | Kind | Stored on (added by) | Shown |
 | --- | --- | --- |
@@ -294,7 +294,7 @@ In `enforce`, an `allow` without a receipt is refused (§4.2). Hangar keeps the 
 | `tool.call` | `Approval.receipt` on the turn (#173) | the turn's approvals, the trace span |
 | `egress.request`, `secret.request` | `EnvRequest.receipt` | the request |
 
-For `job.release` and `landing.approve` hangar also sends `subject.harness_digest`, `environment_digest` and the concrete `model` from the turn's manifest (0014), and `context.checks` with `trusted` set for hangar's own verification, so Tower's receipt carries the attestation envelope (`aw.attest/v1`, Tower#18). Hangar links to `GET /v1/receipts/{id}/attestation`; it doesn't verify the chain itself. Local, shadow and break-glass decisions carry no receipt (break-glass decisions get one when replayed).
+For `job.release` and `landing.approve` hangar also sends `subject.harness_digest`, `environment_digest` and the concrete `model` from the turn's manifest (0014), and `context.checks` with `trusted` set for hangar's own verification, so Tower's receipt carries the attestation envelope (`aw.attest/v1`, Tower#18). hangar links to `GET /v1/receipts/{id}/attestation`; it doesn't verify the chain itself. Local, shadow and break-glass decisions carry no receipt (break-glass decisions get one when replayed).
 
 ## 12. Events from Tower
 
@@ -318,7 +318,7 @@ One inbound route, `POST /api/governance/events`, for everything Tower pushes (i
 - The `hangar` agent's credential can assert requesters and signers. Phase 1 scopes the key to `/v1/decisions*`; phase 2 replaces it with a 15-minute passport. Either way it never reaches a sandbox.
 - A signer asserted by hangar is only as good as hangar's front door: GitHub numeric ids, linked accounts (people.py), never logins. Tower records `proof: hangar:<via>` so an auditor can tell those signatures from ones made in Tower.
 - `action.detail` is content (a command, a file path). It is redacted (`broker.redact`), clipped to 2000 characters with both ends kept (`driver.shown`), shown on the approval card, and forgotten by Tower once decided (its AD-6). Receipts keep only `args_hash`. Events carry ids and hashes only.
-- Hangar posts Tower's `reason` on public issues; it is redacted on the way out like any other text hangar writes there.
+- hangar posts Tower's `reason` on public issues; it is redacted on the way out like any other text hangar writes there.
 
 ## 14. Rollout
 
@@ -353,7 +353,7 @@ Each item is proposed as a comment on the Tower issue that owns it.
 | 12 | `ai_review` is a URL string | an object `{url, sha, harness, model, verdict}`: Tower#19 needs the harness and model to judge independence, and the sha to drop a review of an older head | Tower#13, Tower#19 |
 | 13 | Passports are minted only with `aud = <origin>/mcp`, and `check()` refuses any other audience | `/v1/decisions` and `/hooks/*` must accept the passport hangar holds: one service audience for every route, or a list | Tower#14 |
 | 14 | Federation example pins `sub: hangar:env:<env>` with `requester_claim` (sandboxes) | also a trust for agent `hangar` (kind `hangar`) with `sub: hangar:control-plane` and no requester claim; and hangar's tokens carry `person`, not a verified `email`, until #174 adds one (the `hangar_people` map is the fallback) | Tower#14 |
-| 15 | Webhooks signed with HMAC (Tower#17); hangar's #172 and #190 drafts said "JWKS / EdDSA" | HMAC as Tower#17 specifies, because approval events are hints that hangar re-reads (§12). Hangar's drafts follow this spec | Tower#17 |
+| 15 | Webhooks signed with HMAC (Tower#17); hangar's #172 and #190 drafts said "JWKS / EdDSA" | HMAC as Tower#17 specifies, because approval events are hints that hangar re-reads (§12). hangar's drafts follow this spec | Tower#17 |
 | 16 | Webhook payload: approval and `corr` | also the decision `kind` (`hangar.job.release`, ...); a `run.stop` event kind on the same subscription | Tower#17, Tower#22 |
 | 17 | Per-run stop calls hangar's REST interrupt with a stored hangar token | a signed `run.stop` event to `/api/governance/events`; no hangar token in Tower | Tower#22 |
 | 18 | Reconciliation reads `gen_ai.tool.call.arguments` (raw) and matches the receipt by the span's tool name | match by `corr.tool_call_id` first, then `gen_ai.tool.call.arguments.hash` (bare lowercase hex, as receipts store it) and job/session; hangar doesn't export raw arguments by default | Tower#20 |
@@ -364,7 +364,7 @@ Each item is proposed as a comment on the Tower issue that owns it.
 ## 16. Open items
 
 - **Break-glass replay** (§7, item 21): the record request's shape is agreed only in outline.
-- **Approval ttl for landings**: Tower's `merge_pull_request` ttl is 3 days; hangar has no landing deadline today. Hangar sends none for now.
+- **Approval ttl for landings**: Tower's `merge_pull_request` ttl is 3 days; hangar has no landing deadline today. hangar sends none for now.
 - **Who signs in Tower for a team job** (no person): `requester` is empty and only `context.untrusted_source` is set; maintainers sign. Fine for release; for landing, the policy approvers decide in hangar today, so their mapping to a Tower group needs agreeing per repo.
 - **Multi-signature from hangar surfaces**: two `/hangar approve` comments by different people each add a signature; the second gets the `allow`. Tested on Tower's side once Tower#13 lands.
 

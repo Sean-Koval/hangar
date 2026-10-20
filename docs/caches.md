@@ -2,7 +2,7 @@
 
 A new sandbox used to install every dependency and compile everything from nothing. On a big repo that is minutes
 of every job and every session before the agent does anything useful, and an agent short on time skips the build
-and the tests instead. Hangar now keeps two kinds of cache across sandboxes, per repo:
+and the tests instead. hangar now keeps two kinds of cache across sandboxes, per repo:
 
 - **Dependency caches**: the package managers' caches and the directories they install into (`~/.npm`,
   `node_modules`, `~/.cache/uv`, `.venv`, `~/.cargo`, `target`, the Go module and build caches, Maven, Gradle).
@@ -50,7 +50,7 @@ Each repo's caches have layers:
 
 - **The shared (trusted) layer, one per environment.** Only hangar's own repo builds write it. A repo build runs the
   `install` of the default branch, or of the branch the environment names, in a sandbox hangar created for that
-  build. Hangar's build step saves the dependency caches after a successful `install` (`hangar-cache save`), and
+  build. hangar's build step saves the dependency caches after a successful `install` (`hangar-cache save`), and
   compile caches written during `install` (an `install` that runs `cargo build` with sccache, for example) land
   there too. The layer belongs to the repo's builds in one environment, and only that environment's sandboxes read
   it. An environment's image and `setup` run in its builds before `install`, and members create environments, so a
@@ -68,7 +68,7 @@ Each repo's caches have layers:
 - **No repo reads another's.** The grant names one repo, and that repo is the only one the sandbox can read.
 
 Agent-led setup's validation sandboxes run an agent-written branch, so they count as untrusted like any session. A
-sandbox someone creates with a `hangar.build` label is not a build either. Hangar trusts a sandbox as a build only
+sandbox someone creates with a `hangar.build` label is not a build either. hangar trusts a sandbox as a build only
 when the build it names is running, is of the same repo, and created that very sandbox.
 
 ## Dependency caches
@@ -124,14 +124,14 @@ All three are served on the gateway's port under `/cache`, with the sandbox's gr
 **sccache** uses its WebDAV backend. The sandbox gets `SCCACHE_WEBDAV_ENDPOINT=<gateway>/cache/sccache/` and
 `SCCACHE_WEBDAV_TOKEN=<grant>` (bearer), plus `SCCACHE_WEBDAV_RW_MODE=READ_ONLY` when it may not write. sccache's
 WebDAV backend is opendal's `webdav` service, which by default checks for parent directories with `PROPFIND` and
-creates them with `MKCOL` before a `PUT`. Hangar answers both: keys are flat, so every directory exists. Reads are
+creates them with `MKCOL` before a `PUT`. hangar answers both: keys are flat, so every directory exists. Reads are
 `GET` and `HEAD`, and `DELETE`, `MOVE` and `COPY` are refused. `RUSTC_WRAPPER` points at
 `~/.hangar/bin/hangar-rustc-wrapper`, which runs rustc through sccache when the image has `sccache` and runs rustc
 directly when it doesn't, so a sandbox without sccache builds as before. An environment that maps one of these
 variables itself (in `env:` or `secrets:`) keeps its own.
 
 **Bazel** uses its HTTP caching protocol: `GET` and `PUT` under `/ac/` (action results) and `/cas/` (outputs, named by
-their SHA-256). Hangar adds a block to `~/.bazelrc`, Bazel's home rc file, which Bazel reads after the workspace's
+their SHA-256). hangar adds a block to `~/.bazelrc`, Bazel's home rc file, which Bazel reads after the workspace's
 `.bazelrc`:
 
 ```
@@ -145,7 +145,7 @@ The rest of the file is kept. A `PUT` to `/cas/<sha256>` whose body doesn't hash
 
 **Turborepo** uses the remote cache API (`/v8/artifacts/...`). The sandbox gets `TURBO_API=<gateway>/cache/turbo`,
 `TURBO_TOKEN=<grant>` and `TURBO_TEAM=hangar` (the team is ignored, since the grant decides the repo), plus
-`TURBO_REMOTE_CACHE_READ_ONLY=1` and `TURBO_CACHE=local:rw,remote:r` when it may not write. Hangar serves
+`TURBO_REMOTE_CACHE_READ_ONLY=1` and `TURBO_CACHE=local:rw,remote:r` when it may not write. hangar serves
 `GET`/`HEAD`/`PUT /v8/artifacts/{hash}` (with `x-artifact-duration` and `x-artifact-tag`, so signed artifacts
 verify), `POST /v8/artifacts` (the query), `GET /v8/artifacts/status` and `POST /v8/artifacts/events`.
 Turborepo's artifact signatures (`TURBO_REMOTE_CACHE_SIGNATURE_KEY`) work through hangar unchanged: the tag is stored

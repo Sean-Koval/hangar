@@ -6,9 +6,9 @@ Status: deferred (2026-10-15): not scheduled, and not for 2026 (swarms, the impr
 
 ## 1. Summary
 
-> **Product priority (owner, 2026-10-12).** Hangar is a control plane for sandboxes with agent harnesses, used to scale software development with coding agents. Swarms exist to get more real work done: issues fixed, migrations landed, PRs opened. Evals, labeling, the improvement loop and RL are features on top of that fleet, built from the traces real work already produces. When a choice trades development throughput or UX against eval or RL convenience, development wins.
+> **Product priority (owner, 2026-10-12).** hangar is a control plane for sandboxes with agent harnesses, used to scale software development with coding agents. Swarms exist to get more real work done: issues fixed, migrations landed, PRs opened. Evals, labeling, the improvement loop and RL are features on top of that fleet, built from the traces real work already produces. When a choice trades development throughput or UX against eval or RL convenience, development wins.
 
-- **Product shape:** hangar becomes the tool a developer, or the agent they are working with, reaches for to spread coding work across many isolated, fast, cheap sandboxes. It can split a migration across shards, try N fixes for an issue and keep the one that passes the repo's tests, or run untrusted code. Hangar handles placement, policy, credentials, traces and checks. A handful of MCP tools covers it, with `swarm` as the one-call default. Results land as branches and PRs, under 0002's human-approved landing.
+- **Product shape:** hangar becomes the tool a developer, or the agent they are working with, reaches for to spread coding work across many isolated, fast, cheap sandboxes. It can split a migration across shards, try N fixes for an issue and keep the one that passes the repo's tests, or run untrusted code. hangar handles placement, policy, credentials, traces and checks. A handful of MCP tools covers it, with `swarm` as the one-call default. Results land as branches and PRs, under 0002's human-approved landing.
 - **Use open formats for the eval side; don't let them shape the core.** Development work is described by GitHub issues, 0004 tasks and `swarm` calls, and it is checked by the repo's own commands (its tests, linters, builds). For *graded* work (benchmarks, regression sets, experiments, RL), hangar uses **Harbor's task format** (`task.toml`, instruction, `tests/test.sh` → `reward.json`) as its only task format, implements **Harbor's sandbox interface** (`BaseEnvironment`) as an adapter, and exports trajectories as **ATIF v1.7** next to OpenTelemetry spans. A finished development run can be saved as a Harbor task, so real work becomes the regression set.
 - **The improvement loop runs on a schedule and ends at a PR:**
   1. observe;
@@ -38,10 +38,10 @@ Status: deferred (2026-10-15): not scheduled, and not for 2026 (swarms, the impr
 | Finding | Source (§10) | Consequence for hangar |
 | --- | --- | --- |
 | Harbor defines the sandbox interface (`start/stop/exec/upload/download`), the task and verifier layout, separate verifier sandboxes, and ATIF. Its docs list about 30 integrated providers, including `gke`, `e2b`, `daytona` and `modal`. | R1 (interface, verifier, ATIF verified at source); provider list per the research brief | *(Moved to flightdeck, 2026-10-17: the task format and the ATIF adapter are flightdeck's; decision 16.)* Implement `BaseEnvironment`; adopt the task format and ATIF; convert `evals/semver` into a Harbor task |
-| `verifiers` v1: taskset × harness × trace. A model-interception proxy captures tokens and logprobs. GEPA is built in and optimizes prompts over any harness, including Claude Code and Codex. | R1 | Hangar's model-API proxy (0003 M9) doubles as the interception point; GEPA is a candidate proposer |
+| `verifiers` v1: taskset × harness × trace. A model-interception proxy captures tokens and logprobs. GEPA is built in and optimizes prompts over any harness, including Claude Code and Codex. | R1 | hangar's model-API proxy (0003 M9) doubles as the interception point; GEPA is a candidate proposer |
 | Memory snapshot plus fork of a running sandbox exists at E2B, Morph, Freestyle, CodeSandbox, Modal (alpha) and GKE Pod Snapshots (GA May 2026). Others fork only the filesystem. | R2 | `fork(n)` records whether each backend forks memory or only the filesystem. Coding state is mostly on disk, so disk-level forks on GKE are the default and memory fork is opt-in (decision in §7) |
 | Sub-second starts come from warm pools, lazy snapshot restore, and copy-on-write disk and memory shared across clones. Lazy image loading cuts pulls about 7× (SOCI). | R2 | Pools per variant, snapshot-backed pools, image streaming |
-| The OpenAI Agents SDK sandbox abstraction (Apr 2026) ships with 7 providers. No MCP-level sandbox spec exists. | R2 | Hangar's MCP tools are the MCP-side answer; add an Agents SDK provider later |
+| The OpenAI Agents SDK sandbox abstraction (Apr 2026) ships with 7 providers. No MCP-level sandbox spec exists. | R2 | hangar's MCP tools are the MCP-side answer; add an Agents SDK provider later |
 | Rollout scale in practice: 512 containers per step (DeepSWE; Docker daemon limits pushed them to Kubernetes); 1k+ concurrent rollouts (GLM-5); one Firecracker VM per rollout with snapshot-fork (Cursor). | R1 | Kubernetes plus pools is the right base; set a target of 512 concurrent agent sandboxes |
 | Reward hacking is common: edited tests, `sys.exit(0)`, reading answer keys from the grader, special-cased inputs. What works: separate or late-mounted tests, test-file diff checks, no network for graded runs, an LLM-judge detector, an "abort" option, patching exploits rather than penalizing them. | R1 | Defenses are product features (§5.6). Our own semver run found an answer key on disk (0007 evidence #3). |
 | GEPA beats GRPO with up to 35× fewer rollouts. ACE keeps an evolving playbook through small deltas, avoiding "context collapse". SkillsBench: curated skills +16.2 pp, self-generated −1.3 pp, and 2–3 focused skills beat comprehensive ones. | R1, R3 | Propose small deltas, select on validation, confirm on held-out, then a human merges |
@@ -60,7 +60,7 @@ Goals:
 
 Non-goals:
 
-- Training infrastructure, GPUs or trainers. Hangar is the environment and rollout side; trainers (prime-rl, slime, rLLM) are external.
+- Training infrastructure, GPUs or trainers. hangar is the environment and rollout side; trainers (prime-rl, slime, rLLM) are external.
 - A general labeling product. Labeling is scoped to agent traces and runs.
 - Auto-merge of learned changes to team environments.
 
@@ -100,7 +100,7 @@ There are few tools, each covering a lot, with sensible defaults. The existing s
 
 The cost model is per backend, and placement is visible in the result.
 
-**Merging `map` output:** each shard commits on `swarm/<id>/<k>`. Hangar merges the shards in order onto `swarm/<id>`, reports conflicts per shard, and can run one agent sandbox to resolve them.
+**Merging `map` output:** each shard commits on `swarm/<id>/<k>`. hangar merges the shards in order onto `swarm/<id>`, reports conflicts per shard, and can run one agent sandbox to resolve them.
 
 ### 5.2 Performance architecture (targets)
 
@@ -196,12 +196,12 @@ Each number gets a benchmark in `evals/perf/`, run on every release (0004 M0).
 
 ### 5.5 Interop: Harbor, verifiers, ATIF, Agents SDK
 
-> **Moved to flightdeck (2026-10-17, decisions 16 and 17).** Harbor-compatible graded tasks, `save_as_task` (a flightdeck function over hangar's outbox data, `hangar.run/v1`) and the ATIF import and export adapter are flightdeck's. Hangar stores and exports `hangar.trace/v1` (OTLP/JSON on the GenAI conventions) and emits no ATIF; its experiment job takes tasks as `instructions` or an `issue` plus a grader. The text below is kept for history.
+> **Moved to flightdeck (2026-10-17, decisions 16 and 17).** Harbor-compatible graded tasks, `save_as_task` (a flightdeck function over hangar's outbox data, `hangar.run/v1`) and the ATIF import and export adapter are flightdeck's. hangar stores and exports `hangar.trace/v1` (OTLP/JSON on the GenAI conventions) and emits no ATIF; its experiment job takes tasks as `instructions` or an `issue` plus a grader. The text below is kept for history.
 
 Scope: this section is about graded work. Development runs do not need a Harbor task; they use the repo's own checks (`verify=`) and land as branches and PRs. Harbor enters when a run is meant to be scored and compared.
 
 - **Save as task:** `save_as_task(run)` turns a finished development run into a Harbor task. It takes the starting commit as the environment, the issue text as the instruction, and the tests that changed or were added in the merged fix as `tests/`. This is how the team's real work becomes its regression set.
-- **One task format:** Harbor's layout is hangar's only task format. Hangar-specific hints (sandbox size, preferred harness) go in a `[metadata.hangar]` table in `task.toml`. Variants, policy, budgets and ticket links belong to the 0007 experiment definition, which points at task directories. Pin a Harbor version and run its task validator in CI.
+- **One task format:** Harbor's layout is hangar's only task format. hangar-specific hints (sandbox size, preferred harness) go in a `[metadata.hangar]` table in `task.toml`. Variants, policy, budgets and ticket links belong to the 0007 experiment definition, which points at task directories. Pin a Harbor version and run its task validator in CI.
 - **`hangar.harbor:HangarEnvironment`** implements Harbor's `BaseEnvironment` against hangar's REST API, so `harbor run -e hangar.harbor:HangarEnvironment` runs any Harbor task on hangar under its policy. Credentials stay in the Harbor process or hangar's vault, per Harbor's guidance. Capabilities are declared honestly.
 - **Tasks:** `evals/semver` is converted to a Harbor task (`task.toml`, `instruction.md`, `tests/test.sh` writing `reward.json` per category). The 0007 experiment runner accepts Harbor task directories as its task-set format.
 - **Separate verifier sandbox** by default for graded runs (Harbor's `environment_mode = "separate"`): fresh sandbox, only declared artifacts copied, no network.
@@ -215,7 +215,7 @@ Scope: this section is about graded work. Development runs do not need a Harbor 
 | --- | --- | --- |
 | **A. Inference-time and context optimization** (closed models, now) | `swarm(best_of_n)` + verifier = test-time scaling; GEPA/ACE proposals (§5.3); routing bandits within experiments | §5.1, 0007 M7 |
 | **B. Data** | `export_dataset(filter)` (moved to flightdeck: the ATIF adapter): ATIF trajectories, rewards, labels and config fingerprints; successful-trajectory sets for SFT; preference pairs from best-of-N (verified winner vs loser); erroneous segments masked using labels | M7 (§8) |
-| **C. Online RL rollouts** (open models) | Hangar as the environment backend for prime-rl / slime / rLLM: | 0003 M9 proxy, fork, scale targets |
+| **C. Online RL rollouts** (open models) | hangar as the environment backend for prime-rl / slime / rLLM: | 0003 M9 proxy, fork, scale targets |
 | | • pools and fork for grouped rollouts (same start state); | |
 | | • interception through the model gateway (token ids, logprobs, per-rollout id); | |
 | | • 512+ concurrent sandboxes; | |
@@ -248,7 +248,7 @@ Scope: this section is about graded work. Development runs do not need a Harbor 
 
 ## 7. Open questions
 
-1. ~~Harbor's task format as the only task format?~~ **Decided (owner, 2026-10-12): yes, for graded work only.** *Restated 2026-10-17 (decision 16): graded-task formats are flightdeck's, Harbor-compatible.* Development work keeps GitHub issues, 0004 tasks and the repo's own checks. Hangar hints go in `[metadata.hangar]`; experiment settings stay in 0007's experiment definition (§5.5).
+1. ~~Harbor's task format as the only task format?~~ **Decided (owner, 2026-10-12): yes, for graded work only.** *Restated 2026-10-17 (decision 16): graded-task formats are flightdeck's, Harbor-compatible.* Development work keeps GitHub issues, 0004 tasks and the repo's own checks. hangar hints go in `[metadata.hangar]`; experiment settings stay in 0007's experiment definition (§5.5).
 2. `verifiers` integration through Harbor, or natively? Decide after M6.
 3. ~~Memory-fork backend?~~ **Decided (owner, 2026-10-12):** disk-level forks on GKE are the default. Memory fork is opt-in for workloads that need process state: GKE Pod Snapshots first, E2B as the fallback, Morph only if M2 shows a gap neither closes. M2 benchmarks time to N ready forks (N = 1, 10, 50), cost per fork-hour, whether a running process survives, failure rate, and whether it works under gVisor with policy enforced. Run it after 0007 M0 so SSD quota doesn't skew the GKE numbers.
 4. Which open model and trainer for stage C, and on what GPU budget? Out of scope until stage B data exists.

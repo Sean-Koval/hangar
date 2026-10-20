@@ -37,7 +37,7 @@ A cap reached answers 429 over REST and the E2B API, and an error naming the cap
 **person**, the person hangar records on each token and on the work it starts ([security.md](security.md#people)):
 all of a person's tokens, MCP and REST calls, and the OAuth connectors they approved count together, and the
 admin's existing tokens all count as `owner`. `fairness.person_of` is the one place that maps who acted to a person;
-records from before people fall back to the token's name. Hangar's own actors (sessions' and jobs' sandboxes, the
+records from before people fall back to the token's name. hangar's own actors (sessions' and jobs' sandboxes, the
 reaper, schedules) are not people. For the caps to be per engineer, **add each engineer as a person**
 (`hangar person add <name>`, which prints their login token); jobs triggered from GitHub or Slack have no person
 yet and are capped per GitHub login or Slack user.
