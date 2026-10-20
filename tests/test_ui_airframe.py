@@ -132,24 +132,43 @@ def test_console_serves_and_links_airframe(settings):
     assert c.get("/ui/fleet.js").status_code == 200
 
 
-def test_fleet_views_use_the_theme_v3_components():
-    """Board, Bays, Columns and Owners are Airframe's FleetView, FleetBays, FleetColumns and FleetOwners: the vendored
-    theme has them, and the console builds with them rather than its own copies."""
+def test_fleet_is_the_decision_deck_console():
+    """KAN-140 (theme-v12): the Fleet is Airframe's FleetConsole. List (AgentRow) and Board (AgentCard) over one model
+    and one selection; the DecisionDeck is the Needs-you page and a band atop the Fleet; StageRail, Heartbeat and
+    ActivityTimeline are Airframe's; owners are a filter, and Bays, Columns and Owners are retired from hangar."""
     css = (VENDORED / "airframe-components.css").read_text()
     js = (UI / "fleet.js").read_text()
-    for cls in ("af-fleet__board", "af-stand", "af-bays", "af-bay", "af-statecols", "af-mini", "af-owners", "af-cap",
-                "af-track", "af-who"):
-        assert f".{cls}" in css, f"{cls} is not in the vendored Airframe: sync theme-v6 or later"
+    html = (UI / "index.html").read_text()
+    for cls in ("af-runway", "af-agent", "af-agent__line", "af-agent__face", "af-agent--card", "af-board", "af-console",
+                "af-deck", "af-deck__stack", "af-decision", "af-verdict-line", "af-reason", "af-rail", "af-rail--est",
+                "af-ring", "af-capsule", "af-hb", "af-timeline", "af-spark", "af-stages", "af-chips"):
+        assert f".{cls}" in css, f"{cls} is not in the vendored Airframe: sync theme-v12 or later"
         assert cls in js, f"fleet.js doesn't use {cls}"
-    # the avatar triad (theme-v6): owners are round people, harnesses hexagonal agents, through airframe.js's avatar()
-    for kind in ("person", "agent"):
-        assert f".af-avatar--{kind}" in css and f'avatar("{kind}"' in js, f"fleet.js doesn't draw {kind} avatars"
-    assert "af-person__av" not in js, "FleetOwners' own initials are the avatar triad now"
-    own = (UI / "app.css").read_text()
-    for cls in ("af-bay", "af-mini", "af-stand", "af-owners"):  # placement tweaks only, never a redefinition
-        assert not re.search(rf"(^|[,}}])\s*\.{cls}\s*\{{", own, re.M), f"app.css redefines .{cls}"
-    links = re.findall(r'data-fleet-view="([a-z]+)"', (UI / "index.html").read_text())
-    assert links == ["board", "bays", "columns", "owners"]
+    # Airframe's behaviours, not copies: the accordion, the deck and the roving tab stop
+    for helper in ("airframe.expand.open(", "airframe.expand.close(", "airframe.deck.leave(", "airframe.deck[d](",
+                   "airframe.deck.go(", "airframe.roving("):
+        assert helper in js, helper
+    # two views, one selection; the owners filter rides on GET /api/fleet?owner=
+    assert re.findall(r'data-fleet-view="([a-z]+)"', html) == ["list", "board"]
+    assert 'const FLEET_VIEWS = ["list", "board"];' in js and 'q.set("owner", fleet.owner)' in js
+    for gone in ("af-bays", "af-bay", "af-statecols", "af-mini", "af-owners", "af-stand", "fleet-detail"):
+        assert gone not in js and gone not in html, f"{gone} is retired from hangar"
+    # the data: one read and its stream (ticket first), polling when the stream is not there
+    assert '"/api/fleet' in js and '"POST", "/api/fleet/tickets"' in js and "new EventSource(`/api/fleet/stream?ticket=" in js
+    for ev in ('on("snapshot"', 'on("agent"', 'on("gone"', 'on("inbox"', 'on("summary"', 'on("close"'):
+        assert ev in js, ev
+    # progress is solid only from what the agent reported; an estimate is dotted and says so
+    assert "if (u.stage_pct != null) return { i, f: clamp01(u.stage_pct / 100), est: false };" in js
+    assert "about ${pct}% (estimate" in js
+    # the avatar triad: owners are round people, harnesses hexagonal agents
+    assert 'avatar("person"' in js and "agentAvatar(" in js
+    # the deck's routes: decisions, retry and start over, acknowledge; a 404 or 409 is someone else's verdict
+    for route in ("/approvals/${it.approval}", "/api/jobs/${it.job}/reject", "/api/jobs/${it.job}/approve",
+                  "/retry`", "/retry?fresh=1`", "/api/inbox/${encodeURIComponent(it.id)}/ack", "/follow-up`", "/send`"):
+        assert route in js, route
+    assert "e.status === 404 || e.status === 409" in js and "Object.assign(new Error(" in (UI / "app.js").read_text()
+    # receipts and policy check lists are Tower's; hangar shows neither
+    assert "Receipt" not in js and "Checks" not in js
 
 
 def test_console_is_assembled_from_airframe_parts():
@@ -162,7 +181,7 @@ def test_console_is_assembled_from_airframe_parts():
     views = re.findall(r'<section id="view-[a-z-]+" class="view"', html)
     assert len(views) == html.count('<header class="af-page-head')
     assert "view-head" not in html and ".view-head" not in css
-    assert 'id="fleet-sub" class="af-page-head__sum"' in html
+    assert 'id="fleet-sub" class="af-page-head__sum' in html
     # toasts and confirms come from airframe.js; window.confirm() and the own toast are gone
     assert "airframe.toast(" in app and "airframe.confirm(" in app
     assert not re.search(r"(?<![.\w])confirm\(", js), "use confirmAction() (airframe.confirm), never window.confirm()"
@@ -174,8 +193,7 @@ def test_console_is_assembled_from_airframe_parts():
     # drawers: the terminal is the bottom drawer (always Night), the Fleet detail the right one (airframe.drawer)
     assert 'id="drawer" class="af-drawer af-drawer--bottom' in html and 'data-theme="dark"' in html
     assert 'airframe.drawer.open("#drawer", { scrim: false })' in app
-    assert "af-drawer--right" in fleet and "af-drawer__body" in fleet
-    assert "airframe.drawer.open(el, { scrim: false })" in fleet
+    assert "af-drawer--right" not in fleet, "an agent opens in place (AgentRow), not in a drawer"
     assert "--drawer-pad: calc(var(--af-drawer-inset)" in css, "the page and the detail stop above the terminal drawer"
     # empty states are af-empty (no-data, after-action, compact); the five own shapes are gone
     assert "af-empty" in js and 'kind: "after-action"' in app
@@ -257,17 +275,17 @@ def test_held_actions_are_approval_cards_decided_in_place():
     assert "reason ? { reason } : {}" in app and '"reject" : "approve"' in app
     assert "{ decision, message: reason || null }" in app and "/api/env-requests/${a.id}" in app
     # where the cards are: job detail, session detail, Fleet detail (delegated clicks), Needs you
-    assert app.count("approvalClick(e, ") >= 3
-    assert "approvalClick(e, (id) => fleet.cards.get(id), loadFleet)" in fleet
+    assert app.count("approvalClick(e, ") >= 2
     assert "jobApproval(j, false)" in app and "toolApprovals(x.pending_approvals" in app
-    assert "function detailCards(u)" in fleet
-    assert 'api("GET", "/api/inbox")' in app and 'id="view-needs"' in html
+    # KAN-140: Needs you is the DecisionDeck, drawn by fleet.js from GET /api/fleet's inbox, deny with a reason there too
+    assert 'id="view-needs"' in html and 'id="needs-deck"' in html and 'deckHtml("page")' in fleet
     assert 'href="#needs" data-view="needs"' in html
     assert html.index('href="#needs"') < html.index('href="#jobs"'), "what needs a person leads the nav"
-    assert 'cls: "af-empty--clear"' in app and 'title: "Nothing is waiting on you."' in app, "the clear state"
-    # a half-written reason or answer survives the 4 s repaint
+    assert "Nothing waits on you." in fleet, "the clear state"
+    assert 'status("failed", "Give a reason.")' in fleet and "fleet.invalid.add(it.id)" in fleet
+    # a half-written reason or answer survives every repaint and live update
     assert "function openReasons(" in app or "const openReasons" in app
-    assert "restoreReasons(box, reasons, findCard)" in app and "restoreReasons(el, reasons" in fleet
+    assert "restoreReasons(box, reasons, findCard)" in app and "fleet.drafts.set(k, e.target.value)" in fleet
 
 
 def test_narrow_screens_get_a_bottom_tab_bar():
@@ -295,17 +313,14 @@ def test_narrow_screens_get_a_bottom_tab_bar():
 
 
 def test_fleet_header_leads_with_what_needs_a_person():
-    """The Fleet header's mark and keyed counts put what needs a person first, then failed, then denied, then the
-    quiet states (running, starting, paused): one attention order, shared with each pool's counts and the tiles."""
+    """The headline says the fleet in words with what needs a person as its one colored subject; agents within an
+    environment and the deck follow one attention order: needs you, failed, denied, then the quiet states."""
     js = (UI / "fleet.js").read_text()
     order = re.search(r"const ATTENTION = \[([^\]]*)\]", js)
     assert order, "fleet.js defines ATTENTION, the one attention order"
     assert re.findall(r'"([a-z]+)"', order.group(1)) == ["approval", "failed", "denied", "running", "queued", "off"]
-    assert "ATTENTION.find(" in js and "ROLE_RANK = Object.fromEntries(ATTENTION" in js
-    # the keyed counts list the roles in that order too, running after the three that carry color
-    counts = re.search(r"const countMeta = .*?\n\]\);", js, re.S).group(0)
-    keys = [k for k in re.findall(r'\["([a-z ]+)", c\.', counts)]
-    assert keys == ["needs you", "failed", "denied", "running", "starting", "paused", "spun down"], keys
+    assert "ROLE_RANK = Object.fromEntries(ATTENTION" in js and "ROLE_RANK[a.role] - ROLE_RANK[b.role]" in js
+    assert "<em>${number(need)} need${need === 1 ? \"s\" : \"\"} you</em>" in js, "the status as the subject"
     assert "SEVERITY" not in js and "SEVERITY" not in (UI / "app.js").read_text(), "the old denied-first order is gone"
 
 
@@ -353,17 +368,10 @@ def test_phones_land_under_the_header_with_a_compact_fleet_and_activity_cards():
     html, css = (UI / "index.html").read_text(), (UI / "app.css").read_text()
     app, fleet = (UI / "app.js").read_text(), (UI / "fleet.js").read_text()
     assert ".job-detail, .env-detail { scroll-margin-top: calc(var(--af-header-h) + var(--af-space-16)); }" in css
-    assert '<select id="fleet-view-select" class="fleet-view-select" aria-label="Fleet view">' in html
-    select = html.split('id="fleet-view-select"')[1].split("</select>")[0]
-    assert re.findall(r'<option value="([a-z]+)">', select) == ["board", "bays", "columns", "owners"]
-    assert '$("#fleet-view-select").value = fleet.view;' in fleet
-    assert 'location.hash = `#fleet?view=${e.target.value}`' in fleet
-    assert '<span class="fleet-brief af-muted">' in fleet
+    # KAN-140: on a phone the rows stack (AgentRow's own layout below 760 px), the owner chips scroll sideways
+    assert "fleet-owners" in html and "fleet-owners" in fleet
     phone = css[css.index("@media (max-width: 480px)"):]
-    for rule in ('grid-template-areas: "title new" "sum sum" "views stopped"',
-                 "#view-fleet .fleet-view-select { display: block;",
-                 "#view-fleet .fleet-views, #view-fleet #fleet-sub > .af-meta, #view-fleet #fleet-sub > .af-cap "
-                 "{ display: none; }",
+    for rule in (".fleet-owners .af-chips { flex-wrap: nowrap; overflow-x: auto;", ".fleet-key-hint { display: none; }",
                  "#audit-table thead { display: none; }", '"action when" "who who" "target target" "detail detail"'):
         assert rule in phone, rule
     assert "function auditRows(" in app and "function auditDetail(" in app and 'class="af-meta__key"' in app
