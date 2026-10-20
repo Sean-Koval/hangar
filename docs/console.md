@@ -20,7 +20,8 @@ Everything waiting on a person, from the same list `hangar inbox`, Slack and MCP
 own work, and for an admin also the work nobody in particular owns, such as jobs from GitHub issues and Slack. The page
 reads it with the Fleet (`GET /api/fleet` carries the inbox, and its stream keeps it current).
 
-![Needs you: the held push on top of the deck with its command, changes and expiry, Deny and Approve push; the next decisions peeking behind it and listed under Up next](assets/front/ui-needs.png)
+![Needs you: the held push on top of the deck with its command, changes and expiry, Deny, Allow for this turn and Approve push; the next decision peeking behind it](assets/front/ui-needs.png#only-dark)
+![Needs you: the held push on top of the deck with its command, changes and expiry, Deny, Allow for this turn and Approve push; the next decision peeking behind it](assets/front/ui-needs-light.png#only-light)
 
 It is a **deck**: one decision at a time, the soonest to expire on top, the next two peeking behind it, "1 of 7",
 previous and next, and an up-next list to jump to any of them. Decisions (a person is needed now) come before what
@@ -116,7 +117,8 @@ what the live turns spent. **New sandbox** starts one or more identical sandboxe
 numbered work branch; **Show stopped** adds stopped sandboxes; the **Owner** chips keep one person's agents
 (`?owner=`, kept in the URL as `#fleet?owner=priya`).
 
-![The Fleet: the headline, the decision deck as a band, and the agents of base-codex as rows with what each is doing now, its owner, model, stage rail, stage times, token sparkline and spend](assets/front/ui-fleet.png)
+![The Fleet: the headline, the decision deck as a band, and the agents of base-codex as rows with what each is doing now, its owner, model, stage rail, stage times, token sparkline and spend](assets/front/ui-fleet.png#only-dark)
+![The Fleet: the headline, the decision deck as a band, and the agents of base-codex as rows with what each is doing now, its owner, model, stage rail, stage times, token sparkline and spend](assets/front/ui-fleet-light.png#only-light)
 
 Under the header is the **deck** from [Needs you](#needs-you), as a band you can hide (it remembers), then every agent
 grouped by environment, attention first: what needs you, failed, denied, running, queued, spun down. Two views of

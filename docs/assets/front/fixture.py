@@ -532,7 +532,17 @@ class Fixture:
         await page.route("**/api/jobs/job-*", one_job)
         await page.route("**/api/fleet?*", fleet_read)
         await page.route("**/api/fleet", fleet_read)
-        await page.route("**/api/fleet/tickets", lambda r: fixed(r, {"error": "the fixture has no stream; the console polls"}, 404))
+        async def fleet_stream(route):
+            # one snapshot, then the server's own `close` event: the console takes the fleet from it and polls
+            # afterwards (fleet.js), so a decision the recording makes still shows on the next read
+            q = parse_qs(urlparse(route.request.url).query)
+            snap = self.fleet((q.get("owner") or [None])[0], (q.get("include_stopped") or ["false"])[0] == "true")
+            body = (f"event: snapshot\ndata: {json.dumps(snap, separators=(',', ':'), default=str)}\n\n"
+                    'event: close\ndata: {"reason": "fixture", "code": "end"}\n\n')
+            await route.fulfill(status=200, content_type="text/event-stream", body=body)
+
+        await page.route("**/api/fleet/tickets", lambda r: fixed(r, {"ticket": "fixture", "ttl_seconds": 60}))
+        await page.route("**/api/fleet/stream?*", fleet_stream)
         await page.route("**/api/inbox/*/ack", ack)
         await page.route("**/api/jobs/*/retry*", retry)
         await page.route("**/api/jobs/*/approve", job_decided)

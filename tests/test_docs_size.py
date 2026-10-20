@@ -78,6 +78,8 @@ def words(page: str) -> int:
     text = re.sub(r"^---.*?---\n", "", text, flags=re.S)
     text = re.sub(r"```.*?```", "", text, flags=re.S)
     text = re.sub(r"<[^>]+>", "", text)
+    # a Day twin (#only-light) repeats its Night image's alt text
+    text = re.sub(r"^!\[[^\]]*\]\([^)]*#only-light\)$", "", text, flags=re.M)
     return len(re.findall(r"[A-Za-z0-9'’-]+", text))
 
 

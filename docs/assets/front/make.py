@@ -22,6 +22,7 @@ Writes, next to this file (or into --out):
   ui-jobs.png, ui-sessions.png  the console's Jobs and Sessions views, from the demo run
   ui-fleet-board.png            the Fleet's Board with an agent open in place, from the demo run (docs/console.md)
   ui-needs.png, ui-fleet.png, ui-review.png   Needs you (the deck), the Fleet with its deck, and the Diff, from the fixture
+  ui-needs-light.png, ui-fleet-light.png      the same two in Day, for the docs' light scheme and the README's <picture>
   inbox.png                     `hangar inbox` in a terminal
   hangar-suite.svg, -dark.png, -light.png     the diagram (diagram.py)
 CI (.github/workflows/front-page.yml) runs this, checks the files and their sizes, and keeps them as an artifact.
@@ -439,15 +440,17 @@ async def _console_page(ctx, fx: Fixture, hash_: str):
     return page
 
 
-async def _crop(page, path: Path, first: str, last: str, pad: int = 12) -> None:
-    """A still of the page from the top of `first` to the bottom of `last`, the viewport's full width, at 2x. The
-    sticky top bar stays at the top of the document, so it is not painted into the middle of a crop lower down."""
-    await page.add_style_tag(content=".topbar { position: absolute !important; }")
+async def _crop(page, path: Path, first: str | None, last: str, pad: int = 12) -> None:
+    """A still of the page from the top of `first` (None: the top of the page, with the console's header) to the
+    bottom of `last`, the viewport's full width, at 2x. Lower down, the sticky top bar is taken out of the flow first so
+    it is not painted into the middle of the crop."""
+    if first:
+        await page.add_style_tag(content=".topbar { position: absolute !important; } .shell { padding-top: var(--af-header-h); }")
     await page.evaluate("window.scrollTo(0, 0)")
     box = await page.evaluate(
         """([a, b, pad]) => {
-            const t = document.querySelector(a).getBoundingClientRect(), u = document.querySelector(b).getBoundingClientRect();
-            const y = Math.max(window.scrollY + t.top - pad, 0);
+            const u = document.querySelector(b).getBoundingClientRect();
+            const y = a ? Math.max(window.scrollY + document.querySelector(a).getBoundingClientRect().top - pad, 0) : 0;
             return {x: 0, y, width: innerWidth, height: window.scrollY + u.bottom + pad - y};
         }""",
         [first, last, pad],
@@ -456,9 +459,9 @@ async def _crop(page, path: Path, first: str, last: str, pad: int = 12) -> None:
     print("wrote", path, f"({box['width']:.0f}x{box['height']:.0f} at 2x)")
 
 
-async def _fixture_context(browser, width: int):
-    ctx = await browser.new_context(viewport={"width": width, "height": H}, device_scale_factor=2, color_scheme="dark")
-    await ctx.add_init_script(f"localStorage.setItem('hangar.token', '{demo.TOKEN}')")
+async def _fixture_context(browser, width: int, theme: str = "dark"):
+    ctx = await browser.new_context(viewport={"width": width, "height": H}, device_scale_factor=2, color_scheme=theme)
+    await ctx.add_init_script(f"localStorage.setItem('hangar.token', '{demo.TOKEN}'); localStorage.setItem('hangar.theme', '{theme}')")
     return ctx
 
 
@@ -467,11 +470,21 @@ async def console(pw, out: Path) -> None:
     each cropped to what its caption names, from a viewport narrow enough that the crop reads at a README's width."""
     browser = await pw.chromium.launch()
     fx = Fixture()
+    for theme, suffix in (("dark", ""), ("light", "-light")):
+        narrow = await _fixture_context(browser, NARROW, theme)
+        page = await _console_page(narrow, fx, "needs")
+        # the page title and the deck: the held push on top, the next ones peeking, the up-next list (the header's tabs
+        # scroll at this width, so it stays out of the crop)
+        await _crop(page, out / f"ui-needs{suffix}.png", "#view-needs .af-page-head", "#needs-deck .af-deck")
+        await page.close()
+        await narrow.close()
+        docked = await _fixture_context(browser, DOCKED, theme)
+        page = await _console_page(docked, fx, "fleet")
+        # the header, the headline, the deck band and the first agents of the first environment
+        await _crop(page, out / f"ui-fleet{suffix}.png", None, "#fleet-body .af-runway .af-agent:nth-child(4)")
+        await page.close()
+        await docked.close()
     narrow = await _fixture_context(browser, NARROW)
-    page = await _console_page(narrow, fx, "needs")
-    # the page header and the deck: the held push on top, the next ones peeking, the up-next list
-    await _crop(page, out / "ui-needs.png", "#view-needs .af-page-head", "#needs-deck .af-deck")
-    await page.close()
     page = await _console_page(narrow, fx, "jobs")
     await page.locator("#job-list li", has_text="Push the refunds").first.click()
     await page.click("[data-diff-show]")
@@ -485,12 +498,6 @@ async def console(pw, out: Path) -> None:
     await _crop(page, out / "ui-review.png", "#job-detail h4:has(+ .changes)", "[data-thread]")
     await page.close()
     await narrow.close()
-    docked = await _fixture_context(browser, DOCKED)
-    page = await _console_page(docked, fx, "fleet")
-    # the headline, the deck band and the first agents of the first environment
-    await _crop(page, out / "ui-fleet.png", "#view-fleet .af-page-head", "#fleet-body .af-runway .af-agent:nth-child(5)")
-    await page.close()
-    await docked.close()
     await browser.close()
 
 
@@ -547,7 +554,8 @@ def check(out: Path, only: str | None) -> None:
         "diagram": ["hangar-suite.svg", "hangar-suite-dark.png", "hangar-suite-light.png"],
         "ui": ["hangar-demo.gif", "hangar-demo.mp4", "ui-jobs.png", "ui-sessions.png", "inbox.png",
                *(f"ui-fleet-{v}.png" for v in sorted(FLEET_VIEWS))],
-        "console": ["ui-needs.png", "ui-fleet.png", "ui-review.png", "hangar-review.gif", "hangar-review.mp4"],
+        "console": ["ui-needs.png", "ui-needs-light.png", "ui-fleet.png", "ui-fleet-light.png", "ui-review.png",
+                    "hangar-review.gif", "hangar-review.mp4"],
     }
     want = [n for k, v in names.items() if only in (None, k) for n in v]
     bad = []
