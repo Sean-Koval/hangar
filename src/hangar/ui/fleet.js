@@ -73,13 +73,23 @@ function index() {
 const unitOfItem = (it) => (fleet.data?.units || []).find((u) => (u.inbox || []).includes(it.id))
   || (it.job ? (fleet.data?.units || []).find((u) => u.job === it.job) : null)
   || (it.session ? (fleet.data?.units || []).find((u) => u.session?.name === it.session) : null) || null;
-// the deck: decisions by what expires first, then what stopped, newest first; decided ones stay while their verdict shows
+// what waits on a person: decisions by what expires first, then what stopped, newest first; decided ones stay while their
+// verdict shows. The deck stacks the decisions only and lists what stopped under them; with no decision left, what
+// stopped is the stack.
 function queue() {
   const items = (fleet.data?.inbox?.items || []).filter((i) => (DECIDE.has(i.kind) || STOPPED.has(i.kind))
     && (!fleet.done.has(i.id) || fleet.verdicts.has(i.id)));
   const exp = (i) => i.expires_at || unitOfItem(i)?.ask_expires_at || Infinity;
   return items.sort((a, b) => (DECIDE.has(b.kind) - DECIDE.has(a.kind))
     || (DECIDE.has(a.kind) ? exp(a) - exp(b) || (a.since || 0) - (b.since || 0) : (b.since || 0) - (a.since || 0)));
+}
+
+function deckSets() {
+  const q = queue(), decide = q.filter((i) => DECIDE.has(i.kind)), stopped = q.filter((i) => !DECIDE.has(i.kind));
+  let stack = decide.length ? decide : stopped;
+  const top = stack.findIndex((i) => i.id === fleet.deckTop);
+  if (top > 0) stack = stack.slice(top).concat(stack.slice(0, top));
+  return { stack, stopped: decide.length ? stopped : [] };
 }
 
 /* ------------------------------------------------------------------ loading: the stream, else polling */
@@ -375,9 +385,7 @@ function decisionCard(it, k, where) {
 }
 // the deck: the stack (top card in flow, two peeking) and the side (count, previous and next, up next)
 function deckHtml(where) {
-  let q = queue();
-  const top = q.findIndex((i) => i.id === fleet.deckTop);
-  if (top > 0) q = q.slice(top).concat(q.slice(0, top));
+  const { stack: q, stopped } = deckSets();
   const all = fleet.data?.units || [];
   const running = all.filter((u) => u.role === "running").length, queued = all.filter((u) => u.role === "queued").length;
   const lit = q.filter((i) => DECIDE.has(i.kind)).length;
@@ -385,6 +393,11 @@ function deckHtml(where) {
     : `<div class="af-empty af-empty--compact af-deck__empty">${ic("check")}<div class="af-empty__body"><h3 class="af-empty__title">Nothing waits on you.</h3>
         <p class="af-empty__text">${plural(running, "agent")} running, ${queued} queued. You will hear when one needs you.</p></div></div>`;
   const when = (it) => (DECIDE.has(it.kind) ? (it.expires_at || unitOfItem(it)?.ask_expires_at ? `${untilWords(it.expires_at || unitOfItem(it).ask_expires_at)} left` : `${since(it.since)} ago`) : wordOfItem(it));
+  const row = (it, attrs) => { const u = unitOfItem(it); return `<li><button type="button" ${attrs(u)}>${markOnly(roleOfItem(it))}<span class="af-id">${esc(u?.tail || "")}</span><span class="af-deck__what">${esc(u?.work || it.title || it.job || it.session || "")}</span><span class="af-deck__when">${esc(when(it))}</span></button></li>`; };
+  // what stopped, under the decisions: its own list, never in the stack or up next; a row opens the agent, whose console
+  // holds retry, start over and acknowledge
+  const stoppedHtml = stopped.length ? `<h3 class="af-deck__title deck-stopped__title">Stopped<span class="af-deck__count">${stopped.length}</span></h3>
+      <ul class="af-deck__upnext deck-stopped">${stopped.map((it) => row(it, (u) => (u ? `data-dk="jump" data-unit="${esc(u.id)}"` : it.job ? `data-go="job:${esc(it.job)}"` : "disabled"))).join("")}</ul>` : "";
   return `<section class="af-deck" aria-label="Needs you" data-deck="${where}">
     <div class="af-deck__stack">${stack}</div>
     <aside class="af-deck__side">
@@ -394,7 +407,8 @@ function deckHtml(where) {
         : q.length ? "Nothing to decide right now: these stopped. Retry, start over, or acknowledge them to put them away." : "Decisions stack here, soonest to expire on top."}</p>
       ${q.length > 1 ? `<div class="af-deck__nav">${btn("", { kind: "secondary", sm: true, icon: "chevron-right", cls: "af-btn--icon fleet-flip", attrs: { "data-dk": "prev", "aria-label": "Previous" } })}${
         btn("", { kind: "secondary", sm: true, icon: "chevron-right", cls: "af-btn--icon", attrs: { "data-dk": "next", "aria-label": "Next" } })}<span class="af-note">Skip for now</span></div>
-      <ul class="af-deck__upnext">${q.slice(1).map((it) => { const u = unitOfItem(it); return `<li><button type="button" data-dk="go" data-to="${esc(it.id)}">${markOnly(roleOfItem(it))}<span class="af-id">${esc(u?.tail || "")}</span><span class="af-deck__what">${esc(u?.work || it.title || it.job || it.session || "")}</span><span class="af-deck__when">${esc(when(it))}</span></button></li>`; }).join("")}</ul>` : ""}
+      <ul class="af-deck__upnext">${q.slice(1).map((it) => row(it, () => `data-dk="go" data-to="${esc(it.id)}"`)).join("")}</ul>` : ""}
+      ${stoppedHtml}
     </aside>
   </section>`;
 }
@@ -564,8 +578,9 @@ function drawFleet() {
   const band = $("#fleet-band");
   band.hidden = !q.length;
   if (q.length) {
-    paint(band, fleet.band ? deckHtml("band") : `<button type="button" class="fleet-band__bar" data-band="open" aria-expanded="false" aria-controls="fleet-band">${markOnly(roleOfItem(q[0]))}
-      <span class="fleet-band__what"><b>Needs you</b> ${q.length === 1 ? "one decision" : `${q.length} decisions`}: ${esc(unitOfItem(q[0])?.work || q[0].title || "")}</span>${ic("chevron-down")}<span class="af-note">Show</span></button>`, `band:${fleet.band}`);
+    const sq = deckSets().stack, lit = DECIDE.has(sq[0].kind), n = sq.length;
+    paint(band, fleet.band ? deckHtml("band") : `<button type="button" class="fleet-band__bar" data-band="open" aria-expanded="false" aria-controls="fleet-band">${markOnly(roleOfItem(sq[0]))}
+      <span class="fleet-band__what"><b>${lit ? "Needs you" : "Stopped"}</b> ${lit ? (n === 1 ? "one decision" : `${n} decisions`) : (n === 1 ? "one agent" : `${n} agents`)}: ${esc(unitOfItem(sq[0])?.work || sq[0].title || "")}</span>${ic("chevron-down")}<span class="af-note">Show</span></button>`, `band:${fleet.band}`);
   }
   $("#fleet-note").textContent = `${us.filter((u) => u.role === "running").length} running, ${us.filter((u) => u.role === "queued").length} queued${fleet.owner ? `, ${firstName(fleet.owner === "none" ? null : fleet.owner)}'s only` : ""}`;
   const envs = [...new Set(us.map((u) => u.environment))].sort();
@@ -869,7 +884,7 @@ for (const root of [$("#view-fleet"), $("#view-needs")]) {
   root.addEventListener("af:deck", (e) => {
     const deckEl = e.target.closest(".af-deck"), n = e.detail.count;
     const count = deckEl && $(".af-deck__count", deckEl);
-    const cards = $$(":scope > .af-decision", e.target), q = queue();
+    const cards = $$(":scope > .af-decision", e.target), q = deckSets().stack;
     if (count && n) count.textContent = `${q.findIndex((i) => i.id === e.detail.top?.dataset.item) + 1 || 1} of ${n}`;
     void cards;
   });

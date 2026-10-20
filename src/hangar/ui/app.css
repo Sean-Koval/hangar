@@ -169,6 +169,13 @@ fieldset.creds legend { padding: 0; margin-bottom: var(--af-space-8); font-famil
   .needs-review__row > :is(.af-agent__ttl, .af-agent__rig, .needs-review__acts) { grid-column: 2; }
   .needs-review__acts { justify-content: flex-start; margin-left: -10px; }
 }
+/* what stopped sits under the decisions in its own list (fleet.js deckHtml), on every width: Airframe hides the up-next
+   list below 1000 px, but this is the only place the stopped ones are listed */
+.af-deck .deck-stopped { display: flex; }
+.deck-stopped__title { margin-top: var(--af-space-8); }
+/* the cards peeking behind the top one are neutral stacked surfaces: their status edge stays on the top card only
+   (proposed for Airframe's DecisionDeck; until it ships there, hangar hides it here) */
+.af-deck__stack > .af-decision:not([data-k="0"])::before { display: none; }
 .af-decision .af-lead code { overflow-wrap: anywhere; }
 .af-decision .af-pairs .af-mono, .af-console .af-pairs .af-mono { overflow-wrap: anywhere; }
 
